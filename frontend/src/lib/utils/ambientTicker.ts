@@ -1,36 +1,55 @@
-// Ambient-indicator waveforms, and the one indicator that still needs a
-// JS timer.
+// Ambient-indicator waveforms, and the indicators that need a JS timer.
 //
-// Everything the app pulses, chases, or spins is a CSS animation on a
-// compositable property (see app.css: `ambient-pulse`, `ambient-led`,
-// `ambient-spin`, `working-sprite-run`), phase-locked to wall clock by
-// utils/ambientPhase.ts. Those cost no main-thread work at all: Blink
-// promotes an element for a known animation and ticks opacity/transform
-// off the main thread.
+// Two mechanisms, and which one an indicator gets is decided by WHERE it
+// mounts, not by taste:
 //
-// The status glow is the exception, and deliberately so. Its
+//   CSS keyframes on a compositable property, phase-locked to wall clock
+//   by utils/ambientPhase.ts (app.css: `ambient-led`, `ambient-spin`,
+//   `working-sprite-run`). Blink promotes the element and ticks it off
+//   the main thread, so these cost no style recalc and no paint at all.
+//
+//   This timer, writing inline styles (`.animate-pulse` opacity, the
+//   status glow's `--ambient-glow-t`). An inline write creates no
+//   Animation object.
+//
+// That last sentence is the whole reason the timer still exists.
+// Anything mounted INSIDE the timeline scroller must not create an
+// animation object: an active animation flips Blink's present policy to
+// smoothness-priority, which licenses presenting a frame with tiles
+// still un-rastered. The timeline's core moves are compensated
+// viewport-space moves (head splices, prune shifts, bottom-held
+// toggles) — rows that stay screen-stationary while every tile
+// invalidates at once — and under smoothness-priority that is a
+// checkerboard where text used to be (incident 2026-08-17). See
+// docs/architecture/frontend-scroll.md § The Print Doctrine.
+//
+// `.animate-pulse` is rendered by fourteen chat row components through
+// components/chat/Indicator.svelte, so every running tool call would
+// hold a live animation in the scroller. It stays on this timer.
+// `chat/timelineKeyframeAnimations.test.ts` is the tripwire that keeps
+// it that way.
+//
+// The status glow stays for a second, independent reason: its
 // `--ambient-glow-t` drives three things at once in app.css — shadow
 // spread 0→2px, shadow alpha 0→0.22, and the ::before's opacity
 // 0.7→1.0, which lifts the 1px border with it. box-shadow is not
 // compositable, and opacity alone cannot reproduce spread GROWTH: the
-// ring would sit at full width and fade in rather than expand. Measured
-// 2026-08-23, per 5s with four indicators running:
+// ring would sit at full width and fade in rather than expand.
+//
+// Measured 2026-08-23, per 5s with four indicators running:
 //
 //   glow as a CSS box-shadow animation   324 style recalcs   85.1ms
 //   glow on this timer                    40 style recalcs  127.0ms
-//   pulse/spin/sprite as CSS animations    0 style recalcs    0.0ms
+//   LED/spin/sprite as CSS animations      0 style recalcs    0.0ms
 //
-// So the timer stays for the glow only. It costs nothing until a glow is
-// actually on screen: with no `.status-glow-*` element the loops below
-// write nothing, and a write is what makes a tick expensive — each one
-// forces a whole-document lifecycle, which is why driving the other
-// indicators this way cost more total main-thread time than the CSS
-// keyframes it replaced.
+// A write is what makes a tick expensive, and the timer stops entirely
+// when there is nothing to write — see `armWake` below.
 //
-// The waveform functions are the authoritative specification for the CSS
-// keyframes, not dead code: ambientCss.browser.test.ts samples the
-// rendered animations against them slot by slot, so drift in either
-// direction fails.
+// The waveform functions are the authoritative specification for both
+// mechanisms, not dead code: ambientCss.browser.test.ts samples the
+// rendered CSS animations against them slot by slot, and the tests in
+// this module's suite pin the inline writes to the same functions, so
+// drift in either direction fails.
 import { prefersReducedMotion, reducedMotionQuery } from './reducedMotion';
 import { startAmbientPhase } from './ambientPhase';
 
@@ -84,61 +103,137 @@ function formatValue(v: number): string {
   return String(Math.round(v * 10000) / 10000);
 }
 
+type StyledKind = 'pulse' | 'glow';
+
 const GLOW_CLASSES = ['status-glow-warning', 'status-glow-info'] as const;
+
+/** Consecutive empty ticks before the timer suspends. One second, so a
+ * surface that briefly has no indicator does not thrash the timer off
+ * and on. */
+const IDLE_TICKS_BEFORE_SUSPEND = 8;
 
 let refs = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
+let wake: MutationObserver | null = null;
+let idleTicks = 0;
 let stopPhase: (() => void) | null = null;
-/** Elements carrying the ticker-written glow variable, for mark-and-sweep
+/** Elements carrying ticker-written inline styles, for mark-and-sweep
  * clearing when they lose their marker class or leave the document. */
-const styled = new Set<Element>();
+const styled = new Map<Element, StyledKind>();
+
+function clearStyles(el: Element, kind: StyledKind): void {
+  const style = (el as HTMLElement | SVGElement).style;
+  if (kind === 'pulse') style.removeProperty('opacity');
+  else style.removeProperty('--ambient-glow-t');
+}
 
 function clearAllStyles(): void {
-  for (const el of styled) (el as HTMLElement).style.removeProperty('--ambient-glow-t');
+  for (const [el, kind] of styled) clearStyles(el, kind);
   styled.clear();
 }
 
-function writeStyles(tMs: number): void {
-  const glowT = formatValue(glowTAt(tMs));
+function setStyle(el: Element, property: string, value: string): void {
+  const style = (el as HTMLElement | SVGElement).style;
+  if (style.getPropertyValue(property) !== value) style.setProperty(property, value);
+}
+
+/** Returns whether any consumer is currently on screen. */
+function writeStyles(tMs: number): boolean {
   const seen = new Set<Element>();
+  const mark = (el: Element, kind: StyledKind): void => {
+    seen.add(el);
+    styled.set(el, kind);
+  };
+
+  const pulse = formatValue(pulseOpacityAt(tMs));
+  const pulseS2 = formatValue(pulseOpacityAt(tMs - 250));
+  const pulseS4 = formatValue(pulseOpacityAt(tMs - 500));
+  for (const el of document.getElementsByClassName('animate-pulse')) {
+    const cls = el.classList;
+    setStyle(
+      el,
+      'opacity',
+      cls.contains('ambient-pulse-s2') ? pulseS2 : cls.contains('ambient-pulse-s4') ? pulseS4 : pulse,
+    );
+    mark(el, 'pulse');
+  }
+
+  const glowT = formatValue(glowTAt(tMs));
   for (const name of GLOW_CLASSES) {
     for (const el of document.getElementsByClassName(name)) {
-      seen.add(el);
-      const style = (el as HTMLElement).style;
-      if (style.getPropertyValue('--ambient-glow-t') !== glowT) {
-        style.setProperty('--ambient-glow-t', glowT);
-      }
-      styled.add(el);
+      setStyle(el, '--ambient-glow-t', glowT);
+      mark(el, 'glow');
     }
   }
+
   // Sweep: anything styled on a previous tick that no longer carries a
-  // glow class (toggled off, or detached) falls back to the var()
-  // fallback, which is the t=0 rest state. Clearing a detached element
-  // is harmless.
-  for (const el of styled) {
+  // marker class (toggled off, or detached) falls back to its CSS rest
+  // state. Clearing a detached element is harmless.
+  for (const [el, kind] of styled) {
     if (!seen.has(el)) {
-      (el as HTMLElement).style.removeProperty('--ambient-glow-t');
+      clearStyles(el, kind);
       styled.delete(el);
     }
   }
+  return seen.size > 0;
 }
 
-function tick(): void {
-  if (prefersReducedMotion()) {
-    // Static indicators: fall back to the CSS rest state.
-    clearAllStyles();
-  } else if (!document.hidden) {
-    writeStyles(Date.now());
-  }
-  // Hidden: skip writes (nothing renders; Chromium throttles this timer
-  // to 1Hz anyway) and leave stale values — the visibilitychange
-  // listener re-syncs the instant the page is visible again.
+function arm(): void {
   const now = Date.now();
   timer = setTimeout(tick, AMBIENT_SLOT_MS - (now % AMBIENT_SLOT_MS) || AMBIENT_SLOT_MS);
 }
 
+/**
+ * Suspend the timer until the DOM changes. An indicator cannot appear
+ * without either being inserted or having its class list rewritten, so
+ * those two mutations are the complete wake set — the timer resumes in
+ * the same microtask checkpoint as the change that needs it, with no
+ * visible delay before the first write. The observer disconnects on its
+ * first callback, so a busy document costs one callback per suspension,
+ * never one per mutation.
+ */
+function armWake(): void {
+  if (typeof MutationObserver !== 'function' || document.body === null) {
+    arm();
+    return;
+  }
+  wake = new MutationObserver(syncNow);
+  wake.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+}
+
+function disarmWake(): void {
+  wake?.disconnect();
+  wake = null;
+}
+
+function tick(): void {
+  timer = null;
+  if (prefersReducedMotion()) {
+    // Static indicators. The reduced-motion change listener is the wake
+    // signal, so no timer and no observer while the preference holds.
+    clearAllStyles();
+    return;
+  }
+  if (document.hidden) {
+    // Nothing renders. Leave stale values and stop entirely; the
+    // visibilitychange listener re-syncs the instant the page is back.
+    return;
+  }
+  idleTicks = writeStyles(Date.now()) ? 0 : idleTicks + 1;
+  if (idleTicks >= IDLE_TICKS_BEFORE_SUSPEND) armWake();
+  else arm();
+}
+
 function syncNow(): void {
   if (timer !== null) clearTimeout(timer);
+  timer = null;
+  disarmWake();
+  idleTicks = 0;
   tick();
 }
 
@@ -152,6 +247,8 @@ function install(): void {
 function uninstall(): void {
   if (timer !== null) clearTimeout(timer);
   timer = null;
+  disarmWake();
+  idleTicks = 0;
   reducedMotionQuery()?.removeEventListener('change', syncNow);
   document.removeEventListener('visibilitychange', syncNow);
   stopPhase?.();
@@ -162,7 +259,7 @@ function uninstall(): void {
 /**
  * Start the ambient indicator machinery (refcounted — concurrent starts
  * share one timer and one phase listener). Returns an idempotent stop;
- * the last stop halts the timer, removes the listener and clears every
+ * the last stop halts the timer, removes every listener and clears every
  * inline style it wrote, so a stopped ticker leaves no residue.
  */
 export function startAmbientTicker(): () => void {

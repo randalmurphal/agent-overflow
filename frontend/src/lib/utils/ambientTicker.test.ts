@@ -93,6 +93,18 @@ describe('startAmbientTicker', () => {
 
   const glowVar = (el: HTMLElement): string => el.style.getPropertyValue('--ambient-glow-t');
 
+  // The ticker's refcount is module state. A test whose assertion throws
+  // before its own stop() would leave refs above zero and every LATER
+  // test would silently start a ticker that never installs — one stale
+  // test then reads as three failures. Every start goes through this and
+  // afterEach releases whatever is left.
+  const starts: (() => void)[] = [];
+  function start(): () => void {
+    const stop = startAmbientTicker();
+    starts.push(stop);
+    return stop;
+  }
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -108,6 +120,7 @@ describe('startAmbientTicker', () => {
   });
 
   afterEach(() => {
+    for (const stop of starts.splice(0)) stop();
     for (const el of fixtures.splice(0)) el.remove();
     vi.unstubAllGlobals();
     vi.useRealTimers();
@@ -117,7 +130,7 @@ describe('startAmbientTicker', () => {
     const warning = addFixture('<div class="status-glow-warning"></div>');
     const info = addFixture('<div class="status-glow-info"></div>');
 
-    const stop = startAmbientTicker();
+    const stop = start();
     expect(glowVar(warning)).toBe('0'); // glow at t=0
     expect(glowVar(info)).toBe('0');
 
@@ -131,7 +144,7 @@ describe('startAmbientTicker', () => {
 
   it('advances the glow on the slot grid', () => {
     const glow = addFixture('<div class="status-glow-warning"></div>');
-    const stop = startAmbientTicker();
+    const stop = start();
     for (const t of [250, 500, 1000, 1250, 1500, 2250, 2500]) {
       vi.setSystemTime(t);
       vi.advanceTimersByTime(AMBIENT_SLOT_MS);
@@ -140,11 +153,15 @@ describe('startAmbientTicker', () => {
     stop();
   });
 
-  it('leaves pulse, LED and spinner elements entirely alone', () => {
-    // These are CSS animations now (app.css), phase-locked by
-    // ambientPhase.ts. A tick that writes to them is the regression this
-    // whole change exists to prevent: an inline write is not composited,
-    // so each one repaints the whole document.
+  it('writes pulse opacity, and leaves the CSS-animated indicators alone', () => {
+    // Split by WHERE they mount. `.animate-pulse` is rendered inside the
+    // timeline scroller by fourteen chat row components, where an
+    // Animation object would flip the compositor's present policy, so it
+    // stays an inline write. The LED chase, the stepped spinner and the
+    // sprite mount outside the scroller and are CSS animations
+    // (app.css), phase-locked by ambientPhase.ts — a tick that writes to
+    // those is the regression to catch, because an inline write forfeits
+    // the layer promotion that makes them free.
     const dot = addFixture('<span class="animate-pulse"></span>');
     const shifted = addFixture('<span class="animate-pulse ambient-pulse-s2"></span>');
     const chase = addFixture(
@@ -152,19 +169,53 @@ describe('startAmbientTicker', () => {
     );
     const spinner = addFixture('<svg class="stepped-spin"></svg>');
 
-    const stop = startAmbientTicker();
-    vi.advanceTimersByTime(1000);
+    start();
+    vi.setSystemTime(500);
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS);
 
-    expect(dot.getAttribute('style')).toBe(null);
-    expect(shifted.getAttribute('style')).toBe(null);
+    // advanceTimersByTime moves the mocked clock too, and the module
+    // rounds to 4dp on the way out — read the waveform at the clock the
+    // write actually saw, and compare as numbers.
+    const now = Date.now();
+    expect(Number(dot.style.opacity)).toBeCloseTo(pulseOpacityAt(now), 4);
+    expect(Number(shifted.style.opacity)).toBeCloseTo(pulseOpacityAt(now - 250), 4);
+    expect(dot.style.opacity).not.toBe(shifted.style.opacity);
+
     for (const led of chase.children) expect(led.getAttribute('style')).toBe(null);
     expect(spinner.getAttribute('style')).toBe(null);
+  });
+
+  it('suspends the timer when nothing is on screen, and wakes on a DOM change', async () => {
+    start();
+    // Nothing carries a marker class, so the idle budget runs out and the
+    // timer stops completely rather than waking 8x a second forever.
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS * 12);
+    expect(vi.getTimerCount(), 'timer should be suspended with no consumers').toBe(0);
+
+    const glow = addFixture('<div class="status-glow-warning"></div>');
+    // The wake observer delivers as a microtask, so the first write lands
+    // in the same checkpoint as the insertion — no visible delay.
+    await Promise.resolve();
+
+    expect(glowVar(glow), 'a new consumer must wake the timer').not.toBe('');
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('leaves nothing armed after the last stop, suspended or not', async () => {
+    const stop = start();
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS * 12); // suspend
     stop();
+
+    const glow = addFixture('<div class="status-glow-warning"></div>');
+    await Promise.resolve();
+
+    expect(glowVar(glow), 'a stopped ticker must not still be observing').toBe('');
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('sweeps the glow variable from elements that lose their marker class', () => {
     const glow = addFixture('<div class="status-glow-warning"></div>');
-    const stop = startAmbientTicker();
+    const stop = start();
     vi.setSystemTime(250);
     vi.advanceTimersByTime(AMBIENT_SLOT_MS);
     expect(glowVar(glow)).not.toBe('');
@@ -180,8 +231,8 @@ describe('startAmbientTicker', () => {
 
   it('is refcounted: the ticker survives until the last stop, stops are idempotent', () => {
     const glow = addFixture('<div class="status-glow-warning"></div>');
-    const stopA = startAmbientTicker();
-    const stopB = startAmbientTicker();
+    const stopA = start();
+    const stopB = start();
     stopA();
     stopA(); // double-stop must not release B's hold
     vi.advanceTimersByTime(500); // advances the mocked clock with it
@@ -189,7 +240,7 @@ describe('startAmbientTicker', () => {
     stopB();
     expect(glowVar(glow)).toBe('');
     // A fresh start after full teardown works again.
-    const stopC = startAmbientTicker();
+    const stopC = start();
     expect(glowVar(glow)).toBe(String(glowTAt(Date.now())));
     stopC();
   });
@@ -197,7 +248,7 @@ describe('startAmbientTicker', () => {
   it('withholds writes under prefers-reduced-motion so CSS rest states apply', () => {
     matchMediaMock.matches = true;
     const glow = addFixture('<div class="status-glow-warning"></div>');
-    const stop = startAmbientTicker();
+    const stop = start();
     vi.advanceTimersByTime(1000);
     expect(glowVar(glow)).toBe('');
     stop();
@@ -213,7 +264,7 @@ describe('startAmbientTicker', () => {
     });
     try {
       const glow = addFixture('<div class="status-glow-warning"></div>');
-      const stop = startAmbientTicker();
+      const stop = start();
       vi.setSystemTime(250);
       vi.advanceTimersByTime(1000);
       expect(glowVar(glow)).toBe('');

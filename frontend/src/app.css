@@ -253,40 +253,42 @@ html.light {
   --font-sans: 'Geist Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 
-  /* Every animate-pulse in this app is an ambient indicator (working
-     dots in the sidebar/header/picker, loading text, retry icons). The
-     waveform is `ambient-pulse` below, and it is authoritatively
-     specified by pulseOpacityAt() in utils/ambientTicker.ts — a browser
-     test samples the CSS against that function slot by slot.
+  /* Disarm Tailwind's animate-pulse. Every animate-pulse in this app is
+     an ambient indicator (working dots in the sidebar/header/picker,
+     loading text, retry icons); the utility keeps its name but is a
+     MARKER class — utils/ambientTicker.ts discovers marked elements and
+     writes their pulsing opacity inline.
 
-     Two facts govern the shape, both re-measured 2026-08-23:
+     This one is NOT a performance choice, and re-arming it to save main
+     thread work is the mistake to avoid. chat/Indicator.svelte renders
+     this class from fourteen chat row components, so an armed animation
+     puts a live Animation object inside the timeline scroller on every
+     running tool call — which flips Blink's present policy to
+     smoothness-priority and licenses presenting with un-rastered tiles
+     during the timeline's compensated moves. That is the 2026-08-17
+     checkerboard. An inline style write creates no animation object and
+     so never flips it. See docs/architecture/frontend-scroll.md
+     § The Print Doctrine, and the tripwire in
+     components/chat/timelineKeyframeAnimations.test.ts.
 
-     1. steps() is load-bearing. The original SMOOTH pulse forced a GPU
-        present every vsync — on a 165Hz panel one 6px dot was a
-        standing 165 presents/sec client that stuttered OTHER apps
-        (2026-07-04 incident). It still reproduces: smooth presents 63/s,
-        stepped presents 7.3/s. Never remove the steps().
+     Separately, and still true: the original SMOOTH pulse forced a GPU
+     present every vsync — on a 165Hz panel one 6px dot was a standing
+     165 presents/sec client that stuttered OTHER apps (2026-07-04
+     incident; re-measured 2026-08-23 at 63/s smooth vs 7.3/s stepped).
+     Any stepped waveform here, CSS or JS, keeps that fixed.
 
-     2. The property must be compositable. Blink promotes an element for
-        a known animation and ticks opacity/transform off the main
-        thread; a stepped opacity animation costs ZERO style recalcs and
-        zero paint. Animating a non-compositable property instead —
-        box-shadow, background-position — costs ~65 recalcs/sec, which
-        is what the retired JS ticker was built to avoid.
-
-     The ticker that replaced these keyframes in 2026-07 optimised
-     recalcs but forfeited that promotion, so each of its writes
-     repainted the whole document; it cost more total main-thread time
-     than the CSS it replaced. utils/ambientPhase.ts keeps every
-     indicator on one wall-clock beat, which is the one thing the
-     keyframes cannot do alone.
+     Indicators that mount OUTSIDE the scroller are free to be CSS
+     animations and are: `ambient-led`, `ambient-spin` and
+     `working-sprite-run` below all animate a compositable property, cost
+     zero style recalcs, and take their wall-clock phase from
+     utils/ambientPhase.ts.
 
      Spinners (animate-spin) are deliberately untouched — smooth
      rotation, transient use only. Standing spinners use
      primitives/SteppedSpinner.svelte: a spoked glyph whose steps(12)
      rotation lands on spoke positions, so the discretization reads as
      design. */
-  --animate-pulse: ambient-pulse 2s steps(8, jump-none) infinite;
+  --animate-pulse: none;
 
   /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
@@ -896,29 +898,17 @@ input[type="search"]::-webkit-search-cancel-button {
   color: var(--info);
 }
 /*
- * Ambient pulse. base → 0.5 → base over 2s, steps(8, jump-none) applied
- * to EACH half, which is 16 held values of 125ms — the grid every other
- * ambient indicator shares. Mirrors pulseOpacityAt() exactly (the
- * jump-none endpoints are why slots 7/8 both sit at 0.5 and slots 15/0
- * both sit at base); ambientCss.browser.test.ts samples one against the
- * other. See the --animate-pulse note in @theme for why it is stepped
- * and why it is opacity.
- *
- * The staggers are Indicator.svelte's 250ms/500ms LAGS, so the delays
- * are negative-equivalent (-1750ms ≡ +250ms at a 2s period) — a
- * positive delay would leave the dot un-animated for its first cycle.
- *
- * Reduced motion is handled by the global reset at the bottom of this
- * file: it collapses the animation, and with no fill-mode the element
- * falls back to its natural opacity.
+ * Ambient pulse: no CSS here on purpose. The utility's animation is
+ * disarmed in @theme and the ticker (utils/ambientTicker.ts) writes
+ * inline opacity onto every `.animate-pulse` element — `animate-pulse`,
+ * `ambient-pulse-s2` and `ambient-pulse-s4` (Indicator.svelte's
+ * 250ms/500ms staggers) are marker classes the ticker discovers, not
+ * styled selectors. They must stay that way: giving them an
+ * animation-delay would require an animation to delay, which is exactly
+ * what must not exist inside the timeline scroller (see @theme).
+ * With the ticker stopped or reduced motion active, no inline style is
+ * present and elements rest at their natural opacity.
  */
-@keyframes ambient-pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
-  100% { opacity: 1; }
-}
-.ambient-pulse-s2 { animation-delay: -1750ms; }
-.ambient-pulse-s4 { animation-delay: -1500ms; }
 
 /*
  * SteppedSpinner's rotation: one 30° spoke advance per 125ms slot, 12

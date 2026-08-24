@@ -977,11 +977,30 @@ Everything else is still ink. No CSS transitions (the app.css timeline
 kill rule zeroes them — see `components/chat/AGENTS.md` §Row Contract),
 no Svelte `transition:`/`in:`/`out:`/`animate:` directives
 (`timelineAnimationDirectives.test.ts`), no decorative keyframes on row
-content — `animate-pulse` is disarmed app-wide (`--animate-pulse: none`
-in the theme; the ambient ticker drives those opacities with inline
-style writes, which create no animation objects and so never flip the
-present policy). The guards make the wrong thing inert or loud rather
-than relying on review memory.
+content (`timelineKeyframeAnimations.test.ts`) — `animate-pulse` is
+disarmed app-wide (`--animate-pulse: none` in the theme; the ambient
+ticker drives those opacities with inline style writes, which create no
+animation objects and so never flip the present policy). The guards make
+the wrong thing inert or loud rather than relying on review memory.
+
+The keyframe guard exists because that door was walked through. Commit
+`5c860a15` re-armed `--animate-pulse` as a stepped CSS animation for a
+measured main-thread win (the ambient indicators were 62% of renderer
+main-thread work) and shipped a live Animation object into the scroller
+on every running tool call — `chat/Indicator.svelte` renders the class
+from fourteen row components. Nothing caught it: the kill rule only
+reaches transitions and the directive walk only reaches Svelte
+directives. The guard now DERIVES the armed-class set from app.css, so
+re-arming a utility fails the build rather than needing a reviewer to
+remember this paragraph. Indicators that mount outside the scroller
+(`ambient-led`, `ambient-spin`, `working-sprite-run`) are free to be CSS
+animations and are.
+
+One in-scroller-adjacent animation is allowlisted rather than removed:
+`MessageTimeline`'s explicit-jump landing flash is an overlay on the
+NON-SCROLLING wrapper, a sibling after the scroller in source order,
+placed there deliberately so no row gains an animation. A jump is an
+instant teleport, not a compensated move.
 
 The guards do not yet cover everything the doctrine claims. Known
 in-scroller animations outside them, kept deliberately pending a

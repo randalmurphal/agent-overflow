@@ -904,9 +904,11 @@ implementation detail:
   finished branch folds into the done group chip, and a wave folds to
   its summary row while the next segment reveals. Each is one owned animation;
   nothing else moves. All gated by `motionReduced()`.
-- Running glyph = `SteppedSpinner`; standing indicators otherwise use
-  the ambientTicker marker classes if ever needed — no CSS `animate-*`
-  loops (disarmed/incident history).
+- Running glyph = `SteppedSpinner`, whose stepped rotation is a
+  compositable CSS animation (`stepped-spin`) — legal here because the
+  overlay is not the timeline scroller. Standing indicators otherwise use
+  the ambientTicker marker classes — no Tailwind `animate-*` loops
+  (disarmed/incident history).
 - The svelte flush caps and quiet-work rules stay untouched — nothing
   here adds per-frame reactive work; the 1Hz clock is the only timer.
 

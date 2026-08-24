@@ -5,7 +5,6 @@ import '../../app.css';
 import {
   AMBIENT_SLOT_MS,
   ledOpacitiesAt,
-  pulseOpacityAt,
   spinAngleAt,
 } from './ambientTicker';
 import { startAmbientPhase } from './ambientPhase';
@@ -65,41 +64,23 @@ afterEach(() => {
   for (const el of hosts.splice(0)) el.remove();
 });
 
-describe('ambient pulse keyframes', () => {
-  it('renders pulseOpacityAt() on every 125ms slot of the 2s cycle', () => {
+describe('ambient pulse', () => {
+  // The inverse of the other suites here. `.animate-pulse` is the one
+  // ambient indicator that must NOT be a CSS animation: chat/Indicator
+  // renders it inside the timeline scroller from fourteen row
+  // components, and an Animation object there flips the compositor's
+  // present policy (docs/architecture/frontend-scroll.md § The Print
+  // Doctrine). utils/ambientTicker.ts drives it with inline writes.
+  it('creates no animation object, so it cannot flip the present policy', () => {
     const dot = mount('<span class="animate-pulse"></span>');
-    const animation = animationOf(dot, 'ambient-pulse');
-    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
-      sampleAt(animation, t);
-      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
-    }
-  });
+    const shifted = mount('<span class="animate-pulse ambient-pulse-s2"></span>');
 
-  it('holds each value for its whole slot rather than easing through it', () => {
-    // The steps() is what keeps this from presenting every vsync — the
-    // 2026-07-04 incident, still reproducible (63 presents/s smooth vs
-    // 7.3 stepped). A smooth ramp would fail here.
-    const dot = mount('<span class="animate-pulse"></span>');
-    const animation = animationOf(dot, 'ambient-pulse');
-    for (const slotStart of [0, 125, 875, 1000, 1875]) {
-      sampleAt(animation, slotStart);
-      const atStart = opacityOf(dot);
-      sampleAt(animation, slotStart + AMBIENT_SLOT_MS - 1);
-      expect(opacityOf(dot), `slot at ${slotStart}ms drifted mid-slot`).toBeCloseTo(atStart, 6);
-    }
-  });
-
-  it('lags the s2 and s4 dots by 250ms and 500ms', () => {
-    const s2 = mount('<span class="animate-pulse ambient-pulse-s2"></span>');
-    const s4 = mount('<span class="animate-pulse ambient-pulse-s4"></span>');
-    const a2 = animationOf(s2, 'ambient-pulse');
-    const a4 = animationOf(s4, 'ambient-pulse');
-    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
-      sampleAt(a2, t);
-      sampleAt(a4, t);
-      expect(opacityOf(s2), `s2 at t=${t}ms`).toBeCloseTo(pulseOpacityAt(t - 250), 4);
-      expect(opacityOf(s4), `s4 at t=${t}ms`).toBeCloseTo(pulseOpacityAt(t - 500), 4);
-    }
+    expect(dot.getAnimations(), 'animate-pulse must stay disarmed').toHaveLength(0);
+    expect(shifted.getAnimations(), 'the stagger classes are markers, not styled selectors').toHaveLength(0);
+    expect(getComputedStyle(dot).animationName).toBe('none');
+    // The stagger markers must not carry a delay either: a delay implies
+    // an animation to delay.
+    expect(getComputedStyle(shifted).animationName).toBe('none');
   });
 });
 
@@ -207,19 +188,19 @@ describe('startAmbientPhase', () => {
     for (const undo of cleanup.splice(0)) undo();
   });
 
-  it('puts dots mounted at different times on one wall-clock beat', async () => {
+  it('puts spinners mounted at different times on one wall-clock beat', async () => {
     stop = startAmbientPhase();
-    const first = mount('<span class="animate-pulse"></span>');
+    const first = mount('<svg class="stepped-spin"></svg>');
     // Long enough to land in a different 125ms slot without alignment.
     await new Promise((r) => setTimeout(r, 320));
-    const second = mount('<span class="animate-pulse"></span>');
+    const second = mount('<svg class="stepped-spin"></svg>');
     await new Promise((r) => setTimeout(r, 30));
 
-    const a = animationOf(first, 'ambient-pulse');
-    const b = animationOf(second, 'ambient-pulse');
+    const a = animationOf(first, 'ambient-spin');
+    const b = animationOf(second, 'ambient-spin');
     const slot = (animation: Animation): number =>
-      Math.floor((((animation.currentTime as number) % 2000) + 2000) % 2000 / AMBIENT_SLOT_MS);
-    expect(slot(b), 'later dot is on a different beat from the first').toBe(slot(a));
+      Math.floor(((((animation.currentTime as number) % 1500) + 1500) % 1500) / AMBIENT_SLOT_MS);
+    expect(slot(b), 'later spinner is on a different beat from the first').toBe(slot(a));
   });
 
   // A long period makes the two outcomes unmistakable: an untouched

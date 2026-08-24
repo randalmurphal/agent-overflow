@@ -36,12 +36,21 @@
   };
 
   // Stagger offsets for the backgrounded three-dot variant.
-  // ambient-pulse-s2/-s4 carry an `animation-delay` in app.css that
-  // shifts those dots 2 and 4 slots (250ms / 500ms) along the shared
-  // `ambient-pulse` keyframes. Shifts stay on the animation's own
-  // 125ms step grid so all three dots change on the same instants;
-  // an off-grid offset would land a dot mid-step and read as drift.
-  // Phase is wall-clock, not mount-time — see utils/ambientPhase.ts.
+  // `ambient-pulse-s2`/`-s4` are MARKER classes with no CSS behind
+  // them: utils/ambientTicker.ts discovers them and writes those dots'
+  // inline opacity from the pulse phase shifted by 250ms / 500ms.
+  //
+  // They stay markers rather than becoming an animation-delay. This
+  // component renders inside the timeline scroller, where an Animation
+  // object flips the compositor's present policy and licenses
+  // presenting with un-rastered tiles during the timeline's compensated
+  // moves — and a delay needs an animation to delay. See the
+  // --animate-pulse note in app.css and
+  // docs/architecture/frontend-scroll.md § The Print Doctrine.
+  //
+  // Shifts stay on the ticker's 125ms slot grid so all three dots change
+  // on instants it already writes; an off-grid offset would need extra
+  // phases and extra style passes.
   const BG_DOT_SHIFTS = ['', 'ambient-pulse-s2', 'ambient-pulse-s4'] as const;
 
   interface Props {

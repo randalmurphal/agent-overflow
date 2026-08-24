@@ -24,6 +24,16 @@
   // startTime the moment it begins, the same beat every other ambient
   // indicator shares.
   //
+  // The strip is keyed on the sprite id, and that is load-bearing rather
+  // than tidiness. Swapping art changes only the duration and step count
+  // inside the shorthand, never `animation-name`, so Blink updates the
+  // running animation IN PLACE: no `animationstart` fires, the phase
+  // module has already recorded that Animation object as aligned, and
+  // the startTime pinned for the old period silently becomes wrong for
+  // the new one. Keying forces a fresh element, hence a fresh animation
+  // and a fresh pin. Art changes at most once per turn, so the remount
+  // is one span.
+  //
   // Freeze paths, all frame 0 with no timer to stop: `animate` false
   // (low-power mode) drops the animation, and OS reduced-motion is
   // collapsed by the global reset in app.css. A hidden document needs no
@@ -67,6 +77,8 @@
     style="--working-sprite-aspect:{aspect};--working-sprite-frames:{sprite.frames}"
     data-sprite-id={sprite.id}
   >
-    <span class="working-sprite-strip" style={stripStyle}></span>
+    {#key sprite.id}
+      <span class="working-sprite-strip" style={stripStyle}></span>
+    {/key}
   </span>
 </span>

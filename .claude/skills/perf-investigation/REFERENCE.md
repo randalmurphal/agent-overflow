@@ -38,18 +38,32 @@ Edit a hunk with `pnpm patch svelte@<v> --edit-dir <dir>` (applies the existing 
 
 ## The ambient indicators drive ~two thirds of the renderer main thread
 
-**Built 2026-08-23.** Pulse, LED chase, stepped spin and the sprite are CSS
-keyframes again (`app.css`), phase-locked to wall clock by
-`utils/ambientPhase.ts`; the ticker survives for the glow alone and writes
-nothing when no `.status-glow-*` is on screen. The waveform functions in
-`ambientTicker.ts` stayed as the authoritative spec and
-`ambientCss.browser.test.ts` samples the rendered CSS against them slot by
-slot. Two findings only the build surfaced: a composited translate resamples
-the sprite texture unless the frame width is snapped to whole DEVICE pixels
-(25px frame at 125% scaling: 80.8% of pixels resampled), and a filtered
-ancestor (light mode's drop-shadow) does NOT de-composite the strip. The
-section below is the measurement that motivated it; keep it for the
-mechanism, not as a description of current code.
+**Built 2026-08-23, then partly reversed the same day.** LED chase,
+stepped spin and the sprite are CSS keyframes (`app.css`), phase-locked to
+wall clock by `utils/ambientPhase.ts`. The sprite was the single largest
+writer (25/s) and is the bulk of the win.
+
+**`animate-pulse` is NOT re-armable, and this is the standing constraint.**
+It was re-armed in `5c860a15` and reverted in the same wave. `chat/Indicator.svelte`
+renders the class inside the timeline scroller from fourteen row components, and a
+CSS animation there creates an Animation object, which flips Blink to
+smoothness-priority and licenses presenting with un-rastered tiles during the
+timeline's compensated moves — the 2026-08-17 checkerboard. The inline write the
+ticker does creates no animation object; that property, not the recalc count, is
+why the ticker exists for pulse. Before proposing any ambient-indicator change,
+ask WHERE the indicator mounts. Guard:
+`frontend/src/lib/components/chat/timelineKeyframeAnimations.test.ts`, which derives
+the armed-class set from app.css so re-arming fails the build.
+
+The ticker now also suspends outright when no consumer is on screen, waking from a
+MutationObserver, so an idle app has zero ambient wakeups.
+
+Two findings only the build surfaced: a composited translate resamples the sprite
+texture unless the frame width is snapped to whole DEVICE pixels (25px frame at 125%
+scaling: 80.8% of pixels resampled), and a filtered ancestor (light mode's
+drop-shadow) does NOT de-composite the strip. The section below is the measurement
+that motivated the work; keep it for the mechanism, not as a description of current
+code.
 
 Measured 2026-08-23 on the live app (`probe frames 20`, trace kept at
 `trace-postsvg.json`) plus four isolated Chrome 151 spikes under
