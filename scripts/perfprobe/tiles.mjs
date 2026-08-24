@@ -2,16 +2,17 @@
 // usage: probe tiles
 import { connectBrowser, connectPage, done, evaluate, readStream, sleep } from './lib/cdp.mjs';
 import { pad, mb, fail } from './lib/format.mjs';
+import { SCROLL_SURFACE_SELECTOR } from './lib/dom.mjs';
 
 const b = await connectBrowser();
 const p = await connectPage();
 
-// DOM-side plane rects taken in the same second, so layer bounds can be matched to panes by height.
-const planes = await evaluate(p, `[...document.querySelectorAll('.scroll-composited-content')].map((el) => {
+// DOM-side scroll-surface rects taken in the same second, so layer bounds can be matched by height.
+const surfaces = await evaluate(p, `[...document.querySelectorAll(${JSON.stringify(SCROLL_SURFACE_SELECTOR)})].map((el) => {
   const r = el.getBoundingClientRect();
   return { x: Math.round(r.x), w: Math.round(r.width), h: Math.round(r.height),
     pane: el.closest('[data-pane-id]')?.getAttribute('data-pane-id') || '',
-    run: !!el.parentElement?.classList.contains('activity-run-clip') };
+    run: el.matches('[data-testid="activity-run-clip"]') };
 })`);
 
 b.events.length = 0;
@@ -54,8 +55,8 @@ for (const t of snap.active_tiles) {
 
 const describe = (L) => {
   if (!L) return '';
-  const hit = planes.find((pl) => pl.w === L.bounds.width && Math.abs(pl.h - L.bounds.height) <= 2);
-  if (hit) return `${hit.run ? 'activity run' : 'timeline plane'} ${hit.pane} at x=${hit.x}`;
+  const hit = surfaces.find((surface) => surface.w === L.bounds.width && Math.abs(surface.h - L.bounds.height) <= 2);
+  if (hit) return `${hit.run ? 'activity run' : 'scroll surface'} ${hit.pane} at x=${hit.x}`;
   if (L.bounds.width >= 2000) return 'root / full-width';
   return (L.compositing_reasons || []).join(',');
 };

@@ -3,6 +3,7 @@
 import { connectBrowser, connectPage, done, evaluate, sleep, PORT } from './lib/cdp.mjs';
 import { takeMemoryDump, allocatorMB, isRenderer, blinkClassRows } from './lib/memdump.mjs';
 import { fail } from './lib/format.mjs';
+import { CHAT_SCROLLER_SELECTOR } from './lib/dom.mjs';
 
 const args = process.argv.slice(2);
 const idx = args.indexOf('--css');
@@ -76,8 +77,8 @@ async function phase(label, css) {
 let code = 0;
 try {
   if (SCROLL) {
-    rect = await evaluate(p, `(() => { const el = document.querySelector('.scroll-composited-content'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
-    if (!rect) throw new Error('--scroll needs a .scroll-composited-content plane on screen, found none');
+    rect = await evaluate(p, `(() => { const el = document.querySelector(${JSON.stringify(CHAT_SCROLLER_SELECTOR)}); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    if (!rect) throw new Error('--scroll needs a mounted message timeline, found none');
   }
   await phase('A baseline ', '');
   await phase('B override ', CSS);

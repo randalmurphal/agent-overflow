@@ -2,6 +2,7 @@
 // usage: probe overview
 import { connectBrowser, connectPage, done, evaluate } from './lib/cdp.mjs';
 import { pad } from './lib/format.mjs';
+import { SCROLL_SURFACE_SELECTOR } from './lib/dom.mjs';
 
 const b = await connectBrowser();
 let procs = null;
@@ -76,7 +77,7 @@ const facts = await evaluate(c, `(() => {
     href: location.href,
     dpr: devicePixelRatio,
     vw: innerWidth, vh: innerHeight,
-    planes: document.querySelectorAll('.scroll-composited-content').length,
+    scrollSurfaces: document.querySelectorAll(${JSON.stringify(SCROLL_SURFACE_SELECTOR)}).length,
     panes: document.querySelectorAll('[data-pane-id]').length,
     scripts: [...document.scripts].map((s) => s.src.split('/').pop()).filter(Boolean),
     heapMB: performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : null,
@@ -86,7 +87,7 @@ const facts = await evaluate(c, `(() => {
 })()`);
 console.log('== page');
 console.log(`  href ${facts.href}  backend port ${new URL(facts.href).port || '(none)'}`);
-console.log(`  viewport ${facts.vw}x${facts.vh} at dpr ${facts.dpr}  composited planes ${facts.planes}  [data-pane-id] ${facts.panes}`);
+console.log(`  viewport ${facts.vw}x${facts.vh} at dpr ${facts.dpr}  scroll surfaces ${facts.scrollSurfaces}  [data-pane-id] ${facts.panes}`);
 console.log(`  scripts ${facts.scripts.join(' ') || '(none)'}`);
 console.log(`  js heap ${facts.heapMB}MB  resources ${facts.resourceCount} (${(facts.resourceBytes / 1048576).toFixed(1)}MB transferred)`);
 await done([c]);

@@ -14,7 +14,13 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { describe, it } from 'vitest';
-import { SRC_ROOT, expectAllowlistExact, repoPath, scannedSources } from '../test/sourceScan';
+import {
+  SRC_ROOT,
+  expectAllowlistExact,
+  repoPath,
+  scannedSources,
+  walkSources,
+} from '../test/sourceScan';
 
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
@@ -157,6 +163,7 @@ const SCROLL_CONTENT_SURFACES = [
 ] as const;
 const AUTHORED_SCROLL_COMPOSITOR_STATE =
   /scroll-composited-content|will-change\s*:|style:(?:transform|translate|rotate)|setProperty\(\s*['"](?:translate|rotate)['"]/;
+const PERFPROBE_ROOT = resolve(SRC_ROOT, '..', '..', 'scripts', 'perfprobe');
 
 // ---------------------------------------------------------------------------
 
@@ -340,11 +347,21 @@ describe('architecture', () => {
         offenders.set(path, ['authors content promotion or transform state']);
       }
     }
+    for (const file of walkSources(PERFPROBE_ROOT, /\.mjs$/)) {
+      const text = readFileSync(file, 'utf8');
+      if (!text.includes('scroll-composited-content')) continue;
+      const relativePath = file
+        .slice(PERFPROBE_ROOT.length + 1)
+        .split(sep)
+        .join('/');
+      const path = `scripts/perfprobe/${relativePath}`;
+      offenders.set(path, ['queries the deleted composited-content class']);
+    }
     expectAllowlistExact(
       offenders,
       {},
       'New violations.',
-      'Drive visible motion through scrollTop. Do not add will-change or content transforms to controller surfaces.',
+      'Drive visible motion through scrollTop. Do not add compositor state to controller surfaces or restore probes that query the deleted layer class.',
     );
   });
 });

@@ -1,6 +1,7 @@
-// Where the node count goes: live census, frame tree, detached trees, documents, plane mounts.
+// Where the node count goes: live census, frame tree, detached trees, documents, scroll surfaces.
 // usage: probe detached
 import { connectPage, done, evaluate } from './lib/cdp.mjs';
+import { SCROLL_SURFACE_SELECTOR } from './lib/dom.mjs';
 
 const c = await connectPage();
 
@@ -81,8 +82,8 @@ const dcnt = await c.send('Runtime.callFunctionOn', {
 });
 console.log('DOCS:', dcnt.result?.value ?? 'ERR');
 
-console.log('MOUNTS:', JSON.stringify(await evaluate(c, `(() => {
-  return [...document.querySelectorAll('.scroll-composited-content')].map(el => {
+console.log('SCROLL SURFACES:', JSON.stringify(await evaluate(c, `(() => {
+  return [...document.querySelectorAll(${JSON.stringify(SCROLL_SURFACE_SELECTOR)})].map(el => {
     const r = el.getBoundingClientRect();
     const chain = [];
     let p = el;

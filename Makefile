@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl launch-wsl soak soak-check build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness e2e
+.PHONY: install dev dev-wsl launch-wsl soak soak-check soak-contract build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider
@@ -299,6 +299,11 @@ launch-wsl:
 # it only reads launcher-soak.log.
 soak-check:
 	@scripts/soak-check.sh
+
+# Probe the actual WebView2 scrollTop contract without touching visible UI.
+# Requires a running `make soak` instance on its isolated CDP port.
+soak-contract:
+	@AO_CDP_PORT=9224 scripts/perfprobe/probe scroll-contract
 
 # build-wsl: cross-compiles the Linux ELF backend + Windows .exe launcher
 # without running. Use this when you want to hand the .exe off (e.g.

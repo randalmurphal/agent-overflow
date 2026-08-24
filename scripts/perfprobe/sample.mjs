@@ -1,7 +1,8 @@
-// Steady-state samples: per-process private footprint and key allocators, js heap, pane count.
+// Steady-state samples: process footprint, allocators, JS heap, and scroll-surface count.
 // usage: probe sample [--every <sec>] [--for <sec>] [--detached]
 import { connectBrowser, connectPage, done, sleep } from './lib/cdp.mjs';
 import { takeMemoryDump, allocatorMB, allocatedObjectsMB, role } from './lib/memdump.mjs';
+import { SCROLL_SURFACE_SELECTOR } from './lib/dom.mjs';
 
 const args = process.argv.slice(2);
 const arg = (name, def) => { const i = args.indexOf(name); return i >= 0 ? +args[i + 1] : def; };
@@ -38,7 +39,7 @@ async function sample() {
   }
   const ev = await p.send('Runtime.evaluate', {
     returnByValue: true,
-    expression: `({ heapMB: +(performance.memory.usedJSHeapSize / 1048576).toFixed(1), panes: document.querySelectorAll('.scroll-composited-content').length })`,
+    expression: `({ heapMB: +(performance.memory.usedJSHeapSize / 1048576).toFixed(1), scrollSurfaces: document.querySelectorAll(${JSON.stringify(SCROLL_SURFACE_SELECTOR)}).length })`,
   });
   out.page = ev.result?.value;
   if (DETACHED) {

@@ -16,6 +16,7 @@ later you ask `make soak-check` what happened.
 ```
 make soak         # build + launch the isolated instance (blocks; leave it running)
 make soak-check   # read-only: uptime, stalls, recovery episodes, controller rebuilds
+make soak-contract # verify scrollTop quantization in the actual WebView2 renderer
 ```
 
 ## What makes it safe to run beside your own app
@@ -123,7 +124,7 @@ already has (`HarnessInfo` for evidence paths, replay capture).
 
 The window opens at 800x600 (`soakWindowWidth`) because a soak sits on a
 real monitor beside real work for hours; it only has to be big enough to
-keep the renderer compositing a live thread.
+keep the renderer painting a live thread.
 
 ## The scenario: three subagents, forever
 
@@ -201,6 +202,11 @@ opt-in as everywhere else: `AGENT_OVERFLOW_WEBVIEW_LOG=1 make soak`.
 Note the WebView2 console-window caveat in
 `cmd/agent-overflow-windows/AGENTS.md` — closing that console kills the
 app, which would end the soak.
+
+`make soak-contract` attaches to the soak WebView2 over its isolated CDP
+port, mounts an invisible offscreen scroller, writes fractional `scrollTop`
+values, verifies whole-CSS-pixel readback, and removes the element before
+returning. It changes no app state and needs no monitor-specific visual check.
 
 ## Restarting a soak
 

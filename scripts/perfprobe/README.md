@@ -18,6 +18,7 @@ Start the app with `DEBUG=1 make dev-wsl` (CDP on 9223), or the soak rig with
 ```
 scripts/perfprobe/probe                     # usage plus the probe list
 scripts/perfprobe/probe overview
+AO_CDP_PORT=9224 scripts/perfprobe/probe scroll-contract
 scripts/perfprobe/probe memdump --renderer --classes
 scripts/perfprobe/probe heapsnapshot before
 scripts/perfprobe/probe snapshot-detached /mnt/c/Users/<you>/AppData/Local/Temp/ao-perfprobe/heap-before.heapsnapshot
@@ -31,9 +32,11 @@ Env:
   snapshots, default `%LOCALAPPDATA%\Temp\ao-perfprobe`. The wrapper prints its WSL
   path after every online run so you can feed saved files back to the offline probes.
 
-All probes are read-only except `ab`, which injects a CSS override and can drive
-synthetic wheel scrolling. It refuses port 9223 without `--allow-user-app` because
-that is the port of the app somebody is actually using.
+No probe changes persisted app state. `scroll-contract` mounts an invisible
+offscreen scroller for one synchronous readback check and removes it before
+returning. `ab` injects a CSS override and can drive synthetic wheel scrolling. It
+refuses port 9223 without `--allow-user-app` because that is the port of the app
+somebody is actually using.
 
 `sample --detached` adds a `Runtime.queryObjects` node census, which runs a full
 memory-reducing GC on every tick and so changes the memory it reports. Keep it off for
