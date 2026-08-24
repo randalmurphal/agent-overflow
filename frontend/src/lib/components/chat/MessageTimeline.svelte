@@ -68,6 +68,8 @@
   // Visual breathing room between the last message and the composer
   // overlay; combined with the --composer-height variable from ChatView.
   const BOTTOM_PAD_PX = 16;
+  const TIMELINE_TOP_SPACER_PX = 24;
+  const TIMELINE_LOAD_OLDER_HEADER_PX = 60;
   // Soft fade at the top of the scroll viewport: content dissolves under
   // the chat header instead of meeting a hard gap. Implemented as a
   // gradient OVERLAY (surface color -> transparent, painted over the
@@ -871,6 +873,7 @@
           getKey={(node) => timelineNodeKey(node)}
           bufferSize={BUFFER_SIZE_PX}
           renderAll={IS_TEST}
+          headerSize={pane.hasMoreHistory ? TIMELINE_LOAD_OLDER_HEADER_PX : TIMELINE_TOP_SPACER_PX}
           onscroll={handleTimelineScroll}
           onscrollend={handleTimelineScrollEnd}
           onCompensation={stick.applyEngineCompensation}
@@ -885,6 +888,28 @@
             navRail?.scheduleViewportSync();
           }}
         >
+          {#snippet header()}
+            <!-- The timeline header has stable identity and exact geometry.
+                 Keeping it outside transcript rows prevents a prepend from
+                 removing 60px from the retained former-first row. -->
+            <div class={`h-full pt-6 ${ROW_SHELL_CLASSES}`}>
+              {#if pane.hasMoreHistory}
+                <div class="mb-3 flex justify-center">
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    onclick={paging.handleLoadOlder}
+                    loading={pane.loadingOlder}
+                    testId="load-older-messages"
+                  >
+                    {#snippet children()}
+                      {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
+                    {/snippet}
+                  </Button>
+                </div>
+              {/if}
+            </div>
+          {/snippet}
           {#snippet children(node: TimelineNode, index: number)}
             <!-- Outer per-row wrapper. We do NOT set data-item-id here:
                  only TimelineLeaf owns that attribute on its root. Structural
@@ -927,32 +952,6 @@
                    comment in app.css and
                    docs/architecture/settle-flicker-analysis.md. -->
               <div data-row-geometry-content>
-                {#if index === 0}
-                  <!-- Top of timeline. Load-older button (when applicable) and
-                       a small top breathing-room spacer ride inside the first
-                       row. When user scrolls to the very top, the button is
-                       the first thing they see. After load-older completes,
-                       the explicit scrollToIndex re-anchors them to where they
-                       were reading — the button moves up out of view. -->
-                  <div class={`pt-6 ${ROW_SHELL_CLASSES}`}>
-                    {#if pane.hasMoreHistory}
-                      <div class="mb-3 flex justify-center">
-                        <Button
-                          variant="secondary"
-                          size="xs"
-                          onclick={paging.handleLoadOlder}
-                          loading={pane.loadingOlder}
-                          testId="load-older-messages"
-                        >
-                          {#snippet children()}
-                            {pane.loadingOlder ? 'Loading…' : 'Load older messages'}
-                          {/snippet}
-                        </Button>
-                      </div>
-                    {/if}
-                  </div>
-                {/if}
-
                 <!-- Row column: see ROW_SHELL_CLASSES for the deliberate
                      inset versus the composer's 62rem + px-6. -->
                 <div class={ROW_SHELL_CLASSES}>

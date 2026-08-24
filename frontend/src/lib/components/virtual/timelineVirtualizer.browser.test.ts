@@ -42,6 +42,7 @@ function mountHarness(
     initialRows: HarnessRow[];
     bufferSize: number;
     renderAll: boolean;
+    headerSize: number;
     estimate: RowEstimate;
     onscroll: (offset: number) => void;
     onscrollend: () => void;
@@ -249,7 +250,18 @@ describe('ownership: the adapter never writes scrollTop', () => {
     expect(tail).not.toBeNull();
     expect(tailWrapper).not.toBeNull();
     expect(plane).not.toBeNull();
-    expect(plane!.style.transform).toBe('');
+    const planePaint = getComputedStyle(plane!);
+    expect(planePaint.willChange).toBe('auto');
+    expect(planePaint.transform).toBe('none');
+    expect(planePaint.translate).toBe('none');
+    expect(planePaint.rotate).toBe('none');
+    expect(planePaint.scale).toBe('none');
+    const rowPaint = getComputedStyle(tailWrapper!);
+    expect(rowPaint.willChange).toBe('auto');
+    expect(rowPaint.transform).toBe('none');
+    expect(rowPaint.translate).toBe('none');
+    expect(rowPaint.rotate).toBe('none');
+    expect(rowPaint.scale).toBe('none');
     expect(plane!.style.top).toMatch(/px$/);
     const localTopBefore = tailWrapper!.style.top;
 
@@ -291,6 +303,109 @@ describe('ownership: the adapter never writes scrollTop', () => {
     expect(rowEl(scrollEl, `row-${ROW_COUNT - 1}`)?.parentElement).toBe(tailWrapper);
     expect(rowEl(scrollEl, `row-${ROW_COUNT - 1}`)).toBe(tail);
     expect(tailWrapper!.style.top).toBe(localTopBefore);
+  });
+});
+
+describe('exact leading header', () => {
+  it('holds the first loaded reading rows while prepended estimates measure', async () => {
+    let scrollEl: HTMLElement | undefined;
+    const ctx = mountHarness({
+      headerSize: 60,
+      trackReadingAnchor: () => false,
+      onCompensation: (compensation) => {
+        if (scrollEl) scrollEl.scrollTop = compensation.target;
+      },
+    });
+    scrollEl = ctx.scrollEl;
+    await waitForStableGeometry(scrollEl, 'header mount');
+    await pinToBottomAndSettle(scrollEl, 'header bottom seed');
+    scrollEl.scrollTop = 0;
+    await waitFor(() => rowEl(scrollEl!, 'row-1') !== null, 'first reading rows to mount');
+    await waitForStableGeometry(scrollEl, 'history head settle');
+
+    const anchor = rowEl(scrollEl, 'row-1')!;
+    const anchorTop = anchor.getBoundingClientRect().top;
+    const prepended = Array.from({ length: 20 }, (_, index) => ({
+      id: `prepended-${index}`,
+      heightPx: ROW_PX,
+      label: `Prepended ${index}`,
+    }));
+    ctx.harness.setRows([...prepended, ...ctx.harness.getRows()]);
+
+    await waitFor(
+      () => rowEl(scrollEl!, 'row-1')?.getAttribute('data-row-index') === '21',
+      'retained reading row to re-index',
+    );
+    await waitForStableGeometry(scrollEl, 'prepended estimate corrections');
+    expect(rowEl(scrollEl, 'row-1')).toBe(anchor);
+    expect(anchor.getBoundingClientRect().top).toBeCloseTo(anchorTop, 0);
+  });
+
+  it('keeps transcript identity and reading geometry stable across prepend and header resize', async () => {
+    let scrollEl: HTMLElement | undefined;
+    const ctx = mountHarness({
+      headerSize: 60,
+      onCompensation: (compensation) => {
+        if (scrollEl) scrollEl.scrollTop = compensation.target;
+      },
+    });
+    scrollEl = ctx.scrollEl;
+    await waitForStableGeometry(scrollEl, 'header mount');
+    await pinToBottomAndSettle(scrollEl, 'header bottom seed');
+    scrollEl.scrollTop = 0;
+    await waitFor(
+      () => scrollEl!.querySelector('[data-virtual-header]') !== null,
+      'header to enter the mounted window',
+    );
+
+    const handle = ctx.harness.handle()!;
+    const header = scrollEl.querySelector('[data-virtual-header]') as HTMLElement;
+    expect(header.getBoundingClientRect().height).toBe(60);
+    expect(handle.getItemOffset(0)).toBe(60);
+    expect(handle.findItemIndex(20)).toBe(0);
+    expect(handle.takeSnapshot()).toHaveLength(ROW_COUNT);
+
+    scrollEl.scrollTop = 860;
+    await waitFor(() => handle.getScrollOffset() === 860, 'reading scroll input');
+    await waitForStableGeometry(scrollEl, 'reading position');
+    const readingRow = [...scrollEl.querySelectorAll<HTMLElement>('[data-row-id]')].find((row) => {
+      const rect = row.getBoundingClientRect();
+      return rect.top >= 100 && rect.bottom <= VIEWPORT_PX - 100;
+    });
+    expect(readingRow).toBeDefined();
+    const readingId = readingRow!.dataset.rowId!;
+    const readingIndex = Number(readingRow!.dataset.rowIndex);
+    const readingTop = readingRow!.getBoundingClientRect().top;
+
+    ctx.harness.setRows([
+      { id: 'prepended-a', heightPx: ROW_PX, label: 'Prepended A' },
+      { id: 'prepended-b', heightPx: ROW_PX, label: 'Prepended B' },
+      ...ctx.harness.getRows(),
+    ]);
+    await waitFor(
+      () => rowEl(scrollEl!, readingId)?.getAttribute('data-row-index') === String(readingIndex + 2),
+      'reading row to re-index after prepend',
+    );
+    await waitForStableGeometry(scrollEl, 'prepended rows to measure');
+    expect(rowEl(scrollEl, readingId)).toBe(readingRow);
+    expect(readingRow!.getBoundingClientRect().top).toBeCloseTo(readingTop, 0);
+
+    const totalBeforeResize = handle.getTotalSize();
+    ctx.harness.setHeaderSize(24);
+    await waitFor(() => handle.getTotalSize() === totalBeforeResize - 36, 'header resize');
+    await waitForStableGeometry(scrollEl, 'header resize settle');
+    expect(readingRow!.getBoundingClientRect().top).toBeCloseTo(readingTop, 0);
+    expect(handle.getTotalSize()).toBe(totalBeforeResize - 36);
+    expect(handle.getItemOffset(0)).toBe(24);
+    expect(handle.takeSnapshot()).toHaveLength(ROW_COUNT + 2);
+
+    scrollEl.scrollTop = 0;
+    await waitFor(
+      () =>
+        (scrollEl!.querySelector('[data-virtual-header]') as HTMLElement | null)
+          ?.getBoundingClientRect().height === 24,
+      'resized header to re-enter the mounted window',
+    );
   });
 });
 

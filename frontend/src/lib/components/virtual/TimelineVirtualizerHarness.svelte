@@ -30,6 +30,7 @@
     estimate?: RowEstimate;
     renderAll?: boolean;
     viewportPx?: number;
+    headerSize?: number;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     onCompensation?: (compensation: EngineCompensation) => void;
@@ -43,6 +44,7 @@
     estimate,
     renderAll = false,
     viewportPx = 600,
+    headerSize = 0,
     onscroll,
     onscrollend,
     onCompensation,
@@ -55,6 +57,8 @@
   let rows = $state<HarnessRow[]>(initialRows);
   let scrollEl: HTMLElement | undefined = $state();
   let listRef: TimelineVirtualizerHandle | undefined = $state();
+  // svelte-ignore state_referenced_locally -- fixture-owned after mount.
+  let currentHeaderSize = $state(headerSize);
 
   /** Replace the keyed data array; the virtualizer derives the mutation. */
   export function setRows(next: HarnessRow[]): void {
@@ -87,6 +91,10 @@
 
   export function scroller(): HTMLElement | undefined {
     return scrollEl;
+  }
+
+  export function setHeaderSize(next: number): void {
+    currentHeaderSize = next;
   }
 
   // The suites exercise the adapter without a scroll controller, so the
@@ -123,7 +131,11 @@
     {onContentGeometry}
     {trackReadingAnchor}
     {applyScrollTarget}
+    headerSize={currentHeaderSize}
   >
+    {#snippet header()}
+      <div data-testid="virtual-header" style="height: 100%;">Header</div>
+    {/snippet}
     {#snippet children(row: HarnessRow, index: number)}
       <div data-row-index={index} data-row-id={row.id} style="height: {row.heightPx}px;">
         {#if row.headPx}

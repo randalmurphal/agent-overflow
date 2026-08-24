@@ -74,6 +74,12 @@
   interface Props {
     data: readonly T[];
     getKey: (item: T, index: number) => unknown;
+    /** Exact-height content before the first data row. It stays outside
+     * keyed row identity so a prepend cannot move the header to a new row
+     * and silently change the retained row's geometry. */
+    header?: Snippet;
+    /** Rendered header height in CSS px. Required when `header` is set. */
+    headerSize?: number;
     /** External scroll container. The engine never owns or styles it. */
     scrollRef?: HTMLElement;
     /** Per-row size estimate (priors → kind table → default). */
@@ -109,6 +115,8 @@
   let {
     data,
     getKey,
+    header,
+    headerSize,
     scrollRef,
     estimate,
     bufferSize = DEFAULT_BUFFER_PX,
@@ -122,6 +130,33 @@
     onContentGeometry,
     children,
   }: Props = $props();
+
+  function validatedHeaderSize(snippet: Snippet | undefined, size: number | undefined): number {
+    if (!snippet) {
+      if (size !== undefined && size !== 0) {
+        throw new Error('TimelineVirtualizer headerSize requires a header snippet');
+      }
+      return 0;
+    }
+    if (size === undefined || !Number.isFinite(size) || size < 0) {
+      throw new Error('TimelineVirtualizer headerSize must be a finite non-negative number');
+    }
+    return size;
+  }
+
+  const renderHeaderSize = $derived(validatedHeaderSize(header, headerSize));
+  let actualScrollOffset = 0;
+
+  function engineOffsetFor(offset: number): number {
+    return Math.max(0, offset - renderHeaderSize);
+  }
+
+  function publicCompensation(compensation: EngineCompensation): EngineCompensation {
+    return {
+      ...compensation,
+      target: Math.max(0, actualScrollOffset + compensation.delta),
+    };
+  }
 
   // untrack: constructor-once by design (see the header block).
   const engineEstimate = untrack(
@@ -144,7 +179,7 @@
   function applyUpdate(update: EngineUpdate | null): void {
     if (!update) return;
     geometryVersion++;
-    if (update.compensation) queueCompensation(update.compensation);
+    if (update.compensation) queueCompensation(publicCompensation(update.compensation));
   }
 
   // ------------------------------------------------------------------
@@ -174,8 +209,29 @@
     // measurement batch). Both targets derive from the same engine scroll
     // offset, so the merge recomputes the exact combined target from the
     // summed deltas (see mergeCompensations).
-    pendingCompensation = mergeCompensations(prior, next, engine.getScrollOffset());
+    pendingCompensation = mergeCompensations(prior, next, actualScrollOffset);
   }
+
+  // Header geometry is exact and therefore has no ResizeObserver delivery
+  // to tell the engine that data rows moved. Report the move directly when
+  // the reader is below the old header. At the top, scrollTop stays zero so
+  // the header itself remains the reading anchor.
+  let priorHeaderSize = untrack(() => validatedHeaderSize(header, headerSize));
+  $effect.pre(() => {
+    const next = renderHeaderSize;
+    const prior = priorHeaderSize;
+    if (next === prior) return;
+    priorHeaderSize = next;
+    geometryVersion++;
+    if (actualScrollOffset >= prior) {
+      const delta = next - prior;
+      queueCompensation({
+        kind: 'head-splice',
+        delta,
+        target: Math.max(0, actualScrollOffset + delta),
+      });
+    }
+  });
 
   $effect(() => {
     const currentGeometryVersion = geometryVersion;
@@ -190,6 +246,7 @@
     untrack(() => {
       if (compensation && onCompensation) {
         onCompensation(compensation);
+        syncEngineToLiveScrollTop();
         // The controller's compensation write moves the position by the
         // content shift it preserves across; a pending index scroll's
         // takeover check must expect the same shift or it would read its
@@ -199,6 +256,7 @@
         noteCompensationForIndexScroll(compensation.delta);
       }
       convergeIndexScroll();
+      correctHeadSpliceAnchor();
       maybeDeliverContentGeometry();
       // Strictly last: row offsets and the container height are flushed
       // and the controller has performed any compensation write, so this
@@ -256,7 +314,7 @@
   function maybeDeliverContentGeometry(): void {
     if (!onContentGeometry || scrollerContentWidth === undefined) return;
     const sample: ContentGeometrySample = {
-      height: engine.getTotalSize(),
+      height: engine.getTotalSize() + renderHeaderSize,
       width: scrollerContentWidth,
       windowMeasured: windowFullyMeasured(),
       maxFirstMeasureCorrectionPx,
@@ -380,6 +438,9 @@
       case 'unchanged':
         break;
       case 'head':
+        armHeadSpliceAnchor();
+        queueUpdate(engine.applyLength(nextKeys.length, mutation.headSplice));
+        break;
       case 'tail':
         queueUpdate(engine.applyLength(nextKeys.length, mutation.headSplice));
         break;
@@ -390,13 +451,19 @@
   });
 
   function queueUpdate(update: EngineUpdate | null): void {
-    if (update?.compensation) queueCompensation(update.compensation);
+    if (update?.compensation) queueCompensation(publicCompensation(update.compensation));
   }
 
   const renderTotalSize = $derived.by(() => {
     void geometryVersion;
     void reconciledData;
     return engine.getTotalSize();
+  });
+
+  const renderHeader = $derived.by(() => {
+    void geometryVersion;
+    void reconciledData;
+    return header && (data.length === 0 || engine.getWindow()[0] === 0) ? header : undefined;
   });
 
   const plane = $derived(projection.plane);
@@ -418,6 +485,12 @@
   // against the state the previous batch left behind.
   let readingAnchor: ReadingAnchor | null = null;
   let anchorScrollTop = -1;
+  interface HeadSpliceAnchor {
+    rowEl: HTMLElement;
+    viewportTop: number;
+  }
+  let latestViewportAnchor: HeadSpliceAnchor | null = null;
+  let headSpliceAnchor: HeadSpliceAnchor | null = null;
 
   function rowFor(element: Element): { el: HTMLElement; index: number } | undefined {
     for (let node: Element | null = element; node; node = node.parentElement) {
@@ -434,13 +507,70 @@
 
   function refreshReadingAnchor(): void {
     const scroller = observedScroller;
-    if (!scroller || !readingAnchorWanted()) {
+    if (!scroller) {
       readingAnchor = null;
       anchorScrollTop = -1;
+      latestViewportAnchor = null;
       return;
     }
-    readingAnchor = sampleReadingAnchor({ scroller, rowFor });
+    readingAnchor = readingAnchorWanted() ? sampleReadingAnchor({ scroller, rowFor }) : null;
     anchorScrollTop = scroller.scrollTop;
+    // A retained-row anchor is only needed near the head, where a prepend
+    // can occur, or while a measurement cascade is already being held.
+    // Skip the extra hit test on the bottom-follow streaming hot path.
+    if (!headSpliceAnchor && engine.getWindow()[0] !== 0) {
+      latestViewportAnchor = null;
+      return;
+    }
+    const viewport = scroller.getBoundingClientRect();
+    const dataStart = viewport.top + renderHeaderSize - scroller.scrollTop;
+    const y = Math.max(viewport.top + scroller.clientTop + 1, dataStart + 1);
+    const x = viewport.left + viewport.width / 2;
+    const hit = y < viewport.bottom ? document.elementFromPoint(x, y) : null;
+    const firstVisible = hit ? rowFor(hit)?.el : undefined;
+    latestViewportAnchor = firstVisible
+      ? { rowEl: firstVisible, viewportTop: firstVisible.getBoundingClientRect().top }
+      : null;
+  }
+
+  function syncEngineToLiveScrollTop(): void {
+    const top = observedScroller?.scrollTop;
+    if (top === undefined) return;
+    actualScrollOffset = top;
+    engine.noteScrollOffset(engineOffsetFor(top));
+  }
+
+  // A head page can place the old reading row below one newly inserted,
+  // still-unmeasured row. The normal straddling-row rule intentionally
+  // leaves that row's below-viewport-top correction visible. During a head
+  // splice that would move the retained reading row instead. Hold the live
+  // retained DOM row across the inserted window's measurement cascade.
+  // Scroll input refreshes `latestViewportAnchor` while the request is in
+  // flight, so this never restores a position captured before the user moved.
+  function armHeadSpliceAnchor(): void {
+    const anchor = latestViewportAnchor;
+    headSpliceAnchor = anchor?.rowEl.isConnected ? { ...anchor } : null;
+  }
+
+  function correctHeadSpliceAnchor(): void {
+    const anchor = headSpliceAnchor;
+    if (!anchor) return;
+    if (!anchor.rowEl.isConnected) {
+      headSpliceAnchor = null;
+      return;
+    }
+    const delta = anchor.rowEl.getBoundingClientRect().top - anchor.viewportTop;
+    if (Math.abs(delta) > 0.01 && onCompensation) {
+      const currentTop = observedScroller?.scrollTop ?? actualScrollOffset;
+      onCompensation({
+        kind: 'head-splice',
+        delta,
+        target: Math.max(0, currentTop + delta),
+      });
+      syncEngineToLiveScrollTop();
+      noteCompensationForIndexScroll(delta);
+    }
+    if (windowFullyMeasured()) headSpliceAnchor = null;
   }
 
   // Passed to the engine, which calls it ONLY for the row spanning the
@@ -563,7 +693,11 @@
     if (!scroller) return;
     lastScrollTime = performance.now();
     const offset = scroller.scrollTop;
-    applyUpdate(engine.applyScroll(offset));
+    if (headSpliceAnchor && Math.abs(offset - actualScrollOffset) > 0.01) {
+      headSpliceAnchor = null;
+    }
+    actualScrollOffset = offset;
+    applyUpdate(engine.applyScroll(engineOffsetFor(offset)));
     onscroll?.(offset);
     // The viewport top now sits over different content. Re-sample unless
     // the position is unchanged (the controller's own compensation write
@@ -690,7 +824,10 @@
       // the navigation's own ground shifting, not a takeover, and the
       // restore pass that follows is exactly the one that puts the
       // anchored row back.
-      const maxScroll = Math.max(0, engine.getTotalSize() - engine.getViewportSize());
+      const maxScroll = Math.max(
+        0,
+        engine.getTotalSize() + renderHeaderSize - engine.getViewportSize(),
+      );
       const expected = Math.min(pending.expectedPosition, maxScroll);
       // Live DOM read, not engine.getScrollOffset(): the engine's offset
       // lags its own write until the scroll event lands, and a stale
@@ -701,7 +838,8 @@
         return;
       }
     }
-    let target = engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset);
+    let target =
+      engine.targetOffsetFor(pending.index, pending.align, pending.extraOffset) + renderHeaderSize;
     // An align-end target decomposes as offset(index) + size(index) −
     // viewport, so it moves for two reasons with different owners. Rows
     // ABOVE moving (ΔOffset — a fold's RO landing, an estimate
@@ -746,7 +884,7 @@
     // viewport excludes the padding both sides share).
     pending.expectedPosition = Math.min(
       Math.max(0, target),
-      Math.max(0, engine.getTotalSize() - engine.getViewportSize()),
+      Math.max(0, engine.getTotalSize() + renderHeaderSize - engine.getViewportSize()),
     );
   }
 
@@ -786,32 +924,34 @@
     const paddingTop = Number.parseFloat(style.paddingTop) || 0;
     const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
     applyUpdate(engine.applyViewportResize(scroller.clientHeight - paddingTop - paddingBottom));
-    applyUpdate(engine.applyScroll(scroller.scrollTop));
+    actualScrollOffset = scroller.scrollTop;
+    applyUpdate(engine.applyScroll(engineOffsetFor(scroller.scrollTop)));
   }
 
   // ------------------------------------------------------------------
   // Read-only handle (see TimelineVirtualizerHandle in utils/virtual/types)
   // ------------------------------------------------------------------
   export function getScrollOffset(): number {
-    return engine.getScrollOffset();
+    return actualScrollOffset;
   }
   export function noteScrollTopWritten(top: number): void {
-    engine.noteScrollOffset(top);
+    actualScrollOffset = top;
+    engine.noteScrollOffset(engineOffsetFor(top));
   }
   export function getViewportSize(): number {
     return engine.getViewportSize();
   }
   export function getScrollSize(): number {
-    return Math.max(engine.getTotalSize(), engine.getViewportSize());
+    return Math.max(engine.getTotalSize() + renderHeaderSize, engine.getViewportSize());
   }
   export function getTotalSize(): number {
-    return engine.getTotalSize();
+    return engine.getTotalSize() + renderHeaderSize;
   }
   export function findItemIndex(offset: number): number {
-    return engine.findItemIndex(offset);
+    return engine.findItemIndex(engineOffsetFor(offset));
   }
   export function getItemOffset(index: number): number {
-    return engine.getItemOffset(index);
+    return engine.getItemOffset(index) + renderHeaderSize;
   }
   export function sizeAt(index: number): number {
     return engine.sizeAt(index);
@@ -836,14 +976,26 @@
   style:flex="none"
   style:position="relative"
   style:width="100%"
-  style:height="{renderTotalSize}px"
+  style:height="{renderTotalSize + renderHeaderSize}px"
 >
+  {#if renderHeader}
+    <div
+      data-virtual-header
+      style:position="absolute"
+      style:left="0px"
+      style:top="0px"
+      style:width="100%"
+      style:height="{renderHeaderSize}px"
+    >
+      {@render renderHeader()}
+    </div>
+  {/if}
   <div
     bind:this={renderPlane}
     data-virtual-row-plane
     style:position="absolute"
     style:left="0px"
-    style:top="{plane.origin}px"
+    style:top="{plane.origin + renderHeaderSize}px"
     style:width="100%"
     style:height="{plane.size}px"
   >

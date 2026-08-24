@@ -156,14 +156,14 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     }
   }
 
-  // The prepend holds the reading position via the engine's keyed mutation
-  // handling. It re-bases measured sizes and reports the scrollTop
-  // compensation in one step. There is deliberately NO explicit
-  // re-anchor here — a
-  // re-anchor captured before the await would yank the user back if they
-  // kept scrolling while the page loaded. The pause lease keeps the
-  // prepend's scrollHeight growth from re-sticking; `escaped` marks the
-  // user as reading older.
+  // The engine's head mutation holds the reading position through the
+  // estimated prepend. The virtualizer keeps the current retained DOM row
+  // stationary while newly mounted estimates measure. There is no explicit
+  // pre-request restore here. Scroll input keeps the virtualizer's candidate
+  // current while the request is in flight, so a user who keeps moving is
+  // never pulled back to the request's starting position. The pause lease
+  // keeps scrollHeight growth from re-sticking; `escaped` marks the user as
+  // reading older.
   async function handleLoadOlder(): Promise<void> {
     if (!options.getListRef()) return;
     const pane = options.getPane();
