@@ -180,9 +180,8 @@ func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
 
 // TestBrowserArgs covers three invariants for the WebView2 flag set:
 //
-//  1. Dev is a strict superset of prod: dev mode only layers on top of
-//     the always-applied flags. If a flag should drop from dev, it must
-//     drop from prod first — otherwise dev users lose a safety net.
+//  1. Dev and soak are strict supersets of prod: diagnostic modes only layer
+//     their isolated CDP endpoint on top of the always-applied flags.
 //  2. Prod must never include --remote-debugging-*. That port is
 //     unauthenticated CDP and only belongs in developer builds.
 //  3. No raw --disable-features/--enable-features switch, in any mode.
@@ -193,15 +192,16 @@ func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
 //     which Wails merges into its single switch.
 func TestBrowserArgs(t *testing.T) {
 	prod := browserArgs("prod")
-	dev := browserArgs("dev")
-
-	devSet := make(map[string]struct{}, len(dev))
-	for _, a := range dev {
-		devSet[a] = struct{}{}
-	}
-	for _, a := range prod {
-		if _, ok := devSet[a]; !ok {
-			t.Errorf("prod arg %q missing from dev — dev must be a strict superset", a)
+	for _, mode := range []string{appidentity.ModeDev, appidentity.ModeSoak} {
+		modeArgs := browserArgs(mode)
+		modeSet := make(map[string]struct{}, len(modeArgs))
+		for _, arg := range modeArgs {
+			modeSet[arg] = struct{}{}
+		}
+		for _, arg := range prod {
+			if _, ok := modeSet[arg]; !ok {
+				t.Errorf("prod arg %q missing from %s", arg, mode)
+			}
 		}
 	}
 
@@ -211,9 +211,11 @@ func TestBrowserArgs(t *testing.T) {
 		}
 	}
 
-	for _, a := range dev {
-		if strings.HasPrefix(a, "--disable-features") || strings.HasPrefix(a, "--enable-features") {
-			t.Errorf("raw feature switch %q would clobber Wails' merged --disable-features — use browserDisabledFeatures/browserEnabledFeatures", a)
+	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeSoak} {
+		for _, arg := range browserArgs(mode) {
+			if strings.HasPrefix(arg, "--disable-features") || strings.HasPrefix(arg, "--enable-features") {
+				t.Errorf("%s raw feature switch %q would clobber Wails' merged feature configuration", mode, arg)
+			}
 		}
 	}
 }
@@ -258,10 +260,21 @@ func TestBrowserFeatures(t *testing.T) {
 	}
 }
 
-func TestBrowserArgsLeaveTextAntialiasingAtChromiumDefault(t *testing.T) {
-	for _, arg := range browserArgs("prod") {
-		if arg == "--disable-lcd-text" {
-			t.Fatal("browser args force grayscale text antialiasing")
+func TestWebviewBrowserOptionsLeaveTextAndScrollerCompositingAtChromiumDefaults(t *testing.T) {
+	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeSoak} {
+		opts := webviewBrowserOptions(mode, "profile", "forensics")
+		if len(opts.EnabledFeatures) != 0 {
+			t.Errorf("%s EnabledFeatures = %v, want none", mode, opts.EnabledFeatures)
+		}
+		for _, feature := range opts.EnabledFeatures {
+			if feature == "PreferNonCompositedScrolling" {
+				t.Errorf("%s restores retired scroller placement feature", mode)
+			}
+		}
+		for _, arg := range opts.AdditionalBrowserArgs {
+			if strings.HasPrefix(arg, "--disable-lcd-text") {
+				t.Errorf("%s forces grayscale text antialiasing with %q", mode, arg)
+			}
 		}
 	}
 }

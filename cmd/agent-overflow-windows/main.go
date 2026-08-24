@@ -1096,24 +1096,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		Assets: application.AssetOptions{
 			Handler: pickerAssetHandler(distros),
 		},
-		Windows: application.WindowsOptions{
-			AdditionalBrowserArgs: browserArgs(mode),
-			DisabledFeatures:      browserDisabledFeatures(),
-			// Stable per-mode WebView2 profile. Without this the profile
-			// path defaults to %APPDATA%\<exe name>, and dev builds carry a
-			// unique timestamped exe name — every `make dev-wsl` minted a
-			// fresh EBWebView profile dir (cold caches, orphaned junk under
-			// Roaming). A stable path also pins where WebView2 diagnostics
-			// land (EBWebView\chrome_debug.log, EBWebView\Crashpad\) so the
-			// mixed-DPI blank-window investigation has one place to look.
-			// Empty string (unresolvable %APPDATA%) falls back to the Wails
-			// default rather than failing the launch.
-			WebviewUserDataPath: webviewDataDir(mode),
-			// Where a render-hang's renderer minidump + breadcrumbs land
-			// (see renderForensicsDir). Logged at startup so an operator —
-			// or a bug-report scrape — knows where to look.
-			RenderForensicsDir: forensicsDir,
-		},
+		Windows: webviewBrowserOptions(mode, webviewDataDir(mode), forensicsDir),
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1427,6 +1410,31 @@ func browserArgs(mode string) []string {
 		args = append(args, "--disable-gpu")
 	}
 	return args
+}
+
+// webviewBrowserOptions is the one construction path for process-wide WebView2
+// configuration. Keeping the final Wails shape pure lets tests inspect every
+// mode, including EnabledFeatures, instead of proving only one input slice.
+//
+// EnabledFeatures deliberately stays empty. The retired pair
+// --disable-lcd-text + PreferNonCompositedScrolling first disabled Blink's
+// LCD-text guard against eager scroller promotion, then tried to restore the
+// old placement policy with an internal feature. Without the companion every
+// scroller became a content-sized composited layer: renderer cc/tile_memory
+// measured 165.5MB versus an 89.9MB same-day baseline. Chromium defaults now
+// own both text antialiasing and scroller placement; neither half belongs here.
+func webviewBrowserOptions(mode, userDataDir, forensicsDir string) application.WindowsOptions {
+	return application.WindowsOptions{
+		AdditionalBrowserArgs: browserArgs(mode),
+		DisabledFeatures:      browserDisabledFeatures(),
+		// Stable per-mode WebView2 profile. Without this the profile path
+		// defaults to %APPDATA%\<exe name>, and dev builds carry a unique
+		// timestamped exe name. A stable path also pins WebView2 diagnostics.
+		// Empty (unresolvable %APPDATA%) intentionally takes the Wails default.
+		WebviewUserDataPath: userDataDir,
+		// Renderer minidumps and breadcrumbs. Empty disables capture.
+		RenderForensicsDir: forensicsDir,
+	}
 }
 
 // browserDisabledFeatures returns the Chromium base::Feature names
