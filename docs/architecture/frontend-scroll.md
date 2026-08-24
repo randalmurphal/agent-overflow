@@ -59,54 +59,19 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `chokepoint.ts` — the single `writeScrollTop` chokepoint every
     programmatic write routes through, plus its satellites: the
     provenance ledger, arrival-readback acceptance, and spring-tick
-    trace sampling. The compositing the glide residue below depends on
-    comes from a **static `scroll-composited-content` class on every
-    controller-owned content element** (MessageTimeline, ChannelView,
-    ActivityRun's clip content) — permanent by design. It replaced a
-    promote/demote lease that reclaimed idle-pane tile memory (~27MB
-    across four parked panes, measured 2026-07-21 on Windows/WebView2):
-    every lease transition re-rasters a layer the reader may be looking
-    at, and three separate visible-flicker incidents traced to those
-    transitions — a demote firing mid-stream of a neighboring pane
-    (2026-08-03 shimmer), a re-promote landing on the first spring tick
-    after a mid-turn demote (2026-08-05 boundary stutter), and a
-    detach-path clear stripping the hint from a still-visible run clip
-    on a cold compositor after hours of idle (2026-08-10). Each fix
-    added guards around the transitions; removing the transitions
-    removed the whole class of bug. A hint that never changes on a
-    mounted element cannot flicker. The steady-state cost is the tile
-    memory the lease used to reclaim (the ~27MB above), plus a layer
-    per mounted expanded run clip — ActivityRun carries the class
-    unconditionally, live or not, because liveness can land on an
-    already-mounted run and a class that appears then is itself a
-    raster transition. Do not reintroduce conditional promotion here
-    or in consumer markup; `attach()` reports an uncomposited
-    contentEl to frontend-errors.jsonl in trace-enabled builds.
-    The chokepoint also owns the **fractional glide residue**: spring
-    writes are fractional, the engine rounds `scrollTop` to whole CSS
-    pixels, and the sub-pixel remainder is composited as a `translateY`
-    on `contentEl` so slow spring tails render continuously instead of
-    as 1px steps. Two display-physics guards ride along: an epsilon
-    `rotate(0.0001deg)` defeats WebKit's compositor pixel alignment
-    (which would round the sub-pixel translate to whole device pixels
-    and oscillate around the trajectory), and the spring holds a
-    refresh-aware "fusion floor" while decelerating: derived from
-    devicePixelRatio plus the spring's measured rAF cadence so the
-    glide advances 1/k device pixels per displayed frame
-    (k = ⌊refresh/60⌋). Every harmonic of the bilinear-resample
-    breathing on thin rows then either phase-locks (constant resample
-    weights — invisible) or patterns at ≥60Hz, above flicker fusion;
-    sub-120Hz displays get the full one-pixel-per-frame lock (zero
-    breathing). A refresh-blind floor aliased into a visible ~12Hz
-    beat on 144Hz panels — see `fusionFloorPxPerFrame` in spring.ts
-    for the derivation. The residue is a render detail, not a second scroll
-    writer — it never changes `scrollTop` and fires no scroll events.
-    Release rules: a clear that accompanies a real write (any
-    non-spring caller, or detach) is instant; a release with no write
-    (spring catch-up, selection pause, sentinel entry, cancel) is
-    EASED to zero over ~6 frames — snapping the parked ~0.5px residue
-    once per quantum read as a faint vibration during bursty output.
-    Either way text at rest ends crisp at translate 0.
+    trace sampling. It records the requested-to-readback quantization
+    error but does not render a second position. Controller content must
+    not carry authored `will-change`, `translate`, or `rotate` state.
+    A permanent content layer caused stale WebView2 pixels while state,
+    DOM, and input remained live (bug-report-20260823T224631Z). Earlier
+    promote/demote leases also caused three raster-transition flickers.
+    The spring instead accounts for integer `scrollTop` in its motion
+    model. It carries rounding error forward and holds a cadence-aware
+    floor of one CSS pixel every `floor(refresh/60)` displayed frames,
+    yielding at least 60 visible position changes per second at 60,
+    90, 120, 144, 165, and 240Hz. The rule is independent of DPR because
+    tested Chromium scrollTop readback quantizes in CSS pixels. See
+    `quantizedMotionFloorPxPerFrame` in `spring.ts`.
   - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.
@@ -116,7 +81,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     (below all three, the spring's own decay governs): the
     **acceleration slew** (a geometric onset ramp, ×1.10 per 60Hz frame
     over max(ramp base, current speed toward the target), the base a
-    display-independent 1.0 px/frame floored by the fusion floor — a
+    display-independent 1.0 px/frame floored by the cadence floor — a
     standstill quantum eases in instead of jumping to its peak, and
     glides stretch into the next quantum's arrival instead of
     stop-starting per line), the **deceleration envelope** (0.11 ×
@@ -1129,7 +1094,7 @@ Contract: [`scroll-contracts.md`](scroll-contracts.md) C7.
 
 Most nested bodies are inert boxes. An activity run's clip is not: the run
 holding the live tail gets its own `createUseStickToBottomController`, same
-spring and glide compositing as the pane, so streaming activity chases inside
+spring as the pane, so streaming activity chases inside
 the cap while the prose above it stays put. Rules that matter from the outer
 side ([`activity-runs.md`](activity-runs.md) has the rest):
 
@@ -1140,9 +1105,6 @@ side ([`activity-runs.md`](activity-runs.md) has the rest):
   `overflow-y: auto` with a restored `scrollTop`; a controller per run in the
   buffer would be a spring, an observer set, and intent listeners each for
   physics one of them can use.
-  (The static `scroll-composited-content` class on the clip content is the one thing
-  every expanded run carries, controller or not — see the `chokepoint.ts`
-  bullet under `utils/scroll/` above.)
 - **The clip's outer height changes only on explicit events** — growth toward
   the cap, item expansion, a collapse toggle — never from inner streaming.
   That is what keeps the outer engine quiet, and it keeps `rowDelta === 0` for

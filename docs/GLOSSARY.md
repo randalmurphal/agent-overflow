@@ -97,7 +97,6 @@ Source: `docs/architecture/frontend-scroll.md`, `docs/architecture/scroll-contra
 | **stick / escape / re-stick** | The sticky-bottom intent model. Any upward user input escapes synchronously; re-stick only via input-backed scroll near bottom, explicit `forceStick`, or wheel-down while clamped. Intent is event-sourced, never geometry-inferred. |
 | **spring chase** | The velocity-spring animation the viewport uses to follow a moving bottom. All autonomous growth while pinned takes this one route. |
 | **glide** | A spring chase in flight, as the user sees it. |
-| **glide residue** | The sub-pixel remainder of each spring write, rendered as a compositor `translateY` so slow spring tails stay smooth through integer `scrollTop`. |
 | **warm gate** | Quiescence gate over content deliveries: growth stays sync-pinned until the content observer has been quiet or a failsafe trips. Stops a thread restore from chasing its own mount cascade. |
 | **write caller** | Every programmatic `scrollTop` write names its origin from a closed union, classified `program` (bounded continuous motion) vs `placement` (one-shot). |
 | **activity run** | One maximal stretch of consecutive rail rows rendered as one timeline row that scrolls in place and collapses to a line. The one nested scroller running the pane's physics (`docs/architecture/activity-runs.md`). |

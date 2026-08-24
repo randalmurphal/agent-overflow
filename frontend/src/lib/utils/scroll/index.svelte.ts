@@ -119,7 +119,7 @@ const STICK_TO_BOTTOM_OFFSET_PX = 70;
 // Spring kinematics, tuning constants, and the sentinel/structural-append
 // windows live in scroll/spring.ts. The write chokepoint and its
 // satellites (provenance ledger, arrival readback, spring-tick trace
-// sampling, glide residue) live in scroll/chokepoint.ts.
+// sampling) live in scroll/chokepoint.ts.
 
 // Frontend-errors rate limit for the spring's write-refusal guard
 // escalation: the first latch per window files a persisted diagnostic
@@ -210,12 +210,11 @@ export function createUseStickToBottomController(
   // ===== Write chokepoint =====
   // The single programmatic-write site and its satellites — the
   // provenance ledger, arrival-readback acceptance, spring-tick trace
-  // sampling, and the fractional glide residue — live in
-  // scroll/chokepoint.ts as one unit. The late-bound dep closes over
-  // `intent` (created below) and is only invoked at write time.
+  // sampling live in scroll/chokepoint.ts as one unit. The late-bound
+  // dep closes over `intent` (created below) and is only invoked at
+  // write time.
   const chokepoint = createWriteChokepoint({
     getScrollEl: () => scrollEl,
-    getContentEl: () => contentEl,
     scrollTopIsAtTarget,
     refreshIsNearBottom,
     noteProgrammaticWrite: (top) => {
@@ -234,8 +233,6 @@ export function createUseStickToBottomController(
     scrollTopUnexplained,
     arrivalReadback,
     forceNextSpringTickTrace,
-    applyGlideResidue,
-    settleGlideResidue,
   } = chokepoint;
   // OS reduced-motion OR the app's low-power setting, both meaning
   // "place instantly, never spring-glide" — see utils/reducedMotion.ts,
@@ -363,16 +360,6 @@ export function createUseStickToBottomController(
     liveContentActive: liveContentActiveNow,
     prefersReducedMotion: motionReduced,
     forceNextSpringTickTrace,
-    settleGlideResidue,
-    // Display input to the spring's refresh-aware fusion floor — the
-    // derivation lives beside its sibling constants in spring.ts
-    // (fusionFloorPxPerFrame); the spring supplies the other input,
-    // its measured rAF cadence. Read live — zoom and monitor moves
-    // change dpr between and during chases.
-    devicePixelRatio: () =>
-      typeof window !== 'undefined' && window.devicePixelRatio > 0
-        ? window.devicePixelRatio
-        : 1,
     scrollTopUnexplained,
     reportWriteRefusal,
   });
@@ -919,23 +906,6 @@ export function createUseStickToBottomController(
     scrollEl = nextScrollEl;
     contentEl = nextContentEl;
     observers.beginWarmup();
-    // The compositing contract check: the glide residue's translation
-    // needs contentEl composited, which comes from a static
-    // `scroll-composited-content` class the consumer's own markup must
-    // carry (chokepoint.ts, "Fractional glide residue"). A controller
-    // attached without it repaints on every glide frame with nothing
-    // visibly wrong, so the breach is made loud here instead. The class
-    // is the contract (never a runtime style write — a will-change
-    // transition re-rasters a visible layer), so the class is what is
-    // checked.
-    const contentComposited = nextContentEl.classList.contains('scroll-composited-content');
-    if (!contentComposited) {
-      reportFrontendDiagnostic(
-        'scroll: controller attached to an uncomposited contentEl — its markup must carry '
-          + 'the static scroll-composited-content class (utils/scroll/chokepoint.ts)',
-        `surface ${nextScrollEl.dataset?.testid ?? 'unknown'}`,
-      );
-    }
     if (isUiRenderTraceEnabled()) trace('scroll.attach', () => ({
       surface: nextScrollEl.dataset?.testid ?? '',
       scrollTop: Math.round(nextScrollEl.scrollTop),
@@ -945,7 +915,6 @@ export function createUseStickToBottomController(
       isAtBottomState,
       escapedFromLockState,
       pauseDepth,
-      contentComposited,
     }));
     observers.attach();
     intent.attach(nextScrollEl);
@@ -1017,12 +986,8 @@ export function createUseStickToBottomController(
     intent.detach();
     // spring.cancel() also resets the target-change timestamp and
     // sentinel state; only the stop request needs a separate clear.
-    // The glide residue is cleared INSTANTLY here (not via cancel's
-    // gentle settle) — the settle loop would outlive contentEl below
-    // and leave the detached element with a stale transform.
     spring.cancel();
     spring.clearStopRequest();
-    applyGlideResidue(0);
     chokepoint.resetLedger();
     scrollEl = undefined;
     contentEl = undefined;

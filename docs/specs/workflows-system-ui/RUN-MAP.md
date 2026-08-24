@@ -869,9 +869,9 @@ implementation detail:
     it. Pinned by `runMapFollow.svelte.test.ts` "chipVisible — the
     disengaged offer is only rendered when it travels" and by the
     overlay e2e's return-to-the-marker leg.
-11. `will-change` is never toggled; if the glide needs compositing it
-    uses a static class or nothing (post-incident doctrine,
-    `chokepoint.ts:179-199`).
+11. The glide does not author `will-change` or content transforms.
+    Promotion transitions caused visible flicker, and a permanent content
+    layer later produced stale WebView2 pixels while the DOM stayed live.
 12. **Container resize is a recomputation event, and rate-bound**: a
     `ResizeObserver` on the scroller re-runs the follow decision and the
     chip's geometry, rate-bound (≥100ms end-to-start) so live resizing

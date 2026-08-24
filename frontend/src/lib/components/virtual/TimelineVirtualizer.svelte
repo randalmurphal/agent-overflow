@@ -82,12 +82,8 @@
     bufferSize?: number;
     /** Mount every row (happy-dom unit-test seam). */
     renderAll?: boolean;
-    /** The stable mounted-row paint plane. Bind when a host scroll
-     * controller needs to apply compositor-only render offsets. */
+    /** The stable mounted-row plane. */
     renderPlane?: HTMLDivElement;
-    /** Static classes owned by the target. Chat supplies its permanent
-     * compositor contract; static review documents do not need one. */
-    renderPlaneClass?: string;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     /** Engine compensation observations → scroll controller resolver. */
@@ -118,7 +114,6 @@
     bufferSize = DEFAULT_BUFFER_PX,
     renderAll = false,
     renderPlane = $bindable(),
-    renderPlaneClass = '',
     onscroll,
     onscrollend,
     onCompensation,
@@ -846,13 +841,11 @@
   <div
     bind:this={renderPlane}
     data-virtual-row-plane
-    class={renderPlaneClass}
     style:position="absolute"
     style:left="0px"
-    style:top="0px"
+    style:top="{plane.origin}px"
     style:width="100%"
     style:height="{plane.size}px"
-    style:transform="translateY({plane.origin}px)"
   >
     {#each rows as row (row.key)}
       <VirtualRow

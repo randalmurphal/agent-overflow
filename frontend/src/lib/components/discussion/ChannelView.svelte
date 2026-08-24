@@ -296,12 +296,7 @@
       aria-label="Discussion Channel Messages"
       data-testid="channel-message-list"
     >
-      <!-- Static scroll-composited-content keeps contentEl composited for
-           the scroll controller's sub-pixel glide residue, matching
-           MessageTimeline's contentEl (see the comment there and
-           utils/scroll/chokepoint.ts, "Fractional glide residue").
-           Permanent by design — do not make it conditional. -->
-      <div bind:this={contentEl} class="space-y-3 scroll-composited-content">
+      <div bind:this={contentEl} class="space-y-3">
         {#if loadingInitial}
           <div class="text-[0.75rem] text-fg-subtle">Loading channel messages…</div>
         {:else if loadError}

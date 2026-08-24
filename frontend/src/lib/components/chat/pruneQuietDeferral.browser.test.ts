@@ -74,8 +74,8 @@ describe('recent-window prune quiet deferral', () => {
       ?.closest('[data-virtual-row]') as HTMLElement | undefined) ?? null;
     expect(plane).not.toBeNull();
     expect(liveRow).not.toBeNull();
-    expect(plane?.classList.contains('scroll-composited-content')).toBe(true);
-    expect(getComputedStyle(plane!).willChange).toContain('transform');
+    expect(plane?.style.transform).toBe('');
+    expect(getComputedStyle(plane!).willChange).toBe('auto');
 
     // The scheduler owes the prune once the glide and its sentinel die
     // (liveness hold ~500ms, recheck cadence 200ms) — no further wire

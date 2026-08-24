@@ -196,12 +196,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     }
   });
 
-  it('keeps the static compositor class on the controller contentEl', async () => {
-    // Load-bearing compositing hint (utils/scroll/chokepoint.ts,
-    // "Fractional glide residue"), permanent by design after the
-    // promote/demote lease's transitions caused three flicker incidents.
-    // Nothing else fails if the class silently disappears — the glide
-    // residue just starts repainting on the main thread every frame.
+  it('keeps the virtual row plane free of authored compositor state', async () => {
     const pane = await buildPane(undefined, [makeItem({ id: 'a', summary: 'first' })]);
     pane.thread!.id = 'thread-will-change';
 
@@ -209,8 +204,11 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
     await tick();
 
     const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
-    const content = scroll.querySelector('.scroll-composited-content');
-    expect(content, 'contentEl lost its static compositor class').toBeTruthy();
+    const content = scroll.querySelector('[data-virtual-row-plane]') as HTMLElement | null;
+    expect(content).not.toBeNull();
+    expect(content?.style.transform).toBe('');
+    expect(content?.style.getPropertyValue('translate')).toBe('');
+    expect(content?.style.getPropertyValue('rotate')).toBe('');
   });
 
   // The measured-size priors are what let a revisited thread skip the

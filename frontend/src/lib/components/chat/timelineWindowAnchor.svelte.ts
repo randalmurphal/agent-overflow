@@ -117,8 +117,7 @@ export function createTimelineWindowAnchor(
   // (a live turn's chase or armed structural spring) answers with the
   // live-content path, and its first tick reads as a takeover that kills the
   // pending index scroll — so the reader's clicked delta glided for up to
-  // two seconds at tail speed, resampling every glyph on screen through the
-  // glide residue's fractional transform (bug-report-20260802T011749Z:
+  // two seconds at tail speed (bug-report-20260802T011749Z:
   // spring chases starting ≤6ms after each toggle while a turn streamed).
   // Two rAFs, not one: the first fires at the START of the rendering update
   // that measures; the second is the first moment strictly after the

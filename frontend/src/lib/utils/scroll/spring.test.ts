@@ -2,8 +2,8 @@
 // need frame-precise control over rAF timing and target geometry:
 // the hard velocity cap, the deceleration envelope, the acceleration
 // slew (onset ramp, parked carry decay, seed exemption, integrator
-// composability), the integer-rounding remainder carry (glide-residue
-// continuity), the clamp-not-zero momentum carry, the write-refusal
+// composability), the integer-rounding error carry, the clamp-not-zero
+// momentum carry, the write-refusal
 // guard (latch, probe backoff, three-way write classification, heal /
 // abandon reporting), and the per-chase
 // telemetry summary. Controller-level
@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSpringChase,
-  fusionFloorPxPerFrame,
+  quantizedMotionFloorPxPerFrame,
   SPRING_WRITE_REFUSAL_LATCH_TICKS,
   SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS,
   type ArrivalReadback,
@@ -50,7 +50,6 @@ interface Harness {
   getTarget(): number;
   setLiveContentActive(active: boolean): void;
   setRefuseWrites(refuse: boolean): void;
-  residueSettles(): number;
 }
 
 /**
@@ -68,7 +67,6 @@ function makeHarness(
   opts: {
     quantize?: boolean;
     clientHeight?: number;
-    dpr?: number;
     refuse?: boolean;
     /** Engine max-scroll clamp: stored scrollTop never exceeds this. */
     clampMax?: number;
@@ -77,7 +75,6 @@ function makeHarness(
   let scrollTop = 0;
   let target = 0;
   let liveContentActive = true;
-  let residueSettles = 0;
   // Write-refusal mode: models the wedged non-scroll-container element
   // from bug-report-20260818T003129Z — writes are received but move
   // nothing, and (mirroring the real chokepoint) each one still stamps
@@ -135,14 +132,6 @@ function makeHarness(
     liveContentActive: () => liveContentActive,
     prefersReducedMotion: () => false,
     forceNextSpringTickTrace: () => {},
-    settleGlideResidue: () => {
-      residueSettles += 1;
-    },
-    // Display input to the refresh-aware fusion floor; the derivation
-    // itself is unit-tested directly (fusionFloorPxPerFrame below). At
-    // dpr 1 and the harness's default 16.67ms cadence the floor is the
-    // 60Hz phase lock: 1.0 px per frame.
-    devicePixelRatio: () => opts.dpr ?? 1,
     scrollTopUnexplained: () =>
       lastExplainedScrollTop !== null
       && Math.abs(scrollTop - lastExplainedScrollTop) > ARRIVAL_DISTANCE_PX,
@@ -166,7 +155,6 @@ function makeHarness(
     setRefuseWrites: (refuse: boolean) => {
       refuseWrites = refuse;
     },
-    residueSettles: () => residueSettles,
   };
 }
 
@@ -468,7 +456,7 @@ describe('momentum carry across catch-up', () => {
 });
 
 describe('acceleration slew (onset ramp + parked decay)', () => {
-  it('ramps a standstill onset geometrically from the fusion floor instead of jumping to the envelope peak', () => {
+  it('ramps a standstill onset geometrically from the cadence floor instead of jumping to the envelope peak', () => {
     const h = makeHarness();
     h.setTarget(60);
     h.spring.markTargetChanged();
@@ -476,7 +464,7 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
 
     const moves = displacements(h, 6);
     // Pre-slew, the first frame jumped straight to min(raw spring
-    // ≈3.8, envelope 6.6). Slewed: the fusion floor (the 60Hz phase
+    // ≈3.8, envelope 6.6). Slewed: the cadence floor (the 60Hz phase
     // lock, 1.0) × the ramp factor, compounding ~10% per frame.
     expect(moves[0]).toBeGreaterThan(1.0);
     expect(moves[0]).toBeLessThan(1.2);
@@ -548,7 +536,7 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
     // this ceiling-dominated regime the tolerance pins the RAMP's time
     // scaling only — the integrator's own composability is pinned
     // separately by the ceiling-free test below. 120Hz is
-    // the comparison point because its fusion floor rung equals 60Hz's
+    // the comparison point because its cadence-floor rung equals 60Hz's
     // (both 1.0 px/frame), isolating time-scaling from the
     // refresh-aware floor ladder.
     // 1s window over a long chase: ramp (~0.5s) + cruise. Bounded
@@ -574,7 +562,7 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
 
   it('integrates composably across fractional steps (60Hz vs 120Hz, ceiling-free regime)', () => {
     // A 6px quantum keeps every velocity below the slew base ramp
-    // (1.10), the envelope min (1.6), and the fusion floor — pure
+    // (1.10), the envelope min (1.6), and the cadence floor — pure
     // spring physics, so this directly pins the integrator's
     // fractional-step composability: retention must be
     // (damping/mass)^f, not (damping^f)/mass. The historical form's
@@ -637,12 +625,8 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
     }
   });
 
-  it('keeps the standstill attack display-independent on high-DPR panels (perceptual ramp base)', () => {
-    // At dpr 3 the fusion floor clamps to 0.4 — display physics says
-    // sub-pixel breathing is negligible there, but a 0.4-based ramp
-    // would stretch the same quantum's attack to ~2× its 1× duration.
-    // The ramp bases at max(1.0, floor), so the onset matches dpr 1.
-    const h = makeHarness({ dpr: 3 });
+  it('starts from the one-pixel cadence floor at standstill', () => {
+    const h = makeHarness();
     h.setTarget(60);
     h.spring.markTargetChanged();
     h.spring.start();
@@ -677,15 +661,12 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
   });
 });
 
-describe('glide shaping (decel envelope + fractional tail)', () => {
+describe('glide shaping (decel envelope + quantized tail)', () => {
   // The peak sits at the slew-ramp ↔ envelope crossover; the envelope
   // (0.09 · remaining) shapes the
-  // ease-out; the exponential tail below it is deliberately UNSHAPED —
-  // sub-pixel motion renders continuously through the controller's
-  // fractional glide residue, so the historical anti-judder floor and
-  // settle taper are gone. These tests pin the envelope bound, the
-  // natural cradled tail (sub-1px frames the floor used to erase), and
-  // the remainder-carry continuity under integer scrollTop rounding.
+  // ease-out. The cadence floor holds its quantized tail until the final
+  // three-pixel landing. These tests pin the envelope bound, floor, and
+  // error-carry continuity under integer scrollTop rounding.
   function parkAt(h: Harness, target: number): void {
     h.setTarget(target);
     h.spring.markTargetChanged();
@@ -706,7 +687,7 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
     return moves;
   }
 
-  it('bounds the peak with the envelope and holds the fusion floor through the tail', () => {
+  it('bounds the peak with the envelope and holds the cadence floor through the tail', () => {
     const h = makeHarness();
     parkAt(h, 100);
 
@@ -722,7 +703,7 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
     }
     // Ease-out: once past the peak, per-frame moves only decelerate —
     // the envelope tracks remaining distance down, decays naturally,
-    // then plateaus at the fusion floor (equal frames allowed). The
+    // then plateaus at the cadence floor (equal frames allowed). The
     // final frame is excluded: it combines the last decay step with
     // the sentinel-entry exact snap (≤1px arrival band, invisible), so
     // it reads larger than the step before it.
@@ -731,18 +712,13 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
       expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
     }
     expect(moves[moves.length - 1]).toBeLessThanOrEqual(1.55);
-    // Fusion-floor hold: the deceleration parks at the floor (the 60Hz
-    // phase lock — 1.0 device px per frame at this harness's dpr 1 and
+    // Cadence-floor hold: the deceleration parks at the floor (the 60Hz
+    // phase lock, 1.0 CSS px per frame at this harness's
     // 16.67ms cadence) instead of decaying through it.
     const floorHold = moves.filter((m) => m > 0.98 && m < 1.02);
     expect(floorHold.length).toBeGreaterThanOrEqual(2);
-    // THE regression assertion: a decelerating glide never DWELLS in
-    // the visible-breathing speed band (sub-floor but still moving) —
-    // bilinear resampling of the residue renders thin rows as sharp/dim
-    // flicker at those speeds (2026-07-04T2026 capture: 49% of glide
-    // time spent there). The floor releases inside the last 3px, so the
-    // landing ritardando sweeps the band in a bounded handful of frames
-    // (~one dim/bright cycle) rather than crawling through it.
+    // A decelerating glide never dwells below one CSS pixel per 60Hz
+    // frame. The floor releases only inside the last 3px.
     const breathingBand = moves.filter((m) => m > 0.05 && m < 0.95);
     expect(breathingBand.length).toBeLessThanOrEqual(4);
   });
@@ -769,8 +745,8 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
     // Without the remainder carry, each rounded-DOWN readback dropped
     // the sub-pixel progress and the next written value could regress
     // (write 100.4 → readback 100 → next write 100.2), a ±0.5px
-    // sawtooth in the rendered (residue-composited) position at tail
-    // speeds. With carry, the written sequence never moves backwards.
+    // sawtooth in requested positions at tail speeds. With carry, the
+    // written sequence never moves backwards.
     const h = makeHarness({ quantize: true });
     parkAt(h, 100);
 
@@ -791,100 +767,76 @@ describe('glide shaping (decel envelope + fractional tail)', () => {
   });
 });
 
-describe('fusionFloorPxPerFrame (refresh-aware derivation)', () => {
-  // The quantity the rule targets: floor advance in DEVICE px per
-  // DISPLAYED frame — the lock ratio r = 1/k from the constant block.
-  // (floor is px per 60Hz-equivalent frame; × dtFrames × dpr converts.)
-  function devicePxPerDisplayedFrame(dpr: number, intervalMs: number): number {
-    return fusionFloorPxPerFrame(dpr, intervalMs) * (intervalMs / (1000 / 60)) * dpr;
+describe('quantizedMotionFloorPxPerFrame', () => {
+  function cssPxPerDisplayedFrame(intervalMs: number): number {
+    return quantizedMotionFloorPxPerFrame(intervalMs) * (intervalMs / (1000 / 60));
   }
 
-  it('phase-locks sub-120Hz displays at one device pixel per frame (zero breathing)', () => {
-    expect(devicePxPerDisplayedFrame(1, 1000 / 60)).toBeCloseTo(1, 5);
-    expect(devicePxPerDisplayedFrame(1.1, 1000 / 60)).toBeCloseTo(1, 5);
-    expect(devicePxPerDisplayedFrame(1, 1000 / 90)).toBeCloseTo(1, 5);
+  it('moves one CSS pixel per frame below 120Hz', () => {
+    expect(cssPxPerDisplayedFrame(1000 / 60)).toBeCloseTo(1, 5);
+    expect(cssPxPerDisplayedFrame(1000 / 90)).toBeCloseTo(1, 5);
   });
 
-  it('half-locks 120–179Hz so the alternation patterns at or above fusion', () => {
-    // 144Hz: alternation at 72Hz — the refresh-blind floor's ~12Hz
-    // second-harmonic beat on this refresh is the bug this fixes.
-    expect(devicePxPerDisplayedFrame(1.1, 1000 / 144)).toBeCloseTo(0.5, 5);
-    expect(devicePxPerDisplayedFrame(1.1, 1000 / 165)).toBeCloseTo(0.5, 5);
-    expect(devicePxPerDisplayedFrame(2, 1000 / 120)).toBeCloseTo(0.5, 5);
+  it('uses one CSS pixel every two frames from 120 through 179Hz', () => {
+    expect(cssPxPerDisplayedFrame(1000 / 120)).toBeCloseTo(0.5, 5);
+    expect(cssPxPerDisplayedFrame(1000 / 144)).toBeCloseTo(0.5, 5);
+    expect(cssPxPerDisplayedFrame(1000 / 165)).toBeCloseTo(0.5, 5);
   });
 
-  it('keeps descending the ladder at very high refresh', () => {
-    expect(devicePxPerDisplayedFrame(1, 1000 / 240)).toBeCloseTo(0.25, 5);
+  it('uses one CSS pixel every four frames at 240Hz', () => {
+    expect(cssPxPerDisplayedFrame(1000 / 240)).toBeCloseTo(0.25, 5);
   });
 
   it('falls back to the 60Hz assumption until cadence is measured', () => {
-    expect(fusionFloorPxPerFrame(1.1, null)).toBeCloseTo(
-      fusionFloorPxPerFrame(1.1, 1000 / 60),
+    expect(quantizedMotionFloorPxPerFrame(null)).toBeCloseTo(
+      quantizedMotionFloorPxPerFrame(1000 / 60),
       5,
     );
   });
 
-  it('clamps degenerate inputs', () => {
-    // 3× retina: a one-pixel lock is a meaningless 20px/s hold — min binds.
-    expect(fusionFloorPxPerFrame(3, 1000 / 60)).toBeCloseTo(0.4, 5);
-    // dpr < 1 (zoomed-out webview) at 100Hz would demand ~3.3px/frame —
-    // max binds at the envelope's lower cap.
-    expect(fusionFloorPxPerFrame(0.5, 1000 / 100)).toBeCloseTo(1.6, 5);
-    // Unmeasurable dpr guards to 1.
-    expect(fusionFloorPxPerFrame(0, 1000 / 60)).toBeCloseTo(1, 5);
+  it('bounds unusual and invalid cadence samples', () => {
+    expect(quantizedMotionFloorPxPerFrame(1000 / 100)).toBeCloseTo(1.6, 5);
+    expect(quantizedMotionFloorPxPerFrame(0)).toBeCloseTo(1, 5);
   });
 
-  it('adapts a live chase to measured cadence: a 165Hz chase plateaus at the half lock', () => {
-    const h = makeHarness({ dpr: 1.1 });
-    // Park at 165Hz cadence so the frame-interval EMA converges there.
-    h.setTarget(100);
-    h.spring.markTargetChanged();
-    h.spring.start();
-    for (let i = 0; i < 300; i++) frame(1000 / 165);
-    expect(Math.abs(h.getScrollTop() - 100)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
+  it.each([60, 90, 120, 144, 165, 240])(
+    'keeps quantized tail updates at 60Hz or faster on a %iHz display',
+    (refreshHz) => {
+      const interval = 1000 / refreshHz;
+      const h = makeHarness({ quantize: true });
+      h.setTarget(100);
+      h.spring.markTargetChanged();
+      h.spring.start();
+      for (let i = 0; i < refreshHz * 2; i++) frame(interval);
 
-    h.setTarget(160);
-    h.spring.markTargetChanged();
-    const moves: number[] = [];
-    for (let i = 0; i < 400 && Math.abs(h.getScrollTop() - 160) > 1; i++) {
-      const before = h.getScrollTop();
-      frame(1000 / 165);
-      moves.push(h.getScrollTop() - before);
-    }
-    expect(Math.abs(h.getScrollTop() - 160)).toBeLessThanOrEqual(1);
-    // Floor = 0.5 device px per displayed frame = 0.5/1.1 ≈ 0.4545 CSS
-    // px — NOT the 60Hz-derived value the old refresh-blind floor
-    // would hold (1.0/1.1 ≈ 0.909/frame60 → 0.33/frame at 165Hz).
-    const floorHold = moves.filter((m) => m > 0.448 && m < 0.462);
-    expect(floorHold.length).toBeGreaterThanOrEqual(4);
-  });
-});
-
-describe('glide residue clearing', () => {
-  it('clears the residue on cancel', () => {
-    const h = makeHarness();
-    h.setTarget(200);
-    h.spring.markTargetChanged();
-    h.spring.start();
-    for (let i = 0; i < 5; i++) frame();
-    const before = h.residueSettles();
-    h.spring.cancel();
-    expect(h.residueSettles()).toBe(before + 1);
-  });
-
-  it('clears the residue when the chase settles into the sentinel', () => {
-    const h = makeHarness();
-    h.setTarget(60);
-    h.spring.markTargetChanged();
-    h.spring.start();
-    // Run past arrival + retain lapse; live content stays active, so
-    // the chase parks in sentinel mode (which must leave text crisp
-    // even though no exact write fires once the readback matches).
-    for (let i = 0; i < 80; i++) frame();
-    expect(Math.abs(h.getScrollTop() - 60)).toBeLessThanOrEqual(ARRIVAL_DISTANCE_PX);
-    expect(h.residueSettles()).toBeGreaterThan(0);
-    expect(h.spring.isActive()).toBe(true); // sentinel-alive, not cancelled
-  });
+      h.setTarget(160);
+      h.spring.markTargetChanged();
+      const tailMoves: number[] = [];
+      for (let i = 0; i < refreshHz * 3 && h.getScrollTop() < 157; i++) {
+        const before = h.getScrollTop();
+        frame(interval);
+        if (before >= 148 && before < 156) {
+          tailMoves.push(h.getScrollTop() - before);
+        }
+      }
+      expect(h.getScrollTop()).toBeGreaterThanOrEqual(157);
+      expect(tailMoves.length).toBeGreaterThanOrEqual(3);
+      const maxStationaryFrames = Math.max(0, Math.ceil(refreshHz / 60) - 1);
+      let stationaryRun = 0;
+      let longestStationaryRun = 0;
+      for (const move of tailMoves) {
+        expect(move).toBeGreaterThanOrEqual(0);
+        expect(move).toBeLessThanOrEqual(2);
+        if (move === 0) {
+          stationaryRun += 1;
+          longestStationaryRun = Math.max(longestStationaryRun, stationaryRun);
+        } else {
+          stationaryRun = 0;
+        }
+      }
+      expect(longestStationaryRun).toBeLessThanOrEqual(maxStationaryFrames);
+    },
+  );
 });
 
 describe('chase telemetry', () => {

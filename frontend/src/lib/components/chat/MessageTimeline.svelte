@@ -60,11 +60,7 @@
   // cc/tile_memory, within noise): parked-at-bottom panes only fill
   // the above-side buffer, and layer overheads dominated — buffered
   // rows cost DOM, not raster; tiles only exist near each pane's
-  // viewport. (A promote/demote lease once reclaimed parked panes'
-  // layers entirely, but its transitions caused three visible-flicker
-  // incidents and it was removed 2026-08-10 — contentEl is now
-  // permanently composited; see chokepoint.ts, "Fractional glide
-  // residue".) Shrinking below ~800px starts exposing the stall x
+  // viewport. Shrinking below ~800px starts exposing the stall x
   // fling blanking scenarios above for low-single-digit-MB DOM
   // savings; 1200 ≈ a viewport of stall insurance. Keep in sync with
   // TimelineVirtualizer's DEFAULT_BUFFER_PX.
@@ -865,24 +861,12 @@
            estimate→measure cascade — the thread-switch flicker. On any
            mismatch the estimate degrades per-row to the kind table /
            flat default. See utils/virtual/priors.ts and
-           docs/architecture/frontend-scroll.md.
-
-           The static scroll-composited-content class keeps contentEl
-           permanently composited so the spring's sub-pixel individual
-           translate residue composes with the plane's translateY origin
-           (utils/scroll/chokepoint.ts, "Fractional
-           glide residue"). Permanent by design: promotion used to be a
-           promote/demote lease that reclaimed idle-pane tile memory, but
-           its transitions re-raster a layer the reader may be looking at
-           and caused three visible-flicker incidents; a hint that never
-           changes on a mounted element cannot flicker. Do not make it
-           conditional. -->
+           docs/architecture/frontend-scroll.md. -->
       <div style:visibility={hideContentForWarmup ? 'hidden' : 'visible'}>
         {#key pane.threadId}
         <TimelineVirtualizer
           bind:this={listRef}
           bind:renderPlane={contentEl}
-          renderPlaneClass="scroll-composited-content"
           scrollRef={scrollEl}
           data={revealedNodes}
           estimate={sizePriors.rowEstimate}

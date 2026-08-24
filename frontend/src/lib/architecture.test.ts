@@ -144,6 +144,20 @@ const WAILS_EVENT_ALLOWLIST: Record<string, string> = {
     'provider:terminal_output is a byte stream written straight into this pane\'s xterm; buffering it in a store would duplicate the terminal\'s scrollback',
 };
 
+// These are the content surfaces the scroll controller can move. Authored
+// promotion or transform state creates a second paint position outside the
+// scrollTop chokepoint and can leave WebView2 presenting stale layer pixels.
+const SCROLL_CONTENT_SURFACES = [
+  'app.css',
+  'lib/components/chat/MessageTimeline.svelte',
+  'lib/components/chat/ActivityRun.svelte',
+  'lib/components/discussion/ChannelView.svelte',
+  'lib/components/virtual/TimelineVirtualizer.svelte',
+  'lib/utils/scroll/chokepoint.ts',
+] as const;
+const AUTHORED_SCROLL_COMPOSITOR_STATE =
+  /scroll-composited-content|will-change\s*:|style:(?:transform|translate|rotate)|setProperty\(\s*['"](?:translate|rotate)['"]/;
+
 // ---------------------------------------------------------------------------
 
 interface ParsedImport {
@@ -315,6 +329,22 @@ describe('architecture', () => {
       WAILS_EVENT_ALLOWLIST,
       'New violations.',
       'Route the event through the store that owns the entity it describes; see frontend/CLAUDE.md → State Boundaries.',
+    );
+  });
+
+  it('keeps scroll content free of authored compositor state', () => {
+    const offenders = new Map<string, string[]>();
+    for (const path of SCROLL_CONTENT_SURFACES) {
+      const text = readFileSync(join(SRC_ROOT, path), 'utf8');
+      if (AUTHORED_SCROLL_COMPOSITOR_STATE.test(text)) {
+        offenders.set(path, ['authors content promotion or transform state']);
+      }
+    }
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Drive visible motion through scrollTop. Do not add will-change or content transforms to controller surfaces.',
     );
   });
 });

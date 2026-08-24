@@ -167,9 +167,6 @@ describe('scroll interleavings — ops × states frame invariants', () => {
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
-    // Production markup carries the static compositing class on every
-    // controller-owned content element; attach() reports its absence.
-    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 

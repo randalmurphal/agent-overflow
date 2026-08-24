@@ -4,8 +4,7 @@
 //
 // - `writeScrollTop` — the single write site. Tags the write for the
 //   intent machine's scroll-event classification, updates the
-//   provenance ledger, samples spring-tick trace records, and manages
-//   the fractional glide residue that rides the content transform.
+//   provenance ledger, and samples spring-tick trace records.
 // - Provenance ledger — the last EXPLAINED scrollTop (authored write
 //   readback, or a user-classified scroll event via `noteUserScroll`).
 //   While the spring sentinel idles nothing else may move scrollTop, so
@@ -20,10 +19,6 @@
 //   arrival checks stop re-writing a target the browser will keep
 //   rejecting. Shared by the spring chase (via deps.arrival) and the
 //   controller's notify paths.
-// - Glide residue — the sub-pixel remainder of each spring write,
-//   rendered as a compositor transform so slow spring tails stay
-//   continuous instead of stepping whole pixels (full rationale on the
-//   member below).
 //
 // No $state lives here: the reactive flags stay in the controller and
 // are reached through accessor deps, the same seam shape as
@@ -45,13 +40,8 @@ import type { ScrollWriteCaller } from './types';
 // spring.start()).
 const SPRING_TICK_TRACE_SAMPLE = 12;
 
-// Per-frame decay factor for the residue's no-write release: 0.5px
-// falls below the 0.02 snap threshold in ~6 frames (~100ms at 60Hz).
-const RESIDUE_SETTLE_DECAY = 0.55;
-
 export interface WriteChokepointDeps {
   getScrollEl(): HTMLElement | undefined;
-  getContentEl(): HTMLElement | undefined;
   /** ≤1px arrival tolerance over the live scrollTop (controller geometry helper). */
   scrollTopIsAtTarget(target: number): boolean;
   /** Post-write near-bottom refresh — touches the controller's $state flag. */
@@ -82,10 +72,6 @@ export interface WriteChokepoint {
   arrivalReadback: ArrivalReadback;
   /** Chase boundaries force the next tick write to record (spring dep). */
   forceNextSpringTickTrace(): void;
-  /** Instant residue set/clear — for glide writes and clears that accompany a real write. */
-  applyGlideResidue(residue: number): void;
-  /** No-write release — ease the residue to zero instead of popping. */
-  settleGlideResidue(): void;
 }
 
 export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoint {
@@ -154,118 +140,6 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
     springTickSinceLastTrace = SPRING_TICK_TRACE_SAMPLE - 1;
   }
 
-  // ===== Fractional glide residue =====
-  // scrollTop is quantized to whole CSS pixels by the engine, so a slow
-  // spring tail (< ~1px per display frame) rendered through scrollTop
-  // alone becomes 1px steps at a low effective rate — measured as
-  // 14–55Hz stepping on a 165Hz panel (2026-07-04 capture), perceived
-  // as "low fps" judder. The compositor has no such quantum: the
-  // sub-pixel remainder of each spring write rides as the individual
-  // `translate` property on contentEl, so the rendered position is the
-  // spring's fractional output and sub-pixel motion is genuinely continuous (bilinear
-  // resample during motion only). The residue is always < 1px, applies
-  // only to 'spring.tick' writes, clears on every other write, is
-  // eased out when the spring stops without a write (catch-up /
-  // selection pause / sentinel entry / cancel, via the
-  // settleGlideResidue dep), and clears instantly on detach — text
-  // always comes to rest crisp at translate 0. This is a render
-  // detail of the write chokepoint, not a second scroll writer: it
-  // never changes scrollTop, fires no scroll events, and does not
-  // affect layout offsets or any measurement this package or the
-  // virtualizer performs (row sizes come from ResizeObserver content
-  // boxes; only an absolute getBoundingClientRect against the viewport
-  // would see the <1px offset, and nothing in the scroll path does).
-  //
-  // For that translation to ride the compositor rather than trigger
-  // main-thread repaints, contentEl must be composited: every
-  // controller-owned content element carries a static
-  // `scroll-composited-content` class in its own markup (MessageTimeline,
-  // ChannelView, ActivityRun's clip content — the last on EVERY
-  // mounted expanded run, not just the live one that gets a
-  // controller, because liveness can land on an already-mounted run
-  // and a class that appears then is itself a raster transition). The
-  // hint is deliberately permanent — it was once a promote/demote
-  // lease that reclaimed idle-pane tile memory (~27MB across four
-  // parked panes, measured 2026-07-21 on Windows/WebView2; that
-  // figure, plus whatever mounted run clips add, is the steady-state
-  // cost this trade accepts), but every lease transition re-rasters a
-  // layer the reader may be looking at, and three separate
-  // visible-flicker incidents (2026-08-03 demote under contention,
-  // 2026-08-05 promote at glide start, 2026-08-10 clear at a run's
-  // live falling edge after long idle) traced back to exactly those
-  // transitions. A hint that never changes on a mounted element
-  // cannot flicker. attach() reports a contentEl missing the class to
-  // the frontend-errors channel, so a consumer that forgets it is loud
-  // instead of silently repainting every glide frame.
-  //
-  // Releasing the residue has two shapes, and the split is load-bearing:
-  //   - A clear that ACCOMPANIES a real scrollTop write (any non-glide
-  //     caller below) is instant — the rendered jump IS the write's
-  //     motion, so rendered position must equal the new scrollTop in
-  //     the same frame.
-  //   - A release with NO accompanying write (spring caught up between
-  //     quanta, selection pause, sentinel entry, cancel) EASES the
-  //     residue to zero over a few frames instead. The asymptotic tail
-  //     parks every landing with up to ~0.5px of live residue; snapping
-  //     that with no write is a sub-pixel pop, and during bursty tool
-  //     output — one landing per quantum at a few Hz — the repeated
-  //     pops read as a faint vibration (2026-07-04 report on the first
-  //     residue build). The ease-out is the same "cradle" shape as the
-  //     glide itself, ~100ms to crisp.
-  let glideResidue = 0;
-  let residueSettleHandle: number | null = null;
-  function stopResidueSettle(): void {
-    if (residueSettleHandle !== null) {
-      cancelAnimationFrame(residueSettleHandle);
-      residueSettleHandle = null;
-    }
-  }
-  function setGlideResidue(residue: number): void {
-    // Sub-1/50px residues are visually void; snap them to zero so the
-    // transform clears (and the style write is skipped) at rest.
-    const next = Math.abs(residue) < 0.02 ? 0 : residue;
-    if (next === glideResidue) return;
-    glideResidue = next;
-    const contentEl = deps.getContentEl();
-    if (!contentEl) return;
-    // The epsilon rotation defeats compositor pixel alignment: WebKit
-    // snaps axis-aligned composited layers to the device-pixel grid
-    // (text-sharpness heuristic), which rounds a pure sub-pixel
-    // translateY to 0 or ±1 device px — the applied offset then FLIPS
-    // each time the residue crosses the half-pixel mark, oscillating
-    // around the smooth trajectory instead of following it (captured
-    // 2026-07-04T2016 on a 1.1-DPR grid: rendered math monotone,
-    // on-screen motion vibrating, hairline rows worst). A
-    // non-axis-aligned matrix cannot be pixel-snapped, so the
-    // compositor must resample at the true fractional offset. 1e-4deg
-    // shears < 0.01px across a 5000px layer — imperceptible itself.
-    if (next === 0) {
-      contentEl.style.removeProperty('translate');
-      contentEl.style.removeProperty('rotate');
-      return;
-    }
-    // Individual transform properties compose with the virtualizer's
-    // plane-origin `transform` instead of overwriting it. Flat scroll
-    // surfaces have no base transform and use the same sink unchanged.
-    contentEl.style.setProperty('translate', `0px ${-next}px`);
-    contentEl.style.setProperty('rotate', '0.0001deg');
-  }
-  function applyGlideResidue(residue: number): void {
-    stopResidueSettle();
-    setGlideResidue(residue);
-  }
-  function settleGlideResidue(): void {
-    if (glideResidue === 0 || residueSettleHandle !== null) return;
-    const step = (): void => {
-      residueSettleHandle = null;
-      setGlideResidue(glideResidue * RESIDUE_SETTLE_DECAY);
-      if (glideResidue !== 0) {
-        residueSettleHandle = requestAnimationFrame(step);
-      }
-    };
-    residueSettleHandle = requestAnimationFrame(step);
-  }
-
   // ===== The write =====
   function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
     const scrollEl = deps.getScrollEl();
@@ -317,31 +191,12 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
         clientHeight: Math.round(beforeClient),
         maxTarget: Math.round(Math.max(0, beforeHeight - beforeClient)),
         taggedTop,
-        // Sub-pixel remainder THIS write rides on the content transform
-        // (glide writes only; every other caller clears it below).
-        residue:
-          caller === 'spring.tick'
-            ? Math.round((value - taggedTop) * 100) / 100
-            : 0,
+        // Browser quantization or clamping visible at the authored-write
+        // boundary. Unlike the former content transform, this is
+        // diagnostic only and cannot create a second rendered position.
+        quantizationError: Math.round((value - taggedTop) * 100) / 100,
         ...deps.traceState(),
       }));
-    }
-    // Style writes LAST (residue transform, then scrollBehavior
-    // restore): a style write dirties style state, so keeping both
-    // after every layout read above avoids forcing an extra recalc
-    // mid-sequence — this runs at up to display refresh rate during a
-    // chase. Same-frame visually: the transform composites with this
-    // frame's paint regardless of its position in the sequence.
-    if (caller === 'spring.tick') {
-      // Render the engine-rounded remainder via the content transform.
-      // |residue| ≥ 1 means the engine clamped the write (max-scrollTop
-      // race), not rounding — never smear a clamp onto the transform.
-      const residue = value - taggedTop;
-      applyGlideResidue(residue > -1 && residue < 1 ? residue : 0);
-    } else if (glideResidue !== 0) {
-      // Every non-glide write is an exact/instant placement; rendered
-      // position must equal scrollTop exactly.
-      applyGlideResidue(0);
     }
     if (suppressScrollBehavior) scrollEl.style.scrollBehavior = originalScrollBehavior;
   }
@@ -357,7 +212,5 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
     },
     arrivalReadback,
     forceNextSpringTickTrace,
-    applyGlideResidue,
-    settleGlideResidue,
   };
 }

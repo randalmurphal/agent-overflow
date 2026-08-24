@@ -241,16 +241,6 @@ html.light {
   --ansi-fg-97: #1f2328;
 }
 
-/*
- * Permanent compositor contract for controller-owned scroll content.
- * The controller writes sub-pixel motion through the individual translate
- * and rotate properties, which can compose with a virtual row plane's base
- * transform without either owner overwriting the other.
- */
-.scroll-composited-content {
-  will-change: transform, translate, rotate;
-}
-
 @theme {
   /* Fonts. Geist is self-hosted via @fontsource so the desktop build
      has no network dependency. The system fallbacks keep rendering
@@ -985,15 +975,10 @@ html.light .working-sprite {
 /*
  * Band-limited hairline for timeline separators (response divider,
  * compaction divider). A hard 1px line has all its energy at exactly
- * the pixel frequency, so the scroll glide's sub-pixel compositing
- * (fractional translateY + bilinear resample — see
- * utils/scroll/index.svelte.ts glide residue) makes it breathe
- * sharp↔dim as the fractional offset sweeps each device pixel. A 2px
+ * the pixel frequency and aliases during motion. A 2px
  * transparent→color→transparent gradient is smooth at the pixel
- * scale, so sub-pixel shifts barely change any sampled row: same
- * perceived hairline weight, breathing amplitude cut from ~50% to
- * ~10%. Use this (not h-px + bg) for any thin rule that lives inside
- * a scroll-glide surface.
+ * scale, so it keeps a stable perceived weight. Use this instead of
+ * h-px + bg for thin rules inside a scrolling surface.
  */
 .timeline-hairline {
   height: 2px;

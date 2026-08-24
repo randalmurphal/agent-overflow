@@ -27,13 +27,12 @@
 //     lands the reader exactly where they already are is an affordance for
 //     nothing. Hiding it is not a re-engagement — the offer comes back the
 //     moment the run carries the target away from them.
-//   - `will-change` is never toggled here (§9.11, post-incident doctrine
-//     at `utils/scroll/chokepoint.ts:179-199`): three visible-flicker
-//     incidents traced to promote/demote transitions. If the glide ever
-//     needs compositing it gets a static class in markup, not a lease.
+//   - This code does not author `will-change` or content transforms
+//     (§9.11). Promotion transitions caused visible flicker, while a
+//     permanent content layer later produced stale WebView2 pixels.
 //
-// No springs, no residue, no token ring: the glide is a 250ms rAF ease
-// and the only writer that runs across frames.
+// No springs, no second render offset, no token ring: the glide is a
+// 250ms rAF ease and the only writer that runs across frames.
 //
 // The rect arithmetic all of this decides on lives next door in
 // `runMapGeometry.ts`, pure and directly tested. This module is the state

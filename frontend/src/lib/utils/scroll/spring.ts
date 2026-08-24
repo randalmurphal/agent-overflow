@@ -217,19 +217,11 @@ const RESUME_CLAMP_WINDOW_MS = 2000;
 // remaining, giving big glides a progressive slowdown instead of
 // cruise-until-stop.
 //
-// The tail below the envelope is the spring's own decay, rendered
-// continuously through the fractional glide residue (the controller
-// rides the sub-CSS-pixel remainder of each spring write on a
-// contentEl translateY — see writeScrollTop), bounded below by the
-// fusion floor (see fusionFloorPxPerFrame below): position is exact,
-// but bilinear resampling makes thin features (1px separators, glyph
-// stems) breathe between sharp and dim as the fractional offset
-// sweeps each device pixel. The breathing rate is speed ÷ device
-// quantum; a 2026-07-04T2026 capture measured 49% of glide time at
-// 5–40px/s — squarely visible. The floor keeps a decelerating glide's
-// breathing invisible; it replaces the historical anti-judder
-// floor/taper (integer-quantized scrollTop rendering slow tails as
-// 1px steps), which the residue made obsolete.
+// The tail below the envelope is the spring's own decay, bounded below
+// by the quantized-motion floor. Browser scrollTop writes land on whole
+// CSS pixels, so a sub-pixel tail can otherwise show only 14–55 position
+// changes per second on a high-refresh display. The floor keeps visible
+// position changes at 60Hz or faster without translating the content.
 const SPRING_DECEL_ENVELOPE_RATIO = 0.09;
 // Lower cap on the envelope itself (an upper bound never squeezed below
 // this), NOT a forced minimum speed: without it the envelope would
@@ -280,66 +272,25 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // long the pane has actually been still.
 const SPRING_ACCEL_SLEW_FACTOR_PER_FRAME = 1.1;
 // Where a standstill ramp starts, in px per 60Hz frame. The ramp base
-// is max(this, fusion floor): the floor term keeps the ramp out of
-// the sub-floor breathing band on displays where that band bites
-// (the floor reaches 1.6 on some refresh rungs), while this constant
-// keeps the ATTACK a perceptual quantity rather than a display one —
-// the floor alone drops to its 0.4 clamp on a 3× retina panel (where
-// sub-pixel breathing is negligible), which would stretch the same
-// line quantum's attack to ~2× its 1×-display duration for no
-// perceptual gain. 1.0 equals the 60Hz phase-lock floor, so the
-// common case is unchanged and every display starts its ramp within
-// [1.0, 1.6].
+// is max(this, quantized-motion floor). 1.0 equals the 60Hz cadence
+// floor, and every measured refresh starts its ramp within [1.0, 1.6].
 const SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME = 1;
-// The fusion floor releases inside this remaining distance, letting
+// The quantized-motion floor releases inside this remaining distance, letting
 // the spring's natural exponential decay land the glide — a ~3-frame
 // ritardando (the "cradle") instead of constant-speed-then-stop,
 // which read as too firm (2026-07-04 feedback on the 1.2px release).
-// The decay sweeps the visible-breathing speed band (5–40px/s at ~1×
-// DPR) in those same ~3 frames — about one sharp↔dim cycle, gone
-// before the eye can register it as flicker; only SUSTAINED sub-floor
-// dwell breathes visibly (the pre-floor build spent 49% of glide time
-// there). Raising this further trades landing softness back into
-// perceptible breathing.
-const SPRING_FUSION_FLOOR_RELEASE_PX = 3;
+const SPRING_QUANTIZED_FLOOR_RELEASE_PX = 3;
 
-// ===== Fusion-floor derivation (display physics) =====
-// The glide renders fractionally (scrollTop + the controller's
-// translateY residue), and bilinear resampling makes thin features
-// breathe sharp↔dim once per DEVICE pixel crossed — a modulation at
-// (speed ÷ device quantum) cycles/s. The floor keeps a decelerating
-// chase fast enough that this modulation stays invisible.
-//
-// "Above flicker fusion (~60Hz)" is necessary but NOT sufficient: the
-// display samples the modulation at its refresh rate, and any harmonic
-// landing near a multiple of the refresh aliases down into a slow,
-// fully visible beat. The historical refresh-blind floor (1.1/dpr px
-// per 60Hz frame ⇒ ~66 cycles/s at 1.1 dpr) hit all three regimes on
-// real hardware (2026-07-18 report): clean on a 165Hz panel (0.4
-// cycles/frame — well sampled), shimmering on a 144Hz panel (the
-// spiky waveform's 2nd harmonic at 0.917 cycles/frame aliases to
-// 0.083 ⇒ a ~12Hz beat), and worst at 60Hz (1.1 cycles/frame aliases
-// to 0.1 ⇒ ~6Hz full-amplitude pulsing).
-//
-// Refresh-aware rule: hold the floor at r = 1/k device pixels per
-// DISPLAYED frame, k = ⌊refresh / 60⌋. Every harmonic m·r then either
-// phase-locks (m a multiple of k ⇒ constant resample weights, zero
-// modulation) or patterns at refresh/k ≥ 60Hz — above fusion by
-// construction. Sub-120Hz displays get k = 1, a FULL phase lock: one
-// device pixel per frame, no breathing at all — 60Hz panels become
-// the best case rather than the worst. 120–179Hz get the half lock
-// (alternation at refresh/2 ≥ 60Hz), 180Hz+ the third, and so on.
-// The +0.05 rung tolerance keeps a display reporting 119.9Hz on the
-// k=2 rung instead of flapping to a needlessly stiff k=1 floor.
-const FLICKER_FUSION_HZ = 60;
+// ===== Quantized-motion floor =====
+// Chromium and WebView2 quantize programmatic scrollTop writes to whole
+// CSS pixels at every tested devicePixelRatio. To avoid a slow stepped
+// tail, hold velocity at one CSS pixel every k displayed frames, where
+// k = floor(refresh / 60). That yields at least 60 visible changes per
+// second and avoids any authored transform or persistent GPU layer.
+const MIN_VISIBLE_MOTION_HZ = 60;
 const REFRESH_LADDER_TOLERANCE = 0.05;
-// Clamps: never slower than 0.4 (a 3×-retina one-pixel lock would be
-// a meaningless 20px/s hold — and at that quantum the breathing
-// amplitude is negligible anyway) and never stiffer than the
-// deceleration envelope's own lower cap (1.6) so the floor always
-// fits under the envelope.
-const FUSION_FLOOR_MIN_PX_PER_FRAME = 0.4;
-const FUSION_FLOOR_MAX_PX_PER_FRAME = 1.6;
+const QUANTIZED_FLOOR_MIN_PX_PER_FRAME = 1;
+const QUANTIZED_FLOOR_MAX_PX_PER_FRAME = 1.6;
 
 // Pure derivation, exported for tests. `frameIntervalMs` is the
 // spring's measured rAF cadence (null until first measured — falls
@@ -347,22 +298,22 @@ const FUSION_FLOOR_MAX_PX_PER_FRAME = 1.6;
 // the safe transient choice). Returns px per 60Hz-equivalent frame,
 // the spring's velocity unit; the frame-rate-independent integration
 // (velocity · dtFrames) is what converts a held floor back into
-// exactly 1/k device pixels per displayed frame.
-export function fusionFloorPxPerFrame(
-  devicePixelRatio: number,
+// exactly 1/k CSS pixels per displayed frame.
+export function quantizedMotionFloorPxPerFrame(
   frameIntervalMs: number | null,
 ): number {
-  const dpr = devicePixelRatio > 0 ? devicePixelRatio : 1;
-  const deviceQuantumCssPx = 1 / dpr;
   const refreshHz =
     frameIntervalMs !== null && frameIntervalMs > 0
       ? 1000 / frameIntervalMs
-      : FLICKER_FUSION_HZ;
-  const k = Math.max(1, Math.floor(refreshHz / FLICKER_FUSION_HZ + REFRESH_LADDER_TOLERANCE));
-  const floorCssPxPerSecond = (deviceQuantumCssPx * refreshHz) / k;
+      : MIN_VISIBLE_MOTION_HZ;
+  const k = Math.max(
+    1,
+    Math.floor(refreshHz / MIN_VISIBLE_MOTION_HZ + REFRESH_LADDER_TOLERANCE),
+  );
+  const floorCssPxPerSecond = refreshHz / k;
   return Math.min(
-    FUSION_FLOOR_MAX_PX_PER_FRAME,
-    Math.max(FUSION_FLOOR_MIN_PX_PER_FRAME, floorCssPxPerSecond / 60),
+    QUANTIZED_FLOOR_MAX_PX_PER_FRAME,
+    Math.max(QUANTIZED_FLOOR_MIN_PX_PER_FRAME, floorCssPxPerSecond / 60),
   );
 }
 
@@ -601,25 +552,6 @@ export interface SpringChaseDeps {
    */
   forceNextSpringTickTrace(): void;
   /**
-   * Release the fractional glide residue (the sub-CSS-pixel remainder
-   * of the last spring write, rendered as a contentEl translateY by
-   * the controller) by EASING it to zero over a few frames. Called
-   * whenever the spring stops driving motion without a write that
-   * would clear it — catch-up between quanta, selection pause,
-   * sentinel entry, cancel() — so text comes to rest crisp without a
-   * sub-pixel pop (the asymptotic tail parks every landing with up to
-   * ~0.5px live; popping that once per quantum during bursty output
-   * read as a faint vibration — 2026-07-04 report).
-   */
-  settleGlideResidue(): void;
-  /**
-   * Live devicePixelRatio (zoom and monitor moves change it between —
-   * and during — chases). One of the two inputs to the refresh-aware
-   * fusion-floor derivation (fusionFloorPxPerFrame); the spring
-   * supplies the other, its measured rAF cadence.
-   */
-  devicePixelRatio(): number;
-  /**
    * The live scrollTop is NOT explained by the controller's provenance
    * ledger — it differs (beyond the arrival band) from the last
    * authored write's browser-rounded readback / last classified user
@@ -708,12 +640,11 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   let velocity = 0;
   let accumulated = 0;
   let lastTickAt: number | null = null;
-  // True once the CURRENT quantum's glide has exceeded the fusion
-  // floor — only then does the floor hold the deceleration up (see
-  // fusionFloorPxPerFrame). Reset at every catch-up and on
+  // True once the current quantum's glide has exceeded the quantized
+  // motion floor. Reset at every catch-up and on
   // cancel, so each growth's entry ramp stays natural.
-  let fusionFloorEngaged = false;
-  // Measured rAF cadence for the fusion-floor derivation. Deliberately
+  let quantizedFloorEngaged = false;
+  // Measured rAF cadence for the motion-floor derivation. Deliberately
   // NOT reset in cancel() — see the constant block.
   let frameIntervalEmaMs: number | null = null;
   // Monotonic counter (cheaper than `Symbol('spring')` per start). 0 means
@@ -903,7 +834,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     springToken = 0;
     velocity = 0;
     accumulated = 0;
-    fusionFloorEngaged = false;
+    quantizedFloorEngaged = false;
     lastTickAt = null;
     deps.arrival.clear();
     springStartedFromStructuralAppend = false;
@@ -936,7 +867,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     refusalLatchedAt = 0;
     lastRefusalProbeAt = 0;
     lastChaseTarget = -1;
-    deps.settleGlideResidue();
     endChaseTelemetry();
   }
 
@@ -1013,12 +943,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         return;
       }
       if (deps.selectionActive()) {
-        // Selection drag should never fight the user — re-rAF without
-        // advancing scrollTop so the spring effectively pauses. Ease
-        // the glide residue out so the paused text reads crisp (the
-        // pause can last as long as the drag); `accumulated` is
-        // untouched, so the resumed chase stays continuous.
-        deps.settleGlideResidue();
+        // Selection drag should never fight the user. Re-rAF without
+        // advancing scrollTop; `accumulated` stays intact so the resumed
+        // chase remains continuous.
         springFrameHandle = requestFrame(tick);
         return;
       }
@@ -1069,7 +996,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // latch can never re-enter a display-rate loop.
       if (writeRefusalLatched) {
         if (now - lastRefusalProbeAt < SPRING_WRITE_REFUSAL_PROBE_INTERVAL_MS) {
-          const floor = fusionFloorPxPerFrame(deps.devicePixelRatio(), frameIntervalEmaMs);
+          const floor = quantizedMotionFloorPxPerFrame(frameIntervalEmaMs);
           const base = Math.max(SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME, floor);
           const speed = Math.abs(velocity);
           if (speed > base) {
@@ -1131,17 +1058,18 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       const withinTargetChangeRetainWindow =
         wantsSpringNow && now - lastTargetChangedAt < RETAIN_ANIMATION_DURATION_MS;
 
-      // Both inputs (dpr, cadence EMA) are constant within a tick, so
-      // derive the floor once here — the chase steps' floor hold, the
+      // Derive the cadence floor once here. The chase steps' floor hold, the
       // slew ramp's base, and the caught-up branch's carry decay all
       // read it.
-      const fusionFloor = fusionFloorPxPerFrame(
-        deps.devicePixelRatio(),
+      const quantizedFloor = quantizedMotionFloorPxPerFrame(
         frameIntervalEmaMs,
       );
       // Standstill entry speed for the acceleration ramp — perceptual
       // base, floored by display physics (see the constant).
-      const slewRampBase = Math.max(SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME, fusionFloor);
+      const slewRampBase = Math.max(
+        SPRING_ACCEL_SLEW_BASE_PX_PER_FRAME,
+        quantizedFloor,
+      );
 
       if (current !== target && !deps.arrival.matches(target)) {
         // Content oscillation guard: if the sentinel was idle
@@ -1268,9 +1196,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // Deceleration envelope (speed ∝ remaining distance),
               // applied only to a velocity already pointing at the
               // target — reversals still turn on the spring curve. Caps
-              // small-quantum peaks and shapes the ease-out; the tail
-              // below it is the spring's own decay, rendered smoothly
-              // via the fractional glide residue. See
+              // small-quantum peaks and shapes the ease-out. The tail
+              // below it is the spring's own decay. See
               // SPRING_DECEL_ENVELOPE_RATIO.
               const remaining = Math.abs(stepDiff);
               const envelope = Math.min(
@@ -1297,24 +1224,20 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               } else if (stepDiff < 0 && velocity < -slewCeiling) {
                 velocity = -slewCeiling;
               }
-              // Fusion floor: once this quantum's glide has run faster
-              // than the floor, don't let the deceleration sink below
-              // it until the release distance — the sub-floor speed
-              // band renders thin features as visible sharp/dim
-              // breathing under the residue's bilinear resample (see
-              // the constant block). Applies only to velocity already
-              // pointing at the target; reversals decelerate through
-              // zero naturally.
-              if (Math.abs(velocity) >= fusionFloor) {
-                fusionFloorEngaged = true;
+              // Once this quantum has run faster than the cadence floor,
+              // do not let deceleration sink below it until the release
+              // distance. This keeps integer scrollTop movement visible at
+              // 60Hz or faster. Reversals still decelerate through zero.
+              if (Math.abs(velocity) >= quantizedFloor) {
+                quantizedFloorEngaged = true;
               } else if (
-                fusionFloorEngaged
-                && remaining > SPRING_FUSION_FLOOR_RELEASE_PX
+                quantizedFloorEngaged
+                && remaining > SPRING_QUANTIZED_FLOOR_RELEASE_PX
               ) {
                 if (stepDiff > 0 && velocity > 0) {
-                  velocity = fusionFloor;
+                  velocity = quantizedFloor;
                 } else if (stepDiff < 0 && velocity < 0) {
-                  velocity = -fusionFloor;
+                  velocity = -quantizedFloor;
                 }
               }
               accumulated += velocity * stepFraction;
@@ -1361,11 +1284,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 lastRefusalProbeAt = 0;
               }
               consecutiveRefusedWrites = 0;
-              // Carry the browser's integer-rounding remainder instead of
-              // dropping it, so consecutive written values stay continuous
-              // (the controller renders the remainder via the glide
-              // residue; dropping it produced a ±0.5px sawtooth at slow
-              // speeds). A remainder ≥1px means the browser CLAMPED the
+              // Carry the browser's integer-rounding error instead of
+              // dropping it. This is error diffusion: sub-pixel progress
+              // accumulates until the next whole-CSS-pixel readback can move.
+              // A remainder ≥1px means the browser CLAMPED the
               // write (engine max-scrollTop race) — resync from the
               // readback rather than fighting it. Cross-target landings
               // start the next segment clean.
@@ -1432,20 +1354,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         //     a shrink-follow remnant carried into a resumed growth would
         //     nudge the viewport the wrong way for a frame.
         accumulated = 0;
-        // Each quantum re-earns the fusion floor: a caught-up spring's
+        // Each quantum re-earns the quantized floor: a caught-up spring's
         // next growth starts its ramp naturally (a carried remnant ≥
         // the floor re-engages it on the first step anyway).
-        fusionFloorEngaged = false;
-        // No write happens in this branch, so the residue left by the
-        // previous tick's write is released — EASED to zero by the
-        // controller, never snapped. The asymptotic tail parks every
-        // landing with up to ~0.5px live; an instant clear here popped
-        // once per quantum during bursty output and read as a faint
-        // vibration (2026-07-04). The ease completes the landing's
-        // final half-pixel as motion, converging on the rounded
-        // scrollTop — the same point `accumulated = 0` restarts the
-        // physics from, so the next growth stays continuous.
-        deps.settleGlideResidue();
+        quantizedFloorEngaged = false;
         if (withinTargetChangeRetainWindow && velocity > 0) {
           if (velocity > SPRING_CARRY_VELOCITY_CEILING) {
             velocity = SPRING_CARRY_VELOCITY_CEILING;
@@ -1509,13 +1421,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           }
           velocity = 0;
           accumulated = 0;
-          // The exact write above clears the glide residue when it fires;
-          // when the readback already matched the target it doesn't run,
-          // so release explicitly (eased) — the pane idles here and text
-          // must come to rest crisp (a lingering fractional translateY
-          // keeps it resampled). Usually a no-op: the caught-up branch
-          // already settled it.
-          deps.settleGlideResidue();
           if (chaseTelemetry) chaseTelemetry.sentinelTicks += 1;
           if (sentinelEntryTarget < 0) {
             sentinelEntryTarget = target;

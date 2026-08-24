@@ -103,7 +103,6 @@ describe('createUseStickToBottomController', () => {
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
-    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -1648,7 +1647,6 @@ describe('createUseStickToBottomController', () => {
     it('attach with new elements detaches old listeners', async () => {
       const newScrollEl = document.createElement('div');
       const newContentEl = document.createElement('div');
-      newContentEl.className = 'scroll-composited-content';
       newScrollEl.appendChild(newContentEl);
       document.body.appendChild(newScrollEl);
       const newGeom = { scrollHeight: 500, clientHeight: 400, scrollTop: 99, contentHeight: 400 };
@@ -2049,7 +2047,6 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
-    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -2834,7 +2831,6 @@ describe('createUseStickToBottomController — spring chase', () => {
     ): UseStickToBottomOptions {
       localScrollEl = document.createElement('div');
       localContentEl = document.createElement('div');
-      localContentEl.className = 'scroll-composited-content';
       localScrollEl.appendChild(localContentEl);
       document.body.appendChild(localScrollEl);
       localGeom = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400, contentHeight: 800 };
@@ -3835,12 +3831,10 @@ describe('createUseStickToBottomController — spring chase', () => {
       });
     });
 
-    describe('fractional glide residue (sub-pixel individual translate on contentEl)', () => {
-      // The engine rounds scrollTop to whole CSS pixels; the controller
-      // renders the sub-pixel remainder of each spring write as a
-      // translateY on contentEl. The default geometry stub stores
-      // fractional values (residue always 0), so these tests re-stub
-      // with a rounding setter to model the browser.
+    describe('integer scrollTop rendering', () => {
+      // Chromium and WebKit round programmatic scrollTop writes to whole
+      // CSS pixels. The controller must remain monotone and land exactly
+      // without applying a second visual position to the content element.
       function stubRoundingScrollTop(): void {
         stubGeometry(scrollEl, contentEl, geom, {
           setScrollTop: (v, g) => {
@@ -3851,25 +3845,8 @@ describe('createUseStickToBottomController — spring chase', () => {
         });
       }
 
-      function parseTranslateY(translate: string): number {
-        // The trailing epsilon rotation is the compositor anti-snap
-        // (see setGlideResidue); the translateY carries the residue.
-        const match = /^0px (-?\d*\.?\d+)px$/.exec(translate);
-        expect(match, `unexpected translate: "${translate}"`).not.toBeNull();
-        return Number(match![1]);
-      }
-
-      function glideTranslate(): string {
-        return contentEl.style.getPropertyValue('translate');
-      }
-
-      function glideRotation(): string {
-        return contentEl.style.getPropertyValue('rotate');
-      }
-
-      it('rides the rounding remainder on the transform during a chase and rests at translate 0', async () => {
+      it('moves monotonically and never transforms the content plane', async () => {
         stubRoundingScrollTop();
-        contentEl.style.transform = 'translateY(123px)';
         const ro = getRO();
         ro.fire(contentEl, 800);
         await waitMs(150); // warm
@@ -3878,47 +3855,21 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 1200;
         ro.fire(contentEl, 1200);
 
-        // During the chase the residue is applied on spring.tick writes:
-        // every non-empty transform is a translateY strictly inside the
-        // rounding band (|residue| ≤ 0.5 ⇒ |translate| ≤ 0.5), and at
-        // least some frames carry one (fractional spring output cannot
-        // stay integer-aligned for a whole chase).
-        let residueFrames = 0;
+        const positions: number[] = [];
         for (let i = 0; i < 100 && geom.scrollTop !== 800; i++) {
           await nextFrame();
-          const translate = glideTranslate();
-          if (translate !== '') {
-            residueFrames += 1;
-            expect(contentEl.style.transform).toBe('translateY(123px)');
-            expect(glideRotation()).toBe('0.0001deg');
-            expect(Math.abs(parseTranslateY(translate))).toBeLessThanOrEqual(0.5);
-          }
+          positions.push(geom.scrollTop);
+          expect(contentEl.style.getPropertyValue('translate')).toBe('');
+          expect(contentEl.style.getPropertyValue('rotate')).toBe('');
+          expect(contentEl.style.transform).toBe('');
         }
         expect(geom.scrollTop).toBe(800);
-        expect(residueFrames).toBeGreaterThan(0);
-
-        // Landing release: the residue left by the last write is EASED
-        // to zero (a few decaying frames), never popped — an instant
-        // clear once per quantum read as a faint vibration during
-        // bursty tool output (2026-07-04). Magnitudes must only
-        // decrease until the translate rests at ''.
-        const settleMagnitudes: number[] = [];
-        for (let i = 0; i < 20 && glideTranslate() !== ''; i++) {
-          await nextFrame();
-          const translate = glideTranslate();
-          if (translate !== '') {
-            settleMagnitudes.push(Math.abs(parseTranslateY(translate)));
-          }
-        }
-        expect(glideTranslate()).toBe('');
-        expect(glideRotation()).toBe('');
-        expect(contentEl.style.transform).toBe('translateY(123px)');
-        for (let i = 1; i < settleMagnitudes.length; i++) {
-          expect(settleMagnitudes[i]).toBeLessThan(settleMagnitudes[i - 1]);
+        for (let i = 1; i < positions.length; i++) {
+          expect(positions[i]).toBeGreaterThanOrEqual(positions[i - 1]);
         }
       });
 
-      it('clears the residue on the next non-spring write', async () => {
+      it('keeps instant placement transform-free', async () => {
         stubRoundingScrollTop();
         const ro = getRO();
         ro.fire(contentEl, 800);
@@ -3928,17 +3879,14 @@ describe('createUseStickToBottomController — spring chase', () => {
         geom.contentHeight = 1200;
         ro.fire(contentEl, 1200);
 
-        // Advance until a frame leaves a live residue mid-chase.
-        await advanceUntil(
-          () => glideTranslate() !== '' && geom.scrollTop < 800,
-        );
+        await nextFrame();
+        expect(geom.scrollTop).toBeLessThan(800);
 
-        // An instant placement (forceStick) must land with rendered
-        // position exactly equal to scrollTop — transform cleared.
         controller.forceStick();
         expect(geom.scrollTop).toBe(800);
-        expect(glideTranslate()).toBe('');
-        expect(glideRotation()).toBe('');
+        expect(contentEl.style.getPropertyValue('translate')).toBe('');
+        expect(contentEl.style.getPropertyValue('rotate')).toBe('');
+        expect(contentEl.style.transform).toBe('');
       });
     });
 
@@ -6922,7 +6870,6 @@ describe('createUseStickToBottomController — external content-geometry source'
 
     scrollEl = document.createElement('div');
     contentEl = document.createElement('div');
-    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 
@@ -7245,14 +7192,12 @@ describe('createUseStickToBottomController — two instances', () => {
 
     outerScroll = document.createElement('div');
     outerContent = document.createElement('div');
-    outerContent.className = 'scroll-composited-content';
     outerScroll.appendChild(outerContent);
     document.body.appendChild(outerScroll);
     // The run's clip lives INSIDE the timeline's content, as it does in the
     // DOM: an inner gesture's target is an outer descendant.
     innerScroll = document.createElement('div');
     innerContent = document.createElement('div');
-    innerContent.className = 'scroll-composited-content';
     innerScroll.appendChild(innerContent);
     outerContent.appendChild(innerScroll);
 
@@ -7351,7 +7296,6 @@ describe('createUseStickToBottomController — write-refusal forensics wiring', 
     scrollEl = document.createElement('div');
     scrollEl.dataset.testid = 'wedged-clip';
     contentEl = document.createElement('div');
-    contentEl.className = 'scroll-composited-content';
     scrollEl.appendChild(contentEl);
     document.body.appendChild(scrollEl);
 

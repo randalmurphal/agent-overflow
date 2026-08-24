@@ -1,6 +1,6 @@
 // bug-report-20260802T011749Z: expanding a collapsed activity run while a
 // turn streamed made the pane crawl "1 px at a time" — and the glide
-// residue's fractional transform resampled every glyph on screen for the
+// prior fractional content transform resampled every glyph on screen for the
 // duration (the reported "text flicker on expand"). Mechanism: the
 // transaction's claim placed the bottom on pre-measurement geometry, its
 // pause released at tick(), and the release repin's yield handed the

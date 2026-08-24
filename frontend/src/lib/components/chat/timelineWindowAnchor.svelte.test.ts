@@ -12,7 +12,7 @@
 // outlives the measurement flush (two rAFs past the restore), so the
 // release repin can never hand the toggle's still-measuring height
 // delta to an engaged spring (bug-report-20260802T011749Z — the
-// 1px-at-a-time crawl whose glide residue resampled all pane text).
+// 1px-at-a-time crawl across the whole pane).
 
 import { describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';

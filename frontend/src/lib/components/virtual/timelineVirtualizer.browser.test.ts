@@ -233,7 +233,7 @@ describe('ownership: the adapter never writes scrollTop', () => {
     expect(rowEl(scrollEl, 'prepended')).not.toBeNull();
   });
 
-  it('keeps the mounted raster plane and surviving row coordinates stable across a head prune', async () => {
+  it('keeps the mounted row plane and surviving row coordinates stable across a head prune', async () => {
     let scrollEl: HTMLElement | undefined;
     const ctx = mountHarness({
       onCompensation: (compensation) => {
@@ -245,10 +245,12 @@ describe('ownership: the adapter never writes scrollTop', () => {
 
     const tail = rowEl(scrollEl, `row-${ROW_COUNT - 1}`);
     const tailWrapper = tail?.parentElement as HTMLElement | null;
-    const plane = scrollEl.querySelector('[data-virtual-row-plane]');
+    const plane = scrollEl.querySelector('[data-virtual-row-plane]') as HTMLElement | null;
     expect(tail).not.toBeNull();
     expect(tailWrapper).not.toBeNull();
     expect(plane).not.toBeNull();
+    expect(plane!.style.transform).toBe('');
+    expect(plane!.style.top).toMatch(/px$/);
     const localTopBefore = tailWrapper!.style.top;
 
     ctx.harness.setRows(ctx.harness.getRows().slice(20));

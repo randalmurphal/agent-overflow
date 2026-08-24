@@ -1397,14 +1397,9 @@ func browserArgs(mode string) []string {
 		// an index and in-memory bookkeeping for it in the network
 		// service. 1 MiB is the practical floor (0 means "default").
 		"--disk-cache-size=1048576",
-		// Force grayscale text AA in every layer state. Chat content is
-		// permanently composited (static will-change-transform class in
-		// the MessageTimeline / ChannelView / ActivityRun markup;
-		// rationale in frontend/src/lib/utils/scroll/chokepoint.ts,
-		// "Fractional glide residue"), and composited text renders
-		// grayscale; without this flag root-layer text (sidebar/topbar)
-		// would pick up ClearType subpixel AA and sit next to it as the
-		// app's odd mismatched surface. Glyph-edge blending only — text
+		// Keep the established grayscale text AA appearance. Removing this
+		// flag changes glyph-edge rendering across the whole Windows app,
+		// which is independent of the scroll-content layer removal. Glyph
 		// color is untouched. MANDATORY COMPANION:
 		// PreferNonCompositedScrolling in browserEnabledFeatures, or
 		// every scroller gets eagerly composited (see that comment).
@@ -1486,16 +1481,10 @@ func browserEnabledFeatures() []string {
 		// passes, so EVERY scroller (each pane timeline, the pane strip)
 		// got promoted to composited scrolling with content-sized raster
 		// layers — measured 2026-07-21: renderer cc/tile_memory 165.5MB
-		// vs an 89.9MB same-day baseline (captured while chat
-		// compositing was still a promote/demote lease; today's static
-		// promotion raises that baseline by the parked chat layers'
-		// tile cost, not by eager-compositing every scroller). This feature
+		// vs an 89.9MB same-day baseline. This feature
 		// (verified present in WebView2 150.0.4078.83) restores the
 		// prefer-non-composited default so scrollers stay unlayerized;
-		// scrolling still runs on the compositor via raster-inducing
-		// scroll, and the static will-change promotion on chat content
-		// elements — which bypasses the preference — keeps chat panes
-		// composited exactly as designed. If a future WebView2 drops the
+		// scrolling still uses Chromium's normal paint path. If a future WebView2 drops the
 		// feature the symptom to watch for is this same eager-compositing
 		// regression, visible as full-scroll-height layers in the CDP
 		// LayerTree dump for scrollers whose content carries no

@@ -175,20 +175,17 @@ describe('<ChannelView>', () => {
     expect(scroll.style.overflowAnchor).toBe('none');
   });
 
-  it('keeps the static compositor class on the controller contentEl', async () => {
-    // Load-bearing compositing hint (utils/scroll/chokepoint.ts,
-    // "Fractional glide residue"), permanent by design — same contract
-    // as MessageTimeline's contentEl.
+  it('does not author compositor state on the controller contentEl', async () => {
     const pane = await buildPane();
     setBindingMock('GetChannelMessages', async () => []);
     const { getByTestId } = render(ChannelView, {
       props: { pane, channelId: 'channel-1' },
     });
     const scroll = getByTestId('channel-message-list') as HTMLElement;
-    const content = Array.from(scroll.children).find((c) =>
-      c.classList.contains('scroll-composited-content'),
-    );
-    expect(content, 'contentEl lost its static compositor class').toBeTruthy();
+    const content = scroll.firstElementChild as HTMLElement | null;
+    expect(content).not.toBeNull();
+    expect(content?.style.transform).toBe('');
+    expect(content?.classList.contains('scroll-composited-content')).toBe(false);
   });
 
   it('loads with afterSeq -1 and renders a sequence-0 message (regression: afterSeq=0 used to hide it)', async () => {

@@ -114,20 +114,10 @@ describe('activity run clip — scrollbar suppression', () => {
     expect(bar?.style.height).toBe('0px');
   });
 
-  it('resolves the static compositor class to a real hint', () => {
-    // The three controller-owned content elements (MessageTimeline,
-    // ChannelView, this clip's content) carry a static
-    // `scroll-composited-content` class as their compositing contract
-    // (utils/scroll/chokepoint.ts, "Fractional glide residue"). The
-    // unit suites pin the class's presence in the markup; this pins the
-    // other half — that the utility actually exists in the built
-    // app.css and computes to `will-change: transform`. A Tailwind
-    // rename (or a purge that stops seeing the class) would pass every
-    // class-presence assertion while shipping an inert string.
+  it('leaves clip content on the browser-managed paint path', () => {
     const { content } = mountColumn();
-    content.className = 'scroll-composited-content';
-
-    expect(getComputedStyle(content).willChange).toContain('transform');
+    expect(getComputedStyle(content).willChange).toBe('auto');
+    expect(content.style.transform).toBe('');
   });
 
   it('takes no gutter either, so its rows sit on the rail', () => {
