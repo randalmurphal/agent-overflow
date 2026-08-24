@@ -21,7 +21,7 @@ Go backend: 13MB live heap on 6363. Lean; one confirmation profile per investiga
 
 - Task Manager's column is private working set; memory-infra `private_kb` matches it within a few MB.
 - JS is under 2% of wall time in steady state. Per-frame cost is native: the reveal smoother, the 8Hz ambient ticker, the ~20fps sprite, the spring, and the composited layer set (25-27 layers, 14-15 promoted by Overlap).
-- `PlaneRootTransform` was the top Oilpan churn class until 2026-08-23 `7b29f9d6` (21.6 of 28 MB/min, 1,300 allocations/s) and is absent from the churn list now. Chromium `main` (`geometry_mapper_transform_cache.cc` `Update`) calls `MakeGarbageCollected<PlaneRootTransform>` on every cache regeneration, both for a flat non-2D-translation node and for every 2D-translation node under one, with no reuse. Any transform or clip node change anywhere bumps the global generation, and the next paint, hit test or IntersectionObserver query re-allocates for every node it walks. The app fed that loop through `.scroll-composited-content { will-change: transform, translate, rotate }`, which made every timeline plane a flat non-2D-translation node over a subtree of 2D-translation descendants, with the spring writing a transform every glide frame. Removing the rule removed the feed. Every `<svg>` root still qualifies as such a node whenever its rendered size differs from its viewBox (`NeedsReplacedContentTransform` gives it a scale), but with nothing bumping the generation per frame, nothing regenerates.
+- `PlaneRootTransform` was the top Oilpan churn class until 2026-08-23 `7b29f9d6` (21.6 of 28 MB/min, 1,300 allocations/s). Chromium `main` (`geometry_mapper_transform_cache.cc` `Update`) calls `MakeGarbageCollected<PlaneRootTransform>` on every cache regeneration, both for a flat non-2D-translation node and for every 2D-translation node under one, with no reuse. Any transform or clip node change anywhere bumps the global generation, and the next paint, hit test or IntersectionObserver query re-allocates for every node it walks. The app fed that loop through `.scroll-composited-content { will-change: transform, translate, rotate }`, which made every timeline plane a flat non-2D-translation node over a subtree of 2D-translation descendants, with the spring writing a transform every glide frame. Removing the rule removed the feed — at idle. An earlier claim that the class was "absent from churn now" was an idle-only measurement: WHILE SCROLLING it was still 72% of Oilpan churn on 2026-08-24 (26.44MB/min, `scrolldrift` probe), because every `<svg>` root whose rendered size differs from its viewBox qualifies as such a node (`NeedsReplacedContentTransform` gives it a scale) and the app mounted ~400 scaled lucide roots; scroll-driven paint-property updates bump the generation. Fixed 2026-08-24 by converting lucide to CSS-mask spans and matching MeterRing's viewBox to its rendered box (see Fixed causes).
 - `Runtime.queryObjects`, the only way to census detached nodes from outside, runs `CollectAllAvailableGarbage` before it answers (v8 `src/profiler/heap-profiler.cc`: "we should return accurate information about live objects, so we need to collect all garbage first"). That is the memory-reducing collection, Oilpan included, so a poll loop calling it holds the renderer at a floor it never reaches on its own and hides every peak between ticks. Measured 2026-08-23: a 2-minute `sample --detached` loop pinned the renderer at 256-281MB across 100 minutes of real use, while the same build sat 600-700MB group-wide unmeasured. Footprint curve and retention census are separate runs.
 - In a heap snapshot, detachedness is a node field (`detachedness === 2`). The `Detached ` name prefix is absent in current snapshots; a census keyed on it reports everything attached.
 - A retaining path `system / Context → <moduleVar$1> → reactions → derived` means a module-scope svelte signal still holds a reaction from a dead component. Read the derived's `parent` chain: an effect with `fn === null` was destroyed, so the derived outlived its owner and is held only through the signal.
@@ -226,28 +226,54 @@ Compositing these indicators promotes nothing measurable.
 600 `<svg>` roots add 18.6ms per 40 ticks over a no-icon baseline (0.47ms
 per repaint). Two things that were expected to matter, and do not:
 
-- **A scaled viewBox costs the same as an identity one.** `0 0 24 24`
+- **A scaled viewBox costs the same CPU as an identity one.** `0 0 24 24`
   rendered at 12px measured 44.45ms / 46.26ms across two runs; `0 0 12 12`
-  at 12px measured 46.28ms. The replaced-content transform node is not the
-  cost; the SVG root existing at all is. Do not chase viewBox rewriting.
+  at 12px measured 46.28ms. For repaint TIME the transform node is not the
+  cost; the SVG root existing at all is. The scaled node's cost is MEMORY
+  CHURN instead: its `PlaneRootTransform` cache is re-allocated per
+  paint-property generation bump (see the entry above — 72% of scroll
+  churn), which an identity-scale root does not pay. viewBox rewriting is
+  worth it for a frequently repainted svg, not for repaint speed.
 - `mask-image` spans instead of svg roots save ~37% of the icon overhead
-  (38.0ms vs 44.5ms against a 25.8ms floor), not all of it.
+  (38.0ms vs 44.5ms against a 25.8ms floor), not all of it — and drop the
+  root out of the SMIL time-container walk and the transform-cache walk
+  entirely.
 
-At the app's 396 icons this is ~15ms/s **only because frames run at 48/s**.
-Fix the frame rate first: at ~15 frames/s the same icons cost ~4.6ms/s and
-mask-image would save 1.7ms/s. Sequence matters — the icon change is
-marginal once the indicators stop forcing frames.
+At the app's 396 icons the CPU side is ~15ms/s **only because frames run at
+48/s**; the churn side is what got the conversion built (2026-08-24, see
+Fixed causes).
 
 ### auto-animate cold-polls the sidebar
 
 `@formkit/auto-animate` 0.9.0 (`use:autoAnimate` on `ProjectList.svelte:41`
-and `ProjectThreadList.svelte:174`) runs a per-element 2s `poll()`: each
+and `ProjectThreadList.svelte:174`) ran a per-element 2s `poll()`: each
 cycle calls `getCoords` (forced layout) then disconnects and rebuilds an
-IntersectionObserver. In the trace that is 430 idle callbacks / 20s (~43
-tracked elements), 1934 `computeIntersections` (97/s, 36.5ms), and
-`getCoords` is the second-largest style-recalc cause at 89 passes / 137
-elements / 12.0ms. ~2.5ms/s of pure overhead in a sidebar that rarely
-moves. The library exposes no option to disable the poll.
+IntersectionObserver. The first trace under-read it at ~2.5ms/s; the
+2026-08-24 re-measure put it at 22.5 forced layouts/s, 45 IntersectionObserver
+constructions/s and ~11ms/s of style recalc on an idle app, for lists that
+change a few times a minute. The library exposes no option to disable the
+poll — it is framework-blind by design (MutationObserver sees changes only
+after old positions are gone, so it must track continuously). Removed
+2026-08-24: the sidebar's two keyed eaches use svelte `animate:flip` +
+enter/exit transitions (`utils/sidebarAnimate.ts`), which measure during
+reconcile and cost zero at idle.
+
+### Blink retains one edit command per typed character
+
+Every keystroke in a textarea allocates an `InsertIntoTextNodeCommand`
+(undo machinery) that Blink retains for the ELEMENT's lifetime — no API
+clears it, `value = ''` does not release it (and already discards the undo
+stack, measured), and each command can pin a whole 128KB Oilpan page,
+because normal spaces are never compacted. Measured 2026-08-24
+(`editcmdpages` probe): 383 pages held ONLY by edit commands, 47.9MB at
+2.9% fill, ~8KB of committed heap per character ever typed in the app's
+lifetime. Growth is strictly typing-driven — a 180s idle watch
+(`editcmdgrowth`) added +0 commands / +0 pages. The one release is
+replacing the element: the composer swaps its `<textarea>` after every
+send (`ComposerInputSurface.recreateInput`, same-flush `{#key}` bump +
+refocus, invisible by frame capture), which is the natural boundary since
+send already emptied the undo stack. `editcmdpages` is the verification
+probe.
 
 ## Fixed causes (do not re-derive)
 
@@ -258,6 +284,10 @@ moves. The library exposes no option to disable the poll.
 - 2026-08-23 `3e5984ce`: upstream svelte bug, a reconnecting dirty derived was registered twice on deps new to that run and kept a closed pane's DOM alive through the global `accounts` signal (patch hunk 5, reconnect-dedupe).
 - 2026-08-23 `0e6eefc4`: `CommandOutput.svelte` re-splits the command only when its text changes (7MB/min of JS garbage while streaming before).
 - 2026-08-23 `7b29f9d6`: `.scroll-composited-content { will-change: transform, translate, rotate }` gave every timeline plane its own composited layer and fed Chromium's `PlaneRootTransform` re-allocation loop. Motion goes through `scrollTop` now; steady-state Oilpan churn fell from 28 to 1.07 MB/min, and `frontend/src/lib/architecture.test.ts` fails any new will-change or content transform on a controller surface.
+- 2026-08-24 `acc09802`: lucide icons render as CSS-mask spans (pnpm patch on `@lucide/svelte`), removing ~400 scaled svg roots — the transform-cache churn feed while scrolling and the SMIL walk membership. Verify post-restart with `scrolldrift`.
+- 2026-08-24 `54d04e72`: sidebar rows animate with svelte `animate:flip` (`utils/sidebarAnimate.ts`); `@formkit/auto-animate` removed. Idle forced-layout/IO-rebuild/style-recalc cost gone; verify with `frames` on an idle app.
+- 2026-08-24 `04c0af7e`: composer swaps its `<textarea>` element after every send (`recreateInput`), releasing Blink's per-character edit-command pages (~48MB after weeks of use). Verify with `editcmdpages` after typing + sending.
+- 2026-08-24 `7c70256d`: MeterRing viewBox matches its rendered 28px box, so the header rings are identity-scale svgs and their dashoffset ticks stop regenerating a scaled node's transform cache (default zoom only).
 
 ## Ruled out or declined
 
