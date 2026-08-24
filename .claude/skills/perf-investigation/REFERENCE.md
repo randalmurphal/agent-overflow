@@ -36,6 +36,119 @@ Prove the bug on the previous patch, the fix on the new one, without touching no
 
 Edit a hunk with `pnpm patch svelte@<v> --edit-dir <dir>` (applies the existing patch first) and `pnpm patch-commit <dir>`; only the patch hash changes in the lock. `svelte/internal/client` exports `get/set/state` in its types but `derived/effect/effect_root` only at runtime (import the namespace and cast).
 
+## The ambient indicators drive ~two thirds of the renderer main thread
+
+Measured 2026-08-23 on the live app (`probe frames 20`, trace kept at
+`trace-postsvg.json`) plus four isolated Chrome 151 spikes under
+`/tmp/svg-chunk-spike/` (throwaway profile, never the app's).
+
+App, 20s while a turn streamed: 967 main-thread animation frames (48/s) but
+only 248 rAF callbacks. 1055 of 1084 style invalidations are inline-style
+writes from two timers, and they name themselves in the trace:
+
+- `SPAN.working-sprite` 501x (25/s) — `WorkingSprite.svelte` writing
+  `background-position-x` at the sprite's own `frameMs`.
+- `.animate-pulse` dots 554x (~8 ticks/s x 3.5 dots) — `ambientTicker.ts`.
+
+Each write costs a whole-document lifecycle: 562 Paints of the full
+2560x1369 root (mean 364us) and 966 Layerize passes. Layerize is bimodal —
+313 under 10us, 577 over 500us, 183 over 1ms — so a real frame is Paint
+364us + Layerize ~900us + PrePaint/Commit/Style ~260us, call it 1.5ms.
+Paint+Layerize+PrePaint+Commit+UpdateLayoutTree is 1035ms of the 1531ms
+RunTask total: **62% of all renderer main-thread work, at 33 ticker ticks
+of the 48 frames per second.**
+
+### Why the inline write is expensive and a CSS animation is not
+
+Blink promotes an element for a *known* animation and ticks
+opacity/transform on the compositor thread. A one-off inline style write is
+just a style change, so it repaints in the document's own layer — which is
+why the Paint clip is the whole viewport. `ambientTicker.ts` writes styles
+specifically to avoid CSS animations, and in doing so forfeits the
+promotion that made the repaints cheap.
+
+Spike, 600 svg-icon rows inside a `contain:paint` scroller, indicators in
+`overflow:hidden` flex rows, 5s wall, main-thread total (Layerize + Paint +
+PrePaint + Commit + UpdateLayoutTree):
+
+| indicator drive | style recalcs | main thread |
+| --- | --- | --- |
+| static floor | 0 | 0.2ms |
+| JS ticker, 4 dots (today) | 40 | 58.9ms |
+| JS ticker, 40 dots (today) | 40 | 63.4ms |
+| CSS `@keyframes` opacity, 4 | **0** | **0.0ms** |
+| CSS `@keyframes` opacity, 40 | **0** | **0.0ms** |
+| CSS `@keyframes` rotate, 4 | **0** | **0.0ms** |
+| CSS `@keyframes` box-shadow, 4 | 324 | 56.6ms |
+| CSS `@keyframes` background-position, 4 | 325 | 141.0ms |
+
+The ticker's cost is per tick, not per element: 4 dots and 40 dots cost the
+same, because one tick forces one whole-document lifecycle either way.
+
+The 324 recalcs / 5s = 65/s for box-shadow and background-position
+reproduces the 2026-07-20 measurement in `ambientTicker.ts`'s header
+(65.7/s running vs 7.0/s paused) exactly. **That measurement was right for
+the properties it was taken on, and does not hold for opacity or
+transform**, which are compositable and cost nothing.
+
+### Both non-compositable visuals re-express at zero
+
+| approach | style recalcs | main thread |
+| --- | --- | --- |
+| sprite: JS `background-position-x` @25Hz (today) | 125 | 270.1ms |
+| sprite: CSS `background-position` keyframes | 325 | 136.8ms |
+| sprite: CSS `translateX` strip in an `overflow:hidden` slot | **0** | **0.0ms** |
+| glow: JS `box-shadow` @8Hz (today) | 40 | 127.0ms |
+| glow: CSS `box-shadow` keyframes | 324 | 85.1ms |
+| glow: static `box-shadow` on `::before`, opacity keyframed | **0** | **0.0ms** |
+
+Note the ticker is *worse than the CSS animations it replaced* on total
+main-thread time (sprite 270ms vs 137ms), because it traded cheap recalcs
+for full-document paints. It won on the metric it measured and lost on the
+one it did not.
+
+Every consumer the ticker has is compositable or re-expressible: pulse and
+LED chase already write `opacity`, `stepped-spin` writes
+`transform: rotate()`, and the glow's `--ambient-glow-t` -> `::before`
+box-shadow becomes opacity on that same `::before`. There is no consumer
+that needs a JS timer.
+
+### It costs no memory
+
+Detailed memory-infra dump per case, same instrument as the app probe:
+`cc/tile_memory` 40.98-41.55MB, `blink_gc/main` 12.34-13.06MB,
+`gpu/shared_images` 44.00-46.24MB — flat across static, JS ticker, CSS
+opacity at 4 dots, CSS opacity at **40** dots, and the translateX strip.
+Compositing these indicators promotes nothing measurable.
+
+### Icon representation is a distant second
+
+600 `<svg>` roots add 18.6ms per 40 ticks over a no-icon baseline (0.47ms
+per repaint). Two things that were expected to matter, and do not:
+
+- **A scaled viewBox costs the same as an identity one.** `0 0 24 24`
+  rendered at 12px measured 44.45ms / 46.26ms across two runs; `0 0 12 12`
+  at 12px measured 46.28ms. The replaced-content transform node is not the
+  cost; the SVG root existing at all is. Do not chase viewBox rewriting.
+- `mask-image` spans instead of svg roots save ~37% of the icon overhead
+  (38.0ms vs 44.5ms against a 25.8ms floor), not all of it.
+
+At the app's 396 icons this is ~15ms/s **only because frames run at 48/s**.
+Fix the frame rate first: at ~15 frames/s the same icons cost ~4.6ms/s and
+mask-image would save 1.7ms/s. Sequence matters — the icon change is
+marginal once the indicators stop forcing frames.
+
+### auto-animate cold-polls the sidebar
+
+`@formkit/auto-animate` 0.9.0 (`use:autoAnimate` on `ProjectList.svelte:41`
+and `ProjectThreadList.svelte:174`) runs a per-element 2s `poll()`: each
+cycle calls `getCoords` (forced layout) then disconnects and rebuilds an
+IntersectionObserver. In the trace that is 430 idle callbacks / 20s (~43
+tracked elements), 1934 `computeIntersections` (97/s, 36.5ms), and
+`getCoords` is the second-largest style-recalc cause at 89 passes / 137
+elements / 12.0ms. ~2.5ms/s of pure overhead in a sidebar that rarely
+moves. The library exposes no option to disable the poll.
+
 ## Fixed causes (do not re-derive)
 
 - 2026-08-23 `761452b6`: MessageNavRail ticks rested at `translateY(-50%) scaleX(0.38)`, 540 non-2D transform nodes regenerating per scroll frame (~85KB/frame, ~300MB/min while scrolling). Rest state has no transform now.
@@ -60,3 +173,5 @@ Edit a hunk with `pnpm patch svelte@<v> --edit-dir <dir>` (applies the existing 
 - Upstream issue/PR for the reconnect double registration (svelte `main` matched 5.56.8 on 2026-08-23).
 - Chromium perf bug for the `PlaneRootTransform` re-allocation (one-line reuse in `GeometryMapperTransformCache::Update`): not filed, and no longer reached by this app after `7b29f9d6`.
 - Side observation, unfiled: synthetic wheel events on the first composited plane scrolled the whole app view, so the app root may be scrollable.
+- Ambient indicators still ride the JS ticker; the four re-expressions above are measured but not built. Reported to the user 2026-08-23, awaiting a call.
+- `HeapVectorBacking<blink::PaintChunk>` is 0.55 of the residual 1.07 MB/min churn. It is rebuilt once per paint, so it falls with the frame rate rather than needing its own fix.
