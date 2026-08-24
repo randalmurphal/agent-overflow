@@ -29,7 +29,7 @@ describe('<APIRetryRow>', () => {
     expect(row.dataset.status).toBe('running');
     // Pulsing state lives on the inner svg via animate-pulse — assert
     // it's present for the running row.
-    const icon = row.querySelector('svg');
+    const icon = row.querySelector('.lucide-icon');
     expect(icon?.getAttribute('class') ?? '').toContain('animate-pulse');
   });
 
@@ -41,7 +41,7 @@ describe('<APIRetryRow>', () => {
     expect(row.dataset.status).toBe('completed');
     expect(row.getAttribute('role')).toBeNull();
     expect(row.getAttribute('aria-live')).toBeNull();
-    const icon = row.querySelector('svg');
+    const icon = row.querySelector('.lucide-icon');
     expect(icon?.getAttribute('class') ?? '').not.toContain('animate-pulse');
   });
 

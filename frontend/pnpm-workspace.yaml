@@ -14,13 +14,14 @@ packages:
 # DoS < 8.21.0, uninitialized-memory disclosure < 8.20.1); dev-only test
 # server, but override until vitest moves its pin.
 overrides:
-  ws: '>=8.21.0'
   # @ungap/structured-clone: 1.3.0 is deprecated and carries a prototype-
   # pollution advisory (CWE-502). It sits under mermaid (hast-util-*), which
   # renders diagrams straight out of model output — the one dependency path in
   # this app whose input is attacker-influenced by construction. Override until
   # mermaid's transitive pin moves.
   '@ungap/structured-clone': '>=1.3.1'
+  ws: '>=8.21.0'
 
 patchedDependencies:
+  '@lucide/svelte@1.28.0': patches/@lucide__svelte@1.28.0.patch
   svelte@5.56.8: patches/svelte@5.56.8.patch

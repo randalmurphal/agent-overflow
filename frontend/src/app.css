@@ -424,6 +424,35 @@ body::selection {
   background: color-mix(in oklab, var(--accent) 28%, transparent);
 }
 
+/* Mask icons. Every static line-art icon (lucide via the @lucide/svelte
+   mask-icons patch — see frontend/AGENTS.md §Vendor Patches — plus
+   ToolKindIcon and the brand marks) renders as a <span> whose shape is a
+   data-URI `mask` and whose color is its background. An <svg> root rendered
+   at a size other than its viewBox is a scaled replaced-content transform
+   node in Blink: every paint-property change re-allocates a
+   PlaneRootTransform per node on the next geometry-cache walk (72% of
+   Oilpan churn while scrolling, measured 2026-08-24), and each root also
+   joins the per-frame SMIL time-container walk. A masked span has neither
+   cost. The component owns only the shape (--mask-icon) and box size;
+   color stays in the cascade via currentColor.
+
+   The forced-colors block is load-bearing, not polish: High Contrast mode
+   strips background-color, so without it every icon in the app renders as
+   nothing. CanvasText is the mode's own text color. */
+.lucide-icon,
+.mask-icon {
+  display: inline-block;
+  background-color: currentColor;
+  mask: var(--mask-icon) center / contain no-repeat;
+}
+
+@media (forced-colors: active) {
+  .lucide-icon,
+  .mask-icon {
+    background-color: CanvasText;
+  }
+}
+
 /* Global monospace override for code-bearing surfaces. The markdown
    body rules below are kept for specificity, but this catches any
    <pre>/<code>/.ansi-body that is NOT inside .markdown-body. */

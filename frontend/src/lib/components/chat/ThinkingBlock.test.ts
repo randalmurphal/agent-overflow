@@ -66,7 +66,7 @@ describe('<ThinkingBlock>', () => {
         }),
       },
     });
-    const icon = container.querySelector('svg[data-icon]');
+    const icon = container.querySelector('[data-icon]');
     expect(icon?.getAttribute('data-icon')).toBe('brain');
     expect(icon?.getAttribute('aria-label')).toBe('think');
   });

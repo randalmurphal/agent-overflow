@@ -118,7 +118,7 @@ describe('<NotificationRow> permission notices', () => {
     expect(row.getAttribute('role')).toBeNull();
     expect(row.className).not.toContain('text-warning');
     // Distinct from the default bell: lucide stamps the icon name on the svg.
-    expect(row.querySelector('svg')?.getAttribute('class')).toContain('inbox');
+    expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('inbox');
   });
 
   // A downgraded Codex leaves messages parked in the app-server's own queue
@@ -139,7 +139,7 @@ describe('<NotificationRow> permission notices', () => {
     expect(row.textContent).toContain('They run when Codex is upgraded.');
     expect(row.className).toContain('text-warning');
     expect(row.getAttribute('role')).toBe('status');
-    expect(row.querySelector('svg')?.getAttribute('class')).toContain('triangle');
+    expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('triangle');
   });
 
   // The other half of the same family: Codex has the queue API, but this
@@ -158,7 +158,7 @@ describe('<NotificationRow> permission notices', () => {
     const row = getByTestId('notification-row');
     expect(row.textContent).toContain('reopen the thread later to check');
     expect(row.className).toContain('text-warning');
-    expect(row.querySelector('svg')?.getAttribute('class')).toContain('triangle');
+    expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('triangle');
   });
 
   it('surfaces transcript mirror data loss as a warning', () => {
@@ -173,7 +173,7 @@ describe('<NotificationRow> permission notices', () => {
     const row = getByTestId('notification-row');
     expect(row.className).toContain('text-warning');
     expect(row.getAttribute('role')).toBe('status');
-    expect(row.querySelector('svg')?.getAttribute('class')).toContain('triangle');
+    expect(row.querySelector('.lucide-icon')?.getAttribute('class')).toContain('triangle');
   });
 
   it('lists the commands a permission_retry re-allowed, without the warning tone', () => {

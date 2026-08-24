@@ -82,7 +82,7 @@ describe('<CommandResultRow>', () => {
     expect(queryByTestId('command-result-size')).toBeNull();
     // Terminal icon + "command" label carry the attribution — this is not a
     // message from the model.
-    expect(container.querySelector('svg[data-icon]')?.getAttribute('data-icon')).toBe('terminal');
+    expect(container.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('terminal');
     expect(getByTestId('command-result-label').textContent).toBe('command');
   });
 

@@ -116,8 +116,8 @@ describe('<ModelProviderMenu>', () => {
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     const trigger = getByTestId('composer-model-menu-trigger');
     expect(trigger.getAttribute('data-provider')).toBe('claude');
-    expect(trigger.querySelector('svg.lucide-claude')).not.toBeNull();
-    expect(trigger.querySelector('svg.lucide-openai')).toBeNull();
+    expect(trigger.querySelector('.lucide-claude')).not.toBeNull();
+    expect(trigger.querySelector('.lucide-openai')).toBeNull();
   });
 
   it('renders the OpenAI brand mark when provider is Codex', async () => {
@@ -125,14 +125,14 @@ describe('<ModelProviderMenu>', () => {
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     const trigger = getByTestId('composer-model-menu-trigger');
     expect(trigger.getAttribute('data-provider')).toBe('codex');
-    expect(trigger.querySelector('svg.lucide-openai')).not.toBeNull();
-    expect(trigger.querySelector('svg.lucide-claude')).toBeNull();
+    expect(trigger.querySelector('.lucide-openai')).not.toBeNull();
+    expect(trigger.querySelector('.lucide-claude')).toBeNull();
   });
 
   it('Claude mark is painted in the Anthropic coral (--provider-claude)', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
-    const svg = getByTestId('composer-model-menu-trigger').querySelector('svg.lucide-claude')!;
+    const svg = getByTestId('composer-model-menu-trigger').querySelector('.lucide-claude')!;
     // Class tokens, not a substring: `text-provider-claude` is a prefix of
     // `text-provider-claude-tui`, so a substring match would accept the
     // terminal-green tint as the Anthropic coral.
@@ -142,7 +142,7 @@ describe('<ModelProviderMenu>', () => {
   it('OpenAI mark inherits the trigger foreground (no bespoke tint)', async () => {
     const pane = await buildPane(makeThread({ provider: 'codex', model: 'gpt-5' }));
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
-    const svg = getByTestId('composer-model-menu-trigger').querySelector('svg.lucide-openai')!;
+    const svg = getByTestId('composer-model-menu-trigger').querySelector('.lucide-openai')!;
     // Must NOT carry the Anthropic coral — it should read as one piece
     // with the label's muted foreground instead.
     // Split into class tokens: `text-provider-claude` is a prefix of
@@ -190,7 +190,7 @@ describe('<ModelProviderMenu>', () => {
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
 
     const favorite = await findByRole('menuitem', { name: /Opus 4.7/i });
-    expect(favorite.querySelector('svg.lucide-claude')).not.toBeNull();
+    expect(favorite.querySelector('.lucide-claude')).not.toBeNull();
     expect(favorite.textContent ?? '').not.toMatch(/\bClaude\b/);
     await findByRole('menuitem', { name: /Architects/i });
   });

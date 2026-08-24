@@ -58,7 +58,7 @@ describe('<CompactionReasoning>', () => {
     const { container, getByTestId } = render(CompactionReasoning, {
       props: { item: reasoningItem() },
     });
-    const icon = container.querySelector('svg[data-icon]');
+    const icon = container.querySelector('[data-icon]');
     expect(icon?.getAttribute('data-icon')).toBe('compaction');
     expect(icon?.getAttribute('aria-label')).toBe('compact');
     expect(getByTestId('compaction-reasoning-label').textContent).toBe('compact');

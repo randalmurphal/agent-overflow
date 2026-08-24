@@ -32,7 +32,7 @@ describe('<ToolKindIcon>', () => {
   for (const { kind, colorClass } of CASES) {
     it(`renders the ${kind} icon with ${colorClass}`, () => {
       const { container } = render(ToolKindIcon, { props: { kind } });
-      const svg = container.querySelector('svg')!;
+      const svg = container.querySelector('[data-icon]')!;
       expect(svg).not.toBeNull();
       expect(svg.getAttribute('data-icon')).toBe(kind);
       const className = svg.getAttribute('class') ?? '';
@@ -48,11 +48,11 @@ describe('<ToolKindIcon>', () => {
     const { container, rerender } = render(ToolKindIcon, {
       props: { kind: 'terminal' },
     });
-    let svg = container.querySelector('svg')!;
+    let svg = container.querySelector('[data-icon]')!;
     expect(svg.getAttribute('aria-label')).toBe('terminal tool');
 
     rerender({ kind: 'terminal', ariaLabel: 'Run bash command' });
-    svg = container.querySelector('svg')!;
+    svg = container.querySelector('[data-icon]')!;
     expect(svg.getAttribute('aria-label')).toBe('Run bash command');
   });
 });

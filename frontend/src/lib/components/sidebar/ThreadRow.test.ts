@@ -319,7 +319,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
     const forkIndicator = getByTestId('thread-row-fork-lineage');
     expect(forkIndicator).toBeInTheDocument();
-    expect(forkIndicator.querySelector('svg')).not.toBeNull();
+    expect(forkIndicator.querySelector('.lucide-icon')).not.toBeNull();
     expect(forkIndicator.textContent).not.toContain('F');
   });
 
@@ -448,7 +448,7 @@ describe('<ThreadRow> worktree metadata', () => {
     const pane = createThreadPane();
     const { container, getByTestId } = render(ThreadRow, { props: { thread, pane } });
 
-    expect(getByTestId('thread-row-worktree-label').querySelector('svg')).not.toBeNull();
+    expect(getByTestId('thread-row-worktree-label').querySelector('.lucide-icon')).not.toBeNull();
     expect(container.querySelector('[data-testid="thread-row-worktree"] .border-l')).toBeNull();
   });
 
@@ -990,7 +990,7 @@ describe('<ThreadRow> nested row chrome', () => {
     });
     const btn = getByTestId('thread-row-expand');
     expect(btn.getAttribute('aria-expanded')).toBe('false');
-    expect(btn.querySelector('svg')?.classList.contains('rotate-90')).toBe(false);
+    expect(btn.querySelector('.lucide-icon')?.classList.contains('rotate-90')).toBe(false);
   });
 
   it('rotates the chevron when expanded is true', () => {
@@ -1005,7 +1005,7 @@ describe('<ThreadRow> nested row chrome', () => {
     });
     const btn = getByTestId('thread-row-expand');
     expect(btn.getAttribute('aria-expanded')).toBe('true');
-    expect(btn.querySelector('svg')?.classList.contains('rotate-90')).toBe(true);
+    expect(btn.querySelector('.lucide-icon')?.classList.contains('rotate-90')).toBe(true);
   });
 
   it('chevron click calls onToggleExpand and not the row-click path', async () => {

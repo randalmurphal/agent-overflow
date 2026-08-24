@@ -77,7 +77,7 @@ describe('<TerminalInteractionRow>', () => {
     // rather than another bash invocation.
     const { getByTestId } = render(TerminalInteractionRow, { props: { item: makeItem() } });
     expect(getByTestId('terminal-interaction-label').textContent).toBe('wait');
-    const icon = getByTestId('terminal-interaction-row').querySelector('svg[data-icon]');
+    const icon = getByTestId('terminal-interaction-row').querySelector('[data-icon]');
     expect(icon?.getAttribute('data-icon')).toBe('clock');
     expect(icon?.getAttribute('aria-label')).toBe('wait');
   });

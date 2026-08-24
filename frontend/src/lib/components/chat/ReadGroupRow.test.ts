@@ -232,7 +232,7 @@ describe('<ReadGroupRow>', () => {
     });
     const toggle = getByTestId('read-group-row-toggle');
     const chevronSlot = toggle.children[0] as HTMLElement;
-    expect(chevronSlot.querySelector('svg')).not.toBeNull();
+    expect(chevronSlot.querySelector('.lucide-icon')).not.toBeNull();
     expect(chevronSlot.className).toContain('opacity-30');
   });
 

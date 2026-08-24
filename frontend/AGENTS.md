@@ -720,6 +720,27 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
   `svelte-patch-zombie-leak.test.ts` passes unpatched on 5.56.8 and stays
   as the tripwire if that regresses.
 
+- `@lucide__svelte@1.28.0.patch` — **mask-icons**, one hunk: `dist/Icon.svelte`
+  renders a CSS-mask `<span>` (`--mask-icon` data URI, inline px box) instead
+  of an inline `<svg>` root. An `<svg>` rendered at a size other than its
+  viewBox is a scaled replaced-content transform node in Blink; at ~400
+  mounted lucide icons that made `GeometryMapperTransformCache::
+  PlaneRootTransform` re-allocation 72% of Oilpan churn while scrolling
+  (measured 2026-08-24), and every root also joined the per-frame SMIL
+  time-container walk. The span's color/`mask-mode` styling lives in
+  `app.css` (`.lucide-icon`/`.mask-icon`, including the `forced-colors:
+  active` → `CanvasText` fallback without which icons vanish in Windows
+  High Contrast); the patch owns only shape and box size. Pixel parity at
+  app sizes was measured (mean diff ~1/255, subpixel/rotation/dpr2 within
+  noise). Deliberately dropped from upstream's contract: the `color` prop no
+  longer stamps a stroke (currentColor covers every call site) and
+  `children` snippets are not rendered (no call site passes one; audited —
+  see `primitives/__tests__/Icon.test.ts`, which pins the patched contract
+  and fails against an unpatched release). Deliberate divergence, not an
+  upstream bug — carry it forward and re-roll on every version bump; the
+  app-side siblings (`ToolKindIcon.svelte`, `primitives/brand/*`) use the
+  same `.mask-icon` rule directly.
+
 ### Vendored svelte-streamdown
 
 `vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 18 permanent

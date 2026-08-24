@@ -1,0 +1,84 @@
+diff --git a/dist/Icon.svelte b/dist/Icon.svelte
+index 1f65faa12e726bc6a6e8f834986131a02177b7d5..74bbc19431b1e6dec39583eb7a337a47081399e0 100644
+--- a/dist/Icon.svelte
++++ b/dist/Icon.svelte
+@@ -1,26 +1,63 @@
+-<script lang="ts">import defaultAttributes from './defaultAttributes.js';
++<script lang="ts" module>
++// AGENT OVERFLOW PATCH (mask-icons): render every lucide icon as a CSS-mask
++// <span> instead of an inline <svg> root.
++//
++// Why: an <svg> whose rendered size differs from its viewBox is a scaled
++// replaced-content transform node in Blink. The app renders ~400 lucide
++// icons at 10-16px against lucide's 24-unit viewBox, and every paint-property
++// change re-allocates a GeometryMapperTransformCache::PlaneRootTransform per
++// such node on the next cache walk (measured: 72% of Oilpan churn in a
++// scroll-heavy window). Each <svg> also joins the document's SMIL
++// time-container list, which Blink copies once per animation frame. A span
++// with `mask: url(data:image/svg+xml,...)` has neither cost and is
++// pixel-equivalent at these sizes (measured mean diff ~1/255).
++//
++// The span carries no inline background/mask-mode styling: the app stylesheet
++// owns those via `.lucide-icon` (background-color: currentColor; mask:
++// var(--mask-icon) ...), including the `forced-colors: active` fallback to
++// CanvasText — without which masks render invisible in Windows High Contrast.
++//
++// Dropped relative to upstream: `color` now flows through CSS currentColor
++// only (upstream stamped it on the svg's stroke; no app call site passes it),
++// and `children` snippets are not rendered (no app call site passes one; a
++// mask has no DOM to append to).
++const maskCache = new Map<string, string>();
++
++function maskUri(
++  name: string | undefined,
++  iconNode: [string, Record<string, string>][],
++  strokeWidth: number | string,
++): string {
++  const key = `${name ?? '?'}|${strokeWidth}`;
++  const hit = name ? maskCache.get(key) : undefined;
++  if (hit !== undefined) return hit;
++  let body = '';
++  for (const [tag, attrs] of iconNode) {
++    body += `<${tag}`;
++    for (const [k, v] of Object.entries(attrs)) body += ` ${k}="${v}"`;
++    body += '/>';
++  }
++  const svg =
++    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black"` +
++    ` stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
++  const uri = `url('data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, '%27')}')`;
++  if (name) maskCache.set(key, uri);
++  return uri;
++}
++</script>
++
++<script lang="ts">
+ import { hasA11yProp } from './utils/hasA11yProp.js';
+ import { getLucideContext } from './context.js';
+ const globalProps = getLucideContext() ?? {};
+ const { name, color = globalProps.color ?? 'currentColor', size = globalProps.size ?? 24, strokeWidth = globalProps.strokeWidth ?? 2, absoluteStrokeWidth = globalProps.absoluteStrokeWidth ?? false, iconNode = [], children, ...props } = $props();
+ const calculatedStrokeWidth = $derived(absoluteStrokeWidth ? (Number(strokeWidth) * 24) / Number(size) : strokeWidth);
++const mask = $derived(maskUri(name, iconNode, calculatedStrokeWidth));
+ </script>
+ 
+-<svg
+-  {...defaultAttributes}
++<span
+   {...!children && !hasA11yProp(props) && { 'aria-hidden': 'true' }}
+   {...props}
+-  width={size}
+-  height={size}
+-  stroke={color}
+-  stroke-width={calculatedStrokeWidth}
++  style="width:{size}px;height:{size}px;--mask-icon:{mask};{props.style ?? ''}"
+   class={['lucide-icon lucide', globalProps.class, name && `lucide-${name}`, props.class]}
+->
+-  {#each iconNode as [tag, attrs]}
+-    <svelte:element
+-      this={tag as string}
+-      {...attrs}
+-    />
+-  {/each}
+-  {@render children?.()}
+-</svg>
++></span>
