@@ -107,11 +107,43 @@ main-thread time (sprite 270ms vs 137ms), because it traded cheap recalcs
 for full-document paints. It won on the metric it measured and lost on the
 one it did not.
 
-Every consumer the ticker has is compositable or re-expressible: pulse and
-LED chase already write `opacity`, `stepped-spin` writes
-`transform: rotate()`, and the glow's `--ambient-glow-t` -> `::before`
-box-shadow becomes opacity on that same `::before`. There is no consumer
-that needs a JS timer.
+Every consumer the ticker has is compositable except one: pulse and LED
+chase already write `opacity`, `stepped-spin` writes `transform: rotate()`.
+
+The glow is the exception and **should not be re-expressed**. Its
+`--ambient-glow-t` drives three things at once in `app.css:876-878` — shadow
+spread `0 -> 2px`, shadow alpha `0 -> 0.22`, and `::before` opacity
+`0.7 -> 1.0` (which lifts the 1px border with it). Opacity alone cannot
+reproduce spread growth: the ring would sit at full 2px and fade in instead
+of expanding. Keep the glow on the ticker and make the ticker **suspend
+itself when no `.status-glow-*` element is in the DOM** — it currently ticks
+at 8/s unconditionally, so gating it on its last consumer costs the glow
+nothing and costs zero whenever no glow is on screen.
+
+### The 2026-07-04 present-rate incident does not recur, if steps() stays
+
+`app.css`'s `--animate-pulse: none` note records that the original *smooth*
+pulse forced a GPU present every vsync — one 6px dot as a standing 165
+presents/sec client on a 165Hz panel, stuttering other apps. Compositing
+these animations puts them back on the compositor thread, so that incident
+had to be re-measured, not assumed away. Present rate (compositor Swap/s),
+same spike rig:
+
+| case | style recalc/s | presents/s |
+| --- | --- | --- |
+| static floor | 0.5 | 0.2 |
+| pulse: JS ticker @8Hz (today) | 8.0 | 8.2 |
+| pulse: CSS opacity `steps(8)` | 0.0 | 7.3 |
+| pulse: CSS opacity **smooth** | 0.0 | **63.2** |
+| spin: CSS rotate `steps(8)` | 0.0 | 8.5 |
+| sprite: JS background-position @25Hz (today) | 25.0 | 25.0 |
+| sprite: CSS `translateX` `steps(8)` | 0.0 | 8.5 |
+
+The smooth row reproduces the incident exactly (every vsync). **`steps()`
+pins the present rate to the art's own frame rate whether JS or CSS drives
+the animation**, so the compositable re-expressions present no more often
+than today — the sprite still presents at its `frameMs`, the pulse still at
+8/s. The win is main-thread work, not present rate. Keep `steps()`.
 
 ### It costs no memory
 
