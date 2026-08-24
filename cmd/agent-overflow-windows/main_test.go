@@ -189,8 +189,8 @@ func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
 //     Wails emits its own --disable-features (seeded with
 //     msSmartScreenProtection) and Chromium keeps only the last
 //     occurrence of a duplicated switch — a raw flag here clobbers
-//     Wails' list. Feature toggles go through browserDisabledFeatures /
-//     browserEnabledFeatures, which Wails merges into its single switch.
+//     Wails' list. Feature toggles go through browserDisabledFeatures,
+//     which Wails merges into its single switch.
 func TestBrowserArgs(t *testing.T) {
 	prod := browserArgs("prod")
 	dev := browserArgs("dev")
@@ -225,13 +225,8 @@ func TestBrowserArgs(t *testing.T) {
 //     no longer suppresses (WebView2Feedback #4502). Without it a
 //     horizontal trackpad swipe navigates the window back to the
 //     boot-time picker page.
-//   - PreferNonCompositedScrolling enabled — the mandatory companion to
-//     --disable-lcd-text; see browserEnabledFeatures.
-//   - The two lists must not intersect: Chromium resolves a feature
-//     named in both to "disabled wins", which would mask the conflict.
 func TestBrowserFeatures(t *testing.T) {
 	disabled := browserDisabledFeatures()
-	enabled := browserEnabledFeatures()
 
 	// The full disabled set is pinned by name so a list edit that drops
 	// one (each backs a specific fix or hygiene decision — see the
@@ -261,18 +256,13 @@ func TestBrowserFeatures(t *testing.T) {
 	if len(disabled) != len(wantDisabled) {
 		t.Errorf("disabled features = %v, want exactly %v — update both together", disabled, wantDisabled)
 	}
+}
 
-	foundPreferNonComposited := false
-	for _, f := range enabled {
-		if f == "PreferNonCompositedScrolling" {
-			foundPreferNonComposited = true
+func TestBrowserArgsLeaveTextAntialiasingAtChromiumDefault(t *testing.T) {
+	for _, arg := range browserArgs("prod") {
+		if arg == "--disable-lcd-text" {
+			t.Fatal("browser args force grayscale text antialiasing")
 		}
-		if _, ok := disabledSet[f]; ok {
-			t.Errorf("feature %q is both enabled and disabled", f)
-		}
-	}
-	if !foundPreferNonComposited {
-		t.Error("PreferNonCompositedScrolling missing from enabled features — eager compositing regression (see browserEnabledFeatures)")
 	}
 }
 

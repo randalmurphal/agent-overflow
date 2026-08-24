@@ -1099,7 +1099,6 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		Windows: application.WindowsOptions{
 			AdditionalBrowserArgs: browserArgs(mode),
 			DisabledFeatures:      browserDisabledFeatures(),
-			EnabledFeatures:       browserEnabledFeatures(),
 			// Stable per-mode WebView2 profile. Without this the profile
 			// path defaults to %APPDATA%\<exe name>, and dev builds carry a
 			// unique timestamped exe name — every `make dev-wsl` minted a
@@ -1345,8 +1344,7 @@ func wslSingleInstanceMode() string {
 // silently clobbered Wails' list (msSmartScreenProtection was being
 // re-enabled) — and anything Wails seeds would clobber ours if the
 // order ever flipped. Feature toggles go through
-// browserDisabledFeatures / browserEnabledFeatures, which Wails merges
-// into its single switch.
+// browserDisabledFeatures, which Wails merges into its single switch.
 //
 // 3D APIs are deliberately left ENABLED. The terminal's xterm renderer
 // loads the WebGL addon to draw box-drawing and block/quadrant glyphs
@@ -1397,13 +1395,6 @@ func browserArgs(mode string) []string {
 		// an index and in-memory bookkeeping for it in the network
 		// service. 1 MiB is the practical floor (0 means "default").
 		"--disk-cache-size=1048576",
-		// Keep the established grayscale text AA appearance. Removing this
-		// flag changes glyph-edge rendering across the whole Windows app,
-		// which is independent of the scroll-content layer removal. Glyph
-		// color is untouched. MANDATORY COMPANION:
-		// PreferNonCompositedScrolling in browserEnabledFeatures, or
-		// every scroller gets eagerly composited (see that comment).
-		"--disable-lcd-text",
 	}
 	if port := appidentity.DevToolsPort(mode); port > 0 {
 		args = append(args,
@@ -1466,30 +1457,6 @@ func browserDisabledFeatures() []string {
 		// source; frontend/src/app.css carries an overscroll-behavior-x
 		// backstop in case a future runtime renames the feature.
 		"OverscrollHistoryNavigation",
-	}
-}
-
-// browserEnabledFeatures returns the Chromium base::Feature names
-// switched on in the WebView2, shipped via Wails'
-// WindowsOptions.EnabledFeatures (same single-switch rule as
-// browserDisabledFeatures).
-func browserEnabledFeatures() []string {
-	return []string{
-		// MANDATORY COMPANION to --disable-lcd-text (browserArgs). Blink
-		// composites a scroller eagerly whenever doing so cannot hurt
-		// LCD text; with LCD text globally off, that guard always
-		// passes, so EVERY scroller (each pane timeline, the pane strip)
-		// got promoted to composited scrolling with content-sized raster
-		// layers — measured 2026-07-21: renderer cc/tile_memory 165.5MB
-		// vs an 89.9MB same-day baseline. This feature
-		// (verified present in WebView2 150.0.4078.83) restores the
-		// prefer-non-composited default so scrollers stay unlayerized;
-		// scrolling still uses Chromium's normal paint path. If a future WebView2 drops the
-		// feature the symptom to watch for is this same eager-compositing
-		// regression, visible as full-scroll-height layers in the CDP
-		// LayerTree dump for scrollers whose content carries no
-		// will-change (sidebar lists, the pane strip).
-		"PreferNonCompositedScrolling",
 	}
 }
 
