@@ -1,15 +1,22 @@
-// app_webview_trim.go is the backend half of the idle renderer memory trim.
+// app_webview_trim.go is the backend half of the renderer memory trim.
 //
 // Blink only runs its memory-reducing GC — the one that DECOMMITS Oilpan
 // pages instead of pooling them — when the page is hidden or the OS reports
 // memory pressure. An always-visible desktop app never gets either signal,
 // so the renderer parks at its high-water mark forever (measured 2026-08-25:
 // 5 idle hours flat at ~293MB with ~20MB live; one forced GC returned 54MB
-// instantly). The frontend reports input idleness over
-// RequestWebviewMemoryTrim; this side gates on provider activity and
-// forwards the webview:trim directive to the process that owns the webview
-// (the Windows launcher, over the notification bridge), which fires CDP
-// HeapProfiler.collectGarbage through WebView2's DevTools bridge.
+// instantly). Simulated pressure notifications were A/B'd and return
+// nothing in WebView2; the forced GC is the only working lever, and its
+// whole cost is one ~58ms main-thread stall (soak rig, streaming load).
+// That price shapes the policy: the trim fires in input-quiet windows
+// BETWEEN turns — ~10s after the last turn completes, at most once per
+// webviewTrimMinInterval — so an active session returns to floor after
+// every turn instead of ratcheting until the user walks away. The frontend
+// reports input quiet over RequestWebviewMemoryTrim; this side gates on
+// provider activity and forwards the webview:trim directive to the process
+// that owns the webview (the Windows launcher, over the notification
+// bridge), which fires CDP HeapProfiler.collectGarbage through WebView2's
+// DevTools bridge.
 //
 // The gates live HERE, not in the frontend, because only this process knows
 // whether a turn is open: a GC pause (tens of ms) is invisible on an idle
