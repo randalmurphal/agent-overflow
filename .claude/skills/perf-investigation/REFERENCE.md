@@ -293,6 +293,8 @@ probe.
 
 ## Ruled out or declined
 
+- GPU-process swings (observed 206→305MB and back within 15-second windows, 2026-08-25): attributed by dumping AT a caught peak (poll `PrivateMemorySize64` of the AO gpu-process — filter `msedgewebview2` command lines for BOTH `--type=gpu-process` AND `agent-overflow`, five WebView2 apps run on this box — and fire `memdump --gpu` on a threshold). Of an 83MB peak-over-floor, only 17MB is visible to memory-infra (malloc +16, tiles +1, shared images and skia flat); the rest is untracked D3D11 usermode-driver staging during raster/upload bursts. Transient, returns to floor in seconds, scales with repaint volume. Not a leak; only lever is rastering less (ruled out). Floor remains 185-230MB.
+
 - WebView2 `MemoryUsageTargetLevel=Low`: declined. Its spec describes working-set trimming through disk swapping, not reclamation ("if script runs after we swapped related memory out, we will swap the memory in to ensure script can still run"), so it shrinks the Task Manager number and adds swap-in stalls. Blur-gating it also leaves active-state memory untouched.
 - Mount fewer panes / scope the ticker: rejected by ruling.
 - Overlap-layer restructuring (14 layers promoted by Overlap): ceiling ~5-10MB GPU and ~2% main thread; the fixes change scroll or paint behavior. Not worth an A/B unless the ceiling changes.
