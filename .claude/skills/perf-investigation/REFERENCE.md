@@ -13,6 +13,8 @@ Renderer ("Agent Overflow (dev)") at first start, two panes visible: 112-128MB p
 
 GPU process: about 185-230MB at first start and it does not fall below that. Roughly 100-120MB is fixed (D3D11/ANGLE driver heap, DirectComposition swap chain at 2560x1369 ≈ 14MB per buffer, skia GPU cache ≈ 16MB, shared images ≈ 13MB, transfer buffers), 40-50MB is heap slack, and cc/resource_memory (tiles, 40MB at start) scales with composited planes. It is not attributable to app code below that line.
 
+Steady state with a restored 12-pane strip (2026-08-25, dump at 290.5MB private): tracked allocators total ~146MB — malloc 98.9 (win_heap 38.7 + partitions 50.3 + metadata/fragmentation caches 10.5), cc/resource_memory 16.8, gpu 15.7 (shared_images 13.4, shader_cache 2.2), skia 13.5, shared_memory 1.2 (plus one 16MB renderer↔GPU transfer segment). The other ~145MB is invisible to memory-infra: D3D11 usermode driver + DirectComposition. The band is a floor, not growth — a fresh restart re-entered 246-280MB within minutes, identical to the 5-hour-old process, and the app-drivable slice (tiles + shared images + skia ≈ 45MB) is already post-`7b29f9d6` minimal. Peaks to 340-440MB are the documented transient driver staging (line below). No app-side lever cuts the steady band without rastering less.
+
 Browser process ("Manager"): 40-55MB, mostly IndexedDB/leveldb and malloc. Network, Storage, Crashpad: under 10MB each.
 
 Go backend: 13MB live heap on 6363. Lean; one confirmation profile per investigation is enough.
