@@ -151,6 +151,32 @@ func (p *Parser) provisionalMirroredCommandEvent(threadID, commandUUID string, n
 	}}
 }
 
+// settleMirroredCommandAtTurnResult closes a direct command on Claude's
+// authoritative turn result. The wire emits result before the command's
+// terminal command_lifecycle frame, while triage force-closes every unresolved
+// foreground tool at EventTurnComplete. Emitting the command completion first
+// preserves that safety net without falsely failing every native command.
+//
+// The later lifecycle frame still releases send-side delivery bookkeeping.
+// It may also be the only terminal signal when a command is cancelled before
+// it opens a turn, so finishMirroredCommand remains idempotent through removal
+// of the command state here.
+func (p *Parser) settleMirroredCommandAtTurnResult(threadID string, failed bool, now time.Time) []provider.ProviderEvent {
+	if p == nil || p.activeCommandUUID == "" {
+		return nil
+	}
+	commandUUID := p.activeCommandUUID
+	// A result closes the only window in which synthetic command output can
+	// arrive. Clear it now rather than letting a malformed post-result envelope
+	// inherit this command's correlation while lifecycle bookkeeping catches up.
+	p.activeCommandUUID = ""
+	terminal := provider.CommandCompleted
+	if failed {
+		terminal = provider.CommandCancelled
+	}
+	return p.finishMirroredCommand(threadID, commandUUID, terminal, now)
+}
+
 func (p *Parser) finishMirroredCommand(threadID, commandUUID string, terminal provider.CommandLifecycleState, now time.Time) []provider.ProviderEvent {
 	if p == nil || p.transcriptMirror == nil {
 		return nil

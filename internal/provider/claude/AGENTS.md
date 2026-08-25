@@ -105,10 +105,13 @@ owner. The top-level `ParseLine` (in `parser.go`) reads the envelope's
   task binding. Unattributed prefixes are bounded by file count, entry count,
   per-file bytes, and total bytes. Crossing a bound emits one visible
   degradation warning for the command. A fork's outer synthetic answer is
-  held until terminal and emitted once as a top-level sourced command result.
-  Projection, task, owner, and dedupe state is
-  released at terminal. Ordinary async sidechains keep using stdout and their
-  mirror copies are ignored.
+  held until the authoritative `result` envelope and emitted once as a
+  top-level sourced command result before `EventTurnComplete`. Claude emits
+  the terminal `command_lifecycle` frame after `result`, so that later frame
+  only releases delivery bookkeeping. Cancellation before a turn opens remains
+  the fallback completion path. Projection, task, owner, and dedupe state is
+  released when the result settles the command. Ordinary async sidechains keep
+  using stdout and their mirror copies are ignored.
 - `parse_control.go` — `control_request` envelopes: CanUseTool
   approvals and the exit_plan_mode signal. `parseControlRequest` is a
   `*Parser` METHOD because a subagent's ask arrives here as

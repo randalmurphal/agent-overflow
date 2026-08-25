@@ -121,7 +121,12 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 	} else if stopReason == "error" {
 		failure = &provider.FailureMeta{Class: provider.FailureFatal}
 	}
-	events := []provider.ProviderEvent{{
+	// Claude closes a native slash-command turn with result and only then emits
+	// command_lifecycle completed/cancelled. Settle the visible command before
+	// EventTurnComplete reaches triage, whose orphan guard must remain strict for
+	// real tools whose result was lost.
+	events := p.settleMirroredCommandAtTurnResult(threadID, aborted || stopReason == "error", now)
+	events = append(events, provider.ProviderEvent{
 		Kind:             provider.EventTurnComplete,
 		ThreadID:         threadID,
 		StructuredOutput: raw["structured_output"],
@@ -137,7 +142,7 @@ func (p *Parser) parseResult(threadID string, raw map[string]json.RawMessage, no
 		Timestamp: now,
 		Raw:       line,
 		Failure:   failure,
-	}}
+	})
 
 	return events, nil
 }

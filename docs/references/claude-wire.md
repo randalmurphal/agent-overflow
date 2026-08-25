@@ -3084,6 +3084,14 @@ result{subtype:"success",num_turns:0,total_cost_usd:0,result:<same text>}
 command_lifecycle{state:"completed"}
 ```
 
+The ordering of the final two frames is a persistence boundary, not incidental
+timing. AO settles the visible Command or Skill row and releases its held
+synthetic output when `result` arrives, then emits `EventTurnComplete`. The
+later lifecycle frame only closes delivery bookkeeping. Waiting for that frame
+would let triage's turn-complete orphan guard mark the still-running command as
+failed and reject its real completion as late. A lifecycle terminal without a
+result remains the fallback for a command cancelled before it opens a turn.
+
 **The output rides an `assistant` envelope stamped `<synthetic>`:**
 
 ```json

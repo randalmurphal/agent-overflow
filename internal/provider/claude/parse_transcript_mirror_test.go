@@ -73,29 +73,33 @@ func TestTranscriptMirrorTurnsDirectForkedCommandIntoLiveSkill(t *testing.T) {
 		t.Fatalf("mirrored final = %+v", final)
 	}
 
-	terminal := parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"completed"}`)
-	if len(terminal) != 3 || terminal[0].Kind != provider.EventToolComplete || terminal[0].ItemID != launchID || terminal[1].Kind != provider.EventCommandResult || terminal[2].Kind != provider.EventCommandLifecycle {
-		t.Fatalf("terminal events = %+v", terminal)
+	result := parse(`{"type":"result","subtype":"success","is_error":false,"result":"review complete"}`)
+	if len(result) != 3 || result[0].Kind != provider.EventToolComplete || result[0].ItemID != launchID || result[1].Kind != provider.EventCommandResult || result[2].Kind != provider.EventTurnComplete {
+		t.Fatalf("result events = %+v", result)
 	}
-	if terminal[1].Content != "review complete\n\nsecond page" || terminal[1].ParentToolUseID != "" {
-		t.Fatalf("fork result = %+v, want one combined top-level synthetic answer", terminal[1])
+	if result[1].Content != "review complete\n\nsecond page" || result[1].ParentToolUseID != "" {
+		t.Fatalf("fork result = %+v, want one combined top-level synthetic answer", result[1])
 	}
 	var resultMeta provider.CommandResultMeta
-	if err := json.Unmarshal(terminal[1].Meta, &resultMeta); err != nil {
+	if err := json.Unmarshal(result[1].Meta, &resultMeta); err != nil {
 		t.Fatalf("decode result meta: %v", err)
 	}
 	if resultMeta.AgentResult == nil || resultMeta.AgentResult.LaunchID != launchID || resultMeta.AgentResult.SourceKind != "skill" || resultMeta.AgentResult.SourceName != "code-review" {
 		t.Fatalf("fork result source = %+v", resultMeta.AgentResult)
 	}
 	var meta map[string]any
-	if err := json.Unmarshal(terminal[0].Meta, &meta); err != nil {
+	if err := json.Unmarshal(result[0].Meta, &meta); err != nil {
 		t.Fatalf("decode completion meta: %v", err)
 	}
 	if _, ok := meta["skillFork"].(map[string]any); !ok {
-		t.Fatalf("completion has no skillFork marker: %s", terminal[0].Meta)
+		t.Fatalf("completion has no skillFork marker: %s", result[0].Meta)
 	}
 	if meta["directCommandResult"] != true {
-		t.Fatalf("completion has no direct-command result marker: %s", terminal[0].Meta)
+		t.Fatalf("completion has no direct-command result marker: %s", result[0].Meta)
+	}
+	terminal := parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"completed"}`)
+	if len(terminal) != 1 || terminal[0].Kind != provider.EventCommandLifecycle {
+		t.Fatalf("terminal events = %+v, want bookkeeping only after result settled the command", terminal)
 	}
 	if len(parser.transcriptMirror.projections) != 0 || len(parser.transcriptMirror.taskScopes) != 0 || len(parser.transcriptMirror.scopeOwners) != 0 {
 		t.Fatalf("completed command retained mirror state: %+v", parser.transcriptMirror)
@@ -251,13 +255,85 @@ func TestDirectNonForkingCommandKeepsItsCommandResult(t *testing.T) {
 	if events := parse(`{"type":"assistant","message":{"id":"synthetic-usage","role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"Usage: 42%"}]}}`); len(events) != 0 {
 		t.Fatalf("command output was not held until classification: %+v", events)
 	}
-	events := parse(`{"type":"command_lifecycle","command_uuid":"cmd-usage","state":"completed"}`)
-	if len(events) != 3 || events[0].Kind != provider.EventCommandResult || events[1].Kind != provider.EventToolComplete || events[1].Content != "Usage: 42%" || events[2].Kind != provider.EventCommandLifecycle {
-		t.Fatalf("non-fork terminal events = %+v", events)
+	events := parse(`{"type":"result","subtype":"success","is_error":false,"result":"Usage: 42%"}`)
+	if len(events) != 3 || events[0].Kind != provider.EventCommandResult || events[1].Kind != provider.EventToolComplete || events[1].Content != "Usage: 42%" || events[2].Kind != provider.EventTurnComplete {
+		t.Fatalf("non-fork result events = %+v", events)
 	}
 	var resultMeta provider.CommandResultMeta
 	if err := json.Unmarshal(events[0].Meta, &resultMeta); err != nil || !resultMeta.Suppressed {
 		t.Fatalf("non-fork command result signal was not row-suppressed: meta=%s err=%v", events[0].Meta, err)
+	}
+	terminal := parse(`{"type":"command_lifecycle","command_uuid":"cmd-usage","state":"completed"}`)
+	if len(terminal) != 1 || terminal[0].Kind != provider.EventCommandLifecycle {
+		t.Fatalf("non-fork terminal events = %+v, want bookkeeping only", terminal)
+	}
+}
+
+func TestDirectCommandWithoutSyntheticOutputSettlesBeforeTurnComplete(t *testing.T) {
+	session := &Session{}
+	session.directCommands.note("cmd-compact", "/compact", provider.SendOptions{})
+	parser := NewParser()
+	parser.peerTurns = session
+
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v", err)
+		}
+		return events
+	}
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-compact","state":"started"}`)
+	events := parse(`{"type":"result","subtype":"success","is_error":false,"result":""}`)
+	if len(events) != 2 || events[0].Kind != provider.EventToolComplete || events[1].Kind != provider.EventTurnComplete {
+		t.Fatalf("compact result events = %+v, want command completion before turn completion", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("decode completion meta: %v", err)
+	}
+	if meta["is_error"] == true {
+		t.Fatalf("successful output-free command rendered as failed: %s", events[0].Meta)
+	}
+	terminal := parse(`{"type":"command_lifecycle","command_uuid":"cmd-compact","state":"completed"}`)
+	if len(terminal) != 1 || terminal[0].Kind != provider.EventCommandLifecycle {
+		t.Fatalf("compact terminal events = %+v, want bookkeeping only", terminal)
+	}
+}
+
+func TestFailedDirectCommandSettlesAsErrorBeforeTurnComplete(t *testing.T) {
+	session := &Session{}
+	session.directCommands.note("cmd-failed", "/compact", provider.SendOptions{})
+	parser := NewParser()
+	parser.peerTurns = session
+
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v", err)
+		}
+		return events
+	}
+	parse(`{"type":"command_lifecycle","command_uuid":"cmd-failed","state":"started"}`)
+	events := parse(`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["compaction failed"]}`)
+	if len(events) != 2 || events[0].Kind != provider.EventToolComplete || events[1].Kind != provider.EventTurnComplete {
+		t.Fatalf("failed result events = %+v, want command completion before turn completion", events)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("decode completion meta: %v", err)
+	}
+	if meta["is_error"] != true {
+		t.Fatalf("failed command rendered as successful: %s", events[0].Meta)
+	}
+	turnComplete, ok := events[1].TurnComplete.(*provider.WireTurnCompleteMeta)
+	if !ok || turnComplete.StopReason != "error" {
+		t.Fatalf("failed command turn completion = %+v", events[1].TurnComplete)
+	}
+	terminal := parse(`{"type":"command_lifecycle","command_uuid":"cmd-failed","state":"cancelled"}`)
+	if len(terminal) != 1 || terminal[0].Kind != provider.EventCommandLifecycle {
+		t.Fatalf("failed command terminal events = %+v, want bookkeeping only", terminal)
 	}
 }
 
