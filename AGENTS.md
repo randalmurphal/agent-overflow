@@ -241,15 +241,18 @@ thread — `close_agent` is a model tool only.
   `setupE2EApp` and `newTestAppWithStore` both poison the provider
   binary settings, stub text generation and the live Codex model
   catalog, detach HOME/USERPROFILE, and fail any test that still spawns
-  (`app_e2e_isolation_test.go`); `resolveTextGenerationExecutor`
+  (`app_e2e_isolation_test.go`, thin glue over `internal/kerneltest`,
+  which holds the importable guard so a fixture in ANY package can
+  install it); `resolveTextGenerationExecutor`
   additionally refuses real CLI execution inside any test binary, and
   the boot prune refuses a metadata store whose `providerHome` stamp
   does not match the credential home; a session-starting test installs
   `testutil.WriteMockClaudeScript` / `WriteMockCodexSession` over the
   poison. Any NEW fixture that constructs an `*App` able to start
   sessions, and any new spawn path (probes, catalogs, textgen-style
-  side effects), must be wired into the same guard — mocking stays
-  mandatory-by-default, never opt-in per test.
+  side effects), must be wired into the same guard — via
+  `kerneltest.IsolateSpawns` if it lives outside package `main` —
+  mocking stays mandatory-by-default, never opt-in per test.
 
 ## Deferred (Not Currently in Scope)
 

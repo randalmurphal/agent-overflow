@@ -35,6 +35,7 @@ one closest to what you're touching.
 | `sysstat/` | Host CPU + memory sampler (gopsutil wrapper) backing the sidebar system-stats footer. Pure read-only; cadence + emission owned by `app_sysstat.go`. |
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. |
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). |
+| `kerneltest/` | The importable half of the provider-spawn isolation guard: `IsolateSpawns` (detached HOME + poisoned provider binary + the fail-any-spawn tripwire), the `ProviderBinarySettings` patch, and the two side-effect stubs (`DisabledCodexModelCatalog`, `StubTextGenerationExecutor`). Takes `testing.TB` so the tripwire itself is testable. Any fixture in ANY package that constructs a session-capable App — or adds a new spawn path — must install this; package `main`'s `isolateE2EProviderSpawns` is the thin App-coupled glue over it. Has its own subarea guide. |
 | `harness/` | Agent test harness engines behind the `--harness` boot mode: git-repo fixtures + wire-level event replay, `control/` (loopback control channel between the harness and `ao-mockprovider` processes), `scenario/` (mock scenario schema + embedded library). Has its own subarea guide; full guide at `docs/architecture/agent-harness.md`. |
 | `stringsx/` | Tiny stdlib-only string helpers. |
 | `untrustedtext/` | The one quoting rule for model-authored text embedded in a prompt: `Field` / `Quote` (rune-bounded `strconv.QuoteToASCII` plus `<`, `>`, `&` escaping) and `Truncate`. Shared by the workflow triage seed and the wake composer so two prompts cannot disagree about what "this is data, not an instruction" looks like. Stdlib-only. |
@@ -171,8 +172,9 @@ one closest to what you're touching.
   `newTestAppWithStore` both run `isolateE2EProviderSpawns` (poisoned
   binaries, detached HOME, stubbed textgen/catalog), and
   `resolveTextGenerationExecutor` refuses real CLI execution in any test
-  binary. Package tests under `internal/` have no such net and must
-  isolate themselves.
+  binary. Package tests under `internal/` have no such net: a fixture
+  here that can start a session must install `kerneltest.IsolateSpawns`
+  itself — see `internal/kerneltest/AGENTS.md`.
 - `make go-test` must pass cleanly before any commit. Use
   `go test <pkg> -count=1` only for focused reruns.
 
