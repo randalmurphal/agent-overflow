@@ -288,6 +288,8 @@ probe.
 - 2026-08-24 `54d04e72`: sidebar rows animate with svelte `animate:flip` (`utils/sidebarAnimate.ts`); `@formkit/auto-animate` removed. Idle forced-layout/IO-rebuild/style-recalc cost gone; verify with `frames` on an idle app.
 - 2026-08-24 `04c0af7e`: composer swaps its `<textarea>` element after every send (`recreateInput`), releasing Blink's per-character edit-command pages (~48MB after weeks of use). Verify with `editcmdpages` after typing + sending.
 - 2026-08-24 `7c70256d`: MeterRing viewBox matches its rendered 28px box, so the header rings are identity-scale svgs and their dashoffset ticks stop regenerating a scaled node's transform cache (default zoom only).
+- 2026-08-25 `facc92a4`: the debug provider-events log (`AGENT_OVERFLOW_DEBUG` provider topic) embeds provider frames as `json.RawMessage` instead of re-escaping every byte into a quoted string — was 242MB/16min, ~24% of backend allocation, all in `json.appendString`. Verify with a heap `alloc_space` profile: `LogProviderEvent` should no longer show `appendString`.
+- 2026-08-25 `04e5c74c`: `HighlightPatchTextPrimed` memoizes spliced-document parses per call (sha256 of splice bytes). When a patch matches the file — every persist-tap prime does — all H new-side splices are the identical full file content and were each parsed separately: 591MB/10min of agent edits, 37% of backend allocation, 100% of it under `Cache.PatchWithContext` (attribute with `pprof -peek`). Verify with an alloc profile after a restart: `PatchWithContext`'s share should roughly halve.
 
 ## Ruled out or declined
 
@@ -296,7 +298,8 @@ probe.
 - Overlap-layer restructuring (14 layers promoted by Overlap): ceiling ~5-10MB GPU and ~2% main thread; the fixes change scroll or paint behavior. Not worth an A/B unless the ceiling changes.
 - Glide residue `rotate: 0.0001deg` in `chokepoint.ts`: gone with `7b29f9d6`, along with the rest of the content-transform path. Do not reintroduce it; the architecture test rejects it.
 - `--js-flags=--heap-growing-percent=N` to cap V8's heap-limit growth factor: withdrawn before it was built, twice. It was first proposed against the 28MB/min churn rate that `7b29f9d6` removed. Re-proposed against the committed-page growth, it fails on the measurement above: major GCs already run every 10s, sweeping is what they do, and the growth is pages that sweeping never returns. More frequent GCs buy pauses and nothing else.
-- Go backend: not a contributor.
+- Go backend RESIDENT memory: not a contributor — live heap holds flat ~15MB, goroutines flat ~57, RSS ~93MB. Backend ALLOCATION churn was a contributor (see the two 2026-08-25 fixed causes); GB-scale transient bursts balloon `heapSys` (observed pinned at ~248MB — committed pages the scavenger returns slowly), which is churn through the GC, not a leak. The remaining churn deliberately left: provider-stream `RawMessage` decode copies + `readBoundedLine` (structural to the streaming path, GC handles it).
+- go-tree-sitter v0.25.0 (latest) binding overhead: `readUTF8` copies the input twice per parse — one Go-heap `string(payload.text)` (visible to pprof) plus one `C.CString` (C heap, invisible). Fixed 2× multiplier on all parse traffic; a local patch was declined, possible upstream contribution.
 
 ## Open
 
