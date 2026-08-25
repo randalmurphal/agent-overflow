@@ -32,3 +32,42 @@ export function replaceTextareaRange(
   textarea.setSelectionRange(caret, caret);
   textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
+
+/**
+ * Change a textarea to `nextValue` with one native edit over only the range
+ * that differs. A whole-value assignment resets a long textarea's internal
+ * scroll position in Blink when its controlled value commits back through
+ * Svelte. Keeping the unchanged prefix and suffix outside the edit preserves
+ * that internal scroll state and records the mutation as one undo step.
+ */
+export function replaceTextareaValue(
+  textarea: HTMLTextAreaElement,
+  nextValue: string,
+  caret: number,
+): void {
+  const currentValue = textarea.value;
+  if (currentValue === nextValue) {
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(caret, caret);
+    return;
+  }
+  let start = 0;
+  const sharedLength = Math.min(currentValue.length, nextValue.length);
+  while (start < sharedLength && currentValue[start] === nextValue[start]) {
+    start += 1;
+  }
+
+  let currentEnd = currentValue.length;
+  let nextEnd = nextValue.length;
+  while (
+    currentEnd > start
+    && nextEnd > start
+    && currentValue[currentEnd - 1] === nextValue[nextEnd - 1]
+  ) {
+    currentEnd -= 1;
+    nextEnd -= 1;
+  }
+
+  replaceTextareaRange(textarea, start, currentEnd, nextValue.slice(start, nextEnd));
+  textarea.setSelectionRange(caret, caret);
+}

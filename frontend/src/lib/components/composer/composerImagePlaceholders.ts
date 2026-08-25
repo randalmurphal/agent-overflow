@@ -8,6 +8,7 @@ import {
 } from '../../utils/imagePlaceholders';
 import { composerRootFor } from './composerFocus';
 import type { UploadInsertionPoint } from './composerUploads.svelte';
+import { replaceTextareaValue } from './textareaEdit';
 
 interface ComposerImagePlaceholderOptions {
   getTextarea: () => HTMLTextAreaElement | undefined;
@@ -33,11 +34,11 @@ export function createComposerImagePlaceholders(opts: ComposerImagePlaceholderOp
     });
   }
 
-  // Replace the entire textarea value via execCommand so the synthesized
-  // input event drives `handleInput`'s setContent path AND the change is
-  // recorded as one undo step. Direct assignment to textarea.value (or a
-  // controlled re-render that writes the value attribute) clears the
-  // browser's undo stack — execCommand keeps it intact.
+  // Apply the content change as one native edit so the synthesized input
+  // event drives `handleInput`'s setContent path and the browser records one
+  // undo step. `replaceTextareaValue` edits only the changed range: selecting
+  // and replacing the whole controlled value resets a long textarea's own
+  // scroll position in Blink when Svelte commits the draft update.
   function replaceTextareaContent(content: string, cursor: number): boolean {
     const textarea = opts.getTextarea();
     if (!textarea) return false;
@@ -52,10 +53,7 @@ export function createComposerImagePlaceholders(opts: ComposerImagePlaceholderOp
     const root = composerRootFor(textarea);
     const active = document.activeElement;
     if (!root || !active || !root.contains(active)) return false;
-    textarea.focus({ preventScroll: true });
-    textarea.setSelectionRange(0, textarea.value.length);
-    document.execCommand('insertText', false, content);
-    textarea.setSelectionRange(cursor, cursor);
+    replaceTextareaValue(textarea, content, cursor);
     opts.autosizeTextarea();
     opts.refreshTriggers();
     return true;
