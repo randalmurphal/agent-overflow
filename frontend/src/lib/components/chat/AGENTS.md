@@ -240,11 +240,11 @@ Module-level singletons in the markdown pipeline keep remounts cheap.
 
 ## Activity Runs
 
-Consecutive activity rows (tool calls, completions, thinking, and the group
-cards on the same rail) are wrapped by the projection's last pass into ONE
-`activity_run` row: `ActivityRun.svelte`, an always-present summary header
-(`ActivityRunHeader.svelte`) over a height-capped clip that scrolls in place
-and is what collapsing removes. Architecture:
+Consecutive activity rows (tool calls, completions, terminal interactions,
+thinking, and the group cards on the same rail) are wrapped by the projection's
+last pass into ONE `activity_run` row: `ActivityRun.svelte`, an always-present
+summary header (`ActivityRunHeader.svelte`) over a height-capped clip that
+scrolls in place and is what collapsing removes. Architecture:
 [`docs/architecture/activity-runs.md`](../../../../../docs/architecture/activity-runs.md).
 
 Operational rules for this directory:

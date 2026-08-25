@@ -60,6 +60,7 @@ describe('timelineNodeHasRail', () => {
   it.each<[string, TimelineNode, boolean]>([
     ['tool_call leaf', leaf({ kind: 'tool_call' }), true],
     ['tool_completion leaf', leaf({ kind: 'tool_completion' }), true],
+    ['terminal_interaction leaf', leaf({ kind: 'terminal_interaction' }), true],
     ['thinking leaf', leaf({ kind: 'thinking' }), true],
     ['proposed_plan payload is rail-exempt', leaf({ kind: 'tool_call', payloadKind: 'proposed_plan' }), false],
     ['assistant_text leaf has no rail', leaf({ kind: 'assistant_text' }), false],

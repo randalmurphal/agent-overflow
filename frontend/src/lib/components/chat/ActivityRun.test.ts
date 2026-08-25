@@ -581,6 +581,33 @@ describe('<ActivityRun>', () => {
       return renderRun(items, provider);
     }
 
+    it('keeps a background-terminal interaction inside its command run', async () => {
+      const { getAllByTestId, getByTestId } = await renderRun([
+        makeItem({
+          id: 'interacted:pid-42:0:0',
+          itemIndex: 0,
+          kind: 'terminal_interaction',
+          summary: 'Interacted with background terminal',
+          meta: JSON.stringify({ process_id: 'pid-42', has_stdin: true }),
+        }),
+        makeItem({
+          id: 'complete:command-1',
+          itemIndex: 1,
+          kind: 'tool_completion',
+          toolName: 'command_execution',
+          completionOf: 'command-1',
+          summary: 'python3 -m http.server 4179 --bind 127.0.0.1',
+        }),
+      ], 'codex');
+
+      const activityRun = getByTestId('activity-run');
+      expect(getAllByTestId('message-timeline-node')).toHaveLength(1);
+      expect(activityRun.contains(getByTestId('terminal-interaction-row'))).toBe(true);
+      expect(activityRun.contains(getByTestId('command-output-row'))).toBe(true);
+      expect(getByTestId('activity-run-header-counts').textContent).toContain('Wait');
+      expect(getByTestId('activity-run-header-counts').textContent).toContain('Bash');
+    });
+
     it('tallies per tool name', async () => {
       const { getByTestId } = await collapsed([
         tool('t0', 0),

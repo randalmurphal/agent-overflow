@@ -1,9 +1,9 @@
 # Activity Runs
 
-An **activity run** is one maximal stretch of consecutive activity rows —
-tool calls, completions, thinking, and the group cards that sit on the same
-rail — rendered as a single timeline row that scrolls in place and collapses
-to one line.
+An **activity run** is one maximal stretch of consecutive activity rows:
+tool calls, completions, terminal interactions, thinking, and the group cards
+that sit on the same rail. It renders as a single timeline row that scrolls in
+place and collapses to one line.
 
 Designed 2026-07-20, shipped 2026-07-25/26. This document describes what is
 in the tree; where the original design and the implementation disagree, the

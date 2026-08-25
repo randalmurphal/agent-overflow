@@ -1,9 +1,10 @@
 // Final projection pass: wraps every maximal run of consecutive rail-kind
 // rows into one `activity_run` node.
 //
-// Runs bound the vertical space a long stretch of tool calls and thinking
-// takes in the thread. Past the clip's cap a run scrolls in place instead of
-// pushing prose off screen, and any run collapses to a one-line count chip.
+// Runs bound the vertical space a long stretch of tool calls, terminal
+// interactions, and thinking takes in the thread. Past the clip's cap a run
+// scrolls in place instead of pushing prose off screen, and any run collapses
+// to a one-line count chip.
 //
 // Runs at EVERY length: the threshold that matters is the clip's max-height,
 // which self-gates (a run shorter than the cap renders exactly as it does

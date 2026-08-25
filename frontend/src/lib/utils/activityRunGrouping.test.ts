@@ -214,7 +214,6 @@ describe('run boundaries', () => {
     ['error', 'error'],
     ['api_retry', 'api_retry'],
     ['compaction', 'compaction'],
-    ['terminal_interaction', 'terminal_interaction'],
   ])('%s breaks a run', (_label, kind) => {
     const nodes = project([
       tool('t1', 'Bash'),
@@ -223,6 +222,25 @@ describe('run boundaries', () => {
     ]);
 
     expect(nodes.map((n) => n.kind)).toEqual(['activity_run', 'leaf', 'activity_run']);
+  });
+
+  it('keeps terminal interactions on the same activity run as adjacent tools', () => {
+    const nodes = project([
+      tool('t1', 'Bash'),
+      leaf({
+        id: 'interacted:pid-42:0:0',
+        kind: 'terminal_interaction',
+        meta: JSON.stringify({ process_id: 'pid-42', has_stdin: true }),
+      }),
+      tool('t2', 'Bash'),
+    ]);
+
+    expect(nodes).toHaveLength(1);
+    expect(run(nodes, 0).memberItemIds).toEqual([
+      't1',
+      'interacted:pid-42:0:0',
+      't2',
+    ]);
   });
 
   it('includes thinking, completions, and every group kind', () => {

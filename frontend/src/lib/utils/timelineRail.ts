@@ -18,6 +18,7 @@ import type { TimelineNode } from './subagentGrouping';
 export const RAIL_LEAF_KINDS: ReadonlySet<string> = new Set([
   'tool_call',
   'tool_completion',
+  'terminal_interaction',
   'thinking',
 ]);
 
