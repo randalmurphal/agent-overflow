@@ -270,10 +270,10 @@ export interface RevealRead {
 /**
  * The pane's one user-facing error surface plus the provider banner that
  * shares the top of the pane. `setPaneError` / `clearPaneError` are the
- * chokepoint — the message is stored per KIND and the kind decides both
- * the affordance the banner offers and the no-clobber ranking (a
- * `general` write never displaces a live `history-load` retry). The
- * named writers below are thin wrappers kept for their call sites.
+ * chokepoint — the message is stored per KIND, every stored kind renders
+ * as its own banner row (`paneErrorList`, fixed display order), and the
+ * kind decides the affordance each row offers. The named writers below
+ * are thin wrappers kept for their call sites.
  *
  * No consumer binds this interface yet — it is a forward-looking B3
  * grouping of members those call sites reach through the whole pane
