@@ -636,7 +636,7 @@ func TestServer_ReplayCursorAboveHeadGetsGapMarker(t *testing.T) {
 func TestServer_ReplayCursorAboveHeadGapsLatestOnlyChannel(t *testing.T) {
 	f := newServerFixture(t)
 	const channel = "system:stats"
-	if !latestOnlyEventChannels[channel] {
+	if channelRetention(channel) != RetentionLatestOnly {
 		t.Fatalf("%s is no longer a latest-only channel; pick another fixture", channel)
 	}
 	for i := 0; i < 3; i++ {

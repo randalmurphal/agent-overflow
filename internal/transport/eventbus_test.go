@@ -180,7 +180,7 @@ func TestEventBus_Replay_CursorAboveHeadGapsLatestOnlyChannel(t *testing.T) {
 	defer bus.Close()
 
 	const channel = "system:stats"
-	if !latestOnlyEventChannels[channel] {
+	if channelRetention(channel) != RetentionLatestOnly {
 		t.Fatalf("%s is no longer latest-only; pick another fixture", channel)
 	}
 	for i := 1; i <= 3; i++ {
@@ -207,7 +207,7 @@ func TestEventBus_Replay_EphemeralChannelCursors(t *testing.T) {
 	defer bus.Close()
 
 	const channel = "highlight:seed"
-	if !ephemeralEventChannels[channel] {
+	if channelRetention(channel) != RetentionEphemeral {
 		t.Fatalf("%s is no longer ephemeral; pick another fixture", channel)
 	}
 	for i := 1; i <= 3; i++ {
@@ -704,8 +704,8 @@ func TestEventBus_LatestOnlyChannel_RetainsOneAndNeverGaps(t *testing.T) {
 	bus := NewEventBus(10)
 	defer bus.Close()
 
-	// system:stats is in latestOnlyEventChannels: whole-state frames
-	// where the newest supersedes everything prior.
+	// system:stats is RetentionLatestOnly in channelPolicies: whole-state
+	// frames where the newest supersedes everything prior.
 	for i := 1; i <= 5; i++ {
 		bus.Emit("system:stats", i)
 	}

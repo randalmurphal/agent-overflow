@@ -13,10 +13,10 @@ import (
 // longer loopback-only/ephemeral, or an install-status method that is no
 // longer LocalOnly.
 func TestSelfUpdateContractClassifications(t *testing.T) {
-	if !loopbackOnlyEventChannels[selfupdate.ChannelInstall] {
+	if channelAudience(selfupdate.ChannelInstall) != AudienceLoopbackOnly {
 		t.Errorf("%q must be loopback-only: it names a file in the local staging dir and commands a binary swap", selfupdate.ChannelInstall)
 	}
-	if !ephemeralEventChannels[selfupdate.ChannelInstall] {
+	if channelRetention(selfupdate.ChannelInstall) != RetentionEphemeral {
 		t.Errorf("%q must be ephemeral: replaying a stale directive after a reconnect would restart the app on a dead instruction", selfupdate.ChannelInstall)
 	}
 	if !LocalOnlyMethods[selfupdate.RPCReportStatus] {

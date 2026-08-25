@@ -63,11 +63,13 @@ func TestEventVisibleToOrigin(t *testing.T) {
 // back exactly one.
 func TestRefetchSignalChannelsAreLatestOnly(t *testing.T) {
 	for _, channel := range []string{"theme:changed", "spinner:changed", "workflow:definitions-changed"} {
-		if !latestOnlyEventChannels[channel] {
-			t.Fatalf("%s is not latest-only: a reconnect would replay a ring's worth of identical refetch signals", channel)
-		}
-		if ephemeralEventChannels[channel] {
+		switch channelRetention(channel) {
+		case RetentionLatestOnly:
+			// What this test is about.
+		case RetentionEphemeral:
 			t.Fatalf("%s is ephemeral: a client that missed the change would never refetch", channel)
+		default:
+			t.Fatalf("%s is not latest-only: a reconnect would replay a ring's worth of identical refetch signals", channel)
 		}
 
 		bus := NewEventBus(10)

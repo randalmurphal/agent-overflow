@@ -212,9 +212,48 @@ on the wire at all. Rules for any future receiver:
   needs per-method classification, extend `internalmethods.go` rather
   than re-checking origin in method bodies.
 
+## Event-channel policy registry
+
+`event_channels.go` holds `channelPolicies`, ONE authored row per
+channel the app emits: `{Channel, Audience, Retention, Why}`. It is the
+source of truth for both questions decided per channel — who may
+receive its frames and how deep its replay ring is — and it cannot be
+generated, because emit sites are spread across the root package,
+`internal/triage`, `internal/workflow` and others, and several build
+their channel name at runtime. **Adding a channel means adding a row.**
+
+- `Audience` — `AudienceAny` / `AudienceLoopbackOnly` /
+  `AudienceRemoteOnly`.
+- `Retention` — `RetentionDefault` (full ring) / `RetentionEphemeral`
+  (capacity 0) / `RetentionLatestOnly` (capacity 1). The class-level
+  doctrine, including the UNKEYED membership rule for latest-only,
+  lives on the constants.
+- `Why` — the decision. A `Why` containing `"unreviewed"` marks a row
+  that inherited the fail-open default rather than one anyone decided.
+  `TestChannelPolicyUnreviewedWorklist` prints them (`go test
+  ./internal/transport/ -run UnreviewedWorklist -v`) and never fails.
+
+A channel with NO row still gets the fail-open default
+(`unregisteredChannelPolicy`: broadcast, full ring). That is deliberate
+for now — see its `TODO` for the planned fail-closed flip and what
+blocks it. Two harness-only emit paths (`HarnessEmit`,
+`harness.Replayer`) publish onto arbitrary caller-named channels and
+are unregistrable by construction; the file header documents them
+alongside the three dynamic families that DO resolve to registered
+names.
+
+`TestChannelPolicyPreservesFrozenClassification` freezes the contents
+of the four hand-authored maps the registry replaced. Changing one of
+those lists is a behavior change, not a refactor.
+
 ## Event-channel visibility
 
-`event_visibility.go` filters pushed events per connection origin:
+`event_visibility.go` filters pushed events per connection origin. Its
+two sets are DERIVED from `channelPolicies` at init — do not edit them
+directly. They survive as maps only because this is the one hot
+registry consumer (per event per subscriber, and again per event per
+connection); the two retention classes below are cold and read the
+registry directly through `channelRetention`:
 
 - `loopbackOnlyEventChannels` — frames carrying local-terminal bytes or
   identity/billing data that a LAN peer must not see.
@@ -230,7 +269,7 @@ on the wire at all. Rules for any future receiver:
   now because its persist-time seeds can be parse-primed — better than
   the loopback RPC recompute — and local clients consume them as
   in-place cache upgrades.)
-- `ephemeralEventChannels` — channels excluded from replay-ring
+- `RetentionEphemeral` — channels excluded from replay-ring
   retention (`eventbus.go` gives them a zero-capacity ring: sequence
   tracking only). Both seed channels are here because seeds are
   point-in-time cache warmers — replaying superseded frames after a
@@ -244,7 +283,7 @@ on the wire at all. Rules for any future receiver:
   these channels returns nothing and no gap marker — except for an
   above-head cursor, which is a client-state fault rather than a
   retention question (see the gap discussion under Wire frames).
-- `latestOnlyEventChannels` — unkeyed whole-state channels
+- `RetentionLatestOnly` — unkeyed whole-state channels
   (`system:stats`) get a capacity-1 ring: the newest frame fully
   supersedes all prior ones, so a default-depth ring would retain
   hundreds of stale samples forever and replay them all on reconnect.
@@ -254,6 +293,9 @@ on the wire at all. Rules for any future receiver:
   channels (git:status, provider:usage, discussion:state, mcp:status)
   must NOT join this set: capacity 1 would evict other keys' latest
   frames.
+
+To change any of the four memberships, edit the channel's row in
+`channelPolicies`; nothing else needs touching.
 
 ## Events Are Entity-Keyed
 

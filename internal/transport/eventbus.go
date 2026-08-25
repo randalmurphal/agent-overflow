@@ -258,14 +258,18 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 	r, ok := b.rings[channel]
 	if !ok {
 		capacity := b.capacity
-		if ephemeralEventChannels[channel] {
-			// Seed-style cache warmers: sequence tracking only, no
-			// replay retention (see event_visibility.go).
+		switch channelRetention(channel) {
+		case RetentionEphemeral:
+			// Seed-style cache warmers and one-shot directives:
+			// sequence tracking only, no replay retention (see
+			// event_channels.go).
 			capacity = 0
-		} else if latestOnlyEventChannels[channel] {
+		case RetentionLatestOnly:
 			// Whole-state frames: the newest one supersedes all prior
-			// ones, so retain exactly it (see event_visibility.go).
+			// ones, so retain exactly it (see event_channels.go).
 			capacity = 1
+		case RetentionDefault:
+			// Full-depth ring.
 		}
 		r = newRing(channel, capacity)
 		b.rings[channel] = r
@@ -397,7 +401,7 @@ func (b *EventBus) Replay(lastSeqByChannel map[string]uint64) []Event {
 			continue
 		}
 		evts, hadGap := r.replayAfter(lastSeq)
-		if hadGap && lastSeq <= r.seq && latestOnlyEventChannels[channel] {
+		if hadGap && lastSeq <= r.seq && channelRetention(channel) == RetentionLatestOnly {
 			// Whole-state channel: frames the ring evicted are
 			// superseded state, not lost history — deliver the newest
 			// frame instead of a gap marker (a gap would make clients
