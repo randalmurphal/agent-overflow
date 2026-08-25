@@ -257,7 +257,10 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   await spawnRow.getByTestId('agent-row-open-pane').click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-working')).toBeVisible();
-  await expect(pane.getByTestId('agent-pane-streaming-paused')).toBeVisible();
+  // No paused marker: the session mirror continues a backgrounded pane
+  // live, so the "streaming paused" note was removed (ed6d2b40). This
+  // mock has no mirror, so the pane simply holds what streamed pre-cut.
+  await expect(pane.getByTestId('agent-pane-streaming-paused')).toHaveCount(0);
   const paneTimeline = pane.getByTestId('agent-pane-timeline');
   await expect(paneTimeline.getByText('Reading the first shard.')).toBeVisible();
   // Nothing streamed after the cut — that is what "paused" means.
@@ -275,7 +278,6 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   const settledCard = timeline.getByTestId('subagent-group').first();
   await expect(settledCard).toHaveAttribute('data-background', 'true');
   await expect(settledCard.getByTestId('subagent-group-output-error')).toHaveCount(0);
-  await expect(pane.getByTestId('agent-pane-streaming-paused')).toHaveCount(0);
   await expect(pane.getByTestId('agent-pane-working')).toHaveCount(0);
   // The notification's `usage` is the whole run's, and it persists onto
   // the launch row — a backgrounded agent's live ticks are gone by then.

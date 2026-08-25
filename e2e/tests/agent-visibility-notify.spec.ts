@@ -151,18 +151,18 @@ test('a top-level background completion writes a bell and a nested one does not'
   // The nested completion sits inside the outer card, never at top level.
   await expect(timeline.locator('[data-item-id="complete:tu-nested"]')).toHaveCount(0);
 
-  // --- The nested completion is not silent about ITSELF -------------
-  // "Nested completions do not notify" is a claim about the bell only:
-  // the card still folds in the notification's final usage.
+  // --- The nested agent stays out of the inline digest ---------------
+  // "Nested completions do not notify" covers the bell; the nested
+  // agent's card is also absent HERE by design — the digest never
+  // recursively embeds child agents (ed6d2b40). Its transcript lives in
+  // the agent pane, reached through the top agent's pane.
   await topCard.getByTestId('subagent-group-toggle').first().click();
-  const nestedCard = topCard
-    .getByTestId('subagent-group-body')
-    .first()
-    .getByTestId('subagent-group')
-    .first();
-  await expect(nestedCard.getByTestId('subagent-group-label')).toContainText('Nested Runner');
-  await expect(nestedCard.getByTestId('subagent-group-tools')).toHaveText('4 tools');
-  // The nested launch's own spawn record sits in the body too, above its card.
-  const nestedSpawnRow = topCard.locator('[data-item-id="tu-nested"]');
+  const topBody = topCard.getByTestId('subagent-group-body').first();
+  await expect(topBody).toBeVisible();
+  await expect(topBody.getByTestId('subagent-group')).toHaveCount(0);
+  // What DOES render for the nested launch is its spawn row — the same
+  // immutable agent row the main timeline gets, door included.
+  const nestedSpawnRow = topBody.locator('[data-item-id="tu-nested"]');
+  await expect(nestedSpawnRow.getByTestId('agent-row-preview')).toContainText('Nested Runner');
   await expect(nestedSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
 });

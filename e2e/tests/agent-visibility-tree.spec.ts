@@ -152,23 +152,21 @@ test('a forked code-review skill is one skill card and nothing it does is the ma
   await expect(timeline.getByText(FORK_DIFF_COMMAND)).toHaveCount(0);
   await expect(page.getByTestId('claude-subagent-transcript')).toHaveCount(0);
 
-  // Expanded, everything it did lives INSIDE the card: its own Bash row
-  // and both fan-out children as nested cards.
+  // Expanded, the fork's OWN work lives inside the card (its Bash row) —
+  // but its fan-out children do not render as nested cards: the digest
+  // never recursively embeds child agents (ed6d2b40; spec "It never
+  // recursively embeds child agents in the main thread"). The children
+  // live in the agent pane as direct child rows.
   await timeline.getByTestId('subagent-group-toggle').click();
   const body = timeline.getByTestId('subagent-group-body').first();
   await expect(body.getByText(FORK_DIFF_COMMAND)).toBeVisible();
-  await expect(body.getByTestId('subagent-group')).toHaveCount(2);
-  await expect(body.getByTestId('subagent-group-label')).toHaveText([/^Angle A/, /^Angle B/]);
-  await expect(body.getByTestId('subagent-group-description')).toHaveText([
-    'Angle A: correctness',
-    'Angle B: perf',
-  ]);
-  // Kind chips: the fork is a `skill`, its fan-out children are `agent`s.
-  await expect(timeline.getByTestId('subagent-group-kind')).toHaveText([
-    'skill',
-    'agent',
-    'agent',
-  ]);
+  await expect(body.getByTestId('subagent-group')).toHaveCount(0);
+  // The fan-out children render as their spawn ROWS (the same agent row
+  // the main timeline gets), never as cards.
+  await expect(body.locator('[data-item-id="tu-angle-a"]').getByTestId('agent-row-preview')).toContainText('Angle A');
+  await expect(body.locator('[data-item-id="tu-angle-b"]').getByTestId('agent-row-preview')).toContainText('Angle B');
+  // One kind chip on the page: the fork's own `skill`.
+  await expect(timeline.getByTestId('subagent-group-kind')).toHaveText(['skill']);
 });
 
 test('a depth-2 background agent nests under its parent card and indents in the tray', async ({
@@ -294,9 +292,11 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   );
 
   // Both settle: the tray is driven by the level set, so an empty
-  // `background_tasks_changed` empties it — and the cards appear at the
-  // completion points: the outer card on the main timeline, the inner
-  // card inside the outer card's body, each carrying its final counters.
+  // `background_tasks_changed` empties it — and the OUTER card appears at
+  // its completion point on the main timeline. The inner agent does NOT
+  // become a nested card inside it: the digest never recursively embeds
+  // child agents (ed6d2b40) — the inner agent's surface is the agent
+  // pane, reached from the outer pane's child row.
   await waitForGate(harness, 'settle');
   await advance(harness, mockId, 'settle');
   await expect(trayRows).toHaveCount(0);
@@ -308,14 +308,11 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   await expect(outerCard.getByTestId('subagent-group-label')).toContainText('Outer Reviewer');
   await expect(outerCard).toHaveAttribute('data-background', 'true');
   await outerCard.getByTestId('subagent-group-toggle').first().click();
-  const innerCard = outerCard
-    .getByTestId('subagent-group-body')
-    .first()
-    .getByTestId('subagent-group')
-    .first();
-  await expect(innerCard.getByTestId('subagent-group-label')).toContainText('Inner Scanner');
-  await expect(innerCard.getByTestId('subagent-group-kind')).toHaveText('agent');
-  await expect(innerCard).toHaveAttribute('data-background', 'true');
-  // The last live tick is what the terminal persisted (mergeSubagentProgress).
-  await expect(innerCard.getByTestId('subagent-group-tools')).toHaveText('3 tools');
+  const outerBody = outerCard.getByTestId('subagent-group-body').first();
+  await expect(outerBody).toBeVisible();
+  await expect(outerBody.getByTestId('subagent-group')).toHaveCount(0);
+  // The inner launch renders as its spawn ROW inside the body, door and all.
+  const innerSpawnRow = outerBody.locator('[data-item-id="tu-inner"]');
+  await expect(innerSpawnRow.getByTestId('agent-row-preview')).toContainText('Inner Scanner');
+  await expect(innerSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
 });
