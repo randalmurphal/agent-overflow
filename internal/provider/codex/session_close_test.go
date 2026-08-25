@@ -26,6 +26,7 @@ var sessionScopedStateGroups = []string{
 	"childRouting",
 	"collabHistory",
 	"rawCalls",
+	"rolloutTail",
 }
 
 // Every OTHER Session field must claim a disposition in

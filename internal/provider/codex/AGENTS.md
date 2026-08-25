@@ -75,7 +75,13 @@ over stdio.
   active-child subscription recovery on root resume.
 - `session_rollout_notifications.go` — narrow tailing of the active
   Codex rollout file for detached-child mailbox notifications that
-  resumed app-server sessions do not expose as raw events.
+  resumed app-server sessions do not expose as raw events. The tail is
+  ARMED, never unconditional: a resume records the rollout path and only
+  starts polling when the thread can actually hit that gap — either
+  `Config.ResumeHasUnresolvedSubagents` (the app layer's answer, from
+  spawn launches with no completion row) or the first live
+  `registerChildOwnership` on the wire. A fresh `thread/start` keeps raw
+  events and never arms it.
 - `server_requests.go` — server-initiated request dispatch:
   approvals, MCP elicitation, structured user input, and dynamic tools.
 - `turn_input.go` — outbound `turn/start` / `turn/steer` user-input
@@ -661,7 +667,9 @@ for the wire sequence. Key points:
   expose it through `rawResponseItem/completed` when raw events are
   enabled; resumed sessions cannot opt into that raw stream, so
   Agent Overflow also tails the active rollout JSONL from EOF and parses
-  appended `inter_agent_communication` records. Traces
+  appended `inter_agent_communication` records — but only once that
+  resumed session is known to have a child in flight, see
+  `session_rollout_notifications.go` above. Traces
   and older flows can expose the same marker inside a serialized
   `InterAgentCommunication` assistant/commentary message or a standalone
   user-message carrier.

@@ -489,8 +489,23 @@ func (s *Session) registerHistoricalChildOwnership(sourceThreadID, childThreadID
 // paths are different: Codex may reuse one after an app-server restart, so a
 // newly observed child thread replaces the path's historical lookup while the
 // old thread keeps its immutable launch ownership for late thread-scoped events.
+// A successful LIVE registration is also the typed mid-session arming signal
+// for the rollout tail. It is the one funnel both spawn shapes reach — V1's
+// completed `collabAgentToolCall` `spawn_agent` and V2's completed
+// `subAgentActivity` `kind:"started"` — so a resumed session that was not armed
+// at resume time (nothing was outstanding then) starts tailing the moment it
+// acquires a child whose mailbox delivery it could otherwise never see. The
+// HISTORICAL registration deliberately does not arm: replaying a spawn out of
+// the resume response proves nothing about work still in flight, which is what
+// Config.ResumeHasUnresolvedSubagents answers. Arming after the mutation, not
+// inside it, keeps the tail's own lock acquisition off a path that already
+// holds mu.
 func (s *Session) registerChildOwnership(sourceThreadID, childThreadID, agentPath, parentToolUseID string) bool {
-	return s.registerChildOwnershipWithSource(sourceThreadID, childThreadID, agentPath, parentToolUseID, false)
+	registered := s.registerChildOwnershipWithSource(sourceThreadID, childThreadID, agentPath, parentToolUseID, false)
+	if registered {
+		s.armRolloutSubagentNotificationTail("spawned child observed on the wire")
+	}
+	return registered
 }
 
 func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID, agentPath, parentToolUseID string, fromHistory bool) bool {

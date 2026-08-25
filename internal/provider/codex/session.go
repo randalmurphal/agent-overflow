@@ -381,6 +381,10 @@ type Session struct {
 	childRouting  sessionChildRoutingState
 	collabHistory sessionCollabHistoryState
 	rawCalls      sessionRawToolCallState
+	// rolloutTail is the arming state of the resumed-session rollout reader.
+	// Recorded on `thread/resume`, armed only by evidence this session can hit
+	// the raw-events gap — see sessionRolloutTailState.
+	rolloutTail sessionRolloutTailState
 	// childLifecycleMu serializes live and recovered child status emission.
 	// The revision rejects a stale thread/read snapshot if a live lifecycle
 	// notification arrived while the recovery request was in flight. Sits
@@ -578,12 +582,26 @@ type Config struct {
 	// see threadApprovalsReviewer, which is what actually reaches the wire so
 	// the field is sent explicitly on every start, resume, and turn regardless
 	// of how the Config was built.
-	ApprovalsReviewer     string
-	ResumeThreadID        string // thread ID to resume, empty for new
-	SystemPrompt          string
-	MCPServers            map[string]any
-	ContextWindow         int
-	AutoCompactTokenLimit int
+	ApprovalsReviewer string
+	ResumeThreadID    string // thread ID to resume, empty for new
+	// ResumeHasUnresolvedSubagents reports whether the thread being RESUMED
+	// still has Codex spawn-agent children whose answer has not reached the
+	// parent transcript. It arms the rollout tail
+	// (session_rollout_notifications.go), which is the only way a resumed
+	// session can observe that delivery: `experimentalRawEvents` exists on
+	// `thread/start` alone and lives in the app-server's in-memory ThreadState,
+	// so a resume never gets the raw stream that carries the mailbox record.
+	//
+	// It arrives as a boolean because the answer is a STORE question — which
+	// persisted spawn launches still lack a completion row — and this package
+	// cannot import store or triage. The app layer answers it at the resume
+	// call site (app_session.go). Ignored on a fresh `thread/start`, which
+	// keeps its raw events and never needs the tail.
+	ResumeHasUnresolvedSubagents bool
+	SystemPrompt                 string
+	MCPServers                   map[string]any
+	ContextWindow                int
+	AutoCompactTokenLimit        int
 	// ReasoningEffort is the Codex-native reasoning_effort enum value exposed
 	// by the selected model. Applied to the thread start
 	// handshake under `config.model_reasoning_effort`, and re-applied to
@@ -783,6 +801,7 @@ func (s *Session) Close() error {
 	s.rawCalls = sessionRawToolCallState{}
 	s.childRouting = sessionChildRoutingState{}
 	s.collabHistory = sessionCollabHistoryState{}
+	s.rolloutTail = sessionRolloutTailState{}
 	// childLifecycleRevision is the one piece of child state guarded by
 	// childLifecycleMu rather than mu, so it is dropped under its own lock —
 	// mu → childLifecycleMu, the one Close edge in the lock order above.

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/store"
 )
 
 func newStartStateApp() *App {
@@ -193,5 +195,79 @@ func waitForStartJoiners(t *testing.T, app *App, threadID string) {
 	case <-startState.done:
 		t.Fatalf("start for %s finished before a joiner could park", threadID)
 	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+// TestThreadHasUnresolvedCodexSubagents pins the store question behind
+// codex.Config.ResumeHasUnresolvedSubagents — the relevance gate on the
+// rollout tail a resumed Codex session uses to recover detached-child mailbox
+// deliveries it cannot see as raw events.
+//
+// The predicate is deliberately "a background spawn launch with no completion
+// sibling", NOT the narrower live-background flag: a child's own status signal
+// clears that flag the moment the child goes terminal, and the window the tail
+// exists for is exactly the one after that, while the child's FINAL_ANSWER is
+// still undelivered in the parent's mailbox.
+func TestThreadHasUnresolvedCodexSubagents(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "codex", "/tmp/w-codex-resume-tail", "gpt-5.3-codex", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	if err := app.store.InsertTurn(store.Turn{
+		TurnID:    "t0",
+		ThreadID:  thread.ID,
+		TurnIndex: 0,
+		StartedAt: 0,
+	}); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+
+	if app.threadHasUnresolvedCodexSubagents(thread.ID) {
+		t.Fatal("a thread that never spawned an agent asked for a rollout tail")
+	}
+
+	launch := store.Item{
+		ID:           "spawn-1",
+		ThreadID:     thread.ID,
+		TurnIndex:    0,
+		ItemIndex:    0,
+		Kind:         "tool_call",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent",
+		IsBackground: true,
+		ToolName:     "collab_agent",
+		// The child has already gone terminal and the launch is no longer
+		// "live", which is the state the mailbox delivery still has to close.
+		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]},` +
+			`"codex_child_terminal_statuses":{"child-1":"completed"},"live_background_active":false}`,
+		CreatedAt: 1000,
+		UpdatedAt: 1000,
+	}
+	if err := app.store.InsertItem(launch); err != nil {
+		t.Fatalf("seed spawn launch: %v", err)
+	}
+	if !app.threadHasUnresolvedCodexSubagents(thread.ID) {
+		t.Fatal("a spawn launch with no completion row did not ask for a rollout tail")
+	}
+
+	if err := app.store.InsertItem(store.Item{
+		ID:           "spawn-1-complete",
+		ThreadID:     thread.ID,
+		TurnIndex:    0,
+		ItemIndex:    1,
+		Kind:         "tool_completion",
+		Role:         "assistant",
+		Status:       "completed",
+		Summary:      "spawn_agent -> done",
+		CompletionOf: "spawn-1",
+		CreatedAt:    2000,
+		UpdatedAt:    2000,
+	}); err != nil {
+		t.Fatalf("seed completion sibling: %v", err)
+	}
+	if app.threadHasUnresolvedCodexSubagents(thread.ID) {
+		t.Fatal("a spawn whose answer already landed still asked for a rollout tail")
 	}
 }

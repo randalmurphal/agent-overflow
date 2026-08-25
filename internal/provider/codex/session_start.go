@@ -230,8 +230,18 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	// the two (session_revert.go).
 	s.recordThreadHistoryMode(resp)
 	if method == "thread/resume" {
+		// The rollout path is recorded BEFORE rehydration: rehydration puts
+		// work on the collab worker and the read loop is already live, so a
+		// spawn can arm the tail from this moment on and needs the path in
+		// place. Recording is not arming — see sessionRolloutTailState.
+		s.prepareRolloutSubagentNotificationTail(readNestedString(resp, "thread", "path"))
 		s.rehydrateCollabOwnershipFromThreadResponse(resp)
-		s.startRolloutSubagentNotificationObserver(readNestedString(resp, "thread", "path"))
+		if cfg.ResumeHasUnresolvedSubagents {
+			// The app layer found spawn launches on this thread that are still
+			// waiting for their answer, so the mailbox delivery this session
+			// cannot see as a raw event is exactly what it is about to miss.
+			s.armRolloutSubagentNotificationTail("resume with unresolved spawn children")
+		}
 	}
 
 	return nil
