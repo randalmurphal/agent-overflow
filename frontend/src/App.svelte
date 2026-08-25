@@ -48,6 +48,7 @@
   } from './lib/theme/themeApply.svelte';
   import { applyFonts } from './lib/utils/fonts';
   import { startAmbientTicker } from './lib/utils/ambientTicker';
+  import { startIdleMemoryTrim } from './lib/utils/idleMemoryTrim';
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
@@ -470,7 +471,12 @@
     // (pulse dots, working-LED chase, status glows, stepped spinners).
     const stopAmbientTicker = startAmbientTicker();
 
+    // Report input idleness so the backend can direct a renderer
+    // memory-reducing GC between turns (app_webview_trim.go).
+    const stopIdleMemoryTrim = startIdleMemoryTrim();
+
     return () => {
+      stopIdleMemoryTrim();
       stopAmbientTicker();
       flushPaneLayout();
       cleanupEvents();

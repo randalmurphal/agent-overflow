@@ -323,6 +323,9 @@ export {
   // Always-on frontend runtime-error log
   ReportFrontendErrorBatch,
 
+  // Idle renderer memory trim (utils/idleMemoryTrim.ts)
+  RequestWebviewMemoryTrim,
+
   // PR-based thread creation
   CreateThreadFromPR,
 

@@ -147,6 +147,17 @@ const (
 	UpdaterVerifying       Channel = "updater:verifying"
 )
 
+// webview:* — directives to the process that owns the webview. Like
+// updater:install these are imperative commands the Windows launcher acts
+// on, not notifications; WebviewTrim asks it to run a memory-reducing GC
+// in the renderer (CDP HeapProfiler.collectGarbage) while the window
+// stays visible — the trigger Blink otherwise only gets from a hidden
+// window or OS memory pressure, neither of which ever fires for an
+// always-visible desktop app.
+const (
+	WebviewTrim Channel = "webview:trim"
+)
+
 // usage:* — per-thread cost refetch nudge fired after a provider figure
 // lands. It carries only the thread id: every usage surface refetches
 // through GetUsageStats rather than trusting a pushed number, the same

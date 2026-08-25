@@ -1213,6 +1213,16 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 		// The backend stages the new launcher .exe but cannot swap a running
 		// Windows executable; this is the callback that does (see update.go).
 		HandleUpdateInstall: a.handleUpdateInstall,
+		// The backend decides WHEN the renderer should drop its pooled GC
+		// pages (frontend input idle + no provider turn); this process owns
+		// the WebView2 and is the only one that can fire the GC
+		// (webviewtrim.go).
+		HandleWebviewTrim: func(reason string) {
+			a.mu.Lock()
+			w := a.window
+			a.mu.Unlock()
+			trimRendererMemory(w, reason)
+		},
 	})
 	if err != nil {
 		return err

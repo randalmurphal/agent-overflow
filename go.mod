@@ -267,4 +267,4 @@ tool github.com/wailsapp/wails/v3/cmd/wails3
 // monitor-scale-detection re-enable (#5732 -> PR #5734) and the host
 // rasterization-scale stand-down (PR #5761, which generalised it to
 // visual hosting). Do not re-add them.
-replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260820002956-810e078de420
+replace github.com/wailsapp/wails/v3 => github.com/randalmurphal/wails/v3 v3.0.0-beta.4.0.20260825150712-2d9e0221958f

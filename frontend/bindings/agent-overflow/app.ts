@@ -590,7 +590,7 @@ export function DismissDesignOptionSet(threadID: string, setID: string): $Cancel
  *     the user can roll back. The newer-than-current gate is deliberately
  *     skipped for an explicit pick; integrity verification still applies.
  * 
- * Only one download runs at a time: it claims updaterBusy under updaterMu and
+ * Only one download runs at a time: it claims a.updater.busy under a.updater.mu and
  * returns ErrUpdateBusy if another is already in flight. The busy flag also
  * fences a concurrent CheckForUpdate out of re-targeting the provider while the
  * chosen release is being resolved and installed.
@@ -1831,7 +1831,7 @@ export function HighlightSchemaVersion(): $CancellablePromise<string> {
 
 /**
  * ImportSessions starts an import run and returns immediately. Progress
- * arrives on sessionImportProgressChannel, one frame per session plus a
+ * arrives on eventchan.SessionImportProgress, one frame per session plus a
  * terminal frame.
  * 
  * Duplicate ids in one request collapse: the scan's dedup happens BEFORE a
@@ -2036,7 +2036,7 @@ export function ListDiscussionsForThread(threadID: string): $CancellablePromise<
  * ListImportableSessions scans the provider homes for sessions AO does not
  * already have.
  * 
- * Cached for sessionImportScanTTL; the request's ForceRefresh bypasses it. A
+ * Cached for sessionimport.ScanTTL; the request's ForceRefresh bypasses it. A
  * provider whose home cannot be read is reported in Providers and does not
  * fail the call — a broken Codex home must not take Claude's sessions away.
  */
@@ -3023,6 +3023,17 @@ export function ReportFrontendErrorBatch(lines: string[]): $CancellablePromise<s
  */
 export function ReportUpdateInstallStatus(stage: string, version: string, message: string): $CancellablePromise<void> {
     return $Call.ByID(314214419, stage, version, message);
+}
+
+/**
+ * RequestWebviewMemoryTrim asks the webview's owning process to run a
+ * memory-reducing GC in the renderer. Called by the embedded frontend when
+ * user input has been idle past its threshold. Returns what happened —
+ * "requested", "skipped-active-turn", or "skipped-recent" — so the caller
+ * can log without a second RPC. LocalOnly (internal/transport/internalmethods.go).
+ */
+export function RequestWebviewMemoryTrim(): $CancellablePromise<string> {
+    return $Call.ByID(2045178958);
 }
 
 /**
@@ -4431,7 +4442,7 @@ export function WorkflowListDefinitions(projectID: string): $CancellablePromise<
  * the same total the detail view's spend and the engine's budget check report
  * for that run, and the number a root's overview row must show for a recursive
  * campaign whose spend lands almost entirely on its call children. Composition
- * goes through the one ledger pricing rule (app_usage_pricing.go); a run whose
+ * goes through the one ledger pricing rule (internal/usageledger); a run whose
  * phases ran on Codex has no wire-reported cost at all, so summing the
  * `cost_usd` column alone would report those runs as free.
  * 

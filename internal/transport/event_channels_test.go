@@ -79,7 +79,8 @@ var (
 		"updater:progress",   // 2026-08-25 pass
 		"updater:ready",      // 2026-08-25 pass
 		"updater:verifying",  // 2026-08-25 pass
-		"usage:thread_cost",  // 2026-08-25 pass
+		"usage:thread_cost", // 2026-08-25 pass
+		"webview:trim",      // 2026-08-25: launcher GC directive, same posture as updater:install
 		"worktree:setup",
 	}
 	frozenRemoteOnlyChannels = []string{
@@ -89,6 +90,7 @@ var (
 		"highlight:diff_seed",
 		"highlight:seed",
 		"updater:install",
+		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}
 	frozenLatestOnlyChannels = []string{
 		"spinner:changed",

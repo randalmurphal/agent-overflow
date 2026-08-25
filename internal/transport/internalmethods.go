@@ -687,6 +687,14 @@ var LocalOnlyMethods = map[string]bool{
 	// with the fence held until the launcher's own report was refused as stale.
 	"ReportUpdateInstallStatus": true,
 
+	// 9c. Desktop renderer memory trim. RequestWebviewMemoryTrim emits the
+	// webview:trim directive the Windows launcher answers with a forced
+	// renderer GC — a desktop-host control like the rest of category 9. The
+	// caller is the embedded webview reporting its own input idleness; a
+	// LAN-attached peer's idleness says nothing about the desktop session,
+	// and letting one command GC pauses into it would be a jank lever.
+	"RequestWebviewMemoryTrim": true,
+
 	// 10. Session import. Every method here reads the user's provider homes
 	// (~/.claude, ~/.codex) off the local filesystem and hands back what it
 	// finds: absolute session-file paths, workspace paths, and the prompt text

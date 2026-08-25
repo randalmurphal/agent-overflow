@@ -721,6 +721,20 @@ var channelPolicies = []ChannelPolicy{
 			"refused. Keyed per thread.",
 	},
 	{
+		Channel:   eventchan.WebviewTrim,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionEphemeral,
+		Why: "An imperative directive, not a notification: the Windows " +
+			"launcher acts on it by forcing a memory-reducing GC in the " +
+			"renderer over the WebView2 DevTools bridge. Its only " +
+			"legitimate consumer is the launcher on this host, which is " +
+			"loopback by construction. Ephemeral for the same reason as " +
+			"updater:install: it speaks for the idle moment it was emitted " +
+			"in, so replaying a backlog to a reconnecting launcher would " +
+			"fire GC pauses into a session that may be active again. The " +
+			"backend re-emits on the next idle report.",
+	},
+	{
 		Channel:   eventchan.WorkflowDefinitionsChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,

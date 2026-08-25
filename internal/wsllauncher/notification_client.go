@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/selfupdate"
 
@@ -41,6 +42,14 @@ type NotificationClientConfig struct {
 	// answers a directive by posting an RPC back over this same connection,
 	// and that response can only arrive if the read loop is free.
 	HandleUpdateInstall func(selfupdate.InstallDirective)
+
+	// HandleWebviewTrim, when non-nil, additionally subscribes this
+	// connection to the ephemeral webview:trim directive channel and hands
+	// every frame to the callback with its reason string. Same posture as
+	// HandleUpdateInstall: nil keeps the wire unchanged, the callback runs
+	// off the read loop, and the channel carries no replay cursor — a trim
+	// is only meaningful in the idle moment it was emitted.
+	HandleWebviewTrim func(reason string)
 }
 
 // NotificationClient is the launcher's narrow transport client. It consumes
@@ -48,10 +57,11 @@ type NotificationClientConfig struct {
 // for it, the ephemeral updater:install directive channel, and uses the same
 // connection for the RPCs both of those produce.
 type NotificationClient struct {
-	wsURL         string
-	token         string
-	present       func(notify.Send) error
-	handleInstall func(selfupdate.InstallDirective)
+	wsURL             string
+	token             string
+	present           func(notify.Send) error
+	handleInstall     func(selfupdate.InstallDirective)
+	handleWebviewTrim func(reason string)
 	// channels is the exact subscribe-frame payload, fixed at construction so
 	// every reconnect asks for the same set.
 	channels []string
@@ -115,18 +125,22 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 	if config.HandleUpdateInstall != nil {
 		channels = append(channels, selfupdate.ChannelInstall)
 	}
+	if config.HandleWebviewTrim != nil {
+		channels = append(channels, string(eventchan.WebviewTrim))
+	}
 	return &NotificationClient{
-		wsURL:         parsed.String(),
-		token:         config.Token,
-		present:       config.Present,
-		handleInstall: config.HandleUpdateInstall,
-		channels:      channels,
-		logf:          logf,
-		minWait:       minWait,
-		maxWait:       maxWait,
-		rpcTimeout:    notificationBridgeRPCTimeout,
-		pending:       make(map[string]pendingRPC),
-		connReady:     make(chan struct{}),
+		wsURL:             parsed.String(),
+		token:             config.Token,
+		present:           config.Present,
+		handleInstall:     config.HandleUpdateInstall,
+		handleWebviewTrim: config.HandleWebviewTrim,
+		channels:          channels,
+		logf:              logf,
+		minWait:           minWait,
+		maxWait:           maxWait,
+		rpcTimeout:        notificationBridgeRPCTimeout,
+		pending:           make(map[string]pendingRPC),
+		connReady:         make(chan struct{}),
 	}, nil
 }
 
@@ -278,6 +292,10 @@ func (c *NotificationClient) handleEvent(event notificationEvent) error {
 		c.handleInstallDirective(event.Data)
 		return nil
 	}
+	if event.Channel == string(eventchan.WebviewTrim) {
+		c.handleWebviewTrimDirective(event.Data)
+		return nil
+	}
 	if event.Channel != notify.SendChannel {
 		return nil
 	}
@@ -346,6 +364,27 @@ func (c *NotificationClient) handleInstallDirective(data json.RawMessage) {
 	// Off the read loop: the handler answers by posting an RPC over this same
 	// connection and can only see the response if the read loop keeps running.
 	go c.handleInstall(directive)
+}
+
+// handleWebviewTrimDirective decodes one webview:trim frame and hands its
+// reason to the launcher. A malformed frame is logged and dropped, never
+// connection-fatal — losing one trim costs nothing, the backend re-emits on
+// the next idle report. Off the read loop for the same reason as the install
+// directive: the handler runs a DevTools round-trip and must not stall
+// notification delivery behind it.
+func (c *NotificationClient) handleWebviewTrimDirective(data json.RawMessage) {
+	if c.handleWebviewTrim == nil {
+		c.logf("webview trim: ignore directive on an unsubscribed connection")
+		return
+	}
+	var directive struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(data, &directive); err != nil {
+		c.logf("webview trim: ignore malformed directive: %v", err)
+		return
+	}
+	go c.handleWebviewTrim(directive.Reason)
 }
 
 func (c *NotificationClient) writeJSON(ctx context.Context, conn *websocket.Conn, frame notificationClientFrame) error {

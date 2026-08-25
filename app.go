@@ -245,6 +245,10 @@ type App struct {
 	// updater is the whole in-app self-update concern (app_updater*.go). Its
 	// own mutex travels with it; nothing outside that cluster reads it.
 	updater appUpdaterState
+	// webviewTrimLastUnixNano stamps the last accepted webview:trim request,
+	// the backend-side floor between forced renderer GCs
+	// (app_webview_trim.go). Atomic: read-CAS on the RPC path, no lock.
+	webviewTrimLastUnixNano atomic.Int64
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race

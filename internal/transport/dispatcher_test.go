@@ -996,6 +996,7 @@ func (p *privilegedApp) ListReleases() string              { return "ok" }
 func (p *privilegedApp) DownloadUpdate() string            { return "ok" }
 func (p *privilegedApp) RestartToUpdate() string           { return "ok" }
 func (p *privilegedApp) ReportUpdateInstallStatus() string { return "ok" }
+func (p *privilegedApp) RequestWebviewMemoryTrim() string  { return "ok" }
 
 // 11. Session import (provider-home enumeration + ingest).
 func (p *privilegedApp) ListImportableSessions() string   { return "ok" }

@@ -457,6 +457,9 @@ export const GetUIRenderTracePath = dispatch('GetUIRenderTracePath');
 // Always-on frontend runtime-error log
 export const ReportFrontendErrorBatch = dispatch('ReportFrontendErrorBatch');
 
+// Idle renderer memory trim
+export const RequestWebviewMemoryTrim = dispatch('RequestWebviewMemoryTrim');
+
 // PR-based thread creation
 export const CreateThreadFromPR = dispatch('CreateThreadFromPR');
 

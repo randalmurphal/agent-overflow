@@ -1584,7 +1584,7 @@ export class ImportProviderStatus {
 
 /**
  * ImportRunHandle is what ImportSessions returns immediately; everything else
- * arrives on sessionImportProgressChannel.
+ * arrives on eventchan.SessionImportProgress.
  */
 export class ImportRunHandle {
     "importId": string;

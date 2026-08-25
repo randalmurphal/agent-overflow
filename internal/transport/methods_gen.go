@@ -242,6 +242,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ReplyToPRThread", ID: 446243420},                       // main.App.ReplyToPRThread
 	{Name: "ReportFrontendErrorBatch", ID: 2174329377},             // main.App.ReportFrontendErrorBatch
 	{Name: "ReportUpdateInstallStatus", ID: 314214419},             // main.App.ReportUpdateInstallStatus
+	{Name: "RequestWebviewMemoryTrim", ID: 2045178958},             // main.App.RequestWebviewMemoryTrim
 	{Name: "ResetKeybindings", ID: 2775767393},                     // main.App.ResetKeybindings
 	{Name: "ResizeTerminal", ID: 1887984285},                       // main.App.ResizeTerminal
 	{Name: "RespondToApproval", ID: 1919237704},                    // main.App.RespondToApproval
