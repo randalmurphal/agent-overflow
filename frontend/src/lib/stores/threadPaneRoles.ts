@@ -32,6 +32,12 @@
 // `utils/uiRenderTrace.ts#summarizePaneForTrace`, which exists to
 // summarise the pane and whose honest narrowest type IS the pane. A role
 // for either would just re-describe `ThreadPane` under a new name.
+// `stores/agentScopeView.svelte.ts` inherits that: it BUILDS a pane the
+// timeline mounts, and the timeline hands it down to that same composer
+// surface, so its facade is typed as the whole pane. It gets the
+// property the roles give a consumer — an exhaustive, compile-checked
+// member list — from a `satisfies Pick<ThreadPane, …>` over its
+// forwarded getters instead.
 //
 // `ThreadPaneRoleConformance` at the bottom is the drift tripwire: it
 // fails to compile the moment `ThreadPane` stops satisfying a role, and

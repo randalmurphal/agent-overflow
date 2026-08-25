@@ -236,6 +236,63 @@ describe('createAgentScopeView', () => {
     view.dispose();
   });
 
+  // ---- Pinned divergences ---------------------------------------------
+  // Two behaviors from the 2026-08-22 incident class, pinned as CONTRACT
+  // rather than as a side effect of how the facade happens to be built.
+  // Both survived the Proxy -> plain-object rewrite because these run.
+
+  it('pins pruneRowUiState as a deliberate no-op owned by the scope view', async () => {
+    // The scoped MessageTimeline's prune computes retention from ITS OWN
+    // revealed rows — one subtree — while the row-UI store is SHARED with
+    // the source pane. Letting it through revoked the main timeline's
+    // expansion state and attachment blobs (dead screenshots, 2026-08-22).
+    // The no-op must be the VIEW's own member, never a forward: a forward
+    // would run the source pane's real prune with scope-only retention,
+    // which is the incident.
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+
+    expect(view.pane.pruneRowUiState).not.toBe(pane.pruneRowUiState);
+
+    pane.setUserMessageExpanded('main-text', true);
+    // `false` rather than `true`: the registry clears an override that
+    // matches the current collapseDiffPreviews default instead of storing it.
+    pane.setDiffCardExpanded('main-text', 'src/app.ts', false);
+    expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
+
+    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
+
+    expect(pane.isUserMessageExpanded('main-text')).toBe(true);
+    expect(pane.diffCardExpandedOverride('main-text', 'src/app.ts')).toBe(false);
+    expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(true);
+
+    view.dispose();
+  });
+
+  it('pins timelineTurns as scope-narrowed: one key for every scoped row', async () => {
+    // The scope IS one turn. A subagent's rows are written at the main
+    // thread's write head across however many provider turns it outlives,
+    // so keying the response decorations on `item.turnIndex` stamped
+    // "Response 1m 58s" on a still-running agent the moment the main turn
+    // settled (2026-08-22). The facet is the view's own and its `keyOf`
+    // ignores the item's turnIndex entirely.
+    const { pane, agent } = await setup();
+    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const turns = view.pane.timelineTurns;
+
+    expect(turns).not.toBe(pane.timelineTurns);
+    expect(turns.keyOf(makeItem({ turnIndex: 0 }))).toBe(
+      turns.keyOf(makeItem({ turnIndex: 7 })),
+    );
+    // The source pane keys on the provider turn; both rows above would be
+    // two different turns there.
+    expect(pane.timelineTurns.keyOf(makeItem({ turnIndex: 0 }))).not.toBe(
+      pane.timelineTurns.keyOf(makeItem({ turnIndex: 7 })),
+    );
+
+    view.dispose();
+  });
+
   it('recomputes the window when the source timeline changes', async () => {
     const { pane, agent } = await setup();
     const view = createAgentScopeView(pane, agent, 'launch-1');

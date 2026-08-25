@@ -4,10 +4,40 @@
 // its virtualizer, scroll physics, activity runs, paging plumbing — whose
 // visible window is one subagent launch's subtree. Rather than teach the
 // timeline a "scope mode", this module answers the ThreadPane surface
-// with a Proxy over the source pane that overrides exactly the members
-// where a scoped view legitimately differs, and forwards everything else
-// (item resolution, payload loads, approvals, expansion registries,
-// live-aggregate reads) so nothing here can drift from the chat surface.
+// with a PLAIN OBJECT over the source pane that overrides exactly the
+// members where a scoped view legitimately differs, and forwards
+// everything else (item resolution, payload loads, approvals, expansion
+// registries, live-aggregate reads) so nothing here can drift from the
+// chat surface.
+//
+// Plain object, not a Proxy, and that is a type-checking decision. A
+// Proxy forwards whatever it is asked for, so neither half of the
+// forward set is checkable: a member added to `ThreadPane` silently
+// forwards (nobody is told the scoped view now answers something it has
+// never thought about), and a member REMOVED from `ThreadPane` leaves a
+// dead override entry that compiles forever. Here the forward set is a
+// literal of getters checked with `satisfies Pick<ThreadPane, …>`, which
+// fails in both directions: a missing member is a missing property and a
+// stale one is an excess property. `AgentScopeOverride` names the
+// divergences and `AgentScopeForwarded` is everything else, so adding a
+// pane member forces a deliberate choice between the two lists.
+//
+// Every forward is a GETTER, never a copied value. The source pane's
+// fields are `$state`; delegating at READ time is what preserves their
+// reactivity, exactly as the Proxy's property-access delegation did.
+// Nothing here may spread `forwarded` — a spread evaluates every getter
+// once and freezes the result.
+//
+// The view's TYPE stays the whole `ThreadPane` rather than a union of
+// the narrow roles in `threadPaneRoles.ts`, and that is forced rather
+// than lazy: this object is mounted as `MessageTimeline`'s `pane` prop,
+// and the timeline hands the same object down to `TimelineLeaf` →
+// `UserMessage` → `UserMessageEditor` → `ComposerInputSurface`, one of
+// the two places that guide names as deliberately staying on
+// `ThreadPane` (the surface runs `/` commands and reaches
+// `makeCommandContext` plus the whole command-action surface). Narrowing
+// here would mean widening a role until it re-described the pane. The
+// exhaustiveness check below is what the roles would have bought.
 //
 // The override table IS the design — each entry names why the scoped
 // view diverges:
@@ -17,6 +47,8 @@
 //   surfaces at once), and timelineRestore keys scroll snapshots and
 //   restore bookkeeping by scrollStateKey (per SCOPE, so an agent pane's
 //   position never clobbers the main timeline's saved position).
+// - `agentScopeRootId`: the launch this view is scoped to. Empty on the
+//   thread timeline; rows read it to know which surface they are on.
 // - `items`: the scope's loaded subtree. Direct children get their
 //   `parentId` LIFTED (cleared) so the grouping treats them as this
 //   surface's top level. A direct child launch remains a card, but its own
@@ -47,6 +79,13 @@
 //   scope can show is either loaded or fetched wholesale through
 //   `ensureSubagentChildren` (the pane body drives that; see
 //   AgentPane.svelte), so the timeline's edge-paging must never fire.
+//   `hasDeferredRecentWindowPrune` / `retryDeferredRecentWindowPrune`
+//   ride with them: the deferred prune describes the SOURCE window, and
+//   a scoped instance retrying it would run the host's bookkeeping.
+// - `loading` / `showLoadingSpinner`: false. Both describe the source
+//   window's switch/page load; the scope's rows are already local or
+//   arriving through hydration, which the pane body renders its own
+//   states for.
 // - `openAgentPane`: descend-in-place. Inside the pane, opening a child
 //   card grows the breadcrumb (`pushScope`) instead of re-seeding the
 //   companion from the outside.
@@ -93,6 +132,45 @@ export interface AgentScopeView {
   /** Release the view's own registries. Call on unmount. */
   dispose(): void;
 }
+
+/**
+ * The members the scoped view answers ITSELF. One entry per paragraph of
+ * the override table in the module header; adding to this list without a
+ * matching `overrides` entry is a compile error, and so is the reverse.
+ */
+type AgentScopeOverride =
+  | 'paneId'
+  | 'scrollStateKey'
+  | 'agentScopeRootId'
+  | 'items'
+  | 'revealBoundary'
+  | 'timelineTurns'
+  | 'activityRuns'
+  | 'scrollController'
+  | 'attachScrollController'
+  | 'detachScrollController'
+  | 'scrollToItemRequest'
+  | 'requestScrollToItem'
+  | 'loadOlder'
+  | 'loadNewer'
+  | 'loadUntilItem'
+  | 'hasMoreHistory'
+  | 'hasMoreNewer'
+  | 'loadingOlder'
+  | 'loadingNewer'
+  | 'hasDeferredRecentWindowPrune'
+  | 'retryDeferredRecentWindowPrune'
+  | 'pruneRowUiState'
+  | 'loading'
+  | 'showLoadingSpinner'
+  | 'openAgentPane';
+
+/**
+ * Everything else on the pane. Forwarded verbatim, and exhaustively:
+ * `ThreadPane` gaining a member puts it here, where the `forwarded`
+ * literal below has to grow an entry or fail to compile.
+ */
+type AgentScopeForwarded = Exclude<keyof ThreadPane, AgentScopeOverride>;
 
 /** Settled no-op paging result: a scope window has no edges to page. */
 const NO_PAGE: Promise<LoadOlderResult> = Promise.resolve({
@@ -206,7 +284,7 @@ export function createAgentScopeView(
     scrollController: () => scrollController,
   });
 
-  const overrides: Record<PropertyKey, unknown> = {
+  const overrides = {
     get paneId() {
       return `${sourcePane.paneId}~agent`;
     },
@@ -281,16 +359,173 @@ export function createAgentScopeView(
     openAgentPane(launchItemId: string, label: string): void {
       agent.pushScope(launchItemId, label);
     },
-  };
+  } satisfies Pick<ThreadPane, AgentScopeOverride>;
 
-  const pane = new Proxy(sourcePane, {
-    get(target, prop) {
-      if (prop in overrides) {
-        return Reflect.get(overrides, prop);
-      }
-      return Reflect.get(target, prop, target);
-    },
-  }) as ThreadPane;
+  // ---- Forwarded surface ------------------------------------------------
+  // Read the module header before touching this: every entry is a getter
+  // that reaches the source pane at READ time (reactivity), and the
+  // `satisfies` is the exhaustiveness check in both directions. Order
+  // follows `thread.svelte.ts`'s own return object, so the two read as a
+  // pair.
+  const forwarded = {
+    get thread() { return sourcePane.thread; },
+    get threadId() { return sourcePane.threadId; },
+    get activeModel() { return sourcePane.activeModel; },
+    get effectiveModel() { return sourcePane.effectiveModel; },
+    get terminalThreadId() { return sourcePane.terminalThreadId; },
+    get draftPlaceholder() { return sourcePane.draftPlaceholder; },
+    get hasDraftPlaceholder() { return sourcePane.hasDraftPlaceholder; },
+    get canCompose() { return sourcePane.canCompose; },
+    get lastLiveContentAt() { return sourcePane.lastLiveContentAt; },
+    get markLiveContentAdvanced() { return sourcePane.markLiveContentAdvanced; },
+    get setDraftPlaceholderMode() { return sourcePane.setDraftPlaceholderMode; },
+    get applyDraftPlaceholderDefaults() { return sourcePane.applyDraftPlaceholderDefaults; },
+    get applyDraftPlaceholderWorkspace() { return sourcePane.applyDraftPlaceholderWorkspace; },
+    get dematerializeEmptyDraftThread() { return sourcePane.dematerializeEmptyDraftThread; },
+    get isLocked() { return sourcePane.isLocked; },
+    get timelineRevision() { return sourcePane.timelineRevision; },
+    get rowUiRetentionRevision() { return sourcePane.rowUiRetentionRevision; },
+    get getItemById() { return sourcePane.getItemById; },
+    get pendingApprovals() { return sourcePane.pendingApprovals; },
+    get pendingUserInputs() { return sourcePane.pendingUserInputs; },
+    get contextWindow() { return sourcePane.contextWindow; },
+    get providerBanner() { return sourcePane.providerBanner; },
+    get providerSessionAccount() { return sourcePane.providerSessionAccount; },
+    get generalError() { return sourcePane.generalError; },
+    get generalErrorKind() { return sourcePane.generalErrorKind; },
+    get sendInFlight() { return sourcePane.sendInFlight; },
+    get showTerminal() { return sourcePane.showTerminal; },
+    get gitStatus() { return sourcePane.gitStatus; },
+    get canAdoptOpenedTerminal() { return sourcePane.canAdoptOpenedTerminal; },
+    get latestSettledTurn() { return sourcePane.latestSettledTurn; },
+    get oldestLoadedCursor() { return sourcePane.oldestLoadedCursor; },
+    get newestLoadedCursor() { return sourcePane.newestLoadedCursor; },
+    get oldestLoadedTurnIndex() { return sourcePane.oldestLoadedTurnIndex; },
+    get newestLoadedTurnIndex() { return sourcePane.newestLoadedTurnIndex; },
+    get debugMemoryStats() { return sourcePane.debugMemoryStats; },
+    get channelMessages() { return sourcePane.channelMessages; },
+    get channelStatus() { return sourcePane.channelStatus; },
+    get channelTurnCount() { return sourcePane.channelTurnCount; },
+    get channelMaxTurns() { return sourcePane.channelMaxTurns; },
+    get channelAwaitingResponse() { return sourcePane.channelAwaitingResponse; },
+    get channelCurrentSpeakerRole() { return sourcePane.channelCurrentSpeakerRole; },
+    get channelParticipants() { return sourcePane.channelParticipants; },
+    get channelLiveTail() { return sourcePane.channelLiveTail; },
+    get channelLastLiveContentAt() { return sourcePane.channelLastLiveContentAt; },
+    get pendingClarification() { return sourcePane.pendingClarification; },
+    get activeOptionSet() { return sourcePane.activeOptionSet; },
+    get designViewport() { return sourcePane.designViewport; },
+    get showPlanSidebar() { return sourcePane.showPlanSidebar; },
+    get showReviewPane() { return sourcePane.showReviewPane; },
+    get showDesignPreviewPanel() { return sourcePane.showDesignPreviewPanel; },
+    get showAgentPane() { return sourcePane.showAgentPane; },
+    get switchGeneration() { return sourcePane.switchGeneration; },
+    get switchThread() { return sourcePane.switchThread; },
+    get refreshFromBackend() { return sourcePane.refreshFromBackend; },
+    get retryHistoryLoad() { return sourcePane.retryHistoryLoad; },
+    get snapshotForClose() { return sourcePane.snapshotForClose; },
+    get clear() { return sourcePane.clear; },
+    get startDraftPlaceholder() { return sourcePane.startDraftPlaceholder; },
+    get materializeDraftPlaceholder() { return sourcePane.materializeDraftPlaceholder; },
+    get adoptMaterializedDraftThread() { return sourcePane.adoptMaterializedDraftThread; },
+    get ensureMaterializedThread() { return sourcePane.ensureMaterializedThread; },
+    get ensureSubagentChildren() { return sourcePane.ensureSubagentChildren; },
+    get loadRecentTail() { return sourcePane.loadRecentTail; },
+    get addApproval() { return sourcePane.addApproval; },
+    get removeApproval() { return sourcePane.removeApproval; },
+    get addUserInput() { return sourcePane.addUserInput; },
+    get removeUserInput() { return sourcePane.removeUserInput; },
+    get upsertItem() { return sourcePane.upsertItem; },
+    get upsertItems() { return sourcePane.upsertItems; },
+    get applyProviderItemUpserts() { return sourcePane.applyProviderItemUpserts; },
+    get removeItemById() { return sourcePane.removeItemById; },
+    get removeItemsFromTurn() { return sourcePane.removeItemsFromTurn; },
+    get removeRevertedItems() { return sourcePane.removeRevertedItems; },
+    get __flushItemSmoothersForTest() { return sourcePane.__flushItemSmoothersForTest; },
+    get __itemSmootherCountForTest() { return sourcePane.__itemSmootherCountForTest; },
+    get __syncLedgerArmedForTest() { return sourcePane.__syncLedgerArmedForTest; },
+    get applyItemDelta() { return sourcePane.applyItemDelta; },
+    get applyItemMeta() { return sourcePane.applyItemMeta; },
+    get applyItemPatch() { return sourcePane.applyItemPatch; },
+    get expansionStateFor() { return sourcePane.expansionStateFor; },
+    get retainExpansionStateFor() { return sourcePane.retainExpansionStateFor; },
+    get expansionStateForPayload() { return sourcePane.expansionStateForPayload; },
+    get retainExpansionStateForPayload() { return sourcePane.retainExpansionStateForPayload; },
+    get isSubagentGroupExpanded() { return sourcePane.isSubagentGroupExpanded; },
+    get toggleSubagentGroupExpanded() { return sourcePane.toggleSubagentGroupExpanded; },
+    get subagentLiveAggregate() { return sourcePane.subagentLiveAggregate; },
+    get isUserMessageExpanded() { return sourcePane.isUserMessageExpanded; },
+    get setUserMessageExpanded() { return sourcePane.setUserMessageExpanded; },
+    get diffCardExpandedOverride() { return sourcePane.diffCardExpandedOverride; },
+    get setDiffCardExpanded() { return sourcePane.setDiffCardExpanded; },
+    get expansionSignature() { return sourcePane.expansionSignature; },
+    get hasUserExpansionWithin() { return sourcePane.hasUserExpansionWithin; },
+    get attachmentCacheFor() { return sourcePane.attachmentCacheFor; },
+    get liveThinkingTailForItem() { return sourcePane.liveThinkingTailForItem; },
+    get isItemSmoothing() { return sourcePane.isItemSmoothing; },
+    get snapSmoothersToReceived() { return sourcePane.snapSmoothersToReceived; },
+    get setPaneError() { return sourcePane.setPaneError; },
+    get clearPaneError() { return sourcePane.clearPaneError; },
+    get setGeneralError() { return sourcePane.setGeneralError; },
+    get setSessionError() { return sourcePane.setSessionError; },
+    get setHistoryLoadError() { return sourcePane.setHistoryLoadError; },
+    get clearGeneralError() { return sourcePane.clearGeneralError; },
+    get clearSessionError() { return sourcePane.clearSessionError; },
+    get setSendInFlight() { return sourcePane.setSendInFlight; },
+    get armStructuralSpring() { return sourcePane.armStructuralSpring; },
+    get trackOptimisticItem() { return sourcePane.trackOptimisticItem; },
+    get isOptimisticItem() { return sourcePane.isOptimisticItem; },
+    get untrackOptimisticItem() { return sourcePane.untrackOptimisticItem; },
+    get setContextWindow() { return sourcePane.setContextWindow; },
+    get clearContextWindow() { return sourcePane.clearContextWindow; },
+    get setProviderBanner() { return sourcePane.setProviderBanner; },
+    get setProviderSessionAccount() { return sourcePane.setProviderSessionAccount; },
+    get setActiveTurn() { return sourcePane.setActiveTurn; },
+    get settleTurn() { return sourcePane.settleTurn; },
+    get clearActiveTurn() { return sourcePane.clearActiveTurn; },
+    get clearTurnState() { return sourcePane.clearTurnState; },
+    get liveTodo() { return sourcePane.liveTodo; },
+    get liveTodoShowAll() { return sourcePane.liveTodoShowAll; },
+    get setLiveTodo() { return sourcePane.setLiveTodo; },
+    get clearLiveTodo() { return sourcePane.clearLiveTodo; },
+    get toggleLiveTodoShowAll() { return sourcePane.toggleLiveTodoShowAll; },
+    get activityRailTodosOpen() { return sourcePane.activityRailTodosOpen; },
+    get activityRailBackgroundOpen() { return sourcePane.activityRailBackgroundOpen; },
+    get activityRailInputCollapsed() { return sourcePane.activityRailInputCollapsed; },
+    get toggleActivityRailTodos() { return sourcePane.toggleActivityRailTodos; },
+    get toggleActivityRailBackground() { return sourcePane.toggleActivityRailBackground; },
+    get toggleActivityRailInputCollapsed() { return sourcePane.toggleActivityRailInputCollapsed; },
+    get replaceThread() { return sourcePane.replaceThread; },
+    get setEffectiveModel() { return sourcePane.setEffectiveModel; },
+    get applyEffectiveModel() { return sourcePane.applyEffectiveModel; },
+    get setShowTerminal() { return sourcePane.setShowTerminal; },
+    get requestTerminalFocus() { return sourcePane.requestTerminalFocus; },
+    get consumeTerminalFocusRequest() { return sourcePane.consumeTerminalFocusRequest; },
+    get togglePlanSidebar() { return sourcePane.togglePlanSidebar; },
+    get setShowPlanSidebar() { return sourcePane.setShowPlanSidebar; },
+    get toggleReviewPane() { return sourcePane.toggleReviewPane; },
+    get setShowReviewPane() { return sourcePane.setShowReviewPane; },
+    get closeAgentPane() { return sourcePane.closeAgentPane; },
+    get toggleDesignPreviewPanel() { return sourcePane.toggleDesignPreviewPanel; },
+    get setShowDesignPreviewPanel() { return sourcePane.setShowDesignPreviewPanel; },
+    get applyChannelMessage() { return sourcePane.applyChannelMessage; },
+    get applyChannelMessages() { return sourcePane.applyChannelMessages; },
+    get applyChannelState() { return sourcePane.applyChannelState; },
+    get clearChannel() { return sourcePane.clearChannel; },
+    get setPendingClarification() { return sourcePane.setPendingClarification; },
+    get setActiveOptionSet() { return sourcePane.setActiveOptionSet; },
+    get setDesignViewport() { return sourcePane.setDesignViewport; },
+    get clearDesign() { return sourcePane.clearDesign; },
+    get applyDesignOptionsUpdate() { return sourcePane.applyDesignOptionsUpdate; },
+  } satisfies Pick<ThreadPane, AgentScopeForwarded>;
+
+  // Own properties, getters intact. NOT a spread of the two literals — a
+  // spread would evaluate every getter once and hand the timeline a frozen
+  // snapshot of the pane.
+  const pane: ThreadPane = Object.defineProperties({} as ThreadPane, {
+    ...Object.getOwnPropertyDescriptors(forwarded),
+    ...Object.getOwnPropertyDescriptors(overrides),
+  });
 
   return {
     pane,
