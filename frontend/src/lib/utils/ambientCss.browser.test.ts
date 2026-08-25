@@ -65,64 +65,26 @@ afterEach(() => {
   for (const el of hosts.splice(0)) el.remove();
 });
 
-describe('ambient pulse root vars', () => {
-  // The pulse is NOT a CSS animation: a running opacity animation
-  // promotes its element to its own composited layer, and one dot per
-  // busy thread put 18 layers on 6px dots (2026-08-25; the @theme
-  // `--animate-pulse` comment carries the history). The utility reads
-  // root-level custom properties the ticker writes; these tests prove
-  // the CSS wiring renders the ticker's waveform and that no Animation
-  // object exists to trigger the promotion.
-  const setPulseVars = (t: number): void => {
-    const root = document.documentElement.style;
-    root.setProperty('--ambient-pulse-o', String(pulseOpacityAt(t)));
-    root.setProperty('--ambient-pulse-o2', String(pulseOpacityAt(t + 250)));
-    root.setProperty('--ambient-pulse-o4', String(pulseOpacityAt(t + 500)));
-  };
-  afterEach(() => {
-    const root = document.documentElement.style;
-    for (const name of ['--ambient-pulse-o', '--ambient-pulse-o2', '--ambient-pulse-o4']) {
-      root.removeProperty(name);
-    }
-  });
-
-  it('renders the base var across the 2s cycle, with no Animation object', () => {
+describe('ambient pulse rendering', () => {
+  // The pulse is NOT a CSS animation (a running opacity animation
+  // promotes its element to its own composited layer — 18 of 26 layers
+  // on 6px dots, 2026-08-25) and NOT root custom properties (a root
+  // custom-property write invalidates style for the whole document —
+  // the 2fps-springs regression, same day). The ticker writes each
+  // dot's opacity inline (ambientTicker.test.ts pins the writes and the
+  // staggers); what needs a real cascade is that app.css arms neither
+  // failure mode on the class itself.
+  it('creates no Animation object and rests at full opacity', () => {
     const dot = mount('<span class="animate-pulse"></span>');
     expect(dot.getAnimations(), 'pulse must not create an Animation (layer promotion)').toHaveLength(0);
-    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
-      setPulseVars(t);
-      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
-    }
+    expect(opacityOf(dot), 'rest state is the default opacity').toBe(1);
   });
 
-  it('rests at full opacity when the ticker has written nothing', () => {
+  it('renders an inline waveform write over the rest state', () => {
     const dot = mount('<span class="animate-pulse"></span>');
-    expect(opacityOf(dot)).toBe(1);
-  });
-
-  it('staggers the backgrounded dots one and two slots apart', () => {
-    // Indicator.svelte's three-dot `backgrounded` variant: each stagger
-    // class reads its own root property, written one and two 250ms slots
-    // AHEAD of the base waveform.
-    const base = mount('<span class="animate-pulse"></span>');
-    const s2 = mount('<span class="animate-pulse ambient-pulse-s2"></span>');
-    const s4 = mount('<span class="animate-pulse ambient-pulse-s4"></span>');
-    const dots: [HTMLElement, number][] = [
-      [base, 0],
-      [s2, 250],
-      [s4, 500],
-    ];
-
     for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
-      setPulseVars(t);
-      for (const [el, lead] of dots) {
-        expect(opacityOf(el), `lead ${lead}ms at t=${t}ms`).toBeCloseTo(pulseOpacityAt(t + lead), 4);
-      }
-      // The whole point of the stagger, and it holds at every slot: the
-      // waveform is symmetric about slot 7.5, so two dots an even number
-      // of slots apart can never land on the same value.
-      const values = new Set(dots.map(([el]) => opacityOf(el).toFixed(4)));
-      expect(values.size, `dots share an opacity at t=${t}ms`).toBe(3);
+      dot.style.setProperty('opacity', String(pulseOpacityAt(t)));
+      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
     }
   });
 });

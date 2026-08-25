@@ -22,16 +22,23 @@
 // (CompositingReason::kActiveOpacityAnimation), and the pulse class sits
 // on one working dot per busy thread/subagent row: a fleet of agents put
 // 18 of the app's 26 layers on 6px dots (measured 2026-08-25, user app
-// under multi-agent load). This timer instead writes THREE custom
-// properties on the document root per 125ms slot (base + the two
-// stagger phases); the dots read them through `opacity: var(...)` in
-// app.css. No Animation objects, no promotions, and the recalc scope of
-// a root var write is only the elements that consume it. This flips the
-// 2026-08-24 decision that moved the pulse to CSS — that measurement
-// priced a handful of dots on a quiet layout and missed the per-dot
-// layer; the old inline-write cost (~28 whole-document repaints/sec)
-// came from per-ELEMENT style writes, which the root-var form does not
-// do. History of both flips lives at app.css `--animate-pulse`.
+// under multi-agent load). This timer instead writes each dot's opacity
+// INLINE, exactly like the glow: per-element writes, mark-and-sweep
+// clearing, CSS rest state (opacity 1) when a write stops.
+//
+// NOT root custom properties, and that was measured, not guessed: the
+// first de-promotion attempt wrote three `--ambient-pulse-*` vars on
+// the document root per slot, and a root-level custom-property write
+// invalidates style for the WHOLE document, not just the consumers —
+// 381 recalc passes of ~3,500 elements at 22-30ms each over a 10s
+// window on the user's app (2026-08-25, `probe frames`), ~195ms/s of
+// recalc that dropped frames under every scroll spring. A per-element
+// inline write invalidates one 6px span; at fleet scale (tens of dots,
+// 8 writes/s each) the recalc cost is single-digit ms/s. The ~28
+// whole-document repaints/sec that killed the ORIGINAL ticker pulse
+// came from the sprite's background-position write, not from opacity
+// on leaf spans. History of all three flips lives at app.css
+// `--animate-pulse`.
 //
 // Measured 2026-08-23, per 5s: the sprite's old inline write cost
 // 163.0ms of main-thread work; as a CSS animation it costs 0.0ms.
@@ -102,40 +109,15 @@ function formatValue(v: number): string {
 
 const GLOW_CLASSES = ['status-glow-warning', 'status-glow-info'] as const;
 
-/** The three pulse phases written on the document root: base, and the
- * -250ms / -500ms staggers Indicator.svelte spreads across its three
- * backgrounded dots (one and two slots apart, matching the deleted CSS
- * animation-delays — a negative delay shows the waveform AHEAD). */
-const PULSE_VARS = [
-  ['--ambient-pulse-o', 0],
-  ['--ambient-pulse-o2', 250],
-  ['--ambient-pulse-o4', 500],
-] as const;
-
-/** Last values written to the root, so an unchanged slot writes nothing. */
-let lastPulse: string | null = null;
-
-function writePulseVars(tMs: number): boolean {
-  const root = document.documentElement;
-  if (document.getElementsByClassName('animate-pulse').length === 0) {
-    if (lastPulse !== null) clearPulseVars();
-    return false;
-  }
-  const values = PULSE_VARS.map(([, lead]) => formatValue(pulseOpacityAt(tMs + lead)));
-  const key = values.join(' ');
-  if (key !== lastPulse) {
-    for (let i = 0; i < PULSE_VARS.length; i++) {
-      root.style.setProperty(PULSE_VARS[i][0], values[i]);
-    }
-    lastPulse = key;
-  }
-  return true;
-}
-
-function clearPulseVars(): void {
-  const root = document.documentElement;
-  for (const [name] of PULSE_VARS) root.style.removeProperty(name);
-  lastPulse = null;
+/** Stagger lead for a pulse dot: Indicator.svelte's backgrounded
+ * variant marks its second and third dots one and two 250ms slots
+ * AHEAD of the base waveform (matching the deleted CSS
+ * animation-delays — a negative delay shows the waveform ahead). */
+function pulseLeadFor(el: Element): number {
+  const classes = el.classList;
+  if (classes.contains('ambient-pulse-s4')) return 500;
+  if (classes.contains('ambient-pulse-s2')) return 250;
+  return 0;
 }
 
 /** Consecutive empty ticks before the timer suspends. One second, so a
@@ -148,26 +130,36 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let wake: MutationObserver | null = null;
 let idleTicks = 0;
 let stopPhase: (() => void) | null = null;
-/** Elements carrying a ticker-written `--ambient-glow-t`, for
- * mark-and-sweep clearing when they lose their marker class or leave the
- * document. */
+/** Elements carrying a ticker-written inline style (`--ambient-glow-t`
+ * on glow rows, `opacity` on pulse dots), for mark-and-sweep clearing
+ * when they lose their marker class or leave the document. */
 const styled = new Set<Element>();
 
 function clearStyles(el: Element): void {
-  (el as HTMLElement | SVGElement).style.removeProperty('--ambient-glow-t');
+  const style = (el as HTMLElement | SVGElement).style;
+  style.removeProperty('--ambient-glow-t');
+  style.removeProperty('opacity');
 }
 
 function clearAllStyles(): void {
   for (const el of styled) clearStyles(el);
   styled.clear();
-  clearPulseVars();
 }
 
 /** Returns whether any consumer is currently on screen. */
 function writeStyles(tMs: number): boolean {
-  const hasPulse = writePulseVars(tMs);
   const seen = new Set<Element>();
   const glowT = formatValue(glowTAt(tMs));
+
+  for (const el of document.getElementsByClassName('animate-pulse')) {
+    const style = (el as HTMLElement | SVGElement).style;
+    const value = formatValue(pulseOpacityAt(tMs + pulseLeadFor(el)));
+    if (style.getPropertyValue('opacity') !== value) {
+      style.setProperty('opacity', value);
+    }
+    seen.add(el);
+    styled.add(el);
+  }
 
   for (const name of GLOW_CLASSES) {
     for (const el of document.getElementsByClassName(name)) {
@@ -182,7 +174,7 @@ function writeStyles(tMs: number): boolean {
 
   // Sweep: anything styled on a previous tick that no longer carries a
   // marker class (toggled off, or detached) falls back to its CSS rest
-  // state — the var() fallback, t=0. Clearing a detached element is
+  // state — glow t=0, pulse opacity 1. Clearing a detached element is
   // harmless.
   for (const el of styled) {
     if (!seen.has(el)) {
@@ -190,7 +182,7 @@ function writeStyles(tMs: number): boolean {
       styled.delete(el);
     }
   }
-  return hasPulse || seen.size > 0;
+  return seen.size > 0;
 }
 
 function arm(): void {
