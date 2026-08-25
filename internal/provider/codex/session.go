@@ -152,16 +152,41 @@ type Session struct {
 	unclaimedNotifications           map[string]struct{}
 	unclaimedNotificationsOverflowed bool
 	nextID                           atomic.Int64
-	mu                               sync.Mutex
-	pending                          map[int64]chan json.RawMessage
-	onEvent                          func(provider.ProviderEvent)
-	eventMu                          sync.Mutex
-	dynamicToolHandler               DynamicToolHandler
-	cancel                           context.CancelFunc
-	closing                          atomic.Bool
-	readDone                         chan struct{}
+	// LOCK ORDER: mu → childLifecycleMu → eventMu. Take them in that order or
+	// not at all; nothing in this package takes them in the reverse direction.
+	// approvalsMu and collabAsyncMu are LEAVES — no other Session lock may be
+	// acquired while either is held (drainPendingApprovals deliberately
+	// releases approvalsMu before it emits; startCollabAsync only starts a
+	// goroutine, which enters the order on its own stack).
+	//
+	// Two edges are actually exercised. Close takes childLifecycleMu under mu
+	// to drop childLifecycleRevision. observeAndEmitChildLifecycle and
+	// emitRecoveredChildStatus reserve eventMu under childLifecycleMu and then
+	// release childLifecycleMu before delivering, so a later child-lifecycle
+	// observation cannot overtake an earlier one while still keeping the
+	// external callback out from under the lifecycle lock.
+	//
+	// mu is NEVER held across an emit. Every emitter builds its events under
+	// mu, releases it, and only then calls emitEvent / emitEvents — see
+	// thread_settings.go for the canonical shape. eventMu is the ONLY lock
+	// that may be held across s.onEvent (emitEventLocked): that is what gives
+	// the provider callback its serialized-delivery contract without pinning
+	// session state while the app layer runs.
+	//
+	// codexThreadID, appServerVersion, threadHistoryMode, pendingRevert,
+	// threadQueueNative, closing and nextID are atomics precisely so their
+	// readers never have to enter this order at all.
+	mu                 sync.Mutex
+	pending            map[int64]chan json.RawMessage
+	onEvent            func(provider.ProviderEvent)
+	eventMu            sync.Mutex
+	dynamicToolHandler DynamicToolHandler
+	cancel             context.CancelFunc
+	closing            atomic.Bool
+	readDone           chan struct{}
 	// approvalsMu guards pendingApprovals, resolvedApprovals, and
-	// approvalsClosed.
+	// approvalsClosed. A LEAF in the lock order above: no other Session lock
+	// may be taken while it is held.
 	approvalsMu sync.Mutex
 	// pendingApprovals maps request ID (string form, matching the
 	// RequestID field of ApprovalResponse) to the in-flight request
@@ -264,7 +289,8 @@ type Session struct {
 	subagentNotificationDedup map[subagentNotificationDedupKey]struct{}
 	// childLifecycleMu serializes live and recovered child status emission.
 	// The revision rejects a stale thread/read snapshot if a live lifecycle
-	// notification arrived while the recovery request was in flight.
+	// notification arrived while the recovery request was in flight. Sits
+	// between mu and eventMu in the lock order above.
 	childLifecycleMu       sync.Mutex
 	childLifecycleRevision map[string]uint64
 	rolloutObserverWG      sync.WaitGroup
@@ -285,6 +311,8 @@ type Session struct {
 	// Collaboration metadata enrichment and reopen-history traversal run in
 	// session-scoped background work. collabAsyncMu closes the Add/Wait race;
 	// collabHistory* is guarded by mu and feeds one sequential traversal.
+	// collabAsyncMu is a LEAF in the lock order above — the work it guards is
+	// handed to a goroutine, which enters the order on its own stack.
 	collabAsyncMu                 sync.Mutex
 	collabAsyncClosing            bool
 	collabAsyncWG                 sync.WaitGroup

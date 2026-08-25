@@ -335,6 +335,47 @@ over stdio.
   nothing, writes nothing, and never resolves the Codex home itself. Has its
   own subarea guide.
 
+## Session lock order
+
+`Session` carries five mutexes. **Take them in this order or not at all:**
+
+```
+mu  →  childLifecycleMu  →  eventMu
+```
+
+`approvalsMu` and `collabAsyncMu` are **leaves**: no other `Session` lock
+may be acquired while either is held. `drainPendingApprovals` releases
+`approvalsMu` before it emits, and `startCollabAsync` only hands work to a
+goroutine, which enters the order on its own stack.
+
+Two edges are actually exercised today, both for the same reason — a child's
+lifecycle emission must not be overtaken, and the external callback must not
+run under the lifecycle lock:
+
+| Site | Sequence |
+|---|---|
+| `Close` (`session.go`) | takes `childLifecycleMu` under `mu` to drop `childLifecycleRevision` |
+| `observeAndEmitChildLifecycle`, `emitRecoveredChildStatus` (`collab_agents.go`) | reserve `eventMu` under `childLifecycleMu`, then release `childLifecycleMu` before delivering |
+
+Three rules follow, and they are what keep the order shallow:
+
+- **`mu` is never held across an emit.** Every emitter builds its events
+  under `mu`, releases it, and only then calls `emitEvent` / `emitEvents`
+  (`thread_settings.go` is the canonical shape — it says so in a comment).
+  So the `mu → eventMu` edge exists in the order but is not taken anywhere:
+  the only path from `mu` toward emission is the `Close` edge above.
+- **`eventMu` is the only lock that may be held across `s.onEvent`.**
+  `emitEventLocked` (`session.go`) is the sole caller of the callback, and
+  it runs under `eventMu`. That is what gives the provider callback its
+  serialized-delivery contract without pinning session state while the app
+  layer runs — an app-layer callback re-entering the `Session` deadlocks
+  only if a future emitter starts holding `mu` across an emit.
+- **Atomics exist to stay out of this order.** `codexThreadID`,
+  `appServerVersion`, `threadHistoryMode`, `pendingRevert`,
+  `threadQueueNative`, `closing` and `nextID` are atomic precisely so
+  read-loop paths that already hold `mu` can consult them without a second
+  lock — see the anti-pattern on the root Codex thread id below.
+
 ## Methods we call
 
 - `thread/start`, `thread/resume`, `thread/fork` (optionally cut at a
