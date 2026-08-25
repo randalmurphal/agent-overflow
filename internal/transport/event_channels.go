@@ -732,9 +732,13 @@ var channelPolicies = []ChannelPolicy{
 		Retention: RetentionDefault,
 		Why: "Run-failure toasts remote overlay viewers need too (workflow " +
 			"reads are wire-safe); emit sites keep the real cause in local " +
-			"diagnostics and send a hand-written opaque sentence. Every " +
-			"frame is a distinct toast (client dedups over an LRU): never " +
-			"latest-only.",
+			"diagnostics and send a hand-written opaque sentence. One " +
+			"deliberate exception: reportUnitWorktreeRetained names the " +
+			"retained worktree's absolute path — the only place a human can " +
+			"recover the uncommitted work — which matches the accepted " +
+			"posture that absolute workspace paths already reach remote " +
+			"peers (thread:updated). Every frame is a distinct toast " +
+			"(client dedups over an LRU): never latest-only.",
 	},
 	{
 		Channel:   "workflow:gate-notify",
