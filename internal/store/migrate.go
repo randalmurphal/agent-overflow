@@ -15,6 +15,21 @@ const createMigrationVersionsTableSQL = `CREATE TABLE IF NOT EXISTS migration_ve
 	applied  INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
 )`
 
+// DEPRECATED for new migrations — mustReplaceOnce, mustReplaceEvery, and
+// mustCutFrom below exist only for the derivations already in this file.
+//
+// Deriving a rebuild from an earlier migration's text makes that earlier text
+// live source code: editing it silently rewrites every migration downstream of
+// it, including ones that have already run on user databases. Two stores at the
+// same version number then hold different schemas, and nothing in the chain can
+// see it — the version row says the migration ran.
+//
+// A NEW rebuild-style migration RESTATES its SQL in full, as a const of its
+// own. Copy the previous rebuild's text, apply the change, and let the two
+// diverge; the duplication is the point. The shipped derivations are pinned by
+// sha256 in migrate_freeze_test.go, so an edit to any text they derive from
+// fails there rather than in a user's database.
+//
 // mustReplaceOnce derives one migration's SQL from an earlier, already-shipped
 // rebuild by substituting exactly one fragment. It panics unless `old` occurs
 // exactly once.
@@ -33,6 +48,9 @@ func mustReplaceOnce(source, old, replacement string) string {
 	}
 }
 
+// mustReplaceEvery is part of the DEPRECATED derivation family described above:
+// not for new migrations, which restate their SQL in full.
+//
 // mustReplaceEvery replaces every occurrence of old, panicking unless there
 // were exactly want of them. The count is the point: it lets a rebuild derive
 // from a multi-table text where the same constraint appears once per table,
@@ -45,6 +63,9 @@ func mustReplaceEvery(source, old, replacement string, want int) string {
 	return strings.ReplaceAll(source, old, replacement)
 }
 
+// mustCutFrom is part of the DEPRECATED derivation family described above: not
+// for new migrations, which restate their SQL in full.
+//
 // mustCutFrom returns source from the first occurrence of marker onward,
 // panicking if the marker is absent. Used to slice one table's statement group
 // out of a multi-table rebuild so a later migration can re-derive that table

@@ -1174,12 +1174,42 @@ blocked checkpoint with a result ROW, never an error — a caller that only
 checks `err` cannot tell a reclaimed WAL from an abandoned one), and it
 quiesces the read pool internally, exactly like VACUUM.
 
+## Shipped migration SQL is frozen
+
+Shipped migration text is immutable, and here that rule is ENFORCED rather
+than asked for. `migrate_freeze_test.go` pins the sha256 of the final SQL of
+every migration whose text is DERIVED at package init from an earlier
+migration's — v28, v31, v34, v39, v43, v44, v45, v48, v56, v57 today, built by
+the `mustReplaceOnce` / `mustReplaceEvery` / `mustCutFrom` family.
+
+- **Why those and not the const ones.** A derivation makes an earlier
+  migration's text live source code: v43 is v39's rebuild with a
+  substitution, v56 is v44's, v48 is v31's, which is v11's. Editing the source
+  rewrites every migration downstream of it — including ones that already ran
+  on user databases. Two stores at the same version number then hold different
+  schemas, and nothing can detect it, because the version row says the
+  migration ran. The hazard is invisible at the edited line, which is what the
+  hashes replace.
+- **New rebuild-style migrations RESTATE their SQL in full**, as a const of
+  their own. Copy the previous rebuild's text, apply the change, let the two
+  diverge. The derivation helpers are deprecated for new work and carry a
+  comment saying so; the duplication is deliberate.
+- **The completeness half is mechanical.** `TestEveryDerivedMigrationIsFrozen`
+  parses this package's source, resolves which declarations reach a derivation
+  helper (transitively), and fails if a migration built from one is missing
+  from the frozen map — printing the line to paste. A freeze list kept by hand
+  would only protect the migrations somebody remembered.
+- **When it fails, the answer is almost always "add a new migration."** Update
+  a frozen hash only when you are certain that migration has never shipped.
+
 ## Extension points
 
 - To add a new column / index / CHECK: write a new migration — never
   edit a shipped one — and add a test that asserts both the schema and
   the constraint behavior. See
-  `docs/architecture/how-to.md#add-a-migration`.
+  `docs/architecture/how-to.md#add-a-migration`. `migrate_freeze_test.go`
+  enforces the "never edit a shipped one" half for derived migrations — see
+  "Shipped migration SQL is frozen" above.
 - To add a new table: confirm the provider session doesn't already own
   the data; if it doesn't, add the table + migration + a companion
   `<name>.go` with typed accessors. Update `docs/architecture/schema.md`.
@@ -1190,7 +1220,9 @@ quiesces the read pool internally, exactly like VACUUM.
 
 - Do NOT use `SELECT *`. Index every `WHERE` column. No business logic
   in SQL — just persist + query.
-- Do NOT edit a migration that has shipped. Append a new one.
+- Do NOT edit a migration that has shipped. Append a new one. Do NOT derive
+  a new migration's SQL from an earlier one's text — restate it in full (see
+  "Shipped migration SQL is frozen").
 - Do NOT work around SQLite+WAL single-writer semantics with in-Go
   locks; structure writes so they don't contend.
 - Do NOT load `payload.data` eagerly alongside list reads. `meta` is
