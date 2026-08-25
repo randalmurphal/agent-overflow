@@ -54,6 +54,12 @@ answers is usually visible flicker on top of the cost. Neither reads as
 different from real work in the `mutations` census. Both use only
 `Runtime.evaluate`, so they run alongside a `sample` curve.
 
+`evalq '<expr>'` runs one ad-hoc expression in the page and prints the JSON
+result — for one-off censuses that don't earn a probe of their own (count
+distinct mask URIs, list running animations by target). `Runtime.evaluate`
+only, so it also runs alongside a sampler. Read-only expressions only on the
+user's app; anything that mutates page state belongs on the soak rig.
+
 ## Method
 
 The probes are the instrument, not the investigation. For how to use them (which
