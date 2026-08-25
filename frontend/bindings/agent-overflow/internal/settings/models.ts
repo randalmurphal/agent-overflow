@@ -968,6 +968,36 @@ export class Settings {
     "workflowPaused": boolean;
 
     /**
+     * KeepAwakeEnabled is the master switch for the OS sleep inhibitor
+     * (internal/power). While set, the machine does not idle-sleep, so a
+     * long unattended turn is not cut off by a suspend.
+     * 
+     * Deliberately absent from DefaultSettings, the ClaudeTUIEnabled
+     * pattern: the default is the Go zero value, false. Holding a system
+     * power assertion is the kind of thing a user must ask for, and every
+     * settings file that predates this key must read as "off" rather than
+     * silently start pinning the machine awake after an upgrade.
+     * Defaulting it true would also invert writeSparse — which persists
+     * only what differs from DefaultSettings — and make `false` the value
+     * that survives a write while `true` was dropped.
+     */
+    "keepAwakeEnabled": boolean;
+
+    /**
+     * KeepAwakeScreen additionally keeps the DISPLAY on while
+     * KeepAwakeEnabled is set. With it off, only system sleep is blocked
+     * and the screen may blank and lock normally. Meaningless on its own —
+     * the master switch is what decides whether anything is held at all.
+     * 
+     * Default TRUE, and therefore present in DefaultSettings (the mirror
+     * of KeepAwakeEnabled, and the same reasoning as SpinnerVerbsEnabled):
+     * "keep awake" colloquially means the screen stays up, so the axis
+     * starts at the meaning of the phrase and the user narrows it. An
+     * absent key must read as on, which only DefaultSettings can do.
+     */
+    "keepAwakeScreen": boolean;
+
+    /**
      * Window stores the desktop window placement (position, size, and
      * maximized/fullscreen state) so the app reopens where it was last
      * closed. Owned by the Go side, not the frontend — written from
@@ -1112,6 +1142,12 @@ export class Settings {
         if (!("workflowPaused" in $$source)) {
             this["workflowPaused"] = false;
         }
+        if (!("keepAwakeEnabled" in $$source)) {
+            this["keepAwakeEnabled"] = false;
+        }
+        if (!("keepAwakeScreen" in $$source)) {
+            this["keepAwakeScreen"] = false;
+        }
         if (!("window" in $$source)) {
             this["window"] = (new windowgeom$0.Geometry());
         }
@@ -1142,7 +1178,7 @@ export class Settings {
         const $$createField53_0 = $$createType12;
         const $$createField58_0 = $$createType0;
         const $$createField60_0 = $$createType0;
-        const $$createField63_0 = $$createType13;
+        const $$createField65_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1202,7 +1238,7 @@ export class Settings {
             $$parsedSource["spinnerDisabledAnimations"] = $$createField60_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField63_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField65_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

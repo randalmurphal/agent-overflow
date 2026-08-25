@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/kerneltest"
+	"agent-overflow/internal/power"
 )
 
 // isolateE2EProviderSpawns makes it structurally impossible for a test built on
@@ -41,4 +42,11 @@ func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	// incidentally from a test. A test asserting generated text installs its
 	// own fake over this.
 	app.textGenerationExecutor = kerneltest.StubTextGenerationExecutor()
+
+	// The OS sleep inhibitor is real system state — a fixture that flips
+	// keepAwakeEnabled must not pin the developer's machine awake for the
+	// rest of the session. internal/power refuses inside a test binary on
+	// its own, so this seam is about keeping the log quiet and giving a
+	// test asserting the mode something to install a recorder over.
+	app.keepAwakeApply = func(power.Mode) error { return nil }
 }

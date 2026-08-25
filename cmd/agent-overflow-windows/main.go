@@ -1232,6 +1232,11 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 			a.mu.Unlock()
 			trimRendererMemory(w, reason)
 		},
+		// The backend owns the SETTING; this process owns the machine's
+		// power state. SetThreadExecutionState is a Win32 call the WSL
+		// backend cannot make, so keep awake is asserted here
+		// (keepawake.go).
+		HandleKeepAwake: applyKeepAwakeDirective,
 	})
 	if err != nil {
 		return err

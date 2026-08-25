@@ -13,6 +13,8 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     collapseDiffPreviews: false,
     streamingEnabled: true,
     lowPowerMode: false,
+    keepAwakeEnabled: false,
+    keepAwakeScreen: true,
     // Shipped spinner defaults: verbs on, animations off (see
     // stores/settings.svelte.ts DEFAULT_SETTINGS).
     spinnerVerbsEnabled: true,

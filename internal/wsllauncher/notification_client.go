@@ -50,6 +50,23 @@ type NotificationClientConfig struct {
 	// off the read loop, and the channel carries no replay cursor — a trim
 	// is only meaningful in the idle moment it was emitted.
 	HandleWebviewTrim func(reason string)
+
+	// HandleKeepAwake, when non-nil, additionally subscribes this
+	// connection to the power:keepawake directive channel and hands every
+	// well-formed frame's mode ("off" | "system" | "display") to the
+	// callback. Same nil-keeps-the-wire-unchanged posture as the two
+	// above, with one difference that matters:
+	//
+	// This channel carries a LEVEL, not an edge. The launcher owns the
+	// Win32 execution state for the whole machine, so after a reconnect it
+	// must end up holding whatever the backend's CURRENT setting says —
+	// not whatever it happened to hold before the drop. The channel is
+	// RetentionLatestOnly on the server, and this client asks for it with
+	// a replay cursor pinned at ZERO on every connection, so the newest
+	// frame is redelivered whether it was emitted at the backend's boot an
+	// hour ago or lands a moment from now. Convergence therefore needs no
+	// re-emit on subscribe and no cursor bookkeeping here.
+	HandleKeepAwake func(mode string)
 }
 
 // NotificationClient is the launcher's narrow transport client. It consumes
@@ -62,9 +79,14 @@ type NotificationClient struct {
 	present           func(notify.Send) error
 	handleInstall     func(selfupdate.InstallDirective)
 	handleWebviewTrim func(reason string)
+	handleKeepAwake   func(mode string)
 	// channels is the exact subscribe-frame payload, fixed at construction so
 	// every reconnect asks for the same set.
 	channels []string
+	// levelChannels are the subscribed channels whose newest retained
+	// frame must be redelivered on every connection. They ride the replay
+	// request with a cursor of zero — see HandleKeepAwake.
+	levelChannels []string
 	logf     func(string, ...any)
 	minWait  time.Duration
 	maxWait  time.Duration
@@ -87,6 +109,18 @@ type NotificationClient struct {
 	pendingMu sync.Mutex
 	pending   map[string]pendingRPC
 	nextRPC   atomic.Uint64
+
+	// keepAwake* is the ordered latest-wins mailbox behind
+	// handleKeepAwakeDirective. A bare `go handler(mode)` per frame (the
+	// webview:trim shape) is wrong for a LEVEL: two frames in quick
+	// succession — a replayed boot frame plus a live toggle, or a fast
+	// on/off — would race, and the stale mode could apply last, leaving
+	// the machine's power state contradicting the setting. One drain
+	// goroutine applies modes in arrival order and skips straight to the
+	// newest when frames outpace it.
+	keepAwakeMu      sync.Mutex
+	keepAwakePending *string
+	keepAwakeDrain   bool
 }
 
 func NewNotificationClient(config NotificationClientConfig) (*NotificationClient, error) {
@@ -128,13 +162,20 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 	if config.HandleWebviewTrim != nil {
 		channels = append(channels, string(eventchan.WebviewTrim))
 	}
+	var levelChannels []string
+	if config.HandleKeepAwake != nil {
+		channels = append(channels, string(eventchan.PowerKeepAwake))
+		levelChannels = append(levelChannels, string(eventchan.PowerKeepAwake))
+	}
 	return &NotificationClient{
 		wsURL:             parsed.String(),
 		token:             config.Token,
 		present:           config.Present,
 		handleInstall:     config.HandleUpdateInstall,
 		handleWebviewTrim: config.HandleWebviewTrim,
+		handleKeepAwake:   config.HandleKeepAwake,
 		channels:          channels,
+		levelChannels:     levelChannels,
 		logf:              logf,
 		minWait:           minWait,
 		maxWait:           maxWait,
@@ -203,16 +244,31 @@ func (c *NotificationClient) runConnection(ctx context.Context) (bool, error) {
 		return true, fmt.Errorf("subscribe to notification channel: %w", err)
 	}
 
-	// Only notification:send carries a replay cursor. updater:install is
-	// ephemeral on the server (never retained in the replay ring), and a
-	// directive is only actionable while the user is waiting on it — a channel
-	// absent from lastSeqByChannel gets no replay, which is exactly right.
+	// notification:send is the only channel that carries a MOVING replay
+	// cursor: its frames are history, and the launcher must not miss or
+	// repeat one. updater:install and webview:trim are ephemeral on the
+	// server (never retained) and only actionable in the moment they were
+	// emitted — a channel absent from lastSeqByChannel gets no replay,
+	// which is exactly right for them.
+	//
+	// power:keepawake is the third shape: a retained LEVEL. It rides the
+	// same frame with a cursor pinned at ZERO, which on its latest-only
+	// ring means "send me the newest frame, whenever it was emitted" —
+	// that is the whole convergence mechanism after a reconnect. Zero, not
+	// a tracked cursor: a backend restart re-seeds every channel's seq
+	// from 1, and a remembered cursor above the new head would come back
+	// as a gap marker instead of the state.
 	c.seqMu.Lock()
 	lastSeq := c.lastSeq
 	c.seqMu.Unlock()
+	cursors := make(map[string]uint64, 1+len(c.levelChannels))
+	cursors[notify.SendChannel] = lastSeq
+	for _, channel := range c.levelChannels {
+		cursors[channel] = 0
+	}
 	if err := c.writeJSON(ctx, conn, notificationClientFrame{
 		Type:             "replay",
-		LastSeqByChannel: map[string]uint64{notify.SendChannel: lastSeq},
+		LastSeqByChannel: cursors,
 	}); err != nil {
 		return true, fmt.Errorf("request replay: %w", err)
 	}
@@ -294,6 +350,17 @@ func (c *NotificationClient) handleEvent(event notificationEvent) error {
 	}
 	if event.Channel == string(eventchan.WebviewTrim) {
 		c.handleWebviewTrimDirective(event.Data)
+		return nil
+	}
+	if event.Channel == string(eventchan.PowerKeepAwake) {
+		if event.Gap {
+			// Cannot happen with a zero cursor on a latest-only ring, but
+			// a gap marker carries `null` data and no mode — acting on it
+			// would mean guessing at the machine's power state.
+			c.logf("keep awake: ignore replay gap marker at sequence %d", event.Seq)
+			return nil
+		}
+		c.handleKeepAwakeDirective(event.Data)
 		return nil
 	}
 	if event.Channel != notify.SendChannel {
@@ -385,6 +452,61 @@ func (c *NotificationClient) handleWebviewTrimDirective(data json.RawMessage) {
 		return
 	}
 	go c.handleWebviewTrim(directive.Reason)
+}
+
+// handleKeepAwakeDirective decodes one power:keepawake frame and hands its
+// mode to the launcher. A malformed frame is logged and dropped rather
+// than being connection-fatal, and a frame with no recognizable mode is
+// dropped rather than defaulted: this directive commands the machine's
+// power state, and guessing would either pin a laptop awake on a garbled
+// frame or release an inhibit the user asked for.
+//
+// Off the read loop like its two siblings — the handler hands work to the
+// execution-state holder thread and must not stall notification delivery.
+func (c *NotificationClient) handleKeepAwakeDirective(data json.RawMessage) {
+	if c.handleKeepAwake == nil {
+		c.logf("keep awake: ignore directive on an unsubscribed connection")
+		return
+	}
+	var directive struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(data, &directive); err != nil {
+		c.logf("keep awake: ignore malformed directive: %v", err)
+		return
+	}
+	if directive.Mode == "" {
+		c.logf("keep awake: ignore directive with no mode")
+		return
+	}
+	c.keepAwakeMu.Lock()
+	c.keepAwakePending = &directive.Mode
+	startDrain := !c.keepAwakeDrain
+	c.keepAwakeDrain = true
+	c.keepAwakeMu.Unlock()
+	if startDrain {
+		go c.drainKeepAwake()
+	}
+}
+
+// drainKeepAwake applies pending keep-awake modes until the mailbox is
+// empty, then exits; handleKeepAwakeDirective restarts it on the next
+// frame. Only the newest pending mode is ever applied — intermediate
+// modes that arrived while the handler ran are convergence noise, not
+// history.
+func (c *NotificationClient) drainKeepAwake() {
+	for {
+		c.keepAwakeMu.Lock()
+		mode := c.keepAwakePending
+		c.keepAwakePending = nil
+		if mode == nil {
+			c.keepAwakeDrain = false
+			c.keepAwakeMu.Unlock()
+			return
+		}
+		c.keepAwakeMu.Unlock()
+		c.handleKeepAwake(*mode)
+	}
 }
 
 func (c *NotificationClient) writeJSON(ctx context.Context, conn *websocket.Conn, frame notificationClientFrame) error {

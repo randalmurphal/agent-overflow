@@ -223,6 +223,20 @@ export interface Settings {
    */
   lowPowerMode: boolean;
   /**
+   * Keep-awake master switch (the sidebar moon/sun toggle): while on,
+   * the app holds an OS sleep inhibitor so the machine never
+   * idle-sleeps. Persisted, so it survives restarts. Mirrors
+   * internal/settings.Settings.KeepAwakeEnabled's zero-value default
+   * (off).
+   */
+  keepAwakeEnabled: boolean;
+  /**
+   * Scope of keep-awake when it is on: true also keeps the display
+   * from sleeping (machine + screen), false lets the screen blank
+   * while the machine stays awake. Default on.
+   */
+  keepAwakeScreen: boolean;
+  /**
    * Working-indicator spinner verbs: replace the rail's "Working" label
    * with one verb per turn, drawn from the built-in list plus
    * `spinnerCustomVerbs`. Default ON — the verbs are text-only and the

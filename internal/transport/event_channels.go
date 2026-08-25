@@ -309,6 +309,22 @@ var channelPolicies = []ChannelPolicy{
 			"ephemeral or latest-only.",
 	},
 	{
+		Channel:   eventchan.PowerKeepAwake,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionLatestOnly,
+		Why: "Imperative host directive: it commands the process that owns " +
+			"this machine's power state (the Windows launcher) to hold or " +
+			"release an OS sleep inhibitor. A LAN peer has no business " +
+			"pinning the desktop awake, and UpdateSettings — the only thing " +
+			"that produces it — is already LocalOnly. Latest-only, NOT " +
+			"ephemeral: the frame is a LEVEL, not an edge. A launcher that " +
+			"reconnects (or connects after the backend's boot emit) must end " +
+			"up holding what the current setting says, and a capacity-1 ring " +
+			"is what makes its replay deliver exactly that. Legal here " +
+			"because the channel is UNKEYED — one global power state, no " +
+			"per-thread or per-workspace multiplexing.",
+	},
+	{
 		Channel:   eventchan.PRUpdated,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

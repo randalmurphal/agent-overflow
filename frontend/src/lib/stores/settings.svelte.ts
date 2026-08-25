@@ -12,6 +12,10 @@ const DEFAULT_SETTINGS: Settings = {
   collapseDiffPreviews: false,
   streamingEnabled: true,
   lowPowerMode: false,
+  // Keep-awake mirrors internal/settings: enabled follows the
+  // zero-value-off pattern, screen scope defaults on.
+  keepAwakeEnabled: false,
+  keepAwakeScreen: true,
   // Spinner defaults mirror internal/settings.DefaultSettings: verbs on
   // (text-only), animations off (the LED chase is stock), compaction
   // slot "" = the built-in robo-papers default.

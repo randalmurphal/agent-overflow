@@ -161,6 +161,17 @@
           onToggle={(value) => updateSetting('lowPowerMode', value)}
         />
       </SettingsField>
+
+      <SettingsField
+        label="Keep-awake includes screen"
+        hint="When keep-awake is on (the sun toggle in the sidebar), also keep the display from sleeping. Off: the machine stays awake but the screen may turn off."
+      >
+        <ToggleSwitch
+          checked={settings.keepAwakeScreen}
+          ariaLabel="Toggle Keep-Awake Screen"
+          onToggle={(value) => updateSetting('keepAwakeScreen', value)}
+        />
+      </SettingsField>
     </div>
   </section>
 

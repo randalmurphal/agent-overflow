@@ -139,6 +139,13 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 		// must not hold up the save the user just made.
 		a.scheduleLiveClaudeReconcile()
 	}
+	if patchTouchesKeepAwake(patch) {
+		// Keep awake applies live, with no restart: re-derive the mode
+		// from the saved snapshot and push it at both this process's OS
+		// and the launcher that owns the host's power state. See
+		// app_power.go for why one mode string rather than the two keys.
+		a.applyKeepAwake(next)
+	}
 	a.ReconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
 		// Editor preference touched — drop the cached catalog so the

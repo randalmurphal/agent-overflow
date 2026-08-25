@@ -61,6 +61,16 @@ const (
 	NotificationSend      Channel = "notification:send"
 )
 
+// power:* — host power-management directives. Like updater:install and
+// webview:trim these are imperative commands the Windows launcher acts
+// on, not notifications. PowerKeepAwake carries the LEVEL the OS sleep
+// inhibitor should sit at ("off" | "system" | "display"), not an edge:
+// the launcher must converge on the latest frame after any reconnect,
+// which is why its policy row is latest-only rather than ephemeral.
+const (
+	PowerKeepAwake Channel = "power:keepawake"
+)
+
 // pr:* — pull-request detail and review-thread pushes.
 const (
 	PRUpdated Channel = "pr:updated"

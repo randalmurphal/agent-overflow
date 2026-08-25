@@ -23,6 +23,7 @@ import (
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/power"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
@@ -245,6 +246,13 @@ type App struct {
 	// the backend-side floor between forced renderer GCs
 	// (app_webview_trim.go). Atomic: read-CAS on the RPC path, no lock.
 	webviewTrimLastUnixNano atomic.Int64
+	// keepAwakeApply is the OS sleep-inhibitor seam (app_power.go). nil
+	// means power.Apply, which is what production always uses; fixtures
+	// install a recorder so no test binary can move the developer's
+	// machine's power state. internal/power refuses inside a test binary
+	// on its own too — this seam is what lets a test ASSERT the mode
+	// instead of just being protected from it.
+	keepAwakeApply func(power.Mode) error
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race

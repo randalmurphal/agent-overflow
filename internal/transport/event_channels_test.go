@@ -55,6 +55,7 @@ var (
 		"mcp:status",
 		"notification:activated",
 		"notification:send",
+		"power:keepawake", // 2026-08-25: launcher power directive, same posture as webview:trim
 		"pr:updated",
 		"provider:account",
 		"provider:account_usage_error",
@@ -93,6 +94,9 @@ var (
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}
 	frozenLatestOnlyChannels = []string{
+		// A LEVEL, not an edge: a reconnecting launcher replays with a
+		// zero cursor and must converge on the current keep-awake state.
+		"power:keepawake",
 		"spinner:changed",
 		"system:stats",
 		"theme:changed",

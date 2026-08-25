@@ -127,6 +127,16 @@ func (a *App) Start(ctx context.Context) error {
 	// `system:stats` event every ~2s. See app_sysstat.go.
 	a.startSystemStatsSampler()
 
+	// Assert the persisted keep-awake state. Synchronous and cheap (one
+	// D-Bus round trip at most, nothing at all when the setting is off),
+	// and it must run on the boot path rather than lazily: the whole
+	// point of persisting the switch is that the machine stays awake
+	// across a restart without the user touching the toggle again. The
+	// event bus is wired before Start (bootTransport → SetEventBus), so
+	// the directive this emits is retained on its latest-only ring and
+	// reaches a launcher that connects later. See app_power.go.
+	a.applyKeepAwake(a.currentSettings())
+
 	// Start the background `git fetch` cadence so ahead/behind counts
 	// track the remote instead of the user's last manual fetch. Reads
 	// Settings.BackgroundGitFetch live each tick; skipped entirely in
