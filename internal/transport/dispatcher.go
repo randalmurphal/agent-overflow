@@ -233,24 +233,16 @@ func (d *Dispatcher) LookupName(name string) (*Method, bool) {
 	return m, ok
 }
 
-// Resolve is the dispatcher's entry point used by the connection
-// handler: prefer ID, fall back to name, return a wire-ready
-// FrameError when neither resolves. Wire message is generic to avoid
-// leaking which IDs/names were probed.
+// ResolveForOrigin is the dispatcher's entry point used by the
+// connection handler: prefer ID, fall back to name, return a wire-ready
+// FrameError when neither resolves. The wire message is generic to
+// avoid leaking which IDs/names were probed.
 //
-// Equivalent to ResolveForOrigin(id, name, true) — i.e. assumes the
-// caller is loopback. Connection handlers that know whether the peer
-// is loopback should call ResolveForOrigin directly so LocalOnlyMethods
-// gets enforced.
-func (d *Dispatcher) Resolve(id uint32, name string) (*Method, *FrameError) {
-	return d.ResolveForOrigin(id, name, true)
-}
-
-// ResolveForOrigin is the origin-aware variant of Resolve. When
-// isLoopback is false and the resolved method appears in
-// LocalOnlyMethods, the dispatcher refuses with ErrCodeMethodNotFound —
-// indistinguishable from a probe of an unregistered method, so a LAN
-// scanner can't fingerprint which methods are privileged.
+// The origin is a REQUIRED argument, never a default. When isLoopback
+// is false and the resolved method appears in LocalOnlyMethods, the
+// dispatcher refuses with ErrCodeMethodNotFound — indistinguishable
+// from a probe of an unregistered method, so a LAN scanner can't
+// fingerprint which methods are privileged.
 //
 // The check happens AFTER lookup so a non-loopback peer probing for a
 // privileged method gets the same shape of error whether the method
@@ -293,10 +285,10 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 	return method, nil
 }
 
-// Invoke unmarshals params, calls the method, and returns the JSON-
-// serialised result. The error return distinguishes:
+// InvokeForOrigin unmarshals params, calls the method, and returns the
+// JSON-serialised result. The error return distinguishes:
 //
-//   - ErrCodeMethodNotFound: caller used the wrong ID/name (handled by Resolve).
+//   - ErrCodeMethodNotFound: caller used the wrong ID/name (handled by ResolveForOrigin).
 //   - ErrCodeBadParams:      wire input failed to decode for a declared type.
 //   - ErrCodeMethodError:    the method itself returned a non-nil error.
 //   - ErrCodeTemporarilyUnavailable: the method hit a retryable deadline.
@@ -306,21 +298,13 @@ func (d *Dispatcher) ResolveForOrigin(id uint32, name string, isLoopback bool) (
 // deliberately generic — full prose (file paths, internal state, panic
 // details) is logged server-side. A LAN-attached attacker can probe the
 // wire shape but cannot harvest project-internal strings.
-// Invoke is the legacy entry point. It keeps the original redaction
-// semantics (method-returned error text NOT exposed) so the existing
-// info-disclosure regression tests stay representative of LAN-peer
-// behaviour. Production code on the connection path uses
-// InvokeForOrigin directly with the per-conn loopback flag.
-func (d *Dispatcher) Invoke(ctx context.Context, m *Method, params []json.RawMessage) (result json.RawMessage, frameErr *FrameError) {
-	return d.InvokeForOrigin(ctx, m, params, false)
-}
-
-// InvokeForOrigin runs the dispatch with the caller's origin known.
-// `isLoopback` is the per-connection loopback flag and drives error
-// exposure: a loopback peer is the same machine as the backend, so
-// leaking a method-returned error string adds no information beyond
-// what the server-side log already contains, while a LAN peer must
-// continue to see the redacted "method failed (id: <cid>)" envelope.
+//
+// `isLoopback` is the per-connection loopback flag, required rather than
+// defaulted, and it drives error exposure: a loopback peer is the same
+// machine as the backend, so leaking a method-returned error string adds
+// no information beyond what the server-side log already contains, while
+// a LAN peer must continue to see the redacted "method failed (id: <cid>)"
+// envelope.
 func (d *Dispatcher) InvokeForOrigin(ctx context.Context, m *Method, params []json.RawMessage, isLoopback bool) (result json.RawMessage, frameErr *FrameError) {
 	defer func() {
 		if r := recover(); r != nil {
