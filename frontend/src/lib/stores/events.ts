@@ -76,9 +76,7 @@ import {
   applyTurnCompleted,
   applySessionDied,
   applyTodoUpdate,
-  applyDefaultSwapped,
   applyModelFallback,
-  type DefaultSwappedPayload,
 } from './eventsProvider';
 import {
   handleDesignReloadMain,
@@ -371,16 +369,6 @@ export function setupEventListeners(): () => void {
     applyWorktreeSetup,
   );
 
-  // provider:default_swapped — backend auto-flipped the default
-  // provider because the saved one was not_found and the other was
-  // ready. Surface a toast so the user notices the change before they
-  // wonder why the next thread routed to a different CLI; the value
-  // can still be reverted manually in Settings.
-  const cancelDefaultSwapped = wailsEventOn<DefaultSwappedPayload>(
-    'provider:default_swapped',
-    applyDefaultSwapped,
-  );
-
   // transport:gap — synthetic event fired by wsClient.ts when the
   // server reports a missed seq on a channel. Coarse-grained recovery:
   // re-fetch the active pane's window so SQLite (the authoritative
@@ -524,7 +512,6 @@ export function setupEventListeners(): () => void {
     cancelThreadUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
-    cancelDefaultSwapped();
     cancelTransportGap();
     cancelDesignReloadMain();
     cancelDesignOptionsUpdate();

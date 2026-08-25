@@ -22,7 +22,6 @@ import { loadProviderAccounts } from './providerAccounts.svelte';
 import { iterPanes } from './panes.svelte';
 import { recordProviderStatus } from './providerStatus.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
-import { addToast } from './toast.svelte';
 import {
   projectApprovalRequest,
   projectApprovalResolution,
@@ -461,20 +460,3 @@ export function applyTodoUpdate(evt: TodoUpdateEvent): void {
   }
 }
 
-export interface DefaultSwappedPayload {
-  from?: string;
-  to?: string;
-  fromCli?: string;
-  otherCli?: string;
-  reason?: string;
-}
-
-export function applyDefaultSwapped(payload: DefaultSwappedPayload): void {
-  if (!payload || !payload.to) return;
-  const next = payload.otherCli || payload.to;
-  const prev = payload.fromCli || payload.from || 'previous default';
-  addToast(
-    'info',
-    `Default provider switched to ${next} — ${prev} CLI not detected.`,
-  );
-}
