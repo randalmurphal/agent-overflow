@@ -15,8 +15,12 @@ const (
 	maxDeferredChildEventsTotal     = 512
 	maxDeferredChildEventBytes      = 4 * 1024 * 1024
 	maxDeferredChildThreadIDBytes   = 256
-	deferredChildOwnershipTimeout   = 10 * time.Second
 )
+
+// deferredChildOwnershipTimeout is how long a child thread's wire events stay
+// quarantined before the routing deadline rejects them. A var only so a test
+// can shrink it; nothing outside a test may write it.
+var deferredChildOwnershipTimeout = 10 * time.Second
 
 // deferredChildWireEvent is either a notification (RequestID empty) or a
 // server request. Server requests must be retained as well as notifications:
@@ -78,19 +82,46 @@ func (s *Session) deferChildWireEvent(providerThreadID string, event deferredChi
 	if s.deferredChildDeadlines[providerThreadID] == nil {
 		threadID := providerThreadID
 		s.deferredChildDeadlines[providerThreadID] = time.AfterFunc(deferredChildOwnershipTimeout, func() {
-			s.expireDeferredChildWireEvents(threadID)
+			// The expiry writes a JSON-RPC rejection and can emit a routing
+			// warning, so it has to be OVER before Close returns — and
+			// Close's own timer.Stop() cannot promise that: Stop does not
+			// wait for a callback already running, and it only runs after
+			// the drains it would be racing. Registering the work with
+			// collabAsyncWG (which Close waits on, having already latched
+			// collabAsyncClosing) is what closes both halves: a timer that
+			// fires after the latch is refused outright, and one that beat
+			// it is joined.
+			s.startCollabAsync(func() {
+				s.expireDeferredChildWireEvents(threadID)
+			})
 		})
 	}
 	return true
 }
 
 func (s *Session) takeDeferredChildWireEvents(providerThreadID string) []deferredChildWireEvent {
+	return s.takeDeferredChildWireEventsUnlessClosing(providerThreadID, false)
+}
+
+// takeDeferredChildWireEventsUnlessClosing removes and returns one child
+// thread's quarantined queue, cancelling its deadline timer.
+//
+// stopIfClosing is for the EXPIRY path, and it must be answered under mu
+// rather than by the caller afterwards: taking the queue and then noticing
+// the session is closing drops the events either way, but it does so having
+// already committed to a rejection the caller then never writes. Under mu the
+// two are one decision — Close's own drain sees an untouched queue and logs
+// it as unresolved ownership, which is what it is.
+func (s *Session) takeDeferredChildWireEventsUnlessClosing(providerThreadID string, stopIfClosing bool) []deferredChildWireEvent {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	if providerThreadID == "" {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if stopIfClosing && s.closing.Load() {
+		return nil
+	}
 	events := s.deferredChildWireEvents[providerThreadID]
 	if len(events) == 0 {
 		return nil
@@ -118,8 +149,8 @@ func (s *Session) takeDeferredChildWireEvents(providerThreadID string) []deferre
 }
 
 func (s *Session) expireDeferredChildWireEvents(providerThreadID string) {
-	events := s.takeDeferredChildWireEvents(providerThreadID)
-	if len(events) == 0 || s.closing.Load() {
+	events := s.takeDeferredChildWireEventsUnlessClosing(providerThreadID, true)
+	if len(events) == 0 {
 		return
 	}
 	s.deleteUnownedAgentMeta(providerThreadID)
