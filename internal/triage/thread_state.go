@@ -220,15 +220,6 @@ type threadState struct {
 	// boundaries by design, so NOT swept by clearOpenTurn — only at
 	// session teardown. See flush_queue.go.
 	queuedFlushItems []QueuedFlushItem
-	// claimedFlushItems counts batch items mid-handoff between the
-	// queue delete in tryFlushQueue and the dispatcher's synchronous
-	// in-flight record. Folded into QueuedFlushItemCount so the
-	// revert-on-interrupt predicate sees a draining batch as queued →
-	// claimed → in-flight, never invisible (round-14 close-out, C14-1).
-	// Held only across the dispatcher callback; tryFlushQueue's deferred
-	// drop always runs, so the teardown sweep is a safety net it never
-	// needed.
-	claimedFlushItems int
 
 	// pendingWakeupAt is the fire time (epoch ms) of the Claude harness's
 	// pending ScheduleWakeup timer. The timer is in-process CLI state with
@@ -354,6 +345,25 @@ type threadIdentity struct {
 	// (echo path), before r.mu; never replaced (same reasoning as
 	// anchorLock).
 	drainLock sync.Mutex
+
+	// claimedFlushItems counts batch items mid-handoff between the
+	// queue delete in tryFlushQueue and the dispatcher's synchronous
+	// in-flight record. Folded into QueuedFlushItemCount so the
+	// revert-on-interrupt predicate sees a draining batch as queued →
+	// claimed → in-flight, never invisible (round-14 close-out, C14-1).
+	// Held only across the dispatcher callback; tryFlushQueue's deferred
+	// drop always runs and clamps at zero.
+	//
+	// On the never-deleted identity, NOT threadState, because the claim
+	// must survive cleanupThread: the dispatcher callback runs outside
+	// r.mu, so a session teardown can sweep the thread mid-handoff. On
+	// deletable state that sweep vanished the claim (count lied to the
+	// revert predicate) and a successor session's fresh claim could then
+	// be eaten by the old dispatch's deferred decrement (campaign review
+	// 2026-08-25, codex finding 1). Pre-split this was a Router-level map
+	// that cleanup deliberately never touched; this placement restores
+	// that lifetime. Guarded by r.mu, exactly as that map was.
+	claimedFlushItems int
 
 	// epoch counts MarkThreadActive calls. An asynchronous teardown
 	// captures the epoch before unregistering a dead session and hands it

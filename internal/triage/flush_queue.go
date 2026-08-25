@@ -251,12 +251,18 @@ func (r *Router) QueuedFlushItemCount(threadID string) int {
 	defer r.mu.Unlock()
 	// claimedFlushItems keeps a batch mid-handoff (deleted from the
 	// queue, not yet recorded in-flight by the App dispatcher) visible
-	// to the revert predicate — see tryFlushQueue.
-	st := r.threadStateIfPresent(threadID)
-	if st == nil {
-		return 0
+	// to the revert predicate — see tryFlushQueue. It lives on the
+	// never-deleted identity, so it stays visible even when the thread
+	// state was swept mid-handoff.
+	queued := 0
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		queued = len(st.queuedFlushItems)
 	}
-	return len(st.queuedFlushItems) + st.claimedFlushItems
+	claimed := 0
+	if id := r.identityIfPresent(threadID); id != nil {
+		claimed = id.claimedFlushItems
+	}
+	return queued + claimed
 }
 
 func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
@@ -377,14 +383,19 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	batch := make([]QueuedFlushItem, len(queue))
 	copy(batch, queue)
 	st.queuedFlushItems = nil
-	st.claimedFlushItems += len(batch)
+	// The claim lives on the never-deleted identity (see threadIdentity):
+	// the dispatcher below runs outside r.mu, so a session teardown can
+	// sweep threadState mid-handoff — the claim must survive that sweep or
+	// QueuedFlushItemCount lies to the revert predicate. identitiesMu is a
+	// leaf lock, so minting/reading the identity under r.mu is safe.
+	r.identity(threadID).claimedFlushItems += len(batch)
 	r.mu.Unlock()
 
 	defer func() {
 		r.mu.Lock()
-		if drop := r.threadStateIfPresent(threadID); drop != nil {
-			if drop.claimedFlushItems -= len(batch); drop.claimedFlushItems < 0 {
-				drop.claimedFlushItems = 0
+		if id := r.identityIfPresent(threadID); id != nil {
+			if id.claimedFlushItems -= len(batch); id.claimedFlushItems < 0 {
+				id.claimedFlushItems = 0
 			}
 		}
 		r.mu.Unlock()
