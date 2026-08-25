@@ -986,6 +986,12 @@ func TestUpsertTurnRow_EchoOpenedIndex_AdoptedByTheProviderTurnStart(t *testing.
 	if turns[0].StartedAt != startedAt {
 		t.Fatalf("started_at = %d, want the echo's %d (the existing row is authoritative)", turns[0].StartedAt, startedAt)
 	}
+	// The adoption backfills the wire's provider turn id onto the
+	// echo-opened row: it is the collision discriminator (blank always
+	// reads as "adopt") and the Codex fork/revert anchor.
+	if turns[0].ProviderTurnID != "codex-turn-1" {
+		t.Fatalf("provider_turn_id = %q, want the adopted wire start's codex-turn-1", turns[0].ProviderTurnID)
+	}
 }
 
 // The forward order is still the openQueuedEchoTurn guard's job, and the row

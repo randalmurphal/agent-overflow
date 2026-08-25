@@ -73,6 +73,50 @@ func TestInsertTurnPersistsRowWithNullCompletedAt(t *testing.T) {
 	}
 }
 
+func TestBackfillTurnProviderIDIsFirstWriteWins(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForTurn(t, s, "t1")
+	if err := s.InsertTurn(makeInflightTurn("t1:1", "t1", 1, 1000)); err != nil {
+		t.Fatalf("insert turn: %v", err)
+	}
+
+	if err := s.BackfillTurnProviderID("t1:1", "codex-turn-1"); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	got, _, err := s.GetTurn("t1:1")
+	if err != nil {
+		t.Fatalf("get turn: %v", err)
+	}
+	if got.ProviderTurnID != "codex-turn-1" {
+		t.Fatalf("provider_turn_id = %q, want codex-turn-1", got.ProviderTurnID)
+	}
+
+	// A second backfill with a different id must not displace the first —
+	// the guard is in the SQL, not caller discipline.
+	if err := s.BackfillTurnProviderID("t1:1", "codex-turn-2"); err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	got, _, err = s.GetTurn("t1:1")
+	if err != nil {
+		t.Fatalf("get turn after second backfill: %v", err)
+	}
+	if got.ProviderTurnID != "codex-turn-1" {
+		t.Fatalf("provider_turn_id = %q after second backfill, want the original codex-turn-1", got.ProviderTurnID)
+	}
+
+	// A missing row is a silent no-op, not an error.
+	if err := s.BackfillTurnProviderID("t1:missing", "codex-turn-3"); err != nil {
+		t.Fatalf("backfill onto missing row: %v", err)
+	}
+	// Empty inputs are refused loudly.
+	if err := s.BackfillTurnProviderID("", "codex-turn-1"); err == nil {
+		t.Fatal("empty turn id accepted, want error")
+	}
+	if err := s.BackfillTurnProviderID("t1:1", ""); err == nil {
+		t.Fatal("empty provider turn id accepted, want error")
+	}
+}
+
 func TestInsertTurnAcceptsZeroTurnIndex(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForTurn(t, s, "t1")

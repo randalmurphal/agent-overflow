@@ -258,7 +258,12 @@ func (r *Router) upsertTurnRow(turn store.Turn) int {
 //     echo-opened `<thread>:<index>` row later hit by the wire start
 //     that carries the provider's id, or the reverse). Adopt the
 //     standing row: turn ids are resolved by index at settle time
-//     (persistedTurnID), so nothing downstream needs the second id.
+//     (persistedTurnID), so nothing downstream needs the second id —
+//     but the wire's provider turn id is BACKFILLED onto the adopted
+//     row when it has none, because that id is the discriminator this
+//     very function relies on (a blank always reads as "adopt") and
+//     the Codex fork/revert anchor. First-write-wins in the store, so
+//     the backfill can never displace a real id.
 func (r *Router) reconcileTurnIndexCollision(turn store.Turn) (int, bool) {
 	existing, found, err := r.store.GetTurnByThreadIndex(turn.ThreadID, turn.TurnIndex)
 	if err != nil {
@@ -273,6 +278,11 @@ func (r *Router) reconcileTurnIndexCollision(turn store.Turn) (int, bool) {
 	if incomingProvider == "" || standingProvider == "" || incomingProvider == standingProvider {
 		log.Printf("triage: turn start %s adopts the row already open at %s/%d (%s) — same logical turn, two id shapes",
 			turn.TurnID, turn.ThreadID, turn.TurnIndex, existing.TurnID)
+		if incomingProvider != "" && standingProvider == "" {
+			if err := r.store.BackfillTurnProviderID(existing.TurnID, incomingProvider); err != nil {
+				log.Printf("triage: backfill provider turn id %s onto %s: %v", incomingProvider, existing.TurnID, err)
+			}
+		}
 		return existing.TurnIndex, true
 	}
 	relocated := turn

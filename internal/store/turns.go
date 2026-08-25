@@ -206,6 +206,32 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 	return nil
 }
 
+// BackfillTurnProviderID stamps the provider's wire turn id onto a turn
+// row that has none — the echo-opened `<thread>:<index>` row a later wire
+// turn start ADOPTS (triage's turn-index reconciliation). First-write-wins
+// in SQL: a row already carrying a provider id is never overwritten, so a
+// misdirected backfill costs nothing. Zero rows affected is a normal
+// outcome (the row already has an id, or was relocated meanwhile), not an
+// error — provider_turn_id is forensic identity plus the Codex fork/revert
+// anchor, and both readers tolerate absence.
+func (s *Store) BackfillTurnProviderID(turnID, providerTurnID string) error {
+	if turnID == "" {
+		return fmt.Errorf("store: backfill turn provider id: turn id is required")
+	}
+	if providerTurnID == "" {
+		return fmt.Errorf("store: backfill turn provider id %s: provider turn id is required", turnID)
+	}
+	_, err := s.db.Exec(
+		`UPDATE turns SET provider_turn_id = ?
+		  WHERE turn_id = ? AND provider_turn_id = ''`,
+		providerTurnID, turnID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: backfill turn %s provider id: %w", turnID, err)
+	}
+	return nil
+}
+
 // CrashedTurn identifies one turn row that RecoverCrashedTurns settled:
 // the previous app instance died while this (thread, turn) was
 // in-flight.
