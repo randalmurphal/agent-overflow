@@ -313,10 +313,40 @@ func TestRedactError_KeepsTheTimeoutMessage(t *testing.T) {
 	}
 }
 
-func TestTranslateCLINotFound_PathErrorMessage(t *testing.T) {
-	err := TranslateCLINotFound("codex", time.Second, &os.PathError{Op: "stat", Path: "/no/such"})
-	if err == nil || !strings.Contains(err.Error(), "/no/such") {
-		t.Fatalf("unexpected error: %v", err)
+// TestRedactError_CollapsesPathErrors: RedactError's output reaches the
+// AudienceAny thread:title_generation channel, and a wrapped *os.PathError
+// names an absolute host path (scratch/temp file, output file). The collapse
+// is typed rather than substring-matched so a new error shape carrying a path
+// cannot silently opt out (security review 2026-08-25, finding 2).
+func TestRedactError_CollapsesPathErrors(t *testing.T) {
+	err := fmt.Errorf("codex: scratch files: %w", &os.PathError{
+		Op:   "open",
+		Path: "/home/developer/.cache/agent-overflow/scratch-1234.json",
+		Err:  errors.New("permission denied"),
+	})
+	got := RedactError(err)
+	if strings.Contains(got, "/home/developer") {
+		t.Fatalf("RedactError leaked the path: %q", got)
+	}
+	if got != "provider file access failed (open)" {
+		t.Fatalf("RedactError(path error) = %q", got)
+	}
+}
+
+// TestTranslateCLINotFound_PathErrorOmitsThePath: the translated message
+// travels the same wire path as RedactError's output, and pathErr.Path is
+// the user's configured absolute binary path.
+func TestTranslateCLINotFound_PathErrorOmitsThePath(t *testing.T) {
+	err := TranslateCLINotFound("claude", time.Second, &os.PathError{
+		Op:   "fork/exec",
+		Path: "/home/developer/.local/bin/claude",
+		Err:  errors.New("permission denied"),
+	})
+	if err == nil || strings.Contains(err.Error(), "/home/developer") {
+		t.Fatalf("translated error leaked the path: %v", err)
+	}
+	if err.Error() != "claude CLI not found or not executable" {
+		t.Fatalf("unexpected message: %v", err)
 	}
 }
 

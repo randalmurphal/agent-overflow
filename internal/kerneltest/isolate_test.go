@@ -58,6 +58,32 @@ func TestDetachHomePointsAtAnEmptyDir(t *testing.T) {
 	}
 }
 
+// TestDetachHomeClearsProviderHomeOverrides pins that the override variables
+// which repoint a provider home AWAY from $HOME are removed by PRESENCE, not
+// just blanked: Claude keys its macOS Keychain service off the variable
+// existing at all, so an exported CLAUDE_CONFIG_DIR surviving DetachHome would
+// hand a spawned child the developer's real credentials (security review
+// 2026-08-25, finding 4).
+func TestDetachHomeClearsProviderHomeOverrides(t *testing.T) {
+	overrides := []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"}
+	for _, key := range overrides {
+		t.Setenv(key, "/tmp/developer-exported-"+key)
+	}
+
+	home := DetachHome(t)
+
+	for _, key := range overrides {
+		if got, present := os.LookupEnv(key); present {
+			t.Errorf("%s survived DetachHome as %q; it must be UNSET (presence is what it means)", key, got)
+		}
+	}
+	for _, key := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA"} {
+		if got := os.Getenv(key); got != home {
+			t.Errorf("%s = %q, want the detached home %q", key, got, home)
+		}
+	}
+}
+
 func TestPoisonProviderBinaryRecordsSpawnAndFailsTheTest(t *testing.T) {
 	rec := &recordingTB{TB: t}
 	poison, sentinel := PoisonProviderBinary(rec)

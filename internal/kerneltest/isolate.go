@@ -48,9 +48,11 @@ type Isolation struct {
 //     spawn and exits. The test then FAILS from cleanup with instructions —
 //     a test that needs a live session must install a mock
 //     (testutil.WriteMockClaudeScript / WriteMockCodexSession) over the poison.
-//  2. HOME/USERPROFILE point at an empty temp dir, so anything that still
-//     reaches a real binary (or reads a provider home directly) finds no
-//     credentials and no session history.
+//  2. HOME/USERPROFILE point at an empty temp dir and the provider-home
+//     override variables (CLAUDE_CONFIG_DIR, CLAUDE_SECURESTORAGE_CONFIG_DIR,
+//     CODEX_HOME) are unset, so anything that still reaches a real binary (or
+//     reads a provider home directly) finds no credentials and no session
+//     history — even under a developer shell that exports an override.
 //
 // Installing the returned PoisonedBinary into whatever settings/config the
 // fixture's subject resolves its binaries from is the caller's job — that is
@@ -70,12 +72,33 @@ func IsolateSpawns(t testing.TB) Isolation {
 // the test, so anything reading a provider home directly (credentials, session
 // history, ~/.claude.json) finds nothing rather than the developer's real one.
 // Returns the directory.
+//
+// The provider-home OVERRIDE variables are unset outright, not pointed at the
+// temp dir: they repoint a provider home AWAY from $HOME (see
+// settings/providerenv.go), so a developer shell that exports
+// CLAUDE_CONFIG_DIR would hand every spawned child the real credentials no
+// matter where HOME points — and on macOS, Claude >= 2.1.220 keys its
+// Keychain service off the variable's PRESENCE, so even an empty value is not
+// equivalent to absence. t.Setenv first so the original value is restored
+// after the test.
+//
+// XDG_*/APPDATA are detached to the temp dir for the same reason at one
+// remove: os.UserConfigDir honors them, so a fixture exercising the real boot
+// path would otherwise read and write the developer's live agent-overflow
+// settings and database.
 func DetachHome(t testing.TB) string {
 	t.Helper()
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	for _, key := range []string{"CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"} {
+		t.Setenv(key, "") // registers the restore for after the test
+		os.Unsetenv(key)  // presence, not value, is what these mean
+	}
+	for _, key := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "APPDATA", "LOCALAPPDATA"} {
+		t.Setenv(key, home)
+	}
 	return home
 }
 

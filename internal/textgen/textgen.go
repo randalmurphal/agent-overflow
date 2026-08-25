@@ -277,8 +277,13 @@ func TranslateCLINotFound(cliName string, timeout time.Duration, err error) erro
 	if errors.Is(err, context.DeadlineExceeded) {
 		return cliTimeoutError{cliName: cliName, timeout: timeout}
 	}
-	if pathErr, ok := errors.AsType[*os.PathError](err); ok {
-		return fmt.Errorf("%s CLI not found: %s", cliName, pathErr.Path)
+	if _, ok := errors.AsType[*os.PathError](err); ok {
+		// Deliberately NOT naming pathErr.Path: this message reaches the
+		// AudienceAny thread:title_generation channel through RedactError,
+		// and the path is the user's configured absolute binary path
+		// (security review 2026-08-25, finding 2). cliName already names
+		// which CLI to check.
+		return fmt.Errorf("%s CLI not found or not executable", cliName)
 	}
 	return err
 }
@@ -311,6 +316,15 @@ func (e cliTimeoutError) Unwrap() error { return context.DeadlineExceeded }
 func RedactError(err error) string {
 	if err == nil {
 		return ""
+	}
+	// A wrapped *os.PathError names an absolute host path (a scratch/temp
+	// file, an output file, a configured binary path), and this string
+	// reaches the AudienceAny thread:title_generation channel — collapse it
+	// by TYPE so a new error shape carrying a path cannot silently opt out
+	// (security review 2026-08-25, finding 2). The op survives for
+	// diagnosability; the path never does.
+	if pathErr, ok := errors.AsType[*os.PathError](err); ok {
+		return fmt.Sprintf("provider file access failed (%s)", pathErr.Op)
 	}
 	message := err.Error()
 	if strings.Contains(message, "CLI failed") {
