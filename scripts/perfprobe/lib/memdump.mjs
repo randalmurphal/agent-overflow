@@ -42,6 +42,7 @@ export function parseDump(text) {
         effectiveSize: at.effective_size ? hex(at.effective_size.value) : null,
         allocatedObjects: at.allocated_objects_size ? hex(at.allocated_objects_size.value) : null,
         objectCount: at.object_count ? hex(at.object_count.value) : null,
+        raw: at, // every provider attr (committed/resident/fragmentation live only here)
       };
     }
   }
