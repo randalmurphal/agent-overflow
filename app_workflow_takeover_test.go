@@ -77,10 +77,15 @@ func TestSchemaRestartedTakeoverSessionIsOwnedByPreparation(t *testing.T) {
 	if err != nil || !restarted || startCalls != 1 {
 		t.Fatalf("schema restart = restarted %v, starts %d, err %v", restarted, startCalls, err)
 	}
+	// The restart's own teardown of the schema-less session goes through the
+	// same stopSession seam as every other runner stop.
+	if stopCalls != 1 {
+		t.Fatalf("schema restart stopped %d sessions, want the schema-less one", stopCalls)
+	}
 	prepared := preparedWorkflowAgentTurn{threadID: thread.ID, startedSession: restarted}
 	_ = prepared.discard(runner, errors.New("later preparation failure"))
-	if stopCalls != 1 {
-		t.Fatalf("discard stopped %d sessions, want the restarted session", stopCalls)
+	if stopCalls != 2 {
+		t.Fatalf("discard left stop count at %d, want 2 (restart teardown + discard)", stopCalls)
 	}
 	if schema := runner.schemaForThread(thread.ID); len(schema) != 0 {
 		t.Fatalf("discard retained temporary schema: %s", schema)

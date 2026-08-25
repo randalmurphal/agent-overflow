@@ -29,16 +29,14 @@ import (
 // `workflowSpendSource`) already holds `*store.Store` directly.
 
 // workflowSessionHost is the provider-session lifecycle a workflow element's
-// turn runs inside. Both spellings of the stop are listed because the runner
-// calls both today: `stopSession` routes through the App's `stopSessionFn`
-// override, `StopSession` does not. The seam records the fact rather than
-// hiding it behind one name, since the two are not interchangeable under a
-// fixture that installs an override.
+// turn runs inside. Every stop goes through `stopSession` (the spelling that
+// honours the App's `stopSessionFn` test seam); the schema-restart path used
+// to bypass it via the exported `StopSession`, which was drift from the
+// restart's original all-exported wiring, not a design choice.
 type workflowSessionHost interface {
 	startSession(ctx context.Context, threadID string) error
 	startSessionTakingLock(ctx context.Context, threadID string) error
 	stopSession(threadID string) error
-	StopSession(threadID string) error
 	sessionManager() sessionManager
 }
 

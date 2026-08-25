@@ -351,7 +351,7 @@ func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(ctx context.Context,
 	if !restart {
 		return false, nil
 	}
-	if err := r.host.StopSession(threadID); err != nil {
+	if err := r.host.stopSession(threadID); err != nil {
 		r.removeTemporarySchema(threadID)
 		return false, fmt.Errorf("workflow runner: stop schema-less takeover session: %w", err)
 	}
