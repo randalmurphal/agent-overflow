@@ -26,6 +26,16 @@ func TestFlushClaimSurvivesCleanupMidHandoff(t *testing.T) {
 
 	firstEntered := make(chan struct{})
 	releaseFirst := make(chan struct{})
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(releaseFirst)
+		}
+	}
+	// A t.Fatalf between the blocking dispatch and the release would
+	// otherwise park the dispatcher goroutine forever.
+	t.Cleanup(release)
 	var call atomic.Int32
 	router.SetFlushDispatcher(func(threadID string, items []QueuedFlushItem) {
 		if call.Add(1) == 1 {
@@ -78,6 +88,6 @@ func TestFlushClaimSurvivesCleanupMidHandoff(t *testing.T) {
 		t.Fatalf("after generation-2 settle: count = %d, want 1 (old decrement ate the claim)", got)
 	}
 
-	close(releaseFirst)
+	release()
 	waitForCount(0)
 }

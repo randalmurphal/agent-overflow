@@ -55,6 +55,13 @@ var nonChannelEmitters = []string{
 // (`const x = eventchan.Foo`, screenshot.InstallEventName) and a typed
 // parameter/variable stay legitimate: the newtype already vouches for
 // those.
+//
+// Known residual holes (verified absent today; do not over-trust the
+// guard): a FUNCTION-LOCAL untyped const (the scan walks top-level
+// decls only), a const built by string CONCATENATION (the scan requires
+// a plain literal), and a CROSS-PACKAGE exported untyped const spelled
+// as a SelectorExpr. Closing them needs go/types resolution; revisit if
+// one ever appears.
 func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
 	fset := token.NewFileSet()
 	var offenders []string

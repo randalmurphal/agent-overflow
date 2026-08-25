@@ -199,6 +199,29 @@ describe('defaultBootstrap', () => {
     expect(b.remote).toBe(true);
   });
 
+  // The trust anchor is the local stub, so a revalidation may confirm
+  // the session but never retarget it: a manifest naming a different
+  // wsUrl than the one injected at page load is refused (2026-08-25
+  // security review, finding 7).
+  it('rejects a revalidated manifest that names a different wsUrl', async () => {
+    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
+    const retargeted = { ...INJECTED, wsUrl: 'ws://attacker.example:9999/ws' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(retargeted), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+
+    await expect(defaultBootstrap({ revalidate: true })).rejects.toThrow(
+      /different wsUrl/,
+    );
+  });
+
   // REGRESSION GUARD for the same-origin check's exemption. The
   // `--connect` stub (internal/clientmode) injects this manifest into
   // the page it serves from loopback, and its wsUrl names the REMOTE
