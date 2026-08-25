@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -558,7 +559,7 @@ func TestReapIdleSessionsIsRaceFreeUnderChurn(t *testing.T) {
 func newTestAppWithTriage(t *testing.T) *App {
 	t.Helper()
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	return app
 }
 
@@ -768,7 +769,7 @@ func TestReapIdleSessionsReapsAfterApprovalResolves(t *testing.T) {
 // normal turn activity instead.
 func TestReapIdleSessionsSkipsPendingWakeup(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-pending-wakeup")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)

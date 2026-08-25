@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -117,7 +118,7 @@ func installSteerTestSession(t *testing.T, app *App, thread store.Thread, steerO
 // turn/steer.
 func TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := testThread("thread-steer-ok")
 	thread.Provider = string(provider.Codex)
@@ -189,7 +190,7 @@ func TestSteerMessageWithOptions_PersistsUserRowAndDispatchesToCodex(t *testing.
 // backend defends against a stray RPC the same way.
 func TestSteerMessageWithOptions_FailsForNonCodexProvider(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := testThread("thread-steer-claude")
 	thread.Provider = string(provider.Claude)
@@ -223,7 +224,7 @@ func TestSteerMessageWithOptions_FailsForNonCodexProvider(t *testing.T) {
 // for the same fallback.
 func TestSteerMessageWithOptions_NoActiveTurnSurfacesSentinel(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := testThread("thread-steer-no-turn")
 	thread.Provider = string(provider.Codex)
@@ -254,7 +255,7 @@ func TestSteerMessageWithOptions_NoActiveTurnSurfacesSentinel(t *testing.T) {
 // user_text row.
 func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := testThread("thread-steer-fail")
 	thread.Provider = string(provider.Codex)
@@ -320,7 +321,7 @@ func TestSteerMessageWithOptions_FailureClearsPendingSendAndPersistsErrorRow(t *
 // for the mid-turn injection path.
 func TestSteerMessageWithOptions_MarksProposedPlanImplemented(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := testThread("thread-steer-implement-plan")
 	thread.Provider = string(provider.Codex)

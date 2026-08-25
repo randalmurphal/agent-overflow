@@ -1,6 +1,10 @@
 package transport
 
-import "testing"
+import (
+	"testing"
+
+	"agent-overflow/internal/eventchan"
+)
 
 func TestEventVisibleToOrigin(t *testing.T) {
 	for _, channel := range []string{
@@ -74,7 +78,7 @@ func TestRefetchSignalChannelsAreLatestOnly(t *testing.T) {
 
 		bus := NewEventBus(10)
 		for range 5 {
-			if _, err := bus.Emit(channel, nil); err != nil {
+			if _, err := bus.Emit(eventchan.Channel(channel), nil); err != nil {
 				bus.Close()
 				t.Fatalf("Emit(%s): %v", channel, err)
 			}
@@ -98,11 +102,11 @@ func TestEventBusEphemeralChannelsSkipReplayRetention(t *testing.T) {
 	defer sub.Close()
 
 	for _, channel := range []string{"highlight:seed", "highlight:diff_seed"} {
-		first, err := bus.Emit(channel, map[string]string{"n": "1"})
+		first, err := bus.Emit(eventchan.Channel(channel), map[string]string{"n": "1"})
 		if err != nil {
 			t.Fatalf("Emit(%s): %v", channel, err)
 		}
-		second, err := bus.Emit(channel, map[string]string{"n": "2"})
+		second, err := bus.Emit(eventchan.Channel(channel), map[string]string{"n": "2"})
 		if err != nil {
 			t.Fatalf("Emit(%s): %v", channel, err)
 		}

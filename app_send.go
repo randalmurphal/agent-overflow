@@ -10,6 +10,7 @@ import (
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/planrevision"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -1048,7 +1049,7 @@ func (a *App) refreshProposedPlanItem(threadID, itemID string) {
 	if !found {
 		return
 	}
-	a.emit("provider:item_event", triage.NewItemStreamUpsert(plan))
+	a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(plan))
 }
 
 // providerSendIdentity is the ONE constructor of a user send's wire

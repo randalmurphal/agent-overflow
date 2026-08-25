@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/slicesx"
 )
@@ -89,7 +90,7 @@ func (r *Router) emitProviderCommands(threadID string, commands []provider.Slash
 	if err != nil {
 		log.Printf("triage: provider commands attribution for %s: %v", threadID, err)
 	}
-	r.emit("provider:commands", ProviderCommandsEvent{
+	r.emit(eventchan.ProviderCommands, ProviderCommandsEvent{
 		ThreadID: threadID,
 		Provider: attribution.Provider,
 		Replace:  true,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -78,7 +79,7 @@ func (r *Router) projectTodoSnapshot(threadID string, steps []TodoStep, updatedA
 		// answer "was anything stored", so a list still reaches live panes
 		// and a clear stays silent.
 		if len(steps) > 0 {
-			r.emit("provider:todo_update", TodoUpdateEvent{ThreadID: threadID, Steps: steps})
+			r.emit(eventchan.ProviderTodoUpdate, TodoUpdateEvent{ThreadID: threadID, Steps: steps})
 		}
 		return nil
 	}
@@ -87,12 +88,12 @@ func (r *Router) projectTodoSnapshot(threadID string, steps []TodoStep, updatedA
 		if existed || err != nil {
 			// Explicit empty slice (not nil) so the wire carries [] and honors
 			// the non-nullable TodoUpdateEvent.steps type the frontend declares.
-			r.emit("provider:todo_update", TodoUpdateEvent{ThreadID: threadID, Steps: []TodoStep{}})
+			r.emit(eventchan.ProviderTodoUpdate, TodoUpdateEvent{ThreadID: threadID, Steps: []TodoStep{}})
 		}
 		return err
 	}
 	storeErr := r.store.SetThreadLiveTodo(threadID, storeLiveTodo(steps, updatedAt))
-	r.emit("provider:todo_update", TodoUpdateEvent{
+	r.emit(eventchan.ProviderTodoUpdate, TodoUpdateEvent{
 		ThreadID: threadID,
 		Steps:    steps,
 	})

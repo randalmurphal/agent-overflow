@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/safecopy"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
@@ -47,7 +48,7 @@ func (r *workflowAppRunner) captureArtifacts(done workflowCompletion, envelope j
 	}
 	if err := json.Unmarshal(envelope, &control); err != nil {
 		log.Printf("workflow artifact capture %s: decode validated envelope: %v", done.key.ItemID, err)
-		r.app.emit("workflow:error", map[string]any{
+		r.app.emit(eventchan.WorkflowError, map[string]any{
 			"itemId": done.key.ItemID,
 			"error":  "workflow artifact capture could not decode the validated envelope; inspect local diagnostics",
 		})
@@ -81,7 +82,7 @@ func (r *workflowAppRunner) captureArtifacts(done workflowCompletion, envelope j
 
 func (r *workflowAppRunner) emitArtifactError(itemID, output string, err error) {
 	log.Printf("workflow artifact capture %s output %q: %v", itemID, output, err)
-	r.app.emit("workflow:error", map[string]any{
+	r.app.emit(eventchan.WorkflowError, map[string]any{
 		"itemId": itemID,
 		"output": output,
 		"error":  fmt.Sprintf("workflow artifact %q capture failed; inspect local diagnostics", output),

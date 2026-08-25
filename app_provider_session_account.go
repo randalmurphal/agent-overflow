@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -54,12 +55,12 @@ func (a *App) providerSessionAccount(threadID string) *ProviderSessionAccountEve
 
 func (a *App) emitProviderSessionAccount(threadID string) {
 	if event := a.providerSessionAccount(threadID); event != nil {
-		a.emit("provider:session_account", *event)
+		a.emit(eventchan.ProviderSessionAccount, *event)
 	}
 }
 
 func (a *App) emitProviderSessionDisconnected(threadID, providerName string) {
-	a.emit("provider:session_account", ProviderSessionAccountEvent{
+	a.emit(eventchan.ProviderSessionAccount, ProviderSessionAccountEvent{
 		ThreadID:  threadID,
 		Provider:  providerName,
 		Connected: false,

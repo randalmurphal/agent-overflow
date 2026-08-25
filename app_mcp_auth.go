@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/ctxutil"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -327,7 +328,7 @@ func (a *App) pollClaudeMCPAfterOAuth(
 			CheckedAt: time.Now(),
 		})
 		success := observation.status == mcpstatus.StatusConnected
-		a.emit("mcp:oauth-completed", map[string]any{
+		a.emit(eventchan.MCPOAuthCompleted, map[string]any{
 			"threadId":   threadID,
 			"provider":   mcpProviderClaude,
 			"serverName": serverName,
@@ -350,7 +351,7 @@ func (a *App) pollClaudeMCPAfterOAuth(
 		return
 	}
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: serverName})
-	a.emit("mcp:oauth-completed", map[string]any{
+	a.emit(eventchan.MCPOAuthCompleted, map[string]any{
 		"threadId":   threadID,
 		"provider":   mcpProviderClaude,
 		"serverName": serverName,
@@ -388,7 +389,7 @@ func (a *App) pollClaudeMCPAfterOAuth(
 func (a *App) handleCodexMCPOAuthCompleted(threadID, serverName string, success bool, errMsg string) {
 	sanitizedErr := sanitizeMCPError(errMsg)
 	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: serverName})
-	a.emit("mcp:oauth-completed", map[string]any{
+	a.emit(eventchan.MCPOAuthCompleted, map[string]any{
 		"threadId":   threadID,
 		"provider":   mcpProviderCodex,
 		"serverName": serverName,

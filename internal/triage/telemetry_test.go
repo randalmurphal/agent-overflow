@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -79,7 +80,7 @@ func newTestRouterWithTelemetry(t *testing.T) (*Router, *turnTelemetryProbe, *st
 		t.Fatalf("seed thread: %v", err)
 	}
 
-	r := NewRouter(st, func(string, any) {})
+	r := NewRouter(st, func(eventchan.Channel, any) {})
 	recorder := tracetest.NewSpanRecorder()
 	tp := trace.NewTracerProvider(trace.WithSpanProcessor(recorder))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })

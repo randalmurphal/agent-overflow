@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -278,7 +279,7 @@ func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
 	if plan, found, err := r.store.GetThreadProposedPlanItem(evt.ThreadID, item.ID); err != nil {
 		return fmt.Errorf("plan decorated item %s: %w", item.ID, err)
 	} else if found {
-		r.emit("provider:item_event", NewItemStreamUpsert(plan))
+		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(plan))
 	}
 	return nil
 }

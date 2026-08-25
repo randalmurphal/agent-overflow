@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	claudeprovider "agent-overflow/internal/provider/claude"
 )
@@ -39,8 +40,8 @@ type rateLimitProbeLoop struct {
 	interval time.Duration
 }
 
-func (a *App) rememberRateLimitsEvent(name string, data any) {
-	if name != "provider:usage" {
+func (a *App) rememberRateLimitsEvent(name eventchan.Channel, data any) {
+	if name != eventchan.ProviderUsage {
 		return
 	}
 	var usage provider.UsageEvent
@@ -173,7 +174,7 @@ func (a *App) forgetRateLimitsSnapshot(providerName, accountID string) {
 	a.rateLimitsMu.Lock()
 	delete(a.rateLimitsByProvider, rateLimitsCacheKey(providerName, accountID))
 	a.rateLimitsMu.Unlock()
-	a.emit("provider:usage", provider.UsageEvent{
+	a.emit(eventchan.ProviderUsage, provider.UsageEvent{
 		Action: "rate_limits_removed",
 		RateLimits: &provider.RateLimitsSnapshot{
 			Provider:  providerName,

@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -11,7 +12,7 @@ func collectErrorItemUpserts(t *testing.T, app *App, buffer int) chan store.Item
 	t.Helper()
 
 	items := make(chan store.Item, buffer)
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
+	app.triage = triage.NewRouter(app.store, func(eventName eventchan.Channel, data any) {
 		if eventName != "provider:item_event" {
 			return
 		}

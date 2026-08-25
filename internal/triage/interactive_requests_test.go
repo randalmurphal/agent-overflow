@@ -5,11 +5,12 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
 func TestPendingInteractiveRequestsSnapshotOrdersAndClears(t *testing.T) {
-	router := NewRouter(nil, func(string, any) {})
+	router := NewRouter(nil, func(eventchan.Channel, any) {})
 
 	approvalMeta := mustMarshalJSON(t, provider.ApprovalRequest{
 		RequestID:   "approval-1",
@@ -114,7 +115,7 @@ func TestPendingInteractiveRequestsSnapshotOrdersAndClears(t *testing.T) {
 }
 
 func TestPendingInteractiveRequestsCleanupThreadClearsOrder(t *testing.T) {
-	router := NewRouter(nil, func(string, any) {})
+	router := NewRouter(nil, func(eventchan.Channel, any) {})
 	router.setPendingUserInput("thread-1", provider.UserInputRequest{
 		RequestID: "input-1",
 		ThreadID:  "thread-1",
@@ -248,21 +249,21 @@ func TestHasPendingWorkNilRouter(t *testing.T) {
 }
 
 func TestHasPendingWorkEmptyThread(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 	if r.HasPendingWork("") {
 		t.Fatal("empty threadID returned true")
 	}
 }
 
 func TestHasPendingWorkNoState(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 	if r.HasPendingWork("thread-1") {
 		t.Fatal("fresh router returned true")
 	}
 }
 
 func TestHasPendingWorkPendingApproval(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 
 	meta := mustMarshalJSON(t, provider.ApprovalRequest{
 		RequestID: "a-1",
@@ -303,7 +304,7 @@ func TestHasPendingWorkPendingApproval(t *testing.T) {
 }
 
 func TestHasPendingWorkPendingUserInput(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 
 	meta := mustMarshalJSON(t, provider.UserInputRequest{
 		RequestID: "ui-1",
@@ -353,7 +354,7 @@ func TestHasPendingWorkPendingUserInput(t *testing.T) {
 }
 
 func TestHasPendingWorkQueuedFlushItems(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 
 	r.RegisterQueueItem("thread-1", QueuedFlushItem{
 		ID:      "queue:1",
@@ -366,7 +367,7 @@ func TestHasPendingWorkQueuedFlushItems(t *testing.T) {
 }
 
 func TestHasPendingWorkPendingSend(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 
 	r.RegisterPendingSendWithExpectation("thread-1", "user:1", 1, PendingSendExpectation{})
 
@@ -376,7 +377,7 @@ func TestHasPendingWorkPendingSend(t *testing.T) {
 }
 
 func TestHasPendingWorkCleanupThreadClears(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 
 	r.setPendingUserInput("thread-1", provider.UserInputRequest{
 		RequestID: "ui-x",
@@ -402,7 +403,7 @@ func TestHasPendingWorkCleanupThreadClears(t *testing.T) {
 }
 
 func TestHasPendingWorkIsolatesThreads(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 
 	r.RegisterPendingSendWithExpectation("thread-1", "user:1", 1, PendingSendExpectation{})
 

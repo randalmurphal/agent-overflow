@@ -10,6 +10,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/stringsx"
 )
@@ -293,7 +294,7 @@ func (r *Router) handleApprovalRequest(evt provider.ProviderEvent) error {
 	// reply lands as a user_text upsert which already bumps activity.
 	requestedAt := eventTimestampMillis(evt)
 	r.bumpThreadActivity(evt.ThreadID, requestedAt, "approval request")
-	r.emit("provider:approval", provider.ApprovalEvent{
+	r.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
 		Action:      "request",
 		ThreadID:    evt.ThreadID,
 		Request:     &request,
@@ -328,7 +329,7 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 		}
 	}
 
-	r.emit("provider:approval", provider.ApprovalEvent{
+	r.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
 		Action:    "resolve",
 		ThreadID:  evt.ThreadID,
 		RequestID: requestID,

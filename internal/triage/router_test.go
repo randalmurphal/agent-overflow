@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -496,8 +497,8 @@ func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	t.Cleanup(func() { st.Close() })
 
 	emissions := &emissionLog{}
-	emit := func(eventName string, data any) {
-		emissions.add(emitted{eventName, data})
+	emit := func(eventName eventchan.Channel, data any) {
+		emissions.add(emitted{eventName.String(), data})
 	}
 
 	router := NewRouter(st, emit)
@@ -1019,7 +1020,7 @@ func TestCompactBoundarySequenceSkipsPersistedRowsAfterRouterRestart(t *testing.
 		t.Fatalf("handle initial compact: %v", err)
 	}
 
-	router = NewRouter(st, func(string, any) {})
+	router = NewRouter(st, func(eventchan.Channel, any) {})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventCompactBoundary,
 		ThreadID:  "t1",

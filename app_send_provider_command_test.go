@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -138,7 +139,7 @@ func newClaudeThreadForProviderCommandTest(t *testing.T, app *App, id string) st
 // the same text as a command or model prose.
 func TestSendMessageWithOptions_CommandRoutingDoesNotDependOnDiscovery(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := newClaudeThreadForProviderCommandTest(t, app, "thread-provider-command")
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")

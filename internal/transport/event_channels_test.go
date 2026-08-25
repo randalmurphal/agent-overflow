@@ -4,12 +4,14 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/eventchan"
 )
 
 // TestChannelPolicyHasNoDuplicates guards the one failure mode the index
 // build swallows: two rows for the same channel silently keep the last.
 func TestChannelPolicyHasNoDuplicates(t *testing.T) {
-	seen := make(map[string]int, len(channelPolicies))
+	seen := make(map[eventchan.Channel]int, len(channelPolicies))
 	for i, policy := range channelPolicies {
 		if policy.Channel == "" {
 			t.Fatalf("channelPolicies[%d] has an empty channel name", i)
@@ -141,7 +143,7 @@ func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
 			// derived set) is what catches a NEW row quietly acquiring a
 			// non-default policy nobody signed off on.
 			for _, policy := range channelPolicies {
-				if tc.classify(policy.Channel) && !want[policy.Channel] {
+				if tc.classify(string(policy.Channel)) && !want[string(policy.Channel)] {
 					t.Errorf("%s gained a %s classification the old map did not give it", policy.Channel, tc.name)
 				}
 			}
@@ -160,7 +162,7 @@ func TestChannelPolicyFailsClosedForUnregisteredChannels(t *testing.T) {
 	if registered {
 		t.Fatalf("%s is unexpectedly registered", channel)
 	}
-	if policy.Channel != channel {
+	if policy.Channel != eventchan.Channel(channel) {
 		t.Errorf("fallback policy channel = %q, want %q", policy.Channel, channel)
 	}
 	if policy.Audience != AudienceLoopbackOnly {
@@ -186,7 +188,7 @@ func TestChannelPolicyUnreviewedWorklist(t *testing.T) {
 	var unreviewed []string
 	for _, policy := range channelPolicies {
 		if strings.Contains(policy.Why, unreviewedMarker) {
-			unreviewed = append(unreviewed, policy.Channel)
+			unreviewed = append(unreviewed, string(policy.Channel))
 		}
 	}
 	sort.Strings(unreviewed)

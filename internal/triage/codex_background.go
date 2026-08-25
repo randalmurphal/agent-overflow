@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -59,10 +60,7 @@ import (
 //     deliveries) and codex_background_interactions.go (the spawn card's
 //     bounded collab-interaction list).
 
-const (
-	codexLiveCommandOutputMaxBytes       = 1024 * 1024
-	codexBackgroundTasksChangedEventName = "provider:background_tasks_changed"
-)
+const codexLiveCommandOutputMaxBytes = 1024 * 1024
 
 // BackgroundTasksChangedEvent is the `provider:background_tasks_changed`
 // payload: a refresh nudge for the tray listing, optionally carrying
@@ -142,7 +140,7 @@ func (r *Router) emitCodexBackgroundTasksChanged(threadID string) {
 	if strings.TrimSpace(threadID) == "" {
 		return
 	}
-	r.emit(codexBackgroundTasksChangedEventName, BackgroundTasksChangedEvent{ThreadID: threadID})
+	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: threadID})
 }
 
 func mergeRawJSONObject(left, right json.RawMessage) json.RawMessage {

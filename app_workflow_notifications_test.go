@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -63,7 +64,7 @@ func TestWorkflowStateEmitterPersistsTemplateAndSendsTypedNotifications(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	emitter := workflowEmitter{app: app, emit: func(string, any) {}}
+	emitter := workflowEmitter{app: app, emit: func(eventchan.Channel, any) {}}
 	emitter.Emit("workflow:item-state", engine.StateEvent{
 		ItemID: item.ID, ProjectID: item.ProjectID,
 		From: engine.StateRunning, To: engine.StateNeedsHuman, Reason: engine.ReasonQuestion,
@@ -107,7 +108,7 @@ func TestDoneItemSendsNoNotification(t *testing.T) {
 	if err := app.store.CreateWorkItem(item); err != nil {
 		t.Fatal(err)
 	}
-	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
+	workflowEmitter{app: app, emit: func(eventchan.Channel, any) {}}.Emit(
 		"workflow:item-state", engine.StateEvent{ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
 	select {

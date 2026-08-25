@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -77,7 +78,7 @@ func (a *App) markConfirmedBackgroundTasksInactiveAfterProviderCleanup(threadID 
 	now := time.Now().UnixMilli()
 	_, toolCallErr := a.store.MarkLiveBackgroundToolCallsInactive(threadID, now)
 	_, subagentErr := a.store.MarkLiveCodexSubagentLaunchesInactive(threadID, now)
-	a.emit("provider:background_tasks_changed", map[string]any{"threadId": threadID})
+	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
 	if toolCallErr != nil {
 		toolCallErr = fmt.Errorf("%s: clear running background tasks: %w", errorPrefix, toolCallErr)
 	}

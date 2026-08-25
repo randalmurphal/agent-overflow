@@ -12,12 +12,19 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"agent-overflow/internal/eventchan"
 )
 
-// Transport event channels carrying the notification pipe.
+// Transport event channels carrying the notification pipe. Defined AS
+// their internal/eventchan constants so the emit side and this
+// cross-process contract cannot drift, but typed `string`: the launcher
+// carries these in subscribe frames and replay cursors, which are wire
+// input on the other end. Emit sites use the eventchan constants
+// directly.
 const (
-	ActivatedChannel = "notification:activated"
-	SendChannel      = "notification:send"
+	ActivatedChannel = string(eventchan.NotificationActivated)
+	SendChannel      = string(eventchan.NotificationSend)
 )
 
 // Content limits enforced by the backend before publication and re-checked

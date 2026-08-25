@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/codexghost"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -62,7 +63,7 @@ func (a *App) flipCodexGhostBackgroundRowsOnStart(threadID string) {
 		return
 	}
 	for _, item := range flipped {
-		a.emit("provider:item_event", triage.NewItemStreamUpsert(item))
+		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
 	}
 }
 

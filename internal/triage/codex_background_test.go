@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -265,7 +266,7 @@ func TestCodexUnifiedExecQuickCompletionPersistsNormalCommand(t *testing.T) {
 	if string(data) != "ok\n" {
 		t.Fatalf("payload = %q, want ok newline", string(data))
 	}
-	if countEvents(emissions.snapshot(), codexBackgroundTasksChangedEventName) < 2 {
+	if countEvents(emissions.snapshot(), eventchan.ProviderBackgroundTasksChanged.String()) < 2 {
 		t.Fatal("quick completion did not emit tray refresh for live tracker removal")
 	}
 }

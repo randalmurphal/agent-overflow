@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -69,7 +70,7 @@ func (r *Router) handleCompactionStatus(evt provider.ProviderEvent) error {
 	if already {
 		return nil
 	}
-	r.emit("provider:compacting", CompactingStateEvent{
+	r.emit(eventchan.ProviderCompacting, CompactingStateEvent{
 		ThreadID:    evt.ThreadID,
 		Active:      true,
 		SinceUnixMs: since,
@@ -99,6 +100,6 @@ func (r *Router) clearCompacting(threadID string) {
 	}
 	r.mu.Unlock()
 	if active {
-		r.emit("provider:compacting", CompactingStateEvent{ThreadID: threadID, Active: false})
+		r.emit(eventchan.ProviderCompacting, CompactingStateEvent{ThreadID: threadID, Active: false})
 	}
 }

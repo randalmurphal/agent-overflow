@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
@@ -43,8 +44,8 @@ type workflowDigestContext struct {
 	Checks   []string
 }
 
-func (a *App) prepareWorkflowEngineEvent(name string, payload any) {
-	if name != "workflow:item-state" {
+func (a *App) prepareWorkflowEngineEvent(name eventchan.Channel, payload any) {
+	if name != eventchan.WorkflowItemState {
 		return
 	}
 	event, ok := payload.(engine.StateEvent)
@@ -234,7 +235,7 @@ func (a *App) upgradeWorkflowDigest(item store.WorkItem, template WorkflowDigest
 		log.Printf("workflow digest %s: persist upgrade: %v", item.ID, err)
 		return
 	}
-	a.emit("workflow:item-state", engine.StateEvent{
+	a.emit(eventchan.WorkflowItemState, engine.StateEvent{
 		ItemID: item.ID, ProjectID: item.ProjectID,
 		From: engine.State(item.State), To: engine.State(item.State), Reason: engine.Reason(item.Reason),
 	})

@@ -13,6 +13,13 @@ package transport
 // map[string]bool probe is one hash and one byte; going through
 // ChannelPolicy would copy two string headers on every delivered frame.
 //
+// They are keyed by plain string, not eventchan.Channel, for the same
+// reason channelPolicyIndex is: the hot path is handed Event.Channel,
+// which is the wire spelling — a name a client's replay request may have
+// chosen. The one-time init converts the authored rows on the way in;
+// string and eventchan.Channel share a representation, so neither that
+// conversion nor a caller's costs anything at runtime.
+//
 // The rationale for each membership lives on its registry row's Why, and
 // the doctrine for each CLASS lives on the Audience constants.
 var (
@@ -32,10 +39,10 @@ func init() {
 		case AudienceLoopbackOnly:
 			// Reaches loopback only; in neither set.
 		case AudienceRemoteOnly:
-			remoteOnlyEventChannels[policy.Channel] = true
-			remoteVisibleEventChannels[policy.Channel] = true
+			remoteOnlyEventChannels[string(policy.Channel)] = true
+			remoteVisibleEventChannels[string(policy.Channel)] = true
 		case AudienceAny:
-			remoteVisibleEventChannels[policy.Channel] = true
+			remoteVisibleEventChannels[string(policy.Channel)] = true
 		}
 	}
 }

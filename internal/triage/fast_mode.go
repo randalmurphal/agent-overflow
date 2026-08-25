@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -29,7 +30,7 @@ func (r *Router) emitFastModeState(threadID string, status *provider.FastModeSta
 	if r == nil || threadID == "" || status == nil || status.IsZero() {
 		return
 	}
-	r.emit("provider:fast_mode", FastModeStateEvent{
+	r.emit(eventchan.ProviderFastMode, FastModeStateEvent{
 		ThreadID:       threadID,
 		State:          status.State,
 		DisabledReason: status.DisabledReason,

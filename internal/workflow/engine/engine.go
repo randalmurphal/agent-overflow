@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
@@ -586,7 +587,7 @@ func (e *Engine) loadParked(itemID string) (*runtimeItem, error) {
 }
 
 func (e *Engine) emitError(itemID string, err error) {
-	e.emitter.Emit("workflow:error", ErrorEvent{
+	e.emitter.Emit(eventchan.WorkflowError, ErrorEvent{
 		ItemID: itemID,
 		Error:  "workflow operation failed; inspect the item's typed state and local diagnostics",
 		detail: err,
@@ -594,7 +595,7 @@ func (e *Engine) emitError(itemID string, err error) {
 }
 
 func (e *Engine) emitEngineState() {
-	e.emitter.Emit("workflow:engine-state", EngineState{Paused: e.paused})
+	e.emitter.Emit(eventchan.WorkflowEngineState, EngineState{Paused: e.paused})
 }
 
 // emitItemState is the single place a lifecycle transition reaches the wire,
@@ -603,7 +604,7 @@ func (e *Engine) emitEngineState() {
 // rather than a resident run, and a phase read back from the row could name the
 // phase the run moved on to rather than the one the transition happened in.
 func (e *Engine) emitItemState(itemID, projectID string, from, to State, reason Reason) {
-	e.emitter.Emit("workflow:item-state", StateEvent{
+	e.emitter.Emit(eventchan.WorkflowItemState, StateEvent{
 		ItemID: itemID, ProjectID: projectID, From: from, To: to, Reason: reason,
 	})
 }
@@ -626,7 +627,7 @@ func (e *Engine) emitPhaseState(event PhaseEvent) {
 	if event.OccurredAt == 0 {
 		event.OccurredAt = e.timestamp()
 	}
-	e.emitter.Emit("workflow:phase-state", event)
+	e.emitter.Emit(eventchan.WorkflowPhaseState, event)
 }
 
 // emitItemStateAt is emitItemState for the transitions taken with the run
@@ -634,7 +635,7 @@ func (e *Engine) emitPhaseState(event PhaseEvent) {
 // rests on that attempt, so its cause and its narrative are filed under this
 // coordinate and an observer needs it to read either.
 func (e *Engine) emitItemStateAt(item *runtimeItem, from, to State, reason Reason) {
-	e.emitter.Emit("workflow:item-state", StateEvent{
+	e.emitter.Emit(eventchan.WorkflowItemState, StateEvent{
 		ItemID: item.item.ID, ProjectID: item.item.ProjectID, From: from, To: to, Reason: reason,
 		PhaseID: item.phaseID, Attempt: item.attempt,
 	})

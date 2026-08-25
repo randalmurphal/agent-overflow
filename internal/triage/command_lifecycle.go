@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -140,7 +141,7 @@ func (r *Router) handleCommandLifecycle(evt provider.ProviderEvent) error {
 		}
 	}
 
-	r.emit("provider:command_lifecycle", out)
+	r.emit(eventchan.ProviderCommandLifecycle, out)
 	return nil
 }
 

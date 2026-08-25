@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -235,7 +236,7 @@ func TestCodexReviewCommandTargetUsesTheComposerGrammar(t *testing.T) {
 
 func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review-active")
 
 	if _, err := app.RegisterQueueItem(thread.ID, "/review", SendMessageOptions{}); err == nil ||
@@ -260,7 +261,7 @@ func TestCodexReviewCannotBeQueuedOrSteeredIntoAnActiveTurn(t *testing.T) {
 // AO thread the review's transcript will arrive on.
 func TestStartCodexReviewSendsTheTargetInline(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review")
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
@@ -399,7 +400,7 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 // a billed turn it can never show.
 func TestStartCodexReviewRefusesADetachedAnswer(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-review-detached")
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
@@ -422,7 +423,7 @@ func TestStartCodexReviewRefusesADetachedAnswer(t *testing.T) {
 // evidence the binding did anything is the request itself.
 func TestCompactCodexThreadDrivesTheRPC(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-compact")
 	capturePath := filepath.Join(t.TempDir(), "rpc.ndjson")
@@ -442,7 +443,7 @@ func TestCompactCodexThreadDrivesTheRPC(t *testing.T) {
 // requires an existing provider context.
 func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := newCodexThreadForReviewTest(t, app, "thread-codex-no-session")
 	binary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
 		`"method":"initialize"`:           `{"jsonrpc":"2.0","id":%s,"result":{}}`,
@@ -482,7 +483,7 @@ func TestCodexReviewLazyStartsAColdThread(t *testing.T) {
 // the backend must say so rather than nil-dereferencing its way there.
 func TestCodexReviewBindingsRefuseANonCodexThread(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := testThread("thread-claude-not-codex")
 	thread.Provider = string(provider.Claude)

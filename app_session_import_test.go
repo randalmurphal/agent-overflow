@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/store"
 )
@@ -27,7 +28,7 @@ type progressRecorder struct {
 func recordSessionImportProgress(app *App) *progressRecorder {
 	rec := &progressRecorder{done: make(chan struct{})}
 	app.testEmitHook = func(name string, data any) {
-		if name != sessionImportProgressChannel {
+		if name != eventchan.SessionImportProgress.String() {
 			return
 		}
 		frame, ok := data.(SessionImportProgressEvent)

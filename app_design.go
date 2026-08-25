@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"agent-overflow/internal/design"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -198,11 +199,11 @@ func (a *App) handleDesignWatcherEvent(ev design.WatchEvent) {
 	}
 	switch ev.Subject {
 	case design.WatchSubjectMain:
-		a.emit("design:reload-main", map[string]any{
+		a.emit(eventchan.DesignReloadMain, map[string]any{
 			"threadId": ev.ThreadID,
 		})
 	case design.WatchSubjectOptions:
-		a.emit("design:options-update", map[string]any{
+		a.emit(eventchan.DesignOptionsUpdate, map[string]any{
 			"threadId": ev.ThreadID,
 			"setId":    ev.SetID,
 		})

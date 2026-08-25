@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+
+	"agent-overflow/internal/eventchan"
 )
 
 // DefaultRingCapacity is the per-channel event buffer size. Tuned to
@@ -232,7 +234,14 @@ func NewEventBus(capacity int) *EventBus {
 	}
 }
 
-// Emit publishes a new event on the given channel. Returns the event so
+// Emit publishes a new event on the given channel. The channel is an
+// eventchan.Channel rather than a string so a call site cannot typo a
+// name or invent one without adding both its constant and its
+// ChannelPolicy row; the three paths that legitimately publish a
+// caller-named channel (HarnessEmit, harness.Replayer, and the harness
+// replay-log republisher) spell an explicit eventchan.Channel(name)
+// conversion and land on the fail-closed loopback-only default.
+// Returns the event so
 // callers can synchronously inspect the seq if needed (replay tests
 // exercise this). Emitting after Close is a silent no-op — late
 // publishers shouldn't crash the app during shutdown.
@@ -245,7 +254,7 @@ func NewEventBus(capacity int) *EventBus {
 // so concurrent emitters and Replay/Subscribe don't serialize behind a
 // reflection walk. Seq assignment and ring append stay atomic per
 // channel — ring order is exact; fanout runs after unlock, as before.
-func (b *EventBus) Emit(channel string, payload any) (Event, error) {
+func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, error) {
 	if b.closed.Load() {
 		return Event{}, nil
 	}
@@ -254,6 +263,12 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
+
+	// The wire spelling. Free — string and eventchan.Channel share a
+	// representation — and it is what every map below is keyed by, since
+	// replay cursors and subscribe filters arrive from the peer as
+	// strings.
+	channel := string(typedChannel)
 
 	b.mu.Lock()
 	r, ok := b.rings[channel]

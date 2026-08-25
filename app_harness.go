@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/notify"
@@ -153,7 +154,10 @@ func (h *Harness) HarnessEmit(channel string, payload json.RawMessage) error {
 	if !json.Valid(payload) {
 		return fmt.Errorf("payload is not valid JSON")
 	}
-	h.app.emit(channel, payload)
+	// Deliberate escape hatch: the channel is caller-named, so it is
+	// unregistrable by construction and lands on the fail-closed
+	// loopback-only default (see unregisteredChannelPolicy). Harness-only.
+	h.app.emit(eventchan.Channel(channel), payload)
 	return nil
 }
 

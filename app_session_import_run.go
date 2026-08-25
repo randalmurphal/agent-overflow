@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/sessionimport"
@@ -14,12 +15,6 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/semaphore"
 )
-
-// sessionImportProgressChannel carries one frame per session an import run
-// finishes, plus exactly one terminal frame. It is loopback-only
-// (internal/transport/event_visibility.go): the frames name provider-home
-// file paths.
-const sessionImportProgressChannel = "session-import:progress"
 
 // Per-session outcomes on the progress channel.
 const (
@@ -34,7 +29,7 @@ type ImportSessionsRequest struct {
 }
 
 // ImportRunHandle is what ImportSessions returns immediately; everything else
-// arrives on sessionImportProgressChannel.
+// arrives on eventchan.SessionImportProgress.
 type ImportRunHandle struct {
 	ImportID string `json:"importId"`
 	Total    int    `json:"total"`
@@ -98,7 +93,7 @@ type sessionImportJobResult struct {
 }
 
 // ImportSessions starts an import run and returns immediately. Progress
-// arrives on sessionImportProgressChannel, one frame per session plus a
+// arrives on eventchan.SessionImportProgress, one frame per session plus a
 // terminal frame.
 //
 // Duplicate ids in one request collapse: the scan's dedup happens BEFORE a
@@ -176,7 +171,7 @@ func (a *App) runSessionImport(ctx context.Context, run *sessionImportRun, ids [
 		frame.ImportID = run.id
 		frame.Completed = completed
 		frame.Total = run.total
-		a.emit(sessionImportProgressChannel, frame)
+		a.emit(eventchan.SessionImportProgress, frame)
 	}
 
 	deps, err := a.sessionImportDeps()
@@ -380,7 +375,7 @@ func (a *App) resolveImportRows(ctx context.Context, ids []string) map[string]se
 }
 
 func (a *App) emitSessionImportDone(run *sessionImportRun, completed int) {
-	a.emit(sessionImportProgressChannel, SessionImportProgressEvent{
+	a.emit(eventchan.SessionImportProgress, SessionImportProgressEvent{
 		ImportID:  run.id,
 		Completed: completed,
 		Total:     run.total,

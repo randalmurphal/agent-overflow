@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
 )
 
@@ -97,7 +98,7 @@ func (a *App) activateNotificationTarget(target notify.Target) error {
 	if err := notify.ValidateTarget(target); err != nil {
 		return err
 	}
-	a.emit(notify.ActivatedChannel, target)
+	a.emit(eventchan.NotificationActivated, target)
 	return nil
 }
 
@@ -137,7 +138,7 @@ func (s *transportNotificationSender) send(title, body string, target notify.Tar
 		Body:   body,
 		Target: target,
 	}
-	if _, err := bus.Emit(notify.SendChannel, payload); err != nil {
+	if _, err := bus.Emit(eventchan.NotificationSend, payload); err != nil {
 		return fmt.Errorf("publish notification to launcher: %w", err)
 	}
 	return nil

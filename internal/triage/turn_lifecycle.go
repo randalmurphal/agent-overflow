@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 
@@ -69,7 +70,7 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		StartedAt: startedAt,
 	}
 	r.setOpenRoundSnapshot(snapshot)
-	r.emit("provider:turn_started", TurnStartedEvent(snapshot))
+	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 	return nil
 }
 
@@ -415,7 +416,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// at most one emit per round, regardless of synthesis races.
 	round, hasRound := r.takeOpenRound(evt.ThreadID)
 	if hasRound && err == nil {
-		r.emit("provider:turn_completed", r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta))
+		r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta))
 	}
 
 	// Orphan error result: an error turn-complete with no open round, no
@@ -1102,7 +1103,7 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		StartedAt: startedAt,
 	}
 	r.setOpenRoundSnapshot(snapshot)
-	r.emit("provider:turn_started", TurnStartedEvent(snapshot))
+	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 }
 
 // settleQueuedEchoPredecessor closes the logical turn a queued echo is
@@ -1731,11 +1732,11 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	r.mu.Unlock()
 
 	if hadEffectiveModel {
-		r.emit("provider:model_fallback", ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
+		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
 	}
 
 	if hasPendingUsage {
-		r.emit("provider:usage", pendingUsage)
+		r.emit(eventchan.ProviderUsage, pendingUsage)
 	}
 
 	if orphanSpan != nil {
@@ -1835,7 +1836,7 @@ func (r *Router) MarkThreadActive(threadID string) {
 	identity.interruptMarks = nil
 	r.mu.Unlock()
 	if hadEffectiveModel {
-		r.emit("provider:model_fallback", ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
+		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
 	}
 }
 

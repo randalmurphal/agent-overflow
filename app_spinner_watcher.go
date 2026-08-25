@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/spinner"
 )
 
@@ -66,7 +67,7 @@ func spinnerFileRelevant(name string) bool {
 // usable without it (built-in sprites ship with the frontend).
 func (a *App) startSpinnerWatcher(dir string) {
 	watcher, err := newSpinnerWatcher(dir, spinnerWatchDebounce, func() {
-		a.emit("spinner:changed", nil)
+		a.emit(eventchan.SpinnerChanged, nil)
 	})
 	if err != nil {
 		log.Printf("spinner watcher unavailable: %v", err)

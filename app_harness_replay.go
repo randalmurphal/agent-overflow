@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness"
 )
 
@@ -64,8 +65,11 @@ func (h *Harness) replayerEngine() *harness.Replayer {
 	defer h.mu.Unlock()
 	if h.replayer == nil {
 		h.replayer = harness.NewReplayer(
-			func(kind string, data json.RawMessage) { h.app.emit(kind, data) },
-			func(st harness.ReplayStatus) { h.app.emit("harness:replay", st) },
+			// Deliberate escape hatch: a recorded event log names its own
+			// channels, so they are unregistrable by construction and land
+			// on the fail-closed loopback-only default. Harness-only.
+			func(kind string, data json.RawMessage) { h.app.emit(eventchan.Channel(kind), data) },
+			func(st harness.ReplayStatus) { h.app.emit(eventchan.HarnessReplay, st) },
 		)
 	}
 	return h.replayer

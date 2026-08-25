@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -536,7 +537,7 @@ func validateManagedProvider(providerName string) error {
 }
 
 func (a *App) emitProviderAccountUsageRefreshError(providerName, accountID string, err error) {
-	a.emit("provider:account_usage_error", map[string]string{
+	a.emit(eventchan.ProviderAccountUsageError, map[string]string{
 		"provider":  providerName,
 		"accountId": accountID,
 		"message":   err.Error(),

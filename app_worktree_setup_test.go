@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/worktreesetup"
 
@@ -27,7 +28,7 @@ type setupEventRecorder struct {
 func (r *setupEventRecorder) record(name string, data any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if name != worktreeSetupChannel {
+	if name != eventchan.WorktreeSetup.String() {
 		r.other = append(r.other, name)
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/threadtitle"
@@ -50,7 +51,7 @@ func (a *App) emitThreadTitleGeneration(threadID string, err error) {
 	if err != nil {
 		message = textgen.RedactError(err)
 	}
-	a.emitEvent("thread:title_generation", ThreadTitleGenerationEvent{
+	a.emitEvent(eventchan.ThreadTitleGeneration, ThreadTitleGenerationEvent{
 		ThreadID: threadID,
 		Error:    message,
 	})

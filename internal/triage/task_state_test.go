@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -433,8 +434,8 @@ func TestTaskUpdateOnColdRouterSeedsFromPersistedTodo(t *testing.T) {
 
 	// A fresh router over the same store is what an app restart leaves
 	// behind (the provider session resumes with its task list intact).
-	cold := NewRouter(st, func(eventName string, data any) {
-		emissions.add(emitted{eventName, data})
+	cold := NewRouter(st, func(eventName eventchan.Channel, data any) {
+		emissions.add(emitted{eventName.String(), data})
 	})
 	if err := cold.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
 		TaskID: "1", Status: "completed",
@@ -467,8 +468,8 @@ func TestTaskDeleteOnColdRouterClearsPersistedTodo(t *testing.T) {
 	seedOpenTurn(t, router, st, "t1", 0)
 	_ = router.Handle(taskCreateEvent("t1", "1", "only task"))
 
-	cold := NewRouter(st, func(eventName string, data any) {
-		emissions.add(emitted{eventName, data})
+	cold := NewRouter(st, func(eventName eventchan.Channel, data any) {
+		emissions.add(emitted{eventName.String(), data})
 	})
 	if err := cold.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
 		TaskID: "1", Deleted: true,
@@ -506,7 +507,7 @@ func TestColdSeedIgnoresStepsWithoutIDs(t *testing.T) {
 		t.Fatalf("todo update: %v", err)
 	}
 
-	cold := NewRouter(st, func(string, any) {})
+	cold := NewRouter(st, func(eventchan.Channel, any) {})
 	if err := cold.Handle(taskUpdateEvent("t1", provider.TaskUpdateMeta{
 		TaskID: "1", Status: "completed",
 	})); err != nil {
@@ -536,7 +537,7 @@ func TestTaskCreateOnColdRouterAppendsToSeededList(t *testing.T) {
 	_ = router.Handle(taskCreateEvent("t1", "1", "first"))
 	_ = router.Handle(taskCreateEvent("t1", "2", "second"))
 
-	cold := NewRouter(st, func(string, any) {})
+	cold := NewRouter(st, func(eventchan.Channel, any) {})
 	if err := cold.Handle(taskCreateEvent("t1", "3", "added after the restart")); err != nil {
 		t.Fatalf("cold task create: %v", err)
 	}
@@ -573,7 +574,7 @@ func TestColdSeedSkipsAnAllCompletedList(t *testing.T) {
 		}
 	}
 
-	cold := NewRouter(st, func(string, any) {})
+	cold := NewRouter(st, func(eventchan.Channel, any) {})
 	if err := cold.Handle(taskCreateEvent("t1", "1", "next list")); err != nil {
 		t.Fatalf("cold task create: %v", err)
 	}
@@ -629,7 +630,7 @@ func TestTaskCreateHealsAnUnreadableStoredList(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	router := NewRouter(st, func(string, any) {})
+	router := NewRouter(st, func(eventchan.Channel, any) {})
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 

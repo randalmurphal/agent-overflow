@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/triage"
@@ -959,7 +960,7 @@ func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provi
 		return
 	}
 	a.rememberChatModelProfile(sanitized)
-	a.emitEvent("thread:updated", triage.ThreadUpdateEvent{Action: "full", Thread: &sanitized})
+	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &sanitized})
 }
 
 // firstLine truncates a command answer to its first line for error surfaces.

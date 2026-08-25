@@ -28,12 +28,6 @@ const (
 	// worktreeSetupFlushBytes forces a flush for output that never emits a
 	// newline (progress bars redrawing with \r), so the panel still moves.
 	worktreeSetupFlushBytes = 8 * 1024
-
-	// worktreeSetupChannel is the event channel. Its own channel rather than
-	// a phase discriminator on an existing one: only the panel subscribes,
-	// and the frames carry local command output (transport keeps it
-	// loopback-only, like terminal:output).
-	worktreeSetupChannel = "worktree:setup"
 )
 
 // Run states, as the panel sees them. "succeeded" and "cancelled" are terminal

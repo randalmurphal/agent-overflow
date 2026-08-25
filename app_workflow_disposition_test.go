@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -177,7 +178,7 @@ func TestWorkflowAutoMergeHonorsCleanupAutoAfterReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
+	workflowEmitter{app: app, emit: func(eventchan.Channel, any) {}}.Emit(
 		"workflow:item-state", engine.StateEvent{ItemID: item.ID, ProjectID: item.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
 	app.workflowAutoDisposition.Wait()
@@ -465,7 +466,7 @@ func TestWorkflowCreateItemPRPushesAndPersistsReference(t *testing.T) {
 		t.Fatalf("auto detected forge = %q", forge)
 	}
 	testutil.RunGit(t, repo, "config", "url."+remote+".insteadOf", remoteURL)
-	workflowEmitter{app: app, emit: func(string, any) {}}.Emit(
+	workflowEmitter{app: app, emit: func(eventchan.Channel, any) {}}.Emit(
 		"workflow:item-state", engine.StateEvent{ItemID: autoItem.ID, ProjectID: autoItem.ProjectID, From: engine.StateRunning, To: engine.StateDone},
 	)
 	app.workflowAutoDisposition.Wait()

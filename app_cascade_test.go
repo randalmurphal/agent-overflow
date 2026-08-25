@@ -47,7 +47,7 @@ func setupCascadeApp(t *testing.T) (*App, *capturedEventBus, string) {
 		deliberations:       make(map[string]*discussion.Deliberation),
 		configDir:           dbDir,
 	}
-	app.triage = triage.NewRouter(st, bus.emit)
+	app.triage = triage.NewRouter(st, bus.emitChannel)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	app.registry = discussion.NewRegistry(st)
 	app.channels = discussion.NewChannelService(st)

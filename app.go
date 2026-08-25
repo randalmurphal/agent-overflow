@@ -504,7 +504,12 @@ type App struct {
 	// leaves it nil; resolveLookPath() falls through to exec.LookPath.
 	// Tests install a fake so they can simulate "only claude installed"
 	// without touching $PATH.
-	lookPathFn  func(string) error
+	lookPathFn func(string) error
+	// emitEventFn is a test-only override for a.emitEvent. It takes the
+	// channel in its WIRE spelling rather than as an eventchan.Channel —
+	// it is an observation seam, not an emit site, so it has nothing to
+	// keep honest and typing it would churn every test that installs one.
+	// Same reasoning as testEmitHook below.
 	emitEventFn func(eventName string, data any)
 	// shutdownStepFn is a test-only hook fired after every step of
 	// Shutdown. Production leaves this nil. Order tests install it to
@@ -524,7 +529,8 @@ type App struct {
 	// the hook with the (name, data) pair it would have published. data
 	// is the raw payload — the transport bus assigns its own per-channel
 	// seq when it emits, so test observers see the same shape the
-	// downstream code emitted.
+	// downstream code emitted. name is the channel's WIRE spelling, for
+	// the reason given on emitEventFn above.
 	testEmitHook func(name string, data any)
 	// remoteClientProbeFn is a test-only override for hasRemoteClient
 	// (production reads the transport server's connection counter).

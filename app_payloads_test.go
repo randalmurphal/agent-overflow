@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -109,7 +110,7 @@ func TestGetPayloadBindingsRequireOwningThread(t *testing.T) {
 
 func TestGetPayloadDataFlushesLiveThinkingBuffer(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-live-thinking")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -149,7 +150,7 @@ func TestGetPayloadDataIncludesThinkingDeltaBeforeWireEmission(t *testing.T) {
 	}
 
 	var payloadDuringDelta string
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
+	app.triage = triage.NewRouter(app.store, func(eventName eventchan.Channel, data any) {
 		if eventName != "provider:item_event" {
 			return
 		}
@@ -194,7 +195,7 @@ func TestGetPayloadDataIncludesAssistantTextDeltaBeforeWireEmission(t *testing.T
 	}
 
 	var payloadDuringDelta string
-	app.triage = triage.NewRouter(app.store, func(eventName string, data any) {
+	app.triage = triage.NewRouter(app.store, func(eventName eventchan.Channel, data any) {
 		if eventName != "provider:item_event" {
 			return
 		}

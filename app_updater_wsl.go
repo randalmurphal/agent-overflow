@@ -50,6 +50,7 @@ import (
 	"runtime"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/selfupdate"
 	"agent-overflow/internal/wsldistro"
@@ -432,7 +433,7 @@ func (a *App) restartToUpdateWSL() error {
 	a.updater.mu.Unlock()
 
 	log.Printf("updater: handing %s (%s) to the Windows launcher", filename, version)
-	a.emit(selfupdate.ChannelInstall, selfupdate.InstallDirective{
+	a.emit(eventchan.UpdaterInstall, selfupdate.InstallDirective{
 		Filename: filename,
 		SHA256:   hex.EncodeToString(digest),
 		Version:  version,

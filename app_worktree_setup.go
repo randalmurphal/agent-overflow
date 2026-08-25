@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/slicesx"
@@ -409,7 +410,7 @@ func (a *App) recordUnstartableWorktreeSetupRun(target worktreeSetupTarget, caus
 	if target.threadID != "" {
 		a.setThreadWorktreeSetupState(target.threadID, store.WorktreeSetupStateFailed)
 	}
-	a.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
+	a.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStarted,
 		ThreadID:     run.threadID,
 		RunID:        run.id,
@@ -417,7 +418,7 @@ func (a *App) recordUnstartableWorktreeSetupRun(target worktreeSetupTarget, caus
 		Steps:        run.steps,
 		StartedAt:    run.startedAt,
 	})
-	a.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
+	a.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase: worktreeSetupPhaseFinished,
 		// The path rides every frame, terminal ones included: a client
 		// following an UNBOUND run has no thread id to key on, and the
@@ -519,7 +520,7 @@ func (a *App) finishThreadWorktreeSetup(run *worktreeSetupRun, runErr error) {
 		a.worktreeSetup.mu.Unlock()
 	}
 
-	a.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
+	a.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseFinished,
 		ThreadID:     threadID,
 		RunID:        run.id,
@@ -728,7 +729,7 @@ func (a *App) setThreadWorktreeSetupState(threadID, state string) {
 		return
 	}
 	current.WorktreeSetupState = state
-	a.emitEvent("thread:updated", triage.ThreadUpdateEvent{Action: "full", Thread: &current})
+	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &current})
 }
 
 // threadOccupiesWorktree reports whether the thread is still working in the

@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/eventchan"
 )
 
 // chromeForTestingManifestURL is the canonical manifest published by
@@ -50,7 +52,7 @@ const manifestFetchTimeout = 30 * time.Second
 // flow over. No frontend listener is wired today; events are useful
 // for diagnostic logs and a future "Downloading rendering engine…"
 // banner.
-const InstallEventName = "screenshot:install-progress"
+const InstallEventName = eventchan.ScreenshotInstallProgress
 
 // InstallProgress is the per-tick event the installer emits.
 //
@@ -97,7 +99,7 @@ type Installer struct {
 
 	// Emit receives InstallProgress events. nil is allowed — events
 	// are dropped silently.
-	Emit func(eventName string, data any)
+	Emit func(channel eventchan.Channel, data any)
 
 	// AllowInsecureScheme bypasses the https-only check on
 	// ManifestURL and the resolved zip URL. ONLY for tests serving
@@ -109,7 +111,7 @@ type Installer struct {
 // NewInstaller wires the supplied dependencies and applies defaults
 // for the rest. ConfigDir is required; the cache lives under
 // configDir/headless-shell/.
-func NewInstaller(configDir string, emit func(eventName string, data any)) *Installer {
+func NewInstaller(configDir string, emit func(eventchan.Channel, any)) *Installer {
 	return &Installer{
 		ConfigDir:   configDir,
 		ManifestURL: chromeForTestingManifestURL,

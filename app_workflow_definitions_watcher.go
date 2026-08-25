@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/eventchan"
+
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -62,7 +64,7 @@ func newWorkflowDefinitionsWatcher(root string, debounce time.Duration, emit fun
 
 func (a *App) startWorkflowDefinitionsWatcher(root string) {
 	watcher, err := newWorkflowDefinitionsWatcher(root, workflowDefinitionsDebounce, func() {
-		a.emit("workflow:definitions-changed", nil)
+		a.emit(eventchan.WorkflowDefinitionsChanged, nil)
 	})
 	if err != nil {
 		log.Printf("workflow definitions watcher unavailable: %v", err)

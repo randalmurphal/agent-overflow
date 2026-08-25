@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -492,7 +493,7 @@ func (a *App) removeWorkflowUnitWorktrees(item store.WorkItem) error {
 
 func (r *workflowAppRunner) reportUnitCleanupFailure(itemID string, cause error) {
 	log.Printf("workflow unit worktree cleanup %s: %v", itemID, cause)
-	r.app.emit("workflow:error", map[string]any{
+	r.app.emit(eventchan.WorkflowError, map[string]any{
 		"itemId": itemID,
 		"error":  "workflow fan-out unit worktrees could not be cleaned up; inspect local diagnostics",
 	})
@@ -510,7 +511,7 @@ func (r *workflowAppRunner) reportUnitWorktreeRetained(itemID string, unit store
 		unit.UnitID, retainedDirtyReason(changes), unit.WorktreePath, unit.Branch,
 	)
 	log.Printf("workflow unit worktree retained %s: %s", itemID, message)
-	r.app.emit("workflow:error", map[string]any{
+	r.app.emit(eventchan.WorkflowError, map[string]any{
 		"itemId": itemID,
 		"error":  message,
 	})
@@ -521,7 +522,7 @@ func (r *workflowAppRunner) reportUnitWorktreeRetained(itemID string, unit store
 // absent — so this exists to keep "the count is missing" from being silent.
 func (r *workflowAppRunner) reportUnitGitStateFailure(itemID string, cause error) {
 	log.Printf("workflow join unit git state %s: %v", itemID, cause)
-	r.app.emit("workflow:error", map[string]any{
+	r.app.emit(eventchan.WorkflowError, map[string]any{
 		"itemId": itemID,
 		"error":  "some fan-out unit branch or worktree state could not be read for the join; inspect local diagnostics",
 	})

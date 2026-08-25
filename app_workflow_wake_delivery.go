@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/workflow/engine"
@@ -320,7 +321,7 @@ func (a *App) clearStaleWakeBinding(item store.WorkItem, reason string) {
 	// which would otherwise strand a queued claim here with nothing left to
 	// invalidate it.
 	a.clearWakeRecord(item.ID)
-	a.emit("workflow:error", engine.ErrorEvent{
+	a.emit(eventchan.WorkflowError, engine.ErrorEvent{
 		ItemID: item.ID,
 		Error:  "this run's bound thread is gone; its results now surface in the workflows overlay",
 	})
@@ -328,7 +329,7 @@ func (a *App) clearStaleWakeBinding(item store.WorkItem, reason string) {
 
 func (a *App) reportWakeFailure(item store.WorkItem, threadID string, cause error) {
 	log.Printf("workflow wake %s: deliver to thread %s: %v", item.ID, threadID, cause)
-	a.emit("workflow:error", engine.ErrorEvent{
+	a.emit(eventchan.WorkflowError, engine.ErrorEvent{
 		ItemID: item.ID,
 		Error:  "this run's result could not be delivered to its bound thread; open the run in the workflows overlay",
 	})

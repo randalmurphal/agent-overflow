@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -483,7 +484,7 @@ func (a *App) RenameThread(id string, title string) error {
 	if err := a.store.UpdateTitle(id, title); err != nil {
 		return err
 	}
-	a.emitEvent("thread:updated", triage.ThreadUpdateEvent{
+	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
 		Action: "patch",
 		ID:     id,
 		Title:  &title,
@@ -793,7 +794,7 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 	}
 	for i := range rows {
 		row := rows[i]
-		a.emitEvent("thread:updated", triage.ThreadUpdateEvent{Action: "full", Thread: &row})
+		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &row})
 	}
 	return rows, nil
 }

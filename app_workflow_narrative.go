@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	workflowrunner "agent-overflow/internal/workflow/runner"
 )
 
@@ -52,7 +53,7 @@ const workflowAssistantTextKind = "assistant_text"
 func (r *workflowAppRunner) settleAttemptNarrative(attempt *workflowAttempt, authored string, envelope json.RawMessage) {
 	if err := r.writeAttemptNarrative(attempt, authored, envelope); err != nil {
 		log.Printf("workflow narrative %s: %v", workflowRunKey(attempt.key), err)
-		r.app.emit("workflow:error", map[string]any{
+		r.app.emit(eventchan.WorkflowError, map[string]any{
 			"itemId": attempt.key.ItemID,
 			"error":  "workflow narrative could not be written from the phase's final envelope; inspect local diagnostics",
 		})

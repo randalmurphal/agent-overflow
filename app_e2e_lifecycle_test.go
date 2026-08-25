@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -54,6 +55,14 @@ func (b *capturedEventBus) emit(name string, data any) {
 	case b.ch <- capturedEvent{Name: name, Data: data}:
 	default:
 	}
+}
+
+// emitChannel is the triage.Router emit callback: same recorder, typed
+// channel. Two methods rather than one because testEmitHook observes
+// a.emit's wire spelling (a string) while the router emits eventchan
+// constants.
+func (b *capturedEventBus) emitChannel(name eventchan.Channel, data any) {
+	b.emit(name.String(), data)
 }
 
 // observeRouterEvent is the router.SetEventHook callback. Each Handle
@@ -254,7 +263,7 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 		startingSessions:    make(map[string]*sessionStart),
 		threadSystemPrompts: make(map[string]string),
 	}
-	app.triage = triage.NewRouter(st, bus.emit)
+	app.triage = triage.NewRouter(st, bus.emitChannel)
 	app.triage.SetEventHook(bus.observeRouterEvent)
 	ensureDefaultTestProject(t, app)
 	// No test may reach a real provider binary or the developer's provider

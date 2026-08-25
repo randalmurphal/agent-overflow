@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -26,7 +27,7 @@ func wakeupEvent(t *testing.T, threadID string, scheduledForUnixMs int64) provid
 // values: schedule sets, re-schedule replaces (the harness keeps one
 // wakeup per loop), stop clears, and schedule-after-stop sets again.
 func TestSessionWakeupTransitions(t *testing.T) {
-	r := NewRouter(nil, func(string, any) {})
+	r := NewRouter(nil, func(eventchan.Channel, any) {})
 	const threadID = "thread-wakeup"
 	fireAt := time.Now().Add(25 * time.Minute).UnixMilli()
 
@@ -78,7 +79,7 @@ func TestSessionWakeupClearedBySessionLifecycle(t *testing.T) {
 	fireAt := time.Now().Add(45 * time.Minute).UnixMilli()
 
 	t.Run("CleanupThread", func(t *testing.T) {
-		r := NewRouter(nil, func(string, any) {})
+		r := NewRouter(nil, func(eventchan.Channel, any) {})
 		const threadID = "thread-wakeup-cleanup"
 		if err := r.Handle(wakeupEvent(t, threadID, fireAt)); err != nil {
 			t.Fatalf("handle schedule: %v", err)
@@ -90,7 +91,7 @@ func TestSessionWakeupClearedBySessionLifecycle(t *testing.T) {
 	})
 
 	t.Run("MarkThreadActive", func(t *testing.T) {
-		r := NewRouter(nil, func(string, any) {})
+		r := NewRouter(nil, func(eventchan.Channel, any) {})
 		const threadID = "thread-wakeup-restart"
 		if err := r.Handle(wakeupEvent(t, threadID, fireAt)); err != nil {
 			t.Fatalf("handle schedule: %v", err)
@@ -108,7 +109,7 @@ func TestPendingWakeupAtNilSafety(t *testing.T) {
 	if _, ok := r.PendingWakeupAt("thread"); ok {
 		t.Fatal("nil router must report no pending wakeup")
 	}
-	live := NewRouter(nil, func(string, any) {})
+	live := NewRouter(nil, func(eventchan.Channel, any) {})
 	if _, ok := live.PendingWakeupAt(""); ok {
 		t.Fatal("empty thread id must report no pending wakeup")
 	}

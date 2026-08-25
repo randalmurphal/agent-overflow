@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
@@ -372,7 +373,7 @@ func (r *workflowAppRunner) writeToolNarrative(attempt *workflowToolAttempt, rep
 	report.Truncated = attempt.output.Truncated()
 	if err := os.WriteFile(attempt.narrativePath, []byte(workflowrunner.ToolNarrative(report)), appSensitiveFilePerm); err != nil {
 		log.Printf("workflow runner: write tool narrative %s: %v", attempt.narrativePath, err)
-		r.app.emit("workflow:error", map[string]any{
+		r.app.emit(eventchan.WorkflowError, map[string]any{
 			"itemId": attempt.key.ItemID,
 			"error":  "workflow tool narrative could not be written; inspect local diagnostics",
 		})

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/terminal"
 )
@@ -52,7 +53,7 @@ func (a *App) ProviderTerminalAttach(threadID string) (ProviderTerminalHandle, e
 		return ProviderTerminalHandle{}, err
 	}
 	summary, err := sess.AttachTerminal(func(terminalID string, seq uint64, data []byte) {
-		a.emit("provider:terminal_output", ProviderTerminalOutputEvent{
+		a.emit(eventchan.ProviderTerminalOutput, ProviderTerminalOutputEvent{
 			TerminalID: terminalID,
 			ThreadID:   threadID,
 			Sequence:   seq,

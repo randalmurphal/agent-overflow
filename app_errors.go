@@ -4,15 +4,19 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
 // emitEvent sends an arbitrary event to the frontend. Prefer this over
 // reaching for the transport bus directly so tests can intercept
 // emissions via emitEventFn without wiring a real transport bus.
-func (a *App) emitEvent(eventName string, data any) {
+// The channel is typed for the same reason a.emit's is; emitEventFn
+// stays string-typed because it is a test observation seam, not an emit
+// site of its own.
+func (a *App) emitEvent(eventName eventchan.Channel, data any) {
 	if a.emitEventFn != nil {
-		a.emitEventFn(eventName, data)
+		a.emitEventFn(string(eventName), data)
 		return
 	}
 	// Route through a.emit so the transport bus stamps its per-channel

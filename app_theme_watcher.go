@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/theme"
 )
 
@@ -75,7 +76,7 @@ func themeFileRelevant(name string) bool {
 // without it (the frontend still reads themes on demand).
 func (a *App) startThemeWatcher(dir string) {
 	watcher, err := newThemeWatcher(dir, themeWatchDebounce, func() {
-		a.emit("theme:changed", nil)
+		a.emit(eventchan.ThemeChanged, nil)
 	})
 	if err != nil {
 		log.Printf("theme watcher unavailable: %v", err)

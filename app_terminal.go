@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/terminal"
 )
 
@@ -196,7 +197,7 @@ func (a *App) GetTerminalReplay(terminalID string) (TerminalReplay, error) {
 
 // terminalOutputCallback emits a `terminal:output` event to the frontend.
 func (a *App) terminalOutputCallback(threadID, terminalID string, sequence uint64, data []byte) {
-	a.emit("terminal:output", TerminalOutputEvent{
+	a.emit(eventchan.TerminalOutput, TerminalOutputEvent{
 		TerminalID: terminalID,
 		ThreadID:   threadID,
 		Sequence:   sequence,
@@ -217,7 +218,7 @@ func (a *App) terminalExitCallback(threadID, terminalID string, status terminal.
 	if a.shuttingDown.Load() {
 		return
 	}
-	a.emit("terminal:exit", TerminalExitEvent{
+	a.emit(eventchan.TerminalExit, TerminalExitEvent{
 		TerminalID: terminalID,
 		ThreadID:   threadID,
 		Code:       status.Code,

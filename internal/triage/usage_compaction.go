@@ -11,6 +11,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -303,7 +304,7 @@ func (r *Router) throttledEmitUsage(threadID string, evt provider.UsageEvent) {
 		throttle.lastEmittedAt = now
 		throttle.pending = nil
 		r.mu.Unlock()
-		r.emit("provider:usage", evt)
+		r.emit(eventchan.ProviderUsage, evt)
 		return
 	}
 	throttle.pending = &evt
@@ -337,7 +338,7 @@ func (r *Router) FlushUsageEmitThrottle(threadID string) {
 	evt, ok := r.takeUsageEmitPendingLocked(threadID)
 	r.mu.Unlock()
 	if ok {
-		r.emit("provider:usage", evt)
+		r.emit(eventchan.ProviderUsage, evt)
 	}
 }
 

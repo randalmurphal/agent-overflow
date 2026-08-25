@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
@@ -53,7 +54,7 @@ func (r *workflowAppRunner) parkForUsageLimit(
 			)
 			if err != nil {
 				log.Printf("workflow runner: record provider usage scope for %s: %v; parking without cross-run notification coalescing", itemID, err)
-				r.app.emit("workflow:error", engine.ErrorEvent{
+				r.app.emit(eventchan.WorkflowError, engine.ErrorEvent{
 					ItemID: itemID,
 					Error:  "the provider usage limit was recognized, but its notification correlation could not be recorded; the run was still parked without retries",
 				})

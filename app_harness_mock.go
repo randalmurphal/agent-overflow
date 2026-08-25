@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 )
@@ -149,7 +150,7 @@ func (h *Harness) resolveScenario(reg control.Registration) (control.Assignment,
 
 // onMockReport fans a mock progress report onto the event bus.
 func (h *Harness) onMockReport(info control.MockInfo, rep control.Report) {
-	h.app.emit("harness:mock", harnessMockEvent{
+	h.app.emit(eventchan.HarnessMock, harnessMockEvent{
 		MockID:   info.MockID,
 		Protocol: info.Registration.Protocol,
 		Cwd:      info.Registration.Cwd,

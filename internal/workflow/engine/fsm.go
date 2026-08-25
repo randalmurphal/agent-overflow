@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
@@ -516,7 +517,7 @@ func (e *Engine) noteGateNotify(item *runtimeItem, decision def.RouteDecision, p
 	if !decision.Notify {
 		return
 	}
-	e.emitter.Emit("workflow:gate-notify", NotifyEvent{
+	e.emitter.Emit(eventchan.WorkflowGateNotify, NotifyEvent{
 		ItemID: item.item.ID, ProjectID: item.item.ProjectID,
 		PhaseID: phaseID, Attempt: attempt,
 		Decision: string(decision.Kind), Target: decision.Target,

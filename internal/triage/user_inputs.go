@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/stringsx"
 )
@@ -100,7 +101,7 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 	// not on this request, so they don't bump separately.
 	requestedAt := eventTimestampMillis(evt)
 	r.bumpThreadActivity(evt.ThreadID, requestedAt, "user_input request")
-	r.emit("provider:user_input", provider.UserInputEvent{
+	r.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
 		Action:      "request",
 		ThreadID:    evt.ThreadID,
 		Request:     &request,
@@ -120,7 +121,7 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 			return err
 		}
 	}
-	r.emit("provider:user_input", provider.UserInputEvent{
+	r.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
 		Action:    "resolve",
 		ThreadID:  evt.ThreadID,
 		RequestID: requestID,

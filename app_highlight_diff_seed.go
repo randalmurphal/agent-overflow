@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/workspacepath"
 )
@@ -255,7 +256,7 @@ func (a *App) observeDiffPayloadPersisted(threadID, payloadID string, previews [
 			// strictly better than what the local RPC path computes for
 			// an already-persisted diff, so the frontend upgrades its
 			// cache in place when the seed wins the race.
-			a.emit("highlight:diff_seed", HighlightDiffSeedEvent{ThreadID: threadID, Files: previewSeeds})
+			a.emit(eventchan.HighlightDiffSeed, HighlightDiffSeedEvent{ThreadID: threadID, Files: previewSeeds})
 		}
 	}()
 }

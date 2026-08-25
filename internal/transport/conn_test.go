@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"agent-overflow/internal/eventchan"
 )
 
 // TestSpliceBatchFrame_MatchesLegacyEntries pins the spliced batch
@@ -27,7 +29,7 @@ func TestSpliceBatchFrame_MatchesLegacyEntries(t *testing.T) {
 		{"thread:update", []int{1, 2, 3}},
 		{"provider:item_event", "second on same channel"},
 	} {
-		evt, err := bus.Emit(emit.channel, emit.payload)
+		evt, err := bus.Emit(eventchan.Channel(emit.channel), emit.payload)
 		if err != nil {
 			t.Fatalf("emit %s: %v", emit.channel, err)
 		}

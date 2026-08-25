@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/triage"
 )
 
@@ -42,7 +43,7 @@ func TestEmitWireErrorToThreadRespectsStoppedGate(t *testing.T) {
 	if err := app.store.CreateThread(testThread("thread-stopped")); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	app.triage.CleanupThread("thread-stopped")
 

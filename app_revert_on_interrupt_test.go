@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -195,7 +196,7 @@ func TestEvaluateInterruptRevertPredicateRejectsQueuedFlush(t *testing.T) {
 	defer cleanup()
 	thread := createAppTestThread(t, app, "pred-queue", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID:      "queue:1",
 		Message: "follow-up message",
@@ -218,7 +219,7 @@ func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing
 	defer cleanup()
 	thread := createAppTestThread(t, app, "pred-dispatch", "codex", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.flushDispatch.mu.Lock()
 	app.ensureFlushDispatchMapsLocked()
 	app.flushDispatch.inflightItems[thread.ID] = 1
@@ -275,7 +276,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 	// predicate and the locking. Written before any goroutine starts.
 	app.sessions[thread.ID] = session{provider: "claude"}
 
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	inGap := make(chan struct{})
 	release := make(chan struct{})
@@ -549,7 +550,7 @@ func TestInterruptAndRevertIfCleanFallsBackWhenAssistantPresent(t *testing.T) {
 func TestInterruptAndRevertIfCleanRevertsClaudeFirstTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-first", "claude", t.TempDir())
 	// Even though TurnIndex==0 short-circuits in the Claude revert path,
 	// SessionRef is set to confirm it gets cleared.
@@ -670,7 +671,7 @@ func TestInterruptRollbackPreservesConcurrentEffortChange(t *testing.T) {
 func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-tui", "claude-tui", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
 
@@ -710,7 +711,7 @@ func TestInterruptAndRevertIfCleanRevertsClaudeTUIWithoutKillingSession(t *testi
 func TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := createAppTestThread(t, app, "revert-synth", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "synth prompt")
 	// Deliberately do NOT seed a message anchor — the predicate is still
@@ -745,7 +746,7 @@ func TestInterruptAndRevertIfCleanRevertsWithSynthesizedAnchor(t *testing.T) {
 func TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-interrupt-revert", "codex", workspace)
 	thread.SessionRef = "provider-codex-interrupt"
@@ -895,7 +896,7 @@ func TestInterruptAndRevertIfCleanCodexMarksCompletionDuringInterruptAsReverted(
 func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -967,7 +968,7 @@ func TestInterruptAndRevertIfCleanSurvivesCompactBoundary(t *testing.T) {
 func TestInterruptAndRevertIfCleanSurvivesPriorInterruptMarker(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")

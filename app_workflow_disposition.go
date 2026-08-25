@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
@@ -187,7 +188,7 @@ func (a *App) applyWorkflowDisposition(item store.WorkItem, action workflowDispo
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("persist cleanup failure receipt: %w", persistErr))
 		}
 		log.Printf("workflow disposition %s: %v", item.ID, cleanupErr)
-		a.emit("workflow:error", engine.ErrorEvent{
+		a.emit(eventchan.WorkflowError, engine.ErrorEvent{
 			ItemID: item.ID,
 			Error:  "workflow disposition landed but automatic worktree cleanup failed",
 		})
@@ -217,7 +218,7 @@ func (a *App) emitWorkflowDispositionState(item store.WorkItem) {
 		log.Printf("workflow disposition %s: reload before state emit: %v", item.ID, err)
 		return
 	}
-	a.emit("workflow:item-state", engine.StateEvent{
+	a.emit(eventchan.WorkflowItemState, engine.StateEvent{
 		ItemID: current.ID, ProjectID: current.ProjectID,
 		From: engine.State(current.State), To: engine.State(current.State),
 		Reason: engine.Reason(current.Reason),
@@ -349,7 +350,7 @@ func (a *App) autoDisposeWorkflowItem(itemID string) {
 				log.Printf("workflow auto-disposition %s: park after load failure: %v", itemID, parkErr)
 			}
 		}
-		a.emit("workflow:error", engine.ErrorEvent{
+		a.emit(eventchan.WorkflowError, engine.ErrorEvent{
 			ItemID: itemID,
 			Error:  "automatic workflow disposition failed; inspect the item's disposition state",
 		})
@@ -374,7 +375,7 @@ func (a *App) autoDisposeWorkflowItem(itemID string) {
 			failure = errors.Join(failure, fmt.Errorf("park disposition: %w", parkErr))
 		}
 		log.Printf("workflow auto-disposition %s: %v", itemID, failure)
-		a.emit("workflow:error", engine.ErrorEvent{
+		a.emit(eventchan.WorkflowError, engine.ErrorEvent{
 			ItemID: itemID,
 			Error:  "automatic workflow disposition failed; inspect the item's disposition state",
 		})
@@ -394,7 +395,7 @@ func (a *App) autoDisposeWorkflowItem(itemID string) {
 	}
 	if _, err := a.runWorkflowDisposition(itemID, action, projectProfile.Disposition); err != nil {
 		log.Printf("workflow auto-disposition %s (%s): %v", itemID, projectProfile.Disposition, err)
-		a.emit("workflow:error", engine.ErrorEvent{
+		a.emit(eventchan.WorkflowError, engine.ErrorEvent{
 			ItemID: itemID,
 			Error:  "automatic workflow disposition failed; inspect the item's disposition state",
 		})

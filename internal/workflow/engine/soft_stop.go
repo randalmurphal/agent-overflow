@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 )
 
@@ -76,7 +77,7 @@ func (e *Engine) setSoftStop(itemID string, armed bool) error {
 	if resident, tracked := e.items[itemID]; tracked {
 		resident.item.SoftStop = armed
 	}
-	e.emitter.Emit("workflow:soft-stop", SoftStopEvent{ItemID: itemID, Armed: armed})
+	e.emitter.Emit(eventchan.WorkflowSoftStop, SoftStopEvent{ItemID: itemID, Armed: armed})
 	return nil
 }
 
@@ -118,7 +119,7 @@ func (e *Engine) parkSoftStop(item *runtimeItem, root store.WorkItem) error {
 	if resident, tracked := e.items[root.ID]; tracked {
 		resident.item.SoftStop = false
 	}
-	e.emitter.Emit("workflow:soft-stop", SoftStopEvent{ItemID: root.ID, Armed: false})
+	e.emitter.Emit(eventchan.WorkflowSoftStop, SoftStopEvent{ItemID: root.ID, Armed: false})
 	return e.teardown(item, teardownRequest{
 		cause:       softStopCause(item, root),
 		phaseStatus: "parked", nextState: StateNeedsHuman, reason: ReasonCheckpoint,

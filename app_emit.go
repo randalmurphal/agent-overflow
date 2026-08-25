@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/closer"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/eventscope"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
@@ -21,8 +22,13 @@ import (
 // may not be wired) and lets tests construct an App with just the
 // fields they need. Tests that want to observe emissions install
 // testEmitHook; it sees the same (name, data) pair the bus would have
-// published.
-func (a *App) emit(name string, data any) {
+// published, with the channel in its wire spelling.
+//
+// The channel is an eventchan.Channel, so a call site cannot name a
+// channel the policy registry has never heard of without an explicit
+// eventchan.Channel(...) conversion — which only the harness escape
+// hatches (app_harness.go, app_harness_replay.go) spell.
+func (a *App) emit(name eventchan.Channel, data any) {
 	a.rememberRateLimitsEvent(name, data)
 	// Snapshot the bus pointer once so a concurrent SetEventBus cannot
 	// flip nil/non-nil between the guard and the Emit call.
@@ -39,7 +45,7 @@ func (a *App) emit(name string, data any) {
 		}
 	}
 	if a.testEmitHook != nil {
-		a.testEmitHook(name, data)
+		a.testEmitHook(string(name), data)
 	}
 }
 
@@ -65,7 +71,7 @@ func (a *App) emitRateLimitsSnapshot(snap provider.RateLimitsSnapshot) {
 			snap.AccountID = account.ID
 		}
 	}
-	a.emit("provider:usage", provider.UsageEvent{
+	a.emit(eventchan.ProviderUsage, provider.UsageEvent{
 		Action:     "rate_limits",
 		RateLimits: &snap,
 	})
@@ -80,8 +86,8 @@ func (a *App) emitRateLimitsSnapshot(snap provider.RateLimitsSnapshot) {
 // The emission goes through a.emit so the bus stamps its per-channel
 // seq; the replay log receives the same payload because the replay
 // format records provider events, not wire envelopes.
-func (a *App) emitWithReplay() func(string, any) {
-	return func(eventName string, data any) {
+func (a *App) emitWithReplay() func(eventchan.Channel, any) {
+	return func(eventName eventchan.Channel, data any) {
 		a.emit(eventName, data)
 		if a.replay == nil || !a.replay.Enabled() {
 			return
@@ -90,7 +96,7 @@ func (a *App) emitWithReplay() func(string, any) {
 		if threadID == "" {
 			return
 		}
-		rec, err := replay.NewRecord(time.Now(), threadID, eventName, data)
+		rec, err := replay.NewRecord(time.Now(), threadID, eventName.String(), data)
 		if err != nil {
 			log.Printf("replay: NewRecord failed: %v", err)
 			return

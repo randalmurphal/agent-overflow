@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -209,7 +210,7 @@ func TestUsageLimitParkDoesNotStopOtherWorkOnTheProvider(t *testing.T) {
 
 func TestUsageLimitCleanupDoesNotRecordAUserInterrupt(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 	thread := testThread("usage-cleanup-interrupt")
 	thread.Provider = string(provider.Codex)

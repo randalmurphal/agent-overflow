@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"agent-overflow/internal/eventchan"
+
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
 
@@ -70,13 +72,13 @@ const updaterChecksumAsset = "SHASUMS256"
 // Check results (update-available / no-update) are deliberately NOT bridged:
 // the frontend drives Check via the CheckForUpdate RPC and uses its return
 // value, so re-emitting them as events would be redundant.
-var updaterEventBridge = map[string]string{
-	updater.EventDownloadStarted:  "updater:download-started",
-	updater.EventDownloadProgress: "updater:progress",
-	updater.EventVerifying:        "updater:verifying",
-	updater.EventInstalling:       "updater:installing",
-	updater.EventUpdateReady:      "updater:ready",
-	updater.EventError:            "updater:error",
+var updaterEventBridge = map[string]eventchan.Channel{
+	updater.EventDownloadStarted:  eventchan.UpdaterDownloadStarted,
+	updater.EventDownloadProgress: eventchan.UpdaterProgress,
+	updater.EventVerifying:        eventchan.UpdaterVerifying,
+	updater.EventInstalling:       eventchan.UpdaterInstalling,
+	updater.EventUpdateReady:      eventchan.UpdaterReady,
+	updater.EventError:            eventchan.UpdaterError,
 }
 
 // updaterReadyChannel and updaterErrorChannel name the two channels the App
@@ -92,7 +94,7 @@ var (
 	updaterErrorChannel = mustBridgedChannel(updater.EventError)
 )
 
-func mustBridgedChannel(event string) string {
+func mustBridgedChannel(event string) eventchan.Channel {
 	channel, ok := updaterEventBridge[event]
 	if !ok || channel == "" {
 		panic("updater: " + event + " has no transport channel in updaterEventBridge")

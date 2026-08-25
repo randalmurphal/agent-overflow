@@ -1,5 +1,7 @@
 package transport
 
+import "agent-overflow/internal/eventchan"
+
 // Event-channel policy registry.
 //
 // Every Go → frontend event rides a NAMED CHANNEL through the event bus
@@ -11,11 +13,20 @@ package transport
 // (broadcast to every client, full-depth ring). About two thirds of the
 // channels the app emits were in that state.
 //
-// THIS TABLE IS THE DEFINITION. It cannot be generated: emit sites are
-// spread across the root package, internal/triage, internal/workflow and
-// several others, and some construct their channel name at runtime (see
-// "Dynamic channel families" below), so an AST scan cannot enumerate
-// them. Adding a channel means adding a row here.
+// THIS TABLE IS THE DEFINITION of the two POLICY questions. It cannot be
+// generated: emit sites are spread across the root package,
+// internal/triage, internal/workflow and several others, and some
+// construct their channel name at runtime (see "Dynamic channel
+// families" below), so an AST scan cannot enumerate them. Adding a
+// channel means adding a row here.
+//
+// The SPELLING lives one layer down, in internal/eventchan: every row's
+// Channel is an `eventchan.Channel` constant, and every emit site takes
+// that same type rather than a string. The two halves are one table, not
+// two parallel ones — TestEveryEventChannelConstantHasAPolicyRow and
+// TestEveryChannelPolicyRowHasAConstant (event_channels_eventchan_test.go)
+// fail on either half missing. Adding a channel is therefore two edits:
+// a constant in internal/eventchan and a row here.
 //
 // A `Why` containing the substring "unreviewed" marks a row that inherited
 // a default rather than a decision anyone made. Every row was reviewed in
@@ -24,12 +35,9 @@ package transport
 //
 // # Dynamic channel families
 //
-// Four emit paths do not spell their channel as a literal at the call
-// site. Three resolve to names already in the table; one is unbounded:
+// Three emit paths do not spell their channel as a constant at the call
+// site. Two resolve to names already in the table; one is unbounded:
 //
-//   - `internal/triage/subagent_progress.go` emits
-//     `"provider:" + subagentProgressEventName`. One member,
-//     `provider:subagent_progress`, listed below.
 //   - `app_updater.go`'s `updaterEventBridge` maps six Wails updater
 //     event names onto six `updater:*` channels. All six are listed;
 //     `mustBridgedChannel` panics at startup if a row is deleted from
@@ -141,8 +149,10 @@ func (r Retention) String() string {
 
 // ChannelPolicy is one row of the registry.
 type ChannelPolicy struct {
-	// Channel is the exact channel name passed to EventBus.Emit.
-	Channel string
+	// Channel is the exact channel name passed to EventBus.Emit, spelled
+	// as its internal/eventchan constant — the newtype is what stops this
+	// table and the emit sites becoming two string tables that drift.
+	Channel eventchan.Channel
 	// Audience is who may receive frames on this channel.
 	Audience Audience
 	// Retention is how deep this channel's replay ring is.
@@ -168,7 +178,7 @@ const unreviewedMarker = "unreviewed"
 // to answer exactly that question.
 var channelPolicies = []ChannelPolicy{
 	{
-		Channel:   "design:options-update",
+		Channel:   eventchan.DesignOptionsUpdate,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Ids only (threadId, setId) — a refetch nudge. ListDesignOptions " +
@@ -177,7 +187,7 @@ var channelPolicies = []ChannelPolicy{
 			"Default ring so replay delivers missed invalidations.",
 	},
 	{
-		Channel:   "design:reload-main",
+		Channel:   eventchan.DesignReloadMain,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "threadId-only edge signal that cache-busts the design iframe; " +
@@ -185,7 +195,7 @@ var channelPolicies = []ChannelPolicy{
 			"design:options-update. Keyed per thread.",
 	},
 	{
-		Channel:   "discussion:message",
+		Channel:   eventchan.DiscussionMessage,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Deliberately remote-visible. Remote clients can already call " +
@@ -195,7 +205,7 @@ var channelPolicies = []ChannelPolicy{
 			"because dispatching a turn prompt is session control, not a read.",
 	},
 	{
-		Channel:   "discussion:state",
+		Channel:   eventchan.DiscussionState,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Deliberately remote-visible, same reasoning as " +
@@ -203,7 +213,7 @@ var channelPolicies = []ChannelPolicy{
 			"channel id, so it must never become latest-only.",
 	},
 	{
-		Channel:   "git:status",
+		Channel:   eventchan.GitStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Addressed by the CANONICAL ABSOLUTE workspace path (it has to " +
@@ -215,7 +225,7 @@ var channelPolicies = []ChannelPolicy{
 			"side reaches every subscriber. Keyed by cwd — never latest-only.",
 	},
 	{
-		Channel:   "harness:mock",
+		Channel:   eventchan.HarnessMock,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Frames carry the mock's cwd (a local path) and the exact wire " +
@@ -224,7 +234,7 @@ var channelPolicies = []ChannelPolicy{
 			"consumers are loopback test tooling by construction.",
 	},
 	{
-		Channel:   "harness:replay",
+		Channel:   eventchan.HarnessReplay,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Progress frames name the local NDJSON replay-log path and pass " +
@@ -232,7 +242,7 @@ var channelPolicies = []ChannelPolicy{
 			"construction (same story as harness:mock).",
 	},
 	{
-		Channel:   "highlight:diff_seed",
+		Channel:   eventchan.HighlightDiffSeed,
 		Audience:  AudienceAny,
 		Retention: RetentionEphemeral,
 		Why: "Goes to EVERY client, deliberately: its persist-time seeds can " +
@@ -245,7 +255,7 @@ var channelPolicies = []ChannelPolicy{
 			"and each frame can carry large span/hash arrays.",
 	},
 	{
-		Channel:   "highlight:seed",
+		Channel:   eventchan.HighlightSeed,
 		Audience:  AudienceRemoteOnly,
 		Retention: RetentionEphemeral,
 		Why: "Pushes syntax-span metadata alongside streaming text so a remote " +
@@ -259,7 +269,7 @@ var channelPolicies = []ChannelPolicy{
 			"for the same reason as highlight:diff_seed.",
 	},
 	{
-		Channel:   "mcp:oauth-completed",
+		Channel:   eventchan.MCPOAuthCompleted,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Carries provider-reported MCP error strings verbatim " +
@@ -270,7 +280,7 @@ var channelPolicies = []ChannelPolicy{
 			"keeping the push side loopback-only closes the third door.",
 	},
 	{
-		Channel:   "mcp:status",
+		Channel:   eventchan.MCPStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Same disclosure class as mcp:oauth-completed — verbatim " +
@@ -279,7 +289,7 @@ var channelPolicies = []ChannelPolicy{
 			"would evict other servers' latest frames.",
 	},
 	{
-		Channel:   "notification:activated",
+		Channel:   eventchan.NotificationActivated,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "OS-notification click routing for the local desktop window; the " +
@@ -287,7 +297,7 @@ var channelPolicies = []ChannelPolicy{
 			"no OS notification to have clicked.",
 	},
 	{
-		Channel:   "notification:send",
+		Channel:   eventchan.NotificationSend,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Instructs a host-side presenter (the Windows launcher's " +
@@ -299,7 +309,7 @@ var channelPolicies = []ChannelPolicy{
 			"ephemeral or latest-only.",
 	},
 	{
-		Channel:   "pr:updated",
+		Channel:   eventchan.PRUpdated,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Carries a pull request's full detail and every review thread on " +
@@ -311,7 +321,7 @@ var channelPolicies = []ChannelPolicy{
 			"emits to every subscriber: the push side is the third door.",
 	},
 	{
-		Channel:   "provider:account",
+		Channel:   eventchan.ProviderAccount,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Carries the user's email/display name plus authenticated " +
@@ -320,13 +330,13 @@ var channelPolicies = []ChannelPolicy{
 			"frame.",
 	},
 	{
-		Channel:   "provider:account_usage_error",
+		Channel:   eventchan.ProviderAccountUsageError,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why:       "Account-scoped billing/quota failure detail; same identity class as provider:account.",
 	},
 	{
-		Channel:   "provider:approval",
+		Channel:   eventchan.ProviderApproval,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Tool-use approval requests quote the exact command line, file " +
@@ -335,7 +345,7 @@ var channelPolicies = []ChannelPolicy{
 			"LocalOnly; the request side stays loopback-only to match.",
 	},
 	{
-		Channel:   "provider:background_task_state",
+		Channel:   eventchan.ProviderBackgroundTaskState,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Background terminal/task state carries the local command and " +
@@ -343,7 +353,7 @@ var channelPolicies = []ChannelPolicy{
 			"terminal:output.",
 	},
 	{
-		Channel:   "provider:background_tasks_changed",
+		Channel:   eventchan.ProviderBackgroundTasksChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "threadId plus a full replacement set of task refs (ids and " +
@@ -352,7 +362,7 @@ var channelPolicies = []ChannelPolicy{
 			"Consumers treat it as a refetch nudge. Keyed per thread.",
 	},
 	{
-		Channel:   "provider:command_lifecycle",
+		Channel:   eventchan.ProviderCommandLifecycle,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Queue UX is loopback: GetQueueState and every queue RPC are " +
@@ -363,7 +373,7 @@ var channelPolicies = []ChannelPolicy{
 			"never latest-only or ephemeral.",
 	},
 	{
-		Channel:   "provider:commands",
+		Channel:   eventchan.ProviderCommands,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Slash-command names and hints for composer autocomplete on any " +
@@ -372,7 +382,7 @@ var channelPolicies = []ChannelPolicy{
 			"never latest-only.",
 	},
 	{
-		Channel:   "provider:compacting",
+		Channel:   eventchan.ProviderCompacting,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "{threadId, active} render state any viewer needs; the " +
@@ -380,7 +390,7 @@ var channelPolicies = []ChannelPolicy{
 			"(compaction_status.go). Keyed per thread: never latest-only.",
 	},
 	{
-		Channel:   "provider:fast_mode",
+		Channel:   eventchan.ProviderFastMode,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Per-thread mode-chip state, restated on every session init and " +
@@ -388,7 +398,7 @@ var channelPolicies = []ChannelPolicy{
 			"paths or identity. Keyed per thread.",
 	},
 	{
-		Channel:   "provider:item_event",
+		Channel:   eventchan.ProviderItemEvent,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "The main transcript stream; a remote viewer that cannot see it " +
@@ -397,7 +407,7 @@ var channelPolicies = []ChannelPolicy{
 			"latest-only.",
 	},
 	{
-		Channel:   "provider:model_fallback",
+		Channel:   eventchan.ProviderModelFallback,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Effective-model render state any viewer needs; the provider's " +
@@ -405,7 +415,7 @@ var channelPolicies = []ChannelPolicy{
 			"thread with a monotonic revision — ordered, never latest-only.",
 	},
 	{
-		Channel:   "provider:queue_flushed",
+		Channel:   eventchan.ProviderQueueFlushed,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Per-thread flush-queue frames carry the queued user message " +
@@ -413,25 +423,25 @@ var channelPolicies = []ChannelPolicy{
 			"queue-mutating RPCs are LocalOnly.",
 	},
 	{
-		Channel:   "provider:queue_restored",
+		Channel:   eventchan.ProviderQueueRestored,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why:       "Same payload class as provider:queue_flushed — queued user message bodies restored into the composer.",
 	},
 	{
-		Channel:   "provider:queue_state_changed",
+		Channel:   eventchan.ProviderQueueStateChanged,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why:       "Same payload class as provider:queue_flushed — the queue snapshot it announces carries the queued message bodies.",
 	},
 	{
-		Channel:   "provider:session_account",
+		Channel:   eventchan.ProviderSessionAccount,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why:       "Per-session binding of a thread to a provider account identity; same identity class as provider:account.",
 	},
 	{
-		Channel:   "provider:session_died",
+		Channel:   eventchan.ProviderSessionDied,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Deliberately remote-visible: without it a remote viewer sees the " +
@@ -439,7 +449,7 @@ var channelPolicies = []ChannelPolicy{
 			"TestEventVisibleToOrigin.",
 	},
 	{
-		Channel:   "provider:status",
+		Channel:   eventchan.ProviderStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Reports provider CLI installation/auth state and carries an " +
@@ -447,16 +457,15 @@ var channelPolicies = []ChannelPolicy{
 			"authentication failures for the local machine's toolchain.",
 	},
 	{
-		Channel:   "provider:subagent_progress",
+		Channel:   eventchan.ProviderSubagentProgress,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Subagent tray/progress state; activity and summary are " +
 			"model-authored text, lastToolName names a tool without its " +
-			"arguments. Keyed per thread + launch item: never latest-only. " +
-			"(Dynamic name: \"provider:\" + subagentProgressEventName.)",
+			"arguments. Keyed per thread + launch item: never latest-only.",
 	},
 	{
-		Channel:   "provider:terminal_output",
+		Channel:   eventchan.ProviderTerminalOutput,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Raw PTY bytes of a claude-tui take-control session — command " +
@@ -466,14 +475,14 @@ var channelPolicies = []ChannelPolicy{
 			"pane attaches the sink emits to every subscriber.",
 	},
 	{
-		Channel:   "provider:todo_update",
+		Channel:   eventchan.ProviderTodoUpdate,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Model-authored plan steps every viewer renders; each frame " +
 			"replaces the full list. Keyed per thread: never latest-only.",
 	},
 	{
-		Channel:   "provider:turn_completed",
+		Channel:   eventchan.ProviderTurnCompleted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Core turn lifecycle — drives the active-turn registry on every " +
@@ -484,7 +493,7 @@ var channelPolicies = []ChannelPolicy{
 			"never latest-only.",
 	},
 	{
-		Channel:   "provider:turn_started",
+		Channel:   eventchan.ProviderTurnStarted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Pairs with provider:turn_completed in the active-turn " +
@@ -492,7 +501,7 @@ var channelPolicies = []ChannelPolicy{
 			"ordered: never latest-only.",
 	},
 	{
-		Channel:   "provider:usage",
+		Channel:   eventchan.ProviderUsage,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Deliberately remote-visible: token counts, context %, and rate " +
@@ -501,7 +510,7 @@ var channelPolicies = []ChannelPolicy{
 			"provider/account/limit — never latest-only.",
 	},
 	{
-		Channel:   "provider:user_input",
+		Channel:   eventchan.ProviderUserInput,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Interactive provider questions quote whatever the provider is " +
@@ -509,7 +518,7 @@ var channelPolicies = []ChannelPolicy{
 			"answer RPCs are LocalOnly. Same class as provider:approval.",
 	},
 	{
-		Channel:   "screenshot:install-progress",
+		Channel:   eventchan.ScreenshotInstallProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Host-side browser-binary install progress; error strings can " +
@@ -517,7 +526,7 @@ var channelPolicies = []ChannelPolicy{
 			"subscriber today, so no remote client loses anything.",
 	},
 	{
-		Channel:   "session-import:progress",
+		Channel:   eventchan.SessionImportProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Reports on files in the user's provider homes: each frame names " +
@@ -527,7 +536,7 @@ var channelPolicies = []ChannelPolicy{
 			"third door.",
 	},
 	{
-		Channel:   "spinner:changed",
+		Channel:   eventchan.SpinnerChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
 		Why: "Retention: a payload-less refetch signal — `emit(name, " +
@@ -543,7 +552,7 @@ var channelPolicies = []ChannelPolicy{
 			"nudge must reach them too.",
 	},
 	{
-		Channel:   "system:stats",
+		Channel:   eventchan.SystemStats,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
 		Why: "Retention reviewed: host CPU + memory sample for the sidebar " +
@@ -556,19 +565,19 @@ var channelPolicies = []ChannelPolicy{
 			"payload doc bars per-process detail from ever joining it.",
 	},
 	{
-		Channel:   "terminal:exit",
+		Channel:   eventchan.TerminalExit,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why:       "Local PTY session lifecycle; paired with terminal:output and the same local-execution class.",
 	},
 	{
-		Channel:   "terminal:output",
+		Channel:   eventchan.TerminalOutput,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why:       "Raw local PTY bytes — command output, file contents, anything on the terminal's screen.",
 	},
 	{
-		Channel:   "theme:changed",
+		Channel:   eventchan.ThemeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
 		Why: "Retention: payload-less refetch signal, same matched " +
@@ -577,7 +586,7 @@ var channelPolicies = []ChannelPolicy{
 			"is deliberately wire-safe, same story as spinner:changed.",
 	},
 	{
-		Channel:   "thread:mode_changed",
+		Channel:   eventchan.ThreadModeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Thread-row state (mode + a one-shot needsReconnect toast) " +
@@ -585,7 +594,7 @@ var channelPolicies = []ChannelPolicy{
 			"(UpdateThreadMode). Keyed per thread.",
 	},
 	{
-		Channel:   "thread:runtime_mode_changed",
+		Channel:   eventchan.ThreadRuntimeModeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Thread-row approval-posture state; names a mode, not a " +
@@ -593,7 +602,7 @@ var channelPolicies = []ChannelPolicy{
 			"is LocalOnly). Keyed per thread.",
 	},
 	{
-		Channel:   "thread:title_generation",
+		Channel:   eventchan.ThreadTitleGeneration,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Title-regen completion signal; error text passes " +
@@ -602,7 +611,7 @@ var channelPolicies = []ChannelPolicy{
 			"stderr. Keyed per thread.",
 	},
 	{
-		Channel:   "thread:updated",
+		Channel:   eventchan.ThreadUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Full frames embed the whole store.Thread — absolute project/" +
@@ -614,7 +623,7 @@ var channelPolicies = []ChannelPolicy{
 			"field-by-field, so every frame matters: never latest-only.",
 	},
 	{
-		Channel:   "updater:download-started",
+		Channel:   eventchan.UpdaterDownloadStarted,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Update lifecycle is host-local: CheckForUpdate / " +
@@ -625,7 +634,7 @@ var channelPolicies = []ChannelPolicy{
 			"loopback-only. (Bridged from updater.EventDownloadStarted.)",
 	},
 	{
-		Channel:   "updater:error",
+		Channel:   eventchan.UpdaterError,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Verbatim updater/launcher error text — can quote URLs and " +
@@ -635,7 +644,7 @@ var channelPolicies = []ChannelPolicy{
 			"(Bridged from updater.EventError, plus two direct emits.)",
 	},
 	{
-		Channel:   "updater:install",
+		Channel:   eventchan.UpdaterInstall,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
 		Why: "An imperative directive, not a notification: the Windows " +
@@ -651,14 +660,14 @@ var channelPolicies = []ChannelPolicy{
 			"re-emits on the next RestartToUpdate.",
 	},
 	{
-		Channel:   "updater:installing",
+		Channel:   eventchan.UpdaterInstalling,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Same loopback-only story as updater:download-started. " +
 			"(Bridged from updater.EventInstalling.)",
 	},
 	{
-		Channel:   "updater:progress",
+		Channel:   eventchan.UpdaterProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionLatestOnly,
 		Why: "Per-chunk byte counters — the highest-frequency updater " +
@@ -669,7 +678,7 @@ var channelPolicies = []ChannelPolicy{
 			"(Bridged from updater.EventDownloadProgress.)",
 	},
 	{
-		Channel:   "updater:ready",
+		Channel:   eventchan.UpdaterReady,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Arms the local Restart button; same loopback-only story as " +
@@ -679,14 +688,14 @@ var channelPolicies = []ChannelPolicy{
 			"stageWSLUpdate on WSL.)",
 	},
 	{
-		Channel:   "updater:verifying",
+		Channel:   eventchan.UpdaterVerifying,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Same loopback-only story as updater:download-started. " +
 			"(Bridged from updater.EventVerifying.)",
 	},
 	{
-		Channel:   "usage:thread_cost",
+		Channel:   eventchan.UsageThreadCost,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "threadId-only nudge, but both RPCs it triggers " +
@@ -696,7 +705,7 @@ var channelPolicies = []ChannelPolicy{
 			"thread.",
 	},
 	{
-		Channel:   "user_message:reverted",
+		Channel:   eventchan.UserMessageReverted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Timeline truncation directive every viewer must apply or its " +
@@ -706,7 +715,7 @@ var channelPolicies = []ChannelPolicy{
 			"refused. Keyed per thread.",
 	},
 	{
-		Channel:   "workflow:definitions-changed",
+		Channel:   eventchan.WorkflowDefinitionsChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
 		Why: "Retention: payload-less refetch signal, same matched " +
@@ -716,7 +725,7 @@ var channelPolicies = []ChannelPolicy{
 			"they need this nudge to refetch definitions.",
 	},
 	{
-		Channel:   "workflow:engine-state",
+		Channel:   eventchan.WorkflowEngineState,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
 		Why: "One unkeyed process-wide boolean ({paused}) where the newest " +
@@ -727,7 +736,7 @@ var channelPolicies = []ChannelPolicy{
 			"let remote overlays render the pause banner.",
 	},
 	{
-		Channel:   "workflow:error",
+		Channel:   eventchan.WorkflowError,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Run-failure toasts remote overlay viewers need too (workflow " +
@@ -741,7 +750,7 @@ var channelPolicies = []ChannelPolicy{
 			"(client dedups over an LRU): never latest-only.",
 	},
 	{
-		Channel:   "workflow:gate-notify",
+		Channel:   eventchan.WorkflowGateNotify,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Workflow-authored ids and enums only; the one surface that " +
@@ -751,7 +760,7 @@ var channelPolicies = []ChannelPolicy{
 			"afterWorkflowEngineEvent to raise OS notifications.)",
 	},
 	{
-		Channel:   "workflow:item-state",
+		Channel:   eventchan.WorkflowItemState,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Run-state transitions the overlay accumulates (a transition " +
@@ -759,14 +768,14 @@ var channelPolicies = []ChannelPolicy{
 			"reads serve remote overlays. Keyed per run: never latest-only.",
 	},
 	{
-		Channel:   "workflow:phase-state",
+		Channel:   eventchan.WorkflowPhaseState,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Per-run/phase/attempt/unit patches the run map applies in " +
 			"place. Keyed: never latest-only.",
 	},
 	{
-		Channel:   "workflow:soft-stop",
+		Channel:   eventchan.WorkflowSoftStop,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "{itemId, armed} supersede-per-key state; keyed per run-tree " +
@@ -774,7 +783,7 @@ var channelPolicies = []ChannelPolicy{
 			"frames — never latest-only.",
 	},
 	{
-		Channel:   "worktree:setup",
+		Channel:   eventchan.WorktreeSetup,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Streams the stdout/stderr of the project's own setup commands " +
@@ -790,10 +799,17 @@ var channelPolicies = []ChannelPolicy{
 // channelPolicyIndex is the by-name lookup, built from channelPolicies at
 // init. A duplicate channel would silently keep the LAST row;
 // TestChannelPolicyHasNoDuplicates is the gate that stops one landing.
+//
+// Keyed by plain string, not eventchan.Channel, deliberately: every
+// lookup path is reached by a channel name that came off the WIRE at
+// least some of the time (Replay's cursor map, the launcher's replay
+// request), and converting untrusted input into the newtype would assert
+// a registration nobody checked. Emit's typed channel converts on the
+// way in for free — string and eventchan.Channel share a representation.
 var channelPolicyIndex = func() map[string]ChannelPolicy {
 	index := make(map[string]ChannelPolicy, len(channelPolicies))
 	for _, policy := range channelPolicies {
-		index[policy.Channel] = policy
+		index[string(policy.Channel)] = policy
 	}
 	return index
 }()
@@ -828,7 +844,9 @@ func policyForChannel(channel string) (ChannelPolicy, bool) {
 		return policy, true
 	}
 	fallback := unregisteredChannelPolicy
-	fallback.Channel = channel
+	// Labels the fallback row with the name that missed; it is a
+	// diagnostic, not an assertion that this name is registered.
+	fallback.Channel = eventchan.Channel(channel)
 	return fallback, false
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/profile"
 )
@@ -352,7 +353,7 @@ func joinProfileFindings(findings []profile.Finding) string {
 
 func (e *Engine) emitBudgetExceeded(itemID string, spend Spend, elapsed time.Duration) {
 	spendCopy := spend
-	e.emitter.Emit("workflow:error", ErrorEvent{
+	e.emitter.Emit(eventchan.WorkflowError, ErrorEvent{
 		ItemID:          itemID,
 		Error:           "workflow item budget exhausted",
 		Spend:           &spendCopy,

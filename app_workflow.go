@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/project"
@@ -63,10 +64,10 @@ func (l workflowEngineLog) LogEngineEvent(event engine.LogEvent) {
 
 type workflowEmitter struct {
 	app  *App
-	emit func(string, any)
+	emit func(eventchan.Channel, any)
 }
 
-func (e workflowEmitter) Emit(name string, payload any) {
+func (e workflowEmitter) Emit(name eventchan.Channel, payload any) {
 	if e.app != nil {
 		e.app.prepareWorkflowEngineEvent(name, payload)
 	}

@@ -23,7 +23,11 @@ import (
 // harness).
 type Replayer struct {
 	// emit publishes one event to the bus. Injected so the engine stays
-	// free of App/transport types.
+	// free of App/transport types. `kind` stays a plain string, not an
+	// eventchan.Channel: a recorded NDJSON log names its own channels, so
+	// these are caller-named and unregistrable by construction. The
+	// injector (app_harness_replay.go) does the explicit conversion and
+	// they land on the registry's fail-closed loopback-only default.
 	emit func(kind string, data json.RawMessage)
 	// progress publishes replay-state events (kind "harness:replay").
 	progress func(status ReplayStatus)

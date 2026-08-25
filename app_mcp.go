@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/mcpstatus"
 )
 
@@ -41,7 +42,7 @@ func (b *appMCPStatusBus) Emit(s mcpstatus.ServerStatus) {
 	if b.app == nil {
 		return
 	}
-	b.app.emit("mcp:status", s)
+	b.app.emit(eventchan.MCPStatus, s)
 }
 
 // claudeConfig returns the lazy-init Claude config-file adapter bound

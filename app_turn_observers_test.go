@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -87,7 +88,7 @@ func TestTurnObserverCanUnsubscribeAndRegisterDuringCallback(t *testing.T) {
 
 func TestTurnObserversDispatchAfterTriage(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-observer-order")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)

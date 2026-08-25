@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -118,7 +119,7 @@ func TestGetThreadLiveStateReadsTodoWrittenByAPreviousSession(t *testing.T) {
 		t.Fatalf("todo update: %v", err)
 	}
 	app.triage.CleanupThread(thread.ID)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 
 	state, err := app.GetThreadLiveState(thread.ID)
@@ -142,7 +143,7 @@ func TestGetThreadLiveStateReadsTodoWrittenByAPreviousSession(t *testing.T) {
 // is actually for.
 func TestGetThreadLiveStateSurvivesAnUnreadableTodo(t *testing.T) {
 	app, dbPath := newTestAppWithStorePath(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 	thread := seedLiveStateTodoThread(t, app, "live-todo-corrupt")
 

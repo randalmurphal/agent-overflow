@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 )
@@ -103,24 +104,34 @@ func TestUnitPhaseEventsCarryTheEngineEventTime(t *testing.T) {
 // frontend's architecture.test.ts.
 //
 // The walk is over the whole FILE, not over function bodies: a package-level
-// `const phaseStateChannel = "workflow:phase-state"` plus
+// `const phaseStateChannel = eventchan.WorkflowPhaseState` plus
 // `emitter.Emit(phaseStateChannel, …)` is a second construction path that no
 // body-scoped scan can see, and it is the exact shape a future refactor
-// reaches for. So EVERY occurrence of the string counts — const, var,
-// composite literal, or a fragment concatenated into one — and the only
-// occurrence this package tolerates is the one inside `emitPhaseState`.
+// reaches for. So EVERY occurrence of the channel counts — const, var,
+// composite literal, the `eventchan` constant, or a string fragment
+// concatenated into its wire name — and the only occurrence this package
+// tolerates is the one inside `emitPhaseState`.
+//
+// Naming the channel through internal/eventchan does NOT retire this test.
+// The constant is the spelling every emit site in the repo shares; what this
+// package must not grow is a SECOND place that hands it to the emitter, which
+// is exactly what a shared local alias would be.
 func TestPhaseStateEventsHaveOneConstructionPath(t *testing.T) {
 	// The unit half of the channel rides the same emitter, so there is one
-	// string to police rather than two. A future unit-only channel joins this
+	// channel to police rather than two. A future unit-only channel joins this
 	// list and gets the same treatment.
-	for _, channel := range []string{"workflow:phase-state"} {
-		requireSingleChannelSite(t, channel, "emitPhaseState")
+	for _, channel := range []eventchan.Channel{eventchan.WorkflowPhaseState} {
+		requireSingleChannelSite(t, channel, "WorkflowPhaseState", "emitPhaseState")
 	}
 }
 
-// requireSingleChannelSite fails unless the channel string occurs exactly once
-// in the package's non-test sources, inside the named function.
-func requireSingleChannelSite(t *testing.T, channel, emitter string) {
+// requireSingleChannelSite fails unless the channel occurs exactly once in the
+// package's non-test sources, inside the named function. Both spellings count:
+// the `eventchan.<constant>` selector every emit site uses, and a bare string
+// literal equal to the channel's wire name — the latter would still compile
+// (Go assigns an untyped literal to any string type), so it stays policed here
+// as well as by the repo-wide TestEmitSitesNameAnEventChannelConstant.
+func requireSingleChannelSite(t *testing.T, channel eventchan.Channel, constant, emitter string) {
 	t.Helper()
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(info fs.FileInfo) bool {
@@ -132,7 +143,7 @@ func requireSingleChannelSite(t *testing.T, channel, emitter string) {
 	sites := map[string][]string{}
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
-			for _, hit := range channelLiterals(file, channel) {
+			for _, hit := range channelSites(file, channel, constant) {
 				owner := enclosingFunc(file, hit)
 				sites[owner] = append(sites[owner], fset.Position(hit).String())
 			}
@@ -147,18 +158,28 @@ func requireSingleChannelSite(t *testing.T, channel, emitter string) {
 	}
 }
 
-// channelLiterals reports every position in one file where the channel string
-// is constructed, whether written whole or assembled from constant fragments.
-func channelLiterals(file *ast.File, channel string) []token.Pos {
+// channelSites reports every position in one file where the channel is named:
+// the `eventchan.<constant>` selector, or its wire string written whole or
+// assembled from constant fragments.
+func channelSites(file *ast.File, channel eventchan.Channel, constant string) []token.Pos {
 	var hits []token.Pos
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch typed := node.(type) {
+		case *ast.SelectorExpr:
+			// `eventchan.WorkflowPhaseState`. Matched on the package
+			// identifier so a same-named field on some other type does not
+			// trip it.
+			pkg, ok := typed.X.(*ast.Ident)
+			if ok && pkg.Name == "eventchan" && typed.Sel.Name == constant {
+				hits = append(hits, typed.Pos())
+				return false
+			}
 		case *ast.BinaryExpr:
 			// `"workflow:" + "phase-state"` is the same channel, spelled to slip
 			// past an equality check. Folded here, and its operands are not
 			// descended into afterwards.
 			if folded, ok := foldStringConcat(typed); ok {
-				if folded == channel {
+				if folded == channel.String() {
 					hits = append(hits, typed.Pos())
 				}
 				return false
@@ -167,7 +188,7 @@ func channelLiterals(file *ast.File, channel string) []token.Pos {
 			if typed.Kind != token.STRING {
 				return true
 			}
-			if value, err := strconv.Unquote(typed.Value); err == nil && value == channel {
+			if value, err := strconv.Unquote(typed.Value); err == nil && value == channel.String() {
 				hits = append(hits, typed.Pos())
 			}
 		}

@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -61,7 +62,7 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 	if sessionActive {
 		needsReconnect = a.applyActiveModeChange(threadID, sess, provider.NormalizeInteractionMode(normalized))
 	}
-	a.emitEvent("thread:mode_changed", ThreadModeChangedEvent{
+	a.emitEvent(eventchan.ThreadModeChanged, ThreadModeChangedEvent{
 		ThreadID:       threadID,
 		Mode:           normalized,
 		NeedsReconnect: needsReconnect,

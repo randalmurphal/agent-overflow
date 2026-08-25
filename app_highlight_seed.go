@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/highlight"
 )
 
@@ -287,7 +288,7 @@ func (a *App) processHighlightSeedTick(st *seedState, tick seedTick) {
 		if finalFence {
 			evt.ContentKey = highlight.FrontendContentKey(fence.Source)
 		}
-		a.emit("highlight:seed", evt)
+		a.emit(eventchan.HighlightSeed, evt)
 	}
 }
 

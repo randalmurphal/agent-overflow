@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/triage"
 )
@@ -14,7 +15,7 @@ import (
 // disconnect path: the session stored with the same token is dropped.
 func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-unregister")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -53,7 +54,7 @@ func TestUnregisterSessionRemovesSessionForMatchingToken(t *testing.T) {
 // TestStaleSessionDisconnectDoesNotRemoveReplacement for the broader path.
 func TestUnregisterSessionKeepsSessionWhenTokenIsStale(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread := testThread("thread-unregister-stale")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)

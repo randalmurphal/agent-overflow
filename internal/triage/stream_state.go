@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/pathlinks"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -814,7 +815,7 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 	state.lastMerged = merged
 	state.lastRefs = refs
 	state.lastMetaBase = item.Meta
-	r.emit("provider:item_event", newItemStreamMeta(item.ThreadID, item.ID, item.Kind, merged, updatedAt))
+	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.Kind, merged, updatedAt))
 }
 
 // workspacePathFor returns the WorkspacePath for threadID, using a

@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/closer"
 	"agent-overflow/internal/design"
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/logging"
@@ -168,7 +169,7 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	app.telemetry = tel
 	// The triage router does not expose in-flight work today; Shutdown
 	// still dispatches drainTriage under a timeout and records the step.
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	// A design reactor with nil helpers is fine for teardown —
 	// TeardownThread is a no-op when no pending captures or
 	// diagnostic state exist.

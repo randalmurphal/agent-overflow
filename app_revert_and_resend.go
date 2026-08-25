@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/composerdraft"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -161,7 +162,7 @@ func (a *App) RevertConversationAndResendMessage(
 	// FIFO WebSocket, so the frontend observes truncate-then-new-message
 	// and never sees the replacement user row land in a timeline it is
 	// about to cut.
-	a.emit("user_message:reverted", UserMessageRevertedEvent{
+	a.emit(eventchan.UserMessageReverted, UserMessageRevertedEvent{
 		ThreadID:              threadID,
 		UserItemID:            item.ID,
 		TurnIndex:             item.TurnIndex,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 )
@@ -187,7 +188,7 @@ func (a *App) emitProviderAccount(
 	info provider.AccountInfo,
 	generation uint64,
 ) {
-	a.emit("provider:account", ProviderAccountEvent{
+	a.emit(eventchan.ProviderAccount, ProviderAccountEvent{
 		Provider:   providerName,
 		AccountID:  account.ID,
 		Account:    info,
@@ -219,7 +220,7 @@ func (a *App) emitProviderAccountIfCurrent(
 }
 
 func (a *App) emitProviderAccountCleared(providerName string, generation uint64) {
-	a.emit("provider:account", ProviderAccountEvent{
+	a.emit(eventchan.ProviderAccount, ProviderAccountEvent{
 		Provider:   providerName,
 		Generation: generation,
 		Cleared:    true,

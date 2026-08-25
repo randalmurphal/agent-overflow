@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -33,7 +34,7 @@ func (a *App) GetThreadRuntimeMode(threadID string) (string, error) {
 }
 
 func (a *App) emitRuntimeModeChanged(threadID string, mode provider.RuntimeMode) {
-	a.emitEvent("thread:runtime_mode_changed", ThreadRuntimeModeChangedEvent{
+	a.emitEvent(eventchan.ThreadRuntimeModeChanged, ThreadRuntimeModeChangedEvent{
 		ThreadID:       threadID,
 		RuntimeMode:    string(mode),
 		NeedsReconnect: false,

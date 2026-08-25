@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/eventchan"
 )
 
 func TestEventBus_EmitAssignsSeq(t *testing.T) {
@@ -184,7 +186,7 @@ func TestEventBus_Replay_CursorAboveHeadGapsLatestOnlyChannel(t *testing.T) {
 		t.Fatalf("%s is no longer latest-only; pick another fixture", channel)
 	}
 	for i := 1; i <= 3; i++ {
-		bus.Emit(channel, i)
+		bus.Emit(eventchan.Channel(channel), i)
 	}
 
 	behind := bus.Replay(map[string]uint64{channel: 1})
@@ -211,7 +213,7 @@ func TestEventBus_Replay_EphemeralChannelCursors(t *testing.T) {
 		t.Fatalf("%s is no longer ephemeral; pick another fixture", channel)
 	}
 	for i := 1; i <= 3; i++ {
-		bus.Emit(channel, i)
+		bus.Emit(eventchan.Channel(channel), i)
 	}
 
 	if behind := bus.Replay(map[string]uint64{channel: 1}); len(behind) != 0 {
@@ -760,7 +762,7 @@ func TestEventBus_EmitWireBytesByteIdentical(t *testing.T) {
 	}
 	for _, ch := range channels {
 		for i, p := range payloads {
-			evt, err := bus.Emit(ch, p)
+			evt, err := bus.Emit(eventchan.Channel(ch), p)
 			if err != nil {
 				t.Fatalf("emit %q #%d: %v", ch, i, err)
 			}
@@ -830,7 +832,7 @@ func TestEventBus_ConcurrentEmit_SubscriberSeqOrderedPerChannel(t *testing.T) {
 		wg.Go(func() {
 			channel := fmt.Sprintf("ch%d", c)
 			for range each {
-				if _, err := bus.Emit(channel, "x"); err != nil {
+				if _, err := bus.Emit(eventchan.Channel(channel), "x"); err != nil {
 					t.Errorf("emit %s: %v", channel, err)
 					return
 				}
@@ -885,7 +887,7 @@ func TestEventBus_SubscriberOriginFilterAtEnqueue(t *testing.T) {
 
 			want := make(map[string]bool, len(channels))
 			for _, ch := range channels {
-				if _, err := bus.Emit(ch, "x"); err != nil {
+				if _, err := bus.Emit(eventchan.Channel(ch), "x"); err != nil {
 					t.Fatalf("emit %s: %v", ch, err)
 				}
 				want[ch] = tc.loopback == nil || eventVisibleToOrigin(ch, *tc.loopback)

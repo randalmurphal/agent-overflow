@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -119,7 +120,7 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 	if err := a.store.ClearLastTokenUsage(threadID); err != nil {
 		log.Printf("UpdateThreadContextSettings: clear last token usage: %v", err)
 	}
-	a.emit("provider:usage", provider.UsageEvent{
+	a.emit(eventchan.ProviderUsage, provider.UsageEvent{
 		Action:   "reset",
 		ThreadID: threadID,
 	})

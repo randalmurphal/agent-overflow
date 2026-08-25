@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -223,7 +224,7 @@ func codexParityCase() parityCase {
 // a per-provider input, not a constant.
 func driveLiveSession(t *testing.T, st *store.Store, events []provider.ProviderEvent, expectedWireItemID string) {
 	t.Helper()
-	router := triage.NewRouter(st, func(string, any) {})
+	router := triage.NewRouter(st, func(eventchan.Channel, any) {})
 	t.Cleanup(router.WaitForPendingSettles)
 
 	userEvent := findEvent(t, events, provider.EventUserText)

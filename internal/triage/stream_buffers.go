@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 )
 
@@ -79,7 +80,7 @@ type pendingStreamFlush struct {
 }
 
 func (r *Router) emitItemDelta(evt ItemDeltaEvent) {
-	r.emit("provider:item_event", newItemStreamDelta(evt))
+	r.emit(eventchan.ProviderItemEvent, newItemStreamDelta(evt))
 }
 
 func (r *Router) stageTextPersistenceForEmit(threadID, itemID, payloadID, delta string, updatedAt int64) bool {

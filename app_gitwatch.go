@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/transport"
@@ -224,7 +225,7 @@ func (a *App) pumpGitWatch(pump *gitWatchPump) {
 				return
 			default:
 			}
-			a.emit("git:status", GitStatusEvent{Cwd: pump.cwd, Status: status})
+			a.emit(eventchan.GitStatus, GitStatusEvent{Cwd: pump.cwd, Status: status})
 		}
 	}
 }

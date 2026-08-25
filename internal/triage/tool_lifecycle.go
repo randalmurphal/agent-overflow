@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -906,7 +907,7 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 		return fmt.Errorf("triage: stash background terminal %s/%s: %w", evt.ThreadID, meta.TaskID, err)
 	}
 
-	r.emit("provider:background_task_state", BackgroundTaskStateEvent{
+	r.emit(eventchan.ProviderBackgroundTaskState, BackgroundTaskStateEvent{
 		ThreadID:  evt.ThreadID,
 		TaskID:    meta.TaskID,
 		LaunchID:  toolUseID,
@@ -1195,7 +1196,7 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	}
 
 	if stashWasDrained {
-		r.emit("provider:background_task_state", BackgroundTaskStateEvent{
+		r.emit(eventchan.ProviderBackgroundTaskState, BackgroundTaskStateEvent{
 			ThreadID:  evt.ThreadID,
 			TaskID:    meta.TaskID,
 			LaunchID:  launch.ID,
@@ -1520,11 +1521,11 @@ func (r *Router) turnIndexForScope(threadID, scope string) (int, error) {
 }
 
 func (r *Router) emitItemUpsert(item store.Item) {
-	r.emit("provider:item_event", NewItemStreamUpsert(item))
+	r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
 }
 
 func (r *Router) emitItemUpsertWithActivity(item store.Item, countsAsActivity bool) {
-	r.emit("provider:item_event", NewItemStreamUpsertWithActivity(item, &countsAsActivity))
+	r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsertWithActivity(item, &countsAsActivity))
 }
 
 func isToolStartMetaUpdateOnly(raw json.RawMessage) bool {

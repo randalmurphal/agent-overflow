@@ -9,6 +9,7 @@ import (
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -334,7 +335,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			return
 		}
 		if !flushedEmitted {
-			a.emit("provider:queue_flushed", QueueFlushedEvent{
+			a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
 				ThreadID: threadID,
 				Items:    []QueueFlushedItem{flushedItem},
 			})
@@ -505,7 +506,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// no provider:item_event — so the item reserves its timeline
 		// position in SQLite but stays as a queued marker in the UI
 		// until the provider echo confirms it entered context.
-		a.emit("provider:queue_flushed", QueueFlushedEvent{
+		a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
 			ThreadID: threadID,
 			Items:    []QueueFlushedItem{flushedItem},
 		})
@@ -972,7 +973,7 @@ func (a *App) emitQueueStateChanged(threadID string) {
 			items = append(items, flushqueue.ItemFromTriage(threadID, item))
 		}
 	}
-	a.emit("provider:queue_state_changed", QueueStateChangedEvent{
+	a.emit(eventchan.ProviderQueueStateChanged, QueueStateChangedEvent{
 		ThreadID: threadID,
 		Items:    items,
 	})

@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/eventchan"
 )
 
 // fakeArchive builds an in-memory zip mirroring Chrome-for-Testing's
@@ -110,7 +112,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 	srv, downloads := fakeManifestServer(t, "999.0.1.0")
 
 	var events []InstallProgress
-	emit := func(name string, data any) {
+	emit := func(name eventchan.Channel, data any) {
 		if name != InstallEventName {
 			return
 		}

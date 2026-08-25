@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -125,7 +126,7 @@ func (a *App) emitApprovalResolution(threadID, requestID, decision string, updat
 			log.Printf("respond to approval triage update failed: %v", err)
 		}
 	} else {
-		a.emit("provider:approval", provider.ApprovalEvent{
+		a.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
 			Action:    "resolve",
 			ThreadID:  threadID,
 			RequestID: requestID,
@@ -135,7 +136,7 @@ func (a *App) emitApprovalResolution(threadID, requestID, decision string, updat
 }
 
 func (a *App) emitApprovalFailure(threadID, requestID string, err error) {
-	a.emit("provider:approval", provider.ApprovalEvent{
+	a.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
 		Action:    "fail",
 		ThreadID:  threadID,
 		RequestID: requestID,
@@ -162,7 +163,7 @@ func (a *App) emitUserInputResolution(threadID, requestID, decision string, answ
 			log.Printf("respond to user input triage update failed: %v", err)
 		}
 	} else {
-		a.emit("provider:user_input", provider.UserInputEvent{
+		a.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
 			Action:    "resolve",
 			ThreadID:  threadID,
 			RequestID: requestID,
@@ -172,7 +173,7 @@ func (a *App) emitUserInputResolution(threadID, requestID, decision string, answ
 }
 
 func (a *App) emitUserInputFailure(threadID, requestID string, err error) {
-	a.emit("provider:user_input", provider.UserInputEvent{
+	a.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
 		Action:    "fail",
 		ThreadID:  threadID,
 		RequestID: requestID,

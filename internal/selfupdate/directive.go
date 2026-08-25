@@ -7,12 +7,17 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"agent-overflow/internal/eventchan"
 )
 
 const (
 	// ChannelInstall is the transport event channel the backend emits an
-	// InstallDirective on and the Windows launcher subscribes to.
-	ChannelInstall = "updater:install"
+	// InstallDirective on and the Windows launcher subscribes to. Defined
+	// AS its internal/eventchan constant so the two spellings cannot
+	// drift, but typed `string` because the launcher carries it in a
+	// subscribe frame; the emit site uses eventchan.UpdaterInstall.
+	ChannelInstall = string(eventchan.UpdaterInstall)
 
 	// StagingDirName is the directory, relative to the app-managed root on each
 	// side of the WSL boundary, that holds downloaded-but-not-yet-installed

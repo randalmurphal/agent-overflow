@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/composerdraft"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -160,7 +161,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 	}
 
 	a.emitQueueStateChanged(threadID)
-	a.emit("provider:queue_restored", QueueRestoredEvent{
+	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 		ThreadID:     threadID,
 		Reason:       "session_died",
 		QueueItemIDs: queueItemIDs,
@@ -269,7 +270,7 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 			// The rows are already deleted — emit the removal so the
 			// frontend drops them, then requeue so the messages keep a
 			// delivery vehicle (their redispatch persists fresh rows).
-			a.emit("provider:queue_restored", QueueRestoredEvent{
+			a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 				ThreadID:    threadID,
 				Reason:      reason,
 				UserItemIDs: userItemIDs,
@@ -278,7 +279,7 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 			return
 		}
 	}
-	a.emit("provider:queue_restored", QueueRestoredEvent{
+	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
 		ThreadID:     threadID,
 		Reason:       reason,
 		QueueItemIDs: queueItemIDs,

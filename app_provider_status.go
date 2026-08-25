@@ -1,6 +1,7 @@
 package main
 
 import (
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerstatus"
 )
@@ -10,7 +11,7 @@ import (
 // seq it stamps on every other wire emission. Safe to call even when
 // the status is "ready" — the UI treats ready as a clear-banner signal.
 func (a *App) emitProviderStatus(evt providerstatus.Event) {
-	a.emit("provider:status", evt)
+	a.emit(eventchan.ProviderStatus, evt)
 }
 
 // emitProviderStatusesFromDetect emits a provider:status event per

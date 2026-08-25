@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -123,7 +124,7 @@ func (r *Router) handleModelFallback(evt provider.ProviderEvent) error {
 	fallbackState.effectiveModelSet = true
 	revision := r.nextEffectiveModelRevisionLocked(evt.ThreadID)
 	r.mu.Unlock()
-	r.emit("provider:model_fallback", ModelFallbackEvent{
+	r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{
 		ThreadID:       evt.ThreadID,
 		RequestedModel: meta.OriginalModel,
 		EffectiveModel: meta.FallbackModel,
@@ -162,7 +163,7 @@ func (r *Router) ClearEffectiveModel(threadID string) bool {
 	}
 	r.mu.Unlock()
 	if existed {
-		r.emit("provider:model_fallback", ModelFallbackEvent{ThreadID: threadID, Revision: revision})
+		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: revision})
 	}
 	return existed
 }

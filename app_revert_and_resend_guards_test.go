@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
@@ -163,7 +164,7 @@ func TestRevertAndResendRefusesPendingSend(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			app, cleanup := newTestApp(t)
 			defer cleanup()
-			app.triage = triage.NewRouter(app.store, func(string, any) {})
+			app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 			thread := createAppTestThread(t, app, "t-pending", "claude", t.TempDir())
 			insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 			insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")

@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
+
 	"github.com/coder/websocket"
 )
 
@@ -640,7 +642,7 @@ func TestServer_ReplayCursorAboveHeadGapsLatestOnlyChannel(t *testing.T) {
 		t.Fatalf("%s is no longer a latest-only channel; pick another fixture", channel)
 	}
 	for i := 0; i < 3; i++ {
-		f.bus.Emit(channel, i)
+		f.bus.Emit(eventchan.Channel(channel), i)
 	}
 	conn := f.dial(t)
 

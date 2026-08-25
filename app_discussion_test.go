@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -340,7 +341,7 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
 	app.channels = discussion.NewChannelService(app.store)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	// The synthesized early turn-complete below advances the FSM and
 	// arms a next-speaker prompt on a background goroutine
 	// (promptDiscussionSpeakerAsync). Stub the dispatch so the test
@@ -545,7 +546,7 @@ func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.channels = discussion.NewChannelService(app.store)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	// The first participant's turn-complete below advances the FSM and
 	// arms a next-speaker prompt on a background goroutine
 	// (promptDiscussionSpeakerAsync). Stub the dispatch so the test
@@ -1025,7 +1026,7 @@ func TestSyncDiscussionTurnPromptsNextSpeakerWithMessagesSinceOwnLastPost(t *tes
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
 	app.channels = discussion.NewChannelService(app.store)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.startSessionFn = func(string) error { return nil }
 
 	sendCh, sendFn := newSendCaptureChan()
@@ -1134,7 +1135,7 @@ func TestSyncDiscussionTurnToolOnlyStillAdvancesAndPromptsNextSpeaker(t *testing
 	app := newTestAppWithStore(t)
 	app.registry = discussion.NewRegistry(app.store)
 	app.channels = discussion.NewChannelService(app.store)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.startSessionFn = func(string) error { return nil }
 
 	sendCh, sendFn := newSendCaptureChan()
@@ -1602,9 +1603,9 @@ func TestDiscussionPromptDispatchFailureUnclaimsAndAllowsRetry(t *testing.T) {
 	// surfacing (promptDiscussionSpeakerAsync → emitWireErrorToThread →
 	// triage persist + provider:item_event) without sleeping.
 	triageEmitCh := make(chan string, 32)
-	app.triage = triage.NewRouter(app.store, func(name string, _ any) {
+	app.triage = triage.NewRouter(app.store, func(name eventchan.Channel, _ any) {
 		select {
-		case triageEmitCh <- name:
+		case triageEmitCh <- name.String():
 		default:
 		}
 	})

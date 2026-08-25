@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/profile"
@@ -403,10 +404,10 @@ type fakeEmitter struct {
 	events []emittedEvent
 }
 
-func (f *fakeEmitter) Emit(name string, payload any) {
+func (f *fakeEmitter) Emit(name eventchan.Channel, payload any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.events = append(f.events, emittedEvent{name: name, payload: payload})
+	f.events = append(f.events, emittedEvent{name: string(name), payload: payload})
 }
 
 func (f *fakeEmitter) stateEvents(itemID string) []StateEvent {

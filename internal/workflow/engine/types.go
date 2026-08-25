@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/profile"
@@ -487,7 +488,7 @@ type Runner interface {
 // the engine owner goroutine and must return promptly; it must not call back
 // into Engine synchronously.
 type Emitter interface {
-	Emit(eventName string, payload any)
+	Emit(channel eventchan.Channel, payload any)
 }
 
 // ResolvedDefinition is one validated workflow plus the two facts only a

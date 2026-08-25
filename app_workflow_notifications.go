@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
@@ -20,9 +21,9 @@ import (
 // The engine emits from its command-loop goroutine, so nothing here may block
 // or re-enter the engine. Everything past the classification below runs on the
 // per-App serial queues.
-func (a *App) afterWorkflowEngineEvent(name string, payload any) {
+func (a *App) afterWorkflowEngineEvent(name eventchan.Channel, payload any) {
 	switch name {
-	case "workflow:item-state":
+	case eventchan.WorkflowItemState:
 		event, ok := payload.(engine.StateEvent)
 		if !ok {
 			return

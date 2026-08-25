@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -30,8 +31,6 @@ import (
 // replacement process never carries the previous process's tasks).
 
 const (
-	// subagentProgressEventName is the frontend channel for live ticks.
-	subagentProgressEventName = "subagent_progress"
 	// subagentProgressMetaKey is the launch-row meta key the final
 	// numbers persist under (a provider.SubagentProgressMeta object).
 	subagentProgressMetaKey = "subagentProgress"
@@ -89,7 +88,7 @@ func (r *Router) handleSubagentProgress(evt provider.ProviderEvent) error {
 	st.subagentProgress[itemID] = merged
 	r.mu.Unlock()
 
-	r.emit("provider:"+subagentProgressEventName, SubagentProgressEvent{
+	r.emit(eventchan.ProviderSubagentProgress, SubagentProgressEvent{
 		ThreadID:  evt.ThreadID,
 		ItemID:    itemID,
 		ParentID:  eventParentID(evt),
@@ -272,6 +271,6 @@ func (r *Router) handleBackgroundTasksChanged(evt provider.ProviderEvent) error 
 	if meta.Tasks == nil {
 		meta.Tasks = []provider.BackgroundTaskRef{}
 	}
-	r.emit(codexBackgroundTasksChangedEventName, BackgroundTasksChangedEvent{ThreadID: evt.ThreadID, Tasks: meta.Tasks})
+	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: evt.ThreadID, Tasks: meta.Tasks})
 	return nil
 }

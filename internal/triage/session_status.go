@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
 
@@ -78,7 +79,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 	}
 
 	if wasNew {
-		r.emit("provider:session_died", SessionDiedEvent{
+		r.emit(eventchan.ProviderSessionDied, SessionDiedEvent{
 			ThreadID:   evt.ThreadID,
 			Reason:     info.Reason,
 			ExitCode:   info.ExitCode,

@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 )
@@ -196,7 +197,7 @@ func (a *App) adoptWorkspaceWorktreeSetup(worktreePath string, thread store.Thre
 	}
 	a.worktreeSetup.mu.Unlock()
 
-	a.emitEvent(worktreeSetupChannel, frame)
+	a.emitEvent(eventchan.WorktreeSetup, frame)
 	return true
 }
 

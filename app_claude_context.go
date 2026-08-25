@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -40,7 +41,7 @@ func (a *App) ensureClaudeContextReadyForUserSendLocked(thread store.Thread) err
 			return fmt.Errorf("record Claude session ref before context repair: %w", err)
 		}
 		if changed {
-			a.emitEvent("thread:updated", triage.ThreadUpdateEvent{
+			a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
 				Action:     "patch",
 				ID:         thread.ID,
 				SessionRef: &sessionID,

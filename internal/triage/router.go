@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
@@ -45,7 +46,7 @@ type TurnMetrics struct {
 // Router classifies provider events and routes them.
 type Router struct {
 	store *store.Store
-	emit  func(eventName string, data any) // wraps app.Event.Emit
+	emit  func(channel eventchan.Channel, data any) // wraps app.Event.Emit
 	// usageWorkItemResolver attributes phase-thread usage rows to a
 	// workflow run at append time; the app installs it once the
 	// workflow engine is wired (SetUsageWorkItemResolver).
@@ -219,7 +220,7 @@ func (r *Router) SetUsageWorkItemResolver(resolve func(threadID string) string) 
 
 // NewRouter creates a triage router. Telemetry is off by default; wire a
 // tracer and metrics via SetTelemetry to enable spans and counters.
-func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
+func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 	noopMeter := metricnoop.NewMeterProvider().Meter("triage/router")
 	ts, _ := noopMeter.Int64Counter("turns.started")
 	tc, _ := noopMeter.Int64Counter("turns.completed")
@@ -739,7 +740,7 @@ func (r *Router) maybeReopenSettledRound(evt provider.ProviderEvent) {
 		StartedAt: startedAt,
 	}
 	r.setOpenRoundSnapshot(snapshot)
-	r.emit("provider:turn_started", TurnStartedEvent(snapshot))
+	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
 }
 
 func (r *Router) handleThreadModelUpdate(evt provider.ProviderEvent) error {
@@ -803,7 +804,7 @@ func (r *Router) handleRateLimits(evt provider.ProviderEvent) error {
 			usage.RateLimits = &snap
 		}
 	}
-	r.emit("provider:usage", usage)
+	r.emit(eventchan.ProviderUsage, usage)
 	return nil
 }
 
@@ -1094,7 +1095,7 @@ type ThreadUpdateEvent struct {
 func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
 	patch.Action = "patch"
 	patch.ID = threadID
-	r.emit("thread:updated", patch)
+	r.emit(eventchan.ThreadUpdated, patch)
 }
 
 // bumpThreadActivity is the single chokepoint for advancing
@@ -1266,7 +1267,7 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 // place, avoiding re-transmission of immutable structural fields and the
 // potentially large summary text.
 func (r *Router) emitItemPatch(threadID, itemID, kind string, patch ItemPatchFields) {
-	r.emit("provider:item_event", newItemStreamPatch(threadID, itemID, kind, patch))
+	r.emit(eventchan.ProviderItemEvent, newItemStreamPatch(threadID, itemID, kind, patch))
 }
 
 // persistItemFieldsAndPatch writes a targeted UPDATE for the specified

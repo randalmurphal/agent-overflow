@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -179,7 +180,7 @@ func (a *App) finishWorkspaceMCPAuth(
 	if outcome.success {
 		a.applyWorkspaceMCPAuthToLiveSessions(key)
 	}
-	a.emit("mcp:oauth-completed", map[string]any{
+	a.emit(eventchan.MCPOAuthCompleted, map[string]any{
 		"threadId":   "",
 		"provider":   key.provider,
 		"serverName": key.server,

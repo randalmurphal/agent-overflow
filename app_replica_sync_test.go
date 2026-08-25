@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -211,7 +212,7 @@ func TestClampSliceItemBudget(t *testing.T) {
 func TestInterruptRevertEventCarriesPostCutStamps(t *testing.T) {
 	app, cleanup := newTestApp(t)
 	defer cleanup()
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	bus := newCapturedEventBus()
 	app.testEmitHook = bus.emit
 

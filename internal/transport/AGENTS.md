@@ -222,6 +222,28 @@ generated, because emit sites are spread across the root package,
 `internal/triage`, `internal/workflow` and others, and several build
 their channel name at runtime. **Adding a channel means adding a row.**
 
+Each row's `Channel` is an `eventchan.Channel` constant, not a string:
+`internal/eventchan` holds the SPELLING half of the same table, and
+`EventBus.Emit` — along with `(*App).emit`, `triage.NewRouter`'s emit
+callback, and `workflow/engine.Emitter` — takes that type. So **adding a
+channel is two edits**, a constant there and a row here;
+`event_channels_eventchan_test.go` AST-parses the constants and fails on
+either half missing its counterpart. The type stops a channel *variable*
+crossing into an emit site without an explicit `eventchan.Channel(...)`
+conversion; Go would still assign a bare string LITERAL silently, which
+the root package's `TestEmitSitesNameAnEventChannelConstant` is what
+catches.
+
+The registry's own lookups (`channelPolicyIndex`, and the two derived
+visibility sets in `event_visibility.go`) stay keyed by plain `string`.
+That is deliberate, not an oversight: every one of them is reached by a
+channel name that came off the WIRE at least some of the time — a replay
+cursor, a subscribe filter, `Event.Channel` on the hot delivery path —
+and converting peer-chosen input into the newtype would assert a
+registration nobody checked. The one-time init converts the authored
+rows; `string` and `eventchan.Channel` share a representation, so no
+conversion on any path costs anything.
+
 - `Audience` — `AudienceAny` / `AudienceLoopbackOnly` /
   `AudienceRemoteOnly`.
 - `Retention` — `RetentionDefault` (full ring) / `RetentionEphemeral`
@@ -242,8 +264,10 @@ clients"; local UX keeps working. Two harness-only emit paths
 (`HarnessEmit`, `harness.Replayer`) publish onto arbitrary
 caller-named channels and are unregistrable by construction — the
 loopback-only default still reaches their loopback-by-construction
-consumers; the file header documents them alongside the three dynamic
-families that DO resolve to registered names.
+consumers; both spell an explicit `eventchan.Channel(name)` conversion
+at the call site so the escape hatch is visible. The file header
+documents them alongside the two dynamic families that DO resolve to
+registered names.
 
 `TestChannelPolicyPreservesFrozenClassification` freezes every
 non-default classification (the original four hand-authored maps plus

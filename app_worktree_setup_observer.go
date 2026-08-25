@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/worktreesetup"
 )
 
@@ -49,7 +50,7 @@ func newWorktreeSetupObserver(app *App, run *worktreeSetupRun) *worktreeSetupObs
 // config, and emitting the record's copy is what guarantees a client's step
 // list is the one the snapshot RPC would hand it.
 func (o *worktreeSetupObserver) RunStarted(_ []worktreesetup.Step) {
-	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
+	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStarted,
 		ThreadID:     o.app.worktreeSetupThreadID(o.run),
 		RunID:        o.run.id,
@@ -61,7 +62,7 @@ func (o *worktreeSetupObserver) RunStarted(_ []worktreesetup.Step) {
 
 func (o *worktreeSetupObserver) StepStarted(index int) {
 	o.app.setWorktreeSetupStepStatus(o.run, index, worktreeSetupStepRunning)
-	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
+	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStepStarted,
 		ThreadID:     o.app.worktreeSetupThreadID(o.run),
 		RunID:        o.run.id,
@@ -112,7 +113,7 @@ func (o *worktreeSetupObserver) StepFinished(index int, err error) {
 		message = err.Error()
 	}
 	o.app.setWorktreeSetupStepStatus(o.run, index, status)
-	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
+	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStepFinished,
 		ThreadID:     o.app.worktreeSetupThreadID(o.run),
 		RunID:        o.run.id,
@@ -153,7 +154,7 @@ func (o *worktreeSetupObserver) flushLocked() {
 	}
 	chunk := string(o.pending)
 	o.pending = o.pending[:0]
-	o.app.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
+	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseOutput,
 		ThreadID:     o.app.worktreeSetupThreadID(o.run),
 		RunID:        o.run.id,

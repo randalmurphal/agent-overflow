@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -45,12 +46,6 @@ import (
 // Never on a timer and never while idle. Every failure is logged and leaves
 // the rate-table fallback in place; nothing about a turn's completion depends
 // on it.
-
-// usageThreadCostEvent nudges the thread-scoped usage surfaces after a
-// provider figure lands. It carries only the thread id: every usage surface
-// refetches through GetUsageStats rather than trusting a pushed number, which
-// is the same rule provider:turn_completed's refresh bump follows.
-const usageThreadCostEvent = "usage:thread_cost"
 
 // noteCodexThreadCost fires the post-turn thread-cost read for threadID.
 //
@@ -318,5 +313,5 @@ func (a *App) readCodexThreadCost(threadID, sessionToken string, epoch uint64) {
 	// bump fired before this read returned, so the chip would show the
 	// rate-table figure until the next turn. This second, narrower nudge is
 	// what makes the provider figure appear on the turn it describes.
-	a.emit(usageThreadCostEvent, map[string]any{"threadId": threadID})
+	a.emit(eventchan.UsageThreadCost, map[string]any{"threadId": threadID})
 }

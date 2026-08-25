@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -169,7 +170,7 @@ func (a *App) emitProposedPlanUpsert(threadID, planItemID string) error {
 		return err
 	}
 	if found {
-		a.emit("provider:item_event", triage.NewItemStreamUpsert(plan))
+		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(plan))
 		return nil
 	}
 	return fmt.Errorf("proposed plan %s not found on thread %s", planItemID, threadID)

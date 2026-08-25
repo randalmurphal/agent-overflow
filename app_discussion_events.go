@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"agent-overflow/internal/discussion"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 )
 
@@ -67,7 +68,7 @@ func (a *App) emitDiscussionMessage(channelID string, msg store.ChannelMessage) 
 		log.Printf("discussion: resolve channel for message emit %s: %v", channelID, err)
 		return
 	}
-	a.emit("discussion:message", ChannelMessageEvent{
+	a.emit(eventchan.DiscussionMessage, ChannelMessageEvent{
 		ChannelID: channel.ID,
 		ThreadID:  channel.ThreadID,
 		Message:   msg,
@@ -86,7 +87,7 @@ func (a *App) emitDiscussionState(channelID string) {
 		log.Printf("discussion: build state for emit %s: %v", channelID, err)
 		return
 	}
-	a.emit("discussion:state", payload)
+	a.emit(eventchan.DiscussionState, payload)
 }
 
 // buildChannelState is the single projector behind both the

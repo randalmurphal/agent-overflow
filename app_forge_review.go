@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/transport"
@@ -652,7 +653,7 @@ func (a *App) pumpPRUpdates(pump *prUpdatePump) {
 			return
 		default:
 		}
-		a.emit("pr:updated", event)
+		a.emit(eventchan.PRUpdated, event)
 	}
 }
 

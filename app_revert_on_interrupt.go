@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/composerdraft"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -189,7 +190,7 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		HistoryRev:            cut.Stamp.Rev,
 		HistoryEpoch:          cut.Stamp.Epoch,
 	}
-	a.emit("user_message:reverted", cutEvent)
+	a.emit(eventchan.UserMessageReverted, cutEvent)
 
 	return InterruptAndRevertResult{
 		Reverted:              true,

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -804,7 +805,7 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 
 func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	workspace := t.TempDir()
 	thread := testThread("thread-send-first-anchor")
@@ -878,7 +879,7 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 // is precisely the pre-echo state.
 func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	workspace := t.TempDir()
 	thread := testThread("thread-send-prestamp-uuid")
@@ -1394,7 +1395,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	// Start a turn and seed a running tool_call in it.
 	if err := app.triage.Handle(provider.ProviderEvent{
@@ -1512,7 +1513,7 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 				t.Fatalf("CreateThread: %v", err)
 			}
 
-			app.triage = triage.NewRouter(app.store, func(string, any) {})
+			app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 			// Open a turn.
 			if err := app.triage.Handle(provider.ProviderEvent{
@@ -1868,9 +1869,9 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 	var mu sync.Mutex
 	var emissions []string
 	var upsertedIDs []string
-	app.triage = triage.NewRouter(app.store, func(name string, data any) {
+	app.triage = triage.NewRouter(app.store, func(name eventchan.Channel, data any) {
 		mu.Lock()
-		emissions = append(emissions, name)
+		emissions = append(emissions, name.String())
 		if name == "provider:item_event" {
 			if event, ok := data.(triage.ItemStreamEvent); ok && event.Action == "upsert" && event.Item != nil {
 				upsertedIDs = append(upsertedIDs, event.Item.ID)
@@ -2020,9 +2021,9 @@ func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
 
 	var mu sync.Mutex
 	var emissions []string
-	app.triage = triage.NewRouter(app.store, func(name string, _ any) {
+	app.triage = triage.NewRouter(app.store, func(name eventchan.Channel, _ any) {
 		mu.Lock()
-		emissions = append(emissions, name)
+		emissions = append(emissions, name.String())
 		mu.Unlock()
 	})
 
@@ -2073,7 +2074,7 @@ func TestSendMessageRegistersPendingSend(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	sess, err := claude.NewSession(
 		context.Background(),
@@ -2119,7 +2120,7 @@ func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	// Closed Claude session so sendToProvider's WriteLine returns "process
 	// already exited". Mirrors TestSendMessagePersistsUserItemAndError-

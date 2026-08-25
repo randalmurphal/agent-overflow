@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/sysstat"
 )
 
@@ -88,7 +89,7 @@ func (a *App) emitSystemStats(ctx context.Context) {
 		log.Printf("sysstat: sample: %v", err)
 		return
 	}
-	a.emit("system:stats", SystemStats{
+	a.emit(eventchan.SystemStats, SystemStats{
 		IsWSL:         wslIsWSL(),
 		CPUPercent:    reading.CPUPercent,
 		MemUsedBytes:  reading.MemUsedBytes,

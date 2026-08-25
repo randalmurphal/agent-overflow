@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
@@ -149,7 +150,7 @@ func (a *App) applyThreadTitleIfCurrent(threadID, expected, title string) (bool,
 		return false, nil
 	}
 
-	a.emitEvent("thread:updated", triage.ThreadUpdateEvent{
+	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
 		Action: "patch",
 		ID:     threadID,
 		Title:  &title,

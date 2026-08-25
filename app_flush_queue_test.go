@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -26,7 +27,7 @@ import (
 // provider_item_id.
 func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-codex-ok")
@@ -330,7 +331,7 @@ func TestDispatchFlush_EmitsQueueFlushedBeforeQueueDrainedSnapshot(t *testing.T)
 // new turn carrying the queued content.
 func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-codex-fallback")
@@ -455,7 +456,7 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 // or persist a half-baked item.
 func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-no-session")
@@ -492,7 +493,7 @@ func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 // preserving wire-visible ordering trumps best-effort delivery.
 func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-abort")
@@ -820,7 +821,7 @@ func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
 
 func TestDispatchFlush_StaleGenerationAfterRollbackDropsBatch(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 
 	thread := testThread("flush-stale-generation")
 	thread.Provider = string(provider.Codex)
@@ -957,7 +958,7 @@ func (a *App) dispatchFlushToProviderShouldErrorWith(t *testing.T, sess session,
 // provider confirmation.
 func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.triage = triage.NewRouter(app.store, func(string, any) {})
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	app.configureTriageQueueCallbacks()
 
 	thread := testThread("flush-payload")
@@ -1772,6 +1773,12 @@ func (r *emitRecorder) capture(channel string, data any) {
 	r.calls = append(r.calls, emittedCall{Channel: channel, Data: data})
 }
 
+// captureChannel is capture as the triage.Router emit callback takes it:
+// same recorder, typed channel.
+func (r *emitRecorder) captureChannel(channel eventchan.Channel, data any) {
+	r.capture(channel.String(), data)
+}
+
 func (r *emitRecorder) snapshot() []emittedCall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1861,7 +1868,7 @@ func newAppForFlushQueueRPC(t *testing.T) (*App, *emitRecorder) {
 	app := newTestAppWithStore(t)
 	rec := &emitRecorder{}
 	app.testEmitHook = rec.capture
-	app.triage = triage.NewRouter(app.store, rec.capture)
+	app.triage = triage.NewRouter(app.store, rec.captureChannel)
 	app.configureTriageQueueCallbacks()
 	return app, rec
 }
