@@ -7,7 +7,7 @@
 // Blink promotes those elements and ticks them off the main thread, so
 // they cost no style recalc and no paint at all.
 //
-// The sidebar status glow is one exception, and the reason is a
+// The sidebar status glow is the ONE exception, and the reason is a
 // PROPERTY, not a place. Its `--ambient-glow-t` drives three things at
 // once in app.css — shadow spread 0→2px, shadow alpha 0→0.22, and the
 // ::before's opacity 0.7→1.0, which lifts the 1px border with it.
@@ -16,32 +16,25 @@
 // than expand. So this timer writes that one custom property inline on
 // the rows carrying a glow class.
 //
-// `.animate-pulse` is the other exception, and its reason is LAYER
-// COUNT, not a property. A running opacity animation — steps() or not —
-// promotes its element to its own composited layer
-// (CompositingReason::kActiveOpacityAnimation), and the pulse class sits
-// on one working dot per busy thread/subagent row: a fleet of agents put
-// 18 of the app's 26 layers on 6px dots (measured 2026-08-25, user app
-// under multi-agent load). This timer instead writes each dot's opacity
-// INLINE, exactly like the glow: per-element writes, mark-and-sweep
-// clearing, CSS rest state (opacity 1) when a write stops.
+// Nothing else may join it on that argument, and `.animate-pulse` is
+// the cautionary tale: it was pulled back in here twice on 2026-08-25
+// to de-promote its composited layers, first via root custom properties
+// (whole-document invalidation, 2fps springs) and then via per-element
+// inline opacity, which `probe frames` costed on the live app at ~31ms/s
+// — 9 whole-document paint lifecycles per second, about three quarters
+// of the idle renderer main thread. Both flips counted layers instead of
+// costing them; the promotion is +1 layer per dot with no overlap
+// cascade and 0.01MB of texture for thirty of them. The pulse is a CSS
+// animation again and the layers are the cheaper side of that trade.
 //
-// NOT root custom properties, and that was measured, not guessed: the
-// first de-promotion attempt wrote three `--ambient-pulse-*` vars on
-// the document root per slot, and a root-level custom-property write
-// invalidates style for the WHOLE document, not just the consumers —
-// 381 recalc passes of ~3,500 elements at 22-30ms each over a 10s
-// window on the user's app (2026-08-25, `probe frames`), ~195ms/s of
-// recalc that dropped frames under every scroll spring. A per-element
-// inline write invalidates one 6px span; at fleet scale (tens of dots,
-// 8 writes/s each) the recalc cost is single-digit ms/s. The ~28
-// whole-document repaints/sec that killed the ORIGINAL ticker pulse
-// came from the sprite's background-position write, not from opacity
-// on leaf spans. History of all three flips lives at app.css
-// `--animate-pulse`.
-//
-// Measured 2026-08-23, per 5s: the sprite's old inline write cost
-// 163.0ms of main-thread work; as a CSS animation it costs 0.0ms.
+// The rule the two flips broke: an inline style write costs one WHOLE
+// DOCUMENT lifecycle per tick, no matter how small the element or how
+// few of them there are (measured 2026-08-24: 4 dots and 40 dots both
+// 58.9ms/5s, against 0.0ms for the CSS form at either count). Only reach
+// for this timer when the property genuinely cannot be a compositable
+// CSS animation — not to win back a layer, a class, or an Animation
+// object. Per 5s, the sprite's old inline write cost 163.0ms of
+// main-thread work; as a CSS animation it costs 0.0ms.
 //
 // A write is what makes a tick expensive, and the timer stops entirely
 // when there is nothing to write — see `armWake` below. A thread
@@ -109,17 +102,6 @@ function formatValue(v: number): string {
 
 const GLOW_CLASSES = ['status-glow-warning', 'status-glow-info'] as const;
 
-/** Stagger lead for a pulse dot: Indicator.svelte's backgrounded
- * variant marks its second and third dots one and two 250ms slots
- * AHEAD of the base waveform (matching the deleted CSS
- * animation-delays — a negative delay shows the waveform ahead). */
-function pulseLeadFor(el: Element): number {
-  const classes = el.classList;
-  if (classes.contains('ambient-pulse-s4')) return 500;
-  if (classes.contains('ambient-pulse-s2')) return 250;
-  return 0;
-}
-
 /** Consecutive empty ticks before the timer suspends. One second, so a
  * surface that briefly has no indicator does not thrash the timer off
  * and on. */
@@ -130,15 +112,13 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 let wake: MutationObserver | null = null;
 let idleTicks = 0;
 let stopPhase: (() => void) | null = null;
-/** Elements carrying a ticker-written inline style (`--ambient-glow-t`
- * on glow rows, `opacity` on pulse dots), for mark-and-sweep clearing
- * when they lose their marker class or leave the document. */
+/** Elements carrying the ticker-written `--ambient-glow-t`, for
+ * mark-and-sweep clearing when they lose the glow class or leave the
+ * document. */
 const styled = new Set<Element>();
 
 function clearStyles(el: Element): void {
-  const style = (el as HTMLElement | SVGElement).style;
-  style.removeProperty('--ambient-glow-t');
-  style.removeProperty('opacity');
+  (el as HTMLElement | SVGElement).style.removeProperty('--ambient-glow-t');
 }
 
 function clearAllStyles(): void {
@@ -150,16 +130,6 @@ function clearAllStyles(): void {
 function writeStyles(tMs: number): boolean {
   const seen = new Set<Element>();
   const glowT = formatValue(glowTAt(tMs));
-
-  for (const el of document.getElementsByClassName('animate-pulse')) {
-    const style = (el as HTMLElement | SVGElement).style;
-    const value = formatValue(pulseOpacityAt(tMs + pulseLeadFor(el)));
-    if (style.getPropertyValue('opacity') !== value) {
-      style.setProperty('opacity', value);
-    }
-    seen.add(el);
-    styled.add(el);
-  }
 
   for (const name of GLOW_CLASSES) {
     for (const el of document.getElementsByClassName(name)) {
@@ -173,9 +143,8 @@ function writeStyles(tMs: number): boolean {
   }
 
   // Sweep: anything styled on a previous tick that no longer carries a
-  // marker class (toggled off, or detached) falls back to its CSS rest
-  // state — glow t=0, pulse opacity 1. Clearing a detached element is
-  // harmless.
+  // glow class (toggled off, or detached) falls back to the CSS rest
+  // state, t=0. Clearing a detached element is harmless.
   for (const el of styled) {
     if (!seen.has(el)) {
       clearStyles(el);

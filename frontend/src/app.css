@@ -256,11 +256,7 @@ html.light {
   /* Ambient pulse. Every animate-pulse in this app is an ambient
      indicator (working dots in the sidebar/header/picker/rows, loading
      text, retry icons), so the utility keeps its name and is redefined
-     to a TICKER-DRIVEN opacity: utils/ambientTicker.ts writes each
-     dot's opacity inline every 125ms slot (`.ambient-pulse-s2`/`-s4`
-     are stagger markers it reads). `none` here suppresses Tailwind's
-     own keyframe animation for the utility; the rest state is the
-     default opacity 1, restored when the ticker sweeps its write.
+     onto our own keyframes instead of Tailwind's.
 
      STEPPED, not smooth, and that half is load-bearing. The original
      smooth pulse forced a GPU present every vsync — on a 165Hz panel
@@ -269,38 +265,47 @@ html.light {
      smooth vs 7.3/s stepped). Eight values per half-cycle reads as the
      same breath and presents 8/s.
 
-     NOT a CSS animation, and NOT root custom properties — four flips,
-     each on new measurement. 5c860a15 armed the ticker; 1633dcea
-     disarmed it (Animation-in-scroller present-policy theory);
-     2026-08-24 measured that theory's exposure as binary and
-     document-wide (present-policy-arms.mjs) and moved the pulse to CSS
-     keyframes for the compositor's zero main-thread cost. 2026-08-25
-     measured that form at FLEET scale: a running opacity animation —
-     steps() or not — promotes its element to its own composited layer
-     (kActiveOpacityAnimation), and one dot per busy thread/subagent
-     put 18 of the app's 26 layers on 6px dots. The replacement wrote
-     three `--ambient-pulse-*` vars on the DOCUMENT ROOT per slot, and
-     that same day's `probe frames` on the user's app showed why that
-     is worse: a root custom-property write invalidates style for the
-     whole document — ~3,500 elements per pass, 22-30ms, 8/s, ~195ms/s
-     of recalc that dropped frames under every scroll spring. Per-dot
-     inline writes have none of these costs: no Animation objects (the
-     present-policy hazard stays open through the sprite and LED chase
-     regardless), no layers, and a recalc scope of one 6px span per
-     write. The ~28 whole-document repaints/sec that killed the
-     ORIGINAL ticker form came from the sprite's background-position
-     write, not from opacity on leaf spans.
+     A CSS animation rather than a JS style write, because opacity is
+     compositable: Blink promotes the element for a KNOWN animation and
+     ticks it on the compositor thread, so a running dot costs no style
+     recalc, no paint and no layerize. An inline style write is just a
+     style change on an unpromoted element, so every tick drags the
+     whole document through recalc → paint → layerize → commit. That
+     cost is per TICK, not per element: the 2026-08-24 spike measured 4
+     dots and 40 dots at the same 58.9ms/5s, against 0.0ms for the CSS
+     form at either count.
 
-     Wall-clock phase comes from Date.now() in the ticker, so dots that
-     mount at different times breathe together, in step with the CSS
-     indicators phase-locked by utils/ambientPhase.ts.
+     History, because this flipped five times and the last two were
+     mine to un-do. 5c860a15 armed a JS ticker; 1633dcea disarmed it on
+     an Animation-in-scroller present-policy theory; 2026-08-24
+     measured that theory as binary and document-wide
+     (present-policy-arms.mjs) and moved the pulse here, to CSS
+     keyframes. 2026-08-25 flipped it away twice on a LAYER COUNT: a
+     running opacity animation promotes its element
+     (kActiveOpacityAnimation), and under fleet load 18 of the app's 26
+     layers were 6px dots. First replacement (f3552fb8) wrote root
+     custom properties and regressed springs to 2fps — a root
+     custom-property write invalidates the whole document. Second
+     (da78203a) wrote each dot's opacity inline, and `probe frames` on
+     the live app put the bill at ~31ms/s: 9 full paint lifecycles a
+     second (181 Layerize / 244 Paint / 181 Commit per 20s), about
+     three quarters of the idle renderer main thread. Both flips were
+     counting layers instead of costing them — the promotion those 18
+     layers cost was already measured on 2026-08-24 at +1 layer per dot
+     with no overlap cascade and 34.30 → 34.31MB of texture across a
+     0→30 dot sweep. Trading ~31ms/s of main thread for 0.01MB is the
+     one trade this app's perf work is not allowed to make. Layers are
+     not free by assumption; these ones were measured, and they are.
+
+     Wall-clock phase comes from utils/ambientPhase.ts, so dots that
+     mount at different times breathe together.
 
      Spinners (animate-spin) are deliberately untouched — smooth
      rotation, transient use only. Standing spinners use
      primitives/SteppedSpinner.svelte: a spoked glyph whose steps(12)
      rotation lands on spoke positions, so the discretization reads as
      design. */
-  --animate-pulse: none;
+  --animate-pulse: ambient-pulse 2000ms steps(8, jump-none) infinite;
 
   /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
@@ -943,19 +948,33 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 /*
  * Ambient pulse: the working-dot / loading-text breath, 1 → 0.5 → 1
- * over 2s, 8 values per 1s half — 125ms per value, the same slot grid
- * every other ambient indicator uses. There is no rule here on purpose:
- * utils/ambientTicker.ts writes each dot's opacity INLINE
- * (pulseOpacityAt is the waveform's authority; the @theme
- * `--animate-pulse` comment carries the why, including why root custom
- * properties were reverted). The rest state is the default opacity 1:
- * ticker suspended, reduced motion, or no ticker at all (tests) all
- * read as a steady dot once the ticker's sweep clears its write.
+ * over 2s. `animate-pulse` is redefined in @theme to run these with
+ * steps(8, jump-none), which lands 8 opacity values on each 1s half —
+ * 125ms per value, the same slot grid every other ambient indicator
+ * uses. Mirrors pulseOpacityAt() in utils/ambientTicker.ts, and
+ * ambientCss.browser.test.ts samples this rule against it.
  *
  * .ambient-pulse-s2 / -s4 are Indicator.svelte's staggers for the three
  * backgrounded dots, one and two slots apart so they never breathe in
- * unison — the ticker reads them as lead markers.
+ * unison. The delays are NEGATIVE on purpose: a positive delay would
+ * hold the dot un-animated at full opacity through its first quarter
+ * second and fire `animationstart` late, and that event is what
+ * ambientPhase.ts pins the wall-clock phase on. Direction is free in a
+ * periodic waveform; what matters is that the three sit a slot apart.
+ *
+ * Compound selectors so a stagger outranks the utility's own implied
+ * animation-delay: 0s whichever cascade layer either lands in.
+ *
+ * Reduced motion collapses these through the global reset at the bottom
+ * of this file, leaving the dot at its natural opacity.
  */
+@keyframes ambient-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.animate-pulse.ambient-pulse-s2 { animation-delay: -250ms; }
+.animate-pulse.ambient-pulse-s4 { animation-delay: -500ms; }
 
 /*
  * SteppedSpinner's rotation: one 30° spoke advance per 125ms slot, 12

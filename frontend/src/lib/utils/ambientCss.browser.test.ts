@@ -65,26 +65,34 @@ afterEach(() => {
   for (const el of hosts.splice(0)) el.remove();
 });
 
-describe('ambient pulse rendering', () => {
-  // The pulse is NOT a CSS animation (a running opacity animation
-  // promotes its element to its own composited layer — 18 of 26 layers
-  // on 6px dots, 2026-08-25) and NOT root custom properties (a root
-  // custom-property write invalidates style for the whole document —
-  // the 2fps-springs regression, same day). The ticker writes each
-  // dot's opacity inline (ambientTicker.test.ts pins the writes and the
-  // staggers); what needs a real cascade is that app.css arms neither
-  // failure mode on the class itself.
-  it('creates no Animation object and rests at full opacity', () => {
+describe('ambient pulse keyframes', () => {
+  it('renders pulseOpacityAt() across the 2s cycle', () => {
     const dot = mount('<span class="animate-pulse"></span>');
-    expect(dot.getAnimations(), 'pulse must not create an Animation (layer promotion)').toHaveLength(0);
-    expect(opacityOf(dot), 'rest state is the default opacity').toBe(1);
+    const animation = animationOf(dot, 'ambient-pulse');
+    for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
+      sampleAt(animation, t);
+      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
+    }
   });
 
-  it('renders an inline waveform write over the rest state', () => {
-    const dot = mount('<span class="animate-pulse"></span>');
+  // The staggers are negative animation-delays, so each marked dot shows
+  // the waveform one or two 250ms slots AHEAD of the base — that, and
+  // not a different waveform, is what keeps the three from breathing in
+  // unison. A positive delay would hold the dot un-animated through its
+  // first quarter second and fire `animationstart` late, which is the
+  // event ambientPhase.ts pins wall-clock phase on.
+  it.each([
+    ['ambient-pulse-s2', 250],
+    ['ambient-pulse-s4', 500],
+  ])('runs %s a lead of %dms ahead of the base waveform', (stagger, leadMs) => {
+    const base = mount('<span class="animate-pulse"></span>');
+    const staggered = mount(`<span class="animate-pulse ${stagger}"></span>`);
+    const baseAnimation = animationOf(base, 'ambient-pulse');
+    const staggeredAnimation = animationOf(staggered, 'ambient-pulse');
     for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
-      dot.style.setProperty('opacity', String(pulseOpacityAt(t)));
-      expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
+      sampleAt(baseAnimation, t);
+      sampleAt(staggeredAnimation, t);
+      expect(opacityOf(staggered), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t + leadMs), 4);
     }
   });
 });
