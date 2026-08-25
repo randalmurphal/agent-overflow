@@ -93,6 +93,7 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   RefreshMcpServerStatus: owned(MCP_SERVERS_STORE, 'refreshMcpServerStatus()'),
   ReconnectMcpServer: owned(MCP_SERVERS_STORE, 'reconnectMcpServer()'),
   TriggerMcpAuth: owned(MCP_SERVERS_STORE, 'triggerMcpAuth()'),
+  TriggerWorkspaceMcpAuth: owned(MCP_SERVERS_STORE, 'triggerMcpAuth()'),
   ListChatBarFavorites: owned(
     CHAT_BAR_FAVORITES_STORE,
     'ensureChatBarFavorites() + peekChatBarFavorites()',

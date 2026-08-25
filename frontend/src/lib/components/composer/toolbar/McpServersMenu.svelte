@@ -124,12 +124,9 @@
       addToast('info', `Enable ${row.name} first, then sign in.`);
       return;
     }
-    if (!target?.threadId) {
-      addToast('info', 'Start the thread before signing in.');
-      return;
-    }
+    if (!target) return;
     try {
-      const res = await triggerMcpAuth(target.threadId, row.name);
+      const res = await triggerMcpAuth(target, row.name);
       if (res?.authUrl) {
         await OpenExternalURL(res.authUrl);
       } else {

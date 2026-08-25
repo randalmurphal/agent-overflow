@@ -289,6 +289,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875},      // main.App.TerminateCodexBackgroundTerminal
 	{Name: "TouchRemoteEndpoint", ID: 2647456459},                  // main.App.TouchRemoteEndpoint
 	{Name: "TriggerMcpAuth", ID: 1291217507},                       // main.App.TriggerMcpAuth
+	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274},               // main.App.TriggerWorkspaceMcpAuth
 	{Name: "UnarchiveProject", ID: 2561521885},                     // main.App.UnarchiveProject
 	{Name: "UnarchiveThread", ID: 3655125512},                      // main.App.UnarchiveThread
 	{Name: "UnpinThread", ID: 3175043037},                          // main.App.UnpinThread

@@ -204,6 +204,55 @@ describe('<McpServersTrigger>', () => {
     await waitFor(() => expect(auth).toHaveBeenCalledWith('thread-1', 'atlassian'));
   });
 
+  it('signs in from a draft placeholder without materializing a thread', async () => {
+    setBindingMock('ListWorkspaceMcpServers', async () => [
+      row({
+        provider: 'codex',
+        name: 'atlassian',
+        status: 'needs-auth',
+        authStatus: 'oAuth',
+        source: 'config',
+      }),
+    ]);
+    const workspaceAuth = setBindingMock('TriggerWorkspaceMcpAuth', async () => ({
+      authUrl: 'https://example.test/oauth',
+      provider: 'codex',
+      requiresUserAction: true,
+    }));
+    const threadAuth = setBindingMock('TriggerMcpAuth', async () => {
+      throw new Error('draft sign-in must not require a persisted thread');
+    });
+    const createThread = setBindingMock('CreateThread', async () => {
+      throw new Error('draft sign-in must not materialize the draft');
+    });
+    const openURL = setBindingMock('OpenExternalURL', async () => {});
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+    pane.startDraftPlaceholder(
+      {
+        id: 'project-1',
+        path: '/repo',
+        name: 'Repository',
+        sortPosition: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      },
+      'chat',
+      { provider: 'codex', workspacePath: '/repo' },
+    );
+
+    const { getByTestId, findByRole } = render(McpServersTrigger, { props: { pane } });
+    await fireEvent.click(getByTestId('composer-mcp-trigger'));
+    await fireEvent.click(await findByRole('button', { name: 'Sign in to atlassian' }));
+
+    await waitFor(() =>
+      expect(workspaceAuth).toHaveBeenCalledWith('codex', '/repo', 'atlassian'),
+    );
+    expect(openURL).toHaveBeenCalledWith('https://example.test/oauth');
+    expect(threadAuth).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
+  });
+
   it('surfaces a failed listing in the menu instead of an empty state', async () => {
     setBindingMock('ListThreadMcpServers', async () => {
       throw new Error('mcp listing unavailable');

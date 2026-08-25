@@ -3453,9 +3453,9 @@ export function SetWorkspaceMcpServerEnabled(providerName: string, workspacePath
 }
 
 /**
- * StartCodexReview runs Codex's built-in code review on the thread's current
- * workspace state, INLINE — the review turn lands on this thread, so its
- * transcript flows through the same triage path every other turn does.
+ * StartCodexReview runs Codex's built-in review through the normal composer
+ * send transaction. The user command, turn, nested agent activity, sourced
+ * result, lazy session start, and send-failure state therefore share one path.
  * 
  * Detached delivery is deliberately not exposed. A detached review runs on a
  * thread this session does not own, so every notification it produces hits the
@@ -3731,6 +3731,18 @@ export function TouchRemoteEndpoint(id: string): $CancellablePromise<void> {
  */
 export function TriggerMcpAuth(threadID: string, name: string): $CancellablePromise<$models.MCPAuthInitResult> {
     return $Call.ByID(1291217507, threadID, name).then(($result: any) => {
+        return $$createType130($result);
+    });
+}
+
+/**
+ * TriggerWorkspaceMcpAuth authenticates a provider/workspace MCP server
+ * without creating an Agent Overflow thread. A temporary provider process owns
+ * the loopback listener through the browser hop, then exits when completion is
+ * confirmed, rejected, timed out, or the app shuts down.
+ */
+export function TriggerWorkspaceMcpAuth(providerName: string, workspacePath: string, serverName: string): $CancellablePromise<$models.MCPAuthInitResult> {
+    return $Call.ByID(417766274, providerName, workspacePath, serverName).then(($result: any) => {
         return $$createType130($result);
     });
 }

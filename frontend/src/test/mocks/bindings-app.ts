@@ -575,6 +575,7 @@ export const ReconnectMcpServer = dispatch('ReconnectMcpServer');
 export const GetMcpServerStatus = dispatch('GetMcpServerStatus');
 export const RefreshMcpServerStatus = dispatch('RefreshMcpServerStatus');
 export const TriggerMcpAuth = dispatch('TriggerMcpAuth');
+export const TriggerWorkspaceMcpAuth = dispatch('TriggerWorkspaceMcpAuth');
 
 // Send-queue (per-thread mid-turn queue; backend-owned). Tests that
 // exercise mid-turn submits must mock RegisterQueueItem to return the

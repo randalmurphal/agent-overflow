@@ -406,6 +406,7 @@ export {
   GetMcpServerStatus,
   RefreshMcpServerStatus,
   TriggerMcpAuth,
+  TriggerWorkspaceMcpAuth,
 
   // In-app self-update (app_updater.go). LocalOnly — loopback callers only.
   CheckForUpdate,

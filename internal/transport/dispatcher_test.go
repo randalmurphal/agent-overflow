@@ -901,11 +901,12 @@ func (p *privilegedApp) SetThreadMcpServerEnabled() string { return "ok" }
 func (p *privilegedApp) SetWorkspaceMcpServerEnabled() string {
 	return "ok"
 }
-func (p *privilegedApp) ReconnectMcpServer() string     { return "ok" }
-func (p *privilegedApp) GetMcpServerStatus() string     { return "ok" }
-func (p *privilegedApp) ListMcpServerStatuses() string  { return "ok" }
-func (p *privilegedApp) RefreshMcpServerStatus() string { return "ok" }
-func (p *privilegedApp) TriggerMcpAuth() string         { return "ok" }
+func (p *privilegedApp) ReconnectMcpServer() string      { return "ok" }
+func (p *privilegedApp) GetMcpServerStatus() string      { return "ok" }
+func (p *privilegedApp) ListMcpServerStatuses() string   { return "ok" }
+func (p *privilegedApp) RefreshMcpServerStatus() string  { return "ok" }
+func (p *privilegedApp) TriggerMcpAuth() string          { return "ok" }
+func (p *privilegedApp) TriggerWorkspaceMcpAuth() string { return "ok" }
 
 // 8b. Provider-reported account usage (spawns the provider CLI under the
 // user's credentials and returns account-scoped data).

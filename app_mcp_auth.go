@@ -185,6 +185,54 @@ func (a *App) startClaudeMCPOAuthPoll(threadID, serverName string) {
 // Session struct.
 type claudeMCPStatusQuerier func(ctx context.Context) ([]claude.MCPServerStatus, error)
 
+type claudeMCPOAuthObservation struct {
+	status   mcpstatus.Status
+	raw      string
+	error    string
+	timedOut bool
+	aborted  bool
+}
+
+// waitForClaudeMCPOAuth is the shared provider-observation loop for both a
+// thread-owned session and a temporary workspace-auth process. Keeping the
+// state machine here prevents those two entry points from disagreeing about
+// terminal statuses, transient query failures, cancellation, or timeout.
+func waitForClaudeMCPOAuth(
+	ctx context.Context,
+	serverName string,
+	intervals []time.Duration,
+	getQuerier func() claudeMCPStatusQuerier,
+) claudeMCPOAuthObservation {
+	for _, d := range intervals {
+		if !ctxutil.Sleep(ctx, d) {
+			return claudeMCPOAuthObservation{aborted: true}
+		}
+		query := getQuerier()
+		if query == nil {
+			return claudeMCPOAuthObservation{aborted: true}
+		}
+		statuses, err := query(ctx)
+		if err != nil {
+			continue
+		}
+		for i := range statuses {
+			if statuses[i].Name != serverName {
+				continue
+			}
+			mapped := claude.MCPStatusFromRaw(statuses[i].Status)
+			if mapped == mcpstatus.StatusConnected || mapped == mcpstatus.StatusFailed {
+				return claudeMCPOAuthObservation{
+					status: mapped,
+					raw:    statuses[i].Status,
+					error:  statuses[i].Error,
+				}
+			}
+			break
+		}
+	}
+	return claudeMCPOAuthObservation{timedOut: true, error: "sign-in not confirmed"}
+}
+
 // defaultClaudeMCPOAuthIntervals is a Fibonacci-shaped ramp for fast
 // browser flows (most OAuth completes inside 10s), then a steady 15s
 // cadence out to a ~5-minute total budget for the slow ones: an IdP
@@ -258,70 +306,42 @@ func (a *App) pollClaudeMCPAfterOAuth(
 	intervals []time.Duration,
 	getQuerier func() claudeMCPStatusQuerier,
 ) {
-	for _, d := range intervals {
-		if !ctxutil.Sleep(ctx, d) {
+	observation := waitForClaudeMCPOAuth(ctx, serverName, intervals, getQuerier)
+	if observation.aborted {
+		return
+	}
+	if !observation.timedOut {
+		// Shutdown race guard. appCtx is cancelled in Shutdown step 1b,
+		// BEFORE drainTriage. Bail before emitErrorToThread can file a
+		// triage.Handle past the drain barrier.
+		if ctx.Err() != nil {
 			return
 		}
-		query := getQuerier()
-		if query == nil {
-			return
-		}
-		statuses, err := query(ctx)
-		if err != nil {
-			continue
-		}
-		var entry *claude.MCPServerStatus
-		for i := range statuses {
-			if statuses[i].Name == serverName {
-				entry = &statuses[i]
-				break
+		sanitizedErr := sanitizeMCPError(observation.error)
+		a.mcpStatus().Put(mcpstatus.ServerStatus{
+			Key:       mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: serverName},
+			Status:    observation.status,
+			Raw:       observation.raw,
+			Error:     sanitizedErr,
+			Source:    mcpstatus.SourceLiveSession,
+			CheckedAt: time.Now(),
+		})
+		success := observation.status == mcpstatus.StatusConnected
+		a.emit("mcp:oauth-completed", map[string]any{
+			"threadId":   threadID,
+			"provider":   mcpProviderClaude,
+			"serverName": serverName,
+			"success":    success,
+			"error":      sanitizedErr,
+		})
+		if !success {
+			msg := sanitizedErr
+			if msg == "" {
+				msg = "sign-in did not complete"
 			}
+			a.emitErrorToThread(threadID, fmt.Sprintf("mcp: %s: %s", serverName, msg))
 		}
-		if entry == nil {
-			continue
-		}
-		mapped := claude.MCPStatusFromRaw(entry.Status)
-		switch mapped {
-		case mcpstatus.StatusConnected, mcpstatus.StatusFailed:
-			// Shutdown race guard. appCtx is cancelled in Shutdown
-			// step 1b, BEFORE drainTriage. If we landed here between
-			// the query returning and the side effects, ctx.Err()
-			// has flipped — bail before emitErrorToThread can file a
-			// triage.Handle past the drain barrier.
-			if ctx.Err() != nil {
-				return
-			}
-			sanitizedErr := sanitizeMCPError(entry.Error)
-			a.mcpStatus().Put(mcpstatus.ServerStatus{
-				Key:       mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: serverName},
-				Status:    mapped,
-				Raw:       entry.Status,
-				Error:     sanitizedErr,
-				Source:    mcpstatus.SourceLiveSession,
-				CheckedAt: time.Now(),
-			})
-			success := mapped == mcpstatus.StatusConnected
-			a.emit("mcp:oauth-completed", map[string]any{
-				"threadId":   threadID,
-				"provider":   mcpProviderClaude,
-				"serverName": serverName,
-				"success":    success,
-				"error":      sanitizedErr,
-			})
-			if !success {
-				msg := sanitizedErr
-				if msg == "" {
-					msg = "sign-in did not complete"
-				}
-				a.emitErrorToThread(threadID, fmt.Sprintf("mcp: %s: %s", serverName, msg))
-			}
-			return
-		default:
-			// needs-auth, starting/pending, unknown, or any future
-			// status the projector returns as a non-terminal value:
-			// keep polling. Missing-from-response (entry == nil)
-			// already continues earlier.
-		}
+		return
 	}
 	// Budget exhausted without a terminal answer. Same shutdown race
 	// guard as the terminal branch: past the drain barrier nothing may
@@ -344,8 +364,10 @@ func (a *App) pollClaudeMCPAfterOAuth(
 // fires after the user's browser hop completes the OAuth handshake.
 // AO invalidates the status cache so the next read reflects the
 // freshly-credentialed session, surfaces a `mcp:oauth-completed` event
-// for any popup listening, and — on success — hot-reloads the thread's
-// live Codex session.
+// for any popup listening, and — on success — hot-reloads every live Codex
+// session. The grant and config are provider-global, so limiting the reload to
+// the initiating thread leaves sibling app-servers holding the same stale
+// startup failure.
 //
 // The reload is what makes the sign-in take effect. A loaded thread
 // keeps the MCP manager it started with, so a server that failed
@@ -380,19 +402,19 @@ func (a *App) handleCodexMCPOAuthCompleted(threadID, serverName string, success 
 		}
 		// serverName is provider-supplied too — same bound as the error
 		// beside it before it reaches a persisted thread item.
-		a.emitErrorToThread(threadID, fmt.Sprintf("mcp: %s: %s", sanitizeMCPError(serverName), msg))
+		if threadID != "" {
+			a.emitErrorToThread(threadID, fmt.Sprintf("mcp: %s: %s", sanitizeMCPError(serverName), msg))
+		}
 		return
 	}
-	sess, ok := a.sessionManager().get(threadID)
-	if !ok || sess.codex == nil {
-		return
+	// The grant and on-disk Codex MCP config are provider-global. Every live
+	// app-server can retain the failed startup this login invalidated, so reload
+	// all of them rather than leaving sibling panes stale until their next
+	// restart.
+	for _, live := range a.sessionManager().codexMCPSessions() {
+		live.session.ForgetMCPStartupState(serverName)
+		a.requestCodexMCPReload(live.threadID)
 	}
-	// The retained startup failure describes the run this sign-in just
-	// invalidated; without the forget it would outrank the settled list
-	// until Codex's next startupStatus round (the next turn boundary),
-	// rendering "Failed / Sign in again" over a sign-in that succeeded.
-	sess.codex.ForgetMCPStartupState(serverName)
-	a.requestCodexMCPReload(threadID)
 }
 
 // handleCodexMCPStartupUpdate is the per-thread side-channel

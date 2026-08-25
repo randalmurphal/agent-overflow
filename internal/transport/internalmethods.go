@@ -629,10 +629,11 @@ var LocalOnlyMethods = map[string]bool{
 	//     ~/.codex/config.toml write (categories 2 + 3) — and reshape
 	//     what tools the provider can call. ReconnectMcpServer drives
 	//     the live session's reconnect the same way (category 2).
-	//   - TriggerMcpAuth starts a session if needed (category 2) and
-	//     emits the authorization URL the desktop user opens locally — a
-	//     LAN peer opening the URL would land on the AO backend's
-	//     loopback OAuth callback, not their own browser.
+	//   - TriggerMcpAuth starts a session if needed, while
+	//     TriggerWorkspaceMcpAuth starts a temporary provider process
+	//     (category 2). Both emit an authorization URL the desktop user
+	//     opens locally. A LAN peer opening the URL would land on the AO
+	//     backend's loopback OAuth callback, not their own browser.
 	//   - ListThreadMcpServers / ListWorkspaceMcpServers /
 	//     ListMcpServerStatuses disclose server names, scopes, and tool
 	//     inventory (never args/env) — the same enumeration shape
@@ -648,6 +649,7 @@ var LocalOnlyMethods = map[string]bool{
 	"ListMcpServerStatuses":        true,
 	"RefreshMcpServerStatus":       true,
 	"TriggerMcpAuth":               true,
+	"TriggerWorkspaceMcpAuth":      true,
 
 	// 8b. Codex account-level usage. GetCodexAccountUsage drives the user's
 	// own `codex` CLI — a live session's app-server when one is open, a

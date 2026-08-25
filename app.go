@@ -601,6 +601,13 @@ type App struct {
 	// poller's entry on its way out.
 	claudeMCPOAuthPollsMu sync.Mutex
 	claudeMCPOAuthPolls   map[string]*claudeMCPOAuthPoll
+	// workspaceMCPAuthFlows owns provider processes started for OAuth from
+	// an unmaterialized draft. The process is keyed by the provider config
+	// entity rather than a thread, and stays alive through the browser hop.
+	// Concurrent clicks for the same target share one startup and URL.
+	workspaceMCPAuthMu      sync.Mutex
+	workspaceMCPAuthFlows   map[workspaceMCPAuthKey]*workspaceMCPAuthRun
+	workspaceMCPAuthStarter workspaceMCPAuthStarter
 	// codexMCPReloads coalesces async `config/mcpServer/reload` requests
 	// per thread (requestCodexMCPReload): the RPC is a level trigger, so
 	// requests landing while one is in flight collapse into a single

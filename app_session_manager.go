@@ -1,10 +1,12 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
 
@@ -244,6 +246,48 @@ func (m sessionManager) codexSessionForBinary(binary string) *codex.Session {
 		}
 	}
 	return nil
+}
+
+type codexMCPLiveSession struct {
+	threadID string
+	session  *codex.Session
+}
+
+// codexMCPSessions snapshots every live Codex session. MCP OAuth credentials
+// are provider-global, so a completed login invalidates retained startup state
+// in every process, not only whichever pane opened the browser.
+func (m sessionManager) codexMCPSessions() []codexMCPLiveSession {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	out := make([]codexMCPLiveSession, 0)
+	for threadID, sess := range m.app.sessions {
+		if sess.codex != nil {
+			out = append(out, codexMCPLiveSession{threadID: threadID, session: sess.codex})
+		}
+	}
+	return out
+}
+
+type claudeMCPLiveSession struct {
+	threadID string
+	session  *claude.Session
+}
+
+// claudeMCPSessions snapshots live Claude sessions whose cwd resolves the same
+// workspace MCP configuration. Other workspaces may use the same server name
+// for a different endpoint and must not be reconnected by this flow.
+func (m sessionManager) claudeMCPSessions(workspacePath string) []claudeMCPLiveSession {
+	workspacePath = filepath.Clean(workspacePath)
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	out := make([]claudeMCPLiveSession, 0)
+	for threadID, sess := range m.app.sessions {
+		if sess.claude == nil || filepath.Clean(sess.launchOpts.WorkDir) != workspacePath {
+			continue
+		}
+		out = append(out, claudeMCPLiveSession{threadID: threadID, session: sess.claude})
+	}
+	return out
 }
 
 // normalizeCodexBinary folds the unset binary setting onto the same value

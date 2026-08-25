@@ -280,6 +280,53 @@ url = "https://mcp.atlassian.com/v1/sse"
 	}
 }
 
+// TestHandleCodexMCPOAuthCompleted_ReloadsSiblingSessions pins the provider-
+// global ownership of the OAuth grant. A completion received on one
+// app-server must clear retained startup failures in every live Codex process,
+// or sibling panes stay on "Sign in again" until their sessions restart.
+func TestHandleCodexMCPOAuthCompleted_ReloadsSiblingSessions(t *testing.T) {
+	app, _, codexPath := newMCPTestApp(t)
+	writeCodexConfig(t, codexPath, `
+[mcp_servers.atlassian]
+url = "https://mcp.atlassian.com/v1/sse"
+`)
+	first, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5", "chat")
+	if err != nil {
+		t.Fatalf("create first thread: %v", err)
+	}
+	second, err := createTestThread(t, app, string(provider.Codex), t.TempDir(), "gpt-5", "chat")
+	if err != nil {
+		t.Fatalf("create second thread: %v", err)
+	}
+	firstCapture := t.TempDir()
+	secondCapture := t.TempDir()
+	newCodexMcpStatusSession(
+		t,
+		app,
+		first.ID,
+		writeCodexRefreshCaptureBinary(t, firstCapture, "codex-thread-first", ""),
+		first.WorkspacePath,
+		"codex-oauth-first-token",
+	)
+	newCodexMcpStatusSession(
+		t,
+		app,
+		second.ID,
+		writeCodexRefreshCaptureBinary(t, secondCapture, "codex-thread-second", ""),
+		second.WorkspacePath,
+		"codex-oauth-second-token",
+	)
+
+	app.handleCodexMCPOAuthCompleted(first.ID, "atlassian", true, "")
+
+	if method := readCodexReloadCapture(t, firstCapture, 3*time.Second); method != "config/mcpServer/reload" {
+		t.Fatalf("initiating session method = %q, want config/mcpServer/reload", method)
+	}
+	if method := readCodexReloadCapture(t, secondCapture, 3*time.Second); method != "config/mcpServer/reload" {
+		t.Fatalf("sibling session method = %q, want config/mcpServer/reload", method)
+	}
+}
+
 // TestCodexMCPReloadRequestsCoalesce: `config/mcpServer/reload` is a
 // level trigger — it re-reads the whole config — so N completions
 // landing while one reload is in flight must collapse into a single

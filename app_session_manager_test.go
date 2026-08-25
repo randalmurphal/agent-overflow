@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
 )
 
 func TestSessionManagerStartDedupesByThread(t *testing.T) {
@@ -194,6 +196,34 @@ func TestThreadIDsForProviderOrStartingCountsAHandingOffThreadOnce(t *testing.T)
 	ids := manager.threadIDsForProviderOrStarting(string(provider.Claude))
 	if len(ids) != 1 || ids[0] != "handoff" {
 		t.Fatalf("thread ids = %v, want the handing-off thread exactly once", ids)
+	}
+}
+
+func TestMCPOAuthSessionSnapshotsRespectProviderAndWorkspaceOwnership(t *testing.T) {
+	app := &App{sessions: map[string]session{
+		"claude-root": {
+			provider:   string(provider.Claude),
+			claude:     &claude.Session{},
+			launchOpts: provider.SessionOptions{WorkDir: "/repo"},
+		},
+		"claude-worktree": {
+			provider:   string(provider.Claude),
+			claude:     &claude.Session{},
+			launchOpts: provider.SessionOptions{WorkDir: "/repo/.wt/a"},
+		},
+		"codex": {
+			provider: string(provider.Codex),
+			codex:    &codex.Session{},
+		},
+	}}
+
+	claudeSessions := app.sessionManager().claudeMCPSessions("/repo")
+	if len(claudeSessions) != 1 || claudeSessions[0].threadID != "claude-root" {
+		t.Fatalf("Claude MCP sessions = %+v, want only the matching workspace", claudeSessions)
+	}
+	codexSessions := app.sessionManager().codexMCPSessions()
+	if len(codexSessions) != 1 || codexSessions[0].threadID != "codex" {
+		t.Fatalf("Codex MCP sessions = %+v, want every Codex process", codexSessions)
 	}
 }
 

@@ -42,11 +42,13 @@ import {
   SetWorkspaceMcpServerEnabled,
   ThreadMCPServer,
   TriggerMcpAuth,
+  TriggerWorkspaceMcpAuth,
   type MCPAuthInitResult,
   type MCPServerStatus,
 } from './bindings';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { wailsEventOn } from './wailsEvents';
+import { addToast } from './toast.svelte';
 
 // Backend-emitted payload for the `mcp:oauth-completed` channel.
 // Mirrors the map shape in app_mcp_auth.go.
@@ -298,6 +300,10 @@ function installMcpEventListeners(): void {
       // Signing in changes what the next listing reports for that server on
       // every entity that carries it, not just the thread the popup ran in.
       invalidateKeysWithServer(payload.provider, payload.serverName);
+      if (!payload.threadId && !payload.success && !payload.timedOut) {
+        const detail = payload.error ? `: ${payload.error}` : '';
+        addToast('error', `Sign-in failed for ${payload.serverName}${detail}`);
+      }
     }),
   ];
 }
@@ -406,8 +412,11 @@ export async function refreshMcpServerStatus(provider: string, name: string): Pr
   await GetMcpServerStatus(provider, name, true);
 }
 
-export async function triggerMcpAuth(threadId: string, name: string): Promise<MCPAuthInitResult> {
-  return TriggerMcpAuth(threadId, name);
+export async function triggerMcpAuth(target: MCPTarget, name: string): Promise<MCPAuthInitResult> {
+  if (target.threadId) {
+    return TriggerMcpAuth(target.threadId, name);
+  }
+  return TriggerWorkspaceMcpAuth(target.provider, target.workspacePath, name);
 }
 
 /** Diagnostics / tests: the entities currently held. */

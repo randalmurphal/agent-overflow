@@ -21,6 +21,7 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import type { EntityAttachment } from './entityStore.svelte';
 import { applyTransportGap } from './eventsTransportGap';
+import { getToasts, removeToast } from './toast.svelte';
 
 function row(over: Partial<ThreadMCPServer>): ThreadMCPServer {
   return new ThreadMCPServer({
@@ -441,6 +442,40 @@ describe('mcpServers store — mcp:status routing', () => {
     });
     await flush();
     expect(calls).toBe(2);
+  });
+
+  it('surfaces an asynchronous draft sign-in failure without a thread error row', async () => {
+    const before = new Set(getToasts().map((toast) => toast.id));
+    emitWailsEvent('mcp:oauth-completed', {
+      threadId: '',
+      provider: 'codex',
+      serverName: 'atlassian',
+      success: false,
+      error: 'browser approval was denied',
+    });
+    await flush();
+
+    const added = getToasts().filter((toast) => !before.has(toast.id));
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({
+      type: 'error',
+      message: 'Sign-in failed for atlassian: browser approval was denied',
+    });
+    for (const toast of added) removeToast(toast.id);
+  });
+
+  it('does not toast when an abandoned draft sign-in times out', async () => {
+    const before = getToasts().length;
+    emitWailsEvent('mcp:oauth-completed', {
+      threadId: '',
+      provider: 'claude',
+      serverName: 'srv',
+      success: false,
+      timedOut: true,
+      error: 'sign-in not confirmed',
+    });
+    await flush();
+    expect(getToasts()).toHaveLength(before);
   });
 });
 

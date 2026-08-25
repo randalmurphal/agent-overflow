@@ -12,8 +12,10 @@ import (
 )
 
 // oneshotClient is a strictly sequential request/response JSON-RPC client
-// over a short-lived `codex app-server` process. It exists for the reads
-// that answer a UI question without a thread: `model/list`, `skills/list`.
+// over a threadless `codex app-server` process. Most callers are one-shot
+// reads (`model/list`, `skills/list`). MCP OAuth keeps the same client alive
+// through one completion notification because its loopback listener belongs
+// to that process.
 //
 // It is deliberately not the Session machinery — that wires turn tracking,
 // approval routing, child-thread quarantine and notification dispatch,
@@ -22,8 +24,9 @@ import (
 // correlation is "read frames until the id matches" rather than a pending
 // map.
 //
-// No `thread/start` is ever issued through this client, so no turn is
-// billed and no provider state is mutated.
+// No `thread/start` is ever issued through this client, so no turn is billed
+// and no provider thread is created. Individual methods can still mutate
+// their own account-level state, such as installing an MCP OAuth grant.
 type oneshotClient struct {
 	proc *provider.Process
 	// label prefixes every error so a failure names the read that caused
