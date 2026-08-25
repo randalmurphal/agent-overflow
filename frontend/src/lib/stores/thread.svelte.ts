@@ -136,6 +136,13 @@ const PANE_ERROR_KINDS: readonly PaneErrorKind[] = Object.freeze([
   'history-load',
 ]);
 
+/** Top-to-bottom order of the stacked banner rows; see `paneErrorList`. */
+const PANE_ERROR_DISPLAY_ORDER: readonly PaneErrorKind[] = Object.freeze([
+  'session',
+  'history-load',
+  'general',
+]);
+
 /**
  * Creates a self-contained thread pane state instance.
  * Each pane tracks its own thread, unified timeline items, approvals,
@@ -362,19 +369,19 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // failed, queue failed, workspace prep failed, …) destroyed a live
   // retryable `history-load` banner along with its Retry button. Now
   // every write and every clear goes through `setPaneError` /
-  // `clearPaneError`, and the shared banner surface is RESOLVED from the
-  // stored kinds instead of being whatever landed last:
+  // `clearPaneError`:
   //
   //   - `session`      — a provider session_died event; carries Reconnect.
   //   - `history-load` — the initial history window failed and can be
   //                      retried in place; carries Retry.
   //   - `general`      — everything else; carries no action.
   //
-  // Resolution is most-recent-write-wins (the old single-slot
-  // behaviour), with ONE exception, which is the whole point of the
-  // chokepoint: a `general` write never displaces a live `history-load`
-  // error. The retry banner stays up; the general message is still
-  // stored and surfaces the moment the history load resolves.
+  // Every stored kind RENDERS, as its own stacked banner row with its
+  // own action and its own Dismiss (`paneErrorList`, user ruling
+  // 2026-08-25 — this replaced the earlier one-slot resolution rule,
+  // whose no-clobber exception silently hid a general error for as long
+  // as a history-load banner was up). A second write of the same kind
+  // replaces that kind's message; kinds never displace each other.
   let paneErrors: Readonly<Partial<Record<PaneErrorKind, PaneErrorEntry>>> =
     $state.raw(EMPTY_PANE_ERRORS);
   let paneErrorWriteSeq = 0;
@@ -399,19 +406,30 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     paneErrors = next;
   }
   /**
-   * Which stored error owns the shared banner surface right now. See the
-   * `paneErrors` comment for the ranking rule; `null` when nothing is set.
+   * Every stored error, in the fixed order the banner stack renders them:
+   * session (Reconnect) on top, then history-load (Retry), then general.
+   * Fixed by kind rather than by write order so rows never reshuffle
+   * under the pointer when a second error lands.
    */
-  function activePaneError(): { message: string; kind: PaneErrorKind } | null {
-    const historyLoad = paneErrors['history-load'];
+  function paneErrorList(): { kind: PaneErrorKind; message: string }[] {
+    const out: { kind: PaneErrorKind; message: string }[] = [];
+    for (const kind of PANE_ERROR_DISPLAY_ORDER) {
+      const entry = paneErrors[kind];
+      if (entry !== undefined) out.push({ kind, message: entry.message });
+    }
+    return out;
+  }
+  /**
+   * The newest stored error — the single-error convenience read behind
+   * `generalError`/`generalErrorKind`. Display goes through
+   * `paneErrorList`; this exists for presence checks and scope views.
+   */
+  function newestPaneError(): { message: string; kind: PaneErrorKind } | null {
     let best: PaneErrorEntry | undefined;
     let bestKind: PaneErrorKind | null = null;
     for (const kind of PANE_ERROR_KINDS) {
       const entry = paneErrors[kind];
       if (entry === undefined) continue;
-      // The no-clobber rule: while a retryable history-load banner is up
-      // it owns the surface, whatever landed after it.
-      if (kind === 'general' && historyLoad !== undefined) continue;
       if (best === undefined || entry.seq > best.seq) {
         best = entry;
         bestKind = kind;
@@ -1280,17 +1298,24 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get providerSessionAccount() {
       return providerSessionAccount;
     },
-    /** Message owning the shared banner surface; see `activePaneError`. */
+    /**
+     * Every stored pane error in banner-stack order; each renders as its
+     * own row with its own action and Dismiss. See `paneErrorList`.
+     */
+    get paneErrorList() {
+      return paneErrorList();
+    },
+    /** Newest stored error's message; presence-check convenience. */
     get generalError() {
-      return activePaneError()?.message ?? null;
+      return newestPaneError()?.message ?? null;
     },
     /**
-     * Tag of the message above, and therefore which action the banner
-     * offers. `'general'` reports as `null` — an untagged error has no
-     * affordance, which is the distinction this getter has always drawn.
+     * Tag of the message above. `'general'` reports as `null` — an
+     * untagged error has no affordance, which is the distinction this
+     * getter has always drawn.
      */
     get generalErrorKind() {
-      const kind = activePaneError()?.kind ?? null;
+      const kind = newestPaneError()?.kind ?? null;
       return kind === 'general' ? null : kind;
     },
     get loading() {
@@ -2084,10 +2109,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
 
     /**
      * Untagged write — the grab-bag slot (rename failed, git action
-     * failed, workspace prep failed, …). It no longer destroys a live
-     * `history-load` banner: the retry affordance stays up and this
-     * message surfaces once the history load resolves. `null` keeps its
-     * historical meaning of "clear the banner entirely".
+     * failed, workspace prep failed, …). It never touches another kind's
+     * row: a live `history-load` banner keeps its Retry and this message
+     * renders as its own row beneath it. `null` keeps its historical
+     * meaning of "clear every banner".
      */
     setGeneralError(message: string | null): void {
       if (message === null) clearPaneError();

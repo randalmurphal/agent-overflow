@@ -282,7 +282,9 @@ export interface RevealRead {
  * regrouping pass is what would narrow them onto this type.
  */
 export interface ErrorSurface {
-  /** Message currently owning the shared banner surface. */
+  /** Every stored error in banner-stack order; one row each. */
+  readonly paneErrorList: readonly { kind: PaneErrorKind; message: string }[];
+  /** Newest stored error's message; presence-check convenience. */
   readonly generalError: string | null;
   /** Its kind, with `'general'` reported as `null` — an untagged error has no action. */
   readonly generalErrorKind: 'session' | 'history-load' | null;

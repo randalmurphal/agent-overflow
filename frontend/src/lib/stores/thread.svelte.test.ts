@@ -10043,48 +10043,54 @@ describe('thread identity cutoff', () => {
   });
 });
 
-// The pane's error surface stores one message PER KIND and resolves the
-// shared banner from them, rather than keeping whatever landed last.
-// Only one visible behaviour differs from the old single-slot writer, and
-// it is the reason the chokepoint exists: an untagged `general` write no
-// longer destroys a live retryable `history-load` banner (and its Retry
-// button) — 15 call sites could do that.
+// The pane's error surface stores one message PER KIND and renders
+// EVERY stored kind as its own stacked banner row (user ruling
+// 2026-08-25). This replaced the earlier one-slot resolution, whose
+// no-clobber exception silently hid a general error while a
+// history-load banner was up. Kinds never displace each other; each
+// row dismisses independently.
 describe('pane error surface', () => {
-  it('a general error does not clobber a live history-load banner', () => {
+  it('stores every kind and lists them in banner-stack order', () => {
+    const pane = createThreadPane();
+    pane.setHistoryLoadError('Failed to load thread items: boom');
+    pane.setGeneralError('Failed to rename thread');
+    pane.setSessionError('Session died');
+
+    // session on top, then history-load, then general — fixed order, so
+    // rows never reshuffle when a later error lands.
+    expect(pane.paneErrorList).toEqual([
+      { kind: 'session', message: 'Session died' },
+      { kind: 'history-load', message: 'Failed to load thread items: boom' },
+      { kind: 'general', message: 'Failed to rename thread' },
+    ]);
+  });
+
+  it('a general error never touches a live history-load row', () => {
     const pane = createThreadPane();
     pane.setHistoryLoadError('Failed to load thread items: boom');
     pane.setGeneralError('Failed to rename thread');
 
-    // History-load owns the shared surface, so the Retry affordance stays.
-    expect(pane.generalErrorKind).toBe('history-load');
-    expect(pane.generalError).toBe('Failed to load thread items: boom');
+    expect(pane.paneErrorList).toEqual([
+      { kind: 'history-load', message: 'Failed to load thread items: boom' },
+      { kind: 'general', message: 'Failed to rename thread' },
+    ]);
 
-    // The general message was not lost — it surfaces once the retry lands.
+    // Retry resolving clears only its own row.
     pane.setHistoryLoadError(null);
-    expect(pane.generalErrorKind).toBeNull();
-    expect(pane.generalError).toBe('Failed to rename thread');
+    expect(pane.paneErrorList).toEqual([
+      { kind: 'general', message: 'Failed to rename thread' },
+    ]);
   });
 
-  it('keeps last-write-wins between general and session errors', () => {
+  it('a second write of one kind replaces that row only', () => {
     const pane = createThreadPane();
     pane.setSessionError('Session died');
-    expect(pane.generalErrorKind).toBe('session');
-
     pane.setGeneralError('Failed to rename thread');
-    expect(pane.generalErrorKind).toBeNull();
-    expect(pane.generalError).toBe('Failed to rename thread');
-
     pane.setSessionError('Session died again');
-    expect(pane.generalErrorKind).toBe('session');
-    expect(pane.generalError).toBe('Session died again');
-  });
-
-  it('a session error still takes the surface from a history-load banner', () => {
-    const pane = createThreadPane();
-    pane.setHistoryLoadError('Failed to load thread items: boom');
-    pane.setSessionError('Session died');
-    expect(pane.generalErrorKind).toBe('session');
-    expect(pane.generalError).toBe('Session died');
+    expect(pane.paneErrorList).toEqual([
+      { kind: 'session', message: 'Session died again' },
+      { kind: 'general', message: 'Failed to rename thread' },
+    ]);
   });
 
   it('clearSessionError leaves an orthogonal error visible', () => {
@@ -10092,27 +10098,32 @@ describe('pane error surface', () => {
     pane.setSessionError('Session died');
     pane.setGeneralError('Failed to rename thread');
     pane.clearSessionError();
-    expect(pane.generalError).toBe('Failed to rename thread');
+    expect(pane.paneErrorList).toEqual([
+      { kind: 'general', message: 'Failed to rename thread' },
+    ]);
   });
 
-  it('Dismiss clears the surface whatever is on it', () => {
+  it('per-kind dismiss clears one row; the bare clear drops them all', () => {
     const pane = createThreadPane();
     pane.setHistoryLoadError('Failed to load thread items: boom');
     pane.setGeneralError('Failed to rename thread');
     pane.setSessionError('Session died');
-    pane.clearGeneralError();
+    pane.clearPaneError('history-load');
+    expect(pane.paneErrorList.map((e) => e.kind)).toEqual(['session', 'general']);
+    pane.clearPaneError();
+    expect(pane.paneErrorList).toEqual([]);
     expect(pane.generalError).toBeNull();
-    expect(pane.generalErrorKind).toBeNull();
   });
 
-  it('setPaneError / clearPaneError are the chokepoint the wrappers use', () => {
+  it('generalError/generalErrorKind report the newest stored error', () => {
     const pane = createThreadPane();
     pane.setPaneError('Retry me', 'history-load');
     pane.setPaneError('Untagged');
-    expect(pane.generalErrorKind).toBe('history-load');
-    pane.clearPaneError('history-load');
     expect(pane.generalError).toBe('Untagged');
-    pane.clearPaneError();
-    expect(pane.generalError).toBeNull();
+    expect(pane.generalErrorKind).toBeNull();
+    pane.setSessionError('Session died');
+    expect(pane.generalErrorKind).toBe('session');
+    pane.clearPaneError('session');
+    expect(pane.generalError).toBe('Untagged');
   });
 });

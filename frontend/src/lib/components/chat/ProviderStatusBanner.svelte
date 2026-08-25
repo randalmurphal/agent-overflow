@@ -42,21 +42,24 @@
     return evt.status === 'ready' ? null : evt;
   });
 
-  let sessionBannerVisible = $derived(
-    !!pane.thread && (reconnecting || retryingHistory || !!pane.generalError),
-  );
-  let sessionBannerClasses = $derived(
-    reconnecting || retryingHistory
-      ? 'bg-warning/15 border-warning/30 text-warning'
-      : 'bg-error/15 border-error/30 text-error',
-  );
-  let sessionMessage = $derived(
-    reconnecting
-      ? 'Reconnecting…'
-      : retryingHistory
-        ? 'Retrying thread history…'
-        : (pane.generalError ?? 'Provider error'),
-  );
+  // One stacked row per stored error kind (session / history-load /
+  // general), each with its own action and Dismiss — user ruling
+  // 2026-08-25, replacing the single resolved slot whose no-clobber rule
+  // silently hid secondary errors. A row in a busy state (reconnecting,
+  // retrying) swaps to warning colours and progress copy in place.
+  const ERROR_ROW_CLASSES = 'bg-error/15 border-error/30 text-error';
+  const BUSY_ROW_CLASSES = 'bg-warning/15 border-warning/30 text-warning';
+  function rowBusy(kind: string): boolean {
+    return (
+      (kind === 'session' && reconnecting) ||
+      (kind === 'history-load' && retryingHistory)
+    );
+  }
+  function rowMessage(kind: string, message: string): string {
+    if (kind === 'session' && reconnecting) return 'Reconnecting…';
+    if (kind === 'history-load' && retryingHistory) return 'Retrying thread history…';
+    return message;
+  }
 
   // Status-level banner (install / version / auth) — colour + copy are
   // derived off the status string. Docs link (when present) comes from
@@ -115,9 +118,10 @@
   async function handleReconnect() {
     if (!pane.threadId || reconnecting) return;
     reconnecting = true;
-    pane.clearGeneralError();
     try {
       await ReconnectSession(pane.threadId);
+      // Only the session row resolves; an orthogonal error's row stays.
+      pane.clearPaneError('session');
       // Re-pull from the backend even on success. The backend's
       // CleanupThread synthesizes a truncated provider:turn_completed
       // when triage state was live, but events that fire during the
@@ -128,14 +132,15 @@
       await pane.refreshFromBackend();
     } catch (err) {
       console.error('Failed to reconnect:', err);
-      pane.setGeneralError(userFacingError(err));
+      // Replace the session row's message so its Reconnect stays offered.
+      pane.setPaneError(userFacingError(err), 'session');
     } finally {
       reconnecting = false;
     }
   }
 
   async function handleHistoryRetry() {
-    if (retryingHistory || pane.generalErrorKind !== 'history-load') return;
+    if (retryingHistory) return;
     retryingHistory = true;
     try {
       await pane.retryHistoryLoad();
@@ -250,33 +255,44 @@
     </div>
   {/if}
 
-  {#if sessionBannerVisible && pane.thread}
-    <div transition:fade={{ duration: 150 }} role="alert" aria-live="assertive" class="border-b {sessionBannerClasses} px-4 py-2 flex items-center gap-2">
-      <p class="text-xs flex-1 line-clamp-2" title={sessionMessage}>{sessionMessage}</p>
-      {#if pane.generalErrorKind === 'session'}
-        <button
-          onclick={handleReconnect}
-          disabled={reconnecting}
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {reconnecting ? 'Reconnecting...' : 'Reconnect'}
-        </button>
-      {:else if pane.generalErrorKind === 'history-load'}
-        <button
-          onclick={handleHistoryRetry}
-          disabled={retryingHistory}
-          class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        >
-          {retryingHistory ? 'Retrying…' : 'Retry'}
-        </button>
-      {/if}
-      <button
-        onclick={() => pane.clearGeneralError()}
-        class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
-        aria-label="Dismiss Banner"
+  {#if pane.thread}
+    {#each pane.paneErrorList as err (err.kind)}
+      <div
+        transition:fade={{ duration: 150 }}
+        role="alert"
+        aria-live="assertive"
+        data-testid="pane-error-banner"
+        data-kind={err.kind}
+        class="border-b {rowBusy(err.kind) ? BUSY_ROW_CLASSES : ERROR_ROW_CLASSES} px-4 py-2 flex items-center gap-2"
       >
-        Dismiss
-      </button>
-    </div>
+        <p class="text-xs flex-1 line-clamp-2" title={rowMessage(err.kind, err.message)}>
+          {rowMessage(err.kind, err.message)}
+        </p>
+        {#if err.kind === 'session'}
+          <button
+            onclick={handleReconnect}
+            disabled={reconnecting}
+            class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            {reconnecting ? 'Reconnecting...' : 'Reconnect'}
+          </button>
+        {:else if err.kind === 'history-load'}
+          <button
+            onclick={handleHistoryRetry}
+            disabled={retryingHistory}
+            class="text-xs px-2 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            {retryingHistory ? 'Retrying…' : 'Retry'}
+          </button>
+        {/if}
+        <button
+          onclick={() => pane.clearPaneError(err.kind)}
+          class="text-xs hover:opacity-70 cursor-pointer shrink-0 px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+          aria-label="Dismiss Banner"
+        >
+          Dismiss
+        </button>
+      </div>
+    {/each}
   {/if}
 </div>

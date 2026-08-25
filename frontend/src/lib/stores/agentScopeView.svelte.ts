@@ -393,6 +393,7 @@ export function createAgentScopeView(
     get providerSessionAccount() { return sourcePane.providerSessionAccount; },
     get generalError() { return sourcePane.generalError; },
     get generalErrorKind() { return sourcePane.generalErrorKind; },
+    get paneErrorList() { return sourcePane.paneErrorList; },
     get sendInFlight() { return sourcePane.sendInFlight; },
     get showTerminal() { return sourcePane.showTerminal; },
     get gitStatus() { return sourcePane.gitStatus; },
