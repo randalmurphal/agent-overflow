@@ -1,5 +1,5 @@
 // Detailed memory-infra dump: per process private footprint and allocator breakdown.
-// usage: probe memdump [--renderer] [--classes] [--gpu] [--trigger-blink-gc-mb <N> [--max-sec <S>]]
+// usage: probe memdump [--renderer] [--classes] [--gpu] [--trigger-blink-gc-mb <N> | --trigger-private-mb <N>] [--max-sec <S>]
 import { connectBrowser, done, sleep } from './lib/cdp.mjs';
 import { takeMemoryDump, allocatorMB, allocatedObjectsMB, isRenderer, isGpu, role, blinkClassRows, ccTileTotal } from './lib/memdump.mjs';
 import { pad, mb, fail } from './lib/format.mjs';
@@ -8,7 +8,9 @@ const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
 const num = (f, def) => { const i = args.indexOf(f); return i >= 0 ? +args[i + 1] : def; };
 const WANT_RENDERER = has('--renderer'), WANT_CLASSES = has('--classes'), GPU_ONLY = has('--gpu');
-const TRIGGER = num('--trigger-blink-gc-mb', 0), MAXSEC = num('--max-sec', 600);
+// --trigger-blink-gc-mb watches Oilpan allocated objects (live + unswept) — the churn view.
+// --trigger-private-mb watches the renderer's whole private footprint — the Task Manager number.
+const TRIGGER = num('--trigger-blink-gc-mb', 0), TRIGGER_PRIV = num('--trigger-private-mb', 0), MAXSEC = num('--max-sec', 600);
 
 const eff = (a) => a.effectiveSize ?? a.size;
 
@@ -59,7 +61,7 @@ function printClasses(proc, limit = 40) {
 
 const b = await connectBrowser();
 
-if (TRIGGER > 0) {
+if (TRIGGER > 0 || TRIGGER_PRIV > 0) {
   // Light dumps are cheap enough to poll; only the crossing takes the expensive detailed dump.
   const t0 = Date.now();
   let fired = false;
@@ -68,12 +70,16 @@ if (TRIGGER > 0) {
     const r = Object.values(byPid).find(isRenderer);
     if (!r) { console.log('no renderer dump'); await sleep(5000); continue; }
     const alloc = allocatedObjectsMB(r);
-    console.log(`${new Date().toISOString()} blink_gc committed=${allocatorMB(r, 'blink_gc')} allocated_objects=${alloc} cc=${allocatorMB(r, 'cc')} v8=${allocatorMB(r, 'v8')}`);
-    if (alloc !== null && alloc >= TRIGGER) {
+    console.log(`${new Date().toISOString()} private=${r.privMB} blink_gc committed=${allocatorMB(r, 'blink_gc')} allocated_objects=${alloc} cc=${allocatorMB(r, 'cc')} v8=${allocatorMB(r, 'v8')}`);
+    const crossed = TRIGGER_PRIV > 0
+      ? r.privMB != null && r.privMB >= TRIGGER_PRIV
+      : alloc !== null && alloc >= TRIGGER;
+    if (crossed) {
       const det = await takeMemoryDump(b, 'detailed');
       const dr = Object.values(det.byPid).find(isRenderer);
       if (!dr) break;
-      console.log(`DETAILED: committed=${allocatorMB(dr, 'blink_gc')} allocated_objects=${allocatedObjectsMB(dr)}`);
+      console.log(`DETAILED: private=${dr.privMB} committed=${allocatorMB(dr, 'blink_gc')} allocated_objects=${allocatedObjectsMB(dr)}`);
+      printProcess(dr);
       printClasses(dr, 45);
       fired = true;
       break;
