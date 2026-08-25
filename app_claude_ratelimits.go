@@ -27,7 +27,7 @@ var rateLimitProbeHTTPClient = &http.Client{}
 //
 // Every automatic trigger reaches this through claudeUsageGate(), never
 // directly — the gate coalesces bursts and enforces the cooldown. A server
-// 429 is scoped per account by usageBackoffLedger inside the refresh path,
+// 429 is scoped per account by usagebackoff.Ledger inside the refresh path,
 // which refuses further requests for that account until the backoff expires.
 //
 // Returns nil on ErrNoCredentials — the user simply hasn't run
@@ -64,14 +64,14 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) error {
 	// No managed account yet: the canonical login is probed directly, keyed in
 	// the backoff ledger under the empty account ID so a 429 here still holds
 	// follow-up probes without sending anything.
-	if remaining := a.usageBackoff.Remaining(string(provider.Claude), ""); remaining > 0 {
+	if remaining := a.usageProbe.backoff.Remaining(string(provider.Claude), ""); remaining > 0 {
 		return fmt.Errorf(
 			"the usage endpoint rate limited this login; try again in %s",
 			remaining.Round(time.Second),
 		)
 	}
 	snap, err := claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
-	a.usageBackoff.Note(string(provider.Claude), "", err)
+	a.usageProbe.backoff.Note(string(provider.Claude), "", err)
 	if err != nil {
 		if errors.Is(err, claude.ErrNoCredentials) {
 			return nil

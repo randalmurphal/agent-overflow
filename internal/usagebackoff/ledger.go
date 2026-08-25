@@ -1,4 +1,6 @@
-package main
+// Package usagebackoff scopes server-imposed usage-endpoint backoffs (429) to
+// the account that earned them, durably.
+package usagebackoff
 
 import (
 	"errors"
@@ -10,20 +12,20 @@ import (
 	"agent-overflow/internal/provider/claude"
 )
 
-// initialUsageProbeBackoff applies after the FIRST 429 whose Retry-After
-// header was absent or unusable; each consecutive headerless 429 doubles it up
-// to maxUsageProbeBackoff. The observed throttle window on Claude's usage
+// initialProbeBackoff applies after the FIRST 429 whose Retry-After header was
+// absent or unusable; each consecutive headerless 429 doubles it up to
+// maxProbeBackoff. The observed throttle window on Claude's usage
 // endpoint is about an hour, so a short fixed default (this was once 1 minute)
 // had the app retrying straight back into the active window — every attempt
 // re-earning the throttle, which reads as "rate limits never update anymore".
-const initialUsageProbeBackoff = 10 * time.Minute
+const initialProbeBackoff = 10 * time.Minute
 
-// maxUsageProbeBackoff caps the headerless-429 escalation at the observed
+// maxProbeBackoff caps the headerless-429 escalation at the observed
 // throttle window.
-const maxUsageProbeBackoff = time.Hour
+const maxProbeBackoff = time.Hour
 
-// usageBackoffLedger scopes server-imposed usage-endpoint backoffs (429) to
-// the account that earned them. The throttle is per-bearer: one account being
+// Ledger scopes server-imposed usage-endpoint backoffs (429) to the account
+// that earned them. The throttle is per-bearer: one account being
 // rate limited says nothing about the others (observed 2026-08-03 — an
 // inactive account's probe succeeded mid-throttle while every request for the
 // selected account served 429). A provider-wide hold would bury every other
@@ -41,31 +43,31 @@ const maxUsageProbeBackoff = time.Hour
 // re-earning the throttle each time, which is the "rate limits never update
 // anymore" symptom. Load binds the ledger to a file; every state change writes
 // it back.
-type usageBackoffLedger struct {
+type Ledger struct {
 	mu sync.Mutex
 	// now is a test seam; nil means the wall clock.
 	now func() time.Time
 	// path is the durable copy. Empty means memory-only — the zero value, and
 	// what unit tests that never call Load get.
 	path  string
-	until map[usageBackoffKey]time.Time
+	until map[ledgerKey]time.Time
 	// headerlessStrikes counts consecutive 429s that carried no usable
 	// Retry-After, per account, driving the exponential default backoff.
 	// Cleared by a success or by a 429 that does name its window.
-	headerlessStrikes map[usageBackoffKey]int
+	headerlessStrikes map[ledgerKey]int
 }
 
-type usageBackoffKey struct {
+type ledgerKey struct {
 	provider  string
 	accountID string
 }
 
 // Remaining reports how much of the account's backoff still holds. Zero means
 // requests are allowed.
-func (l *usageBackoffLedger) Remaining(providerName, accountID string) time.Duration {
+func (l *Ledger) Remaining(providerName, accountID string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	until, ok := l.until[usageBackoffKey{providerName, accountID}]
+	until, ok := l.until[ledgerKey{providerName, accountID}]
 	if !ok {
 		return 0
 	}
@@ -82,8 +84,8 @@ func (l *usageBackoffLedger) Remaining(providerName, accountID string) time.Dura
 // strike count, because it proves the throttle lifted. Other errors change
 // nothing: a 401 or a transport failure says nothing about the throttle
 // either way.
-func (l *usageBackoffLedger) Note(providerName, accountID string, err error) {
-	key := usageBackoffKey{providerName, accountID}
+func (l *Ledger) Note(providerName, accountID string, err error) {
+	key := ledgerKey{providerName, accountID}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err == nil {
@@ -107,34 +109,34 @@ func (l *usageBackoffLedger) Note(providerName, accountID string, err error) {
 		delete(l.headerlessStrikes, key)
 	} else {
 		if l.headerlessStrikes == nil {
-			l.headerlessStrikes = make(map[usageBackoffKey]int)
+			l.headerlessStrikes = make(map[ledgerKey]int)
 		}
 		l.headerlessStrikes[key]++
-		retry = maxUsageProbeBackoff
+		retry = maxProbeBackoff
 		// Bound the shift, not just the product — a runaway strike count
 		// would overflow the Duration before min() could cap it.
 		if doublings := l.headerlessStrikes[key] - 1; doublings < 3 {
-			retry = min(initialUsageProbeBackoff<<doublings, maxUsageProbeBackoff)
+			retry = min(initialProbeBackoff<<doublings, maxProbeBackoff)
 		}
 	}
 	if l.until == nil {
-		l.until = make(map[usageBackoffKey]time.Time)
+		l.until = make(map[ledgerKey]time.Time)
 	}
 	l.until[key] = l.clock().Add(retry)
 	l.saveLocked()
 }
 
-// usageBackoffEntry is one persisted account hold. The wire shape is the
-// ledger's own file format; nothing else reads it.
-type usageBackoffEntry struct {
+// fileEntry is one persisted account hold. The wire shape is the ledger's own
+// file format; nothing else reads it.
+type fileEntry struct {
 	Provider          string    `json:"provider"`
 	AccountID         string    `json:"accountId"`
 	Until             time.Time `json:"until"`
 	HeaderlessStrikes int       `json:"headerlessStrikes,omitempty"`
 }
 
-type usageBackoffFile struct {
-	Entries []usageBackoffEntry `json:"entries"`
+type ledgerFile struct {
+	Entries []fileEntry `json:"entries"`
 }
 
 // Load binds the ledger to path and adopts whatever holds are still running.
@@ -144,11 +146,11 @@ type usageBackoffFile struct {
 // A file that cannot be read is not fatal: the ledger starts empty and says
 // so. The cost of losing the holds is one throttled request per account; the
 // cost of refusing to boot is the whole app.
-func (l *usageBackoffLedger) Load(path string) {
+func (l *Ledger) Load(path string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.path = path
-	var file usageBackoffFile
+	var file ledgerFile
 	found, err := atomicfile.ReadJSON(path, &file)
 	if err != nil {
 		log.Printf("usage backoff: read %s: %v; starting with no holds", path, err)
@@ -159,10 +161,10 @@ func (l *usageBackoffLedger) Load(path string) {
 	}
 	now := l.clock()
 	for _, entry := range file.Entries {
-		key := usageBackoffKey{entry.Provider, entry.AccountID}
+		key := ledgerKey{entry.Provider, entry.AccountID}
 		if entry.HeaderlessStrikes > 0 {
 			if l.headerlessStrikes == nil {
-				l.headerlessStrikes = make(map[usageBackoffKey]int)
+				l.headerlessStrikes = make(map[ledgerKey]int)
 			}
 			l.headerlessStrikes[key] = entry.HeaderlessStrikes
 		}
@@ -170,7 +172,7 @@ func (l *usageBackoffLedger) Load(path string) {
 			continue
 		}
 		if l.until == nil {
-			l.until = make(map[usageBackoffKey]time.Time)
+			l.until = make(map[ledgerKey]time.Time)
 		}
 		l.until[key] = entry.Until
 	}
@@ -182,20 +184,20 @@ func (l *usageBackoffLedger) Load(path string) {
 // A failed write is announced, not swallowed: it means the next restart walks
 // back into a live throttle, which is precisely the symptom this file exists
 // to prevent, and a silent version of it would be undiagnosable.
-func (l *usageBackoffLedger) saveLocked() {
+func (l *Ledger) saveLocked() {
 	if l.path == "" {
 		return
 	}
 	now := l.clock()
-	file := usageBackoffFile{Entries: make([]usageBackoffEntry, 0, len(l.until))}
-	seen := make(map[usageBackoffKey]struct{}, len(l.until)+len(l.headerlessStrikes))
+	file := ledgerFile{Entries: make([]fileEntry, 0, len(l.until))}
+	seen := make(map[ledgerKey]struct{}, len(l.until)+len(l.headerlessStrikes))
 	for key, until := range l.until {
 		strikes := l.headerlessStrikes[key]
 		if !until.After(now) && strikes == 0 {
 			continue
 		}
 		seen[key] = struct{}{}
-		file.Entries = append(file.Entries, usageBackoffEntry{
+		file.Entries = append(file.Entries, fileEntry{
 			Provider:          key.provider,
 			AccountID:         key.accountID,
 			Until:             until,
@@ -208,7 +210,7 @@ func (l *usageBackoffLedger) saveLocked() {
 		if _, ok := seen[key]; ok || strikes == 0 {
 			continue
 		}
-		file.Entries = append(file.Entries, usageBackoffEntry{
+		file.Entries = append(file.Entries, fileEntry{
 			Provider:          key.provider,
 			AccountID:         key.accountID,
 			HeaderlessStrikes: strikes,
@@ -219,7 +221,7 @@ func (l *usageBackoffLedger) saveLocked() {
 	}
 }
 
-func (l *usageBackoffLedger) clock() time.Time {
+func (l *Ledger) clock() time.Time {
 	if l.now != nil {
 		return l.now()
 	}

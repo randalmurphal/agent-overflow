@@ -219,10 +219,10 @@ func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing
 	thread := createAppTestThread(t, app, "pred-dispatch", "codex", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
 	app.triage = triage.NewRouter(app.store, func(string, any) {})
-	app.flushDispatchMu.Lock()
+	app.flushDispatch.mu.Lock()
 	app.ensureFlushDispatchMapsLocked()
-	app.flushDispatchInflightItems[thread.ID] = 1
-	app.flushDispatchMu.Unlock()
+	app.flushDispatch.inflightItems[thread.ID] = 1
+	app.flushDispatch.mu.Unlock()
 
 	ok, _, reason, err := app.evaluateInterruptRevertPredicate(thread.ID)
 	if err != nil {
@@ -241,7 +241,7 @@ func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing
 //
 // A queued flush is tracked by exactly one of three signals at any moment:
 // triage's queuedFlushItems (QueuedFlushItemCount), the app's
-// flushDispatchInflightItems counter, or the persisted SQLite row.
+// a.flushDispatch.inflightItems counter, or the persisted SQLite row.
 // tryFlushQueue hands off from the first to the second by deleting the item
 // from the triage queue (under r.mu), releasing r.mu, and THEN invoking the
 // dispatcher — and the inflight counter is only bumped inside that dispatcher
@@ -252,7 +252,7 @@ func TestEvaluateInterruptRevertPredicateRejectsInflightFlushDispatch(t *testing
 // DeleteConversationFromTurn the very turn the queued message was about to
 // extend — discarding the prompt that started it.
 //
-// The fix makes App.RegisterQueueItem hold App.flushHandoffMu across the queue
+// The fix makes App.RegisterQueueItem hold App.flushDispatch.handoffMu across the queue
 // append and flush handoff. The revert predicate reads the queued / in-flight
 // counters under the same mutex (pendingFlushWorkCount), so
 // InterruptAndRevertIfClean cannot observe the window: its predicate read blocks
@@ -288,13 +288,13 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
 		close(inGap)
 		<-release
-		app.flushDispatchMu.Lock()
+		app.flushDispatch.mu.Lock()
 		app.ensureFlushDispatchMapsLocked()
-		app.flushDispatchInflightItems[threadID] += len(items)
-		app.flushDispatchMu.Unlock()
+		app.flushDispatch.inflightItems[threadID] += len(items)
+		app.flushDispatch.mu.Unlock()
 	})
 
-	// Queue M. With the fix, RegisterQueueItem holds flushHandoffMu across the
+	// Queue M. With the fix, RegisterQueueItem holds a.flushDispatch.handoffMu across the
 	// flush, so this goroutine parks inside the interpose with the mutex held.
 	registered := make(chan error, 1)
 	go func() {
@@ -309,7 +309,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 	}
 
 	// The user hits Stop while M is mid-handoff. InterruptAndRevertIfClean must
-	// block on flushHandoffMu — which it acquires inside its revert-predicate
+	// block on a.flushDispatch.handoffMu — which it acquires inside its revert-predicate
 	// read while RegisterQueueItem holds it — so it must not observe the window.
 	type iarOutcome struct {
 		res InterruptAndRevertResult
@@ -330,11 +330,11 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 			"(Reverted=%v, err=%v); expected it to block on flushHandoffMu held by "+
 			"RegisterQueueItem and never revert the turn-starting prompt", out.res.Reverted, out.err)
 	case <-time.After(500 * time.Millisecond):
-		// Correctly blocked on flushHandoffMu — the fix is serializing.
+		// Correctly blocked on a.flushDispatch.handoffMu — the fix is serializing.
 	}
 
 	// Release the handoff. RegisterQueueItem records M in-flight, drops
-	// flushHandoffMu, and the parked Stop proceeds — now seeing pending flush work.
+	// a.flushDispatch.handoffMu, and the parked Stop proceeds — now seeing pending flush work.
 	close(release)
 	if err := <-registered; err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)

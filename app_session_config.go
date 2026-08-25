@@ -493,9 +493,9 @@ func (a *App) threadConfigBusy(threadID string) bool {
 		}
 	}
 
-	a.flushDispatchMu.Lock()
-	inflight := a.flushDispatchInflightItems[threadID]
-	a.flushDispatchMu.Unlock()
+	a.flushDispatch.mu.Lock()
+	inflight := a.flushDispatch.inflightItems[threadID]
+	a.flushDispatch.mu.Unlock()
 	if inflight > 0 {
 		return true
 	}

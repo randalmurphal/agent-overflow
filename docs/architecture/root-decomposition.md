@@ -9,6 +9,12 @@ All numbers below are measured against the tree at the time of writing
 (re-measure before quoting them; the scripts are one-liners over
 `app*.go`).
 
+> **Field names in §(a)/§(b) are pre-stage-2.** Stage 2 collapsed 92 of
+> the 221 fields into 15 named group structs (`app_state.go`), so e.g.
+> `updaterMu` now reads `a.updater.mu` and `gitWatchPumpsMu` reads
+> `a.gitStatus.mu`. The counts and the cluster shape they describe are
+> unchanged — only the spellings are.
+
 ## (a) Field ownership
 
 | Metric | Count |
@@ -100,22 +106,42 @@ are set and cleared in one critical section). Both new locks are
 disjoint from `mu`: no path holds one while taking the other, and
 neither critical section calls anything that takes another App mutex.
 
-**Stage 2 — field grouping + free mass.** Two independent moves.
+**Stage 2 — field grouping + free mass (done).** Two independent moves.
 
-- *Free mass*: 19 `app_*.go` production files (5,128 lines) declare no
-  `*App` receiver at all — pure helpers already sitting in `main` for
-  no reason. Largest: `app_workflow_runner.go` (593),
-  `app_workflow_tool.go` (543), `app_workflow_workspace.go` (521),
-  `app_workflow_reliability.go` (461), `app_workflow_start_watchdog.go`
-  (391), `app_workflow_takeover.go` (379), `app_dir_watcher.go` (314),
-  `app_workflow_observe.go` (307), `app_usage_backoff.go` (228). These
-  move to `internal/` leaf packages with no interface design and no wire
-  impact. (Five more no-`App`-receiver files are `Harness` methods and
-  stay put.)
-- *Field grouping*: collapse each single-owner run into a named embedded
-  struct (`updater`, `flushDispatch`, `gitWatch`, …) so the 221-field
-  wall reads as ~15 groups. Mechanical; makes stage 3's cut lines
-  visible.
+- *Free mass*: of the 19 `app_*.go` production files that declare no
+  `*App` receiver, **six moved** — `internal/serialqueue` (`serialQueue`
+  → `Queue`), `internal/usageledger` (`ledgerSpend` / `priceUsageGroups`
+  → `Spend` / `PriceGroups`), `internal/usagebackoff`
+  (`usageBackoffLedger` → `Ledger`), `internal/sessionimport`
+  (`sessionImportScanCache` → `ScanCache`), and
+  `internal/selfupdate/linuxgate.go` (`linuxUpdaterBlocked` →
+  `LinuxUpdaterBlocked`). Tests moved with them.
+
+  **Thirteen did not, and the "no `*App` receiver" measurement is what
+  misled:** ten of them (`app_workflow_runner.go`, `_tool`,
+  `_workspace`, `_reliability`, `_start_watchdog`, `_takeover`,
+  `_observe`, `_send`, `_agent_turn`, `_quota`) declare methods on
+  `*workflowAppRunner`, whose first field is `app *App` — moving them IS
+  the stage-3 workflow-host extraction, not free mass.
+  `app_worktree_setup_types.go` is generated-bindings surface
+  (`WorktreeSetupRunState` et al. appear in
+  `frontend/bindings/.../models.ts`). `app_updater_desktop.go` and
+  `app_notifications_desktop.go` take `*App` as a parameter.
+  `app_dir_watcher.go` was moved and reverted: `themeWatcher` /
+  `spinnerWatcher` are DEFINED TYPES over `dirWatcher` and their tests
+  reach its unexported suppression ledger under its unexported mutex, so
+  promoting it means exporting a mutex on a shared core or rewriting a
+  live-fsnotify test — neither is a behavior-preserving mechanical move.
+- *Field grouping*: `App` went from 221 fields to **144 top-level**,
+  92 of them collapsed into **15 named group structs** in
+  `app_state.go` — `updater` (13), `mcp` (15), `flushDispatch` (8),
+  `design` (8), `prUpdates` (7), `usageProbe` (7), `sessionImport` (6),
+  `backgroundFetch` (5), `gitStatus` (4), `worktreeSetup` (4),
+  `workflowAutoResume` (4), `turnObservers` (4), `markThreadRead` (3),
+  `threadTitleGen` (2), `codexThreadCost` (2). Named fields, never
+  embedded; every mutex moved with all of its wards; `mu` (session
+  lifecycle) and the ambient set stayed top-level. `app_state.go`'s
+  header states the rules a new group must follow.
 
 **Stage 3+ — workflow-host extraction (deferred, own thread).** The
 workflow host is the largest coherent cluster and the best-isolated: 26

@@ -63,7 +63,7 @@ type GitStatusEvent struct {
 // events — that's the responsibility this struct represents, not "another
 // subscription".
 //
-// refs and dead are guarded by App.gitWatchPumpsMu, never by the pump
+// refs and dead are guarded by App.gitStatus.mu, never by the pump
 // itself. `dead` is set by the goroutine's own teardown: a pump whose
 // Updates() channel closed under it (Manager.Close) forwards nothing ever
 // again, so a caller must not be handed a reference on it — it would get a
@@ -112,9 +112,9 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 	// under the pump lock below stays the authoritative one — it is the only
 	// point where the handle actually lands — so a caller that loses a race
 	// for the last slot still cannot exceed the cap.
-	a.gitWatchPumpsMu.Lock()
-	atCap := len(a.gitWatchHandles) >= maxGitWatchHandles
-	a.gitWatchPumpsMu.Unlock()
+	a.gitStatus.mu.Lock()
+	atCap := len(a.gitStatus.handles) >= maxGitWatchHandles
+	a.gitStatus.mu.Unlock()
 	if atCap {
 		return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions
 	}
@@ -136,13 +136,13 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 	cwd, initial := sub.Cwd(), sub.Initial()
 
 	id := uuid.NewString()
-	a.gitWatchPumpsMu.Lock()
-	if len(a.gitWatchHandles) >= maxGitWatchHandles {
-		a.gitWatchPumpsMu.Unlock()
+	a.gitStatus.mu.Lock()
+	if len(a.gitStatus.handles) >= maxGitWatchHandles {
+		a.gitStatus.mu.Unlock()
 		sub.Close()
 		return GitStatusSubscriptionResult{}, ErrTooManyGitStatusSubscriptions
 	}
-	pump, shared := a.gitWatchPumps[cwd]
+	pump, shared := a.gitStatus.pumps[cwd]
 	// A dead pump reads as absent. Its goroutine has already stopped
 	// forwarding, so sharing it would hand back a handle that receives
 	// nothing; the fresh pump replaces the map entry and the dead one's
@@ -155,15 +155,15 @@ func (a *App) GitStatusSubscribe(ctx context.Context, threadID string) (GitStatu
 		pump.refs++
 	} else {
 		pump = &gitWatchPump{cwd: cwd, sub: sub, done: make(chan struct{}), refs: 1}
-		a.gitWatchPumps[cwd] = pump
+		a.gitStatus.pumps[cwd] = pump
 	}
-	a.gitWatchHandles[id] = pump
-	a.gitWatchPumpsMu.Unlock()
+	a.gitStatus.handles[id] = pump
+	a.gitStatus.mu.Unlock()
 
 	if shared {
 		sub.Close()
 	} else {
-		a.gitWatchPumpWG.Go(func() { a.pumpGitWatch(pump) })
+		a.gitStatus.wg.Go(func() { a.pumpGitWatch(pump) })
 	}
 
 	if state := transport.ConnStateFromContext(ctx); state != nil {
@@ -232,24 +232,24 @@ func (a *App) pumpGitWatch(pump *gitWatchPump) {
 // unsubscribeGitWatch releases one caller's handle. The pump (and the
 // gitwatch subscription under it) survives until the last handle goes.
 func (a *App) unsubscribeGitWatch(id string) {
-	a.gitWatchPumpsMu.Lock()
-	pump, ok := a.gitWatchHandles[id]
+	a.gitStatus.mu.Lock()
+	pump, ok := a.gitStatus.handles[id]
 	if !ok {
-		a.gitWatchPumpsMu.Unlock()
+		a.gitStatus.mu.Unlock()
 		return
 	}
-	delete(a.gitWatchHandles, id)
+	delete(a.gitStatus.handles, id)
 	pump.refs--
 	var teardown *gitWatchPump
 	if pump.refs <= 0 {
 		teardown = pump
 		// Only if it is still the pump serving this cwd — a superseded
 		// pump was replaced in the map and must not evict its successor.
-		if a.gitWatchPumps[pump.cwd] == pump {
-			delete(a.gitWatchPumps, pump.cwd)
+		if a.gitStatus.pumps[pump.cwd] == pump {
+			delete(a.gitStatus.pumps, pump.cwd)
 		}
 	}
-	a.gitWatchPumpsMu.Unlock()
+	a.gitStatus.mu.Unlock()
 	if teardown == nil {
 		return
 	}
@@ -274,15 +274,15 @@ func (a *App) unsubscribeGitWatch(id string) {
 // own teardown), and it is shutdown-only — the channel closes on
 // Manager.Close, after which gitwatch.Subscribe itself refuses.
 func (a *App) dropGitWatchPump(pump *gitWatchPump) {
-	a.gitWatchPumpsMu.Lock()
-	defer a.gitWatchPumpsMu.Unlock()
+	a.gitStatus.mu.Lock()
+	defer a.gitStatus.mu.Unlock()
 	pump.dead = true
-	if a.gitWatchPumps[pump.cwd] == pump {
-		delete(a.gitWatchPumps, pump.cwd)
+	if a.gitStatus.pumps[pump.cwd] == pump {
+		delete(a.gitStatus.pumps, pump.cwd)
 	}
-	for id, held := range a.gitWatchHandles {
+	for id, held := range a.gitStatus.handles {
 		if held == pump {
-			delete(a.gitWatchHandles, id)
+			delete(a.gitStatus.handles, id)
 		}
 	}
 }

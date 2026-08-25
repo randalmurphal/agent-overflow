@@ -2702,9 +2702,9 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 	}
 	settled := 0
 	settlement := triage.NewFlushSettlement(func() { settled++ })
-	app.flushDispatchMu.Lock()
+	app.flushDispatch.mu.Lock()
 	app.ensureFlushDispatchMapsLocked()
-	app.flushDispatchCurrent[thread.ID] = flushDispatchBatch{
+	app.flushDispatch.current[thread.ID] = flushDispatchBatch{
 		items: []triage.QueuedFlushItem{{
 			ID:         "queue:same",
 			Message:    "queued payload copy",
@@ -2712,10 +2712,10 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 			EnqueuedAt: 10,
 			Settlement: settlement,
 		}},
-		generation: app.flushDispatchGeneration[thread.ID],
+		generation: app.flushDispatch.generation[thread.ID],
 	}
-	app.flushDispatchInflightItems[thread.ID] = 1
-	app.flushDispatchMu.Unlock()
+	app.flushDispatch.inflightItems[thread.ID] = 1
+	app.flushDispatch.mu.Unlock()
 	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:same", store.Item{
 		ID:        "user:1:flush:1",
 		ThreadID:  thread.ID,

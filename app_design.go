@@ -29,7 +29,7 @@ func (f designCapturerFunc) Capture(ctx context.Context, threadID string) ([]byt
 // connection per capture either way.
 func (a *App) newDesignCapturer() design.Capturer {
 	return designCapturerFunc(func(ctx context.Context, threadID string) ([]byte, error) {
-		if a.screenshotManager == nil {
+		if a.design.screenshots == nil {
 			return nil, fmt.Errorf("design: screenshot manager not initialised")
 		}
 		srv := a.transportServer.Load()
@@ -44,7 +44,7 @@ func (a *App) newDesignCapturer() design.Capturer {
 		// designLoopbackOnly; the headless browser is also on
 		// loopback so the request is allowed without a token.
 		url := fmt.Sprintf("http://%s/design/%s/main/", addr, threadID)
-		return a.screenshotManager.Capture(ctx, screenshot.CaptureOptions{
+		return a.design.screenshots.Capture(ctx, screenshot.CaptureOptions{
 			URL:            url,
 			ViewportWidth:  screenshot.DefaultTileWidth,
 			ViewportHeight: screenshot.DefaultTileHeight,
@@ -71,10 +71,10 @@ func (a *App) designSessionConfig(thread store.Thread) (designSessionConfig, err
 	if thread.Mode != "design" {
 		return designSessionConfig{}, nil
 	}
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return designSessionConfig{}, fmt.Errorf("design workdir manager unavailable")
 	}
-	if err := a.designWorkdir.EnsureThread(thread.ID); err != nil {
+	if err := a.design.workdir.EnsureThread(thread.ID); err != nil {
 		return designSessionConfig{}, err
 	}
 	return designSessionConfig{
@@ -121,11 +121,11 @@ func (a *App) activateDesignSession(thread store.Thread) (map[string]any, error)
 // 7 which cancels browserCtx, the goroutine sees a started+then-closed
 // manager and exits without further work).
 func (a *App) primeDesignScreenshotManager() {
-	if a.screenshotManager == nil {
+	if a.design.screenshots == nil {
 		return
 	}
 	go func() {
-		if err := a.screenshotManager.Prime(context.Background()); err != nil {
+		if err := a.design.screenshots.Prime(context.Background()); err != nil {
 			log.Printf("screenshot: prime: %v", err)
 		}
 	}()
@@ -135,51 +135,51 @@ func (a *App) primeDesignScreenshotManager() {
 // thread's provider. Both providers use the same Codex HTTP MCP server
 // (Codex consumes it inline, Claude consumes it via --mcp-config).
 func (a *App) designMCPConfigForThread(thread store.Thread) (map[string]any, error) {
-	if a.designMCP == nil {
+	if a.design.mcp == nil {
 		return nil, fmt.Errorf("design MCP server unavailable")
 	}
-	return a.designMCP.RegisterThread(thread.ID)
+	return a.design.mcp.RegisterThread(thread.ID)
 }
 
 func (a *App) teardownDesignThread(threadID string) {
 	a.stopDesignWatcher(threadID)
-	if a.reactor != nil {
-		a.reactor.TeardownThread(threadID)
+	if a.design.reactor != nil {
+		a.design.reactor.TeardownThread(threadID)
 	}
-	if a.designMCP != nil {
-		a.designMCP.UnregisterThread(threadID)
+	if a.design.mcp != nil {
+		a.design.mcp.UnregisterThread(threadID)
 	}
 }
 
 func (a *App) startDesignWatcher(threadID string) error {
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return fmt.Errorf("design workdir manager unavailable")
 	}
-	mainPath, err := a.designWorkdir.MainPath(threadID)
+	mainPath, err := a.design.workdir.MainPath(threadID)
 	if err != nil {
 		return err
 	}
 	threadDir := filepath.Dir(mainPath)
-	a.designWatchersMu.Lock()
-	defer a.designWatchersMu.Unlock()
-	if existing, ok := a.designWatchers[threadID]; ok {
+	a.design.watchersMu.Lock()
+	defer a.design.watchersMu.Unlock()
+	if existing, ok := a.design.watchers[threadID]; ok {
 		// Idempotent: a redundant call (e.g. session restart) reuses
 		// the live watcher instead of leaking a duplicate goroutine.
 		_ = existing
 		return nil
 	}
 	w := design.NewWatcher(threadID, threadDir, a.handleDesignWatcherEvent, design.WatcherOptions{})
-	a.designWatchers[threadID] = w
+	a.design.watchers[threadID] = w
 	return nil
 }
 
 func (a *App) stopDesignWatcher(threadID string) {
-	a.designWatchersMu.Lock()
-	w, ok := a.designWatchers[threadID]
+	a.design.watchersMu.Lock()
+	w, ok := a.design.watchers[threadID]
 	if ok {
-		delete(a.designWatchers, threadID)
+		delete(a.design.watchers, threadID)
 	}
-	a.designWatchersMu.Unlock()
+	a.design.watchersMu.Unlock()
 	if ok {
 		w.Stop()
 	}
@@ -190,11 +190,11 @@ func (a *App) stopDesignWatcher(threadID string) {
 // settle-window tracker and emits a thread-aware reload event so the
 // frontend cache-busts the iframe / refreshes panels.
 func (a *App) handleDesignWatcherEvent(ev design.WatchEvent) {
-	if a.designDiagnostics != nil {
+	if a.design.diagnostics != nil {
 		// MarkActivity tells the diagnostic buffer the iframe is
 		// likely about to load + report; Drain on get_design_diagnostics
 		// will then block briefly to avoid stale-empty results.
-		a.designDiagnostics.MarkActivity(ev.ThreadID)
+		a.design.diagnostics.MarkActivity(ev.ThreadID)
 	}
 	switch ev.Subject {
 	case design.WatchSubjectMain:
@@ -216,10 +216,10 @@ func (a *App) handleDesignWatcherEvent(ev design.WatchEvent) {
 // the watcher reports the set, and this binding enumerates the
 // options inside it.
 func (a *App) ListDesignOptions(threadID, setID string) ([]string, error) {
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return nil, fmt.Errorf("design workdir manager unavailable")
 	}
-	return a.designWorkdir.ListOptions(threadID, setID)
+	return a.design.workdir.ListOptions(threadID, setID)
 }
 
 // DesignOptionSet is the wire shape for the "currently active
@@ -243,10 +243,10 @@ type DesignOptionSet struct {
 // already durable, so no SQLite row needs to mirror the picker — the
 // `.picked` marker file is the dismissal record.
 func (a *App) LatestDesignOptionSet(threadID string) (*DesignOptionSet, error) {
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return nil, fmt.Errorf("design workdir manager unavailable")
 	}
-	setID, optionIDs, err := a.designWorkdir.LatestUnpickedOptionSet(threadID)
+	setID, optionIDs, err := a.design.workdir.LatestUnpickedOptionSet(threadID)
 	if err != nil {
 		return nil, err
 	}
@@ -266,10 +266,10 @@ func (a *App) LatestDesignOptionSet(threadID string) (*DesignOptionSet, error) {
 // Called from the frontend's DesignOptionsPanel after SendMessage
 // for the structured `option_chosen` payload returns successfully.
 func (a *App) DismissDesignOptionSet(threadID, setID string) error {
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return fmt.Errorf("design workdir manager unavailable")
 	}
-	return a.designWorkdir.MarkOptionSetPicked(threadID, setID)
+	return a.design.workdir.MarkOptionSetPicked(threadID, setID)
 }
 
 // designWorkDirOverride returns the per-thread workdir to use as the
@@ -284,10 +284,10 @@ func (a *App) DismissDesignOptionSet(threadID, setID string) error {
 // Extracted from startSessionNow so the override is unit-testable
 // without booting a full session.
 func (a *App) designWorkDirOverride(t store.Thread) (string, error) {
-	if t.Mode != "design" || a.designWorkdir == nil {
+	if t.Mode != "design" || a.design.workdir == nil {
 		return "", nil
 	}
-	return a.designWorkdir.ThreadDir(t.ID)
+	return a.design.workdir.ThreadDir(t.ID)
 }
 
 // EnsureDesignWorkdir materialises the per-thread {main,options}/
@@ -296,12 +296,12 @@ func (a *App) designWorkDirOverride(t store.Thread) (string, error) {
 // to mount so the file server has something to serve before the
 // agent's first edit. Idempotent — safe to call on every mount.
 func (a *App) EnsureDesignWorkdir(threadID string) error {
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return fmt.Errorf("design workdir manager unavailable")
 	}
-	if err := a.designWorkdir.EnsureThread(threadID); err != nil {
+	if err := a.design.workdir.EnsureThread(threadID); err != nil {
 		return fmt.Errorf("ensure workdir for thread %q (base=%q): %w",
-			threadID, a.designWorkdir.BaseDir(), err)
+			threadID, a.design.workdir.BaseDir(), err)
 	}
 	return nil
 }
@@ -328,14 +328,14 @@ type DesignWorkdirInfo struct {
 // sibling getter bindings (GetSettings, GetThreadRuntimeMode) and
 // keeps the method name distinct from the DesignWorkdirInfo struct.
 func (a *App) GetDesignWorkdirInfo(threadID string) (DesignWorkdirInfo, error) {
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return DesignWorkdirInfo{}, fmt.Errorf("design workdir manager unavailable")
 	}
-	mainPath, err := a.designWorkdir.MainPath(threadID)
+	mainPath, err := a.design.workdir.MainPath(threadID)
 	if err != nil {
 		return DesignWorkdirInfo{}, err
 	}
-	files, err := a.designWorkdir.ListMainFiles(threadID)
+	files, err := a.design.workdir.ListMainFiles(threadID)
 	if err != nil {
 		return DesignWorkdirInfo{}, err
 	}
@@ -350,7 +350,7 @@ func (a *App) GetDesignWorkdirInfo(threadID string) (DesignWorkdirInfo, error) {
 // posts diagnostics to the parent window; the frontend buffers and
 // calls this binding to feed them into the per-thread ring.
 func (a *App) IngestDiagnosticBatch(batch design.DiagnosticBatch) error {
-	if a.designDiagnostics == nil {
+	if a.design.diagnostics == nil {
 		return fmt.Errorf("design diagnostic buffer unavailable")
 	}
 	if len(batch.Diagnostics) > maxDiagnosticBatchEntries {
@@ -367,7 +367,7 @@ func (a *App) IngestDiagnosticBatch(batch design.DiagnosticBatch) error {
 		batch.Diagnostics[i].URL = stringsx.Clip(batch.Diagnostics[i].URL, maxDiagnosticFieldChars)
 		batch.Diagnostics[i].Stack = stringsx.Clip(batch.Diagnostics[i].Stack, maxDiagnosticStackChars)
 	}
-	a.designDiagnostics.AppendBatch(batch.ThreadID, batch.Diagnostics)
+	a.design.diagnostics.AppendBatch(batch.ThreadID, batch.Diagnostics)
 	return nil
 }
 

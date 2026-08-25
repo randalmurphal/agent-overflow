@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usageledger"
 	"agent-overflow/internal/workflow/engine"
 )
 
@@ -461,8 +462,8 @@ func workflowRunMapSkeleton(item store.WorkItemTreeRun) (phases []WorkflowRunMap
 // force over it.
 //
 // Both go through the paths the ENFORCEMENT uses: the spend is
-// `priceUsageGroups` — the one ledger pricing rule every dollar surface folds
-// through — and the ceiling is `engine.ResolveBudget`, the call the engine's
+// `usageledger.PriceGroups` — the one ledger pricing rule every dollar surface
+// folds through — and the ceiling is `engine.ResolveBudget`, the call the engine's
 // own budget check is built on, so a profile-supplied default is the map's
 // number exactly as it is the park's. The tree is priced ONCE and the resolved
 // spend is handed to `ResolveBudget` rather than letting it re-read the ledger,
@@ -471,7 +472,7 @@ func (a *App) workflowRunMapMoney(
 	ctx context.Context, root engine.BudgetSubject,
 	usage store.WorkItemUsage, detail []store.UsageDetailRow,
 ) (WorkflowRunSpend, *WorkflowAgentRunBudget, error) {
-	priced, err := priceUsageGroups(detail)
+	priced, err := usageledger.PriceGroups(detail)
 	if err != nil {
 		return WorkflowRunSpend{}, nil, fmt.Errorf("workflow run map: run %s spend: %w", root.ItemID, err)
 	}

@@ -101,8 +101,8 @@ func newObserveHarness(t *testing.T, providerName string) *observeHarness {
 		harness.sends <- content
 		return nil
 	}
-	app.workflowAutoResumeNowFn = func() time.Time { return harness.now }
-	app.newWorkflowAutoResumeTimer = func(delay time.Duration, fire func()) workflowTimer {
+	app.workflowAutoResume.nowFn = func() time.Time { return harness.now }
+	app.workflowAutoResume.newTimer = func(delay time.Duration, fire func()) workflowTimer {
 		return &armedWorkflowTimer{callback: fire, delay: delay}
 	}
 	harness.runner = newWorkflowAppRunner(app, t.TempDir(), nil)

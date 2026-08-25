@@ -276,12 +276,12 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 // pendingFlushWorkCount sums every queued / in-flight follow-up message the
 // revert predicate must treat as turn-extending work. It reads three counters
 // that the flush handoff updates non-atomically (triage queue length, deferred
-// pending count, App-layer inflight count), so it holds flushHandoffMu across
+// pending count, App-layer inflight count), so it holds a.flushDispatch.handoffMu across
 // all three — the same mutex RegisterQueueItem holds across its enqueue→flush
 // handoff. That makes a message mid-handoff observable here as either
 // still-queued or already-in-flight, never invisible in the gap between.
 //
-// The lock-free boundary drains don't hold flushHandoffMu; for them the
+// The lock-free boundary drains don't hold a.flushDispatch.handoffMu; for them the
 // triage claim count (see tryFlushQueue) keeps a draining batch inside
 // QueuedFlushItemCount until the App inflight count has it. That overlap
 // only closes the gap if the triage counts are read FIRST: a batch moving
@@ -289,11 +289,11 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 // zero-counted. Do not reorder these reads.
 //
 // Reached only from evaluateInterruptRevertPredicate (InterruptAndRevertIfClean
-// holds the per-thread action lock, not flushHandoffMu), so there is no
+// holds the per-thread action lock, not a.flushDispatch.handoffMu), so there is no
 // re-entrancy on this mutex.
 func (a *App) pendingFlushWorkCount(threadID string) int {
-	a.flushHandoffMu.Lock()
-	defer a.flushHandoffMu.Unlock()
+	a.flushDispatch.handoffMu.Lock()
+	defer a.flushDispatch.handoffMu.Unlock()
 	total := 0
 	if a.triage != nil {
 		total += a.triage.QueuedFlushItemCount(threadID)

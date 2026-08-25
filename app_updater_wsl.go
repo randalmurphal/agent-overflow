@@ -15,7 +15,7 @@
 // The handoff is therefore the whole risk, and it has two phases, each under
 // its own deadline (armWSLInstallDeadlineLocked owns both, one timer field):
 //
-//	RestartToUpdate  → marker written, updaterBusy claimed and held,
+//	RestartToUpdate  → marker written, a.updater.busy claimed and held,
 //	                   directive emitted, ACK deadline armed
 //	  ├─ "proceeding" → acknowledged: marker and fence KEPT (the launcher is
 //	  │                 about to kill this process), ACK deadline replaced by
@@ -120,7 +120,7 @@ type wslUpdateMode struct {
 // initWSLUpdater configures the headless WSL backend's updater and reconciles
 // whatever install the previous run handed to the launcher. Called from
 // runHeadless BEFORE the transport server starts, so the updater RPC handlers
-// observe App.updater and App.wslUpdate without a race.
+// observe App.updater.handle and App.updater.wsl without a race.
 //
 // Like the desktop initUpdater it is a no-op on any failure (logged): in-app
 // updates simply stay unavailable while the app runs normally. Failing to set
@@ -210,9 +210,9 @@ func initWSLUpdaterIn(a *App, currentVersion, markerDir string) {
 		ackTimeout:      wslInstallACKTimeout,
 		backstopTimeout: wslInstallBackstopTimeout,
 	}
-	a.wslUpdate = mode
-	a.updater = u
-	a.updaterProvider = targetable
+	a.updater.wsl = mode
+	a.updater.handle = u
+	a.updater.provider = targetable
 	reconcileWSLUpdateMarker(a, currentVersion, mode)
 	log.Printf("updater: configured for %s (current version %s, target %s/%s, staging %s)",
 		updaterRepository, currentVersion, req.Platform, req.Arch, mode.stagingDir)
@@ -273,9 +273,9 @@ func clearWSLUpdateResidue(mode *wslUpdateMode) {
 // setUpdateApplyFailure records the boot notice CheckForUpdate surfaces on
 // UpdateAvailability.LastApplyFailure.
 func (a *App) setUpdateApplyFailure(notice string) {
-	a.updaterMu.Lock()
-	a.updateApplyFailure = notice
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	a.updater.applyFailure = notice
+	a.updater.mu.Unlock()
 }
 
 // notifyPendingUpdateApplyFailure presents the boot-detected "update didn't
@@ -292,9 +292,9 @@ func (a *App) setUpdateApplyFailure(notice string) {
 // surface is UpdateAvailability.LastApplyFailure, which the Settings panel reads
 // on every check for the life of the process.
 func (a *App) notifyPendingUpdateApplyFailure() {
-	a.updaterMu.Lock()
-	notice := a.updateApplyFailure
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	notice := a.updater.applyFailure
+	a.updater.mu.Unlock()
 	if notice == "" {
 		return
 	}
@@ -306,7 +306,7 @@ func (a *App) notifyPendingUpdateApplyFailure() {
 // stageWSLUpdate copies the freshly downloaded and verified artifact out of the
 // distro into the launcher's staging directory. It returns the terminal event
 // its caller must emit — readiness or failure — rather than emitting it itself:
-// the caller releases the updaterBusy fence first, and a client that acts on
+// the caller releases the a.updater.busy fence first, and a client that acts on
 // "ready" the instant it lands would otherwise be refused a restart by a fence
 // that is already on its way out.
 //
@@ -320,12 +320,12 @@ func (a *App) notifyPendingUpdateApplyFailure() {
 // that digest: the artifact crosses a filesystem this process does not own, and
 // that check is the backend-side integrity gate on the hop.
 func (a *App) stageWSLUpdate(rel *updater.Release) (terminal func()) {
-	mode := a.wslUpdate
+	mode := a.updater.wsl
 	filename, version, digest, err := releaseIdentity(rel)
 	if err != nil {
 		return a.failWSLStaging(err)
 	}
-	src := a.updater.DownloadedPath()
+	src := a.updater.handle.DownloadedPath()
 	if src == "" {
 		return a.failWSLStaging(errors.New("updater: the download reported success but staged no file"))
 	}
@@ -335,9 +335,9 @@ func (a *App) stageWSLUpdate(rel *updater.Release) (terminal func()) {
 	// (or a temp file a crashed copy left) has no business surviving next to
 	// the one we are about to hand over. Clearing App state first keeps the two
 	// in step: from here until the copy lands, nothing is staged.
-	a.updaterMu.Lock()
-	a.updaterStaged = nil
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	a.updater.staged = nil
+	a.updater.mu.Unlock()
 	if err := selfupdate.SweepStagingDir(mode.stagingDir); err != nil {
 		return a.failWSLStaging(err)
 	}
@@ -347,9 +347,9 @@ func (a *App) stageWSLUpdate(rel *updater.Release) (terminal func()) {
 		return a.failWSLStaging(err)
 	}
 
-	a.updaterMu.Lock()
-	a.updaterStaged = rel
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	a.updater.staged = rel
+	a.updater.mu.Unlock()
 
 	log.Printf("updater: staged %s (%s) at %s for the Windows launcher", filename, version, staged)
 	// The same channel and payload shape the desktop bridge forwards for
@@ -364,9 +364,9 @@ func (a *App) stageWSLUpdate(rel *updater.Release) (terminal func()) {
 // the panel would sit at "installing" forever.
 func (a *App) failWSLStaging(cause error) func() {
 	log.Printf("updater: staging the update for the Windows launcher failed: %v", cause)
-	a.updaterMu.Lock()
-	a.updaterStaged = nil
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	a.updater.staged = nil
+	a.updater.mu.Unlock()
 	return a.updaterErrorEmitter(updater.ErrorInfo{
 		Stage:    updater.StageInstall,
 		Message:  cause.Error(),
@@ -379,31 +379,31 @@ func (a *App) failWSLStaging(cause error) func() {
 // has re-verified the file, so the process must stay alive and reachable long
 // enough to be told what happened.
 //
-// updaterBusy is claimed here and released only by the install settling: the
+// a.updater.busy is claimed here and released only by the install settling: the
 // launcher's "failed" report, an expired deadline (ACK or backstop), or — the
 // success path — never, because the launcher kills this process. Holding it in
 // between is what keeps a second click, or a second --connect client, from
 // emitting a competing directive while the first is in flight.
 func (a *App) restartToUpdateWSL() error {
-	mode := a.wslUpdate
+	mode := a.updater.wsl
 
-	a.updaterMu.Lock()
-	if a.updaterBusy {
-		a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	if a.updater.busy {
+		a.updater.mu.Unlock()
 		return ErrUpdateBusy
 	}
-	staged := a.updaterStaged
+	staged := a.updater.staged
 	if staged == nil {
-		a.updaterMu.Unlock()
+		a.updater.mu.Unlock()
 		return ErrUpdateNotReady
 	}
 	filename, version, digest, err := releaseIdentity(staged)
 	if err != nil {
-		a.updaterMu.Unlock()
+		a.updater.mu.Unlock()
 		return fmt.Errorf("restart to update: %w", err)
 	}
 
-	a.updaterBusy = true
+	a.updater.busy = true
 	// The marker goes down before the directive goes out. The launcher may kill
 	// this process the moment it reads the directive, and a swap with no marker
 	// on disk would leave the next boot unable to tell a successful update from
@@ -411,25 +411,25 @@ func (a *App) restartToUpdateWSL() error {
 	// leaves nothing behind and the fence is simply released again.
 	if err := selfupdate.SaveMarker(mode.markerDir, selfupdate.Marker{
 		ExpectedVersion: version,
-		PriorVersion:    a.updater.CurrentVersion(),
+		PriorVersion:    a.updater.handle.CurrentVersion(),
 		StagedAt:        time.Now(),
 	}); err != nil {
-		a.updaterBusy = false
-		a.updaterMu.Unlock()
+		a.updater.busy = false
+		a.updater.mu.Unlock()
 		return fmt.Errorf("restart to update: %w", err)
 	}
-	a.updaterInstall = staged
+	a.updater.install = staged
 	// A fresh sequence starts unacknowledged even if a previous one ended in
 	// the acknowledged phase. settleWSLInstallLocked already resets this; saying
 	// so here is what makes the guarantee local to the handoff.
-	a.updaterInstallAcked = false
+	a.updater.installAcked = false
 	// Armed BEFORE the emit: the launcher can answer the moment the frame
 	// lands, and an ACK that arrives before its own deadline exists would find
 	// no install in flight and be refused as stale.
 	a.armWSLInstallDeadlineLocked(mode.ackTimeout, fmt.Sprintf(
 		"The Windows launcher did not respond to the install request within %s, so the update was not applied.",
 		mode.ackTimeout))
-	a.updaterMu.Unlock()
+	a.updater.mu.Unlock()
 
 	log.Printf("updater: handing %s (%s) to the Windows launcher", filename, version)
 	a.emit(selfupdate.ChannelInstall, selfupdate.InstallDirective{
@@ -461,7 +461,7 @@ func (a *App) restartToUpdateWSL() error {
 // LocalOnly: it mutates install state, clears an on-disk marker, and releases
 // the updater's busy fence.
 func (a *App) ReportUpdateInstallStatus(stage, version, message string) error {
-	if a.wslUpdate == nil {
+	if a.updater.wsl == nil {
 		return ErrUpdatesUnsupported
 	}
 	switch stage {
@@ -470,30 +470,30 @@ func (a *App) ReportUpdateInstallStatus(stage, version, message string) error {
 		return fmt.Errorf("%w: %q", ErrInvalidInstallStatus, stage)
 	}
 
-	a.updaterMu.Lock()
-	inflight := a.updaterInstall
+	a.updater.mu.Lock()
+	inflight := a.updater.install
 	if inflight == nil {
-		a.updaterMu.Unlock()
+		a.updater.mu.Unlock()
 		return ErrNoInstallInFlight
 	}
 	if version != inflight.Version {
-		a.updaterMu.Unlock()
+		a.updater.mu.Unlock()
 		return fmt.Errorf("%w: reported %q, in flight %q", ErrInstallVersionMismatch, version, inflight.Version)
 	}
 
 	if stage == selfupdate.StatusProceeding {
-		if a.updaterInstallAcked {
+		if a.updater.installAcked {
 			// A duplicate acknowledgement. Idempotent, and deliberately does NOT
 			// re-arm: a chatty or looping launcher must not be able to extend
 			// the silence backstop indefinitely, which is the one thing that
 			// would put the deadlock this backstop exists to prevent back on
 			// the table.
-			a.updaterMu.Unlock()
+			a.updater.mu.Unlock()
 			log.Printf("updater: duplicate acknowledgement for the install of %s; ignoring", version)
 			return nil
 		}
-		a.updaterInstallAcked = true
-		// The marker stays on disk and updaterBusy stays held on purpose: the
+		a.updater.installAcked = true
+		// The marker stays on disk and a.updater.busy stays held on purpose: the
 		// launcher has the file and is about to kill this process. That marker
 		// is the only thing the NEXT boot can compare its own version against,
 		// and the fence keeps a late second click from emitting a directive
@@ -504,17 +504,17 @@ func (a *App) ReportUpdateInstallStatus(stage, version, message string) error {
 		// (or loses the bridge before it can report the failure) does not leave
 		// this backend fenced busy with a marker on disk until the user
 		// restarts the app by hand.
-		a.armWSLInstallDeadlineLocked(a.wslUpdate.backstopTimeout, fmt.Sprintf(
+		a.armWSLInstallDeadlineLocked(a.updater.wsl.backstopTimeout, fmt.Sprintf(
 			"The Windows launcher went silent during the install; still running %s.",
-			a.updater.CurrentVersion()))
-		a.updaterMu.Unlock()
+			a.updater.handle.CurrentVersion()))
+		a.updater.mu.Unlock()
 		log.Printf("updater: the launcher acknowledged the install of %s; awaiting shutdown", version)
 		return nil
 	}
 
-	gen := a.updaterInstallGen
+	gen := a.updater.installGen
 	acted := a.abandonWSLInstallLocked(gen)
-	a.updaterMu.Unlock()
+	a.updater.mu.Unlock()
 	if acted {
 		a.emitWSLInstallFailure(launcherFailureMessage(message))
 	}
@@ -522,7 +522,7 @@ func (a *App) ReportUpdateInstallStatus(stage, version, message string) error {
 }
 
 // armWSLInstallDeadlineLocked puts the in-flight install under a deadline,
-// replacing whatever deadline it was under before. Caller holds updaterMu.
+// replacing whatever deadline it was under before. Caller holds a.updater.mu.
 //
 // One timer field, not one per phase: the acknowledgement deadline and the
 // post-acknowledgement silence backstop are the same thing at different points
@@ -532,18 +532,18 @@ func (a *App) ReportUpdateInstallStatus(stage, version, message string) error {
 // The generation bump lives here, not at the call sites, so every armed
 // deadline carries a token no earlier deadline shares. Stop below is not
 // enough on its own: a callback that has already fired is past stopping —
-// merely parked on updaterMu — and with a shared generation it would pass the
+// merely parked on a.updater.mu — and with a shared generation it would pass the
 // guard after the phase change that replaced it, unwinding an install the
 // launcher had just been told to proceed with (marker gone, error emitted,
 // swap continuing anyway). With the bump, the replaced callback finds the
 // generation moved on and stands down.
 func (a *App) armWSLInstallDeadlineLocked(after time.Duration, message string) {
-	if a.updaterInstallTimer != nil {
-		a.updaterInstallTimer.Stop()
+	if a.updater.installTimer != nil {
+		a.updater.installTimer.Stop()
 	}
-	a.updaterInstallGen++
-	gen := a.updaterInstallGen
-	a.updaterInstallTimer = time.AfterFunc(after, func() { a.failWSLInstallOnDeadline(gen, message) })
+	a.updater.installGen++
+	gen := a.updater.installGen
+	a.updater.installTimer = time.AfterFunc(after, func() { a.failWSLInstallOnDeadline(gen, message) })
 }
 
 // failWSLInstallOnDeadline is the timer entry point for both install deadlines.
@@ -566,9 +566,9 @@ func (a *App) failWSLInstallOnDeadline(gen uint64, message string) {
 // install deadlines; the launcher's own failure report takes the same two steps
 // while already holding the lock.
 func (a *App) failWSLInstall(gen uint64, message string) {
-	a.updaterMu.Lock()
+	a.updater.mu.Lock()
 	acted := a.abandonWSLInstallLocked(gen)
-	a.updaterMu.Unlock()
+	a.updater.mu.Unlock()
 	if acted {
 		a.emitWSLInstallFailure(message)
 	}
@@ -576,11 +576,11 @@ func (a *App) failWSLInstall(gen uint64, message string) {
 
 // abandonWSLInstallLocked releases the in-flight install, drops its marker,
 // and lifts the busy fence, reporting whether it was the one to do so. Caller
-// holds updaterMu.
+// holds a.updater.mu.
 //
 // gen is what makes the unwind idempotent across the races that matter: a
 // deadline firing at the same moment the report it was waiting for arrives,
-// and the sharper shapes where the fired callback loses updaterMu to a phase
+// and the sharper shapes where the fired callback loses a.updater.mu to a phase
 // change (a "proceeding" re-arming the backstop) or to a report plus a
 // subsequent RestartToUpdate. Every armed deadline gets its own generation
 // (armWSLInstallDeadlineLocked owns the bump), so a replaced or settled
@@ -590,36 +590,36 @@ func (a *App) failWSLInstall(gen uint64, message string) {
 // the install in flight.
 //
 // The marker drops here — under the lock, BEFORE the fence lifts — because the
-// moment updaterBusy is false a waiting RestartToUpdate can claim the fence and
+// moment a.updater.busy is false a waiting RestartToUpdate can claim the fence and
 // write a fresh marker; cleanup deferred past the unlock would delete that new
 // install's marker and leave its swap invisible to the next boot. SaveMarker
 // already runs under this lock, so marker I/O being a locked operation is the
 // established shape, not a new cost.
 //
-// updaterStaged is deliberately left alone: the artifact really is still staged
+// a.updater.staged is deliberately left alone: the artifact really is still staged
 // on the Windows side, so a retry has something to hand over, and the next
 // download sweeps it before staging its own.
 func (a *App) abandonWSLInstallLocked(gen uint64) bool {
-	if a.updaterInstall == nil || a.updaterInstallGen != gen {
+	if a.updater.install == nil || a.updater.installGen != gen {
 		return false
 	}
 	a.settleWSLInstallLocked()
-	if err := selfupdate.ClearMarker(a.wslUpdate.markerDir); err != nil {
+	if err := selfupdate.ClearMarker(a.updater.wsl.markerDir); err != nil {
 		log.Printf("updater: clear update marker after a failed install: %v", err)
 	}
-	a.updaterBusy = false
+	a.updater.busy = false
 	return true
 }
 
 // settleWSLInstallLocked returns the install state to rest: no install in
-// flight, no phase, no deadline armed. Caller holds updaterMu.
+// flight, no phase, no deadline armed. Caller holds a.updater.mu.
 func (a *App) settleWSLInstallLocked() {
-	if a.updaterInstallTimer != nil {
-		a.updaterInstallTimer.Stop()
-		a.updaterInstallTimer = nil
+	if a.updater.installTimer != nil {
+		a.updater.installTimer.Stop()
+		a.updater.installTimer = nil
 	}
-	a.updaterInstall = nil
-	a.updaterInstallAcked = false
+	a.updater.install = nil
+	a.updater.installAcked = false
 }
 
 // emitWSLInstallFailure is the unlocked tail of an abandoned install: the log

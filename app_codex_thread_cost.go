@@ -99,12 +99,12 @@ func (a *App) noteCodexThreadCost(threadID, sessionToken string) {
 // re-read for you"; the returned epoch is the fence the winning read must
 // still hold when it comes back.
 func (a *App) claimCodexThreadCostRead(threadID, sessionToken string) (uint64, bool) {
-	a.codexThreadCostMu.Lock()
-	defer a.codexThreadCostMu.Unlock()
-	if a.codexThreadCostInflight == nil {
-		a.codexThreadCostInflight = make(map[string]*codexThreadCostRead)
+	a.codexThreadCost.mu.Lock()
+	defer a.codexThreadCost.mu.Unlock()
+	if a.codexThreadCost.inflight == nil {
+		a.codexThreadCost.inflight = make(map[string]*codexThreadCostRead)
 	}
-	if slot, busy := a.codexThreadCostInflight[threadID]; busy {
+	if slot, busy := a.codexThreadCost.inflight[threadID]; busy {
 		slot.dirty = true
 		// The LATEST settle owns the re-read, so it also owns the token.
 		// Keeping the first claimant's would send the rerun at a session
@@ -113,7 +113,7 @@ func (a *App) claimCodexThreadCostRead(threadID, sessionToken string) (uint64, b
 		slot.token = sessionToken
 		return 0, false
 	}
-	a.codexThreadCostInflight[threadID] = &codexThreadCostRead{token: sessionToken}
+	a.codexThreadCost.inflight[threadID] = &codexThreadCostRead{token: sessionToken}
 	return 0, true
 }
 
@@ -127,14 +127,14 @@ func (a *App) claimCodexThreadCostRead(threadID, sessionToken string) (uint64, b
 // and the stored figure stays behind the last settled turn until some future
 // turn happens to settle while the slot is free.
 func (a *App) nextCodexThreadCostRead(threadID string) (string, uint64, bool) {
-	a.codexThreadCostMu.Lock()
-	defer a.codexThreadCostMu.Unlock()
-	slot, ok := a.codexThreadCostInflight[threadID]
+	a.codexThreadCost.mu.Lock()
+	defer a.codexThreadCost.mu.Unlock()
+	slot, ok := a.codexThreadCost.inflight[threadID]
 	if !ok {
 		return "", 0, false
 	}
 	if !slot.dirty {
-		delete(a.codexThreadCostInflight, threadID)
+		delete(a.codexThreadCost.inflight, threadID)
 		return "", 0, false
 	}
 	slot.dirty = false
@@ -151,13 +151,13 @@ func (a *App) nextCodexThreadCostRead(threadID string) (string, uint64, bool) {
 // the write would resurrect it. persistCodexThreadCostIfCurrent is the one
 // that answers and writes without a gap.
 func (a *App) codexThreadCostReadIsCurrent(threadID string, epoch uint64) bool {
-	a.codexThreadCostMu.Lock()
-	defer a.codexThreadCostMu.Unlock()
+	a.codexThreadCost.mu.Lock()
+	defer a.codexThreadCost.mu.Unlock()
 	return a.codexThreadCostReadIsCurrentLocked(threadID, epoch)
 }
 
 func (a *App) codexThreadCostReadIsCurrentLocked(threadID string, epoch uint64) bool {
-	slot, ok := a.codexThreadCostInflight[threadID]
+	slot, ok := a.codexThreadCost.inflight[threadID]
 	return ok && slot.epoch == epoch
 }
 
@@ -185,8 +185,8 @@ func (a *App) codexThreadCostReadIsCurrentLocked(threadID string, epoch uint64) 
 // the row would be inert but the write would still cost a round trip and
 // overwrite a fresher one. The fence refuses it outright.
 func (a *App) persistCodexThreadCostIfCurrent(threadID string, epoch uint64, cost store.ProviderThreadCost) (bool, error) {
-	a.codexThreadCostMu.Lock()
-	defer a.codexThreadCostMu.Unlock()
+	a.codexThreadCost.mu.Lock()
+	defer a.codexThreadCost.mu.Unlock()
 	if !a.codexThreadCostReadIsCurrentLocked(threadID, epoch) {
 		return false, nil
 	}
@@ -227,11 +227,11 @@ func (a *App) forgetCodexThreadCost(threadID string) {
 	// otherwise write back a row describing the provider thread this call
 	// exists to forget — inert under the identity comparison, but it would
 	// still displace whatever the new provider thread had already stored.
-	a.codexThreadCostMu.Lock()
-	if slot, ok := a.codexThreadCostInflight[threadID]; ok {
+	a.codexThreadCost.mu.Lock()
+	if slot, ok := a.codexThreadCost.inflight[threadID]; ok {
 		slot.epoch++
 	}
-	a.codexThreadCostMu.Unlock()
+	a.codexThreadCost.mu.Unlock()
 
 	if err := a.store.DeleteProviderThreadCost(threadID); err != nil {
 		log.Printf("codex thread cost: forget for %s: %v", threadID, err)

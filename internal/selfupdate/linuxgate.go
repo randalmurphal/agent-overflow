@@ -1,4 +1,4 @@
-package main
+package selfupdate
 
 import (
 	"fmt"
@@ -15,18 +15,18 @@ import (
 // offering a Download that fails at the last step, after the user has waited
 // through a tens-of-MB transfer.
 //
-// Deliberately tag-free and in its own file: initUpdater lives behind
-// `!nogui` and needs a Wails application to exercise, while these two checks
-// are pure enough to unit-test on any host. Only initUpdater's
+// Deliberately tag-free and in its own file: the caller (initUpdater) lives
+// behind `!nogui` and needs a Wails application to exercise, while these two
+// checks are pure enough to unit-test on any host. Only initUpdater's
 // runtime.GOOS == "linux" branch calls it, so macOS (whose .app bundle swap
 // has its own working path, and which has no AppImage equivalent) is
 // untouched.
 
-// linuxUpdaterBlocked reports why an in-app update could not be applied to
+// LinuxUpdaterBlocked reports why an in-app update could not be applied to
 // this Linux install, or "" when nothing blocks it. The returned string is a
 // log fragment, phrased to complete "updater: <reason> — in-app updates
 // disabled".
-func linuxUpdaterBlocked() string {
+func LinuxUpdaterBlocked() string {
 	if appimage.Running() {
 		// The type-2 AppImage runtime mounts the app's squashfs read-only and
 		// unmounts it when we exit. There is no version of the swap that can

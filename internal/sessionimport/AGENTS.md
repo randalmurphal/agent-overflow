@@ -60,6 +60,11 @@ from triage's exported, Router-free shaping helpers — see
   stopped, in the thread and in the source file.
 - `refresh.go` — `PlanUpdate` / `ApplyUpdate`: what a re-read of the
   source file would add to a thread that was already imported.
+- `scancache.go` — `ScanCache`: THE cached `Scan`, one entry rather than a
+  keyed map (the scan is unfiltered by construction), with `ScanTTL`,
+  single-flight `Get(ctx, force)`, id `Lookup` that honors the TTL, and a
+  deep copy per caller. Failures are never cached. `App` owns the
+  instance; the walk itself is the caller's function.
 
 `Scan`, `ImportOne` and `ApplyUpdate` are the only things here that
 WRITE. The writer half (everything above them) reads the thread row and

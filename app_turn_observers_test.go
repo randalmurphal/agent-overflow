@@ -55,10 +55,10 @@ func TestTurnObserverUnsubscribeIsIdempotentAndCleansBucket(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("calls after unsubscribe = %d, want 0", calls)
 	}
-	app.turnObserversMu.Lock()
-	defer app.turnObserversMu.Unlock()
-	if len(app.turnObservers) != 0 {
-		t.Fatalf("turn observer buckets after unsubscribe = %d, want 0", len(app.turnObservers))
+	app.turnObservers.mu.Lock()
+	defer app.turnObservers.mu.Unlock()
+	if len(app.turnObservers.byThread) != 0 {
+		t.Fatalf("turn observer buckets after unsubscribe = %d, want 0", len(app.turnObservers.byThread))
 	}
 }
 
@@ -189,9 +189,9 @@ func TestTurnObserversConcurrentRegisterDispatchAndUnsubscribe(t *testing.T) {
 	if calls.Load() == 0 {
 		t.Fatal("concurrent dispatch invoked no observers")
 	}
-	app.turnObserversMu.Lock()
-	defer app.turnObserversMu.Unlock()
-	if len(app.turnObservers) != 0 {
-		t.Fatalf("turn observer buckets after concurrent unsubscribe = %d, want 0", len(app.turnObservers))
+	app.turnObservers.mu.Lock()
+	defer app.turnObservers.mu.Unlock()
+	if len(app.turnObservers.byThread) != 0 {
+		t.Fatalf("turn observer buckets after concurrent unsubscribe = %d, want 0", len(app.turnObservers.byThread))
 	}
 }

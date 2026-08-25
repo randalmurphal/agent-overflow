@@ -18,9 +18,9 @@ rates reprices all history the next time someone looks.
 
 ## The one caller, and why it is not this package
 
-`app_usage_pricing.go` (package `main`) is the **only** caller: `ledgerSpend`
+`internal/usageledger` is the **only** caller: `usageledger.Spend`
 folds a `store.UsageDetailRow` group into `{WireUSD, EstimatedUSD,
-UnpricedRows}`, and `priceUsageGroups` is what every dollar-reporting surface
+UnpricedRows}`, and `usageledger.PriceGroups` is what every dollar-reporting surface
 composes through — the usage dashboard (`GetUsageStats`), a workflow run's
 overlay cost (`WorkflowGetItem`, `WorkflowListItemCosts`), and the workflow
 engine's per-tree budget enforcement (`workflowSpendSource.TreeSpend`).
@@ -71,14 +71,14 @@ explicit table entry the day it ships, not an assumption that the
 - What does NOT belong here:
   - Deciding which `usage_ledger` rows need pricing (that's
     `cost_source='none'` vs `'wire'`, decided in
-    `app_usage_pricing.go`).
+    `internal/usageledger`).
   - Deciding what an unpriced row MEANS. `Price` reports `ok=false` and
     stops there; whether that is tolerable is the consumer's call and
     depends on the question being asked — a token ceiling is exact
     regardless, a dollar ceiling the tree has not obviously crossed
     cannot be judged at all (`engine.ResolveBudget`), and a display
     surface reports the priced lower bound and says it is one.
-    `ledgerSpend.Estimated()` is true in that case too: a total that
+    `usageledger.Spend.Estimated()` is true in that case too: a total that
     silently omits rows must never present itself as exact.
   - Persisting an estimate anywhere. Estimates are query-time only.
   - Provider or store types. This package must stay stdlib-only so it
@@ -96,9 +96,9 @@ explicit table entry the day it ships, not an assumption that the
 
 - `internal/store/usage_ledger.go` — the ledger schema and
   `QueryUsage` / `QueryUsageDetail` this package's output feeds.
-- `app_usage_pricing.go` — the only caller; `ledgerSpend` /
-  `priceUsageGroups` merge wire cost and `Price` estimates for every
-  surface that reports dollars.
+- `internal/usageledger` — the only caller; `usageledger.Spend` /
+  `usageledger.PriceGroups` merge wire cost and `Price` estimates for
+  every surface that reports dollars.
 - `docs/architecture/adrs/ADR-008-cost-computation-in-provider-adapters.md`
   — history of the wire-cost-only decision and why read-time estimation
   was added on top of it instead of reverting it.

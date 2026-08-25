@@ -1,4 +1,4 @@
-package main
+package selfupdate
 
 import (
 	"os"
@@ -81,12 +81,12 @@ func TestUpdaterProbeDirWritable_Concurrent(t *testing.T) {
 // is read-only, so probing it would only produce a less useful reason).
 func TestUpdaterLinuxGate_AppImageRefuses(t *testing.T) {
 	t.Setenv("APPIMAGE", "/home/user/Apps/agent-overflow.AppImage")
-	reason := linuxUpdaterBlocked()
+	reason := LinuxUpdaterBlocked()
 	if reason == "" {
-		t.Fatal("linuxUpdaterBlocked() = \"\" under an AppImage launch, want a refusal")
+		t.Fatal("LinuxUpdaterBlocked() = \"\" under an AppImage launch, want a refusal")
 	}
 	if !strings.Contains(reason, "AppImage") {
-		t.Fatalf("linuxUpdaterBlocked() = %q, want a reason naming the AppImage", reason)
+		t.Fatalf("LinuxUpdaterBlocked() = %q, want a reason naming the AppImage", reason)
 	}
 }
 
@@ -96,8 +96,8 @@ func TestUpdaterLinuxGate_AppImageRefuses(t *testing.T) {
 func TestUpdaterLinuxGate_AppDirMarkerRefuses(t *testing.T) {
 	t.Setenv("APPIMAGE", "")
 	t.Setenv("APPDIR", "/tmp/.mount_agentXXXXXX")
-	if reason := linuxUpdaterBlocked(); reason == "" {
-		t.Fatal("linuxUpdaterBlocked() = \"\" with APPDIR set, want a refusal")
+	if reason := LinuxUpdaterBlocked(); reason == "" {
+		t.Fatal("LinuxUpdaterBlocked() = \"\" with APPDIR set, want a refusal")
 	}
 }
 
@@ -115,7 +115,7 @@ func TestUpdaterLinuxGate_OrdinaryInstallAllowed(t *testing.T) {
 	if err := probeDirWritable(filepath.Dir(exe)); err != nil {
 		t.Skipf("test binary directory is not writable (%v); nothing to assert", err)
 	}
-	if reason := linuxUpdaterBlocked(); reason != "" {
-		t.Fatalf("linuxUpdaterBlocked() = %q, want \"\" for a writable non-AppImage install", reason)
+	if reason := LinuxUpdaterBlocked(); reason != "" {
+		t.Fatalf("LinuxUpdaterBlocked() = %q, want \"\" for a writable non-AppImage install", reason)
 	}
 }

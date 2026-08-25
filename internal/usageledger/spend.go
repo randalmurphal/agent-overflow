@@ -1,4 +1,7 @@
-package main
+// Package usageledger owns the one pricing rule the usage ledger is read
+// through: which rows the internal/usagecost rate table applies to, and what an
+// unpriceable row does to a total.
+package usageledger
 
 import (
 	"fmt"
@@ -7,7 +10,7 @@ import (
 	"agent-overflow/internal/usagecost"
 )
 
-// One pricing rule for the usage ledger.
+// Spend is one pricing rule for the usage ledger.
 //
 // A ledger row carries either a wire-reported cost (Claude prices its own
 // turns) or tokens alone (Codex reports no cost anywhere on its wire;
@@ -21,7 +24,7 @@ import (
 // budget is enforced against would stop being the number a human is shown.
 // internal/usagecost owns the rate table; this owns the rule for which rows it
 // applies to and what an unpriceable row does to a total.
-type ledgerSpend struct {
+type Spend struct {
 	// WireUSD is what the providers themselves reported.
 	WireUSD float64
 	// EstimatedUSD is what the internal/usagecost rate table priced token-only
@@ -36,20 +39,20 @@ type ledgerSpend struct {
 }
 
 // TotalUSD is the composed cost: what was reported plus what was priced.
-func (s ledgerSpend) TotalUSD() float64 { return s.WireUSD + s.EstimatedUSD }
+func (s Spend) TotalUSD() float64 { return s.WireUSD + s.EstimatedUSD }
 
 // Estimated reports whether TotalUSD is anything other than exactly what the
 // providers reported — either because the rate table priced part of it, or
 // because some rows could not be priced at all and the total is a lower bound.
 // Both are the same caveat to a reader, and a total that silently OMITS rows
 // must never present itself as exact.
-func (s ledgerSpend) Estimated() bool { return s.EstimatedUSD != 0 || s.UnpricedRows > 0 }
+func (s Spend) Estimated() bool { return s.EstimatedUSD != 0 || s.UnpricedRows > 0 }
 
-// add folds one (model, cost_source) ledger group into the running total. An
+// Add folds one (model, cost_source) ledger group into the running total. An
 // unrecognized cost_source is an error rather than a skipped group: the column
 // is written by one code path with two legal values, so a third one is
 // corruption that must not silently subtract from a cost total.
-func (s *ledgerSpend) add(group store.UsageDetailRow) error {
+func (s *Spend) Add(group store.UsageDetailRow) error {
 	switch group.CostSource {
 	case "wire":
 		s.WireUSD += group.CostUSD
@@ -69,12 +72,12 @@ func (s *ledgerSpend) add(group store.UsageDetailRow) error {
 	return nil
 }
 
-// priceUsageGroups folds every group of one aggregation into one composed cost.
-func priceUsageGroups(groups []store.UsageDetailRow) (ledgerSpend, error) {
-	var spend ledgerSpend
+// PriceGroups folds every group of one aggregation into one composed cost.
+func PriceGroups(groups []store.UsageDetailRow) (Spend, error) {
+	var spend Spend
 	for _, group := range groups {
-		if err := spend.add(group); err != nil {
-			return ledgerSpend{}, err
+		if err := spend.Add(group); err != nil {
+			return Spend{}, err
 		}
 	}
 	return spend, nil

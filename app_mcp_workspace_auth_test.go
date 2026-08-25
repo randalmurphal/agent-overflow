@@ -18,7 +18,7 @@ func TestTriggerWorkspaceMCPAuthSingleFlightsWithoutThread(t *testing.T) {
 	closed := make(chan struct{}, 1)
 	started := make(chan struct{})
 	var starts atomic.Int32
-	app.workspaceMCPAuthStarter = func(
+	app.mcp.workspaceAuthStarter = func(
 		_ context.Context, providerName, workspacePath, serverName string,
 	) (*workspaceMCPAuthHandle, error) {
 		if providerName != "codex" || workspacePath != "/repo" || serverName != "atlassian" {
@@ -76,7 +76,7 @@ func TestTriggerWorkspaceMCPAuthSingleFlightsWithoutThread(t *testing.T) {
 func TestTriggerWorkspaceMCPAuthFailedStartCanRetry(t *testing.T) {
 	app := &App{}
 	var starts atomic.Int32
-	app.workspaceMCPAuthStarter = func(
+	app.mcp.workspaceAuthStarter = func(
 		_ context.Context, _, _, _ string,
 	) (*workspaceMCPAuthHandle, error) {
 		if starts.Add(1) == 1 {
@@ -107,7 +107,7 @@ func TestTriggerWorkspaceMCPAuthShutdownClosesFlowWithoutEvent(t *testing.T) {
 	var emits atomic.Int32
 	app.testEmitHook = func(string, any) { emits.Add(1) }
 	closed := make(chan struct{})
-	app.workspaceMCPAuthStarter = func(
+	app.mcp.workspaceAuthStarter = func(
 		_ context.Context, _, _, _ string,
 	) (*workspaceMCPAuthHandle, error) {
 		return &workspaceMCPAuthHandle{

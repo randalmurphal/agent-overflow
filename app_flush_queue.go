@@ -114,118 +114,118 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 	batch := make([]triage.QueuedFlushItem, len(items))
 	copy(batch, items)
 
-	a.flushDispatchMu.Lock()
+	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
-	generation := a.flushDispatchGeneration[threadID]
-	a.flushDispatchQueues[threadID] = append(a.flushDispatchQueues[threadID], flushDispatchBatch{
+	generation := a.flushDispatch.generation[threadID]
+	a.flushDispatch.queues[threadID] = append(a.flushDispatch.queues[threadID], flushDispatchBatch{
 		items:      batch,
 		generation: generation,
 	})
-	a.flushDispatchInflightItems[threadID] += len(batch)
-	if a.flushDispatchRunning[threadID] {
-		a.flushDispatchMu.Unlock()
+	a.flushDispatch.inflightItems[threadID] += len(batch)
+	if a.flushDispatch.running[threadID] {
+		a.flushDispatch.mu.Unlock()
 		return
 	}
-	a.flushDispatchRunning[threadID] = true
-	a.flushDispatchWG.Add(1)
-	a.flushDispatchMu.Unlock()
+	a.flushDispatch.running[threadID] = true
+	a.flushDispatch.wg.Add(1)
+	a.flushDispatch.mu.Unlock()
 
 	go a.runFlushDispatchWorker(threadID)
 }
 
 func (a *App) runFlushDispatchWorker(threadID string) {
-	defer a.flushDispatchWG.Done()
+	defer a.flushDispatch.wg.Done()
 	for {
-		a.flushDispatchMu.Lock()
-		queue := a.flushDispatchQueues[threadID]
+		a.flushDispatch.mu.Lock()
+		queue := a.flushDispatch.queues[threadID]
 		if len(queue) == 0 {
-			delete(a.flushDispatchQueues, threadID)
-			delete(a.flushDispatchRunning, threadID)
-			a.flushDispatchMu.Unlock()
+			delete(a.flushDispatch.queues, threadID)
+			delete(a.flushDispatch.running, threadID)
+			a.flushDispatch.mu.Unlock()
 			return
 		}
 		batch := queue[0]
 		if len(queue) == 1 {
-			delete(a.flushDispatchQueues, threadID)
+			delete(a.flushDispatch.queues, threadID)
 		} else {
-			a.flushDispatchQueues[threadID] = queue[1:]
+			a.flushDispatch.queues[threadID] = queue[1:]
 		}
-		a.flushDispatchCurrent[threadID] = batch
-		a.flushDispatchMu.Unlock()
+		a.flushDispatch.current[threadID] = batch
+		a.flushDispatch.mu.Unlock()
 
 		a.dispatchFlushWithGeneration(threadID, batch.items, batch.generation)
 
-		a.flushDispatchMu.Lock()
-		delete(a.flushDispatchCurrent, threadID)
-		if a.flushDispatchGeneration[threadID] == batch.generation {
-			a.flushDispatchInflightItems[threadID] -= len(batch.items)
-			if a.flushDispatchInflightItems[threadID] <= 0 {
-				delete(a.flushDispatchInflightItems, threadID)
+		a.flushDispatch.mu.Lock()
+		delete(a.flushDispatch.current, threadID)
+		if a.flushDispatch.generation[threadID] == batch.generation {
+			a.flushDispatch.inflightItems[threadID] -= len(batch.items)
+			if a.flushDispatch.inflightItems[threadID] <= 0 {
+				delete(a.flushDispatch.inflightItems, threadID)
 			}
 		}
-		a.flushDispatchMu.Unlock()
+		a.flushDispatch.mu.Unlock()
 	}
 }
 
 func (a *App) flushDispatchItemCount(threadID string) int {
-	a.flushDispatchMu.Lock()
-	defer a.flushDispatchMu.Unlock()
-	return a.flushDispatchInflightItems[threadID]
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	return a.flushDispatch.inflightItems[threadID]
 }
 
 func (a *App) ensureFlushDispatchMapsLocked() {
-	if a.flushDispatchQueues == nil {
-		a.flushDispatchQueues = make(map[string][]flushDispatchBatch)
+	if a.flushDispatch.queues == nil {
+		a.flushDispatch.queues = make(map[string][]flushDispatchBatch)
 	}
-	if a.flushDispatchCurrent == nil {
-		a.flushDispatchCurrent = make(map[string]flushDispatchBatch)
+	if a.flushDispatch.current == nil {
+		a.flushDispatch.current = make(map[string]flushDispatchBatch)
 	}
-	if a.flushDispatchRunning == nil {
-		a.flushDispatchRunning = make(map[string]bool)
+	if a.flushDispatch.running == nil {
+		a.flushDispatch.running = make(map[string]bool)
 	}
-	if a.flushDispatchInflightItems == nil {
-		a.flushDispatchInflightItems = make(map[string]int)
+	if a.flushDispatch.inflightItems == nil {
+		a.flushDispatch.inflightItems = make(map[string]int)
 	}
-	if a.flushDispatchGeneration == nil {
-		a.flushDispatchGeneration = make(map[string]uint64)
+	if a.flushDispatch.generation == nil {
+		a.flushDispatch.generation = make(map[string]uint64)
 	}
 }
 
 func (a *App) clearFlushDispatchForRollback(threadID string) {
-	a.flushDispatchMu.Lock()
+	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
-	a.flushDispatchGeneration[threadID]++
-	delete(a.flushDispatchQueues, threadID)
-	delete(a.flushDispatchCurrent, threadID)
-	delete(a.flushDispatchInflightItems, threadID)
-	a.flushDispatchMu.Unlock()
+	a.flushDispatch.generation[threadID]++
+	delete(a.flushDispatch.queues, threadID)
+	delete(a.flushDispatch.current, threadID)
+	delete(a.flushDispatch.inflightItems, threadID)
+	a.flushDispatch.mu.Unlock()
 }
 
 func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFlushItem {
-	a.flushDispatchMu.Lock()
+	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
-	a.flushDispatchGeneration[threadID]++
+	a.flushDispatch.generation[threadID]++
 	var drained []triage.QueuedFlushItem
-	if current, ok := a.flushDispatchCurrent[threadID]; ok {
+	if current, ok := a.flushDispatch.current[threadID]; ok {
 		drained = append(drained, current.items...)
-		delete(a.flushDispatchCurrent, threadID)
+		delete(a.flushDispatch.current, threadID)
 	}
-	for _, batch := range a.flushDispatchQueues[threadID] {
+	for _, batch := range a.flushDispatch.queues[threadID] {
 		drained = append(drained, batch.items...)
 	}
-	delete(a.flushDispatchQueues, threadID)
-	delete(a.flushDispatchInflightItems, threadID)
-	a.flushDispatchMu.Unlock()
+	delete(a.flushDispatch.queues, threadID)
+	delete(a.flushDispatch.inflightItems, threadID)
+	a.flushDispatch.mu.Unlock()
 	return drained
 }
 
 func (a *App) currentFlushDispatchGeneration(threadID string) uint64 {
-	a.flushDispatchMu.Lock()
-	defer a.flushDispatchMu.Unlock()
-	if a.flushDispatchGeneration == nil {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	if a.flushDispatch.generation == nil {
 		return 0
 	}
-	return a.flushDispatchGeneration[threadID]
+	return a.flushDispatch.generation[threadID]
 }
 
 func (a *App) isFlushDispatchGenerationCurrent(threadID string, generation uint64) bool {
@@ -241,7 +241,7 @@ func (a *App) drainFlushDispatch(ctx context.Context, timeout time.Duration) err
 
 	done := make(chan struct{})
 	go func() {
-		a.flushDispatchWG.Wait()
+		a.flushDispatch.wg.Wait()
 		close(done)
 	}()
 	select {
@@ -858,25 +858,25 @@ func (a *App) registerQueueItem(
 	// the lazy-init pattern on Send and Steer.
 	a.ensureTriageRouter()
 
-	// Hold flushHandoffMu across the queue append and the immediate flush
+	// Hold a.flushDispatch.handoffMu across the queue append and the immediate flush
 	// handoff below: the revert predicate reads the same queued / in-flight
 	// counters under this mutex (pendingFlushWorkCount), so holding it here
 	// keeps a Stop click from observing tryFlushQueue's handoff window and
-	// discarding the turn-starting prompt. See the flushHandoffMu field doc
+	// discarding the turn-starting prompt. See the a.flushDispatch.handoffMu field doc
 	// (app.go) for the window and why this isn't the per-thread action lock.
 	//
-	// Lock hierarchy (acyclic): threadLock -> flushHandoffMu -> {r.mu (triage),
-	// flushDispatchMu, a.mu}. The only threadLock/flushHandoffMu edge is the
+	// Lock hierarchy (acyclic): threadLock -> a.flushDispatch.handoffMu -> {r.mu (triage),
+	// a.flushDispatch.mu, a.mu}. The only threadLock/a.flushDispatch.handoffMu edge is the
 	// revert predicate's (InterruptAndRevertIfClean holds threadLock and reaches
-	// flushHandoffMu via pendingFlushWorkCount). This span acquires r.mu,
-	// flushDispatchMu (the synchronous enqueueFlushDispatch inflight bump), and
-	// a.mu (sessionManager().get below) while holding flushHandoffMu, but never
+	// a.flushDispatch.handoffMu via pendingFlushWorkCount). This span acquires r.mu,
+	// a.flushDispatch.mu (the synchronous enqueueFlushDispatch inflight bump), and
+	// a.mu (sessionManager().get below) while holding a.flushDispatch.handoffMu, but never
 	// the thread lock — enqueueFlushDispatch spawns the dispatch worker, which
 	// takes threadLock asynchronously. And no path holds a.mu when entering
 	// RegisterQueueItem or pendingFlushWorkCount, so a.mu is never inverted
-	// against flushHandoffMu. No cycle, no deadlock.
-	a.flushHandoffMu.Lock()
-	defer a.flushHandoffMu.Unlock()
+	// against a.flushDispatch.handoffMu. No cycle, no deadlock.
+	a.flushDispatch.handoffMu.Lock()
+	defer a.flushDispatch.handoffMu.Unlock()
 
 	totalQueued := a.triage.QueuedFlushItemCount(threadID) + a.triage.DeferredPendingFlushItemCount(threadID) + a.flushDispatchItemCount(threadID)
 	if totalQueued >= maxQueueLength() {

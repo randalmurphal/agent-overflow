@@ -46,7 +46,7 @@ func (a *App) refreshProviderAccountUsage(
 	// about the throttle) is recorded on the way out so every later caller,
 	// manual or automatic, is held the same way.
 	backoffHold := func() error {
-		if remaining := a.usageBackoff.Remaining(providerName, accountID); remaining > 0 {
+		if remaining := a.usageProbe.backoff.Remaining(providerName, accountID); remaining > 0 {
 			return fmt.Errorf(
 				"the usage endpoint rate limited this account; try again in %s",
 				remaining.Round(time.Second),
@@ -126,7 +126,7 @@ func (a *App) refreshProviderAccountUsage(
 	// credential) proved nothing in either direction.
 	defer func() {
 		if probeRan {
-			a.usageBackoff.Note(providerName, accountID, probeErr)
+			a.usageProbe.backoff.Note(providerName, accountID, probeErr)
 		}
 	}()
 	// Only Codex probes from a temporary home now: its app-server has to run

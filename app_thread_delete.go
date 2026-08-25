@@ -174,10 +174,10 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 // created before design mode existed) or the directory was already gone.
 func (a *App) cleanupThreadDesignWorkdir(threadID string) error {
 	a.teardownDesignThread(threadID)
-	if a.designWorkdir == nil {
+	if a.design.workdir == nil {
 		return nil
 	}
-	if err := a.designWorkdir.Wipe(threadID); err != nil {
+	if err := a.design.workdir.Wipe(threadID); err != nil {
 		return fmt.Errorf("wipe design workdir: %w", err)
 	}
 	return nil

@@ -27,8 +27,8 @@ func newMCPTestApp(t *testing.T) (*App, string, string) {
 	app := newTestAppWithStore(t)
 	claudePath := filepath.Join(t.TempDir(), "claude.json")
 	codexPath := filepath.Join(t.TempDir(), "config.toml")
-	app.claudeConfigStore = claudeconfig.New(claudePath)
-	app.codexConfigStore = codexconfig.New(codexPath)
+	app.mcp.claudeConfigStore = claudeconfig.New(claudePath)
+	app.mcp.codexConfigStore = codexconfig.New(codexPath)
 	return app, claudePath, codexPath
 }
 
@@ -405,8 +405,8 @@ func TestListWorkspaceMcpServers_StaleStatusOverlayFlagged(t *testing.T) {
 	writeClaudePluginFixture(t, claudePath, "pw", "pw")
 	writeClaudeConfig(t, claudePath, `{"mcpServers": {}, "projects": {}}`)
 	now := time.Now()
-	app.mcpStatusCacheOnce.Do(func() {})
-	app.mcpStatusCache = mcpstatus.NewWith(30*time.Second, nil, func() time.Time { return now })
+	app.mcp.statusCacheOnce.Do(func() {})
+	app.mcp.statusCache = mcpstatus.NewWith(30*time.Second, nil, func() time.Time { return now })
 	app.mcpStatus().Put(mcpstatus.ServerStatus{
 		Key:    mcpstatus.Key{Provider: mcpstatus.ProviderClaude, Name: "plugin:pw:pw"},
 		Status: mcpstatus.StatusConnected,
@@ -1444,9 +1444,9 @@ func TestStartClaudeMCPOAuthPoll_DedupCancelsPrior(t *testing.T) {
 	// a never-completing thread.
 
 	peek := func(name string) *claudeMCPOAuthPoll {
-		app.claudeMCPOAuthPollsMu.Lock()
-		defer app.claudeMCPOAuthPollsMu.Unlock()
-		return app.claudeMCPOAuthPolls[name]
+		app.mcp.claudeOAuthPollsMu.Lock()
+		defer app.mcp.claudeOAuthPollsMu.Unlock()
+		return app.mcp.claudeOAuthPolls[name]
 	}
 
 	// Twice for "linear":
@@ -1459,12 +1459,12 @@ func TestStartClaudeMCPOAuthPoll_DedupCancelsPrior(t *testing.T) {
 	originalCancel := first.cancel
 	// Wrapping the cancel func under the same lock guards the read
 	// the second startClaudeMCPOAuthPoll will perform a moment later.
-	app.claudeMCPOAuthPollsMu.Lock()
+	app.mcp.claudeOAuthPollsMu.Lock()
 	first.cancel = func() {
 		close(firstCancelFired)
 		originalCancel()
 	}
-	app.claudeMCPOAuthPollsMu.Unlock()
+	app.mcp.claudeOAuthPollsMu.Unlock()
 
 	app.startClaudeMCPOAuthPoll("thread-1", "linear")
 

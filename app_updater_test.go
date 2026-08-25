@@ -130,7 +130,7 @@ func TestUpdaterRPCsUnsupportedWhenNil(t *testing.T) {
 func TestRestartExitWatchdogFiresAfterDelay(t *testing.T) {
 	a := &App{}
 	fired := make(chan int, 1)
-	a.restartExitFn = func(code int) { fired <- code }
+	a.updater.restartExitFn = func(code int) { fired <- code }
 
 	disarm := a.armRestartExitWatchdog(10 * time.Millisecond)
 	defer disarm()
@@ -151,7 +151,7 @@ func TestRestartExitWatchdogDisarmPreventsExit(t *testing.T) {
 	// old version. A watchdog that still fires would kill a healthy app.
 	a := &App{}
 	fired := make(chan int, 1)
-	a.restartExitFn = func(code int) { fired <- code }
+	a.updater.restartExitFn = func(code int) { fired <- code }
 
 	disarm := a.armRestartExitWatchdog(20 * time.Millisecond)
 	disarm()
@@ -169,7 +169,7 @@ func TestRestartWithExitWatchdogDisarmsOnSpawnFailure(t *testing.T) {
 	// version — with NO pending force-exit left ticking.
 	a := &App{}
 	fired := make(chan int, 1)
-	a.restartExitFn = func(code int) { fired <- code }
+	a.updater.restartExitFn = func(code int) { fired <- code }
 
 	err := a.restartWithExitWatchdog(func(context.Context) error {
 		return errors.New("spawn helper: boom")
@@ -180,7 +180,7 @@ func TestRestartWithExitWatchdogDisarmsOnSpawnFailure(t *testing.T) {
 
 	// The production delay is deliberately long (25s); prove the disarm by
 	// firing every OTHER armed watchdog: if the error path had left one
-	// armed, restartExitFn would eventually be called. A short observation
+	// armed, a.updater.restartExitFn would eventually be called. A short observation
 	// window suffices because a disarmed time.AfterFunc never fires.
 	select {
 	case <-fired:
@@ -196,7 +196,7 @@ func TestRestartWithExitWatchdogStaysArmedOnSuccess(t *testing.T) {
 	// exists (we cannot wait 25s here; armRestartExitWatchdog's own tests
 	// cover the firing behavior with short delays).
 	a := &App{}
-	a.restartExitFn = func(int) {}
+	a.updater.restartExitFn = func(int) {}
 	if err := a.restartWithExitWatchdog(func(context.Context) error { return nil }); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

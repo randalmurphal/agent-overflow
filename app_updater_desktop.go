@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"runtime"
 
+	"agent-overflow/internal/selfupdate"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/github"
@@ -22,14 +24,14 @@ import (
 
 // initUpdater configures app.Updater for in-app self-update and bridges its
 // events onto the transport bus. Called once from runDesktop after
-// application.New and before the transport server starts, so App.updater is
+// application.New and before the transport server starts, so App.updater.handle is
 // visible to RPC handlers without a race.
 //
-// It is a no-op (App.updater stays nil → the RPCs report unsupported) for
+// It is a no-op (App.updater.handle stays nil → the RPCs report unsupported) for
 // unstamped "dev" builds, for Linux installs the swap could never write to
-// (see app_updater_linuxgate.go), and on any provider/init failure (logged):
-// in-app updates simply stay unavailable while the app runs normally. Failing
-// to set up the updater must never block startup.
+// (see internal/selfupdate/linuxgate.go), and on any provider/init failure
+// (logged): in-app updates simply stay unavailable while the app runs
+// normally. Failing to set up the updater must never block startup.
 func initUpdater(appService *App, app *application.App) {
 	if version == "dev" {
 		log.Printf("updater: disabled for dev build (version=%q)", version)
@@ -40,9 +42,9 @@ func initUpdater(appService *App, app *application.App) {
 	// a system-wide install (/usr/bin, /opt) is not writable by the user
 	// running us. Neither can host the in-place binary swap, so report the
 	// feature unsupported now rather than after a tens-of-MB download. See
-	// app_updater_linuxgate.go; macOS is deliberately unaffected.
+	// internal/selfupdate/linuxgate.go; macOS is deliberately unaffected.
 	if runtime.GOOS == "linux" {
-		if reason := linuxUpdaterBlocked(); reason != "" {
+		if reason := selfupdate.LinuxUpdaterBlocked(); reason != "" {
 			log.Printf("updater: %s — in-app updates disabled", reason)
 			return
 		}
@@ -94,8 +96,8 @@ func initUpdater(appService *App, app *application.App) {
 		return
 	}
 
-	appService.updater = app.Updater
-	appService.updaterProvider = targetable
+	appService.updater.handle = app.Updater
+	appService.updater.provider = targetable
 	bridgeUpdaterEvents(appService, app)
 	log.Printf("updater: configured for %s (current version %s)", updaterRepository, version)
 }

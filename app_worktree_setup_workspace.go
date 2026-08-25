@@ -45,7 +45,7 @@ func workspaceSetupRunKey(worktreePath string) string {
 }
 
 // findWorkspaceSetupRunLocked resolves an unbound run by the worktree it
-// provisions. Callers hold worktreeSetupMu.
+// provisions. Callers hold a.worktreeSetup.mu.
 //
 // The exact-key hit is the ordinary case: the caller round-trips the very
 // string defaultWorktreePath returned. The fallback scan exists because the
@@ -57,10 +57,10 @@ func workspaceSetupRunKey(worktreePath string) string {
 // steal a thread's record.
 func (a *App) findWorkspaceSetupRunLocked(worktreePath string) (*worktreeSetupRun, string) {
 	key := workspaceSetupRunKey(worktreePath)
-	if run := a.worktreeSetupRuns[key]; run != nil {
+	if run := a.worktreeSetup.runs[key]; run != nil {
 		return run, key
 	}
-	for candidate, run := range a.worktreeSetupRuns {
+	for candidate, run := range a.worktreeSetup.runs {
 		if run.threadID != "" {
 			continue
 		}
@@ -118,7 +118,7 @@ func (a *App) launchWorkspaceWorktreeSetup(project store.Project, worktreePath s
 // to be corrected out of. It gets the terminal frame — the run's real state —
 // and the durable column is stamped from that same truth.
 //
-// Both the settled read and the stamp happen under worktreeSetupMu, which is
+// Both the settled read and the stamp happen under a.worktreeSetup.mu, which is
 // what orders this write against a settle racing it. See worktreeSetupRun.settled.
 //
 // Reports whether a run was adopted, so a caller holding a thread row it has
@@ -130,25 +130,25 @@ func (a *App) adoptWorkspaceWorktreeSetup(worktreePath string, thread store.Thre
 		return false
 	}
 
-	a.worktreeSetupMu.Lock()
+	a.worktreeSetup.mu.Lock()
 	run, key := a.findWorkspaceSetupRunLocked(worktreePath)
 	if run == nil {
-		a.worktreeSetupMu.Unlock()
+		a.worktreeSetup.mu.Unlock()
 		return false
 	}
 	// A brand-new thread cannot already own a run, but the map is keyed by a
 	// caller-supplied id in tests and by uuid collision in theory. Refusing is
 	// the only safe move: overwriting would strand a live goroutine whose
 	// record nothing can reach, and therefore whose cancel nothing can call.
-	if existing := a.worktreeSetupRuns[threadID]; existing != nil && existing != run {
-		a.worktreeSetupMu.Unlock()
+	if existing := a.worktreeSetup.runs[threadID]; existing != nil && existing != run {
+		a.worktreeSetup.mu.Unlock()
 		log.Printf("thread %s: not adopting the worktree setup for %s; the thread already has a run", threadID, worktreePath)
 		return false
 	}
-	delete(a.worktreeSetupRuns, key)
+	delete(a.worktreeSetup.runs, key)
 	run.key = threadID
 	run.threadID = threadID
-	a.worktreeSetupRuns[threadID] = run
+	a.worktreeSetup.runs[threadID] = run
 
 	var frame WorktreeSetupEvent
 	if run.settled {
@@ -194,7 +194,7 @@ func (a *App) adoptWorkspaceWorktreeSetup(worktreePath string, thread store.Thre
 			StartedAt:    run.startedAt,
 		}
 	}
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 
 	a.emitEvent(worktreeSetupChannel, frame)
 	return true
@@ -220,16 +220,16 @@ func (a *App) cancelWorktreeSetupsForPath(worktreePath string) {
 	if worktreePath == "" {
 		return
 	}
-	a.worktreeSetupMu.Lock()
+	a.worktreeSetup.mu.Lock()
 	var runs []*worktreeSetupRun
-	for _, run := range a.worktreeSetupRuns {
+	for _, run := range a.worktreeSetup.runs {
 		if !gitops.SameFilesystemPath(run.worktreePath, worktreePath) {
 			continue
 		}
 		run.cancelled = true
 		runs = append(runs, run)
 	}
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 	for _, run := range runs {
 		run.cancel()
 		<-run.done
@@ -271,9 +271,9 @@ func (a *App) GetWorkspaceWorktreeSetup(projectID, worktreePath string) (Worktre
 	}
 	worktreePath = worktree.Path
 
-	a.worktreeSetupMu.Lock()
+	a.worktreeSetup.mu.Lock()
 	run, _ := a.findWorkspaceSetupRunLocked(worktreePath)
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 	if run != nil {
 		return a.worktreeSetupRunState(run), nil
 	}

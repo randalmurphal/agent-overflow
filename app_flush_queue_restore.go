@@ -52,7 +52,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 		return nil
 	}
 
-	// threadLock -> flushDispatchMu is the established lock order documented
+	// threadLock -> a.flushDispatch.mu is the established lock order documented
 	// by RegisterQueueItem. Draining here, rather than before the thread lock,
 	// keeps the guard and the destructive operation in one critical section.
 	dispatchItems := a.drainFlushDispatchForSessionEnd(threadID)

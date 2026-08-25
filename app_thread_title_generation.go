@@ -23,22 +23,22 @@ import (
 // rather than queueing behind it — the running goroutine's completion
 // event is the answer for both.
 func (a *App) claimThreadTitleGeneration(threadID string) bool {
-	a.threadTitleGenMu.Lock()
-	defer a.threadTitleGenMu.Unlock()
-	if _, held := a.threadTitleGenActive[threadID]; held {
+	a.threadTitleGen.mu.Lock()
+	defer a.threadTitleGen.mu.Unlock()
+	if _, held := a.threadTitleGen.active[threadID]; held {
 		return false
 	}
-	if a.threadTitleGenActive == nil {
-		a.threadTitleGenActive = make(map[string]struct{})
+	if a.threadTitleGen.active == nil {
+		a.threadTitleGen.active = make(map[string]struct{})
 	}
-	a.threadTitleGenActive[threadID] = struct{}{}
+	a.threadTitleGen.active[threadID] = struct{}{}
 	return true
 }
 
 func (a *App) releaseThreadTitleGeneration(threadID string) {
-	a.threadTitleGenMu.Lock()
-	defer a.threadTitleGenMu.Unlock()
-	delete(a.threadTitleGenActive, threadID)
+	a.threadTitleGen.mu.Lock()
+	defer a.threadTitleGen.mu.Unlock()
+	delete(a.threadTitleGen.active, threadID)
 }
 
 // emitThreadTitleGeneration publishes the completion frame of one

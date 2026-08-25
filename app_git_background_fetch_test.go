@@ -121,7 +121,7 @@ func TestBackgroundFetchPassRefreshesBehindCount(t *testing.T) {
 	if got := behindCount(t, app, repo); got != 1 {
 		t.Fatalf("BehindCount after the pass = %d, want 1", got)
 	}
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 0 {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 0 {
 		t.Fatalf("memo = %v, want empty after a clean pass", got)
 	}
 }
@@ -176,7 +176,7 @@ func TestBackgroundFetchPassFetchesEachRepositoryOnce(t *testing.T) {
 		t.Fatalf("CommonDir: %v", err)
 	}
 	want := backgroundFetchRepoKey + commonDir
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 1 || got[0] != want {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 1 || got[0] != want {
 		t.Fatalf("memo keys = %v, want exactly [%s] (one fetch per repository)", got, want)
 	}
 }
@@ -191,13 +191,13 @@ func TestBackgroundFetchPassMemoRecoversAndReports(t *testing.T) {
 	broken := filepath.Join(t.TempDir(), "gone.git")
 	testutil.RunGit(t, repo, "remote", "set-url", "origin", broken)
 	app.runBackgroundFetchPass(t.Context())
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 1 {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 1 {
 		t.Fatalf("memo keys after a failing pass = %v, want one entry", got)
 	}
 
 	testutil.RunGit(t, repo, "remote", "set-url", "origin", bare)
 	app.runBackgroundFetchPass(t.Context())
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 0 {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 0 {
 		t.Fatalf("memo keys after recovery = %v, want empty", got)
 	}
 
@@ -207,7 +207,7 @@ func TestBackgroundFetchPassMemoRecoversAndReports(t *testing.T) {
 	app.gitCore().InvalidateFetchCache(repo)
 	testutil.RunGit(t, repo, "remote", "set-url", "origin", broken)
 	app.runBackgroundFetchPass(t.Context())
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 1 {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 1 {
 		t.Fatalf("memo keys after the failure returned = %v, want one entry", got)
 	}
 }
@@ -224,14 +224,14 @@ func TestBackgroundFetchPassRemembersUnresolvableProjectPaths(t *testing.T) {
 	app.runBackgroundFetchPass(t.Context())
 
 	want := backgroundFetchPathKey + notARepo
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 1 || got[0] != want {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 1 || got[0] != want {
 		t.Fatalf("memo keys = %v, want [%s]", got, want)
 	}
 
 	// Repeat passes keep exactly one entry: the log is memoized, and
 	// retain must not drop a key the pass just re-reported.
 	app.runBackgroundFetchPass(t.Context())
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 1 || got[0] != want {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 1 || got[0] != want {
 		t.Fatalf("memo keys after a second pass = %v, want [%s]", got, want)
 	}
 }
@@ -244,7 +244,7 @@ func TestBackgroundFetchPassForgetsRemovedProjects(t *testing.T) {
 	addProject(t, app, "p-gone", notARepo)
 
 	app.runBackgroundFetchPass(t.Context())
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 1 {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 1 {
 		t.Fatalf("memo keys = %v, want one entry", got)
 	}
 
@@ -252,7 +252,7 @@ func TestBackgroundFetchPassForgetsRemovedProjects(t *testing.T) {
 		t.Fatalf("delete project: %v", err)
 	}
 	app.runBackgroundFetchPass(t.Context())
-	if got := memoKeys(&app.backgroundFetchErrors); len(got) != 0 {
+	if got := memoKeys(&app.backgroundFetch.errors); len(got) != 0 {
 		t.Fatalf("memo keys after the project was removed = %v, want empty", got)
 	}
 }
@@ -280,9 +280,9 @@ func TestBackgroundGitFetchDisabledNeverStartsALoop(t *testing.T) {
 	app.backgroundFetchDisabled = true
 
 	app.startBackgroundGitFetch()
-	app.backgroundFetchMu.Lock()
-	stop := app.backgroundFetchStop
-	app.backgroundFetchMu.Unlock()
+	app.backgroundFetch.mu.Lock()
+	stop := app.backgroundFetch.stop
+	app.backgroundFetch.mu.Unlock()
 	if stop != nil {
 		t.Fatal("startBackgroundGitFetch created a loop while disabled")
 	}
@@ -295,17 +295,17 @@ func TestBackgroundGitFetchStartIsIdempotentAndStops(t *testing.T) {
 	app := newBackgroundFetchTestApp(t)
 
 	app.startBackgroundGitFetch()
-	app.backgroundFetchMu.Lock()
-	first := app.backgroundFetchStop
-	app.backgroundFetchMu.Unlock()
+	app.backgroundFetch.mu.Lock()
+	first := app.backgroundFetch.stop
+	app.backgroundFetch.mu.Unlock()
 	if first == nil {
 		t.Fatal("startBackgroundGitFetch did not create a loop")
 	}
 
 	app.startBackgroundGitFetch()
-	app.backgroundFetchMu.Lock()
-	second := app.backgroundFetchStop
-	app.backgroundFetchMu.Unlock()
+	app.backgroundFetch.mu.Lock()
+	second := app.backgroundFetch.stop
+	app.backgroundFetch.mu.Unlock()
 	if second != first {
 		t.Fatal("a second start replaced the running loop instead of no-oping")
 	}

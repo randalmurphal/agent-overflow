@@ -58,8 +58,8 @@ const maxWorkflowResumeDelay = 30 * 24 * time.Hour
 const workflowAutoResumeRetryDelay = 5 * time.Minute
 
 func (a *App) workflowAutoResumeTimer(delay time.Duration, fire func()) workflowTimer {
-	if a.newWorkflowAutoResumeTimer != nil {
-		return a.newWorkflowAutoResumeTimer(delay, fire)
+	if a.workflowAutoResume.newTimer != nil {
+		return a.workflowAutoResume.newTimer(delay, fire)
 	}
 	return time.AfterFunc(delay, fire)
 }
@@ -68,8 +68,8 @@ func (a *App) workflowAutoResumeTimer(delay time.Duration, fire func()) workflow
 // Production leaves the injection nil and reads `time.Now`, mirroring
 // `idleReaperNowFn` / `retentionNowFn`.
 func (a *App) workflowAutoResumeNow() time.Time {
-	if a.workflowAutoResumeNowFn != nil {
-		return a.workflowAutoResumeNowFn()
+	if a.workflowAutoResume.nowFn != nil {
+		return a.workflowAutoResume.nowFn()
 	}
 	return time.Now()
 }
@@ -93,17 +93,17 @@ func (a *App) armWorkflowAutoResume(itemID string, delay time.Duration) {
 	if delay < 0 {
 		delay = 0
 	}
-	a.workflowAutoResumeMu.Lock()
-	if existing, ok := a.workflowAutoResumes[itemID]; ok {
+	a.workflowAutoResume.mu.Lock()
+	if existing, ok := a.workflowAutoResume.timers[itemID]; ok {
 		existing.Stop()
 	}
-	if a.workflowAutoResumes == nil {
-		a.workflowAutoResumes = make(map[string]workflowTimer)
+	if a.workflowAutoResume.timers == nil {
+		a.workflowAutoResume.timers = make(map[string]workflowTimer)
 	}
-	a.workflowAutoResumes[itemID] = a.workflowAutoResumeTimer(delay, func() {
+	a.workflowAutoResume.timers[itemID] = a.workflowAutoResumeTimer(delay, func() {
 		a.fireWorkflowAutoResume(itemID)
 	})
-	a.workflowAutoResumeMu.Unlock()
+	a.workflowAutoResume.mu.Unlock()
 }
 
 // clearWorkflowAutoResume disarms and forgets one run's self-resume. It is
@@ -118,13 +118,13 @@ func (a *App) armWorkflowAutoResume(itemID string, delay time.Duration) {
 // — a run whose column is set with nothing armed in THIS process is one the
 // boot sweep will re-arm, and the fire re-checks the run before acting.
 func (a *App) clearWorkflowAutoResume(itemID string) {
-	a.workflowAutoResumeMu.Lock()
-	timer, armed := a.workflowAutoResumes[itemID]
+	a.workflowAutoResume.mu.Lock()
+	timer, armed := a.workflowAutoResume.timers[itemID]
 	if armed {
 		timer.Stop()
-		delete(a.workflowAutoResumes, itemID)
+		delete(a.workflowAutoResume.timers, itemID)
 	}
-	a.workflowAutoResumeMu.Unlock()
+	a.workflowAutoResume.mu.Unlock()
 	if !armed {
 		return
 	}
@@ -210,12 +210,12 @@ func (a *App) sweepWorkflowAutoResumes() {
 // stopWorkflowAutoResumes disarms every timer on the way down. The column
 // survives, so the next boot re-arms exactly what this leaves behind.
 func (a *App) stopWorkflowAutoResumes() {
-	a.workflowAutoResumeMu.Lock()
-	for itemID, timer := range a.workflowAutoResumes {
+	a.workflowAutoResume.mu.Lock()
+	for itemID, timer := range a.workflowAutoResume.timers {
 		timer.Stop()
-		delete(a.workflowAutoResumes, itemID)
+		delete(a.workflowAutoResume.timers, itemID)
 	}
-	a.workflowAutoResumeMu.Unlock()
+	a.workflowAutoResume.mu.Unlock()
 }
 
 // workflowAutoResumable reports whether a run is in the state a scheduled bare

@@ -1,15 +1,13 @@
-package main
+package sessionimport
 
 import (
 	"context"
 	"slices"
 	"sync"
 	"time"
-
-	"agent-overflow/internal/sessionimport"
 )
 
-// sessionImportScanTTL is how long one provider-home scan is reused.
+// ScanTTL is how long one provider-home scan is reused.
 //
 // A scan walks every session file in both provider homes — a real Claude home
 // is gigabytes across a thousand-plus transcripts — and the import modal
@@ -17,17 +15,17 @@ import (
 // each time. Sixty seconds is short enough that a session finished while the
 // modal is open shows up on the next natural re-list, and the Refresh button
 // bypasses the cache outright.
-const sessionImportScanTTL = time.Minute
+const ScanTTL = time.Minute
 
-// sessionImportScan is one cached scan plus the moment it was taken. The
+// CachedScan is one cached scan plus the moment it was taken. The
 // timestamp travels with the rows so a cache hit reports when the disk was
 // actually read, not when the RPC was answered.
-type sessionImportScan struct {
-	result    sessionimport.ScanResult
-	scannedAt int64
+type CachedScan struct {
+	Result    ScanResult
+	ScannedAt int64
 }
 
-// sessionImportScanCache holds THE scan — one entry, not a keyed map.
+// ScanCache holds THE scan — one entry, not a keyed map.
 //
 // The scan is unfiltered by construction: `ImportScanRequest` carries no
 // provider or workspace filter, so there is exactly one question to answer and
@@ -39,41 +37,44 @@ type sessionImportScan struct {
 // the store read behind the dedup set fails, which is neither expected nor
 // self-healing on a timer, and serving a cached failure would make the modal's
 // Retry button do nothing.
-type sessionImportScanCache struct {
+type ScanCache struct {
 	mu       sync.Mutex
 	ttl      time.Duration
 	now      func() time.Time
-	scan     func(context.Context) (sessionimport.ScanResult, error)
-	entry    *sessionImportScanEntry
-	inflight *sessionImportScanLoad
+	scan     func(context.Context) (ScanResult, error)
+	entry    *scanCacheEntry
+	inflight *scanCacheLoad
 }
 
-// sessionImportScanEntry is the cached scan, its expiry, and the id index
+// scanCacheEntry is the cached scan, its expiry, and the id index
 // Lookup answers from.
-type sessionImportScanEntry struct {
-	scan      sessionImportScan
-	byID      map[string]sessionimport.Row
+type scanCacheEntry struct {
+	scan      CachedScan
+	byID      map[string]Row
 	expiresAt time.Time
 }
 
-type sessionImportScanLoad struct {
+type scanCacheLoad struct {
 	done chan struct{}
-	scan sessionImportScan
+	scan CachedScan
 	err  error
 }
 
-func newSessionImportScanCache(
+// NewScanCache binds a cache to one scan function. A non-positive ttl means
+// ScanTTL and a nil now means the wall clock, so a caller that has no opinion
+// about either passes zero values.
+func NewScanCache(
 	ttl time.Duration,
 	now func() time.Time,
-	scan func(context.Context) (sessionimport.ScanResult, error),
-) *sessionImportScanCache {
+	scan func(context.Context) (ScanResult, error),
+) *ScanCache {
 	if ttl <= 0 {
-		ttl = sessionImportScanTTL
+		ttl = ScanTTL
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &sessionImportScanCache{ttl: ttl, now: now, scan: scan}
+	return &ScanCache{ttl: ttl, now: now, scan: scan}
 }
 
 // Get returns the current scan, walking the provider homes at most once
@@ -87,39 +88,39 @@ func newSessionImportScanCache(
 // hands them to every caller in between; returning them directly would make
 // one caller's append or in-place edit another caller's listing (the same rule
 // internal/codexmodels follows).
-func (c *sessionImportScanCache) Get(ctx context.Context, force bool) (sessionImportScan, error) {
+func (c *ScanCache) Get(ctx context.Context, force bool) (CachedScan, error) {
 	c.mu.Lock()
 	if !force && c.fresh() {
 		entry := c.entry
 		c.mu.Unlock()
-		return cloneSessionImportScan(entry.scan), nil
+		return cloneCachedScan(entry.scan), nil
 	}
 	if existing := c.inflight; existing != nil {
 		done := existing.done
 		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return sessionImportScan{}, ctx.Err()
+			return CachedScan{}, ctx.Err()
 		case <-done:
 			if existing.err != nil {
-				return sessionImportScan{}, existing.err
+				return CachedScan{}, existing.err
 			}
-			return cloneSessionImportScan(existing.scan), nil
+			return cloneCachedScan(existing.scan), nil
 		}
 	}
-	load := &sessionImportScanLoad{done: make(chan struct{})}
+	load := &scanCacheLoad{done: make(chan struct{})}
 	c.inflight = load
 	c.mu.Unlock()
 
 	result, err := c.scan(ctx)
-	scan := sessionImportScan{result: result, scannedAt: c.now().UnixMilli()}
+	scan := CachedScan{Result: result, ScannedAt: c.now().UnixMilli()}
 
 	c.mu.Lock()
 	load.scan = scan
 	load.err = err
 	c.inflight = nil
 	if err == nil {
-		c.entry = &sessionImportScanEntry{
+		c.entry = &scanCacheEntry{
 			scan:      scan,
 			byID:      indexScanRows(result.Rows),
 			expiresAt: c.now().Add(c.ttl),
@@ -129,13 +130,13 @@ func (c *sessionImportScanCache) Get(ctx context.Context, force bool) (sessionIm
 	c.mu.Unlock()
 
 	if err != nil {
-		return sessionImportScan{}, err
+		return CachedScan{}, err
 	}
-	return cloneSessionImportScan(scan), nil
+	return cloneCachedScan(scan), nil
 }
 
 // fresh reports whether the cached entry may still be served. Callers hold mu.
-func (c *sessionImportScanCache) fresh() bool {
+func (c *ScanCache) fresh() bool {
 	return c.entry != nil && c.now().Before(c.entry.expiresAt)
 }
 
@@ -148,50 +149,50 @@ func (c *sessionImportScanCache) fresh() bool {
 // re-mints the same ids (a row id is (provider, session id) and depends on
 // nothing about when the scan ran). Lookup itself never scans: whether a miss
 // is worth re-walking the disk for is the caller's decision.
-func (c *sessionImportScanCache) Lookup(id string) (sessionimport.Row, bool) {
+func (c *ScanCache) Lookup(id string) (Row, bool) {
 	if id == "" {
-		return sessionimport.Row{}, false
+		return Row{}, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.fresh() {
-		return sessionimport.Row{}, false
+		return Row{}, false
 	}
 	row, ok := c.entry.byID[id]
 	if !ok {
-		return sessionimport.Row{}, false
+		return Row{}, false
 	}
 	return cloneScanRow(row), true
 }
 
 // Reset drops the cached scan. Used after an import run so the next list does
 // not offer sessions that now have threads.
-func (c *sessionImportScanCache) Reset() {
+func (c *ScanCache) Reset() {
 	c.mu.Lock()
 	c.entry = nil
 	c.mu.Unlock()
 }
 
-func indexScanRows(rows []sessionimport.Row) map[string]sessionimport.Row {
-	byID := make(map[string]sessionimport.Row, len(rows))
+func indexScanRows(rows []Row) map[string]Row {
+	byID := make(map[string]Row, len(rows))
 	for _, row := range rows {
 		byID[row.ID] = row
 	}
 	return byID
 }
 
-func cloneSessionImportScan(scan sessionImportScan) sessionImportScan {
-	scan.result.Providers = slices.Clone(scan.result.Providers)
-	rows := slices.Clone(scan.result.Rows)
+func cloneCachedScan(scan CachedScan) CachedScan {
+	scan.Result.Providers = slices.Clone(scan.Result.Providers)
+	rows := slices.Clone(scan.Result.Rows)
 	for i := range rows {
 		rows[i].Warnings = slices.Clone(rows[i].Warnings)
 		rows[i].ImportedFrom = rows[i].ImportedFrom.Clone()
 	}
-	scan.result.Rows = rows
+	scan.Result.Rows = rows
 	return scan
 }
 
-func cloneScanRow(row sessionimport.Row) sessionimport.Row {
+func cloneScanRow(row Row) Row {
 	row.Warnings = slices.Clone(row.Warnings)
 	row.ImportedFrom = row.ImportedFrom.Clone()
 	return row

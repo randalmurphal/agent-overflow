@@ -367,7 +367,7 @@ func TestManualUsageRefreshRefusesDuringBackoff(t *testing.T) {
 	})
 	app.rateLimitProbeClientOverride = &http.Client{Transport: tripwireRoundTripper{t: t}}
 
-	app.usageBackoff.Note(
+	app.usageProbe.backoff.Note(
 		string(provider.Claude),
 		"selected",
 		&claude.RateLimitedError{RetryAfter: time.Minute},
@@ -399,11 +399,11 @@ func TestManualUsageRefreshRecordsAPerAccountBackoff(t *testing.T) {
 	if !errors.As(err, &limited) {
 		t.Fatalf("refresh error = %v, want *claude.RateLimitedError", err)
 	}
-	remaining := app.usageBackoff.Remaining(string(provider.Claude), "selected")
+	remaining := app.usageProbe.backoff.Remaining(string(provider.Claude), "selected")
 	if remaining <= 0 || remaining > 45*time.Second {
 		t.Fatalf("Remaining(selected) = %v, want (0s, 45s] from the manual 429", remaining)
 	}
-	if got := app.usageBackoff.Remaining(string(provider.Claude), "other"); got != 0 {
+	if got := app.usageProbe.backoff.Remaining(string(provider.Claude), "other"); got != 0 {
 		t.Fatalf("Remaining(other) = %v, want 0 — one account's 429 must not hold the rest", got)
 	}
 }
@@ -427,7 +427,7 @@ func TestBackoffOnOneAccountDoesNotBlockAnotherCardsRefresh(t *testing.T) {
 	}
 	app.rateLimitProbeClientOverride = expiringUsageClient(t, "other")
 
-	app.usageBackoff.Note(
+	app.usageProbe.backoff.Note(
 		string(provider.Claude),
 		"selected",
 		&claude.RateLimitedError{RetryAfter: time.Hour},

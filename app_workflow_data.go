@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/project"
+	"agent-overflow/internal/usageledger"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/profile"
 )
@@ -152,7 +153,7 @@ func (a *App) WorkflowListDefinitions(projectID string) (WorkflowDefinitionCatal
 // the same total the detail view's spend and the engine's budget check report
 // for that run, and the number a root's overview row must show for a recursive
 // campaign whose spend lands almost entirely on its call children. Composition
-// goes through the one ledger pricing rule (app_usage_pricing.go); a run whose
+// goes through the one ledger pricing rule (internal/usageledger); a run whose
 // phases ran on Codex has no wire-reported cost at all, so summing the
 // `cost_usd` column alone would report those runs as free.
 //
@@ -182,15 +183,15 @@ func (a *App) WorkflowListItemCosts(projectID string) (map[string]float64, error
 	for _, node := range nodes {
 		parents[node.ID] = node.ParentItemID
 	}
-	spends := make(map[string]*ledgerSpend, len(groups))
+	spends := make(map[string]*usageledger.Spend, len(groups))
 	for _, group := range groups {
 		for _, itemID := range workItemAncestryChain(group.WorkItemID, parents) {
 			spend, ok := spends[itemID]
 			if !ok {
-				spend = &ledgerSpend{}
+				spend = &usageledger.Spend{}
 				spends[itemID] = spend
 			}
-			if err := spend.add(group.UsageDetailRow); err != nil {
+			if err := spend.Add(group.UsageDetailRow); err != nil {
 				return nil, fmt.Errorf("list workflow item costs for project %s: %w", projectID, err)
 			}
 		}

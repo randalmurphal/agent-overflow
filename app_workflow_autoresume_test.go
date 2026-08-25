@@ -53,8 +53,8 @@ func newAutoResumeHarness(t *testing.T) *autoResumeHarness {
 		app: newTestAppWithStore(t),
 		now: time.Unix(1_700_000_000, 0),
 	}
-	harness.app.workflowAutoResumeNowFn = func() time.Time { return harness.now }
-	harness.app.newWorkflowAutoResumeTimer = func(delay time.Duration, fire func()) workflowTimer {
+	harness.app.workflowAutoResume.nowFn = func() time.Time { return harness.now }
+	harness.app.workflowAutoResume.newTimer = func(delay time.Duration, fire func()) workflowTimer {
 		timer := &armedWorkflowTimer{callback: fire, delay: delay}
 		harness.pending = timer
 		return timer
@@ -157,9 +157,9 @@ func TestWorkflowAutoResumeFiresIntoAResumeAndLeavesTheColumnToTheTransition(t *
 	// transition reach the column, through the same hook a manual resume goes
 	// through. (Here it is the retry re-arm holding the slot; on the success
 	// path it is the fire's own spent timer.)
-	harness.app.workflowAutoResumeMu.Lock()
-	_, stillRegistered := harness.app.workflowAutoResumes[item.ID]
-	harness.app.workflowAutoResumeMu.Unlock()
+	harness.app.workflowAutoResume.mu.Lock()
+	_, stillRegistered := harness.app.workflowAutoResume.timers[item.ID]
+	harness.app.workflowAutoResume.mu.Unlock()
 	if !stillRegistered {
 		t.Fatal("the fire dropped its registration, so no transition can clear the column")
 	}
@@ -169,9 +169,9 @@ func TestWorkflowAutoResumeFiresIntoAResumeAndLeavesTheColumnToTheTransition(t *
 	if got := harness.scheduleAt(t, item.ID); got != 0 {
 		t.Fatalf("schedule after the resume transition = %d, want 0", got)
 	}
-	harness.app.workflowAutoResumeMu.Lock()
-	_, stillRegistered = harness.app.workflowAutoResumes[item.ID]
-	harness.app.workflowAutoResumeMu.Unlock()
+	harness.app.workflowAutoResume.mu.Lock()
+	_, stillRegistered = harness.app.workflowAutoResume.timers[item.ID]
+	harness.app.workflowAutoResume.mu.Unlock()
 	if stillRegistered {
 		t.Fatal("the transition left a registration behind")
 	}
@@ -281,11 +281,11 @@ func TestWorkflowAutoResumeSweepReArmsAcrossARestart(t *testing.T) {
 	harness.app.sweepWorkflowAutoResumes()
 
 	rearmed := map[string]time.Duration{}
-	harness.app.workflowAutoResumeMu.Lock()
-	for itemID, timer := range harness.app.workflowAutoResumes {
+	harness.app.workflowAutoResume.mu.Lock()
+	for itemID, timer := range harness.app.workflowAutoResume.timers {
 		rearmed[itemID] = timer.(*armedWorkflowTimer).delay
 	}
-	harness.app.workflowAutoResumeMu.Unlock()
+	harness.app.workflowAutoResume.mu.Unlock()
 
 	if delay, ok := rearmed[future.ID]; !ok || delay != 6*time.Hour {
 		t.Fatalf("future schedule re-armed at %v (present=%v), want 6h", delay, ok)
@@ -403,9 +403,9 @@ func TestWorkflowAutoResumeRetriesAFailedResume(t *testing.T) {
 	if retry == nil || retry.delay != workflowAutoResumeRetryDelay || retry.stopped {
 		t.Fatalf("retry timer = %+v, want a live %v re-arm", retry, workflowAutoResumeRetryDelay)
 	}
-	harness.app.workflowAutoResumeMu.Lock()
-	registered := harness.app.workflowAutoResumes[item.ID]
-	harness.app.workflowAutoResumeMu.Unlock()
+	harness.app.workflowAutoResume.mu.Lock()
+	registered := harness.app.workflowAutoResume.timers[item.ID]
+	harness.app.workflowAutoResume.mu.Unlock()
 	if registered != workflowTimer(retry) {
 		t.Fatalf("registry holds %+v, want the retry timer", registered)
 	}
@@ -436,9 +436,9 @@ func TestWorkflowScheduleResumeRefusesWithoutAnEngine(t *testing.T) {
 	if got := harness.scheduleAt(t, item.ID); got != 0 {
 		t.Fatalf("the refused schedule was still persisted: %d", got)
 	}
-	harness.app.workflowAutoResumeMu.Lock()
-	registered := len(harness.app.workflowAutoResumes)
-	harness.app.workflowAutoResumeMu.Unlock()
+	harness.app.workflowAutoResume.mu.Lock()
+	registered := len(harness.app.workflowAutoResume.timers)
+	harness.app.workflowAutoResume.mu.Unlock()
 	if registered != 0 {
 		t.Fatalf("the refused schedule armed %d timers", registered)
 	}

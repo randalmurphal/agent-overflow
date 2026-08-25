@@ -1,11 +1,14 @@
-package main
+package usagebackoff
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,8 +16,39 @@ import (
 	"agent-overflow/internal/provider/claude"
 )
 
-func newBackoffLedgerForTest(now *time.Time) *usageBackoffLedger {
-	return &usageBackoffLedger{now: func() time.Time { return *now }}
+// syncLogBuffer is a mutex-guarded sink for log.SetOutput. The ledger logs from
+// the caller's goroutine, but -race still wants the test's read of the captured
+// text guarded against the logger's writes.
+type syncLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLogOutput routes the standard logger into a race-safe buffer for the
+// duration of the test.
+func captureLogOutput(t *testing.T) *syncLogBuffer {
+	t.Helper()
+	logs := &syncLogBuffer{}
+	previous := log.Writer()
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return logs
+}
+
+func newBackoffLedgerForTest(now *time.Time) *Ledger {
+	return &Ledger{now: func() time.Time { return *now }}
 }
 
 // A 429 holds exactly the account that earned it, for the server's
@@ -57,11 +91,11 @@ func TestUsageBackoffLedgerEscalatesWithoutRetryAfter(t *testing.T) {
 	key := string(provider.Claude)
 
 	wantHolds := []time.Duration{
-		initialUsageProbeBackoff,
-		2 * initialUsageProbeBackoff,
-		4 * initialUsageProbeBackoff,
-		maxUsageProbeBackoff,
-		maxUsageProbeBackoff,
+		initialProbeBackoff,
+		2 * initialProbeBackoff,
+		4 * initialProbeBackoff,
+		maxProbeBackoff,
+		maxProbeBackoff,
 	}
 	for i, want := range wantHolds {
 		ledger.Note(key, "selected", &claude.RateLimitedError{})
@@ -74,8 +108,8 @@ func TestUsageBackoffLedgerEscalatesWithoutRetryAfter(t *testing.T) {
 	// The escalation is per account: a first headerless 429 elsewhere starts
 	// at the initial hold.
 	ledger.Note(key, "other", &claude.RateLimitedError{})
-	if got := ledger.Remaining(key, "other"); got != initialUsageProbeBackoff {
-		t.Fatalf("Remaining(other) = %v, want %v", got, initialUsageProbeBackoff)
+	if got := ledger.Remaining(key, "other"); got != initialProbeBackoff {
+		t.Fatalf("Remaining(other) = %v, want %v", got, initialProbeBackoff)
 	}
 
 	// A server-named window replaces the guesswork and resets the strikes...
@@ -85,16 +119,16 @@ func TestUsageBackoffLedgerEscalatesWithoutRetryAfter(t *testing.T) {
 	}
 	now = now.Add(45 * time.Second)
 	ledger.Note(key, "selected", &claude.RateLimitedError{})
-	if got := ledger.Remaining(key, "selected"); got != initialUsageProbeBackoff {
-		t.Fatalf("Remaining after reset-then-headerless = %v, want %v", got, initialUsageProbeBackoff)
+	if got := ledger.Remaining(key, "selected"); got != initialProbeBackoff {
+		t.Fatalf("Remaining after reset-then-headerless = %v, want %v", got, initialProbeBackoff)
 	}
-	now = now.Add(initialUsageProbeBackoff)
+	now = now.Add(initialProbeBackoff)
 
 	// ...and so does a success.
 	ledger.Note(key, "selected", nil)
 	ledger.Note(key, "selected", &claude.RateLimitedError{})
-	if got := ledger.Remaining(key, "selected"); got != initialUsageProbeBackoff {
-		t.Fatalf("Remaining after success-then-headerless = %v, want %v", got, initialUsageProbeBackoff)
+	if got := ledger.Remaining(key, "selected"); got != initialProbeBackoff {
+		t.Fatalf("Remaining after success-then-headerless = %v, want %v", got, initialProbeBackoff)
 	}
 }
 
@@ -168,19 +202,19 @@ func TestUsageBackoffLedgerHeadlessStrikesSurviveARestart(t *testing.T) {
 	ledger := newBackoffLedgerForTest(&now)
 	ledger.Load(path)
 	ledger.Note(string(provider.Claude), "selected", &claude.RateLimitedError{})
-	if got := ledger.Remaining(string(provider.Claude), "selected"); got != initialUsageProbeBackoff {
-		t.Fatalf("first headerless hold = %v, want %v", got, initialUsageProbeBackoff)
+	if got := ledger.Remaining(string(provider.Claude), "selected"); got != initialProbeBackoff {
+		t.Fatalf("first headerless hold = %v, want %v", got, initialProbeBackoff)
 	}
 
 	// Restart well past the first hold: it is gone, the strike is not.
-	restartNow := now.Add(2 * initialUsageProbeBackoff)
+	restartNow := now.Add(2 * initialProbeBackoff)
 	restarted := newBackoffLedgerForTest(&restartNow)
 	restarted.Load(path)
 	if got := restarted.Remaining(string(provider.Claude), "selected"); got != 0 {
 		t.Fatalf("expired hold = %v, want it pruned on load", got)
 	}
 	restarted.Note(string(provider.Claude), "selected", &claude.RateLimitedError{})
-	if got := restarted.Remaining(string(provider.Claude), "selected"); got != 2*initialUsageProbeBackoff {
+	if got := restarted.Remaining(string(provider.Claude), "selected"); got != 2*initialProbeBackoff {
 		t.Fatalf("second headerless hold = %v, want the escalation preserved", got)
 	}
 }
@@ -203,7 +237,7 @@ func TestUsageBackoffLedgerKeepsStrikeOnlyEntriesThroughAnotherAccountsWrite(t *
 
 	// Past a's hold: it loads as a strike with no live hold, which is the
 	// state only another account's write can now carry forward.
-	later := base.Add(2 * initialUsageProbeBackoff)
+	later := base.Add(2 * initialProbeBackoff)
 	second := newBackoffLedgerForTest(&later)
 	second.Load(path)
 	if got := second.Remaining(key, "a"); got != 0 {
@@ -214,15 +248,15 @@ func TestUsageBackoffLedgerKeepsStrikeOnlyEntriesThroughAnotherAccountsWrite(t *
 	third := newBackoffLedgerForTest(&later)
 	third.Load(path)
 	third.Note(key, "a", &claude.RateLimitedError{})
-	if got := third.Remaining(key, "a"); got != 2*initialUsageProbeBackoff {
+	if got := third.Remaining(key, "a"); got != 2*initialProbeBackoff {
 		t.Fatalf(
 			"Remaining(a) = %v, want %v — a's escalation survived b's write",
 			got,
-			2*initialUsageProbeBackoff,
+			2*initialProbeBackoff,
 		)
 	}
-	if got := third.Remaining(key, "b"); got != initialUsageProbeBackoff {
-		t.Fatalf("Remaining(b) = %v, want %v", got, initialUsageProbeBackoff)
+	if got := third.Remaining(key, "b"); got != initialProbeBackoff {
+		t.Fatalf("Remaining(b) = %v, want %v", got, initialProbeBackoff)
 	}
 }
 

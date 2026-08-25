@@ -191,18 +191,18 @@ func TestThreadConfigBusySignals(t *testing.T) {
 	liveness.activeTurns.Store(0)
 
 	// In-flight flush dispatch.
-	app.flushDispatchMu.Lock()
-	if app.flushDispatchInflightItems == nil {
-		app.flushDispatchInflightItems = map[string]int{}
+	app.flushDispatch.mu.Lock()
+	if app.flushDispatch.inflightItems == nil {
+		app.flushDispatch.inflightItems = map[string]int{}
 	}
-	app.flushDispatchInflightItems[thread.ID] = 1
-	app.flushDispatchMu.Unlock()
+	app.flushDispatch.inflightItems[thread.ID] = 1
+	app.flushDispatch.mu.Unlock()
 	if !app.threadConfigBusy(thread.ID) {
 		t.Fatal("in-flight flush dispatch not reported busy")
 	}
-	app.flushDispatchMu.Lock()
-	delete(app.flushDispatchInflightItems, thread.ID)
-	app.flushDispatchMu.Unlock()
+	app.flushDispatch.mu.Lock()
+	delete(app.flushDispatch.inflightItems, thread.ID)
+	app.flushDispatch.mu.Unlock()
 
 	// Running backgrounded tool call.
 	now := time.Now().UnixMilli()

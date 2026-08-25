@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usageledger"
 )
 
 // GetUsageStats aggregates the append-only usage ledger (per-turn,
@@ -48,10 +49,10 @@ func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error)
 		byBucket[buckets[i].Bucket] = &buckets[i]
 	}
 
-	// Composed through the one ledger pricing rule (app_usage_pricing.go), the
+	// Composed through the one ledger pricing rule (internal/usageledger), the
 	// same one the workflow budget check enforces with — a bucket's dollars and
 	// a run's dollars are the same arithmetic over the same rate table.
-	spendByBucket := make(map[string]*ledgerSpend, len(buckets))
+	spendByBucket := make(map[string]*usageledger.Spend, len(buckets))
 	for _, d := range details {
 		if _, ok := byBucket[d.Bucket]; !ok {
 			// QueryUsageDetail shares QueryUsage's filters and bucket
@@ -61,10 +62,10 @@ func (a *App) GetUsageStats(query store.UsageQuery) ([]store.UsageBucket, error)
 		}
 		spend, ok := spendByBucket[d.Bucket]
 		if !ok {
-			spend = &ledgerSpend{}
+			spend = &usageledger.Spend{}
 			spendByBucket[d.Bucket] = spend
 		}
-		if err := spend.add(d); err != nil {
+		if err := spend.Add(d); err != nil {
 			return nil, fmt.Errorf("usage stats: %w", err)
 		}
 	}

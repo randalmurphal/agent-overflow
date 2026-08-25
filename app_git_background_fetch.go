@@ -143,9 +143,9 @@ func (a *App) startBackgroundGitFetch() {
 		return
 	}
 
-	a.backgroundFetchMu.Lock()
-	if a.backgroundFetchStop != nil {
-		a.backgroundFetchMu.Unlock()
+	a.backgroundFetch.mu.Lock()
+	if a.backgroundFetch.stop != nil {
+		a.backgroundFetch.mu.Unlock()
 		return
 	}
 	stop := make(chan struct{})
@@ -154,16 +154,16 @@ func (a *App) startBackgroundGitFetch() {
 	// stopBackgroundGitFetch's own cancel. Without it a fetch hanging on
 	// a dead network could hold teardown for the subprocess timeout.
 	ctx, cancel := context.WithCancel(a.lifeCtx())
-	a.backgroundFetchStop = stop
-	a.backgroundFetchCancel = cancel
+	a.backgroundFetch.stop = stop
+	a.backgroundFetch.cancel = cancel
 	// Add(1) under the lock for the same memory-model reason as the
 	// retention sweeper: a concurrent stop that sees a non-nil channel
 	// must observe the counter at 1 before it waits.
-	a.backgroundFetchWG.Add(1)
-	a.backgroundFetchMu.Unlock()
+	a.backgroundFetch.wg.Add(1)
+	a.backgroundFetch.mu.Unlock()
 
 	go func() {
-		defer a.backgroundFetchWG.Done()
+		defer a.backgroundFetch.wg.Done()
 		defer cancel()
 
 		initial := time.NewTimer(backgroundFetchInitialDelay)
@@ -191,12 +191,12 @@ func (a *App) startBackgroundGitFetch() {
 // stopBackgroundGitFetch signals the goroutine to exit and waits for it
 // to return. Safe before start and safe to call twice.
 func (a *App) stopBackgroundGitFetch() {
-	a.backgroundFetchMu.Lock()
-	stop := a.backgroundFetchStop
-	cancel := a.backgroundFetchCancel
-	a.backgroundFetchStop = nil
-	a.backgroundFetchCancel = nil
-	a.backgroundFetchMu.Unlock()
+	a.backgroundFetch.mu.Lock()
+	stop := a.backgroundFetch.stop
+	cancel := a.backgroundFetch.cancel
+	a.backgroundFetch.stop = nil
+	a.backgroundFetch.cancel = nil
+	a.backgroundFetch.mu.Unlock()
 	if stop != nil {
 		close(stop)
 	}
@@ -205,7 +205,7 @@ func (a *App) stopBackgroundGitFetch() {
 	if cancel != nil {
 		cancel()
 	}
-	a.backgroundFetchWG.Wait()
+	a.backgroundFetch.wg.Wait()
 }
 
 // runBackgroundFetchPass performs one pass over the sidebar's projects.
@@ -228,12 +228,12 @@ func (a *App) runBackgroundFetchPass(ctx context.Context) {
 	if err != nil {
 		// Memoized like a fetch failure, and for the same reason: a
 		// store that fails this read fails it every tick.
-		if a.backgroundFetchErrors.shouldLog(backgroundFetchStoreKey, err.Error()) {
+		if a.backgroundFetch.errors.shouldLog(backgroundFetchStoreKey, err.Error()) {
 			log.Printf("git background fetch: list projects: %v", err)
 		}
 		return
 	}
-	a.backgroundFetchErrors.clear(backgroundFetchStoreKey)
+	a.backgroundFetch.errors.clear(backgroundFetchStoreKey)
 
 	core := a.gitCore()
 	// Sorted so the repository a group of worktrees is fetched *through*
@@ -265,7 +265,7 @@ func (a *App) runBackgroundFetchPass(ctx context.Context) {
 		if err != nil {
 			pathKey := backgroundFetchPathKey + path
 			live[pathKey] = struct{}{}
-			if a.backgroundFetchErrors.shouldLog(pathKey, err.Error()) {
+			if a.backgroundFetch.errors.shouldLog(pathKey, err.Error()) {
 				log.Printf("git background fetch: skipping %s: %v", path, err)
 			}
 			continue
@@ -278,15 +278,15 @@ func (a *App) runBackgroundFetchPass(ctx context.Context) {
 		live[repoKey] = struct{}{}
 
 		if _, err := core.FetchRemotesBackground(ctx, path); err != nil {
-			if a.backgroundFetchErrors.shouldLog(repoKey, err.Error()) {
+			if a.backgroundFetch.errors.shouldLog(repoKey, err.Error()) {
 				log.Printf("git background fetch: %s: %v", commonDir, err)
 			}
 			continue
 		}
 		// Success — including a no-op skip inside the stale window —
 		// means the last failure is no longer the current state.
-		a.backgroundFetchErrors.clear(repoKey)
+		a.backgroundFetch.errors.clear(repoKey)
 	}
 
-	a.backgroundFetchErrors.retain(live)
+	a.backgroundFetch.errors.retain(live)
 }

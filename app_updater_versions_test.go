@@ -546,7 +546,7 @@ func newConfiguredUpdater(t *testing.T) *updater.Updater {
 }
 
 func TestDownloadUpdateRejectsInvalidTag(t *testing.T) {
-	a := &App{updater: newConfiguredUpdater(t)}
+	a := &App{updater: appUpdaterState{handle: newConfiguredUpdater(t)}}
 	if err := a.DownloadUpdate("bad tag with spaces"); !errors.Is(err, ErrInvalidReleaseTag) {
 		t.Fatalf("DownloadUpdate(invalid) = %v, want ErrInvalidReleaseTag", err)
 	}
@@ -555,7 +555,7 @@ func TestDownloadUpdateRejectsInvalidTag(t *testing.T) {
 func TestDownloadUpdateEmptyTagRequiresPending(t *testing.T) {
 	// No prior check has staged a pending release (updater sits at StateIdle),
 	// so an empty-tag download must fail fast rather than launch a no-op flow.
-	a := &App{updater: newConfiguredUpdater(t)}
+	a := &App{updater: appUpdaterState{handle: newConfiguredUpdater(t)}}
 	if err := a.DownloadUpdate(""); !errors.Is(err, ErrNoUpdateToDownload) {
 		t.Fatalf("DownloadUpdate(\"\") with no pending release = %v, want ErrNoUpdateToDownload", err)
 	}
@@ -564,8 +564,8 @@ func TestDownloadUpdateEmptyTagRequiresPending(t *testing.T) {
 func TestDownloadUpdateRejectedWhileBusy(t *testing.T) {
 	// A second download while one is already in flight must fail fast — the
 	// updater installs one at a time.
-	a := &App{updater: newConfiguredUpdater(t)}
-	a.updaterBusy = true
+	a := &App{updater: appUpdaterState{handle: newConfiguredUpdater(t)}}
+	a.updater.busy = true
 	if err := a.DownloadUpdate("v0.0.6"); !errors.Is(err, ErrUpdateBusy) {
 		t.Fatalf("DownloadUpdate while busy = %v, want ErrUpdateBusy", err)
 	}
@@ -598,7 +598,7 @@ func newUpdaterApp(t *testing.T, srv *httptest.Server, current string) (*App, *t
 	}); err != nil {
 		t.Fatalf("init updater: %v", err)
 	}
-	return &App{updater: up, updaterProvider: tp}, tp
+	return &App{updater: appUpdaterState{handle: up, provider: tp}}, tp
 }
 
 func TestDownloadUpdateByTagResolveFailureEmitsError(t *testing.T) {
@@ -648,7 +648,7 @@ func TestCheckForUpdateSkipsProbeWhenBusy(t *testing.T) {
 		{tag: "v0.0.8", withPlatform: true, withChecksum: true},
 	}, sumsForPlatform)
 	a, _ := newUpdaterApp(t, srv, "0.0.1")
-	a.updaterBusy = true
+	a.updater.busy = true
 
 	avail, err := a.CheckForUpdate()
 	if err != nil {

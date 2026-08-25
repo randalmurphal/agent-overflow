@@ -96,7 +96,7 @@ func TestInactiveExpiredClaudeUsageRefreshSpendsNothing(t *testing.T) {
 	if published != 0 {
 		t.Fatalf("published %d snapshots, want none for a refresh that never ran", published)
 	}
-	if remaining := app.usageBackoff.Remaining(string(provider.Claude), "inactive"); remaining != 0 {
+	if remaining := app.usageProbe.backoff.Remaining(string(provider.Claude), "inactive"); remaining != 0 {
 		t.Fatalf("Remaining(inactive) = %v, want no backoff from a request never sent", remaining)
 	}
 }
@@ -402,11 +402,11 @@ func TestInactiveClaudeUsageRefreshRecordsItsOwn429Hold(t *testing.T) {
 	if !errors.As(err, &limited) {
 		t.Fatalf("refresh error = %v, want *claude.RateLimitedError", err)
 	}
-	remaining := app.usageBackoff.Remaining(string(provider.Claude), "inactive")
+	remaining := app.usageProbe.backoff.Remaining(string(provider.Claude), "inactive")
 	if remaining <= 0 || remaining > 45*time.Second {
 		t.Fatalf("Remaining(inactive) = %v, want (0s, 45s] from the 429", remaining)
 	}
-	if got := app.usageBackoff.Remaining(string(provider.Claude), "selected"); got != 0 {
+	if got := app.usageProbe.backoff.Remaining(string(provider.Claude), "selected"); got != 0 {
 		t.Fatalf("Remaining(selected) = %v, want 0 — the throttle is per-bearer", got)
 	}
 }

@@ -138,7 +138,7 @@ func newWSLTestApp(t *testing.T, srv *httptest.Server, current string, deadlines
 		ackTimeout:      deadlines.ack,
 		backstopTimeout: deadlines.backstop,
 	}
-	a := &App{wslUpdate: mode}
+	a := &App{updater: appUpdaterState{wsl: mode}}
 	rec := newEventRecorder(a)
 
 	gh, err := github.New(github.Config{
@@ -163,8 +163,8 @@ func newWSLTestApp(t *testing.T, srv *httptest.Server, current string, deadlines
 	}); err != nil {
 		t.Fatalf("init updater: %v", err)
 	}
-	a.updater = u
-	a.updaterProvider = tp
+	a.updater.handle = u
+	a.updater.provider = tp
 	return a, rec, mode
 }
 
@@ -184,9 +184,9 @@ func readMarker(t *testing.T, dir string) *selfupdate.Marker {
 }
 
 func (a *App) busySnapshot() bool {
-	a.updaterMu.Lock()
-	defer a.updaterMu.Unlock()
-	return a.updaterBusy
+	a.updater.mu.Lock()
+	defer a.updater.mu.Unlock()
+	return a.updater.busy
 }
 
 // --- initWSLUpdater gating --------------------------------------------------
@@ -198,8 +198,8 @@ func TestInitWSLUpdaterSkipsDevBuild(t *testing.T) {
 	t.Setenv(wsldistro.AppDataEnv, t.TempDir())
 	a := &App{}
 	initWSLUpdaterIn(a, "dev", t.TempDir())
-	if a.updater != nil || a.wslUpdate != nil {
-		t.Fatalf("dev build must leave the updater unconfigured: updater=%v wslUpdate=%v", a.updater, a.wslUpdate)
+	if a.updater.handle != nil || a.updater.wsl != nil {
+		t.Fatalf("dev build must leave the updater unconfigured: updater=%v wslUpdate=%v", a.updater.handle, a.updater.wsl)
 	}
 }
 
@@ -211,7 +211,7 @@ func TestInitWSLUpdaterRequiresLauncherEnv(t *testing.T) {
 	t.Setenv(wsldistro.AppDataEnv, "")
 	a := &App{}
 	initWSLUpdaterIn(a, "0.0.10", t.TempDir())
-	if a.updater != nil || a.wslUpdate != nil {
+	if a.updater.handle != nil || a.updater.wsl != nil {
 		t.Fatal("WSL self-update must stay unsupported without the launcher-injected AppData path")
 	}
 }
@@ -223,7 +223,7 @@ func TestInitWSLUpdaterRequiresMarkerDir(t *testing.T) {
 	t.Setenv(wsldistro.AppDataEnv, t.TempDir())
 	a := &App{}
 	initWSLUpdaterIn(a, "0.0.10", "")
-	if a.updater != nil || a.wslUpdate != nil {
+	if a.updater.handle != nil || a.updater.wsl != nil {
 		t.Fatal("WSL self-update must stay unsupported without a marker dir")
 	}
 }
@@ -236,32 +236,32 @@ func TestInitWSLUpdaterConfiguresWSLTarget(t *testing.T) {
 	a := &App{}
 	initWSLUpdaterIn(a, "0.0.10", markerDir)
 
-	if a.updater == nil || a.updaterProvider == nil || a.wslUpdate == nil {
+	if a.updater.handle == nil || a.updater.provider == nil || a.updater.wsl == nil {
 		t.Fatalf("expected a configured WSL updater, got updater=%v provider=%v mode=%v",
-			a.updater, a.updaterProvider, a.wslUpdate)
+			a.updater.handle, a.updater.provider, a.updater.wsl)
 	}
 	// Platform MUST be "wsl": left empty, Init defaults to runtime.GOOS and
 	// this backend would silently target the linux desktop assets it cannot
 	// install, while an empty platform AND arch would let the matcher pick the
 	// SHASUMS256 sidecar as the artifact.
-	if a.updaterProvider.req.Platform != "wsl" {
-		t.Fatalf("provider platform = %q, want wsl", a.updaterProvider.req.Platform)
+	if a.updater.provider.req.Platform != "wsl" {
+		t.Fatalf("provider platform = %q, want wsl", a.updater.provider.req.Platform)
 	}
-	if a.updaterProvider.req.CurrentVersion != "0.0.10" {
-		t.Fatalf("provider CurrentVersion = %q, want 0.0.10", a.updaterProvider.req.CurrentVersion)
+	if a.updater.provider.req.CurrentVersion != "0.0.10" {
+		t.Fatalf("provider CurrentVersion = %q, want 0.0.10", a.updater.provider.req.CurrentVersion)
 	}
-	if a.updater.CurrentVersion() != "0.0.10" {
-		t.Fatalf("updater CurrentVersion = %q, want 0.0.10", a.updater.CurrentVersion())
+	if a.updater.handle.CurrentVersion() != "0.0.10" {
+		t.Fatalf("updater CurrentVersion = %q, want 0.0.10", a.updater.handle.CurrentVersion())
 	}
 	wantStaging := filepath.Join(appData, "agent-overflow", selfupdate.StagingDirName)
-	if a.wslUpdate.stagingDir != wantStaging {
-		t.Fatalf("stagingDir = %q, want %q", a.wslUpdate.stagingDir, wantStaging)
+	if a.updater.wsl.stagingDir != wantStaging {
+		t.Fatalf("stagingDir = %q, want %q", a.updater.wsl.stagingDir, wantStaging)
 	}
-	if a.wslUpdate.markerDir != markerDir {
-		t.Fatalf("markerDir = %q, want %q", a.wslUpdate.markerDir, markerDir)
+	if a.updater.wsl.markerDir != markerDir {
+		t.Fatalf("markerDir = %q, want %q", a.updater.wsl.markerDir, markerDir)
 	}
-	if a.wslUpdate.ackTimeout != wslInstallACKTimeout {
-		t.Fatalf("ackTimeout = %v, want %v", a.wslUpdate.ackTimeout, wslInstallACKTimeout)
+	if a.updater.wsl.ackTimeout != wslInstallACKTimeout {
+		t.Fatalf("ackTimeout = %v, want %v", a.updater.wsl.ackTimeout, wslInstallACKTimeout)
 	}
 }
 
@@ -351,9 +351,9 @@ func TestWSLUpdateFlowStagesAndHandsOff(t *testing.T) {
 	// phase: still in flight, now acknowledged, under the silence backstop
 	// instead of the ACK deadline. The launcher's promise to kill this process
 	// is not a fact until it happens.
-	a.updaterMu.Lock()
-	inflight, acked, timer := a.updaterInstall, a.updaterInstallAcked, a.updaterInstallTimer
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	inflight, acked, timer := a.updater.install, a.updater.installAcked, a.updater.installTimer
+	a.updater.mu.Unlock()
 	if inflight == nil || !acked || timer == nil {
 		t.Fatalf("acknowledged install must stay in flight under the backstop: install=%v acked=%v timer=%v",
 			inflight, acked, timer)
@@ -436,9 +436,9 @@ func TestWSLInstallFailedReportUnwinds(t *testing.T) {
 	// The artifact is genuinely still staged on the Windows side, so the App's
 	// record of it stays — a retry has something to hand over, and the next
 	// download sweeps it first anyway.
-	a.updaterMu.Lock()
-	staged := a.updaterStaged
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	staged := a.updater.staged
+	a.updater.mu.Unlock()
 	if staged == nil {
 		t.Fatal("a failed handoff must not forget the still-staged artifact")
 	}
@@ -493,7 +493,7 @@ func TestWSLInstallBackstopUnwindsAfterSilentLauncher(t *testing.T) {
 	// The gap this closes: the launcher acknowledges, then hits an install
 	// error AND its "failed" report never lands (the bridge died in exactly
 	// that window). It stays alive on the old version; without the backstop
-	// this backend would hold updaterBusy and the marker forever — no retry
+	// this backend would hold a.updater.busy and the marker forever — no retry
 	// short of restarting the app, plus a spurious "didn't apply" next boot.
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", wslTestDeadlines{ack: time.Hour, backstop: 20 * time.Millisecond})
@@ -520,9 +520,9 @@ func TestWSLInstallBackstopUnwindsAfterSilentLauncher(t *testing.T) {
 	if a.busySnapshot() {
 		t.Fatal("the backstop must release the fence so the user can retry")
 	}
-	a.updaterMu.Lock()
-	inflight, acked, timer := a.updaterInstall, a.updaterInstallAcked, a.updaterInstallTimer
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	inflight, acked, timer := a.updater.install, a.updater.installAcked, a.updater.installTimer
+	a.updater.mu.Unlock()
 	if inflight != nil || acked || timer != nil {
 		t.Fatalf("backstop must return the install state to rest: install=%v acked=%v timer=%v", inflight, acked, timer)
 	}
@@ -599,9 +599,9 @@ func TestWSLInstallDuplicateProceedingDoesNotExtendTheBackstop(t *testing.T) {
 	if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
 		t.Fatalf("first proceeding: %v", err)
 	}
-	a.updaterMu.Lock()
-	first := a.updaterInstallTimer
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	first := a.updater.installTimer
+	a.updater.mu.Unlock()
 
 	for i := 0; i < 3; i++ {
 		time.Sleep(30 * time.Millisecond)
@@ -609,9 +609,9 @@ func TestWSLInstallDuplicateProceedingDoesNotExtendTheBackstop(t *testing.T) {
 			t.Fatalf("duplicate proceeding %d: %v", i, err)
 		}
 	}
-	a.updaterMu.Lock()
-	still := a.updaterInstallTimer
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	still := a.updater.installTimer
+	a.updater.mu.Unlock()
 	if still != first {
 		t.Fatal("a duplicate acknowledgement re-armed the deadline; a chatty launcher could hold the fence forever")
 	}
@@ -635,9 +635,9 @@ func TestWSLInstallResequencesAfterBackstop(t *testing.T) {
 	}
 	rec.await(t, "updater:error", 5*time.Second)
 
-	a.updaterMu.Lock()
-	deadGen := a.updaterInstallGen
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	deadGen := a.updater.installGen
+	a.updater.mu.Unlock()
 
 	// A fresh cycle: re-check, re-download (which sweeps and re-stages), and
 	// hand off again. Give this one an unreachable backstop so the assertions
@@ -650,9 +650,9 @@ func TestWSLInstallResequencesAfterBackstop(t *testing.T) {
 	}
 	rec.awaitAfter(t, selfupdate.ChannelInstall, from, 5*time.Second)
 
-	a.updaterMu.Lock()
-	gen, inflight, acked := a.updaterInstallGen, a.updaterInstall, a.updaterInstallAcked
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	gen, inflight, acked := a.updater.installGen, a.updater.install, a.updater.installAcked
+	a.updater.mu.Unlock()
 	if gen == deadGen {
 		t.Fatalf("install generation = %d, want a fresh one past the abandoned %d", gen, deadGen)
 	}
@@ -681,7 +681,7 @@ func TestWSLInstallResequencesAfterBackstop(t *testing.T) {
 
 func TestWSLInstallStaleAckDeadlineCannotUnwindAnAcknowledgedInstall(t *testing.T) {
 	// The race: the ACK deadline fires just as the launcher's "proceeding"
-	// report wins updaterMu. Stop can no longer help — the fired callback is
+	// report wins a.updater.mu. Stop can no longer help — the fired callback is
 	// past stopping, merely parked on the lock — so the only thing keeping it
 	// from unwinding the acknowledged install is its generation now being
 	// stale (armWSLInstallDeadlineLocked bumps on every arm). Without that, it
@@ -692,9 +692,9 @@ func TestWSLInstallStaleAckDeadlineCannotUnwindAnAcknowledgedInstall(t *testing.
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
 	handOffForTest(t, a, rec)
 
-	a.updaterMu.Lock()
-	ackGen := a.updaterInstallGen
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	ackGen := a.updater.installGen
+	a.updater.mu.Unlock()
 
 	if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
 		t.Fatalf("ReportUpdateInstallStatus(proceeding): %v", err)
@@ -710,9 +710,9 @@ func TestWSLInstallStaleAckDeadlineCannotUnwindAnAcknowledgedInstall(t *testing.
 	if !a.busySnapshot() {
 		t.Fatal("the fence must stay held for the acknowledged install")
 	}
-	a.updaterMu.Lock()
-	inflight, acked, timer := a.updaterInstall, a.updaterInstallAcked, a.updaterInstallTimer
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	inflight, acked, timer := a.updater.install, a.updater.installAcked, a.updater.installTimer
+	a.updater.mu.Unlock()
 	if inflight == nil || !acked || timer == nil {
 		t.Fatalf("acknowledged install must stay in flight under its backstop: install=%v acked=%v timer=%v",
 			inflight, acked, timer)
@@ -720,22 +720,22 @@ func TestWSLInstallStaleAckDeadlineCannotUnwindAnAcknowledgedInstall(t *testing.
 }
 
 func TestWSLInstallUnwindDropsTheMarkerBeforeTheFenceLifts(t *testing.T) {
-	// The defect shape this pins against: an unwind that releases updaterBusy
+	// The defect shape this pins against: an unwind that releases a.updater.busy
 	// under the lock but clears the marker after the unlock leaves a window
 	// where a waiting RestartToUpdate claims the fence and writes a FRESH
 	// marker — which the old unwind's deferred cleanup then deletes, making a
 	// silent failure of the new swap undetectable on the next boot. So the
 	// invariant is positional: by the time abandonWSLInstallLocked returns,
-	// with updaterMu still held and the fence just lifted, the marker must
+	// with a.updater.mu still held and the fence just lifted, the marker must
 	// already be gone.
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
 	handOffForTest(t, a, rec)
 
-	a.updaterMu.Lock()
-	acted := a.abandonWSLInstallLocked(a.updaterInstallGen)
+	a.updater.mu.Lock()
+	acted := a.abandonWSLInstallLocked(a.updater.installGen)
 	marker, err := selfupdate.LoadMarker(mode.markerDir)
-	a.updaterMu.Unlock()
+	a.updater.mu.Unlock()
 	if !acted {
 		t.Fatal("abandonWSLInstallLocked must act on the install in flight")
 	}
@@ -786,7 +786,7 @@ func stageForTest(t *testing.T, a *App, rec *eventRecorder) {
 // --- ReportUpdateInstallStatus edge orders ----------------------------------
 
 func TestReportUpdateInstallStatusRejectsUnknownStage(t *testing.T) {
-	a := &App{wslUpdate: &wslUpdateMode{markerDir: t.TempDir(), stagingDir: t.TempDir()}}
+	a := &App{updater: appUpdaterState{wsl: &wslUpdateMode{markerDir: t.TempDir(), stagingDir: t.TempDir()}}}
 	if err := a.ReportUpdateInstallStatus("installed", "0.0.8", ""); !errors.Is(err, ErrInvalidInstallStatus) {
 		t.Fatalf("unknown stage = %v, want ErrInvalidInstallStatus", err)
 	}
@@ -802,7 +802,7 @@ func TestReportUpdateInstallStatusUnsupportedOffWSL(t *testing.T) {
 func TestReportUpdateInstallStatusBeforeAnyRestart(t *testing.T) {
 	// A launcher that reports without ever having received a directive (a
 	// replayed frame, a confused build) must not be able to invent state.
-	a := &App{wslUpdate: &wslUpdateMode{markerDir: t.TempDir(), stagingDir: t.TempDir()}}
+	a := &App{updater: appUpdaterState{wsl: &wslUpdateMode{markerDir: t.TempDir(), stagingDir: t.TempDir()}}}
 	for _, stage := range []string{selfupdate.StatusProceeding, selfupdate.StatusFailed} {
 		if err := a.ReportUpdateInstallStatus(stage, "0.0.8", "x"); !errors.Is(err, ErrNoInstallInFlight) {
 			t.Fatalf("%s before any restart = %v, want ErrNoInstallInFlight", stage, err)
@@ -894,9 +894,9 @@ func TestRestartToUpdateWSLRejectedWhileBusy(t *testing.T) {
 	a, rec, _ := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
 	stageForTest(t, a, rec)
 
-	a.updaterMu.Lock()
-	a.updaterBusy = true
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	a.updater.busy = true
+	a.updater.mu.Unlock()
 	if err := a.RestartToUpdate(); !errors.Is(err, ErrUpdateBusy) {
 		t.Fatalf("RestartToUpdate while busy = %v, want ErrUpdateBusy", err)
 	}
@@ -915,11 +915,11 @@ func TestUpdaterPendingStashSequences(t *testing.T) {
 		if _, err := a.CheckForUpdate(); err != nil {
 			t.Fatalf("CheckForUpdate: %v", err)
 		}
-		if a.updaterPending == nil || a.updaterPending.Version != "0.0.8" {
-			t.Fatalf("stash = %+v, want 0.0.8", a.updaterPending)
+		if a.updater.pending == nil || a.updater.pending.Version != "0.0.8" {
+			t.Fatalf("stash = %+v, want 0.0.8", a.updater.pending)
 		}
-		if a.updaterPending.Artifact.Filename != wslAssetName {
-			t.Fatalf("stashed artifact = %q, want the wsl asset", a.updaterPending.Artifact.Filename)
+		if a.updater.pending.Artifact.Filename != wslAssetName {
+			t.Fatalf("stashed artifact = %q, want the wsl asset", a.updater.pending.Artifact.Filename)
 		}
 	})
 
@@ -930,8 +930,8 @@ func TestUpdaterPendingStashSequences(t *testing.T) {
 		if _, err := a.CheckForUpdate(); err != nil {
 			t.Fatalf("CheckForUpdate: %v", err)
 		}
-		if a.updaterPending != nil {
-			t.Fatalf("stash = %+v, want nil when up to date", a.updaterPending)
+		if a.updater.pending != nil {
+			t.Fatalf("stash = %+v, want nil when up to date", a.updater.pending)
 		}
 	})
 
@@ -941,9 +941,9 @@ func TestUpdaterPendingStashSequences(t *testing.T) {
 			t.Fatalf("DownloadUpdate(v0.0.6): %v", err)
 		}
 		rec.await(t, "updater:ready", 20*time.Second)
-		a.updaterMu.Lock()
-		pending, staged := a.updaterPending, a.updaterStaged
-		a.updaterMu.Unlock()
+		a.updater.mu.Lock()
+		pending, staged := a.updater.pending, a.updater.staged
+		a.updater.mu.Unlock()
 		if pending == nil || pending.Version != "0.0.6" {
 			t.Fatalf("stash after by-tag download = %+v, want 0.0.6", pending)
 		}
@@ -974,9 +974,9 @@ func TestUpdaterPendingStashSequences(t *testing.T) {
 		if avail.LatestVersion != "0.0.8" {
 			t.Fatalf("re-check LatestVersion = %q, want 0.0.8", avail.LatestVersion)
 		}
-		a.updaterMu.Lock()
-		pending, staged := a.updaterPending, a.updaterStaged
-		a.updaterMu.Unlock()
+		a.updater.mu.Lock()
+		pending, staged := a.updater.pending, a.updater.staged
+		a.updater.mu.Unlock()
 		if pending == nil || pending.Version != "0.0.8" {
 			t.Fatalf("stash after re-check = %+v, want the newly resolved 0.0.8", pending)
 		}
@@ -1030,9 +1030,9 @@ func TestStageWSLUpdateDigestMismatchEmitsError(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(mode.stagingDir, wslAssetName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a digest mismatch must leave nothing at the destination (stat err = %v)", err)
 	}
-	a.updaterMu.Lock()
-	staged := a.updaterStaged
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	staged := a.updater.staged
+	a.updater.mu.Unlock()
 	if staged != nil {
 		t.Fatalf("staged = %+v, want nil after a failed copy", staged)
 	}
@@ -1065,7 +1065,7 @@ func TestStageWSLUpdateWithoutIdentityFailsClosed(t *testing.T) {
 func newReconcileFixture(t *testing.T) (*App, *wslUpdateMode) {
 	t.Helper()
 	mode := &wslUpdateMode{markerDir: t.TempDir(), stagingDir: filepath.Join(t.TempDir(), selfupdate.StagingDirName)}
-	return &App{wslUpdate: mode}, mode
+	return &App{updater: appUpdaterState{wsl: mode}}, mode
 }
 
 // seedStagedArtifact drops a file in the staging dir so the sweep half of the
@@ -1088,8 +1088,8 @@ func TestReconcileWSLUpdateMarkerAbsent(t *testing.T) {
 
 	reconcileWSLUpdateMarker(a, "0.0.10", mode)
 
-	if a.updateApplyFailure != "" {
-		t.Fatalf("notice = %q, want empty on an ordinary boot", a.updateApplyFailure)
+	if a.updater.applyFailure != "" {
+		t.Fatalf("notice = %q, want empty on an ordinary boot", a.updater.applyFailure)
 	}
 	// No marker means no install was ever handed over, so the boot check has no
 	// business deleting anything a download in this session might be mid-stage.
@@ -1109,8 +1109,8 @@ func TestReconcileWSLUpdateMarkerMatchClearsAndSweeps(t *testing.T) {
 
 	reconcileWSLUpdateMarker(a, "0.0.10", mode)
 
-	if a.updateApplyFailure != "" {
-		t.Fatalf("notice = %q, want empty when the swap worked", a.updateApplyFailure)
+	if a.updater.applyFailure != "" {
+		t.Fatalf("notice = %q, want empty when the swap worked", a.updater.applyFailure)
 	}
 	if m := readMarker(t, mode.markerDir); m != nil {
 		t.Fatalf("marker = %+v, want cleared once its question is answered", m)
@@ -1132,8 +1132,8 @@ func TestReconcileWSLUpdateMarkerMismatchRecordsNotice(t *testing.T) {
 	reconcileWSLUpdateMarker(a, "0.0.10", mode)
 
 	want := "Update to 0.0.11 didn't apply — still running 0.0.10."
-	if a.updateApplyFailure != want {
-		t.Fatalf("notice = %q, want %q", a.updateApplyFailure, want)
+	if a.updater.applyFailure != want {
+		t.Fatalf("notice = %q, want %q", a.updater.applyFailure, want)
 	}
 	if m := readMarker(t, mode.markerDir); m != nil {
 		t.Fatalf("marker = %+v, want cleared so the next boot does not re-accuse", m)
@@ -1155,8 +1155,8 @@ func TestReconcileWSLUpdateMarkerCorruptIsLoudAndSelfHealing(t *testing.T) {
 
 	reconcileWSLUpdateMarker(a, "0.0.10", mode)
 
-	if !strings.Contains(a.updateApplyFailure, "unreadable") {
-		t.Fatalf("notice = %q, want it to name the unreadable record", a.updateApplyFailure)
+	if !strings.Contains(a.updater.applyFailure, "unreadable") {
+		t.Fatalf("notice = %q, want it to name the unreadable record", a.updater.applyFailure)
 	}
 	if _, err := os.Stat(selfupdate.MarkerPath(mode.markerDir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a corrupt marker must be cleared (stat err = %v)", err)
@@ -1181,7 +1181,7 @@ func TestInitWSLUpdaterSurfacesApplyFailureThroughCheck(t *testing.T) {
 
 	a := &App{}
 	initWSLUpdaterIn(a, "0.0.10", markerDir)
-	if a.updater == nil {
+	if a.updater.handle == nil {
 		t.Fatal("expected a configured updater")
 	}
 
@@ -1189,9 +1189,9 @@ func TestInitWSLUpdaterSurfacesApplyFailureThroughCheck(t *testing.T) {
 	// is about the notice reaching the wire shape, and the busy path is the one
 	// return that touches no network — the production updater here points at
 	// the real api.github.com.
-	a.updaterMu.Lock()
-	a.updaterBusy = true
-	a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	a.updater.busy = true
+	a.updater.mu.Unlock()
 
 	avail, err := a.CheckForUpdate()
 	if err != nil {

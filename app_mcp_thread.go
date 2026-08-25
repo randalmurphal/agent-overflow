@@ -299,7 +299,7 @@ func (a *App) setCodexMCPEnabled(reloadThreadID, name string, enabled bool) erro
 }
 
 // codexMCPReloadState coalesces concurrent live-reload requests for one
-// thread's Codex session. Present in App.codexMCPReloads exactly while a
+// thread's Codex session. Present in App.mcp.codexReloads exactly while a
 // reload runner is live for the thread.
 type codexMCPReloadState struct {
 	rerun bool
@@ -319,30 +319,30 @@ type codexMCPReloadState struct {
 // silent path is app shutdown — a timeout is a real failure the user
 // sees.
 func (a *App) requestCodexMCPReload(threadID string) {
-	a.codexMCPReloadsMu.Lock()
-	if st, ok := a.codexMCPReloads[threadID]; ok {
+	a.mcp.codexReloadsMu.Lock()
+	if st, ok := a.mcp.codexReloads[threadID]; ok {
 		st.rerun = true
-		a.codexMCPReloadsMu.Unlock()
+		a.mcp.codexReloadsMu.Unlock()
 		return
 	}
-	if a.codexMCPReloads == nil {
-		a.codexMCPReloads = map[string]*codexMCPReloadState{}
+	if a.mcp.codexReloads == nil {
+		a.mcp.codexReloads = map[string]*codexMCPReloadState{}
 	}
 	st := &codexMCPReloadState{}
-	a.codexMCPReloads[threadID] = st
-	a.codexMCPReloadsMu.Unlock()
+	a.mcp.codexReloads[threadID] = st
+	a.mcp.codexReloadsMu.Unlock()
 
 	go func() {
 		for {
 			err := a.runCodexMCPReload(threadID)
 
-			a.codexMCPReloadsMu.Lock()
+			a.mcp.codexReloadsMu.Lock()
 			rerun := st.rerun
 			st.rerun = false
 			if !rerun {
-				delete(a.codexMCPReloads, threadID)
+				delete(a.mcp.codexReloads, threadID)
 			}
-			a.codexMCPReloadsMu.Unlock()
+			a.mcp.codexReloadsMu.Unlock()
 
 			if err != nil && a.lifeCtx().Err() == nil {
 				a.emitWireErrorToThread(threadID, fmt.Sprintf("mcp: live reload failed: %s", sanitizeMCPError(err.Error())))

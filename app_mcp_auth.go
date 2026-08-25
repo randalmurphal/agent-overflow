@@ -121,7 +121,7 @@ func sanitizeMCPError(s string) string {
 }
 
 // claudeMCPOAuthPoll is the dedup identity stored in
-// App.claudeMCPOAuthPolls. The struct address is the identity — a
+// App.mcp.claudeOAuthPolls. The struct address is the identity — a
 // stale defer can compare its own *claudeMCPOAuthPoll against the
 // current map entry to avoid wiping a newer poller's registration.
 // `cancel` cuts off the poll's ctx so a superseding TriggerMcpAuth
@@ -142,25 +142,25 @@ func (a *App) startClaudeMCPOAuthPoll(threadID, serverName string) {
 	ctx, cancel := context.WithCancel(a.lifeCtx())
 	poll := &claudeMCPOAuthPoll{cancel: cancel}
 
-	a.claudeMCPOAuthPollsMu.Lock()
-	if a.claudeMCPOAuthPolls == nil {
-		a.claudeMCPOAuthPolls = map[string]*claudeMCPOAuthPoll{}
+	a.mcp.claudeOAuthPollsMu.Lock()
+	if a.mcp.claudeOAuthPolls == nil {
+		a.mcp.claudeOAuthPolls = map[string]*claudeMCPOAuthPoll{}
 	}
-	if prior, ok := a.claudeMCPOAuthPolls[serverName]; ok {
+	if prior, ok := a.mcp.claudeOAuthPolls[serverName]; ok {
 		prior.cancel()
 	}
-	a.claudeMCPOAuthPolls[serverName] = poll
-	a.claudeMCPOAuthPollsMu.Unlock()
+	a.mcp.claudeOAuthPolls[serverName] = poll
+	a.mcp.claudeOAuthPollsMu.Unlock()
 
 	go func() {
 		defer func() {
-			a.claudeMCPOAuthPollsMu.Lock()
+			a.mcp.claudeOAuthPollsMu.Lock()
 			// Only clear the slot if it still points at our poll —
 			// a newer caller may have replaced us mid-loop.
-			if a.claudeMCPOAuthPolls[serverName] == poll {
-				delete(a.claudeMCPOAuthPolls, serverName)
+			if a.mcp.claudeOAuthPolls[serverName] == poll {
+				delete(a.mcp.claudeOAuthPolls, serverName)
 			}
-			a.claudeMCPOAuthPollsMu.Unlock()
+			a.mcp.claudeOAuthPollsMu.Unlock()
 			cancel()
 		}()
 		a.pollClaudeMCPAfterOAuth(

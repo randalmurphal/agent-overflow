@@ -381,12 +381,12 @@ type apiAsset struct {
 // ListReleases returns the installable releases for this build's update target,
 // newest first, so the frontend can offer a version picker. Read-only; LocalOnly.
 func (a *App) ListReleases() ([]ReleaseSummary, error) {
-	if a.updater == nil || a.updaterProvider == nil {
+	if a.updater.handle == nil || a.updater.provider == nil {
 		return nil, ErrUpdatesUnsupported
 	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), updaterCheckTimeout)
 	defer cancel()
-	rels, err := a.updaterProvider.listReleases(ctx)
+	rels, err := a.updater.provider.listReleases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list releases: %w", err)
 	}

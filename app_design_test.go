@@ -15,10 +15,10 @@ import (
 func TestGetDesignWorkdirInfoReturnsAbsolutePathAndManifest(t *testing.T) {
 	app := newTestAppWithDesign(t)
 
-	if err := app.designWorkdir.EnsureThread("thread-design"); err != nil {
+	if err := app.design.workdir.EnsureThread("thread-design"); err != nil {
 		t.Fatalf("EnsureThread: %v", err)
 	}
-	mainPath, err := app.designWorkdir.MainPath("thread-design")
+	mainPath, err := app.design.workdir.MainPath("thread-design")
 	if err != nil {
 		t.Fatalf("MainPath: %v", err)
 	}
@@ -83,8 +83,8 @@ func TestDesignIngestDiagnosticBatchAppendsToBuffer(t *testing.T) {
 		t.Fatalf("IngestDiagnosticBatch: %v", err)
 	}
 
-	if app.designDiagnostics.LatestToken("thread-design") < 2 {
-		t.Fatalf("token = %d, want >= 2", app.designDiagnostics.LatestToken("thread-design"))
+	if app.design.diagnostics.LatestToken("thread-design") < 2 {
+		t.Fatalf("token = %d, want >= 2", app.design.diagnostics.LatestToken("thread-design"))
 	}
 }
 
@@ -138,7 +138,7 @@ func TestStartSessionCleansUpDesignMCPRegistrationOnFailure(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	if got := designMCPRegistrationCount(app.designMCP); got != 0 {
+	if got := designMCPRegistrationCount(app.design.mcp); got != 0 {
 		t.Fatalf("registration count before StartSession = %d, want 0", got)
 	}
 
@@ -146,7 +146,7 @@ func TestStartSessionCleansUpDesignMCPRegistrationOnFailure(t *testing.T) {
 		t.Fatal("StartSession() error = nil, want failure")
 	}
 
-	if got := designMCPRegistrationCount(app.designMCP); got != 0 {
+	if got := designMCPRegistrationCount(app.design.mcp); got != 0 {
 		t.Fatalf("registration count after failed StartSession = %d, want 0", got)
 	}
 }
@@ -174,7 +174,7 @@ func TestDesignWorkDirOverridePointsAtThreadDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("designWorkDirOverride: %v", err)
 	}
-	expected, err := app.designWorkdir.ThreadDir(thread.ID)
+	expected, err := app.design.workdir.ThreadDir(thread.ID)
 	if err != nil {
 		t.Fatalf("ThreadDir: %v", err)
 	}
@@ -213,13 +213,13 @@ func TestDesignWorkDirOverrideSkippedForChatThreads(t *testing.T) {
 
 // TestNewDesignCapturerErrorsBeforeBoot pins the boot-order contract:
 // the design.Capturer wired into reactor at App construction is asked
-// to Capture before either subsystem (screenshotManager,
+// to Capture before either subsystem (a.design.screenshots,
 // transportServer) is ready. Each prerequisite gets its own clear
 // error so the agent's read_screenshot tool surfaces useful text via
 // the MCP isError envelope rather than nil-deref'ing.
 func TestNewDesignCapturerErrorsBeforeBoot(t *testing.T) {
 	app := newTestAppWithDesign(t)
-	// newTestAppWithDesign does not wire screenshotManager — that's the
+	// newTestAppWithDesign does not wire a.design.screenshots — that's the
 	// state we're asserting against.
 	cap := app.newDesignCapturer()
 
@@ -239,26 +239,26 @@ func newTestAppWithDesign(t *testing.T) *App {
 	app.configDir = t.TempDir()
 
 	designBase := filepath.Join(t.TempDir(), "design-workdirs")
-	app.designWorkdir = design.NewWorkDirManager(designBase)
-	app.designDiagnostics = design.NewDiagnosticBuffer(nil)
-	app.designServer = design.FileHandler(designBase)
-	app.designWatchers = make(map[string]*design.Watcher)
+	app.design.workdir = design.NewWorkDirManager(designBase)
+	app.design.diagnostics = design.NewDiagnosticBuffer(nil)
+	app.design.server = design.FileHandler(designBase)
+	app.design.watchers = make(map[string]*design.Watcher)
 	// Capturer left nil — the read_screenshot path is exercised in
 	// internal/design/mcp_test.go with its own fake. App-level tests
 	// here cover workdir, diagnostics, MCP registration, and CWD
 	// override; none of them invoke the screenshot path.
-	app.reactor = design.NewReactor(app.designDiagnostics, nil)
-	app.designMCP = design.NewMCPServer(app.reactor)
+	app.design.reactor = design.NewReactor(app.design.diagnostics, nil)
+	app.design.mcp = design.NewMCPServer(app.design.reactor)
 	t.Cleanup(func() {
-		_ = app.designMCP.Close()
+		_ = app.design.mcp.Close()
 		// Stop any watchers spawned during the test.
-		app.designWatchersMu.Lock()
-		watchers := make([]*design.Watcher, 0, len(app.designWatchers))
-		for _, w := range app.designWatchers {
+		app.design.watchersMu.Lock()
+		watchers := make([]*design.Watcher, 0, len(app.design.watchers))
+		for _, w := range app.design.watchers {
 			watchers = append(watchers, w)
 		}
-		app.designWatchers = nil
-		app.designWatchersMu.Unlock()
+		app.design.watchers = nil
+		app.design.watchersMu.Unlock()
 		for _, w := range watchers {
 			w.Stop()
 		}

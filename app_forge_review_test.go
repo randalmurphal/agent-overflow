@@ -111,9 +111,9 @@ func expectNoPRUpdate(t *testing.T, events <-chan PRUpdatedEvent, why string) {
 
 // prPumpState reads a PR's pump bookkeeping under the App's lock.
 func prPumpState(app *App, prKey string) (refs, active int, paused, present bool) {
-	app.prUpdatePumpsMu.Lock()
-	defer app.prUpdatePumpsMu.Unlock()
-	pump, ok := app.prUpdatePumps[prKey]
+	app.prUpdates.mu.Lock()
+	defer app.prUpdates.mu.Unlock()
+	pump, ok := app.prUpdates.pumps[prKey]
 	if !ok {
 		return 0, 0, false, false
 	}
@@ -122,9 +122,9 @@ func prPumpState(app *App, prKey string) (refs, active int, paused, present bool
 
 func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 5 * time.Millisecond
+	app.prUpdates.interval = 5 * time.Millisecond
 	calls := 0
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls++
 		head := "head-a"
 		if calls >= 2 {
@@ -152,7 +152,7 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
 			t.Fatalf("UnsubscribePRUpdates: %v", err)
 		}
-		app.prUpdatePumpWG.Wait()
+		app.prUpdates.wg.Wait()
 	}()
 
 	evt := awaitPRUpdate(t, events, "changed snapshot emit")
@@ -168,9 +168,9 @@ func TestPRUpdatePollingEmitsOnlyOnSnapshotChange(t *testing.T) {
 // N copies of the same event.
 func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 5 * time.Millisecond
+	app.prUpdates.interval = 5 * time.Millisecond
 	var changed atomic.Bool
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		head := "head-a"
 		if changed.Load() {
 			head = "head-b"
@@ -193,9 +193,9 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	if subA.PRKey != subB.PRKey {
 		t.Fatalf("same PR resolved to different keys: %q vs %q", subA.PRKey, subB.PRKey)
 	}
-	app.prUpdatePumpsMu.Lock()
-	pumpCount := len(app.prUpdatePumps)
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Lock()
+	pumpCount := len(app.prUpdates.pumps)
+	app.prUpdates.mu.Unlock()
 	if pumpCount != 1 {
 		t.Fatalf("pump count = %d, want 1 for one PR", pumpCount)
 	}
@@ -219,9 +219,9 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	if refs, active, _, present := prPumpState(app, subA.PRKey); !present || refs != 1 || active != 1 {
 		t.Fatalf("after releasing A: refs=%d active=%d present=%v, want 1/1/true", refs, active, present)
 	}
-	app.prUpdatePumpsMu.Lock()
-	pump := app.prUpdatePumps[subA.PRKey]
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Lock()
+	pump := app.prUpdates.pumps[subA.PRKey]
+	app.prUpdates.mu.Unlock()
 	if err := app.UnsubscribePRUpdates(subB.ID); err != nil {
 		t.Fatalf("unsubscribe B: %v", err)
 	}
@@ -230,13 +230,13 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 	}
 	// The last release stamps the pump dead under the store lock, so a poll
 	// it still has in flight cannot stamp state after a replacement exists.
-	app.prUpdatePumpsMu.Lock()
+	app.prUpdates.mu.Lock()
 	dead := pump.dead
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Unlock()
 	if !dead {
 		t.Fatalf("released pump was not stamped dead")
 	}
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 // TestSubscribePRUpdatesJoinerDoesNotFetch: one PR is one poll stream AND
@@ -246,9 +246,9 @@ func TestPRUpdatePumpIsSharedPerPRKey(t *testing.T) {
 // pump exists to prevent.
 func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = time.Hour
+	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		fetches.Add(1)
 		return prUpdateSnapshot{Detail: gitops.PRDetail{
 			Number:  got.Number,
@@ -282,7 +282,7 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 // TestCreatePRUpdatePumpReconcilesAConcurrentPump: the fetch on the
@@ -292,8 +292,8 @@ func TestSubscribePRUpdatesJoinerDoesNotFetch(t *testing.T) {
 // different observations, however narrowly they raced.
 func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = time.Hour
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.interval = time.Hour
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 
@@ -331,13 +331,13 @@ func TestCreatePRUpdatePumpReconcilesAConcurrentPump(t *testing.T) {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = time.Hour
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.interval = time.Hour
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 	// Mimics the per-connection ctx the transport layer installs: when the
@@ -360,15 +360,15 @@ func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 	if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
 		t.Fatalf("Unsubscribe after connection cleanup: %v", err)
 	}
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 5 * time.Millisecond
+	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
 	var changed atomic.Bool
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
 		head := "head-a"
 		if changed.Load() {
@@ -388,7 +388,7 @@ func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
 			t.Fatalf("UnsubscribePRUpdates: %v", err)
 		}
-		app.prUpdatePumpWG.Wait()
+		app.prUpdates.wg.Wait()
 	}()
 
 	if err := app.SetPRUpdatesActive(sub.ID, false); err != nil {
@@ -419,9 +419,9 @@ func TestPRUpdatePollingPausesWhileInactiveAndCatchesUpOnResume(t *testing.T) {
 // the same direction must not shift the count either way.
 func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 5 * time.Millisecond
+	app.prUpdates.interval = 5 * time.Millisecond
 	var calls atomic.Int32
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
@@ -443,7 +443,7 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 	defer func() {
 		_ = app.UnsubscribePRUpdates(subA.ID)
 		_ = app.UnsubscribePRUpdates(subB.ID)
-		app.prUpdatePumpWG.Wait()
+		app.prUpdates.wg.Wait()
 	}()
 
 	// One hidden client must not stop the pump for the visible one.
@@ -509,9 +509,9 @@ func TestSetPRUpdatesActiveComposesAcrossSubscribers(t *testing.T) {
 // staring at whatever the last visible client saw.
 func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 400 * time.Millisecond
+	app.prUpdates.interval = 400 * time.Millisecond
 	var changed atomic.Bool
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		head := "head-a"
 		if changed.Load() {
 			head = "head-b"
@@ -539,7 +539,7 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 	defer func() {
 		_ = app.UnsubscribePRUpdates(subA.ID)
 		_ = app.UnsubscribePRUpdates(subB.ID)
-		app.prUpdatePumpWG.Wait()
+		app.prUpdates.wg.Wait()
 	}()
 
 	evt := awaitPRUpdate(t, events, "catch-up poll after a new subscriber unpaused the pump")
@@ -558,8 +558,8 @@ func TestSubscribingToAPausedPumpWakesIt(t *testing.T) {
 // dying one's own drop releases exactly the handles that referenced IT.
 func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = time.Hour
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.interval = time.Hour
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
 
@@ -570,24 +570,24 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 
 	// Stand in for the goroutine's teardown having begun: the pump is
 	// stamped dead but its drop has not removed it from the map yet.
-	app.prUpdatePumpsMu.Lock()
-	dying := app.prUpdatePumps[first.PRKey]
+	app.prUpdates.mu.Lock()
+	dying := app.prUpdates.pumps[first.PRKey]
 	if dying == nil {
-		app.prUpdatePumpsMu.Unlock()
+		app.prUpdates.mu.Unlock()
 		t.Fatalf("no pump tracked for %q after Subscribe", first.PRKey)
 	}
 	dying.dead = true
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Unlock()
 
 	second, err := app.SubscribePRUpdates(context.Background(), testPR)
 	if err != nil {
 		t.Fatalf("subscribe onto a dying pump: %v", err)
 	}
 
-	app.prUpdatePumpsMu.Lock()
-	fresh := app.prUpdatePumps[first.PRKey]
-	held := app.prUpdateHandles[second.ID]
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Lock()
+	fresh := app.prUpdates.pumps[first.PRKey]
+	held := app.prUpdates.handles[second.ID]
+	app.prUpdates.mu.Unlock()
 	if fresh == dying {
 		t.Fatalf("Subscribe shared the dying pump instead of minting a fresh one")
 	}
@@ -598,11 +598,11 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	// The dying pump's own drop must take only what belonged to IT.
 	app.dropPRUpdatePump(dying)
 
-	app.prUpdatePumpsMu.Lock()
-	stillMapped := app.prUpdatePumps[first.PRKey]
-	stillHeld, ok := app.prUpdateHandles[second.ID]
-	_, staleHeld := app.prUpdateHandles[first.ID]
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Lock()
+	stillMapped := app.prUpdates.pumps[first.PRKey]
+	stillHeld, ok := app.prUpdates.handles[second.ID]
+	_, staleHeld := app.prUpdates.handles[first.ID]
+	app.prUpdates.mu.Unlock()
 	if stillMapped != fresh {
 		t.Fatalf("the dying pump's drop evicted its successor")
 	}
@@ -623,7 +623,7 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 	// rather than letting the lifetime context end it); stop it so Wait
 	// cannot block on a fixture artifact.
 	close(dying.done)
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 // TestPollPRUpdateStoresNothingOnADeadPump: per PR key, sequence order has
@@ -636,10 +636,10 @@ func TestSubscribePRUpdatesRefusesADyingPump(t *testing.T) {
 // overlapping for a key.
 func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = time.Hour
+	app.prUpdates.interval = time.Hour
 	var fetchErr error
 	head := "head-a"
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		if fetchErr != nil {
 			return prUpdateSnapshot{}, fetchErr
 		}
@@ -650,28 +650,28 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	app.prUpdatePumpsMu.Lock()
-	pump := app.prUpdatePumps[sub.PRKey]
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Lock()
+	pump := app.prUpdates.pumps[sub.PRKey]
+	app.prUpdates.mu.Unlock()
 	if pump == nil {
 		t.Fatalf("no pump tracked for %q after Subscribe", sub.PRKey)
 	}
 
 	// Stand in for the goroutine's teardown having begun while this poll's
 	// fetch was already out on the wire.
-	app.prUpdatePumpsMu.Lock()
+	app.prUpdates.mu.Lock()
 	pump.dead = true
-	globalSeq := app.prUpdateSeq
+	globalSeq := app.prUpdates.seq
 	pumpSeq := pump.seq
 	last := string(pump.last)
-	app.prUpdatePumpsMu.Unlock()
+	app.prUpdates.mu.Unlock()
 
 	assertUnstamped := func(phase string) {
 		t.Helper()
-		app.prUpdatePumpsMu.Lock()
-		defer app.prUpdatePumpsMu.Unlock()
-		if app.prUpdateSeq != globalSeq {
-			t.Fatalf("%s: global seq moved %d -> %d", phase, globalSeq, app.prUpdateSeq)
+		app.prUpdates.mu.Lock()
+		defer app.prUpdates.mu.Unlock()
+		if app.prUpdates.seq != globalSeq {
+			t.Fatalf("%s: global seq moved %d -> %d", phase, globalSeq, app.prUpdates.seq)
 		}
 		if pump.seq != pumpSeq {
 			t.Fatalf("%s: pump seq moved %d -> %d", phase, pumpSeq, pump.seq)
@@ -701,7 +701,7 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 	if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
 		t.Fatalf("unsubscribe: %v", err)
 	}
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 // TestSubscribePRUpdatesCapsOutstandingHandles: every distinct PR behind a
@@ -710,9 +710,9 @@ func TestPollPRUpdateStoresNothingOnADeadPump(t *testing.T) {
 // typed — retrying the same call never fixes it.
 func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = time.Hour
+	app.prUpdates.interval = time.Hour
 	var fetches atomic.Int32
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		fetches.Add(1)
 		return prUpdateSnapshot{Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a"}}, nil
 	}
@@ -721,7 +721,7 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 		for _, id := range ids {
 			_ = app.UnsubscribePRUpdates(id)
 		}
-		app.prUpdatePumpWG.Wait()
+		app.prUpdates.wg.Wait()
 	}()
 
 	for i := 0; i < maxPRUpdateHandles; i++ {
@@ -763,9 +763,9 @@ func TestSubscribePRUpdatesCapsOutstandingHandles(t *testing.T) {
 
 func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 300 * time.Millisecond
+	app.prUpdates.interval = 300 * time.Millisecond
 	var calls atomic.Int32
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		calls.Add(1)
 		return prUpdateSnapshot{
 			Detail: gitops.PRDetail{Number: got.Number, HeadSHA: "head-a", Mergeability: gitops.MergeabilityChecking},
@@ -780,7 +780,7 @@ func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 		if err := app.UnsubscribePRUpdates(sub.ID); err != nil {
 			t.Fatalf("UnsubscribePRUpdates: %v", err)
 		}
-		app.prUpdatePumpWG.Wait()
+		app.prUpdates.wg.Wait()
 	}()
 
 	// Quick hide/show flip well inside one interval: no tick was missed,
@@ -805,9 +805,9 @@ func TestPRUpdateResumeWithoutMissedTickDoesNotPoll(t *testing.T) {
 // one broadcast.
 func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 5 * time.Millisecond
+	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		if failing.Load() {
 			return prUpdateSnapshot{}, errors.New("gh: could not reach github.com")
 		}
@@ -821,7 +821,7 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 	}
 	defer func() {
 		_ = app.UnsubscribePRUpdates(sub.ID)
-		app.prUpdatePumpWG.Wait()
+		app.prUpdates.wg.Wait()
 	}()
 
 	failing.Store(true)
@@ -858,9 +858,9 @@ func TestPRUpdateFetchFailureSurfacesOnTheEvent(t *testing.T) {
 // until the forge recovered or started failing differently.
 func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 5 * time.Millisecond
+	app.prUpdates.interval = 5 * time.Millisecond
 	var failing atomic.Bool
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		if failing.Load() {
 			return prUpdateSnapshot{}, errors.New("gh: could not reach github.com")
 		}
@@ -912,7 +912,7 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 // TestPRUpdateJoinCarriesThePumpSequence pins the ordering a subscriber
@@ -924,10 +924,10 @@ func TestPRUpdateJoinCarriesTheActivePumpError(t *testing.T) {
 // account for.
 func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 	app := NewApp()
-	app.prUpdateInterval = 5 * time.Millisecond
+	app.prUpdates.interval = 5 * time.Millisecond
 	var head atomic.Value
 	head.Store("head-a")
-	app.prUpdateFetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
+	app.prUpdates.fetchFn = func(got gitops.PRReference) (prUpdateSnapshot, error) {
 		return prUpdateSnapshot{Detail: gitops.PRDetail{
 			Number:  got.Number,
 			HeadSHA: head.Load().(string),
@@ -974,7 +974,7 @@ func TestPRUpdateJoinCarriesThePumpSequence(t *testing.T) {
 			t.Fatalf("unsubscribe: %v", err)
 		}
 	}
-	app.prUpdatePumpWG.Wait()
+	app.prUpdates.wg.Wait()
 }
 
 func TestSetPRUpdatesActiveUnknownIDIsNoOp(t *testing.T) {

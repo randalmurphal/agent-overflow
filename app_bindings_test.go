@@ -1119,8 +1119,10 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 		autoReconnectAttempted: make(map[string]bool),
 		threadSystemPrompts:    make(map[string]string),
 		deliberations:          make(map[string]*discussion.Deliberation),
-		gitWatchPumps:          make(map[string]*gitWatchPump),
-		gitWatchHandles:        make(map[string]*gitWatchPump),
+		gitStatus: appGitStatusPumpState{
+			pumps:   make(map[string]*gitWatchPump),
+			handles: make(map[string]*gitWatchPump),
+		},
 	}
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	// The same structural spawn/home isolation setupE2EApp gets. This

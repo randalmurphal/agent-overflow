@@ -31,28 +31,28 @@ func (a *App) subscribeTurnObserver(scope string, observer turnObserver) func() 
 		panic("turn observer: callback cannot be nil")
 	}
 
-	a.turnObserversMu.Lock()
-	if a.turnObservers == nil {
-		a.turnObservers = make(map[string]map[uint64]turnObserver)
+	a.turnObservers.mu.Lock()
+	if a.turnObservers.byThread == nil {
+		a.turnObservers.byThread = make(map[string]map[uint64]turnObserver)
 	}
-	a.nextTurnObserverID++
-	id := a.nextTurnObserverID
-	bucket := a.turnObservers[scope]
+	a.turnObservers.nextID++
+	id := a.turnObservers.nextID
+	bucket := a.turnObservers.byThread[scope]
 	if bucket == nil {
 		bucket = make(map[uint64]turnObserver)
-		a.turnObservers[scope] = bucket
+		a.turnObservers.byThread[scope] = bucket
 	}
 	bucket[id] = observer
-	a.turnObserversMu.Unlock()
+	a.turnObservers.mu.Unlock()
 
 	return func() {
-		a.turnObserversMu.Lock()
-		defer a.turnObserversMu.Unlock()
+		a.turnObservers.mu.Lock()
+		defer a.turnObservers.mu.Unlock()
 
-		bucket := a.turnObservers[scope]
+		bucket := a.turnObservers.byThread[scope]
 		delete(bucket, id)
 		if len(bucket) == 0 {
-			delete(a.turnObservers, scope)
+			delete(a.turnObservers.byThread, scope)
 		}
 	}
 }
@@ -64,9 +64,9 @@ func (a *App) subscribeTurnObserver(scope string, observer turnObserver) func() 
 // concurrently, so callbacks must still be safe to run concurrently and a
 // concurrent dispatch may observe a registry change immediately.
 func (a *App) dispatchTurnObservers(threadID string, evt provider.ProviderEvent) {
-	a.turnObserversMu.RLock()
-	global := a.turnObservers[globalTurnObserverScope]
-	thread := a.turnObservers[threadID]
+	a.turnObservers.mu.RLock()
+	global := a.turnObservers.byThread[globalTurnObserverScope]
+	thread := a.turnObservers.byThread[threadID]
 	observerCount := len(global)
 	if threadID != globalTurnObserverScope {
 		observerCount += len(thread)
@@ -84,7 +84,7 @@ func (a *App) dispatchTurnObservers(threadID string, evt provider.ProviderEvent)
 			observers = append(observers, observer)
 		}
 	}
-	a.turnObserversMu.RUnlock()
+	a.turnObservers.mu.RUnlock()
 
 	for _, observer := range observers {
 		observer(threadID, evt)
@@ -92,7 +92,7 @@ func (a *App) dispatchTurnObservers(threadID string, evt provider.ProviderEvent)
 }
 
 func (a *App) installDiscussionTurnObserver() {
-	a.discussionTurnObserverOnce.Do(func() {
+	a.turnObservers.discussionOnce.Do(func() {
 		a.subscribeGlobalTurnObserver(func(threadID string, evt provider.ProviderEvent) {
 			if evt.Kind != provider.EventTurnComplete {
 				return

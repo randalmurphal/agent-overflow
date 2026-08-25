@@ -310,20 +310,20 @@ func (a *App) startRateLimitProbeLoop(loop rateLimitProbeLoop) {
 // provider. Called from the session event chokepoint; the periodic poll reads
 // it through providerTurnCompletedSince.
 func (a *App) noteProviderTurnActivity(providerName string) {
-	a.turnActivityMu.Lock()
-	if a.turnActivityByProvider == nil {
-		a.turnActivityByProvider = make(map[string]time.Time)
+	a.usageProbe.turnActivityMu.Lock()
+	if a.usageProbe.turnActivityByProvider == nil {
+		a.usageProbe.turnActivityByProvider = make(map[string]time.Time)
 	}
-	a.turnActivityByProvider[providerName] = time.Now()
-	a.turnActivityMu.Unlock()
+	a.usageProbe.turnActivityByProvider[providerName] = time.Now()
+	a.usageProbe.turnActivityMu.Unlock()
 }
 
 // providerTurnCompletedSince reports whether the provider completed a turn
 // after mark. A zero mark means "ever" — a boot with no turns yet polls
 // nothing.
 func (a *App) providerTurnCompletedSince(providerName string, mark time.Time) bool {
-	a.turnActivityMu.Lock()
-	last, ok := a.turnActivityByProvider[providerName]
-	a.turnActivityMu.Unlock()
+	a.usageProbe.turnActivityMu.Lock()
+	last, ok := a.usageProbe.turnActivityByProvider[providerName]
+	a.usageProbe.turnActivityMu.Unlock()
 	return ok && last.After(mark)
 }

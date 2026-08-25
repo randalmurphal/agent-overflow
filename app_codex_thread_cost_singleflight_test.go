@@ -77,9 +77,9 @@ func TestCodexThreadCostReadIsSingleFlightWithARerun(t *testing.T) {
 
 	// Released means gone, not zero-valued: a per-thread map that only ever
 	// grew would be a leak on a long-lived app.
-	app.codexThreadCostMu.Lock()
-	_, present := app.codexThreadCostInflight[id]
-	app.codexThreadCostMu.Unlock()
+	app.codexThreadCost.mu.Lock()
+	_, present := app.codexThreadCost.inflight[id]
+	app.codexThreadCost.mu.Unlock()
 	if present {
 		t.Fatal("the released slot left an entry behind")
 	}
@@ -165,9 +165,9 @@ func TestForgetCodexThreadCostFencesAnInFlightRead(t *testing.T) {
 	}
 	// The NEXT pass is not fenced: it starts after the rollback and reads
 	// the thread as it is now.
-	app.codexThreadCostMu.Lock()
-	app.codexThreadCostInflight[id].dirty = true
-	app.codexThreadCostMu.Unlock()
+	app.codexThreadCost.mu.Lock()
+	app.codexThreadCost.inflight[id].dirty = true
+	app.codexThreadCost.mu.Unlock()
 	_, nextEpoch, again := app.nextCodexThreadCostRead(id)
 	if !again {
 		t.Fatal("the dirty slot refused another pass")

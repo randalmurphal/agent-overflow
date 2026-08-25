@@ -307,7 +307,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 	}
 	// Server-imposed usage holds are per-bearer and run about an hour, far
 	// longer than the interval between app restarts, so they persist.
-	a.usageBackoff.Load(filepath.Join(dbDir, "usage-backoff.json"))
+	a.usageProbe.backoff.Load(filepath.Join(dbDir, "usage-backoff.json"))
 	a.hydratePersistedAccountRateLimits()
 	// Seed the git Core's GitLab self-hosted host snapshot from the
 	// persisted settings before any Status / DetectForge call sees a
@@ -555,20 +555,20 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.registry = discussion.NewRegistry(st)
 	a.channels = discussion.NewChannelService(st)
 	designBase := filepath.Join(dbDir, "design-workdirs")
-	a.designWorkdir = design.NewWorkDirManager(designBase)
-	a.designDiagnostics = design.NewDiagnosticBuffer(nil)
-	a.designServer = design.FileHandler(designBase)
-	a.designWatchers = make(map[string]*design.Watcher)
+	a.design.workdir = design.NewWorkDirManager(designBase)
+	a.design.diagnostics = design.NewDiagnosticBuffer(nil)
+	a.design.server = design.FileHandler(designBase)
+	a.design.watchers = make(map[string]*design.Watcher)
 	// Headless Chromium-driven capture for the agent's read_screenshot
 	// tool. Lazy: the binary downloads on first capture (~150 MB
 	// once), and the browser process boots only when something asks
 	// for a screenshot. Threads that never call read_screenshot pay
 	// nothing.
-	a.screenshotManager = screenshot.NewManager(
+	a.design.screenshots = screenshot.NewManager(
 		screenshot.NewInstaller(dbDir, a.emit),
 	)
-	a.reactor = design.NewReactor(a.designDiagnostics, a.newDesignCapturer())
-	a.designMCP = design.NewMCPServer(a.reactor)
+	a.design.reactor = design.NewReactor(a.design.diagnostics, a.newDesignCapturer())
+	a.design.mcp = design.NewMCPServer(a.design.reactor)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
 	attachmentStore, err := attachment.NewStore(attachment.Config{
 		RootDir: filepath.Join(dbDir, "attachments"),

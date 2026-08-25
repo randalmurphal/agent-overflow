@@ -133,9 +133,9 @@ func waitForGitStatusEvent(t *testing.T, events *[]recordedEmission, mu *sync.Mu
 // gitWatchPumpRefs reports the App-side refcount on cwd's pump, and
 // whether a pump exists at all.
 func gitWatchPumpRefs(app *App, cwd string) (int, bool) {
-	app.gitWatchPumpsMu.Lock()
-	defer app.gitWatchPumpsMu.Unlock()
-	pump, ok := app.gitWatchPumps[cwd]
+	app.gitStatus.mu.Lock()
+	defer app.gitStatus.mu.Unlock()
+	pump, ok := app.gitStatus.pumps[cwd]
 	if !ok {
 		return 0, false
 	}
@@ -281,9 +281,9 @@ func TestGitStatusSubscribeSharesOnePumpPerCwd(t *testing.T) {
 	if refs, ok := gitWatchPumpRefs(app, resA.Cwd); !ok || refs != 2 {
 		t.Fatalf("pump refs = %d (present=%v), want 2", refs, ok)
 	}
-	app.gitWatchPumpsMu.Lock()
-	pumpCount := len(app.gitWatchPumps)
-	app.gitWatchPumpsMu.Unlock()
+	app.gitStatus.mu.Lock()
+	pumpCount := len(app.gitStatus.pumps)
+	app.gitStatus.mu.Unlock()
 	if pumpCount != 1 {
 		t.Fatalf("pump count = %d, want 1 for one workspace", pumpCount)
 	}
@@ -395,24 +395,24 @@ func TestGitStatusSubscribeRefusesADyingPump(t *testing.T) {
 
 	// Stand in for the goroutine's teardown having begun: the pump is
 	// stamped dead but its drop has not removed it from the map yet.
-	app.gitWatchPumpsMu.Lock()
-	dying := app.gitWatchPumps[first.Cwd]
+	app.gitStatus.mu.Lock()
+	dying := app.gitStatus.pumps[first.Cwd]
 	if dying == nil {
-		app.gitWatchPumpsMu.Unlock()
+		app.gitStatus.mu.Unlock()
 		t.Fatalf("no pump tracked for %q after Subscribe", first.Cwd)
 	}
 	dying.dead = true
-	app.gitWatchPumpsMu.Unlock()
+	app.gitStatus.mu.Unlock()
 
 	second, err := app.GitStatusSubscribe(context.Background(), thread.ID)
 	if err != nil {
 		t.Fatalf("subscribe onto a dying pump: %v", err)
 	}
 
-	app.gitWatchPumpsMu.Lock()
-	fresh := app.gitWatchPumps[first.Cwd]
-	held := app.gitWatchHandles[second.ID]
-	app.gitWatchPumpsMu.Unlock()
+	app.gitStatus.mu.Lock()
+	fresh := app.gitStatus.pumps[first.Cwd]
+	held := app.gitStatus.handles[second.ID]
+	app.gitStatus.mu.Unlock()
 	if fresh == dying {
 		t.Fatalf("Subscribe shared the dying pump instead of minting a fresh one")
 	}
@@ -423,11 +423,11 @@ func TestGitStatusSubscribeRefusesADyingPump(t *testing.T) {
 	// The dying pump's own drop must take only what belonged to IT.
 	app.dropGitWatchPump(dying)
 
-	app.gitWatchPumpsMu.Lock()
-	stillMapped := app.gitWatchPumps[first.Cwd]
-	stillHeld, ok := app.gitWatchHandles[second.ID]
-	_, staleHeld := app.gitWatchHandles[first.ID]
-	app.gitWatchPumpsMu.Unlock()
+	app.gitStatus.mu.Lock()
+	stillMapped := app.gitStatus.pumps[first.Cwd]
+	stillHeld, ok := app.gitStatus.handles[second.ID]
+	_, staleHeld := app.gitStatus.handles[first.ID]
+	app.gitStatus.mu.Unlock()
 	if stillMapped != fresh {
 		t.Fatalf("the dying pump's drop evicted its successor")
 	}

@@ -146,9 +146,9 @@ func waitForSetupState(t *testing.T, app *App, threadID, want string) {
 
 func joinSetupRun(t *testing.T, app *App, threadID string) {
 	t.Helper()
-	app.worktreeSetupMu.Lock()
-	run := app.worktreeSetupRuns[threadID]
-	app.worktreeSetupMu.Unlock()
+	app.worktreeSetup.mu.Lock()
+	run := app.worktreeSetup.runs[threadID]
+	app.worktreeSetup.mu.Unlock()
 	if run == nil {
 		return
 	}

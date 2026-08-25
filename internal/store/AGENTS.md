@@ -212,8 +212,8 @@ root `CLAUDE.md` principle 3.
   provider/model filters and day/week/month (timezone-shifted) or
   model/provider/thread/project grouping; `QueryUsageDetail` runs the
   same filters/bucketing but additionally splits by (model,
-  cost_source) — the granularity the app (repo-root
-  `app_usage_pricing.go`) needs to price `cost_source='none'` rows per
+  cost_source) — the granularity the app
+  (`internal/usageledger`) needs to price `cost_source='none'` rows per
   model at query time from `internal/usagecost`. `cost_usd` in the table
   is wire-reported only and this package never estimates it; `QueryUsage`
   alone always reports `UnpricedRows=0` — that field is populated by the

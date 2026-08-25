@@ -122,7 +122,7 @@ func runDesktop(listenAddr string) {
 	app := application.New(appOpts)
 
 	// Configure in-app self-update before the transport serves, so the updater
-	// RPC handlers observe appService.updater without a race. No-op for dev
+	// RPC handlers observe appService.updater.handle without a race. No-op for dev
 	// builds and on provider/init failure (logged) — updates stay unavailable
 	// and the app runs normally.
 	initUpdater(appService, app)

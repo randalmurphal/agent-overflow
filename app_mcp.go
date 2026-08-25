@@ -22,10 +22,10 @@ const mcpStatusCacheTTL = 30 * time.Second
 // bare *App via &App{...} get a working cache on first call without
 // pre-wiring; production wiring doesn't need an explicit init.
 func (a *App) mcpStatus() *mcpstatus.Cache {
-	a.mcpStatusCacheOnce.Do(func() {
-		a.mcpStatusCache = mcpstatus.NewCache(mcpStatusCacheTTL, &appMCPStatusBus{app: a})
+	a.mcp.statusCacheOnce.Do(func() {
+		a.mcp.statusCache = mcpstatus.NewCache(mcpStatusCacheTTL, &appMCPStatusBus{app: a})
 	})
-	return a.mcpStatusCache
+	return a.mcp.statusCache
 }
 
 // appMCPStatusBus wires every cache Put / Invalidate into the
@@ -46,43 +46,43 @@ func (b *appMCPStatusBus) Emit(s mcpstatus.ServerStatus) {
 
 // claudeConfig returns the lazy-init Claude config-file adapter bound
 // to ~/.claude.json by default. Tests can pre-populate
-// a.claudeConfigStore before calling this; production callers rely on
+// a.mcp.claudeConfigStore before calling this; production callers rely on
 // the default path.
 func (a *App) claudeConfig() (*claudeconfig.Store, error) {
-	if a.claudeConfigStore != nil {
-		return a.claudeConfigStore, nil
+	if a.mcp.claudeConfigStore != nil {
+		return a.mcp.claudeConfigStore, nil
 	}
-	a.claudeConfigOnce.Do(func() {
+	a.mcp.claudeConfigOnce.Do(func() {
 		path, err := claudeconfig.DefaultPath()
 		if err != nil {
-			a.claudeConfigErr = err
+			a.mcp.claudeConfigErr = err
 			return
 		}
-		a.claudeConfigStore = claudeconfig.New(path)
+		a.mcp.claudeConfigStore = claudeconfig.New(path)
 	})
-	if a.claudeConfigErr != nil {
-		return nil, fmt.Errorf("claude config: %w", a.claudeConfigErr)
+	if a.mcp.claudeConfigErr != nil {
+		return nil, fmt.Errorf("claude config: %w", a.mcp.claudeConfigErr)
 	}
-	return a.claudeConfigStore, nil
+	return a.mcp.claudeConfigStore, nil
 }
 
 // codexConfig returns the lazy-init Codex TOML adapter bound to
 // ~/.codex/config.toml by default. Same test-injection pattern as
 // claudeConfig.
 func (a *App) codexConfig() (*codexconfig.Store, error) {
-	if a.codexConfigStore != nil {
-		return a.codexConfigStore, nil
+	if a.mcp.codexConfigStore != nil {
+		return a.mcp.codexConfigStore, nil
 	}
-	a.codexConfigOnce.Do(func() {
+	a.mcp.codexConfigOnce.Do(func() {
 		path, err := codexconfig.DefaultPath()
 		if err != nil {
-			a.codexConfigErr = err
+			a.mcp.codexConfigErr = err
 			return
 		}
-		a.codexConfigStore = codexconfig.New(path)
+		a.mcp.codexConfigStore = codexconfig.New(path)
 	})
-	if a.codexConfigErr != nil {
-		return nil, fmt.Errorf("codex config: %w", a.codexConfigErr)
+	if a.mcp.codexConfigErr != nil {
+		return nil, fmt.Errorf("codex config: %w", a.mcp.codexConfigErr)
 	}
-	return a.codexConfigStore, nil
+	return a.mcp.codexConfigStore, nil
 }

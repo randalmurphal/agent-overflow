@@ -114,5 +114,5 @@ func TestUsageProbeGateCooldownCollapsesRequestsIntoOneTimer(t *testing.T) {
 	}
 }
 
-// Server 429 backoffs are per-account state and live in usageBackoffLedger
-// (app_usage_backoff_test.go), not here — the gate only coalesces and paces.
+// Server 429 backoffs are per-account state and live in usagebackoff.Ledger
+// (internal/usagebackoff), not here — the gate only coalesces and paces.

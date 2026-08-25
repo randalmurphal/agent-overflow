@@ -174,12 +174,12 @@ func TestProbeClaudeRateLimits_UnmanagedProbe429RecordsAndEnforcesItsHold(t *tes
 	if !errors.As(err, &limited) {
 		t.Fatalf("probe error = %v, want the 429 surfaced", err)
 	}
-	remaining := app.usageBackoff.Remaining(string(provider.Claude), "")
+	remaining := app.usageProbe.backoff.Remaining(string(provider.Claude), "")
 	if remaining <= 0 || remaining > 45*time.Second {
 		t.Fatalf("Remaining(\"\") = %v, want the Retry-After hold recorded", remaining)
 	}
 	// The hold is scoped to the unmanaged key, not smeared across accounts.
-	if got := app.usageBackoff.Remaining(string(provider.Claude), "some-account"); got != 0 {
+	if got := app.usageProbe.backoff.Remaining(string(provider.Claude), "some-account"); got != 0 {
 		t.Fatalf("Remaining(some-account) = %v, want the hold scoped to the unmanaged key", got)
 	}
 

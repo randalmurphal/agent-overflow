@@ -22,6 +22,11 @@ machinery instead of reimplementing it.
 - The `Marker` the backend writes before the install and reads on the next boot
   to detect a swap that never applied.
 - `StagedFileProvider` — the `updater.Provider` adapter over one local file.
+- `LinuxUpdaterBlocked` — the native-Linux preflight (`linuxgate.go`): an
+  AppImage's read-only squashfs mount and a non-writable install directory
+  both refuse the in-place swap, and both are decided BEFORE the updater is
+  wired up so the feature reports unsupported instead of failing after a
+  tens-of-MB download.
 
 Pure and tag-free: no network, no `exec`, no Wails application package. The one
 non-stdlib import is `wails/v3/pkg/updater` (stdlib-only itself) for the
@@ -31,7 +36,8 @@ non-stdlib import is `wails/v3/pkg/updater` (stdlib-only itself) for the
 
 - **`app_updater*.go` (repo root)** owns the GitHub-facing side: release
   listing, by-tag targeting, the checksum-sidecar lookup, the `verifiedProvider`
-  fail-closed wrapper, the RPC surface, and emitting the directive.
+  fail-closed wrapper, the RPC surface, emitting the directive, and calling the
+  Linux preflight from `initUpdater`.
 - **The launcher (`cmd/agent-overflow-windows`)** owns receiving the directive,
   deciding when to act on it, and the `app.Updater` lifecycle around
   `StagedFileProvider`.

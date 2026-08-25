@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usageledger"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
@@ -103,7 +104,7 @@ type workflowSpendSource struct{ store *store.Store }
 // TreeSpend prices one run tree: the root's own ledger rows plus every run it
 // called, transitively (§12 budgets are enforced against the root across the
 // tree). Composition goes through the one ledger pricing rule
-// (app_usage_pricing.go), so the dollars a budget is enforced against are the
+// (internal/usageledger), so the dollars a budget is enforced against are the
 // dollars every other surface reports for the same rows.
 //
 // A model with no rate is NOT an error here. Its tokens are exact and a token
@@ -120,7 +121,7 @@ func (s workflowSpendSource) TreeSpend(_ context.Context, rootItemID string) (en
 	if err != nil {
 		return engine.Spend{}, err
 	}
-	spend, err := priceUsageGroups(details)
+	spend, err := usageledger.PriceGroups(details)
 	if err != nil {
 		return engine.Spend{}, fmt.Errorf("workflow spend for run %s: %w", rootItemID, err)
 	}
@@ -755,7 +756,7 @@ func (a *App) WorkflowGetItem(itemID string) (WorkflowItemDetailView, error) {
 	if err != nil {
 		return WorkflowItemDetailView{}, err
 	}
-	priced, err := priceUsageGroups(treeDetail)
+	priced, err := usageledger.PriceGroups(treeDetail)
 	if err != nil {
 		return WorkflowItemDetailView{}, fmt.Errorf("workflow item %s spend: %w", itemID, err)
 	}

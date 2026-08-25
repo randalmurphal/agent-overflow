@@ -9,15 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wailsapp/wails/v3/pkg/updater"
-
 	"agent-overflow/internal/attachment"
-	"agent-overflow/internal/claudeconfig"
-	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/codexusage"
-	"agent-overflow/internal/design"
 	"agent-overflow/internal/devserverprobe"
 	"agent-overflow/internal/discussion"
 	gitops "agent-overflow/internal/git"
@@ -25,7 +20,6 @@ import (
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/logging"
-	"agent-overflow/internal/mcpstatus"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/orphanreaper"
@@ -34,7 +28,7 @@ import (
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccounts"
-	"agent-overflow/internal/screenshot"
+	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/spinner"
 	"agent-overflow/internal/store"
@@ -57,7 +51,7 @@ import (
 //
 //wails:ignore
 func (a *App) DesignServer() http.Handler {
-	return a.designServer
+	return a.design.server
 }
 
 // ErrShuttingDown is returned from binding entry points once Shutdown has
@@ -123,63 +117,32 @@ type App struct {
 	// so two transitions of one run cannot race each other's follow-up. They are
 	// separate queues because they are independent consumers: a slow wake
 	// composition must not delay the automation a finished run chains into.
-	workflowAutoDisposition serialQueue
-	workflowWake            serialQueue
-	workflowSchedulerQueue  serialQueue
+	workflowAutoDisposition serialqueue.Queue
+	workflowWake            serialqueue.Queue
+	workflowSchedulerQueue  serialqueue.Queue
 	// workflowWatch is the bounded transition ring `run watch` long-polls
 	// against. Its zero value is usable, so it needs no construction wiring and
 	// an App with no engine still answers a watcher honestly.
 	workflowWatch workflowWatchHub
-	// workflowAutoResumes holds one timer per parked run that will resume
-	// itself (`app_workflow_autoresume.go`). The durable record is
-	// `work_items.auto_resume_at`; this is only the live arming, rebuilt at boot
-	// and disarmed by every transition out of the park. The engine owns no
-	// timers by boundary, which is why the schedule lives here.
-	workflowAutoResumeMu sync.Mutex
-	workflowAutoResumes  map[string]workflowTimer
-	// newWorkflowAutoResumeTimer and workflowAutoResumeNowFn are test-only
-	// injections, mirroring idleReaperNowFn. Production leaves both nil.
-	newWorkflowAutoResumeTimer func(time.Duration, func()) workflowTimer
-	workflowAutoResumeNowFn    func() time.Time
+	// workflowAutoResume is the live arming behind parked runs that resume
+	// themselves (`app_workflow_autoresume.go`).
+	workflowAutoResume appWorkflowAutoResumeState
 	// workflowDigestMu guards the lazily allocated digest-generator slots.
 	workflowDigestMu         sync.Mutex
 	workflowDigestSlots      chan struct{}
 	generateWorkflowDigestFn func(context.Context, store.WorkItem, WorkflowDigest) (WorkflowDigest, error)
-	// turnObservers fan provider events out to internal App features after
-	// triage handling has been attempted. Each registration lives until its
-	// returned unsubscribe function runs; the built-in discussion observer
-	// lives for the App lifetime. turnObserversMu is deliberately independent
-	// of mu so callbacks can safely enter other App coordination paths.
-	turnObserversMu            sync.RWMutex
-	turnObservers              map[string]map[uint64]turnObserver
-	nextTurnObserverID         uint64
-	discussionTurnObserverOnce sync.Once
-	registry                   *discussion.Registry
-	channels                   *discussion.ChannelService
-	// designWorkdir owns each thread's per-thread {main,options}
-	// directory layout. The base directory is the HTTP file server's
-	// StripPrefix target — designServer below mounts it at /design/
-	// on the existing transport.
-	designWorkdir     *design.WorkDirManager
-	designDiagnostics *design.DiagnosticBuffer
-	designServer      http.Handler
-	// screenshotManager drives a long-lived headless Chromium that
-	// renders the design preview URL for the agent's read_screenshot
-	// tool. Lazily started on first capture; closed on app shutdown.
-	// nil during early boot or in tests that don't exercise the
-	// design screenshot path — callers tolerate that explicitly.
-	screenshotManager *screenshot.Manager
-	// designWatchers is the per-thread fs watcher map. Keyed by thread
-	// ID; entries land on session start and Stop() on session teardown.
-	// designWatchersMu guards both insertion and removal.
-	designWatchersMu sync.Mutex
-	designWatchers   map[string]*design.Watcher
-	reactor          *design.Reactor
-	designMCP        *design.MCPServer
-	terminals        *terminal.Manager
-	attachments      *attachment.Store
-	workspaceFiles   *workspacefiles.Searcher
-	logger           *logging.Logger
+	// turnObservers fans provider events out to internal App features after
+	// triage handling has been attempted.
+	turnObservers appTurnObserverState
+	registry      *discussion.Registry
+	channels      *discussion.ChannelService
+	// design is the design-mode concern (app_design*.go): workdirs, the
+	// file server over them, the preview screenshotter, and the watchers.
+	design         appDesignState
+	terminals      *terminal.Manager
+	attachments    *attachment.Store
+	workspaceFiles *workspacefiles.Searcher
+	logger         *logging.Logger
 	// engineLogger is the workflow run-lifecycle log. Separate from `logger`
 	// because it is always on: the provider-event log is a debugging opt-in,
 	// while a park's diagnosis has to be readable without having enabled
@@ -279,73 +242,9 @@ type App struct {
 	// empty identity there is a correct "not yet known" rather than a
 	// race. See docs/specs/thread-replica-sync.md §3.3.
 	storeIdentity atomic.Pointer[store.Identity]
-	// updater drives in-app self-update (check / download / restart) via the
-	// Wails app.Updater singleton. Set once at desktop boot by initUpdater
-	// (app_updater_desktop.go) before the transport server starts, so the
-	// updater RPC handlers observe it without a race. Stays nil in the
-	// headless WSL backend (no Wails application) and in tests; every updater
-	// RPC method guards the nil case and reports the feature unsupported
-	// rather than panicking.
-	updater *updater.Updater
-	// updaterProvider is the targetable GitHub provider behind a.updater,
-	// retained so the version-selection RPCs (ListReleases, DownloadUpdate)
-	// can enumerate releases and aim a download at a specific tag. Set
-	// alongside a.updater by initUpdater; nil on the headless backend.
-	updaterProvider *targetableProvider
-	// updaterMu serializes the provider-retarget-then-resolve sequences that
-	// CheckForUpdate (SetTarget("")+Check) and DownloadUpdate (SetTarget(tag)+
-	// Check) perform. Without it, a concurrent passive CheckForUpdate from a
-	// second --connect client could reset the target between a by-tag
-	// download's SetTarget and its Check, resolving "latest" instead of the
-	// picked tag. updaterBusy (guarded by this mutex) marks an in-flight
-	// download so a racing CheckForUpdate skips its network probe rather than
-	// clobbering the pending release the installer is about to use.
-	updaterMu   sync.Mutex
-	updaterBusy bool
-	// updaterPending mirrors the release a.updater would install right now:
-	// stashed by every successful resolve (CheckForUpdate and DownloadUpdate's
-	// by-tag path), cleared when a resolve finds nothing or fails. Only
-	// meaningful while a.updater.State() == StateAvailable. It exists for the
-	// WSL staging step, which needs the release's asset filename and digest
-	// AFTER DownloadAndInstall — the Updater exposes neither, only the staged
-	// file's path. Guarded by updaterMu.
-	updaterPending *updater.Release
-	// updaterStaged is the release copied into the Windows-side staging
-	// directory and waiting for RestartToUpdate to hand it to the launcher.
-	// WSL mode only; nil until a download stages successfully. Guarded by
-	// updaterMu.
-	updaterStaged *updater.Release
-	// updaterInstall is the install RestartToUpdate handed the launcher and has
-	// not yet settled; nil at rest. updaterInstallAcked distinguishes its two
-	// phases — awaiting the launcher's acknowledgement, then awaiting the
-	// process death that acknowledgement promised — and updaterInstallTimer is
-	// the single deadline whichever phase is currently under (see
-	// armWSLInstallDeadlineLocked; one field means a phase change can never
-	// leave the previous phase's timer armed). updaterInstallGen rises on every
-	// armed deadline so a callback whose deadline was replaced or settled —
-	// even one already fired and parked on updaterMu — cannot unwind an
-	// install it no longer speaks for. All guarded by updaterMu.
-	updaterInstall      *updater.Release
-	updaterInstallAcked bool
-	updaterInstallGen   uint64
-	updaterInstallTimer *time.Timer
-	// updateApplyFailure is the boot-detected "the launcher never applied the
-	// staged update" notice, surfaced to the UI on
-	// UpdateAvailability.LastApplyFailure. Process-lifetime only: it is
-	// recomputed from the on-disk marker at every boot and never persisted, so
-	// a boot that finds no marker (or one matching the running version) starts
-	// with it empty. Guarded by updaterMu.
-	updateApplyFailure string
-	// wslUpdate is non-nil only on the headless WSL backend spawned by the
-	// Windows launcher (see initWSLUpdater). It is the mode switch every WSL
-	// branch of the updater RPCs keys off, and carries the two directories that
-	// path needs. Immutable after init — set before the transport server
-	// starts, read without a lock afterwards.
-	wslUpdate *wslUpdateMode
-	// restartExitFn is the process-exit call RestartToUpdate's watchdog
-	// fires when graceful shutdown wedges (see armRestartExitWatchdog).
-	// nil means os.Exit; tests inject a recorder.
-	restartExitFn func(code int)
+	// updater is the whole in-app self-update concern (app_updater*.go). Its
+	// own mutex travels with it; nothing outside that cluster reads it.
+	updater appUpdaterState
 	// shuttingDown is flipped to true once Shutdown begins. Binding entry
 	// points that spin up new work (StartSession, SendMessage, ReconnectSession)
 	// check it and fail fast with ErrShuttingDown so late RPCs can't race
@@ -366,9 +265,9 @@ type App struct {
 	appCancel context.CancelFunc
 	// mu guards the SESSION-LIFECYCLE concern and nothing else. Every
 	// other coordination area on this struct carries its own mutex
-	// named for it (flushDispatchMu, gitWatchPumpsMu, turnObserversMu,
-	// worktreeSetupMu, workflowDigestMu, deliberationsMu,
-	// backgroundFetchMu, ...). Do not park a new field here because
+	// named for it (a.flushDispatch.mu, a.gitStatus.mu, a.turnObservers.mu,
+	// a.worktreeSetup.mu, workflowDigestMu, deliberationsMu,
+	// a.backgroundFetch.mu, ...). Do not park a new field here because
 	// "there is already a lock" — that is how this one accreted strays.
 	//
 	// Fields guarded by mu:
@@ -414,30 +313,9 @@ type App struct {
 	// App.configApplyLocks for the lock-order rules.
 	sessionConfigApplyLocksOnce sync.Once
 	sessionConfigApplyLocks     *keyedLockRegistry
-	// flushDispatchQueues serializes queued-message flush batches per
-	// thread. Triage decides whether the drain is boundary or immediate;
-	// App owns the asynchronous provider writes so sequence allocation and
-	// Send/Steer locking stay in the same layer.
-	flushDispatchMu            sync.Mutex
-	flushDispatchQueues        map[string][]flushDispatchBatch
-	flushDispatchCurrent       map[string]flushDispatchBatch
-	flushDispatchRunning       map[string]bool
-	flushDispatchInflightItems map[string]int
-	flushDispatchGeneration    map[string]uint64
-	flushDispatchWG            sync.WaitGroup
-	// flushHandoffMu serializes RegisterQueueItem's enqueue→flush handoff
-	// against the revert-on-interrupt predicate's read of the queued /
-	// in-flight counters. tryFlushQueue deletes a batch from the triage queue
-	// before the dispatcher records it as in-flight; in that window the item
-	// is invisible to every counter the predicate consults. Holding this mutex
-	// across both the handoff (RegisterQueueItem) and the counter read
-	// (pendingFlushWorkCount) makes the queued message observable to a
-	// concurrent Stop click as either still-queued or already-in-flight, never
-	// neither. Deliberately NOT the per-thread action lock: that lock is held
-	// for seconds by git / worktree ops, and queueing a message
-	// must stay responsive while those run. See RegisterQueueItem for the full
-	// lock hierarchy and deadlock-freedom argument.
-	flushHandoffMu sync.Mutex
+	// flushDispatch is the queued-message flush concern
+	// (`app_flush_queue*.go`), including both of its mutexes.
+	flushDispatch appFlushDispatchState
 	// threadID → in-flight session start. Concurrent callers wait for the
 	// first start attempt instead of spawning duplicate provider runtimes.
 	startingSessions map[string]*sessionStart
@@ -516,43 +394,12 @@ type App struct {
 	// path holds one while taking the other.
 	deliberationsMu sync.Mutex
 	deliberations   map[string]*discussion.Deliberation
-	// gitWatchPumps holds one pump per canonical cwd — one
-	// gitwatch.Subscription and one goroutine forwarding it to the
-	// "git:status" channel, shared by every caller of that workspace
-	// via the pump's refcount. gitWatchHandles maps each caller's
-	// wire-visible GitStatusSubscribe id to the PUMP it holds a
-	// reference on, which is what GitStatusUnsubscribe and the
-	// per-connection cleanup release. The pump, not its cwd: a dying
-	// pump can be replaced under the same cwd, and a handle naming the
-	// cwd would then release a reference it never took. Both maps are
-	// guarded by gitWatchPumpsMu; gitWatchPumpWG tracks pump goroutines
-	// so Shutdown drains them before returning.
-	gitWatchPumpsMu sync.Mutex
-	gitWatchPumps   map[string]*gitWatchPump
-	gitWatchHandles map[string]*gitWatchPump
-	gitWatchPumpWG  sync.WaitGroup
-	// prUpdatePumps index active PR-scope review-pane polling by PR key
-	// ("<forge>:<namespace>/<repo>:<number>"). Each PR owns ONE
-	// low-cadence poller and one change-detection state however many
-	// callers watch it, and emits only when the normalized snapshot (or
-	// its failure) changes. prUpdateHandles maps each caller's
-	// wire-visible SubscribePRUpdates id to its reference on that pump,
-	// which is what UnsubscribePRUpdates, SetPRUpdatesActive, and the
-	// per-connection cleanup act on. Both maps are guarded by
-	// prUpdatePumpsMu; prUpdatePumpWG tracks pump goroutines so Shutdown
-	// drains them before returning. prUpdateSeq stamps every stored pump
-	// state so a subscriber can order the frames it sees against the state
-	// its subscribe returned; it is GLOBAL rather than per-pump because a
-	// pump can be replaced under its key (a dead pump's successor), and a
-	// per-pump counter would restart at zero — letting the dead one's late
-	// frames outrank the replacement's fresh state.
-	prUpdatePumpsMu  sync.Mutex
-	prUpdatePumps    map[string]*prUpdatePump
-	prUpdateHandles  map[string]*prUpdateHandle
-	prUpdateSeq      uint64
-	prUpdatePumpWG   sync.WaitGroup
-	prUpdateInterval time.Duration
-	prUpdateFetchFn  func(gitops.PRReference) (prUpdateSnapshot, error)
+	// gitStatus is the "git:status" fan-out concern (`app_gitwatch.go`),
+	// distinct from the gitwatch.Manager above that it subscribes to.
+	gitStatus appGitStatusPumpState
+	// prUpdates is the PR-scope review-pane polling concern
+	// (`app_pr_updates.go`).
+	prUpdates appPRUpdateState
 	// codexModelCatalog caches Codex's live app-server model/list response by
 	// binary path. The catalog is provider-owned state, but fetching it spawns
 	// a local CLI subprocess; cache and coalesce calls so settings/model menus
@@ -577,16 +424,6 @@ type App struct {
 	// codexSkills() for the same reason as the model catalog.
 	codexSkillsOnce  sync.Once
 	codexSkillsCache *codexskills.Cache
-	// mcpStatusCache is the provider-derived MCP status cache. Live
-	// thread sessions push into it from their init/notification
-	// events; the popup/settings pull from it and refresh via the
-	// ephemeral fetchers (`claude mcp list` / Codex
-	// `mcpServerStatus/list`) when no live session can feed it.
-	// Lazy-init through mcpStatus() so tests building a bare App{}
-	// don't have to wire it; explicit Invalidate happens on CRUD
-	// edits and on OAuth completion.
-	mcpStatusCacheOnce sync.Once
-	mcpStatusCache     *mcpstatus.Cache
 	// devServerProber dials loopback ports to gate the dev-server chip:
 	// triage's textual detection only proves command output mentioned a
 	// URL, so ProbeDevServerURL checks a listener actually exists before
@@ -609,44 +446,9 @@ type App struct {
 	// (app_highlight_diff_seed.go); bursts past diffSeedMaxWorkers drop
 	// their seeds instead of queueing behind the parse semaphore.
 	diffSeedWorkers atomic.Int32
-	// claudeConfigStore / codexConfigStore are the file-backed MCP
-	// library adapters. AO is a 1:1 sync UI over Claude's
-	// ~/.claude.json `mcpServers` and Codex's ~/.codex/config.toml
-	// `[mcp_servers.*]` blocks — no SQLite library, no per-thread
-	// snapshot. Tests inject path-scoped instances directly onto the
-	// struct; production wires through the lazy claudeConfig() /
-	// codexConfig() helpers in app_mcp.go.
-	claudeConfigOnce  sync.Once
-	claudeConfigStore *claudeconfig.Store
-	claudeConfigErr   error
-	codexConfigOnce   sync.Once
-	codexConfigStore  *codexconfig.Store
-	codexConfigErr    error
-	// claudeMCPOAuthPolls dedups in-flight OAuth-completion pollers
-	// per server name. Re-triggering OAuth for the same server
-	// cancels the prior poll so only the most recent click drives
-	// status updates and emits a single mcp:oauth-completed event.
-	// Claude-only because Codex receives a native
-	// `mcpServer/oauthLogin/completed` notification and doesn't
-	// poll. Tracks the poll's identity (not the cancel func directly)
-	// so a stale defer can compare pointers and avoid wiping a newer
-	// poller's entry on its way out.
-	claudeMCPOAuthPollsMu sync.Mutex
-	claudeMCPOAuthPolls   map[string]*claudeMCPOAuthPoll
-	// workspaceMCPAuthFlows owns provider processes started for OAuth from
-	// an unmaterialized draft. The process is keyed by the provider config
-	// entity rather than a thread, and stays alive through the browser hop.
-	// Concurrent clicks for the same target share one startup and URL.
-	workspaceMCPAuthMu      sync.Mutex
-	workspaceMCPAuthFlows   map[workspaceMCPAuthKey]*workspaceMCPAuthRun
-	workspaceMCPAuthStarter workspaceMCPAuthStarter
-	// codexMCPReloads coalesces async `config/mcpServer/reload` requests
-	// per thread (requestCodexMCPReload): the RPC is a level trigger, so
-	// requests landing while one is in flight collapse into a single
-	// follow-up run. Codex-only; Claude reconnects are per-server RPCs
-	// with no whole-config semantics to coalesce.
-	codexMCPReloadsMu sync.Mutex
-	codexMCPReloads   map[string]*codexMCPReloadState
+	// mcp is the MCP-library concern (`app_mcp*.go`): the two file-backed
+	// config adapters, the status cache, and the three coordination locks.
+	mcp appMCPState
 	// idleReaperStop signals the idle-session reaper goroutine to exit.
 	// Set by startIdleSessionReaper during ServiceStartup; closed exactly
 	// once by Shutdown before the parallel session close so the reaper
@@ -662,94 +464,25 @@ type App struct {
 	// store and snapshot the session map.
 	retentionCleanupStop chan struct{}
 	retentionCleanupWG   sync.WaitGroup
-	// backgroundFetchMu guards the cadence's start/stop handshake
-	// (backgroundFetchStop + backgroundFetchCancel). Its own mutex, not
-	// a.mu: the git-fetch cadence shares nothing with session
-	// lifecycle, and the two fields are set and cleared as one unit so
-	// they must live under one lock. Nothing inside its critical
-	// sections takes another App mutex (lifeCtx is a plain field read),
-	// and no a.mu holder touches these fields — the two locks are
-	// disjoint.
-	backgroundFetchMu sync.Mutex
-	// backgroundFetchStop signals the background `git fetch` cadence to
-	// exit. Set by startBackgroundGitFetch during ServiceStartup; closed
-	// exactly once by Shutdown before the store closes, because each
-	// pass reads the project list out of SQLite.
-	backgroundFetchStop chan struct{}
-	// backgroundFetchCancel cancels the context the cadence's git
-	// subprocesses run under, so stopping the loop kills a `git fetch`
-	// hanging on a dead network instead of waiting out its timeout.
-	// Set and cleared alongside backgroundFetchStop, under
-	// backgroundFetchMu.
-	backgroundFetchCancel context.CancelFunc
-	backgroundFetchWG     sync.WaitGroup
-	// backgroundFetchErrors remembers the last background-fetch failure
-	// per repository so an unreachable remote logs once rather than
-	// every tick. See app_git_background_fetch.go.
-	backgroundFetchErrors backgroundFetchErrorMemo
-	// Chat-thread worktree setup runs, keyed by thread id: at most one
-	// per thread, and only while it is running or after it FAILED — a
-	// success drops its record. Guarded by its own mutex rather than
-	// a.mu because a run settles from its own goroutine and must not
-	// contend with session bookkeeping. See app_worktree_setup.go.
-	worktreeSetupMu   sync.Mutex
-	worktreeSetupRuns map[string]*worktreeSetupRun
-	// worktreeSetupStopped is set by stopThreadWorktreeSetups in the same
-	// critical section it snapshots the runs from, so no kickoff can join the
-	// WaitGroup after the wait below has begun.
-	worktreeSetupStopped bool
-	// worktreeSetupWG joins every run goroutine in Shutdown before the
-	// store closes, because settling a run writes the thread's durable
-	// setup state.
-	worktreeSetupWG sync.WaitGroup
-	// sessionImportScans caches provider-home scans behind the import modal
-	// (app_session_import_cache.go). Lazy-init through
-	// sessionImportScanCache() so tests building a bare App{} don't wire it.
-	sessionImportScansOnce sync.Once
-	sessionImportScans     *sessionImportScanCache
-	// The one in-flight session-import run. Importing writes threads and
-	// projects, and two concurrent runs over overlapping ids would race the
-	// dedup set that makes "Import All" idempotent — so there is at most one,
-	// and a second request is refused rather than queued. Same
-	// stopped-flag-plus-WaitGroup discipline as the worktree setups above;
-	// Shutdown joins it before the store closes. See app_session_import_run.go.
-	sessionImportMu      sync.Mutex
-	sessionImportActive  *sessionImportRun
-	sessionImportStopped bool
-	sessionImportWG      sync.WaitGroup
-	// Background thread read-state stamps (app_session_bindings.go).
-	// SwitchThread registers one per focus so the RPC the UI blocks on
-	// doesn't queue behind the store's single writer connection.
-	// markThreadReadStopped is set inside the same critical section that
-	// the WaitGroup is joined from, so no stamp can register after the
-	// wait has begun; Shutdown joins them before the store closes.
-	markThreadReadMu      sync.Mutex
-	markThreadReadStopped bool
-	markThreadReadWG      sync.WaitGroup
-	// Per-provider usage-probe gates (app_usage_probe_gate.go): every
-	// automatic rate-limit refresh trigger funnels through one so bursts
-	// coalesce and a cooldown bounds request rate. Lazily built via
-	// claudeUsageGate() / codexUsageGate().
-	claudeUsageGateOnce sync.Once
-	claudeUsageGateVal  *usageProbeGate
-	codexUsageGateOnce  sync.Once
-	codexUsageGateVal   *usageProbeGate
-	// usageBackoff holds per-account usage-endpoint 429 backoffs
-	// (app_usage_backoff.go); the refresh paths consult it before sending
-	// anything. Zero value ready.
-	usageBackoff usageBackoffLedger
-	// turnActivityByProvider records the last turn completion per provider
-	// (app_ratelimits.go). The periodic rate-limit poll reads it so an idle
-	// app — open threads, no turns — sends zero usage-endpoint requests.
-	turnActivityMu         sync.Mutex
-	turnActivityByProvider map[string]time.Time
-	// threadTitleGenActive is the set of threads with a title generation
-	// in flight (app_thread_title_generation.go). Auto, heal, and
-	// user-triggered regeneration all claim through it, so N sends on a
-	// still-default thread — or N impatient clicks — cost one run of up
-	// to two 3-minute CLI attempts instead of N. Lazily built.
-	threadTitleGenMu     sync.Mutex
-	threadTitleGenActive map[string]struct{}
+	// backgroundFetch is the background `git fetch` cadence
+	// (`app_git_background_fetch.go`).
+	backgroundFetch appBackgroundFetchState
+	// worktreeSetup is the chat-thread worktree setup concern
+	// (`app_worktree_setup.go`).
+	worktreeSetup appWorktreeSetupState
+	// sessionImport is the session-import concern
+	// (`app_session_import*.go`): the scan cache and the one live run.
+	sessionImport appSessionImportState
+	// markThreadRead joins the background thread read-state stamps
+	// (`app_session_bindings.go`).
+	markThreadRead appMarkThreadReadState
+	// usageProbe is the rate-limit refresh concern
+	// (`app_usage_probe_gate.go`, `app_ratelimits.go`): the per-provider
+	// gates, the per-account 429 backoffs, and the idle-app activity stamps.
+	usageProbe appUsageProbeState
+	// threadTitleGen is the in-flight set for thread-title generation
+	// (`app_thread_title_generation.go`).
+	threadTitleGen appThreadTitleGenState
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn        func(string) error
 	stopSessionFn         func(string) error
@@ -869,33 +602,14 @@ type App struct {
 	// sweep. Production leaves it nil and retentionNow reads time.Now
 	// directly. Mirrors idleReaperNowFn.
 	retentionNowFn func() time.Time
-	// codexThreadCostInflight single-flights the post-turn Codex
-	// thread-cost read, per thread. The read is fired asynchronously from a
-	// settled turn and forwarded by the app-server to the ChatGPT backend,
-	// so a fast follow-up turn can settle while the previous read is still
-	// out; without the gate each settle would add another concurrent
-	// backend request for a figure that only gets more accurate by
-	// waiting.
-	//
-	// The value is the slot's whole state, not a bare presence marker: a
-	// settle during an in-flight read cannot simply be dropped (that read
-	// may have been answered before the turn completed), so it marks the
-	// slot dirty, hands over its own session token, and the owner goes
-	// around once more against the CURRENT session. See
-	// app_codex_thread_cost.go.
-	//
-	// There is deliberately no companion "the delete failed" map. A stored
-	// row names the provider thread it was read from (store migration v68),
-	// and every read compares that against the thread's current SessionRef,
-	// so a row a rollback could not delete is already unreadable — no
-	// process-lifetime marker is standing between it and the user.
-	codexThreadCostMu       sync.Mutex
-	codexThreadCostInflight map[string]*codexThreadCostRead
+	// codexThreadCost single-flights the post-turn Codex thread-cost read,
+	// per thread (`app_codex_thread_cost.go`).
+	codexThreadCost appCodexThreadCostState
 }
 
 // codexThreadCostRead is one thread's in-flight read slot.
 //
-// Every field is guarded by App.codexThreadCostMu, and the slot exists only
+// Every field is guarded by App.codexThreadCost.mu, and the slot exists only
 // while a read is out — which is also what bounds the epoch counter: nothing
 // needs to remember a rollback that happened while no read was in flight.
 type codexThreadCostRead struct {
@@ -1024,15 +738,23 @@ func NewApp() *App {
 		startingSessions:               make(map[string]*sessionStart),
 		reconnectingThreads:            make(map[string]bool),
 		autoReconnectAttempted:         make(map[string]bool),
-		turnObservers:                  make(map[string]map[uint64]turnObserver),
 		threadSystemPrompts:            make(map[string]string),
 		deliberations:                  make(map[string]*discussion.Deliberation),
-		gitWatchPumps:                  make(map[string]*gitWatchPump),
-		gitWatchHandles:                make(map[string]*gitWatchPump),
-		prUpdatePumps:                  make(map[string]*prUpdatePump),
-		prUpdateHandles:                make(map[string]*prUpdateHandle),
 		providerCredentialFingerprints: make(map[string][32]byte),
-		worktreeSetupRuns:              make(map[string]*worktreeSetupRun),
+		turnObservers: appTurnObserverState{
+			byThread: make(map[string]map[uint64]turnObserver),
+		},
+		gitStatus: appGitStatusPumpState{
+			pumps:   make(map[string]*gitWatchPump),
+			handles: make(map[string]*gitWatchPump),
+		},
+		prUpdates: appPRUpdateState{
+			pumps:   make(map[string]*prUpdatePump),
+			handles: make(map[string]*prUpdateHandle),
+		},
+		worktreeSetup: appWorktreeSetupState{
+			runs: make(map[string]*worktreeSetupRun),
+		},
 	}
 	app.installDiscussionTurnObserver()
 	return app

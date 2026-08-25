@@ -90,7 +90,7 @@ type prUpdateSnapshot struct {
 // unsubscribed) or the app's lifetime context ends.
 //
 // refs, active, dead, last, lastSnapshot, lastErr, lastWireErr and seq are
-// all guarded by App.prUpdatePumpsMu. The change-detection state is under
+// all guarded by App.prUpdates.mu. The change-detection state is under
 // the lock rather than owned by the goroutine because a JOINING subscriber
 // reads it: it is handed the pump's own snapshot, its own active failure,
 // and the sequence both were stamped with, instead of fetching one — which
@@ -423,7 +423,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		}
 	}
 	if start != nil {
-		a.prUpdatePumpWG.Go(func() { a.pumpPRUpdates(start) })
+		a.prUpdates.wg.Go(func() { a.pumpPRUpdates(start) })
 	}
 
 	if state := transport.ConnStateFromContext(ctx); state != nil {
@@ -452,10 +452,10 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 // fetch and create one. The handle cap is enforced here so a refusal costs
 // nothing.
 func (a *App) joinPRUpdatePump(prKey string) (ref prUpdateReference, joined bool, err error) {
-	a.prUpdatePumpsMu.Lock()
-	defer a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Lock()
+	defer a.prUpdates.mu.Unlock()
 	a.ensurePRUpdateMapsLocked()
-	if len(a.prUpdateHandles) >= maxPRUpdateHandles {
+	if len(a.prUpdates.handles) >= maxPRUpdateHandles {
 		return prUpdateReference{}, false, ErrTooManyPRUpdateSubscriptions
 	}
 	pump := a.livePRUpdatePumpLocked(prKey)
@@ -478,10 +478,10 @@ func (a *App) createPRUpdatePump(
 	snapshot prUpdateSnapshot,
 	encoded []byte,
 ) (ref prUpdateReference, start *prUpdatePump, err error) {
-	a.prUpdatePumpsMu.Lock()
-	defer a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Lock()
+	defer a.prUpdates.mu.Unlock()
 	a.ensurePRUpdateMapsLocked()
-	if len(a.prUpdateHandles) >= maxPRUpdateHandles {
+	if len(a.prUpdates.handles) >= maxPRUpdateHandles {
 		return prUpdateReference{}, nil, ErrTooManyPRUpdateSubscriptions
 	}
 	if existing := a.livePRUpdatePumpLocked(prKey); existing != nil {
@@ -496,25 +496,25 @@ func (a *App) createPRUpdatePump(
 		lastSnapshot: snapshot,
 		seq:          a.nextPRUpdateSeqLocked(),
 	}
-	a.prUpdatePumps[prKey] = pump
+	a.prUpdates.pumps[prKey] = pump
 	return a.takePRUpdateReferenceLocked(pump), pump, nil
 }
 
 // nextPRUpdateSeqLocked stamps the next pump state. Callers hold
-// prUpdatePumpsMu, which is also what orders the stamp against the store it
+// a.prUpdates.mu, which is also what orders the stamp against the store it
 // belongs to: a frame's seq is assigned in the same critical section that
 // published the state it carries.
 func (a *App) nextPRUpdateSeqLocked() uint64 {
-	a.prUpdateSeq++
-	return a.prUpdateSeq
+	a.prUpdates.seq++
+	return a.prUpdates.seq
 }
 
 func (a *App) ensurePRUpdateMapsLocked() {
-	if a.prUpdatePumps == nil {
-		a.prUpdatePumps = make(map[string]*prUpdatePump)
+	if a.prUpdates.pumps == nil {
+		a.prUpdates.pumps = make(map[string]*prUpdatePump)
 	}
-	if a.prUpdateHandles == nil {
-		a.prUpdateHandles = make(map[string]*prUpdateHandle)
+	if a.prUpdates.handles == nil {
+		a.prUpdates.handles = make(map[string]*prUpdateHandle)
 	}
 }
 
@@ -525,7 +525,7 @@ func (a *App) ensurePRUpdateMapsLocked() {
 // the dead one's own drop leaves it alone (it checks identity) while still
 // releasing exactly the handles that referenced IT.
 func (a *App) livePRUpdatePumpLocked(prKey string) *prUpdatePump {
-	pump, ok := a.prUpdatePumps[prKey]
+	pump, ok := a.prUpdates.pumps[prKey]
 	if !ok || pump.dead {
 		return nil
 	}
@@ -543,7 +543,7 @@ func (a *App) takePRUpdateReferenceLocked(pump *prUpdatePump) prUpdateReference 
 	pump.active++
 	resumed := pump.refs > 1 && pump.active == 1
 	pump.paused.Store(false)
-	a.prUpdateHandles[id] = &prUpdateHandle{pump: pump, active: true}
+	a.prUpdates.handles[id] = &prUpdateHandle{pump: pump, active: true}
 	if resumed {
 		wakePRUpdatePump(pump)
 	}
@@ -573,16 +573,16 @@ func (a *App) UnsubscribePRUpdates(subscriptionID string) error {
 // An unknown id is a no-op, not an error: visibility flips race scope
 // switches and pane disposal, and losing that race is benign.
 func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
-	a.prUpdatePumpsMu.Lock()
-	handle, ok := a.prUpdateHandles[subscriptionID]
+	a.prUpdates.mu.Lock()
+	handle, ok := a.prUpdates.handles[subscriptionID]
 	if !ok || handle.active == active {
-		a.prUpdatePumpsMu.Unlock()
+		a.prUpdates.mu.Unlock()
 		return nil
 	}
 	handle.active = active
 	pump := handle.pump
 	if pump.dead {
-		a.prUpdatePumpsMu.Unlock()
+		a.prUpdates.mu.Unlock()
 		return nil
 	}
 	if active {
@@ -592,7 +592,7 @@ func (a *App) SetPRUpdatesActive(subscriptionID string, active bool) error {
 	}
 	resumed := active && pump.active == 1
 	pump.paused.Store(pump.active <= 0)
-	a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Unlock()
 	if resumed {
 		wakePRUpdatePump(pump)
 	}
@@ -676,9 +676,9 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 		if err == nil {
 			// The fetch ran outside the lock; only the compare-and-store is
 			// inside it, because a joining subscriber reads this state.
-			a.prUpdatePumpsMu.Lock()
+			a.prUpdates.mu.Lock()
 			if pump.dead {
-				a.prUpdatePumpsMu.Unlock()
+				a.prUpdates.mu.Unlock()
 				return PRUpdatedEvent{}, false
 			}
 			unchanged := string(encoded) == string(pump.last) && pump.lastErr == ""
@@ -691,7 +691,7 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 				pump.seq = a.nextPRUpdateSeqLocked()
 				seq = pump.seq
 			}
-			a.prUpdatePumpsMu.Unlock()
+			a.prUpdates.mu.Unlock()
 			if unchanged {
 				return PRUpdatedEvent{}, false
 			}
@@ -717,9 +717,9 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 	// Dedup BEFORE logging: a forge that is down fails identically every
 	// tick, and logging first turned one outage into a log line every 45s
 	// for as long as a pane stayed open.
-	a.prUpdatePumpsMu.Lock()
+	a.prUpdates.mu.Lock()
 	if pump.dead {
-		a.prUpdatePumpsMu.Unlock()
+		a.prUpdates.mu.Unlock()
 		return PRUpdatedEvent{}, false
 	}
 	duplicate := pump.lastErr == message
@@ -730,7 +730,7 @@ func (a *App) pollPRUpdate(pump *prUpdatePump) (PRUpdatedEvent, bool) {
 		pump.seq = a.nextPRUpdateSeqLocked()
 		seq = pump.seq
 	}
-	a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Unlock()
 	if duplicate {
 		return PRUpdatedEvent{}, false
 	}
@@ -753,13 +753,13 @@ func prUpdateErrorMessage(correlationID string) string {
 // unknown ids and double-unsubscribes are no-ops, because the
 // connection-cleanup safety net may have run first on disconnect.
 func (a *App) unsubscribePRUpdates(id string) {
-	a.prUpdatePumpsMu.Lock()
-	handle, ok := a.prUpdateHandles[id]
+	a.prUpdates.mu.Lock()
+	handle, ok := a.prUpdates.handles[id]
 	if !ok {
-		a.prUpdatePumpsMu.Unlock()
+		a.prUpdates.mu.Unlock()
 		return
 	}
-	delete(a.prUpdateHandles, id)
+	delete(a.prUpdates.handles, id)
 	var teardown *prUpdatePump
 	pump := handle.pump
 	if handle.active {
@@ -777,13 +777,13 @@ func (a *App) unsubscribePRUpdates(id string) {
 		// Only if it is still the pump serving this key — a superseded
 		// (dead) pump was replaced in the map and must not evict its
 		// successor.
-		if a.prUpdatePumps[pump.prKey] == pump {
-			delete(a.prUpdatePumps, pump.prKey)
+		if a.prUpdates.pumps[pump.prKey] == pump {
+			delete(a.prUpdates.pumps, pump.prKey)
 		}
 	} else {
 		pump.paused.Store(pump.active <= 0)
 	}
-	a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Unlock()
 	if teardown != nil {
 		close(teardown.done)
 	}
@@ -801,47 +801,47 @@ func (a *App) unsubscribePRUpdates(id string) {
 // own teardown), and it is shutdown-only — the loop exits on the app
 // lifetime context, after which nothing new subscribes.
 func (a *App) dropPRUpdatePump(pump *prUpdatePump) {
-	a.prUpdatePumpsMu.Lock()
-	defer a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Lock()
+	defer a.prUpdates.mu.Unlock()
 	pump.dead = true
-	if a.prUpdatePumps[pump.prKey] == pump {
-		delete(a.prUpdatePumps, pump.prKey)
+	if a.prUpdates.pumps[pump.prKey] == pump {
+		delete(a.prUpdates.pumps, pump.prKey)
 	}
-	for id, handle := range a.prUpdateHandles {
+	for id, handle := range a.prUpdates.handles {
 		if handle.pump == pump {
-			delete(a.prUpdateHandles, id)
+			delete(a.prUpdates.handles, id)
 		}
 	}
 }
 
 func (a *App) closePRUpdatePumps() {
-	a.prUpdatePumpsMu.Lock()
-	ids := make([]string, 0, len(a.prUpdateHandles))
-	for id := range a.prUpdateHandles {
+	a.prUpdates.mu.Lock()
+	ids := make([]string, 0, len(a.prUpdates.handles))
+	for id := range a.prUpdates.handles {
 		ids = append(ids, id)
 	}
-	a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Unlock()
 	for _, id := range ids {
 		a.unsubscribePRUpdates(id)
 	}
 	// A pump whose handles all vanished with a dropped connection can
 	// outlive them; close what is left so Wait() cannot block.
-	a.prUpdatePumpsMu.Lock()
-	orphans := make([]*prUpdatePump, 0, len(a.prUpdatePumps))
-	for key, pump := range a.prUpdatePumps {
-		delete(a.prUpdatePumps, key)
+	a.prUpdates.mu.Lock()
+	orphans := make([]*prUpdatePump, 0, len(a.prUpdates.pumps))
+	for key, pump := range a.prUpdates.pumps {
+		delete(a.prUpdates.pumps, key)
 		orphans = append(orphans, pump)
 	}
-	a.prUpdatePumpsMu.Unlock()
+	a.prUpdates.mu.Unlock()
 	for _, pump := range orphans {
 		close(pump.done)
 	}
-	a.prUpdatePumpWG.Wait()
+	a.prUpdates.wg.Wait()
 }
 
 func (a *App) fetchPRUpdateSnapshot(pr gitops.PRReference) (prUpdateSnapshot, error) {
-	if a.prUpdateFetchFn != nil {
-		return a.prUpdateFetchFn(pr)
+	if a.prUpdates.fetchFn != nil {
+		return a.prUpdates.fetchFn(pr)
 	}
 	detail, err := a.gitCore().GetPRDetail("", pr)
 	if err != nil {
@@ -855,8 +855,8 @@ func (a *App) fetchPRUpdateSnapshot(pr gitops.PRReference) (prUpdateSnapshot, er
 }
 
 func (a *App) prUpdatePollInterval() time.Duration {
-	if a.prUpdateInterval > 0 {
-		return a.prUpdateInterval
+	if a.prUpdates.interval > 0 {
+		return a.prUpdates.interval
 	}
 	return defaultPRUpdateInterval
 }

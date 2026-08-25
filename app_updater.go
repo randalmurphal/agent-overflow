@@ -16,7 +16,7 @@ import (
 // singleton backs the native desktop path (initUpdater in
 // app_updater_desktop.go); the headless WSL backend builds its own Updater over
 // the same providers and stages the artifact for the Windows launcher to swap
-// (initWSLUpdater in app_updater_wsl.go). Tests leave a.updater nil, so every
+// (initWSLUpdater in app_updater_wsl.go). Tests leave a.updater.handle nil, so every
 // method here guards that case and reports the feature unsupported rather than
 // panicking.
 //
@@ -171,12 +171,12 @@ type UpdateAvailability struct {
 // result rather than an RPC error — the caller still gets every field that
 // does not depend on the network.
 func (a *App) CheckForUpdate() (UpdateAvailability, error) {
-	if a.updater == nil {
+	if a.updater.handle == nil {
 		return UpdateAvailability{Supported: false, CurrentVersion: version}, nil
 	}
 
-	a.updaterMu.Lock()
-	defer a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	defer a.updater.mu.Unlock()
 
 	// A download/install is in flight (only reachable from a second --connect
 	// client — the same client's UI blocks checks during a download). Running
@@ -184,34 +184,34 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	// the installer is about to use, so report the current state without
 	// probing the network. The busy client's next check, after the install
 	// settles, returns the authoritative answer.
-	if a.updaterBusy {
+	if a.updater.busy {
 		return UpdateAvailability{
 			Supported:        true,
-			CurrentVersion:   a.updater.CurrentVersion(),
-			LastApplyFailure: a.updateApplyFailure,
+			CurrentVersion:   a.updater.handle.CurrentVersion(),
+			LastApplyFailure: a.updater.applyFailure,
 		}, nil
 	}
 
 	// The passive check always reports the newest release: clear any tag a
 	// prior DownloadUpdate aimed the provider at, so rolling back to an older
 	// version doesn't make a later check report that older version as "latest".
-	if a.updaterProvider != nil {
-		a.updaterProvider.SetTarget("")
+	if a.updater.provider != nil {
+		a.updater.provider.SetTarget("")
 	}
 
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), updaterCheckTimeout)
 	defer cancel()
 
-	rel, err := a.updater.Check(ctx)
+	rel, err := a.updater.handle.Check(ctx)
 	if err != nil {
 		// The stash mirrors what the updater would install NOW; a failed
 		// resolve means we no longer know, so drop it rather than let a stale
 		// identity outlive the release it described.
-		a.updaterPending = nil
+		a.updater.pending = nil
 		return UpdateAvailability{
 			Supported:        true,
-			CurrentVersion:   a.updater.CurrentVersion(),
-			LastApplyFailure: a.updateApplyFailure,
+			CurrentVersion:   a.updater.handle.CurrentVersion(),
+			LastApplyFailure: a.updater.applyFailure,
 			CheckError:       fmt.Sprintf("check for update: %v", err),
 		}, nil
 	}
@@ -219,12 +219,12 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	// that just ran the Check, so the updater's pending release and our record
 	// of it can never be observed out of step. The WSL staging path is the only
 	// reader; on desktop this is one small snapshot per check and nothing more.
-	a.updaterPending = snapshotRelease(rel)
+	a.updater.pending = snapshotRelease(rel)
 
 	out := UpdateAvailability{
 		Supported:        true,
-		CurrentVersion:   a.updater.CurrentVersion(),
-		LastApplyFailure: a.updateApplyFailure,
+		CurrentVersion:   a.updater.handle.CurrentVersion(),
+		LastApplyFailure: a.updater.applyFailure,
 	}
 	if rel != nil {
 		out.Available = true
@@ -273,12 +273,12 @@ func snapshotRelease(rel *updater.Release) *updater.Release {
 //     the user can roll back. The newer-than-current gate is deliberately
 //     skipped for an explicit pick; integrity verification still applies.
 //
-// Only one download runs at a time: it claims updaterBusy under updaterMu and
+// Only one download runs at a time: it claims a.updater.busy under a.updater.mu and
 // returns ErrUpdateBusy if another is already in flight. The busy flag also
 // fences a concurrent CheckForUpdate out of re-targeting the provider while the
 // chosen release is being resolved and installed.
 func (a *App) DownloadUpdate(tag string) error {
-	if a.updater == nil {
+	if a.updater.handle == nil {
 		return ErrUpdatesUnsupported
 	}
 	if a.shuttingDown.Load() {
@@ -288,45 +288,45 @@ func (a *App) DownloadUpdate(tag string) error {
 		return fmt.Errorf("%w: %q", ErrInvalidReleaseTag, tag)
 	}
 
-	// Claim the updater under updaterMu so this whole resolve+install is
+	// Claim the updater under a.updater.mu so this whole resolve+install is
 	// serialized against CheckForUpdate (and a second DownloadUpdate). The
 	// empty-tag precondition is re-checked here, holding the lock, so a
 	// concurrent check can't flip the state between the guard and the claim.
-	a.updaterMu.Lock()
-	if a.updaterBusy {
-		a.updaterMu.Unlock()
+	a.updater.mu.Lock()
+	if a.updater.busy {
+		a.updater.mu.Unlock()
 		return ErrUpdateBusy
 	}
 	if tag == "" {
 		// Empty tag installs the already-staged latest; require StateAvailable
 		// so a download with no prior check fails fast. A specific tag resolves
 		// its own pending release below, so it has no such precondition.
-		if st := a.updater.State(); st != updater.StateAvailable {
-			a.updaterMu.Unlock()
+		if st := a.updater.handle.State(); st != updater.StateAvailable {
+			a.updater.mu.Unlock()
 			return fmt.Errorf("%w (state=%s)", ErrNoUpdateToDownload, st)
 		}
 	}
-	a.updaterBusy = true
+	a.updater.busy = true
 	// Copy the resolved identity out under the busy fence. From here on the
 	// goroutine works from this local, so a CheckForUpdate that lands after the
 	// install settles (the busy flag only fences it until then) cannot retarget
 	// the release the staging step is about to name and verify against. The
 	// by-tag path below overwrites it with its own resolve.
-	pending := a.updaterPending
-	a.updaterMu.Unlock()
+	pending := a.updater.pending
+	a.updater.mu.Unlock()
 
 	go func() {
 		// terminal, when set, is the event that ends this flow for the
-		// frontend. It fires from the deferred block AFTER updaterBusy drops,
+		// frontend. It fires from the deferred block AFTER a.updater.busy drops,
 		// because a client's very next action can test that same fence: the WSL
 		// RestartToUpdate refuses while a download holds it, and a UI that acts
 		// on "ready" the instant it lands must not be told an update is still
 		// installing by the goroutine that just finished installing it.
 		var terminal func()
 		defer func() {
-			a.updaterMu.Lock()
-			a.updaterBusy = false
-			a.updaterMu.Unlock()
+			a.updater.mu.Lock()
+			a.updater.busy = false
+			a.updater.mu.Unlock()
 			if terminal != nil {
 				terminal()
 			}
@@ -334,25 +334,25 @@ func (a *App) DownloadUpdate(tag string) error {
 
 		if tag != "" {
 			// Retarget + resolve under the lock so a racing CheckForUpdate can't
-			// reset the provider target between SetTarget and Check. updaterBusy
+			// reset the provider target between SetTarget and Check. a.updater.busy
 			// (still set) keeps that check from running its own Check until the
 			// install finishes, so the pending release stays this tag's. Bound
 			// the resolve by the short check timeout — not the download timeout
 			// — so the lock (which a concurrent check may wait on) is held only
 			// for the metadata round trip, never the multi-minute download.
 			rctx, rcancel := context.WithTimeout(a.lifeCtx(), updaterCheckTimeout)
-			a.updaterMu.Lock()
-			if a.updaterProvider != nil {
-				a.updaterProvider.SetTarget(tag)
+			a.updater.mu.Lock()
+			if a.updater.provider != nil {
+				a.updater.provider.SetTarget(tag)
 			}
-			rel, err := a.updater.Check(rctx)
+			rel, err := a.updater.handle.Check(rctx)
 			// Both resolve paths stash the same way, still holding the lock the
 			// Check ran under: this one and CheckForUpdate's. If only one did,
 			// the WSL staging step below could copy freshly downloaded bytes
 			// under a stale release's filename and digest.
-			a.updaterPending = snapshotRelease(rel)
-			pending = a.updaterPending
-			a.updaterMu.Unlock()
+			a.updater.pending = snapshotRelease(rel)
+			pending = a.updater.pending
+			a.updater.mu.Unlock()
 			rcancel()
 			// Check errors are RETURNED by the updater, not emitted, so on
 			// failure we surface our own updater:error — the frontend has
@@ -377,7 +377,7 @@ func (a *App) DownloadUpdate(tag string) error {
 		// EventUpdateReady on success and EventError on failure; the bridge
 		// forwards all of them to the frontend, so the only thing left to do
 		// with the returned error is log it for the server-side record.
-		if err := a.updater.DownloadAndInstall(ctx); err != nil {
+		if err := a.updater.handle.DownloadAndInstall(ctx); err != nil {
 			log.Printf("updater: download/install failed: %v", err)
 			return
 		}
@@ -388,7 +388,7 @@ func (a *App) DownloadUpdate(tag string) error {
 		// updater:ready the frontend acts on once the bytes have landed —
 		// verified again on the far side. Desktop mode never enters this branch
 		// and keeps the bridged event.
-		if a.wslUpdate != nil {
+		if a.updater.wsl != nil {
 			terminal = a.stageWSLUpdate(pending)
 		}
 	}()
@@ -423,16 +423,16 @@ const restartExitWatchdogDelay = 25 * time.Second
 // so it hands the staged artifact to the launcher instead and lets the launcher
 // kill it. See restartToUpdateWSL.
 func (a *App) RestartToUpdate() error {
-	if a.updater == nil {
+	if a.updater.handle == nil {
 		return ErrUpdatesUnsupported
 	}
-	if a.wslUpdate != nil {
+	if a.updater.wsl != nil {
 		return a.restartToUpdateWSL()
 	}
-	if a.updater.DownloadedPath() == "" {
+	if a.updater.handle.DownloadedPath() == "" {
 		return ErrUpdateNotReady
 	}
-	return a.restartWithExitWatchdog(a.updater.Restart)
+	return a.restartWithExitWatchdog(a.updater.handle.Restart)
 }
 
 // restartWithExitWatchdog arms a force-exit watchdog around the restart
@@ -456,12 +456,12 @@ func (a *App) restartWithExitWatchdog(restart func(ctx context.Context) error) e
 }
 
 // armRestartExitWatchdog schedules a hard process exit after delay and
-// returns a disarm function. Fires through a.restartExitFn (os.Exit when
+// returns a disarm function. Fires through a.updater.restartExitFn (os.Exit when
 // nil) so tests can observe the trigger without dying.
 func (a *App) armRestartExitWatchdog(delay time.Duration) (disarm func()) {
 	timer := time.AfterFunc(delay, func() {
 		log.Printf("updater: graceful shutdown did not finish within %s of RestartToUpdate — force-exiting so the swap helper can proceed", delay)
-		exitFn := a.restartExitFn
+		exitFn := a.updater.restartExitFn
 		if exitFn == nil {
 			exitFn = os.Exit
 		}

@@ -386,9 +386,9 @@ func waitForWorkspaceSetupState(t *testing.T, app *App, worktreePath, want strin
 	deadline := time.Now().Add(10 * time.Second)
 	var last WorktreeSetupRunState
 	for time.Now().Before(deadline) {
-		app.worktreeSetupMu.Lock()
+		app.worktreeSetup.mu.Lock()
 		run, _ := app.findWorkspaceSetupRunLocked(worktreePath)
-		app.worktreeSetupMu.Unlock()
+		app.worktreeSetup.mu.Unlock()
 		if run != nil {
 			select {
 			case <-run.done:
@@ -495,10 +495,10 @@ func TestCreateThreadAdoptsUnboundWorktreeSetup(t *testing.T) {
 	}
 
 	// The record moved: the workspace key is empty and the thread key answers.
-	app.worktreeSetupMu.Lock()
+	app.worktreeSetup.mu.Lock()
 	stranded, _ := app.findWorkspaceSetupRunLocked(result.WorktreePath)
-	adopted := app.worktreeSetupRuns[thread.ID]
-	app.worktreeSetupMu.Unlock()
+	adopted := app.worktreeSetup.runs[thread.ID]
+	app.worktreeSetup.mu.Unlock()
 	if stranded != nil {
 		t.Fatal("a run stayed registered under the workspace key after adoption")
 	}
@@ -637,10 +637,10 @@ func TestSwitchThreadWorkspaceAdoptsUnboundWorktreeSetup(t *testing.T) {
 		t.Fatalf("worktree_setup_state = %q, want running after adopting a live run", switched.WorktreeSetupState)
 	}
 
-	app.worktreeSetupMu.Lock()
+	app.worktreeSetup.mu.Lock()
 	stranded, _ := app.findWorkspaceSetupRunLocked(result.WorktreePath)
-	adopted := app.worktreeSetupRuns[thread.ID]
-	app.worktreeSetupMu.Unlock()
+	adopted := app.worktreeSetup.runs[thread.ID]
+	app.worktreeSetup.mu.Unlock()
 	if stranded != nil {
 		t.Fatal("a run stayed registered under the workspace key after the switch adopted it")
 	}
@@ -670,9 +670,9 @@ func TestRemoveProjectWorktreeCancelsUnboundSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareProjectWorktree() error = %v", err)
 	}
-	app.worktreeSetupMu.Lock()
+	app.worktreeSetup.mu.Lock()
 	run, _ := app.findWorkspaceSetupRunLocked(result.WorktreePath)
-	app.worktreeSetupMu.Unlock()
+	app.worktreeSetup.mu.Unlock()
 	if run == nil {
 		t.Fatal("no unbound run registered for the freshly cut worktree")
 	}
@@ -685,9 +685,9 @@ func TestRemoveProjectWorktreeCancelsUnboundSetup(t *testing.T) {
 	default:
 		t.Fatal("removal returned while the unbound recipe was still running in the deleted directory")
 	}
-	app.worktreeSetupMu.Lock()
+	app.worktreeSetup.mu.Lock()
 	leftover, _ := app.findWorkspaceSetupRunLocked(result.WorktreePath)
-	app.worktreeSetupMu.Unlock()
+	app.worktreeSetup.mu.Unlock()
 	if leftover != nil {
 		t.Fatal("the unbound run's record outlived the worktree it describes")
 	}

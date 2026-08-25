@@ -160,7 +160,7 @@ func TestListImportableSessionsKeepsOneProviderWhenTheOtherIsUnreadable(t *testi
 func wireImportScanClock(app *App, ttl time.Duration) (*time.Time, *int) {
 	now := time.Unix(1000, 0)
 	scans := 0
-	app.sessionImportScans = newSessionImportScanCache(ttl,
+	app.sessionImport.scans = sessionimport.NewScanCache(ttl,
 		func() time.Time { return now },
 		func(ctx context.Context) (sessionimport.ScanResult, error) {
 			scans++
@@ -561,7 +561,7 @@ func blockingScanCache(t *testing.T, app *App) (release func()) {
 	t.Helper()
 	newImportHome(t).attach(app)
 	gate := make(chan struct{})
-	app.sessionImportScans = newSessionImportScanCache(time.Minute, time.Now,
+	app.sessionImport.scans = sessionimport.NewScanCache(time.Minute, time.Now,
 		func(ctx context.Context) (sessionimport.ScanResult, error) {
 			select {
 			case <-gate:

@@ -146,7 +146,7 @@ type ImportUpdateResult struct {
 // ListImportableSessions scans the provider homes for sessions AO does not
 // already have.
 //
-// Cached for sessionImportScanTTL; the request's ForceRefresh bypasses it. A
+// Cached for sessionimport.ScanTTL; the request's ForceRefresh bypasses it. A
 // provider whose home cannot be read is reported in Providers and does not
 // fail the call — a broken Codex home must not take Claude's sessions away.
 func (a *App) ListImportableSessions(req ImportScanRequest) (ImportScanResult, error) {
@@ -284,14 +284,14 @@ func providerHomeIfPresent(path string) string {
 
 // sessionImportScanCache lazy-builds the scan cache, so a test that
 // constructs a bare &App{} does not have to pre-wire it.
-func (a *App) sessionImportScanCache() *sessionImportScanCache {
-	a.sessionImportScansOnce.Do(func() {
-		if a.sessionImportScans == nil {
-			a.sessionImportScans = newSessionImportScanCache(
-				sessionImportScanTTL, time.Now, a.scanImportableSessions)
+func (a *App) sessionImportScanCache() *sessionimport.ScanCache {
+	a.sessionImport.scansOnce.Do(func() {
+		if a.sessionImport.scans == nil {
+			a.sessionImport.scans = sessionimport.NewScanCache(
+				sessionimport.ScanTTL, time.Now, a.scanImportableSessions)
 		}
 	})
-	return a.sessionImportScans
+	return a.sessionImport.scans
 }
 
 // scanImportableSessions is the cache's loader: resolve the homes, scan.
@@ -304,9 +304,9 @@ func (a *App) scanImportableSessions(ctx context.Context) (sessionimport.ScanRes
 	return sessionimport.Scan(ctx, deps, sessionimport.Filter{})
 }
 
-func wireImportScanResult(scan sessionImportScan) ImportScanResult {
-	providers := make([]ImportProviderStatus, 0, len(scan.result.Providers))
-	for _, status := range scan.result.Providers {
+func wireImportScanResult(scan sessionimport.CachedScan) ImportScanResult {
+	providers := make([]ImportProviderStatus, 0, len(scan.Result.Providers))
+	for _, status := range scan.Result.Providers {
 		providers = append(providers, ImportProviderStatus{
 			Provider:     status.Provider,
 			Available:    status.Available,
@@ -314,8 +314,8 @@ func wireImportScanResult(scan sessionImportScan) ImportScanResult {
 			SkippedCount: status.SkippedCount,
 		})
 	}
-	rows := make([]ImportableSession, 0, len(scan.result.Rows))
-	for _, row := range scan.result.Rows {
+	rows := make([]ImportableSession, 0, len(scan.Result.Rows))
+	for _, row := range scan.Result.Rows {
 		rows = append(rows, ImportableSession{
 			ID:                 row.ID,
 			Provider:           row.Provider,
@@ -341,7 +341,7 @@ func wireImportScanResult(scan sessionImportScan) ImportScanResult {
 	return ImportScanResult{
 		Providers: slicesx.OrEmpty(providers),
 		Rows:      slicesx.OrEmpty(rows),
-		ScannedAt: scan.scannedAt,
+		ScannedAt: scan.ScannedAt,
 	}
 }
 

@@ -44,7 +44,7 @@ type workspaceMCPAuthStarter func(
 ) (*workspaceMCPAuthHandle, error)
 
 // workspaceMCPAuthRun is both the single-flight startup and the identity held
-// in App.workspaceMCPAuthFlows. Closing ready publishes result/err to callers
+// in App.mcp.workspaceAuthFlows. Closing ready publishes result/err to callers
 // that arrived while the provider process was starting.
 type workspaceMCPAuthRun struct {
 	ready  chan struct{}
@@ -75,9 +75,9 @@ func (a *App) TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName st
 	}
 
 	key := workspaceMCPAuthKey{provider: providerName, workspace: workspacePath, server: serverName}
-	a.workspaceMCPAuthMu.Lock()
-	if run := a.workspaceMCPAuthFlows[key]; run != nil {
-		a.workspaceMCPAuthMu.Unlock()
+	a.mcp.workspaceAuthMu.Lock()
+	if run := a.mcp.workspaceAuthFlows[key]; run != nil {
+		a.mcp.workspaceAuthMu.Unlock()
 		select {
 		case <-run.ready:
 			return run.result, run.err
@@ -85,15 +85,15 @@ func (a *App) TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName st
 			return MCPAuthInitResult{}, a.lifeCtx().Err()
 		}
 	}
-	if a.workspaceMCPAuthFlows == nil {
-		a.workspaceMCPAuthFlows = make(map[workspaceMCPAuthKey]*workspaceMCPAuthRun)
+	if a.mcp.workspaceAuthFlows == nil {
+		a.mcp.workspaceAuthFlows = make(map[workspaceMCPAuthKey]*workspaceMCPAuthRun)
 	}
 	flowCtx, cancel := context.WithTimeout(a.lifeCtx(), workspaceMCPAuthLifetime)
 	run := &workspaceMCPAuthRun{ready: make(chan struct{}), cancel: cancel}
-	a.workspaceMCPAuthFlows[key] = run
-	a.workspaceMCPAuthMu.Unlock()
+	a.mcp.workspaceAuthFlows[key] = run
+	a.mcp.workspaceAuthMu.Unlock()
 
-	starter := a.workspaceMCPAuthStarter
+	starter := a.mcp.workspaceAuthStarter
 	if starter == nil {
 		starter = a.startWorkspaceMCPAuth
 	}
@@ -124,11 +124,11 @@ func (a *App) TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName st
 }
 
 func (a *App) removeWorkspaceMCPAuthRun(key workspaceMCPAuthKey, run *workspaceMCPAuthRun) {
-	a.workspaceMCPAuthMu.Lock()
-	if a.workspaceMCPAuthFlows[key] == run {
-		delete(a.workspaceMCPAuthFlows, key)
+	a.mcp.workspaceAuthMu.Lock()
+	if a.mcp.workspaceAuthFlows[key] == run {
+		delete(a.mcp.workspaceAuthFlows, key)
 	}
-	a.workspaceMCPAuthMu.Unlock()
+	a.mcp.workspaceAuthMu.Unlock()
 }
 
 func (a *App) finishWorkspaceMCPAuth(

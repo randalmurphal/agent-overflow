@@ -116,28 +116,28 @@ func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error)
 	ctx, cancel := context.WithCancel(a.lifeCtx())
 	run := &sessionImportRun{id: uuid.NewString(), total: len(ids), cancel: cancel}
 
-	a.sessionImportMu.Lock()
+	a.sessionImport.mu.Lock()
 	// The stopped flag and the WaitGroup Add sit in ONE critical section, and
 	// stopSessionImports sets the flag in that same section before it waits.
 	// That is what makes "no goroutine joins the WaitGroup after Wait began"
 	// structural rather than a matter of call ordering.
-	if a.sessionImportStopped {
-		a.sessionImportMu.Unlock()
+	if a.sessionImport.stopped {
+		a.sessionImport.mu.Unlock()
 		cancel()
 		return ImportRunHandle{}, ErrShuttingDown
 	}
-	if a.sessionImportActive != nil {
-		a.sessionImportMu.Unlock()
+	if a.sessionImport.active != nil {
+		a.sessionImport.mu.Unlock()
 		cancel()
 		return ImportRunHandle{}, fmt.Errorf(
 			"import sessions: an import is already running; wait for it to finish or cancel it first")
 	}
-	a.sessionImportActive = run
-	a.sessionImportWG.Add(1)
-	a.sessionImportMu.Unlock()
+	a.sessionImport.active = run
+	a.sessionImport.wg.Add(1)
+	a.sessionImport.mu.Unlock()
 
 	go func() {
-		defer a.sessionImportWG.Done()
+		defer a.sessionImport.wg.Done()
 		defer cancel()
 		defer a.finishSessionImportRun(run)
 		a.runSessionImport(ctx, run, ids)
@@ -151,9 +151,9 @@ func (a *App) ImportSessions(req ImportSessionsRequest) (ImportRunHandle, error)
 // end from silence.
 func (a *App) CancelSessionImport(importID string) error {
 	importID = strings.TrimSpace(importID)
-	a.sessionImportMu.Lock()
-	run := a.sessionImportActive
-	a.sessionImportMu.Unlock()
+	a.sessionImport.mu.Lock()
+	run := a.sessionImport.active
+	a.sessionImport.mu.Unlock()
 	if run == nil || (importID != "" && run.id != importID) {
 		return fmt.Errorf("cancel session import: no import run %q is in progress", importID)
 	}
@@ -391,26 +391,26 @@ func (a *App) emitSessionImportDone(run *sessionImportRun, completed int) {
 // finishSessionImportRun clears the registry slot, but only when it still
 // holds THIS run — a shutdown that cleared it first must not be undone.
 func (a *App) finishSessionImportRun(run *sessionImportRun) {
-	a.sessionImportMu.Lock()
-	if a.sessionImportActive == run {
-		a.sessionImportActive = nil
+	a.sessionImport.mu.Lock()
+	if a.sessionImport.active == run {
+		a.sessionImport.active = nil
 	}
-	a.sessionImportMu.Unlock()
+	a.sessionImport.mu.Unlock()
 }
 
 // stopSessionImports cancels the in-flight run and joins its goroutine.
 // Called from Shutdown before the store closes, because an import writes to
 // it. Idempotent.
 func (a *App) stopSessionImports() {
-	a.sessionImportMu.Lock()
-	a.sessionImportStopped = true
-	run := a.sessionImportActive
-	a.sessionImportActive = nil
-	a.sessionImportMu.Unlock()
+	a.sessionImport.mu.Lock()
+	a.sessionImport.stopped = true
+	run := a.sessionImport.active
+	a.sessionImport.active = nil
+	a.sessionImport.mu.Unlock()
 	if run != nil {
 		run.cancel()
 	}
-	a.sessionImportWG.Wait()
+	a.sessionImport.wg.Wait()
 }
 
 // importWarningLogLimit bounds one session's logged warnings. A corrupt

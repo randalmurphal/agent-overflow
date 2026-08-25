@@ -165,8 +165,8 @@ func (o *worktreeSetupObserver) flushLocked() {
 }
 
 func (a *App) setWorktreeSetupStepStatus(run *worktreeSetupRun, index int, status string) {
-	a.worktreeSetupMu.Lock()
-	defer a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Lock()
+	defer a.worktreeSetup.mu.Unlock()
 	if index < 0 || index >= len(run.statuses) {
 		return
 	}

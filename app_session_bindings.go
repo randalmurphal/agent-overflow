@@ -54,20 +54,20 @@ func (a *App) AutoResumeThread(threadID string) error {
 }
 
 // markThreadFocused stamps the thread's read-state in the background.
-// Registration happens synchronously under markThreadReadMu so the
+// Registration happens synchronously under a.markThreadRead.mu so the
 // WaitGroup can never be joined by a stamp that was accepted after
 // stopMarkThreadReads decided nothing more would run.
 func (a *App) markThreadFocused(threadID string) {
-	a.markThreadReadMu.Lock()
-	if a.markThreadReadStopped {
-		a.markThreadReadMu.Unlock()
+	a.markThreadRead.mu.Lock()
+	if a.markThreadRead.stopped {
+		a.markThreadRead.mu.Unlock()
 		return
 	}
-	a.markThreadReadWG.Add(1)
-	a.markThreadReadMu.Unlock()
+	a.markThreadRead.wg.Add(1)
+	a.markThreadRead.mu.Unlock()
 
 	go func() {
-		defer a.markThreadReadWG.Done()
+		defer a.markThreadRead.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
 		if err := a.store.MarkThreadReadNow(ctx, threadID); err != nil {
@@ -84,7 +84,7 @@ func (a *App) markThreadFocused(threadID string) {
 // registered has landed, WITHOUT refusing later ones. It is the
 // observation point for tests that need the durable row.
 func (a *App) waitMarkThreadReads() {
-	a.markThreadReadWG.Wait()
+	a.markThreadRead.wg.Wait()
 }
 
 // stopMarkThreadReads refuses new read-state stamps and waits out the
@@ -92,10 +92,10 @@ func (a *App) waitMarkThreadReads() {
 // writes to SQLite, and markThreadReadTimeout caps how long that wait
 // can add to quit latency.
 func (a *App) stopMarkThreadReads() {
-	a.markThreadReadMu.Lock()
-	a.markThreadReadStopped = true
-	a.markThreadReadMu.Unlock()
-	a.markThreadReadWG.Wait()
+	a.markThreadRead.mu.Lock()
+	a.markThreadRead.stopped = true
+	a.markThreadRead.mu.Unlock()
+	a.markThreadRead.wg.Wait()
 }
 
 func (a *App) loadThreadForFocus(threadID string) (store.Thread, error) {

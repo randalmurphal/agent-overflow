@@ -390,7 +390,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 func runHeadless(listenAddr string, printURLFD int) {
 	appService := newApp()
 	// Before the transport server starts, so the updater RPC handlers see a
-	// fully wired App.updater / App.wslUpdate without a race. Gated at runtime
+	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
 	initWSLUpdater(appService)
 	// Headless mode honors only the explicit --listen flag — the

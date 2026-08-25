@@ -58,7 +58,7 @@ import (
 // app_worktree_setup_observer.go.
 
 // worktreeSetupRun is the App's record of one run. Records live in
-// App.worktreeSetupRuns under a KEY that is the thread id for a bound run and
+// App.worktreeSetup.runs under a KEY that is the thread id for a bound run and
 // workspaceSetupRunKey(worktreePath) for an unbound one, so exactly one entry
 // per owner exists at a time and adoption is a re-key rather than a copy.
 //
@@ -79,16 +79,16 @@ type worktreeSetupRun struct {
 	steps        []WorktreeSetupStep
 	config       worktreesetup.Config
 
-	// key is this run's identity in App.worktreeSetupRuns, and threadID is
+	// key is this run's identity in App.worktreeSetup.runs, and threadID is
 	// the thread it reports against — the same string for an ordinary run,
 	// and (workspaceSetupRunKey(worktreePath), "") for one that was started
-	// before any thread existed. Both are guarded by App.worktreeSetupMu
+	// before any thread existed. Both are guarded by App.worktreeSetup.mu
 	// because adoption rewrites them mid-run; read threadID through
 	// worktreeSetupThreadID, never directly off the record.
 	key      string
 	threadID string
 
-	// Guarded by App.worktreeSetupMu.
+	// Guarded by App.worktreeSetup.mu.
 	statuses     []string
 	state        string
 	errorText    string
@@ -208,7 +208,7 @@ type worktreeSetupTarget struct {
 }
 
 // resolveSetupKeyLocked picks the map key a target registers under. Callers
-// hold worktreeSetupMu, and that is the point: an unbound target's key depends
+// hold a.worktreeSetup.mu, and that is the point: an unbound target's key depends
 // on whether an existing unbound record already covers the directory under a
 // differently-spelled path, so choosing it in a separate critical section from
 // the registration let a retry land beside the record it meant to replace.
@@ -234,12 +234,12 @@ func (a *App) resolveSetupKeyLocked(target worktreeSetupTarget) string {
 //     workspace RPC after a thread adopted the run (the run is bound now, so
 //     the workspace key is free), and two threads sharing one worktree.
 //
-// Callers hold worktreeSetupMu.
+// Callers hold a.worktreeSetup.mu.
 func (a *App) setupRunBlockingLocked(key, worktreePath string) *worktreeSetupRun {
-	if existing := a.worktreeSetupRuns[key]; existing != nil && existing.state == worktreeSetupRunRunning {
+	if existing := a.worktreeSetup.runs[key]; existing != nil && existing.state == worktreeSetupRunRunning {
 		return existing
 	}
-	for _, run := range a.worktreeSetupRuns {
+	for _, run := range a.worktreeSetup.runs {
 		if run.state != worktreeSetupRunRunning {
 			continue
 		}
@@ -320,13 +320,13 @@ func (a *App) launchWorktreeSetup(target worktreeSetupTarget, requireRecipe bool
 	ctx, cancel := context.WithCancel(a.lifeCtx())
 	run.cancel = cancel
 
-	a.worktreeSetupMu.Lock()
+	a.worktreeSetup.mu.Lock()
 	// The stopped flag and the WaitGroup Add sit in ONE critical section, and
 	// stopThreadWorktreeSetups sets the flag in that same section before it
 	// waits. That is what makes "no goroutine joins the WaitGroup after Wait
 	// began" structural rather than a matter of call ordering.
-	if a.worktreeSetupStopped {
-		a.worktreeSetupMu.Unlock()
+	if a.worktreeSetup.stopped {
+		a.worktreeSetup.mu.Unlock()
 		cancel()
 		return ErrShuttingDown
 	}
@@ -334,17 +334,17 @@ func (a *App) launchWorktreeSetup(target worktreeSetupTarget, requireRecipe bool
 	// takes is a function of the map's current contents.
 	key := a.resolveSetupKeyLocked(target)
 	if blocking := a.setupRunBlockingLocked(key, worktreePath); blocking != nil {
-		a.worktreeSetupMu.Unlock()
+		a.worktreeSetup.mu.Unlock()
 		cancel()
 		return fmt.Errorf("worktree setup for %s is already running", target.describe())
 	}
-	if a.worktreeSetupRuns == nil {
-		a.worktreeSetupRuns = make(map[string]*worktreeSetupRun)
+	if a.worktreeSetup.runs == nil {
+		a.worktreeSetup.runs = make(map[string]*worktreeSetupRun)
 	}
 	run.key = key
-	a.worktreeSetupRuns[key] = run
-	a.worktreeSetupWG.Add(1)
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.runs[key] = run
+	a.worktreeSetup.wg.Add(1)
+	a.worktreeSetup.mu.Unlock()
 
 	// An unbound run has no row to stamp; its state lives only in the record
 	// and on the wire until a thread adopts it.
@@ -353,7 +353,7 @@ func (a *App) launchWorktreeSetup(target worktreeSetupTarget, requireRecipe bool
 	}
 
 	go func() {
-		defer a.worktreeSetupWG.Done()
+		defer a.worktreeSetup.wg.Done()
 		defer cancel()
 		observer := newWorktreeSetupObserver(a, run)
 		// The observer owns every emission for this run, including the
@@ -392,19 +392,19 @@ func (a *App) recordUnstartableWorktreeSetupRun(target worktreeSetupTarget, caus
 	}
 	close(run.done)
 
-	a.worktreeSetupMu.Lock()
-	if a.worktreeSetupRuns == nil {
-		a.worktreeSetupRuns = make(map[string]*worktreeSetupRun)
+	a.worktreeSetup.mu.Lock()
+	if a.worktreeSetup.runs == nil {
+		a.worktreeSetup.runs = make(map[string]*worktreeSetupRun)
 	}
 	key := a.resolveSetupKeyLocked(target)
 	if blocking := a.setupRunBlockingLocked(key, target.worktreePath); blocking != nil {
-		a.worktreeSetupMu.Unlock()
+		a.worktreeSetup.mu.Unlock()
 		log.Printf("%s: worktree setup unreadable while a run is in flight: %v", target.describe(), cause)
 		return
 	}
 	run.key = key
-	a.worktreeSetupRuns[key] = run
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.runs[key] = run
+	a.worktreeSetup.mu.Unlock()
 
 	if target.threadID != "" {
 		a.setThreadWorktreeSetupState(target.threadID, store.WorktreeSetupStateFailed)
@@ -454,7 +454,7 @@ func (a *App) recordUnstartableWorktreeSetupRun(target worktreeSetupTarget, caus
 func (a *App) finishThreadWorktreeSetup(run *worktreeSetupRun, runErr error) {
 	finishedAt := time.Now().UnixMilli()
 
-	a.worktreeSetupMu.Lock()
+	a.worktreeSetup.mu.Lock()
 	shuttingDown := run.shuttingDown
 	cancelled := run.cancelled
 	threadID := run.threadID
@@ -475,7 +475,7 @@ func (a *App) finishThreadWorktreeSetup(run *worktreeSetupRun, runErr error) {
 	}
 	run.state = state
 	run.settled = true
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 
 	if shuttingDown {
 		a.dropWorktreeSetupRun(run)
@@ -491,9 +491,9 @@ func (a *App) finishThreadWorktreeSetup(run *worktreeSetupRun, runErr error) {
 	// right now is by definition IN the worktree.
 	if state == worktreeSetupRunFailed && threadID != "" && !a.threadOccupiesWorktree(threadID, run.worktreePath) {
 		state = worktreeSetupRunCancelled
-		a.worktreeSetupMu.Lock()
+		a.worktreeSetup.mu.Lock()
 		run.state = state
-		a.worktreeSetupMu.Unlock()
+		a.worktreeSetup.mu.Unlock()
 	}
 
 	// Re-read the binding at the moment the outcome is committed, and stamp
@@ -503,20 +503,20 @@ func (a *App) finishThreadWorktreeSetup(run *worktreeSetupRun, runErr error) {
 	// next boot sweep. Serialising the decision and the write is what orders
 	// them — adoption issues its stamp the same way.
 	if state == worktreeSetupRunFailed {
-		a.worktreeSetupMu.Lock()
+		a.worktreeSetup.mu.Lock()
 		threadID = run.threadID
 		if threadID != "" {
 			a.setThreadWorktreeSetupState(threadID, store.WorktreeSetupStateFailed)
 		}
-		a.worktreeSetupMu.Unlock()
+		a.worktreeSetup.mu.Unlock()
 	} else {
 		a.dropWorktreeSetupRun(run)
-		a.worktreeSetupMu.Lock()
+		a.worktreeSetup.mu.Lock()
 		threadID = run.threadID
 		if threadID != "" {
 			a.setThreadWorktreeSetupState(threadID, store.WorktreeSetupStateNone)
 		}
-		a.worktreeSetupMu.Unlock()
+		a.worktreeSetup.mu.Unlock()
 	}
 
 	a.emitEvent(worktreeSetupChannel, WorktreeSetupEvent{
@@ -535,10 +535,10 @@ func (a *App) finishThreadWorktreeSetup(run *worktreeSetupRun, runErr error) {
 // under the run's key. The identity check matters: a retry can already have
 // replaced it, and adoption can already have moved it to a thread id.
 func (a *App) dropWorktreeSetupRun(run *worktreeSetupRun) {
-	a.worktreeSetupMu.Lock()
-	defer a.worktreeSetupMu.Unlock()
-	if a.worktreeSetupRuns[run.key] == run {
-		delete(a.worktreeSetupRuns, run.key)
+	a.worktreeSetup.mu.Lock()
+	defer a.worktreeSetup.mu.Unlock()
+	if a.worktreeSetup.runs[run.key] == run {
+		delete(a.worktreeSetup.runs, run.key)
 	}
 }
 
@@ -546,8 +546,8 @@ func (a *App) dropWorktreeSetupRun(run *worktreeSetupRun) {
 // rewrites the field mid-run, so the observer and every emitter must go through
 // here rather than reading the record directly.
 func (a *App) worktreeSetupThreadID(run *worktreeSetupRun) string {
-	a.worktreeSetupMu.Lock()
-	defer a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Lock()
+	defer a.worktreeSetup.mu.Unlock()
 	return run.threadID
 }
 
@@ -561,12 +561,12 @@ func (a *App) worktreeSetupThreadID(run *worktreeSetupRun) string {
 // thread or its worktree down, and a recipe still writing into a directory
 // that is about to be removed is the race this join closes.
 func (a *App) cancelThreadWorktreeSetup(threadID string) {
-	a.worktreeSetupMu.Lock()
-	run := a.worktreeSetupRuns[threadID]
+	a.worktreeSetup.mu.Lock()
+	run := a.worktreeSetup.runs[threadID]
 	if run != nil {
 		run.cancelled = true
 	}
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 
 	if run != nil {
 		run.cancel()
@@ -586,10 +586,10 @@ func (a *App) cancelThreadWorktreeSetup(threadID string) {
 // exists so the UI reacts at the moment of the switch rather than at the end
 // of the recipe.
 func (a *App) releaseThreadWorktreeSetup(threadID, workspacePath string) {
-	a.worktreeSetupMu.Lock()
-	run := a.worktreeSetupRuns[threadID]
+	a.worktreeSetup.mu.Lock()
+	run := a.worktreeSetup.runs[threadID]
 	retained := run != nil && gitops.SameFilesystemPath(run.worktreePath, workspacePath)
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 	if retained {
 		return
 	}
@@ -604,21 +604,21 @@ func (a *App) releaseThreadWorktreeSetup(threadID, workspacePath string) {
 // which is what we want: their recipe is a live child process group like any
 // other, and the fact that no row describes it changes nothing about shutdown.
 func (a *App) stopThreadWorktreeSetups() {
-	a.worktreeSetupMu.Lock()
-	a.worktreeSetupStopped = true
-	cancels := make([]context.CancelFunc, 0, len(a.worktreeSetupRuns))
-	for _, run := range a.worktreeSetupRuns {
+	a.worktreeSetup.mu.Lock()
+	a.worktreeSetup.stopped = true
+	cancels := make([]context.CancelFunc, 0, len(a.worktreeSetup.runs))
+	for _, run := range a.worktreeSetup.runs {
 		if run.state != worktreeSetupRunRunning {
 			continue
 		}
 		run.shuttingDown = true
 		cancels = append(cancels, run.cancel)
 	}
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 	for _, cancel := range cancels {
 		cancel()
 	}
-	a.worktreeSetupWG.Wait()
+	a.worktreeSetup.wg.Wait()
 }
 
 // sweepCrashedWorktreeSetups settles rows a previous app instance left
@@ -650,9 +650,9 @@ func (a *App) sweepCrashedWorktreeSetups() {
 // --- Snapshot ---
 
 func (a *App) worktreeSetupSnapshot(thread store.Thread) WorktreeSetupRunState {
-	a.worktreeSetupMu.Lock()
-	run := a.worktreeSetupRuns[thread.ID]
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Lock()
+	run := a.worktreeSetup.runs[thread.ID]
+	a.worktreeSetup.mu.Unlock()
 	if run != nil {
 		return a.worktreeSetupRunState(run)
 	}
@@ -676,7 +676,7 @@ func (a *App) worktreeSetupSnapshot(thread store.Thread) WorktreeSetupRunState {
 // reports the run's OWN thread id, which is empty for an unbound run and is
 // what re-keys a client the moment adoption fills it in.
 func (a *App) worktreeSetupRunState(run *worktreeSetupRun) WorktreeSetupRunState {
-	a.worktreeSetupMu.Lock()
+	a.worktreeSetup.mu.Lock()
 	state := WorktreeSetupRunState{
 		ThreadID:     run.threadID,
 		RunID:        run.id,
@@ -688,7 +688,7 @@ func (a *App) worktreeSetupRunState(run *worktreeSetupRun) WorktreeSetupRunState
 		StartedAt:    run.startedAt,
 		FinishedAt:   run.finishedAt,
 	}
-	a.worktreeSetupMu.Unlock()
+	a.worktreeSetup.mu.Unlock()
 
 	// Sequence BEFORE content: a chunk emitted between these two reads lands
 	// in Output but reports a seq the client already has, so it is ignored

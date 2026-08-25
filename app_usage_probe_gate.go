@@ -21,8 +21,8 @@ const usageProbeMinInterval = 30 * time.Second
 // stale until the next periodic tick.
 //
 // Server-imposed 429 backoffs are deliberately NOT tracked here: the throttle
-// is per-account, not per-provider, so that state lives in usageBackoffLedger
-// (app_usage_backoff.go), which the refresh path consults before touching the
+// is per-account, not per-provider, so that state lives in usagebackoff.Ledger
+// (internal/usagebackoff), which the refresh path consults before touching the
 // endpoint. A probe the gate lets through can therefore still return without
 // having sent a request.
 type usageProbeGate struct {
@@ -79,7 +79,7 @@ func (g *usageProbeGate) request(fromTimer bool) {
 	g.mu.Unlock()
 
 	// The probe's error surface is owned elsewhere: probeClaudeRateLimits /
-	// probeCodexRateLimits log their own failures and usageBackoffLedger
+	// probeCodexRateLimits log their own failures and usagebackoff.Ledger
 	// records any 429.
 	_ = g.probe(g.ctxFn())
 
@@ -115,15 +115,15 @@ func (g *usageProbeGate) scheduleLocked(wait time.Duration) {
 // claudeUsageGate lazily builds the Claude gate so directly-constructed test
 // Apps get one without boot wiring.
 func (a *App) claudeUsageGate() *usageProbeGate {
-	a.claudeUsageGateOnce.Do(func() {
-		a.claudeUsageGateVal = newUsageProbeGate(a.probeClaudeRateLimits, a.lifeCtx)
+	a.usageProbe.claudeGateOnce.Do(func() {
+		a.usageProbe.claudeGate = newUsageProbeGate(a.probeClaudeRateLimits, a.lifeCtx)
 	})
-	return a.claudeUsageGateVal
+	return a.usageProbe.claudeGate
 }
 
 func (a *App) codexUsageGate() *usageProbeGate {
-	a.codexUsageGateOnce.Do(func() {
-		a.codexUsageGateVal = newUsageProbeGate(a.probeCodexRateLimits, a.lifeCtx)
+	a.usageProbe.codexGateOnce.Do(func() {
+		a.usageProbe.codexGate = newUsageProbeGate(a.probeCodexRateLimits, a.lifeCtx)
 	})
-	return a.codexUsageGateVal
+	return a.usageProbe.codexGate
 }

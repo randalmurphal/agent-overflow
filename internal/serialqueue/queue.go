@@ -1,8 +1,10 @@
-package main
+// Package serialqueue runs submitted jobs one at a time, in submission order,
+// on a goroutine that exists only while work is pending.
+package serialqueue
 
 import "sync"
 
-// serialQueue runs jobs one at a time, in submission order, on a goroutine that
+// Queue runs jobs one at a time, in submission order, on a goroutine that
 // exists only while work is pending.
 //
 // It is the shape every app-side reaction to a workflow engine event needs: the
@@ -13,7 +15,7 @@ import "sync"
 //
 // Wait blocks until the queue drains, which is what lets shutdown finish a
 // receipt or a delivery before SQLite closes.
-type serialQueue struct {
+type Queue struct {
 	mu   sync.Mutex
 	wg   sync.WaitGroup
 	jobs []func()
@@ -21,7 +23,7 @@ type serialQueue struct {
 }
 
 // Go appends a job and starts the worker if it is not already running.
-func (q *serialQueue) Go(job func()) {
+func (q *Queue) Go(job func()) {
 	q.mu.Lock()
 	q.jobs = append(q.jobs, job)
 	if q.busy {
@@ -34,7 +36,7 @@ func (q *serialQueue) Go(job func()) {
 	go q.run()
 }
 
-func (q *serialQueue) run() {
+func (q *Queue) run() {
 	defer q.wg.Done()
 	for {
 		q.mu.Lock()
@@ -54,4 +56,4 @@ func (q *serialQueue) run() {
 // Wait blocks until the worker has drained everything submitted before the
 // call. Jobs submitted while Wait is blocked are covered too, since the worker
 // only reports done with an empty queue.
-func (q *serialQueue) Wait() { q.wg.Wait() }
+func (q *Queue) Wait() { q.wg.Wait() }
