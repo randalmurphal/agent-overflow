@@ -2,6 +2,8 @@ package highlight
 
 import (
 	"bytes"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -401,6 +403,61 @@ func TestHighlightPatchTextUnknownLang(t *testing.T) {
 	for i, line := range res.Lines {
 		if line.Runs != nil {
 			t.Errorf("line %d not plain for plaintext patch: %v", i, line.Runs)
+		}
+	}
+}
+
+// When the patch matches the file, every hunk's NEW-side splice
+// (prime + newDoc + suffix) reconstructs the identical full file
+// content — without the per-call memo an H-hunk patch parsed that one
+// document H times (591MB of allocation in 10 minutes of agent edits,
+// measured 2026-08-25). Pins both halves: the parse count and span
+// parity against un-memoized single-hunk baselines.
+func TestHighlightPatchTextPrimedMemoizesMatchingSplices(t *testing.T) {
+	var fileLines []string
+	for i := 1; i <= 30; i++ {
+		fileLines = append(fileLines, fmt.Sprintf("x%d = %d  # line", i, i))
+	}
+	content := strings.Join(fileLines, "\n") + "\n"
+
+	header := "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n"
+	hunkAt := func(start int) string {
+		return fmt.Sprintf("@@ -%d,3 +%d,3 @@\n", start, start) +
+			" " + fileLines[start-1] + "\n" +
+			fmt.Sprintf("-old%d = None\n", start+1) +
+			"+" + fileLines[start] + "\n" +
+			" " + fileLines[start+1] + "\n"
+	}
+	starts := []int{5, 15, 25}
+	patch := header
+	for _, s := range starts {
+		patch += hunkAt(s)
+	}
+
+	before := hunkDocParses.Load()
+	res := HighlightPatchTextPrimed(LangPython, patch, content)
+	parses := hunkDocParses.Load() - before
+	if res.Incomplete {
+		t.Fatal("primed parse reported incomplete")
+	}
+	// 3 distinct old-side splices + 1 shared new-side splice. 6 means
+	// the memo stopped deduplicating the identical new-side documents.
+	if parses != 4 {
+		t.Fatalf("parses = %d, want 4 (3 old sides + 1 memoized new side)", parses)
+	}
+
+	// Parity: each hunk's span lines must byte-match the same hunk
+	// highlighted alone (its own call, memo cold — the un-memoized
+	// baseline).
+	const headerLines, hunkLines = 3, 5
+	for k, s := range starts {
+		single := HighlightPatchTextPrimed(LangPython, header+hunkAt(s), content)
+		for j := 0; j < hunkLines; j++ {
+			got := res.Lines[headerLines+k*hunkLines+j]
+			want := single.Lines[headerLines+j]
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("hunk %d line %d: memoized %v, baseline %v", k, j, got, want)
+			}
 		}
 	}
 }

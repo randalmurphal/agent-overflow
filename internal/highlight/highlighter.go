@@ -2,8 +2,11 @@ package highlight
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"io"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
@@ -108,6 +111,20 @@ func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 	incomplete := false
 	budget := time.Now().Add(patchParseBudget)
 	primer := primer{content: fileContent}
+	// Per-call parse memo, keyed on the spliced document's bytes. When
+	// the patch matches the file (the persist tap verifies it), every
+	// hunk's NEW-side splice — prime + newDoc + suffix — reconstructs
+	// the SAME full file content, so an H-hunk patch was parsing one
+	// identical document H times (measured 2026-08-25: this path was
+	// 37% of all backend allocation, 591MB in 10 minutes of agent
+	// edits). The memo collapses those to one parse; old-side docs
+	// differ per hunk and simply miss. Scoped to this call on purpose —
+	// the shared Cache already dedupes whole calls, and cross-call
+	// reuse of a spliced doc has no second consumer.
+	var memo hunkDocMemo
+	if fileContent != "" {
+		memo = make(hunkDocMemo, 2)
+	}
 
 	for _, hunk := range parsed.hunks {
 		if time.Now().After(budget) {
@@ -121,8 +138,8 @@ func HighlightPatchTextPrimed(lang Lang, patch, fileContent string) Result {
 		}
 		prime := primer.primeFor(hunk.newStart)
 		suffix := primer.suffixFrom(hunk.newStart + hunk.newCount)
-		oldLines, oldRes := highlightHunkDoc(lang, prime, suffix, hunk.oldDoc)
-		newLines, newRes := highlightHunkDoc(lang, prime, suffix, hunk.newDoc)
+		oldLines, oldRes := highlightHunkDoc(lang, prime, suffix, hunk.oldDoc, memo)
+		newLines, newRes := highlightHunkDoc(lang, prime, suffix, hunk.newDoc, memo)
 		truncated = truncated || oldRes.Truncated || newRes.Truncated
 		incomplete = incomplete || oldRes.Incomplete || newRes.Incomplete
 		for _, ref := range hunk.lines {
@@ -203,16 +220,33 @@ func (pr *primer) suffixFrom(fileLine int) string {
 	return pr.content[pr.off:]
 }
 
+// hunkDocMemo caches spliced-document Highlight results within one
+// HighlightPatchTextPrimed call, keyed by the exact bytes the splice
+// would parse. Incomplete results are never stored — the same
+// transient-degradation rule the Cache applies, scoped to this call.
+type hunkDocMemo map[[sha256.Size]byte]Result
+
+// hunkDocParses counts whole-document parses issued by
+// highlightHunkDoc. Test hook: the memo regression test pins that an
+// H-hunk matching patch parses its identical new-side splices once,
+// not H times.
+var hunkDocParses atomic.Int64
+
+func highlightHunkParse(lang Lang, src []byte) Result {
+	hunkDocParses.Add(1)
+	return Highlight(lang, src)
+}
+
 // highlightHunkDoc highlights one reconstructed hunk side, optionally
 // spliced between preceding and following file content. Empty docs
 // (the old side of an added file) short-circuit; only the doc's own
 // lines are returned.
-func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte) ([]EncodedLine, Result) {
+func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte, memo hunkDocMemo) ([]EncodedLine, Result) {
 	if len(doc) == 0 {
 		return nil, Result{}
 	}
 	if prime == "" && suffix == "" {
-		res := Highlight(lang, doc)
+		res := highlightHunkParse(lang, doc)
 		return res.Lines, res
 	}
 	// Keep the combined document under the input cap: first trim the
@@ -232,15 +266,39 @@ func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte) ([]EncodedLin
 	}
 	if overflow := len(prime) + 1 + len(doc) - maxInputBytes; overflow > 0 {
 		if overflow >= len(prime) {
-			res := Highlight(lang, doc)
+			res := highlightHunkParse(lang, doc)
 			return res.Lines, res
 		}
 		cut := strings.IndexByte(prime[overflow:], '\n')
 		if cut < 0 {
-			res := Highlight(lang, doc)
+			res := highlightHunkParse(lang, doc)
 			return res.Lines, res
 		}
 		prime = prime[overflow+cut+1:]
+	}
+	// Memo lookup before materializing the splice: hash the exact byte
+	// sequence the concat below would produce. When the patch matches
+	// the file, every hunk's new-side splice reconstructs the SAME full
+	// file content, so without this an H-hunk patch parsed one
+	// identical document H times — measured at 591MB of allocation in
+	// 10 minutes of agent edits, 37% of the backend total (2026-08-25).
+	// A hit skips the parse AND the concat.
+	var key [sha256.Size]byte
+	if memo != nil {
+		h := sha256.New()
+		if prime != "" {
+			io.WriteString(h, prime)
+			h.Write([]byte{'\n'})
+		}
+		h.Write(doc)
+		if suffix != "" {
+			h.Write([]byte{'\n'})
+			io.WriteString(h, suffix)
+		}
+		h.Sum(key[:0])
+		if res, ok := memo[key]; ok {
+			return sliceHunkDocLines(res, prime, doc), res
+		}
 	}
 	size := len(prime) + 1 + len(doc)
 	if suffix != "" {
@@ -256,22 +314,34 @@ func highlightHunkDoc(lang Lang, prime, suffix string, doc []byte) ([]EncodedLin
 		combined = append(combined, '\n')
 		combined = append(combined, suffix...)
 	}
-	res := Highlight(lang, combined)
+	res := highlightHunkParse(lang, combined)
+	if memo != nil && !res.Incomplete {
+		memo[key] = res
+	}
+	return sliceHunkDocLines(res, prime, doc), res
+}
+
+// sliceHunkDocLines cuts the doc's own lines out of a spliced-document
+// result: skip the prime's lines, drop the suffix's trailing entries —
+// callers index doc lines only, and the trimmed slice keeps that
+// contract visible. Shared lines are safe across hunks: padRuns copies
+// before padding and renderers never mutate.
+func sliceHunkDocLines(res Result, prime string, doc []byte) []EncodedLine {
 	skip := 0
 	if prime != "" {
-		skip = countLines([]byte(prime))
+		// strings.Count avoids the []byte(prime) copy countLines would
+		// take — the prime is most of the file on every hunk.
+		skip = strings.Count(prime, "\n") + 1
 	}
 	if skip >= len(res.Lines) {
-		return nil, res
+		return nil
 	}
-	// Drop the suffix's trailing entries: callers index doc lines only,
-	// and the trimmed slice keeps that contract visible.
 	docLines := countLines(doc)
 	lines := res.Lines[skip:]
 	if len(lines) > docLines {
 		lines = lines[:docLines]
 	}
-	return lines, res
+	return lines
 }
 
 // paintSpan is one capture's byte range awaiting precedence
