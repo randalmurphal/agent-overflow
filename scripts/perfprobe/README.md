@@ -47,6 +47,13 @@ footprint-over-time curves; use `detached` or a heap snapshot for retention ques
 Only one tracing session can exist on the browser target at a time, so `memdump`,
 `sample`, `churn`, `tiles`, `frames` and `ab` must not run concurrently.
 
+`mutations` counts attribute writes; `attrflap <attr>` says whether they change
+anything. A writer that rewrites the value already there costs a style
+invalidation per write and moves nothing, and a value alternating between two
+answers is usually visible flicker on top of the cost. Neither reads as
+different from real work in the `mutations` census. Both use only
+`Runtime.evaluate`, so they run alongside a `sample` curve.
+
 ## Method
 
 The probes are the instrument, not the investigation. For how to use them (which

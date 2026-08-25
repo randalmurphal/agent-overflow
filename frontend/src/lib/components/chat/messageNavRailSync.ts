@@ -25,7 +25,9 @@
 // transform, arrow visibility) so a 60Hz scroll never touches Svelte
 // reactivity. Writes are diff-only against (element, value) pairs, so
 // unchanged values write nothing while a remounted element is always
-// rewritten.
+// rewritten — EVERY writer in here, with no per-tick sweep beside them:
+// a pass that touches ticks it is not changing is O(thread length) of
+// invalidation for one moved marker.
 
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import {
@@ -88,14 +90,12 @@ export interface NavRailViewportSync {
    * reactive, callers re-read per interaction.
    */
   getClipOffsetPx(): number;
-  /** rAF-coalesced sync; the public scroll-path entry. */
-  schedule(): void;
   /**
-   * Structural pass: the keyed tick list reuses surviving elements, so
-   * the applied current flag is cleared by hand (indices shifted under
-   * it) before the resync recomputes.
+   * rAF-coalesced sync; the public scroll-path entry, and also what a
+   * structural pass calls — the applied claim is element-keyed, so a
+   * rebuilt tick list needs a recompute and nothing else.
    */
-  reset(): void;
+  schedule(): void;
   /** Teardown: drop the pending frame. */
   cancel(): void;
 }
@@ -115,13 +115,22 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
   // Deliberately not reactive: the scroll-cadence writer mutates
   // dataset directly.
   const tickEls: (HTMLElement | null)[] = [];
-  let appliedCurrent: number | null = null;
   // Applied caches keyed on the ELEMENT the value was written to, which
   // is what makes the diff-only writes remount-proof: a rebuilt element
   // (the {#if overflowing} arrows remount born hidden; the marker and
   // strip remount on a rail visibility toggle) arrives with default
   // styles, and a value-equal skip against the OLD element's state
   // would strand it. The element identity mismatch forces the write.
+  //
+  // The lit tick is keyed the same way for a second reason: a structural
+  // pass shifts indices under the claim while the keyed list keeps the
+  // ELEMENT it reused, so an index-keyed cache goes stale on a rebuild
+  // and an element-keyed one does not. Keying on the index is what
+  // forced every rebuild to scrub data-current off EVERY tick before the
+  // resync relit one — O(thread length) attribute writes per pass,
+  // measured 2026-08-25 at 140 writes across 111 ticks in 15s, two of
+  // which changed anything.
+  let currentEl: HTMLElement | null = null;
   let markerEl: HTMLElement | null = null;
   let markerTop = '';
   let stripEl: HTMLElement | null = null;
@@ -139,16 +148,11 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
   let frame: number | undefined;
 
   function applyCurrent(next: number | null): void {
-    if (appliedCurrent === next) return;
-    if (appliedCurrent !== null) {
-      const prev = tickEls[appliedCurrent];
-      if (prev) prev.dataset.current = 'false';
-    }
-    if (next !== null) {
-      const el = tickEls[next];
-      if (el) el.dataset.current = 'true';
-    }
-    appliedCurrent = next;
+    const el = next === null ? null : tickEls[next] ?? null;
+    if (el === currentEl) return;
+    if (currentEl) currentEl.dataset.current = 'false';
+    if (el) el.dataset.current = 'true';
+    currentEl = el;
   }
 
   function syncNow(): void {
@@ -295,6 +299,10 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
         },
         destroy() {
           if (tickEls[index] === el) tickEls[index] = null;
+          // Dropping the claim with the element it was written to is
+          // what keeps a torn-down tick out of this closure (and stops
+          // the next sync writing 'false' to a detached node).
+          if (currentEl === el) currentEl = null;
         },
       };
     },
@@ -302,13 +310,6 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
       return clipPx;
     },
     schedule,
-    reset() {
-      for (const el of tickEls) {
-        if (el) el.dataset.current = 'false';
-      }
-      appliedCurrent = null;
-      schedule();
-    },
     cancel() {
       if (frame !== undefined) {
         cancelAnimationFrame(frame);

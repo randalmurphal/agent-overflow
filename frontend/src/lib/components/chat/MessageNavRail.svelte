@@ -140,8 +140,8 @@
   // The window-bounds read touches pane.items' edge rows, which the
   // streaming apply replaces per flush — deriving the bounds down to
   // PRIMITIVES puts Svelte's equality cutoff between those deltas and
-  // the tick merge, so `merged` (and the O(ticks) structural reset it
-  // drives) only recomputes when the window's span actually moves.
+  // the tick merge, so `merged` (and the O(ticks) merge it drives) only
+  // recomputes when the window's span actually moves.
   // -1 is the "nothing loaded" sentinel; real turn indices are >= 0.
   let windowBounds = $derived(itemWindowBounds(pane.items));
   let windowFirstTurn = $derived(windowBounds?.first.turnIndex ?? -1);
@@ -364,15 +364,15 @@
     sync.schedule();
   }
 
-  // A structural pass replaces the tick list; the applied fill is stale
-  // by construction (the keyed list reuses surviving elements, so it
-  // must be cleared by hand) — reset and resync. untrack because
-  // schedule() reads ctx getters (isEnabled → `visible`): these effects
-  // must re-run on exactly their named dependency, not on whatever a
-  // getter happens to touch.
+  // A structural pass replaces the tick list, which can move the claim
+  // to a different tick with no scroll event behind it — resync. The
+  // sync's applied caches are element-keyed, so nothing has to be
+  // cleared first. untrack because schedule() reads ctx getters
+  // (isEnabled → `visible`): these effects must re-run on exactly their
+  // named dependency, not on whatever a getter happens to touch.
   $effect(() => {
     ticks;
-    untrack(() => sync.reset());
+    untrack(() => sync.schedule());
   });
 
   // A column resize changes the window's clip math without a scroll

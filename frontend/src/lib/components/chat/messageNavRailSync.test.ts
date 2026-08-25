@@ -11,6 +11,7 @@ import type { MergedNavTicks } from './messageNavRail';
 import {
   createNavRailViewportSync,
   type NavRailSyncCtx,
+  type NavRailTickRegistration,
   type NavRailViewportSync,
 } from './messageNavRailSync';
 
@@ -37,6 +38,11 @@ describe('messageNavRailSync single position claim', () => {
   let latestArrow: HTMLElement;
   let availableHeight: number;
   let tickEls: HTMLElement[];
+  let tickRegs: NavRailTickRegistration[];
+  // The fixture sync reads its ticks through this, so a test can rebuild
+  // the list the way a paging pass does. Everything else leaves it at
+  // the three-tick `merged` baseline.
+  let ticksNow: MergedNavTicks;
 
   function ctxFor(
     list: TimelineVirtualizerHandle,
@@ -97,11 +103,13 @@ describe('messageNavRailSync single position claim', () => {
     latestArrow.style.visibility = 'hidden';
     // Large enough that the 3-tick strip (16px) fits: no clip, no arrows.
     availableHeight = 300;
-    sync = createNavRailViewportSync(ctxFor(list, merged));
+    ticksNow = merged;
+    sync = createNavRailViewportSync({ ...ctxFor(list, merged), getTicks: () => ticksNow });
+    tickRegs = [];
     tickEls = merged.ticks.map((_, i) => {
       const el = document.createElement('div');
       el.dataset.current = 'false';
-      sync.registerTick(el, i);
+      tickRegs.push(sync.registerTick(el, i));
       return el;
     });
   });
@@ -322,6 +330,70 @@ describe('messageNavRailSync single position claim', () => {
     expect(currents()).toEqual(['false', 'false', 'false']);
     expect(marker.style.visibility).toBe('');
     expect(marker.style.top).toBe('75%');
+  });
+
+  // The claim is keyed on the ELEMENT, not its index, so a structural
+  // pass is an ordinary resync. These two pin what that buys: a rebuild
+  // must not sweep the ticks it is not changing (the sweep was
+  // O(thread length) attribute writes per pass), and a torn-down tick
+  // must take the claim with it.
+  it('a rebuilt tick list keeps the claim and leaves every other tick alone', () => {
+    // Nodes 4..7: u2 (node 5) is the only tick on screen.
+    scrollOffset = 450;
+    sync.schedule();
+    drainFrames();
+    expect(currents()).toEqual(['false', 'true', 'false']);
+
+    // A value no writer in the module produces: surviving it proves the
+    // resync touched only the tick whose state actually changed.
+    tickEls[0].dataset.current = 'untouched';
+    tickEls[2].dataset.current = 'untouched';
+
+    // Older messages page in: one tick prepended, the other three
+    // reused at shifted indices — u2's claim moves from index 1 to 2
+    // while staying the same element.
+    const prepended: MergedNavTicks = {
+      ticks: [
+        { id: 'u0', turnIndex: 0, itemIndex: 0, nodeIndex: 0 },
+        { id: 'u1', turnIndex: 1, itemIndex: 0, nodeIndex: 3 },
+        { id: 'u2', turnIndex: 2, itemIndex: 0, nodeIndex: 5 },
+        { id: 'u3', turnIndex: 3, itemIndex: 0, nodeIndex: 10 },
+      ],
+      loadedStart: 0,
+      loadedEnd: 3,
+    };
+    ticksNow = prepended;
+    tickRegs[0].update(1);
+    tickRegs[1].update(2);
+    tickRegs[2].update(3);
+    const prependedEl = document.createElement('div');
+    prependedEl.dataset.current = 'false';
+    sync.registerTick(prependedEl, 0);
+
+    sync.schedule();
+    drainFrames();
+    expect(tickEls[1].dataset.current, 'the claim rides its element').toBe('true');
+    expect(tickEls[0].dataset.current).toBe('untouched');
+    expect(tickEls[2].dataset.current).toBe('untouched');
+    expect(prependedEl.dataset.current).toBe('false');
+  });
+
+  it('destroying the lit tick releases the claim instead of stranding it', () => {
+    scrollOffset = 450;
+    sync.schedule();
+    drainFrames();
+    const lit = tickEls[1];
+    expect(lit.dataset.current).toBe('true');
+
+    tickRegs[1].destroy();
+    // Nodes 8..10 at the thread's bottom edge → u3 lights. It must do so
+    // without a stale clear reaching the torn-down element, which is
+    // detached by now: writing to it would be work on a dead node.
+    scrollOffset = 800;
+    sync.schedule();
+    drainFrames();
+    expect(tickEls[2].dataset.current).toBe('true');
+    expect(lit.dataset.current, 'never written after teardown').toBe('true');
   });
 
   it('a strip that fits is actively cleared, not merely left alone', () => {
