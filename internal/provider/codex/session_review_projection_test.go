@@ -9,12 +9,8 @@ import (
 
 func newReviewProjectionSession(events *[]provider.ProviderEvent) *Session {
 	s := &Session{
-		threadID:               "ao-thread",
-		model:                  "parent-model",
-		pending:                make(map[int64]chan json.RawMessage),
-		turnOrigins:            make(map[string]turnOrigin),
-		schemaedTurnIDs:        make(map[string]struct{}),
-		structuredOutputByTurn: make(map[string]json.RawMessage),
+		threadID: "ao-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(event provider.ProviderEvent) {
 			*events = append(*events, event)
 		},
@@ -24,7 +20,17 @@ func newReviewProjectionSession(events *[]provider.ProviderEvent) *Session {
 			model:         "review-model",
 			responseBound: true,
 		},
-		pendingLocalTurnStarts: 1,
+		turn: sessionTurnState{
+			schemaedTurnIDs:        make(map[string]struct{}),
+			structuredOutputByTurn: make(map[string]json.RawMessage),
+		},
+		origins: sessionTurnOrigins{
+			byTurn:                 make(map[string]turnOrigin),
+			pendingLocalTurnStarts: 1,
+		},
+		turnConfig: sessionTurnConfig{
+			model: "parent-model",
+		},
 	}
 	s.setRootThreadID("codex-thread")
 	return s
@@ -83,7 +89,7 @@ func TestReviewProjectionKeepsControlTurnPrivateAndScopesActivity(t *testing.T) 
 		t.Fatal("private review turn was not consumed")
 	}
 	s.mu.Lock()
-	activeTurnID := s.activeTurnID
+	activeTurnID := s.turn.activeTurnID
 	s.mu.Unlock()
 	if activeTurnID != "private-turn" {
 		t.Fatalf("activeTurnID = %q, want private interrupt authority", activeTurnID)
@@ -175,8 +181,8 @@ func TestReviewProjectionFlushesIntermediateProseAndPublishesOneSourcedResult(t 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.review != nil || s.activeTurnID != "" {
-		t.Fatalf("terminal state leaked: review=%+v active=%q", s.review, s.activeTurnID)
+	if s.review != nil || s.turn.activeTurnID != "" {
+		t.Fatalf("terminal state leaked: review=%+v active=%q", s.review, s.turn.activeTurnID)
 	}
 }
 

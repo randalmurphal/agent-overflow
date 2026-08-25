@@ -12,28 +12,36 @@ import (
 func newMultiAgentV2RoutingSession(t *testing.T, onEvent func(provider.ProviderEvent)) *Session {
 	t.Helper()
 	s := &Session{
-		threadID:                  "ao-thread",
-		onEvent:                   onEvent,
-		childParentByThread:       make(map[string]string),
-		childParentByAgentPath:    make(map[string]string),
-		childThreadByAgentPath:    make(map[string]string),
-		childPathOwnerLive:        make(map[string]bool),
-		agentPathByThread:         make(map[string]string),
-		agentMetaByThread:         make(map[string]collabReceiverMeta),
-		subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
-		rawToolCallsByID:          make(map[string]rawToolCall),
-		waitReceiverIDsByCall:     make(map[string][]string),
-		deferredChildWireEvents:   make(map[string][]deferredChildWireEvent),
-		deferredChildDeadlines:    make(map[string]*time.Timer),
-		collabHistoryGeneration:   1,
-		collabHistoryVisited:      make(map[string]uint64),
-		planBuffersByItemID:       make(map[string]*planBuffer),
-		planBuffersByTurnID:       make(map[string]*planBuffer),
+		threadID:            "ao-thread",
+		onEvent:             onEvent,
+		planBuffersByItemID: make(map[string]*planBuffer),
+		planBuffersByTurnID: make(map[string]*planBuffer),
+		collab: sessionCollabState{
+			childParentByThread:       make(map[string]string),
+			childParentByAgentPath:    make(map[string]string),
+			childThreadByAgentPath:    make(map[string]string),
+			childPathOwnerLive:        make(map[string]bool),
+			agentPathByThread:         make(map[string]string),
+			agentMetaByThread:         make(map[string]collabReceiverMeta),
+			subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
+		},
+		childRouting: sessionChildRoutingState{
+			deferredChildWireEvents: make(map[string][]deferredChildWireEvent),
+			deferredChildDeadlines:  make(map[string]*time.Timer),
+		},
+		collabHistory: sessionCollabHistoryState{
+			generation: 1,
+			visited:    make(map[string]uint64),
+		},
+		rawCalls: sessionRawToolCallState{
+			byID:                  make(map[string]rawToolCall),
+			waitReceiverIDsByCall: make(map[string][]string),
+		},
 	}
 	s.setRootThreadID("root-provider-thread")
 	t.Cleanup(func() {
 		s.mu.Lock()
-		for _, timer := range s.deferredChildDeadlines {
+		for _, timer := range s.childRouting.deferredChildDeadlines {
 			timer.Stop()
 		}
 		s.mu.Unlock()
@@ -181,8 +189,8 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.model = "gpt-5.4"
-	s.reasoningEffort = "high"
+	s.turnConfig.model = "gpt-5.4"
+	s.turnConfig.reasoningEffort = "high"
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-a","agentNickname":"Socrates","source":{"subAgent":{"threadSpawn":{"parentThreadId":"root-provider-thread","agentPath":"/root/reviewer"}}}}}}`))
 
 	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
@@ -233,8 +241,8 @@ func TestMultiAgentV2NestedSpawnInheritsSourceAgentProfile(t *testing.T) {
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
 	})
-	s.model = "gpt-root"
-	s.reasoningEffort = "high"
+	s.turnConfig.model = "gpt-root"
+	s.turnConfig.reasoningEffort = "high"
 	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/reviewer", "spawn-a") {
 		t.Fatal("register source child ownership")
 	}
@@ -531,7 +539,7 @@ func TestMultiAgentV2HistoryCannotReplaceLivePathOwner(t *testing.T) {
 	if got := s.providerThreadForAgentPath("/root/review", "spawn-new"); got != "child-new" {
 		t.Fatalf("history replaced live provider thread with %q", got)
 	}
-	if !s.childPathOwnerLive["/root/review"] {
+	if !s.collab.childPathOwnerLive["/root/review"] {
 		t.Fatal("history downgraded live path ownership provenance")
 	}
 }
@@ -596,8 +604,8 @@ func TestMultiAgentV2QuarantineExpiryDropsUnownedNotifications(t *testing.T) {
 		t.Fatal("accepted quarantine did not retain child display metadata")
 	}
 	s.expireDeferredChildWireEvents("unknown-child")
-	if s.deferredChildWireCount != 0 || len(s.deferredChildWireEvents) != 0 {
-		t.Fatalf("expired quarantine retained data: count=%d queues=%d", s.deferredChildWireCount, len(s.deferredChildWireEvents))
+	if s.childRouting.deferredChildWireCount != 0 || len(s.childRouting.deferredChildWireEvents) != 0 {
+		t.Fatalf("expired quarantine retained data: count=%d queues=%d", s.childRouting.deferredChildWireCount, len(s.childRouting.deferredChildWireEvents))
 	}
 	if len(events) != 1 || events[0].Kind != provider.EventNotification {
 		t.Fatalf("expiry warning = %+v", events)

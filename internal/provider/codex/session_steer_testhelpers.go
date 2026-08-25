@@ -11,11 +11,11 @@ import "time"
 // NewProbeOnlyTestSession helper next door.
 //
 // Scoped out of `_test.go` so sibling packages can import it; the
-// codex package's own tests poke `s.activeTurnID` directly because
+// codex package's own tests poke `s.turn.activeTurnID` directly because
 // they live in the same package.
 func SetActiveTurnIDForTest(s *Session, turnID string) {
 	s.mu.Lock()
-	s.activeTurnID = turnID
+	s.turn.activeTurnID = turnID
 	s.mu.Unlock()
 }
 

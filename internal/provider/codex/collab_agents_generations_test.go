@@ -33,11 +33,11 @@ func TestClosingAChildDropsItsTurnGenerationCounter(t *testing.T) {
 	s.deleteParentToolUseForProviderThread("child-1")
 
 	s.mu.Lock()
-	remaining := len(s.childTurnGenerations)
+	remaining := len(s.collab.childTurnGenerations)
 	s.mu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("childTurnGenerations retains %d entries after close_agent: %v",
-			remaining, s.childTurnGenerations)
+			remaining, s.collab.childTurnGenerations)
 	}
 	// Zero is the documented legal answer for a child this session never
 	// watched start, and after the teardown there is no parent card left for
@@ -60,16 +60,16 @@ func TestClosingAChildResolvesTheGenerationKeyBeforeDroppingItsPath(t *testing.T
 	s.advanceChildTurnGeneration("child-1")
 
 	s.mu.Lock()
-	_, keyedByPath := s.childTurnGenerations["/root/reviewer"]
+	_, keyedByPath := s.collab.childTurnGenerations["/root/reviewer"]
 	s.mu.Unlock()
 	if !keyedByPath {
-		t.Fatalf("counter is not keyed on the canonical agent path: %v", s.childTurnGenerations)
+		t.Fatalf("counter is not keyed on the canonical agent path: %v", s.collab.childTurnGenerations)
 	}
 
 	s.deleteParentToolUseForProviderThread("child-1")
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, orphaned := s.childTurnGenerations["/root/reviewer"]; orphaned {
+	if _, orphaned := s.collab.childTurnGenerations["/root/reviewer"]; orphaned {
 		t.Fatal("the path-keyed counter outlived the path mapping that names it")
 	}
 }
@@ -89,7 +89,7 @@ func TestClosingAnUnnamedChildDropsItsTurnGenerationCounter(t *testing.T) {
 	s.deleteParentToolUseForProviderThread("child-1")
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.childTurnGenerations) != 0 {
-		t.Fatalf("childTurnGenerations retains %v for an unnamed child", s.childTurnGenerations)
+	if len(s.collab.childTurnGenerations) != 0 {
+		t.Fatalf("childTurnGenerations retains %v for an unnamed child", s.collab.childTurnGenerations)
 	}
 }

@@ -48,7 +48,7 @@ func (s *Session) rehydrateCollabOwnershipFromThreadResponse(resp json.RawMessag
 	}
 
 	s.mu.Lock()
-	generation := s.collabHistoryGeneration
+	generation := s.collabHistory.generation
 	s.mu.Unlock()
 	mapped := make([]string, 0, len(ownerships))
 	for _, ownership := range ownerships {
@@ -149,10 +149,10 @@ func collabHistoryOwnerships(resp json.RawMessage) ([]collabHistoryOwnership, er
 
 func (s *Session) beginCollabHistoryGeneration() {
 	s.mu.Lock()
-	s.collabHistoryGeneration++
-	s.collabHistoryQueue = nil
-	s.collabHistoryVisited = make(map[string]uint64)
-	s.collabHistoryAttempts = 0
+	s.collabHistory.generation++
+	s.collabHistory.queue = nil
+	s.collabHistory.visited = make(map[string]uint64)
+	s.collabHistory.attempts = 0
 	s.mu.Unlock()
 }
 
@@ -161,26 +161,26 @@ func (s *Session) enqueueCollabHistoryJob(job collabHistoryJob) {
 		return
 	}
 	s.mu.Lock()
-	if job.Generation != s.collabHistoryGeneration {
+	if job.Generation != s.collabHistory.generation {
 		s.mu.Unlock()
 		return
 	}
-	if len(s.collabHistoryQueue) >= maxCollabHistoryThreads {
+	if len(s.collabHistory.queue) >= maxCollabHistoryThreads {
 		s.mu.Unlock()
 		s.warnCollabHistory("Codex collaboration history exceeded the safe traversal limit", nil)
 		return
 	}
-	s.collabHistoryQueue = append(s.collabHistoryQueue, job)
-	if s.collabHistoryRunning {
+	s.collabHistory.queue = append(s.collabHistory.queue, job)
+	if s.collabHistory.running {
 		s.mu.Unlock()
 		return
 	}
-	s.collabHistoryRunning = true
+	s.collabHistory.running = true
 	s.mu.Unlock()
 
 	if !s.startCollabAsync(s.runCollabHistoryQueue) {
 		s.mu.Lock()
-		s.collabHistoryRunning = false
+		s.collabHistory.running = false
 		s.mu.Unlock()
 	}
 }
@@ -188,32 +188,32 @@ func (s *Session) enqueueCollabHistoryJob(job collabHistoryJob) {
 func (s *Session) runCollabHistoryQueue() {
 	for {
 		s.mu.Lock()
-		if len(s.collabHistoryQueue) == 0 {
-			s.collabHistoryRunning = false
+		if len(s.collabHistory.queue) == 0 {
+			s.collabHistory.running = false
 			s.mu.Unlock()
 			return
 		}
-		job := s.collabHistoryQueue[0]
-		s.collabHistoryQueue[0] = collabHistoryJob{}
-		s.collabHistoryQueue = s.collabHistoryQueue[1:]
+		job := s.collabHistory.queue[0]
+		s.collabHistory.queue[0] = collabHistoryJob{}
+		s.collabHistory.queue = s.collabHistory.queue[1:]
 		childThreadID := strings.TrimSpace(job.Ownership.ChildThreadID)
-		if job.Generation != s.collabHistoryGeneration || s.collabHistoryVisited[childThreadID] == job.Generation {
+		if job.Generation != s.collabHistory.generation || s.collabHistory.visited[childThreadID] == job.Generation {
 			s.mu.Unlock()
 			continue
 		}
-		if s.collabHistoryAttempts >= maxCollabHistoryThreads {
+		if s.collabHistory.attempts >= maxCollabHistoryThreads {
 			s.mu.Unlock()
 			s.warnCollabHistory("Codex collaboration history exceeded the safe traversal limit", nil)
 			continue
 		}
-		s.collabHistoryAttempts++
-		s.collabHistoryVisited[childThreadID] = job.Generation
+		s.collabHistory.attempts++
+		s.collabHistory.visited[childThreadID] = job.Generation
 		s.mu.Unlock()
 
 		if err := s.inspectCollabHistoryChild(job); err != nil {
 			s.mu.Lock()
-			if s.collabHistoryVisited[childThreadID] == job.Generation {
-				delete(s.collabHistoryVisited, childThreadID)
+			if s.collabHistory.visited[childThreadID] == job.Generation {
+				delete(s.collabHistory.visited, childThreadID)
 			}
 			s.mu.Unlock()
 			s.warnCollabHistory(fmt.Sprintf("Codex child history %s could not be inspected", childThreadID), err)
@@ -357,7 +357,7 @@ func (s *Session) attachActiveChildWithRetry(providerThreadID string) error {
 func (s *Session) collabHistoryGenerationCurrent(generation uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return generation == s.collabHistoryGeneration && !s.closing.Load()
+	return generation == s.collabHistory.generation && !s.closing.Load()
 }
 
 func (s *Session) startCollabAsync(work func()) bool {
@@ -376,15 +376,15 @@ func (s *Session) startCollabAsync(work func()) bool {
 
 func (s *Session) warnCollabHistory(message string, err error) {
 	s.mu.Lock()
-	generation := s.collabHistoryGeneration
-	if s.collabHistoryWarnedGeneration == generation {
+	generation := s.collabHistory.generation
+	if s.collabHistory.warnedGeneration == generation {
 		s.mu.Unlock()
 		if err != nil {
 			log.Printf("codex: %s: %v", message, err)
 		}
 		return
 	}
-	s.collabHistoryWarnedGeneration = generation
+	s.collabHistory.warnedGeneration = generation
 	s.mu.Unlock()
 
 	if err != nil {

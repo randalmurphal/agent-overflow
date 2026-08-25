@@ -76,7 +76,7 @@ func TestExternalTurnIsAdoptedAndMarked(t *testing.T) {
 
 	// Adopted as active, or Interrupt/Steer would address nothing.
 	s.mu.Lock()
-	active := s.activeTurnID
+	active := s.turn.activeTurnID
 	s.mu.Unlock()
 	if active != "turn-ext-1" {
 		t.Errorf("activeTurnID: got %q, want turn-ext-1", active)
@@ -151,7 +151,7 @@ func TestTurnOriginIsForgottenOnCompletion(t *testing.T) {
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext-1","status":"completed"}}}`))
 
 	s.mu.Lock()
-	tracked := len(s.turnOrigins)
+	tracked := len(s.origins.byTurn)
 	s.mu.Unlock()
 	if tracked != 0 {
 		t.Errorf("turnOrigins after completion: %d entries, want 0", tracked)
@@ -166,7 +166,7 @@ func TestTurnOriginIsForgottenOnCompletion(t *testing.T) {
 		lastVerdict = s.adoptTurnStart(lastTurnID)
 	}
 	s.mu.Lock()
-	tracked = len(s.turnOrigins)
+	tracked = len(s.origins.byTurn)
 	s.mu.Unlock()
 	if tracked > maxTrackedTurnOrigins {
 		t.Errorf("turnOrigins grew to %d, cap is %d", tracked, maxTrackedTurnOrigins)

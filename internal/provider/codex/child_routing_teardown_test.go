@@ -37,7 +37,7 @@ func TestExpireDeferredChildWireEventsRunsWhileOpen(t *testing.T) {
 		t.Fatalf("expected one routing warning, got %d", len(events))
 	}
 	s.mu.Lock()
-	remaining := len(s.deferredChildWireEvents["child-thread"])
+	remaining := len(s.childRouting.deferredChildWireEvents["child-thread"])
 	s.mu.Unlock()
 	if remaining != 0 {
 		t.Fatalf("queue not drained: %d events remain", remaining)
@@ -62,7 +62,7 @@ func TestExpireDeferredChildWireEventsIsInertOnceClosing(t *testing.T) {
 		t.Fatalf("closing session emitted %d events during expiry", len(events))
 	}
 	s.mu.Lock()
-	remaining := len(s.deferredChildWireEvents["child-thread"])
+	remaining := len(s.childRouting.deferredChildWireEvents["child-thread"])
 	s.mu.Unlock()
 	if remaining != 1 {
 		t.Fatalf("closing expiry consumed the queue: %d events remain, want 1", remaining)

@@ -357,7 +357,7 @@ func (s *Session) emitChildTokenUsageProgress(providerThreadID, parentToolUseID 
 // no path.
 func (s *Session) spawnLaunchParentToolUse(providerThreadID string) string {
 	s.mu.Lock()
-	agentPath := s.agentPathByThread[strings.TrimSpace(providerThreadID)]
+	agentPath := s.collab.agentPathByThread[strings.TrimSpace(providerThreadID)]
 	s.mu.Unlock()
 	cut := strings.LastIndex(agentPath, "/")
 	if cut <= 0 {
@@ -398,7 +398,7 @@ func (s *Session) parentToolUseForProviderThread(providerThreadID string) string
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.childParentByThread[providerThreadID]
+	return s.collab.childParentByThread[providerThreadID]
 }
 
 // childTurnGenerationKeyLocked normalises the two names ONE child answers to.
@@ -410,7 +410,7 @@ func (s *Session) childTurnGenerationKeyLocked(id string) string {
 	if id == "" {
 		return ""
 	}
-	if agentPath := s.agentPathByThread[id]; agentPath != "" {
+	if agentPath := s.collab.agentPathByThread[id]; agentPath != "" {
 		return agentPath
 	}
 	return id
@@ -432,10 +432,10 @@ func (s *Session) advanceChildTurnGeneration(providerThreadID string) {
 	if key == "" {
 		return
 	}
-	if s.childTurnGenerations == nil {
-		s.childTurnGenerations = make(map[string]uint64)
+	if s.collab.childTurnGenerations == nil {
+		s.collab.childTurnGenerations = make(map[string]uint64)
 	}
-	s.childTurnGenerations[key]++
+	s.collab.childTurnGenerations[key]++
 }
 
 // childTurnGeneration reports the child turn a delivery belongs to. Zero is a
@@ -447,7 +447,7 @@ func (s *Session) childTurnGeneration(agentPath string) uint64 {
 	if key == "" {
 		return 0
 	}
-	return s.childTurnGenerations[key]
+	return s.collab.childTurnGenerations[key]
 }
 
 func (s *Session) parentToolUseForAgentPath(agentPath string) string {
@@ -456,7 +456,7 @@ func (s *Session) parentToolUseForAgentPath(agentPath string) string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.childParentByAgentPath[agentPath]
+	return s.collab.childParentByAgentPath[agentPath]
 }
 
 func (s *Session) providerThreadForAgentPath(agentPath, parentToolUseID string) string {
@@ -467,8 +467,8 @@ func (s *Session) providerThreadForAgentPath(agentPath, parentToolUseID string) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	providerThreadID := s.childThreadByAgentPath[agentPath]
-	if parentToolUseID == "" || s.childParentByThread[providerThreadID] == parentToolUseID {
+	providerThreadID := s.collab.childThreadByAgentPath[agentPath]
+	if parentToolUseID == "" || s.collab.childParentByThread[providerThreadID] == parentToolUseID {
 		return providerThreadID
 	}
 	return ""
@@ -507,50 +507,50 @@ func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID
 		log.Printf("codex: reject self-referential child ownership source=%q child=%q item=%q", sourceThreadID, childThreadID, parentToolUseID)
 		return false
 	}
-	if s.childParentByThread == nil {
-		s.childParentByThread = make(map[string]string)
+	if s.collab.childParentByThread == nil {
+		s.collab.childParentByThread = make(map[string]string)
 	}
-	if existing := s.childParentByThread[childThreadID]; existing != "" && existing != parentToolUseID {
+	if existing := s.collab.childParentByThread[childThreadID]; existing != "" && existing != parentToolUseID {
 		log.Printf("codex: reject conflicting child thread ownership %q: existing=%s incoming=%s", childThreadID, existing, parentToolUseID)
 		return false
 	}
 	if agentPath != "" {
-		if s.childParentByAgentPath == nil {
-			s.childParentByAgentPath = make(map[string]string)
+		if s.collab.childParentByAgentPath == nil {
+			s.collab.childParentByAgentPath = make(map[string]string)
 		}
-		if s.agentPathByThread == nil {
-			s.agentPathByThread = make(map[string]string)
+		if s.collab.agentPathByThread == nil {
+			s.collab.agentPathByThread = make(map[string]string)
 		}
-		if s.childThreadByAgentPath == nil {
-			s.childThreadByAgentPath = make(map[string]string)
+		if s.collab.childThreadByAgentPath == nil {
+			s.collab.childThreadByAgentPath = make(map[string]string)
 		}
-		if s.childPathOwnerLive == nil {
-			s.childPathOwnerLive = make(map[string]bool)
+		if s.collab.childPathOwnerLive == nil {
+			s.collab.childPathOwnerLive = make(map[string]bool)
 		}
-		if existing := s.agentPathByThread[childThreadID]; existing != "" && existing != agentPath {
+		if existing := s.collab.agentPathByThread[childThreadID]; existing != "" && existing != agentPath {
 			log.Printf("codex: reject conflicting canonical path for child %q: existing=%q incoming=%q", childThreadID, existing, agentPath)
 			return false
 		}
-		if currentThreadID := s.childThreadByAgentPath[agentPath]; currentThreadID != "" && currentThreadID != childThreadID {
-			if s.agentPathByThread[childThreadID] == agentPath {
+		if currentThreadID := s.collab.childThreadByAgentPath[agentPath]; currentThreadID != "" && currentThreadID != childThreadID {
+			if s.collab.agentPathByThread[childThreadID] == agentPath {
 				log.Printf("codex: reject replay from superseded child path ownership %q: current=%s replay=%s", agentPath, currentThreadID, childThreadID)
 				return false
 			}
-			if !fromHistory && s.childPathOwnerLive[agentPath] {
+			if !fromHistory && s.collab.childPathOwnerLive[agentPath] {
 				log.Printf("codex: reject conflicting live child path ownership %q: current=%s incoming=%s", agentPath, currentThreadID, childThreadID)
 				return false
 			}
 		}
 	}
-	s.childParentByThread[childThreadID] = parentToolUseID
+	s.collab.childParentByThread[childThreadID] = parentToolUseID
 	if agentPath != "" {
-		s.agentPathByThread[childThreadID] = agentPath
-		currentThreadID := s.childThreadByAgentPath[agentPath]
-		preserveLiveOwner := fromHistory && currentThreadID != "" && s.childPathOwnerLive[agentPath]
+		s.collab.agentPathByThread[childThreadID] = agentPath
+		currentThreadID := s.collab.childThreadByAgentPath[agentPath]
+		preserveLiveOwner := fromHistory && currentThreadID != "" && s.collab.childPathOwnerLive[agentPath]
 		if !preserveLiveOwner {
-			s.childParentByAgentPath[agentPath] = parentToolUseID
-			s.childThreadByAgentPath[agentPath] = childThreadID
-			s.childPathOwnerLive[agentPath] = !fromHistory
+			s.collab.childParentByAgentPath[agentPath] = parentToolUseID
+			s.collab.childThreadByAgentPath[agentPath] = childThreadID
+			s.collab.childPathOwnerLive[agentPath] = !fromHistory
 		}
 	}
 	return true
@@ -577,7 +577,7 @@ func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activ
 func (s *Session) activeCollabModel() (string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.model, s.reasoningEffort
+	return s.turnConfig.model, s.turnConfig.reasoningEffort
 }
 
 func (s *Session) collabProfileForThread(providerThreadID string) (string, string) {
@@ -585,11 +585,11 @@ func (s *Session) collabProfileForThread(providerThreadID string) (string, strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if providerThreadID != "" && providerThreadID != s.rootThreadID() {
-		if meta := s.agentMetaByThread[providerThreadID]; meta.Model != "" || meta.ReasoningEffort != "" {
+		if meta := s.collab.agentMetaByThread[providerThreadID]; meta.Model != "" || meta.ReasoningEffort != "" {
 			return meta.Model, meta.ReasoningEffort
 		}
 	}
-	return s.model, s.reasoningEffort
+	return s.turnConfig.model, s.turnConfig.reasoningEffort
 }
 
 func (s *Session) rememberCollabProfile(providerThreadID, model, reasoningEffort string) {
@@ -599,14 +599,14 @@ func (s *Session) rememberCollabProfile(providerThreadID, model, reasoningEffort
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.agentMetaByThread == nil {
-		s.agentMetaByThread = make(map[string]collabReceiverMeta)
+	if s.collab.agentMetaByThread == nil {
+		s.collab.agentMetaByThread = make(map[string]collabReceiverMeta)
 	}
-	meta := s.agentMetaByThread[providerThreadID]
+	meta := s.collab.agentMetaByThread[providerThreadID]
 	meta.ThreadID = providerThreadID
 	meta.Model = strings.TrimSpace(model)
 	meta.ReasoningEffort = strings.TrimSpace(reasoningEffort)
-	s.agentMetaByThread[providerThreadID] = meta
+	s.collab.agentMetaByThread[providerThreadID] = meta
 }
 
 func (s *Session) observeSubAgentActivityOwnership(method string, params json.RawMessage) []string {
@@ -648,23 +648,23 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 	// one, the thread id otherwise), and deleting the mapping first would leave
 	// the entry unreachable and permanent.
 	generationKey := s.childTurnGenerationKeyLocked(providerThreadID)
-	if agentPath := s.agentPathByThread[providerThreadID]; agentPath != "" {
-		if s.childThreadByAgentPath[agentPath] == providerThreadID {
-			delete(s.childParentByAgentPath, agentPath)
-			delete(s.childThreadByAgentPath, agentPath)
-			delete(s.childPathOwnerLive, agentPath)
+	if agentPath := s.collab.agentPathByThread[providerThreadID]; agentPath != "" {
+		if s.collab.childThreadByAgentPath[agentPath] == providerThreadID {
+			delete(s.collab.childParentByAgentPath, agentPath)
+			delete(s.collab.childThreadByAgentPath, agentPath)
+			delete(s.collab.childPathOwnerLive, agentPath)
 		}
-		delete(s.agentPathByThread, providerThreadID)
+		delete(s.collab.agentPathByThread, providerThreadID)
 	}
-	delete(s.childParentByThread, providerThreadID)
-	delete(s.agentMetaByThread, providerThreadID)
+	delete(s.collab.childParentByThread, providerThreadID)
+	delete(s.collab.agentMetaByThread, providerThreadID)
 	// The generation counter goes with the ownership it counted. Zero — what a
 	// later delivery for this child would now read — is already the documented
 	// legal answer for a child this session never watched start, and after the
 	// teardown above there is no parent card left for such a delivery to reach
 	// anyway.
 	if generationKey != "" {
-		delete(s.childTurnGenerations, generationKey)
+		delete(s.collab.childTurnGenerations, generationKey)
 	}
 	s.mu.Unlock()
 }
@@ -770,8 +770,8 @@ func (s *Session) deleteUnownedAgentMeta(providerThreadID string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.childParentByThread[providerThreadID] == "" {
-		delete(s.agentMetaByThread, providerThreadID)
+	if s.collab.childParentByThread[providerThreadID] == "" {
+		delete(s.collab.agentMetaByThread, providerThreadID)
 	}
 }
 
@@ -956,15 +956,15 @@ func (s *Session) preserveWaitAgentReceiverTargets(evt *provider.ProviderEvent) 
 			return
 		}
 		s.mu.Lock()
-		if s.waitReceiverIDsByCall == nil {
-			s.waitReceiverIDsByCall = make(map[string][]string)
+		if s.rawCalls.waitReceiverIDsByCall == nil {
+			s.rawCalls.waitReceiverIDsByCall = make(map[string][]string)
 		}
-		s.waitReceiverIDsByCall[itemID] = append([]string(nil), receiverThreadIDs...)
+		s.rawCalls.waitReceiverIDsByCall[itemID] = append([]string(nil), receiverThreadIDs...)
 		s.mu.Unlock()
 	case provider.EventToolComplete:
 		s.mu.Lock()
-		receiverThreadIDs := append([]string(nil), s.waitReceiverIDsByCall[itemID]...)
-		delete(s.waitReceiverIDsByCall, itemID)
+		receiverThreadIDs := append([]string(nil), s.rawCalls.waitReceiverIDsByCall[itemID]...)
+		delete(s.rawCalls.waitReceiverIDsByCall, itemID)
 		s.mu.Unlock()
 		if len(receiverThreadIDs) == 0 {
 			return
@@ -1049,7 +1049,7 @@ func setRawStringArray(input map[string]json.RawMessage, key string, values []st
 func (s *Session) collabReceiverMetadataForThreads(receiverThreadIDs []string) []collabReceiverMeta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.agentMetaByThread) == 0 {
+	if len(s.collab.agentMetaByThread) == 0 {
 		return nil
 	}
 	agents := make([]collabReceiverMeta, 0, len(receiverThreadIDs))
@@ -1059,7 +1059,7 @@ func (s *Session) collabReceiverMetadataForThreads(receiverThreadIDs []string) [
 		if threadID == "" {
 			continue
 		}
-		meta := s.agentMetaByThread[threadID]
+		meta := s.collab.agentMetaByThread[threadID]
 		if meta.ThreadID == "" {
 			meta.ThreadID = threadID
 		}
@@ -1194,10 +1194,10 @@ func (s *Session) rememberCollabReceiverMeta(meta collabReceiverMeta) {
 		return
 	}
 	s.mu.Lock()
-	if s.agentMetaByThread == nil {
-		s.agentMetaByThread = make(map[string]collabReceiverMeta)
+	if s.collab.agentMetaByThread == nil {
+		s.collab.agentMetaByThread = make(map[string]collabReceiverMeta)
 	}
-	existing := s.agentMetaByThread[meta.ThreadID]
+	existing := s.collab.agentMetaByThread[meta.ThreadID]
 	existing.ThreadID = meta.ThreadID
 	if meta.AgentNickname != "" {
 		existing.AgentNickname = meta.AgentNickname
@@ -1211,6 +1211,6 @@ func (s *Session) rememberCollabReceiverMeta(meta collabReceiverMeta) {
 	if meta.ReasoningEffort != "" {
 		existing.ReasoningEffort = meta.ReasoningEffort
 	}
-	s.agentMetaByThread[meta.ThreadID] = existing
+	s.collab.agentMetaByThread[meta.ThreadID] = existing
 	s.mu.Unlock()
 }

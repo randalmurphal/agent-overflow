@@ -15,11 +15,13 @@ func TestRolloutSubagentNotificationLineEmitsEvent(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "parent-thread",
-		childParentByThread: map[string]string{
-			"child-done": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{
+				"child-done": "call-collab-1",
+			},
 		},
 	}
 
@@ -86,11 +88,13 @@ func TestRolloutAndRawSubagentNotificationDedupes(t *testing.T) {
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{
-			"child-done": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{
+				"child-done": "call-collab-1",
+			},
 		},
 	}
 	s.setRootThreadID("parent-provider-thread")

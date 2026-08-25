@@ -349,11 +349,13 @@ func newMCPTestSession(t *testing.T, onEvent func(provider.ProviderEvent)) *Sess
 		}
 	}
 	return &Session{
-		threadID:               "thread-1",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    map[string]string{},
-		childParentByAgentPath: map[string]string{},
-		agentPathByThread:      map[string]string{},
-		onEvent:                onEvent,
+		threadID: "thread-1",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  onEvent,
+		collab: sessionCollabState{
+			childParentByThread:    map[string]string{},
+			childParentByAgentPath: map[string]string{},
+			agentPathByThread:      map[string]string{},
+		},
 	}
 }

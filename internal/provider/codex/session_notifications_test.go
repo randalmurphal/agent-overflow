@@ -10,11 +10,13 @@ import (
 func TestDispatchLineChildNotificationSetsParentToolUseID(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 
@@ -34,11 +36,13 @@ func TestDispatchLineChildNotificationSetsParentToolUseID(t *testing.T) {
 func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 
@@ -73,12 +77,14 @@ func TestDispatchLineSuppressesChildTurnLifecycle(t *testing.T) {
 func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		usageAcct:           newUsageAccounting(false),
+		threadID:  "parent-thread",
+		pending:   make(map[int64]chan json.RawMessage),
+		usageAcct: newUsageAccounting(false),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 
@@ -135,12 +141,14 @@ func TestDispatchLineChildTokenUsageBecomesScopedProgress(t *testing.T) {
 func TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		usageAcct:           newUsageAccounting(false),
+		threadID:  "parent-thread",
+		pending:   make(map[int64]chan json.RawMessage),
+		usageAcct: newUsageAccounting(false),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 
@@ -161,23 +169,25 @@ func TestDispatchLineChildTokenUsageWithoutTotalEmitsNothing(t *testing.T) {
 func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID: "parent-thread",
-		pending:  make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{
-			"child-1":      "spawn-reviewer",
-			"grandchild-1": "spawn-deep",
-		},
-		agentPathByThread: map[string]string{
-			"child-1":      "/root/reviewer",
-			"grandchild-1": "/root/reviewer/deep",
-		},
-		childParentByAgentPath: map[string]string{
-			"/root/reviewer":      "spawn-reviewer",
-			"/root/reviewer/deep": "spawn-deep",
-		},
+		threadID:  "parent-thread",
+		pending:   make(map[int64]chan json.RawMessage),
 		usageAcct: newUsageAccounting(false),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{
+				"child-1":      "spawn-reviewer",
+				"grandchild-1": "spawn-deep",
+			},
+			agentPathByThread: map[string]string{
+				"child-1":      "/root/reviewer",
+				"grandchild-1": "/root/reviewer/deep",
+			},
+			childParentByAgentPath: map[string]string{
+				"/root/reviewer":      "spawn-reviewer",
+				"/root/reviewer/deep": "spawn-deep",
+			},
 		},
 	}
 
@@ -197,12 +207,14 @@ func TestDispatchLineNestedChildTokenUsageCarriesTheSpawnsOwnParent(t *testing.T
 func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
-		usageAcct:           newUsageAccounting(false),
+		threadID:  "parent-thread",
+		pending:   make(map[int64]chan json.RawMessage),
+		usageAcct: newUsageAccounting(false),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 	s.setRootThreadID("provider-parent")
@@ -222,11 +234,13 @@ func TestDispatchLineParentTokenUsageStillMetersTheParent(t *testing.T) {
 func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 
@@ -244,11 +258,13 @@ func TestDispatchLineSuppressesChildCompacted(t *testing.T) {
 func TestDispatchLineSuppressesChildContextCompactionItem(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 
@@ -262,11 +278,13 @@ func TestDispatchLineSuppressesChildContextCompactionItem(t *testing.T) {
 func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 	s.setRootThreadID("provider-parent")
@@ -292,11 +310,13 @@ func TestDispatchLineEmitsParentContextCompactionItem(t *testing.T) {
 func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 
@@ -312,11 +332,13 @@ func TestDispatchLineSuppressesChildNameUpdated(t *testing.T) {
 func TestDispatchLineParentTokenUsageStillEmits(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 

@@ -119,8 +119,8 @@ func (s *Session) reconcileThreadSettings(params json.RawMessage) {
 		return
 	}
 	s.mu.Lock()
-	s.observedSettings = settings
-	s.observedSettingsKnown = true
+	s.settings.observed = settings
+	s.settings.observedKnown = true
 	// Consume any expectation a `thread/settings/update` push left behind.
 	// The message is built under the lock and emitted outside it — emitEvent
 	// takes eventMu and runs arbitrary app-layer code.
@@ -140,5 +140,5 @@ func (s *Session) reconcileThreadSettings(params json.RawMessage) {
 func (s *Session) ObservedThreadSettings() (ThreadSettings, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.observedSettings, s.observedSettingsKnown
+	return s.settings.observed, s.settings.observedKnown
 }

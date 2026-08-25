@@ -389,7 +389,7 @@ func (s *Session) startReview(
 // idle rather than racing a live turn.
 func (s *Session) CompactThread(ctx context.Context) error {
 	s.mu.Lock()
-	busy := s.activeTurnID != "" || s.review != nil
+	busy := s.turn.activeTurnID != "" || s.review != nil
 	s.mu.Unlock()
 	if busy {
 		return fmt.Errorf("codex: %s: thread already has an active turn", threadCompactStartMethod)

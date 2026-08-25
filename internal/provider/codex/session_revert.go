@@ -309,7 +309,7 @@ func (s *Session) Revert(ctx context.Context, beforeTurnID string) (RevertedThre
 		)
 	}
 	s.mu.Lock()
-	activeTurnID := s.activeTurnID
+	activeTurnID := s.turn.activeTurnID
 	s.mu.Unlock()
 	if activeTurnID != "" {
 		return RevertedThread{}, fmt.Errorf(

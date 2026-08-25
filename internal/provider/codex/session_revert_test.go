@@ -278,7 +278,7 @@ func TestSessionRevertRefusesMidTurn(t *testing.T) {
 
 	s := newRevertSession(t, binary)
 	s.mu.Lock()
-	s.activeTurnID = "turn-live"
+	s.turn.activeTurnID = "turn-live"
 	s.mu.Unlock()
 
 	_, err := s.Revert(context.Background(), "turn-c")

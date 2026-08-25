@@ -74,27 +74,27 @@ func PlanLiveUpdate(prev, next provider.SessionOptions) (LiveUpdate, bool) {
 func (s *Session) ApplyLiveUpdate(update LiveUpdate) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.model = update.Model
-	s.reasoningEffort = update.ReasoningEffort
-	s.serviceTier = update.ServiceTier
-	s.approvalPolicy = update.ApprovalPolicy
-	s.sandbox = update.Sandbox
-	s.approvalsReviewer = update.ApprovalsReviewer
+	s.turnConfig.model = update.Model
+	s.turnConfig.reasoningEffort = update.ReasoningEffort
+	s.turnConfig.serviceTier = update.ServiceTier
+	s.turnConfig.approvalPolicy = update.ApprovalPolicy
+	s.turnConfig.sandbox = update.Sandbox
+	s.turnConfig.approvalsReviewer = update.ApprovalsReviewer
 }
 
-// turnConfig snapshots the mutable turn-scoped config under the session
+// snapshotTurnConfig snapshots the mutable turn-scoped config under the session
 // mutex so Send composes one consistent view even if ApplyLiveUpdate lands
 // concurrently.
-func (s *Session) turnConfig() LiveUpdate {
+func (s *Session) snapshotTurnConfig() LiveUpdate {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return LiveUpdate{
-		Model:             s.model,
-		ReasoningEffort:   s.reasoningEffort,
-		ServiceTier:       s.serviceTier,
-		ApprovalPolicy:    s.approvalPolicy,
-		Sandbox:           s.sandbox,
-		ApprovalsReviewer: s.approvalsReviewer,
+		Model:             s.turnConfig.model,
+		ReasoningEffort:   s.turnConfig.reasoningEffort,
+		ServiceTier:       s.turnConfig.serviceTier,
+		ApprovalPolicy:    s.turnConfig.approvalPolicy,
+		Sandbox:           s.turnConfig.sandbox,
+		ApprovalsReviewer: s.turnConfig.approvalsReviewer,
 	}
 }
 
@@ -107,8 +107,8 @@ func (s *Session) turnConfig() LiveUpdate {
 func (s *Session) currentModel() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.observedSettingsKnown && s.observedSettings.Model != "" {
-		return s.observedSettings.Model
+	if s.settings.observedKnown && s.settings.observed.Model != "" {
+		return s.settings.observed.Model
 	}
-	return s.model
+	return s.turnConfig.model
 }

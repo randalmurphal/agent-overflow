@@ -210,7 +210,12 @@ func TestUsageAccounting_BackwardsCumulativeRebaselines(t *testing.T) {
 // TestAttachTurnUsage_StampsAggregateAndModel — the session hook writes
 // both the aggregate and the single-model attribution onto the wire meta.
 func TestAttachTurnUsage_StampsAggregateAndModel(t *testing.T) {
-	s := &Session{model: "gpt-5.2-codex", usageAcct: newUsageAccounting(false)}
+	s := &Session{
+		usageAcct: newUsageAccounting(false),
+		turnConfig: sessionTurnConfig{
+			model: "gpt-5.2-codex",
+		},
+	}
 	s.usageAcct.onTurnStart()
 	s.usageAcct.observe(tokenUsageParams(wireTotals{total: 5000, input: 4000, cached: 3000, output: 1000, reasoning: 200}, 258400))
 

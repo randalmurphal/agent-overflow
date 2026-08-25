@@ -16,11 +16,13 @@ import (
 func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-done": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-done": "call-collab-1"},
 		},
 	}
 
@@ -36,12 +38,14 @@ func TestDispatchLineCollabSpawnRemembersReceiverThread(t *testing.T) {
 
 func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
 	s := &Session{
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		onEvent:                func(provider.ProviderEvent) {},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		collab: sessionCollabState{
+			childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+		},
 	}
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"child-provider-1","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"provider-parent","depth":1,"agent_path":"/root/researcher"}}}}}}`))
@@ -54,14 +58,16 @@ func TestDispatchLineThreadStartedRemembersAgentPath(t *testing.T) {
 func TestDispatchLineWaitAgentEnrichesReceiverMetadata(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread:    map[string]string{"child-provider-1": "call-collab-1"},
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+			agentMetaByThread:      make(map[string]collabReceiverMeta),
 		},
 	}
 
@@ -97,15 +103,19 @@ func TestDispatchLineWaitAgentEnrichesReceiverMetadata(t *testing.T) {
 func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
-		rawToolCallsByID:       make(map[string]rawToolCall),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread:    make(map[string]string),
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+			agentMetaByThread:      make(map[string]collabReceiverMeta),
+		},
+		rawCalls: sessionRawToolCallState{
+			byID: make(map[string]rawToolCall),
 		},
 	}
 
@@ -149,15 +159,19 @@ func TestDispatchLineRawSpawnOutputMapsAgentIDForSubagentNotification(t *testing
 func TestDispatchLineRawSpawnOutputMapsAgentIDForRawUserSubagentNotification(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
-		rawToolCallsByID:       make(map[string]rawToolCall),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread:    make(map[string]string),
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+			agentMetaByThread:      make(map[string]collabReceiverMeta),
+		},
+		rawCalls: sessionRawToolCallState{
+			byID: make(map[string]rawToolCall),
 		},
 	}
 	s.setRootThreadID("parent-provider-thread")
@@ -219,18 +233,20 @@ func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
 
 	events := make(chan provider.ProviderEvent, 10)
 	s := &Session{
-		proc:                   proc,
-		ctx:                    ctx,
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
+		proc:     proc,
+		ctx:      ctx,
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events <- evt
 		},
 		cancel: cancel,
+		collab: sessionCollabState{
+			childParentByThread:    make(map[string]string),
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+			agentMetaByThread:      make(map[string]collabReceiverMeta),
+		},
 	}
 
 	done := make(chan struct{})
@@ -253,7 +269,7 @@ func TestReadChildThreadMetadataEmitsSpawnMetaUpdate(t *testing.T) {
 		t.Fatal("readChildThreadMetadata did not return")
 	}
 
-	gotMeta := s.agentMetaByThread["child-provider-1"]
+	gotMeta := s.collab.agentMetaByThread["child-provider-1"]
 	if gotMeta.ThreadID != "child-provider-1" || gotMeta.AgentNickname != "Newton" || gotMeta.AgentRole != "default" {
 		t.Fatalf("agent metadata = %+v, want child-provider-1/Newton/default", gotMeta)
 	}
@@ -320,19 +336,21 @@ func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
 
 	events := make(chan provider.ProviderEvent, 10)
 	s := &Session{
-		proc:                   proc,
-		ctx:                    ctx,
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
-		collabMetadataReads:    make(chan struct{}, 1),
+		proc:                proc,
+		ctx:                 ctx,
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		collabMetadataReads: make(chan struct{}, 1),
 		onEvent: func(evt provider.ProviderEvent) {
 			events <- evt
 		},
 		cancel: cancel,
+		collab: sessionCollabState{
+			childParentByThread:    make(map[string]string),
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+			agentMetaByThread:      make(map[string]collabReceiverMeta),
+		},
 	}
 	go s.readLoop()
 	t.Cleanup(func() {
@@ -354,7 +372,7 @@ func TestReadChildThreadMetadataRetriesUntilLabelsArrive(t *testing.T) {
 		t.Fatal("readChildThreadMetadata did not return")
 	}
 
-	gotMeta := s.agentMetaByThread["child-provider-1"]
+	gotMeta := s.collab.agentMetaByThread["child-provider-1"]
 	if gotMeta.ThreadID != "child-provider-1" || gotMeta.AgentNickname != "Curie" || gotMeta.AgentRole != "default" {
 		t.Fatalf("agent metadata = %+v, want child-provider-1/Curie/default", gotMeta)
 	}
@@ -385,17 +403,19 @@ func TestReadChildThreadMetadataRequestsNoTurns(t *testing.T) {
 		t.Fatalf("spawn capture sh: %v", err)
 	}
 	s := &Session{
-		proc:                   proc,
-		ctx:                    ctx,
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
-		collabMetadataReads:    make(chan struct{}, 1),
-		onEvent:                func(provider.ProviderEvent) {},
-		cancel:                 cancel,
+		proc:                proc,
+		ctx:                 ctx,
+		threadID:            "parent-thread",
+		pending:             make(map[int64]chan json.RawMessage),
+		collabMetadataReads: make(chan struct{}, 1),
+		onEvent:             func(provider.ProviderEvent) {},
+		cancel:              cancel,
+		collab: sessionCollabState{
+			childParentByThread:    make(map[string]string),
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+			agentMetaByThread:      make(map[string]collabReceiverMeta),
+		},
 	}
 	go s.readLoop()
 	t.Cleanup(func() {
@@ -448,13 +468,15 @@ func TestDispatchLineTypedWaitCompletionPreservesStartedReceiverTargetsSeparatel
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		agentMetaByThread: map[string]collabReceiverMeta{
-			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
-			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
-			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			agentMetaByThread: map[string]collabReceiverMeta{
+				"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+				"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+				"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+			},
 		},
 	}
 
@@ -514,11 +536,13 @@ func TestDispatchLineTypedWaitCompletionPreservesStartedReceiverTargetsSeparatel
 func TestDispatchLineCloseAgentKeepsOwnItemID(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-provider-1": "call-collab-1"},
 		},
 	}
 

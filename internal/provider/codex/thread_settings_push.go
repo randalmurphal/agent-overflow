@@ -120,11 +120,11 @@ type serviceTierWrite struct {
 func (s *Session) planServiceTierWrite() serviceTierWrite {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.serviceTier != "" {
-		return serviceTierWrite{include: true, value: s.serviceTier, asserting: s.serviceTier}
+	if s.turnConfig.serviceTier != "" {
+		return serviceTierWrite{include: true, value: s.turnConfig.serviceTier, asserting: s.turnConfig.serviceTier}
 	}
-	if s.assertedServiceTier != "" {
-		return serviceTierWrite{include: true, value: nil, clearing: s.assertedServiceTier}
+	if s.turnConfig.assertedServiceTier != "" {
+		return serviceTierWrite{include: true, value: nil, clearing: s.turnConfig.assertedServiceTier}
 	}
 	return serviceTierWrite{}
 }
@@ -135,7 +135,7 @@ func (s *Session) commitServiceTierWrite(write serviceTierWrite) {
 		return
 	}
 	s.mu.Lock()
-	s.assertedServiceTier = write.asserting
+	s.turnConfig.assertedServiceTier = write.asserting
 	s.mu.Unlock()
 }
 
@@ -180,12 +180,12 @@ func (s *Session) PushThreadSettings(ctx context.Context, push ThreadSettingsPus
 	}
 
 	s.mu.Lock()
-	if s.settingsUpdateUnsupported {
+	if s.settings.updateUnsupported {
 		s.mu.Unlock()
 		return nil
 	}
-	model := s.model
-	effort := s.reasoningEffort
+	model := s.turnConfig.model
+	effort := s.turnConfig.reasoningEffort
 	s.mu.Unlock()
 
 	params := map[string]any{"threadId": threadID}
@@ -221,7 +221,7 @@ func (s *Session) PushThreadSettings(ctx context.Context, push ThreadSettingsPus
 	// first cannot produce a false alarm because the failure paths below
 	// disarm it.
 	s.mu.Lock()
-	s.pendingSettingsEcho = &expectation
+	s.settings.pendingEcho = &expectation
 	s.mu.Unlock()
 
 	if _, err := s.sendRequest(ctx, threadSettingsUpdateMethod, params); err != nil {
@@ -243,8 +243,8 @@ func (s *Session) PushThreadSettings(ctx context.Context, push ThreadSettingsPus
 // live one and must survive.
 func (s *Session) disarmSettingsEcho(expectation *settingsEchoExpectation) {
 	s.mu.Lock()
-	if s.pendingSettingsEcho == expectation {
-		s.pendingSettingsEcho = nil
+	if s.settings.pendingEcho == expectation {
+		s.settings.pendingEcho = nil
 	}
 	s.mu.Unlock()
 }
@@ -255,8 +255,8 @@ func (s *Session) disarmSettingsEcho(expectation *settingsEchoExpectation) {
 // downgrade re-learns the answer from scratch.
 func (s *Session) noteThreadSettingsUpdateUnsupported() {
 	s.mu.Lock()
-	already := s.settingsUpdateUnsupported
-	s.settingsUpdateUnsupported = true
+	already := s.settings.updateUnsupported
+	s.settings.updateUnsupported = true
 	s.mu.Unlock()
 	if already {
 		return
@@ -288,11 +288,11 @@ func (s *Session) noteThreadSettingsUpdateUnsupported() {
 // still running the tier we asked it to drop" is the only failure the clear
 // can have, and it is what this compares.
 func (s *Session) verifyThreadSettingsEcho(settings ThreadSettings) string {
-	expectation := s.pendingSettingsEcho
+	expectation := s.settings.pendingEcho
 	if expectation == nil {
 		return ""
 	}
-	s.pendingSettingsEcho = nil
+	s.settings.pendingEcho = nil
 	if time.Now().After(expectation.expires) {
 		return ""
 	}

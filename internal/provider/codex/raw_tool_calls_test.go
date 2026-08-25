@@ -12,15 +12,19 @@ import (
 func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: make(map[string]string),
-		agentPathByThread:      make(map[string]string),
-		agentMetaByThread:      make(map[string]collabReceiverMeta),
-		rawToolCallsByID:       make(map[string]rawToolCall),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread:    make(map[string]string),
+			childParentByAgentPath: make(map[string]string),
+			agentPathByThread:      make(map[string]string),
+			agentMetaByThread:      make(map[string]collabReceiverMeta),
+		},
+		rawCalls: sessionRawToolCallState{
+			byID: make(map[string]rawToolCall),
 		},
 	}
 
@@ -63,16 +67,20 @@ func TestDispatchLineRawSpawnOutputLabelsLaterWaitAgent(t *testing.T) {
 func TestDispatchLineRawWaitCallPreservesRequestedReceiversOnTimeoutCompletion(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:         "parent-thread",
-		pending:          make(map[int64]chan json.RawMessage),
-		rawToolCallsByID: make(map[string]rawToolCall),
-		agentMetaByThread: map[string]collabReceiverMeta{
-			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
-			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
-			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
-		},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			agentMetaByThread: map[string]collabReceiverMeta{
+				"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+				"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+				"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+			},
+		},
+		rawCalls: sessionRawToolCallState{
+			byID: make(map[string]rawToolCall),
 		},
 	}
 
@@ -115,16 +123,20 @@ func TestDispatchLineRawWaitCallPreservesRequestedReceiversOnTimeoutCompletion(t
 func TestDispatchLineRawWaitCallPreservesAllReceiversSeparatelyOnPartialCompletion(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:         "parent-thread",
-		pending:          make(map[int64]chan json.RawMessage),
-		rawToolCallsByID: make(map[string]rawToolCall),
-		agentMetaByThread: map[string]collabReceiverMeta{
-			"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
-			"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
-			"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
-		},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			agentMetaByThread: map[string]collabReceiverMeta{
+				"child-provider-1": {ThreadID: "child-provider-1", AgentNickname: "Hypatia", AgentRole: "default"},
+				"child-provider-2": {ThreadID: "child-provider-2", AgentNickname: "Parfit", AgentRole: "default"},
+				"child-provider-3": {ThreadID: "child-provider-3", AgentNickname: "Ada", AgentRole: "default"},
+			},
+		},
+		rawCalls: sessionRawToolCallState{
+			byID: make(map[string]rawToolCall),
 		},
 	}
 
@@ -188,44 +200,48 @@ func TestRawWriteStdinWaitResultIgnoresSpoofedCommandOutput(t *testing.T) {
 
 func TestDispatchLineRawToolCallsAreBoundedAndCleared(t *testing.T) {
 	s := &Session{
-		threadID:         "parent-thread",
-		pending:          make(map[int64]chan json.RawMessage),
-		rawToolCallsByID: make(map[string]rawToolCall),
-		onEvent:          func(provider.ProviderEvent) {},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		rawCalls: sessionRawToolCallState{
+			byID: make(map[string]rawToolCall),
+		},
 	}
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"unrelated","call_id":"ignored-1","arguments":"{}"}}}`))
-	if len(s.rawToolCallsByID) != 0 {
-		t.Fatalf("unrelated raw call retained: %+v", s.rawToolCallsByID)
+	if len(s.rawCalls.byID) != 0 {
+		t.Fatalf("unrelated raw call retained: %+v", s.rawCalls.byID)
 	}
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"write_stdin","call_id":"wait-1","arguments":"{\"session_id\":\"pid-42\",\"chars\":\"\"}"}}}`))
-	if len(s.rawToolCallsByID) != 1 {
-		t.Fatalf("write_stdin raw call count = %d, want 1", len(s.rawToolCallsByID))
+	if len(s.rawCalls.byID) != 1 {
+		t.Fatalf("write_stdin raw call count = %d, want 1", len(s.rawCalls.byID))
 	}
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call_output","call_id":"wait-1","output":"Process running with session ID pid-42\nOutput:\n"}}}`))
-	if len(s.rawToolCallsByID) != 0 {
-		t.Fatalf("raw call not cleared after output: %+v", s.rawToolCallsByID)
+	if len(s.rawCalls.byID) != 0 {
+		t.Fatalf("raw call not cleared after output: %+v", s.rawCalls.byID)
 	}
 
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"rawResponseItem/completed","params":{"threadId":"parent-thread","turnId":"turn-1","item":{"type":"function_call","name":"wait_agent","call_id":"wait-agent-1","arguments":"{\"targets\":[\"child-provider-1\"]}"}}}`))
-	if len(s.rawToolCallsByID) != 1 {
-		t.Fatalf("wait_agent raw call count = %d, want 1", len(s.rawToolCallsByID))
+	if len(s.rawCalls.byID) != 1 {
+		t.Fatalf("wait_agent raw call count = %d, want 1", len(s.rawCalls.byID))
 	}
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"parent-thread","turn":{"id":"turn-1","status":"completed"}}}`))
-	if len(s.rawToolCallsByID) != 0 {
-		t.Fatalf("raw calls not cleared on turn complete: %+v", s.rawToolCallsByID)
+	if len(s.rawCalls.byID) != 0 {
+		t.Fatalf("raw calls not cleared on turn complete: %+v", s.rawCalls.byID)
 	}
 }
 
 func TestDispatchLineRawExecCommandOutputEmitsModelResult(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:         "parent-thread",
-		pending:          make(map[int64]chan json.RawMessage),
-		rawToolCallsByID: make(map[string]rawToolCall),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		rawCalls: sessionRawToolCallState{
+			byID: make(map[string]rawToolCall),
 		},
 	}
 
@@ -255,8 +271,8 @@ func TestDispatchLineRawExecCommandOutputEmitsModelResult(t *testing.T) {
 	if meta["command"] != "sleep 10" {
 		t.Fatalf("meta.command = %v, want sleep 10", meta["command"])
 	}
-	if len(s.rawToolCallsByID) != 0 {
-		t.Fatalf("raw exec call not cleared after output: %+v", s.rawToolCallsByID)
+	if len(s.rawCalls.byID) != 0 {
+		t.Fatalf("raw exec call not cleared after output: %+v", s.rawCalls.byID)
 	}
 }
 

@@ -10,13 +10,15 @@ import (
 func TestDispatchLineSubagentNotificationUsesAgentPathMapping(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:               "parent-thread",
-		pending:                make(map[int64]chan json.RawMessage),
-		childParentByThread:    make(map[string]string),
-		childParentByAgentPath: map[string]string{"/root/researcher": "call-collab-1"},
-		agentPathByThread:      make(map[string]string),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread:    make(map[string]string),
+			childParentByAgentPath: map[string]string{"/root/researcher": "call-collab-1"},
+			agentPathByThread:      make(map[string]string),
 		},
 	}
 
@@ -296,11 +298,13 @@ func TestExtractSubagentNotificationsFromUserMessage_NonTextContent(t *testing.T
 func TestDispatchLineSubagentNotificationEmitsEvent(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-done": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-done": "call-collab-1"},
 		},
 	}
 
@@ -340,11 +344,13 @@ func TestDispatchLineRawInterAgentSubagentNotificationEmitsEvent(t *testing.T) {
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByAgentPath: map[string]string{
-			"/root/researcher": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{
+				"/root/researcher": "call-collab-1",
+			},
 		},
 	}
 	s.setRootThreadID("parent-provider-thread")
@@ -394,11 +400,13 @@ func TestDispatchLineRawInterAgentSubagentNotificationWithoutPhaseIgnored(t *tes
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByAgentPath: map[string]string{
-			"/root/researcher": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{
+				"/root/researcher": "call-collab-1",
+			},
 		},
 	}
 	s.setRootThreadID("parent-provider-thread")
@@ -421,11 +429,13 @@ func TestDispatchLineRawInterAgentSubagentNotificationMixedContentIgnored(t *tes
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByAgentPath: map[string]string{
-			"/root/researcher": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{
+				"/root/researcher": "call-collab-1",
+			},
 		},
 	}
 
@@ -447,11 +457,13 @@ func TestDispatchLineRawInterAgentSubagentNotificationAuthorMismatchIgnored(t *t
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByAgentPath: map[string]string{
-			"/root/other": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{
+				"/root/other": "call-collab-1",
+			},
 		},
 	}
 
@@ -473,14 +485,16 @@ func TestDispatchLineRawInterAgentSubagentNotificationFromChildThreadIgnored(t *
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{
-			"child-provider-thread": "call-collab-1",
-		},
-		childParentByAgentPath: map[string]string{
-			"/root/researcher": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{
+				"child-provider-thread": "call-collab-1",
+			},
+			childParentByAgentPath: map[string]string{
+				"/root/researcher": "call-collab-1",
+			},
 		},
 	}
 	s.setRootThreadID("parent-provider-thread")
@@ -503,11 +517,13 @@ func TestDispatchLineRawUserSubagentNotificationMixedContentIgnored(t *testing.T
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{
-			"child-done": "call-collab-1",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{
+				"child-done": "call-collab-1",
+			},
 		},
 	}
 
@@ -531,11 +547,13 @@ func TestDispatchLineRawUserSubagentNotificationWrongBlockTypeIgnored(t *testing
 			s := &Session{
 				threadID: "parent-thread",
 				pending:  make(map[int64]chan json.RawMessage),
-				childParentByThread: map[string]string{
-					"child-done": "call-collab-1",
-				},
 				onEvent: func(evt provider.ProviderEvent) {
 					events = append(events, evt)
+				},
+				collab: sessionCollabState{
+					childParentByThread: map[string]string{
+						"child-done": "call-collab-1",
+					},
 				},
 			}
 
@@ -561,11 +579,13 @@ func TestDispatchLineRawInterAgentSubagentNotificationWrongBlockTypeIgnored(t *t
 			s := &Session{
 				threadID: "parent-thread",
 				pending:  make(map[int64]chan json.RawMessage),
-				childParentByAgentPath: map[string]string{
-					"/root/researcher": "call-collab-1",
-				},
 				onEvent: func(evt provider.ProviderEvent) {
 					events = append(events, evt)
+				},
+				collab: sessionCollabState{
+					childParentByAgentPath: map[string]string{
+						"/root/researcher": "call-collab-1",
+					},
 				},
 			}
 
@@ -605,11 +625,13 @@ func TestDispatchLineRawAssistantMessageDoesNotEmitSubagentNotification(t *testi
 func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-done": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-done": "call-collab-1"},
 		},
 	}
 
@@ -636,11 +658,13 @@ func TestDispatchLineSubagentNotificationCarrierDoesNotEmitUserTextWhenMapped(t 
 func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{"child-done": "call-collab-1"},
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child-done": "call-collab-1"},
 		},
 	}
 
@@ -668,11 +692,13 @@ func TestDispatchLineSubagentNotificationMixedContentKeepsUserText(t *testing.T)
 func TestDispatchLineSubagentNotificationUnmappedCarrierKeepsUserText(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:            "parent-thread",
-		pending:             make(map[int64]chan json.RawMessage),
-		childParentByThread: make(map[string]string),
+		threadID: "parent-thread",
+		pending:  make(map[int64]chan json.RawMessage),
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: make(map[string]string),
 		},
 	}
 
@@ -703,12 +729,14 @@ func TestDispatchLineSubagentNotificationMultipleTagsEmitOnce(t *testing.T) {
 	s := &Session{
 		threadID: "parent-thread",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByThread: map[string]string{
-			"child-1": "call-collab-1",
-			"child-2": "call-collab-2",
-		},
 		onEvent: func(evt provider.ProviderEvent) {
 			events = append(events, evt)
+		},
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{
+				"child-1": "call-collab-1",
+				"child-2": "call-collab-2",
+			},
 		},
 	}
 

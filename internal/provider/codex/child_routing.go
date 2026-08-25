@@ -61,27 +61,27 @@ func (s *Session) deferChildWireEvent(providerThreadID string, event deferredChi
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.deferredChildWireEvents == nil {
-		s.deferredChildWireEvents = make(map[string][]deferredChildWireEvent)
+	if s.childRouting.deferredChildWireEvents == nil {
+		s.childRouting.deferredChildWireEvents = make(map[string][]deferredChildWireEvent)
 	}
-	queuedForThread := s.deferredChildWireEvents[providerThreadID]
+	queuedForThread := s.childRouting.deferredChildWireEvents[providerThreadID]
 	if len(queuedForThread) >= maxDeferredChildEventsPerThread ||
-		s.deferredChildWireCount >= maxDeferredChildEventsTotal ||
+		s.childRouting.deferredChildWireCount >= maxDeferredChildEventsTotal ||
 		eventBytes > maxDeferredChildEventBytes ||
-		s.deferredChildWireBytes > maxDeferredChildEventBytes-eventBytes {
+		s.childRouting.deferredChildWireBytes > maxDeferredChildEventBytes-eventBytes {
 		return false
 	}
 	event.Params = append(json.RawMessage(nil), event.Params...)
 	event.RawLine = append(json.RawMessage(nil), event.RawLine...)
-	s.deferredChildWireEvents[providerThreadID] = append(queuedForThread, event)
-	s.deferredChildWireCount++
-	s.deferredChildWireBytes += eventBytes
-	if s.deferredChildDeadlines == nil {
-		s.deferredChildDeadlines = make(map[string]*time.Timer)
+	s.childRouting.deferredChildWireEvents[providerThreadID] = append(queuedForThread, event)
+	s.childRouting.deferredChildWireCount++
+	s.childRouting.deferredChildWireBytes += eventBytes
+	if s.childRouting.deferredChildDeadlines == nil {
+		s.childRouting.deferredChildDeadlines = make(map[string]*time.Timer)
 	}
-	if s.deferredChildDeadlines[providerThreadID] == nil {
+	if s.childRouting.deferredChildDeadlines[providerThreadID] == nil {
 		threadID := providerThreadID
-		s.deferredChildDeadlines[providerThreadID] = time.AfterFunc(deferredChildOwnershipTimeout, func() {
+		s.childRouting.deferredChildDeadlines[providerThreadID] = time.AfterFunc(deferredChildOwnershipTimeout, func() {
 			// The expiry writes a JSON-RPC rejection and can emit a routing
 			// warning, so it has to be OVER before Close returns — and
 			// Close's own timer.Stop() cannot promise that: Stop does not
@@ -122,28 +122,28 @@ func (s *Session) takeDeferredChildWireEventsUnlessClosing(providerThreadID stri
 	if stopIfClosing && s.closing.Load() {
 		return nil
 	}
-	events := s.deferredChildWireEvents[providerThreadID]
+	events := s.childRouting.deferredChildWireEvents[providerThreadID]
 	if len(events) == 0 {
 		return nil
 	}
-	delete(s.deferredChildWireEvents, providerThreadID)
-	if timer := s.deferredChildDeadlines[providerThreadID]; timer != nil {
+	delete(s.childRouting.deferredChildWireEvents, providerThreadID)
+	if timer := s.childRouting.deferredChildDeadlines[providerThreadID]; timer != nil {
 		timer.Stop()
-		delete(s.deferredChildDeadlines, providerThreadID)
+		delete(s.childRouting.deferredChildDeadlines, providerThreadID)
 	}
 	for _, event := range events {
-		s.deferredChildWireBytes -= event.sizeBytes()
+		s.childRouting.deferredChildWireBytes -= event.sizeBytes()
 	}
-	s.deferredChildWireCount -= len(events)
-	if s.deferredChildWireCount < 0 {
+	s.childRouting.deferredChildWireCount -= len(events)
+	if s.childRouting.deferredChildWireCount < 0 {
 		log.Printf("codex: deferred child routing event count underflow; resetting")
-		s.deferredChildWireCount = 0
+		s.childRouting.deferredChildWireCount = 0
 	}
-	if s.deferredChildWireBytes < 0 {
+	if s.childRouting.deferredChildWireBytes < 0 {
 		// Defensive only: every queue mutation is under mu, so reaching this
 		// branch indicates an accounting bug rather than provider input.
 		log.Printf("codex: deferred child routing byte count underflow; resetting")
-		s.deferredChildWireBytes = 0
+		s.childRouting.deferredChildWireBytes = 0
 	}
 	return events
 }
@@ -194,8 +194,8 @@ func (s *Session) warnChildRoutingOverflow(providerThreadID, method string, requ
 	}
 
 	s.mu.Lock()
-	warned := s.childRoutingWarned
-	s.childRoutingWarned = true
+	warned := s.childRouting.warned
+	s.childRouting.warned = true
 	s.mu.Unlock()
 	if warned || s.closing.Load() {
 		return

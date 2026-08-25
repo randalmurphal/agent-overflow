@@ -43,7 +43,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 		return err
 	}
 
-	cfg := s.turnConfig()
+	cfg := s.snapshotTurnConfig()
 	params := map[string]any{
 		"threadId":          s.rootThreadID(),
 		"input":             input,
@@ -132,7 +132,7 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	if turnID != "" {
 		s.bindPendingTurnSchema(turnID)
 		s.mu.Lock()
-		s.activeTurnID = turnID
+		s.turn.activeTurnID = turnID
 		s.mu.Unlock()
 	}
 
@@ -141,15 +141,15 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 
 func (s *Session) setPendingTurnSchema(schemaed bool) {
 	s.mu.Lock()
-	s.pendingTurnSchemaKnown = true
-	s.pendingTurnSchemaed = schemaed
+	s.turn.pendingTurnSchemaKnown = true
+	s.turn.pendingTurnSchemaed = schemaed
 	s.mu.Unlock()
 }
 
 func (s *Session) clearPendingTurnSchema() {
 	s.mu.Lock()
-	s.pendingTurnSchemaKnown = false
-	s.pendingTurnSchemaed = false
+	s.turn.pendingTurnSchemaKnown = false
+	s.turn.pendingTurnSchemaed = false
 	s.mu.Unlock()
 }
 
@@ -159,19 +159,19 @@ func (s *Session) bindPendingTurnSchema(turnID string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.pendingTurnSchemaKnown {
+	if !s.turn.pendingTurnSchemaKnown {
 		return
 	}
-	if s.pendingTurnSchemaed {
-		if s.schemaedTurnIDs == nil {
-			s.schemaedTurnIDs = make(map[string]struct{})
+	if s.turn.pendingTurnSchemaed {
+		if s.turn.schemaedTurnIDs == nil {
+			s.turn.schemaedTurnIDs = make(map[string]struct{})
 		}
-		s.schemaedTurnIDs[turnID] = struct{}{}
+		s.turn.schemaedTurnIDs[turnID] = struct{}{}
 	} else {
-		delete(s.schemaedTurnIDs, turnID)
+		delete(s.turn.schemaedTurnIDs, turnID)
 	}
-	s.pendingTurnSchemaKnown = false
-	s.pendingTurnSchemaed = false
+	s.turn.pendingTurnSchemaKnown = false
+	s.turn.pendingTurnSchemaed = false
 }
 
 // Steer injects user input into the currently-active turn's
@@ -205,7 +205,7 @@ func (s *Session) bindPendingTurnSchema(turnID string) {
 // the three refusals it can answer with.
 func (s *Session) Steer(ctx context.Context, content string, opts provider.SendOptions) error {
 	s.mu.Lock()
-	expectedTurnID := s.activeTurnID
+	expectedTurnID := s.turn.activeTurnID
 	s.mu.Unlock()
 	if expectedTurnID == "" {
 		return ErrNoActiveTurn
@@ -334,7 +334,7 @@ func steerDataReportsNotSteerable(data json.RawMessage) bool {
 // which only sends the JSON-RPC and leaks the local Deferreds.
 func (s *Session) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
-	turnID := s.activeTurnID
+	turnID := s.turn.activeTurnID
 	s.mu.Unlock()
 
 	_, err := s.sendRequest(ctx, "turn/interrupt", map[string]any{
@@ -353,13 +353,13 @@ func (s *Session) Interrupt(ctx context.Context) error {
 func (s *Session) claimTurnStart(turnID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.seenTurnStarts == nil {
-		s.seenTurnStarts = make(map[string]struct{})
+	if s.turn.seenTurnStarts == nil {
+		s.turn.seenTurnStarts = make(map[string]struct{})
 	}
-	if _, ok := s.seenTurnStarts[turnID]; ok {
+	if _, ok := s.turn.seenTurnStarts[turnID]; ok {
 		return false
 	}
-	s.seenTurnStarts[turnID] = struct{}{}
+	s.turn.seenTurnStarts[turnID] = struct{}{}
 	return true
 }
 
@@ -371,8 +371,8 @@ func (s *Session) clearTurnStart(turnID string) {
 		return
 	}
 	s.mu.Lock()
-	delete(s.seenTurnStarts, turnID)
-	delete(s.turnOrigins, turnID)
+	delete(s.turn.seenTurnStarts, turnID)
+	delete(s.origins.byTurn, turnID)
 	// A turn just ENDED, and upstream runs at most one turn at a time on a
 	// thread: any turn a timed-out `turn/start` created would have had to
 	// start (and consume its claim) before this one could finish. So a claim

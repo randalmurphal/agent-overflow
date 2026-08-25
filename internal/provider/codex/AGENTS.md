@@ -7,11 +7,23 @@ over stdio.
 
 - `session.go` — the shared `Session` state struct, the `Config` it is built
   from, the accessors over both, dynamic-tool and MCP handler registration
-  (plus the retained per-server startup states), and `Close`, which drops the
-  session-scoped maps field by field. Everything the read loop touches is
-  either owned by the read-loop goroutine alone (`usageAcct`) or guarded —
-  `mu` for the mutable session state, `eventMu` for emission, and an atomic
-  for the root Codex thread id (see below).
+  (plus the retained per-server startup states), and `Close`. Everything the
+  read loop touches is either owned by the read-loop goroutine alone
+  (`usageAcct`) or guarded — `mu` for the mutable session state, `eventMu` for
+  emission, and an atomic for the root Codex thread id (see below).
+  State is **grouped by concern into sub-structs** — `turn` (per-turn state),
+  `origins` (who started each turn), `turnConfig` (what the next turn asks
+  for) versus `settings` (what Codex reports it is running), `collab` (child
+  identity), `childRouting` (the ownership quarantine), `collabHistory` (the
+  resume traversal) and `rawCalls`. The locks, the atomics that exist to stay
+  out of the lock order, the process, and the registered observers stay at the
+  top level, as do the two fields guarded by a lock other than `mu`
+  (`childLifecycleRevision`, `collabAsyncClosing`) — a group is assigned WHOLE
+  under `mu`, so a field with a different guard cannot live in one.
+  `Close` drops the session-scoped groups by zeroing each group rather than
+  field by field, which is what keeps a field added later from being
+  forgotten; `TestCloseReleasesSessionScopedState` fills every field of every
+  such group reflectively and lists the state Close deliberately leaves.
 - `session_start.go` — the sequence that turns a spawned process into a
   session with a thread. `NewSession` does the spawn, the `initialize`
   handshake, the version and queue-support records frozen off it, and the
@@ -46,7 +58,17 @@ over stdio.
   otherwise choose an OS keyring.
 - `session_notifications.go` — notification pre-processing, child
   routing, classifier invocation, event enrichment, turn-state tracking,
-  and final event emission.
+  and final event emission. `dispatchRoutableNotification` is five steps in a
+  fixed order, each a named function taking and returning its values
+  explicitly: `resolveNotificationRoute` (which thread this frame belongs to,
+  including the params rewrite that can change the answer, and the
+  inline-review claim), `claimNotificationOwnership` (what the frame proves
+  about child ownership, the spawn card it renders on, and the mailbox-carrier
+  consumption that must happen before agent-path retention),
+  `interceptChildNotification` (what a child may not project onto the parent,
+  plus the token-usage carve-out that is re-scoped instead of dropped),
+  `foldNotificationOntoParent` (plan delta, settings echo, usage accounting)
+  and `classifyAndEmitNotification`.
 - `child_routing.go` — bounded/deadlined fail-closed quarantine for
   notifications and server requests from not-yet-owned child threads.
 - `collab_rehydrate.go` — bounded read-only descendant-history traversal and
@@ -654,8 +676,8 @@ context meter, title, or compact state (ADR-002).
 `isUnsafeChildProjectionEvent` is the second gate on the event side.
 
 `thread/tokenUsage/updated` is the one method deliberately NOT in the
-suppression set. It is intercepted in `dispatchRoutableNotification`
-BEFORE the child-state branch and converted, by
+suppression set. It is intercepted in `interceptChildNotification`
+(`session_notifications.go`) BEFORE the child-state branch and converted, by
 `emitChildTokenUsageProgress`, into an `EventSubagentProgress` scoped to
 the spawn card:
 

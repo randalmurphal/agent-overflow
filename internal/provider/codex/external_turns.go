@@ -68,7 +68,7 @@ const (
 // external.
 func (s *Session) beginLocalTurnStart() {
 	s.mu.Lock()
-	s.pendingLocalTurnStarts++
+	s.origins.pendingLocalTurnStarts++
 	s.mu.Unlock()
 }
 
@@ -80,8 +80,8 @@ func (s *Session) beginLocalTurnStart() {
 // externally injected.
 func (s *Session) abandonLocalTurnStart() {
 	s.mu.Lock()
-	if s.pendingLocalTurnStarts > 0 {
-		s.pendingLocalTurnStarts--
+	if s.origins.pendingLocalTurnStarts > 0 {
+		s.origins.pendingLocalTurnStarts--
 	}
 	s.mu.Unlock()
 }
@@ -100,8 +100,8 @@ func (s *Session) abandonLocalTurnStart() {
 // is no ambiguity left to record.
 func (s *Session) noteAmbiguousLocalTurnStart() {
 	s.mu.Lock()
-	if s.pendingLocalTurnStarts > 0 {
-		s.ambiguousLocalTurnStarts++
+	if s.origins.pendingLocalTurnStarts > 0 {
+		s.origins.ambiguousLocalTurnStarts++
 	}
 	s.mu.Unlock()
 }
@@ -129,15 +129,15 @@ func (s *Session) noteAmbiguousLocalTurnStart() {
 // direction the whole classifier takes — a wrong "local" costs a marker, a
 // wrong "external" mislabels the user's own message.
 func (s *Session) dropAmbiguousLocalTurnStartsLocked(because string) {
-	if s.ambiguousLocalTurnStarts == 0 {
+	if s.origins.ambiguousLocalTurnStarts == 0 {
 		return
 	}
-	dropped := s.ambiguousLocalTurnStarts
-	if dropped > s.pendingLocalTurnStarts {
-		dropped = s.pendingLocalTurnStarts
+	dropped := s.origins.ambiguousLocalTurnStarts
+	if dropped > s.origins.pendingLocalTurnStarts {
+		dropped = s.origins.pendingLocalTurnStarts
 	}
-	s.pendingLocalTurnStarts -= dropped
-	s.ambiguousLocalTurnStarts = 0
+	s.origins.pendingLocalTurnStarts -= dropped
+	s.origins.ambiguousLocalTurnStarts = 0
 	if dropped > 0 {
 		log.Printf("codex: thread %s: released %d turn/start claim(s) left by a timed-out request (%s)",
 			s.threadID, dropped, because)
@@ -153,12 +153,12 @@ func (s *Session) bindLocalTurnStart(turnID string) {
 		// Response carried no turn id (older/odd app-server). Nothing to bind
 		// the claim to, so release it rather than letting it absorb an
 		// unrelated later turn.
-		if s.pendingLocalTurnStarts > 0 {
-			s.pendingLocalTurnStarts--
+		if s.origins.pendingLocalTurnStarts > 0 {
+			s.origins.pendingLocalTurnStarts--
 		}
 		return
 	}
-	if _, seen := s.turnOrigins[turnID]; seen {
+	if _, seen := s.origins.byTurn[turnID]; seen {
 		// The racing `turn/started` already classified this turn and took a
 		// claim for it, so anything still outstanding was not for this turn.
 		// If a timed-out request is what left it there, this response is the
@@ -166,8 +166,8 @@ func (s *Session) bindLocalTurnStart(turnID string) {
 		s.dropAmbiguousLocalTurnStartsLocked("a later turn/start named an already-classified turn")
 		return
 	}
-	if s.pendingLocalTurnStarts > 0 {
-		s.pendingLocalTurnStarts--
+	if s.origins.pendingLocalTurnStarts > 0 {
+		s.origins.pendingLocalTurnStarts--
 	}
 	s.rememberTurnOriginLocked(turnID, turnOriginLocal)
 }
@@ -200,14 +200,14 @@ func (s *Session) adoptTurnStart(turnID string) turnAdoption {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if origin, seen := s.turnOrigins[turnID]; seen {
+	if origin, seen := s.origins.byTurn[turnID]; seen {
 		if origin == turnOriginExternal {
 			return turnAdoptionExternal
 		}
 		return turnAdoptionLocal
 	}
-	if s.pendingLocalTurnStarts > 0 {
-		s.pendingLocalTurnStarts--
+	if s.origins.pendingLocalTurnStarts > 0 {
+		s.origins.pendingLocalTurnStarts--
 		s.rememberTurnOriginLocked(turnID, turnOriginLocal)
 		return turnAdoptionLocal
 	}
@@ -230,7 +230,7 @@ func (s *Session) turnIsExternal(turnID string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.turnOrigins[turnID] == turnOriginExternal
+	return s.origins.byTurn[turnID] == turnOriginExternal
 }
 
 // maxTrackedTurnOrigins bounds the origin map. Entries are dropped on
@@ -246,13 +246,13 @@ const maxTrackedTurnOrigins = 64
 // a caller that assumed the write succeeded would stamp the turn start
 // external and leave every later event of the same turn unstamped.
 func (s *Session) rememberTurnOriginLocked(turnID string, origin turnOrigin) bool {
-	if s.turnOrigins == nil {
-		s.turnOrigins = make(map[string]turnOrigin, 2)
+	if s.origins.byTurn == nil {
+		s.origins.byTurn = make(map[string]turnOrigin, 2)
 	}
-	if _, seen := s.turnOrigins[turnID]; !seen && len(s.turnOrigins) >= maxTrackedTurnOrigins {
+	if _, seen := s.origins.byTurn[turnID]; !seen && len(s.origins.byTurn) >= maxTrackedTurnOrigins {
 		return false
 	}
-	s.turnOrigins[turnID] = origin
+	s.origins.byTurn[turnID] = origin
 	return true
 }
 

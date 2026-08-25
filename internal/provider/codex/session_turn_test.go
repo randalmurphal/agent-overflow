@@ -287,7 +287,7 @@ func TestCodexInterruptWithActiveTurn(t *testing.T) {
 
 	// Simulate turn/started by setting activeTurnID.
 	s.mu.Lock()
-	s.activeTurnID = "turn-1"
+	s.turn.activeTurnID = "turn-1"
 	s.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -316,12 +316,14 @@ func TestCodexInterruptSendsThreadAndTurnID(t *testing.T) {
 	}
 
 	s := &Session{
-		proc:         proc,
-		threadID:     testThread,
-		activeTurnID: "turn-1",
-		pending:      make(map[int64]chan json.RawMessage),
-		onEvent:      func(provider.ProviderEvent) {},
-		cancel:       cancel,
+		proc:     proc,
+		threadID: testThread,
+		pending:  make(map[int64]chan json.RawMessage),
+		onEvent:  func(provider.ProviderEvent) {},
+		cancel:   cancel,
+		turn: sessionTurnState{
+			activeTurnID: "turn-1",
+		},
 	}
 	s.setRootThreadID("codex-thread-1")
 	go s.readLoop()

@@ -190,8 +190,8 @@ func TestCodexPlanLiveUpdateFastModeTransitions(t *testing.T) {
 				t.Fatalf("update.ServiceTier = %q, want %q", update.ServiceTier, tt.want)
 			}
 			s.ApplyLiveUpdate(update)
-			if got := s.turnConfig().ServiceTier; got != tt.want {
-				t.Fatalf("turnConfig().ServiceTier = %q, want %q", got, tt.want)
+			if got := s.snapshotTurnConfig().ServiceTier; got != tt.want {
+				t.Fatalf("snapshotTurnConfig().ServiceTier = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -509,7 +509,11 @@ func TestCodexPlanLiveUpdateRuntimeModeTransitions(t *testing.T) {
 // switch still be inert if ApplyLiveUpdate forgets a field — and the reviewer
 // is exactly the kind of field a struct-literal copy silently omits.
 func TestApplyLiveUpdateSwapsReviewerOnTurnConfig(t *testing.T) {
-	s := &Session{approvalsReviewer: approvalsReviewerUser}
+	s := &Session{
+		turnConfig: sessionTurnConfig{
+			approvalsReviewer: approvalsReviewerUser,
+		},
+	}
 
 	toAuto := codexLiveUpdateBaseOptions()
 	toAuto.RuntimeMode = provider.RuntimeAuto
@@ -518,7 +522,7 @@ func TestApplyLiveUpdateSwapsReviewerOnTurnConfig(t *testing.T) {
 		t.Fatal("PlanLiveUpdate into auto needs a restart")
 	}
 	s.ApplyLiveUpdate(update)
-	if got := s.turnConfig().ApprovalsReviewer; got != approvalsReviewerAuto {
+	if got := s.snapshotTurnConfig().ApprovalsReviewer; got != approvalsReviewerAuto {
 		t.Fatalf("turnConfig reviewer after switching into auto = %q, want %q", got, approvalsReviewerAuto)
 	}
 
@@ -527,7 +531,7 @@ func TestApplyLiveUpdateSwapsReviewerOnTurnConfig(t *testing.T) {
 		t.Fatal("PlanLiveUpdate out of auto needs a restart")
 	}
 	s.ApplyLiveUpdate(back)
-	if got := s.turnConfig().ApprovalsReviewer; got != approvalsReviewerUser {
+	if got := s.snapshotTurnConfig().ApprovalsReviewer; got != approvalsReviewerUser {
 		t.Fatalf("turnConfig reviewer after switching out of auto = %q, want %q", got, approvalsReviewerUser)
 	}
 }

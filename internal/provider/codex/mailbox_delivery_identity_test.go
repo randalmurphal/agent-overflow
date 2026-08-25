@@ -83,10 +83,12 @@ func TestEncryptedProgressDeliveriesStayDistinct(t *testing.T) {
 func TestIdenticalDeliveriesSurviveAcrossChildTurns(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:               "thread-1",
-		childParentByAgentPath: map[string]string{"/root/review_perf": "spawn-1"},
-		agentPathByThread:      map[string]string{"child-1": "/root/review_perf"},
-		onEvent:                func(event provider.ProviderEvent) { events = append(events, event) },
+		threadID: "thread-1",
+		onEvent:  func(event provider.ProviderEvent) { events = append(events, event) },
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{"/root/review_perf": "spawn-1"},
+			agentPathByThread:      map[string]string{"child-1": "/root/review_perf"},
+		},
 	}
 	line := []byte(`{"type":"inter_agent_communication","payload":{"author":"/root/review_perf","recipient":"/root","content":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/review_perf\nPayload:\nDone.","trigger_turn":false}}`)
 

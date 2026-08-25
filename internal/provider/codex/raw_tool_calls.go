@@ -81,10 +81,10 @@ func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
 		return
 	}
 	s.mu.Lock()
-	if s.rawToolCallsByID == nil {
-		s.rawToolCallsByID = make(map[string]rawToolCall)
+	if s.rawCalls.byID == nil {
+		s.rawCalls.byID = make(map[string]rawToolCall)
 	}
-	s.rawToolCallsByID[callID] = call
+	s.rawCalls.byID[callID] = call
 	s.pruneRawToolCallsLocked(callID)
 	s.mu.Unlock()
 }
@@ -95,7 +95,7 @@ func (s *Session) enrichRawToolCallOutput(params json.RawMessage, item map[strin
 		return params
 	}
 	s.mu.Lock()
-	call := s.rawToolCallsByID[callID]
+	call := s.rawCalls.byID[callID]
 	s.mu.Unlock()
 	if call.CallID == "" {
 		return params
@@ -174,7 +174,7 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 		return
 	}
 	s.mu.Lock()
-	call := s.rawToolCallsByID[itemID]
+	call := s.rawCalls.byID[itemID]
 	s.mu.Unlock()
 	if call.CallID == "" {
 		return
@@ -200,15 +200,15 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 }
 
 func (s *Session) pruneRawToolCallsLocked(keepCallID string) {
-	if len(s.rawToolCallsByID) <= maxRawToolCallRecords {
+	if len(s.rawCalls.byID) <= maxRawToolCallRecords {
 		return
 	}
-	for callID := range s.rawToolCallsByID {
+	for callID := range s.rawCalls.byID {
 		if callID == keepCallID {
 			continue
 		}
-		delete(s.rawToolCallsByID, callID)
-		if len(s.rawToolCallsByID) <= maxRawToolCallRecords {
+		delete(s.rawCalls.byID, callID)
+		if len(s.rawCalls.byID) <= maxRawToolCallRecords {
 			return
 		}
 	}
@@ -220,7 +220,7 @@ func (s *Session) deleteRawToolCall(callID string) {
 		return
 	}
 	s.mu.Lock()
-	delete(s.rawToolCallsByID, callID)
+	delete(s.rawCalls.byID, callID)
 	s.mu.Unlock()
 }
 

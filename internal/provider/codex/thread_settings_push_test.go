@@ -196,7 +196,7 @@ func TestPushThreadSettingsUnsupportedTransitions(t *testing.T) {
 		if err := s.PushThreadSettings(context.Background(), push); err != nil {
 			t.Fatalf("-32601 must not surface as an error: %v", err)
 		}
-		if s.pendingSettingsEcho != nil {
+		if s.settings.pendingEcho != nil {
 			t.Error("a downgraded push must not leave an armed expectation behind")
 		}
 		_ = s.Close()
@@ -209,7 +209,7 @@ func TestPushThreadSettingsUnsupportedTransitions(t *testing.T) {
 		if err == nil {
 			t.Fatal("a real rejection must surface, not be swallowed as a downgrade")
 		}
-		if s.settingsUpdateUnsupported {
+		if s.settings.updateUnsupported {
 			t.Error("a real rejection must not latch the unsupported flag")
 		}
 		// The expectation is armed before the request goes out (the echo is
@@ -217,7 +217,7 @@ func TestPushThreadSettingsUnsupportedTransitions(t *testing.T) {
 		// back down — otherwise the next unrelated settings echo within the
 		// window would be reported as a rejection of a request Codex never
 		// accepted.
-		if s.pendingSettingsEcho != nil {
+		if s.settings.pendingEcho != nil {
 			t.Error("a rejected push must not leave an armed expectation behind")
 		}
 		_ = s.Close()
@@ -287,7 +287,11 @@ func TestVerifyThreadSettingsEcho(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &Session{pendingSettingsEcho: tc.expectation}
+			s := &Session{
+				settings: sessionSettingsState{
+					pendingEcho: tc.expectation,
+				},
+			}
 			got := s.verifyThreadSettingsEcho(tc.settings)
 			switch {
 			case tc.wantMatch == "" && got != "":
@@ -295,7 +299,7 @@ func TestVerifyThreadSettingsEcho(t *testing.T) {
 			case tc.wantMatch != "" && !strings.Contains(got, tc.wantMatch):
 				t.Errorf("verifyThreadSettingsEcho = %q, want it to mention %q", got, tc.wantMatch)
 			}
-			if s.pendingSettingsEcho != nil {
+			if s.settings.pendingEcho != nil {
 				t.Error("the expectation must be single-shot; a second echo cannot re-raise it")
 			}
 		})
@@ -309,9 +313,11 @@ func TestReconcileThreadSettingsEmitsEchoDivergence(t *testing.T) {
 	s := &Session{
 		threadID: testThread,
 		onEvent:  func(e provider.ProviderEvent) { events = append(events, e) },
-		pendingSettingsEcho: &settingsEchoExpectation{
-			model:   "gpt-5.6-codex",
-			expires: time.Now().Add(time.Minute),
+		settings: sessionSettingsState{
+			pendingEcho: &settingsEchoExpectation{
+				model:   "gpt-5.6-codex",
+				expires: time.Now().Add(time.Minute),
+			},
 		},
 	}
 	s.setRootThreadID("codex-thread")

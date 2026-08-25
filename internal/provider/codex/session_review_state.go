@@ -42,7 +42,7 @@ func (s *Session) reserveReview(turnIndex int, target ReviewTarget) error {
 	if s.review != nil {
 		return fmt.Errorf("codex: %s: a review is already running", reviewStartMethod)
 	}
-	if s.activeTurnID != "" {
+	if s.turn.activeTurnID != "" {
 		return fmt.Errorf("codex: %s: thread already has an active turn", reviewStartMethod)
 	}
 	s.review = &reviewRun{turnIndex: turnIndex, target: target}
@@ -107,7 +107,7 @@ func (s *Session) effectiveReviewModel(ctx context.Context) (string, error) {
 		return model, nil
 	}
 	s.mu.Lock()
-	model := strings.TrimSpace(s.model)
+	model := strings.TrimSpace(s.turnConfig.model)
 	s.mu.Unlock()
 	return model, nil
 }

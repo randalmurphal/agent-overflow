@@ -80,22 +80,74 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 // dispatchRoutableNotification handles a root notification or a child
 // notification whose spawn ownership is already known. The outer dispatcher
 // is deliberately the only entry from raw JSON-RPC so foreign child threads
-// can never fall through to parent turn state. providerThreadID is the
-// caller's already-derived route id — recomputed here only when
-// observeRawResponseItem may have rewritten params (rawResponseItem/completed
-// is the sole method it rewrites, see raw_tool_calls.go).
+// can never fall through to parent turn state.
+//
+// It is five steps, in this order, and the order is the contract: resolve the
+// route, claim what the frame proves about ownership, let the child gate
+// intercept, fold what belongs on the parent, then classify and emit. Each
+// step takes and returns its values explicitly so the two the route is carried
+// on — params (rewritten) and providerThreadID (re-derived) — stay visible at
+// this call site rather than mutating behind a pipeline.
 func (s *Session) dispatchRoutableNotification(method string, params json.RawMessage, providerThreadID string) {
+	params, providerThreadID, routed := s.resolveNotificationRoute(method, params, providerThreadID)
+	if routed {
+		return
+	}
+	parentToolUseID, mappedChildThreadIDs, consumed := s.claimNotificationOwnership(method, params, providerThreadID)
+	if consumed {
+		return
+	}
+	if s.interceptChildNotification(method, params, providerThreadID, parentToolUseID) {
+		return
+	}
+	s.foldNotificationOntoParent(method, params)
+	s.classifyAndEmitNotification(method, params, providerThreadID, parentToolUseID, mappedChildThreadIDs)
+}
+
+// resolveNotificationRoute answers which thread this frame belongs to, and
+// claims the frames that route somewhere other than the ordinary thread
+// projection.
+//
+// providerThreadID arrives already derived by the caller and is recomputed
+// here only when observeRawResponseItem may have REWRITTEN params
+// (rawResponseItem/completed is the sole method it rewrites, see
+// raw_tool_calls.go). A review notification belongs to the inline-review
+// projection, which owns its own turn ids, so it never reaches the steps
+// below; the returned flag says the frame is already routed.
+func (s *Session) resolveNotificationRoute(
+	method string,
+	params json.RawMessage,
+	providerThreadID string,
+) (json.RawMessage, string, bool) {
 	params = s.observeRawResponseItem(method, params)
 	if method == "rawResponseItem/completed" {
 		providerThreadID = providerThreadIDFromParams(params)
 	}
 	if s.handleReviewSpecialNotification(method, params) {
-		return
+		return params, providerThreadID, true
 	}
-	mappedChildThreadIDs := s.observeSubAgentActivityOwnership(method, params)
-	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
+	return params, providerThreadID, false
+}
+
+// claimNotificationOwnership records what this frame proves about child-thread
+// ownership and resolves the spawn card a child frame renders on.
+// mappedChildThreadIDs are the provider threads this frame just mapped; their
+// quarantined backlog is drained at the very end of dispatch, once the spawn
+// row itself has reached triage.
+//
+// The raw mailbox carrier is consumed BEFORE the path/meta retention that
+// follows it, which is the original order and load-bearing: a consumed carrier
+// is a delivery of a child's answer, not a description of the child thread, and
+// must not leave agent-path state behind. A consumed carrier ends dispatch.
+func (s *Session) claimNotificationOwnership(
+	method string,
+	params json.RawMessage,
+	providerThreadID string,
+) (parentToolUseID string, mappedChildThreadIDs []string, consumed bool) {
+	mappedChildThreadIDs = s.observeSubAgentActivityOwnership(method, params)
+	parentToolUseID = s.parentToolUseForProviderThread(providerThreadID)
 	if s.emitSubagentNotificationsFromRawMailboxCarrier(method, params, providerThreadID, parentToolUseID) {
-		return
+		return "", nil, true
 	}
 	if parentToolUseID != "" {
 		s.rememberAgentPathForProviderThread(providerThreadID, parentToolUseID, params)
@@ -103,33 +155,57 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 	if method == "thread/started" {
 		s.rememberAgentMetaForProviderThread(providerThreadID, params)
 	}
-	if parentToolUseID != "" {
-		if method == "thread/tokenUsage/updated" {
-			// The child's ONLY live progress signal. Re-emitted scoped to
-			// the spawn card and returned on immediately, so it reaches
-			// neither usageAcct.observe below (the parent's per-turn
-			// accounting) nor the classifier's EventTokenUsage (the
-			// parent's context meter). Removing it from
-			// isChildSuppressedThreadNotification without this intercept
-			// would leak a child's window onto the parent meter, which is
-			// what that list was protecting against.
-			s.emitChildTokenUsageProgress(providerThreadID, parentToolUseID, params)
-			return
-		}
-		childStateNotification := isChildSuppressedThreadNotification(method) ||
-			isChildSuppressedItemNotification(method, params)
-		if childStateNotification {
-			// Drop child-thread state notifications that would otherwise
-			// overwrite the parent thread's projection. See the suppression
-			// helpers in collab_agents.go for the rationale.
-			return
-		}
-		if isChildTurnLifecycleNotification(method) {
-			s.emitChildLifecycleEvents(method, params, parentToolUseID)
-			return
-		}
-	}
+	return parentToolUseID, mappedChildThreadIDs, false
+}
 
+// interceptChildNotification is the child-thread gate: what a child says that
+// must never become parent-thread state, plus the one carve-out that is
+// re-scoped instead of dropped. Returns true when the frame is fully handled
+// here. A root frame (parentToolUseID == "") passes straight through.
+func (s *Session) interceptChildNotification(
+	method string,
+	params json.RawMessage,
+	providerThreadID string,
+	parentToolUseID string,
+) bool {
+	if parentToolUseID == "" {
+		return false
+	}
+	if method == "thread/tokenUsage/updated" {
+		// The child's ONLY live progress signal. Re-emitted scoped to
+		// the spawn card and returned on immediately, so it reaches
+		// neither usageAcct.observe below (the parent's per-turn
+		// accounting) nor the classifier's EventTokenUsage (the
+		// parent's context meter). Removing it from
+		// isChildSuppressedThreadNotification without this intercept
+		// would leak a child's window onto the parent meter, which is
+		// what that list was protecting against.
+		s.emitChildTokenUsageProgress(providerThreadID, parentToolUseID, params)
+		return true
+	}
+	childStateNotification := isChildSuppressedThreadNotification(method) ||
+		isChildSuppressedItemNotification(method, params)
+	if childStateNotification {
+		// Drop child-thread state notifications that would otherwise
+		// overwrite the parent thread's projection. See the suppression
+		// helpers in collab_agents.go for the rationale.
+		return true
+	}
+	if isChildTurnLifecycleNotification(method) {
+		s.emitChildLifecycleEvents(method, params, parentToolUseID)
+		return true
+	}
+	return false
+}
+
+// foldNotificationOntoParent applies the three frames that mutate parent-thread
+// state before classification. Both thread-wide folds are parent-only by
+// construction rather than by re-checking: every child frame that could carry
+// them returned in interceptChildNotification above. What a child CAN still
+// reach here is item-scoped — an item/plan/delta from a child folds into the
+// same plan buffer the parent's transcript renders, which is the projection the
+// spawn card exists to show.
+func (s *Session) foldNotificationOntoParent(method string, params json.RawMessage) {
 	if method == "item/plan/delta" {
 		s.appendPlanDelta(params)
 	}
@@ -148,6 +224,20 @@ func (s *Session) dispatchRoutableNotification(method string, params json.RawMes
 		// untouched.
 		s.usageAcct.observe(params)
 	}
+}
+
+// classifyAndEmitNotification turns the frame into provider events and
+// delivers them: the classifier, the two event rewrites that need session
+// state (the provider-queue notice and review scoping), the per-event child
+// gate, and the deferred-child drain that must not run until the spawn row it
+// belongs under has reached triage.
+func (s *Session) classifyAndEmitNotification(
+	method string,
+	params json.RawMessage,
+	providerThreadID string,
+	parentToolUseID string,
+	mappedChildThreadIDs []string,
+) {
 	events, handled := s.classifyNotificationWithBufferedPlan(method, params)
 	if !handled {
 		s.warnUnclaimedNotification(method)
@@ -321,16 +411,16 @@ func (s *Session) claimSubagentNotification(parentItemID string, generation uint
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.subagentNotificationDedup == nil {
-		s.subagentNotificationDedup = make(map[subagentNotificationDedupKey]struct{})
+	if s.collab.subagentNotificationDedup == nil {
+		s.collab.subagentNotificationDedup = make(map[subagentNotificationDedupKey]struct{})
 	}
-	if _, ok := s.subagentNotificationDedup[key]; ok {
+	if _, ok := s.collab.subagentNotificationDedup[key]; ok {
 		return false
 	}
-	if len(s.subagentNotificationDedup) >= maxSubagentNotificationDedupEntries {
-		s.subagentNotificationDedup = make(map[subagentNotificationDedupKey]struct{})
+	if len(s.collab.subagentNotificationDedup) >= maxSubagentNotificationDedupEntries {
+		s.collab.subagentNotificationDedup = make(map[subagentNotificationDedupKey]struct{})
 	}
-	s.subagentNotificationDedup[key] = struct{}{}
+	s.collab.subagentNotificationDedup[key] = struct{}{}
 	return true
 }
 
@@ -394,7 +484,7 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		}
 		s.bindPendingTurnSchema(evt.TurnID)
 		s.mu.Lock()
-		s.activeTurnID = evt.TurnID
+		s.turn.activeTurnID = evt.TurnID
 		s.mu.Unlock()
 	case provider.EventUserText:
 		// The user-message echo of an injected turn. Without the marker it
@@ -412,9 +502,9 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 			s.attachTurnUsage(meta)
 		}
 		s.mu.Lock()
-		s.activeTurnID = ""
-		s.rawToolCallsByID = make(map[string]rawToolCall)
-		s.waitReceiverIDsByCall = make(map[string][]string)
+		s.turn.activeTurnID = ""
+		s.rawCalls.byID = make(map[string]rawToolCall)
+		s.rawCalls.waitReceiverIDsByCall = make(map[string][]string)
 		s.mu.Unlock()
 		s.clearPlanBufferForTurn(evt.TurnID)
 		s.clearTurnStart(evt.TurnID)
@@ -428,18 +518,18 @@ func (s *Session) observeStructuredOutputCandidate(event *provider.ProviderEvent
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, schemaed := s.schemaedTurnIDs[event.TurnID]; !schemaed {
+	if _, schemaed := s.turn.schemaedTurnIDs[event.TurnID]; !schemaed {
 		return
 	}
-	if s.structuredOutputByTurn == nil {
-		s.structuredOutputByTurn = make(map[string]json.RawMessage)
+	if s.turn.structuredOutputByTurn == nil {
+		s.turn.structuredOutputByTurn = make(map[string]json.RawMessage)
 	}
 	payload := []byte(event.Content)
 	if !json.Valid(payload) {
-		delete(s.structuredOutputByTurn, event.TurnID)
+		delete(s.turn.structuredOutputByTurn, event.TurnID)
 		return
 	}
-	s.structuredOutputByTurn[event.TurnID] = json.RawMessage(payload)
+	s.turn.structuredOutputByTurn[event.TurnID] = json.RawMessage(payload)
 }
 
 func (s *Session) takeStructuredOutput(turnID string) json.RawMessage {
@@ -448,9 +538,9 @@ func (s *Session) takeStructuredOutput(turnID string) json.RawMessage {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	payload := s.structuredOutputByTurn[turnID]
-	delete(s.structuredOutputByTurn, turnID)
-	delete(s.schemaedTurnIDs, turnID)
+	payload := s.turn.structuredOutputByTurn[turnID]
+	delete(s.turn.structuredOutputByTurn, turnID)
+	delete(s.turn.schemaedTurnIDs, turnID)
 	return payload
 }
 

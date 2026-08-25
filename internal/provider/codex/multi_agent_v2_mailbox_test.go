@@ -44,10 +44,12 @@ func TestRolloutAgentMessageEmitsCompletionAtMailboxDelivery(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
-		childParentByAgentPath: map[string]string{
-			"/root/review_perf": "spawn-1",
+		onEvent:  func(event provider.ProviderEvent) { events = append(events, event) },
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{
+				"/root/review_perf": "spawn-1",
+			},
 		},
-		onEvent: func(event provider.ProviderEvent) { events = append(events, event) },
 	}
 	line := []byte(`{"timestamp":"2026-07-11T00:00:00Z","type":"response_item","payload":{"type":"agent_message","author":"/root/review_perf","recipient":"/root","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/review_perf\nPayload:\nFound one allocation issue."}]}}`)
 
@@ -70,10 +72,12 @@ func TestRolloutInterAgentCommunicationEmitsCompletionAtMailboxDelivery(t *testi
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
-		childParentByAgentPath: map[string]string{
-			"/root/review_perf": "spawn-1",
+		onEvent:  func(event provider.ProviderEvent) { events = append(events, event) },
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{
+				"/root/review_perf": "spawn-1",
+			},
 		},
-		onEvent: func(event provider.ProviderEvent) { events = append(events, event) },
 	}
 	line := []byte(`{"timestamp":"2026-07-11T00:00:00Z","type":"inter_agent_communication","payload":{"author":"/root/review_perf","recipient":"/root","other_recipients":[],"content":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/review_perf\nPayload:\nCurrent rollout shape.","internal_chat_message_metadata_passthrough":{"turn_id":"child-turn-1"},"trigger_turn":false}}`)
 
@@ -108,10 +112,12 @@ func TestDispatchRawAgentMessageRoutesRootAndDedupesDurableRecord(t *testing.T) 
 	s := &Session{
 		threadID: "thread-1",
 		pending:  make(map[int64]chan json.RawMessage),
-		childParentByAgentPath: map[string]string{
-			"/root/review_perf": "spawn-1",
+		onEvent:  func(event provider.ProviderEvent) { events = append(events, event) },
+		collab: sessionCollabState{
+			childParentByAgentPath: map[string]string{
+				"/root/review_perf": "spawn-1",
+			},
 		},
-		onEvent: func(event provider.ProviderEvent) { events = append(events, event) },
 	}
 	s.setRootThreadID("root-provider-thread")
 	item := `{"type":"agent_message","author":"/root/review_perf","recipient":"/root","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/review_perf\nPayload:\nDelivered once."}],"internal_chat_message_metadata_passthrough":{"turn_id":"child-turn-1"}}`
@@ -133,10 +139,12 @@ func TestDispatchRawAgentMessageRoutesRootAndDedupesDurableRecord(t *testing.T) 
 func TestRawSpawnMetadataIncludesActiveModelAndEffort(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
-		threadID:        "thread-1",
-		model:           "gpt-5.4",
-		reasoningEffort: "high",
-		onEvent:         func(event provider.ProviderEvent) { events = append(events, event) },
+		threadID: "thread-1",
+		onEvent:  func(event provider.ProviderEvent) { events = append(events, event) },
+		turnConfig: sessionTurnConfig{
+			model:           "gpt-5.4",
+			reasoningEffort: "high",
+		},
 	}
 	s.rememberRawToolCall(map[string]json.RawMessage{
 		"type":      json.RawMessage(`"function_call"`),
@@ -145,7 +153,7 @@ func TestRawSpawnMetadataIncludesActiveModelAndEffort(t *testing.T) {
 		"arguments": json.RawMessage(`"{\"model\":\"gpt-5.4-mini\",\"reasoning_effort\":\"low\"}"`),
 	})
 	s.mu.Lock()
-	call := s.rawToolCallsByID["spawn-1"]
+	call := s.rawCalls.byID["spawn-1"]
 	s.mu.Unlock()
 	s.emitRawSpawnAgentMetaUpdate(call, collabReceiverMeta{
 		ThreadID:      "child-1",

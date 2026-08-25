@@ -100,7 +100,7 @@ func TestCodexInterruptDrainsPendingApproval(t *testing.T) {
 	// Need an active turn for Interrupt to attempt the RPC at all —
 	// before that gate the function returns "no active turn".
 	s.mu.Lock()
-	s.activeTurnID = "turn-1"
+	s.turn.activeTurnID = "turn-1"
 	s.mu.Unlock()
 
 	line := []byte(`{"jsonrpc":"2.0","id":11,"method":"item/commandExecution/requestApproval","params":{"command":"ls"}}`)
@@ -160,7 +160,7 @@ func TestCodexInterruptDrainsPendingUserInput(t *testing.T) {
 	s, eventCh := newTestCodexSession(t)
 
 	s.mu.Lock()
-	s.activeTurnID = "turn-1"
+	s.turn.activeTurnID = "turn-1"
 	s.mu.Unlock()
 
 	line := []byte(`{"jsonrpc":"2.0","id":12,"method":"item/tool/requestUserInput","params":{"questions":[{"id":"scope","header":"Scope","question":"Choose","options":[{"label":"turn","description":"This turn"}]}]}}`)
