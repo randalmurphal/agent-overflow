@@ -362,7 +362,8 @@ func TestTasksByThreadClearedOnCleanupThread(t *testing.T) {
 		t.Errorf("persisted todo list should survive CleanupThread")
 	}
 	router.mu.Lock()
-	_, exists := router.tasksByThread["t1"]
+	taskState := router.threadStateIfPresent("t1")
+	exists := taskState != nil && taskState.tasks != nil
 	router.mu.Unlock()
 	if exists {
 		t.Errorf("tasksByThread should be cleared after CleanupThread")
@@ -681,7 +682,8 @@ func TestResetThreadTodoDropsMapAndColumnAndEmits(t *testing.T) {
 		t.Fatalf("reset must clear the column")
 	}
 	router.mu.Lock()
-	_, warm := router.tasksByThread["t1"]
+	warmState := router.threadStateIfPresent("t1")
+	warm := warmState != nil && warmState.tasks != nil
 	router.mu.Unlock()
 	if warm {
 		t.Fatalf("reset must drop the correlation map")

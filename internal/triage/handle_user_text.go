@@ -240,7 +240,10 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 				// exact except for an open-but-still-rowless turn, where
 				// it prefers the steer-shape append.
 				r.mu.Lock()
-				open, hasOpen := r.openTurns[item.ThreadID]
+				open, hasOpen := 0, false
+				if st := r.threadStateIfPresent(item.ThreadID); st != nil {
+					open, hasOpen = st.openTurn, st.openTurnSet
+				}
 				r.mu.Unlock()
 				pending.EchoTurnWasEmpty = !hasOpen || open != item.TurnIndex
 				log.Printf("triage: sample deferred turn occupancy for %s/%s: %v — falling back to turn-open state (empty=%v)",

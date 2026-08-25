@@ -219,7 +219,8 @@ func (r *Router) RegisterQueueItem(threadID string, item QueuedFlushItem) int64 
 		item.EnqueuedAt = time.Now().UnixMilli()
 	}
 	r.mu.Lock()
-	r.queuedFlushItems[threadID] = append(r.queuedFlushItems[threadID], item)
+	st := r.state(threadID)
+	st.queuedFlushItems = append(st.queuedFlushItems, item)
 	r.mu.Unlock()
 	return item.EnqueuedAt
 }
@@ -233,7 +234,8 @@ func (r *Router) HasQueuedFlushItems(threadID string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.queuedFlushItems[threadID]) > 0
+	st := r.threadStateIfPresent(threadID)
+	return st != nil && len(st.queuedFlushItems) > 0
 }
 
 // QueuedFlushItemCount returns the number of pending queue entries
@@ -250,7 +252,11 @@ func (r *Router) QueuedFlushItemCount(threadID string) int {
 	// claimedFlushItems keeps a batch mid-handoff (deleted from the
 	// queue, not yet recorded in-flight by the App dispatcher) visible
 	// to the revert predicate — see tryFlushQueue.
-	return len(r.queuedFlushItems[threadID]) + r.claimedFlushItems[threadID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return 0
+	}
+	return len(st.queuedFlushItems) + st.claimedFlushItems
 }
 
 func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
@@ -260,7 +266,7 @@ func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	count := 0
-	for _, pending := range r.pendingByThread[threadID] {
+	for _, pending := range r.pendingSendsLocked(threadID) {
 		if pending.DeferredItem != nil && r.sniffFlushShape(threadID, &pending, sendShapeSiteDeferredCount) {
 			count++
 		}
@@ -276,7 +282,7 @@ func (r *Router) MaxPendingFlushSequence(threadID string, turnIndex int) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	maxSeq := 0
-	for _, pending := range r.pendingByThread[threadID] {
+	for _, pending := range r.pendingSendsLocked(threadID) {
 		if pending.DeferredItem == nil || !strings.HasPrefix(pending.AOItemID, prefix) {
 			continue
 		}
@@ -308,10 +314,11 @@ func (r *Router) QueuedFlushItems(threadID string) []QueuedFlushItem {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	src, ok := r.queuedFlushItems[threadID]
-	if !ok || len(src) == 0 {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.queuedFlushItems) == 0 {
 		return nil
 	}
+	src := st.queuedFlushItems
 	out := make([]QueuedFlushItem, len(src))
 	copy(out, src)
 	return out
@@ -356,11 +363,12 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 		return false
 	}
 	r.mu.Lock()
-	queue, ok := r.queuedFlushItems[threadID]
-	if !ok || len(queue) == 0 {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || len(st.queuedFlushItems) == 0 {
 		r.mu.Unlock()
 		return false
 	}
+	queue := st.queuedFlushItems
 	dispatcher := r.dispatchFlush
 	if dispatcher == nil {
 		r.mu.Unlock()
@@ -368,14 +376,16 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	}
 	batch := make([]QueuedFlushItem, len(queue))
 	copy(batch, queue)
-	delete(r.queuedFlushItems, threadID)
-	r.claimedFlushItems[threadID] += len(batch)
+	st.queuedFlushItems = nil
+	st.claimedFlushItems += len(batch)
 	r.mu.Unlock()
 
 	defer func() {
 		r.mu.Lock()
-		if r.claimedFlushItems[threadID] -= len(batch); r.claimedFlushItems[threadID] <= 0 {
-			delete(r.claimedFlushItems, threadID)
+		if drop := r.threadStateIfPresent(threadID); drop != nil {
+			if drop.claimedFlushItems -= len(batch); drop.claimedFlushItems < 0 {
+				drop.claimedFlushItems = 0
+			}
 		}
 		r.mu.Unlock()
 	}()
@@ -434,10 +444,11 @@ func (r *Router) hasQueueBlockingWork(threadID string) (bool, error) {
 func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
-	if state == nil {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || st.codexBackground == nil {
 		return false
 	}
+	state := st.codexBackground
 	for _, tracker := range state.unifiedExec {
 		if tracker != nil {
 			return true
@@ -451,7 +462,9 @@ func (r *Router) hasActiveCodexUnifiedExec(threadID string) bool {
 // session-scoped, so a torn-down session must not leak entries into
 // a fresh one.
 func (r *Router) clearFlushQueueLocked(threadID string) {
-	delete(r.queuedFlushItems, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.queuedFlushItems = nil
+	}
 }
 
 func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushItem {
@@ -475,7 +488,8 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 
 	r.mu.Lock()
 	var drained []UnconfirmedFlushItem
-	for _, item := range r.queuedFlushItems[threadID] {
+	drainState := r.state(threadID)
+	for _, item := range drainState.queuedFlushItems {
 		payload := append(json.RawMessage(nil), item.Payload...)
 		drained = append(drained, UnconfirmedFlushItem{
 			QueueItemID:     item.ID,
@@ -486,9 +500,9 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 			Settlement:      item.Settlement,
 		})
 	}
-	delete(r.queuedFlushItems, threadID)
+	drainState.queuedFlushItems = nil
 
-	pending := r.pendingByThread[threadID]
+	pending := drainState.pendingSends
 	var echoConsumed []pendingSend
 	if len(pending) > 0 {
 		kept := make([]pendingSend, 0, len(pending))
@@ -524,10 +538,9 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 			drained = append(drained, restored)
 		}
 		if len(kept) == 0 {
-			delete(r.pendingByThread, threadID)
-		} else {
-			r.pendingByThread[threadID] = kept
+			kept = nil
 		}
+		r.state(threadID).pendingSends = kept
 	}
 	r.mu.Unlock()
 

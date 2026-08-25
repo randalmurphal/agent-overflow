@@ -79,12 +79,12 @@ func (o turnOutcome) errored() bool {
 func (r *Router) openTurnSpan(evt provider.ProviderEvent, turnIndex int) {
 	r.mu.Lock()
 	tracer := r.tracer
-	generation := r.turnSpanGenerations[evt.ThreadID] + 1
-	r.turnSpanGenerations[evt.ThreadID] = generation
-	existing := r.turnSpans[evt.ThreadID]
-	if existing != nil {
-		delete(r.turnSpans, evt.ThreadID)
-	}
+	id := r.identity(evt.ThreadID)
+	id.turnSpanGeneration++
+	generation := id.turnSpanGeneration
+	st := r.state(evt.ThreadID)
+	existing := st.turnSpan
+	st.turnSpan = nil
 	r.mu.Unlock()
 	if existing != nil {
 		existing.End()
@@ -104,12 +104,12 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent, turnIndex int) {
 		),
 	)
 	r.mu.Lock()
-	if r.turnSpanGenerations[evt.ThreadID] != generation {
+	if r.identity(evt.ThreadID).turnSpanGeneration != generation {
 		r.mu.Unlock()
 		span.End()
 		return
 	}
-	r.turnSpans[evt.ThreadID] = span
+	r.state(evt.ThreadID).turnSpan = span
 	r.mu.Unlock()
 	r.metrics.TurnsStarted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("provider", thread.Provider)))
@@ -120,13 +120,13 @@ func (r *Router) openTurnSpan(evt provider.ProviderEvent, turnIndex int) {
 // later provider completion.
 func (r *Router) finishTurnSpan(threadID string, outcome turnOutcome) {
 	r.mu.Lock()
-	r.turnSpanGenerations[threadID]++
-	span, ok := r.turnSpans[threadID]
-	if ok {
-		delete(r.turnSpans, threadID)
+	r.identity(threadID).turnSpanGeneration++
+	var span trace.Span
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		span, st.turnSpan = st.turnSpan, nil
 	}
 	r.mu.Unlock()
-	if !ok {
+	if span == nil {
 		return
 	}
 	r.recordTurnSpanOutcome(span, outcome)

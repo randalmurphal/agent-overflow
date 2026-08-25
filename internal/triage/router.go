@@ -54,68 +54,18 @@ type Router struct {
 	tracer                trace.Tracer
 	metrics               TurnMetrics
 	mu                    sync.Mutex
-	// flushAnchorLocks serializes, PER THREAD, every mutation of that
-	// thread's pending-send state that pairs with a store write: the
-	// echo-time pop + attach/deferred-persist (handleUserText), the
-	// interrupt-time bump-and-mark / transition-and-persist (+ in-lock
-	// anchor record) in PromoteQuietFlushSends and
-	// EagerPersistDeferredFlushSends, the session-death drain
-	// (DrainUnconfirmedFlushItems), and the pending-send sweeps
-	// (cleanupThread, ClearPendingSendsByItemIDs,
-	// ClearPendingSendForFailure). r.mu alone cannot do this: the
-	// interrupt paths must release it before their store writes, and an
-	// echo popping in that window reads a pendingSend snapshot whose
-	// AnchoredAtInterrupt claim is not yet — or never becomes — durable
-	// (round-3 review, cold-1/2/3); a sweep in the same window loses to
-	// the echo-failure reinsert (round-5, R5-2). Holding the anchor lock
-	// across pop AND write makes every popped snapshot truthful, and
-	// sweeps total.
-	//
-	// Per-thread — NOT router-wide — because the confirmed hook
-	// (message anchor record) runs inside the lock: one thread's slow
-	// record must not block every other thread's echoes, interrupts,
-	// and teardowns (round-5, R5-1). Lock order: the anchor lock is
-	// always taken BEFORE r.mu, never while holding it. Entries are
-	// never deleted — a deleted entry would hand a fresh acquirer a NEW
-	// mutex while a waiter still holds the old one, silently splitting
-	// the serialization domain (same never-delete reasoning as
-	// threadEpochs). One pointer per thread ever seen.
-	flushAnchorLocks   map[string]*sync.Mutex
-	flushAnchorLocksMu sync.Mutex
-	// drainLocks serializes, PER THREAD, an interrupt-queue drain's
-	// full pop + persist span. r.mu alone covers only the map pop: a
-	// settle-goroutine drain releases it before persisting the
-	// handed-off rows, and the promoted-echo boundary path checking
-	// hasQueuedInterruptItems in that window sees an empty queue while
-	// rows are still uncommitted — they then land above the sampled
-	// boundary and a revert cuts them as "response" although the
-	// session slice keeps them (round-7, R7-3). Queue APPENDS need no
-	// covering: they happen only on the serial provider read loop,
-	// which is busy running the echo. Lock order: taken after the
-	// thread's flush anchor (echo path), before r.mu; never deleted
-	// (same reasoning as flushAnchorLocks).
-	drainLocks   map[string]*sync.Mutex
-	drainLocksMu sync.Mutex
-	// flushStampEpochs (guarded by r.mu) counts, per thread, the
-	// MarkFlushSendsInterrupted calls that stamped at least one entry.
-	// Interrupt paths are not serialized against each other (a stop
-	// press can race the revert path's interrupt), so a failed
-	// interrupt's RestoreFlushSendsInterrupted only applies while its
-	// own epoch is still current — a newer Mark's live stamp must not
-	// be clobbered by an older call's failure. Never deleted: a
-	// CleanupThread reset would let a stale pre-cleanup token match a
-	// fresh epoch (same never-delete reasoning as threadEpochs).
-	flushStampEpochs map[string]uint64
-	// flushStampUnwinds (guarded by r.mu) parks, per thread by epoch, a
-	// restore token that arrived while a newer Mark's stamp was live.
-	// An applied restore chains down through parked epochs so
-	// overlapping interrupts that ALL fail unwind fully regardless of
-	// failure order; an unwind parked under an epoch whose interrupt
-	// succeeded is permanently unreachable — the succeeded stamp stays,
-	// which is correct — and its entry is the map's only (negligible)
-	// growth. Parked tokens from before a session replacement are
-	// dropped when the chain reaches them (thread epoch mismatch).
-	flushStampUnwinds map[string]map[uint64]FlushStampToken
+	// threads holds the per-thread correlation state, one entry per
+	// thread with a live (or recently torn-down) session. Guarded by
+	// r.mu. cleanupThread drops the whole entry, which is what makes the
+	// per-thread sweep complete BY CONSTRUCTION — see thread_state.go.
+	threads map[string]*threadState
+	// identities holds the per-thread state that must SURVIVE cleanup:
+	// monotonic epochs/generations and the two per-thread locks. Entries
+	// are never deleted. Guarded by identitiesMu, a LEAF lock, because
+	// the anchor/drain lookups must run before r.mu is taken (see the
+	// lock order on threadIdentity.anchorLock).
+	identities   map[string]*threadIdentity
+	identitiesMu sync.Mutex
 	// flushStampSeq (guarded by r.mu) gives each stamping
 	// MarkFlushSendsInterrupted call a router-unique identity. Stamp
 	// epochs alone can't provide one: an applied restore steps the
@@ -125,63 +75,10 @@ type Router struct {
 	flushStampSeq uint64
 	// flushStampApplied (guarded by r.mu) records the seq of every
 	// restore token that has applied, so duplicate restores are
-	// rejected instead of parked. Never deleted (same reasoning as
-	// flushStampEpochs); one struct{} per FAILED interrupt ever, so
-	// growth is negligible.
+	// rejected instead of parked. Keyed by the router-unique seq, not by
+	// thread — one struct{} per FAILED interrupt ever, so growth is
+	// negligible and there is nothing per-thread to sweep.
 	flushStampApplied map[uint64]struct{}
-	// interruptMarks (guarded by r.mu) records, per thread, every live
-	// MarkFlushSendsInterrupted call as {seq, interrupted turn} in call
-	// order. The per-entry stamp cannot cover an echo whose pending
-	// entry was POPPED before the mark ran but is still persisting —
-	// openQueuedEchoTurn reads the newest entry's turn so that
-	// in-flight echo still settles the cut turn "interrupted"
-	// (round-10, R10-6). Appended even when the mark stamped no FIFO
-	// entries (the popped entry is exactly why the FIFO can be empty).
-	// A failed interrupt's restore removes ITS entry wherever it sits
-	// (seq-keyed, so overlapping failures unwind correctly in any
-	// order — round-11, R11-3); a succeeded interrupt's entry lingers
-	// until MarkThreadActive clears the thread's list — an in-flight
-	// echo cannot survive session replacement, and a replacement after
-	// revert REUSES turn indexes, so a cross-session record would
-	// mislabel a reused index (round-11, CT11-2).
-	interruptMarks          map[string][]interruptMark
-	pendingCommandDiffs     map[string]pendingCommandInlineDiff
-	pendingApprovals        map[string]pendingApprovalState
-	pendingApprovalOrder    map[string][]string
-	pendingApprovalItems    map[string]string
-	pendingUserInputs       map[string]provider.UserInputRequest
-	pendingUserInputOrder   map[string][]string
-	interruptQueue          map[string][]queuedPersistence
-	openTurns               map[string]int
-	segmentIndexByScope     map[string]int
-	blockIndexByScope       map[string]int
-	activeTextBlocks        map[string]bool
-	activeThinkingBlocks    map[string]bool
-	activeTextBlockRefs     map[string]activeStreamBlock
-	activeThinkingBlockRefs map[string]activeStreamBlock
-	streamingItemCounts     map[string]int
-	// streamingScopeCounts mirrors streamingItemCounts at SCOPE
-	// granularity (key threadID|scope). The thread-wide counter gates the
-	// interrupt-queue DRAIN (drain once the whole thread is idle); the
-	// scoped counter gates the QUEUE decision so a new row defers
-	// (invariant 11) only behind a SAME-scope stream. A main-scope
-	// completion must not queue behind a concurrent subagent-scope stream.
-	streamingScopeCounts map[string]int
-	errorSeqByScope      map[string]int
-	compactionSeqByScope map[string]int
-	// timelineSeqByScope allocates per-(thread, turn, label) ids for the
-	// timeline rows whose wire envelope carries no usable provider id of its
-	// own — notifications, and command results whose synthetic envelope
-	// omitted `message.id`. The label dimension keeps those namespaces apart;
-	// go through nextScopeSequence rather than indexing it directly.
-	timelineSeqByScope map[string]int
-	// streamPersistBuffers decouple the live UI stream from durable
-	// history writes. Text/thinking deltas emit immediately on ordered
-	// provider:item_event deltas, then flush to SQLite by interval, byte
-	// threshold, or lifecycle boundary. Codex command-output deltas
-	// buffer BOTH the SQLite append and the wire-visible item upsert
-	// (no per-chunk delta channel exists for command rows).
-	streamPersistBuffers map[string]*streamPersistBuffer
 	// streamFlushMu serializes stream-persist flush critical sections
 	// (extract buffer + SQLite write) against each other and against the
 	// command-output Replace rewrite. Timer flushes run off the provider
@@ -189,90 +86,10 @@ type Router struct {
 	// the authoritative Replace snapshot lands would append a duplicate
 	// output tail after the rewrite. Lock order: streamFlushMu first,
 	// r.mu nested inside. Never acquire streamFlushMu while holding r.mu.
+	// It is DISJOINT from the per-thread anchor/drain locks — see the
+	// threadState.streamPersistBuffers doc for why that holds and which
+	// two call sites keep it holding.
 	streamFlushMu sync.Mutex
-	// settledTurns marks turns whose handleTurnComplete has already run
-	// to completion (turns row UPDATE-d, streaming items settled). A
-	// second EventTurnComplete for a settled turn is
-	// the multi-result-per-turn wire pattern (Claude CLI synthesizes a
-	// `type:"user"` envelope from a task_notification → second `result`
-	// envelope) or the synthetic-truncate-then-real race; in either
-	// case the second handler invocation is a persistence no-op so
-	// the turns row isn't re-stamped. Cleared by setOpenTurn (so a
-	// re-init can re-settle the same turn) and CleanupThread (session
-	// teardown). Key = threadID|turnIndex.
-	//
-	// Note: this gate operates at LOGICAL-TURN granularity. The
-	// frontend-facing `provider:turn_completed` emission is gated
-	// independently per WIRE ROUND via currentRoundByThread/takeOpenRound
-	// below — so a multi-result-per-turn cascade emits one
-	// turn_completed per `result` envelope while persistence stays at
-	// one settle per logical turn.
-	settledTurns map[string]bool
-	// currentRoundByThread names the active wire-round for each thread.
-	// Frontend `provider:turn_started` / `provider:turn_completed`
-	// emissions are gated per round via this slot — handleTurnStart and
-	// the re-round branch of handleInit allocate a fresh round id;
-	// handleTurnComplete reads-and-clears it via takeOpenRound. A wire
-	// round corresponds to one Claude `result` envelope (or one Codex
-	// `turn/completed`); a logical agent-overflow turn can span multiple
-	// rounds when Claude's CLI synthesizes a `type:"user"` envelope from
-	// a task_notification and the model issues another response. The
-	// per-round cadence is what drives the working indicator, Stop
-	// button, and composer-block state — all of
-	// which want "model is engaged right now" semantics rather than
-	// "user-typed prompt is in flight." Key = threadID. Cleared by
-	// takeOpenRound (every wire complete) and CleanupThread.
-	currentRoundByThread map[string]ActiveTurnSnapshot
-	// effectiveModelByThread is the session-scoped model actually serving a
-	// thread after a provider fallback. The durable threads.model remains the
-	// user's requested model; this live projection is cleared with the provider
-	// session and included in GetThreadLiveState hydration.
-	effectiveModelByThread map[string]string
-	// effectiveModelRevisions is monotonic per thread for the process
-	// lifetime. Set/clear emissions can cross between provider and teardown
-	// goroutines; the revision lets the frontend reject stale delivery.
-	effectiveModelRevisions map[string]uint64
-	// tasksByThread is the per-thread mirror of the Claude Task*
-	// family task list. Survives any number of Parser recreations
-	// within the process lifetime so a TaskUpdate against an id
-	// created before session resume still routes correctly. Cleared
-	// by CleanupThread. Bounded by
-	// maxTasksPerThread on insert (cap-and-reject).
-	tasksByThread map[string]*threadTasks
-	// turnSpans holds the active span for each in-flight turn so we can
-	// close it when the matching EventTurnComplete arrives. Keyed by
-	// threadID since the provider treats each thread as its own turn
-	// stream.
-	turnSpans map[string]trace.Span
-	// turnSpanGenerations prevents a slow or reentrant span start from
-	// registering after a newer start or terminal cleanup won the thread.
-	// Values are monotonic for the process lifetime and are never deleted:
-	// resetting one would let an old in-flight generation match a later
-	// session that reused the thread id.
-	turnSpanGenerations map[string]uint64
-	// stoppedThreads remembers thread IDs that CleanupThread has
-	// explicitly stopped. While the flag is set, Handle drops events
-	// that would persist to the store so late-arriving readLoop lines
-	// from the torn-down subprocess do not leave orphan rows on the
-	// stopped thread (Bug B5). Cleared ONLY by the host's session-start
-	// path via MarkThreadActive — never by a wire event. A session that
-	// dies before emitting anything recognizable (e.g. Claude failing
-	// its --resume-session-at validation pre-init) must still have its
-	// error results routed, so the host declares the thread active when
-	// it commits to a replacement session rather than waiting for proof
-	// of life from the wire. Host-synthesized events bypass the flag via
-	// HandleSynthetic.
-	stoppedThreads map[string]struct{}
-	// threadEpochs counts MarkThreadActive calls per thread. An
-	// asynchronous teardown captures the epoch before unregistering a
-	// dead session and hands it to CleanupThreadIfEpoch, which no-ops
-	// when the epoch has moved — i.e. the host committed to a
-	// replacement session while the teardown goroutine was still in
-	// flight. Entries are never deleted (a delete would reset the
-	// counter to 0 and let a stale captured 0 match); growth is bounded
-	// by the number of distinct threads that start a session in this
-	// process's lifetime.
-	threadEpochs map[string]uint64
 	// unknownSessionStatusLogged throttles the "unknown session-status
 	// content" log to one line per distinct value. EventSessionStatus
 	// carries provider-specific Content strings ("disconnected",
@@ -287,31 +104,6 @@ type Router struct {
 	// with r.mu already held, so the drift bookkeeping must never reach
 	// for it. See send_shape.go.
 	sendShapeDrift
-	// codexBackground is the Codex-specific background-terminal projector
-	// state, keyed by threadID. Tracks inProgress unifiedExec items +
-	// spawn_agent rows with running children so we can stamp
-	// is_background=true on the first wire-typed yield signal (text /
-	// reasoning delta) or at turn/completed (the catchall). See
-	// codex_background.go for the lifecycle details and invariant 25 for
-	// the wire-typed-signal rule this implements.
-	codexBackground map[string]*codexBackgroundState
-	// terminalInteractionSeq counts terminal interaction carriers per
-	// (thread, turn, processID). Empty wait polls may reuse the latest
-	// carrier for that process; forwarded-stdin interactions always take
-	// the next id. Bounded the same way other id-allocating counters are:
-	// retained across clearOpenTurn to avoid multi-result id collisions and
-	// swept on CleanupThread / selective turn re-init reset. See
-	// terminal_interaction.go for the handler.
-	terminalInteractionSeq map[string]int
-	// openAPIRetryRows flags threads whose current api_retry row is in
-	// status=running and therefore eligible to flip on the next
-	// forward-progress event. The hot streaming path
-	// (maybeMarkAPIRetryCompleted, called per text/thinking/tool event)
-	// short-circuits when the flag is unset so the common case avoids
-	// a SQLite GetThreadItem on every text delta. Set in handleAPIRetry
-	// when persisting a running row; cleared after the flip completes
-	// or when the turn closes via clearOpenTurn / CleanupThread.
-	openAPIRetryRows map[string]bool
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the
@@ -337,63 +129,6 @@ type Router struct {
 	// this counter (see WaitForPendingSettles) so SQLite isn't closed
 	// underneath an in-flight settle.
 	settleWG sync.WaitGroup
-	// pendingByThread is the FIFO of AO-initiated user sends awaiting
-	// wire confirmation, keyed by threadID. Triage's send path appends
-	// an entry when it dispatches a user message; the matching wire
-	// EventUserText pops the head. Bounded by user attention (typically
-	// 0-1 entries per thread). Lifecycle: user-send-time carry-over —
-	// swept at CleanupThread as a safety net. See pending_send.go.
-	pendingByThread map[string][]pendingSend
-	// wireOnlyUserTextSeen dedupes wire EventUserText events that don't
-	// match any pending AO send (the "agent prompted itself" or
-	// session-resume replay case). Outer key = threadID; inner set =
-	// providerItemIDs we've already observed. Cleared by CleanupThread.
-	wireOnlyUserTextSeen map[string]map[string]struct{}
-	// queuedFlushItems is the per-thread "queued user message awaiting
-	// provider boundary" state. Populated when the user types into the
-	// composer mid-turn and submits; drained when no top-level
-	// foreground tool or queue-blocking background task remains (watch
-	// tasks — Monitor, meta.watch_task — never block the drain; see
-	// HasQueueBlockingBackgroundToolCall). Lifecycle: spans
-	// turn boundaries by design, so NOT swept by clearOpenTurn — only
-	// by CleanupThread on session teardown. See flush_queue.go.
-	queuedFlushItems map[string][]QueuedFlushItem
-	// pendingWakeupByThread is the fire time (epoch ms) of the Claude
-	// harness's pending ScheduleWakeup timer per thread. The timer is
-	// in-process CLI state with no task lifecycle, so this map is the
-	// only record that an idle-looking session will resume itself; the
-	// idle-session reaper reads it via PendingWakeupAt. Session-scoped:
-	// swept by cleanupThread AND MarkThreadActive (a replacement process
-	// never inherits the timer). See session_wakeup.go.
-	pendingWakeupByThread map[string]int64
-	// subagentProgress (guarded by r.mu) is the latest live progress tick
-	// per launch tool_use, keyed thread:item. Live UI state only; the
-	// terminal path consumes it into the launch row's meta. Swept with
-	// pendingWakeupByThread (same process-scoped lifetime). See
-	// subagent_progress.go.
-	subagentProgress map[string]provider.SubagentProgressMeta
-	// compactingSinceByThread is the open compacting window per thread:
-	// the epoch-ms timestamp of the frame that opened it. Live-only
-	// projection behind `provider:compacting` (compaction_status.go);
-	// closed by the explicit close frame, the compact boundary, or turn
-	// completion, and swept by cleanupThread AND MarkThreadActive (a
-	// replacement process is never mid-compaction).
-	compactingSinceByThread map[string]int64
-	// commandLifecycle correlates Claude's `command_lifecycle` acks back
-	// to the AO row and the wire round each stdin user message was queued
-	// into, keyed threadID → command_uuid. Send-time carry-over, released
-	// on the terminal ack and swept by cleanupThread; bounded per thread
-	// by maxCommandLifecycleEntriesPerThread. See command_lifecycle.go for
-	// why neither value can be recovered lazily.
-	commandLifecycle map[string]map[string]commandLifecycleEntry
-	// claimedFlushItems counts batch items mid-handoff between the
-	// queue delete in tryFlushQueue and the dispatcher's synchronous
-	// in-flight record. Folded into QueuedFlushItemCount so the
-	// revert-on-interrupt predicate sees a draining batch as queued →
-	// claimed → in-flight, never invisible (round-14 close-out, C14-1).
-	// Held only across the dispatcher callback; not swept by
-	// CleanupThread — tryFlushQueue's deferred drop always runs.
-	claimedFlushItems map[string]int
 	// dispatchFlush is the app-layer callback invoked when the queue
 	// drains. Wired via SetFlushDispatcher; nil disables dispatch. Triage
 	// releases r.mu before invoking, and the callback must return quickly;
@@ -409,43 +144,6 @@ type Router struct {
 	// message anchor recording. Direct sends never fire it — their
 	// anchor is recorded at send time in app_send.go.
 	flushUserTextConfirmed func(threadID string, item store.Item)
-	// workspacePathByThread is a small read-through cache for the
-	// thread row's WorkspacePath, populated lazily by path-ref enrichment
-	// (the only hot caller). A thread's workspace is set at create
-	// time and effectively immutable, so the cache is safe without
-	// invalidation beyond CleanupThread. Without it, every
-	// assistant_text settle ran a SQLite GetThread JUST to read a
-	// stable string — fine on its own, but adds up across the
-	// 10-30 text blocks per heavy turn. Keyed by threadID.
-	workspacePathByThread map[string]string
-	// streamingPathRefsLast carries the live-stream pathRefs state per
-	// streaming assistant_text row: the incremental pathlinks scanner
-	// (regex only over each flush's appended tail; stat re-validation
-	// of all known candidates per tick — the full rescan used to make
-	// total scan work quadratic in message length) plus the dedupe
-	// snapshot that lets unchanged windows skip the meta JSON
-	// round-trip, the SQLite UPDATE, and the action:"meta" emission.
-	// Keyed by streamPersistKey(threadID,itemID); cleared at
-	// doSettleStreamingText, clearActiveStreamBlocksForTurnLocked,
-	// and CleanupThread so a torn-down
-	// streaming row can't leak its last-seen state into the next
-	// turn or session.
-	streamingPathRefsLast map[string]*streamingPathRefsState
-	// revertedTurns marks threads whose next provider:turn_completed
-	// emission should carry RevertedUserMessage=true. Set by the App
-	// layer's revert-on-interrupt path BEFORE it tears down the
-	// session; consumed (read-and-clear) inside buildRoundCompletedEvent.
-	// Defensively swept by clearOpenTurn and CleanupThread so a stale
-	// flag never leaks into a future turn. See revert_marker.go.
-	revertedTurns map[string]struct{}
-	// usageEmitThrottles rate-limits provider:usage emissions to at most
-	// one per usageEmitMinInterval per thread. The context-window meter
-	// changes gradually during streaming; Claude can fire 10-50 token
-	// usage events/second but the UI doesn't benefit from updates faster
-	// than ~2/sec. The pending window is flushed on turn-complete and
-	// CleanupThread so the final reading always reaches the frontend.
-	// Keyed by threadID.
-	usageEmitThrottles map[string]*usageEmitThrottle
 	// assistantTextStream is an app-layer observer of a streaming
 	// assistant_text row's full accumulated text: called with
 	// final=false at each persistence flush window (the same cadence
@@ -539,57 +237,10 @@ func NewRouter(st *store.Store, emit func(eventName string, data any)) *Router {
 			ItemsPersisted:    ip,
 			PayloadsPersisted: pp,
 		},
-		pendingCommandDiffs:        make(map[string]pendingCommandInlineDiff),
-		pendingApprovals:           make(map[string]pendingApprovalState),
-		pendingApprovalOrder:       make(map[string][]string),
-		pendingApprovalItems:       make(map[string]string),
-		pendingUserInputs:          make(map[string]provider.UserInputRequest),
-		pendingUserInputOrder:      make(map[string][]string),
-		interruptQueue:             make(map[string][]queuedPersistence),
-		openTurns:                  make(map[string]int),
-		segmentIndexByScope:        make(map[string]int),
-		blockIndexByScope:          make(map[string]int),
-		activeTextBlocks:           make(map[string]bool),
-		activeThinkingBlocks:       make(map[string]bool),
-		activeTextBlockRefs:        make(map[string]activeStreamBlock),
-		activeThinkingBlockRefs:    make(map[string]activeStreamBlock),
-		streamingItemCounts:        make(map[string]int),
-		streamingScopeCounts:       make(map[string]int),
-		errorSeqByScope:            make(map[string]int),
-		compactionSeqByScope:       make(map[string]int),
-		timelineSeqByScope:         make(map[string]int),
-		streamPersistBuffers:       make(map[string]*streamPersistBuffer),
-		settledTurns:               make(map[string]bool),
-		currentRoundByThread:       make(map[string]ActiveTurnSnapshot),
-		effectiveModelByThread:     make(map[string]string),
-		effectiveModelRevisions:    make(map[string]uint64),
-		tasksByThread:              make(map[string]*threadTasks),
-		turnSpans:                  make(map[string]trace.Span),
-		turnSpanGenerations:        make(map[string]uint64),
-		stoppedThreads:             make(map[string]struct{}),
-		threadEpochs:               make(map[string]uint64),
+		threads:                    make(map[string]*threadState),
+		identities:                 make(map[string]*threadIdentity),
 		unknownSessionStatusLogged: make(map[string]struct{}),
-		codexBackground:            make(map[string]*codexBackgroundState),
-		terminalInteractionSeq:     make(map[string]int),
-		openAPIRetryRows:           make(map[string]bool),
-		pendingByThread:            make(map[string][]pendingSend),
-		flushAnchorLocks:           make(map[string]*sync.Mutex),
-		drainLocks:                 make(map[string]*sync.Mutex),
-		flushStampEpochs:           make(map[string]uint64),
-		flushStampUnwinds:          make(map[string]map[uint64]FlushStampToken),
 		flushStampApplied:          make(map[uint64]struct{}),
-		interruptMarks:             make(map[string][]interruptMark),
-		wireOnlyUserTextSeen:       make(map[string]map[string]struct{}),
-		queuedFlushItems:           make(map[string][]QueuedFlushItem),
-		pendingWakeupByThread:      make(map[string]int64),
-		subagentProgress:           make(map[string]provider.SubagentProgressMeta),
-		compactingSinceByThread:    make(map[string]int64),
-		commandLifecycle:           make(map[string]map[string]commandLifecycleEntry),
-		claimedFlushItems:          make(map[string]int),
-		workspacePathByThread:      make(map[string]string),
-		streamingPathRefsLast:      make(map[string]*streamingPathRefsState),
-		revertedTurns:              make(map[string]struct{}),
-		usageEmitThrottles:         make(map[string]*usageEmitThrottle),
 	}
 }
 
@@ -1073,7 +724,8 @@ func (r *Router) maybeReopenSettledRound(evt provider.ProviderEvent) {
 	}
 
 	r.mu.Lock()
-	settled := r.settledTurns[settledTurnKey(evt.ThreadID, turnIndex)]
+	settledState := r.threadStateIfPresent(evt.ThreadID)
+	settled := settledState != nil && settledState.settledTurns[turnIndex]
 	r.mu.Unlock()
 	if !settled {
 		return

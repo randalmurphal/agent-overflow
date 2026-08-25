@@ -44,7 +44,7 @@ func TestSendShapeStampedAtEveryRegistrar(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	queue := append([]pendingSend(nil), router.pendingByThread["t1"]...)
+	queue := append([]pendingSend(nil), router.state("t1").pendingSends...)
 	router.mu.Unlock()
 
 	if len(queue) != len(want) {
@@ -108,7 +108,7 @@ func TestSendShapeSniffStaysAuthoritative(t *testing.T) {
 	// deferred-flush count must include it.
 	item := store.Item{ID: "user:4:flush:1", ThreadID: "t1", TurnIndex: 4, Kind: "user_text", Role: "user"}
 	router.mu.Lock()
-	router.pendingByThread["t1"] = []pendingSend{{
+	router.state("t1").pendingSends = []pendingSend{{
 		AOItemID: "user:4:flush:1", QueueItemID: "queue:q1", TurnIndex: 4,
 		DeferredItem: &item, Shape: sendShapeDirect,
 		InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
@@ -132,7 +132,7 @@ func TestSendShapeSniffStaysAuthoritative(t *testing.T) {
 		t.Fatalf("count returned %d despite the drift panic", got)
 	}
 	router.mu.Lock()
-	router.pendingByThread["t1"][0].Shape = sendShapeFlush
+	router.state("t1").pendingSends[0].Shape = sendShapeFlush
 	router.mu.Unlock()
 	if got := router.DeferredPendingFlushItemCount("t1"); got != 1 {
 		t.Fatalf("DeferredPendingFlushItemCount = %d, want 1", got)

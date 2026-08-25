@@ -129,7 +129,7 @@ func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) 
 		}
 	}
 	router.mu.Lock()
-	queuedBefore := len(router.interruptQueue["t1"])
+	queuedBefore := len(router.state("t1").interruptQueue)
 	router.mu.Unlock()
 	if queuedBefore != 1 {
 		t.Fatalf("expected 1 queued completion before turn-complete, got %d", queuedBefore)
@@ -216,7 +216,7 @@ func TestTurnCompleteTruncatedFlipsRunningAndDrainsQueueAsErrored(t *testing.T) 
 	// 5. Post-drain, the interrupt queue must be empty so a late stray
 	// event cannot reopen the turn.
 	router.mu.Lock()
-	remaining := len(router.interruptQueue["t1"])
+	remaining := len(router.state("t1").interruptQueue)
 	router.mu.Unlock()
 	if remaining != 0 {
 		t.Errorf("interrupt queue still has %d entries after truncation drain", remaining)

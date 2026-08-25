@@ -36,10 +36,14 @@ func (r *Router) handleSessionWakeup(evt provider.ProviderEvent) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if meta.ScheduledForUnixMs <= 0 {
-		delete(r.pendingWakeupByThread, evt.ThreadID)
+		if st := r.threadStateIfPresent(evt.ThreadID); st != nil {
+			st.pendingWakeupAt, st.pendingWakeupSet = 0, false
+		}
 		return nil
 	}
-	r.pendingWakeupByThread[evt.ThreadID] = meta.ScheduledForUnixMs
+	st := r.state(evt.ThreadID)
+	st.pendingWakeupAt = meta.ScheduledForUnixMs
+	st.pendingWakeupSet = true
 	return nil
 }
 
@@ -55,7 +59,12 @@ func (r *Router) PendingWakeupAt(threadID string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	r.mu.Lock()
-	at, ok := r.pendingWakeupByThread[threadID]
+	st := r.threadStateIfPresent(threadID)
+	var at int64
+	ok := st != nil && st.pendingWakeupSet
+	if ok {
+		at = st.pendingWakeupAt
+	}
 	r.mu.Unlock()
 	if !ok {
 		return time.Time{}, false

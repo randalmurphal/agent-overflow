@@ -160,10 +160,11 @@ func classifyCommandDelivery(roundAtQueue, roundAtStart string) CommandDelivery 
 func (r *Router) rememberCommandLifecycle(threadID, commandUUID string, entry commandLifecycleEntry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	byUUID := r.commandLifecycle[threadID]
+	st := r.state(threadID)
+	byUUID := st.commandLifecycle
 	if byUUID == nil {
 		byUUID = make(map[string]commandLifecycleEntry)
-		r.commandLifecycle[threadID] = byUUID
+		st.commandLifecycle = byUUID
 	}
 	if _, exists := byUUID[commandUUID]; !exists && len(byUUID) >= maxCommandLifecycleEntriesPerThread {
 		log.Printf("triage: command lifecycle map full for thread %s (%d entries); dropping correlation for %s",
@@ -176,19 +177,26 @@ func (r *Router) rememberCommandLifecycle(threadID, commandUUID string, entry co
 func (r *Router) peekCommandLifecycle(threadID, commandUUID string) (commandLifecycleEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	entry, ok := r.commandLifecycle[threadID][commandUUID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return commandLifecycleEntry{}, false
+	}
+	entry, ok := st.commandLifecycle[commandUUID]
 	return entry, ok
 }
 
 func (r *Router) takeCommandLifecycle(threadID, commandUUID string) (commandLifecycleEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	byUUID := r.commandLifecycle[threadID]
-	entry, ok := byUUID[commandUUID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return commandLifecycleEntry{}, false
+	}
+	entry, ok := st.commandLifecycle[commandUUID]
 	if ok {
-		delete(byUUID, commandUUID)
-		if len(byUUID) == 0 {
-			delete(r.commandLifecycle, threadID)
+		delete(st.commandLifecycle, commandUUID)
+		if len(st.commandLifecycle) == 0 {
+			st.commandLifecycle = nil
 		}
 	}
 	return entry, ok
@@ -203,7 +211,7 @@ func (r *Router) pendingSendItemIDForProviderID(threadID, providerItemID string)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, pending := range r.pendingByThread[threadID] {
+	for _, pending := range r.pendingSendsLocked(threadID) {
 		if pending.ExpectedProviderItemID == providerItemID {
 			return pending.AOItemID
 		}

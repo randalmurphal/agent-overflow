@@ -293,10 +293,11 @@ func (r *Router) persistAndEmitContextWindow(threadID string, window provider.Co
 func (r *Router) throttledEmitUsage(threadID string, evt provider.UsageEvent) {
 	now := time.Now()
 	r.mu.Lock()
-	throttle := r.usageEmitThrottles[threadID]
+	st := r.state(threadID)
+	throttle := st.usageEmitThrottle
 	if throttle == nil {
 		throttle = &usageEmitThrottle{}
-		r.usageEmitThrottles[threadID] = throttle
+		st.usageEmitThrottle = throttle
 	}
 	if now.Sub(throttle.lastEmittedAt) >= usageEmitMinInterval {
 		throttle.lastEmittedAt = now
@@ -314,7 +315,11 @@ func (r *Router) throttledEmitUsage(threadID string, evt provider.UsageEvent) {
 // or a zero value and false otherwise. Caller must hold r.mu and emit
 // the returned event AFTER releasing the lock.
 func (r *Router) takeUsageEmitPendingLocked(threadID string) (provider.UsageEvent, bool) {
-	throttle := r.usageEmitThrottles[threadID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return provider.UsageEvent{}, false
+	}
+	throttle := st.usageEmitThrottle
 	if throttle == nil || throttle.pending == nil {
 		return provider.UsageEvent{}, false
 	}
@@ -341,6 +346,8 @@ func (r *Router) FlushUsageEmitThrottle(threadID string) {
 // context meter reading jumps discontinuously.
 func (r *Router) resetUsageEmitThrottle(threadID string) {
 	r.mu.Lock()
-	delete(r.usageEmitThrottles, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.usageEmitThrottle = nil
+	}
 	r.mu.Unlock()
 }

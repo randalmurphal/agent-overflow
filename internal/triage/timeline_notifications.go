@@ -117,7 +117,9 @@ func (r *Router) ResetThreadTodo(threadID string) error {
 		return nil
 	}
 	r.mu.Lock()
-	delete(r.tasksByThread, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.tasks = nil
+	}
 	r.mu.Unlock()
 	return r.projectTodoSnapshot(threadID, nil, 0)
 }
@@ -317,9 +319,13 @@ func (r *Router) nextNotificationSequence(threadID string, turnIndex int) int {
 func (r *Router) nextScopeSequence(threadID string, turnIndex int, label string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := scopeCounterKey(threadID, turnIndex, label)
-	seq := r.timelineSeqByScope[key]
-	r.timelineSeqByScope[key] = seq + 1
+	key := scopeCounterKey(turnIndex, label)
+	st := r.state(threadID)
+	if st.timelineSeqByScope == nil {
+		st.timelineSeqByScope = make(map[string]int)
+	}
+	seq := st.timelineSeqByScope[key]
+	st.timelineSeqByScope[key] = seq + 1
 	return seq
 }
 

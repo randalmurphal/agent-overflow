@@ -41,18 +41,25 @@ func (r *Router) setPendingUserInput(threadID string, request provider.UserInput
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pendingUserInputs[approvalStateKey(threadID, request.RequestID)] = request
-	rememberInteractiveRequestOrder(r.pendingUserInputOrder, threadID, request.RequestID)
+	st := r.state(threadID)
+	if st.pendingUserInputs == nil {
+		st.pendingUserInputs = make(map[string]provider.UserInputRequest)
+	}
+	st.pendingUserInputs[request.RequestID] = request
+	st.pendingUserInputOrder = rememberInteractiveRequestOrder(st.pendingUserInputOrder, threadID, request.RequestID)
 }
 
 func (r *Router) takePendingUserInput(threadID, requestID string) (provider.UserInputRequest, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := approvalStateKey(threadID, requestID)
-	request, ok := r.pendingUserInputs[key]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return provider.UserInputRequest{}, false
+	}
+	request, ok := st.pendingUserInputs[requestID]
 	if ok {
-		delete(r.pendingUserInputs, key)
-		removeInteractiveRequestOrder(r.pendingUserInputOrder, threadID, requestID)
+		delete(st.pendingUserInputs, requestID)
+		st.pendingUserInputOrder = removeInteractiveRequestOrder(st.pendingUserInputOrder, threadID, requestID)
 	}
 	return request, ok
 }

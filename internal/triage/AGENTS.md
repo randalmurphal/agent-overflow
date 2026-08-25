@@ -266,6 +266,13 @@ none fits.
   The frontend renders the chip only after `ProbeDevServerURL`
   (`internal/devserverprobe`) confirms a listener on the port.
 - `maps.go` — generic map utilities (currently just `deleteByPrefix`).
+- `thread_state.go` — `threadState` (the Router's whole per-thread
+  correlation surface, dropped in one `delete` at cleanup) and
+  `threadIdentity` (the per-thread state that must SURVIVE cleanup:
+  epochs, generations, the flush-stamp ledger, interrupt marks, and the
+  anchor/drain locks), plus the four accessors every call site goes
+  through. Read the type docs before adding per-thread state — where a
+  field lands decides whether a session teardown drops it.
 
 ## Routing table
 
@@ -750,9 +757,26 @@ Editing rules:
 
 ## Correlation state (bounded, not derived)
 
-Router maps exist only to correlate adjacent provider events; they are
-not a cache of store or provider-session data. Every map needs a clear
-owner and cleanup path.
+Per-thread correlation state exists only to correlate adjacent provider
+events; it is not a cache of store or provider-session data. Every field
+needs a clear owner and cleanup path.
+
+**Where it lives.** One `map[threadID]*threadState` on the Router
+(`thread_state.go`), NOT a new thread-keyed map beside it. `cleanupThread`
+sweeps by dropping that one entry, so a field added to `threadState` is
+swept the day it is added — by construction, with no per-map delete to
+keep manually complete. Add a thread-keyed map to the Router and you
+re-open exactly the class of leak the struct exists to close.
+
+State that must SURVIVE cleanup goes on `threadIdentity` instead, and
+only for one of the two reasons that type documents: a monotonic
+counter whose reset would let a stale captured value match a fresh
+session, or a lock whose replacement would split a serialization domain.
+
+Write paths take `r.state(id)` (get-or-create); read paths take
+`r.threadStateIfPresent(id)` and treat nil as the zero values the old
+per-field maps returned for a missing key. A read path that mints state
+leaks an entry per idle thread queried.
 
 Use these categories when adding or moving state:
 

@@ -86,32 +86,31 @@ func (r *Router) persistedToolCallScope(threadID, toolUseID string) string {
 	return strings.TrimSpace(item.ParentID)
 }
 
-func approvalStateKey(threadID, requestID string) string {
-	return threadID + ":" + requestID
-}
-
-func approvalDecisionKey(threadID, itemID string) string {
-	return threadID + ":" + itemID
-}
-
 func (r *Router) setPendingApproval(threadID string, approval pendingApprovalState) {
 	if approval.Request.RequestID == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pendingApprovals[approvalStateKey(threadID, approval.Request.RequestID)] = approval
-	rememberInteractiveRequestOrder(r.pendingApprovalOrder, threadID, approval.Request.RequestID)
+	st := r.state(threadID)
+	if st.pendingApprovals == nil {
+		st.pendingApprovals = make(map[string]pendingApprovalState)
+	}
+	st.pendingApprovals[approval.Request.RequestID] = approval
+	st.pendingApprovalOrder = rememberInteractiveRequestOrder(st.pendingApprovalOrder, threadID, approval.Request.RequestID)
 }
 
 func (r *Router) takePendingApproval(threadID, requestID string) (pendingApprovalState, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := approvalStateKey(threadID, requestID)
-	approval, ok := r.pendingApprovals[key]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return pendingApprovalState{}, false
+	}
+	approval, ok := st.pendingApprovals[requestID]
 	if ok {
-		delete(r.pendingApprovals, key)
-		removeInteractiveRequestOrder(r.pendingApprovalOrder, threadID, requestID)
+		delete(st.pendingApprovals, requestID)
+		st.pendingApprovalOrder = removeInteractiveRequestOrder(st.pendingApprovalOrder, threadID, requestID)
 	}
 	return approval, ok
 }
@@ -122,22 +121,33 @@ func (r *Router) rememberApprovalDecision(threadID, itemID, decision string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pendingApprovalItems[approvalDecisionKey(threadID, itemID)] = decision
+	st := r.state(threadID)
+	if st.pendingApprovalItems == nil {
+		st.pendingApprovalItems = make(map[string]string)
+	}
+	st.pendingApprovalItems[itemID] = decision
 }
 
 func (r *Router) takeApprovalDecision(threadID, itemID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := approvalDecisionKey(threadID, itemID)
-	decision := r.pendingApprovalItems[key]
-	delete(r.pendingApprovalItems, key)
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return ""
+	}
+	decision := st.pendingApprovalItems[itemID]
+	delete(st.pendingApprovalItems, itemID)
 	return decision
 }
 
 func (r *Router) peekApprovalDecision(threadID, itemID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.pendingApprovalItems[approvalDecisionKey(threadID, itemID)]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return ""
+	}
+	return st.pendingApprovalItems[itemID]
 }
 
 func decodeApprovalRequest(raw json.RawMessage) provider.ApprovalRequest {

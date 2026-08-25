@@ -339,7 +339,8 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		expectedClientID = aoItemID
 	}
 	r.mu.Lock()
-	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
+	st := r.state(threadID)
+	st.pendingSends = append(st.pendingSends, pendingSend{
 		AOItemID:               aoItemID,
 		QueueItemID:            queueItemID,
 		TurnIndex:              turnIndex,
@@ -364,7 +365,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 func (r *Router) HasPendingSendForThread(threadID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.pendingByThread[threadID]) > 0
+	return len(r.pendingSendsLocked(threadID)) > 0
 }
 
 // peekPendingSendHead returns the FIFO head for threadID without
@@ -377,7 +378,7 @@ func (r *Router) HasPendingSendForThread(threadID string) bool {
 func (r *Router) peekPendingSendHead(threadID string) (pendingSend, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	queue := r.pendingByThread[threadID]
+	queue := r.pendingSendsLocked(threadID)
 	if len(queue) == 0 {
 		return pendingSend{}, false
 	}
@@ -463,7 +464,7 @@ func (r *Router) consumeMatchingPendingSend(threadID, providerItemID string) (pe
 func (r *Router) consumeMatchingPendingSendForEcho(threadID, providerItemID, clientID string) (pendingSend, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	queue := r.pendingByThread[threadID]
+	queue := r.pendingSendsLocked(threadID)
 	if len(queue) == 0 {
 		return pendingSend{}, false
 	}
@@ -510,16 +511,17 @@ func (r *Router) consumeMatchingPendingSendForEcho(threadID, providerItemID, cli
 // still references the popped entry) — queues are tiny, so the
 // allocation is cheap and the GC behavior is obvious.
 func (r *Router) popPendingSendAtLocked(threadID string, i int) pendingSend {
-	queue := r.pendingByThread[threadID]
+	st := r.state(threadID)
+	queue := st.pendingSends
 	entry := queue[i]
 	if len(queue) == 1 {
-		delete(r.pendingByThread, threadID)
+		st.pendingSends = nil
 		return entry
 	}
 	next := make([]pendingSend, 0, len(queue)-1)
 	next = append(next, queue[:i]...)
 	next = append(next, queue[i+1:]...)
-	r.pendingByThread[threadID] = next
+	st.pendingSends = next
 	return entry
 }
 
@@ -542,7 +544,11 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 	defer anchor.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	queue := r.pendingByThread[threadID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return
+	}
+	queue := st.pendingSends
 	if len(queue) == 0 {
 		return
 	}
@@ -552,12 +558,12 @@ func (r *Router) ClearPendingSendForFailure(threadID, aoItemID string) {
 		}
 		nextLen := len(queue) - 1
 		if nextLen == 0 {
-			delete(r.pendingByThread, threadID)
+			st.pendingSends = nil
 		} else {
 			next := make([]pendingSend, 0, nextLen)
 			next = append(next, queue[:i]...)
 			next = append(next, queue[i+1:]...)
-			r.pendingByThread[threadID] = next
+			st.pendingSends = next
 		}
 		return
 	}
@@ -578,7 +584,9 @@ func (r *Router) clearPendingSendsForThread(threadID string) {
 // CleanupThread to keep the entire teardown inside one critical
 // section so a concurrent Handle observes a consistent snapshot.
 func (r *Router) clearPendingSendsLocked(threadID string) {
-	delete(r.pendingByThread, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.pendingSends = nil
+	}
 }
 
 // MaxPendingSendTurnIndex returns the highest TurnIndex across all
@@ -590,8 +598,8 @@ func (r *Router) clearPendingSendsLocked(threadID string) {
 func (r *Router) MaxPendingSendTurnIndex(threadID string) (int, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	pending, ok := r.pendingByThread[threadID]
-	if !ok || len(pending) == 0 {
+	pending := r.pendingSendsLocked(threadID)
+	if len(pending) == 0 {
 		return 0, false
 	}
 	maxTurn := pending[0].TurnIndex
@@ -613,10 +621,11 @@ func (r *Router) markWireOnlyUserTextSeen(threadID, providerItemID string) bool 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	seen, ok := r.wireOnlyUserTextSeen[threadID]
-	if !ok {
+	st := r.state(threadID)
+	seen := st.wireOnlyUserTextSeen
+	if seen == nil {
 		seen = make(map[string]struct{})
-		r.wireOnlyUserTextSeen[threadID] = seen
+		st.wireOnlyUserTextSeen = seen
 	}
 	if _, dup := seen[providerItemID]; dup {
 		return false
@@ -625,17 +634,12 @@ func (r *Router) markWireOnlyUserTextSeen(threadID, providerItemID string) bool 
 	return true
 }
 
-// flushAnchor returns threadID's anchor mutex, creating it on first
-// use. Entries are never deleted (see the flushAnchorLocks field doc).
+// flushAnchor returns threadID's anchor mutex, creating its identity
+// record on first use. Identity records are never deleted (see the
+// threadIdentity.anchorLock doc for why replacing this mutex would split
+// the serialization domain).
 func (r *Router) flushAnchor(threadID string) *sync.Mutex {
-	r.flushAnchorLocksMu.Lock()
-	defer r.flushAnchorLocksMu.Unlock()
-	mu, ok := r.flushAnchorLocks[threadID]
-	if !ok {
-		mu = &sync.Mutex{}
-		r.flushAnchorLocks[threadID] = mu
-	}
-	return mu
+	return &r.identity(threadID).anchorLock
 }
 
 // isWireOnlyUserTextSeen reports whether providerItemID was already
@@ -650,7 +654,11 @@ func (r *Router) isWireOnlyUserTextSeen(threadID, providerItemID string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, seen := r.wireOnlyUserTextSeen[threadID][providerItemID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return false
+	}
+	_, seen := st.wireOnlyUserTextSeen[providerItemID]
 	return seen
 }
 
@@ -671,14 +679,17 @@ func (r *Router) isWireOnlyUserTextSeen(threadID, providerItemID string) bool {
 func (r *Router) reinsertPendingSendHead(threadID string, entry pendingSend) {
 	entry.EchoConsumed = true
 	r.mu.Lock()
-	r.pendingByThread[threadID] = append([]pendingSend{entry}, r.pendingByThread[threadID]...)
+	st := r.state(threadID)
+	st.pendingSends = append([]pendingSend{entry}, st.pendingSends...)
 	r.mu.Unlock()
 }
 
 // clearWireOnlyUserTextLocked clears the dedup set for threadID. Caller must
 // hold r.mu.
 func (r *Router) clearWireOnlyUserTextLocked(threadID string) {
-	delete(r.wireOnlyUserTextSeen, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.wireOnlyUserTextSeen = nil
+	}
 }
 
 // EagerPersistedFlush describes a deferred flush send that was eagerly
@@ -772,17 +783,18 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 	// only follow the death drain, which serializes behind this
 	// function's anchor lock, so the epoch check at claim time covers
 	// the store writes below too.
-	if r.threadEpochs[threadID] != tok.threadEpoch {
+	id := r.identity(threadID)
+	if id.epoch != tok.threadEpoch {
 		r.mu.Unlock()
 		return nil
 	}
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	// The stamp re-write covers only entries REGISTERED between this
 	// interrupt's pre-ack Mark and now — Mark already stamped everything
 	// else. It is fenced by the mark token's stamp epoch: a concurrent
 	// interrupt that Marked during the ack wait published a NEWER stamp
 	// that this pass's post-ack value must not clobber (round-9, R9-5).
-	stampCurrent := r.flushStampEpochs[threadID] == tok.stampEpoch
+	stampCurrent := id.flushStampEpoch == tok.stampEpoch
 	type eagerSnapshot struct {
 		item        store.Item
 		queueItemID string
@@ -883,11 +895,11 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 	defer anchor.Unlock()
 
 	r.mu.Lock()
-	if r.threadEpochs[threadID] != tok.threadEpoch {
+	if r.identity(threadID).epoch != tok.threadEpoch {
 		r.mu.Unlock()
 		return nil
 	}
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	var ids []string
 	for i := range pending {
 		// Already-anchored entries were promoted (and anchor-recorded) by
@@ -957,7 +969,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 func (r *Router) rebumpAnchoredQuietSiblings(threadID, echoedItemID string, turnIndex int, now int64) {
 	r.mu.Lock()
 	var siblingIDs []string
-	for _, entry := range r.pendingByThread[threadID] {
+	for _, entry := range r.pendingSendsLocked(threadID) {
 		if entry.AOItemID == echoedItemID || entry.WasDeferred || !entry.AnchoredAtInterrupt {
 			continue
 		}
@@ -988,7 +1000,7 @@ func (r *Router) rebumpAnchoredQuietSiblings(threadID, echoedItemID string, turn
 // scan is cheap insurance either way).
 func (r *Router) markSiblingNeedsTailRebump(threadID, aoItemID string) {
 	r.mu.Lock()
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	for i := range pending {
 		if pending[i].AOItemID == aoItemID {
 			pending[i].NeedsTailRebump = true
@@ -1012,7 +1024,7 @@ func (r *Router) markSiblingNeedsTailRebump(threadID, aoItemID string) {
 // observe the mid-restore entry.
 func (r *Router) restorePendingSendDeferred(threadID, aoItemID string) {
 	r.mu.Lock()
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	for i := range pending {
 		if pending[i].AOItemID == aoItemID {
 			if pending[i].QuietItem != nil {
@@ -1083,7 +1095,7 @@ type interruptMark struct {
 func (r *Router) MarkFlushSendsInterrupted(threadID string, interruptedTurnIndex int) FlushStampToken {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	var prev map[string]int
 	for i := range pending {
 		if pending[i].QueueItemID == "" {
@@ -1095,8 +1107,9 @@ func (r *Router) MarkFlushSendsInterrupted(threadID string, interruptedTurnIndex
 		prev[pending[i].AOItemID] = pending[i].InterruptedTurnIndex
 		pending[i].InterruptedTurnIndex = interruptedTurnIndex
 	}
+	id := r.identity(threadID)
 	if prev != nil {
-		r.flushStampEpochs[threadID]++
+		id.flushStampEpoch++
 	}
 	r.flushStampSeq++
 	// The thread-level mark list gets an entry even when nothing was
@@ -1104,14 +1117,14 @@ func (r *Router) MarkFlushSendsInterrupted(threadID string, interruptedTurnIndex
 	// call is mid-persist with a -1 stamp retained, and the list is the
 	// only way its openQueuedEchoTurn can still learn which turn the
 	// interrupt cut (round-10, R10-6).
-	r.interruptMarks[threadID] = append(r.interruptMarks[threadID], interruptMark{
+	id.interruptMarks = append(id.interruptMarks, interruptMark{
 		seq:  r.flushStampSeq,
 		turn: interruptedTurnIndex,
 	})
 	return FlushStampToken{
 		prev:        prev,
-		stampEpoch:  r.flushStampEpochs[threadID],
-		threadEpoch: r.threadEpochs[threadID],
+		stampEpoch:  id.flushStampEpoch,
+		threadEpoch: id.epoch,
 		seq:         r.flushStampSeq,
 	}
 }
@@ -1142,7 +1155,8 @@ func (r *Router) RestoreFlushSendsInterrupted(threadID string, tok FlushStampTok
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.threadEpochs[threadID] != tok.threadEpoch {
+	id := r.identity(threadID)
+	if id.epoch != tok.threadEpoch {
 		return
 	}
 	if _, applied := r.flushStampApplied[tok.seq]; applied {
@@ -1160,25 +1174,21 @@ func (r *Router) RestoreFlushSendsInterrupted(threadID string, tok FlushStampTok
 	if len(tok.prev) == 0 {
 		return
 	}
-	if r.flushStampEpochs[threadID] != tok.stampEpoch {
-		stash := r.flushStampUnwinds[threadID]
-		if stash == nil {
-			stash = make(map[uint64]FlushStampToken)
-			r.flushStampUnwinds[threadID] = stash
+	if id.flushStampEpoch != tok.stampEpoch {
+		if id.flushStampUnwinds == nil {
+			id.flushStampUnwinds = make(map[uint64]FlushStampToken)
 		}
-		stash[tok.stampEpoch] = tok
+		id.flushStampUnwinds[tok.stampEpoch] = tok
 		return
 	}
 	r.applyFlushStampRestoreLocked(threadID, tok)
-	stash := r.flushStampUnwinds[threadID]
 	for {
-		current := r.flushStampEpochs[threadID]
-		parked, ok := stash[current]
+		parked, ok := id.flushStampUnwinds[id.flushStampEpoch]
 		if !ok {
 			return
 		}
-		delete(stash, current)
-		if parked.threadEpoch != r.threadEpochs[threadID] {
+		delete(id.flushStampUnwinds, id.flushStampEpoch)
+		if parked.threadEpoch != id.epoch {
 			return
 		}
 		if _, applied := r.flushStampApplied[parked.seq]; applied {
@@ -1195,13 +1205,13 @@ func (r *Router) RestoreFlushSendsInterrupted(threadID string, tok FlushStampTok
 // holds r.mu and has verified the epoch is current and the token
 // unapplied.
 func (r *Router) applyFlushStampRestoreLocked(threadID string, tok FlushStampToken) {
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	for i := range pending {
 		if value, ok := tok.prev[pending[i].AOItemID]; ok {
 			pending[i].InterruptedTurnIndex = value
 		}
 	}
-	r.flushStampEpochs[threadID] = tok.stampEpoch - 1
+	r.identity(threadID).flushStampEpoch = tok.stampEpoch - 1
 	r.flushStampApplied[tok.seq] = struct{}{}
 	r.removeInterruptMarkLocked(threadID, tok.seq)
 }
@@ -1212,10 +1222,10 @@ func (r *Router) applyFlushStampRestoreLocked(threadID string, tok FlushStampTok
 // overlapping failures unwind correctly in any restore order.
 // Idempotent: a duplicate removal finds nothing. Caller holds r.mu.
 func (r *Router) removeInterruptMarkLocked(threadID string, seq uint64) {
-	marks := r.interruptMarks[threadID]
-	for i := range marks {
-		if marks[i].seq == seq {
-			r.interruptMarks[threadID] = append(marks[:i], marks[i+1:]...)
+	id := r.identity(threadID)
+	for i := range id.interruptMarks {
+		if id.interruptMarks[i].seq == seq {
+			id.interruptMarks = append(id.interruptMarks[:i], id.interruptMarks[i+1:]...)
 			return
 		}
 	}
@@ -1228,7 +1238,7 @@ func (r *Router) removeInterruptMarkLocked(threadID string, seq uint64) {
 // (stamp-only) semantics, which is the safe side of the race.
 func (r *Router) unclaimPendingSendAnchor(threadID, aoItemID string) {
 	r.mu.Lock()
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	for i := range pending {
 		if pending[i].AOItemID == aoItemID {
 			pending[i].AnchoredAtInterrupt = false
@@ -1248,7 +1258,7 @@ func (r *Router) markPendingSendsAnchoredAtInterrupt(threadID string, ids map[st
 		return
 	}
 	r.mu.Lock()
-	pending := r.pendingByThread[threadID]
+	pending := r.pendingSendsLocked(threadID)
 	for i := range pending {
 		if _, ok := ids[pending[i].AOItemID]; ok {
 			pending[i].AnchoredAtInterrupt = true
@@ -1287,7 +1297,11 @@ func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
 	defer anchor.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	queue := r.pendingByThread[threadID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return
+	}
+	queue := st.pendingSends
 	if len(queue) == 0 {
 		return
 	}
@@ -1298,8 +1312,19 @@ func (r *Router) ClearPendingSendsByItemIDs(threadID string, ids []string) {
 		}
 	}
 	if len(filtered) == 0 {
-		delete(r.pendingByThread, threadID)
+		st.pendingSends = nil
 	} else {
-		r.pendingByThread[threadID] = filtered
+		st.pendingSends = filtered
 	}
+}
+
+// pendingSendsLocked returns the thread's pending-send FIFO, or nil when
+// the thread has none. Caller holds r.mu. In-place mutation through the
+// returned slice is intentional and unchanged from the map days: the
+// header shares the backing array with the stored one.
+func (r *Router) pendingSendsLocked(threadID string) []pendingSend {
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		return st.pendingSends
+	}
+	return nil
 }

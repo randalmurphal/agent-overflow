@@ -74,9 +74,7 @@ type modelFallbackMeta struct {
 }
 
 func (r *Router) handleModelFallback(evt provider.ProviderEvent) error {
-	r.mu.Lock()
-	sessionEpoch := r.threadEpochs[evt.ThreadID]
-	r.mu.Unlock()
+	sessionEpoch := r.ThreadEpoch(evt.ThreadID)
 
 	var meta modelFallbackMeta
 	if len(evt.Meta) > 0 {
@@ -116,11 +114,13 @@ func (r *Router) handleModelFallback(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	if _, stopped := r.stoppedThreads[evt.ThreadID]; stopped || r.threadEpochs[evt.ThreadID] != sessionEpoch {
+	if id := r.identityIfPresent(evt.ThreadID); id != nil && (id.stopped || id.epoch != sessionEpoch) {
 		r.mu.Unlock()
 		return nil
 	}
-	r.effectiveModelByThread[evt.ThreadID] = meta.FallbackModel
+	fallbackState := r.state(evt.ThreadID)
+	fallbackState.effectiveModel = meta.FallbackModel
+	fallbackState.effectiveModelSet = true
 	revision := r.nextEffectiveModelRevisionLocked(evt.ThreadID)
 	r.mu.Unlock()
 	r.emit("provider:model_fallback", ModelFallbackEvent{
@@ -151,8 +151,11 @@ func (r *Router) ClearEffectiveModel(threadID string) bool {
 		return false
 	}
 	r.mu.Lock()
-	_, existed := r.effectiveModelByThread[threadID]
-	delete(r.effectiveModelByThread, threadID)
+	existed := false
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		existed = st.effectiveModelSet
+		st.effectiveModel, st.effectiveModelSet = "", false
+	}
 	var revision uint64
 	if existed {
 		revision = r.nextEffectiveModelRevisionLocked(threadID)
@@ -165,11 +168,13 @@ func (r *Router) ClearEffectiveModel(threadID string) bool {
 }
 
 // nextEffectiveModelRevisionLocked returns the next per-thread projection
-// revision. Entries deliberately survive session cleanup, like threadEpochs,
-// so an old goroutine can never reuse a revision after restart. MUST hold r.mu.
+// revision. It lives on threadIdentity, which deliberately survives session
+// cleanup, so an old goroutine can never reuse a revision after restart.
+// MUST hold r.mu.
 func (r *Router) nextEffectiveModelRevisionLocked(threadID string) uint64 {
-	r.effectiveModelRevisions[threadID]++
-	return r.effectiveModelRevisions[threadID]
+	id := r.identity(threadID)
+	id.effectiveModelRevision++
+	return id.effectiveModelRevision
 }
 
 func firstNonEmptyString(values ...string) string {

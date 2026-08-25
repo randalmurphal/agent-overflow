@@ -58,10 +58,12 @@ func (r *Router) handleCompactionStatus(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	since, already := r.compactingSinceByThread[evt.ThreadID]
+	st := r.state(evt.ThreadID)
+	since, already := st.compactingSince, st.compactingSinceSet
 	if !already {
 		since = evt.Timestamp.UnixMilli()
-		r.compactingSinceByThread[evt.ThreadID] = since
+		st.compactingSince = since
+		st.compactingSinceSet = true
 	}
 	r.mu.Unlock()
 	if already {
@@ -90,8 +92,11 @@ func (r *Router) clearCompacting(threadID string) {
 		return
 	}
 	r.mu.Lock()
-	_, active := r.compactingSinceByThread[threadID]
-	delete(r.compactingSinceByThread, threadID)
+	active := false
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		active = st.compactingSinceSet
+		st.compactingSince, st.compactingSinceSet = 0, false
+	}
 	r.mu.Unlock()
 	if active {
 		r.emit("provider:compacting", CompactingStateEvent{ThreadID: threadID, Active: false})

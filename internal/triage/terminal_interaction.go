@@ -217,19 +217,19 @@ func terminalInteractionID(processID string, turnIndex, seq int, poll bool) stri
 func (r *Router) nextTerminalInteractionSequence(threadID string, turnIndex int, processID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.terminalInteractionSeq == nil {
-		r.terminalInteractionSeq = make(map[string]int)
+	st := r.state(threadID)
+	if st.terminalInteractionSeq == nil {
+		st.terminalInteractionSeq = make(map[string]int)
 	}
-	key := terminalInteractionSeqKey(threadID, turnIndex, processID)
-	seq := r.terminalInteractionSeq[key]
-	r.terminalInteractionSeq[key] = seq + 1
+	key := terminalInteractionSeqKey(turnIndex, processID)
+	seq := st.terminalInteractionSeq[key]
+	st.terminalInteractionSeq[key] = seq + 1
 	return seq
 }
 
-// terminalInteractionSeqKey builds the map key the sequence counter is
-// stored under. Mirrors the `<thread>|<turn>|<scope>` shape used by
-// other per-turn counters so CleanupThread's prefix-sweep keeps these
-// bounded alongside the rest.
-func terminalInteractionSeqKey(threadID string, turnIndex int, processID string) string {
-	return fmt.Sprintf("%s|%d|%s", threadID, turnIndex, processID)
+// terminalInteractionSeqKey builds the key the sequence counter is stored
+// under WITHIN the thread's state. Mirrors the `<turn>|<scope>` shape
+// used by the other per-turn counters there.
+func terminalInteractionSeqKey(turnIndex int, processID string) string {
+	return fmt.Sprintf("%d|%s", turnIndex, processID)
 }

@@ -552,5 +552,9 @@ func TestStreamingTextSkipsMidStreamEmitWithoutWorkspace(t *testing.T) {
 func liveCacheSize(r *Router) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.streamingPathRefsLast)
+	total := 0
+	for _, st := range r.threads {
+		total += len(st.streamingPathRefsLast)
+	}
+	return total
 }

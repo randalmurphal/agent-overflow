@@ -46,21 +46,28 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if active, ok := r.currentRoundByThread[threadID]; ok {
-		activeCopy := active
+	if id := r.identityIfPresent(threadID); id != nil {
+		snapshot.EffectiveModelRevision = id.effectiveModelRevision
+	}
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return snapshot
+	}
+
+	if st.currentRoundOpen {
+		activeCopy := st.currentRound
 		snapshot.ActiveTurn = &activeCopy
 	}
 
-	snapshot.EffectiveModel = r.effectiveModelByThread[threadID]
-	snapshot.EffectiveModelRevision = r.effectiveModelRevisions[threadID]
-	snapshot.CompactingSinceUnixMs = r.compactingSinceByThread[threadID]
+	snapshot.EffectiveModel = st.effectiveModel
+	snapshot.CompactingSinceUnixMs = st.compactingSince
 
-	if queue := r.queuedFlushItems[threadID]; len(queue) > 0 {
+	if queue := st.queuedFlushItems; len(queue) > 0 {
 		snapshot.QueueItems = make([]QueuedFlushItem, len(queue))
 		copy(snapshot.QueueItems, queue)
 	}
 
-	for _, pending := range r.pendingByThread[threadID] {
+	for _, pending := range st.pendingSends {
 		if pending.DeferredItem == nil || !r.sniffFlushShape(threadID, &pending, sendShapeSiteLiveSnapshot) {
 			continue
 		}
@@ -75,18 +82,16 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 		})
 	}
 
-	for _, requestID := range r.pendingApprovalOrder[threadID] {
-		key := approvalStateKey(threadID, requestID)
-		pending, ok := r.pendingApprovals[key]
+	for _, requestID := range st.pendingApprovalOrder {
+		pending, ok := st.pendingApprovals[requestID]
 		if !ok {
 			continue
 		}
 		snapshot.Interactive.Approvals = append(snapshot.Interactive.Approvals, pending.Request)
 	}
 
-	for _, requestID := range r.pendingUserInputOrder[threadID] {
-		key := approvalStateKey(threadID, requestID)
-		request, ok := r.pendingUserInputs[key]
+	for _, requestID := range st.pendingUserInputOrder {
+		request, ok := st.pendingUserInputs[requestID]
 		if !ok {
 			continue
 		}

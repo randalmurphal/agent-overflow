@@ -232,7 +232,7 @@ func (r *Router) markCodexUnifiedExecProcessBackgrounded(threadID, processID str
 	}
 	changed := false
 	r.mu.Lock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state != nil {
 		tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
 		if tracker == nil {
@@ -301,7 +301,7 @@ func (r *Router) settleCodexTerminalWaitsExcept(threadID, keepProcessID string) 
 	var waits []pendingProcessWait
 	var seenItemIDs map[string]struct{}
 	r.mu.Lock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil || (len(state.pendingWaitByProcess) == 0 && len(state.waitCarrierByProcess) == 0) {
 		r.mu.Unlock()
 		return
@@ -362,7 +362,7 @@ func (r *Router) settleCodexTerminalWaitForProcess(threadID, processID string) e
 	}
 	var wait pendingTerminalWait
 	r.mu.Lock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state != nil {
 		if pending := state.pendingWaitByProcess[processID]; strings.TrimSpace(pending.itemID) != "" {
 			wait = pending
@@ -389,7 +389,7 @@ func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID strin
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return false
 	}
@@ -439,7 +439,7 @@ func (r *Router) clearCodexTerminalWaitCarrierIfMatches(threadID, processID, ite
 		return
 	}
 	r.mu.Lock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state != nil {
 		if wait := state.waitCarrierByProcess[processID]; strings.TrimSpace(wait.itemID) == itemID {
 			delete(state.waitCarrierByProcess, processID)
@@ -452,7 +452,7 @@ func (r *Router) clearCodexPendingTerminalWaitState(threadID, processID, itemID 
 	processID = strings.TrimSpace(processID)
 	itemID = strings.TrimSpace(itemID)
 	r.mu.Lock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state != nil {
 		if processID != "" {
 			if wait := state.pendingWaitByProcess[processID]; strings.TrimSpace(wait.itemID) == itemID {
@@ -470,7 +470,7 @@ func (r *Router) codexTerminalWaitItemIDForProcess(threadID, processID string, t
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return ""
 	}
@@ -490,7 +490,7 @@ func (r *Router) hasCodexBackgroundTerminalForProcess(threadID, processID string
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return false
 	}
@@ -525,7 +525,7 @@ func (r *Router) codexTerminalSummaryForProcess(threadID, processID string) stri
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return ""
 	}
@@ -544,7 +544,7 @@ func (r *Router) codexTerminalCommandForProcess(threadID, processID string) stri
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return ""
 	}
@@ -594,7 +594,7 @@ func (r *Router) handleCodexExecResult(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	state := r.codexBackground[evt.ThreadID]
+	state := r.codexBackgroundIfPresent(evt.ThreadID)
 	if state != nil {
 		tracker := state.unifiedExec[itemID]
 		if tracker == nil && meta.ProcessID != "" {
@@ -636,7 +636,7 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 	meta := decodeCodexItemMeta(evt.Meta)
 	command := codexCommandFromMeta(evt.Meta)
 	r.mu.Lock()
-	state := r.codexBackground[evt.ThreadID]
+	state := r.codexBackgroundIfPresent(evt.ThreadID)
 	if state == nil {
 		r.mu.Unlock()
 		return false
@@ -683,7 +683,7 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	handled := false
 	hasPendingWait := false
 	r.mu.Lock()
-	state := r.codexBackground[evt.ThreadID]
+	state := r.codexBackgroundIfPresent(evt.ThreadID)
 	now := eventTimestampMillis(evt)
 	if state != nil && state.unifiedExec[itemID] != nil {
 		live := state.unifiedExec[itemID]
@@ -767,7 +767,7 @@ func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, trac
 // the live tray when typed item/completed removes the transient tracker.
 func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64) []store.Item {
 	r.mu.Lock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		r.mu.Unlock()
 		return nil
@@ -817,7 +817,7 @@ func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64)
 func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return 0
 	}
@@ -838,7 +838,8 @@ func (r *Router) ThreadIDsWithLiveCodexBackgroundTasks() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var ids []string
-	for threadID, state := range r.codexBackground {
+	for threadID, st := range r.threads {
+		state := st.codexBackground
 		if state == nil {
 			continue
 		}

@@ -8,11 +8,11 @@ package triage
 // "user pressed Stop and we kept the message" (paint the Interrupted
 // pill) from "user pressed Stop and the message is gone" (no pill).
 //
-// State lives on Router (router.go). All accesses share r.mu with
-// every other per-thread correlation map so CleanupThread sees a
-// consistent snapshot. Cleanup paths in clearOpenTurn and
-// CleanupThread sweep stale flags as a safety net; the normal flow
-// is one set + one read-and-clear per revert.
+// State lives on the thread's threadState (thread_state.go). All
+// accesses share r.mu with every other per-thread correlation field so
+// CleanupThread sees a consistent snapshot. clearOpenTurn clears the
+// flag as a safety net and CleanupThread drops the whole state entry;
+// the normal flow is one set + one read-and-clear per revert.
 
 // MarkTurnReverted flags the thread so the next provider:turn_completed
 // emission for any in-flight round carries RevertedUserMessage=true.
@@ -23,7 +23,7 @@ func (r *Router) MarkTurnReverted(threadID string) {
 		return
 	}
 	r.mu.Lock()
-	r.revertedTurns[threadID] = struct{}{}
+	r.state(threadID).revertedTurn = true
 	r.mu.Unlock()
 }
 
@@ -34,7 +34,9 @@ func (r *Router) ClearTurnReverted(threadID string) {
 		return
 	}
 	r.mu.Lock()
-	delete(r.revertedTurns, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.revertedTurn = false
+	}
 	r.mu.Unlock()
 }
 
@@ -49,9 +51,10 @@ func (r *Router) consumeRevertedTurn(threadID string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.revertedTurns[threadID]; !ok {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || !st.revertedTurn {
 		return false
 	}
-	delete(r.revertedTurns, threadID)
+	st.revertedTurn = false
 	return true
 }

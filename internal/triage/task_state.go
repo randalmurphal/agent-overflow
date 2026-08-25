@@ -107,7 +107,8 @@ func (r *Router) seedTasksFromStoredTodo(threadID string) error {
 		return nil
 	}
 	r.mu.Lock()
-	_, warm := r.tasksByThread[threadID]
+	warmState := r.threadStateIfPresent(threadID)
+	warm := warmState != nil && warmState.tasks != nil
 	r.mu.Unlock()
 	if warm {
 		return nil
@@ -137,8 +138,8 @@ func (r *Router) seedTasksFromStoredTodo(threadID string) error {
 	r.mu.Lock()
 	// Re-checked under the lock: per-thread events are serialized by their
 	// read loop, but the map must never clobber state a racing writer built.
-	if _, exists := r.tasksByThread[threadID]; !exists {
-		r.tasksByThread[threadID] = tt
+	if st := r.state(threadID); st.tasks == nil {
+		st.tasks = tt
 	}
 	r.mu.Unlock()
 	return nil
@@ -157,10 +158,11 @@ func allStepsCompleted(steps []store.ThreadLiveTodoStep) bool {
 }
 
 func (r *Router) upsertTaskCreateLocked(threadID, id, subject string) bool {
-	tt := r.tasksByThread[threadID]
+	st := r.state(threadID)
+	tt := st.tasks
 	if tt == nil {
 		tt = &threadTasks{byID: make(map[string]triageTask)}
-		r.tasksByThread[threadID] = tt
+		st.tasks = tt
 	}
 	if existing, ok := tt.byID[id]; ok {
 		if subject != "" && subject != existing.Subject {
@@ -183,7 +185,11 @@ func (r *Router) upsertTaskCreateLocked(threadID, id, subject string) bool {
 }
 
 func (r *Router) applyTaskUpdateLocked(threadID string, meta provider.TaskUpdateMeta) bool {
-	tt := r.tasksByThread[threadID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return false
+	}
+	tt := st.tasks
 	if tt == nil {
 		return false
 	}
@@ -221,7 +227,11 @@ func (r *Router) applyTaskUpdateLocked(threadID string, meta provider.TaskUpdate
 }
 
 func (r *Router) taskStepsLocked(threadID string) []TodoStep {
-	tt := r.tasksByThread[threadID]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil
+	}
+	tt := st.tasks
 	if tt == nil || len(tt.order) == 0 {
 		return nil
 	}

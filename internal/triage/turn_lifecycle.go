@@ -588,7 +588,8 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// pages is still the steady-state mechanism; this is an extra
 	// nudge at the natural quiet point.
 	r.mu.Lock()
-	thisThreadIdle := r.streamingItemCounts[evt.ThreadID] == 0
+	idleState := r.threadStateIfPresent(evt.ThreadID)
+	thisThreadIdle := idleState == nil || idleState.streamingItemCount == 0
 	r.mu.Unlock()
 	if thisThreadIdle {
 		threadID := evt.ThreadID
@@ -868,7 +869,8 @@ func lateErrorTurnPayload(meta turnCompleteMeta) (string, string) {
 
 func (r *Router) currentTurnIndex(threadID string) (int, error) {
 	r.mu.Lock()
-	if turnIndex, ok := r.openTurns[threadID]; ok {
+	if st := r.threadStateIfPresent(threadID); st != nil && st.openTurnSet {
+		turnIndex := st.openTurn
 		r.mu.Unlock()
 		return turnIndex, nil
 	}
@@ -885,8 +887,11 @@ func (r *Router) currentTurnIndex(threadID string) (int, error) {
 func (r *Router) openTurnIndex(threadID string) (int, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	turnIndex, ok := r.openTurns[threadID]
-	return turnIndex, ok
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || !st.openTurnSet {
+		return 0, false
+	}
+	return st.openTurn, true
 }
 
 // OpenTurnIndex returns the currently-open logical turn for threadID,
@@ -916,31 +921,37 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 func (r *Router) hasInFlightTurnOrRound(threadID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.openTurns[threadID]; ok {
-		return true
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return false
 	}
-	if _, ok := r.currentRoundByThread[threadID]; ok {
-		return true
-	}
-	return false
+	return st.openTurnSet || st.currentRoundOpen
 }
 
 func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	r.mu.Lock()
-	r.openTurns[threadID] = turnIndex
-	key := scopeCounterKey(threadID, turnIndex, "")
-	r.segmentIndexByScope[key] = -1
-	r.blockIndexByScope[key] = -1
-	r.clearActiveStreamBlocksForTurnLocked(threadID, turnIndex)
-	r.streamingItemCounts[threadID] = 0
-	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
-	delete(r.errorSeqByScope, key)
+	st := r.state(threadID)
+	st.openTurn = turnIndex
+	st.openTurnSet = true
+	key := scopeCounterKey(turnIndex, "")
+	if st.segmentIndexByScope == nil {
+		st.segmentIndexByScope = make(map[string]int)
+	}
+	if st.blockIndexByScope == nil {
+		st.blockIndexByScope = make(map[string]int)
+	}
+	st.segmentIndexByScope[key] = -1
+	st.blockIndexByScope[key] = -1
+	r.clearActiveStreamBlocksForTurnLocked(st, turnIndex)
+	st.streamingItemCount = 0
+	clear(st.streamingScopeCounts)
+	delete(st.errorSeqByScope, key)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
 	// same turn again. The multi-result-per-turn case does NOT re-fire
 	// EventTurnStart between the two completes, so the marker survives
 	// there and the second complete returns early.
-	delete(r.settledTurns, settledTurnKey(threadID, turnIndex))
+	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
 }
 
@@ -999,7 +1010,8 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 // here.
 func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt int64, interruptedTurnIndex int) {
 	r.mu.Lock()
-	open, hasOpen := r.openTurns[threadID]
+	st := r.state(threadID)
+	open, hasOpen := st.openTurn, st.openTurnSet
 	if hasOpen && open == turnIndex {
 		r.mu.Unlock()
 		return
@@ -1009,20 +1021,27 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 		log.Printf("triage: queued echo turn %s/%d ignored — open turn %d is already past it", threadID, turnIndex, open)
 		return
 	}
-	if _, settled := r.settledTurns[settledTurnKey(threadID, turnIndex)]; settled {
+	if st.settledTurns[turnIndex] {
 		r.mu.Unlock()
 		log.Printf("triage: queued echo turn %s/%d ignored — turn already settled", threadID, turnIndex)
 		return
 	}
-	r.openTurns[threadID] = turnIndex
-	key := scopeCounterKey(threadID, turnIndex, "")
-	if _, ok := r.segmentIndexByScope[key]; !ok {
-		r.segmentIndexByScope[key] = -1
+	st.openTurn = turnIndex
+	st.openTurnSet = true
+	key := scopeCounterKey(turnIndex, "")
+	if st.segmentIndexByScope == nil {
+		st.segmentIndexByScope = make(map[string]int)
 	}
-	if _, ok := r.blockIndexByScope[key]; !ok {
-		r.blockIndexByScope[key] = -1
+	if st.blockIndexByScope == nil {
+		st.blockIndexByScope = make(map[string]int)
 	}
-	delete(r.settledTurns, settledTurnKey(threadID, turnIndex))
+	if _, ok := st.segmentIndexByScope[key]; !ok {
+		st.segmentIndexByScope[key] = -1
+	}
+	if _, ok := st.blockIndexByScope[key]; !ok {
+		st.blockIndexByScope[key] = -1
+	}
+	delete(st.settledTurns, turnIndex)
 	// The thread-level mark list covers the entry the per-entry stamp
 	// structurally cannot: one POPPED from the FIFO just before
 	// MarkFlushSendsInterrupted ran, whose echo is settling here with
@@ -1033,8 +1052,8 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	// a replacement session's reused turn indexes (revert paths) never
 	// meet a dead session's marks (round-11, CT11-2).
 	markedInterruptTurn := -1
-	if marks := r.interruptMarks[threadID]; len(marks) > 0 {
-		markedInterruptTurn = marks[len(marks)-1].turn
+	if id := r.identityIfPresent(threadID); id != nil && len(id.interruptMarks) > 0 {
+		markedInterruptTurn = id.interruptMarks[len(id.interruptMarks)-1].turn
 	}
 	r.mu.Unlock()
 
@@ -1138,41 +1157,49 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 	}, persistErr))
 }
 
-func (r *Router) clearActiveStreamBlocksForTurnLocked(threadID string, turnIndex int) {
-	prefix := fmt.Sprintf("%s|%d|", threadID, turnIndex)
-	deleteByPrefix(r.activeTextBlocks, prefix)
-	deleteByPrefix(r.activeThinkingBlocks, prefix)
-	deleteByPrefix(r.activeTextBlockRefs, prefix)
-	deleteByPrefix(r.activeThinkingBlockRefs, prefix)
-	for key := range r.streamPersistBuffers {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		if buffer := r.streamPersistBuffers[key]; buffer != nil && buffer.timer != nil {
-			buffer.timer.Stop()
-		}
-		delete(r.streamPersistBuffers, key)
+// clearActiveStreamBlocksForTurnLocked drops one turn's streaming
+// bookkeeping from the thread's state. Caller holds r.mu.
+func (r *Router) clearActiveStreamBlocksForTurnLocked(st *threadState, turnIndex int) {
+	if st == nil {
+		return
 	}
-	// streamingPathRefsLast is keyed by streamPersistKey
-	// (threadID|itemID). Assistant_text ids carry the turn index in
-	// their suffix (TextItemID → "text:<turnIndex>:[scope:]<n>"), so
-	// the prefix "threadID|text:<turnIndex>:" sweeps every entry this
-	// turn allocated — scoped (subagent) variants share the same
-	// turn-index segment because scope appears AFTER it.
-	deleteByPrefix(r.streamingPathRefsLast, threadID+"|text:"+fmt.Sprintf("%d:", turnIndex))
+	prefix := fmt.Sprintf("%d|", turnIndex)
+	deleteByPrefix(st.activeTextBlocks, prefix)
+	deleteByPrefix(st.activeThinkingBlocks, prefix)
+	deleteByPrefix(st.activeTextBlockRefs, prefix)
+	deleteByPrefix(st.activeThinkingBlockRefs, prefix)
+	// NOTE: this routine used to also sweep streamPersistBuffers with the
+	// same "<threadID>|<turnIndex>|" prefix, but those are keyed by ITEM
+	// ID ("text:<turn>:<n>", a provider tool id, ...), never by
+	// "<turn>|…", so the loop could never match an entry. It is dropped
+	// rather than re-pointed: buffers are extracted at their own settle
+	// (flushStreamingItem) and swept wholesale at session teardown, and
+	// dropping a live buffer at a turn boundary WITHOUT flushing it would
+	// discard streamed bytes SQLite has not seen. Surfaced, not changed.
+	//
+	// streamingPathRefsLast is keyed by itemID. Assistant_text ids carry
+	// the turn index in their suffix (TextItemID →
+	// "text:<turnIndex>:[scope:]<n>"), so the prefix "text:<turnIndex>:"
+	// sweeps every entry this turn allocated — scoped (subagent)
+	// variants share the same turn-index segment because scope appears
+	// AFTER it.
+	deleteByPrefix(st.streamingPathRefsLast, "text:"+fmt.Sprintf("%d:", turnIndex))
 }
 
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
 // settlement for (threadID, turnIndex). It returns true only for the first
 // claimant; later callers should take the duplicate/late-payload path.
 func (r *Router) claimTurnSettlement(threadID string, turnIndex int) bool {
-	key := settledTurnKey(threadID, turnIndex)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.settledTurns[key] {
+	st := r.state(threadID)
+	if st.settledTurns[turnIndex] {
 		return false
 	}
-	r.settledTurns[key] = true
+	if st.settledTurns == nil {
+		st.settledTurns = make(map[int]bool)
+	}
+	st.settledTurns[turnIndex] = true
 	return true
 }
 
@@ -1184,11 +1211,8 @@ func (r *Router) claimTurnSettlement(threadID string, turnIndex int) bool {
 func (r *Router) isTurnSettled(threadID string, turnIndex int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.settledTurns[settledTurnKey(threadID, turnIndex)]
-}
-
-func settledTurnKey(threadID string, turnIndex int) string {
-	return fmt.Sprintf("%s|%d", threadID, turnIndex)
+	st := r.threadStateIfPresent(threadID)
+	return st != nil && st.settledTurns[turnIndex]
 }
 
 // setOpenRoundSnapshot records the active wire-round snapshot for threadID. A round
@@ -1219,7 +1243,9 @@ func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot) {
 		return
 	}
 	r.mu.Lock()
-	r.currentRoundByThread[snapshot.ThreadID] = snapshot
+	st := r.state(snapshot.ThreadID)
+	st.currentRound = snapshot
+	st.currentRoundOpen = true
 	r.mu.Unlock()
 }
 
@@ -1235,9 +1261,14 @@ func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot) {
 func (r *Router) takeOpenRound(threadID string) (ActiveTurnSnapshot, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	round, ok := r.currentRoundByThread[threadID]
-	delete(r.currentRoundByThread, threadID)
-	return round, ok
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || !st.currentRoundOpen {
+		return ActiveTurnSnapshot{}, false
+	}
+	round := st.currentRound
+	st.currentRound = ActiveTurnSnapshot{}
+	st.currentRoundOpen = false
+	return round, true
 }
 
 // openRoundID returns the active wire-round id for threadID without
@@ -1250,7 +1281,11 @@ func (r *Router) takeOpenRound(threadID string) (ActiveTurnSnapshot, bool) {
 func (r *Router) openRoundID(threadID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.currentRoundByThread[threadID].TurnID
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return ""
+	}
+	return st.currentRound.TurnID
 }
 
 // ActiveTurnSnapshot returns the current live wire-round snapshot for a
@@ -1263,8 +1298,11 @@ func (r *Router) ActiveTurnSnapshot(threadID string) (ActiveTurnSnapshot, bool) 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	snapshot, ok := r.currentRoundByThread[threadID]
-	return snapshot, ok
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || !st.currentRoundOpen {
+		return ActiveTurnSnapshot{}, false
+	}
+	return st.currentRound, true
 }
 
 // activeRoundTurnIndex returns the turn index for the frontend-visible active
@@ -1277,11 +1315,11 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	snapshot, ok := r.currentRoundByThread[threadID]
-	if !ok {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil || !st.currentRoundOpen {
 		return 0, false
 	}
-	return snapshot.TurnIndex, true
+	return st.currentRound.TurnIndex, true
 }
 
 // clearOpenTurn drops per-turn flow-control state at EventTurnComplete.
@@ -1312,19 +1350,19 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 // path.
 func (r *Router) clearOpenTurn(threadID string) {
 	r.mu.Lock()
-	turnIndex, ok := r.openTurns[threadID]
-	if ok {
-		r.clearActiveStreamBlocksForTurnLocked(threadID, turnIndex)
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		r.mu.Unlock()
+		return
+	}
+	if st.openTurnSet {
+		r.clearActiveStreamBlocksForTurnLocked(st, st.openTurn)
 		// pendingCommandDiffs is keyed by `<threadID>:<itemID>` and
 		// stages an inline-diff preview between EventToolStart and
 		// EventToolComplete for command_execution rows. If the matching
 		// completion never arrived in this turn (interrupted, crashed),
 		// the entry would otherwise leak until CleanupThread.
-		for key, pending := range r.pendingCommandDiffs {
-			if pending.ThreadID == threadID {
-				delete(r.pendingCommandDiffs, key)
-			}
-		}
+		clear(st.pendingCommandDiffs)
 		// pendingApprovals / pendingApprovalItems / pendingUserInputs
 		// are keyed by `<threadID>:<requestID-or-itemID>`. Approvals are
 		// inherently mid-turn — the model issues a control_request, the
@@ -1333,28 +1371,28 @@ func (r *Router) clearOpenTurn(threadID string) {
 		// resolution (subprocess died, fatal error, model declined to
 		// emit the resolved meta). Sweep them so the next turn doesn't
 		// inherit a stale request id.
-		approvalPrefix := threadID + ":"
-		deleteByPrefix(r.pendingApprovals, approvalPrefix)
-		deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
-		deleteByPrefix(r.pendingUserInputs, approvalPrefix)
-		delete(r.pendingApprovalOrder, threadID)
-		delete(r.pendingUserInputOrder, threadID)
+		clear(st.pendingApprovals)
+		clear(st.pendingApprovalItems)
+		clear(st.pendingUserInputs)
+		st.pendingApprovalOrder = nil
+		st.pendingUserInputOrder = nil
 	}
-	delete(r.openTurns, threadID)
-	delete(r.interruptQueue, threadID)
-	delete(r.streamingItemCounts, threadID)
-	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
+	st.openTurn = 0
+	st.openTurnSet = false
+	st.interruptQueue = nil
+	st.streamingItemCount = 0
+	clear(st.streamingScopeCounts)
 	// openAPIRetryRows tracks "thread has a running api_retry row that
 	// still needs flipping". By turn-end the row was either flipped
 	// already or the turn closed without forward progress; either way
 	// the next turn starts with a clean flag.
-	delete(r.openAPIRetryRows, threadID)
+	st.openAPIRetryRow = false
 	// revertedTurns is normally read-and-cleared inside
 	// buildRoundCompletedEvent. Defensive sweep here covers the case
 	// where MarkTurnReverted was set but no turn-completed actually
 	// fires (rare — e.g. the thread had no open turn so no
 	// synthesizeTruncatedTurnComplete ran).
-	delete(r.revertedTurns, threadID)
+	st.revertedTurn = false
 	r.mu.Unlock()
 }
 
@@ -1481,10 +1519,7 @@ func (r *Router) RecoverCrashedTurns() (int, error) {
 // diagnostics or correlate with downstream emissions; empty string
 // when no turn could be resolved or the session was replaced.
 func (r *Router) MarkUserInterrupt(threadID string, sampledTurnIndex int, tok FlushStampToken) (string, error) {
-	r.mu.Lock()
-	stale := r.threadEpochs[threadID] != tok.threadEpoch
-	r.mu.Unlock()
-	if stale {
+	if r.ThreadEpoch(threadID) != tok.threadEpoch {
 		return "", nil
 	}
 	if sampledTurnIndex < 0 {
@@ -1601,10 +1636,7 @@ func (r *Router) CleanupThread(threadID string) {
 // MarkThreadActive) cannot have produced turns or streams within the
 // microseconds the preamble takes.
 func (r *Router) CleanupThreadIfEpoch(threadID string, epoch uint64) bool {
-	r.mu.Lock()
-	current := r.threadEpochs[threadID]
-	r.mu.Unlock()
-	if current != epoch {
+	if r.ThreadEpoch(threadID) != epoch {
 		return false
 	}
 	return r.cleanupThread(threadID, &epoch)
@@ -1636,117 +1668,66 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	defer anchor.Unlock()
 
 	r.mu.Lock()
-	if requireEpoch != nil && r.threadEpochs[threadID] != *requireEpoch {
+	identity := r.identity(threadID)
+	if requireEpoch != nil && identity.epoch != *requireEpoch {
 		r.mu.Unlock()
 		return false
 	}
 	// Set the stopped flag BEFORE dropping other state so Handle observes
 	// a consistent snapshot: any concurrent Handle call either sees a live
 	// thread with full state, or a stopped thread with no state.
-	r.stoppedThreads[threadID] = struct{}{}
+	identity.stopped = true
 	var orphanSpan trace.Span
 	// Invalidate a span start that is still outside the lock doing thread
 	// lookup or invoking the tracer. The generation remains monotonic across
 	// session reuse so that stale start can never match a later session.
-	r.turnSpanGenerations[threadID]++
-	if span, ok := r.turnSpans[threadID]; ok {
-		orphanSpan = span
-		delete(r.turnSpans, threadID)
-	}
-	delete(r.openTurns, threadID)
-	delete(r.interruptQueue, threadID)
-	delete(r.streamingItemCounts, threadID)
-	deleteByPrefix(r.streamingScopeCounts, threadID+"|")
-	delete(r.workspacePathByThread, threadID)
-	for key, pending := range r.pendingCommandDiffs {
-		if pending.ThreadID == threadID {
-			delete(r.pendingCommandDiffs, key)
-		}
-	}
-	approvalPrefix := threadID + ":"
-	deleteByPrefix(r.pendingApprovals, approvalPrefix)
-	deleteByPrefix(r.pendingApprovalItems, approvalPrefix)
-	deleteByPrefix(r.pendingUserInputs, approvalPrefix)
-	delete(r.pendingApprovalOrder, threadID)
-	delete(r.pendingUserInputOrder, threadID)
-	prefix := threadID + "|"
-	deleteByPrefix(r.segmentIndexByScope, prefix)
-	deleteByPrefix(r.blockIndexByScope, prefix)
-	deleteByPrefix(r.activeTextBlocks, prefix)
-	deleteByPrefix(r.activeThinkingBlocks, prefix)
-	deleteByPrefix(r.activeTextBlockRefs, prefix)
-	deleteByPrefix(r.activeThinkingBlockRefs, prefix)
-	deleteByPrefix(r.errorSeqByScope, prefix)
-	deleteByPrefix(r.compactionSeqByScope, prefix)
-	deleteByPrefix(r.timelineSeqByScope, prefix)
-	for key := range r.streamPersistBuffers {
-		if strings.HasPrefix(key, prefix) {
-			if buffer := r.streamPersistBuffers[key]; buffer != nil && buffer.timer != nil {
+	identity.turnSpanGeneration++
+
+	// The per-thread sweep is COMPLETE BY CONSTRUCTION: every map this
+	// routine used to delete from one key at a time now lives on the
+	// thread's *threadState (thread_state.go), so dropping that one
+	// entry drops all of it. A new field added there is swept the day
+	// it is added — which is the whole point of the struct, and why
+	// nothing may be added back to the Router as a thread-keyed map.
+	//
+	// What survives, deliberately:
+	//   - threadIdentity (epochs, generations, flush-stamp ledger,
+	//     interrupt marks, the anchor/drain locks). Never deleted; a
+	//     reset-to-zero would let a stale captured epoch match again.
+	//   - threads.live_todo in SQLite. The todo list lives on the thread
+	//     row (migration v65) precisely so it survives the session that
+	//     reported it; only the provider emptying the list clears it.
+	//
+	// The three reads below happen BEFORE the delete because they need
+	// state the delete is about to destroy; everything after them is a
+	// side effect (timer stop, span outcome, emit), not a sweep.
+	st := r.threadStateIfPresent(threadID)
+	var (
+		hadEffectiveModel      bool
+		effectiveModelRevision uint64
+		pendingUsage           provider.UsageEvent
+		hasPendingUsage        bool
+	)
+	if st != nil {
+		orphanSpan, st.turnSpan = st.turnSpan, nil
+		// Stop the in-flight flush timers before the buffers become
+		// unreachable — a live timer would otherwise fire against a
+		// buffer nothing can ever flush again.
+		for _, buffer := range st.streamPersistBuffers {
+			if buffer != nil && buffer.timer != nil {
 				buffer.timer.Stop()
 			}
-			delete(r.streamPersistBuffers, key)
 		}
+		hadEffectiveModel = st.effectiveModelSet
+		pendingUsage, hasPendingUsage = r.takeUsageEmitPendingLocked(threadID)
 	}
-	deleteByPrefix(r.streamingPathRefsLast, prefix)
-	deleteByPrefix(r.terminalInteractionSeq, prefix)
-	deleteByPrefix(r.settledTurns, prefix)
-	// currentRoundByThread is keyed by threadID — a single delete is the
-	// correct primitive. Cleared every wire-complete by takeOpenRound;
-	// CleanupThread is the safety net for sessions that ended without
-	// a final wire turn-complete (clean stdout EOF, host-side
-	// StopSession during a round).
-	delete(r.currentRoundByThread, threadID)
-	// The todo list is NOT cleaned up here: it lives on the thread row
-	// (threads.live_todo, migration v65) precisely so it survives the session
-	// that reported it. Only the provider emptying the list clears it.
-	// The harness wakeup timer is in-process CLI state — it dies with the
-	// session, so its record must not outlive it and shield a future
-	// session from the idle reaper.
-	delete(r.pendingWakeupByThread, threadID)
-	r.dropSubagentProgressForThread(threadID)
-	// A compacting window belongs to the process running the compaction;
-	// the frontend drops its copy on the same session-teardown path, so
-	// no inactive frame is emitted here.
-	delete(r.compactingSinceByThread, threadID)
-	// Command-lifecycle correlation is send-time carry-over for THIS
-	// process's stdin writes. A replacement session never acks them, so
-	// entries left behind would linger until the per-thread cap evicted
-	// them — and could attach a stale row id to a future uuid collision.
-	delete(r.commandLifecycle, threadID)
-	_, hadEffectiveModel := r.effectiveModelByThread[threadID]
-	delete(r.effectiveModelByThread, threadID)
-	var effectiveModelRevision uint64
+	delete(r.threads, threadID)
 	if hadEffectiveModel {
+		// The revision counter lives on the identity, so it is still
+		// here after the delete: the frontend needs a STRICTLY newer
+		// revision to accept the clear.
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
 	}
-	delete(r.tasksByThread, threadID)
-	delete(r.openAPIRetryRows, threadID)
-	// Drop the Codex background projector's per-thread trackers. A
-	// restarted session never inherits trackers from a prior session —
-	// the wire replays item/started for still-inProgress items and the
-	// projector re-observes them fresh. Keeping stale trackers would
-	// cause the first yield in the new session to stamp a row that
-	// belongs to an entirely different process id.
-	delete(r.codexBackground, threadID)
-	// Pending-send registry + wire-only dedup are user-send-time
-	// carry-over (see internal/triage/CLAUDE.md correlation taxonomy):
-	// the queue can outlive any single turn, but a torn-down session
-	// must not leak entries into a fresh one. Both sweeps share the
-	// thread-key path used elsewhere in this routine.
-	r.clearPendingSendsLocked(threadID)
-	r.clearWireOnlyUserTextLocked(threadID)
-	// Flush-queue + trigger-fired marker are session-scoped: a torn-down
-	// session must not deliver yesterday's queued user text to a fresh
-	// session that re-attaches to the same threadID, and a stale fired
-	// marker must not block the next session's first-round trigger.
-	r.clearFlushQueueLocked(threadID)
-	// Safety net for the revert-on-interrupt marker. Normally consumed
-	// by buildRoundCompletedEvent during the synthesized truncated
-	// turn-complete that fires above; this catches the case where the
-	// flag was set but no emission happened (e.g. predicate raced).
-	delete(r.revertedTurns, threadID)
-	pendingUsage, hasPendingUsage := r.takeUsageEmitPendingLocked(threadID)
-	delete(r.usageEmitThrottles, threadID)
 	r.mu.Unlock()
 
 	if hadEffectiveModel {
@@ -1776,9 +1757,9 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 // MarkThreadActive.
 func (r *Router) isThreadStopped(threadID string) bool {
 	r.mu.Lock()
-	_, stopped := r.stoppedThreads[threadID]
-	r.mu.Unlock()
-	return stopped
+	defer r.mu.Unlock()
+	id := r.identityIfPresent(threadID)
+	return id != nil && id.stopped
 }
 
 // MarkThreadActive clears the stopped flag so a replacement session's
@@ -1790,7 +1771,7 @@ func (r *Router) isThreadStopped(threadID string) bool {
 // is safe: the prior subprocess's read loop is fully drained before a
 // start proceeds (provider Close blocks on read-loop exit), so no
 // stale frame can slip through the freshly-cleared gate. No wire event
-// may clear this flag — see the stoppedThreads field comment.
+// may clear this flag — see the threadIdentity.stopped field comment.
 //
 // Reactivation also resets the thread's logical-turn settlement ledger.
 // The context-repair restart deliberately skips CleanupThread, so
@@ -1807,30 +1788,43 @@ func (r *Router) isThreadStopped(threadID string) bool {
 // which lets asynchronous teardowns detect that a replacement session
 // claimed the thread mid-teardown and abort their cleanup.
 func (r *Router) MarkThreadActive(threadID string) {
+	identity := r.identity(threadID)
 	r.mu.Lock()
-	delete(r.stoppedThreads, threadID)
-	deleteByPrefix(r.settledTurns, threadID+"|")
-	_, hadEffectiveModel := r.effectiveModelByThread[threadID]
-	delete(r.effectiveModelByThread, threadID)
+	identity.stopped = false
+	identity.epoch++
+	// This is NOT the cleanup sweep — the repair-restart path reaches
+	// here WITHOUT a CleanupThread, so the thread's state entry can be
+	// fully live and must survive. Only the fields whose meaning is
+	// bound to the process that just died are cleared, each for its own
+	// reason. Anything not listed here deliberately carries over.
+	var hadEffectiveModel bool
 	var effectiveModelRevision uint64
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		// A stale settlement marker would misroute a replacement
+		// session's first error result into persistLateTurnPayload
+		// (see the doc comment above).
+		st.settledTurns = nil
+		hadEffectiveModel = st.effectiveModelSet
+		st.effectiveModel, st.effectiveModelSet = "", false
+		// A pending harness wakeup is in-process state of the PREVIOUS
+		// CLI process; the replacement session this call commits to
+		// never inherits the timer. Without it a stale future fire time
+		// would shield the fresh session from the idle reaper for up to
+		// the wakeup clamp (60 min).
+		st.pendingWakeupAt, st.pendingWakeupSet = 0, false
+		// The ticks belong to the provider PROCESS: a dead process will
+		// never deliver the terminal that would consume them.
+		st.subagentProgress = nil
+		// A replacement process is never mid-compaction; a stale window
+		// would pin a "Compacting" label onto the fresh session.
+		st.compactingSince, st.compactingSinceSet = 0, false
+		// Same reasoning for the command-lifecycle correlation: the acks
+		// it waits on can only come from the process that just died.
+		st.commandLifecycle = nil
+	}
 	if hadEffectiveModel {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
 	}
-	r.threadEpochs[threadID]++
-	// A pending harness wakeup is in-process state of the PREVIOUS CLI
-	// process; the replacement session this call commits to never
-	// inherits the timer (the repair-restart path skips CleanupThread,
-	// so this is the sweep that covers it). Without it a stale future
-	// fire time would shield the fresh session from the idle reaper for
-	// up to the wakeup clamp (60 min).
-	delete(r.pendingWakeupByThread, threadID)
-	r.dropSubagentProgressForThread(threadID)
-	// A replacement process is never mid-compaction; a stale window would
-	// pin a "Compacting" label onto the fresh session.
-	delete(r.compactingSinceByThread, threadID)
-	// Same reasoning for the command-lifecycle correlation: the acks it
-	// waits on can only come from the process that just died.
-	delete(r.commandLifecycle, threadID)
 	// Interrupt marks are session-scoped: an in-flight echo cannot
 	// survive the session whose read loop carries it, and a replacement
 	// session after revert REUSES turn indexes — a lingering mark would
@@ -1838,7 +1832,7 @@ func (r *Router) MarkThreadActive(threadID string) {
 	// interrupt (round-11, CT11-2). Deletion is safe here (unlike the
 	// epoch maps): mark entries are keyed by router-unique seqs, so a
 	// stale restore's removal against the fresh list finds nothing.
-	delete(r.interruptMarks, threadID)
+	identity.interruptMarks = nil
 	r.mu.Unlock()
 	if hadEffectiveModel {
 		r.emit("provider:model_fallback", ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})
@@ -1854,7 +1848,9 @@ func (r *Router) MarkThreadActive(threadID string) {
 // teardown's captured 0 match.
 func (r *Router) ThreadEpoch(threadID string) uint64 {
 	r.mu.Lock()
-	epoch := r.threadEpochs[threadID]
-	r.mu.Unlock()
-	return epoch
+	defer r.mu.Unlock()
+	if id := r.identityIfPresent(threadID); id != nil {
+		return id.epoch
+	}
+	return 0
 }

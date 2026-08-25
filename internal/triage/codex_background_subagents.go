@@ -131,7 +131,7 @@ func (r *Router) resolveSubagentsForWait(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	state := r.codexBackground[evt.ThreadID]
+	state := r.codexBackgroundIfPresent(evt.ThreadID)
 	toEmit := make([]pendingSubagentCompletionEmit, 0)
 	emitted := make(map[string]struct{})
 	if state != nil {
@@ -429,7 +429,7 @@ func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID strin
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return
 	}

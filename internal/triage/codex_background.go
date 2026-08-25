@@ -120,12 +120,22 @@ func newCodexBackgroundState() *codexBackgroundState {
 // codexBackgroundForThread returns (or lazily creates) the per-thread
 // projector state. Must be called with r.mu held.
 func (r *Router) codexBackgroundForThread(threadID string) *codexBackgroundState {
-	state, ok := r.codexBackground[threadID]
-	if !ok {
-		state = newCodexBackgroundState()
-		r.codexBackground[threadID] = state
+	st := r.state(threadID)
+	if st.codexBackground == nil {
+		st.codexBackground = newCodexBackgroundState()
 	}
-	return state
+	return st.codexBackground
+}
+
+// codexBackgroundIfPresent returns the thread's projector state without
+// creating one. Read paths use it so a probe for a thread that never ran
+// Codex work stays allocation-free. Must be called with r.mu held.
+func (r *Router) codexBackgroundIfPresent(threadID string) *codexBackgroundState {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil
+	}
+	return st.codexBackground
 }
 
 func (r *Router) emitCodexBackgroundTasksChanged(threadID string) {
@@ -236,7 +246,9 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 
 func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
 	r.mu.Lock()
-	delete(r.codexBackground, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.codexBackground = nil
+	}
 	r.mu.Unlock()
 }
 
@@ -270,7 +282,7 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 	}
 
 	r.mu.Lock()
-	state := r.codexBackground[evt.ThreadID]
+	state := r.codexBackgroundIfPresent(evt.ThreadID)
 	var spawnTracker *spawnAgentTracker
 	if state != nil {
 		spawnTracker = state.spawnAgent[itemID]
@@ -289,7 +301,7 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 			shouldStamp = true
 		}
 		if !spawnTracker.hasRunningChildren {
-			if state := r.codexBackground[evt.ThreadID]; state != nil {
+			if state := r.codexBackgroundIfPresent(evt.ThreadID); state != nil {
 				delete(state.spawnAgent, itemID)
 			}
 		}
@@ -328,7 +340,7 @@ func (r *Router) observeCodexModelReasoning(threadID string) {
 func (r *Router) observeCodexTurnComplete(threadID string) {
 	r.settleCodexTerminalWaits(threadID)
 	r.mu.Lock()
-	state := r.codexBackground[threadID]
+	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		r.mu.Unlock()
 		return

@@ -181,7 +181,7 @@ func TestPromoteQuietFlushSends_FailedBumpUnclaimsAnchor(t *testing.T) {
 
 	anchors := map[string]bool{}
 	router.mu.Lock()
-	for _, entry := range router.pendingByThread["t1"] {
+	for _, entry := range router.state("t1").pendingSends {
 		anchors[entry.AOItemID] = entry.AnchoredAtInterrupt
 	}
 	router.mu.Unlock()
@@ -762,7 +762,7 @@ func TestEagerPersistDeferredFlushSends_UsesCallerSampledInterruptedTurn(t *test
 
 	got := -2
 	router.mu.Lock()
-	for _, entry := range router.pendingByThread["t1"] {
+	for _, entry := range router.state("t1").pendingSends {
 		if entry.AOItemID == "user:1:flush:1" {
 			got = entry.InterruptedTurnIndex
 		}
@@ -877,7 +877,7 @@ func TestEagerPersistFailure_RestoresDeferredState(t *testing.T) {
 
 	router.mu.Lock()
 	var entry pendingSend
-	for _, e := range router.pendingByThread["t1"] {
+	for _, e := range router.state("t1").pendingSends {
 		if e.AOItemID == "user:1:flush:1" {
 			entry = e
 		}
@@ -932,7 +932,7 @@ func eagerPersistForTest(router *Router, threadID string, interruptedTurn int) [
 // those are covered by the interrupt-sequence tests.
 func promoteQuietForTest(router *Router, threadID string) []store.Item {
 	router.mu.Lock()
-	tok := FlushStampToken{threadEpoch: router.threadEpochs[threadID]}
+	tok := FlushStampToken{threadEpoch: router.identity(threadID).epoch}
 	router.mu.Unlock()
 	return router.PromoteQuietFlushSends(threadID, tok)
 }
@@ -1330,7 +1330,7 @@ func TestPostAckFlushTransition_FencedAgainstSessionReplacement(t *testing.T) {
 		t.Fatalf("stale promote = %+v, want none", promoted)
 	}
 	router.mu.Lock()
-	for _, entry := range router.pendingByThread["t1"] {
+	for _, entry := range router.state("t1").pendingSends {
 		if entry.AnchoredAtInterrupt {
 			t.Error("stale promote claimed the replacement's entry")
 		}
@@ -1360,9 +1360,9 @@ func TestPostAckFlushTransition_FencedAgainstSessionReplacement(t *testing.T) {
 	}
 	router.mu.Lock()
 	var deferredEntry *pendingSend
-	for i := range router.pendingByThread["t1"] {
-		if router.pendingByThread["t1"][i].AOItemID == "user:2:flush:1" {
-			deferredEntry = &router.pendingByThread["t1"][i]
+	for i := range router.state("t1").pendingSends {
+		if router.state("t1").pendingSends[i].AOItemID == "user:2:flush:1" {
+			deferredEntry = &router.state("t1").pendingSends[i]
 		}
 	}
 	if deferredEntry == nil {
@@ -1394,7 +1394,7 @@ func TestRestoreFlushSendsInterrupted_EpochGuard(t *testing.T) {
 		t.Helper()
 		router.mu.Lock()
 		defer router.mu.Unlock()
-		pending := router.pendingByThread[threadID]
+		pending := router.state(threadID).pendingSends
 		if len(pending) != 1 {
 			t.Fatalf("pending entries on %s = %d, want 1", threadID, len(pending))
 		}
@@ -1494,8 +1494,8 @@ func TestEagerPersistStamp_PreservesNewerInterruptStamp(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	got := router.pendingByThread["t1"][0].InterruptedTurnIndex
-	wasDeferred := router.pendingByThread["t1"][0].WasDeferred
+	got := router.state("t1").pendingSends[0].InterruptedTurnIndex
+	wasDeferred := router.state("t1").pendingSends[0].WasDeferred
 	router.mu.Unlock()
 	if got != 1 {
 		t.Fatalf("stamp after stale eager pass = %d, want the newer interrupt's 1", got)
@@ -1584,7 +1584,7 @@ func TestPromotedEchoBoundary_CoversRowsDeferredBehindMidSettleStream(t *testing
 		Summary: "pre-echo completion", CreatedAt: now + 1, UpdatedAt: now + 1,
 	}
 	router.mu.Lock()
-	router.interruptQueue["t1"] = append(router.interruptQueue["t1"], queuedPersistence{item: deferredCompletion})
+	router.state("t1").interruptQueue = append(router.state("t1").interruptQueue, queuedPersistence{item: deferredCompletion})
 	router.mu.Unlock()
 
 	// Mid-loop echo of the promoted message.
@@ -1777,7 +1777,7 @@ func TestUnanchoredEagerFlushEcho_DrainsDeferredRowsBelowBump(t *testing.T) {
 		Summary: "pre-echo completion", CreatedAt: now + 1, UpdatedAt: now + 1,
 	}
 	router.mu.Lock()
-	router.interruptQueue["t1"] = append(router.interruptQueue["t1"], queuedPersistence{item: deferredCompletion})
+	router.state("t1").interruptQueue = append(router.state("t1").interruptQueue, queuedPersistence{item: deferredCompletion})
 	router.mu.Unlock()
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -1946,7 +1946,7 @@ func TestRebumpOverDrained_PreservesAnchoredSiblingFIFO(t *testing.T) {
 		Summary: "pre-echo completion", CreatedAt: now + 2, UpdatedAt: now + 2,
 	}
 	router.mu.Lock()
-	router.interruptQueue["t1"] = append(router.interruptQueue["t1"], queuedPersistence{item: deferredCompletion})
+	router.state("t1").interruptQueue = append(router.state("t1").interruptQueue, queuedPersistence{item: deferredCompletion})
 	router.mu.Unlock()
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -2035,7 +2035,7 @@ func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
 		t.Fatalf("delete q2 row: %v", err)
 	}
 	router.mu.Lock()
-	router.interruptQueue["t1"] = append(router.interruptQueue["t1"], queuedPersistence{item: store.Item{
+	router.state("t1").interruptQueue = append(router.state("t1").interruptQueue, queuedPersistence{item: store.Item{
 		ID: "tool:0:1", ThreadID: "t1", TurnIndex: 0,
 		Kind: "tool_call", Role: "assistant", Status: "completed",
 		Summary: "pre-echo completion", CreatedAt: now + 2, UpdatedAt: now + 2,
@@ -2051,7 +2051,7 @@ func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
 
 	router.mu.Lock()
 	flagged := false
-	for _, entry := range router.pendingByThread["t1"] {
+	for _, entry := range router.state("t1").pendingSends {
 		if entry.AOItemID == "user:0:flush:2" && entry.NeedsTailRebump {
 			flagged = true
 		}
@@ -2138,7 +2138,7 @@ func TestPromotedEchoBoundary_WaitsForInFlightDrain(t *testing.T) {
 		Summary: "pre-echo completion", CreatedAt: now + 1, UpdatedAt: now + 1,
 	}
 	router.mu.Lock()
-	router.interruptQueue["t1"] = append(router.interruptQueue["t1"], queuedPersistence{item: deferredCompletion})
+	router.state("t1").interruptQueue = append(router.state("t1").interruptQueue, queuedPersistence{item: deferredCompletion})
 	router.mu.Unlock()
 
 	// Simulate a settle-goroutine drain mid-flight: the queue is popped
@@ -2146,8 +2146,8 @@ func TestPromotedEchoBoundary_WaitsForInFlightDrain(t *testing.T) {
 	drainLock := router.drainLock("t1")
 	drainLock.Lock()
 	router.mu.Lock()
-	handedOff := router.interruptQueue["t1"]
-	delete(router.interruptQueue, "t1")
+	handedOff := router.state("t1").interruptQueue
+	router.state("t1").interruptQueue = nil
 	router.mu.Unlock()
 
 	echoDone := make(chan error, 1)
@@ -2440,7 +2440,7 @@ func TestDeferredEchoSampleFailure_RecordsTurnOpenFallback(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	pending := append([]pendingSend(nil), router.pendingByThread["t1"]...)
+	pending := append([]pendingSend(nil), router.state("t1").pendingSends...)
 	router.mu.Unlock()
 	if len(pending) != 1 {
 		t.Fatalf("pending entries = %d, want the reinserted echo-consumed entry", len(pending))
@@ -2483,7 +2483,7 @@ func TestDeferredEchoSampleFailure_OpenTurnFallsBackToSteerShape(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	pending := append([]pendingSend(nil), router.pendingByThread["t1"]...)
+	pending := append([]pendingSend(nil), router.state("t1").pendingSends...)
 	router.mu.Unlock()
 	if len(pending) != 1 {
 		t.Fatalf("pending entries = %d, want the reinserted echo-consumed entry", len(pending))

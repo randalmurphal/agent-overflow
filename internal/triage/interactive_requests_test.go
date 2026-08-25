@@ -132,8 +132,8 @@ func TestPendingInteractiveRequestsCleanupThreadClearsOrder(t *testing.T) {
 	}
 	router.mu.Lock()
 	defer router.mu.Unlock()
-	if got := len(router.pendingUserInputOrder); got != 0 {
-		t.Fatalf("pendingUserInputOrder len after cleanup = %d, want 0", got)
+	if st := router.threadStateIfPresent("thread-1"); st != nil {
+		t.Fatalf("thread state survived CleanupThread with %d pending user-input order entries, want the whole entry gone", len(st.pendingUserInputOrder))
 	}
 }
 

@@ -279,8 +279,11 @@ func (r *Router) persistCompletedBlockEmitStreaming(
 	return nil
 }
 
-func scopeCounterKey(threadID string, turnIndex int, scope string) string {
-	return fmt.Sprintf("%s|%d|%s", threadID, turnIndex, scope)
+// scopeCounterKey keys the per-thread id-allocating counters and the
+// active-block maps on threadState. The thread dimension is the map
+// those live in, so it is deliberately absent here.
+func scopeCounterKey(turnIndex int, scope string) string {
+	return fmt.Sprintf("%d|%s", turnIndex, scope)
 }
 
 // ThinkingSummaryPreview seeds a new thinking row's items.summary with

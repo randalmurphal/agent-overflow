@@ -514,7 +514,7 @@ func TestConcurrentTurnSpanStartCannotOverwriteNewerGeneration(t *testing.T) {
 	<-firstDone
 
 	r.mu.Lock()
-	active := len(r.turnSpans)
+	active := r.activeTurnSpanCountLocked()
 	r.mu.Unlock()
 	if active != 1 {
 		t.Fatalf("active turn spans = %d, want the newer span only", active)
@@ -550,7 +550,7 @@ func TestCleanupInvalidatesSpanStartBeforeRegistration(t *testing.T) {
 	<-startDone
 
 	r.mu.Lock()
-	active := len(r.turnSpans)
+	active := r.activeTurnSpanCountLocked()
 	r.mu.Unlock()
 	if active != 1 {
 		t.Fatalf("active turn spans = %d after cleanup and restart, want replacement only", active)

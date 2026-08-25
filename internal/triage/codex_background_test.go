@@ -1219,7 +1219,7 @@ func TestCodexSpawnPendingStartClearsAtTurnComplete(t *testing.T) {
 		t.Fatalf("spawn start: %v", err)
 	}
 	router.mu.Lock()
-	before := len(router.codexBackground["t1"].spawnAgent)
+	before := len(router.threadStateIfPresent("t1").codexBackground.spawnAgent)
 	router.mu.Unlock()
 	if before != 1 {
 		t.Fatalf("pending spawn trackers before turn complete = %d, want 1", before)
@@ -1228,7 +1228,7 @@ func TestCodexSpawnPendingStartClearsAtTurnComplete(t *testing.T) {
 	router.observeCodexTurnComplete("t1")
 
 	router.mu.Lock()
-	after := len(router.codexBackground["t1"].spawnAgent)
+	after := len(router.threadStateIfPresent("t1").codexBackground.spawnAgent)
 	router.mu.Unlock()
 	if after != 0 {
 		t.Fatalf("pending spawn trackers after turn complete = %d, want 0", after)
@@ -1630,7 +1630,7 @@ func TestCodexSubagentWaitCompletionRehydratesPersistedLaunch(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	delete(router.codexBackground, "t1")
+	router.state("t1").codexBackground = nil
 	router.mu.Unlock()
 
 	waitMeta := buildWaitAgentMetaWithMessage(t, "child-rehydrate", "completed", "Recovered final output")
@@ -1721,7 +1721,7 @@ func TestCodexSubagentNotificationRehydratesPersistedLaunch(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	delete(router.codexBackground, "t1")
+	router.state("t1").codexBackground = nil
 	router.mu.Unlock()
 
 	notifyMeta, _ := json.Marshal(map[string]any{
@@ -2280,7 +2280,7 @@ func TestCodexSubagentWaitCompletionPersistsImmediatelyWithActiveStream(t *testi
 		t.Fatalf("wait_carrier_id = %v, want wait-immediate", siblingMeta["wait_carrier_id"])
 	}
 	router.mu.Lock()
-	activeStreams := router.streamingItemCounts["t1"]
+	activeStreams := router.threadStateIfPresent("t1").streamingItemCount
 	router.mu.Unlock()
 	if activeStreams == 0 {
 		t.Fatal("test setup did not leave an active stream")

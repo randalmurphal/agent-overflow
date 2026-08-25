@@ -6,39 +6,42 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func rememberInteractiveRequestOrder(order map[string][]string, threadID, requestID string) {
+// rememberInteractiveRequestOrder appends requestID to one thread's
+// display-order list, preserving first-seen order and ignoring repeats.
+func rememberInteractiveRequestOrder(order []string, threadID, requestID string) []string {
 	threadID = strings.TrimSpace(threadID)
 	requestID = strings.TrimSpace(requestID)
 	if threadID == "" || requestID == "" {
-		return
+		return order
 	}
-	for _, existing := range order[threadID] {
+	for _, existing := range order {
 		if existing == requestID {
-			return
+			return order
 		}
 	}
-	order[threadID] = append(order[threadID], requestID)
+	return append(order, requestID)
 }
 
-func removeInteractiveRequestOrder(order map[string][]string, threadID, requestID string) {
+// removeInteractiveRequestOrder drops requestID from one thread's
+// display-order list.
+func removeInteractiveRequestOrder(order []string, threadID, requestID string) []string {
 	threadID = strings.TrimSpace(threadID)
 	requestID = strings.TrimSpace(requestID)
 	if threadID == "" || requestID == "" {
-		return
+		return order
 	}
-	ids := order[threadID]
+	ids := order
 	for i, existing := range ids {
 		if existing != requestID {
 			continue
 		}
 		ids = append(ids[:i], ids[i+1:]...)
 		if len(ids) == 0 {
-			delete(order, threadID)
-			return
+			return nil
 		}
-		order[threadID] = ids
-		return
+		return ids
 	}
+	return order
 }
 
 // HasPendingWork reports whether the router holds any user-blocking live
@@ -57,16 +60,20 @@ func (r *Router) HasPendingWork(threadID string) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.pendingApprovalOrder[threadID]) > 0 {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return false
+	}
+	if len(st.pendingApprovalOrder) > 0 {
 		return true
 	}
-	if len(r.pendingUserInputOrder[threadID]) > 0 {
+	if len(st.pendingUserInputOrder) > 0 {
 		return true
 	}
-	if len(r.queuedFlushItems[threadID]) > 0 {
+	if len(st.queuedFlushItems) > 0 {
 		return true
 	}
-	if len(r.pendingByThread[threadID]) > 0 {
+	if len(st.pendingSends) > 0 {
 		return true
 	}
 	return false
@@ -88,18 +95,21 @@ func (r *Router) PendingInteractiveRequests(threadID string) provider.PendingInt
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for _, requestID := range r.pendingApprovalOrder[threadID] {
-		key := approvalStateKey(threadID, requestID)
-		pending, ok := r.pendingApprovals[key]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return snapshot
+	}
+
+	for _, requestID := range st.pendingApprovalOrder {
+		pending, ok := st.pendingApprovals[requestID]
 		if !ok {
 			continue
 		}
 		snapshot.Approvals = append(snapshot.Approvals, pending.Request)
 	}
 
-	for _, requestID := range r.pendingUserInputOrder[threadID] {
-		key := approvalStateKey(threadID, requestID)
-		request, ok := r.pendingUserInputs[key]
+	for _, requestID := range st.pendingUserInputOrder {
+		request, ok := st.pendingUserInputs[requestID]
 		if !ok {
 			continue
 		}

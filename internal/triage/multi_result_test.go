@@ -498,21 +498,26 @@ func TestCurrentRoundByThreadIsBoundedByCleanupThread(t *testing.T) {
 	}
 
 	router.mu.Lock()
-	openRound, hasOpenRound := router.currentRoundByThread["t1"]
+	openState := router.threadStateIfPresent("t1")
+	var openRound ActiveTurnSnapshot
+	hasOpenRound := openState != nil && openState.currentRoundOpen
+	if hasOpenRound {
+		openRound = openState.currentRound
+	}
 	router.mu.Unlock()
 	if !hasOpenRound || openRound.TurnID == "" {
-		t.Fatalf("expected currentRoundByThread[t1] to be set after EventTurnStart, got %+v (present=%v)", openRound, hasOpenRound)
+		t.Fatalf("expected the open round slot for t1 to be set after EventTurnStart, got %+v (present=%v)", openRound, hasOpenRound)
 	}
 
 	router.CleanupThread("t1")
 
 	router.mu.Lock()
 	defer router.mu.Unlock()
-	if _, leaked := router.currentRoundByThread["t1"]; leaked {
-		t.Errorf("currentRoundByThread leaked entry for t1 past CleanupThread")
+	if _, leaked := router.threads["t1"]; leaked {
+		t.Errorf("thread state leaked entry for t1 past CleanupThread")
 	}
-	if got := len(router.currentRoundByThread); got != 0 {
-		t.Errorf("currentRoundByThread has %d entries past CleanupThread, want 0", got)
+	if got := len(router.threads); got != 0 {
+		t.Errorf("thread state has %d entries past CleanupThread, want 0", got)
 	}
 }
 
@@ -583,7 +588,7 @@ func TestRoundEmission_CrossThreadIsolation(t *testing.T) {
 	}
 	// t2's slot must still be open.
 	router.mu.Lock()
-	t2RoundStillOpen := router.currentRoundByThread["t2"]
+	t2RoundStillOpen := router.threadStateIfPresent("t2").currentRound
 	router.mu.Unlock()
 	if t2RoundStillOpen.TurnID != t2Round {
 		t.Errorf("t2 round slot was disturbed: got %q, want %q", t2RoundStillOpen.TurnID, t2Round)
@@ -858,11 +863,16 @@ func TestCounterMapsBoundedByCleanupThread(t *testing.T) {
 
 	// Architectural fix invariant: counters survive turn boundaries.
 	router.mu.Lock()
-	if len(router.segmentIndexByScope) == 0 {
+	preCleanupSegmentEntries := 0
+	for _, threadID := range threadIDs {
+		if st := router.threadStateIfPresent(threadID); st != nil {
+			preCleanupSegmentEntries += len(st.segmentIndexByScope)
+		}
+	}
+	if preCleanupSegmentEntries == 0 {
 		router.mu.Unlock()
 		t.Fatal("segmentIndexByScope was wiped at turn-complete — Option-X regression (the fix removed the prefix-sweep but something is still clearing this map)")
 	}
-	preCleanupSegmentEntries := len(router.segmentIndexByScope)
 	router.mu.Unlock()
 	if preCleanupSegmentEntries < len(threadIDs) {
 		t.Errorf("expected at least %d segment counter entries surviving turn-complete, got %d", len(threadIDs), preCleanupSegmentEntries)
@@ -875,28 +885,17 @@ func TestCounterMapsBoundedByCleanupThread(t *testing.T) {
 
 	router.mu.Lock()
 	defer router.mu.Unlock()
-	if got := len(router.segmentIndexByScope); got != 0 {
-		t.Errorf("segmentIndexByScope leaked %d entries past CleanupThread", got)
-	}
-	if got := len(router.blockIndexByScope); got != 0 {
-		t.Errorf("blockIndexByScope leaked %d entries past CleanupThread", got)
-	}
-	if got := len(router.errorSeqByScope); got != 0 {
-		t.Errorf("errorSeqByScope leaked %d entries past CleanupThread", got)
-	}
-	if got := len(router.terminalInteractionSeq); got != 0 {
-		t.Errorf("terminalInteractionSeq leaked %d entries past CleanupThread", got)
-	}
-	// Logical-turn settlement state survives turn boundaries by design
-	// but should not outlive the session.
-	if got := len(router.settledTurns); got != 0 {
-		t.Errorf("settledTurns leaked %d entries past CleanupThread", got)
-	}
-	// Per-wire-round id slot — every wire complete clears its own
-	// thread's slot via takeOpenRound, but CleanupThread is the safety
-	// net for sessions that ended mid-round (no final wire complete).
-	if got := len(router.currentRoundByThread); got != 0 {
-		t.Errorf("currentRoundByThread leaked %d entries past CleanupThread", got)
+	// Every one of these — the id-allocating counters, the logical-turn
+	// settlement ledger that survives turn boundaries by design, and the
+	// per-wire-round id slot — lives on the thread's state entry, so the
+	// one assertion that the entry is gone covers all of them and every
+	// field added beside them later.
+	for _, threadID := range threadIDs {
+		if st := router.threads[threadID]; st != nil {
+			t.Errorf("thread state for %s leaked past CleanupThread: %d segment / %d block / %d error / %d terminal-interaction / %d settled-turn entries, round open=%v",
+				threadID, len(st.segmentIndexByScope), len(st.blockIndexByScope), len(st.errorSeqByScope),
+				len(st.terminalInteractionSeq), len(st.settledTurns), st.currentRoundOpen)
+		}
 	}
 }
 
@@ -948,13 +947,17 @@ func TestClearOpenTurnSweepsPendingApprovalsAndUserInputs(t *testing.T) {
 
 	router.mu.Lock()
 	defer router.mu.Unlock()
-	if got := len(router.pendingApprovals); got != 0 {
+	pendingState := router.threadStateIfPresent("t1")
+	if pendingState == nil {
+		return
+	}
+	if got := len(pendingState.pendingApprovals); got != 0 {
 		t.Errorf("pendingApprovals not swept: %d entries remain", got)
 	}
-	if got := len(router.pendingApprovalItems); got != 0 {
+	if got := len(pendingState.pendingApprovalItems); got != 0 {
 		t.Errorf("pendingApprovalItems not swept: %d entries remain", got)
 	}
-	if got := len(router.pendingUserInputs); got != 0 {
+	if got := len(pendingState.pendingUserInputs); got != 0 {
 		t.Errorf("pendingUserInputs not swept: %d entries remain", got)
 	}
 }
@@ -1176,7 +1179,7 @@ func TestDuplicateFatalErrorStillDrainsInterruptQueue(t *testing.T) {
 	valid := validDrainCompletion("complete:launch-ok", "launch-ok", 11, 2)
 	valid.item.Status = statusCompleted
 	router.mu.Lock()
-	router.interruptQueue["t1"] = []queuedPersistence{valid}
+	router.state("t1").interruptQueue = []queuedPersistence{valid}
 	router.mu.Unlock()
 
 	fatalMeta, _ := json.Marshal(map[string]any{"fatal": true})

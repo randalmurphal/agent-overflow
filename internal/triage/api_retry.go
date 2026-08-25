@@ -121,20 +121,23 @@ func (r *Router) handleAPIRetry(evt provider.ProviderEvent) error {
 
 func (r *Router) markOpenAPIRetryRow(threadID string) {
 	r.mu.Lock()
-	r.openAPIRetryRows[threadID] = true
+	r.state(threadID).openAPIRetryRow = true
 	r.mu.Unlock()
 }
 
 func (r *Router) clearOpenAPIRetryRow(threadID string) {
 	r.mu.Lock()
-	delete(r.openAPIRetryRows, threadID)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		st.openAPIRetryRow = false
+	}
 	r.mu.Unlock()
 }
 
 func (r *Router) hasOpenAPIRetryRow(threadID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.openAPIRetryRows[threadID]
+	st := r.threadStateIfPresent(threadID)
+	return st != nil && st.openAPIRetryRow
 }
 
 // isAPIRetryForwardProgress reports whether an event kind counts as

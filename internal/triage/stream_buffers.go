@@ -78,10 +78,6 @@ type pendingStreamFlush struct {
 	updatedAt    int64
 }
 
-func streamPersistKey(threadID, itemID string) string {
-	return threadID + "|" + itemID
-}
-
 func (r *Router) emitItemDelta(evt ItemDeltaEvent) {
 	r.emit("provider:item_event", newItemStreamDelta(evt))
 }
@@ -139,12 +135,14 @@ func (r *Router) bufferCommandOutputPersistence(threadID, itemID, content string
 // per-chunk item read on the streaming hot path: a live buffer implies
 // the row's existence was already verified at window start.
 func (r *Router) hasCommandOutputBuffer(threadID, itemID string) bool {
-	key := streamPersistKey(threadID, itemID)
 	r.mu.Lock()
-	buffer := r.streamPersistBuffers[key]
-	live := buffer != nil && buffer.kind == payloadKindCommandOutput
-	r.mu.Unlock()
-	return live
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return false
+	}
+	buffer := st.streamPersistBuffers[itemID]
+	return buffer != nil && buffer.kind == payloadKindCommandOutput
 }
 
 // discardCommandOutputBufferLocked drops a pending command-output buffer
@@ -153,15 +151,18 @@ func (r *Router) hasCommandOutputBuffer(threadID, itemID string) bool {
 // first would only burn a write that the rewrite immediately overwrites.
 // Caller must hold r.mu (and streamFlushMu — see handleCommandOutput).
 func (r *Router) discardCommandOutputBufferLocked(threadID, itemID string) {
-	key := streamPersistKey(threadID, itemID)
-	buffer := r.streamPersistBuffers[key]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return
+	}
+	buffer := st.streamPersistBuffers[itemID]
 	if buffer == nil || buffer.kind != payloadKindCommandOutput {
 		return
 	}
 	if buffer.timer != nil {
 		buffer.timer.Stop()
 	}
-	delete(r.streamPersistBuffers, key)
+	delete(st.streamPersistBuffers, itemID)
 }
 
 // stageStreamPersistence records a live delta in the in-memory flush buffer.
@@ -174,11 +175,11 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 		return false
 	}
 
-	key := streamPersistKey(delta.threadID, delta.itemID)
 	flushNow := false
 
 	r.mu.Lock()
-	buffer := r.streamPersistBuffers[key]
+	st := r.state(delta.threadID)
+	buffer := st.streamPersistBuffers[delta.itemID]
 	if buffer == nil {
 		buffer = &streamPersistBuffer{
 			threadID:  delta.threadID,
@@ -186,7 +187,10 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 			kind:      delta.kind,
 			payloadID: delta.payloadID,
 		}
-		r.streamPersistBuffers[key] = buffer
+		if st.streamPersistBuffers == nil {
+			st.streamPersistBuffers = make(map[string]*streamPersistBuffer)
+		}
+		st.streamPersistBuffers[delta.itemID] = buffer
 	}
 	// Text/thinking stagers pass the identical string as summaryDelta and
 	// payloadDelta; command_output stages payloadDelta only. Either way
@@ -207,10 +211,10 @@ func (r *Router) stageStreamPersistence(delta pendingStreamFlush, flushOnThresho
 	if buffer.contentWeight() >= persistByteThresholdForKind(buffer.kind) {
 		flushNow = true
 		if !flushOnThreshold {
-			r.scheduleStreamPersistenceLocked(key, buffer)
+			r.scheduleStreamPersistenceLocked(buffer)
 		}
 	} else {
-		r.scheduleStreamPersistenceLocked(key, buffer)
+		r.scheduleStreamPersistenceLocked(buffer)
 	}
 	r.mu.Unlock()
 	return flushNow
@@ -230,17 +234,23 @@ func persistIntervalForKind(kind string) time.Duration {
 	return streamPersistInterval
 }
 
-func (r *Router) scheduleStreamPersistenceLocked(key string, buffer *streamPersistBuffer) {
+func (r *Router) scheduleStreamPersistenceLocked(buffer *streamPersistBuffer) {
 	if buffer.timer != nil {
 		return
 	}
+	threadID, itemID := buffer.threadID, buffer.itemID
 	buffer.timer = time.AfterFunc(persistIntervalForKind(buffer.kind), func() {
-		r.flushStreamPersistenceKey(key)
+		r.flushStreamPersistenceKey(threadID, itemID)
 	})
 }
 
-func (r *Router) takeStreamPersistenceLocked(key string) *pendingStreamFlush {
-	buffer := r.streamPersistBuffers[key]
+// takeStreamPersistenceLocked extracts and removes one thread's buffer
+// for itemID. Caller holds r.mu.
+func (r *Router) takeStreamPersistenceLocked(st *threadState, itemID string) *pendingStreamFlush {
+	if st == nil {
+		return nil
+	}
+	buffer := st.streamPersistBuffers[itemID]
 	if buffer == nil {
 		return nil
 	}
@@ -248,7 +258,7 @@ func (r *Router) takeStreamPersistenceLocked(key string) *pendingStreamFlush {
 		buffer.timer.Stop()
 		buffer.timer = nil
 	}
-	delete(r.streamPersistBuffers, key)
+	delete(st.streamPersistBuffers, itemID)
 	if buffer.content.Len() == 0 {
 		return nil
 	}
@@ -276,11 +286,11 @@ func (r *Router) takeStreamPersistenceLocked(key string) *pendingStreamFlush {
 // cannot interleave with the SQLite write — without it a timer flush
 // extracted-but-not-committed when a command's authoritative Replace
 // snapshot lands would append a duplicate output tail after the rewrite.
-func (r *Router) flushStreamPersistenceKey(key string) {
+func (r *Router) flushStreamPersistenceKey(threadID, itemID string) {
 	r.streamFlushMu.Lock()
 	defer r.streamFlushMu.Unlock()
 	r.mu.Lock()
-	pending := r.takeStreamPersistenceLocked(key)
+	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID)
 	r.mu.Unlock()
 	if pending == nil {
 		return
@@ -293,9 +303,8 @@ func (r *Router) flushStreamPersistenceKey(key string) {
 func (r *Router) flushStreamingItem(threadID, itemID string) error {
 	r.streamFlushMu.Lock()
 	defer r.streamFlushMu.Unlock()
-	key := streamPersistKey(threadID, itemID)
 	r.mu.Lock()
-	pending := r.takeStreamPersistenceLocked(key)
+	pending := r.takeStreamPersistenceLocked(r.threadStateIfPresent(threadID), itemID)
 	r.mu.Unlock()
 	if pending == nil {
 		return nil
@@ -306,15 +315,13 @@ func (r *Router) flushStreamingItem(threadID, itemID string) error {
 func (r *Router) flushStreamingThread(threadID string) error {
 	r.streamFlushMu.Lock()
 	defer r.streamFlushMu.Unlock()
-	prefix := threadID + "|"
 	r.mu.Lock()
 	pending := make([]pendingStreamFlush, 0)
-	for key := range r.streamPersistBuffers {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		if flush := r.takeStreamPersistenceLocked(key); flush != nil {
-			pending = append(pending, *flush)
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for itemID := range st.streamPersistBuffers {
+			if flush := r.takeStreamPersistenceLocked(st, itemID); flush != nil {
+				pending = append(pending, *flush)
+			}
 		}
 	}
 	r.mu.Unlock()
@@ -342,10 +349,12 @@ func (r *Router) flushAllStreamPersistence() error {
 	r.streamFlushMu.Lock()
 	defer r.streamFlushMu.Unlock()
 	r.mu.Lock()
-	pending := make([]pendingStreamFlush, 0, len(r.streamPersistBuffers))
-	for key := range r.streamPersistBuffers {
-		if flush := r.takeStreamPersistenceLocked(key); flush != nil {
-			pending = append(pending, *flush)
+	pending := make([]pendingStreamFlush, 0)
+	for _, st := range r.threads {
+		for itemID := range st.streamPersistBuffers {
+			if flush := r.takeStreamPersistenceLocked(st, itemID); flush != nil {
+				pending = append(pending, *flush)
+			}
 		}
 	}
 	r.mu.Unlock()

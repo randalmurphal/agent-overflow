@@ -169,25 +169,30 @@ func captureCommandExecutionToolResult(raw json.RawMessage, workspaceRoot string
 func (r *Router) setPendingCommandInlineDiff(threadID, itemID string, pending pendingCommandInlineDiff) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pendingCommandDiffs[pendingCommandInlineDiffKey(threadID, itemID)] = pending
+	st := r.state(threadID)
+	if st.pendingCommandDiffs == nil {
+		st.pendingCommandDiffs = make(map[string]pendingCommandInlineDiff)
+	}
+	st.pendingCommandDiffs[itemID] = pending
 }
 
 func (r *Router) takePendingCommandInlineDiff(threadID, itemID string) (pendingCommandInlineDiff, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	key := pendingCommandInlineDiffKey(threadID, itemID)
-	pending, ok := r.pendingCommandDiffs[key]
-	delete(r.pendingCommandDiffs, key)
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return pendingCommandInlineDiff{}, false
+	}
+	pending, ok := st.pendingCommandDiffs[itemID]
+	delete(st.pendingCommandDiffs, itemID)
 	return pending, ok
 }
 
 func (r *Router) clearPendingCommandInlineDiff(threadID, itemID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.pendingCommandDiffs, pendingCommandInlineDiffKey(threadID, itemID))
-}
-
-func pendingCommandInlineDiffKey(threadID, itemID string) string {
-	return threadID + ":" + itemID
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		delete(st.pendingCommandDiffs, itemID)
+	}
 }

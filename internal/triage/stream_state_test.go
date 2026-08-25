@@ -495,7 +495,7 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 		insertToolCallItem(t, st, "t1", "launch-post", "Bash post", "Bash", statusRunning)
 
 		router.mu.Lock()
-		router.interruptQueue["t1"] = []queuedPersistence{
+		router.state("t1").interruptQueue = []queuedPersistence{
 			validDrainCompletion("complete:launch-pre", "launch-pre", 10, 1),
 			{item: store.Item{
 				ID: "bad-kind", ThreadID: "t1", TurnIndex: 0, ItemIndex: 11,
@@ -523,7 +523,7 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 		}
 
 		router.mu.Lock()
-		remaining := len(router.interruptQueue["t1"])
+		remaining := len(router.state("t1").interruptQueue)
 		router.mu.Unlock()
 		if remaining != 0 {
 			t.Errorf("interruptQueue residue: %d", remaining)
@@ -538,7 +538,7 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 		valid := validDrainCompletion("complete:launch-ok", "launch-ok", 11, 2)
 		valid.item.Status = statusCompleted // drain must flip this to errored
 		router.mu.Lock()
-		router.interruptQueue["t1"] = []queuedPersistence{
+		router.state("t1").interruptQueue = []queuedPersistence{
 			{item: store.Item{
 				ID: "bad-kind", ThreadID: "t1", TurnIndex: 0, ItemIndex: 10,
 				Kind: "not_a_valid_kind",

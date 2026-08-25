@@ -275,7 +275,7 @@ func TestCommandLifecycle_CorrelationMapIsBounded(t *testing.T) {
 		}
 	}
 	router.mu.Lock()
-	size := len(router.commandLifecycle["t1"])
+	size := len(router.threadStateIfPresent("t1").commandLifecycle)
 	router.mu.Unlock()
 	if size > maxCommandLifecycleEntriesPerThread {
 		t.Fatalf("correlation map size = %d, want <= %d", size, maxCommandLifecycleEntriesPerThread)

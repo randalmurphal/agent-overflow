@@ -308,7 +308,8 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 	// path explicitly does NOT, so this assertion is the load-bearing
 	// distinguishing signal between the two paths.
 	router.mu.Lock()
-	openIdx, openOK := router.openTurns["t1"]
+	openState := router.threadStateIfPresent("t1")
+	openIdx, openOK := openState.openTurn, openState.openTurnSet
 	router.mu.Unlock()
 	if !openOK {
 		t.Fatal("openTurns[t1] not set — handleTurnStart's setOpenTurn must have run")

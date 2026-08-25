@@ -53,10 +53,6 @@ type SubagentProgressEvent struct {
 	UpdatedAt int64                         `json:"updatedAt"`
 }
 
-func subagentProgressKey(threadID, itemID string) string {
-	return threadID + ":" + itemID
-}
-
 // handleSubagentProgress merges a tick into the launch's live entry and
 // fans the merged state out. Merge, not replace: every field is
 // cumulative and a provider that cannot report one leaves it zero, so
@@ -73,21 +69,24 @@ func (r *Router) handleSubagentProgress(evt provider.ProviderEvent) error {
 			return fmt.Errorf("triage: decode subagent progress meta for %s/%s: %w", evt.ThreadID, itemID, err)
 		}
 	}
-	key := subagentProgressKey(evt.ThreadID, itemID)
 	r.mu.Lock()
-	merged := mergeSubagentProgress(r.subagentProgress[key], tick)
-	if len(r.subagentProgress) >= subagentProgressCap {
-		if _, present := r.subagentProgress[key]; !present {
+	st := r.state(evt.ThreadID)
+	merged := mergeSubagentProgress(st.subagentProgress[itemID], tick)
+	if len(st.subagentProgress) >= subagentProgressCap {
+		if _, present := st.subagentProgress[itemID]; !present {
 			// Bounded like the parser's task map: a runaway session must
 			// not grow router memory without limit. Dropping the oldest
 			// would need ordering state for a case that never happens in
 			// practice (the cap is far above any real agent fan-out), so
-			// the whole map resets and live cards re-fill on the next tick.
+			// the map resets and live cards re-fill on the next tick.
 			log.Printf("triage: subagent progress map hit cap %d; resetting", subagentProgressCap)
-			r.subagentProgress = make(map[string]provider.SubagentProgressMeta)
+			st.subagentProgress = nil
 		}
 	}
-	r.subagentProgress[key] = merged
+	if st.subagentProgress == nil {
+		st.subagentProgress = make(map[string]provider.SubagentProgressMeta)
+	}
+	st.subagentProgress[itemID] = merged
 	r.mu.Unlock()
 
 	r.emit("provider:"+subagentProgressEventName, SubagentProgressEvent{
@@ -150,12 +149,15 @@ func (r *Router) TakeSubagentProgress(threadID, itemID string) (provider.Subagen
 	if r == nil {
 		return provider.SubagentProgressMeta{}, false
 	}
-	key := subagentProgressKey(threadID, itemID)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	progress, ok := r.subagentProgress[key]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return provider.SubagentProgressMeta{}, false
+	}
+	progress, ok := st.subagentProgress[itemID]
 	if ok {
-		delete(r.subagentProgress, key)
+		delete(st.subagentProgress, itemID)
 	}
 	return progress, ok
 }
@@ -167,7 +169,11 @@ func (r *Router) PeekSubagentProgress(threadID, itemID string) (provider.Subagen
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	progress, ok := r.subagentProgress[subagentProgressKey(threadID, itemID)]
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return provider.SubagentProgressMeta{}, false
+	}
+	progress, ok := st.subagentProgress[itemID]
 	return progress, ok
 }
 
@@ -212,19 +218,6 @@ func persistedSubagentProgress(meta string) provider.SubagentProgressMeta {
 		return provider.SubagentProgressMeta{}
 	}
 	return decoded.Progress
-}
-
-// dropSubagentProgressForThread sweeps every live entry of a thread. The
-// ticks belong to the provider PROCESS: a replacement session never
-// carries them forward, and a dead process will never deliver the
-// terminal that would otherwise consume them.
-func (r *Router) dropSubagentProgressForThread(threadID string) {
-	prefix := threadID + ":"
-	for key := range r.subagentProgress {
-		if strings.HasPrefix(key, prefix) {
-			delete(r.subagentProgress, key)
-		}
-	}
 }
 
 // handleSubagentBackgrounded stamps the launch row as backgrounded
