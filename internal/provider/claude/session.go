@@ -222,6 +222,9 @@ type Session struct {
 // NewSession spawns a Claude CLI process and starts the stdout reader goroutine.
 // The init event arrives after the first Send() call, not on spawn.
 func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(provider.ProviderEvent)) (*Session, error) {
+	if onEvent == nil {
+		return nil, fmt.Errorf("claude: onEvent callback is required")
+	}
 	binary := cfg.Binary
 	if binary == "" {
 		binary = "claude"

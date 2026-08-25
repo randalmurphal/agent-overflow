@@ -48,7 +48,7 @@ func StartMCPAuth(ctx context.Context, cfg MCPAuthConfig, serverName string) (*M
 	if watch.budget() > 0 {
 		spawnCtx = context.WithoutCancel(ctx)
 	}
-	session, err := NewSession(spawnCtx, "mcp-auth", cfg.Config, nil)
+	session, err := NewSession(spawnCtx, "mcp-auth", cfg.Config, func(provider.ProviderEvent) {})
 	if err != nil {
 		return nil, nil, err
 	}
