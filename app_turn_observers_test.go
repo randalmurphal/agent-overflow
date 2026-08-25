@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
 )
 
@@ -124,7 +124,7 @@ func TestDiscussionTurnObserverPreservesWireErrorMessage(t *testing.T) {
 	app.channels = discussion.NewChannelService(app.store)
 	emitted := collectErrorItemUpserts(t, app, 4)
 
-	closedStore, err := store.New(filepath.Join(t.TempDir(), "closed.db"))
+	closedStore, err := store.New(storetest.ClonePath(t))
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}

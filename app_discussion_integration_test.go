@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // newDiscussionApp builds an App wired with a fresh on-disk store (so we
@@ -17,7 +17,7 @@ import (
 // reconstruct the store.
 func newDiscussionApp(t *testing.T) (*App, string) {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "discussion-integ.db")
+	dbPath := storetest.ClonePath(t)
 	st, err := store.New(dbPath)
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
@@ -477,8 +477,7 @@ func TestDisc_ChannelMessageSeqDedup(t *testing.T) {
 // TestDisc_DiscussionSurvivesAppRestart (38) — persist a definition, close
 // and reopen the store, and verify the definition is still there.
 func TestDisc_DiscussionSurvivesAppRestart(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "persist.db")
+	dbPath := storetest.ClonePath(t)
 
 	// -- First "run" --
 	st1, err := store.New(dbPath)

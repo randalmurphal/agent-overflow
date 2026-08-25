@@ -79,8 +79,8 @@ var (
 		"updater:progress",   // 2026-08-25 pass
 		"updater:ready",      // 2026-08-25 pass
 		"updater:verifying",  // 2026-08-25 pass
-		"usage:thread_cost", // 2026-08-25 pass
-		"webview:trim",      // 2026-08-25: launcher GC directive, same posture as updater:install
+		"usage:thread_cost",  // 2026-08-25 pass
+		"webview:trim",       // 2026-08-25: launcher GC directive, same posture as updater:install
 		"worktree:setup",
 	}
 	frozenRemoteOnlyChannels = []string{

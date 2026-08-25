@@ -63,8 +63,7 @@ func captureLog(t *testing.T) *bytes.Buffer {
 // follow-up rollback to "second" must take the uuid-keyed path (no
 // ordinal-fallback log).
 func TestConversationRollbackRemapsSurvivingProviderIDs(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread, workspace := setupRemapRollbackThread(t, app)
 
 	if err := rollbackToMessage(app, thread.ID, "user:2"); err != nil {
@@ -132,8 +131,7 @@ func TestConversationRollbackRemapsSurvivingProviderIDs(t *testing.T) {
 // regressed remap), the rollback still lands via the ordinal walk,
 // loudly.
 func TestConversationRollbackOrdinalFallbackStillReachableForStaleIDs(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread, workspace := setupRemapRollbackThread(t, app)
 
 	if err := app.store.UpdateMessageAnchorProviderIDs(thread.ID, "user:2", "uuid-not-in-file", "also-not-in-file"); err != nil {
@@ -163,8 +161,7 @@ func TestConversationRollbackOrdinalFallbackStillReachableForStaleIDs(t *testing
 // leaf scan lands on the active branch (the rechain repaired the
 // topology), so the next resume targets a uuid claude will accept.
 func TestConversationRollbackSlicesPoisonedAPIErrorTail(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()

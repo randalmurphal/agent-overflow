@@ -9,6 +9,7 @@ import (
 
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // fakeCodexProbe wires a deterministic Probe response into a test
@@ -30,7 +31,7 @@ type codexProbeStub struct {
 // tool_call row to errored/lost. This is the only branch that mutates
 // persisted state, so it gets the tightest assertions.
 func TestReconcileCodexMarksLostOnSystemError(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	threadID := seedCodexThread(t, st, "thread-a")
@@ -88,7 +89,7 @@ func TestReconcileCodexMarksLostOnSystemError(t *testing.T) {
 // as dead. The reconciler must NOT flip any rows and must signal
 // `NeedsResume=true` so the caller can sequence a thread/resume.
 func TestReconcileCodexResumesNotLoaded(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	threadID := seedCodexThread(t, st, "thread-b")
@@ -124,7 +125,7 @@ func TestReconcileCodexResumesNotLoaded(t *testing.T) {
 // session is alive, so we leave every row alone. A real completion
 // will arrive over the wire if/when it lands.
 func TestReconcileCodexLeavesAliveUnchanged(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	for _, alive := range []codex.ThreadStatusKind{codex.ThreadStatusIdle, codex.ThreadStatusActive} {
@@ -157,7 +158,7 @@ func TestReconcileCodexLeavesAliveUnchanged(t *testing.T) {
 // calling it on a thread with no session is an explicit error (not a
 // silent no-op).
 func TestReconcileCodexRejectsNoSession(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	threadID := seedCodexThread(t, st, "thread-no-session")
@@ -169,16 +170,6 @@ func TestReconcileCodexRejectsNoSession(t *testing.T) {
 }
 
 // --- helpers ---
-
-func newMemoryStore(t *testing.T) *store.Store {
-	t.Helper()
-	st, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
-}
 
 func newAppWithStore(t *testing.T, st *store.Store) *App {
 	t.Helper()
@@ -392,7 +383,7 @@ func installFakeCodexSessionWithResume(
 // real codex process), so we exercise reconcileCodexAfterStart directly
 // — that's the same code path the goroutine in startSessionNow enters.
 func TestStartSessionTriggersCodexReconcileResumesOnNotLoaded(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 	threadID := seedCodexThread(t, st, "thread-reconcile-start")
 
@@ -417,7 +408,7 @@ func TestStartSessionTriggersCodexReconcileResumesOnNotLoaded(t *testing.T) {
 // is live; a redundant resume would be a waste of a round-trip and
 // could race with real turn traffic.
 func TestStartSessionTriggersCodexReconcileSkipsResumeOnAlive(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 	threadID := seedCodexThread(t, st, "thread-reconcile-alive")
 
@@ -442,7 +433,7 @@ func TestStartSessionTriggersCodexReconcileSkipsResumeOnAlive(t *testing.T) {
 // nothing to resume — the session is terminally broken. Resume would
 // just error back; best to not call it.
 func TestStartSessionTriggersCodexReconcileSkipsResumeOnSystemError(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 	threadID := seedCodexThread(t, st, "thread-reconcile-systemerr")
 
@@ -476,7 +467,7 @@ func TestStartSessionTriggersCodexReconcileSkipsResumeOnSystemError(t *testing.T
 // every new or resumed Codex session because a prior subprocess dying
 // takes its PTYs with it regardless of what the probe would report.
 func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	threadID := seedCodexThread(t, st, "thread-ghost-flip")
@@ -527,7 +518,7 @@ func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
 // truly-lost case). Phase-4's flip widens the "what flips on start"
 // only for backgrounded rows, not inline ones.
 func TestReconcileCodexOnStart_LeavesForegroundRunningRowsAlone(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	threadID := seedCodexThread(t, st, "thread-ghost-flip-foreground")
@@ -564,7 +555,7 @@ func TestReconcileCodexOnStart_LeavesForegroundRunningRowsAlone(t *testing.T) {
 // beyond the supplied threadID would also flip the unrelated Claude
 // row and fail this test.
 func TestReconcileCodexOnStart_ClaudeThreadsUntouched(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	// Seed a Claude thread with a backgrounded Bash launch (status
@@ -609,7 +600,7 @@ func TestReconcileCodexOnStart_ClaudeThreadsUntouched(t *testing.T) {
 // flip (startup → flip → Codex replays item/started to running →
 // subprocess crashes again → next startup → flip again).
 func TestReconcileCodexOnStart_IdempotentAcrossRepeatedStarts(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	threadID := seedCodexThread(t, st, "thread-ghost-flip-idempotent")
@@ -648,7 +639,7 @@ func TestReconcileCodexOnStart_IdempotentAcrossRepeatedStarts(t *testing.T) {
 // or emit anything. The WAL commit is kept cheap but the visible state
 // stays put.
 func TestReconcileCodexOnStart_EmptyThreadNoOp(t *testing.T) {
-	st := newMemoryStore(t)
+	st := storetest.Clone(t)
 	a := newAppWithStore(t, st)
 
 	threadID := seedCodexThread(t, st, "thread-ghost-flip-empty")

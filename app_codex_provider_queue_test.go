@@ -895,8 +895,7 @@ func TestNoProductionCodePathReachesTheProviderQueueWrites(t *testing.T) {
 // construction rather than by a second fixture: it keeps the thread id, so the
 // forget is gated on SessionRef actually changing.
 func TestConversationRollbackForgetsTheProviderThreadCostWhenTheThreadMoves(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-cost-forget", "codex", workspace)
 	thread.SessionRef = "provider-cost-forget"
@@ -950,8 +949,7 @@ func TestConversationRollbackForgetsTheProviderThreadCostWhenTheThreadMoves(t *t
 // it queued that avoids it. The purge has to run while the connection is still
 // live, so it happens BEFORE the stop.
 func TestConversationRollbackPurgesTheProviderQueue(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-queue-purge", "codex", workspace)
 	thread.SessionRef = "provider-queue-purge"
@@ -1034,8 +1032,7 @@ func TestConversationRollbackPurgesTheProviderQueue(t *testing.T) {
 // message on the user's next send. The purge rides the connection the cut
 // already opened; nothing extra is spawned.
 func TestConversationRollbackPurgesTheProviderQueueWithNoLiveSession(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-queue-purge-cold", "codex", workspace)
 	thread.SessionRef = "provider-queue-purge-cold"

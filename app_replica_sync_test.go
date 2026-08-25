@@ -210,8 +210,7 @@ func TestClampSliceItemBudget(t *testing.T) {
 // truncated rows in its replica forever, since no later write mentions
 // them.
 func TestInterruptRevertEventCarriesPostCutStamps(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	bus := newCapturedEventBus()
 	app.testEmitHook = bus.emit

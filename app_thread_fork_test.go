@@ -25,8 +25,7 @@ import (
 // verifies the resulting stored UUIDs match what the JSONL actually contains
 // by looking up each entry via its `forkedFrom.messageUuid` backpointer.
 func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
@@ -103,8 +102,7 @@ func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
 // turn DROPPED from the fork). Otherwise the remap pipeline is the
 // same as the message-keyed fork.
 func TestForkThreadAtTurnIndexRemapsClaudeUUIDs(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
@@ -167,8 +165,7 @@ func TestForkThreadAtTurnIndexRemapsClaudeUUIDs(t *testing.T) {
 // a UUID-keyed revert inside fork2 would fall back to the ordinal
 // walk — defeating the structural fix when users chain forks.
 func TestForkOfForkRemapStaysCorrect(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
@@ -253,8 +250,7 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 // work before the queued message) in the fork, matching the session-file
 // slice which cuts at the message uuid, not the turn boundary.
 func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
@@ -322,8 +318,7 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 // keep turn 0's prefix and slice the session, not start empty (the turn-0
 // shortcut only applies to an anchor that OPENS turn 0).
 func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
@@ -415,8 +410,7 @@ func readForkUUIDMap(t *testing.T, workspace, forkSessionRef string) map[string]
 // happy path: a turn with a stamped user_text row returns that row's
 // provider_item_id so the UUID-keyed fork-slice branch can be taken.
 func TestLookupTurnAnchorClaudeUUIDPicksStampedUserItem(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "anchor-happy", "claude", t.TempDir())
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:0", 0, "first", `{"provider_item_id":"u0"}`)
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:1", 1, "second", `{"provider_item_id":"u1"}`)
@@ -434,8 +428,7 @@ func TestLookupTurnAnchorClaudeUUIDPicksStampedUserItem(t *testing.T) {
 // requested turn must not be picked as the anchor — those rows aren't
 // turn-boundary anchors and would mis-slice the fork.
 func TestLookupTurnAnchorClaudeUUIDSkipsWireOnlyUserItems(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "anchor-wireonly", "claude", t.TempDir())
 	// AO-authored row that opens turn 1 (gets the anchor).
 	insertUserItemWithMeta(t, app.store, thread.ID, "u:1-real", 1, "real prompt", `{"provider_item_id":"u1-real"}`)
@@ -453,8 +446,7 @@ func TestLookupTurnAnchorClaudeUUIDSkipsWireOnlyUserItems(t *testing.T) {
 // dispatch to the ordinal-walk fallback rather than passing an empty
 // UUID into WriteForkFileForUserMessageUUID.
 func TestLookupTurnAnchorClaudeUUIDReturnsEmptyForUnstamped(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "anchor-unstamped", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "u:1", 1, "second")
@@ -473,8 +465,7 @@ func TestLookupTurnAnchorClaudeUUIDReturnsEmptyForUnstamped(t *testing.T) {
 // and starts a fresh provider session instead of attempting an empty
 // slice.
 func TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
@@ -528,8 +519,7 @@ func TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh(t *testing.T) {
 // SQLite clone and the provider cut both derive from the item, so the
 // two histories stay aligned and the fork succeeds.
 func TestForkThreadFromMessageSynthesizesOnAnchorTurnDrift(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()

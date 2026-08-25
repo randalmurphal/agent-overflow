@@ -627,8 +627,7 @@ func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T
 }
 
 func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()

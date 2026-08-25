@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // newHarnessTestApp builds an App + Harness with a disk-backed store and
@@ -24,11 +25,7 @@ func newHarnessTestApp(t *testing.T) (*Harness, *App) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		t.Fatalf("mkdir data dir: %v", err)
 	}
-	st, err := store.New(filepath.Join(dataDir, "agent-overflow.db"))
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Clone(t)
 
 	mgr := replay.NewManager(replay.ManagerConfig{
 		RootDir: filepath.Join(dataDir, "replay"),

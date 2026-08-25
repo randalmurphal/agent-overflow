@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/workspacefiles"
 )
 
@@ -776,7 +777,7 @@ func TestComposer_EmptyDraftSaveIsNoOp(t *testing.T) {
 // Uses a file-backed store (not :memory:) since only file-backed stores
 // survive a Close.
 func TestComposer_DraftSurvivesRestart(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "restart.db")
+	dbPath := storetest.ClonePath(t)
 	threadID := "thr-restart"
 
 	// Round 1: create thread, save draft, close.

@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/triage"
 )
@@ -249,12 +250,7 @@ func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 
 	bus := newCapturedEventBus()
 
-	dbPath := filepath.Join(t.TempDir(), "e2e.db")
-	st, err := store.New(dbPath)
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := storetest.Clone(t)
 
 	app := &App{
 		store:               st,

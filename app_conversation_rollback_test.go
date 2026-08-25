@@ -51,8 +51,7 @@ func rollbackToMessage(app *App, threadID, userItemID string) error {
 }
 
 func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
@@ -90,8 +89,7 @@ func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T)
 }
 
 func TestConversationRollbackRestoresDraftAttachments(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-attachments", "claude", t.TempDir())
 	meta, err := json.Marshal(userMessageMeta{
 		Attachments: []userMessageAttachmentMeta{
@@ -125,8 +123,7 @@ func TestConversationRollbackRestoresDraftAttachments(t *testing.T) {
 }
 
 func TestConversationRollbackRejectsMissingClaudeSessionForLaterTurn(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-missing-session", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
@@ -142,8 +139,7 @@ func TestConversationRollbackRejectsMissingClaudeSessionForLaterTurn(t *testing.
 }
 
 func TestConversationRollbackRejectsMissingClaudeSessionFileForLaterTurn(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-missing-session-file", "claude", t.TempDir())
 	thread.SessionRef = "missing-session"
 	if err := app.store.UpdateThread(thread); err != nil {
@@ -177,8 +173,7 @@ func TestConversationRollbackRejectsMissingClaudeSessionFileForLaterTurn(t *test
 }
 
 func TestConversationRollbackSlicesClaudeSessionByTurnBoundary(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -229,8 +224,7 @@ func TestConversationRollbackSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 // work before the queued send survive in SQLite, and the session slice
 // cuts the JSONL at the queued message's uuid — the two stay aligned.
 func TestConversationRollbackKeepsSharedTurnPrefix(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -350,8 +344,7 @@ func midTurnAnchorFixture(t *testing.T, app *App, threadID, sessionID, flushProv
 // slice at end-of-turn-N-1 and drop the shared turn's kept prefix from the
 // provider session while SQLite retains it.
 func TestConversationRollbackMidTurnAnchorWithoutUUIDClonesFullTranscript(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	const sessionID = "midturn-nouuid-session"
 	thread := midTurnAnchorFixture(t, app, "t-midturn-nouuid", sessionID, "", "")
 
@@ -402,8 +395,7 @@ func TestConversationRollbackMidTurnAnchorWithoutUUIDClonesFullTranscript(t *tes
 // loudly and mutate nothing: SessionRef, timeline rows, anchors, and
 // the draft all stay as they were.
 func TestConversationRollbackMidTurnAnchorStaleUUIDFails(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	const sessionID = "midturn-staleuuid-session"
 	thread := midTurnAnchorFixture(t, app, "t-midturn-staleuuid", sessionID, "uq-stale", "uq-parent-stale")
 
@@ -451,8 +443,7 @@ func TestConversationRollbackMidTurnAnchorStaleUUIDFails(t *testing.T) {
 // parent, not a whole clone: rows appended after the failed rollback
 // must not be resurrected into the retried cut.
 func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	// The fixture transcript ends at "interrupted tail" (a1) and does NOT
 	// contain the anchor: exactly what a committed prior slice leaves
 	// behind. The anchor carries the post-remap state — its own uuid
@@ -522,8 +513,7 @@ func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T)
 // empty must still recognize the already-cut transcript and finish the
 // rollback through the item-meta parent instead of refusing forever.
 func TestConversationRollbackMidTurnAnchorRetryUsesItemMetaParent(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	const sessionID = "midturn-metaparent-session"
 	// Anchor: stale wire uuid, NO parent copy (the follow-up
 	// UpdateMessageAnchorProviderIDs never committed).
@@ -650,8 +640,7 @@ func TestWriteClaudeSessionSliceRetriesNextAnchorCandidate(t *testing.T) {
 // fix at the integration level. The companion fallback test below
 // proves the tightened ordinal walk reaches the same answer.
 func TestConversationRollbackSurvivesCompactBoundary(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -705,8 +694,7 @@ func TestConversationRollbackSurvivesCompactBoundary(t *testing.T) {
 // so the bug-trigger condition (compact summary before the rollback
 // target) is present in both paths.
 func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -772,8 +760,7 @@ func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
 // turn too far back and lose "second"/"reply 1". Mirrors the UUID-keyed
 // happy path's fixture so both paths must reach the identical answer.
 func TestConversationRollbackFallsBackToOrdinalWhenStampedUUIDAbsent(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -834,8 +821,7 @@ func TestConversationRollbackFallsBackToOrdinalWhenStampedUUIDAbsent(t *testing.
 // missing message from AO's DB, the new SessionRef is durable, and
 // the user can edit/resend.
 func TestConversationRollbackTolerantOfMissingJSONLAnchor(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -891,8 +877,7 @@ func TestConversationRollbackTolerantOfMissingJSONLAnchor(t *testing.T) {
 // ever widens ErrUserTurnAtTranscriptEnd to cover gap >= 1, this test
 // will fail and force a deliberate scope decision.
 func TestConversationRollbackRejectsLargerJSONLGap(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -928,8 +913,7 @@ func TestConversationRollbackRejectsLargerJSONLGap(t *testing.T) {
 }
 
 func TestConversationRollbackSlicesClaudeSessionFromPendingForkRef(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := filepath.Join(home, "workspace")
@@ -966,8 +950,7 @@ func TestConversationRollbackSlicesClaudeSessionFromPendingForkRef(t *testing.T)
 }
 
 func TestConversationRollbackCanRollBackAgainAfterClaudeSessionFork(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
@@ -1033,8 +1016,7 @@ func TestConversationRollbackCanRollBackAgainAfterClaudeSessionFork(t *testing.T
 // the drop-the-session branch — the previous exact-zero turn-initial
 // check sent it down the slice path, which fails on the empty prefix.
 func TestConversationRollbackHeadHealedFirstPromptDropsSession(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
@@ -1134,8 +1116,7 @@ func TestClaudeMidTurnAnchor(t *testing.T) {
 // would collide with the dead list's (triage.seedTasksFromStoredTodo). The
 // saga must clear threads.live_todo alongside the rows.
 func TestConversationRollbackClearsPersistedTodo(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	// The reset runs through triage (rollbackConversationLocked guards on
 	// a.triage != nil), which the light fixture leaves unwired.
 	app.ensureTriageRouter()

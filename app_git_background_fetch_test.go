@@ -74,8 +74,7 @@ func TestBackgroundFetchErrorMemoTransitions(t *testing.T) {
 // nil, which would reset the fetch throttle between passes).
 func newBackgroundFetchTestApp(t *testing.T) *App {
 	t.Helper()
-	app, cleanup := newTestApp(t)
-	t.Cleanup(cleanup)
+	app := newTestApp(t)
 	app.git = gitops.NewCore()
 	return app
 }

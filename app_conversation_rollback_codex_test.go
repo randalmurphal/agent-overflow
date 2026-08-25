@@ -26,8 +26,7 @@ import (
 // user-turn segments. If either property regresses, the anchor picked
 // here would cut the fork at the wrong turn.
 func TestResolveCodexForkAnchorPicksLatestProviderBackedTurn(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "codex-anchor", "codex", t.TempDir())
 
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
@@ -61,8 +60,7 @@ func TestResolveCodexForkAnchorPicksLatestProviderBackedTurn(t *testing.T) {
 // previous provider-backed turn instead of failing or anchoring on a
 // turn the server doesn't know.
 func TestResolveCodexForkAnchorSkipsTurnsWithoutProviderID(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "codex-anchor-skip", "codex", t.TempDir())
 
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
@@ -82,8 +80,7 @@ func TestResolveCodexForkAnchorSkipsTurnsWithoutProviderID(t *testing.T) {
 // provider-backed turns AND no provider-confirmed user items resolves
 // to (found=false, nil) — the caller starts a fresh provider thread.
 func TestResolveCodexForkAnchorFreshWhenNoProviderTurns(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "codex-anchor-fresh", "codex", t.TempDir())
 
 	// A local-only failed send is the only occupant of the prefix.
@@ -104,8 +101,7 @@ func TestResolveCodexForkAnchorFreshWhenNoProviderTurns(t *testing.T) {
 // answering "fresh session" would discard provider history, so the
 // resolver must fail loudly instead.
 func TestResolveCodexForkAnchorRejectsLegacyDataHole(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "codex-anchor-hole", "codex", t.TempDir())
 
 	insertUserItemWithMeta(t, app.store, thread.ID, "user:0", 0, "first", `{"provider_item_id":"provider-user-0"}`)
@@ -117,8 +113,7 @@ func TestResolveCodexForkAnchorRejectsLegacyDataHole(t *testing.T) {
 }
 
 func TestConversationRollbackCodexForksAtAnchorAndStopsSession(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-active-revert", "codex", workspace)
 	thread.SessionRef = "provider-active-revert"
@@ -187,8 +182,7 @@ func TestConversationRollbackCodexForksAtAnchorAndStopsSession(t *testing.T) {
 }
 
 func TestConversationRollbackCodexForksThroughTempSessionWhenStopped(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-stopped-revert", "codex", workspace)
 	thread.SessionRef = "provider-stopped-revert"
@@ -231,8 +225,7 @@ func TestConversationRollbackCodexForksThroughTempSessionWhenStopped(t *testing.
 }
 
 func TestConversationRollbackCodexRejectsForkTailMismatch(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-mismatch-revert", "codex", workspace)
 	thread.SessionRef = "provider-mismatch-revert"
@@ -275,8 +268,7 @@ func TestConversationRollbackCodexRejectsForkTailMismatch(t *testing.T) {
 }
 
 func TestConversationRollbackCodexAnchorSkipsLocalOnlyFailedTurn(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-local-only-revert", "codex", workspace)
 	thread.SessionRef = "provider-local-only-revert"
@@ -321,8 +313,7 @@ func TestConversationRollbackCodexAnchorSkipsLocalOnlyFailedTurn(t *testing.T) {
 // the very first message needs no fork — SessionRef clears, the session
 // stops, and the next send starts a fresh Codex thread.
 func TestConversationRollbackCodexTurnZeroClearsSessionRef(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-turn-zero-revert", "codex", workspace)
 	thread.SessionRef = "provider-turn-zero-revert"
@@ -386,8 +377,7 @@ func TestConversationRollbackCodexTurnZeroClearsSessionRef(t *testing.T) {
 // take the fresh-thread path (no fork, cursor stays empty) instead of
 // failing on the missing thread reference.
 func TestConversationRollbackCodexLocalOnlyThreadNeedsNoSessionRef(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	workspace := t.TempDir()
 	thread := createAppTestThread(t, app, "codex-local-only-thread", "codex", workspace)
 	insertUserItem(t, app.store, thread.ID, "user:0-failed", 0, "first (send failed)")
@@ -625,8 +615,7 @@ func paginatedRevertThread(t *testing.T, app *App, name string, mock codexForkMo
 // with `thread/revert` and the thread KEEPS its provider identity —
 // SessionRef unchanged, no fork request on the wire at all.
 func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	logDir := t.TempDir()
 	mock := codexForkMock{
 		resumedThreadID: "provider-inplace-revert",
@@ -676,8 +665,7 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 // TestConversationRollbackCodexForksBelowTheRevertFloor: 0.147 has no
 // `thread/revert` at all, so the fork cut has to still be there.
 func TestConversationRollbackCodexForksBelowTheRevertFloor(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	logDir := t.TempDir()
 	mock := codexForkMock{
 		resumedThreadID: "provider-old-server",
@@ -710,8 +698,7 @@ func TestConversationRollbackCodexForksBelowTheRevertFloor(t *testing.T) {
 // thread/start, upstream defaults to legacy, and upstream refuses a
 // legacy revert. A 0.149 binary alone must NOT flip the cut.
 func TestConversationRollbackCodexForksOnLegacyHistoryThreads(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	logDir := t.TempDir()
 	mock := codexForkMock{
 		resumedThreadID: "provider-legacy-history",
@@ -738,8 +725,7 @@ func TestConversationRollbackCodexForksOnLegacyHistoryThreads(t *testing.T) {
 // before it mutates anything, so the fork must complete the rollback on
 // the same connection.
 func TestConversationRollbackCodexFallsBackToForkOnRefusedRevert(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	logDir := t.TempDir()
 	mock := codexForkMock{
 		resumedThreadID:    "provider-refused-revert",
@@ -775,8 +761,7 @@ func TestConversationRollbackCodexFallsBackToForkOnRefusedRevert(t *testing.T) {
 // thread half-cut, so falling back to a fork built on it would silently
 // disagree with both. The rollback fails with everything untouched.
 func TestConversationRollbackCodexAbortsOnNonRefusalRevertFailure(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	logDir := t.TempDir()
 	mock := codexForkMock{
 		resumedThreadID:    "provider-broken-revert",
@@ -815,8 +800,7 @@ func TestConversationRollbackCodexAbortsOnNonRefusalRevertFailure(t *testing.T) 
 // is the provider turn id of the EARLIEST provider-backed turn at or
 // after K.
 func TestResolveCodexRevertAnchorPicksEarliestDroppedProviderTurn(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "codex-revert-anchor", "codex", t.TempDir())
 
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
@@ -846,8 +830,7 @@ func TestResolveCodexRevertAnchorPicksEarliestDroppedProviderTurn(t *testing.T) 
 // Naming it would be an anchor upstream cannot resolve, so the walk
 // continues UP to the next real one.
 func TestResolveCodexRevertAnchorSkipsTurnsWithoutProviderID(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "codex-revert-anchor-skip", "codex", t.TempDir())
 
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
@@ -868,8 +851,7 @@ func TestResolveCodexRevertAnchorSkipsTurnsWithoutProviderID(t *testing.T) {
 // back to the fork cut, which describes the same boundary from the
 // surviving side.
 func TestResolveCodexRevertAnchorMissesPastTheTail(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "codex-revert-anchor-miss", "codex", t.TempDir())
 
 	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")

@@ -12,11 +12,12 @@ import (
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // newTestApp is the light App fixture for the rollback / fork / revert
-// tests: a real in-memory store and settings, no triage router and no
-// sessions unless the test wires them.
+// tests: a real store cloned from the package's migrated template plus real
+// settings, no triage router and no sessions unless the test wires them.
 //
 // It is send-capable — RevertConversationAndResendMessage and friends
 // reach sendMessageLocked from here — so the provider-spawn isolation is
@@ -26,12 +27,11 @@ import (
 // that costs. Callers that need a specific HOME set it after this
 // returns (last t.Setenv wins); callers that need a live session install
 // a mock binary over the poisoned default.
-func newTestApp(t *testing.T) (*App, func()) {
+// Teardown is t.Cleanup-registered throughout (storetest.Clone closes
+// its own store), so there is nothing for callers to defer.
+func newTestApp(t *testing.T) *App {
 	t.Helper()
-	st, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
+	st := storetest.Clone(t)
 	app := &App{
 		store:    st,
 		settings: settings.NewService(t.TempDir()),
@@ -42,7 +42,7 @@ func newTestApp(t *testing.T) (*App, func()) {
 	isolateE2EProviderSpawns(t, app)
 	app.appCtx, app.appCancel = context.WithCancel(context.Background())
 	t.Cleanup(app.appCancel)
-	return app, func() { st.Close() }
+	return app
 }
 
 func createAppTestThread(t *testing.T, app *App, id, provider, workspace string) store.Thread {

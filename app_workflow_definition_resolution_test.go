@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 )
 
@@ -24,15 +24,7 @@ import (
 // bodies off disk every time.
 func TestCallResolutionReadsEditedPromptsPerInvocation(t *testing.T) {
 	configRoot := t.TempDir()
-	database, err := store.New(filepath.Join(t.TempDir(), "definitions.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := database.Close(); err != nil {
-			t.Errorf("close store: %v", err)
-		}
-	})
+	database := storetest.Clone(t)
 	projectRow := testutil.EnsureProject(t, database, t.TempDir())
 	writeSelfCallingCampaign(t, configRoot, "first wave instructions")
 

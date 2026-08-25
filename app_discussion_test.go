@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
 )
 
@@ -101,8 +101,7 @@ func TestResolveDiscussionDefinitionFallsBackToGlobalWhenProjectDefinitionMissin
 }
 
 func TestResolveDiscussionDefinitionDoesNotHideProjectDefinitionErrors(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "agent-overflow.db")
+	dbPath := storetest.ClonePath(t)
 
 	st, err := store.New(dbPath)
 	if err != nil {

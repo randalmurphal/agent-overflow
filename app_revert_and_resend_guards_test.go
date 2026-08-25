@@ -21,8 +21,7 @@ import (
 // reaching a real CLI or the developer's provider homes.
 
 func TestRevertAndResendValidatesArgs(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 
 	if err := app.RevertConversationAndResendMessage("", "user:1", RevertAndResendOptions{Content: "edited"}); err == nil ||
 		!strings.Contains(err.Error(), "thread id is required") {
@@ -48,8 +47,7 @@ func TestRevertAndResendValidatesArgs(t *testing.T) {
 // distinguish "the app is going away" from a rejection they could
 // retry.
 func TestRevertAndResendRefusesDuringShutdown(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-shutdown", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
@@ -66,8 +64,7 @@ func TestRevertAndResendRefusesDuringShutdown(t *testing.T) {
 // still writing to. The live-turn un-send (InterruptAndRevertIfClean)
 // owns that case and interrupts first.
 func TestRevertAndResendRejectsActiveTurn(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-active", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
@@ -90,8 +87,7 @@ func TestRevertAndResendRejectsActiveTurn(t *testing.T) {
 // provider-injected envelope the user never composed) are both refused
 // rather than silently reverting to the wrong point.
 func TestRevertAndResendRejectsNonUserTargets(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-kind", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertAssistantTextItem(t, app.store, thread.ID, "asst:0", 0, "reply 0")
@@ -115,8 +111,7 @@ func TestRevertAndResendRejectsNonUserTargets(t *testing.T) {
 // idle-thread path can never satisfy — accepting the call would truncate
 // AO's history cache while the live TUI keeps the full conversation.
 func TestRevertAndResendRejectsClaudeTUI(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-tui", "claude-tui", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
@@ -130,8 +125,7 @@ func TestRevertAndResendRejectsClaudeTUI(t *testing.T) {
 // this saga holds across the whole sequence. Reaching the send tail on a
 // workflow thread must fail loudly, never half-run the takeover.
 func TestRevertAndResendRejectsWorkflowThread(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-workflow", "claude", t.TempDir())
 	thread.Mode = threadmode.ModeWorkflow
 	if err := app.store.UpdateThread(thread); err != nil {
@@ -162,8 +156,7 @@ func TestRevertAndResendRefusesPendingSend(t *testing.T) {
 		{"the in-flight message itself", "user:1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			app, cleanup := newTestApp(t)
-			defer cleanup()
+			app := newTestApp(t)
 			app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 			thread := createAppTestThread(t, app, "t-pending", "claude", t.TempDir())
 			insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
@@ -181,8 +174,7 @@ func TestRevertAndResendRefusesPendingSend(t *testing.T) {
 // regardless of what the frontend preflight saw (a task can start
 // between the preflight and the RPC).
 func TestRevertAndResendRefusesUnconfirmedBackgroundKill(t *testing.T) {
-	app, cleanup := newTestApp(t)
-	defer cleanup()
+	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-bg-refuse", "claude", t.TempDir())
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")

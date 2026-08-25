@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 )
 
@@ -1102,7 +1103,10 @@ func newTestAppWithStore(t *testing.T) *App {
 func newTestAppWithStorePath(t *testing.T) (*App, string) {
 	t.Helper()
 
-	dbPath := filepath.Join(t.TempDir(), "app.db")
+	// A byte copy of the package's migrated template rather than a fresh
+	// store.New: this fixture runs ~600 times per suite and each of those
+	// would otherwise replay the whole migration chain.
+	dbPath := storetest.ClonePath(t)
 	st, err := store.New(dbPath)
 	if err != nil {
 		t.Fatalf("store.New() error = %v", err)
