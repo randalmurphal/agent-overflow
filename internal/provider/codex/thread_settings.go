@@ -124,7 +124,7 @@ func (s *Session) reconcileThreadSettings(params json.RawMessage) {
 	// Consume any expectation a `thread/settings/update` push left behind.
 	// The message is built under the lock and emitted outside it — emitEvent
 	// takes eventMu and runs arbitrary app-layer code.
-	mismatch := s.verifyThreadSettingsEcho(settings)
+	mismatch := s.verifyThreadSettingsEchoLocked(settings)
 	s.mu.Unlock()
 	if mismatch != "" {
 		s.emitThreadSettingsEchoError(mismatch)

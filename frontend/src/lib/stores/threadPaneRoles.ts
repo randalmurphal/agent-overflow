@@ -275,12 +275,11 @@ export interface RevealRead {
  * `general` write never displaces a live `history-load` retry). The
  * named writers below are thin wrappers kept for their call sites.
  *
- * Consumers: `chat/ProviderStatusBanner.svelte`,
- * `stores/eventsProvider.ts`, `stores/interruptErrors.ts`,
- * `stores/threadTitleGeneration.svelte.ts`, `stores/panes.svelte.ts`,
- * `composer/Composer.svelte`, `git/GitActionsControl.svelte`,
- * `panes/PaneTitleHandle.svelte`, `sidebar/ThreadRow.svelte`,
- * `sidebar/ThreadContextMenu.svelte`.
+ * No consumer binds this interface yet — it is a forward-looking B3
+ * grouping of members those call sites reach through the whole pane
+ * today (`chat/ProviderStatusBanner.svelte`, `stores/eventsProvider.ts`,
+ * `stores/interruptErrors.ts`, `composer/Composer.svelte`, ...). The B3
+ * regrouping pass is what would narrow them onto this type.
  */
 export interface ErrorSurface {
   /** Message currently owning the shared banner surface. */
@@ -323,11 +322,11 @@ export interface PaneDoors {
  * Reads are limited to what those handlers need to address or dedupe
  * against (`paneId`/`threadId`/`thread`, the pending queues, `items`).
  *
- * Consumers: `stores/eventsItemStream.ts`, `stores/eventsProvider.ts`,
- * `stores/eventsMessageRevert.ts`, `stores/eventsQueue.ts`,
- * `stores/eventsDiscussion.ts`, `stores/eventsDesign.ts`,
- * `stores/eventsTransportGap.ts`, `stores/eventsThreadRows.ts`,
- * `stores/revertOnInterrupt.svelte.ts`, `stores/threadContextWindow.ts`.
+ * No consumer binds this interface yet — it is a forward-looking B3
+ * grouping of the members the event fan-out reaches through the whole
+ * pane today (`stores/eventsItemStream.ts`, `stores/eventsProvider.ts`,
+ * `stores/eventsQueue.ts`, ...). The B3 regrouping pass is what would
+ * narrow those handlers onto this type.
  */
 export interface ThreadPaneIngest {
   readonly paneId: string;

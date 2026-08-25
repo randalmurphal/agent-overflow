@@ -30,8 +30,10 @@ callback, `workflow/engine.Emitter`, and `screenshot.Installer.Emit` all
 take a `Channel`. A channel *variable* therefore cannot cross into an
 emit site without an explicit `eventchan.Channel(...)` conversion — which
 is exactly what the harness escape hatches spell (`HarnessEmit`,
-`harness.Replayer`), landing them on the registry's fail-closed
-loopback-only default.
+`harness.Replayer`). A caller-named channel that matches a registered
+name inherits that row's audience (the harness is the intended forger,
+gated by `--harness`/`--soak` + a LocalOnly receiver); an unrecognized
+name lands on the registry's fail-closed loopback-only default.
 
 What the type does NOT stop is an untyped string LITERAL: Go assigns
 those to any string type. The root package's

@@ -154,9 +154,14 @@ func (h *Harness) HarnessEmit(channel string, payload json.RawMessage) error {
 	if !json.Valid(payload) {
 		return fmt.Errorf("payload is not valid JSON")
 	}
-	// Deliberate escape hatch: the channel is caller-named, so it is
-	// unregistrable by construction and lands on the fail-closed
-	// loopback-only default (see unregisteredChannelPolicy). Harness-only.
+	// Deliberate escape hatch. NOT unregistrable: a caller that spells a
+	// REGISTERED name inherits that row's audience, AudienceAny included —
+	// only unrecognized names land on the fail-closed loopback-only
+	// default. The real gate is reachability: this method exists only
+	// under --harness/--soak, on a LocalOnly receiver, so only a loopback
+	// caller holding the bootstrap token can reach it, and forging frames
+	// is the harness's intended capability (2026-08-25 security review,
+	// finding 3).
 	h.app.emit(eventchan.Channel(channel), payload)
 	return nil
 }

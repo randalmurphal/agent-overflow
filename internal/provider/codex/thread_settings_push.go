@@ -267,7 +267,7 @@ func (s *Session) noteThreadSettingsUpdateUnsupported() {
 	)
 }
 
-// verifyThreadSettingsEcho compares Codex's authoritative settings snapshot
+// verifyThreadSettingsEchoLocked compares Codex's authoritative settings snapshot
 // against what the last push asked for, and returns a user-facing message
 // when they disagree. Called under s.mu from reconcileThreadSettings; the
 // caller emits after unlocking.
@@ -287,7 +287,7 @@ func (s *Session) noteThreadSettingsUpdateUnsupported() {
 // would report one the day upstream renames its own sentinel. "Codex is
 // still running the tier we asked it to drop" is the only failure the clear
 // can have, and it is what this compares.
-func (s *Session) verifyThreadSettingsEcho(settings ThreadSettings) string {
+func (s *Session) verifyThreadSettingsEchoLocked(settings ThreadSettings) string {
 	expectation := s.settings.pendingEcho
 	if expectation == nil {
 		return ""

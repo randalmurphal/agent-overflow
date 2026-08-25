@@ -283,6 +283,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // clear it, and a microtask reports whatever is still dirty. It only
   // observes — it must never recompute, which would rush the readable
   // drain. See revealGateTripwire.ts.
+  // Declaration order is load-bearing: `streamingReveal` is declared BELOW,
+  // so `isRevealGateEngaged` reads it through the closure and is safe only
+  // because nothing calls the tripwire synchronously during construction —
+  // an eager call here would hit the const's temporal dead zone.
   const revealTripwire = createRevealGateTripwire({
     getThreadId: () => thread?.id ?? null,
     isRevealGateEngaged: () => streamingReveal.revealBoundary !== null,

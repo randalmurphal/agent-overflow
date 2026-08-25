@@ -156,8 +156,19 @@ export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise
       // manifest a 200 returns is the stub's own (wsUrl as configured,
       // mode:"client"), so nothing about the session shifts.
       //
-      // Cross-origin by construction — see the same-origin note below.
-      return fetchManifest(injected.token, '', false);
+      // The fetch itself is same-origin (the stub serves both the page
+      // and /bootstrap.json); it is the UPSTREAM BACKEND the wsUrl names
+      // that is cross-origin, which is why requireSameOrigin=false. The
+      // trust anchor is the local stub, so pin the answer to what it
+      // injected at page load: a revalidate must confirm the session,
+      // never retarget it (2026-08-25 security review, finding 7).
+      const revalidated = await fetchManifest(injected.token, '', false);
+      if (revalidated.wsUrl !== injected.wsUrl) {
+        throw new Error(
+          `bootstrap revalidate returned a different wsUrl than the injected manifest (${revalidated.wsUrl} vs ${injected.wsUrl})`,
+        );
+      }
+      return revalidated;
     }
     validateWsUrl(injected.wsUrl, false);
     const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };

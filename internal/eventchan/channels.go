@@ -29,9 +29,11 @@ const (
 )
 
 // harness:* — the agent test harness's own progress channels. Note the
-// harness ALSO publishes onto arbitrary caller-named channels that are
-// unregistrable by construction; those go through an explicit
-// Channel(...) conversion at the call site.
+// harness ALSO publishes onto arbitrary caller-named channels through an
+// explicit Channel(...) conversion at the call site; a name that matches
+// a registered channel inherits that row's audience (the harness is the
+// intended forger, gated by --harness/--soak + LocalOnly), and an
+// unrecognized name lands on transport's fail-closed default.
 const (
 	HarnessMock   Channel = "harness:mock"
 	HarnessReplay Channel = "harness:replay"

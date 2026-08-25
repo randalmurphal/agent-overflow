@@ -499,7 +499,14 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 
 	r.mu.Lock()
 	var drained []UnconfirmedFlushItem
-	drainState := r.state(threadID)
+	// Read path: a session-death drain for a thread with no state must not
+	// mint one (thread_state.go — a read path that mints leaks an entry per
+	// idle thread queried).
+	drainState := r.threadStateIfPresent(threadID)
+	if drainState == nil {
+		r.mu.Unlock()
+		return nil
+	}
 	for _, item := range drainState.queuedFlushItems {
 		payload := append(json.RawMessage(nil), item.Payload...)
 		drained = append(drained, UnconfirmedFlushItem{
@@ -551,7 +558,7 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 		if len(kept) == 0 {
 			kept = nil
 		}
-		r.state(threadID).pendingSends = kept
+		drainState.pendingSends = kept
 	}
 	r.mu.Unlock()
 

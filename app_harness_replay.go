@@ -65,9 +65,13 @@ func (h *Harness) replayerEngine() *harness.Replayer {
 	defer h.mu.Unlock()
 	if h.replayer == nil {
 		h.replayer = harness.NewReplayer(
-			// Deliberate escape hatch: a recorded event log names its own
-			// channels, so they are unregistrable by construction and land
-			// on the fail-closed loopback-only default. Harness-only.
+			// Deliberate escape hatch. NOT unregistrable: a recorded log's
+			// kinds ARE registered names (emitWithReplay records
+			// eventName.String()), so replayed frames inherit their
+			// registered audience; only unrecognized names land on the
+			// fail-closed loopback-only default. The real gate is that
+			// replay exists only under --harness/--soak on a LocalOnly
+			// receiver (2026-08-25 security review, finding 3).
 			func(kind string, data json.RawMessage) { h.app.emit(eventchan.Channel(kind), data) },
 			func(st harness.ReplayStatus) { h.app.emit(eventchan.HarnessReplay, st) },
 		)

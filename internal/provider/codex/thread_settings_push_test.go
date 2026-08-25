@@ -292,12 +292,12 @@ func TestVerifyThreadSettingsEcho(t *testing.T) {
 					pendingEcho: tc.expectation,
 				},
 			}
-			got := s.verifyThreadSettingsEcho(tc.settings)
+			got := s.verifyThreadSettingsEchoLocked(tc.settings)
 			switch {
 			case tc.wantMatch == "" && got != "":
-				t.Errorf("verifyThreadSettingsEcho = %q, want silence", got)
+				t.Errorf("verifyThreadSettingsEchoLocked = %q, want silence", got)
 			case tc.wantMatch != "" && !strings.Contains(got, tc.wantMatch):
-				t.Errorf("verifyThreadSettingsEcho = %q, want it to mention %q", got, tc.wantMatch)
+				t.Errorf("verifyThreadSettingsEchoLocked = %q, want it to mention %q", got, tc.wantMatch)
 			}
 			if s.settings.pendingEcho != nil {
 				t.Error("the expectation must be single-shot; a second echo cannot re-raise it")

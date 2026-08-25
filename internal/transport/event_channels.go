@@ -445,7 +445,13 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Why: "Deliberately remote-visible: without it a remote viewer sees the " +
-			"turn silently stop with no explanation. Pinned by " +
+			"turn silently stop with no explanation. The frame carries " +
+			"StderrTail — the dead process's last stderr line, pre-sanitized " +
+			"by provider.MarshalProcessExitMeta (single line, hard length " +
+			"cap) — and that is a decided disclosure, not an oversight: the " +
+			"same string persists to items.meta, which the wire-safe " +
+			"ListRecentThreadItems already serves to remote peers " +
+			"(2026-08-25 security review, finding 1). Pinned by " +
 			"TestEventVisibleToOrigin.",
 	},
 	{
@@ -822,10 +828,14 @@ var channelPolicyIndex = func() map[string]ChannelPolicy {
 // working, and TestChannelPolicyUnreviewedWorklist keeps the registered
 // table honest.
 //
-// This is also what makes the two harness-only dynamic emit paths
-// (HarnessEmit, harness.Replayer) safe without a carve-out: their
-// caller-named channels are unregistrable by construction, and their only
-// consumers are loopback test tooling, which this default still reaches.
+// The two harness-only dynamic emit paths (HarnessEmit, harness.Replayer)
+// need no carve-out either, but not because their channels are
+// unregistrable — a caller-named channel that spells a REGISTERED name
+// inherits that row's audience, and a replay log's kinds are exactly the
+// registered names emitWithReplay recorded. Their safety is reachability:
+// both exist only under --harness/--soak, on a LocalOnly receiver, so
+// only loopback test tooling can drive them; unrecognized names still
+// land on this default (2026-08-25 security review, finding 3).
 //
 // The flip from the original fail-open default landed only after every
 // row above had a decided Why (2026-08-25); it is a deliberate behavior
