@@ -201,12 +201,17 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 	fork.SessionRef = resume.SessionRef
 	fork.PendingForkRef = resume.PendingForkRef
 	fork.PendingForkResumeAt = resume.PinnedResumeAt
-	fork.UpdatedAt = time.Now().UnixMilli()
 	if err := a.remapClaudeProviderIDs(fork.ID, resume.UUIDMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
-	if err := a.store.UpdateThread(fork); err != nil {
+	// The pin is one-shot state no whole-row UpdateThread may carry (see
+	// SetThreadForkResume) — and the rest of the fork row was already
+	// written by CreateThread above, so the resume wiring is all that is
+	// left to persist.
+	if err := a.store.SetThreadForkResume(
+		fork.ID, fork.SessionRef, fork.PendingForkRef, fork.PendingForkResumeAt,
+	); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: persist fork state: %w", err),
 			cleanups.Run(),
@@ -333,12 +338,15 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 	fork.SessionRef = resume.SessionRef
 	fork.PendingForkRef = resume.PendingForkRef
 	fork.PendingForkResumeAt = resume.PinnedResumeAt
-	fork.UpdatedAt = time.Now().UnixMilli()
 	if err := a.remapClaudeProviderIDs(fork.ID, resume.UUIDMap); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
-	if err := a.store.UpdateThread(fork); err != nil {
+	// Same narrow write as ForkThread: CreateThread already wrote the row,
+	// and the pin may not ride a whole-row update.
+	if err := a.store.SetThreadForkResume(
+		fork.ID, fork.SessionRef, fork.PendingForkRef, fork.PendingForkResumeAt,
+	); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread from message: persist fork state: %w", err),
 			cleanups.Run(),

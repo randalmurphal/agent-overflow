@@ -907,6 +907,15 @@ an empty `provider_turn_id`.
   UPDATE, so a committed fork cannot re-pin a later restart.
   `BuildForkedThread`'s explicit field list means a fork of a fork never
   inherits a stale pin. A plain `ADD COLUMN`, no CHECK, no rebuild.
+- BOTH pin columns are deliberately omitted from `updateThreadSetSQL`, as
+  `worktree_setup_state` and `live_todo` are. One-shot state plus a
+  whole-row write from a `Thread` struct a caller read some time ago is
+  the clobber shape: a rename or a model change could resurrect a pin the
+  first session start had already consumed, or blank one a concurrent
+  fork had just set. `SetThreadForkResume` is the narrow writer the fork
+  saga uses instead, writing `session_ref` and the pin pair together
+  (they describe one resume state) and leaving `updated_at` alone.
+  Pinned by `TestUpdateThreadPreservesPendingForkPin`.
 
 ## Recent schema changes (v54) — the explicitly scheduled resume moment
 

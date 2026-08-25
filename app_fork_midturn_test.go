@@ -215,6 +215,16 @@ func TestForkThreadClaudeMidTurnTailPinsLazyCut(t *testing.T) {
 	if forked.PendingForkResumeAt != "a1" {
 		t.Errorf("fork PendingForkResumeAt = %q, want the live leaf a1", forked.PendingForkResumeAt)
 	}
+	// The returned struct is the saga's in-memory copy; the pin only does
+	// anything if it reached the ROW the fork's first start reads.
+	storedFork, err := app.store.GetThread(forked.ID)
+	if err != nil {
+		t.Fatalf("GetThread(fork): %v", err)
+	}
+	if storedFork.PendingForkRef != fixture.sessionID || storedFork.PendingForkResumeAt != "a1" {
+		t.Errorf("stored fork pin = %q@%q, want %q@a1 — the pin must be persisted, not just returned",
+			storedFork.PendingForkRef, storedFork.PendingForkResumeAt, fixture.sessionID)
+	}
 	// No transcript written at fork time — the source's is the only file.
 	entries, err := os.ReadDir(fixture.projectDir)
 	if err != nil {

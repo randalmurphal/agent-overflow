@@ -129,7 +129,11 @@ func threadWithModelSelectionProfile(thread store.Thread, profile store.ChatMode
 	thread.AutoCompactExtendedPercent = 0
 	if providerChanged {
 		thread.SessionRef = ""
+		// The lazy-fork pin is a PAIR (ref + cut) consumed together, so it
+		// clears together: a cut left behind names a position in a
+		// transcript the new provider will never read.
 		thread.PendingForkRef = ""
+		thread.PendingForkResumeAt = ""
 	}
 	return thread
 }
@@ -177,6 +181,9 @@ func (a *App) updateThreadForModelSelection(previous, updated store.Thread) erro
 	if previous.Provider == updated.Provider {
 		return a.store.UpdateThread(updated)
 	}
+	// The guarded switch also clears the lazy-fork pin in the same UPDATE —
+	// the pin is absent from the whole-row SET list, and a stale ref would
+	// point into the OLD provider's session files.
 	return a.store.UpdateThreadIfProviderSwitchAllowed(updated, previous.Provider)
 }
 

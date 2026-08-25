@@ -730,9 +730,8 @@ func TestNextSpawnAfterACodexForkStillCarriesTheOverrideAxes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	stored.PendingForkRef = "codex-thread-forked"
-	if err := app.store.UpdateThread(stored); err != nil {
-		t.Fatalf("UpdateThread() error = %v", err)
+	if err := app.store.SetThreadForkResume(stored.ID, stored.SessionRef, "codex-thread-forked", ""); err != nil {
+		t.Fatalf("SetThreadForkResume() error = %v", err)
 	}
 
 	opts := promptOverrideOptions(t, app, id)

@@ -381,7 +381,6 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	thr.Branch = "fix-123"
 	thr.Mode = "plan"
 	thr.DiscussionID = "disc-xyz"
-	thr.PendingForkRef = "fork-pending"
 	thr.ForkedFromThreadID = "thread-upd-parent"
 	thr.UpdatedAt = now + 5000
 
@@ -409,9 +408,8 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	if got.DiscussionID != "disc-xyz" {
 		t.Errorf("DiscussionID: got %q, want %q", got.DiscussionID, "disc-xyz")
 	}
-	if got.PendingForkRef != "fork-pending" {
-		t.Errorf("PendingForkRef: got %q, want %q", got.PendingForkRef, "fork-pending")
-	}
+	// PendingForkRef / PendingForkResumeAt are deliberately NOT reachable
+	// from here — see TestUpdateThreadPreservesPendingForkPin.
 	if got.ForkedFromThreadID != "thread-upd-parent" {
 		t.Errorf("ForkedFromThreadID: got %q, want %q", got.ForkedFromThreadID, "thread-upd-parent")
 	}
@@ -444,6 +442,39 @@ func TestUpdateThreadNewFields(t *testing.T) {
 	}
 	if got2.UpdatedAt != activityAt {
 		t.Errorf("UpdatedAt after stale metadata update: got %d, want activity timestamp %d", got2.UpdatedAt, activityAt)
+	}
+}
+
+func TestProviderSwitchClearsPendingForkPin(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-switch-pin-clear", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := s.SetThreadForkResume(thr.ID, "", "source-session", "leaf-uuid-3"); err != nil {
+		t.Fatalf("SetThreadForkResume(pin): %v", err)
+	}
+
+	// The switch's UPDATE clears the pin itself (the columns are absent from
+	// updateThreadSetSQL, so without the inline clear a committed switch
+	// could strand a pin into the old provider's session files).
+	switched := thr
+	switched.Provider = "codex"
+	switched.SessionRef = ""
+	if err := s.UpdateThreadIfProviderSwitchAllowed(switched, "claude"); err != nil {
+		t.Fatalf("UpdateThreadIfProviderSwitchAllowed: %v", err)
+	}
+	got, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if got.Provider != "codex" {
+		t.Fatalf("Provider = %q, want codex", got.Provider)
+	}
+	if got.PendingForkRef != "" || got.PendingForkResumeAt != "" {
+		t.Fatalf("pin survived the provider switch: %q@%q, want empty",
+			got.PendingForkRef, got.PendingForkResumeAt)
 	}
 }
 
@@ -482,11 +513,10 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	}
 
 	// A restated (unchanged) ref must still clear a pending fork ref: the
-	// changed flag gates the frontend push, never the write itself.
-	got.PendingForkRef = "pending-again"
-	got.PendingForkResumeAt = "leaf-again"
-	if err := s.UpdateThread(got); err != nil {
-		t.Fatalf("UpdateThread() error = %v", err)
+	// changed flag gates the frontend push, never the write itself. The
+	// re-pin goes through the pin's own writer — UpdateThread cannot set it.
+	if err := s.SetThreadForkResume(thread.ID, got.SessionRef, "pending-again", "leaf-again"); err != nil {
+		t.Fatalf("SetThreadForkResume(re-pin) error = %v", err)
 	}
 	changed, err := s.UpdateSessionRef(thread.ID, "session-456")
 	if err != nil {
@@ -536,6 +566,95 @@ func TestUpdateSessionRefAndRemapClearsPendingForkPin(t *testing.T) {
 	}
 	if got.PendingForkRef != "" || got.PendingForkResumeAt != "" {
 		t.Fatalf("pending fork state = %q@%q after remap writer, want both empty", got.PendingForkRef, got.PendingForkResumeAt)
+	}
+}
+
+// TestUpdateThreadPreservesPendingForkPin is the sixth fossil of the
+// clobber class: the lazy-fork pin is ONE-SHOT state the session-ref
+// writers consume, so a caller renaming a thread from a snapshot it read
+// before the fork's first send must not be able to resurrect a cleared pin
+// (or blank a fresh one). SetThreadForkResume is the only writer; the two
+// columns are absent from updateThreadSetSQL.
+//
+// Same assertion shape as the LastReadAt / PinnedAt guards: the pin is set
+// out of band, then DELIBERATELY given different values on the in-memory
+// struct handed to UpdateThread.
+func TestUpdateThreadPreservesPendingForkPin(t *testing.T) {
+	s := newTestStore(t)
+
+	thr := makeThread("thread-fork-pin-preserve", "claude")
+	if err := s.CreateThread(thr); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	// The pinned lazy fork: no session of its own, the SOURCE ref plus the
+	// leaf its timeline was cloned at.
+	if err := s.SetThreadForkResume(thr.ID, "", "source-session", "leaf-uuid-9"); err != nil {
+		t.Fatalf("SetThreadForkResume(pin): %v", err)
+	}
+	pinned, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if pinned.SessionRef != "" || pinned.PendingForkRef != "source-session" || pinned.PendingForkResumeAt != "leaf-uuid-9" {
+		t.Fatalf("pin round-trip = %q/%q@%q, want /source-session@leaf-uuid-9",
+			pinned.SessionRef, pinned.PendingForkRef, pinned.PendingForkResumeAt)
+	}
+
+	// A stale whole-row write: a rename carrying a pre-fork snapshot of the
+	// pin columns (empty) and a post-consumption one (a different pin).
+	stale := pinned
+	stale.Title = "Renamed"
+	stale.PendingForkRef = ""
+	stale.PendingForkResumeAt = ""
+	if err := s.UpdateThread(stale); err != nil {
+		t.Fatalf("UpdateThread(cleared pin): %v", err)
+	}
+	after, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after UpdateThread: %v", err)
+	}
+	if after.PendingForkRef != "source-session" || after.PendingForkResumeAt != "leaf-uuid-9" {
+		t.Fatalf("UpdateThread cleared the pin: got %q@%q, want source-session@leaf-uuid-9",
+			after.PendingForkRef, after.PendingForkResumeAt)
+	}
+	if after.Title != "Renamed" {
+		t.Fatalf("UpdateThread failed to write title: got %q", after.Title)
+	}
+
+	resurrect := after
+	resurrect.PendingForkRef = "some-other-session"
+	resurrect.PendingForkResumeAt = "leaf-uuid-stale"
+	if err := s.UpdateThread(resurrect); err != nil {
+		t.Fatalf("UpdateThread(foreign pin): %v", err)
+	}
+	after, err = s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after second UpdateThread: %v", err)
+	}
+	if after.PendingForkRef != "source-session" || after.PendingForkResumeAt != "leaf-uuid-9" {
+		t.Fatalf("UpdateThread overwrote the pin: got %q@%q, want source-session@leaf-uuid-9",
+			after.PendingForkRef, after.PendingForkResumeAt)
+	}
+
+	// The anchored / Codex fork shape: a session ref of the fork's own, no
+	// pin. The three columns are written as a set, so this also clears.
+	if err := s.SetThreadForkResume(thr.ID, "fork-session", "", ""); err != nil {
+		t.Fatalf("SetThreadForkResume(own session): %v", err)
+	}
+	after, err = s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after own-session write: %v", err)
+	}
+	if after.SessionRef != "fork-session" || after.PendingForkRef != "" || after.PendingForkResumeAt != "" {
+		t.Fatalf("fork resume state = %q/%q@%q, want fork-session with no pin",
+			after.SessionRef, after.PendingForkRef, after.PendingForkResumeAt)
+	}
+
+	// A row deleted underneath the saga must be named, never silently
+	// counted as a wired fork.
+	if err := s.SetThreadForkResume("thread-does-not-exist", "", "src", ""); err == nil ||
+		!strings.Contains(err.Error(), "thread-does-not-exist") {
+		t.Fatalf("SetThreadForkResume(missing thread) = %v, want an error naming the thread", err)
 	}
 }
 
@@ -2685,27 +2804,29 @@ func updateThreadWrittenColumns(t *testing.T) map[string]bool {
 // A new column belongs in updateThreadSetSQL only if a whole-row write from a
 // stale `Thread` struct is the CORRECT outcome for it. Anything owned by a
 // narrow writer, a trigger, or the row's own lifecycle belongs here instead;
-// the five TestUpdateThreadPreserves* tests are the incident record of what
+// the six TestUpdateThreadPreserves* tests are the incident record of what
 // happens when that judgement goes the other way.
 //
 // This map is consulted by nothing at runtime — which is why it lives in the
 // test file rather than the production binary: the SQL is the behavior, and a
 // second list the writer derived from would only be able to agree with itself.
 var threadColumnsNotWrittenByUpdateThread = map[string]string{
-	"id":                   "the WHERE key — UpdateThread matches on it and must never rewrite it",
-	"created_at":           "the row's birth stamp; immutable after CreateThread",
-	"updated_at":           "the sidebar's activity clock, advanced only by writes that mean the user did something (TouchThread, archive/unarchive)",
-	"last_read_at":         "per-thread read state, owned by MarkThreadRead / MarkThreadUnread",
-	"pinned_at":            "sidebar pin state, owned by PinThread / UnpinThread",
-	"worktree_setup_state": "owned by SetThreadWorktreeSetupState (v47); a workspace switch must not clobber a setup run that is still in flight",
-	"import_source":        "write-once provenance (v50); CreateThread is the only writer and nothing may rewrite where a thread came from",
-	"history_rev":          "the replica-invalidation counter (v55), maintained by the items triggers and bumpHistoryRevTx — a Go-side whole-row write would rewind it",
-	"history_epoch":        "the replica-invalidation epoch (v55), maintained by the same triggers",
-	"history_bulk_load":    "a transaction-private flag ApplyImportBatch and DeleteThread raise to suppress the per-row triggers; it is never visible outside their transaction",
-	"live_todo":            "the provider's live todo list (v65), owned by SetThreadLiveTodo / ClearThreadLiveTodo; a rename must not drop a list the user is still working through",
+	"id":                       "the WHERE key — UpdateThread matches on it and must never rewrite it",
+	"created_at":               "the row's birth stamp; immutable after CreateThread",
+	"updated_at":               "the sidebar's activity clock, advanced only by writes that mean the user did something (TouchThread, archive/unarchive)",
+	"last_read_at":             "per-thread read state, owned by MarkThreadRead / MarkThreadUnread",
+	"pinned_at":                "sidebar pin state, owned by PinThread / UnpinThread",
+	"worktree_setup_state":     "owned by SetThreadWorktreeSetupState (v47); a workspace switch must not clobber a setup run that is still in flight",
+	"pending_fork_session_ref": "half of the one-shot lazy-fork pin, owned by SetThreadForkResume and consumed by the two session-ref writers; a stale snapshot must not resurrect a pin a session start already cleared",
+	"pending_fork_resume_at":   "the other half of that pin (v69); it clears with the ref it belongs to and is written by the same narrow writer",
+	"import_source":            "write-once provenance (v50); CreateThread is the only writer and nothing may rewrite where a thread came from",
+	"history_rev":              "the replica-invalidation counter (v55), maintained by the items triggers and bumpHistoryRevTx — a Go-side whole-row write would rewind it",
+	"history_epoch":            "the replica-invalidation epoch (v55), maintained by the same triggers",
+	"history_bulk_load":        "a transaction-private flag ApplyImportBatch and DeleteThread raise to suppress the per-row triggers; it is never visible outside their transaction",
+	"live_todo":                "the provider's live todo list (v65), owned by SetThreadLiveTodo / ClearThreadLiveTodo; a rename must not drop a list the user is still working through",
 }
 
-// TestUpdateThreadColumnGate is the standing version of the five
+// TestUpdateThreadColumnGate is the standing version of the six
 // TestUpdateThreadPreserves* fossils below and above it. Each of those pins one
 // column that a whole-row UpdateThread must not clobber, and each was written
 // after the clobber happened. This test makes the NEXT one impossible to

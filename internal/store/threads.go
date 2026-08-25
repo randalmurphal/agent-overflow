@@ -605,8 +605,7 @@ func (s *Store) ListBlockedThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 // one and why, and whose TestUpdateThreadColumnGate forces every column into
 // exactly one of the two lists.
 const updateThreadSetSQL = `UPDATE threads SET project_id=?, title=?, provider=?, model=?,
-    workspace_path=?, worktree_path=?, branch=?, pr_ref=?, session_ref=?, pending_fork_session_ref=?,
-    pending_fork_resume_at=?,
+    workspace_path=?, worktree_path=?, branch=?, pr_ref=?, session_ref=?,
     mode=?, reasoning_effort=?, fast_mode=?, context_window=?,
     auto_compact_standard_percent=?, auto_compact_extended_percent=?, runtime_mode=?,
     discussion_id=?, parent_thread_id=?, forked_from_thread_id=?, last_token_usage=?,
@@ -639,8 +638,7 @@ func updateThreadArgs(t Thread) []any {
 		nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
-		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
-		t.PendingForkResumeAt,
+		nilIfEmpty(t.SessionRef),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
@@ -769,8 +767,14 @@ func (s *Store) UpdateThreadIfProviderSwitchAllowed(t Thread, previousProvider s
 		return err
 	}
 	args := append(updateThreadArgs(t), t.ID, previousProvider, t.ID)
+	// A provider switch discards the previous provider's resume wiring, and
+	// the lazy-fork pin is deliberately absent from updateThreadSetSQL (see
+	// SetThreadForkResume), so the clear rides this UPDATE itself: a second
+	// statement would leave a crash window where the switch committed and a
+	// stale pin into the old provider's session files survived it.
 	result, err := s.db.Exec(
-		updateThreadSetSQL+` WHERE id=?
+		updateThreadSetSQL+`, pending_fork_session_ref=NULL, pending_fork_resume_at=''
+		 WHERE id=?
 		 AND provider = ?
 		 AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE thread_id = ? LIMIT 1)`,
 		args...,
@@ -1133,6 +1137,44 @@ func (s *Store) UpdateSessionRef(threadID, ref string) (changed bool, err error)
 		return false, err
 	}
 	return prev.String != ref, nil
+}
+
+// SetThreadForkResume writes a new fork's provider resume wiring in one
+// narrow UPDATE: the fork's own session ref (a Claude slice or a Codex
+// thread/fork child) plus the one-shot lazy-fork pin
+// (pending_fork_session_ref + pending_fork_resume_at, which the fork's first
+// session start consumes together). Empty clears; the three are always
+// written as a set, because a ref without its pin — or a pin without its ref
+// — is not a resume state any reader can act on.
+//
+// It exists because the pin must not ride a whole-row write. The two columns
+// are one-shot state the session-ref writers CONSUME, while fifteen callers
+// hand UpdateThread a Thread struct they read some time ago in order to
+// change one field; such a snapshot could resurrect a pin a session start had
+// already cleared, or overwrite one a concurrent fork had just set. They are
+// therefore absent from updateThreadSetSQL, like worktree_setup_state and
+// live_todo, and this is their only writer outside CreateThread and those two
+// clears.
+//
+// Like UpdateSessionRef it leaves updated_at alone: wiring resume state is
+// system work and the sidebar sorts by updated_at.
+func (s *Store) SetThreadForkResume(threadID, sessionRef, pendingForkRef, pinnedResumeAt string) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return fmt.Errorf("store: set thread fork resume: empty thread id")
+	}
+	result, err := s.db.Exec(
+		`UPDATE threads
+		 SET session_ref = ?, pending_fork_session_ref = ?, pending_fork_resume_at = ?
+		 WHERE id = ?`,
+		nilIfEmpty(sessionRef), nilIfEmpty(pendingForkRef), pinnedResumeAt, threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set fork resume for %s: %w", threadID, err)
+	}
+	// A fork row deleted underneath the saga is the one case where silence
+	// would leave an unresumable fork looking wired, so it is named.
+	return requireRowsAffected(result, fmt.Sprintf("store: set fork resume for %s", threadID))
 }
 
 // In-thread setters below intentionally do NOT bump updated_at. Title

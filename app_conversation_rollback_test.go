@@ -942,9 +942,8 @@ func TestConversationRollbackSlicesClaudeSessionFromPendingForkRef(t *testing.T)
 {"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"pending-source-session","message":{"role":"user","content":"second"}}
 `)
 	thread := createAppTestThread(t, app, "t-pending-rollback", "claude", workspace)
-	thread.PendingForkRef = sessionID
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
+	if err := app.store.SetThreadForkResume(thread.ID, "", sessionID, ""); err != nil {
+		t.Fatalf("set thread fork resume: %v", err)
 	}
 	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")

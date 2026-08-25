@@ -792,18 +792,19 @@ func TestUpdateThreadModelSelectionClearsProviderResumeRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
-	thread.SessionRef = "claude-session"
-	thread.PendingForkRef = "claude-fork"
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("UpdateThread(refs): %v", err)
+	// Both refs go through the pin's narrow writer: the lazy-fork pair is
+	// deliberately not writable through a whole-row UpdateThread.
+	if err := app.store.SetThreadForkResume(thread.ID, "claude-session", "claude-fork", "leaf-uuid"); err != nil {
+		t.Fatalf("SetThreadForkResume(refs): %v", err)
 	}
 
 	updated, err := app.UpdateThreadModelSelection(thread.ID, "codex", "gpt-5.5")
 	if err != nil {
 		t.Fatalf("UpdateThreadModelSelection: %v", err)
 	}
-	if updated.SessionRef != "" || updated.PendingForkRef != "" {
-		t.Fatalf("refs = session %q pending %q, want both cleared", updated.SessionRef, updated.PendingForkRef)
+	if updated.SessionRef != "" || updated.PendingForkRef != "" || updated.PendingForkResumeAt != "" {
+		t.Fatalf("refs = session %q pending %q@%q, want all cleared",
+			updated.SessionRef, updated.PendingForkRef, updated.PendingForkResumeAt)
 	}
 }
 

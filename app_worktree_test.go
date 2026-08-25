@@ -2216,10 +2216,13 @@ func attachSessionToWorktree(t *testing.T, env relocateTestEnv, sessionRef, pend
 	}
 	live.WorkspacePath = env.worktreePath
 	live.WorktreePath = env.worktreePath
-	live.SessionRef = sessionRef
-	live.PendingForkRef = pendingForkRef
 	if err := env.app.store.UpdateThread(live); err != nil {
 		t.Fatalf("UpdateThread() error = %v", err)
+	}
+	// The pending-fork pin is not writable through a whole-row UpdateThread
+	// (store.SetThreadForkResume owns it), so the refs are wired separately.
+	if err := env.app.store.SetThreadForkResume(live.ID, sessionRef, pendingForkRef, ""); err != nil {
+		t.Fatalf("SetThreadForkResume() error = %v", err)
 	}
 }
 
