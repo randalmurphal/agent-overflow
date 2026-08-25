@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"log"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -257,6 +258,14 @@ func (b *EventBus) Emit(channel string, payload any) (Event, error) {
 	b.mu.Lock()
 	r, ok := b.rings[channel]
 	if !ok {
+		if _, registered := policyForChannel(channel); !registered {
+			// Once per channel (ring creation), not per frame. Loud on
+			// purpose: fail-closed visibility silently withholds an
+			// unregistered channel from remote clients, and this line is
+			// how that omission surfaces instead of presenting as a
+			// remote-only "events stopped arriving" mystery.
+			log.Printf("transport: event channel %q has no ChannelPolicy row; delivering to loopback connections only (add a row in event_channels.go)", channel)
+		}
 		capacity := b.capacity
 		switch channelRetention(channel) {
 		case RetentionEphemeral:

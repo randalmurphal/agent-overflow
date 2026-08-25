@@ -25,7 +25,8 @@ func TestChannelPolicyHasNoDuplicates(t *testing.T) {
 }
 
 // TestChannelPolicyEveryRowHasAWhy: a row without a reason is a row nobody
-// can review. Unreviewed rows say so explicitly (see unreviewedWhy).
+// can review. Rows still awaiting a decision must say so explicitly (see
+// unreviewedMarker).
 func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 	for _, policy := range channelPolicies {
 		if strings.TrimSpace(policy.Why) == "" {
@@ -34,15 +35,20 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 	}
 }
 
-// The frozen contents of the four hand-authored maps this registry
-// replaced, captured verbatim at the refactor. They are the behavior
-// contract: every channel one of them named must still resolve to the same
-// effective policy, and no channel outside them may have acquired a
-// non-default one. Changing a list below is a deliberate behavior change,
-// not a refactor.
+// The frozen non-default classifications, updated at each deliberate
+// review. First captured verbatim from the four hand-authored maps the
+// registry replaced; extended by the 2026-08-25 classification pass that
+// reviewed every remaining fail-open row (members from that pass are
+// commented). They are the behavior contract: every channel listed must
+// still resolve to the same effective policy, and no channel outside them
+// may acquire a non-default one silently. Changing a list below is a
+// deliberate behavior change, not a refactor — the registry row's Why and
+// this list move together.
 var (
 	frozenLoopbackOnlyChannels = []string{
 		"git:status",
+		"harness:mock",   // 2026-08-25 pass
+		"harness:replay", // 2026-08-25 pass
 		"mcp:oauth-completed",
 		"mcp:status",
 		"notification:activated",
@@ -52,6 +58,7 @@ var (
 		"provider:account_usage_error",
 		"provider:approval",
 		"provider:background_task_state",
+		"provider:command_lifecycle", // 2026-08-25 pass
 		"provider:queue_flushed",
 		"provider:queue_restored",
 		"provider:queue_state_changed",
@@ -59,10 +66,18 @@ var (
 		"provider:status",
 		"provider:terminal_output",
 		"provider:user_input",
+		"screenshot:install-progress", // 2026-08-25 pass
 		"session-import:progress",
 		"terminal:exit",
 		"terminal:output",
+		"updater:download-started", // 2026-08-25 pass
+		"updater:error",            // 2026-08-25 pass
 		"updater:install",
+		"updater:installing", // 2026-08-25 pass
+		"updater:progress",   // 2026-08-25 pass
+		"updater:ready",      // 2026-08-25 pass
+		"updater:verifying",  // 2026-08-25 pass
+		"usage:thread_cost",  // 2026-08-25 pass
 		"worktree:setup",
 	}
 	frozenRemoteOnlyChannels = []string{
@@ -77,7 +92,9 @@ var (
 		"spinner:changed",
 		"system:stats",
 		"theme:changed",
+		"updater:progress", // 2026-08-25 pass
 		"workflow:definitions-changed",
+		"workflow:engine-state", // 2026-08-25 pass
 	}
 )
 
@@ -132,11 +149,12 @@ func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
 	}
 }
 
-// TestChannelPolicyFailsOpenForUnregisteredChannels pins today's behavior
-// for a channel with no row: full-depth ring, visible to everyone. See the
-// TODO on unregisteredChannelPolicy for the planned fail-closed flip —
-// when that lands, this test flips with it.
-func TestChannelPolicyFailsOpenForUnregisteredChannels(t *testing.T) {
+// TestChannelPolicyFailsClosedForUnregisteredChannels pins the behavior
+// for a channel with no row: full-depth ring, delivered to loopback
+// connections only. A channel nobody classified must never reach a LAN
+// peer by omission (see unregisteredChannelPolicy — the fail-closed flip
+// landed 2026-08-25 after every registered row was reviewed).
+func TestChannelPolicyFailsClosedForUnregisteredChannels(t *testing.T) {
 	const channel = "not-a-real:channel"
 	policy, registered := policyForChannel(channel)
 	if registered {
@@ -145,14 +163,17 @@ func TestChannelPolicyFailsOpenForUnregisteredChannels(t *testing.T) {
 	if policy.Channel != channel {
 		t.Errorf("fallback policy channel = %q, want %q", policy.Channel, channel)
 	}
-	if policy.Audience != AudienceAny {
-		t.Errorf("fallback audience = %v, want AudienceAny", policy.Audience)
+	if policy.Audience != AudienceLoopbackOnly {
+		t.Errorf("fallback audience = %v, want AudienceLoopbackOnly", policy.Audience)
 	}
 	if policy.Retention != RetentionDefault {
 		t.Errorf("fallback retention = %v, want RetentionDefault", policy.Retention)
 	}
-	if !eventVisibleToOrigin(channel, true) || !eventVisibleToOrigin(channel, false) {
-		t.Errorf("unregistered channel is not visible to both origins")
+	if !eventVisibleToOrigin(channel, true) {
+		t.Errorf("unregistered channel must stay visible to loopback (harness dynamic channels depend on it)")
+	}
+	if eventVisibleToOrigin(channel, false) {
+		t.Errorf("unregistered channel is visible to a non-loopback origin — the fail-closed default regressed")
 	}
 }
 

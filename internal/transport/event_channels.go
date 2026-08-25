@@ -18,9 +18,9 @@ package transport
 // them. Adding a channel means adding a row here.
 //
 // A `Why` containing the substring "unreviewed" marks a row that inherited
-// the fail-open default rather than a decision anyone made. Those rows are
-// the worklist for the follow-up review pass, and
-// TestChannelPolicyUnreviewedWorklist prints them.
+// a default rather than a decision anyone made. Every row was reviewed in
+// the 2026-08-25 classification pass, so the set should stay empty;
+// TestChannelPolicyUnreviewedWorklist prints any that reappear.
 //
 // # Dynamic channel families
 //
@@ -44,7 +44,8 @@ package transport
 //     under the `--harness` boot path, on a receiver registered
 //     `LocalOnly`, so they are reachable only from loopback in a test
 //     build. Neither can be enumerated here; both land on the
-//     unregistered-channel default below.
+//     unregistered-channel default below — fail-closed, loopback-only —
+//     which still reaches their loopback-by-construction consumers.
 //
 // The registry is deliberately NOT a prefix table: the bus keys rings and
 // visibility by exact channel name, and a prefix rule would let a new
@@ -151,34 +152,37 @@ type ChannelPolicy struct {
 	Why string
 }
 
-// unreviewedWhy is the exact marker a row carries when its classification
-// was never decided — it fell through to the fail-open default and this
-// table merely wrote that down. The follow-up review pass greps for it.
-const unreviewedWhy = "unreviewed — inherited the fail-open default"
-
-// unreviewedMarker is the substring that identifies an unreviewed row.
-// Rows whose retention WAS reviewed but whose audience was not embed it
-// in a longer sentence, so membership is a substring test, not equality.
+// unreviewedMarker is the substring that identifies an unreviewed row —
+// one whose Why records that a default was inherited rather than a
+// decision made. The 2026-08-25 classification pass emptied the set; the
+// marker (and its test) stay so a future captured-not-decided row is
+// still visible as such. Membership is a substring test, not equality,
+// so the marker can sit inside a longer sentence.
 const unreviewedMarker = "unreviewed"
 
 // channelPolicies is the authored table. Alphabetical by channel.
 //
-// Keep the fail-open default (AudienceAny / RetentionDefault) spelled out
-// explicitly on every row rather than relying on the zero value — a row
-// that omits its audience is indistinguishable from one that chose "any",
-// and this table is read to answer exactly that question.
+// Keep AudienceAny / RetentionDefault spelled out explicitly on every row
+// rather than relying on the zero value — a row that omits its audience
+// is indistinguishable from one that chose "any", and this table is read
+// to answer exactly that question.
 var channelPolicies = []ChannelPolicy{
 	{
 		Channel:   "design:options-update",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Ids only (threadId, setId) — a refetch nudge. ListDesignOptions " +
+			"is deliberately wire-safe, so remote design panes depend on this " +
+			"nudge to refetch. Keyed per thread + set: never latest-only. " +
+			"Default ring so replay delivers missed invalidations.",
 	},
 	{
 		Channel:   "design:reload-main",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "threadId-only edge signal that cache-busts the design iframe; " +
+			"the client throttles to 500ms. Same wire-safe read story as " +
+			"design:options-update. Keyed per thread.",
 	},
 	{
 		Channel:   "discussion:message",
@@ -212,15 +216,20 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   "harness:mock",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (emitted only under --harness)",
+		Why: "Frames carry the mock's cwd (a local path) and the exact wire " +
+			"text the app sent the provider. Harness-only (--harness boot, " +
+			"LocalOnly receiver), but the push side is the third door; its " +
+			"consumers are loopback test tooling by construction.",
 	},
 	{
 		Channel:   "harness:replay",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (emitted only under --harness)",
+		Why: "Progress frames name the local NDJSON replay-log path and pass " +
+			"IO/parse errors verbatim. Harness-only; loopback consumers by " +
+			"construction (same story as harness:mock).",
 	},
 	{
 		Channel:   "highlight:diff_seed",
@@ -337,31 +346,46 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   "provider:background_tasks_changed",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "threadId plus a full replacement set of task refs (ids and " +
+			"model-authored descriptions) — no command lines or paths; that " +
+			"loopback-only data rides provider:background_task_state instead. " +
+			"Consumers treat it as a refetch nudge. Keyed per thread.",
 	},
 	{
 		Channel:   "provider:command_lifecycle",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Queue UX is loopback: GetQueueState and every queue RPC are " +
+			"LocalOnly, and the provider:queue_* siblings are already " +
+			"loopback-only — a remote peer cannot render the rows these " +
+			"frames label. States are a progression (queued→started→" +
+			"terminal) correlated by userItemId, so every frame matters: " +
+			"never latest-only or ephemeral.",
 	},
 	{
 		Channel:   "provider:commands",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Slash-command names and hints for composer autocomplete on any " +
+			"client — declared names, never command lines or output. Keyed " +
+			"per thread; each frame replaces wholesale, but per-key, so " +
+			"never latest-only.",
 	},
 	{
 		Channel:   "provider:compacting",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "{threadId, active} render state any viewer needs; the " +
+			"provider's failure prose is deliberately logged, not emitted " +
+			"(compaction_status.go). Keyed per thread: never latest-only.",
 	},
 	{
 		Channel:   "provider:fast_mode",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Per-thread mode-chip state, restated on every session init and " +
+			"turn completion; disabledReason is provider prose but names no " +
+			"paths or identity. Keyed per thread.",
 	},
 	{
 		Channel:   "provider:item_event",
@@ -376,7 +400,9 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   "provider:model_fallback",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Effective-model render state any viewer needs; the provider's " +
+			"refusal prose is rune-bounded at the emit site. Keyed per " +
+			"thread with a monotonic revision — ordered, never latest-only.",
 	},
 	{
 		Channel:   "provider:queue_flushed",
@@ -424,7 +450,10 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   "provider:subagent_progress",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (dynamic name: \"provider:\" + subagentProgressEventName)",
+		Why: "Subagent tray/progress state; activity and summary are " +
+			"model-authored text, lastToolName names a tool without its " +
+			"arguments. Keyed per thread + launch item: never latest-only. " +
+			"(Dynamic name: \"provider:\" + subagentProgressEventName.)",
 	},
 	{
 		Channel:   "provider:terminal_output",
@@ -440,19 +469,27 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   "provider:todo_update",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Model-authored plan steps every viewer renders; each frame " +
+			"replaces the full list. Keyed per thread: never latest-only.",
 	},
 	{
 		Channel:   "provider:turn_completed",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Core turn lifecycle — drives the active-turn registry on every " +
+			"client; a dropped frame is a stuck working indicator, which is " +
+			"why the gap handler forces a pane refresh. errorMessage is " +
+			"user-facing turn state (principle 5), the same text any client " +
+			"reads back from history. Keyed per thread/turn and ordered: " +
+			"never latest-only.",
 	},
 	{
 		Channel:   "provider:turn_started",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Pairs with provider:turn_completed in the active-turn " +
+			"registry; ids and timestamps only. Keyed per thread/turn and " +
+			"ordered: never latest-only.",
 	},
 	{
 		Channel:   "provider:usage",
@@ -473,9 +510,11 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   "screenshot:install-progress",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Host-side browser-binary install progress; error strings can " +
+			"quote manifest URLs. Backend-driven with no frontend " +
+			"subscriber today, so no remote client loses anything.",
 	},
 	{
 		Channel:   "session-import:progress",
@@ -491,7 +530,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   "spinner:changed",
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
-		Why: "Retention reviewed: a payload-less refetch signal — `emit(name, " +
+		Why: "Retention: a payload-less refetch signal — `emit(name, " +
 			"nil)` from a debounced fsnotify watcher over one directory, " +
 			"meaning exactly \"read that directory again\". N retained frames " +
 			"are N IDENTICAL frames, so a reconnect after an agent rewrote a " +
@@ -499,8 +538,9 @@ var channelPolicies = []ChannelPolicy{
 			"Latest-only rather than ephemeral: a client that was disconnected " +
 			"while the directory changed DOES need to hear about it once. " +
 			"Unkeyed (one directory, one global answer), so it satisfies the " +
-			"membership rule. Audience unreviewed — inherited the fail-open " +
-			"default.",
+			"membership rule. Audience: GetSpinnerFiles is deliberately " +
+			"wire-safe — remote clients fetch the same sprite assets, so the " +
+			"nudge must reach them too.",
 	},
 	{
 		Channel:   "system:stats",
@@ -510,8 +550,10 @@ var channelPolicies = []ChannelPolicy{
 			"footer, a fresh whole-state sample every 2s (app_sysstat.go), so " +
 			"a default-depth ring held ~33 minutes of stale samples and " +
 			"replayed all of them on reconnect just to be overwritten by the " +
-			"last one. Unkeyed. Audience unreviewed — inherited the fail-open " +
-			"default.",
+			"last one. Unkeyed. Audience: coarse whole-host aggregates " +
+			"(CPU %, RAM, isWsl) — monitoring the backend host is the " +
+			"channel's purpose, including from a remote viewer, and the " +
+			"payload doc bars per-process detail from ever joining it.",
 	},
 	{
 		Channel:   "terminal:exit",
@@ -529,46 +571,68 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   "theme:changed",
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
-		Why: "Retention reviewed: payload-less refetch signal, same matched " +
+		Why: "Retention: payload-less refetch signal, same matched " +
 			"set as spinner:changed and workflow:definitions-changed — see " +
-			"spinner:changed for the full reasoning. Audience unreviewed — " +
-			"inherited the fail-open default.",
+			"spinner:changed for the full reasoning. Audience: GetThemeFiles " +
+			"is deliberately wire-safe, same story as spinner:changed.",
 	},
 	{
 		Channel:   "thread:mode_changed",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Thread-row state (mode + a one-shot needsReconnect toast) " +
+			"every viewer renders; mutation stays LocalOnly " +
+			"(UpdateThreadMode). Keyed per thread.",
 	},
 	{
 		Channel:   "thread:runtime_mode_changed",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Thread-row approval-posture state; names a mode, not a " +
+			"capability a remote peer could invoke (UpdateThreadRuntimeMode " +
+			"is LocalOnly). Keyed per thread.",
 	},
 	{
 		Channel:   "thread:title_generation",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Title-regen completion signal; error text passes " +
+			"textgen.RedactError, which collapses CLI failures to an opaque " +
+			"sentence precisely because raw ones can quote subprocess " +
+			"stderr. Keyed per thread.",
 	},
 	{
 		Channel:   "thread:updated",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Full frames embed the whole store.Thread — absolute project/" +
+			"workspace/worktree paths and session refs — but ListThreads is " +
+			"deliberately wire-safe, so a remote peer can poll identical " +
+			"rows: the push discloses nothing a poll could not (same " +
+			"reasoning as discussion:message). If thread reads ever go " +
+			"LocalOnly, this row must flip with them. Patch frames merge " +
+			"field-by-field, so every frame matters: never latest-only.",
 	},
 	{
 		Channel:   "updater:download-started",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (bridged from updater.EventDownloadStarted)",
+		Why: "Update lifecycle is host-local: CheckForUpdate / " +
+			"DownloadUpdate / RestartToUpdate are all LocalOnly and only " +
+			"this host can install, so a LAN peer can neither arm nor act " +
+			"on these frames; the verbatim Release payload also discloses " +
+			"host OS/arch. Sibling updater:install was already " +
+			"loopback-only. (Bridged from updater.EventDownloadStarted.)",
 	},
 	{
 		Channel:   "updater:error",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (bridged from updater.EventError)",
+		Why: "Verbatim updater/launcher error text — can quote URLs and " +
+			"staged file paths, and the WSL path forwards text from a " +
+			"separate Windows launcher process this backend does not " +
+			"control. Same loopback-only story as updater:download-started. " +
+			"(Bridged from updater.EventError, plus two direct emits.)",
 	},
 	{
 		Channel:   "updater:install",
@@ -588,84 +652,122 @@ var channelPolicies = []ChannelPolicy{
 	},
 	{
 		Channel:   "updater:installing",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (bridged from updater.EventInstalling)",
+		Why: "Same loopback-only story as updater:download-started. " +
+			"(Bridged from updater.EventInstalling.)",
 	},
 	{
 		Channel:   "updater:progress",
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (bridged from updater.EventDownloadProgress)",
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionLatestOnly,
+		Why: "Per-chunk byte counters — the highest-frequency updater " +
+			"channel, unkeyed (one install at a time, ErrUpdateBusy), each " +
+			"frame fully superseding the last; replaying a backlog of stale " +
+			"counts is pure waste, so it satisfies the latest-only " +
+			"membership rule. Loopback-only with the rest of the lifecycle. " +
+			"(Bridged from updater.EventDownloadProgress.)",
 	},
 	{
 		Channel:   "updater:ready",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (bridged from updater.EventUpdateReady)",
+		Why: "Arms the local Restart button; same loopback-only story as " +
+			"updater:download-started. Default ring so a reconnecting local " +
+			"pane still learns an update is staged. (Bridged from " +
+			"updater.EventUpdateReady on desktop; emitted directly by " +
+			"stageWSLUpdate on WSL.)",
 	},
 	{
 		Channel:   "updater:verifying",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (bridged from updater.EventVerifying)",
+		Why: "Same loopback-only story as updater:download-started. " +
+			"(Bridged from updater.EventVerifying.)",
 	},
 	{
 		Channel:   "usage:thread_cost",
-		Audience:  AudienceAny,
+		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "threadId-only nudge, but both RPCs it triggers " +
+			"(GetThreadContextUsage, GetCodexAccountUsage) are LocalOnly — " +
+			"a remote peer receiving it cannot act on it, so frames off " +
+			"loopback are pure waste (mcp:status reasoning). Keyed per " +
+			"thread.",
 	},
 	{
 		Channel:   "user_message:reverted",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Timeline truncation directive every viewer must apply or its " +
+			"rendered history diverges from SQLite; ids and counters only, " +
+			"no message bodies. The client self-dedups on the monotonic " +
+			"historyRev, so replay is safe and out-of-order frames are " +
+			"refused. Keyed per thread.",
 	},
 	{
 		Channel:   "workflow:definitions-changed",
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
-		Why: "Retention reviewed: payload-less refetch signal, same matched " +
+		Why: "Retention: payload-less refetch signal, same matched " +
 			"set as theme:changed and spinner:changed — see spinner:changed " +
-			"for the full reasoning. Audience unreviewed — inherited the " +
-			"fail-open default.",
+			"for the full reasoning. Audience: workflow reads are " +
+			"deliberately wire-safe so remote workflow overlays can render; " +
+			"they need this nudge to refetch definitions.",
 	},
 	{
 		Channel:   "workflow:engine-state",
 		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Retention: RetentionLatestOnly,
+		Why: "One unkeyed process-wide boolean ({paused}) where the newest " +
+			"frame is the whole answer — satisfies the latest-only " +
+			"membership rule, and replaying exactly the newest frame on " +
+			"reconnect heals the documented dropped-frame banner hazard " +
+			"(workflowRuns.svelte.ts resync note). Wire-safe workflow reads " +
+			"let remote overlays render the pause banner.",
 	},
 	{
 		Channel:   "workflow:error",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Run-failure toasts remote overlay viewers need too (workflow " +
+			"reads are wire-safe); emit sites keep the real cause in local " +
+			"diagnostics and send a hand-written opaque sentence. Every " +
+			"frame is a distinct toast (client dedups over an LRU): never " +
+			"latest-only.",
 	},
 	{
 		Channel:   "workflow:gate-notify",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy + " (no frontend subscriber today; App consumes it in afterWorkflowEngineEvent)",
+		Why: "Workflow-authored ids and enums only; the one surface that " +
+			"reports a gate crossing without a park, so each frame is a " +
+			"distinct crossing and the ring must hold them all — never " +
+			"latest-only. (No frontend subscriber today; App consumes it in " +
+			"afterWorkflowEngineEvent to raise OS notifications.)",
 	},
 	{
 		Channel:   "workflow:item-state",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Run-state transitions the overlay accumulates (a transition " +
+			"on an unknown run triggers a full refetch); wire-safe workflow " +
+			"reads serve remote overlays. Keyed per run: never latest-only.",
 	},
 	{
 		Channel:   "workflow:phase-state",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "Per-run/phase/attempt/unit patches the run map applies in " +
+			"place. Keyed: never latest-only.",
 	},
 	{
 		Channel:   "workflow:soft-stop",
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
-		Why:       unreviewedWhy,
+		Why: "{itemId, armed} supersede-per-key state; keyed per run-tree " +
+			"root, so capacity-1 retention would evict other runs' latest " +
+			"frames — never latest-only.",
 	},
 	{
 		Channel:   "worktree:setup",
@@ -692,26 +794,30 @@ var channelPolicyIndex = func() map[string]ChannelPolicy {
 	return index
 }()
 
-// unregisteredChannelPolicy is what a channel with no registry row gets.
+// unregisteredChannelPolicy is what a channel with no registry row gets:
+// fail-CLOSED. An unregistered channel is delivered to loopback
+// connections only, so a channel nobody classified can never reach a LAN
+// peer by omission — the forgotten registration degrades to "invisible to
+// remote clients", never to "leaked to remote clients". Local UX keeps
+// working, and TestChannelPolicyUnreviewedWorklist keeps the registered
+// table honest.
 //
-// TODO(transport): flip this to fail-CLOSED — an unregistered channel
-// should be treated as AudienceLoopbackOnly, so a channel nobody
-// classified can never reach a LAN peer by omission. That flip is blocked
-// on reviewing every row whose Why contains unreviewedMarker (run
-// TestChannelPolicyUnreviewedWorklist for the list): today ~37 of the 66
-// registered channels carry that marker, and the two harness-only dynamic
-// emit paths (HarnessEmit, harness.Replayer) are unregistrable by
-// construction and would need an explicit carve-out. Until then this stays
-// fail-open so the flip is a reviewed behavior change of its own rather
-// than a side effect of building the table.
+// This is also what makes the two harness-only dynamic emit paths
+// (HarnessEmit, harness.Replayer) safe without a carve-out: their
+// caller-named channels are unregistrable by construction, and their only
+// consumers are loopback test tooling, which this default still reaches.
+//
+// The flip from the original fail-open default landed only after every
+// row above had a decided Why (2026-08-25); it is a deliberate behavior
+// change, not a side effect of building the table.
 var unregisteredChannelPolicy = ChannelPolicy{
-	Audience:  AudienceAny,
+	Audience:  AudienceLoopbackOnly,
 	Retention: RetentionDefault,
-	Why:       "unregistered channel — fail-open default (see unregisteredChannelPolicy)",
+	Why:       "unregistered channel — fail-closed default (see unregisteredChannelPolicy)",
 }
 
 // policyForChannel returns the registered policy for a channel, or the
-// fail-open default for a channel with no row. The bool reports whether
+// fail-closed default for a channel with no row. The bool reports whether
 // the channel was registered.
 func policyForChannel(channel string) (ChannelPolicy, bool) {
 	if policy, ok := channelPolicyIndex[channel]; ok {

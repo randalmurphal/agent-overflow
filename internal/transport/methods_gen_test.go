@@ -88,8 +88,8 @@ var wireSafeMethods = map[string]bool{
 	//     not the URL/bearer-reference inventory that puts the MCP surface
 	//     in category 8;
 	//   - the SAME rich entries already reach remote peers on the
-	//     `provider:commands` event channel, which is not in
-	//     loopbackOnlyEventChannels, so refusing the RPC would buy no
+	//     `provider:commands` event channel, whose registry row is
+	//     AudienceAny, so refusing the RPC would buy no
 	//     confidentiality while emptying the command menu on any thread
 	//     without a live session.
 	//

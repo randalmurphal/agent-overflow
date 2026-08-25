@@ -16,32 +16,39 @@ package transport
 // The rationale for each membership lives on its registry row's Why, and
 // the doctrine for each CLASS lives on the Audience constants.
 var (
-	// loopbackOnlyEventChannels: AudienceLoopbackOnly rows.
-	loopbackOnlyEventChannels = make(map[string]bool)
 	// remoteOnlyEventChannels: AudienceRemoteOnly rows.
 	remoteOnlyEventChannels = make(map[string]bool)
+	// remoteVisibleEventChannels: rows a NON-loopback connection may
+	// receive — AudienceAny and AudienceRemoteOnly. Membership, not
+	// absence, grants remote visibility: that is the fail-closed flip. A
+	// channel with no registry row is in neither set, so it reaches
+	// loopback connections only (see unregisteredChannelPolicy).
+	remoteVisibleEventChannels = make(map[string]bool)
 )
 
 func init() {
 	for _, policy := range channelPolicies {
 		switch policy.Audience {
 		case AudienceLoopbackOnly:
-			loopbackOnlyEventChannels[policy.Channel] = true
+			// Reaches loopback only; in neither set.
 		case AudienceRemoteOnly:
 			remoteOnlyEventChannels[policy.Channel] = true
+			remoteVisibleEventChannels[policy.Channel] = true
 		case AudienceAny:
-			// Reaches everyone; in neither filter set.
+			remoteVisibleEventChannels[policy.Channel] = true
 		}
 	}
 }
 
 // eventVisibleToOrigin reports whether a channel's frames may reach a
-// connection with the given locality. A channel with no registry row is
-// visible to everyone — see unregisteredChannelPolicy for the fail-open
-// default and the TODO naming the planned fail-closed flip.
+// connection with the given locality. Loopback connections see everything
+// except AudienceRemoteOnly rows — including unregistered channels, which
+// is what keeps a forgotten registration (and the harness's caller-named
+// channels) working locally. Non-loopback connections see only channels a
+// registry row explicitly opened to them.
 func eventVisibleToOrigin(channel string, isLoopback bool) bool {
 	if isLoopback {
 		return !remoteOnlyEventChannels[channel]
 	}
-	return !loopbackOnlyEventChannels[channel]
+	return remoteVisibleEventChannels[channel]
 }

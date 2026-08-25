@@ -229,22 +229,26 @@ their channel name at runtime. **Adding a channel means adding a row.**
   doctrine, including the UNKEYED membership rule for latest-only,
   lives on the constants.
 - `Why` — the decision. A `Why` containing `"unreviewed"` marks a row
-  that inherited the fail-open default rather than one anyone decided.
-  `TestChannelPolicyUnreviewedWorklist` prints them (`go test
-  ./internal/transport/ -run UnreviewedWorklist -v`) and never fails.
+  that inherited a default rather than one anyone decided; the
+  2026-08-25 classification pass emptied the set, and
+  `TestChannelPolicyUnreviewedWorklist` prints any that reappear
+  (`go test ./internal/transport/ -run UnreviewedWorklist -v`).
 
-A channel with NO row still gets the fail-open default
-(`unregisteredChannelPolicy`: broadcast, full ring). That is deliberate
-for now — see its `TODO` for the planned fail-closed flip and what
-blocks it. Two harness-only emit paths (`HarnessEmit`,
-`harness.Replayer`) publish onto arbitrary caller-named channels and
-are unregistrable by construction; the file header documents them
-alongside the three dynamic families that DO resolve to registered
-names.
+A channel with NO row gets the fail-CLOSED default
+(`unregisteredChannelPolicy`: loopback-only, full ring), and Emit logs
+once per such channel at ring creation. A forgotten registration
+degrades to "invisible to remote clients", never to "leaked to remote
+clients"; local UX keeps working. Two harness-only emit paths
+(`HarnessEmit`, `harness.Replayer`) publish onto arbitrary
+caller-named channels and are unregistrable by construction — the
+loopback-only default still reaches their loopback-by-construction
+consumers; the file header documents them alongside the three dynamic
+families that DO resolve to registered names.
 
-`TestChannelPolicyPreservesFrozenClassification` freezes the contents
-of the four hand-authored maps the registry replaced. Changing one of
-those lists is a behavior change, not a refactor.
+`TestChannelPolicyPreservesFrozenClassification` freezes every
+non-default classification (the original four hand-authored maps plus
+the 2026-08-25 review's additions). Changing one of those lists is a
+behavior change, not a refactor.
 
 ## Event-channel visibility
 
@@ -253,10 +257,15 @@ two sets are DERIVED from `channelPolicies` at init — do not edit them
 directly. They survive as maps only because this is the one hot
 registry consumer (per event per subscriber, and again per event per
 connection); the two retention classes below are cold and read the
-registry directly through `channelRetention`:
+registry directly through `channelRetention`. Visibility is
+fail-CLOSED for remote peers: a non-loopback connection receives only
+channels in `remoteVisibleEventChannels` (AudienceAny +
+AudienceRemoteOnly rows), so an unregistered channel reaches loopback
+connections only.
 
-- `loopbackOnlyEventChannels` — frames carrying local-terminal bytes or
-  identity/billing data that a LAN peer must not see.
+- `AudienceLoopbackOnly` rows — frames carrying local paths,
+  local-terminal bytes, or identity/billing data that a LAN peer must
+  not see. Absent from `remoteVisibleEventChannels`.
 - `remoteOnlyEventChannels` — frames that exist purely to hide WAN
   round-trip latency (`highlight:seed`) and are waste on a local pipe.
   The producer is ALSO gated on `Server.HasRemoteClient()` (an atomic
