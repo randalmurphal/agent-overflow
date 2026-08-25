@@ -139,7 +139,7 @@ func (s *Session) readLoop() {
 				var info provider.SessionInfo
 				if json.Unmarshal(evt.Meta, &info) == nil {
 					if info.SessionID != "" {
-						s.sessionID = info.SessionID
+						s.setSessionID(info.SessionID)
 					}
 					// `claude_code_version` is the only in-session
 					// statement of which binary is actually serving this

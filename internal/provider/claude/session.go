@@ -18,9 +18,14 @@ var _ provider.Session = (*Session)(nil)
 
 // Session manages a Claude Code CLI subprocess.
 type Session struct {
-	proc      *provider.Process
-	threadID  string
-	sessionID string
+	proc     *provider.Process
+	threadID string
+	// sessionID is the CLI's session identifier — seeded from Config.Resume
+	// at construction and overwritten by every `system/init` on the READ
+	// LOOP, while SessionID() and the replay-parent lookup in
+	// session_send.go read it from binding goroutines. Atomic for the same
+	// reason codex's codexThreadID is: the two sides share no lock.
+	sessionID atomic.Pointer[string]
 	workDir   string
 	onEvent   func(provider.ProviderEvent)
 	cancel    context.CancelFunc
@@ -258,7 +263,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		proc:                     proc,
 		systemPromptPath:         systemPromptPath,
 		threadID:                 threadID,
-		sessionID:                cfg.Resume,
 		workDir:                  cfg.WorkDir,
 		onEvent:                  onEvent,
 		cancel:                   cancel,
@@ -275,6 +279,9 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		crossSessionEnabled:      cfg.CrossSessionEnabled,
 		peerSessionName:          SanitizePeerSessionName(cfg.PeerSessionName),
 		peerRenameSettledName:    SanitizePeerSessionName(cfg.PeerSessionName),
+	}
+	if cfg.Resume != "" {
+		s.setSessionID(cfg.Resume)
 	}
 	// Seed the parser with the configured model so result usage can be
 	// priced even if the init envelope lands late. The init handler still
@@ -296,7 +303,16 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 // SessionID returns the provider's session identifier.
 // Only valid after the init event has been received.
 func (s *Session) SessionID() string {
-	return s.sessionID
+	if id := s.sessionID.Load(); id != nil {
+		return *id
+	}
+	return ""
+}
+
+// setSessionID records the CLI-reported session id. Called from the
+// constructor (Config.Resume seed) and the read loop's init handler.
+func (s *Session) setSessionID(id string) {
+	s.sessionID.Store(&id)
 }
 
 // CanonicalLeafUUID returns the latest settled top-level Claude transcript

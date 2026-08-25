@@ -311,8 +311,9 @@ func (s *Session) verifyReplayParent(evt provider.ProviderEvent) {
 		return
 	}
 	expectedParent, wasRisky := expectation.parent, expectation.wasRisky
-	if parentUUID == "" && wasRisky && providerItemID != "" && s.sessionID != "" {
-		if parent, found, err := findReplayUserParent(s.sessionID, s.workDir, providerItemID); err != nil {
+	sessionID := s.SessionID()
+	if parentUUID == "" && wasRisky && providerItemID != "" && sessionID != "" {
+		if parent, found, err := findReplayUserParent(sessionID, s.workDir, providerItemID); err != nil {
 			s.emitReplayParentError(fmt.Sprintf("Claude replay omitted parentUuid and AO could not verify the transcript parent: %v", err))
 			return
 		} else if found {

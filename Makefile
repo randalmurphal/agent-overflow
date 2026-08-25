@@ -96,7 +96,11 @@ go-test:
 # whose teardown / rebind / event-bus paths are most likely to surface
 # data-race regressions. Triage is included for its stream-persist
 # timer flushes, which run off the provider read loop and serialize
-# against replace/settle writes via streamFlushMu. The repo root (`.`)
+# against replace/settle writes via streamFlushMu. Provider is included
+# because every session runs a read-loop goroutine mutating state that
+# binding goroutines read (sessionID was a real lock-free race caught
+# only by review, 2026-08-24) plus five mutexes and per-process pipe
+# pumps on the Codex side. The repo root (`.`)
 # is included so the App integration tests (transport server boot,
 # multi-session shutdown, event-emit fan-out) get the race detector
 # too — that's the surface most likely to hide a real-world race. The
@@ -108,7 +112,7 @@ go-test:
 # in-invocation parallelism and loaded hosts. Tighten only if you've
 # measured headroom.
 test-race:
-	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
+	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
 
 # provider-smoke is the real-provider gate: it drives one trivial workflow
 # through the REAL `claude` and `codex` binaries (default PATH resolution — no
