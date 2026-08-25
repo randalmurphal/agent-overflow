@@ -5,10 +5,17 @@
 // by ChannelView's initial load and transport-gap recovery. Fan-in
 // target of events.ts's setupEventListeners.
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
-import type { ThreadPane } from './thread.svelte';
 import { iterPanes } from './panes.svelte';
 import { GetChannelMessages, GetChannelState } from './bindings';
 import { isBoundedString, isFiniteNumber, ITEM_EVENT_TEXT_FIELD_MAX_CHARS } from './eventsGuards';
+import type { ThreadPaneIngest } from './threadPaneRoles';
+
+// The registry hands out whole ThreadPanes; this module narrows them to
+// the ingest surface at the one acquisition point, so a new pane member
+// use here fails to compile until threadPaneRoles.ts lists it.
+function ingestPanes(): Iterable<ThreadPaneIngest> {
+  return iterPanes();
+}
 
 /** Wire payload for `discussion:message`. `threadId` is the PARENT
  * thread id (`channel.ThreadID`) — ChannelView/DiscussionView are keyed
@@ -84,7 +91,7 @@ export function applyDiscussionMessage(evt: DiscussionMessageEvent): void {
   if (!isBoundedString(evt.threadId, DISCUSSION_ID_MAX_CHARS)) return;
   if (!isBoundedString(evt.channelId, DISCUSSION_ID_MAX_CHARS)) return;
   if (!isValidChannelMessage(evt.message)) return;
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.applyChannelMessage(evt.message);
   }
@@ -93,7 +100,7 @@ export function applyDiscussionMessage(evt: DiscussionMessageEvent): void {
 export function applyDiscussionState(evt: DiscussionStateEvent): void {
   if (!evt || !evt.threadId || !evt.channelId) return;
   if (!isValidChannelStatePayload(evt)) return;
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.applyChannelState(evt);
   }
@@ -143,7 +150,7 @@ export async function fetchDiscussionChannelSnapshot(
  * zero-based-sequence cursor rule `fetchDiscussionChannelSnapshot`
  * documents.
  */
-export async function refreshDiscussionChannel(pane: ThreadPane): Promise<ChannelMessage[]> {
+export async function refreshDiscussionChannel(pane: ThreadPaneIngest): Promise<ChannelMessage[]> {
   const channelId = pane.thread?.discussionId;
   if (!channelId) return [];
   const loaded = pane.channelMessages;

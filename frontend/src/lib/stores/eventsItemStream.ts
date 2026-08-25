@@ -20,6 +20,14 @@ import { syncProposedPlanStatus, syncThreadActivity, userTextCountsAsActivity } 
 import { lookupDiscussionLiveTail } from './discussionLiveTail';
 import { isBoundedString, isFiniteNumber } from './eventsGuards';
 import { compositeKey } from '../utils/compositeKey';
+import type { ThreadPaneIngest } from './threadPaneRoles';
+
+// The registry hands out whole ThreadPanes; this module narrows them to
+// the ingest surface at the one acquisition point, so a new pane member
+// use here fails to compile until threadPaneRoles.ts lists it.
+function ingestPanes(): Iterable<ThreadPaneIngest> {
+  return iterPanes();
+}
 
 const itemUpsertSubscribers: Set<(item: Item) => void> = new Set();
 const ITEM_EVENT_FLUSH_MAX_DELAY_MS = 50;
@@ -198,7 +206,7 @@ function applyItemUpserts(upserts: PendingItemUpsert[]): void {
   feedDiscussionLiveTailUpserts(itemsByThread);
   const changedThreadIds = new Set<string>();
   const activeThreadIds = new Set<string>();
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     const threadId = pane.threadId;
     if (!threadId) continue;
     const threadItems = itemsByThread.get(threadId);
@@ -266,7 +274,7 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
     }
   }
 
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.applyItemDelta(evt);
   }
@@ -416,7 +424,7 @@ export function flushItemEventQueue(): void {
       const itemKey = itemConflictKey(evt.threadId, evt.itemId);
       if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
       if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-      for (const pane of iterPanes()) {
+      for (const pane of ingestPanes()) {
         if (pane.threadId !== evt.threadId) continue;
         pane.applyItemMeta(evt);
       }
@@ -426,7 +434,7 @@ export function flushItemEventQueue(): void {
       const itemKey = itemConflictKey(evt.threadId, evt.itemId);
       if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
       if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-      for (const pane of iterPanes()) {
+      for (const pane of ingestPanes()) {
         if (pane.threadId !== evt.threadId) continue;
         pane.applyItemPatch(evt);
       }

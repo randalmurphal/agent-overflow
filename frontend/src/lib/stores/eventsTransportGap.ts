@@ -34,6 +34,14 @@ import {
 } from './workflowRuns.svelte';
 import { dropAllThreadHistoryStamps } from './threadHistoryStamps';
 import { threadItemCache } from './threadItemCache';
+import type { ThreadPaneIngest } from './threadPaneRoles';
+
+// The registry hands out whole ThreadPanes; this module narrows them to
+// the ingest surface at the one acquisition point, so a new pane member
+// use here fails to compile until threadPaneRoles.ts lists it.
+function ingestPanes(): Iterable<ThreadPaneIngest> {
+  return iterPanes();
+}
 
 /**
  * The stamp half of gap recovery (docs/specs/thread-replica-sync.md
@@ -134,7 +142,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // pane's loaded window (two panes on one thread can hold
       // different slices), so this cannot dedupe by threadId the
       // way the usage branch below does.
-      for (const pane of iterPanes()) {
+      for (const pane of ingestPanes()) {
         if (!pane.threadId) continue;
         void pane.refreshFromBackend();
       }
@@ -165,7 +173,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // threadId so two panes mounting the same thread don't issue
       // two RPCs for the same refresh.
       const seen = new Set<string>();
-      for (const pane of iterPanes()) {
+      for (const pane of ingestPanes()) {
         if (!pane.threadId || seen.has(pane.threadId)) continue;
         const threadId = pane.threadId;
         seen.add(threadId);
@@ -262,12 +270,12 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // per pane. Full resync (afterSeq -1): a gap means we don't trust
       // any pane's incremental cursor.
       const seenChannelIds = new Set<string>();
-      for (const pane of iterPanes()) {
+      for (const pane of ingestPanes()) {
         const channelId = pane.thread?.discussionId;
         if (!channelId || seenChannelIds.has(channelId)) continue;
         seenChannelIds.add(channelId);
         void fetchDiscussionChannelSnapshot(channelId).then(({ state, messages }) => {
-          for (const p of iterPanes()) {
+          for (const p of ingestPanes()) {
             if (p.thread?.discussionId !== channelId) continue;
             p.applyChannelState(state);
             p.applyChannelMessages(messages);
@@ -287,7 +295,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       );
       dropStampsAfterGap();
       refreshSidebarProjections();
-      for (const pane of iterPanes()) {
+      for (const pane of ingestPanes()) {
         if (!pane.threadId) continue;
         void pane.refreshFromBackend();
       }

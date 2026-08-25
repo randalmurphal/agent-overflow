@@ -9,7 +9,7 @@
 // without taking a dependency on `builtinCommands.svelte.ts` (which
 // imports `revertOnInterrupt` itself).
 
-import type { ThreadPane } from './thread.svelte';
+import type { ErrorSurface } from './threadPaneRoles';
 import { errString } from '../utils/errors';
 import { userFacingError } from '../utils/userFacingError';
 
@@ -45,7 +45,10 @@ export function isBenignInterruptError(err: unknown): boolean {
  * everything else surfaces on the pane banner so a real provider
  * crash doesn't get swallowed by the optimistic UI path.
  */
-export function reportNonBenignInterruptError(pane: ThreadPane, err: unknown): void {
+export function reportNonBenignInterruptError(
+  pane: Pick<ErrorSurface, 'setGeneralError'>,
+  err: unknown,
+): void {
   if (isBenignInterruptError(err)) return;
   console.error('Failed to interrupt turn:', err);
   pane.setGeneralError(userFacingError(err));

@@ -42,10 +42,26 @@ import {
 import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { patchThreadDurableStatus, syncLatestTurnCompleted, syncThreadActivity, updateThreadUsageCache } from './eventsThreadRows';
 import { adoptEventStamp } from './threadHistoryStamps';
+import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
+
+// The provider fan-out writes the ingest surface AND the slice of the
+// pane's error surface its handlers own (session errors, the provider
+// banner). The registry hands out whole ThreadPanes; they narrow here at
+// the one acquisition point, so a new pane member use fails to compile
+// until threadPaneRoles.ts lists it.
+type ProviderEventPane = ThreadPaneIngest &
+  Pick<
+    ErrorSurface,
+    'generalError' | 'setGeneralError' | 'setSessionError' | 'clearSessionError' | 'setProviderBanner'
+  >;
+
+function ingestPanes(): Iterable<ProviderEventPane> {
+  return iterPanes();
+}
 
 export function applyModelFallback(evt: ModelFallbackEvent): void {
   if (!evt?.threadId) return;
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId === evt.threadId) {
       pane.applyEffectiveModel(evt.effectiveModel ?? '', evt.revision);
     }
@@ -61,7 +77,7 @@ export function applyApprovalEvent(evt: ApprovalEvent): void {
       evt.request.requestId,
       evt.request.kind,
     );
-    for (const pane of iterPanes()) {
+    for (const pane of ingestPanes()) {
       if (pane.threadId === evt.request.threadId) {
         pane.addApproval(evt.request);
       }
@@ -77,7 +93,7 @@ export function applyApprovalEvent(evt: ApprovalEvent): void {
 
   if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
     projectApprovalResolution(evt.threadId, evt.requestId);
-    for (const pane of iterPanes()) {
+    for (const pane of ingestPanes()) {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadApproval = pane.pendingApprovals.some((approval) => approval.requestId === evt.requestId);
       pane.removeApproval(evt.requestId);
@@ -93,7 +109,7 @@ export function applyUserInputEvent(evt: UserInputEvent): void {
 
   if (evt.action === 'request' && evt.request?.threadId) {
     projectUserInputRequest(evt.request.threadId, evt.request.requestId);
-    for (const pane of iterPanes()) {
+    for (const pane of ingestPanes()) {
       if (pane.threadId === evt.request.threadId) {
         pane.addUserInput(evt.request);
       }
@@ -109,7 +125,7 @@ export function applyUserInputEvent(evt: UserInputEvent): void {
 
   if ((evt.action === 'resolve' || evt.action === 'fail') && evt.requestId) {
     projectUserInputResolution(evt.threadId, evt.requestId);
-    for (const pane of iterPanes()) {
+    for (const pane of ingestPanes()) {
       if (evt.threadId && pane.threadId !== evt.threadId) continue;
       const hadRequest = pane.pendingUserInputs.some((request) => request.requestId === evt.requestId);
       pane.removeUserInput(evt.requestId);
@@ -163,7 +179,7 @@ export function applyUsageEvent(evt: UsageEvent): void {
       }
     : null;
 
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     if (payload) {
       pane.setContextWindow(payload);
@@ -251,7 +267,7 @@ export function applyProviderStatus(evt: ProviderStatusEvent): void {
   }
 
   const banner = effectiveStatus === 'ready' ? null : normalized;
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.thread?.provider !== provider) continue;
     // Kind-bearing events can carry a threadId for per-pane scoping; when
     // present, only update the matching pane. Without a threadId the event
@@ -302,7 +318,7 @@ export function applyProviderAccount(evt: ProviderAccountEvent): void {
 
 export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): void {
   if (!evt?.threadId) return;
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setProviderSessionAccount(evt.connected ? evt : null);
   }
@@ -330,7 +346,7 @@ export function applyTurnStarted(evt: TurnStartedEvent): void {
   // serving — any stale session_died banner for this thread is now
   // contradicted by visible streaming. Scoped to session-kind so this
   // doesn't clobber an orthogonal error sharing the slot.
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.clearSessionError();
   }
@@ -391,7 +407,7 @@ export function applyTurnCompleted(evt: TurnCompletedEvent): void {
   if (usageSnapshot !== undefined) {
     updateThreadUsageCache(evt.threadId, usageSnapshot);
   }
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.settleTurn(settled);
   }
@@ -424,7 +440,7 @@ export function applySessionDied(evt: SessionDiedEvent): void {
   if (!evt?.threadId) return;
   projectSendResolved(evt.threadId, { error: true });
   const message = sessionDiedBannerMessage(evt);
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setSessionError(message);
   }
@@ -454,7 +470,7 @@ function sessionDiedBannerMessage(evt: SessionDiedEvent): string {
 export function applyTodoUpdate(evt: TodoUpdateEvent): void {
   if (!evt?.threadId) return;
   const steps = Array.isArray(evt.steps) ? evt.steps : [];
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     pane.setLiveTodo(steps);
   }

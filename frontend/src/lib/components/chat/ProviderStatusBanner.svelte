@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fade } from 'svelte/transition';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { ErrorSurface } from '../../stores/threadPaneRoles';
   import {
     GetProviderStatuses,
     ReconnectSession,
@@ -21,7 +21,10 @@
     providerCliLabel,
   } from '../../providers/catalog';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  // The banner's slice of the pane — the error surface role, nothing
+  // else. A new pane member use here fails to compile until
+  // threadPaneRoles.ts lists it on ErrorSurface.
+  let { pane }: { pane: ErrorSurface } = $props();
 
   let reconnecting = $state(false);
   let retryingHistory = $state(false);

@@ -13,6 +13,18 @@ import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { addToast } from './toast.svelte';
 import { getThreadById, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
+import type { ThreadPaneIngest } from './threadPaneRoles';
+
+// The registry hands out whole ThreadPanes; this module narrows them to
+// the ingest surface at its two acquisition points, so a new pane member
+// use here fails to compile until threadPaneRoles.ts lists it.
+function ingestPanes(): Iterable<ThreadPaneIngest> {
+  return iterPanes();
+}
+
+function ingestPaneShowingThread(threadId: string): ThreadPaneIngest | null {
+  return findPaneShowingThread(threadId);
+}
 
 /**
  * Payload for the backend-emitted thread:mode_changed event. Mirrors
@@ -63,7 +75,7 @@ function mergeThreadRowWithLocal(
     activityMarkers.push(cachedThread.updatedAt);
   }
 
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== updated.id || !pane.thread) continue;
     if (pane.thread.lastReadAt !== undefined) {
       readMarkers.push(pane.thread.lastReadAt);
@@ -90,7 +102,7 @@ export function syncThreadRow(updated: Thread): Thread {
 
 export function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
   const cachedThread = getThreadById(evt.threadId)
-    ?? findPaneShowingThread(evt.threadId)?.thread;
+    ?? ingestPaneShowingThread(evt.threadId)?.thread;
   if (!cachedThread) {
     return;
   }
@@ -110,7 +122,7 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
   let projectId = thread?.projectId;
   let latestUpdatedAt = thread?.updatedAt ?? updatedAt;
 
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
     projectId = projectId ?? pane.thread.projectId;
     const paneUpdatedAt = Math.max(pane.thread.updatedAt ?? 0, updatedAt);
@@ -156,7 +168,7 @@ async function resyncThreadRows(): Promise<void> {
   const merged = rows.map((row) => mergeThreadRowWithLocal(row, cachedById.get(row.id)));
   replaceAllThreads(merged);
   const mergedById = new Map(merged.map((thread) => [thread.id, thread]));
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (!pane.threadId || !pane.thread) continue;
     const row = mergedById.get(pane.threadId);
     if (row) pane.replaceThread(row);
@@ -207,7 +219,7 @@ function patchThreadEverywhere(threadId: string, patch: Partial<Thread>): void {
   if (existing) {
     replaceThread({ ...existing, ...patch });
   }
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
     pane.replaceThread({ ...pane.thread, ...patch });
   }
@@ -232,7 +244,7 @@ export function patchThreadDurableStatus(
   if (existing && !patchMatchesThread(existing, patch)) {
     replaceThread({ ...existing, ...patch });
   }
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== threadId || !pane.thread) continue;
     if (patchMatchesThread(pane.thread, patch)) continue;
     pane.replaceThread({ ...pane.thread, ...patch });
@@ -300,7 +312,7 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
   if (!evt) return;
   if (evt.action === 'patch' && evt.id) {
     const cached = getThreadById(evt.id)
-      ?? findPaneShowingThread(evt.id)?.thread;
+      ?? ingestPaneShowingThread(evt.id)?.thread;
     if (!cached) return;
     const merged = { ...cached };
     if (evt.title !== undefined) merged.title = evt.title;

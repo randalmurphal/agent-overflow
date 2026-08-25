@@ -11,6 +11,14 @@ import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { compositeKey } from '../utils/compositeKey';
 import { onBackendIdentity } from '../transport/backendIdentity';
+import type { ThreadPaneIngest } from './threadPaneRoles';
+
+// The registry hands out whole ThreadPanes; this module narrows them to
+// the ingest surface at the one acquisition point, so a new pane member
+// use here fails to compile until threadPaneRoles.ts lists it.
+function ingestPanes(): Iterable<ThreadPaneIngest> {
+  return iterPanes();
+}
 
 // `user_message:reverted` fires after a successful conversation revert
 // (Stop/Esc un-send, or the edit-and-resend saga's committed revert).
@@ -137,7 +145,7 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   dropThreadHistoryStamp(payload.threadId);
   threadItemCache.evict(payload.threadId);
   void removeReplicaWindow(payload.threadId);
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== payload.threadId) continue;
     pane.removeRevertedItems(payload.turnIndex, payload.keptAnchorTurnItemIds ?? []);
     if (!rehydrateDrafts) continue;

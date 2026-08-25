@@ -273,15 +273,22 @@ export interface RevealRead {
  * chokepoint — the message is stored per KIND, every stored kind renders
  * as its own banner row (`paneErrorList`, fixed display order), and the
  * kind decides the affordance each row offers. The named writers below
- * are thin wrappers kept for their call sites.
+ * are thin wrappers kept for their call sites. `thread` / `threadId` /
+ * `refreshFromBackend` are here because the banner's affordances are
+ * per-thread actions: a retry row refreshes THIS thread, and the
+ * provider banner's action needs the thread's provider.
  *
- * No consumer binds this interface yet — it is a forward-looking B3
- * grouping of members those call sites reach through the whole pane
- * today (`chat/ProviderStatusBanner.svelte`, `stores/eventsProvider.ts`,
- * `stores/interruptErrors.ts`, `composer/Composer.svelte`, ...). The B3
- * regrouping pass is what would narrow them onto this type.
+ * Consumers: `chat/ProviderStatusBanner.svelte` (the whole role),
+ * `stores/interruptErrors.ts` (`Pick<…, 'setGeneralError'>`), and
+ * `stores/eventsProvider.ts` (a `Pick` of the writers, intersected with
+ * `ThreadPaneIngest`). `composer/Composer.svelte` also reaches
+ * `setGeneralError`, but through the whole pane — it is one of the
+ * documented whole-pane holdouts above.
  */
 export interface ErrorSurface {
+  readonly threadId: string | null;
+  /** Read for its provider/mode when a banner row's affordance needs it. */
+  readonly thread: Thread | null;
   /** Every stored error in banner-stack order; one row each. */
   readonly paneErrorList: readonly { kind: PaneErrorKind; message: string }[];
   /** Newest stored error's message; presence-check convenience. */
@@ -298,6 +305,7 @@ export interface ErrorSurface {
   readonly clearSessionError: () => void;
   readonly setProviderBanner: (status: ProviderStatusEvent | null | undefined) => void;
   readonly retryHistoryLoad: () => Promise<void>;
+  readonly refreshFromBackend: () => Promise<void>;
 }
 
 /**
@@ -322,19 +330,27 @@ export interface PaneDoors {
  * The write surface the backend-event fan-out lands on: item stream,
  * approvals, turn lifecycle, context window, channel and design pushes.
  * Reads are limited to what those handlers need to address or dedupe
- * against (`paneId`/`threadId`/`thread`, the pending queues, `items`).
+ * against (`paneId`/`threadId`/`thread`, the pending queues, `items`,
+ * `channelMessages` for the discussion refresh diff).
  *
- * No consumer binds this interface yet — it is a forward-looking B3
- * grouping of the members the event fan-out reaches through the whole
- * pane today (`stores/eventsItemStream.ts`, `stores/eventsProvider.ts`,
- * `stores/eventsQueue.ts`, ...). The B3 regrouping pass is what would
- * narrow those handlers onto this type.
+ * Consumers: `stores/eventsItemStream.ts`, `stores/eventsProvider.ts`
+ * (intersected with a `Pick` of `ErrorSurface`'s writers),
+ * `stores/eventsQueue.ts`, `stores/eventsDiscussion.ts`,
+ * `stores/eventsDesign.ts`, `stores/eventsMessageRevert.ts`,
+ * `stores/eventsThreadRows.ts`, `stores/eventsTransportGap.ts`,
+ * `stores/revertOnInterrupt.svelte.ts`. Each narrows at its pane
+ * acquisition point (the registry hands out whole `ThreadPane`s), so a
+ * new member use in any of them fails to compile until it is added
+ * here. `stores/eventsTerminal.ts` stays off this role on purpose: its
+ * two members (`paneId`, `requestTerminalFocus`) are a focus request,
+ * not ingest, and it states its own `Pick`.
  */
 export interface ThreadPaneIngest {
   readonly paneId: string;
   readonly threadId: string | null;
   readonly thread: Thread | null;
   readonly items: Item[];
+  readonly channelMessages: ChannelMessage[];
   readonly getItemById: (itemId: string) => Item | undefined;
   readonly pendingApprovals: ApprovalRequest[];
   readonly pendingUserInputs: UserInputRequest[];

@@ -16,6 +16,17 @@ import {
   getThreadTerminalStateForTerminalEvent,
 } from '../components/terminal/terminalStore.svelte';
 import { DeleteThread } from './bindings';
+import type { ThreadPane } from './thread.svelte';
+
+// Deliberately NOT ThreadPaneIngest (see threadPaneRoles.ts): the two
+// members this module touches are a focus request, not event ingest.
+// The wrapper narrows at the acquisition point, so any new pane member
+// use here fails to compile until this Pick names it.
+type TerminalFocusPane = Pick<ThreadPane, 'paneId' | 'requestTerminalFocus'>;
+
+function terminalFocusPanes(threadID: string): TerminalFocusPane[] {
+  return panesShowingThread(threadID);
+}
 
 export function applyTerminalOutput(payload: TerminalOutputEventPayload): void {
   if (!payload?.threadID || !payload.terminalID) return;
@@ -42,7 +53,7 @@ export async function applyTerminalExit(payload: TerminalExitEventPayload): Prom
   // false for that pane, so the cursor is NOT yanked away.
   const exitingActiveTab = handle.activeTerminalID === payload.terminalID;
   const panesToRefocus = exitingActiveTab
-    ? panesShowingThread(payload.threadID).filter((pane) => getTerminalFocused(pane.paneId))
+    ? terminalFocusPanes(payload.threadID).filter((pane) => getTerminalFocused(pane.paneId))
     : [];
 
   handle.removeTab(payload.terminalID);

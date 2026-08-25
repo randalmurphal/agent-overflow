@@ -30,7 +30,7 @@ import type { Attachment } from '../types/attachment';
 import type { TerminalChip } from '../types/draft';
 import type { Item } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
-import type { ThreadPane } from './thread.svelte';
+import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnapshot';
 import { getActiveTurn } from './threadStatuses.svelte';
@@ -65,6 +65,15 @@ export type RevertEligibility =
   | { canRevert: true; userItem: Item }
   | { canRevert: false; reason: string };
 
+/**
+ * What this flow reads off a pane: the ingest surface (timeline reads,
+ * the optimistic truncate/restore pair) plus the error banner writer the
+ * shared interrupt error filter lands on. Callers pass a whole
+ * `ThreadPane`; the type names the slice actually used, so a new member
+ * use here fails to compile until threadPaneRoles.ts lists it.
+ */
+type InterruptPane = ThreadPaneIngest & Pick<ErrorSurface, 'setGeneralError'>;
+
 interface DraftSnapshotInputs {
   content: string;
   attachments: Attachment[] | { length: number };
@@ -74,7 +83,7 @@ interface DraftSnapshotInputs {
 }
 
 export function canRevertEarlyInterrupt(
-  pane: ThreadPane,
+  pane: InterruptPane,
   draft: DraftSnapshotInputs,
 ): RevertEligibility {
   const threadId = pane.threadId;
@@ -144,7 +153,7 @@ export function canRevertEarlyInterrupt(
  * approval cancellations, etc).
  */
 export function runInterruptOrRevert(
-  pane: ThreadPane,
+  pane: InterruptPane,
   draft: DraftSnapshotInputs,
 ): void {
   const threadId = pane.threadId;
@@ -169,7 +178,7 @@ export function runInterruptOrRevert(
 }
 
 async function runPlainInterrupt(
-  pane: ThreadPane,
+  pane: InterruptPane,
   threadId: string,
   interruptToken: number,
 ): Promise<void> {
@@ -183,7 +192,7 @@ async function runPlainInterrupt(
 }
 
 async function runInterruptOrRevertAfterBackgroundPreflight(
-  pane: ThreadPane,
+  pane: InterruptPane,
   draft: DraftSnapshotInputs,
   threadId: string,
   userItem: Item,

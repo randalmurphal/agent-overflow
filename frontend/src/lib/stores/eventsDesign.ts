@@ -6,6 +6,14 @@ import {
   DESIGN_RELOAD_MAIN_EVENT,
 } from './eventNames';
 import { iterPanes } from './panes.svelte';
+import type { ThreadPaneIngest } from './threadPaneRoles';
+
+// The registry hands out whole ThreadPanes; this module narrows them to
+// the ingest surface at the one acquisition point, so a new pane member
+// use here fails to compile until threadPaneRoles.ts lists it.
+function ingestPanes(): Iterable<ThreadPaneIngest> {
+  return iterPanes();
+}
 
 /**
  * Min interval between consecutive `design:reload-main` cache-bust
@@ -129,7 +137,7 @@ export function applyDesignOptionsUpdate(payload: DesignOptionsUpdatePayload): v
   if (!payload?.threadId) return;
   const detail = payload;
   fireThrottled(designOptionsThrottle, payload.threadId, DESIGN_OTHER_THROTTLE_MS, () => {
-    for (const pane of iterPanes()) {
+    for (const pane of ingestPanes()) {
       if (pane.threadId === detail.threadId) {
         void pane.applyDesignOptionsUpdate(detail.threadId, detail.setId ?? '');
       }

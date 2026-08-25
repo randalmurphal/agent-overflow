@@ -13,6 +13,14 @@ import {
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
+import type { ThreadPaneIngest } from './threadPaneRoles';
+
+// The registry hands out whole ThreadPanes; this module narrows them to
+// the ingest surface at the one acquisition point, so a new pane member
+// use here fails to compile until threadPaneRoles.ts lists it.
+function ingestPanes(): Iterable<ThreadPaneIngest> {
+  return iterPanes();
+}
 
 export interface QueueStateChangedPayload {
   threadId: string;
@@ -74,7 +82,7 @@ export function applyQueueRestored(evt: QueueRestoredPayload | undefined): void 
     userItemIds: evt.userItemIds ?? [],
   });
   const userItemIds = evt.userItemIds ?? [];
-  for (const pane of iterPanes()) {
+  for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     // The backend deleted these rows when it restored their content to
     // the draft (failed Codex resend, session death); drop any mounted
