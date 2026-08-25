@@ -270,8 +270,8 @@ func (a *App) rollbackCodexThreadToMessage(thread store.Thread, anchor store.Mes
 	// thread whose runtime upstream is about to shut down and reload
 	// under this connection. cutCodexThreadHistory runs the RPC through
 	// a throwaway resume session whose events go nowhere.
-	// BEFORE the stop, while the connection is still live: a message already
-	// handed to `thread/queue/add` is not in AO's flushqueue at all — it is a
+	// BEFORE the stop, while the connection is still live: a row in the
+	// PROVIDER's queue is not in AO's flushqueue at all — it is a
 	// row in codex's own SQLite that survives stopSession and that
 	// `QueuedItemService::on_thread_idle` dispatches on the next resume. Left
 	// alone it would re-run a message the user just rolled back, onto a thread

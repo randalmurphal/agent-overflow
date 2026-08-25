@@ -37,6 +37,12 @@ none fits.
   progress" below.
 - `turn_lifecycle.go` — per-turn and per-thread correlation state
   (open turns, interrupt queue, stopped-thread markers, cleanup paths).
+  Also owns turn-index allocation and the `turns`-row reconciliation
+  every opener goes through — see "Turn index is allocated once" below.
+- `pending_send.go` — the per-thread FIFO of AO-initiated user messages
+  awaiting their wire echo, its registration surface, and the one
+  consumption rule `handleUserText` pops through. See "Pending-send
+  consumption" below.
 - `turn_telemetry.go` — live turn-span lifecycle plus the one outcome
   classifier shared by span status and completed/error counters.
 - `live_state.go` — refresh/reconnect snapshot of backend-owned live
@@ -285,7 +291,8 @@ none fits.
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
 | Codex unifiedExec / spawn_agent | unifiedExec starts are transient running-tray state; typed command completions clear live state and persist normal command rows using the original item id only while a Codex wire round is active. Spawn-agent starts are pending-only; terminal spawn completions persist the visible row and use sibling `tool_completion` rows. See `codex_background.go` + invariant 25. |
 | Codex terminal interaction | Empty stdin persists/reuses one visible `terminal_interaction` wait carrier on the current open turn while the PTY tracker is live. Non-empty stdin first flushes any active wait for that process, then persists an interaction marker without storing stdin bytes. See `terminal_interaction.go`. |
-| Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. |
+| Turn start/complete | Write `turns` row; emit `provider:turn_*` to frontend; force-close orphan tool_calls on complete. The row write RECONCILES the index first and returns the one it landed on — see "Turn index is allocated once". |
+| Turn start with an external origin (`origin: external-queue`) | Same as any turn start except the index: a foreign dispatch allocates past every known turn AND every pending send instead of reading the pending-send head, which names a message AO is still waiting on. See "Turn index is allocated once". |
 | Error `result`, no open round/turn | Orphan error item attributed to the pending-send head (else last turn index); queued-send flush suppressed. Settled turns route to `persistLateTurnPayload` instead. See `turn-lifecycle.md §Error routing` path 5. |
 | Error | Distinct event kind; frontend renders as status/alert. |
 | Subagent progress tick | Live-only `provider:subagent_progress` + the merged latest tick per launch in a bounded map (monotonic counters take the max, `TotalTokens` takes the newest value because Claude's can dip on a subagent compaction); nothing persists until the launch's terminal folds the final numbers onto `meta.subagentProgress`. See "Live subagent progress" below. |
@@ -776,6 +783,75 @@ Use these categories when adding or moving state:
   paths that start a thread's next session from scratch on the SAME row
   (rollback, provider switch) call `ResetThreadTodo` so a dead list's
   ids can never seed against a session that will mint them again.
+
+### Pending-send consumption (`pending_send.go`)
+
+Every AO-initiated user message registers a FIFO entry that its wire
+echo consumes. `consumeMatchingPendingSendForEcho` is the ONE rule, and
+it has three keys in strict precedence. Do not add a fallback between
+them — every mispop this rule has produced came from one.
+
+1. **Client id.** The echo carries `clientId` (Codex's
+   `UserMessageItem.client_id`, the `clientUserMessageId` AO dispatched
+   with). It consumes the entry whose `AOItemID` equals it, ANYWHERE in
+   the queue, and matching nothing consumes nothing. A client id AO does
+   not hold is not AO's message.
+2. **Provider item id.** No `clientId`, and the head expects an
+   `ExpectedProviderItemID` (the uuid AO minted and Claude echoes
+   verbatim). Scans for the equal id; no match consumes nothing.
+3. **FIFO.** No `clientId`, and the head expects no wire id — a
+   pre-identity Codex send. Pops the head. The id-less-echo carve-out
+   (an echo with no `provider_item_id` at all, the claude-tui shape)
+   also lands here so the downstream diagnostics stay reachable.
+
+`ExpectedClientID` **subtracts from 2 and 3**, and that is the load-bearing
+part. An entry that announced its echo will name it is invisible to an
+echo that carries no client id: not to the head-pop, not to the
+identity scan. Without that, a direct-send echo FIFO-pops a queued entry
+still waiting for its own `clientId`, which stamps one message onto the
+other's row and leaves the real echo to persist as "Injected provider
+context" — two wrong rows from one pop (2026-08-24). It holds whether or
+not every sender stamps an id, so it is not a transitional guard.
+
+The expectation is declared at registration
+(`PendingSendExpectation{ProviderItemID, ByClientID}`) and `ByClientID`
+carries no value: the registrar copies the entry's own `AOItemID`, so
+the dispatched `clientUserMessageId` and the expected one cannot drift.
+The Claude-shaped registrations (`RegisterPendingSendExpecting`,
+`RegisterPendingFlushSendWithEnqueuedAt`,
+`RegisterPendingQuietFlushSend`) are unchanged wrappers over the same
+registrar.
+
+### Turn index is allocated once (`turn_lifecycle.go`)
+
+`turns.turn_index` is AO's own allocation and `UNIQUE(thread_id,
+turn_index)` enforces it, so two logical turns on one index is
+corruption, not a race to be smoothed over. Three rules keep it honest:
+
+- **A foreign turn start never reads the pending-send head.**
+  `resolveTurnIndexOnStart`'s source-2 peek is an ATTRIBUTION — the
+  dispatcher stamped that index for a message AO sent and is still
+  waiting on. A turn start the provider marked `origin: external-queue`
+  was dispatched by another producer off the provider's own queue, so it
+  allocates past everything known instead (`nextTurnIndexAfterKnown`:
+  past the last persisted turn/item AND past every pending send, because
+  a deferred row is not in SQLite until its echo). Letting it squat is
+  what produced the UNIQUE violation when AO's own echo later opened the
+  turn it was promised.
+- **One logical turn, two id shapes.** `openQueuedEchoTurn` mints
+  `<thread>:<index>`; a Codex wire start mints
+  `<thread>:<providerTurnID>` (`store.ScopedTurnID`). Either order is
+  reachable, so `upsertTurnRow`'s existence probe asks by turn id AND by
+  `(thread, index)`, and a second shape at an occupied index ADOPTS the
+  standing row. Settle already resolves turn ids by index
+  (`persistedTurnID`), so nothing downstream needs the second id.
+- **A real collision relocates, loudly.** Two rows both carrying a
+  provider turn id, and different ones, are provably distinct provider
+  turns: the incoming one moves to the next free index and both ids are
+  logged. `upsertTurnRow` RETURNS the index the row actually occupies
+  and callers must seed their open-turn bookkeeping from the return
+  value, never from what they asked for — which is why `handleTurnStart`
+  writes the row before `setOpenTurn`.
 
 ### Collab interactions on the Codex spawn card
 

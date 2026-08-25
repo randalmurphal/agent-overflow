@@ -90,7 +90,8 @@ func newQueueSession(t *testing.T, binary string, onEvent func(provider.Provider
 }
 
 // newQueueSessionWithConfig builds the queue-test session, letting a caller
-// fill in the safety axes QueueAdd now asserts before every add.
+// fill in the Config axes a case needs — the resume id and BeforeResume hook,
+// or the OwnsQueuedClientID predicate the foreign-submission notice reads.
 func newQueueSessionWithConfig(
 	t *testing.T, binary string, onEvent func(provider.ProviderEvent), customize func(*Config),
 ) *Session {
@@ -172,9 +173,6 @@ func TestThreadQueueIsGatedOnTheHandshakeVersion(t *testing.T) {
 			}
 			// Every entry point refuses with the same typed sentinel, so the
 			// caller has one thing to branch on.
-			if _, err := s.QueueAdd(context.Background(), "hi", provider.SendOptions{}, "user:1"); !IsThreadQueueUnsupported(err) {
-				t.Errorf("QueueAdd err = %v, want ErrThreadQueueUnsupported", err)
-			}
 			if _, err := s.QueueList(context.Background()); !IsThreadQueueUnsupported(err) {
 				t.Errorf("QueueList err = %v, want ErrThreadQueueUnsupported", err)
 			}
@@ -189,191 +187,6 @@ func TestThreadQueueIsGatedOnTheHandshakeVersion(t *testing.T) {
 				t.Errorf("a gated-off session still sent a thread/queue request: %v", err)
 			}
 		})
-	}
-}
-
-// TestQueueAddSendsClientUserMessageIDAndClaimsTheTurn pins both halves of the
-// add: the wire frame carries AO's optimistic row id as the correlation key,
-// and the claim it registers is what keeps the automatically dispatched turn
-// attributed to this app instead of being stamped external-queue.
-func TestQueueAddSendsClientUserMessageIDAndClaimsTheTurn(t *testing.T) {
-	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-		"thread/queue/add": `{"queuedSubmission":{"id":"sub-7","input":[{"type":"text","text":"run the tests"}],` +
-			`"clientUserMessageId":"user:3:flush:1"}}`,
-	})
-	events := []provider.ProviderEvent{}
-	var mu sync.Mutex
-	s := newQueueSession(t, binary, func(evt provider.ProviderEvent) {
-		mu.Lock()
-		events = append(events, evt)
-		mu.Unlock()
-	})
-
-	submission, err := s.QueueAdd(context.Background(), "run the tests", provider.SendOptions{}, "user:3:flush:1")
-	if err != nil {
-		t.Fatalf("QueueAdd: %v", err)
-	}
-	if submission.ID != "sub-7" || submission.ClientUserMessageID != "user:3:flush:1" {
-		t.Fatalf("submission = %+v, want the server's id and the echoed client id", submission)
-	}
-	if submission.Text != "run the tests" {
-		t.Fatalf("submission text = %q, want the input vec flattened", submission.Text)
-	}
-
-	frames := capturedRequests(t, capture)
-	if len(frames) != 1 {
-		t.Fatalf("expected exactly one add request, got %d", len(frames))
-	}
-	params := requestParams(t, frames[0])
-	if params["threadId"] != "codex-thread-q" {
-		t.Errorf("threadId = %v, want the root codex thread", params["threadId"])
-	}
-	if params["clientUserMessageId"] != "user:3:flush:1" {
-		t.Errorf("clientUserMessageId = %v, want AO's optimistic row id", params["clientUserMessageId"])
-	}
-
-	// The dispatched turn arrives with no turn/start of ours. Its origin is
-	// UNDECIDED at turn/started — only the echo's clientId can say which
-	// queued row started — so nothing is stamped there, and the echo resolves
-	// it as local.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-q","turn":{"id":"turn-q-1"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-q","turnId":"turn-q-1","item":{"id":"item-q-1","type":"userMessage","clientId":"user:3:flush:1","content":[{"type":"text","text":"run the tests"}]}}}`))
-	if s.turnIsExternal("turn-q-1") {
-		t.Fatal("a turn dispatched from AO's own queued submission was classified external-queue")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	sawEcho := false
-	for _, evt := range events {
-		switch evt.Kind {
-		case provider.EventTurnStart, provider.EventUserText:
-			if got, ok := metaValue(t, evt.Meta, "origin"); ok {
-				t.Errorf("%s carries origin %v; AO's own queued message must not be marked external", evt.Kind, got)
-			}
-		}
-		if evt.Kind == provider.EventUserText {
-			sawEcho = true
-			if got, ok := metaValue(t, evt.Meta, "client_id"); !ok || got != "user:3:flush:1" {
-				t.Errorf("user echo client_id = %v (present=%v), want the queued row's id", got, ok)
-			}
-		}
-	}
-	if !sawEcho {
-		t.Fatal("no user echo reached the app layer")
-	}
-}
-
-// TestQueueAddAssertsTheTurnConfigBeforeQueueing is finding 1: a queued turn
-// carries NO per-turn overrides upstream (`TurnInputRequest::new(input)`,
-// codex-rs/ext/queue/src/service.rs:433), so the thread must already hold the
-// approval policy, sandbox and reviewer a turn/start would have asserted —
-// otherwise a runtime-mode tightening made while the turn runs never reaches
-// the turn that runs the queued message.
-func TestQueueAddAssertsTheTurnConfigBeforeQueueing(t *testing.T) {
-	capture := t.TempDir() + "/queue-requests.jsonl"
-	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-		"thread/settings/update": `{}`,
-		"thread/queue/add": `{"queuedSubmission":{"id":"sub-1","input":[{"type":"text","text":"hi"}],` +
-			`"clientUserMessageId":"user:1"}}`,
-	})
-	s := newQueueSessionWithConfig(t, binary, nil, func(cfg *Config) {
-		cfg.ReasoningEffort = "high"
-		cfg.ServiceTier = "priority"
-		cfg.ApprovalPolicy = "on-request"
-		cfg.Sandbox = "read-only"
-		cfg.ApprovalsReviewer = approvalsReviewerAuto
-	})
-
-	if _, err := s.QueueAdd(context.Background(), "hi", provider.SendOptions{}, "user:1"); err != nil {
-		t.Fatalf("QueueAdd: %v", err)
-	}
-
-	frames := capturedRequests(t, capture)
-	if len(frames) != 2 {
-		t.Fatalf("expected settings/update then queue/add, got %d frames: %+v", len(frames), frames)
-	}
-	if frames[0]["method"] != "thread/settings/update" {
-		t.Fatalf("first frame = %v, want thread/settings/update BEFORE the add", frames[0]["method"])
-	}
-	if frames[1]["method"] != "thread/queue/add" {
-		t.Fatalf("second frame = %v, want thread/queue/add", frames[1]["method"])
-	}
-	settings := requestParams(t, frames[0])
-	for key, want := range map[string]any{
-		"model":             "test-model",
-		"effort":            "high",
-		"serviceTier":       "priority",
-		"approvalPolicy":    "on-request",
-		"approvalsReviewer": approvalsReviewerAuto,
-	} {
-		if settings[key] != want {
-			t.Errorf("settings/update %s = %v, want %v", key, settings[key], want)
-		}
-	}
-	// The sandbox rides as the same object turn/start sends, not as a bare
-	// string — a mismatch here is a silently-ignored key on the real server.
-	sandbox, ok := settings["sandboxPolicy"].(map[string]any)
-	if !ok || sandbox["type"] != "readOnly" {
-		t.Errorf("settings/update sandboxPolicy = %v, want turnSandboxPolicy's object", settings["sandboxPolicy"])
-	}
-}
-
-// TestQueueAddRefusesWhenTheConfigPushFails: nothing is queued under a policy
-// the app-server was never told about. The add frame must not exist.
-func TestQueueAddRefusesWhenTheConfigPushFails(t *testing.T) {
-	capture := t.TempDir() + "/queue-requests.jsonl"
-	// A settings/update that fails for a reason other than "no such method".
-	binary := queueFakeScriptWithErrors(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture,
-		nil, map[string]string{"thread/settings/update": "thread is busy"})
-	s := newQueueSessionWithConfig(t, binary, nil, func(cfg *Config) {
-		cfg.ApprovalPolicy = "on-request"
-		cfg.Sandbox = "read-only"
-	})
-
-	if _, err := s.QueueAdd(context.Background(), "hi", provider.SendOptions{}, "user:1"); err == nil {
-		t.Fatal("QueueAdd succeeded despite a failed settings assertion")
-	}
-	if _, err := os.Stat(capture); err == nil {
-		frames := capturedRequests(t, capture)
-		for _, frame := range frames {
-			if frame["method"] == "thread/queue/add" {
-				t.Fatal("a queue/add was written after the settings push failed")
-			}
-		}
-	}
-	// The claim must not survive either: no row exists to dispatch.
-	s.mu.Lock()
-	claims := len(s.selfQueuedSubmissions)
-	s.mu.Unlock()
-	if claims != 0 {
-		t.Errorf("self-queued claims after a refused add: %d, want 0", claims)
-	}
-}
-
-// TestQueueAddClaimSurvivesATimeout mirrors abandonLocalTurnStart's asymmetry.
-// A timed-out add may still have landed the row and may already have been
-// dispatched; releasing the claim would mislabel that turn as injected.
-func TestQueueAddClaimSurvivesATimeout(t *testing.T) {
-	s := &Session{threadID: "ao-thread-1", pending: make(map[int64]chan json.RawMessage)}
-	s.setRootThreadID("codex-thread-q")
-	s.threadQueueNative.Store(true)
-
-	s.noteSelfQueuedSubmission("user:1")
-	// A definite failure releases.
-	s.abandonSelfQueuedSubmission("user:1")
-	if external, _ := s.resolveUserEchoOrigin("turn-1", "user:1"); external {
-		t.Fatal("an echo with no claim on a session holding none must still read local")
-	}
-
-	s.noteSelfQueuedSubmission("user:2")
-	if external, _ := s.resolveUserEchoOrigin("turn-2", "user:2"); external {
-		t.Fatal("an outstanding claim must answer for the dispatched turn's echo")
-	}
-	s.forgetTurnOrigin("turn-2")
-	s.noteSelfQueuedSubmission("user:3")
-	if external, _ := s.resolveUserEchoOrigin("turn-2", "user:2"); !external {
-		t.Fatal("one dispatch consumes exactly one claim; the id must not answer twice")
 	}
 }
 
@@ -405,98 +218,6 @@ func TestQueueDeleteReportsTheMatchedState(t *testing.T) {
 			params := requestParams(t, capturedRequests(t, capture)[0])
 			if params["queuedSubmissionId"] != "sub-7" {
 				t.Errorf("queuedSubmissionId = %v, want sub-7 (upstream's spelling)", params["queuedSubmissionId"])
-			}
-		})
-	}
-}
-
-// TestQueueDeleteReleasesTheSelfClaimOnlyWhenItDeleted covers both halves of
-// `deleted`. A row that really went away will never produce a turn of ours, so
-// its claim must go too. A `deleted:false` most often means the drain ALREADY
-// started the row's turn — releasing there would leave the user's own message
-// classified external the moment its echo lands.
-func TestQueueDeleteReleasesTheSelfClaimOnlyWhenItDeleted(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		reply      string
-		wantClaims int
-	}{
-		{"matched", `{"deleted":true}`, 0},
-		{"matched nothing", `{"deleted":false}`, 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			capture := t.TempDir() + "/queue-requests.jsonl"
-			binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-				"thread/queue/add":    `{"queuedSubmission":{"id":"sub-7","input":[{"type":"text","text":"hi"}],"clientUserMessageId":"user:1"}}`,
-				"thread/queue/delete": tc.reply,
-			})
-			s := newQueueSession(t, binary, nil)
-
-			if _, err := s.QueueAdd(context.Background(), "hi", provider.SendOptions{}, "user:1"); err != nil {
-				t.Fatalf("QueueAdd: %v", err)
-			}
-			if _, err := s.QueueDelete(context.Background(), "sub-7"); err != nil {
-				t.Fatalf("QueueDelete: %v", err)
-			}
-			s.mu.Lock()
-			claims := len(s.selfQueuedSubmissions)
-			s.mu.Unlock()
-			if claims != tc.wantClaims {
-				t.Fatalf("self-queued claims after delete = %d, want %d", claims, tc.wantClaims)
-			}
-		})
-	}
-}
-
-// TestQueuedEchoIsCorrelatedByClientID is the FIFO hazard: a foreign
-// `codex queue --thread` row sitting AHEAD of AO's drains first, and a
-// position-based claim would hand AO's claim to it — rendering somebody
-// else's prompt as the user's own.
-func TestQueuedEchoIsCorrelatedByClientID(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// echoes are (turnID, clientID) pairs in dispatch order.
-		echoes   [][2]string
-		external map[string]bool
-	}{
-		{
-			name:     "foreign row dispatches first",
-			echoes:   [][2]string{{"turn-1", "0198f0c1-uuid"}, {"turn-2", "user:1"}},
-			external: map[string]bool{"turn-1": true, "turn-2": false},
-		},
-		{
-			name:     "AO row alone",
-			echoes:   [][2]string{{"turn-1", "user:1"}},
-			external: map[string]bool{"turn-1": false},
-		},
-		{
-			name:     "two AO rows, either order",
-			echoes:   [][2]string{{"turn-1", "user:2"}, {"turn-2", "user:1"}},
-			external: map[string]bool{"turn-1": false, "turn-2": false},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := &Session{threadID: "ao-thread-1", pending: make(map[int64]chan json.RawMessage)}
-			s.setRootThreadID("codex-thread-q")
-			s.threadQueueNative.Store(true)
-			s.noteSelfQueuedSubmission("user:1")
-			if tc.name == "two AO rows, either order" {
-				s.noteSelfQueuedSubmission("user:2")
-			}
-
-			for _, echo := range tc.echoes {
-				turnID, clientID := echo[0], echo[1]
-				// turn/started defers: nothing is decided or recorded there.
-				if got := s.adoptTurnStart(turnID); got != turnAdoptionUndecided {
-					t.Fatalf("adoptTurnStart(%s) = %v, want undecided while claims are outstanding", turnID, got)
-				}
-				got, decided := s.resolveUserEchoOrigin(turnID, clientID)
-				if got != tc.external[turnID] {
-					t.Errorf("echo %s/%s external = %v, want %v", turnID, clientID, got, tc.external[turnID])
-				}
-				if !decided {
-					t.Errorf("echo %s/%s did not decide the turn; turn/started deferred to it", turnID, clientID)
-				}
 			}
 		})
 	}
@@ -549,10 +270,6 @@ func TestPurgeQueueRefusesToReportACompletePurgeOverAPartialList(t *testing.T) {
 		"thread/queue/delete": `{"deleted":true}`,
 	})
 	s := newQueueSession(t, binary, nil)
-	// One row this session queued that the truncated listing never reached.
-	if got := s.RearmSelfQueuedClaims([]string{"user:unseen"}); got != 1 {
-		t.Fatalf("re-armed %d claims, want 1", got)
-	}
 
 	purge, err := s.PurgeQueue(context.Background())
 	if err == nil {
@@ -565,66 +282,70 @@ func TestPurgeQueueRefusesToReportACompletePurgeOverAPartialList(t *testing.T) {
 	if len(purge.Deleted) == 0 {
 		t.Error("PurgeQueue deleted nothing; a partial list is still worth purging")
 	}
-	// And the claims for what it could NOT see survive. The caller refuses the
-	// rollback on this error and the session keeps running, so a row still in
-	// the provider's queue will dispatch on this connection — with a cleared
-	// ledger that turn would be reported to the user as somebody else's
-	// message.
-	if claims := SelfQueuedClaimIDsForTest(s); len(claims) != 1 || claims[0] != "user:unseen" {
-		t.Fatalf("claims after a partial purge = %v, want the unseen row's claim intact", claims)
-	}
 }
 
-// TestQueueAddRefusesRatherThanDropALiveClaim is the claim-ledger cap. A
-// submission written without a claim comes back as a `turn/started` this
-// session cannot account for: the echo is stamped `external-queue`, triage
-// refuses to pop the pending send, and the user's own prompt lands as a second
-// row while the original stays stranded. Refusing the add keeps the message in
-// AO's queue with a visible error instead.
-func TestQueueAddRefusesRatherThanDropALiveClaim(t *testing.T) {
+// TestQueueChangedIsSilentForASubmissionTheAppOwns is the notification half of
+// the reconcile. A `thread/queue/changed` says only `{threadId}`, so the
+// notice has to be evidence-driven — and the evidence is ownership, which only
+// the app layer can answer. A row its store accounts for must not be announced
+// to the user as having come from outside Agent Overflow.
+func TestQueueChangedIsSilentForASubmissionTheAppOwns(t *testing.T) {
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-		"thread/queue/add": `{"queuedSubmission":{"id":"sub-1","input":[{"type":"text","text":"hi"}],` +
-			`"clientUserMessageId":"user:1"}}`,
+		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
+			`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
 	})
-	s := newQueueSession(t, binary, nil)
+	var mu sync.Mutex
+	notices := 0
+	var asked []string
+	s := newQueueSessionWithConfig(t, binary, func(evt provider.ProviderEvent) {
+		if evt.Kind != provider.EventNotification {
+			return
+		}
+		if got, ok := metaValue(t, evt.Meta, "kind"); ok && got == "external_queue" {
+			mu.Lock()
+			notices++
+			mu.Unlock()
+		}
+	}, func(cfg *Config) {
+		cfg.OwnsQueuedClientID = func(clientID string) bool {
+			mu.Lock()
+			asked = append(asked, clientID)
+			mu.Unlock()
+			return clientID == "user:1"
+		}
+	})
 
-	ids := make([]string, 0, maxSelfQueuedClaims)
-	for i := 0; i < maxSelfQueuedClaims; i++ {
-		ids = append(ids, fmt.Sprintf("user:%d", i))
-	}
-	if got := s.RearmSelfQueuedClaims(ids); got != maxSelfQueuedClaims {
-		t.Fatalf("re-armed %d claims, want the ledger full at %d", got, maxSelfQueuedClaims)
-	}
+	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
 
-	_, err := s.QueueAdd(context.Background(), "one too many",
-		provider.SendOptions{}, "user:overflow")
-	if err == nil {
-		t.Fatal("QueueAdd wrote a submission it could not claim")
+	// The reconcile lists asynchronously; give it room to reach a verdict.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		seen, askedCount := notices, len(asked)
+		mu.Unlock()
+		if seen > 0 {
+			t.Fatal("a submission the app layer owns raised an 'external queue' notice")
+		}
+		if askedCount > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(err.Error(), "already waiting") {
-		t.Fatalf("QueueAdd error = %v, want the claim-ledger refusal", err)
-	}
-	// Nothing reached the wire: the capture file only ever holds
-	// `thread/queue/*` frames, so its absence is the assertion.
-	if raw, readErr := os.ReadFile(capture); readErr == nil &&
-		strings.Contains(string(raw), `"method":"thread/queue/add"`) {
-		t.Fatalf("the refused add still reached the wire:\n%s", raw)
-	}
-	// The full ledger is untouched: a new claim may not displace a live one.
-	if claims := SelfQueuedClaimIDsForTest(s); len(claims) != maxSelfQueuedClaims {
-		t.Fatalf("claims after the refusal = %d, want the original %d", len(claims), maxSelfQueuedClaims)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) == 0 || asked[0] != "user:1" {
+		t.Fatalf("ownership predicate saw %v, want the listed row's clientUserMessageId", asked)
 	}
 }
 
-// TestQueueChangedIsSilentForAOsOwnMutations is the notification half of the
-// native path. AO's own add raises `thread/queue/changed` too, so the
-// unconditional notice the non-native path emits would tell the user their own
-// message came from outside Agent Overflow.
-func TestQueueChangedIsSilentForAOsOwnMutations(t *testing.T) {
+// TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission pins the
+// default. This package never writes to the provider's queue, so a session
+// given no way to claim a row has no claim to make: every submission is
+// somebody else's until the app layer says otherwise.
+func TestQueueChangedWithNoOwnershipPredicateReportsEverySubmission(t *testing.T) {
 	capture := t.TempDir() + "/queue-requests.jsonl"
 	binary := queueFakeScript(t, "codex_cli_rs/0.149.0 (test)", "codex-thread-q", capture, map[string]string{
-		"thread/queue/add": `{"queuedSubmission":{"id":"sub-7","input":[{"type":"text","text":"hi"}],"clientUserMessageId":"user:1"}}`,
 		"thread/queue/list": `{"data":[{"id":"sub-7","input":[{"type":"text","text":"hi"}],` +
 			`"clientUserMessageId":"user:1"}],"nextCursor":null}`,
 	})
@@ -641,22 +362,21 @@ func TestQueueChangedIsSilentForAOsOwnMutations(t *testing.T) {
 		}
 	})
 
-	if _, err := s.QueueAdd(context.Background(), "hi", provider.SendOptions{}, "user:1"); err != nil {
-		t.Fatalf("QueueAdd: %v", err)
-	}
 	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"thread/queue/changed","params":{"threadId":"codex-thread-q"}}`))
 
-	// The reconcile lists asynchronously; give it room to reach a verdict.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		seen := notices
 		mu.Unlock()
-		if seen > 0 {
-			t.Fatal("AO's own queued submission raised an 'external queue' notice")
+		if seen == 1 {
+			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("got %d external-queue notices with a nil ownership predicate, want 1", notices)
 }
 
 // TestQueueChangedReportsAForeignSubmissionOnce is the other side: a row AO
@@ -735,98 +455,6 @@ func TestQueueStartIsNeverCalled(t *testing.T) {
 	}
 }
 
-// queueSilentAddScript is a fake app-server that PERSISTS a queue/add and
-// never answers it — the ambiguous shape finding 10 is about. `list` then
-// reports the row that landed, which is the evidence the caller resolves by.
-func queueSilentAddScript(t *testing.T, capturePath string) string {
-	t.Helper()
-	script := fmt.Sprintf(`#!/bin/bash
-while IFS= read -r line; do
-    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
-    if [ -z "$id" ]; then
-        continue
-    fi
-    if echo "$line" | grep -q '"method":"initialize"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"userAgent\":\"codex_cli_rs/0.149.0 (test)\"}}"
-        continue
-    fi
-    if echo "$line" | grep -q '"method":"thread/start"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"codex-thread-q\"}}}"
-        continue
-    fi
-    if echo "$line" | grep -q '"method":"thread/queue/add"'; then
-        echo "$line" >> %q
-        continue
-    fi
-    if echo "$line" | grep -q '"method":"thread/queue/list"'; then
-        echo "$line" >> %q
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"data\":[{\"id\":\"sub-9\",\"input\":[{\"type\":\"text\",\"text\":\"hi\"}],\"clientUserMessageId\":\"user:1\"}],\"nextCursor\":null}}"
-        continue
-    fi
-    echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
-done
-`, capturePath, capturePath)
-	path := t.TempDir() + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write mock script: %v", err)
-	}
-	return path
-}
-
-// TestQueueAddTimeoutIsAmbiguousAndResolvedByTheList is finding 10. A
-// `thread/queue/add` whose response is lost is NOT a failure: upstream
-// appends the row before it answers and `enqueue` calls `wake_if_loaded`, so
-// the message may already be queued and may already be running. Re-sending it
-// would be a second row and a second turn — the queue has no idempotency key.
-//
-// Three things have to hold together for the caller to recover: the error is
-// typed as the ambiguous one, the claim stays armed so the dispatched turn is
-// still attributed to this app, and the row is discoverable by list.
-func TestQueueAddTimeoutIsAmbiguousAndResolvedByTheList(t *testing.T) {
-	capture := t.TempDir() + "/queue-requests.jsonl"
-	s := newQueueSession(t, queueSilentAddScript(t, capture), nil)
-	// The handshake is finished, so nothing else is in flight to race this.
-	s.requestTimeoutOverride = 300 * time.Millisecond
-
-	_, err := s.QueueAdd(context.Background(), "hi", provider.SendOptions{}, "user:1")
-	if !IsAmbiguousQueueAddTimeout(err) {
-		t.Fatalf("QueueAdd err = %v, want the ambiguous queue/add timeout", err)
-	}
-
-	s.mu.Lock()
-	claims := len(s.selfQueuedSubmissions)
-	s.mu.Unlock()
-	if claims != 1 {
-		t.Fatalf("self-queued claims after an ambiguous add: %d, want the claim to stay armed", claims)
-	}
-
-	// The resolution the caller performs instead of retrying.
-	items, err := s.QueueList(context.Background())
-	if err != nil {
-		t.Fatalf("QueueList: %v", err)
-	}
-	if len(items) != 1 || items[0].ClientUserMessageID != "user:1" {
-		t.Fatalf("QueueList = %+v, want the row the timed-out add persisted", items)
-	}
-
-	// And the dispatched turn is still this app's message, not an injection.
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-q","turn":{"id":"turn-amb"}}}`))
-	s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-q","turnId":"turn-amb","item":{"id":"item-amb","type":"userMessage","clientId":"user:1","content":[{"type":"text","text":"hi"}]}}}`))
-	if s.turnIsExternal("turn-amb") {
-		t.Error("the turn dispatched from an ambiguously-added row was classified external-queue")
-	}
-	// Exactly one add reached the wire; nothing retried it.
-	adds := 0
-	for _, frame := range capturedRequests(t, capture) {
-		if frame["method"] == "thread/queue/add" {
-			adds++
-		}
-	}
-	if adds != 1 {
-		t.Errorf("thread/queue/add frames = %d, want exactly 1 (a retry is a second turn)", adds)
-	}
-}
-
 // TestPurgeQueueDropsEveryRowAndCountsTheForeignOnes is finding 7. A message
 // already handed to the provider's queue outlives the session: it sits in
 // codex's SQLite and `on_thread_idle` dispatches it on the next resume, so a
@@ -841,8 +469,9 @@ func TestPurgeQueueDropsEveryRowAndCountsTheForeignOnes(t *testing.T) {
 			`"clientUserMessageId":"0199e3a1-0000-7000-8000-000000000001"}],"nextCursor":null}`,
 		"thread/queue/delete": `{"deleted":true}`,
 	})
-	s := newQueueSession(t, binary, nil)
-	s.noteSelfQueuedSubmission("user:4:flush:1")
+	s := newQueueSessionWithConfig(t, binary, nil, func(cfg *Config) {
+		cfg.OwnsQueuedClientID = func(clientID string) bool { return clientID == "user:4:flush:1" }
+	})
 
 	purge, err := s.PurgeQueue(context.Background())
 	if err != nil {
@@ -861,46 +490,6 @@ func TestPurgeQueueDropsEveryRowAndCountsTheForeignOnes(t *testing.T) {
 	}
 	if len(targets) != 2 || targets[0] != "sub-1" || targets[1] != "sub-2" {
 		t.Errorf("deleted submissions = %v, want both rows in list order", targets)
-	}
-	// The ledger cannot outlive the rows it pointed at: a stale claim would
-	// absorb an unrelated later turn.
-	s.mu.Lock()
-	claims := len(s.selfQueuedSubmissions)
-	s.mu.Unlock()
-	if claims != 0 {
-		t.Errorf("self-queued claims after a purge: %d, want 0", claims)
-	}
-}
-
-// TestRearmSelfQueuedClaimsRestoresOwnershipAcrossASessionDeath is finding
-// 9(b) at the provider boundary. The claim ledger is in-memory — it describes
-// turns THIS connection will see — so a session that dies with rows still in
-// the provider's queue comes back with no claims at all, and the next
-// dispatch of AO's own message would be stamped external-queue.
-func TestRearmSelfQueuedClaimsRestoresOwnershipAcrossASessionDeath(t *testing.T) {
-	s := &Session{threadID: "ao-thread-1", pending: make(map[int64]chan json.RawMessage)}
-	s.setRootThreadID("codex-thread-q")
-	s.threadQueueNative.Store(true)
-
-	// The app layer decides ownership; only AO's own ids are handed over.
-	if got := s.RearmSelfQueuedClaims([]string{"user:4:flush:1", "", "user:4:flush:1"}); got != 1 {
-		t.Fatalf("RearmSelfQueuedClaims = %d, want 1 (blanks and duplicates ignored)", got)
-	}
-	if got := s.RearmSelfQueuedClaims([]string{"user:4:flush:1"}); got != 0 {
-		t.Errorf("re-arming an id already held = %d, want 0", got)
-	}
-
-	// A foreign row dispatched first must not consume the restored claim.
-	if got := s.adoptTurnStart("turn-foreign"); got != turnAdoptionUndecided {
-		t.Fatalf("adoptTurnStart = %v, want undecided while a restored claim is outstanding", got)
-	}
-	external, decided := s.resolveUserEchoOrigin("turn-foreign", "0199e3a1-0000-7000-8000-000000000001")
-	if !external || !decided {
-		t.Errorf("foreign echo = (external=%v, decided=%v), want (true, true)", external, decided)
-	}
-	external, _ = s.resolveUserEchoOrigin("turn-mine", "user:4:flush:1")
-	if external {
-		t.Error("AO's own restored row was classified external-queue after the resume")
 	}
 }
 
@@ -1037,9 +626,9 @@ func TestPurgeQueueNamesTheRowsItDeletedWhenALaterDeleteFails(t *testing.T) {
 		`{"id":"sub-b","input":[{"type":"text","text":"stuck"}],"clientUserMessageId":"user:4:flush:2"}` +
 		`],"nextCursor":null}`
 	binary := queueSelectiveDeleteScript(t, "codex-thread-q", capture, list, "sub-b")
-	s := newQueueSession(t, binary, nil)
-	s.noteSelfQueuedSubmission("user:4:flush:1")
-	s.noteSelfQueuedSubmission("user:4:flush:2")
+	s := newQueueSessionWithConfig(t, binary, nil, func(cfg *Config) {
+		cfg.OwnsQueuedClientID = func(string) bool { return true }
+	})
 
 	purge, err := s.PurgeQueue(context.Background())
 	if err == nil {
@@ -1056,17 +645,7 @@ func TestPurgeQueueNamesTheRowsItDeletedWhenALaterDeleteFails(t *testing.T) {
 		t.Errorf("purge.Deleted[0].Text = %q, want the row's text", purge.Deleted[0].Text)
 	}
 	if purge.Foreign != 0 {
-		t.Errorf("purge.Foreign = %d, want 0; both rows were this session's", purge.Foreign)
-	}
-	// The claim for the DELETED row is released; the claim for the row still
-	// in the queue survives, because the session keeps running and that row
-	// will still dispatch on this connection. Neither claim carries a
-	// submission id — the state RearmSelfQueuedClaims leaves after a session
-	// death — so QueueDelete's own release-by-submission-id cannot find them
-	// and the purge has to release by CLIENT id.
-	claims := SelfQueuedClaimIDsForTest(s)
-	if len(claims) != 1 || claims[0] != "user:4:flush:2" {
-		t.Fatalf("claims after a partial purge = %v, want only the surviving row's", claims)
+		t.Errorf("purge.Foreign = %d, want 0; the app layer claimed both rows", purge.Foreign)
 	}
 }
 
@@ -1157,7 +736,6 @@ func TestQueueDeleteRefusesAResponseWithoutTheDeletedField(t *testing.T) {
 				"thread/queue/delete": tc.reply,
 			})
 			s := newQueueSession(t, binary, nil)
-			s.noteSelfQueuedSubmission("user:1")
 
 			if _, err := s.QueueDelete(context.Background(), "sub-a"); err == nil {
 				t.Fatal("QueueDelete accepted a response with no `deleted` field as a benign miss")
@@ -1171,12 +749,6 @@ func TestQueueDeleteRefusesAResponseWithoutTheDeletedField(t *testing.T) {
 			}
 			if len(purge.Deleted) != 0 {
 				t.Fatalf("purge.Deleted = %+v, want none; nothing was confirmed removed", purge.Deleted)
-			}
-			// The claim survives: the row may still be queued on this
-			// connection, and a cleared claim would announce its dispatch as
-			// somebody else's message.
-			if claims := SelfQueuedClaimIDsForTest(s); len(claims) != 1 {
-				t.Fatalf("claims after an unreadable delete = %v, want the claim intact", claims)
 			}
 		})
 	}

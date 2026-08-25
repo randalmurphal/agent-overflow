@@ -249,21 +249,7 @@ func (e *engine) run() {
 	}
 	for n := range e.turnCh {
 		e.runTurn(n)
-		// The thread just went idle. A protocol that owns a provider-side
-		// user-message queue drains its head here, which is what makes the
-		// mock's dispatch AUTOMATIC in the same sense the real app-server's
-		// `on_thread_idle` hook is — the client never asks for it.
-		if dispatcher, ok := e.adapter.(idleQueueDispatcher); ok {
-			dispatcher.dispatchQueuedOnIdle()
-		}
 	}
-}
-
-// idleQueueDispatcher is implemented by a protocol adapter that holds queued
-// user messages of its own (Codex `thread/queue/*`). Optional: the Claude
-// adapter has no such queue and is never asked.
-type idleQueueDispatcher interface {
-	dispatchQueuedOnIdle()
 }
 
 func (e *engine) runTurn(n int) {

@@ -362,11 +362,12 @@ func classifyItemCompleted(threadID string, params json.RawMessage, now time.Tim
 		// codex-rs/app-server-protocol/src/protocol/v2/item.rs:236) and
 		// threads it from the submitter through
 		// TurnInput::UserInput{client_id} → UserMessageItem.client_id
-		// (core/src/session/mod.rs:4074), so a queue-dispatched turn echoes
-		// exactly the `clientUserMessageId` its row carried. That is what
-		// tells AO's own queued message from a `codex queue` row's — see
-		// resolveUserEchoOrigin. Absent on turns nobody correlated, so the
-		// key is omitted rather than empty.
+		// (core/src/session/mod.rs:4074), so the echo carries back exactly
+		// the `clientUserMessageId` the `turn/start` or `turn/steer` that
+		// produced it sent (session_turn.go). That is how the app layer
+		// matches an echo to the row it sent without relying on ordering.
+		// Absent on turns nobody correlated — a `codex queue` row's own
+		// dispatch, say — so the key is omitted rather than empty.
 		metaFields := make(map[string]string, 2)
 		if itemID != "" {
 			metaFields["provider_item_id"] = itemID
@@ -433,15 +434,6 @@ type subAgentActivity struct {
 // contract (`provider_item_id`, `item_status`, `process_id`), not the wire's
 // camelCase.
 const userMessageClientIDMetaKey = "client_id"
-
-// userEchoClientID reads the client id back out of a user-echo event's Meta.
-// Empty when the wire carried none, which is every turn AO did not correlate.
-func userEchoClientID(meta json.RawMessage) string {
-	if len(meta) == 0 {
-		return ""
-	}
-	return readTopLevelString(meta, userMessageClientIDMetaKey)
-}
 
 func decodeSubAgentActivity(method string, params json.RawMessage) (subAgentActivity, bool) {
 	if method != "item/completed" {

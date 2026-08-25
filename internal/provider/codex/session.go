@@ -36,6 +36,25 @@ var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved: %
 // active-turn registry and the steer RPC arriving here).
 var ErrNoActiveTurn = errors.New("codex: no active turn to steer")
 
+// ErrTurnNotSteerable is returned by Steer when a turn IS running but cannot
+// take input: upstream refuses `turn/steer` on a review turn and on a
+// compaction turn (SteerInputError::ActiveTurnNotSteerable, surfaced as
+// `codexErrorInfo: {"activeTurnNotSteerable": {...}}` in the refusal's
+// `error.data`).
+//
+// It is deliberately NOT folded into ErrNoActiveTurn. The two want opposite
+// recoveries: a no-active-turn race means the message should open a turn of
+// its own, whereas here a turn is running and starting a second one would
+// interleave the user's message with a review or a compaction. The app layer
+// holds the message instead and re-dispatches at the next turn boundary.
+var ErrTurnNotSteerable = errors.New("codex: the active turn cannot be steered")
+
+// IsTurnNotSteerable reports the non-steerable-turn refusal above. Exported so
+// the app layer can branch without importing the sentinel by value.
+func IsTurnNotSteerable(err error) bool {
+	return errors.Is(err, ErrTurnNotSteerable)
+}
+
 // DynamicToolHandler is called when the provider invokes a dynamic tool (item/tool/call
 // or dynamicToolCall). The handler receives the tool name and arguments, and returns
 // the result content and a success flag.
@@ -178,26 +197,15 @@ type Session struct {
 	// the moment something proves the turn dead; see
 	// dropAmbiguousLocalTurnStartsLocked.
 	ambiguousLocalTurnStarts int
-	// selfQueuedSubmissions / reportedForeignSubmissions back the
-	// provider-native user-message queue (thread_queue.go). The first is the
-	// ledger of claims for submissions AO itself put in the provider's queue —
-	// each one is a turn this session will see START without having asked
-	// for it, and consuming a claim is what keeps that turn out of the
-	// external-origin bucket. Claims are consumed by CLIENT ID (the
-	// dispatched turn's `userMessage` echoes it back), not by position: a
-	// foreign row ahead of AO's in the provider FIFO would otherwise eat
-	// AO's claim. The second dedupes the "queued from outside
-	// Agent Overflow" notice per foreign submission id, because the queue is
-	// re-listed on every change. Both guarded by mu; the first is bounded by
-	// maxSelfQueuedClaims (and REFUSES the add at the cap rather than
-	// dropping a live claim), the second by maxReportedForeignSubmissions.
-	//
-	// The claim ledger maps clientUserMessageId → the server-assigned
-	// submission id (empty until the add's response binds it). A map, not a
-	// slice: nothing reads it by position, and a keyed store cannot evict a
-	// live claim to make room for a new one.
-	selfQueuedSubmissions      map[string]string
+	// reportedForeignSubmissions dedupes the "queued from outside Agent
+	// Overflow" notice per foreign submission id, because the provider's queue
+	// is re-listed on every `thread/queue/changed` (thread_queue.go). Guarded
+	// by mu and bounded by maxReportedForeignSubmissions.
 	reportedForeignSubmissions map[string]struct{}
+	// ownsQueuedClient is Config.OwnsQueuedClientID, the app layer's answer to
+	// "is this listed submission ours?". Immutable after construction and
+	// therefore read without mu; nil means every submission is foreign.
+	ownsQueuedClient func(string) bool
 	// queueListInflight / queueListDirty single-flight the
 	// `thread/queue/changed` reconciliation. Every AO mutation and every
 	// automatic dispatch raises a change, so without this an N-message queue
@@ -498,19 +506,33 @@ type Config struct {
 	// `thread/resume` LOADS the thread, and a loaded thread's idle hook is
 	// what drains its provider-side queue (`QueuedItemService::on_thread_idle`
 	// → `start_turn_if_idle`). Anything that has to be true before the first
-	// queued turn can start — the self-queued claim ledger a resumed session
-	// rebuilds, a rollback's purge of rows the user just removed — has to be
-	// true HERE, not after NewSession returns. `thread/queue/list` and
-	// `thread/queue/delete` both answer for an unloaded thread (upstream's
-	// `require_thread` falls back to a thread-store read and the listing is a
-	// plain SQLite page read), which is what makes this side of the resume a
-	// usable place to ask.
+	// queued turn can start has to be
+	// true HERE, not after NewSession returns — a rollback's purge of rows the
+	// user just removed, say. `thread/queue/list` and `thread/queue/delete`
+	// both answer for an unloaded thread (upstream's `require_thread` falls
+	// back to a thread-store read and the listing is a plain SQLite page read),
+	// which is what makes this side of the resume a usable place to ask.
 	//
 	// Synchronous, and its failures are its own: the hook runs inside
 	// NewSession's handshake sequence, so anything slow here delays the
 	// session, and returning nothing means a hook cannot fail a session that
 	// is otherwise fine.
 	BeforeResume func(*Session)
+	// OwnsQueuedClientID answers whether a `clientUserMessageId` sitting in
+	// the provider's own queue belongs to this app.
+	//
+	// AO never calls `thread/queue/add`, so the only rows it can encounter
+	// were written by somebody else — a `codex queue --thread …` invocation,
+	// or another client on the same Codex home. The predicate exists because
+	// "somebody else" is not the same as "not this installation": only the app
+	// layer holds the store rows that could account for an id, and the id
+	// grammar itself is not a credential (see ownsQueuedClientID).
+	//
+	// Nil means every listed submission is foreign, which is the honest
+	// default for a session given no way to claim one. Called off the read
+	// loop's reconcile goroutine, so it must be safe for concurrent use and
+	// must not block.
+	OwnsQueuedClientID func(clientUserMessageID string) bool
 }
 
 // emitEvent preserves the provider callback's serialized-delivery contract

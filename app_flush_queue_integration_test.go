@@ -141,12 +141,15 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 	}
 
 	// 5. Drive the wire echo for each row, in order. Each
-	// EventUserText carries provider_item_id in Meta which both
-	// stamps onto the row AND consumes the matching pending-send
-	// FIFO entry.
+	// EventUserText carries provider_item_id in Meta, which stamps onto
+	// the row, plus the `clientId` the app-server echoes back from the
+	// steer's `clientUserMessageId` — a Codex send registers its pending
+	// entry BY that id, so an echo without one names nobody's row and
+	// would persist as injected provider context.
 	for i, row := range []string{"user:0:flush:1", "user:0:flush:2"} {
 		echoMeta, _ := json.Marshal(map[string]any{
 			"provider_item_id": "wire-echo-" + row,
+			"client_id":        row,
 		})
 		if err := app.triage.Handle(provider.ProviderEvent{
 			Kind:      provider.EventUserText,

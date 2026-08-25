@@ -73,9 +73,13 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 		t.Errorf("pending-send marker not registered after Codex Steer dispatch")
 	}
 
+	// The `clientId` is the other half of the echo: a Codex send registers
+	// its pending entry BY the `clientUserMessageId` the steer stamped, so an
+	// echo that names nothing is somebody else's message.
 	echoMeta, _ := json.Marshal(map[string]any{
 		"provider_item_id": "wire-user-1",
 		"parent_uuid":      "parent-wire-1",
+		"client_id":        "user:3:flush:1",
 	})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
@@ -170,6 +174,7 @@ func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
 
 	echoMeta, _ := json.Marshal(map[string]any{
 		"provider_item_id": "wire-user-1",
+		"client_id":        "user:3:flush:1",
 	})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
@@ -412,7 +417,10 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 		t.Fatalf("append assistant row in fallback turn: %v", err)
 	}
 
-	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-fallback"})
+	echoMeta, _ := json.Marshal(map[string]any{
+		"provider_item_id": "wire-fallback",
+		"client_id":        userItemID,
+	})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
 		ThreadID:  thread.ID,
@@ -662,7 +670,10 @@ func TestDispatchFlush_CodexSteerTimeoutKeepsPendingConfirmation(t *testing.T) {
 		}
 	}
 
-	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-timeout"})
+	echoMeta, _ := json.Marshal(map[string]any{
+		"provider_item_id": "wire-timeout",
+		"client_id":        "user:0:flush:1",
+	})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
 		ThreadID:  thread.ID,
@@ -916,10 +927,10 @@ func TestNextFlushUserItemID_StartsAtOneOnEmptyTurn(t *testing.T) {
 }
 
 // TestDispatchFlushToProvider_RoutesByProviderType pins the
-// per-provider routing decision: Codex sessions go through Steer
-// (with Send fallback wrapped), other sessions go through Send only.
-// Exercised at the unit level so the full trigger → dispatch →
-// session test infra isn't needed for this branch.
+// per-provider routing decision: Codex sessions go through Steer (the
+// caller owns the no-active-turn fallback), other sessions go through
+// Send only. Exercised at the unit level so the full trigger →
+// dispatch → session test infra isn't needed for this branch.
 func TestDispatchFlushToProvider_RoutesByProviderType(t *testing.T) {
 	app := newTestAppWithStore(t)
 
@@ -930,7 +941,7 @@ func TestDispatchFlushToProvider_RoutesByProviderType(t *testing.T) {
 
 func (a *App) dispatchFlushToProviderShouldErrorWith(t *testing.T, sess session, want string) {
 	t.Helper()
-	_, err := a.dispatchFlushToProvider(sess, "thread-1", "x", provider.SendOptions{}, "user:0:flush:1")
+	err := a.dispatchFlushToProvider(sess, "x", provider.SendOptions{})
 	if err == nil {
 		t.Fatalf("dispatchFlushToProvider with empty session: nil err, want %q", want)
 	}
@@ -991,7 +1002,10 @@ func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 		}
 	}
 
-	echoMeta, _ := json.Marshal(map[string]any{"provider_item_id": "wire-payload"})
+	echoMeta, _ := json.Marshal(map[string]any{
+		"provider_item_id": "wire-payload",
+		"client_id":        "user:1:flush:1",
+	})
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind:      provider.EventUserText,
 		ThreadID:  thread.ID,

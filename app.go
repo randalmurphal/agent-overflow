@@ -973,20 +973,6 @@ func (s session) providerSession() provider.Session {
 	}
 }
 
-// usesProviderQueue reports whether this session's mid-turn user messages go
-// into the PROVIDER's own queue (`thread/queue/*`, codex >= 0.148) instead of
-// AO's in-process flushqueue.
-//
-// The two are mutually exclusive by construction and the decision is frozen at
-// session start (`codex.Session.ThreadQueueNative`, taken from the initialize
-// handshake): the provider dispatches its queue itself when the thread goes
-// idle, so a session where both dispatchers were live could send the same
-// message twice. Only Codex has a provider queue — Claude and claude-tui keep
-// AO's, unchanged.
-func (s session) usesProviderQueue() bool {
-	return s.codex != nil && s.codex.ThreadQueueNative()
-}
-
 func NewApp() *App {
 	app := &App{
 		sessions:                       make(map[string]session),

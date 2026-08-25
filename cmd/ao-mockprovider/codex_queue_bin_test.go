@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +11,10 @@ import (
 	"agent-overflow/internal/harness/scenario"
 )
 
-// queueScenario parks turn 1 on a waitSignal so a queue can build up behind
-// it, then answers each dispatched turn by echoing the queued text back — the
-// `userMessage` item an app's pending-send correlation needs, and proof the
-// mock bound the dispatched message's text and client id for the turn's steps.
+// queueScenario parks turn 1 on a waitSignal, which is what lets a test hold a
+// turn open while it exercises the queue tripwires and the steer echo. Later
+// turns echo their own `userMessage` with the client id the caller stamped —
+// the item an app's pending-send correlation needs.
 func queueScenario() *scenario.Scenario {
 	return &scenario.Scenario{
 		Version:  scenario.CurrentVersion,
@@ -34,7 +33,7 @@ func queueScenario() *scenario.Scenario {
 			{Label: "dispatched", Steps: []scenario.Step{
 				{Emit: &scenario.EmitStep{Lines: []string{
 					`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
-					`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"id":"umsg-${TURN}","type":"userMessage","clientId":"${QUEUE_CLIENT_ID}","content":[{"type":"text","text":"${USER_INPUT}"}]}}}`,
+					`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"id":"umsg-${TURN}","type":"userMessage","clientId":"${CLIENT_ID}","content":[{"type":"text","text":"${USER_INPUT}"}]}}}`,
 					`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}","status":"completed"}}}`,
 				}}},
 			}},
@@ -120,13 +119,21 @@ func TestCodexInitializeReportsAVersion(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
-// TestCodexThreadQueueDispatchesAutomatically is the mock's half of the
-// provider-queue contract: submissions land in FIFO order, edits and deletes
-// address them by upstream's own param names, and the queue head starts a turn
-// on its OWN when the thread goes idle — with no `thread/queue/start` from the
-// client, which the mock refuses outright.
-func TestCodexThreadQueueDispatchesAutomatically(t *testing.T) {
-	p, advance := startControlledMock(t, queueScenario(), []string{"app-server"})
+// TestCodexThreadQueueRefusesAddAndStart is the mock's tripwire, and the whole
+// reason the family is still mocked at all.
+//
+// Agent Overflow dispatches every mid-turn message with `turn/steer`. Handing
+// one to the app-server's own queue instead would put TWO dispatchers on one
+// message — the provider drains its queue from `on_thread_idle`, on its own
+// clock — so `add` and `start` must both be unreachable from the app. The mock
+// answers them with an error rather than accepting them, which is what turns a
+// regrown caller into a failing harness run instead of a duplicated turn.
+//
+// `list` and `delete` still answer, because AO still calls them: the rollback
+// purge and the legacy-row sunset both read and empty this queue.
+func TestCodexThreadQueueRefusesAddAndStart(t *testing.T) {
+	env := writeScenarioFile(t, queueScenario(), "")
+	p := startMock(t, []string{"app-server"}, env, t.TempDir())
 
 	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
 	p.expectLine(testTimeout)
@@ -134,84 +141,85 @@ func TestCodexThreadQueueDispatchesAutomatically(t *testing.T) {
 	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
 	p.expectLine(testTimeout)
 
-	// Turn 1 starts and parks.
-	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":"th-q","input":[{"type":"text","text":"first"}]}}`)
-	p.expectLine(testTimeout)
-	p.expectLineContaining(`"method":"turn/started"`, testTimeout)
-
-	// Three submissions while it is held. Every mutation raises the change
-	// notification — including the adding client's own, which is why a client
-	// cannot treat the notification as "someone else did something".
-	for i, text := range []string{"second", "third", "doomed"} {
-		p.send(fmt.Sprintf(
-			`{"jsonrpc":"2.0","id":%d,"method":"thread/queue/add","params":{"threadId":"th-q","input":[{"type":"text","text":%q}],"clientUserMessageId":"user:%d"}}`,
-			10+i, text, i))
-		p.expectLineContaining(`"queuedSubmission"`, testTimeout)
-		p.expectLineContaining(`"method":"thread/queue/changed"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"thread/queue/add","params":{"threadId":"th-q","input":[{"type":"text","text":"queued"}],"clientUserMessageId":"user:0"}}`)
+	if got := p.expectLineContaining(`"error"`, testTimeout); !strings.Contains(got, "turn/steer") {
+		t.Fatalf("thread/queue/add response = %s, want a refusal naming turn/steer", got)
 	}
-
-	// Nothing has run: the queue holds them until the thread is idle.
-	p.send(`{"jsonrpc":"2.0","id":20,"method":"thread/queue/list","params":{"threadId":"th-q"}}`)
-	listed := p.expectLineContaining(`"nextCursor"`, testTimeout)
-	for _, want := range []string{`"queue-sub-1"`, `"queue-sub-2"`, `"queue-sub-3"`, `"second"`, `"third"`, `"doomed"`} {
-		if !strings.Contains(listed, want) {
-			t.Fatalf("queue list missing %s: %s", want, listed)
-		}
-	}
-	if strings.Index(listed, `"second"`) > strings.Index(listed, `"third"`) {
-		t.Fatalf("queue list is not in FIFO order: %s", listed)
-	}
-
-	// `update` and `reorder` exist upstream and have no AO caller, so the mock
-	// refuses them for the same reason it refuses `start`: a harness that grew
-	// a caller must fail here rather than pass against a mock more permissive
-	// than the app.
-	p.send(`{"jsonrpc":"2.0","id":21,"method":"thread/queue/update","params":{"threadId":"th-q","queuedSubmissionId":"queue-sub-1","input":[{"type":"text","text":"edited"}]}}`)
-	if got := p.expectLineContaining(`"error"`, testTimeout); !strings.Contains(got, "does not edit or re-order") {
-		t.Fatalf("thread/queue/update response = %s, want a refusal", got)
-	}
-	p.send(`{"jsonrpc":"2.0","id":26,"method":"thread/queue/reorder","params":{"threadId":"th-q","queuedSubmissionIds":["queue-sub-2","queue-sub-1"]}}`)
-	if got := p.expectLineContaining(`"error"`, testTimeout); !strings.Contains(got, "does not edit or re-order") {
-		t.Fatalf("thread/queue/reorder response = %s, want a refusal", got)
-	}
-
-	// Delete the tail. A second delete of the same id reports deleted:false —
-	// a state, not an error.
-	p.send(`{"jsonrpc":"2.0","id":22,"method":"thread/queue/delete","params":{"threadId":"th-q","queuedSubmissionId":"queue-sub-3"}}`)
-	if got := p.expectLineContaining(`"deleted"`, testTimeout); !strings.Contains(got, `"deleted":true`) {
-		t.Fatalf("delete response = %s", got)
-	}
-	p.expectLineContaining(`"method":"thread/queue/changed"`, testTimeout)
-	p.send(`{"jsonrpc":"2.0","id":23,"method":"thread/queue/delete","params":{"threadId":"th-q","queuedSubmissionId":"queue-sub-3"}}`)
-	if got := p.expectLineContaining(`"deleted"`, testTimeout); !strings.Contains(got, `"deleted":false`) {
-		t.Fatalf("second delete response = %s, want deleted:false", got)
-	}
-
-	// A client must never drive dispatch: the mock refuses `start` loudly.
-	p.send(`{"jsonrpc":"2.0","id":24,"method":"thread/queue/start","params":{"threadId":"th-q"}}`)
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"thread/queue/start","params":{"threadId":"th-q"}}`)
 	if got := p.expectLineContaining(`"error"`, testTimeout); !strings.Contains(got, "dispatch automatically") {
 		t.Fatalf("thread/queue/start response = %s, want a refusal", got)
 	}
 
-	// Release turn 1. Each remaining submission now runs as its own turn, in
-	// order, echoing the text and client id the queue held for it — and the
-	// deletion of queue-sub-3 removes a turn rather than merely a row.
-	advance("hold")
-	p.expectLineContaining(`"status":"completed"`, testTimeout)
-
-	first := p.expectLineContaining(`"type":"userMessage"`, testTimeout)
-	if !strings.Contains(first, `"second"`) || !strings.Contains(first, `"clientId":"user:0"`) {
-		t.Fatalf("first dispatched turn echoed %s", first)
+	// `update` / `reorder` keep their own refusal: they exist upstream and
+	// have no AO caller either.
+	p.send(`{"jsonrpc":"2.0","id":5,"method":"thread/queue/update","params":{"threadId":"th-q","queuedSubmissionId":"queue-sub-1","input":[{"type":"text","text":"edited"}]}}`)
+	if got := p.expectLineContaining(`"error"`, testTimeout); !strings.Contains(got, "does not edit or re-order") {
+		t.Fatalf("thread/queue/update response = %s, want a refusal", got)
 	}
-	second := p.expectLineContaining(`"type":"userMessage"`, testTimeout)
-	if !strings.Contains(second, `"third"`) || !strings.Contains(second, `"clientId":"user:1"`) {
-		t.Fatalf("second dispatched turn echoed %s", second)
+	p.send(`{"jsonrpc":"2.0","id":6,"method":"thread/queue/reorder","params":{"threadId":"th-q","queuedSubmissionIds":["queue-sub-2","queue-sub-1"]}}`)
+	if got := p.expectLineContaining(`"error"`, testTimeout); !strings.Contains(got, "does not edit or re-order") {
+		t.Fatalf("thread/queue/reorder response = %s, want a refusal", got)
 	}
 
-	p.send(`{"jsonrpc":"2.0","id":25,"method":"thread/queue/list","params":{"threadId":"th-q"}}`)
+	// The two survivors answer over an empty queue — the shape every harness
+	// thread is in, and the one the sunset and the rollback purge read.
+	p.send(`{"jsonrpc":"2.0","id":7,"method":"thread/queue/list","params":{"threadId":"th-q"}}`)
 	if got := p.expectLineContaining(`"nextCursor"`, testTimeout); !strings.Contains(got, `"data":[]`) {
-		t.Fatalf("queue should be empty after the drain: %s", got)
+		t.Fatalf("queue list = %s, want an empty queue (nothing can add to it)", got)
+	}
+	p.send(`{"jsonrpc":"2.0","id":8,"method":"thread/queue/delete","params":{"threadId":"th-q","queuedSubmissionId":"queue-sub-1"}}`)
+	if got := p.expectLineContaining(`"deleted"`, testTimeout); !strings.Contains(got, `"deleted":false`) {
+		t.Fatalf("delete response = %s, want deleted:false", got)
 	}
 
 	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
+// TestCodexSteerEchoesTheClientMessageID pins the other half of the same
+// contract. AO registers a steer's pending send BY the `clientUserMessageId`
+// it stamped, so an echo that omits the id is provably not that entry's and
+// the message would persist as injected provider context instead of the
+// user's own. The echo is adapter-owned because its text and id exist only at
+// steer time.
+func TestCodexSteerEchoesTheClientMessageID(t *testing.T) {
+	p, advance := startControlledMock(t, queueScenario(), []string{"app-server"})
+	defer advance("hold")
+
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	p.expectLine(testTimeout)
+	p.send(`{"jsonrpc":"2.0","method":"initialized"}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
+	p.expectLine(testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":"th-q","input":[{"type":"text","text":"first"}],"clientUserMessageId":"user:0"}}`)
+	p.expectLine(testTimeout)
+	p.expectLineContaining(`"method":"turn/started"`, testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"steered"}],"clientUserMessageId":"user:0:flush:1"}}`)
+	echo := p.expectLineContaining(`"type":"userMessage"`, testTimeout)
+	if !strings.Contains(echo, `"steered"`) || !strings.Contains(echo, `"clientId":"user:0:flush:1"`) {
+		t.Fatalf("steer echo = %s, want the steered text and its clientId", echo)
+	}
+	// A second steer in the SAME turn must not reuse the first echo's item id.
+	p.send(`{"jsonrpc":"2.0","id":5,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"again"}],"clientUserMessageId":"user:0:flush:2"}}`)
+	second := p.expectLineContaining(`"type":"userMessage"`, testTimeout)
+	if firstID, secondID := userMessageItemID(t, echo), userMessageItemID(t, second); firstID == secondID {
+		t.Fatalf("two steers in one turn shared the item id %q", firstID)
+	}
+}
+
+// userMessageItemID pulls `params.item.id` out of an `item/completed` line.
+func userMessageItemID(t *testing.T, line string) string {
+	t.Helper()
+	var body struct {
+		Params struct {
+			Item struct {
+				ID string `json:"id"`
+			} `json:"item"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(line), &body); err != nil {
+		t.Fatalf("decode item/completed %q: %v", line, err)
+	}
+	return body.Params.Item.ID
 }

@@ -23,11 +23,13 @@ over stdio.
   rehydration. Every failure here means "there is no usable thread".
 - `session_turn.go` — the turn verbs (`Send` / `Steer` / `Interrupt`), the
   per-turn output-schema binding that carries `SendOptions.OutputSchema` onto
-  the turn id the wire hands back, and the `turn/started` dedupe ledger. Send
-  CLAIMS the turn before the write (`beginLocalTurnStart`) because
-  `turn/started` can beat `turn/start`'s own response onto the read loop, and
-  `clearTurnStart` releases what a timed-out claim left behind — see
-  §"Externally queued turns" for what reads those claims.
+  the turn id the wire hands back, the `turn/started` dedupe ledger, and
+  `classifySteerRejection`. Send CLAIMS the turn before the write
+  (`beginLocalTurnStart`) because `turn/started` can beat `turn/start`'s own
+  response onto the read loop, and `clearTurnStart` releases what a timed-out
+  claim left behind — see §"Externally queued turns" for what reads those
+  claims. Both outbound verbs stamp `SendOptions.ClientUserMessageID` as
+  `clientUserMessageId` — see §"Turn identity and the steer contract".
 - `jsonrpc.go` — JSON-RPC request/response/notification writes,
   pending response correlation, read loop, and raw line dispatch.
 - `account.go` — shared `account/read` decoding plus the cached app-server
@@ -105,23 +107,23 @@ over stdio.
   file also owns `thread/reverted`, the echo that releases the RPC's
   bounded wait; an UNSOLICITED one is logged loudly and never acted on,
   because the notification carries a thread id and no boundary.
-- `thread_queue.go` — the provider-owned user-message queue
-  (`thread/queue/*`, codex >= 0.148): the three RPC wrappers AO calls
-  (`add` / `list` / `delete`) plus `PurgeQueue` over them, the
-  handshake-frozen `ThreadQueueNative` gate, the client-id-keyed self-queued
-  claim ledger that keeps an automatically dispatched turn attributed to this
-  app (and `RearmSelfQueuedClaims`, which rebuilds it after a session death),
-  and the single-flighted `thread/queue/changed` reconciliation. Two refusals
-  live here rather than being smoothed over: `QueueAdd` fails when the claim
-  ledger is full, because a dropped claim would announce the user's own next
-  message as somebody else's, and `QueueList` returns
+- `thread_queue.go` — the provider's own user-message queue
+  (`thread/queue/*`, codex >= 0.148), which **AO reads and deletes but never
+  adds to**. `QueueList` / `QueueDelete` / `PurgeQueue` exist so a conversation
+  rollback can clear rows a FOREIGN producer (`codex queue --thread …`) left in
+  codex's SQLite, the handshake-frozen `ThreadQueueNative` gate says whether
+  those methods exist at all, and the single-flighted `thread/queue/changed`
+  reconcile raises the foreign-submission notice. Ownership is INJECTED
+  (`Config.OwnsQueuedClientID`), because only the app layer holds the store rows
+  that could claim an id; nil means every submission is foreign. Two refusals
+  live here rather than being smoothed over: `QueueList` returns
   `ErrThreadQueueListIncomplete` (page cap or repeated cursor) or
   `ErrThreadQueueListMalformed` (an element this build cannot read) with the
   prefix it did read, because a listing that looked complete would let a purge
   report success over rows it never saw. `PurgeQueue` returns a `QueuePurge`
-  naming the submissions it deleted rather than a count, so a caller that
-  aborts on a partial purge can put its own messages back. `start`, `update`
-  and `reorder` are deliberately absent. See §"The provider-owned queue".
+  naming the submissions it deleted rather than a count, so a caller that aborts
+  on a partial purge can put its own messages back. `add`, `start`, `update` and
+  `reorder` are all deliberately absent. See §"The provider's queue".
 - `session_background.go` — the three background-terminal RPCs:
   `ListBackgroundTerminals` (paginated enumeration with a cursor-progress
   guard), `TerminateBackgroundTerminal` (per-process stop; `terminated:
@@ -139,10 +141,10 @@ over stdio.
   shares. Strictly ADDITIVE over the `turn/start` overrides: model,
   effort and fast mode were already next-turn-effective without it, so
   every failure path degrades to exactly that. The runtime-mode axes
-  (`approvalPolicy` / `sandboxPolicy` / `approvalsReviewer`) ride it ONLY on
-  a queue-native session, where the next turn may be one the app-server
-  starts out of its own queue with no overrides at all — see the file's own
-  doc block.
+  (`approvalPolicy` / `sandboxPolicy` / `approvalsReviewer`) are NOT pushed
+  through it: every turn AO opens is its own `turn/start`, which carries them
+  as overrides, so a second authority for the same axes would only add a way
+  for the two to disagree.
 - `account_usage.go` — `account/usage/read`: the wire shape
   (`AccountUsage`, every summary field a pointer because absence is not
   zero), `Session.ReadAccountUsage` for a live connection, and
@@ -387,14 +389,13 @@ over stdio.
     its local half failed, so a hard error there would wedge that thread's
     edit-and-resend permanently; the caller falls back to the fork cut,
     whose anchor is the last KEPT turn and therefore survives either way.
-- `thread/queue/add` / `list` / `delete` — the provider's own user-message
-  queue, all `#[experimental]` (0.148) and so riding the
-  `capabilities.experimentalApi` the handshake already sets. On a 0.148+
-  app-server these REPLACE `turn/steer` as the destination for a message the
-  user sends mid-turn. `add` is always preceded by a full
-  `thread/settings/update` assertion — a queued turn carries no overrides of
-  its own. `thread/queue/start`, `update` and `reorder` are not called — see
-  §"The provider-owned queue".
+- `thread/queue/list` / `delete` — the READ and DELETE half of the provider's
+  own user-message queue, both `#[experimental]` (0.148) and so riding the
+  `capabilities.experimentalApi` the handshake already sets. AO calls these to
+  clear rows another producer left behind, never to put a message of its own
+  anywhere: `thread/queue/add`, `start`, `update` and `reorder` are all
+  uncalled, and a mid-turn user message goes to `turn/steer` on every
+  supported codex. See §"The provider's queue".
 - `thread/read` — on-reopen liveness probe. Called by `Session.Probe`
   to fetch the current `thread.status.type` so the app-layer reconciler
   can flip stale running background tool rows.
@@ -414,20 +415,15 @@ over stdio.
   rules the code enforces:
   - **The composer-change caller is never mid-turn.** The app layer gates
     that call on the thread being idle
-    (`app_session_config.go#threadTurnInFlight`) UNLESS the session is
-    queue-native, because there a mid-turn change has to reach the thread
-    before the next dispatch. `QueueAdd` is the other mid-turn caller, by
-    design. Both are safe on upstream's own terms: every axis is documented
-    "for subsequent turns" and the op updates the session configuration a
-    later turn is built from, never the running turn's TurnContext.
-  - **The runtime-mode axes are routed through it only on a queue-native
-    session.** `approvalPolicy`, `sandboxPolicy` and `approvalsReviewer`
-    otherwise stay on `turn/start` (see RuntimeMode in the parent guide),
-    which re-asserts all three every turn. A queued turn re-asserts nothing
-    — `ThreadQueueAddParams` carries no overrides and the drain builds a
-    `ThreadSettingsOverrides::default()` — so on those sessions the thread's
-    stored policy IS the turn's policy and the push is what makes a
-    tightening reach the turn that runs the queued row.
+    (`app_session_config.go#threadTurnInFlight`). Skipping the push while busy
+    loses nothing: the same values ride the next `turn/start`, and the RPC's
+    value is the echo, not mutating a running turn.
+  - **The runtime-mode axes are never routed through it.** `approvalPolicy`,
+    `sandboxPolicy` and `approvalsReviewer` stay on `turn/start` (see
+    RuntimeMode in the parent guide), which re-asserts all three every turn —
+    and AO starts every turn on the thread, so there is no dispatch path that
+    could run one without them. A second writer would only add a way for the
+    two to disagree.
   Its params are the same double-option shape as `turn/start`'s: an
   omitted key means "unchanged", an explicit `null` clears to the config
   default. That is why turning fast mode OFF sends `serviceTier: null`
@@ -689,11 +685,13 @@ later — a `turn/started` with no `turn/start` of ours, followed by a full
   the read loop; without the counter that race would classify AO's own turn
   as external. A request TIMEOUT deliberately does not release the claim —
   the turn may exist.
-- A `turn/started` with only SELF-QUEUED claims outstanding resolves to
-  neither answer: `adoptTurnStart` returns `turnAdoptionUndecided` and stamps
-  nothing, because the provider drains one FIFO that can also hold a foreign
-  producer's rows. The `userMessage` echo's `clientId` is what decides it —
-  see §"The provider-owned queue".
+- The verdict is FINAL at `turn/started`. `adoptTurnStart` has two answers and
+  no third: AO starts every turn it owns with a `turn/start` of its own, so an
+  unclaimed one is somebody else's. (It could once DEFER, back when AO put
+  messages in the provider's queue and the app-server dispatched them —
+  see §"The provider's queue".) The `userMessage` echo only READS the recorded
+  answer, which is what keeps the adoption log one line per turn and the
+  turn-start marker from disagreeing with the rows underneath it.
 - An adopted external turn stamps `Meta.origin = "external-queue"`
   (`ExternalTurnOriginQueue`) on the `EventTurnStart` and on the
   `EventUserText` echo, so the injected prompt is not persisted or rendered
@@ -701,8 +699,8 @@ later — a `turn/started` with no `turn/start` of ours, followed by a full
   not a boolean: a second external producer must be distinguishable, not
   folded into "not ours".
 - `thread/queue/changed` is `{threadId}` and nothing else at rust-v0.149.0 —
-  no count, no item id, no text — so what it raises depends on whether AO is
-  itself in the queue. On a pre-0.148 app-server it raises one
+  no count, no item id, no text — so what it raises depends on whether the
+  queue can be READ. On a pre-0.148 app-server it raises one
   `EventNotification` (`Meta.kind = "external_queue"`) that reports no depth,
   because there is no `thread/queue/list` to ask. On 0.148+ the notice is
   evidence-driven instead: see below.
@@ -711,223 +709,172 @@ later — a `turn/started` with no `turn/start` of ours, followed by a full
   turn as injected corrupts the user's own transcript; the reverse costs
   only the marker.
 
-## The provider-owned queue (codex >= 0.148)
+## Turn identity and the steer contract
 
-From 0.148 the queue is not just something that happens TO AO — it is where
-AO puts a message the user sends while a turn is running. `thread_queue.go`
-owns the three methods AO calls (`add` / `list` / `delete`) and the
-reconciliation of `thread/queue/changed` once AO is a participant.
+Every outbound `turn/start` and `turn/steer` carries
+`clientUserMessageId` (`SendOptions.ClientUserMessageID`), and the
+`userMessage` ThreadItem it produces echoes it back as `clientId`
+(`ThreadItem::UserMessage`, rust-v0.149.0
+codex-rs/app-server-protocol/src/protocol/v2/item.rs:236), which
+`protocol_item.go` puts on the event as `client_id` meta. That pairing is how
+a caller matches an echo to the row that produced it without relying on
+ordering. Upstream types the field `Option<String>` on both params structs and
+has since 0.136 — below AO's 0.143 provider floor — so it is sent
+unconditionally and there is no version gate. An EMPTY value is omitted rather
+than sent: upstream mints its own uuid for a producer that supplies none, so an
+explicit empty string would be a value no echo could ever match.
 
-`update` and `reorder` exist upstream and are deliberately NOT wrapped: the
-composer cannot edit or re-order a message once the provider owns it, so a
-wrapper for either would be dead code whose wire shape nothing verifies. The
-mock refuses both with `-32601` so a harness run that grows a caller fails
-loudly (`cmd/ao-mockprovider/codex_queue.go`).
+**A mid-turn message goes to `turn/steer`, on every supported codex.** The
+provider's own queue is not a destination AO writes to — see below.
 
-**One decision, taken once, at handshake time.** `recordThreadQueueSupport`
-runs immediately after `recordAppServerVersion` and freezes
-`Session.ThreadQueueNative()` for the session's whole life. Everything else
-reads that frozen flag. It cannot be re-derived per call: the two queues must
-be MUTUALLY EXCLUSIVE per session, and a flag that could flip mid-session
-would let one message take AO's path and the next take the provider's, with
-no way to reconcile the ordering between them. Empty or unparseable
-`userAgent` fails closed to the old behaviour.
+`turn/steer` takes no config fields, so an in-flight turn can never be
+reconfigured, and it takes `expectedTurnId`, which upstream REQUIRES to be
+non-empty (`turn_processor.rs` refuses an empty one before the request reaches
+the session). AO fills it from the session's tracked `activeTurnID` and refuses
+with `ErrNoActiveTurn` — without writing — when there is none.
 
-**Which queue owns a mid-turn message** (`app_flush_queue.go`):
+**Three refusals, one JSON-RPC code.** All of them come back as -32600
+`invalid_request`, so the code discriminates nothing and
+`classifySteerRejection` (session_turn.go) reads the payload:
 
-| | codex < 0.148 | codex >= 0.148 |
+| upstream `SteerInputError` | how it is recognised | AO's answer |
 |---|---|---|
-| dispatch verb | `turn/steer` | `thread/queue/add` |
-| when it reaches the model | immediately, into the RUNNING turn | when the thread next goes idle |
-| row's turn index | the active turn | the NEXT turn |
-| who starts the turn | nobody (it joins one) | the app-server's idle hook |
+| `NoActiveTurn` | message `no active turn to steer` | `ErrNoActiveTurn` |
+| `ExpectedTurnMismatch` | message ``expected active turn id `X` but found `Y` `` | `ErrNoActiveTurn` |
+| `ActiveTurnNotSteerable` | `error.data`'s `codexErrorInfo` is `{"activeTurnNotSteerable":{turnKind}}` | `ErrTurnNotSteerable` |
 
-The turn-index difference is not cosmetic: a steered message is context for a
-turn already underway, a queued one opens a turn of its own, and placing the
-row in the wrong one puts the prompt below its own answer.
+The first two are the same RACE — the turn ended, or a new one started,
+between the frontend reading the active-turn registry and the steer arriving —
+and the recovery is to open a turn of its own (`IsNoActiveTurnRace`, which the
+app layer already falls back on). The mismatch message NAMES the turn id
+upstream found, and AO deliberately does not parse it out for a retry: by the
+time the answer is read that id can have rolled again, and a steer aimed at a
+turn the message was not written for is worse than a fresh turn. A mismatch
+just means requeue.
 
-**AO must never call `thread/queue/start`.** `QueuedItemService` is a
-`ThreadLifecycleContributor`; `on_thread_idle` → `dispatch_if_idle` →
-`start_turn_if_idle` → `delete_locked`, and `enqueue` itself calls
-`wake_if_loaded`, so an idle thread dispatches inside the `add` request.
-Calling `start` on top of that races the drain. There is no wrapper for it
-and `TestQueueStartIsNeverCalled` fails the build if one appears.
+The third is a different STATE and must never be folded into the race: a turn
+IS running — a review (`review/start`) or a compaction
+(`thread/compact/start`) — and it simply cannot take input. Starting a second
+turn there would interleave the user's message with the review, so it gets its
+own sentinel and the app layer holds the message for the next turn boundary.
+It is also the only one of the three upstream attaches structured data to,
+which is why `RPCError` carries `Data` verbatim: without it, "not steerable"
+is separable from the two races only by its English sentence.
 
-**`clientUserMessageId` is AO's optimistic row id.** Upstream requires the
-field and mints a uuid when a producer omits it, so an empty value would
-silently give up correlation rather than fail. AO passes the deferred row id
-the flush dispatcher just allocated (`user:<turn>:flush:<n>`), which is what
-lets a `thread/queue/list` say which entries are this app's. The echoed
-`userMessage` carries it back as `clientId` (`ThreadItem::UserMessage`,
-rust-v0.149.0 codex-rs/app-server-protocol/src/protocol/v2/item.rs:236), and
-that echo is the AUTHORITY on which queued row the app-server just started —
-see the claim ledger below. Triage still consumes the echo itself by FIFO;
-the `clientId` decides ORIGIN, not row identity.
+## The provider's queue (codex >= 0.148)
 
-**Two claim ledgers, for two different lies:**
+**AO reads and deletes; it never adds.** `thread/queue/add` has no wrapper and
+no caller, and neither do `start`, `update` or `reorder`. What remains in
+`thread_queue.go` is the surface a client needs for a queue it does not
+participate in: `QueueList`, `QueueDelete`, `PurgeQueue` over them, the
+handshake-frozen `ThreadQueueNative` gate, and the `thread/queue/changed`
+reconcile.
 
-- A queue-dispatched turn starts with no `turn/start` of ours, which is
-  exactly the shape of an injected turn. `noteSelfQueuedSubmission` claims
-  before the write (an idle thread can dispatch before the response lands),
-  and the claim is consumed BY CLIENT ID, never by position: the provider
-  drains one FIFO that can hold a foreign producer's rows interleaved with
-  AO's, so popping the oldest claim would hand it to whichever row happened
-  to be at the head and render somebody else's message as the user's own.
-  `turn/started` therefore DEFERS (`turnAdoptionUndecided`) while any
-  self-queued claim is outstanding and stamps nothing; the `userMessage`
-  echo's `clientId` decides it (`resolveUserEchoOrigin`), which is also the
-  row that actually needs protecting. The claim survives a request TIMEOUT,
-  same asymmetry as `beginLocalTurnStart` — see `IsAmbiguousQueueAddTimeout`.
-  The ledger is in-memory, so a session that comes back to a non-empty queue
-  rebuilds it from `RearmSelfQueuedClaims`; the app layer decides which listed
-  rows are AO's (`app_flush_queue_provider.go#rearmCodexProviderQueueClaims`)
-  and hands them over. It is a map keyed by client id and it REFUSES at its
-  cap rather than evicting: a dropped claim is a live message that would be
-  announced as somebody else's, so `QueueAdd` fails the add instead (see
-  §"Two states, not one" below). AO's own queue frees an entry as codex
-  accepts it, so more than its cap can accumulate provider-side across a long
-  turn — the cap here is sized for that, not for AO's queue length.
-- AO's own `add` and `delete` raise `thread/queue/changed` too, and so does
-  every automatic dispatch (the drain deletes the row it started), so the
-  unconditional notice would announce the user's own message as coming from
-  outside. In native mode the classifier's event is dropped and replaced by
-  an async `thread/queue/list` diffed against AO's own client ids; only a
-  submission AO never added raises the notice, and
-  `reportedForeignSubmissions` makes it once per submission. The walk is
-  SINGLE-FLIGHTED with a dirty re-run (`startQueueReconcile`) — an N-message
-  queue produces ~2N notifications and the state at the end of the burst is
-  the only one worth reporting — and its context comes from the session's
-  lifetime, so a teardown mid-walk cancels it.
+`start` is the one that would be actively dangerous: `QueuedItemService` is a
+`ThreadLifecycleContributor` whose `on_thread_idle` → `dispatch_if_idle` →
+`start_turn_if_idle` → `delete_locked` drains the head by itself, and `enqueue`
+calls `wake_if_loaded`, so a client `start` races that drain and can run one
+submission twice. `TestQueueStartIsNeverCalled` fails the build if a caller
+appears. `update` and `reorder` are declined for a duller reason — nothing here
+edits or re-orders a message another producer owns — and the mock refuses both
+with `-32601` so a harness run that grows a caller fails loudly
+(`cmd/ao-mockprovider/codex_queue.go`).
 
-**Ownership is the persisted row, never the id grammar.** AO's queued ids
-(`user:<turn>:flush:<n>`) are deterministic, so they are not a credential: a
-second Agent Overflow profile against the same Codex home mints the same ones,
-and anything speaking `thread/queue/add` may simply supply one. Recognising the
-grammar would re-arm a foreign submission as AO's and render its author's
-message as the user's own. Every provider-queue add eager-persists and MARKS
-its row before the write, keyed by the id that goes on the wire, so the row's
-existence in this app's store is the token
-(`app_flush_queue_provider.go#providerQueuedRowsForThread`). Nothing else needs
-to be persisted for it, and nothing on the wire can forge it.
+**`ThreadQueueNative` is a capability, not a dispatch decision.** It is frozen
+once, at handshake time (`recordThreadQueueSupport`, straight after
+`recordAppServerVersion`), and says only whether `list` / `delete` exist on
+this app-server. What reads it is RECOVERY: a rollback has to purge rows a
+foreign producer left in codex's SQLite, and where the family is missing there
+is nothing to attempt — a state the app layer must be able to see rather than a
+failure to swallow. Empty or unparseable `userAgent` fails closed.
 
-**Two states, not one: `providerQueued` and `providerQueueHandoff`.** The
-marker has to go on BEFORE the add — an add that lands and is never acked is
-exactly the case where this process may not come back to stamp anything — so on
-its own it cannot tell "the provider has this message" from "AO was about to
-ask it to", and those need opposite recoveries. `internal/itemmeta` carries
-both: PROVEN (`MarkProviderQueued`, or `ConfirmProviderQueueHandoff` once the
-ack or a `thread/queue/list` read-back proves it) means absence from the queue
-is a dispatch, so the row is history; UNPROVEN (`MarkProviderQueueHandoff`)
-means absence overwhelmingly means the add never landed, so the message has no
-owner at all and goes back to the composer. Without the split the second case
-is stranded forever, because the marker makes every recovery path step around
-a row the provider never took.
+**Ownership is injected, never derived from the id.** `Config.OwnsQueuedClientID`
+is a `func(clientUserMessageID string) bool` the app layer supplies; nil means
+every listed submission is foreign, which is the honest default for a package
+that writes no rows. It cannot be answered here: AO's own row ids are
+deterministic, so the grammar is not a credential — a second Agent Overflow
+profile against the same Codex home mints the same ones, and anything speaking
+`thread/queue/add` may simply supply one. Only the app layer holds the store
+rows that could account for an id.
 
-**Session start reconciles, and a failed list does not end it.**
-`reconcileCodexProviderQueueOnResume` is `Config.BeforeResume`, so it runs in
-the one window after the handshake froze `ThreadQueueNative` and before the
-`thread/resume` that loads the thread and lets its idle hook dispatch. It
-splits the store's marked rows against `thread/queue/list`: present means the
-provider holds it (re-arm the claim and the pending send, and promote a still
-unproven hand-off), absent and unproven means it was never taken (return it to
-the composer), absent and proven means it ran. The list is retried ONCE and, if
-it still fails, ownership is answered from the store alone — but only for the
-PROVEN rows. For those the store is a complete answer: the provider acked the
-add, so either the row is still queued (the claim and the pending send are
-exactly what its dispatch needs) or it already ran (both are inert, because
-both are consumed by client id and no echo can arrive for a row that is gone),
-and re-arming is what keeps the provider from dispatching AO's own message as
-an injected turn.
-
-An UNPROVEN row gets NEITHER, and that asymmetry is the point. Its add was
-written and never acked, so the provider may hold it or may never have seen it,
-and the two answers want opposite recoveries. Restoring is wrong if the add
-landed — the user gets a draft of a message that is also scheduled to run, and
-sending it is a duplicate. Re-arming is wrong for the commoner case: with no
-add on the other end no echo can ever consume the claim or the pending send, so
-the pending send sits in the FIFO forever, where `HasPendingSendForThread`
-reads it and refuses every revert-and-resend on the thread, while the message
-itself is stranded outside both the provider and the composer. So unproven rows
-are left exactly as they are, the next session start that CAN read the queue
-resolves them, and the notice names them separately
-(`codex_queue_unreconciled` reports the proven count and the unproven count as
-two different states), the same posture as the pre-0.148
-`codex_queue_unsupported` notice.
+**The `thread/queue/changed` notice is evidence-driven where it can be.**
+Where there is no `list` the classifier's own notice stands as written — it
+reports that something was queued, with no depth and no authorship, because
+nothing can be asked. Where the family exists the immediate event is dropped
+and a bounded list decides, so a notice names a submission that was actually
+there. The walk is SINGLE-FLIGHTED with a dirty re-run (`startQueueReconcile`):
+every mutation and every automatic dispatch raises a change, so an N-message
+queue produces ~2N notifications and only the state at the end of the burst is
+worth reporting. Its context comes from the session's lifetime, so a teardown
+mid-walk cancels it, and `reportedForeignSubmissions` makes the notice once per
+submission id.
 
 **A `thread/queue/list` can report a PREFIX.** Pagination stops on a repeated
 cursor or at the page cap, and both used to return the rows so far with a nil
 error — indistinguishable from a short queue. It returns
-`ErrThreadQueueListIncomplete` alongside the prefix now, and every caller that
-must not mistake a partial answer for an empty tail (the purge, the resume
-reconcile) treats it as a failure.
+`ErrThreadQueueListIncomplete` alongside the prefix now, and the purge treats
+that as a failure, because a listing that looked complete would let it report
+success over rows it never saw.
 
 **An element it cannot READ is the same failure.** Upstream's `QueuedSubmission`
-is `{id, input, client_user_message_id}`, all three required and non-`Option`,
-so an element that will not decode is a wire fault, not a short row. Returning
-an EMPTY submission for it — which is what a swallowed `json.Unmarshal` did —
-makes it indistinguishable from an ABSENT one, and absence is exactly what the
-two recovery callers act on: the resume reconcile would hand an unproven AO row
-back to the composer while codex still held it, and the purge would skip the
-empty id and let the rollback truncate over a submission still armed to run.
-`parseQueuedSubmission` reports instead, `QueueList` stops the walk and returns
-the readable prefix with `ErrThreadQueueListMalformed`, and an empty
-server-assigned `id` counts as malformed because it is the only handle a delete
-takes. The one caller that does NOT treat it as fatal is the foreign-submission
-notice walk, which only ever adds notices for rows it can see.
+is `{id, input, client_user_message_id}`, all three required and non-`Option`
+(rust-v0.149.0 codex-rs/app-server-protocol/src/protocol/v2/thread.rs:869), so
+an element that will not decode is a wire fault, not a short row. Returning an
+EMPTY submission for it — which is what a swallowed `json.Unmarshal` did —
+makes it indistinguishable from an ABSENT one, and absence is what the purge
+acts on: it would skip the empty id and let the rollback truncate over a
+submission still armed to run. `parseQueuedSubmission` reports instead,
+`QueueList` stops the walk and returns the readable prefix with
+`ErrThreadQueueListMalformed`, and an empty server-assigned `id` counts as
+malformed because it is the only handle a delete takes. The one caller that
+does NOT treat it as fatal is the foreign-submission notice walk, which only
+ever adds notices for rows it can see.
 
 **`thread/queue/delete`'s `deleted` is required.** `ThreadQueueDeleteResponse`
 types it as a bare `bool` with no serde default, so upstream's own deserializer
 refuses a body without the key. Decoding it into a Go `bool` turned any drift —
 a rename, a nested envelope, an explicit `null` — into a benign-looking
-`false`, which both readers treat as "already dispatched": the claim ledger
-holds its claim and the purge counts the row as accounted for, so the rollback
-truncates history over a submission that may still be armed. It decodes as a
-`*bool` and a missing or null one is an error.
+`false`, which the purge reads as "already dispatched": the row counts as
+accounted for and the rollback truncates history over a submission that may
+still be armed. It decodes as a `*bool` and a missing or null one is an error.
+A genuine `false` is a STATE ("matched nothing"), exactly like
+`TerminateBackgroundTerminal`'s `terminated: false`.
 
 **Rollback purges it, and a purge that cannot complete ABORTS the rollback.**
-AO's own flushqueue is cleared in process, but a row already accepted by
-`thread/queue/add` lives in codex's SQLite: it survives `stopSession` and
-`on_thread_idle` dispatches it on the next resume, re-running a message the
-user just rolled back onto a thread that no longer holds it. `PurgeQueue`
-deletes every row — foreign ones too, named in the log, because a foreign row
-carries the same hazard — over whichever connection the rollback has: the LIVE
-session before the stop (`app_conversation_rollback.go`), or, for a thread that
-had none, the throwaway resume the history cut opens anyway
+A row in codex's SQLite survives `stopSession`, and `on_thread_idle` dispatches
+it on the next resume — re-running a message onto a thread the user just
+truncated. `PurgeQueue` deletes every row over whichever connection the
+rollback has: the LIVE session before the stop
+(`app_conversation_rollback.go`), or, for a thread that had none, the throwaway
+resume the history cut opens anyway
 (`app_codex_revert.go#cutCodexThreadHistory` → `purgeCodexQueueBeforeCut`).
-Nothing is spawned for the purge alone, and the two overlap harmlessly: after a
-successful live purge the second one lists an empty queue. It goes FIRST on the
-cut connection because resuming a thread LOADS it, and a loaded thread's idle
-hook is what dispatches the queue.
+Nothing is spawned for the purge alone, and the two overlap harmlessly. It goes
+FIRST on the cut connection because resuming a thread LOADS it, and a loaded
+thread's idle hook is what dispatches the queue — which is also what
+`Config.BeforeResume` exists for: it runs after the handshake froze
+`ThreadQueueNative` and before the `thread/resume` that loads the thread.
 
 A partial purge is not a degraded success: every row it failed to delete is a
 message the user explicitly truncated away that the idle hook still dispatches
 onto the shortened thread, silently, at the next resume. So the rollback
-refuses before it stops the session and the cut refuses before it truncates —
-a refusal is visible and retryable, a replay onto deleted history is neither.
-A LIVE session on a pre-0.148 app-server has no purge to attempt, and that is
-not automatically safe either: if the store says this thread has rows a newer
-Codex accepted, the rollback is refused there too.
+refuses before it stops the session and the cut refuses before it truncates — a
+refusal is visible and retryable, a replay onto deleted history is neither.
 
 **The refusal is retryable and mutation-free only because the purge reports
 what it already deleted.** Deletes go one row at a time, so with A and B queued
 the purge can remove A and then fail on B. History is untouched, which is what
-the refusal promises — but A is out of codex's queue, no idle hook will
-dispatch it, and every recovery path steps around a row marked provider-queued,
-so an abandoned rollback would silently eat a message the user queued. So
-`PurgeQueue` returns a `QueuePurge` naming the submissions it removed, in
-order, and the abort path
-(`app_flush_queue_provider.go#restorePurgedProviderQueueRows`) puts AO's own
-back through the same restore-to-composer route the never-queued case uses,
-under the `provider_queue_purge_aborted` reason. Ownership there is the
-persisted row, never the id grammar: a deleted submission is restored only when
-this app's store holds an unclaimed provider-queued row under that
-`clientUserMessageId`.
+the refusal promises — but A is out of codex's queue and no idle hook will
+dispatch it. So `PurgeQueue` returns a `QueuePurge` naming the submissions it
+removed, in order, rather than a count, and the abort path can put back
+whichever of them the app layer's own store rows account for.
 
 A FOREIGN submission the purge deleted cannot be put back. There is no
-`thread/queue/add` that preserves another producer's authorship, and re-adding
-it would render that author's text as this user's own message. Those are
-counted, named in the log, and named in the refusal the user sees — never
-restored and never silently forgotten.
+`thread/queue/add` caller here, and re-adding it would render another
+producer's text as this user's own message. Those are counted (`QueuePurge.Foreign`,
+a log figure and deliberately not an ownership verdict), named in the log, and
+named in the refusal the user sees — never restored and never silently
+forgotten.
+
 
 ## History truncation: three cuts, all turn-granular
 
@@ -1028,13 +975,16 @@ opted out at initialize.
 
 **0.147 → 0.149 additions AO declines:**
 
-- `thread/queue/start` (0.148) — the member of the queue family AO must never
-  call: dispatch is automatic (`QueuedItemService::on_thread_idle`), so a
-  client `start` races the provider's own drain and can run one submission
-  twice. `thread/queue/update` and `.../reorder` (0.148) are declined for a
-  duller reason — AO has no surface that edits or re-orders a message the
-  provider already owns. `add` / `list` / `delete` are adopted; see §"The
-  provider-owned queue".
+- `thread/queue/add` (0.148) — AO does not write to the provider's queue at
+  all: a mid-turn message goes to `turn/steer`, correlated by
+  `clientUserMessageId`. `thread/queue/start` is the member of the family AO
+  must never call even in principle — dispatch is automatic
+  (`QueuedItemService::on_thread_idle`), so a client `start` races the
+  provider's own drain and can run one submission twice. `update` and
+  `.../reorder` are declined for a duller reason: AO has no surface that edits
+  or re-orders a message another producer owns. Only `list` / `delete` are
+  adopted, and only to clear a foreign producer's rows; see §"The provider's
+  queue".
 - `project/create` / `delete` / `import` / `list` / `move` / `read` /
   `update` and the `project/changed` + `thread/project/updated`
   notifications (0.149) — AO owns its own project rows keyed on the git

@@ -2,7 +2,10 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/provider"
 )
@@ -17,8 +20,14 @@ import (
 // own response does, so Send CLAIMS the turn before the write
 // (beginLocalTurnStart) and clearTurnStart releases what a timed-out claim
 // left behind. external_turns.go reads an unclaimed `turn/started` as a turn
-// somebody else began, and thread_queue.go holds the second, client-id-keyed
-// ledger for turns the provider's own queue dispatches.
+// somebody else began.
+//
+// Both verbs stamp `clientUserMessageId` (SendOptions.ClientUserMessageID).
+// It is upstream's `Option<String>` correlation handle on TurnStartParams and
+// TurnSteerParams alike, echoed back on the `userMessage` ThreadItem as
+// `clientId` — which is how a caller matches an echo to the row it sent
+// without relying on ordering. Supported since codex 0.136; AO's provider
+// floor is 0.143, so it is unconditional and there is no version gate.
 
 // Send sends a user turn via turn/start.
 //
@@ -42,6 +51,13 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 	}
 	if len(opts.OutputSchema) > 0 {
 		params["outputSchema"] = opts.OutputSchema
+	}
+	// The correlation handle. Omitted rather than sent empty when the caller
+	// has none: upstream types it `Option<String>` and mints its own id for an
+	// absent one, so an explicit empty string would be a value the echo could
+	// never match rather than an absence.
+	if clientID := strings.TrimSpace(opts.ClientUserMessageID); clientID != "" {
+		params["clientUserMessageId"] = clientID
 	}
 	// Per-turn config overrides — Codex's TurnStartParams takes `model`,
 	// `effort`, `serviceTier`, `approvalPolicy`, and `sandboxPolicy` at the
@@ -169,10 +185,11 @@ func (s *Session) bindPendingTurnSchema(turnID string) {
 //
 // REQUIRES an active turn — returns ErrNoActiveTurn if no turn is
 // currently in flight, so the caller can fall back to Send rather
-// than racing the wire. The caller should also fall back when the
-// app-server returns NoActiveTurn or ExpectedTurnMismatch (race
-// window: turn ended or a new turn started between the frontend
-// reading the active-turn registry and the steer RPC arriving here).
+// than racing the wire. `expectedTurnId` is upstream's own precondition
+// and is REQUIRED to be non-empty (turn_processor.rs refuses an empty
+// one with a plain invalid_request before it reaches the session), so
+// the guard above is what keeps AO from writing a request that cannot
+// succeed.
 //
 // DOES NOT take effort / approvalPolicy / sandboxPolicy /
 // collaborationMode — those are turn-creation params for turn/start,
@@ -181,10 +198,11 @@ func (s *Session) bindPendingTurnSchema(turnID string) {
 // creation.
 //
 // Wire shape per
-// codex-rs/app-server-protocol/src/protocol/v2.rs:5192-5209
-// (TurnSteerParams). Server-side reference:
-// codex-rs/core/src/session/mod.rs:2983 (errors NoActiveTurn if no
-// turn is running, ExpectedTurnMismatch if the turn id has rolled).
+// codex-rs/app-server-protocol/src/protocol/v2/turn.rs (TurnSteerParams:
+// `{threadId, clientUserMessageId?, input, expectedTurnId}`). Server-side
+// reference: codex-rs/app-server/src/request_processors/turn_processor.rs
+// and codex-rs/core/src/session/mod.rs — see classifySteerRejection for
+// the three refusals it can answer with.
 func (s *Session) Steer(ctx context.Context, content string, opts provider.SendOptions) error {
 	s.mu.Lock()
 	expectedTurnID := s.activeTurnID
@@ -203,11 +221,96 @@ func (s *Session) Steer(ctx context.Context, content string, opts provider.SendO
 		"input":          input,
 		"expectedTurnId": expectedTurnID,
 	}
+	if clientID := strings.TrimSpace(opts.ClientUserMessageID); clientID != "" {
+		params["clientUserMessageId"] = clientID
+	}
 
 	if _, err := s.sendRequest(ctx, "turn/steer", params); err != nil {
-		return fmt.Errorf("codex: turn/steer: %w", err)
+		return fmt.Errorf("codex: turn/steer: %w", classifySteerRejection(err))
 	}
 	return nil
+}
+
+// classifySteerRejection turns the app-server's `turn/steer` refusals into the
+// two answers a caller can act on. All three arrive as the SAME JSON-RPC code
+// (-32600 invalid_request, `invalid_request(message)` in
+// request_processors/turn_processor.rs), so the code alone says nothing and the
+// discrimination has to come from the payload.
+//
+// Two of them mean "the turn you addressed is not the one running":
+//
+//   - SteerInputError::NoActiveTurn → "no active turn to steer";
+//   - SteerInputError::ExpectedTurnMismatch → "expected active turn id `X` but
+//     found `Y`".
+//
+// Both map onto ErrNoActiveTurn, which is what the app layer already falls
+// back on (IsNoActiveTurnRace → re-dispatch as a fresh turn). The mismatch
+// message NAMES the turn id upstream found, and AO deliberately does not parse
+// it out for a retry: by the time the answer is read that id can already have
+// rolled again, and a steer aimed at a turn the user's message was not written
+// for is worse than opening a turn of its own.
+//
+// The third is a different state entirely: SteerInputError::ActiveTurnNotSteerable
+// means a turn IS running and simply cannot take input — a review or a
+// compaction. Retrying as a fresh turn/start would be wrong too (it would
+// interleave the user's message with a running review), so it gets its own
+// sentinel. It is the one refusal upstream attaches structured data to:
+// `error.data` carries a TurnError whose `codexErrorInfo` is
+// `{"activeTurnNotSteerable":{"turnKind":…}}`, so this reads the typed field
+// rather than the two English sentences that describe it.
+func classifySteerRejection(err error) error {
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		return err
+	}
+	if steerDataReportsNotSteerable(rpcErr.Data) {
+		return fmt.Errorf("%s: %w", rpcErr.Message, ErrTurnNotSteerable)
+	}
+	if isSteerTurnPreconditionMessage(rpcErr.Message) {
+		return fmt.Errorf("%s: %w", rpcErr.Message, ErrNoActiveTurn)
+	}
+	return err
+}
+
+// steerNoActiveTurnMessage / steerExpectedTurnMismatchPrefix are upstream's own
+// strings for the two precondition refusals
+// (request_processors/turn_processor.rs, the `SteerInputError` match). Matched
+// as text because the JSON-RPC code is shared with every other invalid request
+// and neither refusal carries a `codexErrorInfo` — same posture as
+// IsThreadNotFound and the writer-conflict markers next door.
+const (
+	steerNoActiveTurnMessage       = "no active turn to steer"
+	steerExpectedTurnMismatchStart = "expected active turn id "
+)
+
+// isSteerTurnPreconditionMessage matches on CONTAINS rather than equality
+// because the same test runs over a raw wire message and over an error this
+// package has already wrapped with its `codex: turn/steer: ` prefix.
+func isSteerTurnPreconditionMessage(message string) bool {
+	return strings.Contains(message, steerNoActiveTurnMessage) ||
+		strings.Contains(message, steerExpectedTurnMismatchStart)
+}
+
+// steerDataReportsNotSteerable reads the `activeTurnNotSteerable` discriminant
+// out of a refusal's `error.data`.
+//
+// The shape is a serialized TurnError: `{message, codexErrorInfo,
+// additionalDetails}` where `codexErrorInfo` is the externally tagged
+// `{"activeTurnNotSteerable":{"turnKind":"review"|"compact"}}`
+// (app-server-protocol/src/protocol/v2/shared.rs). codexErrorInfoKind already
+// owns the "string variant or single-key object" decoding for that enum, so
+// this only has to navigate to the field.
+func steerDataReportsNotSteerable(data json.RawMessage) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var body struct {
+		Info json.RawMessage `json:"codexErrorInfo"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return false
+	}
+	return codexErrorInfoKind(body.Info) == "activeTurnNotSteerable"
 }
 
 // Interrupt sends turn/interrupt to abort whatever the thread is

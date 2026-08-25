@@ -13,7 +13,6 @@ func newReviewProjectionSession(events *[]provider.ProviderEvent) *Session {
 		model:                  "parent-model",
 		pending:                make(map[int64]chan json.RawMessage),
 		turnOrigins:            make(map[string]turnOrigin),
-		selfQueuedSubmissions:  make(map[string]string),
 		schemaedTurnIDs:        make(map[string]struct{}),
 		structuredOutputByTurn: make(map[string]json.RawMessage),
 		onEvent: func(event provider.ProviderEvent) {

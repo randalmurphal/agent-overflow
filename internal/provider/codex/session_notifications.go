@@ -384,19 +384,13 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		// Adopt the turn regardless of who started it: activeTurnID is what
 		// Interrupt and Steer address, and an externally injected turn that
 		// AO cannot stop is worse than one it cannot attribute. The return
-		// value only decides the marker.
-		//
-		// turnAdoptionUndecided deliberately stamps NOTHING. A queue dispatch
-		// cannot be attributed until its `userMessage` echo names the
-		// `clientId`, and the echo is the row that actually needs protecting —
-		// it is what a reader would otherwise take for something the person in
-		// front of Agent Overflow typed. A turn-start marker guessed here and
-		// contradicted one event later would be worse than no marker at all.
+		// value only decides the marker, and it is decided HERE — a turn is
+		// either one this session asked for or one somebody else injected.
 		switch s.adoptTurnStart(evt.TurnID) {
 		case turnAdoptionExternal:
 			logExternalTurnAdopted(s.threadID, evt.TurnID)
 			stampExternalOrigin(evt)
-		case turnAdoptionUndecided, turnAdoptionLocal:
+		case turnAdoptionLocal:
 		}
 		s.bindPendingTurnSchema(evt.TurnID)
 		s.mu.Lock()
@@ -406,18 +400,10 @@ func (s *Session) updateNotificationState(evt *provider.ProviderEvent) {
 		// The user-message echo of an injected turn. Without the marker it
 		// persists identically to a message typed in this app's composer.
 		//
-		// This is also where an UNDECIDED queue dispatch gets its verdict: the
-		// echo's `clientId` is the only thing that says which queued row the
-		// app-server just started, and AO owns a row exactly when that id is
-		// one it minted. resolveUserEchoOrigin records the answer, so every
-		// later event of the same turn reads consistently.
-		external, decided := s.resolveUserEchoOrigin(evt.TurnID, userEchoClientID(evt.Meta))
-		if external {
-			if decided {
-				// Only a verdict reached HERE is new. A turn already adopted
-				// at its `turn/started` logged there.
-				logExternalTurnAdopted(s.threadID, evt.TurnID)
-			}
+		// The verdict was reached at `turn/started` and only READ here, so the
+		// adoption log stays one line per turn. An unrecorded turn reads local,
+		// which is the same fail-safe direction adoptTurnStart takes.
+		if s.turnIsExternal(evt.TurnID) {
 			stampExternalOrigin(evt)
 		}
 	case provider.EventTurnComplete:

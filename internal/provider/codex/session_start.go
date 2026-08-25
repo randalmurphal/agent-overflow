@@ -82,6 +82,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		collabHistoryVisited:      make(map[string]uint64),
 		planBuffersByItemID:       make(map[string]*planBuffer),
 		planBuffersByTurnID:       make(map[string]*planBuffer),
+		ownsQueuedClient:          cfg.OwnsQueuedClientID,
 	}
 	// On resume the root provider id is already durable in AO. Seed it before
 	// the read loop starts so child notifications racing the thread/resume

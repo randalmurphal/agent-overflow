@@ -402,6 +402,116 @@ func TestConsumeMatchingPendingSend_IDLessEchoPopsHead(t *testing.T) {
 	}
 }
 
+// The 2026-08-24 mispop. An entry registered with ByClientID has announced
+// that its echo will name it, so an echo carrying NO client id is provably
+// somebody else's — and FIFO-popping it anyway stamps one message onto the
+// other's row and leaves the real echo to persist as injected context. The
+// id-less echo must skip past it to the first entry that can actually be
+// consumed positionally.
+func TestConsumeMatchingPendingSend_IDLessEchoSkipsClientIDEntries(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	// A queued send dispatched with `clientUserMessageId` — it sits at the
+	// head, waiting for the echo that names it.
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:m1", store.Item{
+		ID:        "user:3:flush:1",
+		ThreadID:  "t1",
+		TurnIndex: 3,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "queued",
+	}, 10, PendingSendExpectation{ByClientID: true})
+	// A plain send registered behind it (pre-identity Codex shape).
+	router.RegisterPendingSend("t1", "user:4", 4)
+
+	got, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-1", "")
+	if !ok || got.AOItemID != "user:4" {
+		t.Fatalf("id-less echo popped %+v (ok=%v), want the plain entry user:4", got, ok)
+	}
+
+	head, ok := router.peekPendingSendHead("t1")
+	if !ok || head.AOItemID != "user:3:flush:1" {
+		t.Fatalf("the client-id entry did not survive: ok=%v head=%+v", ok, head)
+	}
+
+	named, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-2", "user:3:flush:1")
+	if !ok || named.AOItemID != "user:3:flush:1" {
+		t.Fatalf("the naming echo popped %+v (ok=%v), want user:3:flush:1", named, ok)
+	}
+	if router.HasPendingSendForThread("t1") {
+		t.Fatal("queue should be empty after both echoes")
+	}
+}
+
+// With every entry expecting a client id — the steady state once all Codex
+// sends stamp one — an id-less echo consumes NOTHING rather than falling back
+// to the head.
+func TestConsumeMatchingPendingSend_IDLessEcho_MatchesNothingWhenAllEntriesExpectClientIDs(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ByClientID: true})
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{ByClientID: true})
+
+	if got, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-1", ""); ok {
+		t.Fatalf("an id-less echo popped %+v", got)
+	}
+	if got, ok := router.consumeMatchingPendingSendForEcho("t1", "", ""); ok {
+		t.Fatalf("a fully id-less echo popped %+v", got)
+	}
+	if head, ok := router.peekPendingSendHead("t1"); !ok || head.AOItemID != "user:1" {
+		t.Fatalf("queue disturbed: ok=%v head=%+v", ok, head)
+	}
+}
+
+// The skip applies to the identity scan too, not just the head-pop: a Claude
+// entry sitting BEHIND a client-id entry is still reachable by its own uuid,
+// and the client-id entry is never a candidate for it.
+func TestConsumeMatchingPendingSend_IdentityScanSkipsClientIDEntries(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ByClientID: true})
+	router.RegisterPendingSendExpecting("t1", "user:2", 2, "uuid-b")
+
+	got, ok := router.consumeMatchingPendingSendForEcho("t1", "uuid-b", "")
+	if !ok || got.AOItemID != "user:2" {
+		t.Fatalf("identity echo popped %+v (ok=%v), want user:2", got, ok)
+	}
+	if head, ok := router.peekPendingSendHead("t1"); !ok || head.AOItemID != "user:1" {
+		t.Fatalf("the client-id entry did not survive: ok=%v head=%+v", ok, head)
+	}
+	// And an unrelated provider item id still matches nothing.
+	if got, ok := router.consumeMatchingPendingSendForEcho("t1", "uuid-injected", ""); ok {
+		t.Fatalf("an injected uuid popped %+v", got)
+	}
+}
+
+// The registrar derives ExpectedClientID from the entry's own AOItemID — the
+// id that went on the wire as `clientUserMessageId` — so a caller can never
+// register an expectation that disagrees with what was dispatched.
+func TestRegisterPendingSendWithExpectation_StampsTheAOItemIDAsTheClientID(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	router.RegisterPendingSendWithExpectation("t1", "user:7", 7, PendingSendExpectation{ByClientID: true})
+	head, ok := router.peekPendingSendHead("t1")
+	if !ok {
+		t.Fatal("no entry registered")
+	}
+	if head.ExpectedClientID != "user:7" {
+		t.Fatalf("ExpectedClientID = %q, want the AO row id user:7", head.ExpectedClientID)
+	}
+	if head.ExpectedProviderItemID != "" {
+		t.Fatalf("ExpectedProviderItemID = %q, want empty for a client-id send", head.ExpectedProviderItemID)
+	}
+
+	// The Claude-shaped registrations must stay untouched.
+	router.RegisterPendingSendExpecting("t2", "user:1", 1, "uuid-a")
+	claude, ok := router.peekPendingSendHead("t2")
+	if !ok || claude.ExpectedClientID != "" || claude.ExpectedProviderItemID != "uuid-a" {
+		t.Fatalf("claude entry = %+v (ok=%v), want ExpectedClientID empty and uuid-a expected", claude, ok)
+	}
+}
+
 func TestConsumeMatchingPendingSend_HeadWithoutExpectedID_FIFOPop(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 

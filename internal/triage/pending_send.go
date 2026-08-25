@@ -74,6 +74,27 @@ type pendingSend struct {
 	// are provider-assigned, unknowable at send time), which keeps the
 	// FIFO head-pop semantics.
 	ExpectedProviderItemID string
+
+	// ExpectedClientID is the `clientUserMessageId` this send was
+	// dispatched with — always the entry's own AOItemID, so the field is
+	// really a flag: "this send's echo names itself". Codex threads it
+	// back on the `userMessage` echo as `clientId`
+	// (`TurnInput::UserInput{client_id}` → `UserMessageItem.client_id`,
+	// rust-v0.149.0), which is the only identity key that works there at
+	// all — item ids are provider-assigned, so ExpectedProviderItemID is
+	// structurally unavailable.
+	//
+	// Set means the entry is consumable ONLY by an echo carrying this
+	// client id. An echo with NO client id must skip it, head or not:
+	// that shape is either another producer's row off the provider's own
+	// queue or a pre-identity send, and FIFO-popping an entry that is
+	// waiting to name itself is the 2026-08-24 mispop — a direct-send
+	// echo popped a queued entry, stamping one message onto the other's
+	// row and leaving the real echo to persist as injected context.
+	// Empty for Claude-family sends (identity is
+	// ExpectedProviderItemID) and for any Codex send predating the
+	// stamp, both of which keep the FIFO head-pop.
+	ExpectedClientID string
 	// AnchoredAtInterrupt marks a flush entry whose row was already
 	// placed at its user-visible timeline position by the interrupt
 	// handler — either bumped to the turn tail (PromoteQuietFlushSends,
@@ -215,9 +236,34 @@ func (r *Router) PeekPendingSendHeadForTest(threadID string) (PendingSendSnapsho
 	}, true
 }
 
+// PendingSendExpectation names the wire identity a send's echo will carry
+// back, so the registry can consume the entry by IDENTITY rather than by
+// position. The two axes are per-provider and mutually exclusive in
+// practice, but the struct does not enforce that: a provider that grows
+// both is a stronger match, not a contradiction.
+//
+// Registering with the zero value is the historical FIFO behaviour and
+// stays available for a send whose echo names nothing.
+type PendingSendExpectation struct {
+	// ProviderItemID is the app-minted uuid the CLI echoes verbatim as
+	// the envelope's top-level id (Claude family). See
+	// pendingSend.ExpectedProviderItemID.
+	ProviderItemID string
+
+	// ByClientID marks a send dispatched with `clientUserMessageId` set
+	// to the entry's own AOItemID — every Codex `turn/start` and
+	// `turn/steer`. The registrar copies the AOItemID into
+	// pendingSend.ExpectedClientID, so the caller never restates it and
+	// the two can never disagree. See pendingSend.ExpectedClientID for
+	// what it costs an echo that carries no client id.
+	ByClientID bool
+}
+
 // RegisterPendingSend appends a new entry to the per-thread FIFO with no
-// expected wire id (FIFO-consumed). Codex send paths use this — Codex
-// assigns its own item ids, so identity is unknowable at dispatch.
+// expected wire id (FIFO-consumed). Legacy Codex send paths use this —
+// Codex assigns its own item ids, so provider-item identity is
+// unknowable at dispatch; a send that stamps `clientUserMessageId`
+// should use RegisterPendingSendWithExpectation instead.
 // EnqueuedAt is stamped from time.Now here — Phase E uses it for
 // diagnostics on stranded entries and the wall clock at the register
 // call is the natural reference.
@@ -231,7 +277,14 @@ func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
 // pendingSend.ExpectedProviderItemID. Pass "" for providers with no
 // pre-known identity; that entry falls back to FIFO consumption.
 func (r *Router) RegisterPendingSendExpecting(threadID, aoItemID string, turnIndex int, expectedProviderItemID string) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expectedProviderItemID)
+	r.RegisterPendingSendWithExpectation(threadID, aoItemID, turnIndex, PendingSendExpectation{ProviderItemID: expectedProviderItemID})
+}
+
+// RegisterPendingSendWithExpectation is RegisterPendingSend over the full
+// expectation surface. Codex direct sends and steers register here with
+// {ByClientID: true}.
+func (r *Router) RegisterPendingSendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect)
 }
 
 // RegisterPendingFlushSend registers a deferred user_text row whose
@@ -244,19 +297,39 @@ func (r *Router) RegisterPendingFlushSend(threadID, queueItemID string, item sto
 }
 
 func (r *Router) RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID string, item store.Item, enqueuedAt int64, expectedProviderItemID string) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expectedProviderItemID)
+	r.RegisterPendingFlushSendWithExpectation(threadID, queueItemID, item, enqueuedAt, PendingSendExpectation{ProviderItemID: expectedProviderItemID})
+}
+
+// RegisterPendingFlushSendWithExpectation is the deferred-row registration
+// over the full expectation surface.
+func (r *Router) RegisterPendingFlushSendWithExpectation(threadID, queueItemID string, item store.Item, enqueuedAt int64, expect PendingSendExpectation) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expect)
 }
 
 func (r *Router) RegisterPendingQuietFlushSend(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64, expectedProviderItemID string) {
-	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expectedProviderItemID)
+	r.RegisterPendingQuietFlushSendWithExpectation(threadID, queueItemID, item, turnIndex, enqueuedAt, PendingSendExpectation{ProviderItemID: expectedProviderItemID})
 }
 
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expectedProviderItemID string) {
+// RegisterPendingQuietFlushSendWithExpectation is the quiet-flush
+// registration over the full expectation surface.
+func (r *Router) RegisterPendingQuietFlushSendWithExpectation(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64, expect PendingSendExpectation) {
+	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect)
+}
+
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expect PendingSendExpectation) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
 	if enqueuedAt == 0 {
 		enqueuedAt = time.Now().UnixMilli()
+	}
+	// The expected client id is never a caller-supplied value: it IS the
+	// AO row id that went on the wire as `clientUserMessageId`, so
+	// deriving it here is what keeps the dispatched id and the expected
+	// one from drifting apart.
+	expectedClientID := ""
+	if expect.ByClientID {
+		expectedClientID = aoItemID
 	}
 	r.mu.Lock()
 	r.pendingByThread[threadID] = append(r.pendingByThread[threadID], pendingSend{
@@ -266,7 +339,8 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		EnqueuedAt:             enqueuedAt,
 		DeferredItem:           deferredItem,
 		QuietItem:              quietItem,
-		ExpectedProviderItemID: expectedProviderItemID,
+		ExpectedProviderItemID: expect.ProviderItemID,
+		ExpectedClientID:       expectedClientID,
 		InterruptedTurnIndex:   -1,
 		EchoPromotedBoundary:   -1,
 	})
@@ -315,16 +389,22 @@ func (r *Router) peekPendingSendHead(threadID string) (pendingSend, bool) {
 //     queued send waits out a running turn (the collision window is the
 //     whole remaining turn — the CLI echoes queued sends at turn pickup,
 //     not enqueue) can no longer pop the real send's entry.
-//   - FIFO: an entry with no expected id (Codex — item ids are
+//   - FIFO: an entry with no expected id (legacy Codex — item ids are
 //     provider-assigned, unknowable at dispatch) pops at the head,
 //     preserving the original ordering semantics.
+//
+// A third mode, client id, is reachable only through
+// consumeMatchingPendingSendForEcho and is documented there. It also
+// SUBTRACTS from both modes above: an entry expecting a client id is
+// invisible to an id-less echo, head or not.
 //
 // Carve-out: an echo with NO providerItemID pops the head even in
 // identity mode. Injected envelopes always carry a top-level uuid, so an
 // id-less echo cannot be an injection — but it IS the shape both
 // downstream branches log loudly about (stuck queue-confirm, parser gap),
 // and consuming keeps those diagnostics reachable instead of stranding
-// the entry silently.
+// the entry silently. "The head" there means the head of the entries an
+// id-less echo can consume at all.
 //
 // Returns (zero, false) when nothing matches; handleUserText then routes
 // the echo to the wire-only paths (subagent prompt / injected context).
@@ -357,8 +437,21 @@ func (r *Router) consumeMatchingPendingSend(threadID, providerItemID string) (pe
 //     id AO does not hold is not AO's message; `codex queue` mints a v7 uuid
 //     and cannot collide with AO's `user:<turn>[:flush:<n>]` grammar. Falling
 //     back to FIFO here would reintroduce the exact mispop above.
-//   - clientID absent → the provider-item-id / FIFO rules above, unchanged.
-//     Every non-Codex path and every pre-0.148 Codex session lands here.
+//   - clientID absent → the provider-item-id / FIFO rules above, over the
+//     entries that are NOT waiting to be named. Every non-Codex path and every
+//     pre-identity Codex session lands here.
+//
+// That last clause is the structural half of the fix, and it holds
+// independently of how many senders stamp an id. An entry with
+// ExpectedClientID set has ANNOUNCED that its echo will name it, so an echo
+// carrying no client id is provably not that entry's — and both id-less modes
+// must skip it, the FIFO head-pop as well as the ExpectedProviderItemID scan.
+// Without the skip a direct-send echo (no `clientId` on the wire) FIFO-pops
+// whatever sits at the head, which on 2026-08-24 was a queued entry still
+// waiting for its own `clientId` echo: the direct send's text landed on the
+// queued row and the queued send's echo arrived with nothing left to match, so
+// it persisted as "Injected provider context". Once every Codex send stamps an
+// id the mixed case disappears; until then the skip alone already prevents it.
 func (r *Router) consumeMatchingPendingSendForEcho(threadID, providerItemID, clientID string) (pendingSend, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -374,10 +467,27 @@ func (r *Router) consumeMatchingPendingSendForEcho(threadID, providerItemID, cli
 		}
 		return pendingSend{}, false
 	}
-	if queue[0].ExpectedProviderItemID == "" || providerItemID == "" {
-		return r.popPendingSendAtLocked(threadID, 0), true
+	// The head for an id-less echo is the first entry NOT expecting to be
+	// named by one. Everything below reads from that entry, including the
+	// identity-vs-FIFO mode decision.
+	head := -1
+	for i := range queue {
+		if queue[i].ExpectedClientID == "" {
+			head = i
+			break
+		}
+	}
+	if head < 0 {
+		return pendingSend{}, false
+	}
+	// The claude-tui id-less-echo carve-out, and the Codex-shaped FIFO pop.
+	if queue[head].ExpectedProviderItemID == "" || providerItemID == "" {
+		return r.popPendingSendAtLocked(threadID, head), true
 	}
 	for i := range queue {
+		if queue[i].ExpectedClientID != "" {
+			continue
+		}
 		if queue[i].ExpectedProviderItemID == providerItemID {
 			return r.popPendingSendAtLocked(threadID, i), true
 		}

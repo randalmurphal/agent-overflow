@@ -81,8 +81,9 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 		}
 		var rpcResp struct {
 			Error *struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
+				Code    int             `json:"code"`
+				Message string          `json:"message"`
+				Data    json.RawMessage `json:"data,omitempty"`
 			} `json:"error,omitempty"`
 			Result json.RawMessage `json:"result,omitempty"`
 		}
@@ -92,6 +93,7 @@ func (s *Session) sendRequest(ctx context.Context, method string, params any) (j
 					Method:  method,
 					Code:    rpcResp.Error.Code,
 					Message: rpcResp.Error.Message,
+					Data:    rpcResp.Error.Data,
 				}
 			}
 			if len(rpcResp.Result) > 0 {
@@ -113,6 +115,16 @@ type RPCError struct {
 	Method  string
 	Code    int
 	Message string
+	// Data is the JSON-RPC error's optional `data` member, verbatim.
+	//
+	// Upstream attaches it to exactly the refusals it wants a client to
+	// branch on rather than read — a `turn/steer` refused because the
+	// running turn is a review or a compaction carries a serialized
+	// TurnError here, `codexErrorInfo` and all
+	// (request_processors/turn_processor.rs). Dropping it would leave those
+	// indistinguishable from every other -32600 except by their English
+	// message. Empty for the many refusals that carry none.
+	Data json.RawMessage
 }
 
 func (e *RPCError) Error() string {
@@ -307,6 +319,11 @@ func IsRequestTimeout(err error, method string) bool {
 //     a generic InvalidRequest with the discriminating substring in
 //     the message.
 //
+// Steer itself already classifies the two current app-server messages
+// ("no active turn to steer" and the expected-turn mismatch) onto the
+// sentinel, so shape 1 covers them; the bare substring stays for an error
+// that reached a caller without going through classifySteerRejection.
+//
 // Callers (App's flush-queue dispatch) react to a positive result by
 // retrying via Send instead of Steer.
 func IsNoActiveTurnRace(err error) bool {
@@ -316,7 +333,15 @@ func IsNoActiveTurnRace(err error) bool {
 	if errors.Is(err, ErrNoActiveTurn) {
 		return true
 	}
-	return strings.Contains(err.Error(), "NoActiveTurn")
+	// A turn that is running but refuses input is a different state and must
+	// never read as a race — the fallback for a race is to open a new turn,
+	// which is exactly the wrong answer during a review or a compaction.
+	if IsTurnNotSteerable(err) {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "NoActiveTurn") ||
+		isSteerTurnPreconditionMessage(message)
 }
 
 // IsAmbiguousSteerTimeout reports whether err is the ambiguous

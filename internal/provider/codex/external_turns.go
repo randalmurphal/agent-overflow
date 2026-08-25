@@ -181,31 +181,19 @@ const (
 	turnAdoptionLocal turnAdoption = iota
 	// turnAdoptionExternal — nothing in this session can account for it.
 	turnAdoptionExternal
-	// turnAdoptionUndecided — the only candidates are self-queued claims, and
-	// which claim (if any) this turn belongs to is not knowable yet. The
-	// dispatched turn's `userMessage` echoes the `clientId` that decides it;
-	// resolveUserEchoOrigin is the authority, and nothing is recorded here.
-	turnAdoptionUndecided
 )
 
-// adoptTurnStart classifies an observed `turn/started`.
+// adoptTurnStart classifies an observed `turn/started`, and the answer is
+// FINAL: every turn on this thread is either one AO asked for with a
+// `turn/start` of its own or one somebody else injected, so there is no third
+// state to defer to a later event. AO no longer hands messages to the
+// provider's own queue (thread_queue.go), which was the one dispatch shape
+// that started a turn AO owned without a `turn/start`.
 //
 // Fail-safe direction: a turn is external ONLY when there is no outstanding
-// local claim, no outstanding self-queued claim, and no record of one.
-// Misreading an AO turn as external would mislabel the user's own message;
-// misreading an external turn as local costs only the marker, and the turn
-// still gets adopted as active either way.
-//
-// Self-queued claims DEFER rather than decide. A turn AO put in the
-// PROVIDER's queue starts without a `turn/start` of ours — the app-server's
-// idle hook dispatches it (thread_queue.go) — but so does a row a foreign
-// producer (`codex queue --thread …`) wrote, and the provider drains one FIFO
-// containing both. Popping the oldest claim at `turn/started` would hand AO's
-// claim to whichever row happened to be at the head, so a foreign message
-// ahead of AO's in the queue would render as the user's own. The echo carries
-// `clientId` (ThreadItem::UserMessage, rust-v0.149.0
-// codex-rs/app-server-protocol/src/protocol/v2/item.rs:236) and that is what
-// decides it.
+// local claim and no record of one. Misreading an AO turn as external would
+// mislabel the user's own message; misreading an external turn as local costs
+// only the marker, and the turn still gets adopted as active either way.
 func (s *Session) adoptTurnStart(turnID string) turnAdoption {
 	if turnID == "" {
 		return turnAdoptionLocal
@@ -223,9 +211,6 @@ func (s *Session) adoptTurnStart(turnID string) turnAdoption {
 		s.rememberTurnOriginLocked(turnID, turnOriginLocal)
 		return turnAdoptionLocal
 	}
-	if s.hasSelfQueuedClaimsLocked() {
-		return turnAdoptionUndecided
-	}
 	if !s.rememberTurnOriginLocked(turnID, turnOriginExternal) {
 		// At the origin-map cap nothing was recorded, so turnIsExternal will
 		// later answer "local" for this turn. Reporting external here would
@@ -234,46 +219,6 @@ func (s *Session) adoptTurnStart(turnID string) turnAdoption {
 		return turnAdoptionLocal
 	}
 	return turnAdoptionExternal
-}
-
-// resolveUserEchoOrigin decides who authored the user message an injected or
-// queue-dispatched turn just echoed, and reports true for "not this app".
-//
-// clientID is the echo's `clientId`. For a turn AO queued it is the optimistic
-// row id AO passed to `thread/queue/add`; for a `codex queue` row it is a v7
-// UUID that CLI mints itself
-// (rust-v0.149.0 codex-rs/tui/src/session_queue_commands.rs:48), so the two
-// can never collide.
-//
-// This is where an undecided `turn/started` becomes a verdict, and the verdict
-// is recorded so the rest of the turn reads consistently.
-//
-// `decided` reports whether THIS call is what classified the turn, and exists
-// only so the one-line-per-turn adoption log stays one line per turn: a turn
-// already classified external at its `turn/started` was logged there.
-func (s *Session) resolveUserEchoOrigin(turnID, clientID string) (external, decided bool) {
-	if turnID == "" {
-		return false, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if origin, seen := s.turnOrigins[turnID]; seen {
-		return origin == turnOriginExternal, false
-	}
-	if !s.hasSelfQueuedClaimsLocked() {
-		// No queue participation to reason about. An unrecorded turn reads
-		// local, exactly like turnIsExternal.
-		return false, false
-	}
-	if s.takeSelfQueuedClaimForClientLocked(clientID) {
-		s.rememberTurnOriginLocked(turnID, turnOriginLocal)
-		return false, true
-	}
-	// AO has rows in the provider queue but this dispatch is none of them:
-	// somebody else's row was ahead in the FIFO. The claims stay untouched —
-	// AO's own messages are still waiting.
-	s.rememberTurnOriginLocked(turnID, turnOriginExternal)
-	return true, true
 }
 
 // turnIsExternal reports a previously classified turn. Unknown turn ids read

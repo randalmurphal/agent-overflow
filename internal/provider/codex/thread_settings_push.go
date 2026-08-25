@@ -37,19 +37,14 @@ const settingsEchoWindow = 15 * time.Second
 //     Codex's own thread state — what `thread/read`, the rollout, and any
 //     other client on the same app-server see — match the user's current
 //     selection instead of lagging by one turn.
-//   - ApprovalPolicy / Sandbox / ApprovalsReviewer are pushed ONLY on a
-//     session that uses the provider's own message queue
-//     (`Session.ThreadQueueNative`). The invariant here used to be
-//     unconditional — the three ride `turn/start`, every turn re-asserts all
-//     three, and between turns they govern nothing — and that is still true
-//     for a session AO starts every turn on. It is NOT true once the
-//     app-server starts turns by itself: `ThreadQueueAddParams` carries no
-//     overrides and the drain uses `TurnInputRequest::new(input)`, a
-//     `ThreadSettingsOverrides::default()` (rust-v0.149.0
-//     codex-rs/ext/queue/src/service.rs:433), so a queued turn runs on
-//     whatever the THREAD holds. There the thread's stored policy IS the
-//     turn's policy, and a runtime-mode tightening that never reached the
-//     app-server would let the queued turn run under the looser one.
+//   - ApprovalPolicy / Sandbox / ApprovalsReviewer are NOT pushed at all.
+//     The three ride `turn/start`, which AO sends for every turn on this
+//     thread, so all three are re-asserted before anything executes and
+//     between turns they govern nothing. A second writer for them would add
+//     a way for the two to disagree and buy nothing. (They were pushed for a
+//     while, on sessions where the app-server could start a turn out of its
+//     own queue with no overrides at all — AO no longer puts messages there,
+//     so nothing starts a turn on this thread but AO.)
 //
 // An axis is pushed only when it CHANGED. A push with nothing to say is
 // never sent: upstream skips the core op entirely when every override is
@@ -59,43 +54,16 @@ type ThreadSettingsPush struct {
 	Model       bool
 	Effort      bool
 	ServiceTier bool
-	// The safety axes. Never set for a non-queue-native session — see the
-	// type doc.
-	ApprovalPolicy    bool
-	Sandbox           bool
-	ApprovalsReviewer bool
 }
 
 // Empty reports whether the push has no axes to carry.
 func (p ThreadSettingsPush) Empty() bool {
-	return !p.Model && !p.Effort && !p.ServiceTier &&
-		!p.ApprovalPolicy && !p.Sandbox && !p.ApprovalsReviewer
-}
-
-// queueNativeSettingsPush names every axis, unconditionally. It is what
-// QueueAdd asserts before handing a message to the provider's queue: the
-// question there is not "what did the user just change?" but "is the thread
-// configured the way the turn that runs this row must be?".
-func queueNativeSettingsPush() ThreadSettingsPush {
-	return ThreadSettingsPush{
-		Model:             true,
-		Effort:            true,
-		ServiceTier:       true,
-		ApprovalPolicy:    true,
-		Sandbox:           true,
-		ApprovalsReviewer: true,
-	}
+	return !p.Model && !p.Effort && !p.ServiceTier
 }
 
 // PlanThreadSettingsPush diffs two option bundles and reports which pushable
 // axes changed. It is the companion of PlanLiveUpdate — callers apply the
 // LiveUpdate first (so the session holds the new values) and then push.
-//
-// queueNative comes from `Session.ThreadQueueNative()` and decides only
-// whether the three safety axes are eligible; nothing else about the diff
-// changes. A live runtime-mode change on a queue-native session has to reach
-// the app-server before the next dispatch, because rows may already be
-// waiting in the provider's queue and their turns will not carry overrides.
 //
 // A model or effort that changed TO the empty string is not pushed. Empty
 // means "inherit the thread default" in AO's vocabulary, and neither
@@ -106,25 +74,14 @@ func queueNativeSettingsPush() ThreadSettingsPush {
 // pretending to a clear that the wire cannot carry. `serviceTier` is the one
 // exception — it is a double option and CAN be cleared, which is why fast
 // mode gets its own handling in planServiceTierWrite.
-//
-// The safety axes follow the same "empty cannot be expressed" rule for
-// approvalPolicy and sandbox. `approvalsReviewer` never is empty
-// (threadApprovalsReviewer resolves it), so its diff is a plain comparison.
-func PlanThreadSettingsPush(prev, next provider.SessionOptions, queueNative bool) ThreadSettingsPush {
+func PlanThreadSettingsPush(prev, next provider.SessionOptions) ThreadSettingsPush {
 	prevCfg := ConfigFromOptions(prev)
 	nextCfg := ConfigFromOptions(next)
-	push := ThreadSettingsPush{
+	return ThreadSettingsPush{
 		Model:       nextCfg.Model != "" && nextCfg.Model != prevCfg.Model,
 		Effort:      nextCfg.ReasoningEffort != "" && nextCfg.ReasoningEffort != prevCfg.ReasoningEffort,
 		ServiceTier: nextCfg.ServiceTier != prevCfg.ServiceTier,
 	}
-	if !queueNative {
-		return push
-	}
-	push.ApprovalPolicy = nextCfg.ApprovalPolicy != "" && nextCfg.ApprovalPolicy != prevCfg.ApprovalPolicy
-	push.Sandbox = nextCfg.Sandbox != "" && nextCfg.Sandbox != prevCfg.Sandbox
-	push.ApprovalsReviewer = threadApprovalsReviewer(nextCfg) != threadApprovalsReviewer(prevCfg)
-	return push
 }
 
 // serviceTierWrite is the decision about what an outbound `serviceTier` key
@@ -207,14 +164,6 @@ type settingsEchoExpectation struct {
 //     (`app_session_config.go#threadTurnInFlight`). Skipping the push while
 //     busy loses nothing there: the same values ride the next turn/start, and
 //     the RPC's value is the echo, not mutating a running turn.
-//   - QueueAdd is the deliberate exception and calls it MID-turn, because
-//     that is when messages get queued and a queued turn carries no overrides
-//     of its own. That is safe on upstream's own terms: every axis on
-//     ThreadSettingsUpdateParams is documented "for subsequent turns", the op
-//     is submitted onto the session queue (`Op::ThreadSettings` →
-//     `thread_settings::update`) and updates the session configuration a
-//     later turn is built from, never the running turn's already-built
-//     TurnContext.
 //   - Every failure mode degrades to today's behavior. A codex that predates
 //     the method answers with a JSON-RPC error; that is logged once per
 //     session and the method is never retried on that session, so a downgrade
@@ -237,9 +186,6 @@ func (s *Session) PushThreadSettings(ctx context.Context, push ThreadSettingsPus
 	}
 	model := s.model
 	effort := s.reasoningEffort
-	approvalPolicy := s.approvalPolicy
-	sandbox := s.sandbox
-	approvalsReviewer := s.approvalsReviewer
 	s.mu.Unlock()
 
 	params := map[string]any{"threadId": threadID}
@@ -251,26 +197,6 @@ func (s *Session) PushThreadSettings(ctx context.Context, push ThreadSettingsPus
 	if push.Effort && effort != "" {
 		params["effort"] = effort
 		expectation.effort = effort
-	}
-	// The safety axes take exactly the shapes turn/start sends
-	// (session_turn.go Send), so the two writers can never disagree about what a
-	// policy means: approvalPolicy is remapped for the connected build
-	// (approvalPolicyForCodexVersion), sandboxPolicy is the same object
-	// turnSandboxPolicy builds, and approvalsReviewer is the resolved value.
-	// They are set only for a queue-native session — PlanThreadSettingsPush
-	// and queueNativeSettingsPush are the only producers of these flags.
-	if push.ApprovalPolicy && approvalPolicy != "" {
-		params["approvalPolicy"] = approvalPolicyForCodexVersion(approvalPolicy, s.AppServerVersion())
-	}
-	if push.Sandbox && sandbox != "" {
-		sandboxPolicy, err := turnSandboxPolicy(sandbox)
-		if err != nil {
-			return fmt.Errorf("codex: %s: %w", threadSettingsUpdateMethod, err)
-		}
-		params["sandboxPolicy"] = sandboxPolicy
-	}
-	if push.ApprovalsReviewer && approvalsReviewer != "" {
-		params["approvalsReviewer"] = approvalsReviewer
 	}
 	var tierWrite serviceTierWrite
 	if push.ServiceTier {

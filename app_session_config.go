@@ -216,7 +216,7 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 		if !ok {
 			return false
 		}
-		push := codex.PlanThreadSettingsPush(sess.launchOpts, opts, sess.usesProviderQueue())
+		push := codex.PlanThreadSettingsPush(sess.launchOpts, opts)
 		sess.codex.ApplyLiveUpdate(update)
 		a.pushCodexThreadSettings(threadID, sess.codex, push)
 	default:
@@ -347,37 +347,33 @@ const codexSettingsPushTimeout = 5 * time.Second
 //
 // Two rules, both deliberate:
 //
-//  1. **Between turns only — unless the session uses the provider's own
-//     queue.** A push while a turn is in flight is normally skipped entirely
-//     rather than deferred, and nothing is lost by skipping: the same values
-//     are already in the session's turn config, so the next turn/start
-//     asserts them exactly as it did before this call existed. (The check is
-//     best-effort against a concurrent send from another goroutine — but that
-//     race is benign in both directions, because a push that lands beside a
-//     turn/start writes the very values that turn/start is itself carrying.)
+//  1. **Between turns only.** A push while a turn is in flight is skipped
+//     entirely rather than deferred, and nothing is lost by skipping: the
+//     same values are already in the session's turn config, so the next
+//     turn/start asserts them exactly as it did before this call existed.
+//     (The check is best-effort against a concurrent send from another
+//     goroutine — but that race is benign in both directions, because a push
+//     that lands beside a turn/start writes the very values that turn/start
+//     is itself carrying.)
 //
-//     A queue-native session inverts the argument. There the NEXT turn may be
-//     one the app-server starts by itself out of `thread/queue/*`, and a
-//     queued turn carries no per-turn overrides at all — the thread's stored
-//     settings are its settings. A turn being in flight is also precisely
-//     when rows get queued, so skipping the push there would skip it exactly
-//     when it is load-bearing: the user tightens the runtime mode, the
-//     already-queued message runs under the loose one. See
-//     `codex.PlanThreadSettingsPush`.
+//     The carve-out this used to have — push anyway on a queue-native
+//     session — existed only because the app-server could then start the
+//     NEXT turn itself out of `thread/queue/*`, with no per-turn overrides
+//     on it. AO no longer puts messages there, so nothing starts a turn on
+//     this thread but AO's own turn/start, and the runtime-mode axes ride
+//     that. See `codex.PlanThreadSettingsPush`.
 //
 //  2. **Never user-facing on failure.** A failed or unsupported push is a
 //     lost optimization, not a lost setting. It is logged; the thread's
 //     behavior is unchanged. Codex's own rejection of an override arrives
 //     separately as an `error` notification, which is already thread error
 //     state, and an echo that disagrees with the push is surfaced by
-//     verifyThreadSettingsEcho. A queue-native session does not rely on this
-//     path for correctness either — `QueueAdd` re-asserts the whole config
-//     itself and refuses to queue when that assertion fails.
+//     verifyThreadSettingsEcho.
 func (a *App) pushCodexThreadSettings(threadID string, sess *codex.Session, push codex.ThreadSettingsPush) {
 	if sess == nil || push.Empty() {
 		return
 	}
-	if a.threadTurnInFlight(threadID) && !sess.ThreadQueueNative() {
+	if a.threadTurnInFlight(threadID) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), codexSettingsPushTimeout)

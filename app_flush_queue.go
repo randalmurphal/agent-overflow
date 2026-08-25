@@ -10,7 +10,6 @@ import (
 
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/flushqueue"
-	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -409,7 +408,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve turn index: %w", err)
 	}
 
-	// Three placements, one per dispatch shape (resolveFlushTurnPlacement
+	// Two placements, one per dispatch shape (resolveFlushTurnPlacement
 	// picks the response turn; this picks where the row is PERSISTED):
 	//
 	//   - Claude with an active turn: persist the user_text within the active
@@ -417,58 +416,18 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	//     response at the point it was dispatched), but register the pending
 	//     send at the response turn so resolveTurnIndexOnStart opens a fresh
 	//     turn for the response. This is the only eager-persist case.
-	//   - Codex on `turn/steer` (< 0.148): the message joins the RUNNING turn's
+	//   - Codex on `turn/steer`: the message joins the RUNNING turn's
 	//     pending_input, so resolveFlushTurnPlacement already returned the
 	//     active turn's index and both indices are the same one.
-	//   - Codex on the PROVIDER queue (>= 0.148): nothing joins the running
-	//     turn — the app-server starts a new turn for the row when the thread
-	//     goes idle — so resolveFlushTurnPlacement returned the NEXT turn and
-	//     the row belongs there too.
 	persistTurnIndex := responseTurnIndex
 	eagerPersist := false
-	providerQueued := sess.codex != nil && sess.usesProviderQueue()
-	switch {
-	case sess.codex == nil:
+	if sess.codex == nil {
 		if active, found, lookupErr := a.store.GetActiveTurn(threadID); lookupErr == nil && found {
 			persistTurnIndex = active.TurnIndex
 			eagerPersist = true
 		} else if lookupErr != nil {
 			return QueueFlushedItem{}, false, requeue, fmt.Errorf("resolve persist turn: %w", lookupErr)
 		}
-	case providerQueued:
-		// The row is persisted BEFORE the provider is asked to take it, at
-		// the response turn (where it belongs — the app-server opens a new
-		// turn for it). That is the only way ownership can be durable: once
-		// `thread/queue/add` succeeds the message lives in codex's SQLite and
-		// runs on the next resume even if this process never comes back, and
-		// an in-memory marker cannot survive an app restart to say so. The
-		// row IS the record, keyed by the id that goes on the wire as
-		// `clientUserMessageId`, and `itemmeta.MarkProviderQueued` is what
-		// says who owns it. A definite add failure unwinds it through the
-		// same stale-row requeue an interrupted eager persist uses.
-		//
-		// The marker goes on BEFORE the add, not after the ack, because the
-		// window it has to cover starts at the write: an add that lands and
-		// is never acked is exactly the case where the process may not come
-		// back to stamp anything. Marking a row whose add then definitively
-		// failed costs nothing — that path deletes the row.
-		//
-		// It goes on as UNPROVEN (itemmeta.MarkProviderQueueHandoff), and
-		// that half is what keeps a crash between this write and the add from
-		// stranding the message. A row marked plainly provider-queued is one
-		// every recovery path steps around: session-death drain leaves it,
-		// the resume re-arm only touches rows the provider still lists, and
-		// nothing restores it — correct for a message the provider HAS, fatal
-		// for one it never took. The confirmation below promotes it the
-		// moment the app-server's ack (or a list read-back) proves the row
-		// exists; anything short of that leaves the next session start to ask
-		// the queue (reconcileCodexProviderQueueOnResume).
-		eagerPersist = true
-		markedMeta, markErr := itemmeta.MarkProviderQueueHandoff(userMeta)
-		if markErr != nil {
-			return QueueFlushedItem{}, false, requeue, fmt.Errorf("mark provider-queued: %w", markErr)
-		}
-		userMeta = markedMeta
 	}
 
 	// Mint the queued message's wire id for Claude-family sessions, like
@@ -482,8 +441,15 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 	// FIFO for the WHOLE remaining turn). The row meta is deliberately NOT
 	// pre-stamped: the echo-time merge must produce a meta change so
 	// attachProviderItemIDToUserRow emits the upsert that clears Zone 2.
-	// Codex assigns its own item ids — sendUUID stays empty and the entry
-	// keeps FIFO consumption.
+	//
+	// Codex assigns its own item ids, so it names the message the other way
+	// round: AO passes the row id as `clientUserMessageId` on `turn/steer`
+	// (and on the fresh-turn fallback below), and the dispatched
+	// `userMessage` echoes it back as `clientId`. Both halves — the stamp on
+	// the wire and the ByClientID registration — are one decision: an entry
+	// registered by client id is invisible to an id-less echo, so a codex
+	// send that stamps but registers FIFO (or the reverse) reintroduces the
+	// 2026-08-24 mispop.
 	var sendUUID string
 	if sess.codex == nil {
 		sendUUID = uuid.NewString()
@@ -528,6 +494,17 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 
 	flushedItem := QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}
 
+	// The identity this dispatch will be recognised by. Exactly one of the
+	// two axes is ever populated (see sendUUID above), and the Codex axis is
+	// derived from the row id rather than restated, so the value that goes on
+	// the wire and the value the registry expects cannot drift.
+	sendExpect := triage.PendingSendExpectation{ProviderItemID: sendUUID}
+	var clientUserMessageID string
+	if sess.codex != nil {
+		clientUserMessageID = userItem.ID
+		sendExpect = triage.PendingSendExpectation{ByClientID: true}
+	}
+
 	if eagerPersist {
 		// Emit queue_flushed so the frontend creates the Zone 2 entry
 		// (queued marker above the composer). Persist the row quietly —
@@ -548,10 +525,11 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// emits the provider:item_event upsert that clears Zone 2.
 		// resolveTurnIndexOnStart reads responseTurnIndex from the
 		// FIFO to open a new turn for the response.
-		a.triage.RegisterPendingQuietFlushSend(threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt, sendUUID)
+		a.triage.RegisterPendingQuietFlushSendWithExpectation(
+			threadID, item.ID, userItem, responseTurnIndex, item.EnqueuedAt, sendExpect)
 	} else {
 		// Deferred: row persists at echo time via persistDeferredUserText.
-		a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt, sendUUID)
+		a.triage.RegisterPendingFlushSendWithExpectation(threadID, item.ID, userItem, item.EnqueuedAt, sendExpect)
 	}
 	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
 		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
@@ -561,36 +539,40 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:     providerAttachments,
 		UserMessageUUID: sendUUID,
+		// Codex's half of the same identity (empty for every other provider):
+		// stamped on both `turn/steer` and the fresh-turn fallback, and echoed
+		// back on the `userMessage` item's `clientId`.
+		ClientUserMessageID: clientUserMessageID,
 		// Agent Overflow's own expanded command must bypass Claude's local
 		// router. Every other leading `/name` keeps Claude's native command
 		// semantics, independent of discovery timing.
 		GuardClaudeSlashCommand: !payload.ExpandComposerCommands || resolved.command != "",
 	}
 
-	// The provider queue requires a client message id and echoes it back on
-	// the dispatched `userMessage` item's `clientId`. AO passes the optimistic
-	// row id the dispatcher just allocated, so a queue listing can say which
-	// entries are this app's. Empty for every other path — Codex assigns its
-	// own item ids and the pending FIFO consumes at the head.
-	handoff, dispatchErr := a.dispatchFlushToProvider(sess, threadID, providerContent, sendOpts, userItem.ID)
-	if dispatchErr == nil && handoff == codexQueueHandoffConfirmed {
-		// The app-server said the row is in its queue. Promote the row from
-		// "AO was handing this over" to "the provider owns it", which is what
-		// makes a LATER absence from the queue read as "it dispatched" rather
-		// than "the add never landed". Best-effort: a failed promotion leaves
-		// the row unproven, and the resume-side reconcile re-asks the queue.
-		a.confirmProviderQueueHandoff(threadID, userItem.ID)
-	}
+	dispatchErr := a.dispatchFlushToProvider(sess, providerContent, sendOpts)
 	if dispatchErr != nil {
 		if codex.IsAmbiguousSteerTimeout(dispatchErr) {
 			log.Printf("flush dispatch: thread=%s item=%s: codex steer timed out after write; leaving pending confirmation for provider echo", threadID, item.ID)
 			a.applyProposedPlanAcceptance(threadID, userItem, resolved)
 			return flushedItem, eagerPersist, triage.QueuedFlushItem{}, nil
 		}
-		// IsNoActiveTurnRace is a STEER failure mode: `thread/queue/add`
-		// succeeds whether or not a turn is running, so a provider-queue
-		// session can never take this branch.
-		if sess.codex != nil && !sess.usesProviderQueue() && codex.IsNoActiveTurnRace(dispatchErr) {
+		// A turn IS running and simply cannot take input — Codex is running a
+		// review or a compaction (codex.ErrTurnNotSteerable). Nothing is sent:
+		// re-dispatching as a fresh `turn/start` would interleave the user's
+		// message with the running review, and `thread/queue/add` is not an
+		// option AO has any more. The item goes back on AO's own flush queue,
+		// where the next boundary drain (maybeFlushQueueAtBoundary, which the
+		// review's own turn completion raises) retries it. Deliberately NOT
+		// routed through persistFlushDispatchError: "the queue is waiting for
+		// the review to finish" is the queue working, not a failure to show
+		// the user an error row for.
+		if sess.codex != nil && codex.IsTurnNotSteerable(dispatchErr) {
+			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
+			log.Printf("flush dispatch: thread=%s item=%s: the active codex turn cannot take input (%v); leaving the message queued for the next turn boundary",
+				threadID, item.ID, dispatchErr)
+			return QueueFlushedItem{}, eagerPersist, requeue, dispatchErr
+		}
+		if sess.codex != nil && codex.IsNoActiveTurnRace(dispatchErr) {
 			a.triage.ClearPendingSendForFailure(threadID, userItem.ID)
 			if activeAtResolution {
 				responseTurnIndex++
@@ -604,9 +586,13 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			userItem.TurnIndex = responseTurnIndex
 			userItem.CreatedAt = time.Now().UnixMilli()
 			userItem.UpdatedAt = userItem.CreatedAt
-			// Codex-only branch (IsNoActiveTurnRace) — sendUUID is empty
-			// here, so the re-registered entry keeps FIFO consumption.
-			a.triage.RegisterPendingFlushSendWithEnqueuedAt(threadID, item.ID, userItem, item.EnqueuedAt, sendUUID)
+			// The row id changed, and the client id IS the row id — so both
+			// the wire stamp and the expectation are re-derived from the new
+			// one. Re-registering with the old id would leave the entry
+			// waiting on a `clientId` nothing will ever echo.
+			sendOpts.ClientUserMessageID = userItem.ID
+			a.triage.RegisterPendingFlushSendWithExpectation(
+				threadID, item.ID, userItem, item.EnqueuedAt, triage.PendingSendExpectation{ByClientID: true})
 			sess.liveness.bumpActivity(time.Now())
 			if sendErr := sess.codex.Send(context.Background(), providerContent, sendOpts); sendErr != nil {
 				if codex.IsAmbiguousTurnStartTimeout(sendErr) {
@@ -680,12 +666,8 @@ func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, err
 // the same next index.
 func (a *App) resolveFlushTurnPlacement(threadID string, sess session) (turnIndex int, activeAtResolution bool, err error) {
 	// Codex STEERS a queued message into the running turn, so its row belongs
-	// in that turn. A session on the provider-native queue does not: the
-	// app-server holds the message until the thread goes idle and then starts
-	// a NEW turn for it, exactly like a Claude queued send, so the row has to
-	// be placed at the response turn instead. Same decision the dispatch verb
-	// takes, from the same session-lifetime flag.
-	if sess.codex != nil && !sess.usesProviderQueue() {
+	// in that turn.
+	if sess.codex != nil {
 		if active, found, err := a.store.GetActiveTurn(threadID); err == nil && found {
 			return active.TurnIndex, true, nil
 		} else if err != nil {
@@ -720,13 +702,12 @@ func (a *App) nextSendTurnIndex(threadID string) (int, error) {
 }
 
 // dispatchFlushToProvider routes the actual provider call based on
-// session type. A Codex session on the provider-native queue
-// (`thread/queue/add`, codex >= 0.148) hands the message over and returns —
-// see `usesProviderQueue` for why the choice is frozen at session start and
-// why the two queues can never both dispatch the same message. Older Codex
-// drains prefer Steer (mid-turn pending_input);
-// the caller handles no-active-turn fallback after it can re-register
-// the pending marker at the correct fresh-turn position. Claude needs no
+// session type. A Codex drain STEERS (mid-turn pending_input); the caller
+// handles the no-active-turn fallback after it can re-register the pending
+// marker at the correct fresh-turn position, and the not-steerable refusal by
+// leaving the message queued. It never writes to the app-server's own
+// `thread/queue/*`: that queue dispatches on ITS clock, which means AO's
+// queue and the provider's would both own the same message. Claude needs no
 // second call: sess.Send writes the user envelope to stdin, which IS the
 // steer — the CLI's queue processor drains it into the running turn at
 // the next API iteration (query.ts:1547) whenever that turn still has
@@ -734,14 +715,6 @@ func (a *App) nextSendTurnIndex(threadID string) (int, error) {
 // message is never dropped in either case. See app_steer.go's doc for
 // the verified behaviour and claude-wire.md §command_lifecycle for the
 // per-message ack that reports which path it took.
-//
-// The first return says what the call ESTABLISHED about the message, which is
-// not the same question as whether it errored. Only a confirmed hand-off lets
-// the caller promote the row to provider-owned; an unconfirmed one settles the
-// dispatch (re-sending is the one unrecoverable move) while leaving the row's
-// hand-off unproven, so the next session start resolves it against the queue
-// rather than treating a message the provider may never have taken as history.
-// See codexQueueHandoff and itemmeta.MarkProviderQueueHandoff.
 //
 // Two distinct race shapes both trigger the fallback:
 //
@@ -756,84 +729,20 @@ func (a *App) nextSendTurnIndex(threadID string) (int, error) {
 //     package surfaces wire errors as `fmt.Errorf("codex: %s: %s
 //     (code %d)", ...)` rather than a typed wrapper. Upstream's
 //     error string is stable per codex-rs/core/src/session/mod.rs.
-func (a *App) dispatchFlushToProvider(
-	sess session, threadID, content string, opts provider.SendOptions, clientMessageID string,
-) (codexQueueHandoff, error) {
+func (a *App) dispatchFlushToProvider(sess session, content string, opts provider.SendOptions) error {
 	// Every branch below writes to provider stdin, so stamp activity
 	// once up front. Matches the pre-Send bumps in sendToProvider /
 	// steerMessageWithOptions so the idle reaper can't reap a session
 	// in the middle of a flush dispatch.
 	sess.liveness.bumpActivity(time.Now())
 	if sess.codex != nil {
-		if sess.usesProviderQueue() {
-			// Hand the message to the app-server's own FIFO and stop. The
-			// provider dispatches it when the thread next goes idle
-			// (`QueuedItemService::on_thread_idle`), which is why AO must not
-			// also call `thread/queue/start` and why nothing here waits: the
-			// pending-send entry registered by the caller is claimed by the
-			// dispatched turn's `userMessage` echo, the same correlation the
-			// steer path uses.
-			handoff := codexQueueHandoffConfirmed
-			submission, err := sess.codex.QueueAdd(context.Background(), content, opts, clientMessageID)
-			if err != nil {
-				if !codex.IsAmbiguousQueueAddTimeout(err) {
-					return codexQueueHandoffNone, err
-				}
-				// The add was written but never acked. `thread/queue/add` has
-				// no idempotency key upstream — a retry is a second row and a
-				// second turn — so the queue is ASKED instead of guessed at.
-				confirmed, found, listErr := a.confirmAmbiguousQueueAdd(sess, clientMessageID)
-				if listErr != nil {
-					log.Printf("flush dispatch: thread=%s item=%s: codex thread/queue/add timed out and the queue could not be read back (%v); leaving the pending confirmation for the provider echo and the row's hand-off unproven",
-						threadID, clientMessageID, listErr)
-					return codexQueueHandoffUnconfirmed, nil
-				}
-				if !found {
-					// Absent is still ambiguous, not proof of failure: an idle
-					// thread dispatches inside `enqueue` itself
-					// (`wake_if_loaded`) and the drain DELETES the row it
-					// started, so "not in the queue" also describes a message
-					// that is already running. Re-sending is the one
-					// unrecoverable move, so this leaves the pending entry for
-					// the echo — the same asymmetry the steer and turn/start
-					// timeouts take.
-					log.Printf("flush dispatch: thread=%s item=%s: codex thread/queue/add timed out and the row is not in the queue; it may already have dispatched, so leaving the pending confirmation for the provider echo rather than re-sending",
-						threadID, clientMessageID)
-					return codexQueueHandoffUnconfirmed, nil
-				}
-				// The list read the row back: the add DID land, so the
-				// hand-off is proven after all.
-				submission = confirmed
-				handoff = codexQueueHandoffConfirmed
-			}
-			// The message is now the PROVIDER's, not a write we are waiting to
-			// make — durable in its SQLite, dispatched on the next idle even if
-			// this app-server dies first. Nothing is recorded HERE: the row the
-			// caller persisted before this call already carries the ownership
-			// marker, which is what makes it survive an app restart and what
-			// keeps every ambiguous return path above (including the one where
-			// the read-back itself fails) from losing the fact.
-			// Say so on the same channel Claude's own `queued` ack uses,
-			// so the pending row above the composer reads "the agent has this
-			// message queued" instead of "waiting to be sent" — same UX,
-			// different provider behind it. Purely additive: the row already
-			// renders correctly with no ack at all, so a failure to correlate
-			// costs a label, never the row.
-			a.emit("provider:command_lifecycle", triage.CommandLifecycleEvent{
-				ThreadID:    threadID,
-				CommandUUID: submission.ID,
-				UserItemID:  clientMessageID,
-				State:       provider.CommandQueued,
-			})
-			return handoff, nil
-		}
-		return codexQueueHandoffNone, sess.codex.Steer(context.Background(), content, opts)
+		return sess.codex.Steer(context.Background(), content, opts)
 	}
 	providerSess := sess.providerSession()
 	if providerSess == nil {
-		return codexQueueHandoffNone, fmt.Errorf("session has no provider")
+		return fmt.Errorf("session has no provider")
 	}
-	return codexQueueHandoffNone, providerSess.Send(context.Background(), content, opts)
+	return providerSess.Send(context.Background(), content, opts)
 }
 
 // persistFlushDispatchError persists a system `error` row sibling to

@@ -16,24 +16,24 @@ import (
 // same lines — is every emit line JSON, and does the app's own parser accept
 // it — so a variable bound in one and not the other means the stricter check
 // silently runs against a line no scenario would ever emit. That is how
-// ${USER_INPUT} and ${QUEUE_CLIENT_ID} came to be substituted in the integrity
+// ${USER_INPUT} and ${CLIENT_ID} came to be substituted in the integrity
 // check and left literal in the parser check.
 //
 // A variable a scenario can reference must be bound here, and bound to a value
-// shaped like the real one. USER_INPUT / QUEUE_CLIENT_ID are bound by the codex
-// adapter only for a turn it dispatched from the provider-side queue and are
-// empty on every other turn — the values below are the populated case, which is
+// shaped like the real one. USER_INPUT / CLIENT_ID are bound by the codex
+// adapter from the `turn/start` it is answering, and CLIENT_ID is empty when
+// the caller supplied none — the values below are the populated case, which is
 // the one that has to parse.
 var TestVars = Vars{
-	"SESSION_ID":      "sess-test",
-	"THREAD_ID":       "thread-test",
-	"TURN":            "1",
-	"TURN_ID":         "turn-1",
-	"REQUEST_ID":      "7",
-	"CWD":             "/tmp/workspace",
-	"ITER":            "1",
-	"USER_INPUT":      "queued message",
-	"QUEUE_CLIENT_ID": "user:1:flush:1",
+	"SESSION_ID": "sess-test",
+	"THREAD_ID":  "thread-test",
+	"TURN":       "1",
+	"TURN_ID":    "turn-1",
+	"REQUEST_ID": "7",
+	"CWD":        "/tmp/workspace",
+	"ITER":       "1",
+	"USER_INPUT": "steered message",
+	"CLIENT_ID":  "user:1:flush:1",
 }
 
 // TestLibraryIntegrity enforces the shipped-library invariants: every

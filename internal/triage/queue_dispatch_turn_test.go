@@ -775,3 +775,267 @@ func TestEagerPersistedDeferredFlushEcho_OpensLogicalTurn(t *testing.T) {
 		t.Errorf("flush row turn_index = %d, want 1", row.TurnIndex)
 	}
 }
+
+// A turn start the provider attributed to another producer
+// (`origin: external-queue` — `codex queue --thread` wrote into the same FIFO
+// the app-server drains) must not read its index off the pending-send head.
+// The head names a message this app dispatched and is still waiting on; the
+// foreign turn taking its index is a SQUAT, and the pending send's own echo
+// then collides with it on UNIQUE(thread_id, turn_index) when it opens the
+// turn it was promised (2026-08-24). The foreign turn gets a turn of its own,
+// after everything known.
+func TestHandleTurnStart_ExternalOrigin_DoesNotStealThePendingSendTurnIndex(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	// Turn 0 ran and settled, so LastTurnIndex reads 0.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 complete: %v", err)
+	}
+
+	// AO dispatched a queued message for turn 1; its row is deferred and
+	// therefore invisible to LastTurnIndex.
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:ours", store.Item{
+		ID:        "user:1:flush:1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "ours",
+	}, 10, PendingSendExpectation{ByClientID: true})
+
+	// The foreign turn dispatches first. Codex's turn/started carries no
+	// turn index, only the provider turn id and the origin stamp.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    "codex-turn-foreign",
+		Meta:      json.RawMessage(`{"origin":"external-queue"}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("foreign turn/started: %v", err)
+	}
+
+	openTurn, ok := router.openTurnIndex("t1")
+	if !ok {
+		t.Fatal("expected an open turn after the foreign turn start")
+	}
+	if openTurn == 1 {
+		t.Fatal("the foreign turn squatted on the pending send's turn index 1")
+	}
+	if openTurn != 2 {
+		t.Fatalf("openTurnIndex = %d, want 2 (past the last known turn AND past every pending send)", openTurn)
+	}
+	if _, found, err := st.GetTurnByThreadIndex("t1", 2); err != nil || !found {
+		t.Fatalf("foreign turns row missing at index 2: found=%v err=%v", found, err)
+	}
+	if _, found, err := st.GetTurnByThreadIndex("t1", 1); err == nil && found {
+		t.Fatal("turn index 1 was taken — it belongs to the pending send")
+	}
+
+	// The pending send is untouched and still names turn 1.
+	head, ok := router.PeekPendingSendHeadForTest("t1")
+	if !ok || head.AOItemID != "user:1:flush:1" || head.TurnIndex != 1 {
+		t.Fatalf("pending head = %+v ok=%v, want user:1:flush:1 at turn 1", head, ok)
+	}
+}
+
+// Same rule with no pending send at all: an external turn on an otherwise
+// settled thread still opens a NEW turn rather than reusing the last one.
+func TestHandleTurnStart_ExternalOrigin_AllocatesAfterTheLastKnownTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 0, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 start: %v", err)
+	}
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: normalTurnCompleteMeta(), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn 0 complete: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "codex-turn-foreign",
+		Meta: json.RawMessage(`{"origin":"external-queue"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("foreign turn/started: %v", err)
+	}
+
+	if openTurn, ok := router.openTurnIndex("t1"); !ok || openTurn != 1 {
+		t.Fatalf("openTurnIndex = %d ok=%v, want 1 (LastTurnIndex+1)", openTurn, ok)
+	}
+	if _, found, err := st.GetTurnByThreadIndex("t1", 1); err != nil || !found {
+		t.Fatalf("foreign turns row missing at index 1: found=%v err=%v", found, err)
+	}
+}
+
+// An unknown origin is not an attribution: the pending-send peek stays the
+// answer for every turn start this app could have provoked.
+func TestHandleTurnStart_UnknownOrigin_KeepsThePendingSendTurnIndex(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	router.RegisterPendingSend("t1", "user:4", 4)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "codex-turn-1",
+		Meta: json.RawMessage(`{"origin":"something-new"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn/started: %v", err)
+	}
+	if openTurn, ok := router.openTurnIndex("t1"); !ok || openTurn != 4 {
+		t.Fatalf("openTurnIndex = %d ok=%v, want 4 (pending-send head)", openTurn, ok)
+	}
+}
+
+// upsertTurnRow used to log and swallow the UNIQUE(thread_id, turn_index)
+// failure, which left the incoming turn with no row of its own: its settle
+// then folded onto the SQUATTER's row via persistedTurnID. Two provably
+// distinct provider turns on one index relocate the incoming one instead.
+func TestUpsertTurnRow_DistinctProviderTurnsCollide_RelocatesTheIncomingTurn(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	now := time.Now().UnixMilli()
+	if err := st.InsertTurn(store.Turn{
+		TurnID: "t1:prov-a", ThreadID: "t1", TurnIndex: 1,
+		StartedAt: now, ProviderTurnID: "prov-a",
+	}); err != nil {
+		t.Fatalf("seed standing turn: %v", err)
+	}
+
+	placed := router.upsertTurnRow(store.Turn{
+		TurnID: "t1:prov-b", ThreadID: "t1", TurnIndex: 1,
+		StartedAt: now + 1, ProviderTurnID: "prov-b",
+	})
+	if placed == 1 {
+		t.Fatal("the incoming turn was left colliding on index 1")
+	}
+	if placed != 2 {
+		t.Fatalf("placed index = %d, want 2 (the next free index)", placed)
+	}
+
+	relocated, found, err := st.GetTurnByThreadIndex("t1", 2)
+	if err != nil || !found {
+		t.Fatalf("relocated row missing: found=%v err=%v", found, err)
+	}
+	if relocated.ProviderTurnID != "prov-b" {
+		t.Fatalf("relocated provider turn = %q, want prov-b", relocated.ProviderTurnID)
+	}
+	standing, found, err := st.GetTurnByThreadIndex("t1", 1)
+	if err != nil || !found {
+		t.Fatalf("standing row lost: found=%v err=%v", found, err)
+	}
+	if standing.TurnID != "t1:prov-a" || standing.StartedAt != now {
+		t.Fatalf("standing row was disturbed: %+v", standing)
+	}
+}
+
+// The reverse-order guard. openQueuedEchoTurn mints `<thread>:<index>`; a
+// Codex wire start for the SAME logical turn mints
+// `<thread>:<providerTurnID>`. One index, two id shapes, one turn — adopt the
+// standing row rather than inserting a second one (which is what raised the
+// UNIQUE violation) and rather than relocating (which would split one turn's
+// rows across two indexes).
+func TestUpsertTurnRow_EchoOpenedIndex_AdoptedByTheProviderTurnStart(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startedAt := time.Now().UnixMilli()
+	router.openQueuedEchoTurn("t1", 1, startedAt, -1)
+	if _, found, err := st.GetTurn("t1:1"); err != nil || !found {
+		t.Fatalf("echo-opened turns row missing: found=%v err=%v", found, err)
+	}
+
+	// The wire start arrives afterwards, carrying the provider's own id.
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		TurnID: "codex-turn-1", Timestamp: time.UnixMilli(startedAt + 5),
+	}); err != nil {
+		t.Fatalf("wire turn/started: %v", err)
+	}
+
+	if openTurn, ok := router.openTurnIndex("t1"); !ok || openTurn != 1 {
+		t.Fatalf("openTurnIndex = %d ok=%v, want 1 (the adopted turn)", openTurn, ok)
+	}
+	turns, err := st.ListRecentTurns("t1", 10)
+	if err != nil {
+		t.Fatalf("list turns: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("turns rows = %d (%+v), want exactly 1 — the wire start must adopt, not re-insert", len(turns), turns)
+	}
+	if turns[0].TurnID != "t1:1" || turns[0].TurnIndex != 1 {
+		t.Fatalf("surviving row = %+v, want the echo-opened t1:1 at index 1", turns[0])
+	}
+	if turns[0].StartedAt != startedAt {
+		t.Fatalf("started_at = %d, want the echo's %d (the existing row is authoritative)", turns[0].StartedAt, startedAt)
+	}
+}
+
+// The forward order is still the openQueuedEchoTurn guard's job, and the row
+// the wire start wrote is what survives.
+func TestUpsertTurnRow_ProviderTurnStartThenEcho_KeepsOneRow(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	startedAt := time.Now().UnixMilli()
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", TurnIndex: 1,
+		TurnID: "codex-turn-1", Timestamp: time.UnixMilli(startedAt),
+	}); err != nil {
+		t.Fatalf("wire turn/started: %v", err)
+	}
+	router.openQueuedEchoTurn("t1", 1, startedAt+5, -1)
+
+	turns, err := st.ListRecentTurns("t1", 10)
+	if err != nil {
+		t.Fatalf("list turns: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("turns rows = %d (%+v), want exactly 1", len(turns), turns)
+	}
+	if turns[0].TurnID != "t1:codex-turn-1" {
+		t.Fatalf("surviving row = %+v, want the wire start's t1:codex-turn-1", turns[0])
+	}
+}
+
+// isTurnIndexCollisionError matches modernc.org/sqlite's message by
+// substring — the driver exposes no typed error — so the spelling is pinned
+// against the real refusal rather than a remembered one. A driver that
+// reworded it would otherwise turn the re-resolution path back into the
+// log-and-swallow it replaced, silently.
+func TestIsTurnIndexCollisionError_MatchesTheDriversRefusal(t *testing.T) {
+	_, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	now := time.Now().UnixMilli()
+	if err := st.InsertTurn(store.Turn{TurnID: "a", ThreadID: "t1", TurnIndex: 1, StartedAt: now}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	err := st.InsertTurn(store.Turn{TurnID: "b", ThreadID: "t1", TurnIndex: 1, StartedAt: now})
+	if err == nil {
+		t.Fatal("a second turns row at one (thread, turn_index) was accepted")
+	}
+	if !isTurnIndexCollisionError(err) {
+		t.Fatalf("isTurnIndexCollisionError did not recognise %v", err)
+	}
+	if isTurnIndexCollisionError(nil) {
+		t.Fatal("nil read as a collision")
+	}
+}

@@ -304,3 +304,61 @@ func TestTimedOutTurnStartClaimDoesNotAbsorbALaterExternalTurn(t *testing.T) {
 		}
 	})
 }
+
+// TestTurnAdoptionIsDecidedAtTurnStarted pins that the verdict is FINAL at
+// `turn/started`, with no later event able to revise it.
+//
+// It used to be able to defer: a message AO handed to the provider's own queue
+// started a turn with no `turn/start` of ours — the same shape as an injected
+// one — and only the `userMessage` echo's `clientId` could tell the two apart.
+// AO no longer writes to that queue, so nothing but AO starts a turn AO owns,
+// and the echo's `clientId` is a correlation handle rather than an origin
+// verdict. Deciding once is what keeps the turn-start marker and every later
+// row of the same turn from disagreeing.
+func TestTurnAdoptionIsDecidedAtTurnStarted(t *testing.T) {
+	t.Run("an unclaimed turn/started is external immediately", func(t *testing.T) {
+		s, events := externalTurnTestSession(t, "codex-thread-1")
+
+		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-ext"}}}`))
+		if !s.turnIsExternal("turn-ext") {
+			t.Fatal("turn/started left the origin undecided; nothing later can decide it now")
+		}
+		// An echo carrying a client id nobody in this session minted changes
+		// nothing — the answer was already recorded.
+		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-ext","item":{"id":"item-1","type":"userMessage","clientId":"user:4:flush:1","content":[{"type":"text","text":"hi"}]}}}`))
+
+		if len(*events) != 2 {
+			t.Fatalf("expected turn start + user text, got %+v", *events)
+		}
+		for _, evt := range *events {
+			if got, ok := metaValue(t, evt.Meta, "origin"); !ok || got != ExternalTurnOriginQueue {
+				t.Errorf("%s origin = %v (present=%v), want %q", evt.Kind, got, ok, ExternalTurnOriginQueue)
+			}
+		}
+	})
+
+	t.Run("a claimed turn stays local whatever the echo carries", func(t *testing.T) {
+		s, events := externalTurnTestSession(t, "codex-thread-1")
+
+		s.beginLocalTurnStart()
+		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"codex-thread-1","turn":{"id":"turn-mine"}}}`))
+		s.bindLocalTurnStart("turn-mine")
+		// A client id this session never sent, on a turn it definitely started.
+		s.dispatchLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"codex-thread-1","turnId":"turn-mine","item":{"id":"item-1","type":"userMessage","clientId":"0199e3a1-0000-7000-8000-000000000001","content":[{"type":"text","text":"hi"}]}}}`))
+
+		if len(*events) != 2 {
+			t.Fatalf("expected turn start + user text, got %+v", *events)
+		}
+		for _, evt := range *events {
+			if got, ok := metaValue(t, evt.Meta, "origin"); ok {
+				t.Errorf("%s carries origin %v; the turn was claimed before its start arrived", evt.Kind, got)
+			}
+		}
+		// The correlation handle still reaches the app layer — it is what a
+		// pending send is matched by; it just is not an origin verdict.
+		if got, ok := metaValue(t, (*events)[1].Meta, "client_id"); !ok ||
+			got != "0199e3a1-0000-7000-8000-000000000001" {
+			t.Errorf("client_id = %v (present=%v), want the echo's own id", got, ok)
+		}
+	})
+}

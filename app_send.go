@@ -570,14 +570,29 @@ func (a *App) sendMessageLocked(
 	// deliberately has no marker: its literal command is not a provider user
 	// item, and its synthetic visible turn carries TurnIndex directly.
 	// The marker is consumed by handleUserText when the matching replay
-	// envelope arrives, or cleared on send failure below. sendUUID (set
-	// for Claude, empty for Codex) keys the match by identity.
-	a.triage.RegisterPendingSendExpecting(threadID, userItem.ID, turnIndex, sendUUID)
+	// envelope arrives, or cleared on send failure below.
+	//
+	// Each provider keys the match by the identity it can actually offer.
+	// Claude echoes the uuid AO minted (sendUUID). Codex assigns its own item
+	// ids, so the naming runs the other way: AO stamps the row id as
+	// `clientUserMessageId` on `turn/start` and the `userMessage` echo carries
+	// it back as `clientId`. The wire stamp and the ByClientID registration
+	// are one decision — an entry registered by client id is invisible to an
+	// id-less echo, so stamping without registering (or the reverse) is the
+	// 2026-08-24 mispop.
+	sendExpect := triage.PendingSendExpectation{ProviderItemID: sendUUID}
+	var clientUserMessageID string
+	if sess.codex != nil {
+		clientUserMessageID = userItem.ID
+		sendExpect = triage.PendingSendExpectation{ByClientID: true}
+	}
+	a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
 
 	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
 		InteractionMode:         provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:             providerAttachments,
 		UserMessageUUID:         sendUUID,
+		ClientUserMessageID:     clientUserMessageID,
 		OutputSchema:            opts.OutputSchema,
 		GuardClaudeSlashCommand: !opts.ExpandComposerCommands || resolved.command != "",
 	}); err != nil {

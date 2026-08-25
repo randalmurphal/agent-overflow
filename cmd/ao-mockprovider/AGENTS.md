@@ -85,19 +85,17 @@ does on its own:
   run harness sessions as an ancient app-server: no `thread/queue`, no
   thread-scoped usage, and the pre-0.149 `untrusted` approval policy instead
   of `on-request`.
-- **`thread/queue/*` dispatches itself.** The queue is drained from the
-  engine's idle hook — one submission per idle edge, FIFO — because upstream
-  drains it from `on_thread_idle` and never waits to be asked. That is the
-  whole point of mocking the family: a client that ALSO dispatches from a
-  queue of its own sends every message twice, and only a mock that starts
-  turns nobody requested can show it. `thread/queue/start` is answered with a
-  JSON-RPC error as a tripwire — dispatch is automatic and a client `start`
-  races the drain — and so are `thread/queue/update` and `.../reorder`, which
-  AO has no caller for: a mock more permissive than the app would let a
-  harness run pass against a wrapper nothing verifies.
-  A dispatched turn binds `${USER_INPUT}` and
-  `${QUEUE_CLIENT_ID}` for its steps, since the queued text exists nowhere a
-  scenario file could name it.
+- **`thread/queue/add` and `thread/queue/start` are TRIPWIRES.** Upstream
+  drains that queue from `on_thread_idle`, on its own clock, so a client that
+  ALSO keeps a queue of its own has two dispatchers for one message. Agent
+  Overflow sends every mid-turn message with `turn/steer` and must never call
+  either method; both answer with a JSON-RPC error, which is what turns a
+  regrown caller into a failing harness run instead of a duplicated turn.
+  `list` and `delete` DO answer (over an empty queue — nothing here can fill
+  one) because AO still calls them for the rollback purge and the
+  legacy-row sunset. `thread/queue/update` and `.../reorder` are refused too,
+  for the same reason they always were: a mock more permissive than the app
+  would let a harness run pass against a wrapper nothing verifies.
 - **A thread remembers its history mode.** `thread/start` echoes the
   `historyMode` it was asked for (upstream's default, `legacy`, when the
   params say nothing) and RECORDS it under `AO_HARNESS_TRANSCRIPT_HOME`;
@@ -112,6 +110,15 @@ does on its own:
   response plus the `thread/reverted` notification on the same
   connection. Both cuts post a `history_cut` control report before they
   answer, because "which cut did the app choose" has no other observable.
+
+- **A steer echoes its own `userMessage`.** `turn/steer` reports its text on
+  the same surface a turn's own input does AND writes the `item/completed`
+  the running turn would carry, with the caller's `clientUserMessageId` echoed
+  back as `clientId`. Adapter-owned because neither value exists until the
+  steer arrives — and load-bearing: AO registers a steer's pending send BY
+  that client id, so an echo without it leaves the message rendering as
+  injected provider context. `turn/start` binds the same id as `${CLIENT_ID}`
+  for the scenario's own echo line.
 
 An anchor neither cut recognises is believed on a RESUMED thread and
 refused on a STARTED one. The mock keeps no rollout, so on a resumed

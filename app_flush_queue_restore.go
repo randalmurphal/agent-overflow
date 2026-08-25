@@ -19,8 +19,8 @@ import (
 // session death mid-dispatch, a definite Codex resend failure — and has to
 // end up somewhere durable instead. The two destinations are the composer
 // draft (restore) and the queue itself (requeue); the dispatch half lives in
-// app_flush_queue.go and the provider-owned-queue half in
-// app_flush_queue_provider.go.
+// app_flush_queue.go and what remains of the PROVIDER's own queue — the legacy
+// sunset and the rollback purge — in app_codex_provider_queue.go.
 
 // restoreUnconfirmedQueueOnSessionDeath drains queued and unconfirmed
 // flush state after a session death, restoring what it can to the
@@ -70,9 +70,6 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 		})
 	}
 	drained = dedupeUnconfirmedFlushItems(drained)
-	// Rows the provider's own queue has taken ownership of are not AO's to
-	// recover — see dropProviderQueuedFlushItems.
-	drained = dropProviderQueuedFlushItems(threadID, drained)
 	sort.SliceStable(drained, func(i, j int) bool {
 		left := drained[i].EnqueuedAt
 		right := drained[j].EnqueuedAt
@@ -209,10 +206,10 @@ func (a *App) restoreEagerPersistedFlushesToDraft(threadID string, persisted []t
 // The three `provider:queue_restored` reasons this restore emits.
 //
 // They are not interchangeable labels for one event. The first says a send AO
-// attempted came back as a definite failure; the second says the message was
-// never offered to anything — AO marked the row, the process went away before
-// or during the `thread/queue/add`, and the next session's reconcile found the
-// provider does not have it; the third says the provider DID have it and a
+// attempted came back as a definite failure; the second says nothing will
+// ever run the message — a legacy row an older build left with the Codex
+// queue, which a session start has now taken back out (or which that queue
+// never had); the third says the provider DID have it and a
 // rollback took it back out before refusing, so the message the user typed
 // exists nowhere else. The frontend does the same thing with all three today,
 // but a user asking "why is this back in my composer" has different answers,

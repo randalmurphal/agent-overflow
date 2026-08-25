@@ -602,21 +602,24 @@ func (a *App) spawnProviderSession(
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
-		// A message AO handed to the PROVIDER's queue outlives the app-server
-		// that took it: it sits in codex's SQLite and the idle hook dispatches
-		// it on THIS connection. Re-arm the claim ledger (and the pending-send
-		// entries the dispatched turn's echo claims) from the queue before that
-		// can happen, or the resumed session sees a turn it never started and
-		// stamps the user's own prompt "queued from outside Agent Overflow".
-		// A resume onto an OLDER Codex takes the other branch of the same
-		// hook: nothing there can read the queue, so the rows stay where they
-		// are and the user is told they are waiting on an upgrade.
+		// Ownership of a row sitting in the PROVIDER's queue is a store
+		// question — the id grammar is deterministic and therefore not a
+		// credential — so the codex package asks the app layer. AO writes no
+		// rows there any more, so this only ever claims a legacy one.
+		cfg.OwnsQueuedClientID = func(clientID string) bool {
+			return a.ownsLegacyProviderQueuedClientID(threadID, clientID)
+		}
+		// A message an OLD build handed to the provider's queue outlives the
+		// app-server that took it: it sits in codex's SQLite and the idle hook
+		// dispatches it on THIS connection, as a turn nobody asked for. Retire
+		// those rows — delete them from the queue and hand the text back to the
+		// composer — before that can happen.
 		//
 		// BeforeResume, not after NewSession: `thread/resume` is what LOADS the
 		// thread, and a loaded thread's idle hook is what dispatches the queue.
-		// A claim armed after the dispatch is no claim at all.
+		// A sunset that runs after the dispatch is no sunset at all.
 		cfg.BeforeResume = func(resumed *codex.Session) {
-			a.reconcileCodexProviderQueueOnResume(threadID, resumed)
+			a.sunsetLegacyProviderQueueRows(threadID, resumed)
 		}
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
@@ -1016,6 +1019,10 @@ func (a *App) codexResendAfterInterrupt(
 	sendOpts := provider.SendOptions{
 		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:     providerAttachments,
+		// The merged re-send is correlated to the FIRST item's row, which is
+		// the row the pending entry below is registered for. Items 2+ share
+		// that correlation, exactly as they share the turn.
+		ClientUserMessageID: persisted[0].UserItemID,
 	}
 
 	turnIndex, err := a.nextSendTurnIndex(threadID)
@@ -1031,7 +1038,8 @@ func (a *App) codexResendAfterInterrupt(
 	// item's provider correlation. The row was already persisted at its
 	// interrupt position by EagerPersistDeferredFlushSends — anchor the
 	// fresh entry so the echo's :flush: bump doesn't move it again.
-	a.triage.RegisterPendingSend(threadID, persisted[0].UserItemID, turnIndex)
+	a.triage.RegisterPendingSendWithExpectation(
+		threadID, persisted[0].UserItemID, turnIndex, triage.PendingSendExpectation{ByClientID: true})
 	a.triage.MarkPendingSendAnchoredAtInterrupt(threadID, persisted[0].UserItemID)
 	sess.liveness.bumpActivity(time.Now())
 

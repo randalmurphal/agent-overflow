@@ -10,7 +10,7 @@ The frontend reads this blob back to render the user row's
 attachment chips, source-plan badge, and revision-context badges —
 the JSON tags are part of the contract. App-bound saga code in
 `app_send.go` / `app_draft.go` / `app_flush_queue_restore.go` /
-`app_flush_queue_provider.go` / `app_steer.go` builds inputs out of `store.Attachment`,
+`app_codex_provider_queue.go` / `app_steer.go` builds inputs out of `store.Attachment`,
 `store.ProposedPlanSourceRef`, and `store.DiffReviewSourceRef`,
 then calls the package's `Marshal` / `FromItem` to cross the
 serialisation boundary.

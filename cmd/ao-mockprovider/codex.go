@@ -34,11 +34,13 @@ type codexAdapter struct {
 	// forkSeq numbers `thread/fork` answers so two forks of the same
 	// mock thread never claim the same id.
 	forkSeq atomic.Int64
-	// queue / queueSeq back the provider-owned user-message queue
-	// (`thread/queue/*`, codex >= 0.148). Guarded by mu, which the idle
-	// dispatch on the engine goroutine also takes. See codex_queue.go.
-	queue    []codexQueueEntry
-	queueSeq int
+	// queue backs the provider-owned user-message queue (`thread/queue/*`,
+	// codex >= 0.148) that `list` and `delete` answer over. Guarded by mu.
+	// Nothing fills it — `add` is a tripwire. See codex_queue.go.
+	queue []codexQueueEntry
+	// steerSeq numbers the `userMessage` echo each `turn/steer` produces, so
+	// several steers inside one turn never share an item id.
+	steerSeq atomic.Int64
 	// historyMode is the thread's persisted history contract
 	// ("legacy" / "paginated"), decided at thread/start and merely echoed
 	// on thread/resume. It gates `thread/revert`. See codex_revert.go.
@@ -167,12 +169,17 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// stream as notifications from the engine goroutine.
 		n, vars := a.e.beginTurn()
 		input := codexInputText(params)
-		// Bind the turn's own text so a scenario can echo the `userMessage`
-		// item a real app-server emits for every turn. Without the echo an
-		// app's pending-send correlation never resolves — and on a FIFO
-		// consumer the unconsumed entry then absorbs a LATER turn's echo,
-		// which silently misplaces every message after it.
-		a.e.setTurnVars(n, scenario.Vars{"USER_INPUT": input})
+		// Bind the turn's own text AND the caller's correlation handle so a
+		// scenario can echo the `userMessage` item a real app-server emits for
+		// every turn. Without the echo an app's pending-send correlation never
+		// resolves. Without the `clientId` on it, an app that registered the
+		// send BY client id (which AO does for every codex turn) cannot
+		// consume the entry at all — the echo is provably not that entry's, so
+		// it skips it and the message persists as injected provider context.
+		a.e.setTurnVars(n, scenario.Vars{
+			"USER_INPUT": input,
+			"CLIENT_ID":  readParamString(params, "clientUserMessageId"),
+		})
 		a.e.rep.report(control.Report{
 			Kind: control.ReportUserInput, Turn: n,
 			Input: input, SessionRef: vars["THREAD_ID"],
@@ -192,6 +199,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
 		})
 		a.respond(id, method, vars)
+		a.emitSteeredUserMessage(params, vars)
 	case "thread/fork":
 		a.forkThread(id, params)
 	case "thread/revert":
@@ -405,6 +413,41 @@ func approvalCommandString(step *scenario.ApprovalStep, vars scenario.Vars) stri
 		}
 	}
 	return step.ToolName
+}
+
+// emitSteeredUserMessage writes the `userMessage` item a real app-server emits
+// when a steer lands in the running turn.
+//
+// The ADAPTER owns this one, not a scenario step, for the same reason the
+// queue's dispatched echo used to be adapter-owned: the text and the
+// `clientId` exist only at steer time, so no scenario file could name them. It
+// is also the half of the steer contract the app cannot work without — a steer
+// registers its pending send BY client id, so an echo that never arrives (or
+// arrives without the id) leaves the message rendering as injected provider
+// context instead of the user's own.
+//
+// The item id counts steers rather than reusing the turn's, because several
+// steers can land in one turn and two items sharing an id is a shape no
+// app-server produces.
+func (a *codexAdapter) emitSteeredUserMessage(params json.RawMessage, vars scenario.Vars) {
+	item := map[string]any{
+		"type":    "userMessage",
+		"id":      fmt.Sprintf("umsg-steer-%d", a.steerSeq.Add(1)),
+		"status":  "completed",
+		"content": []any{map[string]any{"type": "text", "text": codexInputText(params)}},
+	}
+	if clientID := readParamString(params, "clientUserMessageId"); clientID != "" {
+		item["clientId"] = clientID
+	}
+	a.w.writeLine(mustJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "item/completed",
+		"params": map[string]any{
+			"threadId": vars["THREAD_ID"],
+			"turnId":   vars["TURN_ID"],
+			"item":     item,
+		},
+	}), 0, 0)
 }
 
 // codexInputText joins the text of a turn/start or turn/steer `input` vec in

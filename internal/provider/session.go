@@ -25,6 +25,21 @@ type SendOptions struct {
 	// Optional: empty means "let the provider assign the id" (legacy
 	// behaviour, id learned from the echo).
 	UserMessageUUID string
+	// ClientUserMessageID is the caller's own id for this user message,
+	// stamped onto the outbound turn so the provider's echo can be matched
+	// back to the row that produced it without relying on ordering.
+	//
+	// Codex sends it as `clientUserMessageId` on every `turn/start` and
+	// `turn/steer` (supported since codex 0.136; AO's provider floor is
+	// 0.143, so there is no version gate) and echoes it back on the
+	// `userMessage` ThreadItem as `clientId`. It is deliberately NOT
+	// UserMessageUUID: that field is the provider-assigned message id
+	// Claude accepts on its stream-json envelope and must be a UUID, while
+	// this one is an opaque correlation handle in AO's own grammar.
+	//
+	// Claude and claude-tui ignore it. Empty means "no correlation handle" —
+	// upstream mints one of its own and the echo carries that instead.
+	ClientUserMessageID string
 	// GuardClaudeSlashCommand forces a command-shaped leading word to reach
 	// Claude as model prose instead of entering the CLI's command router.
 	//

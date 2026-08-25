@@ -193,15 +193,23 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// stdin — the wire `item/completed userMessage` echo can otherwise
 	// race ahead of the marker and miss the pending-send-present branch
 	// in handleUserText. Cleared on Steer failure below.
-	a.triage.RegisterPendingSend(threadID, userItem.ID, turnIndex)
+	//
+	// By CLIENT ID, matching the `clientUserMessageId` the steer carries: the
+	// echo names the row it belongs to, so a foreign row dispatched off the
+	// provider's own queue can never pop this entry (and this entry can never
+	// pop a direct send's id-less echo). Both halves are one decision — see
+	// triage.PendingSendExpectation.
+	a.triage.RegisterPendingSendWithExpectation(
+		threadID, userItem.ID, turnIndex, triage.PendingSendExpectation{ByClientID: true})
 
 	// Stamp activity before stdin write so the idle reaper can't race
 	// a slow Steer-and-respawn against its own teardown. Mirrors the
 	// pre-Send stamp in sendToProvider.
 	sess.liveness.bumpActivity(time.Now())
 	steerErr := codexSess.Steer(context.Background(), providerContent, provider.SendOptions{
-		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
-		Attachments:     providerAttachments,
+		InteractionMode:     provider.NormalizeInteractionMode(thread.Mode),
+		Attachments:         providerAttachments,
+		ClientUserMessageID: userItem.ID,
 	})
 	if steerErr != nil {
 		// Drop the pending-send marker so a stale wire echo from the

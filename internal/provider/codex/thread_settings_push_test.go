@@ -17,10 +17,9 @@ func TestPlanThreadSettingsPushNamesOnlyChangedPushableAxes(t *testing.T) {
 	base := codexLiveUpdateBaseOptions()
 
 	cases := []struct {
-		name        string
-		queueNative bool
-		next        func(provider.SessionOptions) provider.SessionOptions
-		want        ThreadSettingsPush
+		name string
+		next func(provider.SessionOptions) provider.SessionOptions
+		want ThreadSettingsPush
 	}{
 		{
 			name: "no change",
@@ -50,9 +49,10 @@ func TestPlanThreadSettingsPushNamesOnlyChangedPushableAxes(t *testing.T) {
 			want: ThreadSettingsPush{ServiceTier: true},
 		},
 		{
-			// Non-native: the three ride turn/start, which AO sends for every
-			// turn, so pushing them would add a second writer for no gain.
-			name: "runtime mode is not pushed on a non-native session",
+			// The runtime-mode axes ride turn/start, which AO sends for every
+			// turn on this thread, so pushing them would add a second writer
+			// for no gain — and a way for the two to disagree.
+			name: "runtime mode is never pushed",
 			next: func(o provider.SessionOptions) provider.SessionOptions {
 				o.RuntimeMode = provider.RuntimeFullAccess
 				return o
@@ -60,34 +60,15 @@ func TestPlanThreadSettingsPushNamesOnlyChangedPushableAxes(t *testing.T) {
 			want: ThreadSettingsPush{},
 		},
 		{
-			// Native: the next turn may be one the app-server starts out of
-			// its own queue, and that turn carries no overrides at all.
-			name:        "runtime mode is pushed on a queue-native session",
-			queueNative: true,
-			next: func(o provider.SessionOptions) provider.SessionOptions {
-				o.RuntimeMode = provider.RuntimeFullAccess
-				return o
-			},
-			want: ThreadSettingsPush{ApprovalPolicy: true, Sandbox: true},
-		},
-		{
-			// `auto` deliberately keeps approval-required's policy PAIR and
-			// changes only who adjudicates (parent guide, RuntimeMode), so
-			// this transition has exactly one changed axis — and a plan that
-			// named the other two would push values Codex is already running.
-			name:        "reviewer change is pushed on a queue-native session",
-			queueNative: true,
+			// `auto` changes only who adjudicates (parent guide, RuntimeMode).
+			// That axis is `approvalsReviewer`, which is likewise a turn/start
+			// override and likewise not pushed.
+			name: "a reviewer change is never pushed either",
 			next: func(o provider.SessionOptions) provider.SessionOptions {
 				o.RuntimeMode = provider.RuntimeAuto
 				return o
 			},
-			want: ThreadSettingsPush{ApprovalsReviewer: true},
-		},
-		{
-			name:        "an unchanged queue-native session pushes nothing",
-			queueNative: true,
-			next:        func(o provider.SessionOptions) provider.SessionOptions { return o },
-			want:        ThreadSettingsPush{},
+			want: ThreadSettingsPush{},
 		},
 		{
 			name: "empty model is not a clear",
@@ -98,7 +79,7 @@ func TestPlanThreadSettingsPushNamesOnlyChangedPushableAxes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := PlanThreadSettingsPush(base, tc.next(base), tc.queueNative)
+			got := PlanThreadSettingsPush(base, tc.next(base))
 			if got != tc.want {
 				t.Errorf("PlanThreadSettingsPush = %+v, want %+v", got, tc.want)
 			}
@@ -133,7 +114,7 @@ func TestPushThreadSettingsWireShape(t *testing.T) {
 			t.Fatalf("PlanLiveUpdate needs a restart")
 		}
 		s.ApplyLiveUpdate(update)
-		if err := s.PushThreadSettings(context.Background(), PlanThreadSettingsPush(prev, next, false)); err != nil {
+		if err := s.PushThreadSettings(context.Background(), PlanThreadSettingsPush(prev, next)); err != nil {
 			t.Fatalf("PushThreadSettings: %v", err)
 		}
 	}

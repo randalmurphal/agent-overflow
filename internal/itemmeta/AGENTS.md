@@ -45,8 +45,11 @@ logic lives here. Stdlib-only.
   only the second. The split is what lets a later process tell a
   message the provider DISPATCHED (absent from its queue, leave the
   row as history) from one it never took (absent, hand it back to the
-  composer). Written by `app_flush_queue_provider.go`; read by every
-  flush recovery path.
+  composer). NOTHING writes them any more — AO dispatches every mid-turn
+  message with `turn/steer` (2026-08-24 revert) — but a row an older build
+  left in codex's queue still carries them, and the legacy sunset in
+  `app_codex_provider_queue.go` reads the pair to decide which of those rows
+  it can hand back to the composer.
 - `import.go` — the session-import markers: `ImportSourceUUIDKey`
   provenance via `MarkImported`, and `ImportUnavailableKey` +
   `MarkImportUnavailable` for an item whose payload the provider session

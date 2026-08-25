@@ -2,34 +2,38 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
-
-	"agent-overflow/internal/harness/control"
-	"agent-overflow/internal/harness/scenario"
 )
 
 // Provider-owned user-message queue (`thread/queue/*`, codex >= 0.148).
 //
-// The point of mocking this family is that its dispatch is AUTOMATIC. Upstream
-// installs `QueuedItemService` as a thread-lifecycle contributor and drains the
-// head from `on_thread_idle` (codex-rs/ext/queue/src/service.rs), so a client
-// that also dispatched from a queue of its own would send every message twice.
-// A mock that only answered the RPCs could not show that: the harness has
-// to watch the mock start a turn nobody asked for.
+// **Two methods here are tripwires, and that is the file's main job.**
+// Upstream installs `QueuedItemService` as a thread-lifecycle contributor and
+// drains the head from `on_thread_idle` (codex-rs/ext/queue/src/service.rs):
+// dispatch is AUTOMATIC and on the app-server's clock. A client that also
+// keeps a queue of its own — which Agent Overflow does — would then have two
+// dispatchers for one message. So AO sends every mid-turn message with
+// `turn/steer` and must never call `thread/queue/add`, and it must never call
+// `thread/queue/start` either (that races the automatic drain). Both answer
+// with an ERROR here, so a harness run that regrows either caller fails loudly
+// instead of passing with a duplicated turn.
 //
-// So the queue here is drained from the engine's idle hook, exactly once per
-// entry, and `thread/queue/start` is answered with an ERROR — see
-// dispatchQueuedOnIdle and the start case below.
+// `list` and `delete` DO answer, because AO still calls them: a rollback has
+// to purge rows a foreign producer left behind, and a session start retires
+// rows an older AO build added during the 2026-08-21..24 window. Nothing in
+// this mock can put a row in the queue, so both answer over an empty one —
+// which is exactly the shape a harness thread is in.
 //
-// Only the three methods AO calls are implemented (`add` / `list` /
-// `delete`); `update`, `reorder` and `start` all answer method-not-found, so a
-// harness run that grows a caller for one of them fails here.
+// `update` and `reorder` answer method-not-found, same as before: they exist
+// upstream and have no AO caller.
 
-// codexQueueEntry is one queued user message, in wire order.
+// codexQueueEntry is one queued user message, in wire order. Nothing in the
+// mock creates one — `add` is refused — but `list` and `delete` are written
+// against the real shape rather than a hardcoded empty answer, so a future
+// foreign-producer fixture can seed the slice without rewriting them.
 type codexQueueEntry struct {
 	id       string
-	clientID string // clientUserMessageId the app correlated it with
+	clientID string // clientUserMessageId the producer correlated it with
 	text     string
 }
 
@@ -50,7 +54,13 @@ func (q codexQueueEntry) queueSubmissionJSON() map[string]any {
 func (a *codexAdapter) handleQueueRequest(id json.RawMessage, method string, params json.RawMessage) bool {
 	switch method {
 	case "thread/queue/add":
-		a.queueAdd(id, params)
+		// A tripwire, not an omission. A message handed to this queue is
+		// dispatched by the app-server itself, so an app that also owns a
+		// queue can send it twice. AO reverted to `turn/steer` for every
+		// mid-turn message and must never come back here.
+		log.Printf("codex: thread/queue/add called — Agent Overflow dispatches mid-turn messages with turn/steer and must never queue them")
+		a.writeRPCError(id, -32601,
+			"thread/queue/add: mock refuses — Agent Overflow must dispatch mid-turn messages with turn/steer")
 	case "thread/queue/list":
 		a.queueList(id)
 	case "thread/queue/delete":
@@ -66,10 +76,8 @@ func (a *codexAdapter) handleQueueRequest(id json.RawMessage, method string, par
 		a.writeRPCError(id, -32601,
 			method+": mock refuses — Agent Overflow does not edit or re-order provider-queued messages")
 	case "thread/queue/start":
-		// A tripwire, not an omission. Dispatch is automatic; a client that
-		// also calls start races the drain and can double-send. AO must never
-		// call it, and a harness run that does should fail loudly here rather
-		// than pass with a duplicated turn.
+		// The second tripwire. Dispatch is automatic; a client that also calls
+		// start races the drain and can double-send.
 		log.Printf("codex: thread/queue/start called — dispatch is automatic; the client must not ask")
 		a.writeRPCError(id, -32601,
 			"thread/queue/start: mock refuses — queued submissions dispatch automatically on idle")
@@ -77,24 +85,6 @@ func (a *codexAdapter) handleQueueRequest(id json.RawMessage, method string, par
 		return false
 	}
 	return true
-}
-
-func (a *codexAdapter) queueAdd(id json.RawMessage, params json.RawMessage) {
-	entry := codexQueueEntry{
-		clientID: readParamString(params, "clientUserMessageId"),
-		text:     codexInputText(params),
-	}
-	a.mu.Lock()
-	a.queueSeq++
-	entry.id = fmt.Sprintf("queue-sub-%d", a.queueSeq)
-	a.queue = append(a.queue, entry)
-	a.mu.Unlock()
-
-	a.respondJSON(id, map[string]any{"queuedSubmission": entry.queueSubmissionJSON()})
-	// Upstream's `enqueue` notifies AFTER the row lands, and does so for the
-	// adding client too — which is the whole reason the app has to tell its own
-	// adds apart from a `codex queue` write it never made.
-	a.emitQueueChanged()
 }
 
 func (a *codexAdapter) queueList(id json.RawMessage) {
@@ -129,46 +119,6 @@ func (a *codexAdapter) queueDelete(id json.RawMessage, params json.RawMessage) {
 	if deleted {
 		a.emitQueueChanged()
 	}
-}
-
-// dispatchQueuedOnIdle drains one queued submission the way upstream's
-// `on_thread_idle` hook does: pop the head, delete it (which is itself a queue
-// change upstream), then start a turn the client never requested.
-//
-// Exactly one entry per idle edge. The turn it starts ends with another idle
-// edge, so a backlog drains one turn at a time in FIFO order — which is the
-// property the harness scenario asserts.
-func (a *codexAdapter) dispatchQueuedOnIdle() {
-	a.mu.Lock()
-	if len(a.queue) == 0 {
-		a.mu.Unlock()
-		return
-	}
-	head := a.queue[0]
-	a.queue = a.queue[1:]
-	a.mu.Unlock()
-
-	// Upstream's dispatch deletes the row under the lock and the delete emits
-	// the change, so a client watching the queue sees it shrink before the turn
-	// starts.
-	a.emitQueueChanged()
-
-	n, vars := a.e.beginTurn()
-	// The dispatched text exists only here — no scenario file could know it —
-	// so bind it for the turn's steps to echo as the userMessage the app's
-	// pending-send FIFO is waiting for.
-	a.e.setTurnVars(n, scenario.Vars{
-		"USER_INPUT":      head.text,
-		"QUEUE_CLIENT_ID": head.clientID,
-	})
-	a.e.rep.report(control.Report{
-		Kind: control.ReportUserInput, Turn: n,
-		Input: head.text, SessionRef: vars["THREAD_ID"],
-	})
-	// No `turn/start` response to write: nobody asked. The turn's scenario
-	// steps carry `turn/started` themselves, exactly as they do for a
-	// client-initiated turn.
-	a.e.enqueueTurn(n)
 }
 
 // emitQueueChanged writes the notification upstream raises on every queue

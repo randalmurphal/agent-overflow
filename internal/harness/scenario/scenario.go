@@ -172,8 +172,8 @@ type ApprovalStep struct {
 	// (main-agent) shape. Both support ${VAR} substitution.
 	ToolUseID string `json:"toolUseId,omitempty"`
 	AgentID   string `json:"agentId,omitempty"`
-	OnAllow  []Step          `json:"onAllow,omitempty"`
-	OnDeny   []Step          `json:"onDeny,omitempty"`
+	OnAllow   []Step `json:"onAllow,omitempty"`
+	OnDeny    []Step `json:"onDeny,omitempty"`
 	// TimeoutMs bounds the wait; 0 means wait forever. On timeout the
 	// mock logs to stderr and continues with OnDeny.
 	TimeoutMs int `json:"timeoutMs,omitempty"`
@@ -233,12 +233,15 @@ type RepeatStep struct {
 // Two more carry what only the running mock knows about the turn's own user
 // message, which no scenario file could name:
 //
-//	${USER_INPUT}       — the turn's user text (Codex: a `turn/start` input
-//	                      vec, or the text of a submission the mock's own
-//	                      provider-side queue dispatched)
-//	${QUEUE_CLIENT_ID}  — Codex `thread/queue` only: the clientUserMessageId
-//	                      the app correlated the submission with; empty on a
-//	                      client-initiated turn
+//	${USER_INPUT}  — the turn's user text (Codex: the `turn/start` input vec)
+//	${CLIENT_ID}   — Codex only: the `clientUserMessageId` the caller stamped
+//	                 on `turn/start`, which its `userMessage` echo has to
+//	                 carry back as `clientId` or the app cannot consume the
+//	                 pending send it registered by that id. Empty when the
+//	                 caller supplied none.
+//
+// A steer's own echo is written by the adapter rather than a scenario step —
+// its text and client id exist only at steer time — so it needs no variable.
 type Vars map[string]string
 
 // Substitute replaces ${VAR} tokens for every key present in v.

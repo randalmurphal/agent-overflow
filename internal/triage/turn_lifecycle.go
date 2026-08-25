@@ -35,13 +35,16 @@ import (
 // logical-turn".
 func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	turnIndex := r.resolveTurnIndexOnStart(evt)
-	r.setOpenTurn(evt.ThreadID, turnIndex)
-	r.openTurnSpan(evt, turnIndex)
-
 	startedAt := eventTimestampMillis(evt)
-	turnID := resolveTurnID(evt, turnIndex)
-	r.upsertTurnRow(store.Turn{
-		TurnID:    turnID,
+
+	// The turns row is reconciled BEFORE any router state is seeded on
+	// the index. upsertTurnRow can move the turn to a free index when a
+	// DIFFERENT logical turn already occupies this one, and open-turn
+	// bookkeeping seeded on the pre-reconcile index would then name a
+	// row this turn does not own — id-allocating counters, the span, and
+	// the round snapshot all key off it.
+	turnIndex = r.upsertTurnRow(store.Turn{
+		TurnID:    resolveTurnID(evt, turnIndex),
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
@@ -50,6 +53,9 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		// masquerade as a provider id there.
 		ProviderTurnID: strings.TrimSpace(evt.TurnID),
 	})
+
+	r.setOpenTurn(evt.ThreadID, turnIndex)
+	r.openTurnSpan(evt, turnIndex)
 
 	// Open the first wire round for this logical turn. Frontend
 	// idempotency keys on TurnID, so a fresh roundID per round means a
@@ -86,6 +92,9 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 //     session attach via EventInit; tests that exercise this handler
 //     directly).
 //
+// Source 2 is skipped entirely for a turn the provider attributed to
+// another producer (`Meta.origin = external-queue`); see the body.
+//
 // For queue dispatches, source 3 returns the PREVIOUS turn because
 // the deferred user_text for the new turn has not been persisted yet
 // (handleUserText persists on echo, which lands AFTER system.init).
@@ -97,6 +106,18 @@ func (r *Router) resolveTurnIndexOnStart(evt provider.ProviderEvent) int {
 	if evt.TurnIndex != 0 {
 		return evt.TurnIndex
 	}
+	// Source 2 is an ATTRIBUTION, not a counter, and it is only valid for
+	// a turn this app provoked. A turn start the provider stamped
+	// `origin: external-queue` was dispatched by another producer off the
+	// provider's own queue (`codex queue --thread`), so the pending head
+	// names a message that is still waiting — reading its index makes the
+	// foreign turn SQUAT on the AO send's turn, and the send's own echo
+	// then hits UNIQUE(thread_id, turn_index) when it opens the turn it
+	// was promised (2026-08-24). A foreign dispatch gets a turn of its
+	// own, after everything known.
+	if r.turnStartIsForeign(evt) {
+		return r.nextTurnIndexAfterKnown(evt.ThreadID)
+	}
 	if pending, ok := r.peekPendingSendHead(evt.ThreadID); ok {
 		return pending.TurnIndex
 	}
@@ -106,6 +127,55 @@ func (r *Router) resolveTurnIndexOnStart(evt provider.ProviderEvent) int {
 		return 0
 	}
 	return turnIndex
+}
+
+// turnStartIsForeign reports whether the provider attributed this turn
+// start to a producer other than this app. Reuses the user-echo meta
+// decoder — the `origin` key is the same top-level string on both
+// envelopes, stamped by the same `stampExternalOrigin` pass.
+func (r *Router) turnStartIsForeign(evt provider.ProviderEvent) bool {
+	return decodeUserTextMeta(evt.Meta).text("origin") == externalQueueOrigin
+}
+
+// nextTurnIndexAfterKnown allocates the first turn index nothing has
+// claimed: past the last persisted turn/item AND past every pending
+// send's dispatcher-stamped index, because a deferred row is not in
+// SQLite until its echo (the same reason MaxPendingSendTurnIndex exists
+// for the flush allocator). An empty thread keeps index 0 rather than
+// leaving a hole at the start.
+func (r *Router) nextTurnIndexAfterKnown(threadID string) int {
+	next := 0
+	last, err := r.store.LastTurnIndex(threadID)
+	if err != nil {
+		log.Printf("triage: last turn index for foreign turn start on %s: %v", threadID, err)
+	} else {
+		occupied, occErr := r.turnIndexOccupied(threadID, last)
+		if occErr != nil {
+			log.Printf("triage: probe turn index %s/%d: %v", threadID, last, occErr)
+		}
+		if occupied || occErr != nil {
+			next = last + 1
+		}
+	}
+	if maxPending, ok := r.MaxPendingSendTurnIndex(threadID); ok && maxPending+1 > next {
+		next = maxPending + 1
+	}
+	return next
+}
+
+// turnIndexOccupied reports whether anything already stands at
+// (threadID, turnIndex). LastTurnIndex answers 0 both for "this thread's
+// last turn is 0" and for "this thread is empty", so an allocator that
+// wants the NEXT index has to tell those apart. HasItems is not
+// index-scoped and does not need to be: it is only consulted for the MAX
+// index, and if no turns row holds that index then an item must.
+func (r *Router) turnIndexOccupied(threadID string, turnIndex int) (bool, error) {
+	if _, found, err := r.store.GetTurnByThreadIndex(threadID, turnIndex); err != nil {
+		return false, err
+	} else if found {
+		return true, nil
+	}
+	return r.store.HasItems(threadID)
 }
 
 // resolveTurnID builds the thread-scoped `turns` primary key for the incoming
@@ -123,7 +193,22 @@ func resolveTurnID(evt provider.ProviderEvent, turnIndex int) string {
 // Errors are logged but not propagated: turn-start emission must fire
 // even if persistence hiccups, so the frontend's working indicator
 // still tracks the wire signal.
-func (r *Router) upsertTurnRow(turn store.Turn) {
+//
+// Returns the turn index the row ACTUALLY occupies. It differs from
+// turn.TurnIndex only when a different logical turn already stands
+// there, and the caller's open-turn bookkeeping must follow the return
+// value rather than what it asked for.
+//
+// One logical turn can be asked for under two ids, which is why the
+// identity probe is not `GetTurn` alone: openQueuedEchoTurn mints the
+// synthesized `<thread>:<index>` shape while a Codex turn start mints
+// `<thread>:<providerTurnID>` (store.ScopedTurnID). Either order is
+// reachable — the echo can open the turn before the wire start arrives —
+// and re-inserting the second shape hits UNIQUE(thread_id, turn_index),
+// which this used to log and swallow, leaving a turn with no row of its
+// own (2026-08-24). So the probe also asks by INDEX, and two ids at one
+// index are reconciled rather than raced.
+func (r *Router) upsertTurnRow(turn store.Turn) int {
 	_, found, err := r.store.GetTurn(turn.TurnID)
 	if err != nil {
 		log.Printf("triage: turn start get %s: %v", turn.TurnID, err)
@@ -134,11 +219,114 @@ func (r *Router) upsertTurnRow(turn store.Turn) {
 		// and completed_at. Refreshing started_at would show a
 		// later clock on the working indicator each time the
 		// provider re-initialises.
-		return
+		return turn.TurnIndex
+	}
+	if resolved, done := r.reconcileTurnIndexCollision(turn); done {
+		return resolved
 	}
 	if err := r.store.InsertTurn(turn); err != nil {
+		if !isTurnIndexCollisionError(err) {
+			log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
+			return turn.TurnIndex
+		}
+		// A row landed at this index between the probe above and this
+		// insert. Same reconciliation, now with the winner visible.
+		log.Printf("triage: turn start insert %s raced another row at %s/%d — re-resolving",
+			turn.TurnID, turn.ThreadID, turn.TurnIndex)
+		if resolved, done := r.reconcileTurnIndexCollision(turn); done {
+			return resolved
+		}
 		log.Printf("triage: turn start insert %s: %v", turn.TurnID, err)
 	}
+	return turn.TurnIndex
+}
+
+// reconcileTurnIndexCollision decides what to do about a row already
+// standing at (turn.ThreadID, turn.TurnIndex) under a different turn id.
+// Reports (index, true) when the caller must stop — either the standing
+// row IS this turn, or this turn was relocated and inserted elsewhere.
+//
+// The discriminator is the PROVIDER turn id, the only thing on either
+// row that names a provider turn:
+//
+//   - Both rows carry one and they differ → two provably distinct
+//     provider turns on one index. That is the corruption case: the
+//     incoming turn is relocated to a free index and logged loudly with
+//     both ids, because letting it share the row would settle one turn's
+//     stop reason, usage and error onto the other's history.
+//   - Anything else → the same logical turn under its two spellings (an
+//     echo-opened `<thread>:<index>` row later hit by the wire start
+//     that carries the provider's id, or the reverse). Adopt the
+//     standing row: turn ids are resolved by index at settle time
+//     (persistedTurnID), so nothing downstream needs the second id.
+func (r *Router) reconcileTurnIndexCollision(turn store.Turn) (int, bool) {
+	existing, found, err := r.store.GetTurnByThreadIndex(turn.ThreadID, turn.TurnIndex)
+	if err != nil {
+		log.Printf("triage: turn start lookup %s/%d: %v", turn.ThreadID, turn.TurnIndex, err)
+		return turn.TurnIndex, false
+	}
+	if !found || existing.TurnID == turn.TurnID {
+		return turn.TurnIndex, false
+	}
+	incomingProvider := strings.TrimSpace(turn.ProviderTurnID)
+	standingProvider := strings.TrimSpace(existing.ProviderTurnID)
+	if incomingProvider == "" || standingProvider == "" || incomingProvider == standingProvider {
+		log.Printf("triage: turn start %s adopts the row already open at %s/%d (%s) — same logical turn, two id shapes",
+			turn.TurnID, turn.ThreadID, turn.TurnIndex, existing.TurnID)
+		return existing.TurnIndex, true
+	}
+	relocated := turn
+	relocated.TurnIndex = r.nextFreeTurnIndex(turn.ThreadID, turn.TurnIndex)
+	relocated.TurnID = store.ScopedTurnID(turn.ThreadID, turn.ProviderTurnID, relocated.TurnIndex)
+	log.Printf("triage: turn index collision on %s/%d — %s (provider turn %s) already holds it, relocating %s (provider turn %s) to turn %d",
+		turn.ThreadID, turn.TurnIndex, existing.TurnID, standingProvider, turn.TurnID, incomingProvider, relocated.TurnIndex)
+	if err := r.store.InsertTurn(relocated); err != nil {
+		log.Printf("triage: turn start insert %s at relocated index %d: %v", relocated.TurnID, relocated.TurnIndex, err)
+	}
+	return relocated.TurnIndex, true
+}
+
+// nextFreeTurnIndex finds the first index at or after the allocator's
+// answer that no turns row holds. Bounded: a scan that cannot find a
+// free slot returns its last candidate rather than looping, and the
+// insert's own error is then the report.
+func (r *Router) nextFreeTurnIndex(threadID string, collidedAt int) int {
+	candidate := r.nextTurnIndexAfterKnown(threadID)
+	if candidate <= collidedAt {
+		candidate = collidedAt + 1
+	}
+	for attempts := 0; attempts < maxTurnIndexProbes; attempts++ {
+		_, found, err := r.store.GetTurnByThreadIndex(threadID, candidate)
+		if err != nil {
+			log.Printf("triage: probe free turn index %s/%d: %v", threadID, candidate, err)
+			return candidate
+		}
+		if !found {
+			return candidate
+		}
+		candidate++
+	}
+	log.Printf("triage: no free turn index found for %s within %d probes — using %d", threadID, maxTurnIndexProbes, candidate)
+	return candidate
+}
+
+// maxTurnIndexProbes bounds the free-index scan. Relocation is already
+// the rare path, and every extra probe is one indexed read; a thread
+// that would need more than this has something wrong with it that a
+// longer scan will not fix.
+const maxTurnIndexProbes = 64
+
+// isTurnIndexCollisionError reports whether err is SQLite refusing a
+// second turns row at one (thread_id, turn_index). modernc.org/sqlite
+// formats these as "UNIQUE constraint failed: turns.thread_id,
+// turns.turn_index" and exposes no typed error, so this matches by
+// substring the way store.isUniqueConstraintError does.
+func isTurnIndexCollisionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") && strings.Contains(msg, "turns.turn_index")
 }
 
 func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
@@ -851,13 +1039,26 @@ func (r *Router) openQueuedEchoTurn(threadID string, turnIndex int, startedAt in
 	// Same deterministic id shape resolveTurnID synthesizes for Claude
 	// turns (this path never has a wire-supplied turn id). Idempotent:
 	// if a racing system.init inserted the row first, the existing
-	// started_at is preserved.
-	r.upsertTurnRow(store.Turn{
+	// started_at is preserved — and a racing CODEX init inserted it
+	// under `<thread>:<providerTurnID>`, which upsertTurnRow adopts
+	// rather than re-inserting.
+	//
+	// It can never RELOCATE this turn: relocation needs two differing
+	// provider turn ids and this row has none. The check is here anyway
+	// because the open-turn state above was seeded on turnIndex, so a
+	// relocation would leave that state naming a row this turn does not
+	// own, and a silent divergence is exactly the shape the index
+	// reconciliation exists to stop being silent.
+	placedIndex := r.upsertTurnRow(store.Turn{
 		TurnID:    fmt.Sprintf("%s:%d", threadID, turnIndex),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		StartedAt: startedAt,
 	})
+	if placedIndex != turnIndex {
+		log.Printf("triage: queued echo turn %s/%d was placed at %d — open-turn state still names %d",
+			threadID, turnIndex, placedIndex, turnIndex)
+	}
 	r.openTurnSpan(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
 
 	// Re-mint the wire round under the new logical turn. The frontend
