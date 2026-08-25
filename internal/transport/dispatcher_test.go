@@ -575,6 +575,57 @@ func TestDispatcher_Register_HashCollision(t *testing.T) {
 	}
 }
 
+// shadowApp is a second receiver that redeclares fakeApp's Greet. Its
+// FQN differs (different TypeName), so the ID index would accept it —
+// only the name index can catch the shadowing.
+type shadowApp struct{}
+
+func (a *shadowApp) Greet(name string) string { return "shadowed, " + name }
+
+func (a *shadowApp) ShadowOnly() string { return "shadow" }
+
+// prefixedApp is the shape AGENTS.md prescribes for a second receiver:
+// a distinctive prefix, so nothing shares a name with App.
+type prefixedApp struct{}
+
+func (a *prefixedApp) PrefixedGreet(name string) string { return "prefixed, " + name }
+
+func TestDispatcher_Register_NameCollision(t *testing.T) {
+	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
+	_, err := d.Register(&shadowApp{}, RegisterOptions{Package: "main", TypeName: "Shadow"})
+	if err == nil {
+		t.Fatalf("expected name collision error when a second receiver redeclares Greet")
+	}
+	if !strings.Contains(err.Error(), "Greet") {
+		t.Fatalf("collision error should name the colliding method, got: %v", err)
+	}
+	// The earlier receiver must still own the name — no silent shadowing.
+	m, ok := d.LookupName("Greet")
+	if !ok {
+		t.Fatalf("Greet should still be registered after a refused collision")
+	}
+	if m.FQN != "main.App.Greet" {
+		t.Fatalf("Greet was shadowed: FQN is %s", m.FQN)
+	}
+}
+
+func TestDispatcher_Register_DistinctNamesCoexist(t *testing.T) {
+	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
+	if _, err := d.Register(&prefixedApp{}, RegisterOptions{Package: "main", TypeName: "Prefixed"}); err != nil {
+		t.Fatalf("distinct method names must register cleanly: %v", err)
+	}
+	m, ok := d.LookupName("PrefixedGreet")
+	if !ok {
+		t.Fatalf("PrefixedGreet should be registered")
+	}
+	if m.FQN != "main.Prefixed.PrefixedGreet" {
+		t.Fatalf("unexpected FQN: %s", m.FQN)
+	}
+	if _, ok := d.LookupName("Greet"); !ok {
+		t.Fatalf("the first receiver's Greet should still be registered")
+	}
+}
+
 func TestDispatcher_Methods_StableOrder(t *testing.T) {
 	d, _ := newTestDispatcher(t, RegisterOptions{Package: "main", TypeName: "App"})
 	first := d.Methods()

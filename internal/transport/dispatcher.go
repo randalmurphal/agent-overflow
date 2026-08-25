@@ -171,6 +171,16 @@ func (d *Dispatcher) Register(receiver any, opts RegisterOptions) ([]*Method, er
 			return nil, fmt.Errorf("transport: hash collision between %s and %s on id %d",
 				existing.FQN, m.FQN, m.ID)
 		}
+		// Name-based dispatch shares ONE namespace across every
+		// registered receiver (Resolve falls back to name when the
+		// frame carries no ID), so a duplicate name would silently
+		// shadow the earlier receiver's method. Refuse it the same way
+		// an ID collision is refused — see AGENTS.md § "Additional
+		// receivers": a second receiver must use a distinctive prefix.
+		if existing, ok := d.byName[name]; ok {
+			return nil, fmt.Errorf("transport: name collision between %s and %s on name %q",
+				existing.FQN, m.FQN, name)
+		}
 		d.byID[m.ID] = m
 		d.byName[name] = m
 		registered = append(registered, m)
