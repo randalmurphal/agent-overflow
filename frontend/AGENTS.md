@@ -721,25 +721,36 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
   as the tripwire if that regresses.
 
 - `@lucide__svelte@1.28.0.patch` — **mask-icons**, one hunk: `dist/Icon.svelte`
-  renders a CSS-mask `<span>` (`--mask-icon` data URI, inline px box) instead
-  of an inline `<svg>` root. An `<svg>` rendered at a size other than its
-  viewBox is a scaled replaced-content transform node in Blink; at ~400
-  mounted lucide icons that made `GeometryMapperTransformCache::
-  PlaneRootTransform` re-allocation 72% of Oilpan churn while scrolling
-  (measured 2026-08-24), and every root also joined the per-frame SMIL
-  time-container walk. The span's color/`mask-mode` styling lives in
-  `app.css` (`.lucide-icon`/`.mask-icon`, including the `forced-colors:
-  active` → `CanvasText` fallback without which icons vanish in Windows
-  High Contrast); the patch owns only shape and box size. Pixel parity at
-  app sizes was measured (mean diff ~1/255, subpixel/rotation/dpr2 within
-  noise). Deliberately dropped from upstream's contract: the `color` prop no
-  longer stamps a stroke (currentColor covers every call site) and
-  `children` snippets are not rendered (no call site passes one; audited —
-  see `primitives/__tests__/Icon.test.ts`, which pins the patched contract
-  and fails against an unpatched release). Deliberate divergence, not an
+  renders a CSS-mask `<span>` (`--mask-icon: url(#ao-lucide-N)` into the
+  patch's own hidden sprite `<svg>` of `<mask>` elements, inline px box)
+  instead of an inline `<svg>` root. Two Blink costs drive the shape, both
+  measured: an `<svg>` rendered at a size other than its viewBox is a scaled
+  replaced-content transform node (at ~400 mounted lucide icons,
+  `GeometryMapperTransformCache::PlaneRootTransform` re-allocation was 72%
+  of Oilpan churn while scrolling, 2026-08-24; every root also joined the
+  per-frame SMIL time-container walk), and the first replacement — a
+  data-URI `mask-image` per icon — cost an isolated SVG document (internal
+  page + LocalDOMWindow + singleton roster) per DISTINCT URI, ~57 documents
+  whose tiny long-lived singletons pinned hundreds of near-empty 128KB
+  Oilpan pages (the renderer floor ratchet, 2026-08-25; sprite fragments
+  don't dedupe, so `url(file.svg#frag)` was no fix). Masks are
+  `mask-type:alpha`, objectBoundingBox units, 24-unit content scaled to the
+  unit square — pixel-identical to the old `mask-size: contain` rendering
+  on these square spans (spritecheck3/4 probes). The span's
+  color/`mask-mode` styling lives in `app.css`
+  (`.lucide-icon`/`.mask-icon`, including the `forced-colors: active` →
+  `CanvasText` fallback without which icons vanish in Windows High
+  Contrast); the patch owns only shape and box size. The sprite registry is
+  duplicated from `utils/maskSprite.ts` (which the app-side siblings use)
+  because a vendor patch cannot import app code. Deliberately dropped from
+  upstream's contract: the `color` prop no longer stamps a stroke
+  (currentColor covers every call site) and `children` snippets are not
+  rendered (no call site passes one; audited — see
+  `primitives/__tests__/Icon.test.ts`, which pins the patched contract and
+  fails against an unpatched release). Deliberate divergence, not an
   upstream bug — carry it forward and re-roll on every version bump; the
-  app-side siblings (`ToolKindIcon.svelte`, `primitives/brand/*`) use the
-  same `.mask-icon` rule directly.
+  app-side siblings (`ToolKindIcon.svelte`, `primitives/brand/*`) register
+  through `utils/maskSprite.ts` and use the same `.mask-icon` rule.
 
 ### Vendored svelte-streamdown
 

@@ -1,8 +1,8 @@
 diff --git a/dist/Icon.svelte b/dist/Icon.svelte
-index 1f65faa12e726bc6a6e8f834986131a02177b7d5..74bbc19431b1e6dec39583eb7a337a47081399e0 100644
+index 1f65faa12e726bc6a6e8f834986131a02177b7d5..b10315854eeab66c48405408e8b6e6056d063c36 100644
 --- a/dist/Icon.svelte
 +++ b/dist/Icon.svelte
-@@ -1,26 +1,63 @@
+@@ -1,26 +1,100 @@
 -<script lang="ts">import defaultAttributes from './defaultAttributes.js';
 +<script lang="ts" module>
 +// AGENT OVERFLOW PATCH (mask-icons): render every lucide icon as a CSS-mask
@@ -14,41 +14,78 @@ index 1f65faa12e726bc6a6e8f834986131a02177b7d5..74bbc19431b1e6dec39583eb7a337a47
 +// change re-allocates a GeometryMapperTransformCache::PlaneRootTransform per
 +// such node on the next cache walk (measured: 72% of Oilpan churn in a
 +// scroll-heavy window). Each <svg> also joins the document's SMIL
-+// time-container list, which Blink copies once per animation frame. A span
-+// with `mask: url(data:image/svg+xml,...)` has neither cost and is
-+// pixel-equivalent at these sizes (measured mean diff ~1/255).
++// time-container list, which Blink copies once per animation frame. A
++// mask-sprite span has neither cost and is pixel-equivalent at these sizes
++// (measured mean diff ~1/255 for the mask conversion; sprite refs paint
++// identically — spritecheck3/4 probes).
 +//
 +// The span carries no inline background/mask-mode styling: the app stylesheet
 +// owns those via `.lucide-icon` (background-color: currentColor; mask:
 +// var(--mask-icon) ...), including the `forced-colors: active` fallback to
 +// CanvasText — without which masks render invisible in Windows High Contrast.
 +//
++// The mask itself is a same-document sprite reference (`url(#ao-lucide-N)`
++// into one hidden <svg> of <mask> elements), NOT a data-URI image: Blink
++// builds an isolated SVG document — internal page, LocalDOMWindow, and its
++// full singleton roster — per DISTINCT image URI, and the app's ~47 icon
++// URIs held ~57 such documents alive whose tiny long-lived singletons pinned
++// hundreds of near-empty 128KB Oilpan pages (the renderer floor ratchet,
++// measured 2026-08-25). Masks are mask-type:alpha (the semantics the data
++// URIs had under mask-mode: match-source) with objectBoundingBox units and
++// the 24-unit content scaled to the unit square, which matches the old
++// `mask-size: contain` rendering on these square spans. This mirrors the
++// app's utils/maskSprite.ts; it is deliberately self-contained because a
++// vendor patch cannot import app code.
++//
 +// Dropped relative to upstream: `color` now flows through CSS currentColor
 +// only (upstream stamped it on the svg's stroke; no app call site passes it),
 +// and `children` snippets are not rendered (no app call site passes one; a
 +// mask has no DOM to append to).
 +const maskCache = new Map<string, string>();
++const maskMarkup: string[] = [];
++let spriteRoot: SVGSVGElement | undefined;
++let seq = 0;
 +
-+function maskUri(
++function ensureSpriteRoot(): SVGSVGElement {
++  if (spriteRoot === undefined || !spriteRoot.isConnected) {
++    spriteRoot = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
++    spriteRoot.setAttribute('width', '0');
++    spriteRoot.setAttribute('height', '0');
++    spriteRoot.setAttribute('aria-hidden', 'true');
++    spriteRoot.setAttribute('data-mask-sprite', 'lucide');
++    spriteRoot.style.position = 'absolute';
++    // A replaced root would orphan every registered mask, so rebuild them all.
++    if (maskMarkup.length) spriteRoot.innerHTML = maskMarkup.join('');
++    document.body.appendChild(spriteRoot);
++  }
++  return spriteRoot;
++}
++
++function maskRef(
 +  name: string | undefined,
 +  iconNode: [string, Record<string, string>][],
 +  strokeWidth: number | string,
 +): string {
-+  const key = `${name ?? '?'}|${strokeWidth}`;
-+  const hit = name ? maskCache.get(key) : undefined;
-+  if (hit !== undefined) return hit;
 +  let body = '';
 +  for (const [tag, attrs] of iconNode) {
 +    body += `<${tag}`;
 +    for (const [k, v] of Object.entries(attrs)) body += ` ${k}="${v}"`;
 +    body += '/>';
 +  }
-+  const svg =
-+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black"` +
-+    ` stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
-+  const uri = `url('data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, '%27')}')`;
-+  if (name) maskCache.set(key, uri);
-+  return uri;
++  // Unnamed icons key by shape so they cache too instead of growing the sprite.
++  const key = `${name ?? body}|${strokeWidth}`;
++  const hit = maskCache.get(key);
++  if (hit !== undefined) return hit;
++  const id = `ao-lucide-${seq++}`;
++  const markup =
++    `<mask id="${id}" maskUnits="objectBoundingBox" maskContentUnits="objectBoundingBox" style="mask-type:alpha">` +
++    `<g transform="scale(${1 / 24})" fill="none" stroke="black" stroke-width="${strokeWidth}"` +
++    ` stroke-linecap="round" stroke-linejoin="round">${body}</g></mask>`;
++  maskMarkup.push(markup);
++  ensureSpriteRoot().insertAdjacentHTML('beforeend', markup);
++  const ref = `url(#${id})`;
++  maskCache.set(key, ref);
++  return ref;
 +}
 +</script>
 +
@@ -58,7 +95,7 @@ index 1f65faa12e726bc6a6e8f834986131a02177b7d5..74bbc19431b1e6dec39583eb7a337a47
  const globalProps = getLucideContext() ?? {};
  const { name, color = globalProps.color ?? 'currentColor', size = globalProps.size ?? 24, strokeWidth = globalProps.strokeWidth ?? 2, absoluteStrokeWidth = globalProps.absoluteStrokeWidth ?? false, iconNode = [], children, ...props } = $props();
  const calculatedStrokeWidth = $derived(absoluteStrokeWidth ? (Number(strokeWidth) * 24) / Number(size) : strokeWidth);
-+const mask = $derived(maskUri(name, iconNode, calculatedStrokeWidth));
++const mask = $derived(maskRef(name, iconNode, calculatedStrokeWidth));
  </script>
  
 -<svg

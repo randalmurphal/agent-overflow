@@ -32,27 +32,41 @@ afterEach(() => {
 });
 
 describe('mask icons (cascade-coupled)', () => {
-  it('a lucide icon renders as a masked span with currentColor paint and the exact box', () => {
+  it('a lucide icon renders as a sprite-masked span with currentColor paint and the exact box', () => {
     const host = mountIn(Icon, { icon: Search, size: 12 });
     const span = host.querySelector('span.lucide-icon') as HTMLElement;
     expect(span).not.toBeNull();
     expect(host.querySelector('svg')).toBeNull();
     const cs = getComputedStyle(span);
     expect(cs.display).toBe('inline-block');
-    expect(cs.maskImage).toContain('data:image/svg+xml');
+    // Same-document sprite reference, never a data-URI image: each distinct
+    // image URI costs an isolated SVG document (page + LocalDOMWindow +
+    // singleton roster) in Blink, and those documents' tiny long-lived
+    // singletons pinned near-empty Oilpan pages (renderer floor ratchet,
+    // 2026-08-25).
+    expect(cs.maskImage).toContain('#ao-lucide-');
+    expect(cs.maskImage).not.toContain('data:');
     expect(cs.backgroundColor).toBe('rgb(10, 200, 30)');
     const rect = span.getBoundingClientRect();
     expect(rect.width).toBe(12);
     expect(rect.height).toBe(12);
+    // The referenced mask exists in the patch's hidden sprite root.
+    const id = /#(ao-lucide-\d+)/.exec(cs.maskImage)![1];
+    const mask = document.getElementById(id)!;
+    expect(mask.closest('svg[data-mask-sprite="lucide"]')).not.toBeNull();
+    expect(getComputedStyle(mask).maskType).toBe('alpha');
   });
 
-  it('a ToolKindIcon renders as a masked span through the same rule', () => {
+  it('a ToolKindIcon renders as a sprite-masked span through the same rule', () => {
     const host = mountIn(ToolKindIcon, { kind: 'terminal' });
     const span = host.querySelector('span.mask-icon') as HTMLElement;
     expect(span).not.toBeNull();
     const cs = getComputedStyle(span);
-    expect(cs.maskImage).toContain('data:image/svg+xml');
+    expect(cs.maskImage).toContain('#ao-mi-');
+    expect(cs.maskImage).not.toContain('data:');
     expect(cs.display).toBe('inline-block');
+    const id = /#(ao-mi-\d+)/.exec(cs.maskImage)![1];
+    expect(document.getElementById(id)!.closest('svg[data-mask-sprite]')).not.toBeNull();
   });
 
   it('app.css carries the forced-colors CanvasText fallback for both classes', () => {

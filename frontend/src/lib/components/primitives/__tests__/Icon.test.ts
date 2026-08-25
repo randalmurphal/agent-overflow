@@ -1,14 +1,17 @@
 // Verifies the Icon primitive's contract:
 //   - renders the @lucide/svelte component it's handed via `icon`
-//   - forwards size (as inline px) and strokeWidth (into the mask URI)
+//   - forwards size (as inline px) and strokeWidth (into the sprite mask)
 //   - merges opacity-80 default with caller's additional classes
 //   - swaps icon when the prop changes (via re-render)
 //
 // Since the mask-icons patch (frontend/AGENTS.md §Vendor Patches), a lucide
-// icon renders as a CSS-mask <span>, not an <svg> root: the shape lives in
-// `--mask-icon` (a data-URI) and the box size is inline width/height. These
-// assertions pin that patched contract; if they fail against an unpatched
-// @lucide/svelte, the patch was dropped or failed to apply.
+// icon renders as a CSS-mask <span>, not an <svg> root: the shape is a
+// same-document sprite reference (`--mask-icon: url(#ao-lucide-N)` into the
+// patch's hidden <svg data-mask-sprite="lucide"> of <mask> elements — a
+// data-URI image would cost an isolated SVG document per distinct URI) and
+// the box size is inline width/height. These assertions pin that patched
+// contract; if they fail against an unpatched @lucide/svelte, the patch was
+// dropped or failed to apply.
 
 import { describe, expect, it } from 'vitest';
 import { render } from '@testing-library/svelte';
@@ -40,11 +43,26 @@ describe('<Icon>', () => {
     expect(style).toContain('height: 12px');
   });
 
-  it('forwards a custom strokeWidth into the mask URI', () => {
+  it('forwards a custom strokeWidth into the registered sprite mask', () => {
     const { container } = render(Icon, { props: { icon: Search, strokeWidth: 1.5 } });
     const style = container.querySelector('span.lucide-icon')!.getAttribute('style') ?? '';
-    // encodeURIComponent('stroke-width="1.5"')
-    expect(style).toContain('stroke-width%3D%221.5%22');
+    const ref = /--mask-icon: url\(#(ao-lucide-\d+)\)/.exec(style);
+    expect(ref).not.toBeNull();
+    const mask = document.getElementById(ref![1]);
+    expect(mask).not.toBeNull();
+    expect(mask!.closest('[data-mask-sprite="lucide"]')).not.toBeNull();
+    expect(mask!.querySelector('g')!.getAttribute('stroke-width')).toBe('1.5');
+  });
+
+  it('reuses one sprite mask across mounts of the same icon', () => {
+    const a = render(Icon, { props: { icon: Search } });
+    const b = render(Icon, { props: { icon: Search } });
+    const refOf = (c: Element) =>
+      /--mask-icon: (url\(#ao-lucide-\d+\))/.exec(
+        c.querySelector('span.lucide-icon')!.getAttribute('style') ?? '',
+      )?.[1];
+    expect(refOf(a.container)).toBeDefined();
+    expect(refOf(a.container)).toBe(refOf(b.container));
   });
 
   it('applies opacity-80 by default and merges caller classes', () => {

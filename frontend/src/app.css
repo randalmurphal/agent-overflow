@@ -438,14 +438,22 @@ body::selection {
 /* Mask icons. Every static line-art icon (lucide via the @lucide/svelte
    mask-icons patch — see frontend/AGENTS.md §Vendor Patches — plus
    ToolKindIcon and the brand marks) renders as a <span> whose shape is a
-   data-URI `mask` and whose color is its background. An <svg> root rendered
-   at a size other than its viewBox is a scaled replaced-content transform
-   node in Blink: every paint-property change re-allocates a
-   PlaneRootTransform per node on the next geometry-cache walk (72% of
-   Oilpan churn while scrolling, measured 2026-08-24), and each root also
-   joins the per-frame SMIL time-container walk. A masked span has neither
-   cost. The component owns only the shape (--mask-icon) and box size;
-   color stays in the cascade via currentColor.
+   same-document sprite `mask` reference (url(#id) into a hidden <svg> of
+   <mask> elements — utils/maskSprite.ts) and whose color is its background.
+   An <svg> root rendered at a size other than its viewBox is a scaled
+   replaced-content transform node in Blink: every paint-property change
+   re-allocates a PlaneRootTransform per node on the next geometry-cache
+   walk (72% of Oilpan churn while scrolling, measured 2026-08-24), and each
+   root also joins the per-frame SMIL time-container walk. A data-URI
+   mask-image instead costs an isolated SVG document per distinct URI whose
+   singletons pin near-empty Oilpan pages (renderer floor ratchet, measured
+   2026-08-25). A sprite-masked span has none of those costs. The component
+   owns only the shape (--mask-icon) and box size; color stays in the
+   cascade via currentColor.
+
+   The position/size/repeat components below are inert for a mask-element
+   reference (the mask's own objectBoundingBox units do that job) but keep
+   the shorthand valid for any image mask a future caller passes.
 
    The forced-colors block is load-bearing, not polish: High Contrast mode
    strips background-color, so without it every icon in the app renders as

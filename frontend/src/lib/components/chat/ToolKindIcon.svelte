@@ -1,12 +1,10 @@
 <script lang="ts" module>
-  // Tiny icon dispatcher — maps a ToolKindIcon name to a CSS-mask data URI.
-  // Inline shapes to avoid bundling an icon library for a dozen icons.
-  //
-  // A <span> with `mask: url(data:...)` instead of an inline <svg> root, for
-  // the same reason as the @lucide/svelte mask-icons patch (see the
-  // `.mask-icon` rule in app.css): an <svg> rendered at 14px against a
-  // 24-unit viewBox is a scaled replaced-content transform node in Blink and
-  // re-allocates geometry-cache entries on every paint-property change.
+  import { maskSpriteRef } from '../../utils/maskSprite';
+
+  // Tiny icon dispatcher — maps a ToolKindIcon name to a same-document
+  // sprite mask (see utils/maskSprite.ts for why NOT an inline <svg> root
+  // and NOT a data-URI mask-image). Inline shapes to avoid bundling an
+  // icon library for a dozen icons.
   //
   // Color is keyed by `kind` via the --ico-* token family, shared with
   // everything else that speaks in tool hues (`TOOL_KIND_COLOR_CLASS`);
@@ -35,17 +33,9 @@
     generic: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
   };
 
-  const uriCache = new Map<string, string>();
-
-  function maskUriFor(kind: string): string {
-    let uri = uriCache.get(kind);
-    if (uri === undefined) {
-      const body = SHAPES[kind] ?? SHAPES.generic;
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ${STROKED}>${body}</svg>`;
-      uri = `url('data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, '%27')}')`;
-      uriCache.set(kind, uri);
-    }
-    return uri;
+  function maskRefFor(kind: string): string {
+    const known = kind in SHAPES ? kind : 'generic';
+    return maskSpriteRef(`tool:${known}`, 24, 24, STROKED, SHAPES[known]);
   }
 </script>
 
@@ -60,7 +50,7 @@
 
 <span
   class="mask-icon h-3.5 w-3.5 shrink-0 {colorClass}"
-  style="--mask-icon:{maskUriFor(kind)}"
+  style="--mask-icon:{maskRefFor(kind)}"
   role="img"
   aria-label={titleText}
   data-icon={kind}
