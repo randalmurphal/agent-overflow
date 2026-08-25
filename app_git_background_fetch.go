@@ -143,9 +143,9 @@ func (a *App) startBackgroundGitFetch() {
 		return
 	}
 
-	a.mu.Lock()
+	a.backgroundFetchMu.Lock()
 	if a.backgroundFetchStop != nil {
-		a.mu.Unlock()
+		a.backgroundFetchMu.Unlock()
 		return
 	}
 	stop := make(chan struct{})
@@ -160,7 +160,7 @@ func (a *App) startBackgroundGitFetch() {
 	// retention sweeper: a concurrent stop that sees a non-nil channel
 	// must observe the counter at 1 before it waits.
 	a.backgroundFetchWG.Add(1)
-	a.mu.Unlock()
+	a.backgroundFetchMu.Unlock()
 
 	go func() {
 		defer a.backgroundFetchWG.Done()
@@ -191,12 +191,12 @@ func (a *App) startBackgroundGitFetch() {
 // stopBackgroundGitFetch signals the goroutine to exit and waits for it
 // to return. Safe before start and safe to call twice.
 func (a *App) stopBackgroundGitFetch() {
-	a.mu.Lock()
+	a.backgroundFetchMu.Lock()
 	stop := a.backgroundFetchStop
 	cancel := a.backgroundFetchCancel
 	a.backgroundFetchStop = nil
 	a.backgroundFetchCancel = nil
-	a.mu.Unlock()
+	a.backgroundFetchMu.Unlock()
 	if stop != nil {
 		close(stop)
 	}

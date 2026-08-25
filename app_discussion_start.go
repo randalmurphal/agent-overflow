@@ -195,8 +195,8 @@ func (a *App) cleanupDiscussionSetup(
 }
 
 func (a *App) installDeliberation(channelID string, participants []string, maxTurns int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.deliberationsMu.Lock()
+	defer a.deliberationsMu.Unlock()
 
 	if a.deliberations == nil {
 		a.deliberations = make(map[string]*discussion.Deliberation)

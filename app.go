@@ -364,8 +364,34 @@ type App struct {
 	// ServiceStartup; tests build it directly via newTestApp.
 	appCtx    context.Context
 	appCancel context.CancelFunc
-	mu        sync.Mutex
-	sessions  map[string]session // threadID → active session
+	// mu guards the SESSION-LIFECYCLE concern and nothing else. Every
+	// other coordination area on this struct carries its own mutex
+	// named for it (flushDispatchMu, gitWatchPumpsMu, turnObserversMu,
+	// worktreeSetupMu, workflowDigestMu, deliberationsMu,
+	// backgroundFetchMu, ...). Do not park a new field here because
+	// "there is already a lock" — that is how this one accreted strays.
+	//
+	// Fields guarded by mu:
+	//   sessions, aoTokens
+	//   startingSessions, reconnectingThreads, autoReconnectAttempted
+	//   pendingConfigReconnects, configReconnectPollIntervalOverride,
+	//     configReconnectQuietWindowOverride
+	//   claudeLiveConfigApplies, claudeLiveApplyConfirmAfterOverride,
+	//     claudeLiveApplyDegraded, claudeLiveApplyGenerations
+	//   liveClaudeReconcileRunning, liveClaudeReconcileDirty,
+	//     reconcileSessionConfigFn, readClaudeAppliedSettingsFn
+	//   promptOverrideRenders, threadSystemPrompts
+	//   idleReaperStop, retentionCleanupStop — cadence handles rather
+	//     than session state, but both sweeps mutate a.sessions, so
+	//     their start/stop handshake belongs to the same concern.
+	//
+	// Lock ordering: mu is a leaf. No path may take another App mutex
+	// while holding it, and no *Locked helper reaches into a
+	// differently-guarded field. See app_session_manager.go for the
+	// session-map contract and RegisterQueueItem (app_flush_queue.go)
+	// for the flush-side hierarchy.
+	mu       sync.Mutex
+	sessions map[string]session // threadID → active session
 	// aoTokens is the `ao` CLI credential registry: scoped token → the
 	// authority it carries. It is mutated only from the session-map
 	// mutators in app_session_manager.go (under mu), so an entry exists
@@ -482,8 +508,14 @@ type App struct {
 	// threadID → persisted in-process system prompt overrides used for
 	// discussion participants and other non-default session starts.
 	threadSystemPrompts map[string]string
-	// channelID → active deliberation state
-	deliberations map[string]*discussion.Deliberation
+	// channelID → active deliberation state. Guarded by its own
+	// deliberationsMu, not a.mu: deliberation tracking is a
+	// coordination area of its own (app_discussion_*.go) and its
+	// critical sections are pure map ops, so it must not queue behind
+	// session-lifecycle work. Every access is disjoint from a.mu — no
+	// path holds one while taking the other.
+	deliberationsMu sync.Mutex
+	deliberations   map[string]*discussion.Deliberation
 	// gitWatchPumps holds one pump per canonical cwd — one
 	// gitwatch.Subscription and one goroutine forwarding it to the
 	// "git:status" channel, shared by every caller of that workspace
@@ -630,6 +662,15 @@ type App struct {
 	// store and snapshot the session map.
 	retentionCleanupStop chan struct{}
 	retentionCleanupWG   sync.WaitGroup
+	// backgroundFetchMu guards the cadence's start/stop handshake
+	// (backgroundFetchStop + backgroundFetchCancel). Its own mutex, not
+	// a.mu: the git-fetch cadence shares nothing with session
+	// lifecycle, and the two fields are set and cleared as one unit so
+	// they must live under one lock. Nothing inside its critical
+	// sections takes another App mutex (lifeCtx is a plain field read),
+	// and no a.mu holder touches these fields — the two locks are
+	// disjoint.
+	backgroundFetchMu sync.Mutex
 	// backgroundFetchStop signals the background `git fetch` cadence to
 	// exit. Set by startBackgroundGitFetch during ServiceStartup; closed
 	// exactly once by Shutdown before the store closes, because each
@@ -638,7 +679,8 @@ type App struct {
 	// backgroundFetchCancel cancels the context the cadence's git
 	// subprocesses run under, so stopping the loop kills a `git fetch`
 	// hanging on a dead network instead of waiting out its timeout.
-	// Set and cleared alongside backgroundFetchStop, under a.mu.
+	// Set and cleared alongside backgroundFetchStop, under
+	// backgroundFetchMu.
 	backgroundFetchCancel context.CancelFunc
 	backgroundFetchWG     sync.WaitGroup
 	// backgroundFetchErrors remembers the last background-fetch failure

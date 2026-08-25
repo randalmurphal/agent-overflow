@@ -194,8 +194,8 @@ func (a *App) deliberationForChannel(channelID string) (*discussion.Deliberation
 		}
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.deliberationsMu.Lock()
+	defer a.deliberationsMu.Unlock()
 	// Double-checked locking: another goroutine may have rebuilt (or a
 	// live discussion may have been installed) between the map-miss
 	// above and this lock. Keep whichever instance landed first so

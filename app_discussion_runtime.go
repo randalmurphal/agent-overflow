@@ -242,8 +242,8 @@ func (a *App) postDiscussionConclusion(channelID, content string) error {
 }
 
 func (a *App) deliberation(channelID string) (*discussion.Deliberation, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.deliberationsMu.Lock()
+	defer a.deliberationsMu.Unlock()
 
 	deliberation, ok := a.deliberations[channelID]
 	return deliberation, ok

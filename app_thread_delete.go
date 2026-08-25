@@ -209,7 +209,7 @@ func (a *App) removeDeliberationByID(channelID string) {
 	if channelID == "" {
 		return
 	}
-	a.mu.Lock()
+	a.deliberationsMu.Lock()
 	delete(a.deliberations, channelID)
-	a.mu.Unlock()
+	a.deliberationsMu.Unlock()
 }

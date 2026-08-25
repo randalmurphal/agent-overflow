@@ -280,9 +280,9 @@ func TestBackgroundGitFetchDisabledNeverStartsALoop(t *testing.T) {
 	app.backgroundFetchDisabled = true
 
 	app.startBackgroundGitFetch()
-	app.mu.Lock()
+	app.backgroundFetchMu.Lock()
 	stop := app.backgroundFetchStop
-	app.mu.Unlock()
+	app.backgroundFetchMu.Unlock()
 	if stop != nil {
 		t.Fatal("startBackgroundGitFetch created a loop while disabled")
 	}
@@ -295,17 +295,17 @@ func TestBackgroundGitFetchStartIsIdempotentAndStops(t *testing.T) {
 	app := newBackgroundFetchTestApp(t)
 
 	app.startBackgroundGitFetch()
-	app.mu.Lock()
+	app.backgroundFetchMu.Lock()
 	first := app.backgroundFetchStop
-	app.mu.Unlock()
+	app.backgroundFetchMu.Unlock()
 	if first == nil {
 		t.Fatal("startBackgroundGitFetch did not create a loop")
 	}
 
 	app.startBackgroundGitFetch()
-	app.mu.Lock()
+	app.backgroundFetchMu.Lock()
 	second := app.backgroundFetchStop
-	app.mu.Unlock()
+	app.backgroundFetchMu.Unlock()
 	if second != first {
 		t.Fatal("a second start replaced the running loop instead of no-oping")
 	}
