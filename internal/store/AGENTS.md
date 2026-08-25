@@ -32,9 +32,21 @@ root `CLAUDE.md` principle 3.
   verbatim and SQLite ignores an unknown PRAGMA name without an error —
   a DSN typo would otherwise open cleanly and run the whole app with
   foreign keys off.
-- `migrate.go` — forward-only migration chain with the per-version
-  upgrade SQL. `configureDatabase` owns only `journal_mode=WAL` (a
+- `migrate.go` — forward-only migration chain: the `migrations` slice with
+  the per-version upgrade SQL, the apply/rebuild driver, version
+  bookkeeping, and the deprecated derivation helpers
+  (`mustReplaceOnce` / `mustReplaceEvery` / `mustCutFrom`).
+  `configureDatabase` owns only `journal_mode=WAL` (a
   persistent, database-level setting) plus the `dsn.go` verification.
+- `migrate_sql_threads.go` / `migrate_sql_items.go` /
+  `migrate_sql_diff_review.go` / `migrate_sql_workitems.go` — the
+  table-rebuild DDL the chain references, grouped by the table each rebuild
+  recreates (threads carries chat_model_profiles, chat_bar_favorites, and
+  new_thread_mcp_defaults, which ride the same migrations). A derivation
+  and the shipped text it derives from stay in ONE file, so the chain is
+  readable end to end. Declarations only — nothing here applies anything.
+  `migrate_freeze_test.go`'s completeness scan globs the whole package
+  directory, so the freeze is unaffected by which file a derivation sits in.
 - `items.go` / `items_read.go` / `items_write.go` /
   `items_lifecycle.go` / `payloads.go` — timeline item + heavy-payload
   tables. `items.go` carries the shared core (constants, scanners,
