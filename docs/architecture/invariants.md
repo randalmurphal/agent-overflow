@@ -284,7 +284,7 @@ each scope is what matters and a queued row never strands.
 they must route through the queue too**, or the same "new row inserts
 before the streaming tail" bug recurs.
 
-**Carve-out: deferred queued user_text (`RegisterPendingFlushSend`).**
+**Carve-out: deferred queued user_text (`RegisterPendingFlushSendWithExpectation`).**
 Queued user messages dispatched at a boundary are NOT routed through
 the interrupt queue. `persistDeferredUserText` calls the standard
 `persistItem` path at echo time, which allocates `MAX+1` of the

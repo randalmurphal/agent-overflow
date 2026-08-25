@@ -570,22 +570,10 @@ func (a *App) sendMessageLocked(
 	// deliberately has no marker: its literal command is not a provider user
 	// item, and its synthetic visible turn carries TurnIndex directly.
 	// The marker is consumed by handleUserText when the matching replay
-	// envelope arrives, or cleared on send failure below.
-	//
-	// Each provider keys the match by the identity it can actually offer.
-	// Claude echoes the uuid AO minted (sendUUID). Codex assigns its own item
-	// ids, so the naming runs the other way: AO stamps the row id as
-	// `clientUserMessageId` on `turn/start` and the `userMessage` echo carries
-	// it back as `clientId`. The wire stamp and the ByClientID registration
-	// are one decision — an entry registered by client id is invisible to an
-	// id-less echo, so stamping without registering (or the reverse) is the
-	// 2026-08-24 mispop.
-	sendExpect := triage.PendingSendExpectation{ProviderItemID: sendUUID}
-	var clientUserMessageID string
-	if sess.codex != nil {
-		clientUserMessageID = userItem.ID
-		sendExpect = triage.PendingSendExpectation{ByClientID: true}
-	}
+	// envelope arrives, or cleared on send failure below. The identity the
+	// echo matches by — and the wire stamp it rides in on — come from
+	// providerSendIdentity, one derivation for every send entry point.
+	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
 	a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, sendExpect)
 
 	if err := sendToProvider(sess, threadID, providerContent, provider.SendOptions{
@@ -1061,6 +1049,27 @@ func (a *App) refreshProposedPlanItem(threadID, itemID string) {
 		return
 	}
 	a.emit("provider:item_event", triage.NewItemStreamUpsert(plan))
+}
+
+// providerSendIdentity is the ONE constructor of a user send's wire
+// correlation: the `clientUserMessageId` stamped on the provider call and
+// the pending-send expectation its echo is matched against. The two are
+// one decision — an entry registered ByClientID is invisible to an
+// id-less echo, so a send that stamps without registering (or the
+// reverse) is the 2026-08-24 mispop — which is why every send entry
+// point derives the pair here instead of assembling it by hand.
+//
+// Codex names the row from AO's side: the row id rides
+// `clientUserMessageId` and the `userMessage` echo returns it as
+// `clientId`. The Claude family runs the other way: AO mints sendUUID
+// onto the user envelope and the CLI echoes it verbatim as the item id
+// (claude-tui echoes id-less, which the registry's head-pop carve-out
+// absorbs). Codex callers, which never mint a uuid, pass sendUUID "".
+func providerSendIdentity(sess session, rowID, sendUUID string) (clientUserMessageID string, expect triage.PendingSendExpectation) {
+	if sess.codex != nil {
+		return rowID, triage.PendingSendExpectation{ByClientID: true}
+	}
+	return "", triage.PendingSendExpectation{ProviderItemID: sendUUID}
 }
 
 // sendToProvider forwards the user content to the active provider

@@ -241,7 +241,7 @@ func driveLiveSession(t *testing.T, st *store.Store, events []provider.ProviderE
 	if err := router.PersistItem(userItem, nil); err != nil {
 		t.Fatalf("persist optimistic user row: %v", err)
 	}
-	router.RegisterPendingSendExpecting(testThreadID, userItem.ID, userItem.TurnIndex, expectedWireItemID)
+	router.RegisterPendingSendWithExpectation(testThreadID, userItem.ID, userItem.TurnIndex, triage.PendingSendExpectation{ProviderItemID: expectedWireItemID})
 
 	for i, evt := range events {
 		if err := router.Handle(evt); err != nil {

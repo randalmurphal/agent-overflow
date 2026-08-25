@@ -817,10 +817,10 @@ The expectation is declared at registration
 (`PendingSendExpectation{ProviderItemID, ByClientID}`) and `ByClientID`
 carries no value: the registrar copies the entry's own `AOItemID`, so
 the dispatched `clientUserMessageId` and the expected one cannot drift.
-The Claude-shaped registrations (`RegisterPendingSendExpecting`,
-`RegisterPendingFlushSendWithEnqueuedAt`,
-`RegisterPendingQuietFlushSend`) are unchanged wrappers over the same
-registrar.
+The three `Register*WithExpectation` functions are the whole
+registration surface — the pre-identity wrappers are deleted, so a new
+send path must state its expectation explicitly (the zero value is the
+claude-tui id-less shape, not a default to reach by omission).
 
 ### Turn index is allocated once (`turn_lifecycle.go`)
 

@@ -494,16 +494,10 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 
 	flushedItem := QueueFlushedItem{QueueItemID: item.ID, UserItemID: userItem.ID, Message: item.Message}
 
-	// The identity this dispatch will be recognised by. Exactly one of the
-	// two axes is ever populated (see sendUUID above), and the Codex axis is
-	// derived from the row id rather than restated, so the value that goes on
-	// the wire and the value the registry expects cannot drift.
-	sendExpect := triage.PendingSendExpectation{ProviderItemID: sendUUID}
-	var clientUserMessageID string
-	if sess.codex != nil {
-		clientUserMessageID = userItem.ID
-		sendExpect = triage.PendingSendExpectation{ByClientID: true}
-	}
+	// The identity this dispatch will be recognised by — wire stamp and
+	// registry expectation derived together (providerSendIdentity), so
+	// the two cannot drift.
+	clientUserMessageID, sendExpect := providerSendIdentity(sess, userItem.ID, sendUUID)
 
 	if eagerPersist {
 		// Emit queue_flushed so the frontend creates the Zone 2 entry
@@ -590,9 +584,10 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 			// the wire stamp and the expectation are re-derived from the new
 			// one. Re-registering with the old id would leave the entry
 			// waiting on a `clientId` nothing will ever echo.
-			sendOpts.ClientUserMessageID = userItem.ID
+			var refreshExpect triage.PendingSendExpectation
+			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
 			a.triage.RegisterPendingFlushSendWithExpectation(
-				threadID, item.ID, userItem, item.EnqueuedAt, triage.PendingSendExpectation{ByClientID: true})
+				threadID, item.ID, userItem, item.EnqueuedAt, refreshExpect)
 			sess.liveness.bumpActivity(time.Now())
 			if sendErr := sess.codex.Send(context.Background(), providerContent, sendOpts); sendErr != nil {
 				if codex.IsAmbiguousTurnStartTimeout(sendErr) {

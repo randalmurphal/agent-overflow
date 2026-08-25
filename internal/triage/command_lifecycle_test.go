@@ -57,7 +57,7 @@ func countCommandLifecycleEmissions(emissions *emissionLog) int {
 // the FIFO, which is the state every real send path leaves behind BEFORE
 // the stdin write the acks answer.
 func registerCommandPendingSend(r *Router, threadID, itemID, commandUUID string, turnIndex int) {
-	r.RegisterPendingSendExpecting(threadID, itemID, turnIndex, commandUUID)
+	r.RegisterPendingSendWithExpectation(threadID, itemID, turnIndex, PendingSendExpectation{ProviderItemID: commandUUID})
 }
 
 func TestCommandLifecycle_QueuedResolvesUserItemID(t *testing.T) {

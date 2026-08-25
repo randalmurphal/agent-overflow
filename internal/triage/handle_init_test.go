@@ -90,7 +90,7 @@ func TestHandleInit_PendingSendPresent_FiresHandleTurnStart(t *testing.T) {
 
 	// Mirror the send path: register the pending-send before the wire
 	// init arrives.
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventInit,
@@ -127,7 +127,7 @@ func TestHandleInit_PendingSendPresent_DoesNotConsumeIt(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventInit,
@@ -294,7 +294,7 @@ func TestHandleInit_PendingSendPlusSettledTurn_PrefersTurnStartPath(t *testing.T
 	// Now AO sends turn 1 — pending-send is registered for turn 1
 	// while settledTurns[t1:0] is still set. handleInit must take the
 	// handleTurnStart path so the new logical turn opens correctly.
-	router.RegisterPendingSend("t1", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventInit,

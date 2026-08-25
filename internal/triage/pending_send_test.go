@@ -9,8 +9,8 @@ import (
 func TestRegisterAndConsumePendingSend_FIFO(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSend("t1", "user:0", 0)
-	router.RegisterPendingSend("t1", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 
 	first, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok {
@@ -40,7 +40,7 @@ func TestRegisterAndConsumePendingSend_FIFO(t *testing.T) {
 func TestPendingSendIsolatedPerThread(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 
 	if !router.HasPendingSendForThread("t1") {
 		t.Fatalf("t1 should report has-pending after register")
@@ -68,7 +68,7 @@ func TestHasPendingSendForThread(t *testing.T) {
 		t.Fatalf("fresh router should report no pending sends")
 	}
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 
 	if !router.HasPendingSendForThread("t1") {
 		t.Fatalf("expected has-pending after register")
@@ -86,9 +86,9 @@ func TestHasPendingSendForThread(t *testing.T) {
 func TestClearPendingSendForFailure_RemovesMatchingEntry(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSend("t1", "user:0", 0)
-	router.RegisterPendingSend("t1", "user:1", 1)
-	router.RegisterPendingSend("t1", "user:2", 2)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{})
 
 	router.ClearPendingSendForFailure("t1", "user:1")
 
@@ -110,8 +110,8 @@ func TestClearPendingSendForFailure_RemovesMatchingEntry(t *testing.T) {
 func TestClearPendingSendForFailure_NoMatch_NoOp(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSend("t1", "user:0", 0)
-	router.RegisterPendingSend("t1", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 
 	router.ClearPendingSendForFailure("t1", "user:does-not-exist")
 
@@ -128,9 +128,9 @@ func TestClearPendingSendForFailure_NoMatch_NoOp(t *testing.T) {
 func TestClearPendingSendsForThread_SweepsAll(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSend("t1", "user:0", 0)
-	router.RegisterPendingSend("t1", "user:1", 1)
-	router.RegisterPendingSend("t1", "user:2", 2)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{})
 
 	router.clearPendingSendsForThread("t1")
 
@@ -168,8 +168,8 @@ func TestCleanupThread_SweepsPendingSendAndWireOnlySeen(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
-	router.RegisterPendingSend("t1", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 	router.markWireOnlyUserTextSeen("t1", "wire-1")
 	router.markWireOnlyUserTextSeen("t1", "wire-2")
 
@@ -220,8 +220,8 @@ func TestEagerPersistDeferredFlushSends_PersistsAndNilsDeferred(t *testing.T) {
 		CreatedAt: 2,
 		UpdatedAt: 2,
 	}
-	router.RegisterPendingFlushSend("t1", "q-1", item1)
-	router.RegisterPendingFlushSend("t1", "q-2", item2)
+	router.RegisterPendingFlushSendWithExpectation("t1", "q-1", item1, 0, PendingSendExpectation{})
+	router.RegisterPendingFlushSendWithExpectation("t1", "q-2", item2, 0, PendingSendExpectation{})
 
 	result := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
 	if len(result) != 2 {
@@ -276,7 +276,7 @@ func TestEagerPersistDeferredFlushSends_SkipsNonFlushPendingSends(t *testing.T) 
 	createTestThread(t, st, "t1")
 
 	// Direct send (non-flush) — has no QueueItemID.
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 
 	result := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
 	if len(result) != 0 {
@@ -292,9 +292,9 @@ func TestEagerPersistDeferredFlushSends_SkipsNonFlushPendingSends(t *testing.T) 
 func TestClearPendingSendsByItemIDs(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSend("t1", "user:0", 0)
-	router.RegisterPendingSend("t1", "user:0:flush:1", 0)
-	router.RegisterPendingSend("t1", "user:0:flush:2", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:0:flush:1", 0, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:0:flush:2", 0, PendingSendExpectation{})
 
 	router.ClearPendingSendsByItemIDs("t1", []string{"user:0:flush:1", "user:0:flush:2"})
 
@@ -320,14 +320,14 @@ func TestMaxPendingSendTurnIndex(t *testing.T) {
 		t.Fatalf("empty thread should return ok=false")
 	}
 
-	router.RegisterPendingSend("t1", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 	max, ok := router.MaxPendingSendTurnIndex("t1")
 	if !ok || max != 1 {
 		t.Fatalf("single entry: got max=%d ok=%v, want 1/true", max, ok)
 	}
 
-	router.RegisterPendingSend("t1", "user:3", 3)
-	router.RegisterPendingSend("t1", "user:2", 2)
+	router.RegisterPendingSendWithExpectation("t1", "user:3", 3, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{})
 	max, ok = router.MaxPendingSendTurnIndex("t1")
 	if !ok || max != 3 {
 		t.Fatalf("multi entry: got max=%d ok=%v, want 3/true", max, ok)
@@ -353,8 +353,8 @@ func TestClearPendingSendsByItemIDs_EmptyThread(t *testing.T) {
 func TestConsumeMatchingPendingSend_IdentityMatchPopsByID(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-a")
-	router.RegisterPendingSendExpecting("t1", "user:1", 1, "uuid-b")
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{ProviderItemID: "uuid-a"})
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "uuid-b"})
 
 	got, ok := router.consumeMatchingPendingSend("t1", "uuid-b")
 	if !ok || got.AOItemID != "user:1" {
@@ -371,8 +371,8 @@ func TestConsumeMatchingPendingSend_IdentityMatchPopsByID(t *testing.T) {
 func TestConsumeMatchingPendingSend_NoMatch_LeavesQueueIntact(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-a")
-	router.RegisterPendingSendExpecting("t1", "user:1", 1, "uuid-b")
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{ProviderItemID: "uuid-a"})
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "uuid-b"})
 
 	got, ok := router.consumeMatchingPendingSend("t1", "uuid-injected")
 	if ok {
@@ -394,7 +394,7 @@ func TestConsumeMatchingPendingSend_IDLessEchoPopsHead(t *testing.T) {
 	// head anyway so the id-less-echo diagnostics in handleUserText keep
 	// firing against a matched entry (injected content always carries a uuid,
 	// so an id-less echo can only be our own send on a degraded wire).
-	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-a")
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{ProviderItemID: "uuid-a"})
 
 	got, ok := router.consumeMatchingPendingSend("t1", "")
 	if !ok || got.AOItemID != "user:0" {
@@ -423,7 +423,7 @@ func TestConsumeMatchingPendingSend_IDLessEchoSkipsClientIDEntries(t *testing.T)
 		Summary:   "queued",
 	}, 10, PendingSendExpectation{ByClientID: true})
 	// A plain send registered behind it (pre-identity Codex shape).
-	router.RegisterPendingSend("t1", "user:4", 4)
+	router.RegisterPendingSendWithExpectation("t1", "user:4", 4, PendingSendExpectation{})
 
 	got, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-1", "")
 	if !ok || got.AOItemID != "user:4" {
@@ -471,7 +471,7 @@ func TestConsumeMatchingPendingSend_IdentityScanSkipsClientIDEntries(t *testing.
 	router, _, _ := newTestRouter(t)
 
 	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ByClientID: true})
-	router.RegisterPendingSendExpecting("t1", "user:2", 2, "uuid-b")
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{ProviderItemID: "uuid-b"})
 
 	got, ok := router.consumeMatchingPendingSendForEcho("t1", "uuid-b", "")
 	if !ok || got.AOItemID != "user:2" {
@@ -505,7 +505,7 @@ func TestRegisterPendingSendWithExpectation_StampsTheAOItemIDAsTheClientID(t *te
 	}
 
 	// The Claude-shaped registrations must stay untouched.
-	router.RegisterPendingSendExpecting("t2", "user:1", 1, "uuid-a")
+	router.RegisterPendingSendWithExpectation("t2", "user:1", 1, PendingSendExpectation{ProviderItemID: "uuid-a"})
 	claude, ok := router.peekPendingSendHead("t2")
 	if !ok || claude.ExpectedClientID != "" || claude.ExpectedProviderItemID != "uuid-a" {
 		t.Fatalf("claude entry = %+v (ok=%v), want ExpectedClientID empty and uuid-a expected", claude, ok)
@@ -517,7 +517,7 @@ func TestConsumeMatchingPendingSend_HeadWithoutExpectedID_FIFOPop(t *testing.T) 
 
 	// Codex compatibility: entries registered without an expected id keep
 	// order-based matching even when the echo carries a provider item id.
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 
 	got, ok := router.consumeMatchingPendingSend("t1", "codex_item_7")
 	if !ok || got.AOItemID != "user:0" {

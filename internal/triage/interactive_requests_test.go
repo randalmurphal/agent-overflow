@@ -368,7 +368,7 @@ func TestHasPendingWorkQueuedFlushItems(t *testing.T) {
 func TestHasPendingWorkPendingSend(t *testing.T) {
 	r := NewRouter(nil, func(string, any) {})
 
-	r.RegisterPendingSend("thread-1", "user:1", 1)
+	r.RegisterPendingSendWithExpectation("thread-1", "user:1", 1, PendingSendExpectation{})
 
 	if !r.HasPendingWork("thread-1") {
 		t.Fatal("pending send: want true")
@@ -388,7 +388,7 @@ func TestHasPendingWorkCleanupThreadClears(t *testing.T) {
 	r.RegisterQueueItem("thread-1", QueuedFlushItem{
 		ID: "queue:x", Message: "msg",
 	})
-	r.RegisterPendingSend("thread-1", "user:x", 1)
+	r.RegisterPendingSendWithExpectation("thread-1", "user:x", 1, PendingSendExpectation{})
 
 	if !r.HasPendingWork("thread-1") {
 		t.Fatal("multiple sources: want true")
@@ -404,7 +404,7 @@ func TestHasPendingWorkCleanupThreadClears(t *testing.T) {
 func TestHasPendingWorkIsolatesThreads(t *testing.T) {
 	r := NewRouter(nil, func(string, any) {})
 
-	r.RegisterPendingSend("thread-1", "user:1", 1)
+	r.RegisterPendingSendWithExpectation("thread-1", "user:1", 1, PendingSendExpectation{})
 
 	if r.HasPendingWork("thread-2") {
 		t.Fatal("unrelated thread returned true")

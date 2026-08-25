@@ -259,59 +259,30 @@ type PendingSendExpectation struct {
 	ByClientID bool
 }
 
-// RegisterPendingSend appends a new entry to the per-thread FIFO with no
-// expected wire id (FIFO-consumed). Legacy Codex send paths use this —
-// Codex assigns its own item ids, so provider-item identity is
-// unknowable at dispatch; a send that stamps `clientUserMessageId`
-// should use RegisterPendingSendWithExpectation instead.
+// RegisterPendingSendWithExpectation registers a direct send. The echo
+// consumes the entry by the identity `expect` declares: ProviderItemID
+// for the Claude family, {ByClientID: true} for every Codex send and
+// steer, and the zero value for a send whose echo names nothing
+// (claude-tui) — that entry falls back to FIFO consumption.
 // EnqueuedAt is stamped from time.Now here — Phase E uses it for
 // diagnostics on stranded entries and the wall clock at the register
 // call is the natural reference.
-func (r *Router) RegisterPendingSend(threadID, aoItemID string, turnIndex int) {
-	r.RegisterPendingSendExpecting(threadID, aoItemID, turnIndex, "")
-}
-
-// RegisterPendingSendExpecting registers a direct send whose wire echo
-// will carry expectedProviderItemID (the app-minted uuid Claude echoes
-// verbatim). The entry is consumed by id equality — see
-// pendingSend.ExpectedProviderItemID. Pass "" for providers with no
-// pre-known identity; that entry falls back to FIFO consumption.
-func (r *Router) RegisterPendingSendExpecting(threadID, aoItemID string, turnIndex int, expectedProviderItemID string) {
-	r.RegisterPendingSendWithExpectation(threadID, aoItemID, turnIndex, PendingSendExpectation{ProviderItemID: expectedProviderItemID})
-}
-
-// RegisterPendingSendWithExpectation is RegisterPendingSend over the full
-// expectation surface. Codex direct sends and steers register here with
-// {ByClientID: true}.
 func (r *Router) RegisterPendingSendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
 	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect)
 }
 
-// RegisterPendingFlushSend registers a deferred user_text row whose
-// persistence is gated on the wire echo, with no expected wire id. The
-// row's item_index is recomputed at echo time (persistDeferredUserText)
-// so the queued message lands after content the model emitted between
-// dispatch and echo — see the pendingSend doc comment.
-func (r *Router) RegisterPendingFlushSend(threadID, queueItemID string, item store.Item) {
-	r.RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID, item, 0, "")
-}
-
-func (r *Router) RegisterPendingFlushSendWithEnqueuedAt(threadID, queueItemID string, item store.Item, enqueuedAt int64, expectedProviderItemID string) {
-	r.RegisterPendingFlushSendWithExpectation(threadID, queueItemID, item, enqueuedAt, PendingSendExpectation{ProviderItemID: expectedProviderItemID})
-}
-
-// RegisterPendingFlushSendWithExpectation is the deferred-row registration
-// over the full expectation surface.
+// RegisterPendingFlushSendWithExpectation registers a deferred user_text
+// row whose persistence is gated on the wire echo. The row's item_index
+// is recomputed at echo time (persistDeferredUserText) so the queued
+// message lands after content the model emitted between dispatch and
+// echo — see the pendingSend doc comment.
 func (r *Router) RegisterPendingFlushSendWithExpectation(threadID, queueItemID string, item store.Item, enqueuedAt int64, expect PendingSendExpectation) {
 	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expect)
 }
 
-func (r *Router) RegisterPendingQuietFlushSend(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64, expectedProviderItemID string) {
-	r.RegisterPendingQuietFlushSendWithExpectation(threadID, queueItemID, item, turnIndex, enqueuedAt, PendingSendExpectation{ProviderItemID: expectedProviderItemID})
-}
-
 // RegisterPendingQuietFlushSendWithExpectation is the quiet-flush
-// registration over the full expectation surface.
+// registration: the row was already persisted (eager persist) and the
+// echo only confirms it, at the caller-chosen turnIndex.
 func (r *Router) RegisterPendingQuietFlushSendWithExpectation(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64, expect PendingSendExpectation) {
 	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect)
 }

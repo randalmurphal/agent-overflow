@@ -939,7 +939,7 @@ func TestTurnCompleteErrorNoRoundPersistsErrorItem(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:5", 5)
+	router.RegisterPendingSendWithExpectation("t1", "user:5", 5, PendingSendExpectation{})
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:     provider.EventTurnComplete,
@@ -1139,7 +1139,7 @@ func TestMarkThreadActiveResetsSettlementLedger(t *testing.T) {
 	// on this path) and dispatches the next send, which registers its
 	// deferred pending marker for turn 3.
 	router.MarkThreadActive("t1")
-	router.RegisterPendingSend("t1", "user:3", 3)
+	router.RegisterPendingSendWithExpectation("t1", "user:3", 3, PendingSendExpectation{})
 
 	// The replacement session dies pre-init with only an error result.
 	if err := router.Handle(provider.ProviderEvent{

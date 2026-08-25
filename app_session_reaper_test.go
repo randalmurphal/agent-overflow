@@ -688,7 +688,7 @@ func TestReapIdleSessionsSkipsPendingSend(t *testing.T) {
 	}
 	app.sessions[thread.ID] = staleSession()
 
-	app.triage.RegisterPendingSend(thread.ID, "user:1", 1)
+	app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:1", 1, triage.PendingSendExpectation{})
 
 	app.reapIdleSessions(time.Now())
 

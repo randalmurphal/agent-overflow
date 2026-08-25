@@ -3958,7 +3958,7 @@ func TestMarkThreadActiveReadmitsPreInitEvents(t *testing.T) {
 
 	router.CleanupThread("doa")
 	router.MarkThreadActive("doa")
-	router.RegisterPendingSend("doa", "user:3", 3)
+	router.RegisterPendingSendWithExpectation("doa", "user:3", 3, PendingSendExpectation{})
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:     provider.EventTurnComplete,
@@ -4042,7 +4042,7 @@ func TestCleanupThreadIfEpochSkipsAfterReactivation(t *testing.T) {
 	// Replacement session start claims the thread while the teardown
 	// goroutine is still in flight.
 	router.MarkThreadActive("race")
-	router.RegisterPendingSend("race", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("race", "user:1", 1, PendingSendExpectation{})
 
 	if router.CleanupThreadIfEpoch("race", epoch) {
 		t.Fatalf("stale-epoch cleanup reported it ran")
@@ -4061,7 +4061,7 @@ func TestCleanupThreadIfEpochRunsWhenUnchanged(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "doa-clean")
 
-	router.RegisterPendingSend("doa-clean", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("doa-clean", "user:1", 1, PendingSendExpectation{})
 
 	if !router.CleanupThreadIfEpoch("doa-clean", router.ThreadEpoch("doa-clean")) {
 		t.Fatalf("matching-epoch cleanup did not run")

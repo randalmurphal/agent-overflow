@@ -296,7 +296,7 @@ func TestCommandEcho_ConsumesPendingSendAndTurnIndexingSurvives(t *testing.T) {
 
 	// Send 1: the slash command. App-side: optimistic row + pending entry.
 	persistUser("user:0", 0)
-	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-cmd")
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{ProviderItemID: "uuid-cmd"})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now(),
 	}); err != nil {
@@ -324,7 +324,7 @@ func TestCommandEcho_ConsumesPendingSendAndTurnIndexingSurvives(t *testing.T) {
 
 	// Send 2: an ordinary follow-up message.
 	persistUser("user:1", 1)
-	router.RegisterPendingSendExpecting("t1", "user:1", 1, "uuid-followup")
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{ProviderItemID: "uuid-followup"})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventInit, ThreadID: "t1", Timestamp: time.Now(),
 	}); err != nil {

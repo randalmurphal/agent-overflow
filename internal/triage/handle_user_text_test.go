@@ -89,7 +89,7 @@ func TestHandleUserText_PendingSendMatch_StampsProviderItemID(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 	seedUserTextRow(t, st, "t1", 0, "hello world", "")
 	if err := st.UpsertMessageAnchor(store.MessageAnchor{
 		ThreadID:   "t1",
@@ -175,7 +175,7 @@ func TestHandleUserText_DirectSendMatch_DoesNotReposition(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 	seedUserTextRow(t, st, "t1", 0, "original prompt", "")
 
 	// An assistant row lands at the same turn AFTER the prompt. A wrongful
@@ -253,7 +253,7 @@ func TestHandleUserText_InterruptPromotedFlush_EchoDoesNotRebump(t *testing.T) {
 	if err := router.PersistItemQuiet(flushRow, nil); err != nil {
 		t.Fatalf("quiet persist flush row: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:m1", flushRow, 4, now, "")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:m1", flushRow, 4, now, PendingSendExpectation{ProviderItemID: ""})
 
 	// User interrupt → the promote anchors the row at the turn tail.
 	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 1 {
@@ -339,7 +339,7 @@ func TestHandleUserText_EagerPersistedDeferredFlush_EchoDoesNotRebump(t *testing
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:m1", flushRow, now, "")
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:m1", flushRow, now, PendingSendExpectation{ProviderItemID: ""})
 
 	// User interrupt → the deferred row is eagerly persisted at the tail.
 	persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
@@ -402,7 +402,7 @@ func TestHandleUserText_PendingSendMatch_PreservesExistingMeta(t *testing.T) {
 	createTestThread(t, st, "t1")
 
 	existingMeta := `{"attachments":[{"id":"att_1"}],"revision_source_comment_ids":["c-9"]}`
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 	seedUserTextRow(t, st, "t1", 0, "review my plan", existingMeta)
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -642,7 +642,7 @@ func TestHandleUserText_SubagentPromptDoesNotConsumePendingSend(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 2)
-	router.RegisterPendingSend("t1", "user:2", 2)
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{})
 	seedUserTextRow(t, st, "t1", 2, "top-level prompt", "")
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -755,7 +755,7 @@ func TestHandleUserText_PendingSendMatch_EmptyProviderItemID_LogsAndNoOp(t *test
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 	seedUserTextRow(t, st, "t1", 0, "queued message", `{"attachments":[]}`)
 	emissions.reset()
 
@@ -813,7 +813,7 @@ func TestHandleUserText_PendingSendMatch_DuplicateProviderItemID_NoLog(t *testin
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 	seedUserTextRow(t, st, "t1", 0, "hello", `{"provider_item_id":"msg_existing"}`)
 
 	var logBuf bytes.Buffer
@@ -849,7 +849,7 @@ func TestHandleUserText_PendingSendMatch_HonoredID_FoldsParentUUID(t *testing.T)
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 	// Row + anchor carry the honoured send uuid; the anchor has no
 	// parent_uuid yet (Claude assigns parentUuid, unknown at pre-stamp).
 	seedUserTextRow(t, st, "t1", 0, "ship it", `{"provider_item_id":"p"}`)
@@ -948,7 +948,7 @@ func TestHandleUserText_PreStampedIDDrift_OverwritesAndLogs(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:0", 0)
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
 	// Row + anchor carry the minted send uuid (the pre-stamp).
 	seedUserTextRow(t, st, "t1", 0, "fix the bug", `{"provider_item_id":"minted-uuid"}`)
 	if err := st.UpsertMessageAnchor(store.MessageAnchor{
@@ -1012,7 +1012,7 @@ func TestHandleUserText_PendingMatchWithMissingTargetRow_LogsAndReturns(t *testi
 	// Register pending but DO NOT persist the matching row — simulates
 	// a send that errored after RegisterPendingSend but before the
 	// optimistic store write.
-	router.RegisterPendingSend("t1", "user:5", 5)
+	router.RegisterPendingSendWithExpectation("t1", "user:5", 5, PendingSendExpectation{})
 
 	var logBuf bytes.Buffer
 	prev := log.Writer()
@@ -1145,7 +1145,7 @@ func TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst(t *testi
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
-	router.RegisterPendingFlushSend("t1", "queue:abc", queuedItem)
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:abc", queuedItem, 0, PendingSendExpectation{})
 
 	// Model emits assistant text BETWEEN the dispatch and the wire echo.
 	// First text delta goes through persistItem -> UpsertItem ->
@@ -1246,7 +1246,7 @@ func TestHandleUserText_DeferredFlush_TurnBoundaryHonorsDispatchTurn(t *testing.
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
-	router.RegisterPendingFlushSend("t1", "queue:abc", queuedItem)
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:abc", queuedItem, 0, PendingSendExpectation{})
 
 	// Turn 1 opens before the wire echo arrives — simulates the rare
 	// case where the current turn completed and a new one started in
@@ -1325,8 +1325,8 @@ func TestHandleUserText_DeferredFlush_BatchOrderingFIFO(t *testing.T) {
 	second.ID = "user:0:flush:2"
 	second.Summary = "second queued"
 
-	router.RegisterPendingFlushSend("t1", "queue:1", first)
-	router.RegisterPendingFlushSend("t1", "queue:2", second)
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:1", first, 0, PendingSendExpectation{})
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:2", second, 0, PendingSendExpectation{})
 
 	// Model streams a text row between dispatch and the first echo.
 	if err := router.Handle(provider.ProviderEvent{
@@ -1406,7 +1406,7 @@ func TestHandleUserText_MismatchedEchoDoesNotConsumeIdentityPending(t *testing.T
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
-	router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-mine")
+	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{ProviderItemID: "uuid-mine"})
 	seedUserTextRow(t, st, "t1", 0, "hello world", "")
 
 	// Injected envelope arrives before our echo, with a different uuid.
@@ -1489,7 +1489,7 @@ func TestHandleUserText_MismatchedEchoDoesNotPersistDeferredFlush(t *testing.T) 
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:abc", queuedItem, 0, "uuid-mine")
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:abc", queuedItem, 0, PendingSendExpectation{ProviderItemID: "uuid-mine"})
 
 	// Injected envelope with a different uuid arrives first.
 	if err := router.Handle(provider.ProviderEvent{
@@ -1566,7 +1566,7 @@ func TestHandleUserText_FlushConfirmedHook_EagerQuietRows(t *testing.T) {
 	// Direct send: pre-persisted row, no queue item id. The echo stamps
 	// but must NOT fire the hook.
 	seedUserTextRow(t, st, "t1", 3, "direct send", "")
-	router.RegisterPendingSendExpecting("t1", "user:3", 3, "uuid-direct")
+	router.RegisterPendingSendWithExpectation("t1", "user:3", 3, PendingSendExpectation{ProviderItemID: "uuid-direct"})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "direct send",
 		Meta:      json.RawMessage(`{"provider_item_id":"uuid-direct"}`),
@@ -1587,7 +1587,7 @@ func TestHandleUserText_FlushConfirmedHook_EagerQuietRows(t *testing.T) {
 	if err := router.PersistItemQuiet(quietRow, nil); err != nil {
 		t.Fatalf("quiet persist: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:m1", quietRow, 4, now, "uuid-quiet")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:m1", quietRow, 4, now, PendingSendExpectation{ProviderItemID: "uuid-quiet"})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "queued mid-turn",
 		Meta:      json.RawMessage(`{"provider_item_id":"uuid-quiet"}`),
@@ -1620,7 +1620,7 @@ func TestHandleUserText_FlushConfirmedHook_EagerQuietRows(t *testing.T) {
 	if err := router.PersistItemQuiet(anchoredRow, nil); err != nil {
 		t.Fatalf("quiet persist anchored: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:m2", anchoredRow, 4, now+1, "uuid-anchored")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:m2", anchoredRow, 4, now+1, PendingSendExpectation{ProviderItemID: "uuid-anchored"})
 	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 1 {
 		t.Fatalf("promote: got %d, want 1", len(promoted))
 	}

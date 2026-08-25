@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // The edit-and-resend saga is a four-step sequence with three durable
@@ -537,7 +538,7 @@ func TestRevertAndResendProceedsOncePendingSendResolves(t *testing.T) {
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-pending-release")
 
-	app.triage.RegisterPendingSendExpecting(thread.ID, "user:1", 1, "")
+	app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:1", 1, triage.PendingSendExpectation{ProviderItemID: ""})
 	err := app.RevertConversationAndResendMessage(thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
 	if err == nil || !strings.Contains(err.Error(), "awaiting provider confirmation") {
 		t.Fatalf("error = %v, want the pending-send refusal", err)

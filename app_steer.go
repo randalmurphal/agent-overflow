@@ -197,10 +197,10 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// By CLIENT ID, matching the `clientUserMessageId` the steer carries: the
 	// echo names the row it belongs to, so a foreign row dispatched off the
 	// provider's own queue can never pop this entry (and this entry can never
-	// pop a direct send's id-less echo). Both halves are one decision — see
-	// triage.PendingSendExpectation.
-	a.triage.RegisterPendingSendWithExpectation(
-		threadID, userItem.ID, turnIndex, triage.PendingSendExpectation{ByClientID: true})
+	// pop a direct send's id-less echo). Wire stamp and expectation derived
+	// together — see providerSendIdentity.
+	steerClientID, steerExpect := providerSendIdentity(sess, userItem.ID, "")
+	a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, steerExpect)
 
 	// Stamp activity before stdin write so the idle reaper can't race
 	// a slow Steer-and-respawn against its own teardown. Mirrors the
@@ -209,7 +209,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	steerErr := codexSess.Steer(context.Background(), providerContent, provider.SendOptions{
 		InteractionMode:     provider.NormalizeInteractionMode(thread.Mode),
 		Attachments:         providerAttachments,
-		ClientUserMessageID: userItem.ID,
+		ClientUserMessageID: steerClientID,
 	})
 	if steerErr != nil {
 		// Drop the pending-send marker so a stale wire echo from the

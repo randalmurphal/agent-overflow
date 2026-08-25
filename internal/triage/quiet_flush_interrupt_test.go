@@ -59,7 +59,7 @@ func TestPromotedQuietFlushEcho_StampsProviderOrderBoundary(t *testing.T) {
 	if err := router.PersistItemQuiet(flushRow, nil); err != nil {
 		t.Fatalf("quiet persist: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", flushRow, 1, now+2, "ao-uuid-1")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", flushRow, 1, now+2, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	// Interrupt: the promote bumps the row to the turn tail and marks it.
 	promoted := promoteQuietForTest(router, "t1")
@@ -166,13 +166,13 @@ func TestPromoteQuietFlushSends_FailedBumpUnclaimsAnchor(t *testing.T) {
 	if err := router.PersistItemQuiet(okRow, nil); err != nil {
 		t.Fatalf("quiet persist: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", okRow, 1, now, "ao-uuid-1")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", okRow, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 	missingRow := store.Item{
 		ID: "user:0:flush:2", ThreadID: "t1", TurnIndex: 0,
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "never persisted", CreatedAt: now, UpdatedAt: now,
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q2", missingRow, 1, now, "ao-uuid-2")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q2", missingRow, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
 
 	promoted := promoteQuietForTest(router, "t1")
 	if len(promoted) != 1 || promoted[0].ID != "user:0:flush:1" {
@@ -250,7 +250,7 @@ func TestPromoteRacesEcho_ConvergesToALegalState(t *testing.T) {
 		if err := router.PersistItemQuiet(row, nil); err != nil {
 			t.Fatalf("quiet persist: %v", err)
 		}
-		router.RegisterPendingQuietFlushSend("t1", "queue:q1", row, 1, now, "ao-race")
+		router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", row, 1, now, PendingSendExpectation{ProviderItemID: "ao-race"})
 
 		done := make(chan struct{})
 		go func() {
@@ -306,11 +306,11 @@ func TestEagerPersistDeferredFlushSends_DeathRecoveryKeepsQuietItem(t *testing.T
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued text to recover",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
 	if len(persisted) != 1 {
@@ -374,7 +374,7 @@ func TestConsumedEchoReplay_DoesNotPersistInjectedRow(t *testing.T) {
 		if err := router.PersistItemQuiet(row, nil); err != nil {
 			t.Fatalf("quiet persist: %v", err)
 		}
-		router.RegisterPendingQuietFlushSend("t1", "queue:q1", row, 1, now, "uuid-flush")
+		router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", row, 1, now, PendingSendExpectation{ProviderItemID: "uuid-flush"})
 
 		if err := router.Handle(echo("uuid-flush", "queued")); err != nil {
 			t.Fatalf("echo: %v", err)
@@ -402,7 +402,7 @@ func TestConsumedEchoReplay_DoesNotPersistInjectedRow(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("insert row: %v", err)
 		}
-		router.RegisterPendingSendExpecting("t1", "user:0", 0, "uuid-direct")
+		router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{ProviderItemID: "uuid-direct"})
 
 		if err := router.Handle(echo("uuid-direct", "direct")); err != nil {
 			t.Fatalf("echo: %v", err)
@@ -418,11 +418,11 @@ func TestConsumedEchoReplay_DoesNotPersistInjectedRow(t *testing.T) {
 	t.Run("deferred flush", func(t *testing.T) {
 		router, st, _ := newTestRouter(t)
 		createTestThread(t, st, "t1")
-		router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+		router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 			ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 			Kind: "user_text", Role: "user", Status: "completed",
 			Summary: "deferred",
-		}, time.Now().UnixMilli(), "uuid-deferred")
+		}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "uuid-deferred"})
 
 		if err := router.Handle(echo("uuid-deferred", "deferred")); err != nil {
 			t.Fatalf("echo: %v", err)
@@ -460,11 +460,11 @@ func TestEagerPersistDeferredFlushSends_CapturesCheckpointUnderAnchorMu(t *testi
 		hookItems = append(hookItems, item)
 	})
 
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued text",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
 	if len(persisted) != 1 {
@@ -500,11 +500,11 @@ func TestDrainRacesEagerPersist_ConvergesToALegalState(t *testing.T) {
 		threadID := fmt.Sprintf("t-race-%d", i)
 		createTestThread(t, st, threadID)
 		rowID := "user:1:flush:1"
-		router.RegisterPendingFlushSendWithEnqueuedAt(threadID, "queue:q1", store.Item{
+		router.RegisterPendingFlushSendWithExpectation(threadID, "queue:q1", store.Item{
 			ID: rowID, ThreadID: threadID, TurnIndex: 1,
 			Kind: "user_text", Role: "user", Status: "completed",
 			Summary: "raced queued text",
-		}, time.Now().UnixMilli(), "ao-uuid-race")
+		}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-race"})
 
 		var drained []UnconfirmedFlushItem
 		done := make(chan struct{})
@@ -552,12 +552,12 @@ func TestEchoFailurePreDurability_ReinsertsPendingEntry(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued text to keep",
 		Meta:    "{not-json",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	echo := provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "queued text to keep",
@@ -676,14 +676,15 @@ func TestSecondEagerDeferredEcho_SettlesSiblingAsEndTurn(t *testing.T) {
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	now := time.Now().UnixMilli()
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "first queued",
-	}, now, "ao-uuid-1")
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q2", store.Item{
+	}, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
+
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q2", store.Item{
 		ID: "user:2:flush:1", ThreadID: "t1", TurnIndex: 2,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "second queued",
-	}, now, "ao-uuid-2")
+	}, now, PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
 
 	if persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1")); len(persisted) != 2 {
 		t.Fatalf("eager persist = %+v, want two rows", persisted)
@@ -748,10 +749,10 @@ func TestEagerPersistDeferredFlushSends_UsesCallerSampledInterruptedTurn(t *test
 
 	// No turn is open at persist time — the cut turn settled during the
 	// ack wait. The caller's earlier sample must still be stamped.
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "queued",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	if persisted := eagerPersistForTest(router, "t1", 0); len(persisted) != 1 {
 		t.Fatalf("eager persist = %+v, want one row", persisted)
@@ -860,11 +861,11 @@ func TestEagerPersistFailure_RestoresDeferredState(t *testing.T) {
 
 	// Malformed meta defeats the persist (json_valid CHECK on
 	// items.meta) — the transition must roll back.
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued text", Meta: "{not-json",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	if persisted := eagerPersistForTest(router, "t1", 0); len(persisted) != 0 {
 		t.Fatalf("eager persist of unpersistable row = %+v, want none", persisted)
@@ -953,10 +954,10 @@ func TestMarkFlushSendsInterrupted_PreAckStampSettlesInterrupted(t *testing.T) {
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "queued",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	// Pre-ack publish, then the echo lands during the ack wait — no
 	// eager persist has run.
@@ -981,10 +982,11 @@ func TestMarkFlushSendsInterrupted_PreAckStampSettlesInterrupted(t *testing.T) {
 	// A failed interrupt request restores the previous stamp (-1 for a
 	// never-claimed entry): the turn was not provably cut, so a later
 	// natural drain settles end_turn (round-7 R7-5: restore, not wipe).
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q2", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q2", store.Item{
 		ID: "user:2:flush:1", ThreadID: "t1", TurnIndex: 2,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "second",
-	}, time.Now().UnixMilli(), "ao-uuid-2")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
+
 	tok := router.MarkFlushSendsInterrupted("t1", 1)
 	router.RestoreFlushSendsInterrupted("t1", tok)
 	if err := router.Handle(provider.ProviderEvent{
@@ -1090,10 +1092,10 @@ func TestInFlightEchoPoppedBeforeMark_SettlesInterrupted(t *testing.T) {
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "queued",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	// Pop before the mark: the interrupt's pre-ack publish finds an
 	// empty FIFO.
@@ -1317,7 +1319,7 @@ func TestPostAckFlushTransition_FencedAgainstSessionReplacement(t *testing.T) {
 	if err := router.PersistItemQuiet(quietRow, nil); err != nil {
 		t.Fatalf("persist quiet row: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", quietRow, 1, now, "ao-uuid-1")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", quietRow, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 	tok := router.MarkFlushSendsInterrupted("t1", 0)
 	router.MarkThreadActive("t1")
 	if promoted := router.PromoteQuietFlushSends("t1", tok); len(promoted) != 0 {
@@ -1342,10 +1344,11 @@ func TestPostAckFlushTransition_FencedAgainstSessionReplacement(t *testing.T) {
 
 	// Deferred shape: the stale eager persist must not transition the
 	// replacement's entry or write its row.
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q2", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q2", store.Item{
 		ID: "user:2:flush:1", ThreadID: "t1", TurnIndex: 2,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "deferred",
-	}, now, "ao-uuid-2")
+	}, now, PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
+
 	tok = router.MarkFlushSendsInterrupted("t1", 1)
 	router.MarkThreadActive("t1")
 	if persisted := router.EagerPersistDeferredFlushSends("t1", 1, tok); len(persisted) != 0 {
@@ -1396,10 +1399,11 @@ func TestRestoreFlushSendsInterrupted_EpochGuard(t *testing.T) {
 	seed := func(threadID string) {
 		t.Helper()
 		createTestThread(t, st, threadID)
-		router.RegisterPendingFlushSendWithEnqueuedAt(threadID, "queue:"+threadID, store.Item{
+		router.RegisterPendingFlushSendWithExpectation(threadID, "queue:"+threadID, store.Item{
 			ID: "user:1:flush:1", ThreadID: threadID, TurnIndex: 1,
 			Kind: "user_text", Role: "user", Status: "completed", Summary: "queued",
-		}, time.Now().UnixMilli(), "ao-uuid-"+threadID)
+		}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-" + threadID})
+
 	}
 
 	// Newer interrupt succeeded: the older failure's restore parks and
@@ -1474,10 +1478,10 @@ func TestRestoreFlushSendsInterrupted_EpochGuard(t *testing.T) {
 func TestEagerPersistStamp_PreservesNewerInterruptStamp(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:2:flush:1", ThreadID: "t1", TurnIndex: 2,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "queued",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	tokA := router.MarkFlushSendsInterrupted("t1", 0)
 	router.MarkFlushSendsInterrupted("t1", 1)
@@ -1509,11 +1513,11 @@ func TestDeferredEchoPersistFailure_StillOpensQueuedTurn(t *testing.T) {
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued", Meta: "{not-json",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "queued",
@@ -1562,7 +1566,7 @@ func TestPromotedEchoBoundary_CoversRowsDeferredBehindMidSettleStream(t *testing
 	if err := router.PersistItemQuiet(flushRow, nil); err != nil {
 		t.Fatalf("quiet persist: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", flushRow, 1, now, "ao-uuid-1")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", flushRow, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 1 {
 		t.Fatalf("promote = %+v, want the flush row", promoted)
 	}
@@ -1715,7 +1719,7 @@ func TestEchoBoundaryAnchor_RecordedOnFailureNotReplacedOnRetry(t *testing.T) {
 	if err := router.PersistItemQuiet(quietRow2, nil); err != nil {
 		t.Fatalf("persist second quiet row: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q3", quietRow2, 0, now, "ao-uuid-2")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q3", quietRow2, 0, now, PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "second queued",
 		Meta:      json.RawMessage(`{"provider_item_id":"ao-uuid-2"}`),
@@ -1756,7 +1760,7 @@ func TestUnanchoredEagerFlushEcho_DrainsDeferredRowsBelowBump(t *testing.T) {
 	if err := router.PersistItemQuiet(flushRow, nil); err != nil {
 		t.Fatalf("quiet persist: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", flushRow, 0, now, "ao-uuid-1")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", flushRow, 0, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	// A tool completion dispatched before the echo sits in the interrupt
 	// queue (its same-scope stream is still mid-settle) — no item_index
@@ -1921,8 +1925,8 @@ func TestRebumpOverDrained_PreservesAnchoredSiblingFIFO(t *testing.T) {
 			t.Fatalf("quiet persist %s: %v", row.ID, err)
 		}
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", q1, 1, now, "ao-uuid-1")
-	router.RegisterPendingQuietFlushSend("t1", "queue:q2", q2, 1, now+1, "ao-uuid-2")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", q1, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q2", q2, 1, now+1, PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
 	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 2 {
 		t.Fatalf("promote = %d rows, want 2", len(promoted))
 	}
@@ -2010,8 +2014,8 @@ func TestFailedSiblingRebump_RepairedBySiblingEcho(t *testing.T) {
 			t.Fatalf("quiet persist %s: %v", row.ID, err)
 		}
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", q1, 1, now, "ao-uuid-1")
-	router.RegisterPendingQuietFlushSend("t1", "queue:q2", q2, 1, now+1, "ao-uuid-2")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", q1, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q2", q2, 1, now+1, PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
 	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 2 {
 		t.Fatalf("promote = %d rows, want 2", len(promoted))
 	}
@@ -2116,7 +2120,7 @@ func TestPromotedEchoBoundary_WaitsForInFlightDrain(t *testing.T) {
 	if err := router.PersistItemQuiet(flushRow, nil); err != nil {
 		t.Fatalf("quiet persist: %v", err)
 	}
-	router.RegisterPendingQuietFlushSend("t1", "queue:q1", flushRow, 1, now, "ao-uuid-1")
+	router.RegisterPendingQuietFlushSendWithExpectation("t1", "queue:q1", flushRow, 1, now, PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 	if promoted := promoteQuietForTest(router, "t1"); len(promoted) != 1 {
 		t.Fatalf("promote = %d rows, want 1", len(promoted))
 	}
@@ -2287,11 +2291,12 @@ func TestSecondInterrupt_RefreshesDeferredOriginStamp(t *testing.T) {
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	for i, id := range []string{"user:1:flush:1", "user:2:flush:1"} {
-		router.RegisterPendingFlushSendWithEnqueuedAt("t1", fmt.Sprintf("queue:q%d", i+1), store.Item{
+		router.RegisterPendingFlushSendWithExpectation("t1", fmt.Sprintf("queue:q%d", i+1), store.Item{
 			ID: id, ThreadID: "t1", TurnIndex: i + 1,
 			Kind: "user_text", Role: "user", Status: "completed",
 			Summary: fmt.Sprintf("queued %d", i+1),
-		}, time.Now().UnixMilli(), fmt.Sprintf("ao-uuid-%d", i+1))
+		}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: fmt.Sprintf("ao-uuid-%d", i+1)})
+
 	}
 
 	// First interrupt cuts turn 0 and eager-persists both entries.
@@ -2408,7 +2413,7 @@ func TestDeferredEchoSampleFailure_RecordsTurnOpenFallback(t *testing.T) {
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued",
 	}
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", deferredRow, time.Now().UnixMilli(), "ao-uuid-1")
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", deferredRow, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	// Closing the store fails BOTH the occupancy sample and the
 	// subsequent persist — the entry reinserts EchoConsumed, and the
@@ -2454,7 +2459,7 @@ func TestDeferredEchoSampleFailure_OpenTurnFallsBackToSteerShape(t *testing.T) {
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued",
 	}
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", deferredRow, time.Now().UnixMilli(), "ao-uuid-1")
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", deferredRow, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)

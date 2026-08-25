@@ -167,7 +167,7 @@ func TestRevertAndResendRefusesPendingSend(t *testing.T) {
 			thread := createAppTestThread(t, app, "t-pending", "claude", t.TempDir())
 			insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
 			insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
-			app.triage.RegisterPendingSendExpecting(thread.ID, "user:1", 1, "")
+			app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:1", 1, triage.PendingSendExpectation{ProviderItemID: ""})
 
 			assertRevertAndResendRejected(t, app, thread.ID, tc.target, false, "awaiting provider confirmation", 2)
 		})

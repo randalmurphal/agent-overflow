@@ -1016,13 +1016,14 @@ func (a *App) codexResendAfterInterrupt(
 	}
 
 	merged := strings.Join(contents, "\n\n")
+	// The merged re-send is correlated to the FIRST item's row, which is
+	// the row the pending entry below is registered for. Items 2+ share
+	// that correlation, exactly as they share the turn.
+	resendClientID, resendExpect := providerSendIdentity(sess, persisted[0].UserItemID, "")
 	sendOpts := provider.SendOptions{
-		InteractionMode: provider.NormalizeInteractionMode(thread.Mode),
-		Attachments:     providerAttachments,
-		// The merged re-send is correlated to the FIRST item's row, which is
-		// the row the pending entry below is registered for. Items 2+ share
-		// that correlation, exactly as they share the turn.
-		ClientUserMessageID: persisted[0].UserItemID,
+		InteractionMode:     provider.NormalizeInteractionMode(thread.Mode),
+		Attachments:         providerAttachments,
+		ClientUserMessageID: resendClientID,
 	}
 
 	turnIndex, err := a.nextSendTurnIndex(threadID)
@@ -1039,7 +1040,7 @@ func (a *App) codexResendAfterInterrupt(
 	// interrupt position by EagerPersistDeferredFlushSends — anchor the
 	// fresh entry so the echo's :flush: bump doesn't move it again.
 	a.triage.RegisterPendingSendWithExpectation(
-		threadID, persisted[0].UserItemID, turnIndex, triage.PendingSendExpectation{ByClientID: true})
+		threadID, persisted[0].UserItemID, turnIndex, resendExpect)
 	a.triage.MarkPendingSendAnchoredAtInterrupt(threadID, persisted[0].UserItemID)
 	sess.liveness.bumpActivity(time.Now())
 

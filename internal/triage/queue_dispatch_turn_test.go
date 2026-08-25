@@ -60,7 +60,7 @@ func TestHandleTurnStart_PendingSendTurnIndex_PreservesQueueDispatchedTurn(t *te
 		Status:    "completed",
 		Summary:   "commit",
 	}
-	router.RegisterPendingFlushSend("t1", "queue:abc", queuedItem)
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:abc", queuedItem, 0, PendingSendExpectation{})
 
 	// Provider echoes system.init (Claude wire shape: no turn index).
 	// handleInit sees the pending-send and routes through
@@ -159,7 +159,7 @@ func TestHandleTurnStart_PendingSendTurnIndex_NewTurnSegmentsDoNotCollideWithPre
 		Status:    "completed",
 		Summary:   "next prompt",
 	}
-	router.RegisterPendingFlushSend("t1", "queue:abc", queuedItem)
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:abc", queuedItem, 0, PendingSendExpectation{})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventInit,
 		ThreadID:  "t1",
@@ -245,7 +245,7 @@ func TestHandleTurnStart_PendingSendTurnIndex_CodexWireShape_PrefersPendingOverL
 		Status:    "completed",
 		Summary:   "queued prompt",
 	}
-	router.RegisterPendingFlushSend("t1", "queue:abc", queuedItem)
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:abc", queuedItem, 0, PendingSendExpectation{})
 
 	// Codex turn/started → EventTurnStart with no TurnIndex on the wire.
 	if err := router.Handle(provider.ProviderEvent{
@@ -297,14 +297,15 @@ func TestHandleTurnStart_PendingSendTurnIndex_MultiEntryFIFO_HeadWins(t *testing
 	// Two queued sends piled up (turn 1 first, then turn 2). FIFO head
 	// is turn 1 — the wire echo for the next system.init corresponds to
 	// that older send.
-	router.RegisterPendingFlushSend("t1", "queue:1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:1", store.Item{
 		ID: "user:1:flush:0", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "first queued",
-	})
-	router.RegisterPendingFlushSend("t1", "queue:2", store.Item{
+	}, 0, PendingSendExpectation{})
+
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:2", store.Item{
 		ID: "user:2:flush:0", ThreadID: "t1", TurnIndex: 2,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "second queued",
-	})
+	}, 0, PendingSendExpectation{})
 
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventInit,
@@ -390,11 +391,11 @@ func TestDeferredFlushEcho_MidLoopConsumption_OpensLogicalTurn(t *testing.T) {
 
 	// Queue dispatch mid-round: deferred registration stamped at turn 1
 	// (resolveFlushTurnPlacement found no NULL-completed turns row).
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "queued mid-cascade",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	// Mid-loop consumption: the echo arrives with the round still open —
 	// no system.init, no EventTurnStart.
@@ -531,10 +532,11 @@ func TestDeferredFlushEcho_SecondEchoSettlesPredecessorTurn(t *testing.T) {
 	}
 
 	// First queued message consumed mid-loop.
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "first queued",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
+
 	emissions.reset()
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "first queued",
@@ -553,10 +555,11 @@ func TestDeferredFlushEcho_SecondEchoSettlesPredecessorTurn(t *testing.T) {
 	}
 
 	// Second queued message consumed in the same round.
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q2", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q2", store.Item{
 		ID: "user:2:flush:1", ThreadID: "t1", TurnIndex: 2,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "second queued",
-	}, time.Now().UnixMilli(), "ao-uuid-2")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-2"})
+
 	echo2At := time.Now().Add(3 * time.Second)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", Content: "second queued",
@@ -714,10 +717,10 @@ func TestEagerPersistedDeferredFlushEcho_OpensLogicalTurn(t *testing.T) {
 		t.Fatalf("turn 0 start: %v", err)
 	}
 
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:q1", store.Item{
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:q1", store.Item{
 		ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "queued",
-	}, time.Now().UnixMilli(), "ao-uuid-1")
+	}, time.Now().UnixMilli(), PendingSendExpectation{ProviderItemID: "ao-uuid-1"})
 
 	// Interrupt: the deferred row persists eagerly at the turn tail.
 	persisted := eagerPersistForTest(router, "t1", router.OpenTurnIndex("t1"))
@@ -891,7 +894,7 @@ func TestHandleTurnStart_UnknownOrigin_KeepsThePendingSendTurnIndex(t *testing.T
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
-	router.RegisterPendingSend("t1", "user:4", 4)
+	router.RegisterPendingSendWithExpectation("t1", "user:4", 4, PendingSendExpectation{})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventTurnStart, ThreadID: "t1", TurnID: "codex-turn-1",
 		Meta: json.RawMessage(`{"origin":"something-new"}`), Timestamp: time.Now(),

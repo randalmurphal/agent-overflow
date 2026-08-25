@@ -190,7 +190,7 @@ func TestHandleUserText_ForeignQueueEchoAheadOfOurs_LeavesThePendingSendAlone(t 
 	// Codex registers with NO expected provider item id — item ids are
 	// provider-assigned — which is exactly what leaves the entry defenceless
 	// against a FIFO pop.
-	router.RegisterPendingFlushSendWithEnqueuedAt("t1", "queue:m1", ours, now, "")
+	router.RegisterPendingFlushSendWithExpectation("t1", "queue:m1", ours, now, PendingSendExpectation{ProviderItemID: ""})
 
 	// The foreign row dispatches first. `codex queue` mints a v7 uuid for its
 	// clientId, and the session stamps the turn's origin.
@@ -249,8 +249,8 @@ func TestHandleUserText_ForeignQueueEchoAheadOfOurs_LeavesThePendingSendAlone(t 
 // all: an echo without one still pops the FIFO head.
 func TestConsumeMatchingPendingSend_NoClientID_KeepsFIFO(t *testing.T) {
 	router, _, _ := newTestRouter(t)
-	router.RegisterPendingSend("t1", "user:1", 1)
-	router.RegisterPendingSend("t1", "user:2", 2)
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
+	router.RegisterPendingSendWithExpectation("t1", "user:2", 2, PendingSendExpectation{})
 
 	head, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-1", "")
 	if !ok || head.AOItemID != "user:1" {
@@ -266,7 +266,7 @@ func TestConsumeMatchingPendingSend_NoClientID_KeepsFIFO(t *testing.T) {
 // Falling back to FIFO here would be the mispop this path exists to prevent.
 func TestConsumeMatchingPendingSend_UnknownClientID_MatchesNothing(t *testing.T) {
 	router, _, _ := newTestRouter(t)
-	router.RegisterPendingSend("t1", "user:1", 1)
+	router.RegisterPendingSendWithExpectation("t1", "user:1", 1, PendingSendExpectation{})
 
 	if got, ok := router.consumeMatchingPendingSendForEcho("t1", "codex-item-1", "01994f2b-dead"); ok {
 		t.Fatalf("an unknown client id popped %+v", got)

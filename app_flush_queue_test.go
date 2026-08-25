@@ -1215,7 +1215,7 @@ func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testi
 	}
 
 	// Simulate first flush dispatch: registers pending send at turn 1.
-	app.triage.RegisterPendingSend(thread.ID, "user:1:flush:1", 1)
+	app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:1:flush:1", 1, triage.PendingSendExpectation{})
 
 	claudeSess := session{provider: string(provider.Claude)}
 	got, _, err := app.resolveFlushTurnPlacement(thread.ID, claudeSess)
@@ -2110,7 +2110,7 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 	if err := app.triage.PersistItemQuiet(quiet, nil); err != nil {
 		t.Fatalf("PersistItemQuiet: %v", err)
 	}
-	app.triage.RegisterPendingQuietFlushSend(thread.ID, "queue:quiet", quiet, 0, 10, "")
+	app.triage.RegisterPendingQuietFlushSendWithExpectation(thread.ID, "queue:quiet", quiet, 0, 10, triage.PendingSendExpectation{ProviderItemID: ""})
 	deferred := store.Item{
 		ID:        "user:1:flush:1",
 		ThreadID:  thread.ID,
@@ -2122,7 +2122,7 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 		CreatedAt: now + 1,
 		UpdatedAt: now + 1,
 	}
-	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:deferred", deferred, 20, "")
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:deferred", deferred, 20, triage.PendingSendExpectation{ProviderItemID: ""})
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
 
@@ -2393,7 +2393,7 @@ func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "resend me",
 	}
-	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:q1", deferred, 10, triage.PendingSendExpectation{ProviderItemID: ""})
 	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
@@ -2483,7 +2483,7 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "resend me",
 	}
-	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:q1", deferred, 10, triage.PendingSendExpectation{ProviderItemID: ""})
 	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
@@ -2716,7 +2716,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 	}
 	app.flushDispatchInflightItems[thread.ID] = 1
 	app.flushDispatchMu.Unlock()
-	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:same", store.Item{
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:same", store.Item{
 		ID:        "user:1:flush:1",
 		ThreadID:  thread.ID,
 		TurnIndex: 1,
@@ -2726,7 +2726,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 		Summary:   "pending richer copy",
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
-	}, 10, "")
+	}, 10, triage.PendingSendExpectation{ProviderItemID: ""})
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
 
@@ -2882,7 +2882,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("model fallback: %v", err)
 	}
-	app.triage.RegisterPendingFlushSend(thread.ID, "queue-flushed", store.Item{
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue-flushed", store.Item{
 		ID:        "user:7:flush:1",
 		ThreadID:  thread.ID,
 		TurnIndex: 7,
@@ -2890,7 +2890,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 		Role:      "user",
 		Status:    "completed",
 		Summary:   "flushed text",
-	})
+	}, 0, triage.PendingSendExpectation{})
 
 	state, err := app.GetThreadLiveState(thread.ID)
 	if err != nil {
@@ -2995,7 +2995,7 @@ func TestCodexResendAfterInterrupt_AmbiguousTimeoutKeepsPendingConfirmation(t *t
 		Kind: "user_text", Role: "user", Status: "completed",
 		Summary: "resend me",
 	}
-	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:q1", deferred, 10, triage.PendingSendExpectation{ProviderItemID: ""})
 	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
@@ -3051,7 +3051,7 @@ func TestCodexResendAfterInterrupt_MissingAttachmentRestoresDraft(t *testing.T) 
 		Summary: "resend with image",
 		Meta:    `{"attachments":[{"id":"att-gone","threadId":"` + thread.ID + `","filename":"x.png","mimeType":"image/png","size":1}]}`,
 	}
-	app.triage.RegisterPendingFlushSendWithEnqueuedAt(thread.ID, "queue:q1", deferred, 10, "")
+	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:q1", deferred, 10, triage.PendingSendExpectation{ProviderItemID: ""})
 	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
