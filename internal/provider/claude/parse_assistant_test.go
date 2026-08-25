@@ -739,3 +739,144 @@ func TestParseAssistant_AdvisorFixtureRoundTrip(t *testing.T) {
 		t.Fatalf("fixture replay did not produce EventToolComplete with advisor body")
 	}
 }
+
+func TestParseAssistantTextBlockIsSkipped(t *testing.T) {
+	// Text blocks on the coalesced `assistant` envelope are skipped —
+	// the same content streams through stream_event content_block_delta
+	// (covered by TestParseStreamEventTextDelta). Emitting from both
+	// paths would double the cumulative summary in triage.
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"Hello world"}]}}`)
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventTextDelta {
+			t.Fatalf("assistant envelope emitted EventTextDelta for a text block: %+v", e)
+		}
+	}
+}
+
+func TestParseAssistantToolUseBlock(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls"}}]}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventToolStart {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventToolStart)
+	}
+	if evt.ItemID != "tool-1" {
+		t.Errorf("itemID: got %q, want %q", evt.ItemID, "tool-1")
+	}
+	if evt.ItemType != "Bash" {
+		t.Errorf("itemType: got %q, want %q", evt.ItemType, "Bash")
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["toolName"] != "Bash" {
+		t.Errorf("meta toolName: got %v, want %q", meta["toolName"], "Bash")
+	}
+}
+
+func TestParseAssistantExitPlanModeBlock(t *testing.T) {
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"tool-plan-1","name":"ExitPlanMode","input":{"plan":"# Final plan\n\n- ship it"}}]}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventProposedPlan {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventProposedPlan)
+	}
+	if evt.Content != "# Final plan\n\n- ship it" {
+		t.Fatalf("content: got %q, want %q", evt.Content, "# Final plan\n\n- ship it")
+	}
+}
+
+func TestParseAssistantThinkingBlockIsSkipped(t *testing.T) {
+	// A thinking block on the coalesced `assistant` envelope is dropped
+	// when it already streamed (stream_event thinking_delta is the sole
+	// source of thinking content). The snapshot must not re-emit it on any
+	// channel — neither a streaming EventThinking nor a completed block.
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"Let me consider..."}]}}`)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, e := range events {
+		if e.Kind == provider.EventThinking {
+			t.Fatalf("assistant envelope emitted EventThinking for a thinking block: %+v", e)
+		}
+		if e.Kind == provider.EventContentBlockStop && e.ContentPresent {
+			t.Fatalf("already-streamed thinking re-emitted as a completed block: %+v", e)
+		}
+	}
+}
+
+func TestParseAssistantWithUsage(t *testing.T) {
+	// Text is dropped (already streamed — message_start marks it); usage is
+	// still emitted from the assistant envelope.
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":80,"cache_creation_input_tokens":20}}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (usage only), got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventTokenUsage {
+		t.Errorf("kind: got %q, want token_usage", events[0].Kind)
+	}
+	var usage provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &usage); err != nil {
+		t.Fatalf("unmarshal usage: %v", err)
+	}
+	if usage.UsedTokens != 200 {
+		t.Errorf("used tokens: got %d, want 200", usage.UsedTokens)
+	}
+}
+
+func TestParseAssistantMultipleBlocks(t *testing.T) {
+	// Thinking and text are dropped on the assistant envelope (already
+	// streamed — message_start marks them). Only the tool_use fires.
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, assistantMessageStartLine("msg-1")); err != nil {
+		t.Fatalf("parse message_start: %v", err)
+	}
+	line := []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"hello"},{"type":"tool_use","id":"t1","name":"Edit","input":{"file":"x"}}]}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (tool_use only), got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventToolStart {
+		t.Errorf("kind: got %q, want tool_start", events[0].Kind)
+	}
+}

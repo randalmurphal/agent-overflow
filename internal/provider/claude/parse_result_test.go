@@ -188,3 +188,42 @@ func TestParseResult_DoesNotEmitContextWindowFromModelUsage(t *testing.T) {
 	}
 	requireWireTurnComplete(t, events)
 }
+
+func TestParseResultSuccess(t *testing.T) {
+	line := []byte(`{"type":"result","subtype":"success","is_error":false,"result":"Done","session_id":"s1"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTurnComplete {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnComplete)
+	}
+}
+
+// TestParseResult_IsErrorTrueEmitsTurnComplete pins the post-cleanup
+// behaviour: an `is_error: true` result no longer branches into an
+// EventError. The Python SDK's SDKResultError shape has no bare
+// `error` field — only `errors: string[]` — so the previous branch
+// always produced an EventError with empty content. The branch was
+// dead (docs/references/claude-wire.md §result). Interrupted turns
+// are still detected via detectInterrupted; other error subtypes
+// settle as a normal EventTurnComplete whose stop_reason carries
+// the shape signal.
+func TestParseResult_IsErrorTrueWithSubtypeEmitsTurnComplete(t *testing.T) {
+	line := []byte(`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["something broke"]}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTurnComplete {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnComplete)
+	}
+}

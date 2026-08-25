@@ -1253,3 +1253,248 @@ func TestParseTaskNotificationEvent_CarriesEnvelopeUUIDOntoMeta(t *testing.T) {
 		t.Fatalf("absent envelope uuid must not emit the key, got %s", events[0].Meta)
 	}
 }
+
+func TestParseSystemInit(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"init","session_id":"abc-123","model":"claude-opus-4-6","cwd":"/home/user","tools":["Bash","Edit"],"claude_code_version":"2.0.0"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventInit {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventInit)
+	}
+	if evt.ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
+	}
+
+	var info provider.SessionInfo
+	if err := json.Unmarshal(evt.Meta, &info); err != nil {
+		t.Fatalf("unmarshal session info: %v", err)
+	}
+	if info.SessionID != "abc-123" {
+		t.Errorf("sessionID: got %q, want %q", info.SessionID, "abc-123")
+	}
+	if info.Model != "claude-opus-4-6" {
+		t.Errorf("model: got %q, want %q", info.Model, "claude-opus-4-6")
+	}
+	if info.CWD != "/home/user" {
+		t.Errorf("cwd: got %q, want %q", info.CWD, "/home/user")
+	}
+	if len(info.Tools) != 2 {
+		t.Errorf("tools: got %d, want 2", len(info.Tools))
+	}
+	if info.Version != "2.0.0" {
+		t.Errorf("version: got %q, want %q", info.Version, "2.0.0")
+	}
+}
+
+func TestParseSystemSkippedSubtypes(t *testing.T) {
+	skipped := []string{
+		"hook_started", "hook_progress", "hook_response",
+		"notification", "files_persisted",
+		"tool_use_summary", "memory_recall", "local_command_output",
+	}
+
+	for _, subtype := range skipped {
+		line := []byte(`{"type":"system","subtype":"` + subtype + `"}`)
+		events, err := ParseLine(testThread, line)
+		if err != nil {
+			t.Errorf("subtype %q: unexpected error: %v", subtype, err)
+		}
+		if len(events) != 0 {
+			t.Errorf("subtype %q: expected 0 events, got %d", subtype, len(events))
+		}
+	}
+}
+
+func TestParseToolProgressDropped(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"tool_progress","item_id":"item-1","content":{"progress":{"current":5,"total":10,"message":"Reading..."}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
+	}
+}
+
+func TestParseToolProgressNoContentDropped(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"tool_progress"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
+	}
+}
+
+func TestParseCompactBoundary(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-1","content":"Conversation compacted","data":{"context_window":{"used_tokens":50000,"max_tokens":200000,"used_percentage":25,"total_processed":120000}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventCompactBoundary {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventCompactBoundary)
+	}
+	if evt.ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
+	}
+	if evt.ItemID != "compact-1" {
+		t.Errorf("itemID: got %q, want compact-1", evt.ItemID)
+	}
+	if evt.Content != "Conversation compacted" {
+		t.Errorf("content: got %q, want Conversation compacted", evt.Content)
+	}
+
+	var meta provider.ContextWindow
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta.UsedTokens != 50000 {
+		t.Errorf("UsedTokens: got %d, want 50000", meta.UsedTokens)
+	}
+	if meta.MaxTokens != 200000 {
+		t.Errorf("MaxTokens: got %d, want 200000", meta.MaxTokens)
+	}
+	if meta.UsedPercentage != 25 {
+		t.Errorf("UsedPercentage: got %f, want 25", meta.UsedPercentage)
+	}
+}
+
+func TestParseCompactBoundaryPreservesCompactMetadata(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-2","content":"Conversation compacted","compactMetadata":{"trigger":"auto","durationMs":111814}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.ItemID != "compact-2" {
+		t.Errorf("itemID: got %q, want compact-2", evt.ItemID)
+	}
+	if evt.Content != "Conversation compacted" {
+		t.Errorf("content: got %q, want Conversation compacted", evt.Content)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["trigger"] != "auto" {
+		t.Fatalf("trigger = %v, want auto", meta["trigger"])
+	}
+	if meta["durationMs"] != float64(111814) {
+		t.Fatalf("durationMs = %v, want 111814", meta["durationMs"])
+	}
+}
+
+func TestParseCompactBoundaryPreservesCompactMetadataWhenDataIsNotContextWindow(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary","uuid":"compact-3","content":"Conversation compacted","data":{"note":"not a context window"},"compactMetadata":{"trigger":"auto","durationMs":222}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["trigger"] != "auto" {
+		t.Fatalf("trigger = %v, want auto", meta["trigger"])
+	}
+	if meta["durationMs"] != float64(222) {
+		t.Fatalf("durationMs = %v, want 222", meta["durationMs"])
+	}
+}
+
+func TestParseCompactBoundaryNoData(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"compact_boundary"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventCompactBoundary {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventCompactBoundary)
+	}
+	if evt.Meta != nil {
+		t.Errorf("meta: got %s, want nil", evt.Meta)
+	}
+}
+
+func TestParseApiRetry(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"api_retry","data":{"attempt":2,"max_retries":10,"retry_after_ms":5000,"error":{"message":"server overloaded"}}}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	evt := events[0]
+	if evt.Kind != provider.EventAPIRetry {
+		t.Errorf("kind: got %q, want %q", evt.Kind, provider.EventAPIRetry)
+	}
+	if evt.ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", evt.ThreadID, testThread)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["attempt"] != float64(2) {
+		t.Errorf("attempt: got %v, want 2", meta["attempt"])
+	}
+	if meta["max_retries"] != float64(10) {
+		t.Errorf("max_retries: got %v, want 10", meta["max_retries"])
+	}
+	if meta["retry_after_ms"] != float64(5000) {
+		t.Errorf("retry_after_ms: got %v, want 5000", meta["retry_after_ms"])
+	}
+	if meta["error"] != "server overloaded" {
+		t.Errorf("error: got %v, want \"server overloaded\"", meta["error"])
+	}
+}
+
+func TestParseUnknownSystemSubtype(t *testing.T) {
+	line := []byte(`{"type":"system","subtype":"future_feature"}`)
+
+	events, err := ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(events))
+	}
+}

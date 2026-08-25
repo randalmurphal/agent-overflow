@@ -1613,3 +1613,801 @@ func TestChildAgentTokenSpendRefusesEmptyFrames(t *testing.T) {
 		}
 	})
 }
+
+// -- ClassifyNotification tests --
+
+func TestTurnStarted(t *testing.T) {
+	params := json.RawMessage(`{"turn":{"id":"turn-1"}}`)
+	events := ClassifyNotification(testThread, "turn/started", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTurnStart {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnStart)
+	}
+	if events[0].TurnID != "turn-1" {
+		t.Errorf("turnID: got %q, want %q", events[0].TurnID, "turn-1")
+	}
+}
+
+func TestTurnCompletedSuccess(t *testing.T) {
+	params := json.RawMessage(`{"turn":{"id":"turn-1","status":"completed"}}`)
+	events := ClassifyNotification(testThread, "turn/completed", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTurnComplete {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTurnComplete)
+	}
+	if events[0].TurnID != "turn-1" {
+		t.Errorf("turnID: got %q, want %q", events[0].TurnID, "turn-1")
+	}
+}
+
+func TestTurnCompletedFailed(t *testing.T) {
+	params := json.RawMessage(`{"turn":{"id":"turn-1","status":"failed","error":{"message":"model error"}}}`)
+	events := ClassifyNotification(testThread, "turn/completed", params)
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventError {
+		t.Errorf("first event kind: got %q, want %q", events[0].Kind, provider.EventError)
+	}
+	if events[0].Content != "model error" {
+		t.Errorf("error content: got %q, want %q", events[0].Content, "model error")
+	}
+	if events[1].Kind != provider.EventTurnComplete {
+		t.Errorf("second event kind: got %q, want %q", events[1].Kind, provider.EventTurnComplete)
+	}
+}
+
+func TestItemAgentMessageDelta(t *testing.T) {
+	params := json.RawMessage(`{"turnId":"turn-1","itemId":"msg-1","delta":"Hello "}`)
+	events := ClassifyNotification(testThread, "item/agentMessage/delta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTextDelta {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTextDelta)
+	}
+	if events[0].Content != "Hello " {
+		t.Errorf("content: got %q, want %q", events[0].Content, "Hello ")
+	}
+	if events[0].TurnID != "turn-1" {
+		t.Errorf("turnID: got %q, want %q", events[0].TurnID, "turn-1")
+	}
+	if events[0].ItemID != "msg-1" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "msg-1")
+	}
+	if events[0].Role != "assistant" {
+		t.Errorf("role: got %q, want %q", events[0].Role, "assistant")
+	}
+}
+
+func TestItemAgentMessageDeltaEmpty(t *testing.T) {
+	params := json.RawMessage(`{"delta":""}`)
+	events := ClassifyNotification(testThread, "item/agentMessage/delta", params)
+
+	if len(events) != 0 {
+		t.Errorf("expected 0 events for empty delta, got %d", len(events))
+	}
+}
+
+func TestItemStarted(t *testing.T) {
+	params := json.RawMessage(`{"item":{"id":"item-1","type":"command_execution"}}`)
+	events := ClassifyNotification(testThread, "item/started", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolStart {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventToolStart)
+	}
+	if events[0].ItemID != "item-1" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "item-1")
+	}
+	if events[0].ItemType != "command_execution" {
+		t.Errorf("itemType: got %q, want %q", events[0].ItemType, "command_execution")
+	}
+}
+
+func TestItemStartedFileChangeNormalizesToInternalToolName(t *testing.T) {
+	params := json.RawMessage(`{"turnId":"turn-1","item":{"id":"patch-1","type":"fileChange","changes":[{"path":"src/old.go","kind":{"type":"update","move_path":"src/new.go"},"diff":"@@ -1 +1 @@\n-old\n+new"}],"status":"inProgress"}}`)
+	events := ClassifyNotification(testThread, "item/started", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	evt := events[0]
+	if evt.Kind != provider.EventToolStart {
+		t.Fatalf("kind: got %q, want %q", evt.Kind, provider.EventToolStart)
+	}
+	if evt.ItemType != "file_change" {
+		t.Fatalf("itemType: got %q, want file_change", evt.ItemType)
+	}
+	var meta struct {
+		ToolName   string `json:"toolName"`
+		ItemStatus string `json:"item_status"`
+		Input      struct {
+			FilePath string `json:"file_path"`
+		} `json:"input"`
+		Item struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Status  string `json:"status"`
+			Changes []struct {
+				Path string `json:"path"`
+				Kind struct {
+					Type     string `json:"type"`
+					MovePath string `json:"move_path"`
+				} `json:"kind"`
+				Diff string `json:"diff"`
+			} `json:"changes"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta.ToolName != "file_change" {
+		t.Fatalf("toolName: got %q, want file_change", meta.ToolName)
+	}
+	if meta.ItemStatus != "inProgress" {
+		t.Fatalf("item_status: got %q, want inProgress", meta.ItemStatus)
+	}
+	if meta.Input.FilePath != "src/new.go" {
+		t.Fatalf("input.file_path: got %q, want src/new.go", meta.Input.FilePath)
+	}
+	if meta.Item.ID != "patch-1" || meta.Item.Type != "fileChange" || meta.Item.Status != "inProgress" {
+		t.Fatalf("meta.item identity = %+v, want patch-1/fileChange/inProgress", meta.Item)
+	}
+	if len(meta.Item.Changes) != 1 {
+		t.Fatalf("meta.item.changes length = %d, want 1", len(meta.Item.Changes))
+	}
+	change := meta.Item.Changes[0]
+	if change.Path != "src/old.go" || change.Kind.MovePath != "src/new.go" || change.Diff == "" {
+		t.Fatalf("meta.item.changes[0] = %+v, want path, move_path, and diff preserved", change)
+	}
+}
+
+func TestItemCompleted(t *testing.T) {
+	params := json.RawMessage(`{"item":{"id":"item-1","type":"command_execution"}}`)
+	events := ClassifyNotification(testThread, "item/completed", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventToolComplete {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventToolComplete)
+	}
+}
+
+// TestItemStartedDropsNonToolTypes guards the sidebar live-status
+// projection. Codex fires item/started for every ThreadItem variant —
+// including userMessage, agentMessage, reasoning — but only true tools
+// (command execution, file change, mcp tool calls, etc.) should land
+// as EventToolStart. Without this filter, every new turn writes ghost
+// tool_call rows that flicker the sidebar pill running -> idle during
+// the gap between userMessage settling and agentMessage streaming,
+// which is long enough for the "Completed" pill to render mid-turn.
+func TestItemStartedDropsNonToolTypes(t *testing.T) {
+	cases := []string{"userMessage", "agentMessage", "assistantMessage", "reasoning", "plan", "todoList"}
+	for _, itemType := range cases {
+		t.Run(itemType, func(t *testing.T) {
+			params := json.RawMessage(`{"item":{"id":"item-X","type":"` + itemType + `"}}`)
+			events := ClassifyNotification(testThread, "item/started", params)
+			if len(events) != 0 {
+				t.Fatalf("%s started should be dropped, got %d events: %+v", itemType, len(events), events)
+			}
+		})
+	}
+}
+
+// TestItemCompletedDropsNonToolContentTypes mirrors the started filter:
+// completions for todoList must not settle as tool_call rows. Carve-outs:
+//   - agentMessage / assistantMessage / reasoning settle their streaming
+//     content rows via EventContentBlockStop.
+//   - plan re-routes to EventProposedPlan (covered by
+//     TestClassifyNotification_ItemCompletedPlan).
+//   - userMessage promotes to EventUserText (covered by the
+//     TestClassifyItemCompleted_UserMessage_* family in
+//     protocol_test.go); see classifyItemCompleted's userMessage
+//     branch and parse_user.go's `isReplay:true` mirror on the
+//     Claude side.
+func TestItemCompletedDropsNonToolContentTypes(t *testing.T) {
+	cases := []string{"todoList"}
+	for _, itemType := range cases {
+		t.Run(itemType, func(t *testing.T) {
+			params := json.RawMessage(`{"item":{"id":"item-X","type":"` + itemType + `"}}`)
+			events := ClassifyNotification(testThread, "item/completed", params)
+			if len(events) != 0 {
+				t.Fatalf("%s completed should be dropped, got %d events: %+v", itemType, len(events), events)
+			}
+		})
+	}
+}
+
+func TestItemCompletedSettlesStreamingContentTypes(t *testing.T) {
+	cases := []struct {
+		name          string
+		itemType      string
+		wantBlockType string
+	}{
+		{name: "agent message", itemType: "agentMessage", wantBlockType: "text"},
+		{name: "assistant message", itemType: "assistantMessage", wantBlockType: "text"},
+		{name: "reasoning", itemType: "reasoning", wantBlockType: "thinking"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := json.RawMessage(`{"turnId":"turn-1","item":{"id":"item-X","type":"` + tc.itemType + `"}}`)
+			events := ClassifyNotification(testThread, "item/completed", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			if events[0].Kind != provider.EventContentBlockStop {
+				t.Fatalf("kind = %q, want content block stop", events[0].Kind)
+			}
+			var meta map[string]string
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatalf("meta unmarshal: %v", err)
+			}
+			if meta["blockType"] != tc.wantBlockType {
+				t.Fatalf("blockType = %q, want %q", meta["blockType"], tc.wantBlockType)
+			}
+		})
+	}
+}
+
+func TestCommandExecutionOutputDelta(t *testing.T) {
+	params := json.RawMessage(`{"delta":"output line\n"}`)
+	events := ClassifyNotification(testThread, "item/commandExecution/outputDelta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventCommandOutput {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventCommandOutput)
+	}
+	if events[0].Content != "output line\n" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "output line\n")
+	}
+}
+
+func TestTurnDiffUpdated(t *testing.T) {
+	params := json.RawMessage(`{"diff":"--- a/main.go\n+++ b/main.go\n"}`)
+	events := ClassifyNotification(testThread, "turn/diff/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 upgrade-only diff event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventDiff {
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventDiff)
+	}
+	if events[0].Content != "--- a/main.go\n+++ b/main.go\n" {
+		t.Fatalf("content = %q", events[0].Content)
+	}
+	var meta struct {
+		UpgradeOnly bool   `json:"upgrade_only"`
+		Source      string `json:"source"`
+	}
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if !meta.UpgradeOnly || meta.Source != "turn/diff/updated" {
+		t.Fatalf("meta = %+v, want upgrade-only turn diff marker", meta)
+	}
+}
+
+func TestFileChangeOutputDelta(t *testing.T) {
+	params := json.RawMessage(`{"delta":"diff content"}`)
+	events := ClassifyNotification(testThread, "item/fileChange/outputDelta", params)
+
+	if len(events) != 0 {
+		t.Fatalf("item/fileChange/outputDelta should not create transcript events, got %+v", events)
+	}
+}
+
+func TestFileChangePatchUpdated(t *testing.T) {
+	params := json.RawMessage(`{"itemId":"patch-1","changes":[]}`)
+	events := ClassifyNotification(testThread, "item/fileChange/patchUpdated", params)
+
+	if len(events) != 0 {
+		t.Fatalf("item/fileChange/patchUpdated should not create transcript events, got %+v", events)
+	}
+}
+
+func TestTokenUsageUpdated(t *testing.T) {
+	params := json.RawMessage(`{"tokenUsage":{"last":{"inputTokens":100,"outputTokens":20,"cachedInputTokens":6,"totalTokens":126},"total":{"inputTokens":9000,"outputTokens":2000,"cachedInputTokens":839,"totalTokens":11839},"modelContextWindow":258400}}`)
+	events := ClassifyNotification(testThread, "thread/tokenUsage/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTokenUsage {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventTokenUsage)
+	}
+	var window provider.ContextWindow
+	if err := json.Unmarshal(events[0].Meta, &window); err != nil {
+		t.Fatalf("unmarshal context window: %v", err)
+	}
+	if window.UsedTokens != 126 {
+		t.Fatalf("usedTokens: got %d, want 126", window.UsedTokens)
+	}
+	if window.MaxTokens != 258400 {
+		t.Fatalf("maxTokens: got %d, want 258400", window.MaxTokens)
+	}
+}
+
+func TestErrorNotification(t *testing.T) {
+	params := json.RawMessage(`{"error":{"message":"rate limited"}}`)
+	events := ClassifyNotification(testThread, "error", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventError {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventError)
+	}
+	if events[0].Content != "rate limited" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "rate limited")
+	}
+}
+
+func TestTurnPlanUpdatedEmitsTodoUpdate(t *testing.T) {
+	// Real Codex wire shape per app-server-protocol/v2.rs
+	// `TurnPlanUpdatedNotification.plan: Vec<TurnPlanStep>`. The previous
+	// fixture used `plan: "step 1, step 2"` (a string) which only happened
+	// to satisfy the `Kind` assertion; with the new triage `decodeTodoSteps`
+	// gating the frontend emit, that shape would be silently dropped. Pin
+	// the array shape here so a wire regression surfaces at parse time.
+	params := json.RawMessage(`{"plan":[{"step":"step 1","status":"inProgress"},{"step":"step 2","status":"pending"}]}`)
+	events := ClassifyNotification(testThread, "turn/plan/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventTodoUpdate {
+		t.Fatalf("kind = %q, want %q", events[0].Kind, provider.EventTodoUpdate)
+	}
+	// Confirm the plan array survives onto Meta in a shape the triage
+	// decoder will accept (decodeTodoSteps lives in internal/triage; we
+	// only assert the underlying JSON shape here so this package stays
+	// dependency-free).
+	var meta struct {
+		Plan []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"plan"`
+	}
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if len(meta.Plan) != 2 || meta.Plan[0].Step != "step 1" || meta.Plan[0].Status != "inProgress" {
+		t.Fatalf("plan steps: got %+v", meta.Plan)
+	}
+}
+
+func TestClassifyReasoningTextDelta(t *testing.T) {
+	params := json.RawMessage(`{"turnId":"turn-1","itemId":"reason-1","delta":"thinking about this..."}`)
+	events := ClassifyNotification(testThread, "item/reasoning/textDelta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventThinking {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventThinking)
+	}
+	if events[0].Content != "thinking about this..." {
+		t.Errorf("content: got %q, want %q", events[0].Content, "thinking about this...")
+	}
+	if events[0].ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
+	}
+	if events[0].TurnID != "turn-1" {
+		t.Errorf("turnID: got %q, want %q", events[0].TurnID, "turn-1")
+	}
+	if events[0].ItemID != "reason-1" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "reason-1")
+	}
+}
+
+func TestClassifyReasoningTextDeltaFallbackKeys(t *testing.T) {
+	// Falls back to "text" key when "delta" is missing.
+	params := json.RawMessage(`{"text":"via text key"}`)
+	events := ClassifyNotification(testThread, "item/reasoning/textDelta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Content != "via text key" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "via text key")
+	}
+
+	// Falls back to "content.text" when both "delta" and "text" are missing.
+	params2 := json.RawMessage(`{"content":{"text":"nested fallback"}}`)
+	events2 := ClassifyNotification(testThread, "item/reasoning/textDelta", params2)
+
+	if len(events2) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events2))
+	}
+	if events2[0].Content != "nested fallback" {
+		t.Errorf("content: got %q, want %q", events2[0].Content, "nested fallback")
+	}
+
+	// Returns nil when all keys are missing.
+	params3 := json.RawMessage(`{"other":"value"}`)
+	events3 := ClassifyNotification(testThread, "item/reasoning/textDelta", params3)
+	if len(events3) != 0 {
+		t.Errorf("expected 0 events for empty delta, got %d", len(events3))
+	}
+}
+
+func TestClassifyReasoningSummaryTextDelta(t *testing.T) {
+	params := json.RawMessage(`{"delta":"summarizing..."}`)
+	events := ClassifyNotification(testThread, "item/reasoning/summaryTextDelta", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventThinking {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventThinking)
+	}
+	if events[0].Content != "summarizing..." {
+		t.Errorf("content: got %q, want %q", events[0].Content, "summarizing...")
+	}
+}
+
+func TestClassifyThreadNameUpdated(t *testing.T) {
+	params := json.RawMessage(`{"threadName":"My New Thread"}`)
+	events := ClassifyNotification(testThread, "thread/name/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventThreadRenamed {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventThreadRenamed)
+	}
+	if events[0].Content != "My New Thread" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "My New Thread")
+	}
+
+	var meta map[string]string
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["newTitle"] != "My New Thread" {
+		t.Errorf("meta newTitle: got %q, want %q", meta["newTitle"], "My New Thread")
+	}
+}
+
+func TestClassifyThreadNameUpdatedFallback(t *testing.T) {
+	// Falls back to "name" key when "threadName" is missing.
+	params := json.RawMessage(`{"name":"Fallback Name"}`)
+	events := ClassifyNotification(testThread, "thread/name/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Content != "Fallback Name" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "Fallback Name")
+	}
+}
+
+// Regression guard for the original bug: the user's screenshot showed
+// "5-HOUR LIMIT 46% used" while Codex TUI showed "5h limit: 0% left"
+// (100% used) for the same account. The values are wired into the
+// fixture below — codex carries 100/91 and spark carries 46/22. The
+// frontend store keys by (provider, windowMins) only, so without the
+// canonical-bucket filter spark would overwrite codex at the 300 and
+// 10080 slots and produce exactly the reported symptom.
+//
+// The test also distinguishes the two branches of
+// extractCodexRateLimitEntries by giving the top-level `rateLimits`
+// (1/2 — fallback-only data) different values than
+// `rateLimitsByLimitId.codex` (100/91 — preferred path), so a
+// regression that flips the precedence shows up immediately.
+func TestClassifyRateLimitsUpdated(t *testing.T) {
+	params := json.RawMessage(`{
+		"rateLimits": {
+			"limitId": "codex",
+			"limitName": "Codex",
+			"primary": {"usedPercent": 1, "windowDurationMins": 300, "resetsAt": 1775803864},
+			"secondary": {"usedPercent": 2, "windowDurationMins": 10080, "resetsAt": 1776372636}
+		},
+		"rateLimitsByLimitId": {
+			"codex": {
+				"limitId": "codex",
+				"limitName": "Codex",
+				"primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1775803864},
+				"secondary": {"usedPercent": 91, "windowDurationMins": 10080, "resetsAt": 1776372636}
+			},
+			"spark": {
+				"limitId": "spark",
+				"limitName": "GPT-5.3-Codex-Spark",
+				"primary": {"usedPercent": 46, "windowDurationMins": 300, "resetsAt": 1775809666},
+				"secondary": {"usedPercent": 22, "windowDurationMins": 10080, "resetsAt": 1776396466}
+			}
+		}
+	}`)
+	events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventRateLimits {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventRateLimits)
+	}
+	if events[0].ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
+	}
+
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if snapshot.Provider != string(provider.Codex) {
+		t.Errorf("provider: got %q, want %q", snapshot.Provider, provider.Codex)
+	}
+	if snapshot.UpdatedAt == 0 {
+		t.Fatal("expected UpdatedAt to be populated")
+	}
+	if len(snapshot.Limits) != 4 {
+		t.Fatalf("limits len: got %d, want 4 (codex and spark primary + secondary)", len(snapshot.Limits))
+	}
+	if snapshot.Limits[0].LimitID != "codex" || snapshot.Limits[0].WindowMins != 300 {
+		t.Errorf("limits[0]: got %+v", snapshot.Limits[0])
+	}
+	if snapshot.Limits[0].UsedPercent != 100 {
+		t.Errorf("limits[0].UsedPercent: got %v, want 100 (codex bucket value, NOT spark's 46 nor top-level's 1)", snapshot.Limits[0].UsedPercent)
+	}
+	if snapshot.Limits[1].LimitID != "codex" || snapshot.Limits[1].WindowMins != 10080 {
+		t.Errorf("limits[1]: got %+v", snapshot.Limits[1])
+	}
+	if snapshot.Limits[1].UsedPercent != 91 {
+		t.Errorf("limits[1].UsedPercent: got %v, want 91 (codex bucket value, NOT spark's 22 nor top-level's 2)", snapshot.Limits[1].UsedPercent)
+	}
+	if snapshot.Limits[2].LimitID != "spark" || snapshot.Limits[2].UsedPercent != 46 {
+		t.Errorf("limits[2]: got %+v, want spark primary at 46", snapshot.Limits[2])
+	}
+	if snapshot.Limits[3].LimitID != "spark" || snapshot.Limits[3].UsedPercent != 22 {
+		t.Errorf("limits[3]: got %+v, want spark secondary at 22", snapshot.Limits[3])
+	}
+}
+
+// When `rateLimitsByLimitId` is absent (the notification path), the
+// parser must fall back to the top-level `rateLimits` snapshot. Pinned
+// here so a future refactor of extractCodexRateLimitEntries can't
+// silently drop the fallback path.
+func TestClassifyRateLimitsUsesTopLevelWhenByLimitIdAbsent(t *testing.T) {
+	params := json.RawMessage(`{
+		"rateLimits": {
+			"limitId": "codex",
+			"primary": {"usedPercent": 73, "windowDurationMins": 300, "resetsAt": 1775803864},
+			"secondary": {"usedPercent": 12, "windowDurationMins": 10080, "resetsAt": 1776372636}
+		}
+	}`)
+	events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if len(snapshot.Limits) != 2 || snapshot.Limits[0].UsedPercent != 73 || snapshot.Limits[1].UsedPercent != 12 {
+		t.Errorf("snapshot: got %+v, want [{73, 300}, {12, 10080}]", snapshot.Limits)
+	}
+}
+
+// Codex's wire `limit_id` is Option<String> without
+// `skip_serializing_if`, so the default-bucket case arrives as
+// `"limitId": null`. The TUI defaults this to `"codex"`
+// (chatwidget.rs:2891); without the same default we silently drop the
+// entire snapshot and the 5h/7d rings stay stale forever.
+func TestClassifyRateLimitsDefaultsMissingLimitId(t *testing.T) {
+	cases := map[string]json.RawMessage{
+		"null": json.RawMessage(`{
+			"rateLimits": {
+				"limitId": null,
+				"primary": {"usedPercent": 91, "windowDurationMins": 300, "resetsAt": 1775803864},
+				"secondary": {"usedPercent": 7, "windowDurationMins": 10080, "resetsAt": 1776372636}
+			}
+		}`),
+		"absent": json.RawMessage(`{
+			"rateLimits": {
+				"primary": {"usedPercent": 91, "windowDurationMins": 300, "resetsAt": 1775803864},
+				"secondary": {"usedPercent": 7, "windowDurationMins": 10080, "resetsAt": 1776372636}
+			}
+		}`),
+	}
+	for name, params := range cases {
+		t.Run(name, func(t *testing.T) {
+			events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(events))
+			}
+			var snapshot provider.RateLimitsSnapshot
+			if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+				t.Fatalf("unmarshal meta: %v", err)
+			}
+			if len(snapshot.Limits) != 2 {
+				t.Fatalf("limits len: got %d, want 2 (missing limitId must default to codex)", len(snapshot.Limits))
+			}
+			for i, want := range []int{300, 10080} {
+				if snapshot.Limits[i].LimitID != "codex" {
+					t.Errorf("limits[%d].LimitID: got %q, want codex", i, snapshot.Limits[i].LimitID)
+				}
+				if snapshot.Limits[i].WindowMins != want {
+					t.Errorf("limits[%d].WindowMins: got %d, want %d", i, snapshot.Limits[i].WindowMins, want)
+				}
+			}
+		})
+	}
+}
+
+// A standalone notification for an additional bucket must stay available.
+// The frontend keys by account, limit ID, and window, so it cannot overwrite
+// the provider's default allowance.
+func TestClassifyRateLimitsRetainsDynamicBucket(t *testing.T) {
+	params := json.RawMessage(`{
+		"rateLimits": {
+			"limitId": "spark",
+			"limitName": "GPT-5.3-Codex-Spark",
+			"primary": {"usedPercent": 46, "windowDurationMins": 300, "resetsAt": 1775809666},
+			"secondary": {"usedPercent": 22, "windowDurationMins": 10080, "resetsAt": 1776396466}
+		}
+	}`)
+	events := ClassifyNotification(testThread, "account/rateLimits/updated", params)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	var snapshot provider.RateLimitsSnapshot
+	if err := json.Unmarshal(events[0].Meta, &snapshot); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if len(snapshot.Limits) != 2 {
+		t.Fatalf("limits len: got %d, want 2", len(snapshot.Limits))
+	}
+	for _, limit := range snapshot.Limits {
+		if limit.LimitID != "spark" || limit.LimitName != "GPT-5.3-Codex-Spark" {
+			t.Errorf("dynamic bucket: got %+v", limit)
+		}
+	}
+}
+
+func TestClassifyModelRerouted(t *testing.T) {
+	params := json.RawMessage(`{"toModel":"gpt-4.1-mini"}`)
+	events := ClassifyNotification(testThread, "model/rerouted", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventModelRerouted {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventModelRerouted)
+	}
+	if events[0].Content != "gpt-4.1-mini" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "gpt-4.1-mini")
+	}
+
+	var meta map[string]string
+	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["newModel"] != "gpt-4.1-mini" {
+		t.Errorf("meta newModel: got %q, want %q", meta["newModel"], "gpt-4.1-mini")
+	}
+}
+
+func TestClassifyThreadCompacted(t *testing.T) {
+	params := json.RawMessage(`{"compactionId":"c1","tokensRemoved":500}`)
+	events := ClassifyNotification(testThread, "thread/compacted", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventCompactBoundary {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventCompactBoundary)
+	}
+	if events[0].ThreadID != testThread {
+		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, testThread)
+	}
+	if events[0].ItemID != "c1" {
+		t.Errorf("itemID: got %q, want c1", events[0].ItemID)
+	}
+	if string(events[0].Meta) != string(params) {
+		t.Errorf("meta: got %s, want %s", string(events[0].Meta), string(params))
+	}
+}
+
+func TestClassifyServerRequestResolved(t *testing.T) {
+	params := json.RawMessage(`{"requestId":91,"resolution":{"scope":"turn"}}`)
+	events := ClassifyNotification(testThread, "serverRequest/resolved", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != provider.EventApprovalResolved {
+		t.Errorf("kind: got %q, want %q", events[0].Kind, provider.EventApprovalResolved)
+	}
+	if events[0].ItemID != "91" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "91")
+	}
+	if string(events[0].Meta) != string(params) {
+		t.Errorf("meta: got %s, want %s", string(events[0].Meta), string(params))
+	}
+}
+
+func TestClassifyServerRequestResolvedPrefersProviderRequestID(t *testing.T) {
+	params := json.RawMessage(`{"requestId":"interactive-1","providerRequestId":"91"}`)
+	events := ClassifyNotification(testThread, "serverRequest/resolved", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ItemID != "91" {
+		t.Errorf("itemID: got %q, want %q", events[0].ItemID, "91")
+	}
+}
+
+func TestSkippedMethods(t *testing.T) {
+	skipped := []string{
+		"thread/started",
+		"thread/status/changed",
+		"thread/archived",
+		"thread/unarchived",
+		"thread/closed",
+		"item/autoApprovalReview/started",
+		"item/autoApprovalReview/completed",
+		"account/updated",
+		"account/login/completed",
+	}
+
+	for _, method := range skipped {
+		events := ClassifyNotification(testThread, method, json.RawMessage(`{}`))
+		if len(events) != 0 {
+			t.Errorf("method %q: expected 0 events, got %d", method, len(events))
+		}
+	}
+}
+
+// TestClassifyReasoningSummaryPartAddedEmitsParagraphBreak pins the
+// section-boundary behaviour: when Codex's reasoning summary opens a
+// new section, we inject a "\n\n" thinking delta so the accumulated
+// thinking row renders with visible paragraph breaks between sections
+// instead of one run-on blob. Section content itself continues to
+// arrive via `summaryTextDelta` and concatenates onto the same row.
+func TestClassifyReasoningSummaryPartAddedEmitsParagraphBreak(t *testing.T) {
+	events := ClassifyNotification(testThread, "item/reasoning/summaryPartAdded", json.RawMessage(`{"itemId":"i1","summaryIndex":1}`))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Kind != provider.EventThinking {
+		t.Errorf("kind: got %q, want EventThinking", events[0].Kind)
+	}
+	if events[0].Content != "\n\n" {
+		t.Errorf("content: got %q, want %q", events[0].Content, "\n\n")
+	}
+}
+
+func TestUnknownMethod(t *testing.T) {
+	events := ClassifyNotification(testThread, "future/feature", json.RawMessage(`{}`))
+	if len(events) != 0 {
+		t.Errorf("expected 0 events for unknown method, got %d", len(events))
+	}
+}
+
+func TestThreadIDPassthrough(t *testing.T) {
+	params := json.RawMessage(`{"turn":{"id":"t1"}}`)
+	events := ClassifyNotification("my-thread-123", "turn/started", params)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].ThreadID != "my-thread-123" {
+		t.Errorf("threadID: got %q, want %q", events[0].ThreadID, "my-thread-123")
+	}
+}
