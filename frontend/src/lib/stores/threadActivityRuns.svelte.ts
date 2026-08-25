@@ -267,11 +267,23 @@ interface RunEntry {
   threadId: string;
   members: Set<string>;
   /**
+   * `members` as an ordered array — the same deduped insertion-order
+   * sequence the Set iterates, kept beside it so the per-pass
+   * "definitely unchanged" probes compare with indexed loops instead of
+   * iterators. The first cut of that probe used a generator over
+   * `rowMemberIds`, and the IteratorResult churn it minted (~10MB/min of
+   * `next` allocations, 2026-08-25) gave back most of what skipping the
+   * rebuild saved.
+   */
+  membersList: string[];
+  /**
    * Items whose current fields feed this run's header. Unlike `members`, one
    * item may feed multiple runs: a detached completion settles both the
    * launch row and the completion card without joining both identities.
    */
   summaryMembers: Set<string>;
+  /** `summaryMembers` as an ordered array; see `membersList`. */
+  summaryList: string[];
   /**
    * Bumped by `indexMembers` when ordered identity membership or summary
    * dependencies change. Plain, not `$state`: it
@@ -341,7 +353,8 @@ interface RunEntry {
 // entry cannot describe.
 interface ArchivedRun extends Omit<
   RunEntry,
-  'members' | 'summaryMembers' | 'focus' | 'clipOpen' | 'openedLive' | 'membershipEpoch'
+  | 'members' | 'membersList' | 'summaryMembers' | 'summaryList'
+  | 'focus' | 'clipOpen' | 'openedLive' | 'membershipEpoch'
 > {
   keys: string[];
 }
@@ -362,7 +375,9 @@ function emptyEntry(threadId: string): RunEntry {
   return {
     threadId,
     members: new Set(),
+    membersList: [],
     summaryMembers: new Set(),
+    summaryList: [],
     membershipEpoch: 0,
     collapsed: null,
     clipOpen: true,
@@ -520,14 +535,16 @@ export function createThreadActivityRuns(
   }
 
   /**
-   * Allocation-free "definitely unchanged" probe: walks `candidateIds` (an
-   * iterable yielding ids in row order) against the stored set's insertion
-   * order. `true` means the sequences match position for position, so the
-   * rebuild below would produce an identical set — the caller can skip it,
-   * which is what keeps a projection pass from re-allocating two Sets and
-   * re-writing two reverse indexes for every SETTLED run in the window on
-   * every structural bump (measured at 46MB/min of allocation during a
-   * tool-call burn, 2026-08-25).
+   * Allocation-free "definitely unchanged" probe: walks `rowMemberIds` in
+   * row order against the stored ordered list. `true` means the sequences
+   * match position for position, so the rebuild below would produce an
+   * identical set — the caller can skip it, which is what keeps a
+   * projection pass from re-allocating two Sets and re-writing two reverse
+   * indexes for every SETTLED run in the window on every structural bump
+   * (measured at 46MB/min of allocation during a tool-call burn,
+   * 2026-08-25). Indexed loops on purpose: the first cut walked a generator
+   * against the Set's iterator and the IteratorResult objects it minted
+   * were their own ~10MB/min churn line.
    *
    * `false` only means "take the slow path". A repeated id in the input
    * dedupes to one stored member, so it reads here as a mismatch even when
@@ -537,20 +554,30 @@ export function createThreadActivityRuns(
    * to exactly the code that always ran.
    */
   function membersDefinitelyUnchanged(
-    stored: ReadonlySet<string>,
-    candidateIds: Iterable<string>,
+    stored: readonly string[],
+    rowMemberIds: readonly (readonly string[])[],
   ): boolean {
-    const previous = stored.values();
-    for (const id of candidateIds) {
-      if (previous.next().value !== id) return false;
+    let i = 0;
+    for (let row = 0; row < rowMemberIds.length; row += 1) {
+      const ids = rowMemberIds[row];
+      for (let j = 0; j < ids.length; j += 1) {
+        if (stored[i] !== ids[j]) return false;
+        i += 1;
+      }
     }
-    return previous.next().done === true;
+    return i === stored.length;
   }
 
-  function* flattenRowMemberIds(
-    rowMemberIds: readonly (readonly string[])[],
-  ): Generator<string> {
-    for (const row of rowMemberIds) yield* row;
+  /** Same probe for the summary sequence, which is already flat. */
+  function summaryDefinitelyUnchanged(
+    stored: readonly string[],
+    summaryItemIds: readonly string[],
+  ): boolean {
+    if (stored.length !== summaryItemIds.length) return false;
+    for (let i = 0; i < summaryItemIds.length; i += 1) {
+      if (stored[i] !== summaryItemIds[i]) return false;
+    }
+    return true;
   }
 
   function indexMembers(
@@ -559,14 +586,13 @@ export function createThreadActivityRuns(
     rowMemberIds: readonly (readonly string[])[],
     summaryItemIds: readonly string[],
   ): void {
-    // Fast path: both sequences match the stored sets positionally, so the
+    // Fast path: both sequences match the stored lists positionally, so the
     // rebuild below is a no-op — same sets, same reverse indexes, no epoch
     // bump. Skipping it means a settled run costs zero allocation per pass.
-    const identityUnchanged = membersDefinitelyUnchanged(
-      entry.members,
-      flattenRowMemberIds(rowMemberIds),
-    );
-    if (identityUnchanged && membersDefinitelyUnchanged(entry.summaryMembers, summaryItemIds)) {
+    if (
+      membersDefinitelyUnchanged(entry.membersList, rowMemberIds)
+      && summaryDefinitelyUnchanged(entry.summaryList, summaryItemIds)
+    ) {
       return;
     }
 
@@ -583,6 +609,7 @@ export function createThreadActivityRuns(
     // summary. A set-equality test would leave the header naming a tool that
     // is no longer the one in flight.
     const next = new Set<string>();
+    const nextList: string[] = [];
     const previous = entry.members.values();
     let changed = false;
     for (const row of rowMemberIds) {
@@ -591,6 +618,7 @@ export function createThreadActivityRuns(
         // stores; a repeated id must not advance the old iterator twice.
         if (next.has(id)) continue;
         next.add(id);
+        nextList.push(id);
         if (!changed && previous.next().value !== id) changed = true;
       }
     }
@@ -602,12 +630,15 @@ export function createThreadActivityRuns(
       if (runIdByMember.get(id) === runId) runIdByMember.delete(id);
     }
     entry.members = next;
+    entry.membersList = nextList;
     for (const id of next) runIdByMember.set(id, runId);
 
     const nextSummary = new Set(summaryItemIds);
+    const nextSummaryList: string[] = [];
     const previousSummary = entry.summaryMembers.values();
     let summaryChanged = false;
     for (const id of nextSummary) {
+      nextSummaryList.push(id);
       if (!summaryChanged && previousSummary.next().value !== id) {
         summaryChanged = true;
       }
@@ -622,6 +653,7 @@ export function createThreadActivityRuns(
       if (runIds.size === 0) runIdsBySummaryMember.delete(id);
     }
     entry.summaryMembers = nextSummary;
+    entry.summaryList = nextSummaryList;
     for (const id of nextSummary) {
       let runIds = runIdsBySummaryMember.get(id);
       if (!runIds) {
@@ -664,7 +696,9 @@ export function createThreadActivityRuns(
         entries.set(minted, {
           threadId,
           members: new Set(),
+          membersList: [],
           summaryMembers: new Set(),
+          summaryList: [],
           membershipEpoch: 0,
           collapsed: revived.collapsed,
           clipOpen: true,
@@ -701,7 +735,7 @@ export function createThreadActivityRuns(
     ) {
       return;
     }
-    const ids = [...entry.members];
+    const ids = entry.membersList;
     if (ids.length === 0) return;
     const keys = [...new Set([
       archiveKey(entry.threadId, ids[0]),
