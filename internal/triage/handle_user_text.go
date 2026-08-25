@@ -96,8 +96,7 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 			// EchoConsumed entry must still carry the transcript uuid and
 			// parent so the session-death self-heal can stamp them — the
 			// echo won't necessarily be re-delivered (round-6, R6-1).
-			pending.EchoProviderItemID = providerItemID
-			pending.EchoParentUUID = meta.text("parent_uuid")
+			pending.stashEchoIdentity(providerItemID, meta.text("parent_uuid"))
 			var handleErr error
 			if pending.DeferredItem != nil {
 				handleErr = r.persistDeferredUserText(&pending, providerItemID, evt, meta)
@@ -245,11 +244,11 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 					open, hasOpen = st.openTurn, st.openTurnSet
 				}
 				r.mu.Unlock()
-				pending.EchoTurnWasEmpty = !hasOpen || open != item.TurnIndex
+				pending.recordFirstEchoTurnOccupancy(!hasOpen || open != item.TurnIndex)
 				log.Printf("triage: sample deferred turn occupancy for %s/%s: %v — falling back to turn-open state (empty=%v)",
 					item.ThreadID, item.ID, sampleErr, pending.EchoTurnWasEmpty)
 			} else {
-				pending.EchoTurnWasEmpty = !hasRows
+				pending.recordFirstEchoTurnOccupancy(!hasRows)
 			}
 		}
 		mergedMeta, err := usermessage.MergeProviderIDs(item.Meta, providerItemID, parentUUID)
@@ -711,7 +710,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 			// session-death self-heal cannot recompute this value — by
 			// then the response rows have persisted into the same MAX
 			// (round-6, R6-1).
-			pending.EchoPromotedBoundary = boundary
+			pending.recordEchoPromotedBoundary(boundary)
 		}
 	} else if unanchoredEagerBump {
 		// The unanchored eager row is about to bump to the turn tail. If
@@ -752,7 +751,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 				return
 			}
 			if ok {
-				pending.EchoPromotedBoundary = maxIdx
+				pending.recordEchoPromotedBoundary(maxIdx)
 			}
 		}()
 	}
@@ -882,7 +881,7 @@ func (r *Router) recordEchoBoundaryAnchor(threadID string, pending *pendingSend)
 		return
 	}
 	confirmedHook(threadID, row)
-	pending.AnchorRecordedAtEcho = true
+	pending.markAnchorRecordedAtEcho()
 }
 
 // persistWireOnlySubagentPrompt creates or reconciles a nested `user_text`

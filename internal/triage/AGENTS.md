@@ -43,6 +43,12 @@ none fits.
   awaiting their wire echo, its registration surface, and the one
   consumption rule `handleUserText` pops through. See "Pending-send
   consumption" below.
+- `pending_send_transitions.go` — the same registry's named state
+  transitions, split out only because `pending_send.go` is at its size
+  ceiling. Every pendingSend mutation reachable from another file lives
+  here, each with the precondition and the lock it needs; nothing
+  outside these two files writes a `pendingSend` field. See
+  "Pending-send transitions" below.
 - `send_shape.go` — the typed `sendShape` a registrar stamps on every
   pending entry (direct / flush / steer) — the authoritative flush
   classifier readers branch on — plus the registration-time assertion
@@ -854,6 +860,34 @@ registrar also stamps exactly one `sendShape`, which is why there are
 five and not three: `RegisterPendingSteerSendWithExpectation` and
 `RegisterPendingFlushResendWithExpectation` are the direct surface's
 shape-carrying siblings, not new behaviour.
+
+### Pending-send transitions (`pending_send_transitions.go`)
+
+A `pendingSend` field is never assigned from outside `pending_send.go` /
+`pending_send_transitions.go`. Every mutation another file drives goes
+through a named transition whose doc comment states WHEN the transition
+is legal and whether `r.mu` must be held, so the registry's invariants
+stay readable in one place instead of being reconstructed from the call
+sites that happen to write a field.
+
+Two classes, with opposite locking rules:
+
+- **Popped-copy transitions** (`stashEchoIdentity`,
+  `recordFirstEchoTurnOccupancy`, `recordEchoPromotedBoundary`,
+  `markAnchorRecordedAtEcho`) are methods on `*pendingSend` and mutate
+  the copy `consumeMatchingPendingSendForEcho` handed the echo path.
+  `r.mu` must NOT be held: no other goroutine can see that copy. The
+  copy semantics are load-bearing — an entry reinserted by
+  `reinsertPendingSendHead` carries exactly what the echo path stashed,
+  and a successfully consumed one carries it nowhere. Do not convert
+  these to in-place pointer mutation on the live registry.
+- **Registry transitions** (`takeUnconfirmedFlushSendsLocked`, plus the
+  interrupt-path ones that stayed in `pending_send.go`) mutate the live
+  FIFO through its shared backing array and name their own lock.
+
+`AOItemID` and `Shape` have no transition, deliberately: both are
+stamped once by `registerPendingSend` and immutable afterwards, which is
+what lets readers trust the shape stamp instead of sniffing the id.
 
 ### Send shape is stamped at registration (`send_shape.go`)
 

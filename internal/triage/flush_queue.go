@@ -515,45 +515,29 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 	}
 	drainState.queuedFlushItems = nil
 
-	pending := drainState.pendingSends
-	var echoConsumed []pendingSend
-	if len(pending) > 0 {
-		kept := make([]pendingSend, 0, len(pending))
-		for _, entry := range pending {
-			if entry.QueueItemID == "" || entry.Shape != sendShapeFlush {
-				kept = append(kept, entry)
-				continue
-			}
-			if entry.EchoConsumed {
-				// The echo arrived (the provider transcript contains the
-				// message) but its write failed pre-durability. NOT
-				// restorable: a draft restore would re-send content the
-				// provider context already has, duplicating it on the
-				// next session (round-5, R5-3). Self-healed below.
-				echoConsumed = append(echoConsumed, entry)
-				continue
-			}
-			restored := UnconfirmedFlushItem{
-				QueueItemID: entry.QueueItemID,
-				UserItemID:  entry.AOItemID,
-				EnqueuedAt:  entry.EnqueuedAt,
-			}
-			if entry.DeferredItem != nil {
-				item := *entry.DeferredItem
-				restored.DeferredItem = &item
-				restored.Message = item.Summary
-			}
-			if entry.QuietItem != nil {
-				item := *entry.QuietItem
-				restored.QuietItem = &item
-				restored.Message = item.Summary
-			}
-			drained = append(drained, restored)
+	// The registry owns which entries a death drain takes, and which of
+	// those the provider provably consumed: an echoConsumed entry is NOT
+	// restorable — a draft restore would re-send content the provider
+	// context already has, duplicating it on the next session (round-5,
+	// R5-3) — and is self-healed below instead.
+	restorable, echoConsumed := r.takeUnconfirmedFlushSendsLocked(threadID)
+	for _, entry := range restorable {
+		restored := UnconfirmedFlushItem{
+			QueueItemID: entry.QueueItemID,
+			UserItemID:  entry.AOItemID,
+			EnqueuedAt:  entry.EnqueuedAt,
 		}
-		if len(kept) == 0 {
-			kept = nil
+		if entry.DeferredItem != nil {
+			item := *entry.DeferredItem
+			restored.DeferredItem = &item
+			restored.Message = item.Summary
 		}
-		drainState.pendingSends = kept
+		if entry.QuietItem != nil {
+			item := *entry.QuietItem
+			restored.QuietItem = &item
+			restored.Message = item.Summary
+		}
+		drained = append(drained, restored)
 	}
 	r.mu.Unlock()
 
