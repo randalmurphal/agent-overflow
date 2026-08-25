@@ -3,7 +3,12 @@
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
   import { classifyToolName } from './toolCardHeader';
@@ -36,7 +41,7 @@
     showTimestamp = true,
     hostActions,
   }: {
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
     displayItem?: Item;
     statusItem?: Item;

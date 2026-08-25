@@ -1,5 +1,9 @@
 <script lang="ts">
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
   import ExpandablePayloadBody from './ExpandablePayloadBody.svelte';
   import RowError from './RowError.svelte';
@@ -20,7 +24,7 @@
     expansion,
     emptyMessage,
   }: {
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
     /** Owned by `CollabToolRow`, which also states it as the header's
      * `controls` — see utils/chatDomIds.ts. */
     bodyDomId: string;

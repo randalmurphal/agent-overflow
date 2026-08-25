@@ -142,6 +142,19 @@ export function threadUsesDiscussionSurface(
   return !!thread && thread.mode === 'discussion' && !!thread.discussionId;
 }
 
+/**
+ * The kinds the pane's one user-facing error surface can be carrying,
+ * derived from the writers that used to assign its slot directly:
+ * `setSessionError` → `'session'`, `setHistoryLoadError` →
+ * `'history-load'`, and `setGeneralError` / `clearGeneralError` →
+ * `'general'`. The kind decides which action the banner offers
+ * (Reconnect, Retry, none), so a new kind means a new affordance rather
+ * than just a new message. `thread.svelte.ts` owns the storage and the
+ * resolution rule (`setPaneError` / `clearPaneError`); it lives here so
+ * the sub-factories can name it without importing the pane back.
+ */
+export type PaneErrorKind = 'general' | 'session' | 'history-load';
+
 export type LoadOlderResult = {
   insertedBeforeWindow: boolean;
   insertedRows: boolean;

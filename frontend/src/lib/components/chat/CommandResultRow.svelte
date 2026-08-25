@@ -13,7 +13,12 @@
   // the reader and no affordance appears late.
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import {
     createPayloadExpansion,
@@ -36,7 +41,7 @@
   import { copyMarkdownToClipboard } from '../../utils/markdownClipboard';
   import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let { pane, item }: { pane?: PaneSession & RowUiRegistry & ScrollHost; item: Item } = $props();
 
   const LOAD_BUTTON_CLASS =
     'cursor-pointer rounded text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50';

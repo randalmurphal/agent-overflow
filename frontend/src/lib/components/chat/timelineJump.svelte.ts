@@ -10,7 +10,9 @@
 // scroller needs no carve-out. It is positioned once at landing time
 // and cancelled if the reader scrolls away — it does not track content.
 
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  PaneSession,
+} from '../../stores/threadPaneRoles';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import { addToast } from '../../stores/toast.svelte';
 
@@ -32,7 +34,7 @@ const JUMP_FLASH_MAX_WAIT_FRAMES = 45;
 const JUMP_FLASH_STABLE_FRAMES = 2;
 
 export interface TimelineJumpOptions {
-  getPane(): ThreadPane;
+  getPane(): PaneSession;
   getListRef(): TimelineVirtualizerHandle | undefined;
   /**
    * Wired to the restore session's scrollToItem — the one jump path.

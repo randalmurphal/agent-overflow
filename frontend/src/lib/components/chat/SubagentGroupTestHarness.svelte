@@ -7,7 +7,14 @@
 <script lang="ts">
   import SubagentGroup from './SubagentGroup.svelte';
   import type { SubagentGroupNode, TimelineNode } from '../../utils/subagentGrouping';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    TimelineWindow,
+    PaneDoors,
+    TimelineSource,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
 
   let {
     group,
@@ -26,7 +33,7 @@
      * Optional pane stub for tests exercising the pane-backed
      * expansion registry and the expand-triggered child hydration.
      */
-    pane?: ThreadPane;
+    pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource & TimelineWindow;
     /** Passthrough for the open-in-pane routing override. */
   } = $props();
 </script>

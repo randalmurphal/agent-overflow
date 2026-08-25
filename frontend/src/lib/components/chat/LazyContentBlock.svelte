@@ -1,7 +1,11 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { MAX_INLINE_BYTES, shouldLazyLoad, truncateForPreview } from '../../utils/inlineThreshold';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import {
     createPayloadExpansion,
     compactPayloadVersion,
@@ -18,7 +22,7 @@
      * back to local state — fine for unit tests, but in chat surfaces
      * the registry preserves expand state and loaded chunks across
      * the window's overscan eviction. */
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
     threadId?: string;
     /**
      * Payload id the full body lives under, or undefined if only `preview`

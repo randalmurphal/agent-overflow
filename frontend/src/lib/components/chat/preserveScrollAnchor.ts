@@ -1,4 +1,4 @@
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type { ScrollHost } from '../../stores/threadPaneRoles';
 
 /**
  * Run `action` while holding `anchor`'s viewport position, so a row that
@@ -11,7 +11,7 @@ import type { ThreadPane } from '../../stores/thread.svelte';
  * instead, or holding the button still would push the text off the top.
  */
 export function preservePaneScrollAnchorAt(
-  pane: ThreadPane | undefined,
+  pane: ScrollHost | undefined,
   anchor: HTMLElement | null | undefined,
   action: () => void | Promise<void>,
 ): void | Promise<void> {
@@ -23,7 +23,7 @@ export function preservePaneScrollAnchorAt(
 }
 
 export function preservePaneScrollAnchor(
-  pane: ThreadPane | undefined,
+  pane: ScrollHost | undefined,
   event: MouseEvent,
   action: () => void | Promise<void>,
 ): void | Promise<void> {

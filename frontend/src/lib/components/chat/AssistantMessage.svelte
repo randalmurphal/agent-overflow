@@ -1,6 +1,12 @@
 <script lang="ts">
   import type { Item } from '../../types/models';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RevealRead,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import CopyButton from '../primitives/CopyButton.svelte';
   import { addToast } from '../../stores/toast.svelte';
@@ -13,7 +19,7 @@
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { RawJsonFenceFormatter } from './markdown/rawJsonFence';
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
 
   // A schema-bound turn answers with one unfenced JSON document, often a
   // single line tens of KB long; as prose that line re-pairs its `_` and

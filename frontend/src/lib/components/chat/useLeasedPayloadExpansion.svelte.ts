@@ -1,5 +1,8 @@
 import { onDestroy, untrack } from 'svelte';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  PaneSession,
+  RowUiRegistry,
+} from '../../stores/threadPaneRoles';
 import type {
   PayloadExpansionStateOptions,
   RowExpansionStateOptions,
@@ -9,12 +12,15 @@ import { compositeKey } from '../../utils/compositeKey';
 import { payloadVersionKey as cachePayloadVersionKey } from '../../utils/payloadDataCache';
 import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
 
+/** What a leased expansion handle needs: the row-UI registry, plus the pane id the lease is keyed by. */
+type LeaseHost = PaneSession & RowUiRegistry;
+
 interface LeasedExpansionRef {
   readonly current: PayloadExpansionHandle | null;
 }
 
 interface LeasedItemExpansionOptions {
-  getPane(): ThreadPane | undefined;
+  getPane(): LeaseHost | undefined;
   getItem(): Item;
   getFallback(): PayloadExpansionHandle | null;
   getOptions?(): RowExpansionStateOptions;
@@ -22,7 +28,7 @@ interface LeasedItemExpansionOptions {
 }
 
 interface LeasedPayloadExpansionOptions {
-  getPane(): ThreadPane | undefined;
+  getPane(): LeaseHost | undefined;
   getPayloadId(): string | undefined;
   getThreadId(): string;
   getFallback(): PayloadExpansionHandle | null;

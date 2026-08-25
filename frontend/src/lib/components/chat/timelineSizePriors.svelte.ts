@@ -13,7 +13,11 @@
 // same-run thread switch.
 
 import { untrack } from 'svelte';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  PaneSession,
+  RowUiRegistry,
+  ScrollHost,
+} from '../../stores/threadPaneRoles';
 import {
   createRowEstimate,
   getThreadSizePriors,
@@ -140,7 +144,7 @@ export function timelineRowStructuralSizeFor(
 }
 
 export interface TimelineSizePriorsOptions {
-  getPane(): ThreadPane;
+  getPane(): PaneSession & RowUiRegistry & ScrollHost;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getRevealedNodes(): TimelineNode[];
   getScrollSurfaceContentWidth(): number;

@@ -4,7 +4,13 @@
   // adding another adjacent Read appends a file link instead of
   // replacing GenericToolCallRow with a different row shell.
 
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    TimelineSource,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import type { Item } from '../../types/models';
   import type { ReadGroupNode } from '../../utils/subagentGrouping';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -23,7 +29,7 @@
     pane,
     group,
   }: {
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
     group: ReadGroupNode;
   } = $props();
 

@@ -16,10 +16,8 @@
 // timeline.
 
 import { tick } from 'svelte';
-import type {
-  PreserveViewportBottomOptions,
-  ThreadPane,
-} from '../../stores/thread.svelte';
+import type { PreserveViewportBottomOptions } from '../../stores/thread.svelte';
+import type { PaneSession } from '../../stores/threadPaneRoles';
 import type {
   RequestBottomTakeover,
   UseStickToBottomController,
@@ -40,7 +38,7 @@ interface ViewportBottomIntent {
 }
 
 export interface TimelineWindowAnchorOptions {
-  getPane(): ThreadPane;
+  getPane(): PaneSession;
   stick: UseStickToBottomController;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getScrollEl(): HTMLDivElement | undefined;

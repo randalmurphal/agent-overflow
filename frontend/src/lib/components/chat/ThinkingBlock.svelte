@@ -5,11 +5,16 @@
   // This wrapper only supplies the think-specific icon, label, ids, and
   // payload-expansion namespace.
   import type { Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RevealRead,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../../utils/payloadVersion';
   import ReasoningTailRow from './ReasoningTailRow.svelte';
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
 </script>
 
 <ReasoningTailRow

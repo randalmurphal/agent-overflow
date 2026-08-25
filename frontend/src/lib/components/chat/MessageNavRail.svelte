@@ -39,7 +39,11 @@
   import { untrack } from 'svelte';
   import ChevronsUp from '@lucide/svelte/icons/chevrons-up';
   import ChevronsDown from '@lucide/svelte/icons/chevrons-down';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    TimelineSource,
+    TimelineWindow,
+  } from '../../stores/threadPaneRoles';
   import type { TimelineNode } from '../../utils/subagentGrouping';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import { GetThreadTurnPreview, GetThreadUserMessageTicks } from '../../stores/bindings';
@@ -69,7 +73,7 @@
     getListRef,
     onJumpToItem,
   }: {
-    pane: ThreadPane;
+    pane: PaneSession & TimelineSource & TimelineWindow;
     nodes: TimelineNode[];
     getListRef(): TimelineVirtualizerHandle | undefined;
     onJumpToItem(id: string): void;

@@ -4,7 +4,14 @@
   // other tools use GenericToolCallRow's lightweight header/body.
 
   import type { Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneDoors,
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+    TimelineSource,
+    RevealRead,
+  } from '../../stores/threadPaneRoles';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import AdvisorRow from './AdvisorRow.svelte';
   import AgentRow from './AgentRow.svelte';
@@ -24,7 +31,7 @@
     item,
     codexSubagentReceiverLabels = new Map<string, string>(),
   }: {
-    pane: ThreadPane;
+    pane: PaneDoors & PaneSession & RevealRead & RowUiRegistry & ScrollHost & TimelineSource;
     item: Item;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
   } = $props();

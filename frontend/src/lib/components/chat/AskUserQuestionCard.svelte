@@ -29,7 +29,12 @@
   import ChatMarkdown from './ChatMarkdown.svelte';
   import type { Item } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -53,7 +58,7 @@
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let { pane, item }: { pane?: PaneSession & RowUiRegistry & ScrollHost; item: Item } = $props();
 
   // Expansion state lives on the per-pane registry so it survives
   // windowing remount when the row scrolls out of the buffer and back

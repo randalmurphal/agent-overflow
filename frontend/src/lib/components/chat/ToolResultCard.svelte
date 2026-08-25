@@ -4,7 +4,12 @@
   import { getSettings } from '../../stores/settings.svelte';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
@@ -34,7 +39,7 @@
     inlineDiffPreviewFiles,
   } from '../../utils/inlineThreshold';
 
-  let { pane, item, meta, payloadId }: { pane?: ThreadPane; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
+  let { pane, item, meta, payloadId }: { pane?: PaneSession & RowUiRegistry & ScrollHost; item: Item; meta: ToolResultMeta; payloadId?: string } = $props();
 
   function openSidebarForFile(filePath: string) {
     if (!pane || !payloadId) return;

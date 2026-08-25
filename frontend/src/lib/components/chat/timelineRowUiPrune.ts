@@ -7,7 +7,11 @@
 // runs on the 'always' rung because it mutates no reader-visible
 // geometry and must keep bounding memory mid-stream.
 
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  TimelineSource,
+  RowUiRegistry,
+  RevealRead,
+} from '../../stores/threadPaneRoles';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import type { QuietPass } from './timelineQuietWork';
@@ -24,7 +28,7 @@ const ROW_UI_RETAIN_NODE_BUFFER = 96;
 const ROW_UI_RETAIN_TAIL_NODE_COUNT = 64;
 
 export interface TimelineRowUiPruneOptions {
-  getPane(): ThreadPane;
+  getPane(): TimelineSource & RowUiRegistry & RevealRead;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getRevealedNodes(): TimelineNode[];
 }

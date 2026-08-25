@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneDoors,
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { getThreadCurrentProposedPlan } from '../../stores/proposedPlans.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import type { Item, ProposedPlanMeta } from '../../types/models';
@@ -19,7 +25,7 @@
     item,
     meta,
   }: {
-    pane: ThreadPane;
+    pane: PaneDoors & PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
     meta: ProposedPlanMeta;
   } = $props();

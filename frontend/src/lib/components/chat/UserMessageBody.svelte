@@ -27,7 +27,11 @@
    * while collapsed the clip's height is pinned by the clamp, so the state
    * this effect writes cannot feed back into the width it depends on.
    */
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import type { CommandSegment } from '../../utils/commandWords';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { preservePaneScrollAnchorAt } from './preserveScrollAnchor';
@@ -43,7 +47,7 @@
     /** Command-word split of `text`, or empty when nothing expanded. */
     segments: readonly CommandSegment[];
     itemId: string;
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
   }
 
   let { text, segments, itemId, pane }: Props = $props();

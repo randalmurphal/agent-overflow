@@ -37,7 +37,11 @@
   import DiffLineContent from './DiffLineContent.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import { buildInlineDiffRowsCached } from './inlineDiffRows';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { getSettings } from '../../stores/settings.svelte';
   import type { PatchFile } from '../../utils/patchFiles';
   import type { Item } from '../../types/models';
@@ -51,7 +55,7 @@
   import { indicatorStateForItem, rowErrorWithFallback } from './rowState';
 
   interface Props {
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
     file: PatchFile;
     payloadId?: string;
     threadId: string;

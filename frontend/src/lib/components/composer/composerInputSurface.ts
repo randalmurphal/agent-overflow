@@ -10,6 +10,9 @@
 // Types live here rather than in the component so a host can name the
 // handle it holds without importing the component's chunk.
 
+// Deliberately NOT a narrow role: this surface hosts the `/` command
+// runner, which reaches `makeCommandContext` and the whole command
+// action surface. A role for that would just re-describe `ThreadPane`.
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
 import type {

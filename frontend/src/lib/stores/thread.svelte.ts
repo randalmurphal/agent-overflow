@@ -67,6 +67,7 @@ import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
+import { createRevealGateTripwire } from './revealGateTripwire';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import { createThreadSubagentMemory } from './threadSubagentMemory';
 import { createThreadLiveStateHydration } from './threadLiveStateHydration';
@@ -85,6 +86,7 @@ import {
   type DraftPlaceholderDefaults,
   type DraftPlaceholderMode,
   type LoadOlderResult,
+  type PaneErrorKind,
   type PaneScrollController,
   type ScrollToItemRequest,
   type ThreadPaneOptions,
@@ -112,9 +114,27 @@ export type {
   DraftPlaceholderMode,
   DraftThreadPlaceholder,
   LoadOlderResult,
+  PaneErrorKind,
   PaneScrollController,
   PreserveViewportBottomOptions,
 } from './threadPaneShared';
+
+/** One stored error: the message plus the write order that ranks it. */
+interface PaneErrorEntry {
+  readonly message: string;
+  readonly seq: number;
+}
+
+/** Shared empty map so `clearPaneError()` on a clean pane is identity-stable. */
+const EMPTY_PANE_ERRORS: Readonly<Partial<Record<PaneErrorKind, PaneErrorEntry>>> =
+  Object.freeze({});
+
+/** Every kind the surface can hold — iteration order is not the ranking. */
+const PANE_ERROR_KINDS: readonly PaneErrorKind[] = Object.freeze([
+  'general',
+  'session',
+  'history-load',
+]);
 
 /**
  * Creates a self-contained thread pane state instance.
@@ -258,6 +278,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // threadStreamingReveal.svelte.ts. Every items-mutation path that can
   // change which top-level rows exist relative to a live smoother must
   // call `streamingReveal.recomputeReveal()` (or `.disposeAll()`).
+  // Diagnostic-only watch over that invariant: the items-commit
+  // chokepoints below arm it, the reveal recompute (and disposeAll)
+  // clear it, and a microtask reports whatever is still dirty. It only
+  // observes — it must never recompute, which would rush the readable
+  // drain. See revealGateTripwire.ts.
+  const revealTripwire = createRevealGateTripwire({
+    getThreadId: () => thread?.id ?? null,
+    isRevealGateEngaged: () => streamingReveal.revealBoundary !== null,
+  });
   const streamingReveal = createThreadStreamingReveal({
     getItemById,
     getItemIndex: (itemId) => itemIndexById.get(itemId),
@@ -266,6 +295,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     stampLiveContent,
     armStructuralSpring: armLiveContentAppendSpring,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
+    noteRevealSynced: revealTripwire.noteRevealSynced,
   });
   // Windowed-history / paging machinery (loaded-window cursors and flags,
   // the prune paths, and the four load methods) lives in
@@ -315,28 +345,77 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     providerSessionAccount = account?.connected ? account : null;
     providerSessionAccountRevision += 1;
   }
-  // generalError is the grab-bag pane-level error slot surfaced by
-  // ProviderStatusBanner for non-wire failures: thread load failures,
-  // composer send failures, git action failures, reconnect failures.
-  // It is deliberately distinct from providerBanner (which mirrors the
-  // provider's own session/auth/rate-limit state) — consumers treat
-  // them as two independent reasons to show the top-of-pane banner.
-  let generalError: string | null = $state(null);
-  // generalErrorKind tags the source of the current generalError so the
-  // turn-start clear path can target session-death banners specifically
-  // without wiping orthogonal errors (rename failed, git status, thread
-  // load) that happen to be visible. `null` ≡ "any kind" or "no error";
-  // `'session'` ≡ a provider session_died event; `'history-load'` ≡
-  // the initial history window failed and can be retried in place.
-  let generalErrorKind: 'session' | 'history-load' | null = $state(null);
-  function updateHistoryLoadError(message: string | null): void {
-    if (message !== null) {
-      generalError = message;
-      generalErrorKind = 'history-load';
-    } else if (generalErrorKind === 'history-load') {
-      generalError = null;
-      generalErrorKind = null;
+  // The pane's user-facing error state, surfaced by ProviderStatusBanner
+  // for non-wire failures: thread load failures, composer send failures,
+  // git action failures, reconnect failures. Deliberately distinct from
+  // providerBanner (which mirrors the provider's own session/auth/
+  // rate-limit state) — consumers treat them as two independent reasons
+  // to show the top-of-pane banner.
+  //
+  // Stored PER KIND rather than in one slot. There used to be four
+  // writers each assigning the same pair of variables, and the untagged
+  // one (`setGeneralError`, ~15 call sites: rename failed, git action
+  // failed, queue failed, workspace prep failed, …) destroyed a live
+  // retryable `history-load` banner along with its Retry button. Now
+  // every write and every clear goes through `setPaneError` /
+  // `clearPaneError`, and the shared banner surface is RESOLVED from the
+  // stored kinds instead of being whatever landed last:
+  //
+  //   - `session`      — a provider session_died event; carries Reconnect.
+  //   - `history-load` — the initial history window failed and can be
+  //                      retried in place; carries Retry.
+  //   - `general`      — everything else; carries no action.
+  //
+  // Resolution is most-recent-write-wins (the old single-slot
+  // behaviour), with ONE exception, which is the whole point of the
+  // chokepoint: a `general` write never displaces a live `history-load`
+  // error. The retry banner stays up; the general message is still
+  // stored and surfaces the moment the history load resolves.
+  let paneErrors: Readonly<Partial<Record<PaneErrorKind, PaneErrorEntry>>> =
+    $state.raw(EMPTY_PANE_ERRORS);
+  let paneErrorWriteSeq = 0;
+  /**
+   * The ONE error-writing entry point. `kind` decides which slot the
+   * message occupies and which action the banner offers; a second write
+   * of the same kind replaces that kind's message and nothing else.
+   */
+  function setPaneError(message: string, kind: PaneErrorKind = 'general'): void {
+    paneErrors = { ...paneErrors, [kind]: { message, seq: ++paneErrorWriteSeq } };
+  }
+  /** Clear one kind, or every kind when `kind` is omitted. */
+  function clearPaneError(kind?: PaneErrorKind): void {
+    if (kind === undefined) {
+      if (paneErrors === EMPTY_PANE_ERRORS) return;
+      paneErrors = EMPTY_PANE_ERRORS;
+      return;
     }
+    if (paneErrors[kind] === undefined) return;
+    const next = { ...paneErrors };
+    delete next[kind];
+    paneErrors = next;
+  }
+  /**
+   * Which stored error owns the shared banner surface right now. See the
+   * `paneErrors` comment for the ranking rule; `null` when nothing is set.
+   */
+  function activePaneError(): { message: string; kind: PaneErrorKind } | null {
+    const historyLoad = paneErrors['history-load'];
+    let best: PaneErrorEntry | undefined;
+    let bestKind: PaneErrorKind | null = null;
+    for (const kind of PANE_ERROR_KINDS) {
+      const entry = paneErrors[kind];
+      if (entry === undefined) continue;
+      // The no-clobber rule: while a retryable history-load banner is up
+      // it owns the surface, whatever landed after it.
+      if (kind === 'general' && historyLoad !== undefined) continue;
+      if (best === undefined || entry.seq > best.seq) {
+        best = entry;
+        bestKind = kind;
+      }
+    }
+    return best === undefined || bestKind === null
+      ? null
+      : { message: best.message, kind: bestKind };
   }
   let loading: boolean = $state(false);
   // The spinner-flash gate (`pastSpinnerThreshold` + its timer), the
@@ -754,6 +833,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // untouched (the cache paint reconciled by `SyncThreadWindow`), and
     // that is invisible to both of the header's per-run signals.
     activityRuns.noteWholesaleReplace();
+    // Diagnostic only: a wholesale replacement changes which top-level
+    // rows exist relative to a live smoother, so the caller owes the
+    // reveal gate a recompute. Nothing is recomputed here — see
+    // revealGateTripwire.ts.
+    revealTripwire.noteItemsCommitted('commitTimelineItems');
     return true;
   }
 
@@ -862,6 +946,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     for (const id of next.summaryFieldsChangedIds) {
       activityRuns.noteMemberContentChanged(id);
     }
+    // Diagnostic only, same contract as `commitTimelineItems`: the merge
+    // can append a successor that must withhold behind the frontier, so
+    // the batch owes one recompute. See revealGateTripwire.ts.
+    revealTripwire.noteItemsCommitted('commitUpsertResult');
   }
 
   // The streaming item-application machine (upsertItemsBatch and the
@@ -947,11 +1035,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setContextWindow: (next) => {
       contextWindow = next;
     },
-    setGeneralError: (message) => {
-      generalError = message;
-      generalErrorKind = null;
-    },
-    setHistoryLoadError: updateHistoryLoadError,
+    setPaneError,
+    clearPaneError,
     setProviderBanner: (status) => {
       providerBanner = status;
     },
@@ -1191,11 +1276,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get providerSessionAccount() {
       return providerSessionAccount;
     },
+    /** Message owning the shared banner surface; see `activePaneError`. */
     get generalError() {
-      return generalError;
+      return activePaneError()?.message ?? null;
     },
+    /**
+     * Tag of the message above, and therefore which action the banner
+     * offers. `'general'` reports as `null` — an untagged error has no
+     * affordance, which is the distinction this getter has always drawn.
+     */
     get generalErrorKind() {
-      return generalErrorKind;
+      const kind = activePaneError()?.kind ?? null;
+      return kind === 'general' ? null : kind;
     },
     get loading() {
       return loading;
@@ -1469,8 +1561,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       contextWindow = null;
       providerBanner = undefined;
       updateProviderSessionAccount(null);
-      generalError = null;
-      generalErrorKind = null;
+      clearPaneError();
       loading = false;
       sendInFlight = false;
       optimisticItemIds.clear();
@@ -1979,40 +2070,48 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return streamingReveal.revealBoundary;
     },
 
+    /**
+     * The pane's error-writing chokepoint. Every writer below is a thin
+     * wrapper over this pair; see the `paneErrors` declaration for the
+     * kinds and the resolution rule.
+     */
+    setPaneError,
+    clearPaneError,
+
+    /**
+     * Untagged write — the grab-bag slot (rename failed, git action
+     * failed, workspace prep failed, …). It no longer destroys a live
+     * `history-load` banner: the retry affordance stays up and this
+     * message surfaces once the history load resolves. `null` keeps its
+     * historical meaning of "clear the banner entirely".
+     */
     setGeneralError(message: string | null): void {
-      generalError = message;
-      // Untagged write: any prior session-kind tag is invalidated by a
-      // newer message landing in the same slot. The kind tracks the slot's
-      // current occupant, not a history.
-      generalErrorKind = null;
+      if (message === null) clearPaneError();
+      else setPaneError(message, 'general');
     },
 
     setSessionError(message: string): void {
-      generalError = message;
-      generalErrorKind = 'session';
+      setPaneError(message, 'session');
     },
 
     setHistoryLoadError(message: string | null): void {
-      updateHistoryLoadError(message);
+      if (message === null) clearPaneError('history-load');
+      else setPaneError(message, 'history-load');
     },
 
+    /** The banner's Dismiss button: clears the surface, whatever is on it. */
     clearGeneralError(): void {
-      generalError = null;
-      generalErrorKind = null;
+      clearPaneError();
     },
 
     /**
-     * Clears the banner only if the current message came from a provider
-     * session_died event. Called from the `provider:turn_started` handler
-     * so a fresh turn auto-dismisses the stale "session died" banner
-     * without clobbering orthogonal errors (rename failed, git status,
-     * thread load) that happen to be visible in the same slot.
+     * Clears the session-death message only. Called from the
+     * `provider:turn_started` handler so a fresh turn auto-dismisses the
+     * stale "session died" banner without clobbering orthogonal errors
+     * (rename failed, git status, thread load).
      */
     clearSessionError(): void {
-      if (generalErrorKind === 'session') {
-        generalError = null;
-        generalErrorKind = null;
-      }
+      clearPaneError('session');
     },
 
     setSendInFlight(value: boolean): void {

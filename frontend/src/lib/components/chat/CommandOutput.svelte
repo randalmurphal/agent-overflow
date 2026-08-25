@@ -4,7 +4,11 @@
   import { untrack } from 'svelte';
   import type { CommandOutputMeta, Item } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import DevServerChip from './DevServerChip.svelte';
@@ -54,7 +58,7 @@
     showTimestamp = true,
     hostActions,
   }: {
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
     meta?: CommandOutputMeta | null;
     payloadId?: string;

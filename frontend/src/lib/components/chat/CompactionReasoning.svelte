@@ -7,11 +7,16 @@
   // collide. The committed compaction summary is a separate concern and lives on
   // CompactionDivider.
   import type { Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RevealRead,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY } from '../../utils/payloadVersion';
   import ReasoningTailRow from './ReasoningTailRow.svelte';
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
 </script>
 
 <ReasoningTailRow

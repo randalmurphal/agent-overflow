@@ -65,7 +65,14 @@
     deriveClaudeSubagentModelLabel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    TimelineWindow,
+    PaneDoors,
+    TimelineSource,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import {
     decoratedSubagentAggregates,
     pickLatestChildSummary,
@@ -107,7 +114,7 @@
     /** Pane for the per-groupKey subagent expansion registry. When omitted,
      * falls back to local state — expand state then resets on windowing remount.
      * Real chat surfaces always pass `pane`. */
-    pane?: ThreadPane;
+    pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource & TimelineWindow;
     group: SubagentGroupNode;
     /**
      * Nesting depth of THIS group in the timeline tree:

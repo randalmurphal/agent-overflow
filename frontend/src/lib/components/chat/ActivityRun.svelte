@@ -32,7 +32,12 @@
 
   import type { Snippet } from 'svelte';
   import { tick } from 'svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RevealRead,
+    ScrollHost,
+    TimelineSource,
+  } from '../../stores/threadPaneRoles';
   import type { ActivityRunNode, TimelineNode } from '../../utils/subagentGrouping';
   import { timelineNodeItemId, timelineNodeKey } from '../../utils/subagentGrouping';
   import {
@@ -74,7 +79,7 @@
     atTail,
     renderNode,
   }: {
-    pane: ThreadPane;
+    pane: PaneSession & RevealRead & ScrollHost & TimelineSource;
     run: ActivityRunNode;
     depth: number;
     /** This run holds the timeline's tail, so new activity lands here. */

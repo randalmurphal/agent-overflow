@@ -19,7 +19,12 @@
 // changes here, check ChannelView's mount effect too.
 
 import { tick } from 'svelte';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  PaneSession,
+  TimelineSource,
+  TimelineWindow,
+  ScrollHost,
+} from '../../stores/threadPaneRoles';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
@@ -34,7 +39,7 @@ import { captureTimelineAnchor } from './timelineScroll';
 import { isUiRenderTraceEnabled, recordUiTrace } from '../../utils/uiRenderTrace';
 
 export interface TimelineRestoreOptions {
-  getPane(): ThreadPane;
+  getPane(): PaneSession & TimelineSource & TimelineWindow & ScrollHost;
   stick: UseStickToBottomController;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getScrollEl(): HTMLDivElement | undefined;

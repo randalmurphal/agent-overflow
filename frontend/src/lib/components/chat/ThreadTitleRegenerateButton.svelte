@@ -13,14 +13,16 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+  } from '../../stores/threadPaneRoles';
   import {
     regenerateThreadTitle,
     titleGenerationPending,
   } from '../../stores/threadTitleGeneration.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
 
-  let { pane }: { pane: ThreadPane } = $props();
+  let { pane }: { pane: PaneSession } = $props();
 
   let pending = $derived(pane.threadId ? titleGenerationPending(pane.threadId) : false);
   let viewOnly = $derived(isViewOnlySession());

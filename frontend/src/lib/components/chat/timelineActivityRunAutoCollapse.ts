@@ -25,7 +25,10 @@
 // contains the new row. The transaction is the registry's own — see
 // `ThreadActivityRuns.releaseOpenedLive` for its `takeover: 'yield'`.
 
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  RowUiRegistry,
+  TimelineSource,
+} from '../../stores/threadPaneRoles';
 import type { QuietPass } from './timelineQuietWork';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import {
@@ -35,8 +38,11 @@ import {
 } from '../../utils/subagentGrouping';
 import { activityRunOutOfSight } from '../../utils/activityRunAutoCollapse';
 
+/** What the gate reads: the run registry, plus the reader-deviation peek. */
+type AutoCollapseHost = TimelineSource & RowUiRegistry;
+
 export interface TimelineActivityRunAutoCollapseOptions {
-  getPane(): ThreadPane;
+  getPane(): AutoCollapseHost;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getRevealedNodes(): TimelineNode[];
 }
@@ -53,7 +59,7 @@ export interface TimelineActivityRunAutoCollapseOptions {
  * open because one command errored punished ordinary operation to restate
  * what the chip says.
  */
-function readerEngagedWith(pane: ThreadPane, run: ActivityRunNode): boolean {
+function readerEngagedWith(pane: AutoCollapseHost, run: ActivityRunNode): boolean {
   const runs = pane.activityRuns;
   if (runs.windowAnchor(run.runId) !== null) return true;
   if (runs.scrollSnapshot(run.runId)?.escaped) return true;

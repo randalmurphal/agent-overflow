@@ -16,7 +16,10 @@
   // both states for the same reason.
 
   import { untrack } from 'svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    TimelineSource,
+  } from '../../stores/threadPaneRoles';
   import { compositeKey } from '../../utils/compositeKey';
   import type { ActivityRunNode } from '../../utils/subagentGrouping';
   import { activityRunSummary } from './activityRunSummary';
@@ -32,7 +35,7 @@
     onToggle,
     class: className = '',
   }: {
-    pane: ThreadPane;
+    pane: PaneSession & TimelineSource;
     run: ActivityRunNode;
     /** The clip this header opens and closes, owned by `ActivityRun`. */
     clipId: string;

@@ -33,6 +33,12 @@ export interface ThreadStreamingRevealOptions {
   /** Arm the structural-append spring and stamp the live-content latch
    *  (pane's armLiveContentAppendSpring — pane owns all its gates). */
   armStructuralSpring(): void;
+  /**
+   * Diagnostic hook: the gate has just been brought back in sync with
+   * `items` — either recomputed or dropped wholesale. Observation only
+   * (`revealGateTripwire.ts`); it must never move the gate.
+   */
+  noteRevealSynced?(): void;
   /** rowUiState.appendLivePayloadDeltaForItem — live reasoning-tail payload append. */
   appendLivePayloadDeltaForItem(
     itemId: string,
@@ -263,6 +269,9 @@ export function createThreadStreamingReveal(
     itemLiveThinkingTail.clear();
     settledTailSummaries.clear();
     revealBoundary = null;
+    // Dropping the boundary answers a pending items commit as completely
+    // as a recompute would — nothing is withheld any more. Diagnostic only.
+    options.noteRevealSynced?.();
   }
 
   // Two reveal boundaries are equal when both are null or share a position.
@@ -366,6 +375,9 @@ export function createThreadStreamingReveal(
   );
 
   function recomputeRevealPass(): void {
+    // The gate is being re-derived from the current window — whatever an
+    // items commit armed is answered by this pass. Diagnostic only.
+    options.noteRevealSynced?.();
     let frontier: Item | null = null;
     for (const [id, entry] of itemSmoothers) {
       const item = options.getItemById(id);

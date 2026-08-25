@@ -11,7 +11,12 @@
   import { untrack } from 'svelte';
   import type { Item } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RevealRead,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import {
     createPayloadExpansion,
     keepExpandedPayloadFresh,
@@ -44,7 +49,7 @@
     toggleAriaLabel,
     copyLabel,
   }: {
-    pane?: ThreadPane;
+    pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost;
     item: Item;
     // Payload-expansion namespace for this row kind — keeps a thinking row, a
     // compaction reasoning row, and a sibling compaction divider from colliding

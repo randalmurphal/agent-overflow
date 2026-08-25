@@ -18,7 +18,12 @@
   import { untrack } from 'svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import type { Item, ToolInlineDiffFile, ToolResultMeta } from '../../types/models';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { parsePatchFilesCached, type PatchFile, type PatchLine } from '../../utils/patchFiles';
   import {
     INLINE_DIFF_PAYLOAD_PREVIEW_BYTES,
@@ -34,7 +39,7 @@
   import { useLeasedPayloadExpansion } from './useLeasedPayloadExpansion.svelte';
 
   interface Props {
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
     meta: ToolResultMeta;
     payloadId?: string;

@@ -10,7 +10,12 @@
 // streaming delta never re-enters this file.
 
 import { untrack } from 'svelte';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  PaneSession,
+  RevealRead,
+  RowUiRegistry,
+  TimelineSource,
+} from '../../stores/threadPaneRoles';
 import type { Item } from '../../types/models';
 import { formatElapsedSeconds } from '../../utils/format';
 import {
@@ -34,7 +39,7 @@ const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 const NO_WITHHELD_NODES: readonly TimelineNode[] = [];
 
 export interface TimelineRowProjectionOptions {
-  getPane(): ThreadPane;
+  getPane(): PaneSession & TimelineSource & RowUiRegistry & RevealRead;
 }
 
 export interface TimelineRowProjection {

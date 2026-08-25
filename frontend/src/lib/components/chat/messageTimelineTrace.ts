@@ -4,7 +4,7 @@
 // `isUiRenderTraceEnabled()` check, so this module is dev-only payload.
 
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type { TimelineSource } from '../../stores/threadPaneRoles';
 import { transformTranslateY } from './tailSlide';
 import { timelineNodeTurnIndex, type TimelineNode } from '../../utils/subagentGrouping';
 import {
@@ -44,7 +44,7 @@ const mutationTargetIsInsideRow = (target: Node): boolean => {
 };
 
 export function recordTimelineRenderTrace(
-  pane: ThreadPane,
+  pane: TimelineSource,
   groupedNodes: readonly TimelineNode[],
   scrollEl: HTMLElement | undefined,
   listRef: TimelineVirtualizerHandle | undefined,

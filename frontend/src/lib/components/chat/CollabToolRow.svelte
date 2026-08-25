@@ -11,7 +11,13 @@
   import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import type { Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    PaneDoors,
+    TimelineSource,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { importUnavailableLabel } from '../../utils/importUnavailable';
@@ -56,7 +62,7 @@
     showSpawnStatus = false,
     hostActions,
   }: {
-    pane?: ThreadPane;
+    pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
     item: Item;
     codexSubagentReceiverLabels?: ReadonlyMap<string, string>;
     statusItem?: Item;

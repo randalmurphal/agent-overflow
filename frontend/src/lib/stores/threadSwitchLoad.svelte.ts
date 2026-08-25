@@ -95,6 +95,7 @@ import {
   SLICE_AROUND_ITEM_BUDGET,
   SPINNER_THRESHOLD_MS,
   type DraftThreadPlaceholder,
+  type PaneErrorKind,
   type PaneScrollController,
 } from './threadPaneShared';
 
@@ -137,10 +138,10 @@ export interface ThreadSwitchLoadOptions {
   setLatestSettledTurn(next: SettledTurn | null): void;
   getContextWindow(): ContextWindow | null;
   setContextWindow(next: ContextWindow | null): void;
-  /** The pane's untagged general-error slot write (clears `generalErrorKind`). */
-  setGeneralError(message: string | null): void;
-  /** Set or conditionally clear the retryable thread-history error slot. */
-  setHistoryLoadError(message: string | null): void;
+  /** The pane's ONE error-writing entry point (thread.svelte.ts `setPaneError`). */
+  setPaneError(message: string, kind?: PaneErrorKind): void;
+  /** Clear one error kind, or every kind when omitted. */
+  clearPaneError(kind?: PaneErrorKind): void;
   setProviderBanner(status: ProviderStatusEvent | null | undefined): void;
   setProviderSessionAccount(account: ProviderSessionAccountEvent | null): void;
   setSendInFlight(value: boolean): void;
@@ -656,7 +657,7 @@ export function createThreadSwitchLoad(
     options.setContextWindow(seedContextWindow(newThread));
     options.setProviderBanner(undefined);
     options.setProviderSessionAccount(null);
-    options.setGeneralError(null);
+    options.clearPaneError();
     options.setSendInFlight(false);
     options.optimisticItemIds.clear();
     options.channelState.clear();
@@ -845,7 +846,7 @@ export function createThreadSwitchLoad(
       options.installTimelineItems([], { disposeDropped: true });
       options.timelineWindow.resetAfterLoadError();
       options.setLatestSettledTurn(null);
-      options.setGeneralError('This thread no longer exists.');
+      options.setPaneError('This thread no longer exists.', 'general');
       return;
     }
     const page = response.page;
@@ -1019,7 +1020,7 @@ export function createThreadSwitchLoad(
       applySyncResponse(response, newThread, paintSource, sentStamp, lineageChanged);
       if (gen === options.getSwitchGeneration()) {
         failedHistoryLoad = null;
-        options.setHistoryLoadError(null);
+        options.clearPaneError('history-load');
       }
     } catch (err) {
       if (gen !== options.getSwitchGeneration()) return;
@@ -1036,10 +1037,11 @@ export function createThreadSwitchLoad(
         generation: gen,
         anchorItemId: sliceAnchorId,
       };
-      options.setHistoryLoadError(
+      options.setPaneError(
         isTemporarilyUnavailableError(err)
           ? 'Thread history took too long to load.'
           : `Failed to load thread items: ${errString(err)}`,
+        'history-load',
       );
     } finally {
       // Only when this leg is still the current one: a newer switch has

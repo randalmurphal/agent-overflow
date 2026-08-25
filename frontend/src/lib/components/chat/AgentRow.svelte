@@ -33,7 +33,14 @@
   import type { Snippet } from 'svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import type { Item } from '../../types/models';
-  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    PaneDoors,
+    TimelineSource,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import Icon from '../primitives/Icon.svelte';
   import ToolDecisionChip from './ToolDecisionChip.svelte';
   import ToolKindIcon from './ToolKindIcon.svelte';
@@ -62,7 +69,7 @@
     showTimestamp = true,
     hostActions,
   }: {
-    pane?: ThreadPane;
+    pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
     item: Item;
     displayItem?: Item;
     statusItem?: Item;

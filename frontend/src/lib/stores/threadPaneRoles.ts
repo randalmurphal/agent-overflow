@@ -18,6 +18,21 @@
 // This module is types only. It declares no values, so it erases
 // completely at compile time and adds nothing to any bundle.
 //
+// Consumers state the intersection they need
+// (`PaneSession & RowUiRegistry & ScrollHost` for a typical timeline
+// row). `ThreadPane` satisfies every role, so narrowing a CHILD never
+// forces its parent to narrow — the retypings can proceed bottom-up,
+// one component at a time.
+//
+// Two places deliberately stay on `ThreadPane` and are not oversights:
+// `composer/ComposerInputSurface` (and the row that hosts it,
+// `chat/UserMessageEditor` → `chat/UserMessage` → `chat/TimelineLeaf` →
+// `chat/WaitGroup`), because the surface runs `/` commands and reaches
+// `makeCommandContext` plus the whole command-action surface; and
+// `utils/uiRenderTrace.ts#summarizePaneForTrace`, which exists to
+// summarise the pane and whose honest narrowest type IS the pane. A role
+// for either would just re-describe `ThreadPane` under a new name.
+//
 // `ThreadPaneRoleConformance` at the bottom is the drift tripwire: it
 // fails to compile the moment `ThreadPane` stops satisfying a role, and
 // the error names the role.
@@ -43,6 +58,7 @@ import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import type { ApplyItemUpsertsToWindowResult, TimelineCursorLike } from './threadItems';
 import type {
   LoadOlderResult,
+  PaneErrorKind,
   PaneScrollController,
   ScrollToItemRequest,
 } from './threadPaneShared';
@@ -51,8 +67,47 @@ import type {
   RowExpansionStateOptions,
   RowUiStateRetention,
 } from './threadRowUiState.svelte';
-import type { SettledTurn } from './threadTurnProjection';
+import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import type { ThreadPane } from './thread.svelte';
+
+/**
+ * Pane identity, the thread it is holding, and the switch-load
+ * lifecycle around that thread. These key every per-pane registry and
+ * every "is this still the load I started against?" guard in the
+ * timeline's session modules; `switchGeneration` moves on a same-thread
+ * reload where `threadId` does not, which is exactly why both are here.
+ * `ensureMaterializedThread` belongs to the same question — it is how a
+ * draft placeholder becomes the thread the pane holds — and
+ * `debugMemoryStats` rides along as the pane's diagnostics probe, an
+ * opaque trace payload and the only reason the trace passes need a pane
+ * beyond its identity.
+ *
+ * Consumers: `chat/timelineWindowAnchor.svelte.ts`,
+ * `chat/timelineJump.svelte.ts`, `chat/timelineRestore.svelte.ts`,
+ * `chat/timelineDiagnostics.ts`, `chat/timelineSizePriors.svelte.ts`,
+ * `chat/timelinePaging.ts`, `chat/useLeasedPayloadExpansion.svelte.ts`,
+ * and every timeline row (workspace path, thread id, agent scope).
+ */
+export interface PaneSession {
+  readonly paneId: string;
+  readonly threadId: string | null;
+  /** The mounted thread row — read for its provider/mode/workspace, never mutated here. */
+  readonly thread: Thread | null;
+  /** Bumped by every switch, including a same-thread in-place reload. */
+  readonly switchGeneration: number;
+  /** A switch/window load is in flight. */
+  readonly loading: boolean;
+  /** Empty on the thread timeline; an agent-scope facade names its root launch. */
+  readonly agentScopeRootId: string;
+  /** Model the thread is SET to (identity-stable across thread replacement). */
+  readonly activeModel: string;
+  /** Model the pane's next turn will actually run on. */
+  readonly effectiveModel: string;
+  /** Turn a draft placeholder into a real thread; resolves its id, or null. */
+  readonly ensureMaterializedThread: () => Promise<string | null>;
+  /** Dev-only memory probe; opaque to every consumer, which just records it. */
+  readonly debugMemoryStats: () => unknown;
+}
 
 /**
  * What the timeline projection / retention / trace passes read: row
@@ -74,6 +129,13 @@ export interface TimelineSource {
   readonly timelineRevision: number;
   readonly rowUiRetentionRevision: number;
   readonly activityRuns: ThreadActivityRuns;
+  /**
+   * Turn identity for the rows above, taken from the PANE rather than the
+   * thread's turn store (the agent pane's facade keys its scoped window
+   * as one run). Added for `chat/timelineRowProjection.svelte.ts`, which
+   * reads it for the turn-boundary decorations and the response pill.
+   */
+  readonly timelineTurns: TimelineTurnFacet;
 }
 
 /**
@@ -111,7 +173,9 @@ export interface TimelineWindow {
  * ChannelView, ActivityRun) and everyone who needs to reach it.
  *
  * Consumers: `chat/MessageTimeline.svelte`, `chat/ChatView.svelte`,
- * `chat/ActivityRun.svelte`, `chat/preserveScrollAnchor.ts`,
+ * `chat/ActivityRun.svelte`, `chat/preserveScrollAnchor.ts` — and
+ * therefore every row that holds a viewport anchor across a height
+ * change, which is most of them —
  * `chat/editResendFlow.svelte.ts`, `chat/timelinePaging.ts`,
  * `chat/timelineRestore.svelte.ts`, `chat/timelineSizePriors.svelte.ts`,
  * `discussion/ChannelView.svelte`, `panes/PaneHost.svelte`,
@@ -139,11 +203,11 @@ export interface ScrollHost {
  * bounds them.
  *
  * Consumers: `chat/useLeasedPayloadExpansion.svelte.ts`,
- * `chat/UserMessage.svelte`, `chat/UserMessageBody.svelte`,
- * `chat/UserMessageEditor.svelte`, `chat/DiffFileBlock.svelte`,
- * `chat/SubagentGroup.svelte`, `chat/WaitGroup.svelte`,
- * `chat/timelineRowUiPrune.ts`, `chat/timelineActivityRunAutoCollapse.ts`,
- * `composer/composerInputSurface.ts`, `utils/virtual/priors.ts`.
+ * `chat/timelineRowUiPrune.ts`, `chat/timelineSizePriors.svelte.ts`,
+ * `chat/timelineActivityRunAutoCollapse.ts`, `utils/virtual/priors.ts`,
+ * and every timeline ROW that owns expansion state or hands the pane to
+ * one that does (`UserMessageBody`, `DiffFileBlock`, `SubagentGroup`,
+ * `ExpandablePayloadBody`, the tool-row family, …).
  */
 export interface RowUiRegistry {
   readonly expansionStateFor: (
@@ -186,7 +250,8 @@ export interface RowUiRegistry {
  * Consumers: `chat/timelineRowProjection.svelte.ts`,
  * `chat/timelineRowUiPrune.ts`, `chat/MessageTimeline.svelte`,
  * `chat/AssistantMessage.svelte`, `chat/ReasoningTailRow.svelte`,
- * `chat/ActivityRun.svelte`, `App.svelte`.
+ * `chat/ThinkingBlock.svelte`, `chat/CompactionReasoning.svelte`,
+ * `chat/ToolCallCard.svelte`, `chat/ActivityRun.svelte`, `App.svelte`.
  */
 export interface RevealRead {
   readonly revealBoundary: RevealBoundary | null;
@@ -197,22 +262,28 @@ export interface RevealRead {
 }
 
 /**
- * The pane's one user-facing error slot plus the provider banner that
- * shares it. Writers are tag-aware: a session-kind message is
- * auto-dismissible, an orthogonal one is not.
+ * The pane's one user-facing error surface plus the provider banner that
+ * shares the top of the pane. `setPaneError` / `clearPaneError` are the
+ * chokepoint — the message is stored per KIND and the kind decides both
+ * the affordance the banner offers and the no-clobber ranking (a
+ * `general` write never displaces a live `history-load` retry). The
+ * named writers below are thin wrappers kept for their call sites.
  *
  * Consumers: `chat/ProviderStatusBanner.svelte`,
  * `stores/eventsProvider.ts`, `stores/interruptErrors.ts`,
  * `stores/threadTitleGeneration.svelte.ts`, `stores/panes.svelte.ts`,
  * `composer/Composer.svelte`, `git/GitActionsControl.svelte`,
  * `panes/PaneTitleHandle.svelte`, `sidebar/ThreadRow.svelte`,
- * `sidebar/ThreadContextMenu.svelte`. `setHistoryLoadError` is the
- * writer behind the banner's `history-load` retry affordance.
+ * `sidebar/ThreadContextMenu.svelte`.
  */
 export interface ErrorSurface {
+  /** Message currently owning the shared banner surface. */
   readonly generalError: string | null;
+  /** Its kind, with `'general'` reported as `null` — an untagged error has no action. */
   readonly generalErrorKind: 'session' | 'history-load' | null;
   readonly providerBanner: ProviderStatusEvent | null | undefined;
+  readonly setPaneError: (message: string, kind?: PaneErrorKind) => void;
+  readonly clearPaneError: (kind?: PaneErrorKind) => void;
   readonly setGeneralError: (message: string | null) => void;
   readonly setSessionError: (message: string) => void;
   readonly setHistoryLoadError: (message: string | null) => void;
@@ -220,6 +291,24 @@ export interface ErrorSurface {
   readonly clearSessionError: () => void;
   readonly setProviderBanner: (status: ProviderStatusEvent | null | undefined) => void;
   readonly retryHistoryLoad: () => Promise<void>;
+}
+
+/**
+ * The doors a ROW can open onto another surface. Opening a companion or
+ * a scoped pane is normally the header's or a store helper's job; two
+ * affordances live inside the timeline itself — the proposed-plan card's
+ * "View plan" and a subagent launch's "open in pane" — and the pane is
+ * the one place that decides where either routes. Deliberately the
+ * narrowest possible door rather than the pane's whole companion
+ * surface.
+ *
+ * Consumers: `chat/ProposedPlanCard.svelte`, `chat/SubagentGroup.svelte`,
+ * `chat/AgentRow.svelte`, `chat/CollabToolRow.svelte`.
+ */
+export interface PaneDoors {
+  readonly showPlanSidebar: boolean;
+  readonly setShowPlanSidebar: (open: boolean) => void;
+  readonly openAgentPane: (launchItemId: string, label: string) => void;
 }
 
 /**
@@ -284,11 +373,13 @@ type Conforms<Role, Impl extends Role> = Impl;
  * the failing field names the role and the error names the member.
  */
 export type ThreadPaneRoleConformance = {
+  paneSession: Conforms<PaneSession, ThreadPane>;
   timelineSource: Conforms<TimelineSource, ThreadPane>;
   timelineWindow: Conforms<TimelineWindow, ThreadPane>;
   scrollHost: Conforms<ScrollHost, ThreadPane>;
   rowUiRegistry: Conforms<RowUiRegistry, ThreadPane>;
   revealRead: Conforms<RevealRead, ThreadPane>;
+  paneDoors: Conforms<PaneDoors, ThreadPane>;
   errorSurface: Conforms<ErrorSurface, ThreadPane>;
   ingest: Conforms<ThreadPaneIngest, ThreadPane>;
 };

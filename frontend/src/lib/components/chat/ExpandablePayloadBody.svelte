@@ -4,7 +4,11 @@
   import CopyFooter from './CopyFooter.svelte';
   import type { PayloadExpansionHandle } from '../../utils/payloadExpansion.svelte';
   import { formatPayloadSize } from '../../utils/payloadExpansion.svelte';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
 
@@ -21,7 +25,7 @@
     renderContent,
     copyLabel = 'Copy output',
   }: {
-    pane?: ThreadPane;
+    pane?: PaneSession & RowUiRegistry & ScrollHost;
     expansion: PayloadExpansionHandle;
     id: string;
     testPrefix: string;

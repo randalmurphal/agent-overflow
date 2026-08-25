@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { CommandOutputMeta, Item } from '../../types/models';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { formatTimeOfDay } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
   import { terminalInteractionLabelFromSummary } from './commandDisplay';
@@ -10,7 +14,7 @@
   import ToolKindIcon from './ToolKindIcon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let { pane, item }: { pane?: PaneSession & RowUiRegistry & ScrollHost; item: Item } = $props();
 
   let commandOutputMeta = $derived<CommandOutputMeta | null>(
     item.payloadKind === 'command_output'

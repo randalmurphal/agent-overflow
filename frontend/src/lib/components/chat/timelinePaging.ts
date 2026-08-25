@@ -6,7 +6,11 @@
 // section per direction, not a cascade.
 
 import { tick } from 'svelte';
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  PaneSession,
+  ScrollHost,
+  TimelineWindow,
+} from '../../stores/threadPaneRoles';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
@@ -34,7 +38,7 @@ const AUTO_LOAD_ZONE: AutoLoadZoneThresholds = {
 };
 
 export interface TimelinePagingOptions {
-  getPane(): ThreadPane;
+  getPane(): PaneSession & TimelineWindow & ScrollHost;
   stick: UseStickToBottomController;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getScrollEl(): HTMLDivElement | undefined;

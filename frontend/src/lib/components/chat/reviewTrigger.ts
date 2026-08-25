@@ -4,7 +4,7 @@
 // same path covers both the explicit icon button and the modifier-click
 // affordance.
 
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type { PaneSession } from '../../stores/threadPaneRoles';
 import { openReviewCompanion } from '../../stores/reviewPane.svelte';
 
 export interface OpenReviewForItemOpts {
@@ -16,7 +16,7 @@ export interface OpenReviewForItemOpts {
   editItemId?: string;
 }
 
-export function openReviewForItem(pane: ThreadPane, opts: OpenReviewForItemOpts = {}): void {
+export function openReviewForItem(pane: PaneSession, opts: OpenReviewForItemOpts = {}): void {
   const threadId = pane.threadId;
   if (!threadId) return;
   if (opts.editItemId) {

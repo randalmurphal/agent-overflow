@@ -4,7 +4,11 @@
   import Icon from '../primitives/Icon.svelte';
   import type { Item } from '../../types/models';
   import { chatRowDomId } from '../../utils/chatDomIds';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type {
+    PaneSession,
+    RowUiRegistry,
+    ScrollHost,
+  } from '../../stores/threadPaneRoles';
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import {
@@ -13,7 +17,7 @@
   } from '../../utils/payloadVersion';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
 
-  let { pane, item }: { pane?: ThreadPane; item: Item } = $props();
+  let { pane, item }: { pane?: PaneSession & RowUiRegistry & ScrollHost; item: Item } = $props();
 
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.

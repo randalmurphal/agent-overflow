@@ -6,7 +6,11 @@
 // internal reads (pane, contentEl, etc.) are tracked by whichever effect
 // invokes it, same as if the effect body were written out here directly.
 
-import type { ThreadPane } from '../../stores/thread.svelte';
+import type {
+  PaneSession,
+  TimelineSource,
+  TimelineWindow,
+} from '../../stores/threadPaneRoles';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
@@ -31,7 +35,7 @@ import {
 } from '../../utils/paneGeometryProbe';
 
 export interface TimelineDiagnosticsOptions {
-  getPane(): ThreadPane;
+  getPane(): PaneSession & TimelineSource & TimelineWindow;
   stick: UseStickToBottomController;
   getScrollEl(): HTMLDivElement | undefined;
   getContentEl(): HTMLDivElement | undefined;
