@@ -116,12 +116,13 @@ ever reaches `items.meta` in its wire spelling:
 |---|---|---|
 | `import_unavailable` | any item-producing event | The session file no longer holds this item's payload. The value is the REASON (`tool-output-gc`, `exec-detail`); the writer strips the key from the stored provider meta and re-stamps it through `itemmeta.MarkImportUnavailable` so there is exactly one persisted spelling. Set it on the event that ADDRESSES the row — a completion whose output is gone marks its launch row. It is ALSO what makes an orphan legal: a `tool_completion` carrying it with no launch in the batch synthesizes a placeholder `running` launch row and marks that, because the reader emitted the completion precisely to say "the launch is not in this file". Without the marker the same event is still a hard error. |
 | `blockType` | `EventContentBlockStop` | Which settled block this is (`text` / `thinking`). Pure framing: the live path reads it to pick a settle and never persists it, so the writer strips it too. |
-| `provider_item_id` | user text | The wire id of the prompt. Top-level prompts store it as a correlation key; a subagent prompt is KEYED on it (`user:wire:<id>`) and is dropped with a warning when absent, matching triage. |
+| `provider_item_id` | user text | The wire id of the prompt. Top-level prompts store it as a correlation key. Parented text is dropped with a warning when absent, matching triage. |
+| `subagent_opening_prompt` | parented user text | Marks the first user row in a subagent transcript. The writer uses launch-scoped id `user:subagent-prompt:<launchID>`, matching the live launch-time row. Later user-role deliveries remain `user:wire:<provider_item_id>`. |
 | `parent_uuid` | top-level user text | Claude's transcript parent, stored as `provider_parent_uuid`. Optional. |
 | `summary` | `EventCompactBoundary` | The committed compaction summary. Lifted into an on-demand `compaction` payload and removed from the row meta, so `items.meta` stays a cheap `{trigger}` blob. |
 | `api_error_enum` | `EventError` | Promotes the row from `error` to `api_error` kind and keeps the meta, so the frontend can render the actionable branch. |
 | `tool_use_result` / `item.changes` | tool events | The provider's structured file-change result. Claude and Codex shapes both route through triage's own extractors — do not pre-normalize one into the other. |
-| `toolName`, `input`, `is_background`, `exit_code`, `is_error`, `item_status`, `task_id` | tool events | Decoded by `triage.DecodeToolStartMeta` / `DecodeToolCompleteMeta`. Same keys the live parsers emit; a reader that renames one silently loses the field. |
+| `toolName`, `input`, `subagent_launch`, `is_background`, `exit_code`, `is_error`, `item_status`, `task_id` | tool events | Decoded by `triage.DecodeToolStartMeta` / `DecodeToolCompleteMeta`. Same keys the live parsers emit; a reader that renames one silently loses the field. |
 
 ## Event kind → row
 
@@ -130,7 +131,7 @@ ever reaches `items.meta` in its wire spelling:
 | `EventTurnStart` | Opens a `turns` row. Adopts an implicitly-opened turn when one is already open and empty. |
 | `EventTurnComplete` | Settles the open turn (`TurnCompletion` + `usage_ledger` rows) and force-closes its unresolved tools. |
 | `EventUserText`, top-level | `user_text` row `user:<turn>`, role `user`, and it OPENS the turn (Claude transcripts have no turn-start row). Meta is the two correlation keys only. |
-| `EventUserText`, parented | `user_text` row `user:wire:<provider_item_id>` nested under the launching tool_call, meta `{provider_item_id, wire_only:true}`. |
+| `EventUserText`, parented | Opening prompt row `user:subagent-prompt:<launchID>` when marked, otherwise `user:wire:<provider_item_id>` for later deliveries. Both nest under the launch with meta `{provider_item_id, wire_only:true}`. |
 | `EventTextDelta` | `assistant_text` row `text:<turn>[:<scope>]:<seg>` (0-based per turn+scope) + an `assistant_text` payload. Consecutive events for one provider item id accumulate into ONE row, exactly as live deltas do. |
 | `EventThinking` | `thinking` row `think:<turn>[:<scope>]:<block>` + a `thinking` payload; summary is the bounded tail preview. |
 | `EventToolStart` | `tool_call` row keyed on the tool_use id, status `running`. Heavy input (Edit/Write/MultiEdit/NotebookEdit) promotes to a `tool_call_input` payload. A second start for the same id ANNOTATES the row (Claude's `task_started` mapping, Codex child-thread labels) — it never creates a second row. |

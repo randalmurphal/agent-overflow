@@ -3,6 +3,7 @@ package triage
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -540,6 +541,66 @@ func TestHandleUserText_NoPending_SubagentPromptPersistsUnderParent(t *testing.T
 	}
 	if after := readThreadUpdatedAt(t, st, "t1"); after != before {
 		t.Fatalf("threads.updated_at moved across subagent EventUserText: before=%d after=%d", before, after)
+	}
+}
+
+func TestSubagentLaunchPromptKeepsItsOpeningPositionWhenTranscriptIdentityArrivesLate(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	launchMeta := json.RawMessage(`{"toolName":"Agent","subagent_launch":true,"input":{"prompt":"Inspect the parser"}}`)
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "spawn-1",
+		ItemType: "Agent", Meta: launchMeta, Timestamp: time.UnixMilli(1_700_000_000_000),
+	}); err != nil {
+		t.Fatalf("launch agent: %v", err)
+	}
+	deliverSubagentBlock(t, router, "t1", "spawn-1", "child-text#0", "text", "I found the parser")
+
+	launch, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("load launch: found=%v err=%v", found, err)
+	}
+	if wrote, err := router.replaySubagentEvent("t1", launch, provider.ProviderEvent{
+		Kind:            provider.EventUserText,
+		ItemID:          "prompt-uuid",
+		Content:         "Inspect the parser",
+		ParentToolUseID: "spawn-1",
+		Meta:            json.RawMessage(`{"subagent_opening_prompt":true}`),
+		Timestamp:       time.UnixMilli(1_700_000_000_100),
+	}); err != nil || !wrote {
+		t.Fatalf("reconcile transcript prompt: %v", err)
+	}
+
+	children := childrenOfLaunch(t, st, "t1", "spawn-1", 0)
+	if got, want := childIDs(children), []string{"user:subagent-prompt:spawn-1", TextItemID(0, "spawn-1", 1)}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("children = %v, want opening prompt before output %v", got, want)
+	}
+	if got := readProviderItemIDFromMeta(json.RawMessage(children[0].Meta)); got != "prompt-uuid" {
+		t.Fatalf("opening prompt provider item id = %q, want prompt-uuid", got)
+	}
+	if decodeItemMetaMap(t, children[0].Meta)[provider.MetaSubagentPromptProvisionalKey] != nil {
+		t.Fatalf("reconciled opening prompt retained provisional meta: %s", children[0].Meta)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:            provider.EventUserText,
+		ThreadID:        "t1",
+		Content:         "One more constraint",
+		ParentToolUseID: "spawn-1",
+		Meta:            json.RawMessage(`{"provider_item_id":"followup-uuid"}`),
+		Timestamp:       time.UnixMilli(1_700_000_000_200),
+	}); err != nil {
+		t.Fatalf("persist later user-role delivery: %v", err)
+	}
+	children = childrenOfLaunch(t, st, "t1", "spawn-1", 0)
+	if got, want := childIDs(children), []string{
+		"user:subagent-prompt:spawn-1",
+		TextItemID(0, "spawn-1", 1),
+		"user:wire:followup-uuid",
+	}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("children after later delivery = %v, want %v", got, want)
 	}
 }
 

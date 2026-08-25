@@ -454,11 +454,10 @@ func TestSubagentTranscriptBackfillWritesNothingWhenTheLiveStreamDeliveredEveryt
 	}
 }
 
-// The one row an ASYNC agent's live stream never carries is its own
-// prompt: the CLI echoes that only on the INLINE path. So a transcript
-// whose every other row is already on the thread still backfills one row
-// — and it must, or an async agent's card and pane open with no
-// statement of what the agent was asked to do.
+// A provider process started before launch-time prompt projection has no
+// opening row for an ASYNC agent: the CLI echoes that only on the INLINE
+// path. A transcript whose every other row is already on the thread still
+// backfills that row. New launches create it before any child output.
 func TestSubagentTranscriptBackfillAddsThePromptAnAsyncAgentNeverEchoed(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -493,7 +492,7 @@ func TestSubagentTranscriptBackfillAddsThePromptAnAsyncAgentNeverEchoed(t *testi
 		TextItemID(0, "agent-async", 1),
 		"toolu_sub_read",
 		TextItemID(0, "agent-async", 2),
-		"user:wire:s1",
+		provider.SubagentOpeningPromptItemID("agent-async"),
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("backfilled children = %v, want %v", got, want)
@@ -512,8 +511,8 @@ func TestSubagentTranscriptBackfillAddsThePromptAnAsyncAgentNeverEchoed(t *testi
 		t.Fatalf("backfilled prompt meta = %s, want wire_only", prompt.Meta)
 	}
 
-	// A second notification adds nothing: the row id is derived from the
-	// transcript uuid, so the replay upserts rather than appends.
+	// A second notification adds nothing: the opening row carries the
+	// transcript uuid in meta, so backfill recognises it without appending.
 	notifyAgent(t, router, "t1", "agent-async", "task-async", fullAgentTranscript(t, "agent-async-replay.jsonl"), nil)
 	router.WaitForPendingSettles()
 	if again := childIDs(childrenOfLaunch(t, st, "t1", "agent-async", 0)); fmt.Sprint(again) != fmt.Sprint(want) {
@@ -609,7 +608,7 @@ func TestSubagentTranscriptBackfillRunsForANestedLaunch(t *testing.T) {
 
 	got := childIDs(childrenOfLaunch(t, st, "t1", "agent-inner", 0))
 	want := []string{
-		"user:wire:s1",
+		provider.SubagentOpeningPromptItemID("agent-inner"),
 		TextItemID(0, "agent-inner", 1),
 		"toolu_sub_read",
 		TextItemID(0, "agent-inner", 2),

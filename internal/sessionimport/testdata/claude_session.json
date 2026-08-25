@@ -63,7 +63,7 @@
     {
       "turnIndex": 1,
       "itemIndex": 3,
-      "id": "user:wire:child-prompt-1",
+      "id": "user:subagent-prompt:toolu_task_1",
       "kind": "user_text",
       "role": "user",
       "status": "completed",
@@ -74,6 +74,7 @@
       "meta": {
         "import_source_uuid": "00000000-0000-4000-8000-000000000003",
         "provider_item_id": "child-prompt-1",
+        "subagent_opening_prompt": true,
         "wire_only": true
       }
     },

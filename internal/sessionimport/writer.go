@@ -506,6 +506,18 @@ func metaStringObject(obj map[string]json.RawMessage, key string) string {
 	return strings.TrimSpace(value)
 }
 
+func metaBool(raw json.RawMessage, key string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return false
+	}
+	var value bool
+	return json.Unmarshal(obj[key], &value) == nil && value
+}
+
 // providerMetaString is providerMeta as the string items.meta holds; ""
 // for meta that is absent or not a JSON object, matching triage's
 // validJSONObjectString.

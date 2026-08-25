@@ -302,6 +302,29 @@ const MetaTranscriptMirroredKey = "transcript_mirrored"
 // thinking stream after the transcript has already advanced beyond it.
 const MetaTranscriptSnapshotKey = "transcript_snapshot"
 
+// MetaSubagentLaunchKey marks a tool start whose input creates a new agent.
+// Provider adapters know this from their typed wire shape; triage must not
+// maintain a tool-name list to recover it.
+const MetaSubagentLaunchKey = "subagent_launch"
+
+// MetaSubagentOpeningPromptKey marks the first user-role row in one
+// subagent's transcript. Its stable row identity is the launch scope, not the
+// transcript uuid: the launch input lets the live path render the prompt
+// before the child produces output, while the later transcript row supplies
+// the provider uuid without moving that row.
+const MetaSubagentOpeningPromptKey = "subagent_opening_prompt"
+
+// MetaSubagentPromptProvisionalKey marks an opening prompt copied from the
+// launch input before its transcript row arrives. The first scoped user echo
+// replaces this snapshot in place and clears the marker.
+const MetaSubagentPromptProvisionalKey = "subagent_prompt_provisional"
+
+// SubagentOpeningPromptItemID is shared by live triage and session import so
+// refresh converges on the prompt row created when the agent launched.
+func SubagentOpeningPromptItemID(scope string) string {
+	return "user:subagent-prompt:" + scope
+}
+
 type FailureClass string
 
 const (

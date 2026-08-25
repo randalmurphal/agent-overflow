@@ -94,11 +94,10 @@ func hasBlockOfType(blocks []map[string]json.RawMessage, blockType string) bool 
 // This is the subagent's own conversation: the task prompt the CLI hands
 // the agent (`parent_tool_use_id` set, no `isReplay`), and any later
 // user-role text delivered into that agent. Triage's parented wire-only
-// branch persists it as the nested `user:wire:<uuid>` row, which is where
-// the agent pane's opening instructions row and the card's initial-prompt
-// line come from. The same rows reach a BACKGROUNDED agent through the
-// transcript backfill instead, keyed on the same uuid, so the two paths
-// converge on one row.
+// branch reconciles the opening prompt into the launch-scoped row created
+// from Agent/Task input. Later deliveries use `user:wire:<uuid>`. The same
+// rows reach a BACKGROUNDED agent through transcript projection, whose
+// opening-row marker makes both paths converge on the launch-scoped row.
 //
 // Top-level envelopes are left alone: an unparented string-content user
 // row is the pending-send echo's business (parse_user_replay.go), and

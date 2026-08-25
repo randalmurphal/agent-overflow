@@ -882,12 +882,12 @@ func (r *Router) recordEchoBoundaryAnchor(threadID string, pending *pendingSend)
 	pending.AnchorRecordedAtEcho = true
 }
 
-// persistWireOnlySubagentPrompt creates a fresh nested `user_text` row
-// for a subagent's task prompt echoed as user-role content (parented by
-// its launching tool_call). The id format `user:wire:<provider_item_id>`
-// is deterministic from the wire id so repeated arrivals (session resume
-// replay) upsert the same row even if the in-memory dedup set has been
-// swept.
+// persistWireOnlySubagentPrompt creates or reconciles a nested `user_text`
+// row for user-role content parented by a subagent launch. The opening prompt
+// uses the launch-scoped identity from provider.SubagentOpeningPromptItemID:
+// Claude's tool input creates that row before the child can produce output,
+// then the transcript echo supplies its provider uuid without moving it.
+// Later user-role deliveries keep their provider-keyed `user:wire:<id>` rows.
 //
 // The turn is the LAUNCH's turn, never the thread's current one
 // (invariant 10). A backgrounded agent's prompt can arrive from the
@@ -907,24 +907,60 @@ func (r *Router) persistWireOnlySubagentPrompt(evt provider.ProviderEvent, provi
 		return fmt.Errorf("triage: resolve turn index for wire-only subagent prompt on %s: %w", evt.ThreadID, err)
 	}
 
-	metaBytes, err := json.Marshal(map[string]any{
+	parentID := eventParentID(evt)
+	itemID := fmt.Sprintf("user:wire:%s", providerItemID)
+	openingPrompt := decodeUserTextMeta(evt.Meta).flag(provider.MetaSubagentOpeningPromptKey)
+	canonicalID := provider.SubagentOpeningPromptItemID(parentID)
+	canonical, canonicalFound, err := r.store.GetThreadItem(evt.ThreadID, canonicalID)
+	if err != nil {
+		return fmt.Errorf("triage: inspect opening subagent prompt %s/%s: %w", evt.ThreadID, canonicalID, err)
+	}
+	if canonicalFound {
+		wasOpening, provisional, boundProviderItemID, stateErr := subagentOpeningPromptState(canonical.Meta)
+		if stateErr != nil {
+			return fmt.Errorf("triage: decode opening subagent prompt %s/%s: %w", evt.ThreadID, canonicalID, stateErr)
+		}
+		if openingPrompt || (provisional && canonical.Summary == evt.Content) || (wasOpening && boundProviderItemID == providerItemID) {
+			itemID = canonicalID
+			openingPrompt = true
+			turnIndex = canonical.TurnIndex
+		}
+	} else if openingPrompt {
+		legacyID := fmt.Sprintf("user:wire:%s", providerItemID)
+		legacy, legacyFound, legacyErr := r.store.GetThreadItem(evt.ThreadID, legacyID)
+		if legacyErr != nil {
+			return fmt.Errorf("triage: inspect legacy opening subagent prompt %s/%s: %w", evt.ThreadID, legacyID, legacyErr)
+		}
+		if legacyFound {
+			itemID = legacyID
+			turnIndex = legacy.TurnIndex
+		} else {
+			itemID = canonicalID
+		}
+	}
+
+	metaFields := map[string]any{
 		"provider_item_id": providerItemID,
 		"wire_only":        true,
-	})
+	}
+	if openingPrompt {
+		metaFields[provider.MetaSubagentOpeningPromptKey] = true
+	}
+	metaBytes, err := json.Marshal(metaFields)
 	if err != nil {
 		return fmt.Errorf("triage: encode wire-only subagent prompt meta: %w", err)
 	}
 
 	now := eventTimestampMillis(evt)
 	item := store.Item{
-		ID:        fmt.Sprintf("user:wire:%s", providerItemID),
+		ID:        itemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		Kind:      string(provider.ItemUserText),
 		Role:      "user",
 		Status:    statusCompleted,
 		Summary:   evt.Content,
-		ParentID:  eventParentID(evt),
+		ParentID:  parentID,
 		Meta:      string(metaBytes),
 		CreatedAt: now,
 		UpdatedAt: now,

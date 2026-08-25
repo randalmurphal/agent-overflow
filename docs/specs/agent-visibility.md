@@ -32,10 +32,10 @@ launch, how do progress and terminal signals arrive, which controls exist
   launch (ruling 2026-08-23), not a bespoke shape: `user_text` with
   `meta.wire_only`, so it renders as a user bubble with no edit / fork /
   resend actions and stays out of every reader-authored read (nav rail,
-  title regeneration). On Claude it arrives on the wire for an INLINE
-  agent and from the sidechain transcript for a backgrounded one; both
-  key it on the same transcript uuid, so the two paths converge on one
-  row. Codex MultiAgentV2 has no prompt to show at any price — the model
+  title regeneration). Claude creates it from the Agent/Task launch input
+  before child output as `user:subagent-prompt:<launchID>`. The inline echo
+  or sidechain transcript later stamps the transcript uuid onto that row in
+  place. Codex MultiAgentV2 has no prompt to show at any price — the model
   service encrypts `spawn_agent.message` and the child's NEW_TASK payload
   alike, so no client can read it. Its only plaintext statement of the
   task is the model-chosen `task_name`, and the card title and pane

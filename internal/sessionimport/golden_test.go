@@ -183,7 +183,7 @@ func claudeGoldenEvents(threadID string) []importir.Event {
 		{Kind: provider.EventUserText, ThreadID: threadID,
 			ItemID: "child-prompt-1", ParentToolUseID: "toolu_task_1",
 			Content:   "Sweep every parser file.",
-			Meta:      json.RawMessage(`{"provider_item_id":"child-prompt-1"}`),
+			Meta:      json.RawMessage(`{"provider_item_id":"child-prompt-1","subagent_opening_prompt":true}`),
 			Timestamp: at(3)},
 		{Kind: provider.EventTextDelta, ThreadID: threadID,
 			ItemID: "child-msg-1", ParentToolUseID: "toolu_task_1",

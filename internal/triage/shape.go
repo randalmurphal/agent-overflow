@@ -57,6 +57,7 @@ type ToolStartMeta struct {
 	Input           json.RawMessage `json:"input"`
 	MetaUpdateOnly  bool            `json:"meta_update_only"`
 	IsBackground    bool            `json:"is_background"`
+	SubagentLaunch  bool            `json:"subagent_launch"`
 	TaskID          string          `json:"task_id"`
 	SubagentModel   string          `json:"subagent_model"`
 	ParentToolUseID string          `json:"parent_tool_use_id"`
@@ -120,6 +121,7 @@ func DecodeToolStartMetaObject(obj map[string]json.RawMessage) ToolStartMeta {
 	}
 	decodeRawField(obj, "meta_update_only", &m.MetaUpdateOnly)
 	decodeRawField(obj, "is_background", &m.IsBackground)
+	decodeRawField(obj, provider.MetaSubagentLaunchKey, &m.SubagentLaunch)
 	decodeRawField(obj, "task_id", &m.TaskID)
 	decodeRawField(obj, "subagent_model", &m.SubagentModel)
 	decodeRawField(obj, "parent_tool_use_id", &m.ParentToolUseID)

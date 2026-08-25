@@ -492,7 +492,7 @@ func (p *Parser) appendToolUseEvent(
 		p.markAgentLaunchTool(block.ID)
 	}
 
-	meta := marshalToolMeta(block.Name, block.Input, isBackground, assistantMessageID)
+	meta := marshalToolMeta(block.Name, block.Input, isBackground, isAgentLaunchToolName(block.Name), assistantMessageID)
 	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventToolStart,
 		ThreadID:        threadID,
@@ -869,7 +869,7 @@ func hasRunInBackground(input json.RawMessage) bool {
 // `{server, tool}` pair onto `meta.mcp` so the renderer can synthesize
 // the body as `server.tool(args)` from a single source on both
 // providers.
-func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool, assistantMessageID string) json.RawMessage {
+func marshalToolMeta(toolName string, input json.RawMessage, isBackground, isAgentLaunch bool, assistantMessageID string) json.RawMessage {
 	normalizedToolName := toolName
 	var mcp map[string]string
 	if server, tool, ok := parseClaudeMCPToolName(toolName); ok {
@@ -886,6 +886,9 @@ func marshalToolMeta(toolName string, input json.RawMessage, isBackground bool, 
 	}
 	if isBackground {
 		fields["is_background"] = true
+	}
+	if isAgentLaunch {
+		fields[provider.MetaSubagentLaunchKey] = true
 	}
 	if assistantMessageID != "" {
 		fields["assistant_message_id"] = assistantMessageID

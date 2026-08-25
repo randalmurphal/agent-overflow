@@ -153,12 +153,13 @@ func (p *SidechainProjector) drain() ConvertResult {
 
 func newSubagentConverter(scope string) *converter {
 	return &converter{
-		usageByModel:     map[string]*provider.TokenUsage{},
-		unknownSystem:    map[string]int{},
-		emittedAgents:    map[string]bool{},
-		subagentScope:    scope,
-		compactSummaries: map[string]string{},
-		consumedSummary:  map[string]bool{},
+		usageByModel:         map[string]*provider.TokenUsage{},
+		unknownSystem:        map[string]int{},
+		emittedAgents:        map[string]bool{},
+		openingPromptByScope: map[string]bool{},
+		subagentScope:        scope,
+		compactSummaries:     map[string]string{},
+		consumedSummary:      map[string]bool{},
 	}
 }
 

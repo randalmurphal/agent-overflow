@@ -187,24 +187,28 @@ func TestParseAssistant_AgentTaskToolUseMeta(t *testing.T) {
 		toolName             string
 		input                string
 		wantAssistantMessage string
+		wantSubagentLaunch   bool
 	}{
 		{
 			name:                 "foreground Agent",
 			toolName:             "Agent",
 			input:                `{"description":"inspect"}`,
 			wantAssistantMessage: "msg-inline",
+			wantSubagentLaunch:   true,
 		},
 		{
 			name:                 "foreground Task",
 			toolName:             "Task",
 			input:                `{"description":"inspect"}`,
 			wantAssistantMessage: "msg-inline",
+			wantSubagentLaunch:   true,
 		},
 		{
 			name:                 "background Agent",
 			toolName:             "Agent",
 			input:                `{"description":"inspect","run_in_background":true}`,
 			wantAssistantMessage: "msg-inline",
+			wantSubagentLaunch:   true,
 		},
 		{
 			name:                 "non Agent tool",
@@ -237,6 +241,9 @@ func TestParseAssistant_AgentTaskToolUseMeta(t *testing.T) {
 			}
 			if got := meta["assistant_message_id"]; got != tc.wantAssistantMessage {
 				t.Fatalf("assistant_message_id: got %v, want %q", got, tc.wantAssistantMessage)
+			}
+			if got, _ := meta[provider.MetaSubagentLaunchKey].(bool); got != tc.wantSubagentLaunch {
+				t.Fatalf("%s: got %v, want %v", provider.MetaSubagentLaunchKey, got, tc.wantSubagentLaunch)
 			}
 			if _, ok := meta["is_inline_subagent"]; ok {
 				t.Fatalf("is_inline_subagent should not be stamped: %v", meta)

@@ -1,6 +1,7 @@
 package sessionimport
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -82,10 +83,11 @@ type ConvertResult struct {
 //     types, or the DAG dropped them.
 func Convert(chain []Row, opts ConvertOptions) ConvertResult {
 	c := &converter{
-		opts:          opts,
-		usageByModel:  map[string]*provider.TokenUsage{},
-		unknownSystem: map[string]int{},
-		emittedAgents: map[string]bool{},
+		opts:                 opts,
+		usageByModel:         map[string]*provider.TokenUsage{},
+		unknownSystem:        map[string]int{},
+		emittedAgents:        map[string]bool{},
+		openingPromptByScope: map[string]bool{},
 	}
 	c.indexCompactSummaries(chain)
 	c.seedClock(chain)
@@ -130,6 +132,11 @@ type converter struct {
 	// a message from the user) and stamps ParentToolUseID on every event.
 	subagentScope string
 	emittedAgents map[string]bool
+	// openingPromptByScope gives the first user-role row in each subagent a
+	// launch-scoped identity. Live Claude can render that prompt from the
+	// launch input before async stdout would ever echo it; the transcript uuid
+	// then enriches the same row instead of appending it at terminal.
+	openingPromptByScope map[string]bool
 
 	// blockOrdinal counts emitted content blocks per assistant message id.
 	// Claude writes ONE transcript row per content block while streaming,
@@ -232,19 +239,25 @@ func (c *converter) convertUser(row Row) {
 	// opening a turn. startTurn is already inert in scope; the call is
 	// kept so both cases read the same.
 	//
-	// A LIVE inline agent echoes the same prompt on stdout and triage
-	// persists it there; both sides key the row on this uuid, so the
-	// import of a session that streamed live converges on one row rather
-	// than doubling it. A backgrounded agent never echoes, which is why
-	// this path cannot be skipped as "the launch row already has it".
+	// A LIVE launch creates the prompt row from tool input before the child
+	// emits output. Marking the first scoped user row makes the transcript
+	// uuid enrich that launch-scoped row rather than append another one. A
+	// backgrounded agent never echoes on ordinary stdout, which is why this
+	// transcript path still owns the provider identity.
 	c.startTurn(row)
-	c.emit(provider.ProviderEvent{
+	evt := provider.ProviderEvent{
 		Kind:           provider.EventUserText,
 		Role:           "user",
 		ItemID:         row.UUID,
 		Content:        text,
 		ContentPresent: true,
-	}, row)
+	}
+	if scope := strings.TrimSpace(c.subagentScope); scope != "" && !c.openingPromptByScope[scope] {
+		c.openingPromptByScope[scope] = true
+		meta, _ := json.Marshal(map[string]any{provider.MetaSubagentOpeningPromptKey: true})
+		evt.Meta = meta
+	}
+	c.emit(evt, row)
 }
 
 // userPromptText reports whether a user row is something the person

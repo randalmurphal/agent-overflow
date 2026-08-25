@@ -120,6 +120,9 @@ func (s *transcriptMirrorState) providerEvents(threadID string, result sessionim
 	for _, imported := range result.Events {
 		event := imported.ProviderEvent
 		event.ThreadID = threadID
+		if event.Kind == provider.EventUserText && strings.TrimSpace(event.ItemID) != "" {
+			event.Meta = mergeJSONMetaValue(event.Meta, "provider_item_id", strings.TrimSpace(event.ItemID))
+		}
 		event.Meta = mergeJSONMetaFlag(event.Meta, provider.MetaTranscriptSnapshotKey, true)
 		events = append(events, event)
 		if event.Kind == provider.EventToolStart && (isAgentLaunchToolName(event.ItemType) || event.ItemType == "Skill") {
@@ -133,6 +136,10 @@ func (s *transcriptMirrorState) providerEvents(threadID string, result sessionim
 }
 
 func mergeJSONMetaFlag(meta json.RawMessage, key string, value bool) json.RawMessage {
+	return mergeJSONMetaValue(meta, key, value)
+}
+
+func mergeJSONMetaValue(meta json.RawMessage, key string, value any) json.RawMessage {
 	fields := map[string]any{}
 	if len(meta) > 0 {
 		_ = json.Unmarshal(meta, &fields)

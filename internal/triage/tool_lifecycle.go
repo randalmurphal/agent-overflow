@@ -222,7 +222,10 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	// shapeToolItemMeta drops the freshly-extracted payload; the
 	// original launch's payload is canonical.
 	inputPayload := r.shapeToolItemMeta(&item, now)
-	return r.persistItemWithInputPayload(item, nil, inputPayload)
+	if err := r.persistItemWithInputPayload(item, nil, inputPayload); err != nil {
+		return err
+	}
+	return r.persistProvisionalSubagentPrompt(item, meta, now)
 }
 
 // userInputValidationTexts returns the set of human-readable text

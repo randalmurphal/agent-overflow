@@ -104,15 +104,22 @@ func (b *builder) subagentPrompt(evt importir.Event, scope string) error {
 	turnIndex := b.turns.currentFor(evt)
 	b.closeStreams(turnIndex, scope)
 
-	meta, err := json.Marshal(map[string]any{
+	openingPrompt := metaBool(evt.Meta, provider.MetaSubagentOpeningPromptKey)
+	metaFields := map[string]any{
 		"provider_item_id": providerItemID,
 		"wire_only":        true,
-	})
+	}
+	itemID := "user:wire:" + providerItemID
+	if openingPrompt {
+		metaFields[provider.MetaSubagentOpeningPromptKey] = true
+		itemID = provider.SubagentOpeningPromptItemID(scope)
+	}
+	meta, err := json.Marshal(metaFields)
 	if err != nil {
 		return fmt.Errorf("encode subagent prompt meta for %s: %w", providerItemID, err)
 	}
 	_, err = b.appendRow(evt, store.Item{
-		ID:        "user:wire:" + providerItemID,
+		ID:        itemID,
 		TurnIndex: turnIndex,
 		Kind:      kindUserText,
 		Role:      "user",

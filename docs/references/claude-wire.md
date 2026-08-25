@@ -2221,12 +2221,12 @@ prompt is on the wire nowhere at all.
 ```
 
 No `isReplay`, no `isMeta`. The `uuid` equals the FIRST user row's uuid
-in the agent's `subagents/agent-<id>.jsonl`, which is what lets the live
-wire and the sidechain backfill converge on one row instead of two:
-`parse_user.go` promotes it to a scoped `EventUserText`, triage persists
-it as `user:wire:<uuid>` under the launch, and the transcript backfill
-recognises the same id. An async agent's prompt reaches the same row
-through the backfill alone.
+in the agent's `subagents/agent-<id>.jsonl`. AO does not wait for that
+row to order the prompt. The Agent/Task launch input creates
+`user:subagent-prompt:<launchID>` immediately, before child output. The
+inline echo or transcript projection stamps this uuid onto that row in
+place. An async agent therefore has its opening prompt while it runs,
+even though ordinary stdout never carries the echo.
 
 Content is usually a one-element text block array; a bare string is the
 same fact in the other shape. The `isMeta` / `isCompactSummary` /

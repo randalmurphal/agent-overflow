@@ -136,6 +136,10 @@ type subagentDeliveredRows struct {
 	// live parser (recoveredBlockItemID) and the importer's converter
 	// (nextBlockItemID) spell identically.
 	byProviderItem map[string]store.Item
+	// openingPromptByProviderItem covers the launch-scoped prompt row. Its
+	// item id is derived from the launch so it can exist before Claude reveals
+	// the transcript uuid; meta gains that uuid when the real row arrives.
+	openingPromptByProviderItem map[string]store.Item
 }
 
 func (r *Router) subagentDeliveredRows(threadID string, launch store.Item) (subagentDeliveredRows, error) {
@@ -144,19 +148,27 @@ func (r *Router) subagentDeliveredRows(threadID string, launch store.Item) (suba
 		return subagentDeliveredRows{}, fmt.Errorf("list turn %d of %s: %w", launch.TurnIndex, threadID, err)
 	}
 	index := subagentDeliveredRows{
-		byID:           make(map[string]store.Item, len(items)),
-		byProviderItem: map[string]store.Item{},
+		byID:                        make(map[string]store.Item, len(items)),
+		byProviderItem:              map[string]store.Item{},
+		openingPromptByProviderItem: map[string]store.Item{},
 	}
 	for _, item := range items {
 		index.byID[item.ID] = item
 		if item.ParentID != launch.ID {
 			continue
 		}
-		if item.Kind != itemKindAssistantText && item.Kind != itemKindThinking {
-			continue
-		}
 		if providerItemID := decodeProviderItemID(item.Meta); providerItemID != "" {
-			index.byProviderItem[item.Kind+"|"+providerItemID] = item
+			if item.Kind == itemKindUserText {
+				opening, _, _, stateErr := subagentOpeningPromptState(item.Meta)
+				if stateErr != nil {
+					return subagentDeliveredRows{}, fmt.Errorf("decode opening prompt %s/%s: %w", threadID, item.ID, stateErr)
+				}
+				if opening {
+					index.openingPromptByProviderItem[providerItemID] = item
+				}
+			} else if item.Kind == itemKindAssistantText || item.Kind == itemKindThinking {
+				index.byProviderItem[item.Kind+"|"+providerItemID] = item
+			}
 		}
 	}
 	return index, nil
@@ -232,11 +244,13 @@ func subagentEventDelivered(evt provider.ProviderEvent, delivered subagentDelive
 		row, found := delivered.byProviderItem[itemKindThinking+"|"+itemID]
 		return true, found && row.Status == statusCompleted
 	case provider.EventUserText:
-		// Decidable by id: a subagent prompt's row id is
-		// `user:wire:<transcript uuid>` on both write paths
-		// (persistWireOnlySubagentPrompt live, subagentPrompt on import),
-		// so the transcript can address it directly.
-		_, found := delivered.byID["user:wire:"+itemID]
+		// Opening prompts use the launch-scoped row identity so they can be
+		// rendered at launch time. Older and later user-role rows retain the
+		// provider-keyed identity for backward compatibility.
+		_, found := delivered.openingPromptByProviderItem[itemID]
+		if !found {
+			_, found = delivered.byID["user:wire:"+itemID]
+		}
 		return true, found
 	default:
 		return false, false
@@ -280,17 +294,12 @@ func (r *Router) replaySubagentEvent(threadID string, launch store.Item, evt pro
 		evt.Meta = replayedErrorMeta(evt.Meta)
 		return true, r.dispatch(evt)
 	case provider.EventUserText:
-		// The agent's own opening prompt — the task text the CLI handed
-		// it. A BACKGROUNDED agent never echoes it on the wire (only the
-		// inline path does), so the transcript is the sole source, and
-		// this is the row the pane shows as the agent's instructions.
-		//
-		// handleUserText keys the row and its dedup on the meta's
-		// `provider_item_id`, not on ItemID, so the transcript uuid is
-		// stamped there. That is also what makes the replay converge with
-		// the live echo instead of doubling it: both name the same uuid,
-		// so an inline agent's already-persisted row is recognised as
-		// seen and the replay is a no-op.
+		// The first user row is the task text the CLI handed the agent.
+		// A backgrounded agent never echoes it on ordinary stdout. New
+		// launches already have a provisional row from their tool input;
+		// preserving the converter's opening marker lets handleUserText
+		// bind this transcript uuid onto that row without moving it. Later
+		// scoped user rows keep their provider-keyed identities.
 		if strings.TrimSpace(evt.Content) == "" {
 			return false, nil
 		}
@@ -298,7 +307,16 @@ func (r *Router) replaySubagentEvent(threadID string, launch store.Item, evt pro
 		if uuid == "" {
 			return false, nil
 		}
-		meta, err := json.Marshal(map[string]any{"provider_item_id": uuid})
+		metaFields := decodeUserTextMeta(evt.Meta)
+		if metaFields == nil {
+			metaFields = userTextMeta{}
+		}
+		providerItemID, err := json.Marshal(uuid)
+		if err != nil {
+			return false, fmt.Errorf("encode subagent prompt provider id %s: %w", uuid, err)
+		}
+		metaFields["provider_item_id"] = providerItemID
+		meta, err := json.Marshal(metaFields)
 		if err != nil {
 			return false, fmt.Errorf("encode subagent prompt meta for %s: %w", uuid, err)
 		}

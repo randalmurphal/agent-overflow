@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/importir"
+	"agent-overflow/internal/provider"
 )
 
 func TestSidechainProjectorPreservesStateAcrossMirrorBatches(t *testing.T) {
@@ -193,6 +194,16 @@ func TestConvertSubagentTranscriptMatchesTheJoinedImport(t *testing.T) {
 	}, "\n")
 	if got != want {
 		t.Fatalf("standalone events:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if len(standalone.Events) == 0 {
+		t.Fatal("standalone transcript emitted no opening prompt")
+	}
+	var promptMeta map[string]any
+	if err := json.Unmarshal(standalone.Events[0].Meta, &promptMeta); err != nil {
+		t.Fatalf("opening prompt meta: %v", err)
+	}
+	if promptMeta[provider.MetaSubagentOpeningPromptKey] != true {
+		t.Fatalf("opening prompt meta = %s, want %s=true", standalone.Events[0].Meta, provider.MetaSubagentOpeningPromptKey)
 	}
 
 	// The same rows read as part of the whole session: identical events,

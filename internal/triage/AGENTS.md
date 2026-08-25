@@ -80,6 +80,8 @@ none fits.
   for it, and under-reporting a safety refusal is the worse mistake.
 - `tool_lifecycle.go` — tool-call launch/completion rows,
   background-task pairing (Claude), summary/status derivation.
+- `subagent_prompt.go` — the launch-time opening-prompt row for providers
+  whose async child stream cannot carry that row before child output.
 - `background_task_notifications.go` — Claude's
   `system/task_notification` attention signal: the per-event
   `notification` row, the stash drain that writes the `tool_completion`
@@ -277,7 +279,7 @@ none fits.
 | Todo list (Claude TodoWrite / Task\*, Codex update_plan) | `provider:todo_update` to the frontend + the whole list onto `threads.live_todo` (v65); no timeline row ever. SQLite is its source of truth — it survives session teardown and app restart, and `GetThreadLiveState` reads it from the store, not from triage. Empty steps clear the column and emit a clear only when something was stored. See `timeline_notifications.go`. |
 | Permission notice (Claude) | `notification` row per `meta.kind` (`permission_denied` / `permission_retry`) with the notice's own fields forwarded; a denial ALSO stamps `permissionDenied` meta + `items.decision = declined` onto the tool_call row it explains, never its status. See `permission_notices.go`. |
 | Model fallback (Claude) | `notification` row keyed on the WIRE SUBTYPE (`model_fallback` / `model_consent_fallback` / `model_refusal_fallback`) + the session-scoped effective-model projection. Never flattened to one kind — the cause is what the row reports. See `model_fallback.go`. |
-| Scoped user echo (`parent_tool_use_id` set) | The agent's own prompt, as a nested `user_text` row `user:wire:<provider_item_id>` under the launch, meta `wire_only` — on the LAUNCH's turn, never the thread's current one. It can arrive on ordinary sidechain stdout, the live transcript mirror, or the old-process transcript backfill. `wire_only` keeps it out of every reader-authored user-text read. See `handle_user_text.go`. |
+| Scoped user echo (`parent_tool_use_id` set) | Nested `user_text` under the launch on the LAUNCH's turn, never the thread's current one. The opening prompt is created from the launch input as `user:subagent-prompt:<launchID>` before child output. Its first transcript row stamps `provider_item_id` onto that row in place. Later user-role deliveries use `user:wire:<provider_item_id>`. `wire_only` keeps both out of reader-authored user-text reads. See `subagent_prompt.go` and `handle_user_text.go`. |
 | User echo with an external origin (`origin: external-queue`) or peer provenance (`cross_session_message`) | A real `user_text` row with a named author, NOT "Injected provider context". These reach the top-level wire-only branch for a structural reason — the producer minted the uuid, so no pending send can match — but their provenance is POSITIVELY known. Everything else unmatched stays injected context. See `handle_user_text.go`. |
 | Command result (Claude local command) | `command_result` item (role `system`, status `completed`) + on-demand payload above the inline bound. Idempotent on the provider message id so the `result` echo does not duplicate it. See `command_result.go`. |
 | Session wakeup (Claude) | Per-thread pending-wakeup fire time in router state only — nothing persists, nothing emits. Consumed by the idle reaper via `PendingWakeupAt`. See `session_wakeup.go`. |
@@ -483,7 +485,7 @@ text/thinking. It keys on the identity BOTH writers spell identically:
 |---|---|
 | tool start / complete | the `tool_use_id`, which IS the row id on both sides. A completion additionally requires the row to have left `running` — a launch the live stream left running is the tool that was in flight at the cut, and nothing else will ever settle it. |
 | assistant text / thinking | `items.meta.provider_item_id` — the provider's own `<messageID>#<ordinal>`, written by the live parser (`recoveredBlockItemID`) and the importer (`nextBlockItemID`) in the same spelling, and queryable via `FindStreamItemByProviderItemID`. |
-| the agent's own prompt | the row id `user:wire:<transcript uuid>`, which both write paths spell identically (`persistWireOnlySubagentPrompt` live, `sessionimport`'s `subagentPrompt`). |
+| the agent's own prompt | `items.meta.provider_item_id` on the launch-scoped row `user:subagent-prompt:<launchID>`. New live launches create the row from tool input, then transcript projection binds its uuid without changing `item_index`; import marks the first scoped user row and writes the same id. Legacy `user:wire:<uuid>` rows remain recognised. |
 | everything else (errors, command results, compaction) | UNDECIDABLE. Their live ids are per-turn sequence numbers that say nothing about which event produced them. |
 
 `subagentBackfillCut` therefore finds the first decidable-and-missing
@@ -496,13 +498,14 @@ subagent's rows all carry the launch's `turn_index` (invariant 10), so
 one turn read is a superset of what a replay could duplicate.
 
 **The agent's own prompt is outside the cut entirely** (`replaySubagentEventAt`).
-The CLI echoes it on the wire only for an INLINE agent (claude-wire.md
-§"Subagent stream forwarding"), so an ASYNC agent streams its whole
-sidechain and is still missing that one row — it is not evidence about
-where streaming stopped, and letting it decide the cut would replay every
-async agent's transcript from row zero. It is replayed whenever the
-thread has no row for it, at any position, and its deterministic id makes
-that idempotent.
+The CLI echoes it on ordinary stdout only for an INLINE agent
+(claude-wire.md §"Subagent stream forwarding"). New launches therefore
+persist `input.prompt` immediately as the first child row. Transcript
+projection later binds the source uuid onto that same row. A process that
+started before launch marking has no provisional row, so compatibility
+backfill still creates its legacy provider-keyed prompt. Neither case says
+where sidechain streaming stopped, and letting the prompt decide the cut
+would replay every async agent's transcript from row zero.
 
 Placement follows from the same invariants: rows go in at the LAUNCH's
 turn (10) at the store's own `MAX(item_index)+1` (1 and 11 — `item_index`
