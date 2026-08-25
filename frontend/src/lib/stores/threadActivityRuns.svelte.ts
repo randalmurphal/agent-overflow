@@ -519,12 +519,57 @@ export function createThreadActivityRuns(
     return entry;
   }
 
+  /**
+   * Allocation-free "definitely unchanged" probe: walks `candidateIds` (an
+   * iterable yielding ids in row order) against the stored set's insertion
+   * order. `true` means the sequences match position for position, so the
+   * rebuild below would produce an identical set — the caller can skip it,
+   * which is what keeps a projection pass from re-allocating two Sets and
+   * re-writing two reverse indexes for every SETTLED run in the window on
+   * every structural bump (measured at 46MB/min of allocation during a
+   * tool-call burn, 2026-08-25).
+   *
+   * `false` only means "take the slow path". A repeated id in the input
+   * dedupes to one stored member, so it reads here as a mismatch even when
+   * the rebuilt set would come out identical — the slow path then does its
+   * own dedupe-aware compare and reaches the right `changed` verdict. That
+   * costs the fast path nothing in correctness: a false mismatch falls back
+   * to exactly the code that always ran.
+   */
+  function membersDefinitelyUnchanged(
+    stored: ReadonlySet<string>,
+    candidateIds: Iterable<string>,
+  ): boolean {
+    const previous = stored.values();
+    for (const id of candidateIds) {
+      if (previous.next().value !== id) return false;
+    }
+    return previous.next().done === true;
+  }
+
+  function* flattenRowMemberIds(
+    rowMemberIds: readonly (readonly string[])[],
+  ): Generator<string> {
+    for (const row of rowMemberIds) yield* row;
+  }
+
   function indexMembers(
     entry: RunEntry,
     runId: string,
     rowMemberIds: readonly (readonly string[])[],
     summaryItemIds: readonly string[],
   ): void {
+    // Fast path: both sequences match the stored sets positionally, so the
+    // rebuild below is a no-op — same sets, same reverse indexes, no epoch
+    // bump. Skipping it means a settled run costs zero allocation per pass.
+    const identityUnchanged = membersDefinitelyUnchanged(
+      entry.members,
+      flattenRowMemberIds(rowMemberIds),
+    );
+    if (identityUnchanged && membersDefinitelyUnchanged(entry.summaryMembers, summaryItemIds)) {
+      return;
+    }
+
     // Built before the old set is torn down so membership can be compared:
     // the header stamps its summary with `membershipEpoch` rather than
     // walking the ids, and a swap that preserved the count would otherwise
@@ -734,7 +779,9 @@ export function createThreadActivityRuns(
   }
 
   function endPass(): void {
-    for (const [runId, entry] of [...entries]) {
+    // Deleting during iteration is safe on a JS Map (the iterator skips
+    // removed entries); no defensive copy needed at pass cadence.
+    for (const [runId, entry] of entries) {
       if (claimed.has(runId)) continue;
       archiveEntry(entry);
       for (const id of entry.members) {

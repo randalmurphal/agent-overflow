@@ -706,6 +706,33 @@ describe('entry lifecycle', () => {
 
     expect(pass(runs, [['a']])[0].collapsed).toBe(false);
   });
+
+  // Pins the unchanged-membership fast path in `indexMembers`: identical
+  // re-resolves must keep the epoch AND leave the reverse indexes warm, so
+  // a later split still migrates identity by member. A fast path that
+  // skipped a rebuild the indexes actually needed would fail the split leg
+  // (the sub-run holding 'a' would mint a fresh id instead of inheriting).
+  it('identical passes keep the epoch and later migration still works', () => {
+    const runs = registry();
+    const [first] = pass(runs, [['a', 'b', 'c']]);
+
+    const epochs = [
+      pass(runs, [['a', 'b', 'c']])[0],
+      pass(runs, [['a', 'b', 'c']])[0],
+    ];
+    expect(epochs.map((r) => r.runId)).toEqual([first.runId, first.runId]);
+    expect(epochs.map((r) => r.membershipEpoch)).toEqual([
+      first.membershipEpoch,
+      first.membershipEpoch,
+    ]);
+
+    // Membership change after the quiet stretch: the run splits, the entry
+    // follows its previous first member, and the epoch moves.
+    const [left, right] = pass(runs, [['a'], ['b', 'c']]);
+    expect(left.runId).toBe(first.runId);
+    expect(left.membershipEpoch).toBeGreaterThan(first.membershipEpoch);
+    expect(right.runId).not.toBe(first.runId);
+  });
 });
 
 describe('state across a sweep', () => {
