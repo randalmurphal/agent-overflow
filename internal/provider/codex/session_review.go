@@ -388,13 +388,16 @@ func (s *Session) startReview(
 // (`turnKind: "compact"`), so callers should gate it on the thread being
 // idle rather than racing a live turn.
 func (s *Session) CompactThread(ctx context.Context) error {
-	// Closed-session check MUST precede the busy read: Close zeroes s.turn
-	// and s.review, so a post-Close call would read "idle" and proceed into
-	// a request on a dead pipe (see ErrSessionClosed).
+	// Closed-session check MUST precede the busy read AND run under s.mu:
+	// Close zeroes s.turn and s.review, so a post-Close call would read
+	// "idle" and proceed into a request on a dead pipe (see
+	// ErrSessionClosed). Under mu it is ordered against the zeroing; before
+	// Lock it leaves a preemption window.
+	s.mu.Lock()
 	if s.closing.Load() {
+		s.mu.Unlock()
 		return fmt.Errorf("codex: %s: %w", threadCompactStartMethod, ErrSessionClosed)
 	}
-	s.mu.Lock()
 	busy := s.turn.activeTurnID != "" || s.review != nil
 	s.mu.Unlock()
 	if busy {

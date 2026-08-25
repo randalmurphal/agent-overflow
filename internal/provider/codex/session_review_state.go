@@ -37,15 +37,17 @@ type reviewRun struct {
 }
 
 func (s *Session) reserveReview(turnIndex int, target ReviewTarget) error {
-	// Closed-session check MUST precede the busy reads: Close zeroes s.turn
-	// and s.review, so a post-Close call would read "idle", write a fresh
-	// reviewRun onto the closed session, and proceed into a request on a
-	// dead pipe (see ErrSessionClosed).
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Closed-session check MUST precede the busy reads AND run under s.mu:
+	// Close zeroes s.turn and s.review, so a post-Close call would read
+	// "idle", write a fresh reviewRun onto the closed session, and proceed
+	// into a request on a dead pipe (see ErrSessionClosed). Under mu it is
+	// ordered against the zeroing; before Lock it leaves a preemption
+	// window.
 	if s.closing.Load() {
 		return fmt.Errorf("codex: %s: %w", reviewStartMethod, ErrSessionClosed)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.review != nil {
 		return fmt.Errorf("codex: %s: a review is already running", reviewStartMethod)
 	}

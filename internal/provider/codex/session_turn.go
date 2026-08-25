@@ -204,13 +204,17 @@ func (s *Session) bindPendingTurnSchema(turnID string) {
 // and codex-rs/core/src/session/mod.rs — see classifySteerRejection for
 // the three refusals it can answer with.
 func (s *Session) Steer(ctx context.Context, content string, opts provider.SendOptions) error {
-	// Closed-session check MUST precede the activeTurnID read: Close zeroes
-	// s.turn, so without it a post-Close Steer would answer ErrNoActiveTurn
-	// and send the caller into the live-race retry (see ErrSessionClosed).
+	// Closed-session check MUST precede the activeTurnID read AND run under
+	// s.mu: Close zeroes s.turn, so without it a post-Close Steer would
+	// answer ErrNoActiveTurn and send the caller into the live-race retry
+	// (see ErrSessionClosed). Under mu the check is fully ordered against
+	// the zeroing — Close stores closing before it takes mu — where a check
+	// before Lock leaves a preemption window that reads the zeroed state.
+	s.mu.Lock()
 	if s.closing.Load() {
+		s.mu.Unlock()
 		return fmt.Errorf("codex: turn/steer: %w", ErrSessionClosed)
 	}
-	s.mu.Lock()
 	expectedTurnID := s.turn.activeTurnID
 	s.mu.Unlock()
 	if expectedTurnID == "" {
