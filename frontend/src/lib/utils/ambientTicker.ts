@@ -7,23 +7,31 @@
 // Blink promotes those elements and ticks them off the main thread, so
 // they cost no style recalc and no paint at all.
 //
-// The sidebar status glow is the exception, and the reason is a
+// The sidebar status glow is one exception, and the reason is a
 // PROPERTY, not a place. Its `--ambient-glow-t` drives three things at
 // once in app.css — shadow spread 0→2px, shadow alpha 0→0.22, and the
 // ::before's opacity 0.7→1.0, which lifts the 1px border with it.
 // box-shadow is not compositable, and opacity alone cannot reproduce
 // spread GROWTH: the ring would sit at full width and fade in rather
 // than expand. So this timer writes that one custom property inline on
-// the rows carrying a glow class, and nothing else.
+// the rows carrying a glow class.
 //
-// It used to drive `.animate-pulse` too, on the theory that an Animation
-// object inside the timeline scroller licenses presenting with
-// un-rastered tiles. Measurement on 2026-08-24 kept the hazard and
-// killed the scoping — it is binary and document-wide, and the sprite,
-// the LED chase and the line-slide already hold it open through every
-// working turn — so the pulse went back to CSS and the inline write it
-// cost (~28 whole-document repaints/sec) went away. The reasoning lives
-// at app.css `--animate-pulse`.
+// `.animate-pulse` is the other exception, and its reason is LAYER
+// COUNT, not a property. A running opacity animation — steps() or not —
+// promotes its element to its own composited layer
+// (CompositingReason::kActiveOpacityAnimation), and the pulse class sits
+// on one working dot per busy thread/subagent row: a fleet of agents put
+// 18 of the app's 26 layers on 6px dots (measured 2026-08-25, user app
+// under multi-agent load). This timer instead writes THREE custom
+// properties on the document root per 125ms slot (base + the two
+// stagger phases); the dots read them through `opacity: var(...)` in
+// app.css. No Animation objects, no promotions, and the recalc scope of
+// a root var write is only the elements that consume it. This flips the
+// 2026-08-24 decision that moved the pulse to CSS — that measurement
+// priced a handful of dots on a quiet layout and missed the per-dot
+// layer; the old inline-write cost (~28 whole-document repaints/sec)
+// came from per-ELEMENT style writes, which the root-var form does not
+// do. History of both flips lives at app.css `--animate-pulse`.
 //
 // Measured 2026-08-23, per 5s: the sprite's old inline write cost
 // 163.0ms of main-thread work; as a CSS animation it costs 0.0ms.
@@ -94,6 +102,42 @@ function formatValue(v: number): string {
 
 const GLOW_CLASSES = ['status-glow-warning', 'status-glow-info'] as const;
 
+/** The three pulse phases written on the document root: base, and the
+ * -250ms / -500ms staggers Indicator.svelte spreads across its three
+ * backgrounded dots (one and two slots apart, matching the deleted CSS
+ * animation-delays — a negative delay shows the waveform AHEAD). */
+const PULSE_VARS = [
+  ['--ambient-pulse-o', 0],
+  ['--ambient-pulse-o2', 250],
+  ['--ambient-pulse-o4', 500],
+] as const;
+
+/** Last values written to the root, so an unchanged slot writes nothing. */
+let lastPulse: string | null = null;
+
+function writePulseVars(tMs: number): boolean {
+  const root = document.documentElement;
+  if (document.getElementsByClassName('animate-pulse').length === 0) {
+    if (lastPulse !== null) clearPulseVars();
+    return false;
+  }
+  const values = PULSE_VARS.map(([, lead]) => formatValue(pulseOpacityAt(tMs + lead)));
+  const key = values.join(' ');
+  if (key !== lastPulse) {
+    for (let i = 0; i < PULSE_VARS.length; i++) {
+      root.style.setProperty(PULSE_VARS[i][0], values[i]);
+    }
+    lastPulse = key;
+  }
+  return true;
+}
+
+function clearPulseVars(): void {
+  const root = document.documentElement;
+  for (const [name] of PULSE_VARS) root.style.removeProperty(name);
+  lastPulse = null;
+}
+
 /** Consecutive empty ticks before the timer suspends. One second, so a
  * surface that briefly has no indicator does not thrash the timer off
  * and on. */
@@ -116,10 +160,12 @@ function clearStyles(el: Element): void {
 function clearAllStyles(): void {
   for (const el of styled) clearStyles(el);
   styled.clear();
+  clearPulseVars();
 }
 
 /** Returns whether any consumer is currently on screen. */
 function writeStyles(tMs: number): boolean {
+  const hasPulse = writePulseVars(tMs);
   const seen = new Set<Element>();
   const glowT = formatValue(glowTAt(tMs));
 
@@ -144,7 +190,7 @@ function writeStyles(tMs: number): boolean {
       styled.delete(el);
     }
   }
-  return seen.size > 0;
+  return hasPulse || seen.size > 0;
 }
 
 function arm(): void {

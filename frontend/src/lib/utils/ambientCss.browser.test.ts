@@ -65,23 +65,45 @@ afterEach(() => {
   for (const el of hosts.splice(0)) el.remove();
 });
 
-describe('ambient pulse keyframes', () => {
-  it('renders pulseOpacityAt() across the 2s cycle', () => {
+describe('ambient pulse root vars', () => {
+  // The pulse is NOT a CSS animation: a running opacity animation
+  // promotes its element to its own composited layer, and one dot per
+  // busy thread put 18 layers on 6px dots (2026-08-25; the @theme
+  // `--animate-pulse` comment carries the history). The utility reads
+  // root-level custom properties the ticker writes; these tests prove
+  // the CSS wiring renders the ticker's waveform and that no Animation
+  // object exists to trigger the promotion.
+  const setPulseVars = (t: number): void => {
+    const root = document.documentElement.style;
+    root.setProperty('--ambient-pulse-o', String(pulseOpacityAt(t)));
+    root.setProperty('--ambient-pulse-o2', String(pulseOpacityAt(t + 250)));
+    root.setProperty('--ambient-pulse-o4', String(pulseOpacityAt(t + 500)));
+  };
+  afterEach(() => {
+    const root = document.documentElement.style;
+    for (const name of ['--ambient-pulse-o', '--ambient-pulse-o2', '--ambient-pulse-o4']) {
+      root.removeProperty(name);
+    }
+  });
+
+  it('renders the base var across the 2s cycle, with no Animation object', () => {
     const dot = mount('<span class="animate-pulse"></span>');
-    const animation = animationOf(dot, 'ambient-pulse');
+    expect(dot.getAnimations(), 'pulse must not create an Animation (layer promotion)').toHaveLength(0);
     for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
-      sampleAt(animation, t);
+      setPulseVars(t);
       expect(opacityOf(dot), `t=${t}ms`).toBeCloseTo(pulseOpacityAt(t), 4);
     }
   });
 
+  it('rests at full opacity when the ticker has written nothing', () => {
+    const dot = mount('<span class="animate-pulse"></span>');
+    expect(opacityOf(dot)).toBe(1);
+  });
+
   it('staggers the backgrounded dots one and two slots apart', () => {
-    // Indicator.svelte's three-dot `backgrounded` variant. The delays are
-    // NEGATIVE, so a stagger LEADS the base dot: at animation-local time
-    // t the effect is at t + 250 / t + 500. Direction is free in a
-    // periodic waveform; a positive delay would instead park the dot at
-    // full opacity through its first quarter-second and fire
-    // `animationstart` late, which is what ambientPhase.ts pins on.
+    // Indicator.svelte's three-dot `backgrounded` variant: each stagger
+    // class reads its own root property, written one and two 250ms slots
+    // AHEAD of the base waveform.
     const base = mount('<span class="animate-pulse"></span>');
     const s2 = mount('<span class="animate-pulse ambient-pulse-s2"></span>');
     const s4 = mount('<span class="animate-pulse ambient-pulse-s4"></span>');
@@ -92,8 +114,8 @@ describe('ambient pulse keyframes', () => {
     ];
 
     for (let t = 0; t < 2000; t += AMBIENT_SLOT_MS) {
+      setPulseVars(t);
       for (const [el, lead] of dots) {
-        sampleAt(animationOf(el, 'ambient-pulse'), t);
         expect(opacityOf(el), `lead ${lead}ms at t=${t}ms`).toBeCloseTo(pulseOpacityAt(t + lead), 4);
       }
       // The whole point of the stagger, and it holds at every slot: the

@@ -153,14 +153,16 @@ describe('startAmbientTicker', () => {
     stop();
   });
 
-  it('writes nothing to the CSS-animated indicators', () => {
-    // The glow is the only indicator this timer owns. The pulse dots,
-    // the LED chase, the stepped spinner and the sprite are CSS
+  it('writes no inline style onto any indicator element', () => {
+    // The glow writes onto its carrier rows and the pulse writes onto
+    // the DOCUMENT ROOT — never onto the indicator elements themselves.
+    // The LED chase, the stepped spinner and the sprite are CSS
     // animations (app.css) phase-locked by ambientPhase.ts, running off
     // the main thread — a tick that writes an inline style onto any of
-    // them is the regression to catch, because the write both forfeits
-    // the layer promotion that makes them free and fights the animation
-    // for the same property.
+    // them fights the animation for the same property. A per-ELEMENT
+    // pulse write is the same regression: it is the ~28
+    // whole-document-repaints/sec form that killed the original ticker
+    // pulse (see the module header).
     const dot = addFixture('<span class="animate-pulse"></span>');
     const shifted = addFixture('<span class="animate-pulse ambient-pulse-s2"></span>');
     const chase = addFixture(
@@ -176,6 +178,55 @@ describe('startAmbientTicker', () => {
     for (const el of [dot, shifted, spinner, strip, ...chase.children]) {
       expect(el.getAttribute('style'), el.getAttribute('class') ?? el.tagName).toBe(null);
     }
+  });
+
+  const pulseVar = (name: string): string =>
+    document.documentElement.style.getPropertyValue(name);
+  /** The ticker's own 4-decimal rounding (formatValue). */
+  const rounded = (v: number): string => String(Math.round(v * 10000) / 10000);
+
+  it('writes the three pulse phases on the root while a pulse element exists', () => {
+    addFixture('<span class="animate-pulse"></span>');
+    const stop = start();
+    expect(pulseVar('--ambient-pulse-o')).toBe(rounded(pulseOpacityAt(0)));
+
+    vi.setSystemTime(500);
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS);
+    const t = Date.now(); // advanceTimersByTime moves the mocked clock too
+    expect(pulseVar('--ambient-pulse-o')).toBe(rounded(pulseOpacityAt(t)));
+    expect(pulseVar('--ambient-pulse-o2')).toBe(rounded(pulseOpacityAt(t + 250)));
+    expect(pulseVar('--ambient-pulse-o4')).toBe(rounded(pulseOpacityAt(t + 500)));
+
+    stop();
+    expect(pulseVar('--ambient-pulse-o'), 'stop must clear the root vars').toBe('');
+    expect(pulseVar('--ambient-pulse-o2')).toBe('');
+    expect(pulseVar('--ambient-pulse-o4')).toBe('');
+  });
+
+  it('clears the root vars once the last pulse element leaves', () => {
+    const dot = addFixture('<span class="animate-pulse"></span>');
+    const stop = start();
+    expect(pulseVar('--ambient-pulse-o')).not.toBe('');
+    dot.remove();
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS);
+    expect(pulseVar('--ambient-pulse-o'), 'dots gone, vars must not linger').toBe('');
+    stop();
+  });
+
+  it('keeps the timer armed on pulse presence alone', () => {
+    addFixture('<span class="animate-pulse"></span>');
+    start();
+    vi.advanceTimersByTime(AMBIENT_SLOT_MS * 12);
+    expect(vi.getTimerCount(), 'pulse dots are consumers; the timer must not suspend').toBe(1);
+  });
+
+  it('writes no pulse vars under prefers-reduced-motion', () => {
+    matchMediaMock.matches = true;
+    addFixture('<span class="animate-pulse"></span>');
+    const stop = start();
+    vi.advanceTimersByTime(1000);
+    expect(pulseVar('--ambient-pulse-o')).toBe('');
+    stop();
   });
 
   it('suspends the timer when nothing is on screen, and wakes on a DOM change', async () => {

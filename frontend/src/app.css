@@ -256,7 +256,10 @@ html.light {
   /* Ambient pulse. Every animate-pulse in this app is an ambient
      indicator (working dots in the sidebar/header/picker/rows, loading
      text, retry icons), so the utility keeps its name and is redefined
-     onto our own keyframes instead of Tailwind's.
+     to a VAR-DRIVEN opacity: utils/ambientTicker.ts writes
+     --ambient-pulse-o / -o2 / -o4 on the document root each 125ms slot
+     and the rules below read them. `none` here suppresses Tailwind's
+     own keyframe animation for the utility.
 
      STEPPED, not smooth, and that half is load-bearing. The original
      smooth pulse forced a GPU present every vsync — on a 165Hz panel
@@ -265,36 +268,33 @@ html.light {
      smooth vs 7.3/s stepped). Eight values per half-cycle reads as the
      same breath and presents 8/s.
 
-     A CSS animation rather than a JS style write because opacity is
-     compositable: Blink promotes the element and ticks it off the main
-     thread, so a running dot costs no style recalc and no paint. The
-     inline-write version cost ~28 whole-document repaints/sec whenever
-     dots were on screen, on the same thread that serves typing and
-     scrolling.
+     NOT a CSS animation, and that is the third flip, each on new
+     measurement. 5c860a15 armed the ticker; 1633dcea disarmed it
+     (Animation-in-scroller present-policy theory); 2026-08-24 measured
+     that theory's exposure as binary and document-wide
+     (present-policy-arms.mjs) and moved the pulse to CSS keyframes for
+     the compositor's zero main-thread cost. 2026-08-25 measured what
+     that form costs at FLEET scale: a running opacity animation —
+     steps() or not — promotes its element to its own composited layer,
+     and one dot per busy thread/subagent put 18 of the app's 26 layers
+     on 6px dots, feeding overlap/layerize recomputation through every
+     streaming layout shift. The root-var write has neither cost: no
+     Animation objects (the present-policy hazard stays open through the
+     sprite and LED chase regardless), no layers, and a recalc scope of
+     only the consuming elements. The ~28 whole-document repaints/sec
+     that killed the ORIGINAL ticker form came from per-element inline
+     writes; the root-var form writes one element (html), 8 slots/sec.
 
-     History, because this flipped twice. 5c860a15 armed it; 1633dcea
-     disarmed it again on the theory that an Animation object inside the
-     timeline scroller licenses presenting with un-rastered tiles during
-     a compensated move (the 2026-08-17 checkerboard). Measurement on
-     2026-08-24 (scripts/perfprobe/present-policy-arms.mjs) kept the
-     hazard and killed the scoping: the exposure is BINARY (one
-     animation costs what thirty do) and DOCUMENT-wide (an animation
-     outside the scroller scores the same as one inside). The working
-     sprite, the LED chase and the stepped spinner run through every
-     working turn, and TailClampedText's line-slide runs through
-     streaming, so disarming this one utility bought no quiet frame and
-     charged for it on all the others. See
-     docs/architecture/frontend-scroll.md § The Print Doctrine.
-
-     Wall-clock phase comes from utils/ambientPhase.ts, so dots that
-     mount at different times breathe together.
+     Wall-clock phase comes from Date.now() in the ticker, so dots that
+     mount at different times breathe together, in step with the CSS
+     indicators phase-locked by utils/ambientPhase.ts.
 
      Spinners (animate-spin) are deliberately untouched — smooth
      rotation, transient use only. Standing spinners use
      primitives/SteppedSpinner.svelte: a spoked glyph whose steps(12)
      rotation lands on spoke positions, so the discretization reads as
      design. */
-  --animate-pulse: ambient-pulse 2000ms steps(8, jump-none) infinite;
+  --animate-pulse: none;
 
   /* Existing semantic colors. */
   --color-surface-0: var(--surface-0);
@@ -937,33 +937,21 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 /*
  * Ambient pulse: the working-dot / loading-text breath, 1 → 0.5 → 1
- * over 2s. `animate-pulse` is redefined in @theme to run these with
- * steps(8, jump-none), which lands 8 opacity values on each 1s half —
- * 125ms per value, the same slot grid every other ambient indicator
- * uses. Mirrors pulseOpacityAt() in utils/ambientTicker.ts, and
- * ambientCss.browser.test.ts samples this rule against it.
+ * over 2s, 8 values per 1s half — 125ms per value, the same slot grid
+ * every other ambient indicator uses. The values arrive as root-level
+ * custom properties written by utils/ambientTicker.ts (pulseOpacityAt
+ * is the waveform's authority; the @theme `--animate-pulse` comment
+ * carries the why). The var() fallback of 1 is the rest state: ticker
+ * suspended, reduced motion, or no ticker at all (tests) all read as a
+ * steady dot.
  *
  * .ambient-pulse-s2 / -s4 are Indicator.svelte's staggers for the three
  * backgrounded dots, one and two slots apart so they never breathe in
- * unison. The delays are NEGATIVE on purpose: a positive delay would
- * hold the dot un-animated at full opacity through its first quarter
- * second and fire `animationstart` late, and that event is what
- * ambientPhase.ts pins the wall-clock phase on. Direction is free in a
- * periodic waveform; what matters is that the three sit a slot apart.
- *
- * Compound selectors so a stagger outranks the utility's own implied
- * animation-delay: 0s whichever cascade layer either lands in.
- *
- * Reduced motion collapses these through the global reset at the bottom
- * of this file, leaving the dot at its natural opacity.
+ * unison — the ticker writes each phase's own property.
  */
-@keyframes ambient-pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
-  100% { opacity: 1; }
-}
-.animate-pulse.ambient-pulse-s2 { animation-delay: -250ms; }
-.animate-pulse.ambient-pulse-s4 { animation-delay: -500ms; }
+.animate-pulse { opacity: var(--ambient-pulse-o, 1); }
+.animate-pulse.ambient-pulse-s2 { opacity: var(--ambient-pulse-o2, 1); }
+.animate-pulse.ambient-pulse-s4 { opacity: var(--ambient-pulse-o4, 1); }
 
 /*
  * SteppedSpinner's rotation: one 30° spoke advance per 125ms slot, 12
