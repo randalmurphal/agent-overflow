@@ -7,6 +7,68 @@ import (
 	"sort"
 )
 
+// noCompletionSiblingSQL is the "this launch has not been settled yet" probe:
+// no row in the same thread names it through `completion_of`. Twelve of the
+// queries in this file ask exactly that question, and they used to spell it
+// out twelve times.
+//
+// **The trailing `c.completion_of <> (empty)` term is redundant and
+// load-bearing.** The
+// correlated `c.completion_of = items.id` does not textually imply the WHERE
+// clause of the partial `idx_items_completion_of`, and SQLite only uses a
+// partial index when the query's predicates prove the index's predicate. Drop
+// the term and every probe here falls back to scanning the thread's whole
+// items slice — seconds per call on a large thread. It is a planner
+// directive written as SQL, not a filter; see the partial-index qualification
+// rule in internal/store/AGENTS.md, and TestCompletionSiblingProbesUseIndex
+// in items_lifecycle_test.go, which fails the moment a plan stops using it.
+//
+// The OUTER row is referenced as `items.*`, so the fragment may only be
+// spliced into a query whose outer table is literally `items` — the inner copy
+// is aliased `c` precisely so those references stay unambiguous. This is the
+// same alias hazard `subagentLaunchFilterFor` takes a mandatory alias for:
+// unqualified `thread_id` / `id` inside the EXISTS would bind to the inner
+// copy and make the probe vacuously true.
+const noCompletionSiblingSQL = `NOT EXISTS (
+	      SELECT 1 FROM items c
+	       WHERE c.thread_id = items.thread_id
+	         AND c.completion_of = items.id
+	         AND c.completion_of <> ''
+	    )`
+
+// noCompletionSiblingIndexedSQL is the same probe with the index named
+// outright. The two COUNT queries use it because they already pin their outer
+// scan with an `INDEXED BY`, and a query that has taken the plan out of the
+// planner's hands on one table should not leave the other half to chance.
+// Everything the comment above says applies here unchanged.
+const noCompletionSiblingIndexedSQL = `NOT EXISTS (
+	      SELECT 1 FROM items c INDEXED BY idx_items_completion_of
+	       WHERE c.thread_id = items.thread_id
+	         AND c.completion_of = items.id
+	         AND c.completion_of <> ''
+	    )`
+
+// liveBackgroundLaunchSQL is the top-level live background launch: a
+// backgrounded `tool_call` still marked running, at the top level, that no
+// session teardown has marked inactive. It is the row the tray advertises, the
+// flush queue waits on, and the reaper settles.
+//
+// The empty-`parent_id` term is the invariant-24 half — whether the tray SHOWS a nested
+// background Bash and whether that Bash blocks the queue are different
+// questions, and this fragment answers only the second. The terms are also
+// kept textually in sync with the partial `idx_items_live_background`, which
+// is what serves them.
+//
+// The columns are UNQUALIFIED, so this fragment belongs in the OUTER WHERE
+// clause of a query over `items` (or the UPDATE's target table) and nowhere
+// else: spliced inside an EXISTS that joins a second copy of `items`, every
+// term would bind to the inner copy instead.
+const liveBackgroundLaunchSQL = `kind = 'tool_call'
+	    AND status = 'running'
+	    AND is_background = 1
+	    AND parent_id = ''
+	    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0`
+
 func (s *Store) HasItems(threadID string) (bool, error) {
 	var exists int
 	if err := s.reader().QueryRow(
@@ -43,22 +105,13 @@ func (s *Store) HasLiveBackgroundToolCall(threadID string) (bool, error) {
 		`SELECT EXISTS(
 		    SELECT 1 FROM items
 		     WHERE thread_id = ?
-		       AND kind = 'tool_call'
-		       AND status = 'running'
-		       AND is_background = 1
-		       AND parent_id = ''
-		       AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		       AND `+liveBackgroundLaunchSQL+`
 		       AND NOT EXISTS (
 		         SELECT 1 FROM pending_background_task_terminals p
 		          WHERE p.thread_id = items.thread_id
 		            AND p.tool_use_id = items.id
 		       )
-		       AND NOT EXISTS (
-		         SELECT 1 FROM items c
-		          WHERE c.thread_id = items.thread_id
-		            AND c.completion_of = items.id
-		            AND c.completion_of <> ''
-		       )
+		       AND `+noCompletionSiblingSQL+`
 		     LIMIT 1
 		)`,
 		threadID,
@@ -83,23 +136,14 @@ func (s *Store) HasQueueBlockingBackgroundToolCall(threadID string) (bool, error
 		`SELECT EXISTS(
 		    SELECT 1 FROM items
 		     WHERE thread_id = ?
-		       AND kind = 'tool_call'
-		       AND status = 'running'
-		       AND is_background = 1
-		       AND parent_id = ''
-		       AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+		       AND `+liveBackgroundLaunchSQL+`
 		       AND COALESCE(json_extract(meta, '$.watch_task'), 0) = 0
 		       AND NOT EXISTS (
 		         SELECT 1 FROM pending_background_task_terminals p
 		          WHERE p.thread_id = items.thread_id
 		            AND p.tool_use_id = items.id
 		       )
-		       AND NOT EXISTS (
-		         SELECT 1 FROM items c
-		          WHERE c.thread_id = items.thread_id
-		            AND c.completion_of = items.id
-		            AND c.completion_of <> ''
-		       )
+		       AND `+noCompletionSiblingSQL+`
 		     LIMIT 1
 		)`,
 		threadID,
@@ -115,17 +159,8 @@ func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error
 		`SELECT COUNT(*)
 		   FROM items INDEXED BY idx_items_live_background
 		  WHERE thread_id = ?
-		    AND kind = 'tool_call'
-		    AND status = 'running'
-		    AND is_background = 1
-		    AND parent_id = ''
-		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c INDEXED BY idx_items_completion_of
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )`,
+		    AND `+liveBackgroundLaunchSQL+`
+		    AND `+noCompletionSiblingIndexedSQL,
 		threadID,
 	).Scan(&count); err != nil {
 		return 0, fmt.Errorf("store: count live running background tool calls for thread %s: %w", threadID, err)
@@ -147,12 +182,7 @@ func (s *Store) HasLiveCodexSubagentLaunch(threadID string) (bool, error) {
 		       AND items.is_background = 1
 		       AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		       AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		       AND NOT EXISTS (
-		         SELECT 1 FROM items c
-		          WHERE c.thread_id = items.thread_id
-		            AND c.completion_of = items.id
-		            AND c.completion_of <> ''
-		       )
+		       AND `+noCompletionSiblingSQL+`
 		     LIMIT 1
 		)`,
 		threadID,
@@ -176,12 +206,7 @@ func (s *Store) CountLiveCodexSubagentLaunches(threadID string) (int, error) {
 		    AND items.is_background = 1
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c INDEXED BY idx_items_completion_of
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )`,
+		    AND `+noCompletionSiblingIndexedSQL,
 		threadID,
 	).Scan(&count); err != nil {
 		return 0, fmt.Errorf("store: count live Codex subagent launches for thread %s: %w", threadID, err)
@@ -201,12 +226,7 @@ func (s *Store) MarkLiveCodexSubagentLaunchesInactive(threadID string, updatedAt
 		    AND is_background = 1
 		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
 		    AND json_extract(meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )`,
+		    AND `+noCompletionSiblingSQL+``,
 		updatedAt,
 		threadID,
 	)
@@ -235,17 +255,8 @@ func (s *Store) MarkLiveBackgroundToolCallsInactive(threadID string, updatedAt i
 		        ),
 		        updated_at = ?
 		  WHERE thread_id = ?
-		    AND kind = 'tool_call'
-		    AND status = 'running'
-		    AND is_background = 1
-		    AND parent_id = ''
-		    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )`,
+		    AND `+liveBackgroundLaunchSQL+`
+		    AND `+noCompletionSiblingSQL+``,
 		updatedAt,
 		threadID,
 	)
@@ -382,12 +393,7 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
 		    AND items.is_background = 1
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )
+		    AND `+noCompletionSiblingSQL+`
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,
 	)
@@ -416,12 +422,7 @@ func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, er
 		    AND items.kind = 'tool_call'
 		    AND items.tool_name = 'collab_agent'
 		    AND items.is_background = 1
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )
+		    AND `+noCompletionSiblingSQL+`
 		  ORDER BY items.turn_index, items.item_index`,
 		threadID,
 	)
@@ -460,12 +461,7 @@ func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
 		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
 		    AND (
-		      NOT EXISTS (
-		        SELECT 1 FROM items c
-		         WHERE c.thread_id = items.thread_id
-		           AND c.completion_of = items.id
-		           AND c.completion_of <> ''
-		      )
+		      `+noCompletionSiblingSQL+`
 		      OR json_extract(items.meta, '$.live_background_active') = 1
 		    )
 		  ORDER BY items.turn_index, items.item_index`,
@@ -497,12 +493,7 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 		    AND items.kind = 'tool_call'
 		    AND items.tool_name = 'collab_agent'
 		    AND items.is_background = 1
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )`,
+		    AND `+noCompletionSiblingSQL+``,
 		threadID,
 		itemID,
 	)
@@ -559,12 +550,7 @@ func (s *Store) ListRecoverableClaudeBackgroundLaunches() ([]Item, error) {
 		    AND items.status = 'running'
 		    AND items.is_background = 1
 		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
-		    AND NOT EXISTS (
-		      SELECT 1 FROM items c
-		       WHERE c.thread_id = items.thread_id
-		         AND c.completion_of = items.id
-		         AND c.completion_of <> ''
-		    )`,
+		    AND ` + noCompletionSiblingSQL + ``,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list recoverable Claude background launches: %w", err)

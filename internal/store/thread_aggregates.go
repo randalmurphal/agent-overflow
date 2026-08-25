@@ -122,7 +122,7 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // HasLiveBackgroundToolCall, HasQueueBlockingBackgroundToolCall,
 // CountLiveRunningBackgroundToolCalls,
 // MarkLiveBackgroundToolCallsInactive) and paging.go's
-// topLevelItemsFilter KEEP `parent_id = ''`: whether the tray SHOWS a
+// topLevelItemsFilter KEEP the empty-`parent_id` term: whether the tray SHOWS a
 // nested background Bash and whether that Bash blocks the flush queue
 // or survives a session teardown are different questions, and the
 // second one is still answered at the top level only.

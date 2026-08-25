@@ -2640,3 +2640,112 @@ func TestMarkThreadReadNowClearsInterruptedSettledTurn(t *testing.T) {
 		t.Fatal("HasIncompleteTurn = true after MarkThreadReadNow, want false")
 	}
 }
+
+// updateThreadWrittenColumns extracts the column names updateThreadSetSQL
+// actually assigns. The SQL is the behavior; parsing it is what keeps the gate
+// below from checking a hand-kept list against another hand-kept list.
+func updateThreadWrittenColumns(t *testing.T) map[string]bool {
+	t.Helper()
+	setClause, ok := strings.CutPrefix(updateThreadSetSQL, "UPDATE threads SET ")
+	if !ok {
+		t.Fatalf("updateThreadSetSQL no longer starts with `UPDATE threads SET `: %q", updateThreadSetSQL)
+	}
+	written := make(map[string]bool)
+	for _, assignment := range strings.Split(setClause, ",") {
+		assignment = strings.TrimSpace(assignment)
+		column, value, found := strings.Cut(assignment, "=")
+		if !found {
+			t.Fatalf("updateThreadSetSQL fragment %q is not a `column=?` assignment", assignment)
+		}
+		column = strings.TrimSpace(column)
+		if strings.TrimSpace(value) != "?" {
+			t.Fatalf("updateThreadSetSQL assigns %s a literal (%q); the gate only understands bound parameters",
+				column, strings.TrimSpace(value))
+		}
+		if written[column] {
+			t.Errorf("updateThreadSetSQL assigns %s twice", column)
+		}
+		written[column] = true
+	}
+	if len(written) == 0 {
+		t.Fatal("parsed no columns out of updateThreadSetSQL")
+	}
+	return written
+}
+
+// TestUpdateThreadColumnGate is the standing version of the five
+// TestUpdateThreadPreserves* fossils below and above it. Each of those pins one
+// column that a whole-row UpdateThread must not clobber, and each was written
+// after the clobber happened. This test makes the NEXT one impossible to
+// introduce by silence: every `threads` column must be either written by
+// updateThreadSetSQL or named in threadColumnsNotWrittenByUpdateThread with a
+// reason, never both, and the omission map may not name a column that does not
+// exist.
+//
+// The column set comes from PRAGMA table_info on a migrated database rather
+// than from a list in this file, so a migration that adds a column fails here
+// until somebody decides which side it belongs on. Mirrors the
+// LocalOnlyMethods / wireSafeMethods gate in internal/transport.
+func TestUpdateThreadColumnGate(t *testing.T) {
+	s := newTestStore(t)
+
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('threads') ORDER BY cid`)
+	if err != nil {
+		t.Fatalf("read threads columns: %v", err)
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan threads column: %v", err)
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate threads columns: %v", err)
+	}
+	if len(columns) == 0 {
+		t.Fatal("PRAGMA table_info('threads') returned no columns")
+	}
+
+	written := updateThreadWrittenColumns(t)
+	existing := make(map[string]bool, len(columns))
+	for _, column := range columns {
+		existing[column] = true
+	}
+
+	// Forward: every column is classified, and classified exactly once.
+	for _, column := range columns {
+		_, omitted := threadColumnsNotWrittenByUpdateThread[column]
+		switch {
+		case written[column] && omitted:
+			t.Errorf("threads.%s is BOTH written by updateThreadSetSQL and listed in "+
+				"threadColumnsNotWrittenByUpdateThread; the two lists disagree about what UpdateThread does",
+				column)
+		case !written[column] && !omitted:
+			t.Errorf("threads.%s is unclassified: add it to updateThreadSetSQL if a whole-row "+
+				"UpdateThread from a possibly-stale Thread struct should rewrite it, or to "+
+				"threadColumnsNotWrittenByUpdateThread with a one-line reason if it must not",
+				column)
+		}
+	}
+
+	// Backward: neither list may name a column that does not exist. A renamed
+	// or dropped column would otherwise leave a stale entry that silently
+	// keeps the forward half passing.
+	for column := range written {
+		if !existing[column] {
+			t.Errorf("updateThreadSetSQL writes %q, which is not a threads column", column)
+		}
+	}
+	for column, reason := range threadColumnsNotWrittenByUpdateThread {
+		if !existing[column] {
+			t.Errorf("threadColumnsNotWrittenByUpdateThread names %q, which is not a threads column", column)
+		}
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("threadColumnsNotWrittenByUpdateThread[%q] carries no reason; the reason IS the record "+
+				"of why a whole-row write must skip it", column)
+		}
+	}
+}

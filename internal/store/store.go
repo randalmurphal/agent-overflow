@@ -143,12 +143,40 @@ func (s *Store) reader() *sql.DB {
 // by the single writer pool, and quiescing preserves that property with
 // the read pool in play — during fn, every read queues behind the writer
 // exactly as it did when the store held one connection.
+// readQuiesceSettleTick is both the drain poll interval and the one-tick
+// pause quiesceReads takes before its first poll. See the comment there.
+const readQuiesceSettleTick = 5 * time.Millisecond
+
 func (s *Store) quiesceReads(fn func() error) error {
 	if s.read == nil {
 		return fn()
 	}
 	s.readsQuiesced.Store(true)
 	defer s.readsQuiesced.Store(false)
+
+	// One settle tick before the first poll. `readsQuiesced` routes every
+	// NEW reader() call to the writer, but a goroutine that already took
+	// the read pool out of reader() and has not yet issued its statement
+	// is counted by neither side: it will never consult readsQuiesced
+	// again, and it is not yet in Stats().InUse. Polling immediately can
+	// therefore see a drained pool and hand fn the exclusive lock while
+	// that statement is still on its way. The tick gives the handoff a
+	// moment to become visible.
+	//
+	// This is DELIBERATELY a mitigation, not a fix, and the window is not
+	// closed. Closing it means the pool hands out a release handle rather
+	// than a bare *sql.DB, so quiescing can wait on a count it actually
+	// owns — which means threading acquire/release through roughly a
+	// hundred read accessors and turning reader() from a one-line selector
+	// into a lifecycle. That is not worth it here, because losing the race
+	// is bounded and non-corrupting: the late statement opens a read
+	// transaction against the same WAL database fn is rebuilding, so
+	// either it waits out fn's exclusive lock or fn waits out its read
+	// mark, and whichever waits is absorbed by `busy_timeout`. Nothing
+	// reads torn state, nothing is written twice, and the cost is a
+	// microsecond-scale stall on a path that already runs a VACUUM.
+	time.Sleep(readQuiesceSettleTick)
+
 	// In-flight read-pool work is short — single statements, plus the
 	// few bounded read-only transactions reader()'s doc lists; poll
 	// until it drains. The deadline is a backstop — if something wedges,
@@ -156,7 +184,7 @@ func (s *Store) quiesceReads(fn func() error) error {
 	// the pre-read-pool worst case.
 	deadline := time.Now().Add(5 * time.Second)
 	for s.read.Stats().InUse > 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(readQuiesceSettleTick)
 	}
 	return fn()
 }

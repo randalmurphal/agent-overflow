@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -2393,5 +2394,165 @@ func TestUpsertItemWithPayloadAppendRollsBackOnMissingPayload(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("item row landed despite payload append failure (no rollback)")
+	}
+}
+
+// TestCompletionSiblingProbesUseIndex is the guard behind the named SQL
+// fragments in items_lifecycle.go. The completion-sibling probe carries a
+// semantically redundant `c.completion_of <> ”` term for one reason: SQLite
+// uses a partial index only when the query's predicates textually imply the
+// index's WHERE clause, and the correlated `c.completion_of = items.id` does
+// not. Without the term every probe here degrades to scanning the thread's
+// whole items slice — a silent regression, correct in every result it returns
+// and seconds slower per call on a large thread.
+//
+// So the plan is asserted rather than the SQL. Each case is one of the outer
+// query SHAPES items_lifecycle.go splices the fragment into (a bare EXISTS, an
+// INDEXED BY count, a JOIN through threads, a payload LEFT JOIN, an UPDATE,
+// and the one unscoped boot query), built from the same consts the shipped
+// accessors use. TestCompletionSiblingProbesAreNotSpelledInline is the other
+// half: it is what keeps a new call site from bypassing the const and
+// therefore this test.
+func TestCompletionSiblingProbesUseIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	cases := []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{
+			// HasLiveBackgroundToolCall / HasQueueBlockingBackgroundToolCall.
+			name: "thread-scoped EXISTS",
+			query: `SELECT EXISTS(
+			    SELECT 1 FROM items
+			     WHERE thread_id = ?
+			       AND ` + liveBackgroundLaunchSQL + `
+			       AND ` + noCompletionSiblingSQL + `
+			     LIMIT 1
+			)`,
+			args: []any{"thread-plan"},
+		},
+		{
+			// CountLiveRunningBackgroundToolCalls.
+			name: "INDEXED BY count",
+			query: `SELECT COUNT(*)
+			   FROM items INDEXED BY idx_items_live_background
+			  WHERE thread_id = ?
+			    AND ` + liveBackgroundLaunchSQL + `
+			    AND ` + noCompletionSiblingIndexedSQL,
+			args: []any{"thread-plan"},
+		},
+		{
+			// HasLiveCodexSubagentLaunch / CountLiveCodexSubagentLaunches.
+			name: "provider join",
+			query: `SELECT EXISTS(
+			    SELECT 1 FROM items
+			    JOIN threads ON threads.id = items.thread_id
+			     WHERE items.thread_id = ?
+			       AND threads.provider = 'codex'
+			       AND items.kind = 'tool_call'
+			       AND items.status = 'completed'
+			       AND items.tool_name = 'collab_agent'
+			       AND items.is_background = 1
+			       AND ` + noCompletionSiblingSQL + `
+			     LIMIT 1
+			)`,
+			args: []any{"thread-plan"},
+		},
+		{
+			// ListRunningBackgroundToolCalls / ListIncompleteCodexSubagentLaunches /
+			// GetIncompleteCodexSubagentLaunch.
+			name: "payload left join list",
+			query: `SELECT ` + itemColumns + `
+			   FROM items
+			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			  WHERE items.thread_id = ?
+			    AND items.kind = 'tool_call'
+			    AND items.status = 'running'
+			    AND items.is_background = 1
+			    AND ` + noCompletionSiblingSQL + `
+			  ORDER BY items.turn_index, items.item_index`,
+			args: []any{"thread-plan"},
+		},
+		{
+			// MarkLiveBackgroundToolCallsInactive / MarkLiveCodexSubagentLaunchesInactive.
+			name: "update",
+			query: `UPDATE items
+			    SET updated_at = ?
+			  WHERE thread_id = ?
+			    AND ` + liveBackgroundLaunchSQL + `
+			    AND ` + noCompletionSiblingSQL,
+			args: []any{int64(1), "thread-plan"},
+		},
+		{
+			// ListRecoverableClaudeBackgroundLaunches — the one query in the
+			// file with no thread scope, so its plan is the one that matters
+			// most at multi-GB history sizes.
+			name: "unscoped boot sweep",
+			query: `SELECT ` + itemColumns + `
+			   FROM items
+			   JOIN threads ON threads.id = items.thread_id
+			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			  WHERE threads.provider IN ('claude', 'claude-tui')
+			    AND items.kind = 'tool_call'
+			    AND items.status = 'running'
+			    AND items.is_background = 1
+			    AND ` + noCompletionSiblingSQL,
+		},
+		{
+			// ListLiveCodexSubagentLaunches, where the probe sits inside an OR.
+			name: "probe inside a disjunction",
+			query: `SELECT ` + itemColumns + `
+			   FROM items
+			   JOIN threads ON threads.id = items.thread_id
+			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			  WHERE items.thread_id = ?
+			    AND threads.provider = 'codex'
+			    AND items.kind = 'tool_call'
+			    AND items.status = 'completed'
+			    AND items.tool_name = 'collab_agent'
+			    AND items.is_background = 1
+			    AND (
+			      ` + noCompletionSiblingSQL + `
+			      OR json_extract(items.meta, '$.live_background_active') = 1
+			    )
+			  ORDER BY items.turn_index, items.item_index`,
+			args: []any{"thread-plan"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertPlanUses(t, s.db, "idx_items_completion_of",
+				"EXPLAIN QUERY PLAN "+tc.query, tc.args...)
+		})
+	}
+}
+
+// TestCompletionSiblingProbesAreNotSpelledInline keeps every completion-sibling
+// probe in items_lifecycle.go routed through the named consts, which is what
+// makes the plan test above a guard over the whole file rather than over seven
+// strings that happen to live in a test. A new probe written out by hand would
+// otherwise be unmeasured — and, because the redundant planner term is easy to
+// read as noise, is exactly the one somebody would write without it.
+func TestCompletionSiblingProbesAreNotSpelledInline(t *testing.T) {
+	source, err := os.ReadFile("items_lifecycle.go")
+	if err != nil {
+		t.Fatalf("read items_lifecycle.go: %v", err)
+	}
+	// The two const declarations are the only place the probe body may appear.
+	const body = "SELECT 1 FROM items c"
+	got := strings.Count(string(source), body)
+	if got != 2 {
+		t.Errorf("items_lifecycle.go spells the completion-sibling probe body %d times, want 2 "+
+			"(the noCompletionSiblingSQL / noCompletionSiblingIndexedSQL declarations); "+
+			"splice the const instead so TestCompletionSiblingProbesUseIndex covers the new call site", got)
+	}
+	// Same for the live-background launch predicate.
+	const launchTerm = "AND is_background = 1\n\t    AND parent_id = ''"
+	if got := strings.Count(string(source), launchTerm); got != 1 {
+		t.Errorf("items_lifecycle.go spells the live background launch predicate %d times, want 1 "+
+			"(the liveBackgroundLaunchSQL declaration)", got)
 	}
 }

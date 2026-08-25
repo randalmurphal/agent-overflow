@@ -4366,3 +4366,835 @@ func TestMigrationV65AddsThreadLiveTodo(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrationV44AddsSoftStopAndCheckpointReason covers the v44 work_items
+// rebuild. Three properties, because the migration does three things at once:
+// the new `soft_stop` flag exists and is CHECK-bounded, the typed park reason
+// set gained `checkpoint` without losing anything it already admitted, and the
+// rebuild carried every row — including `parent_unit_id`, the column v43 itself
+// created, which the derivation had to add to the copy list by hand. A
+// derivation that forgot it would silently unlink every fan-out child, and the
+// only place that shows up is here.
+func TestMigrationV44AddsSoftStopAndCheckpointReason(t *testing.T) {
+	db := migrateThrough(t, 43)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, snapshot, state, reason,
+		 seeds, step_mode, worktree_path, branch, base_branch, budget,
+		 source, source_ref, triage_thread_id, origin_thread_id, disposition, digest,
+		 parent_item_id, parent_phase_id, parent_unit_id, parent_attempt, call_depth,
+		 created_at, started_at, ended_at)
+		VALUES ('item-v44', 'project-v44', 'keep goal', 'wf', 'shared', '{"id":"wf"}',
+		 'needs-human', 'paused', '{"ticket":"AO-44"}', 1, '/tmp/wt', 'ao-v44', 'main', '{"usd":5}',
+		 'manual', 'ref-v44', 'triage-v44', 'thread-v44', '{"action":"merged"}', '{"whatHappened":"x"}',
+		 '', '', '', 0, 0, 7, 8, 9)`)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source,
+		 parent_item_id, parent_phase_id, parent_unit_id, parent_attempt, call_depth, created_at)
+		VALUES ('child-v44', 'project-v44', 'called run', 'child-wf', 'shared', 'running', 'call',
+		 'item-v44', 'audit', 'port-section', 1, 1, 10)`)
+
+	if _, err := db.Exec(`UPDATE work_items SET soft_stop = 1 WHERE id = 'item-v44'`); err == nil {
+		t.Fatal("work_items already had soft_stop before v44")
+	}
+	if _, err := db.Exec(`UPDATE work_items SET reason = 'checkpoint' WHERE id = 'item-v44'`); err == nil {
+		t.Fatal("pre-v44: work_items must reject reason 'checkpoint'")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 44)); err != nil {
+		t.Fatalf("apply migration v44: %v", err)
+	}
+
+	// Data survives the rebuild — every column, not just the interesting ones.
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'item-v44' AND project_id = 'project-v44' AND goal = 'keep goal'
+		  AND workflow_id = 'wf' AND workflow_scope = 'shared' AND snapshot = '{"id":"wf"}'
+		  AND state = 'needs-human' AND reason = 'paused' AND seeds = '{"ticket":"AO-44"}'
+		  AND step_mode = 1 AND worktree_path = '/tmp/wt' AND branch = 'ao-v44'
+		  AND base_branch = 'main' AND budget = '{"usd":5}' AND source = 'manual'
+		  AND source_ref = 'ref-v44' AND triage_thread_id = 'triage-v44'
+		  AND origin_thread_id = 'thread-v44'
+		  AND disposition = '{"action":"merged"}' AND digest = '{"whatHappened":"x"}'
+		  AND parent_item_id = '' AND parent_unit_id = '' AND call_depth = 0
+		  AND created_at = 7 AND started_at = 8 AND ended_at = 9`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved work item: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v44 rebuild did not preserve the work item row")
+	}
+	// `parent_unit_id` is v43's own column, absent from the copy list v44
+	// inherited until the derivation extended it. A dropped unit linkage names
+	// a child of a phase rather than of the unit that called it.
+	var child int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_items
+		WHERE id = 'child-v44' AND parent_item_id = 'item-v44' AND parent_phase_id = 'audit'
+		  AND parent_unit_id = 'port-section' AND parent_attempt = 1 AND call_depth = 1`).Scan(&child); err != nil {
+		t.Fatalf("read preserved child: %v", err)
+	}
+	if child != 1 {
+		t.Fatal("v44 rebuild dropped the unit call linkage v43 added")
+	}
+
+	// The new column is born disarmed, which is what "almost no run has asked
+	// to stop" has to look like on every historical row.
+	var softStop sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT soft_stop FROM work_items WHERE id = 'item-v44'`,
+	).Scan(&softStop); err != nil {
+		t.Fatalf("read soft_stop: %v", err)
+	}
+	if !softStop.Valid || softStop.Int64 != 0 {
+		t.Fatalf("backfilled soft_stop = %v, want 0", softStop)
+	}
+	for _, good := range []int{0, 1} {
+		if _, err := db.Exec(
+			`UPDATE work_items SET soft_stop = ? WHERE id = 'item-v44'`, good,
+		); err != nil {
+			t.Fatalf("work_items rejected soft_stop %d: %v", good, err)
+		}
+	}
+	// A boolean with a third value is a boolean nobody can branch on.
+	for _, bad := range []any{2, -1, "yes", nil} {
+		if _, err := db.Exec(
+			`UPDATE work_items SET soft_stop = ? WHERE id = 'item-v44'`, bad,
+		); err == nil {
+			t.Errorf("work_items accepted soft_stop %v after v44", bad)
+		}
+	}
+
+	// The widened reason CHECK admits `checkpoint` and still admits everything
+	// the earlier rebuilds put there — a derivation that replaced the wrong
+	// occurrence would show up as a reason silently disappearing.
+	for _, reason := range []string{
+		"", "gate", "question", "stuck", "stalled", "budget-exhausted",
+		"retries-exhausted", "check-failed-genuine", "agent-error", "wiring-error",
+		"disposition", "setup-failed", "interrupted", "taken-over", "unit-failed",
+		"child-failed", "paused", "checkpoint",
+	} {
+		if _, err := db.Exec(
+			`UPDATE work_items SET reason = ? WHERE id = 'item-v44'`, reason,
+		); err != nil {
+			t.Errorf("work_items rejected reason %q after v44: %v", reason, err)
+		}
+	}
+	for _, bad := range []string{"soft-stop", "CHECKPOINT", "queued", "not-a-reason"} {
+		if _, err := db.Exec(
+			`UPDATE work_items SET reason = ? WHERE id = 'item-v44'`, bad,
+		); err == nil {
+			t.Errorf("work_items accepted reason %q after v44", bad)
+		}
+	}
+
+	// The call-linkage CHECKs the earlier rebuilds installed ride the rebuild too.
+	if _, err := db.Exec(
+		`UPDATE work_items SET parent_unit_id = 'orphan' WHERE id = 'item-v44'`,
+	); err == nil {
+		t.Error("v44 rebuild dropped the all-or-nothing unit linkage CHECK")
+	}
+
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_project_created",
+		"idx_work_items_state_created", "idx_work_items_triage_thread",
+		"idx_work_items_agent_source_ref", "idx_work_items_parent",
+		"idx_work_items_origin_thread", "idx_work_items_automation_source_ref",
+	} {
+		readIndexSQL(t, db, index)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v44 rebuild")
+	}
+}
+
+// TestMigrationV46AddsProjectWorktreeSetup pins the plain ADD COLUMN that moved
+// the worktree setup recipe onto the project row. The column is NOT NULL with
+// an empty default on purpose: NULL and the empty string would be two
+// indistinguishable spellings of "unconfigured" and every reader would have to
+// agree about both.
+func TestMigrationV46AddsProjectWorktreeSetup(t *testing.T) {
+	db := migrateThrough(t, 45)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v46', '/tmp/v46', 'V46', 'green', 4, 10, 11, 0)
+	`)
+	if _, err := db.Exec(
+		`UPDATE projects SET worktree_setup = '{}' WHERE id = 'project-v46'`,
+	); err == nil {
+		t.Fatal("projects already had worktree_setup before v46")
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 46)); err != nil {
+		t.Fatalf("apply migration v46: %v", err)
+	}
+
+	var recipe string
+	if err := db.QueryRow(
+		`SELECT worktree_setup FROM projects WHERE id = 'project-v46'`,
+	).Scan(&recipe); err != nil {
+		t.Fatalf("read worktree_setup: %v", err)
+	}
+	if recipe != "" {
+		t.Fatalf("backfilled worktree_setup = %q, want empty", recipe)
+	}
+
+	const setup = `{"copy":[".env"],"commands":[["pnpm","install"]],"timeoutSeconds":600}`
+	if _, err := db.Exec(
+		`UPDATE projects SET worktree_setup = ? WHERE id = 'project-v46'`, setup,
+	); err != nil {
+		t.Fatalf("projects rejected a worktree setup recipe: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT worktree_setup FROM projects WHERE id = 'project-v46'`,
+	).Scan(&recipe); err != nil {
+		t.Fatalf("re-read worktree_setup: %v", err)
+	}
+	if recipe != setup {
+		t.Fatalf("worktree_setup round-trip = %q, want %q", recipe, setup)
+	}
+	// No CHECK: the shape belongs to internal/worktreesetup, and this package
+	// only round-trips the blob. NOT NULL is the one constraint.
+	if _, err := db.Exec(
+		`UPDATE projects SET worktree_setup = NULL WHERE id = 'project-v46'`,
+	); err == nil {
+		t.Error("projects accepted a NULL worktree_setup after v46")
+	}
+
+	// ADD COLUMN, not a rebuild: the rest of the row and the path UNIQUE
+	// constraint are untouched.
+	var name, color string
+	var sortPosition int
+	if err := db.QueryRow(
+		`SELECT name, color, sort_position FROM projects WHERE id = 'project-v46'`,
+	).Scan(&name, &color, &sortPosition); err != nil {
+		t.Fatalf("read migrated project: %v", err)
+	}
+	if name != "V46" || color != "green" || sortPosition != 4 {
+		t.Fatalf("migrated project = (%q, %q, %d)", name, color, sortPosition)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v46-dup', '/tmp/v46', 'Dup', 'red', 5, 12, 13, 0)
+	`); err == nil {
+		t.Error("projects.path lost its UNIQUE constraint across v46")
+	}
+}
+
+// TestMigrationV48AddsCommandResultItemKind covers the items rebuild for the
+// row that holds a slash command the provider CLI ran itself. It is a rebuild,
+// so the assertions are the rebuild set rather than the ADD COLUMN set: every
+// earlier kind still admitted, existing rows carried, every index recreated,
+// and — the part a CREATE/copy/DROP/RENAME loses silently — the two payload-GC
+// triggers both PRESENT and FIRING.
+func TestMigrationV48AddsCommandResultItemKind(t *testing.T) {
+	db := migrateThrough(t, 47)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v48', '/tmp/v48', 'V48', 'blue', 4, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived, disabled_mcp_servers
+		) VALUES (
+			'thread-v48', 'project-v48', 'Pre-migration row', 'claude', 'claude-opus-4-8', '/tmp/v48', NULL,
+			NULL, '', '', '', 'chat', 'high',
+			0, 1000000, 0, 0, 'full-access', '', 31,
+			NULL, 33, 34, 0, NULL
+		)
+	`)
+	mustExec(t, db, `INSERT INTO payloads (id, kind, meta, data, created_at)
+		VALUES ('payload-v48', 'tool_result', '{"k":1}', X'6f6b', 20)`)
+	mustExec(t, db, `INSERT INTO payloads (id, kind, meta, data, created_at)
+		VALUES ('input-v48', 'tool_input', '{}', X'696e', 21)`)
+	mustExec(t, db, `INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, status, summary,
+		 payload_id, parent_id, is_background, completion_of, tool_name, decision,
+		 meta, created_at, updated_at, input_payload_id)
+		VALUES ('existing-v48', 'thread-v48', 0, 0, 'tool_call', 'assistant', 'completed',
+		 'Read file', 'payload-v48', '', 0, '', 'Read', 'approved',
+		 '{"task_id":"t-1"}', 22, 23, 'input-v48')`)
+
+	const commandInsert = `INSERT INTO items
+		(id, thread_id, turn_index, item_index, kind, role, status, summary,
+		 parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+		VALUES ('command-v48', 'thread-v48', 0, 1, 'command_result', 'assistant', 'completed',
+		 '/usage', '', 0, '', '', '', '{}', 24, 25)`
+	if _, err := db.Exec(commandInsert); err == nil {
+		t.Fatal("pre-v48: items must reject kind command_result")
+	}
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 48)); err != nil {
+		t.Fatalf("apply migration v48: %v", err)
+	}
+
+	if _, err := db.Exec(commandInsert); err != nil {
+		t.Fatalf("post-v48: command_result rejected: %v", err)
+	}
+	// The widened CHECK is a superset: the kinds v11 and v31 added must still
+	// be admitted, or a derivation replaced the wrong occurrence.
+	for _, kind := range []string{
+		"user_text", "assistant_text", "thinking", "compaction_reasoning",
+		"tool_call", "tool_completion", "error", "compaction",
+		"terminal_interaction", "notification", "api_retry", "api_error",
+		"workflow_proposal", "command_result",
+	} {
+		if _, err := db.Exec(
+			`UPDATE items SET kind = ? WHERE id = 'command-v48'`, kind,
+		); err != nil {
+			t.Errorf("items rejected kind %q after v48: %v", kind, err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE items SET kind = 'not_a_kind' WHERE id = 'command-v48'`); err == nil {
+		t.Error("post-v48: bogus item kind accepted")
+	}
+	mustExec(t, db, `UPDATE items SET kind = 'command_result' WHERE id = 'command-v48'`)
+
+	// The rebuild copies an explicit column list; a dropped column shows up as
+	// a payload reference that no longer points anywhere.
+	var preserved int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM items
+		WHERE id = 'existing-v48' AND thread_id = 'thread-v48' AND turn_index = 0
+		  AND item_index = 0 AND kind = 'tool_call' AND role = 'assistant'
+		  AND status = 'completed' AND summary = 'Read file'
+		  AND payload_id = 'payload-v48' AND input_payload_id = 'input-v48'
+		  AND parent_id = '' AND is_background = 0 AND completion_of = ''
+		  AND tool_name = 'Read' AND decision = 'approved'
+		  AND meta = '{"task_id":"t-1"}' AND created_at = 22 AND updated_at = 23`).Scan(&preserved); err != nil {
+		t.Fatalf("read preserved item: %v", err)
+	}
+	if preserved != 1 {
+		t.Fatal("v48 rebuild did not preserve the pre-migration item row")
+	}
+
+	// The two payload-GC triggers are dropped with the old table. Assert they
+	// were recreated AND that they still fire: a trigger present but scoped to
+	// the vanished items_new would pass a name check and collect nothing.
+	for _, trigger := range []string{"trg_items_gc_payload", "trg_items_gc_input_payload"} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger,
+		).Scan(&found); err != nil {
+			t.Fatalf("trigger %s missing after v48: %v", trigger, err)
+		}
+	}
+	mustExec(t, db, `DELETE FROM items WHERE id = 'existing-v48'`)
+	for _, payloadID := range []string{"payload-v48", "input-v48"} {
+		var remaining int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM payloads WHERE id = ?`, payloadID,
+		).Scan(&remaining); err != nil {
+			t.Fatalf("count payload %s: %v", payloadID, err)
+		}
+		if remaining != 0 {
+			t.Errorf("payload %s survived its only item's deletion: the v48 GC trigger did not fire", payloadID)
+		}
+	}
+
+	for _, index := range []string{
+		"idx_items_thread", "idx_items_thread_turn_item_unique", "idx_items_parent",
+		"idx_items_completion_of", "idx_items_payload_id", "idx_items_meta_task_id",
+		"idx_items_input_payload_id", "idx_items_live_background",
+		"idx_items_live_codex_subagent",
+	} {
+		readIndexSQL(t, db, index)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("foreign_key_check reported a violation after v48 rebuild")
+	}
+}
+
+// TestMigrationV54AddsWorkItemAutoResumeAt pins the durable half of
+// `run resume --at`. 0 is "nothing armed", which is every historical run, and
+// the column is the single source of truth the boot re-arm reads — an
+// in-memory-only timer would lose the operator's command on the restart the
+// column exists to survive.
+func TestMigrationV54AddsWorkItemAutoResumeAt(t *testing.T) {
+	db := migrateThrough(t, 53)
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, reason, source, created_at)
+		VALUES ('item-v54', 'project-v54', 'ship it', 'build', 'shared', 'needs-human', 'paused', 'manual', 50)`)
+
+	if _, err := db.Exec(
+		`UPDATE work_items SET auto_resume_at = 1 WHERE id = 'item-v54'`,
+	); err == nil {
+		t.Fatal("work_items already had auto_resume_at before v54")
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 54)); err != nil {
+		t.Fatalf("apply migration v54: %v", err)
+	}
+
+	var armed int64
+	if err := db.QueryRow(
+		`SELECT auto_resume_at FROM work_items WHERE id = 'item-v54'`,
+	).Scan(&armed); err != nil {
+		t.Fatalf("read auto_resume_at: %v", err)
+	}
+	if armed != 0 {
+		t.Fatalf("backfilled auto_resume_at = %d, want 0", armed)
+	}
+
+	// Unix milliseconds, stored verbatim: the boot re-arm orders by this
+	// column, so a value that did not round-trip exactly would fire at the
+	// wrong moment rather than fail loudly.
+	const at = int64(1787000000123)
+	mustExec(t, db, `UPDATE work_items SET auto_resume_at = ? WHERE id = 'item-v54'`, at)
+	if err := db.QueryRow(
+		`SELECT auto_resume_at FROM work_items WHERE id = 'item-v54'`,
+	).Scan(&armed); err != nil {
+		t.Fatalf("re-read auto_resume_at: %v", err)
+	}
+	if armed != at {
+		t.Fatalf("auto_resume_at round-trip = %d, want %d", armed, at)
+	}
+	// No CHECK — the value is app-owned scheduling state — but NOT NULL, so
+	// "nothing armed" has exactly one spelling.
+	if _, err := db.Exec(
+		`UPDATE work_items SET auto_resume_at = NULL WHERE id = 'item-v54'`,
+	); err == nil {
+		t.Error("work_items accepted a NULL auto_resume_at after v54")
+	}
+
+	// The soonest-first boot read is what the column is for; assert it orders
+	// armed rows ahead of the disarmed majority.
+	mustExec(t, db, `INSERT INTO work_items
+		(id, project_id, goal, workflow_id, workflow_scope, state, source, created_at, auto_resume_at)
+		VALUES ('item-v54-sooner', 'project-v54', 'sooner', 'build', 'shared', 'needs-human', 'manual', 51, 5)`)
+	var first string
+	if err := db.QueryRow(
+		`SELECT id FROM work_items WHERE auto_resume_at > 0 ORDER BY auto_resume_at ASC LIMIT 1`,
+	).Scan(&first); err != nil {
+		t.Fatalf("read soonest armed run: %v", err)
+	}
+	if first != "item-v54-sooner" {
+		t.Fatalf("soonest armed run = %q, want item-v54-sooner", first)
+	}
+
+	// ADD COLUMN, not a rebuild: the indexes and the call-linkage CHECKs survive.
+	for _, index := range []string{
+		"idx_work_items_project_state_created", "idx_work_items_parent",
+		"idx_work_items_origin_thread", "idx_work_items_automation_source_ref",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v54: %v", index, err)
+		}
+	}
+}
+
+// seedV66Thread inserts the project + thread the provider-cost migrations need
+// a foreign key parent for. The threads column list is the one that exists from
+// v65 on, which is what both v66 and v68 build their pre-image against.
+func seedV66Thread(t *testing.T, db *sql.DB, suffix string) {
+	t.Helper()
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES (?, ?, ?, 'green', 4, 10, 11, 0)
+	`, "project-"+suffix, "/tmp/"+suffix, strings.ToUpper(suffix))
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived
+		) VALUES (
+			?, ?, 'Pre-migration row', 'codex', 'gpt-5.5-codex', ?, NULL,
+			NULL, '', 'provider-thread-1', '', 'chat', 'xhigh',
+			0, 400000, 0, 0, 'auto', '', 31,
+			NULL, 33, 34, 0
+		)
+	`, "thread-"+suffix, "project-"+suffix, "/tmp/"+suffix)
+}
+
+// TestMigrationV66CreatesProviderThreadCost pins the table that holds the
+// PROVIDER's own cumulative cost estimate for a thread. Its grain is the thread
+// and its rows are rewritten in place, which is exactly why it is not a
+// usage_ledger row: a cumulative figure summed alongside the per-turn deltas it
+// already contains would inflate every dollar total in the app.
+func TestMigrationV66CreatesProviderThreadCost(t *testing.T) {
+	db := migrateThrough(t, 65)
+	seedV66Thread(t, db, "v66")
+
+	var exists int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'provider_thread_cost'`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("probe sqlite_master: %v", err)
+	}
+	if exists != 0 {
+		t.Fatal("provider_thread_cost already existed before v66")
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 66)); err != nil {
+		t.Fatalf("apply migration v66: %v", err)
+	}
+
+	mustExec(t, db, `INSERT INTO provider_thread_cost
+		(thread_id, provider, cost_source, cost_usd_micros, updated_at)
+		VALUES ('thread-v66', 'codex', 'provider-estimate', 1234567, 99)`)
+
+	// The wire integer is stored verbatim — millionths of a dollar, never
+	// round-tripped through binary floating point on the way in — and credits
+	// default to zero rather than to an "unknown" sentinel.
+	var micros, credits, updatedAt int64
+	var provider, source string
+	if err := db.QueryRow(`SELECT provider, cost_source, cost_usd_micros, credits_micros, updated_at
+		FROM provider_thread_cost WHERE thread_id = 'thread-v66'`,
+	).Scan(&provider, &source, &micros, &credits, &updatedAt); err != nil {
+		t.Fatalf("read provider_thread_cost: %v", err)
+	}
+	if provider != "codex" || source != "provider-estimate" || micros != 1234567 || credits != 0 || updatedAt != 99 {
+		t.Fatalf("provider_thread_cost row = (%q, %q, %d, %d, %d)",
+			provider, source, micros, credits, updatedAt)
+	}
+
+	// One row per thread: the newest answer replaces the previous one, so a
+	// second row for the same thread would be a second cumulative total.
+	if _, err := db.Exec(`INSERT INTO provider_thread_cost
+		(thread_id, provider, cost_source, cost_usd_micros, updated_at)
+		VALUES ('thread-v66', 'codex', 'provider-estimate', 7, 100)`); err == nil {
+		t.Error("provider_thread_cost accepted a second row for one thread")
+	}
+
+	// 'provider-estimate' is the only provenance today, and the CHECK is what
+	// forces a future producer to declare itself rather than blend in.
+	for _, bad := range []string{"", "wire", "estimate", "PROVIDER-ESTIMATE", "ao-rate-table"} {
+		if _, err := db.Exec(
+			`UPDATE provider_thread_cost SET cost_source = ? WHERE thread_id = 'thread-v66'`, bad,
+		); err == nil {
+			t.Errorf("provider_thread_cost accepted cost_source %q", bad)
+		}
+	}
+	// Only priced rows are written, so there is no NULL to disambiguate.
+	if _, err := db.Exec(
+		`UPDATE provider_thread_cost SET cost_usd_micros = NULL WHERE thread_id = 'thread-v66'`,
+	); err == nil {
+		t.Error("provider_thread_cost accepted a NULL cost_usd_micros")
+	}
+	if _, err := db.Exec(`INSERT INTO provider_thread_cost
+		(thread_id, provider, cost_source, cost_usd_micros, updated_at)
+		VALUES ('thread-nobody', 'codex', 'provider-estimate', 1, 1)`); err == nil {
+		t.Error("provider_thread_cost accepted a row for a thread that does not exist")
+	}
+
+	// Cascades with the thread, unlike usage_ledger: the row is only ever read
+	// to render one thread's own cost, so it has nothing to say once that
+	// thread is gone.
+	mustExec(t, db, `DELETE FROM threads WHERE id = 'thread-v66'`)
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_thread_cost`).Scan(&remaining); err != nil {
+		t.Fatalf("count provider_thread_cost: %v", err)
+	}
+	if remaining != 0 {
+		t.Error("provider_thread_cost row survived its thread's deletion")
+	}
+}
+
+// TestMigrationV67AddsImportSourceIdentity pins the fingerprint a refresh
+// compares before resuming a byte offset. Both columns default to the empty
+// string, which means "recorded before this migration" — NOT "no header" — so a blank stored
+// value must stay comparable-as-unknown rather than reading as a mismatch that
+// would report every pre-migration thread as diverged on its next refresh.
+func TestMigrationV67AddsImportSourceIdentity(t *testing.T) {
+	db := migrateThrough(t, 66)
+	seedV66Thread(t, db, "v67")
+	mustExec(t, db, `INSERT INTO thread_import_state
+		(thread_id, provider, source_path, source_session_id, leaf_uuid, last_source_uuid,
+		 last_source_offset, last_turn_index, last_item_index, imported_at, refreshed_at)
+		VALUES ('thread-v67', 'codex', '/home/u/.codex/sessions/s.jsonl', 'sess-v67', '',
+		 'line:4096', 4096, 3, 7, 40, 41)`)
+
+	if _, err := db.Exec(
+		`UPDATE thread_import_state SET source_meta_hash = 'x' WHERE thread_id = 'thread-v67'`,
+	); err == nil {
+		t.Fatal("thread_import_state already had source_meta_hash before v67")
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 67)); err != nil {
+		t.Fatalf("apply migration v67: %v", err)
+	}
+
+	var hash, mode string
+	if err := db.QueryRow(`SELECT source_meta_hash, source_history_mode
+		FROM thread_import_state WHERE thread_id = 'thread-v67'`).Scan(&hash, &mode); err != nil {
+		t.Fatalf("read import source identity: %v", err)
+	}
+	if hash != "" || mode != "" {
+		t.Fatalf("backfilled identity = (%q, %q), want two empty strings", hash, mode)
+	}
+
+	// ADD COLUMN, not a rebuild: the cursor the refresh resumes from is
+	// untouched, which is the whole point of not rewriting the table.
+	var offset, turnIndex, itemIndex int64
+	var lastUUID string
+	if err := db.QueryRow(`SELECT last_source_uuid, last_source_offset, last_turn_index, last_item_index
+		FROM thread_import_state WHERE thread_id = 'thread-v67'`,
+	).Scan(&lastUUID, &offset, &turnIndex, &itemIndex); err != nil {
+		t.Fatalf("read preserved cursor: %v", err)
+	}
+	if lastUUID != "line:4096" || offset != 4096 || turnIndex != 3 || itemIndex != 7 {
+		t.Fatalf("cursor after v67 = (%q, %d, %d, %d)", lastUUID, offset, turnIndex, itemIndex)
+	}
+
+	const headerHash = "8b1a9953c4611296a827abf8c47804d7a1b1b0d0e0d2b1f6a1c5e0a4b3c2d1e0"
+	mustExec(t, db, `UPDATE thread_import_state
+		SET source_meta_hash = ?, source_history_mode = 'paginated' WHERE thread_id = 'thread-v67'`, headerHash)
+	if err := db.QueryRow(`SELECT source_meta_hash, source_history_mode
+		FROM thread_import_state WHERE thread_id = 'thread-v67'`).Scan(&hash, &mode); err != nil {
+		t.Fatalf("re-read import source identity: %v", err)
+	}
+	if hash != headerHash || mode != "paginated" {
+		t.Fatalf("identity round-trip = (%q, %q)", hash, mode)
+	}
+	// No CHECK on either: the mode vocabulary belongs to the Codex rollout
+	// reader, and a hash is opaque. NOT NULL is the constraint, so "not
+	// recorded" has one spelling.
+	for _, column := range []string{"source_meta_hash", "source_history_mode"} {
+		if _, err := db.Exec(
+			`UPDATE thread_import_state SET ` + column + ` = NULL WHERE thread_id = 'thread-v67'`,
+		); err == nil {
+			t.Errorf("thread_import_state accepted a NULL %s after v67", column)
+		}
+	}
+	// It still cascades with the thread.
+	mustExec(t, db, `DELETE FROM threads WHERE id = 'thread-v67'`)
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM thread_import_state`).Scan(&remaining); err != nil {
+		t.Fatalf("count thread_import_state: %v", err)
+	}
+	if remaining != 0 {
+		t.Error("thread_import_state row survived its thread's deletion after v67")
+	}
+}
+
+// TestMigrationV68DropsProviderThreadCostRowsAndKeysBySessionRef is the
+// DESTRUCTIVE one. v66's rows name no provider thread, so none of them can be
+// told which one they came from; backfilling from today's threads.session_ref
+// would assert exactly the identity the new column exists to VERIFY and
+// re-bless the stale rows the migration is here to neutralise. The rows are
+// therefore dropped, not converted — the table is cache content, one
+// `account/usage/read` away from being re-derived — and this test asserts they
+// are actually GONE rather than merely that the migration ran.
+func TestMigrationV68DropsProviderThreadCostRowsAndKeysBySessionRef(t *testing.T) {
+	db := migrateThrough(t, 67)
+	seedV66Thread(t, db, "v68")
+	mustExec(t, db, `INSERT INTO provider_thread_cost
+		(thread_id, provider, cost_source, cost_usd_micros, credits_micros, updated_at)
+		VALUES ('thread-v68', 'codex', 'provider-estimate', 999999, 5, 70)`)
+	var before int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_thread_cost`).Scan(&before); err != nil {
+		t.Fatalf("count pre-migration cost rows: %v", err)
+	}
+	if before != 1 {
+		t.Fatalf("pre-migration provider_thread_cost rows = %d, want 1", before)
+	}
+	// The v66 table has no session_ref at all, which is the defect: correctness
+	// depended on a DELETE that a crash or a locked database could skip.
+	var sessionRefColumns int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('provider_thread_cost') WHERE name = 'session_ref'`,
+	).Scan(&sessionRefColumns); err != nil {
+		t.Fatalf("probe provider_thread_cost columns: %v", err)
+	}
+	if sessionRefColumns != 0 {
+		t.Fatal("provider_thread_cost already had session_ref before v68")
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 68)); err != nil {
+		t.Fatalf("apply migration v68: %v", err)
+	}
+
+	// GONE, not carried: the row that named no provider thread is not in the
+	// new table under any key.
+	var after int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_thread_cost`).Scan(&after); err != nil {
+		t.Fatalf("count post-migration cost rows: %v", err)
+	}
+	if after != 0 {
+		t.Fatalf("v68 carried %d legacy cost row(s) forward; every one of them is a lifetime total nothing can verify", after)
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM provider_thread_cost WHERE thread_id = 'thread-v68'`,
+	).Scan(&after); err != nil {
+		t.Fatalf("probe legacy thread's cost row: %v", err)
+	}
+	if after != 0 {
+		t.Fatal("the legacy thread's stale cumulative total survived v68")
+	}
+	// The thread itself is untouched: this is a cache drop, not a data loss.
+	var title string
+	if err := db.QueryRow(`SELECT title FROM threads WHERE id = 'thread-v68'`).Scan(&title); err != nil {
+		t.Fatalf("read thread after v68: %v", err)
+	}
+	if title != "Pre-migration row" {
+		t.Fatalf("thread title after v68 = %q", title)
+	}
+
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('provider_thread_cost') WHERE name = 'session_ref'`,
+	).Scan(&sessionRefColumns); err != nil {
+		t.Fatalf("probe rebuilt provider_thread_cost columns: %v", err)
+	}
+	if sessionRefColumns != 1 {
+		t.Fatal("v68 did not add session_ref to provider_thread_cost")
+	}
+
+	// A row must NAME the provider thread it describes; the writer has no way
+	// to store one it cannot name.
+	if _, err := db.Exec(`INSERT INTO provider_thread_cost
+		(thread_id, provider, cost_source, cost_usd_micros, updated_at)
+		VALUES ('thread-v68', 'codex', 'provider-estimate', 1, 1)`); err == nil {
+		t.Error("provider_thread_cost accepted a row with no session_ref after v68")
+	}
+	// A blank identity would match every rolled-back thread's cleared session
+	// ref, which is the one comparison that must never succeed.
+	if _, err := db.Exec(`INSERT INTO provider_thread_cost
+		(thread_id, session_ref, provider, cost_source, cost_usd_micros, updated_at)
+		VALUES ('thread-v68', '', 'codex', 'provider-estimate', 1, 1)`); err == nil {
+		t.Error("provider_thread_cost accepted a blank session_ref after v68")
+	}
+
+	mustExec(t, db, `INSERT INTO provider_thread_cost
+		(thread_id, session_ref, provider, cost_source, cost_usd_micros, updated_at)
+		VALUES ('thread-v68', 'provider-thread-1', 'codex', 'provider-estimate', 4242, 71)`)
+	// The overlay join compares session_ref, so a row describing a provider
+	// thread the AO thread has since left answers "not found" by construction
+	// rather than by an in-memory mark that dies with the process.
+	var matched int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_thread_cost c
+		JOIN threads t ON t.id = c.thread_id AND t.session_ref = c.session_ref
+		WHERE c.thread_id = 'thread-v68'`).Scan(&matched); err != nil {
+		t.Fatalf("join overlay on session ref: %v", err)
+	}
+	if matched != 1 {
+		t.Fatalf("overlay join matched %d rows, want 1", matched)
+	}
+	mustExec(t, db, `UPDATE threads SET session_ref = 'provider-thread-2' WHERE id = 'thread-v68'`)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_thread_cost c
+		JOIN threads t ON t.id = c.thread_id AND t.session_ref = c.session_ref
+		WHERE c.thread_id = 'thread-v68'`).Scan(&matched); err != nil {
+		t.Fatalf("re-join overlay on session ref: %v", err)
+	}
+	if matched != 0 {
+		t.Error("a cost row describing an abandoned provider thread still matched its AO thread")
+	}
+
+	// Everything v66 constrained is still constrained.
+	for _, bad := range []string{"", "wire", "PROVIDER-ESTIMATE"} {
+		if _, err := db.Exec(
+			`UPDATE provider_thread_cost SET cost_source = ? WHERE thread_id = 'thread-v68'`, bad,
+		); err == nil {
+			t.Errorf("provider_thread_cost accepted cost_source %q after v68", bad)
+		}
+	}
+	mustExec(t, db, `DELETE FROM threads WHERE id = 'thread-v68'`)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM provider_thread_cost`).Scan(&after); err != nil {
+		t.Fatalf("count provider_thread_cost after thread delete: %v", err)
+	}
+	if after != 0 {
+		t.Error("provider_thread_cost row survived its thread's deletion after v68")
+	}
+}
+
+// TestMigrationV69AddsPendingForkResumeAt pins the column that stores a lazy
+// Claude fork's transcript cut. Empty means "no pin" — a lazy fork of an idle
+// source cuts at the CLI's own tail, which is correct there — so the column is
+// NOT NULL with an empty default rather than nullable.
+func TestMigrationV69AddsPendingForkResumeAt(t *testing.T) {
+	db := migrateThrough(t, 68)
+	mustExec(t, db, `
+		INSERT INTO projects (id, path, name, color, sort_position, created_at, updated_at, archived)
+		VALUES ('project-v69', '/tmp/v69', 'V69', 'green', 4, 10, 11, 0)
+	`)
+	mustExec(t, db, `
+		INSERT INTO threads (
+			id, project_id, title, provider, model, workspace_path, worktree_path,
+			branch, pr_ref, session_ref, pending_fork_session_ref, mode, reasoning_effort,
+			fast_mode, context_window, auto_compact_standard_percent,
+			auto_compact_extended_percent, runtime_mode, last_token_usage, last_read_at,
+			pinned_at, created_at, updated_at, archived
+		) VALUES (
+			'thread-v69', 'project-v69', 'Pre-migration row', 'claude', 'claude-opus-4-8', '/tmp/v69', NULL,
+			NULL, '', '', 'source-session-v69', 'chat', 'high',
+			0, 1000000, 0, 0, 'full-access', '', 31,
+			NULL, 33, 34, 0
+		)
+	`)
+	if _, err := db.Exec(
+		`UPDATE threads SET pending_fork_resume_at = 'uuid' WHERE id = 'thread-v69'`,
+	); err == nil {
+		t.Fatal("threads already had pending_fork_resume_at before v68")
+	}
+
+	if err := applyMigration(db, migrationByVersion(t, 69)); err != nil {
+		t.Fatalf("apply migration v69: %v", err)
+	}
+
+	// A lazy fork that predates the column has no pin, and neither does any
+	// non-fork thread — one spelling for both.
+	var pin string
+	if err := db.QueryRow(
+		`SELECT pending_fork_resume_at FROM threads WHERE id = 'thread-v69'`,
+	).Scan(&pin); err != nil {
+		t.Fatalf("read pending_fork_resume_at: %v", err)
+	}
+	if pin != "" {
+		t.Fatalf("backfilled pending_fork_resume_at = %q, want empty", pin)
+	}
+	// The pending fork session ref it pairs with is untouched by the ADD COLUMN.
+	var sourceRef string
+	if err := db.QueryRow(
+		`SELECT pending_fork_session_ref FROM threads WHERE id = 'thread-v69'`,
+	).Scan(&sourceRef); err != nil {
+		t.Fatalf("read pending_fork_session_ref: %v", err)
+	}
+	if sourceRef != "source-session-v69" {
+		t.Fatalf("pending_fork_session_ref after v69 = %q", sourceRef)
+	}
+
+	const leaf = "6f0a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b"
+	mustExec(t, db, `UPDATE threads SET pending_fork_resume_at = ? WHERE id = 'thread-v69'`, leaf)
+	if err := db.QueryRow(
+		`SELECT pending_fork_resume_at FROM threads WHERE id = 'thread-v69'`,
+	).Scan(&pin); err != nil {
+		t.Fatalf("re-read pending_fork_resume_at: %v", err)
+	}
+	if pin != leaf {
+		t.Fatalf("pending_fork_resume_at round-trip = %q, want %q", pin, leaf)
+	}
+	// No CHECK — the value is an opaque provider uuid the CLI's own resume
+	// filters repair — but NOT NULL, so "no pin" has one spelling.
+	if _, err := db.Exec(
+		`UPDATE threads SET pending_fork_resume_at = NULL WHERE id = 'thread-v69'`,
+	); err == nil {
+		t.Error("threads accepted a NULL pending_fork_resume_at after v69")
+	}
+
+	// ADD COLUMN, not a rebuild: the threads indexes are untouched.
+	for _, index := range []string{
+		"idx_threads_project", "idx_threads_updated", "idx_threads_parent",
+		"idx_threads_forked_from", "idx_threads_pinned_at",
+	} {
+		var found string
+		if err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
+		).Scan(&found); err != nil {
+			t.Fatalf("index %s missing after v69: %v", index, err)
+		}
+	}
+}
