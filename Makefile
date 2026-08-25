@@ -105,12 +105,13 @@ go-test:
 # multi-session shutdown, event-emit fan-out) get the race detector
 # too — that's the surface most likely to hide a real-world race. The
 # timeout is per test binary, and every listed package runs in ONE go
-# test invocation, so the root suite competes with triage (~330s under
-# -race) for CPU: the root package alone measures ~590s under -race on
-# an idle WSL host (2026-07, post-harness commit), which is why 600s
-# started flaking. 1800s keeps deadlock protection while absorbing
-# in-invocation parallelism and loaded hosts. Tighten only if you've
-# measured headroom.
+# test invocation, so the big suites compete for CPU. Since the
+# storetest template-DB conversion (29ec9041 triage, ed21d0fc root —
+# one migration replay per package instead of one per test) the two
+# heavy legs measure ~108s (triage) and ~270s (root) under -race on an
+# idle WSL host (2026-08-25); before it, root alone hit 1800s. The
+# timeout stays 1800s for deadlock protection on loaded hosts —
+# tighten only if you've measured headroom.
 test-race:
 	go test -race -timeout 1800s ./internal/transport/... ./internal/triage/... ./internal/provider/... ./internal/wsllauncher/... ./internal/clientmode/... ./internal/editor/... .
 
