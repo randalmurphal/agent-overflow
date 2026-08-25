@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/engine"
 )
 
@@ -43,7 +44,7 @@ func (h *wakeHarness) boundRun(t *testing.T, id, threadID string, state engine.S
 }
 
 func TestWorkflowWakeSuppressesTheSameAskAndSaysSo(t *testing.T) {
-	logs := captureLogOutput(t)
+	logs := testutil.CaptureLogOutput(t)
 
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "origin-coalesce")

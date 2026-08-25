@@ -1,0 +1,169 @@
+package workflowhost
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/safecopy"
+	"agent-overflow/internal/workflow/def"
+	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workspacepath"
+)
+
+// settleDone runs the post-success work every done outcome owes the run,
+// whatever produced it. Both execution paths call it, so a tool phase and a tool
+// join get the artifact capture and the worktree retirement an agent one gets.
+func (r *Runner) settleDone(done workflowCompletion, envelope json.RawMessage) {
+	// Artifacts are declared against phase outputs, so only the envelope that
+	// *is* the phase's can carry one. A work unit's outputs reach the workflow
+	// through its join, which captures them when it completes.
+	if done.producesPhaseEnvelope() {
+		r.captureArtifacts(done, envelope)
+	}
+	if done.unitKind == engine.UnitJoin {
+		r.retireUnitWorktrees(done)
+	}
+}
+
+func (r *Runner) captureArtifacts(done workflowCompletion, envelope json.RawMessage) {
+	var control struct {
+		Outputs map[string]any `json:"outputs"`
+	}
+	if err := json.Unmarshal(envelope, &control); err != nil {
+		log.Printf("workflow artifact capture %s: decode validated envelope: %v", done.key.ItemID, err)
+		r.host.Emit(eventchan.WorkflowError, map[string]any{
+			"itemId": done.key.ItemID,
+			"error":  "workflow artifact capture could not decode the validated envelope; inspect local diagnostics",
+		})
+		return
+	}
+	vars := make(map[string]any, len(control.Outputs))
+	for name, value := range control.Outputs {
+		vars[done.key.PhaseID+"."+name] = value
+	}
+	names := make([]string, 0, len(done.workflow.Outputs))
+	for name := range done.workflow.Outputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		output := done.workflow.Outputs[name]
+		if !output.Artifact || !strings.HasPrefix(output.From, done.key.PhaseID+".") {
+			continue
+		}
+		value, ok := def.LookupVariable(vars, output.From)
+		path, stringOK := value.(string)
+		if !ok || !stringOK {
+			r.emitArtifactError(done.key.ItemID, name, fmt.Errorf("source %q did not produce a string path", output.From))
+			continue
+		}
+		if err := CaptureArtifact(r.dataRoot, done.key.ItemID, name, done.workspace, path); err != nil {
+			r.emitArtifactError(done.key.ItemID, name, err)
+		}
+	}
+}
+
+func (r *Runner) emitArtifactError(itemID, output string, err error) {
+	log.Printf("workflow artifact capture %s output %q: %v", itemID, output, err)
+	r.host.Emit(eventchan.WorkflowError, map[string]any{
+		"itemId": itemID,
+		"output": output,
+		"error":  fmt.Sprintf("workflow artifact %q capture failed; inspect local diagnostics", output),
+	})
+}
+
+// CaptureArtifact copies one declared file deliverable out of a phase
+// workspace into the run's app-managed artifact directory, refusing any source
+// that escapes the workspace and retiring earlier versions of the same output.
+func CaptureArtifact(dataRoot, itemID, outputName, workspace, relative string) (resultErr error) {
+	if filepath.Base(itemID) != itemID || itemID == "." || itemID == ".." {
+		return fmt.Errorf("invalid work item id")
+	}
+	if filepath.Base(outputName) != outputName || outputName == "." || outputName == ".." {
+		return fmt.Errorf("invalid workflow output name")
+	}
+	relative, err := workspacepath.NormalizeRelative(relative)
+	if err != nil {
+		return fmt.Errorf("artifact path: %w", err)
+	}
+	source := filepath.Join(workspace, relative)
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return fmt.Errorf("resolve phase workspace: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return fmt.Errorf("resolve artifact source: %w", err)
+	}
+	contained, err := filepath.Rel(resolvedWorkspace, resolved)
+	if err != nil || contained == ".." || strings.HasPrefix(contained, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("artifact source escapes the phase workspace")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("inspect artifact source: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("artifact source is not a regular file")
+	}
+	directory := ArtifactDir(dataRoot, itemID)
+	destination := filepath.Join(directory, outputName+filepath.Ext(resolved))
+	destinationRelative, err := filepath.Rel(dataRoot, destination)
+	if err != nil {
+		return fmt.Errorf("resolve artifact destination: %w", err)
+	}
+	if err := safecopy.File(workspace, relative, dataRoot, destinationRelative, appdirs.SensitiveFilePerm); err != nil {
+		return fmt.Errorf("copy artifact: %w", err)
+	}
+	artifactRoot, err := OpenArtifactRoot(dataRoot, itemID)
+	if err != nil {
+		return fmt.Errorf("clean prior artifact versions: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, artifactRoot.Close()) }()
+	entries, err := fs.ReadDir(artifactRoot.FS(), ".")
+	if err != nil {
+		return fmt.Errorf("clean prior artifact versions: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == filepath.Base(destination) || strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())) != outputName {
+			continue
+		}
+		if err := artifactRoot.Remove(entry.Name()); err != nil {
+			return fmt.Errorf("remove prior artifact %q: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+// OpenArtifactRoot opens one run's artifact directory as an `os.Root`, so a
+// listing or a cleanup traverses it without following a symlink out of the
+// managed tree.
+func OpenArtifactRoot(dataRoot, itemID string) (*os.Root, error) {
+	managedRoot, err := os.OpenRoot(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	artifactRoot, openErr := managedRoot.OpenRoot(filepath.Join("workflow-runs", itemID, "artifacts"))
+	closeErr := managedRoot.Close()
+	if openErr != nil || closeErr != nil {
+		if artifactRoot != nil {
+			_ = artifactRoot.Close()
+		}
+		return nil, errors.Join(openErr, closeErr)
+	}
+	return artifactRoot, nil
+}
+
+// ArtifactDir is where one run's captured artifacts live.
+func ArtifactDir(dataRoot, itemID string) string {
+	return filepath.Join(dataRoot, "workflow-runs", itemID, "artifacts")
+}

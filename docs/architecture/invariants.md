@@ -1158,8 +1158,8 @@ trigger; `engine/unit_actions_test.go` for the per-unit half.
 ## 31. A parked workflow attempt keeps its provider session
 
 **Rule.** Pausing or interrupting a workflow attempt tears the attempt
-down without killing the provider process. `workflowAppRunner.Stop`
-(`app_workflow_runner.go`) calls `InterruptTurn(threadID)` for an agent
+down without killing the provider process. `workflowhost.Runner.Stop`
+(`internal/workflowhost/runner.go`) interrupts the turn for an agent
 attempt — never `StopSession`, never `CleanupThread` — so the CLI
 process, its session file, and the thread's history survive the park.
 Resume carries the parked attempt's thread through `ContinueThread`

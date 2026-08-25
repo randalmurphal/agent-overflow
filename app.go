@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/keybindings"
+	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
@@ -40,6 +40,7 @@ import (
 	"agent-overflow/internal/uitrace"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/scheduler"
+	"agent-overflow/internal/workflowhost"
 	"agent-overflow/internal/workspacefiles"
 )
 
@@ -58,11 +59,6 @@ func (a *App) DesignServer() http.Handler {
 // started. Callers should surface this as a terminal state — no retry will
 // succeed because the app is tearing down.
 var ErrShuttingDown = errors.New("app: shutting down")
-
-const (
-	appPrivateDirPerm    os.FileMode = 0o700
-	appSensitiveFilePerm os.FileMode = 0o600
-)
 
 // App is the primary Wails-bound struct, registered as a v3 service
 // in desktop mode and driven directly via Start() in the headless WSL
@@ -94,7 +90,7 @@ type App struct {
 	settings                   *settings.Service
 	triage                     *triage.Router
 	workflowEngine             *engine.Engine
-	workflowRunner             *workflowAppRunner
+	workflowRunner             *workflowhost.Runner
 	workflowScheduler          *scheduler.Scheduler
 	workflowDefinitionsWatcher *workflowDefinitionsWatcher
 	// themeWatcher watches <configDir>/themes so an agent (or a text
@@ -311,12 +307,12 @@ type App struct {
 	// threadActionLocks serializes per-thread workflows that must observe a
 	// stable thread timeline or workspace while they run.
 	threadActionLocksOnce sync.Once
-	threadActionLocks     *keyedLockRegistry
+	threadActionLocks     *keyedlock.Registry
 	// sessionConfigApplyLocks serializes the live-apply section of the
 	// per-thread config reconciler (app_session_config.go); see
 	// App.configApplyLocks for the lock-order rules.
 	sessionConfigApplyLocksOnce sync.Once
-	sessionConfigApplyLocks     *keyedLockRegistry
+	sessionConfigApplyLocks     *keyedlock.Registry
 	// flushDispatch is the queued-message flush concern
 	// (`app_flush_queue*.go`), including both of its mutexes.
 	flushDispatch appFlushDispatchState
@@ -743,8 +739,8 @@ func NewApp() *App {
 	app := &App{
 		sessions:                       make(map[string]session),
 		aoTokens:                       make(map[string]transport.CallerScope),
-		threadActionLocks:              newKeyedLocks(),
-		sessionConfigApplyLocks:        newKeyedLocks(),
+		threadActionLocks:              keyedlock.New(),
+		sessionConfigApplyLocks:        keyedlock.New(),
 		startingSessions:               make(map[string]*sessionStart),
 		reconnectingThreads:            make(map[string]bool),
 		autoReconnectAttempted:         make(map[string]bool),

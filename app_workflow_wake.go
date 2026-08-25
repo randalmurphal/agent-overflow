@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/wake"
+	"agent-overflow/internal/workflowhost"
 )
 
 // Wake resolution and delivery (spec §5, decision D17).
@@ -344,7 +345,7 @@ func (a *App) wakeReferences(
 		return append(references, failed...), nil
 	}
 	if phase, ok := currentWorkflowPhaseTimelineAttempt(timeline); ok {
-		if narrative, present := workflowNarrativeReference(
+		if narrative, present := workflowhost.NarrativeReference(
 			a.workflowDataRoot(), item.ID, phase.PhaseID, phase.Attempt,
 		); present {
 			references = append(references, wake.Reference{Label: "narrative", Value: narrative})
@@ -412,7 +413,7 @@ func (a *App) workflowRestingNarrative(itemID string) (string, bool) {
 	if err != nil || phase.PhaseID == "" {
 		return "", false
 	}
-	return workflowNarrativeReference(a.workflowDataRoot(), itemID, phase.PhaseID, phase.Attempt)
+	return workflowhost.NarrativeReference(a.workflowDataRoot(), itemID, phase.PhaseID, phase.Attempt)
 }
 
 // workflowRestingPhase returns the attempt a run came to rest on plus its

@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 // workflow turn — a phase attempt, a fan-out unit, or a join alike. It decides
 // when a turn started, when a failure is transient enough to retry, and when a
 // final message is the envelope the attempt was waiting for.
-func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent) {
+func (r *Runner) observe(runKey string, event provider.ProviderEvent) {
 	r.mu.Lock()
 	attempt := r.runs[runKey]
 	if attempt == nil {
@@ -47,7 +47,7 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	}
 	if attempt.timerMode == workflowTimerBackoff {
 		// A session that dies INSIDE the backoff window is latched rather than
-		// dropped. Without the latch `sessionDisconnected` skips this attempt, and
+		// dropped. Without the latch `SessionDisconnected` skips this attempt, and
 		// the resend the backoff is holding lands in a session that has already
 		// been reaped — a transient failure converted into an `agent-error` park.
 		// Folding it in costs the next rung, which is the honest account: two
@@ -251,14 +251,14 @@ func (r *workflowAppRunner) observe(runKey string, event provider.ProviderEvent)
 	}()
 }
 
-// sessionDisconnected advances subprocess-death retry only after the dead
+// SessionDisconnected advances subprocess-death retry only after the dead
 // session has been removed from App's registry. That ordering prevents a
 // millisecond harness backoff from sending into the session being reaped.
 //
 // The latch this looks for is claimed inside `foldSessionDeathIntoLadder`
 // under the runner lock, so one death advances the ladder exactly once however
 // many times it is reported.
-func (r *workflowAppRunner) sessionDisconnected(threadID string) {
+func (r *Runner) SessionDisconnected(threadID string) {
 	var deadKey string
 	var dead *workflowAttempt
 	r.mu.Lock()

@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -59,8 +59,8 @@ func claudeRateLimitedEvent(parent string) provider.ProviderEvent {
 // afterwards.
 type observeHarness struct {
 	t        *testing.T
-	app      *App
-	runner   *workflowAppRunner
+	host     *fakeHost
+	runner   *Runner
 	attempt  *workflowAttempt
 	runKey   string
 	outcomes chan engine.Outcome
@@ -88,26 +88,25 @@ type observeState struct {
 
 func newObserveHarness(t *testing.T, providerName string) *observeHarness {
 	t.Helper()
-	// A real store, because a typed usage-limit park is one of the outcomes under test here:
-	// with a bare App the park panics on the schedule write, and a panic reports
-	// as a crashed binary rather than as the assertion that caught the
-	// regression. Nothing in this file wants the schedule to succeed.
-	app := newTestAppWithStore(t)
 	harness := &observeHarness{
-		t: t, app: app, outcomes: make(chan engine.Outcome, 4), sends: make(chan string, 4),
+		t: t, outcomes: make(chan engine.Outcome, 4), sends: make(chan string, 4),
 		now: time.Unix(1_700_000_000, 0),
 	}
-	app.sendMessageFn = func(_, content string, _ []string) error {
-		harness.sends <- content
-		return nil
+	harness.host = &fakeHost{
+		send: func(
+			_ context.Context, _, content string, _ json.RawMessage, _ func(DispatchIdentity),
+		) error {
+			harness.sends <- content
+			return nil
+		},
 	}
-	app.workflowAutoResume.nowFn = func() time.Time { return harness.now }
-	app.workflowAutoResume.newTimer = func(delay time.Duration, fire func()) workflowTimer {
-		return &armedWorkflowTimer{callback: fire, delay: delay}
-	}
-	harness.runner = newWorkflowAppRunner(app, t.TempDir(), nil)
+	// A real store, because a typed usage-limit park is one of the outcomes under
+	// test here: with a nil store the park panics on the scope write, and a panic
+	// reports as a crashed binary rather than as the assertion that caught the
+	// regression. Nothing in this file wants the write to succeed.
+	harness.runner = newTestRunner(t, harness.host, newTestStore(t), nil)
 	harness.runner.now = func() time.Time { return harness.now }
-	harness.runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+	harness.runner.newTimer = func(delay time.Duration, callback func()) Timer {
 		return &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
 	}
 	key := engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 1}
@@ -554,7 +553,7 @@ func TestWorkflowSessionDeathDuringBackoffStillReachesTheLadder(t *testing.T) {
 		t.Fatalf("the pending backoff was disturbed by the session death: %+v", latched)
 	}
 
-	harness.runner.sessionDisconnected("thread")
+	harness.runner.SessionDisconnected("thread")
 
 	harness.refuteOutcome("the ladder ended on a death it should have absorbed")
 	next := harness.state()
@@ -741,7 +740,9 @@ func TestWorkflowOpeningSendWaitsForItsOwnTurnBeforeConsumingACompletion(t *test
 // wait was meant to protect.
 func TestWorkflowSendDoesNotWaitForATurnThatAlreadyStarted(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
-	harness.app.sendMessageFn = func(_, content string, _ []string) error {
+	harness.host.send = func(
+		_ context.Context, _, content string, _ json.RawMessage, _ func(DispatchIdentity),
+	) error {
 		harness.sends <- content
 		harness.observe(provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: "turn-1"})
 		return nil
@@ -806,7 +807,7 @@ func TestWorkflowSessionErrorClearsTheWaitASendOpened(t *testing.T) {
 		t.Fatalf("state after a session error during the wait = %+v", latched)
 	}
 
-	harness.runner.sessionDisconnected("thread")
+	harness.runner.SessionDisconnected("thread")
 	next := harness.state()
 	if next.mode != workflowTimerBackoff || next.retryCount != 1 {
 		t.Fatalf("state after the disconnect = %+v, want the ladder to take it", next)
@@ -827,7 +828,7 @@ func TestWorkflowSupersededResendIsDroppedWhenTheLadderAdvances(t *testing.T) {
 	harness.attempt.sendMu.Lock()
 	harness.fire(0)
 	harness.observe(provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
-	harness.runner.sessionDisconnected("thread")
+	harness.runner.SessionDisconnected("thread")
 
 	advanced := harness.state()
 	if advanced.mode != workflowTimerBackoff || advanced.retryCount != 2 || advanced.pendingSessionDeath {
@@ -875,7 +876,7 @@ func TestWorkflowCodexEnvelopeFeedbackSendArmsTheWatchdog(t *testing.T) {
 }
 
 // A latched session death outranks the resend the backoff is holding:
-// `sessionDisconnected` owns the next rung, and firing the send would land it in
+// `SessionDisconnected` owns the next rung, and firing the send would land it in
 // a process being reaped.
 func TestWorkflowLatchedSessionDeathSuppressesTheHeldResend(t *testing.T) {
 	harness := newObserveHarness(t, string(provider.Codex))
@@ -893,7 +894,7 @@ func TestWorkflowLatchedSessionDeathSuppressesTheHeldResend(t *testing.T) {
 		t.Fatalf("the suppressed resend spent a rung: %+v", held)
 	}
 
-	harness.runner.sessionDisconnected("thread")
+	harness.runner.SessionDisconnected("thread")
 
 	harness.refuteOutcome("the ladder ended on a death it should have absorbed")
 	next := harness.state()

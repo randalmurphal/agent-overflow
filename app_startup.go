@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
@@ -362,10 +363,10 @@ func repairStartupOwnedPaths(dbDir string) error {
 }
 
 func ensureAppPrivateDir(path string) error {
-	if err := os.MkdirAll(path, appPrivateDirPerm); err != nil {
+	if err := os.MkdirAll(path, appdirs.PrivateDirPerm); err != nil {
 		return err
 	}
-	return os.Chmod(path, appPrivateDirPerm)
+	return os.Chmod(path, appdirs.PrivateDirPerm)
 }
 
 func repairAppOwnedTreeIfExists(root string) error {
@@ -387,14 +388,14 @@ func repairAppOwnedTreeIfExists(root string) error {
 			return nil
 		}
 		if entry.IsDir() {
-			return chmodIfModeDiffers(path, appPrivateDirPerm)
+			return chmodIfModeDiffers(path, appdirs.PrivateDirPerm)
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		if info.Mode().IsRegular() {
-			return chmodIfModeDiffers(path, appSensitiveFilePerm)
+			return chmodIfModeDiffers(path, appdirs.SensitiveFilePerm)
 		}
 		return nil
 	})
@@ -413,7 +414,7 @@ func prepareAppSensitiveFile(path string) error {
 			return fmt.Errorf("refusing to use non-regular sensitive file")
 		}
 	}
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, appSensitiveFilePerm)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, appdirs.SensitiveFilePerm)
 	if err != nil {
 		return err
 	}
@@ -443,7 +444,7 @@ func chmodAppSensitiveFileIfExists(path string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil
 	}
-	return chmodIfModeDiffers(path, appSensitiveFilePerm)
+	return chmodIfModeDiffers(path, appdirs.SensitiveFilePerm)
 }
 
 func chmodIfModeDiffers(path string, want os.FileMode) error {

@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/workflow/def"
@@ -76,12 +77,12 @@ type workflowToolAttempt struct {
 	lastOutput atomic.Int64
 
 	// timer and stop are owned by the runner mutex.
-	timer workflowTimer
+	timer Timer
 	stop  workflowToolStop
 }
 
 // startToolPhase resolves a phase's profile-bound command and runs it.
-func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
+func (r *Runner) startToolPhase(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
 	label := fmt.Sprintf("phase %q", request.Phase.ID)
 	r.markStartStep(request.Key, workflowStartStepReliability)
 	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
@@ -128,7 +129,7 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	return r.startToolRun(ctx, workflowToolRun{
 		workflowCompletion: workflowCompletion{
 			key: request.Key, workflow: request.Workflow, narrativePath: narrativePath,
-			workspace: prepared.path, projectPath: prepared.project.Path,
+			workspace: prepared.Path, projectPath: prepared.Project.Path,
 		},
 		label: label, contract: def.PhaseEnvelope(request.Phase),
 		binding: binding, argv: argv, envelopePath: envelopePath,
@@ -140,7 +141,7 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 // running; the reaping goroutine reports the outcome. Phase attempts and tool
 // fan-out units share it, so process supervision — the watchdog, the kill path,
 // the narrative on a failed start — is written exactly once.
-func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRun, complete func(engine.Outcome)) error {
+func (r *Runner) startToolRun(ctx context.Context, run workflowToolRun, complete func(engine.Outcome)) error {
 	r.markStartStep(run.key, workflowStartStepToolSpawn)
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
@@ -149,7 +150,7 @@ func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRu
 	// The process outlives Start, so it cannot hang off the engine's startup
 	// context — that one is cancelled as soon as Start returns. Application
 	// shutdown still tears the process down through the life context.
-	processCtx, cancel := context.WithCancel(r.host.lifeCtx())
+	processCtx, cancel := context.WithCancel(r.host.LifeCtx())
 	attempt := &workflowToolAttempt{
 		workflowToolRun: run,
 		output:          procutil.NewTailBuffer(workflowToolOutputTailBytes),
@@ -215,7 +216,7 @@ func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRu
 // awaitToolPhase reaps the process and is the single place a tool attempt
 // reports an outcome. It always writes the attempt narrative, including when
 // teardown owns the transition, so a killed command still explains itself.
-func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolAttempt, command *exec.Cmd) {
+func (r *Runner) awaitToolPhase(runKey string, attempt *workflowToolAttempt, command *exec.Cmd) {
 	waitErr := command.Wait()
 	attempt.cancel()
 	stop := r.detachToolAttempt(runKey, attempt)
@@ -284,7 +285,7 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 	// agent does.
 	var notes []memory.Draft
 	notes, payload = def.SplitEnvelopeMemory(payload)
-	r.host.recordEnvelopeMemory(attempt.key, notes)
+	r.host.RecordEnvelopeMemory(attempt.key, notes)
 	r.writeToolNarrative(attempt, report)
 	outcome, err := workflowrunner.OutcomeFromEnvelope(payload)
 	if err != nil {
@@ -301,7 +302,7 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 // readToolEnvelope returns the command's own envelope when it wrote one, and
 // otherwise synthesizes one from the exit status. Post-validation is identical
 // either way — the caller runs it.
-func (r *workflowAppRunner) readToolEnvelope(attempt *workflowToolAttempt, exitCode int) (json.RawMessage, workflowrunner.ToolEnvelopeSource, error) {
+func (r *Runner) readToolEnvelope(attempt *workflowToolAttempt, exitCode int) (json.RawMessage, workflowrunner.ToolEnvelopeSource, error) {
 	written, present, err := readWorkflowToolEnvelopeFile(attempt.envelopePath)
 	if err != nil {
 		return nil, workflowrunner.ToolEnvelopeAbsent, err
@@ -346,7 +347,7 @@ func readWorkflowToolEnvelopeFile(path string) (payload []byte, present bool, re
 // left by a prior process at the same path, so "the command wrote one" is an
 // unambiguous fact rather than an inherited one.
 func prepareWorkflowToolFiles(narrativePath, envelopePath string) error {
-	if err := os.MkdirAll(filepath.Dir(narrativePath), appPrivateDirPerm); err != nil {
+	if err := os.MkdirAll(filepath.Dir(narrativePath), appdirs.PrivateDirPerm); err != nil {
 		return fmt.Errorf("workflow runner: create tool run directory: %w", err)
 	}
 	if err := os.Remove(envelopePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -358,7 +359,7 @@ func prepareWorkflowToolFiles(narrativePath, envelopePath string) error {
 // writeToolNarrative persists the human-facing record of one tool attempt: the
 // command, how it ended, and its masked output tail. Failing to write it is
 // visible, never silent, but never changes the run's outcome.
-func (r *workflowAppRunner) writeToolNarrative(attempt *workflowToolAttempt, report workflowrunner.ToolReport) {
+func (r *Runner) writeToolNarrative(attempt *workflowToolAttempt, report workflowrunner.ToolReport) {
 	report.PhaseID = attempt.key.PhaseID
 	report.Attempt = attempt.key.Attempt
 	report.UnitID = attempt.key.UnitID
@@ -371,9 +372,9 @@ func (r *workflowAppRunner) writeToolNarrative(attempt *workflowToolAttempt, rep
 	}
 	report.Output = attempt.secrets.Mask(attempt.output.String())
 	report.Truncated = attempt.output.Truncated()
-	if err := os.WriteFile(attempt.narrativePath, []byte(workflowrunner.ToolNarrative(report)), appSensitiveFilePerm); err != nil {
+	if err := os.WriteFile(attempt.narrativePath, []byte(workflowrunner.ToolNarrative(report)), appdirs.SensitiveFilePerm); err != nil {
 		log.Printf("workflow runner: write tool narrative %s: %v", attempt.narrativePath, err)
-		r.host.emit(eventchan.WorkflowError, map[string]any{
+		r.host.Emit(eventchan.WorkflowError, map[string]any{
 			"itemId": attempt.key.ItemID,
 			"error":  "workflow tool narrative could not be written; inspect local diagnostics",
 		})
@@ -478,7 +479,7 @@ func (w *workflowToolWriter) Write(payload []byte) (int, error) {
 // toolWatchdogFired parks a phase whose process has emitted nothing for the
 // profile's inactivity window. A late-arriving chunk re-arms the timer for the
 // remainder instead of tripping it.
-func (r *workflowAppRunner) toolWatchdogFired(runKey string) {
+func (r *Runner) toolWatchdogFired(runKey string) {
 	r.mu.Lock()
 	attempt := r.tools[runKey]
 	if attempt == nil || attempt.timer == nil {
@@ -497,7 +498,7 @@ func (r *workflowAppRunner) toolWatchdogFired(runKey string) {
 
 // stopToolAttempt detaches an attempt and kills its process group. It is the
 // one kill path: teardown, the watchdog, and a cancelled startup all use it.
-func (r *workflowAppRunner) stopToolAttempt(runKey string, stop workflowToolStop) (*workflowToolAttempt, bool) {
+func (r *Runner) stopToolAttempt(runKey string, stop workflowToolStop) (*workflowToolAttempt, bool) {
 	r.mu.Lock()
 	attempt, ok := r.stopToolAttemptLocked(runKey, stop)
 	r.mu.Unlock()
@@ -513,7 +514,7 @@ func (r *workflowAppRunner) stopToolAttempt(runKey string, stop workflowToolStop
 // the right to report, so a reaper racing it cannot report the same work twice.
 // The process cancellation stays with the caller: it runs outside the runner
 // lock.
-func (r *workflowAppRunner) stopToolAttemptLocked(runKey string, stop workflowToolStop) (*workflowToolAttempt, bool) {
+func (r *Runner) stopToolAttemptLocked(runKey string, stop workflowToolStop) (*workflowToolAttempt, bool) {
 	attempt, ok := r.tools[runKey]
 	if !ok {
 		return nil, false
@@ -525,7 +526,7 @@ func (r *workflowAppRunner) stopToolAttemptLocked(runKey string, stop workflowTo
 }
 
 // detachToolAttempt removes a finished attempt and reports why it stopped.
-func (r *workflowAppRunner) detachToolAttempt(runKey string, attempt *workflowToolAttempt) workflowToolStop {
+func (r *Runner) detachToolAttempt(runKey string, attempt *workflowToolAttempt) workflowToolStop {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if current, ok := r.tools[runKey]; ok && current == attempt {
@@ -535,7 +536,7 @@ func (r *workflowAppRunner) detachToolAttempt(runKey string, attempt *workflowTo
 	return attempt.stop
 }
 
-func (r *workflowAppRunner) disarmToolTimerLocked(attempt *workflowToolAttempt) {
+func (r *Runner) disarmToolTimerLocked(attempt *workflowToolAttempt) {
 	if attempt.timer != nil {
 		attempt.timer.Stop()
 		attempt.timer = nil

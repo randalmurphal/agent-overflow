@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflowhost"
 )
 
 // Human recovery of one fan-out unit: a failed unit parks the attempt with its
@@ -78,8 +79,8 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 	if units["beta"].UnitAttempt != 2 {
 		t.Fatalf("retried unit try = %d, want 2", units["beta"].UnitAttempt)
 	}
-	if want := workflowUnitBranch(item.Branch, workflowUnitWorkspaceRef{
-		itemID: item.ID, phaseID: "port", attempt: 1, unitID: "beta", unitAttempt: 2,
+	if want := workflowhost.UnitBranch(item.Branch, workflowhost.UnitWorkspaceRef{
+		ItemID: item.ID, PhaseID: "port", Attempt: 1, UnitID: "beta", UnitAttempt: 2,
 	}); units["beta"].Branch != want {
 		t.Fatalf("retried unit branch = %q, want %q", units["beta"].Branch, want)
 	}
@@ -91,7 +92,7 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(phases) != 1 || phases[0].Attempt != 1 {
-		t.Fatalf("repairing a unit replaced the attempt: %+v", phases)
+		t.Fatalf("repairing a unit replaced the Attempt: %+v", phases)
 	}
 }
 
@@ -173,8 +174,8 @@ func TestWorkflowRetryFailedUnitsRepairsEveryFailedUnitAtOnce(t *testing.T) {
 		if units[id].UnitAttempt != 2 {
 			t.Fatalf("repaired unit %q try = %d, want 2", id, units[id].UnitAttempt)
 		}
-		if want := workflowUnitBranch(item.Branch, workflowUnitWorkspaceRef{
-			itemID: item.ID, phaseID: "port", attempt: 1, unitID: id, unitAttempt: 2,
+		if want := workflowhost.UnitBranch(item.Branch, workflowhost.UnitWorkspaceRef{
+			ItemID: item.ID, PhaseID: "port", Attempt: 1, UnitID: id, UnitAttempt: 2,
 		}); units[id].Branch != want {
 			t.Fatalf("repaired unit %q branch = %q, want %q", id, units[id].Branch, want)
 		}
@@ -184,7 +185,7 @@ func TestWorkflowRetryFailedUnitsRepairsEveryFailedUnitAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(phases) != 1 || phases[0].Attempt != 1 {
-		t.Fatalf("repairing every unit replaced the attempt: %+v", phases)
+		t.Fatalf("repairing every unit replaced the Attempt: %+v", phases)
 	}
 }
 
@@ -278,7 +279,7 @@ reliability:
 	// Its siblings were left alone: taking over one unit is not taking over the
 	// attempt, and the join still has not run.
 	if units["alpha"].Status != store.WorkItemUnitDone || units["merge"].Status != store.WorkItemUnitPending {
-		t.Fatalf("takeover disturbed the attempt: alpha=%q merge=%q", units["alpha"].Status, units["merge"].Status)
+		t.Fatalf("takeover disturbed the Attempt: alpha=%q merge=%q", units["alpha"].Status, units["merge"].Status)
 	}
 	if units["beta"].ThreadID != threadID {
 		t.Fatalf("unit thread changed on takeover: %q vs %q", units["beta"].ThreadID, threadID)

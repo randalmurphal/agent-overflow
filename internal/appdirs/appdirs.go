@@ -30,3 +30,15 @@ func Root() (string, error) {
 	}
 	return filepath.Join(base, DirName), nil
 }
+
+// The two modes every file and directory Agent Overflow creates under Root()
+// is given. They live here rather than on the App because the app-managed tree
+// has one owner and one privacy rule, and the packages that write into it
+// (`main`, the workflow runner) must not each pick their own.
+const (
+	// PrivateDirPerm is owner-only for a directory the app manages.
+	PrivateDirPerm os.FileMode = 0o700
+	// SensitiveFilePerm is owner-only for a file whose contents are the user's
+	// — provider prose, run narratives, captured artifacts, credentials.
+	SensitiveFilePerm os.FileMode = 0o600
+)

@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -39,7 +39,7 @@ type workflowTakeoverRestore struct {
 	attributed bool
 }
 
-func (r *workflowAppRunner) StopForTakeover(ctx context.Context, key engine.RunKey) (json.RawMessage, error) {
+func (r *Runner) StopForTakeover(ctx context.Context, key engine.RunKey) (json.RawMessage, error) {
 	runKey := workflowRunKey(key)
 	r.mu.Lock()
 	_, isTool := r.tools[runKey]
@@ -62,7 +62,7 @@ func (r *workflowAppRunner) StopForTakeover(ctx context.Context, key engine.RunK
 		return nil, fmt.Errorf(
 			"workflow runner: attempt %s has a send on thread %s that has not reached the wire in %s; "+
 				"the attempt is still running and the takeover was refused",
-			runKey, attempt.threadID, r.stopSendWait,
+			runKey, attempt.threadID, r.StopSendWait,
 		)
 	}
 	partial, err := r.interruptAndWaitForYield(ctx, runKey, attempt.threadID)
@@ -77,10 +77,10 @@ func (r *workflowAppRunner) StopForTakeover(ctx context.Context, key engine.RunK
 // `detachForTakeover` found it, for a takeover that was refused: observer,
 // registry, schema, work-item attribution, and the reliability deadline it was
 // already running against.
-func (r *workflowAppRunner) restoreTakeoverAttempt(
+func (r *Runner) restoreTakeoverAttempt(
 	runKey string, attempt *workflowAttempt, restore workflowTakeoverRestore,
 ) {
-	attempt.unsubscribe = r.host.subscribeThreadTurnObserver(attempt.threadID, func(_ string, event provider.ProviderEvent) {
+	attempt.unsubscribe = r.host.SubscribeThreadTurnObserver(attempt.threadID, func(_ string, event provider.ProviderEvent) {
 		r.observe(runKey, event)
 	})
 	r.mu.Lock()
@@ -93,7 +93,7 @@ func (r *workflowAppRunner) restoreTakeoverAttempt(
 	r.mu.Unlock()
 }
 
-func (r *workflowAppRunner) detachForTakeover(runKey string) (*workflowAttempt, workflowTakeoverRestore, bool) {
+func (r *Runner) detachForTakeover(runKey string) (*workflowAttempt, workflowTakeoverRestore, bool) {
 	r.mu.Lock()
 	restore := workflowTakeoverRestore{}
 	// The timer state and the attribution are captured before `detachLocked`
@@ -111,7 +111,7 @@ func (r *workflowAppRunner) detachForTakeover(runKey string) (*workflowAttempt, 
 	return attempt, restore, ok
 }
 
-func (r *workflowAppRunner) restoreTakeoverTimerLocked(runKey string, attempt *workflowAttempt, restore workflowTakeoverRestore) {
+func (r *Runner) restoreTakeoverTimerLocked(runKey string, attempt *workflowAttempt, restore workflowTakeoverRestore) {
 	if restore.mode == workflowTimerNone {
 		return
 	}
@@ -124,9 +124,9 @@ func (r *workflowAppRunner) restoreTakeoverTimerLocked(runKey string, attempt *w
 	attempt.timer = r.newTimer(delay, func() { r.timerFired(runKey) })
 }
 
-func (r *workflowAppRunner) interruptAndWaitForYield(ctx context.Context, runKey, threadID string) (json.RawMessage, error) {
+func (r *Runner) interruptAndWaitForYield(ctx context.Context, runKey, threadID string) (json.RawMessage, error) {
 	yielded := make(chan struct{}, 1)
-	unsubscribe := r.host.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
+	unsubscribe := r.host.SubscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
 		if event.Kind == provider.EventTurnComplete {
 			select {
 			case yielded <- struct{}{}:
@@ -143,7 +143,7 @@ func (r *workflowAppRunner) interruptAndWaitForYield(ctx context.Context, runKey
 	// abandons nothing but the wait (`LockCtx` admits no one after refusal),
 	// and the caller's error path restores the attempt and refuses the
 	// takeover.
-	lockCtx, cancel := context.WithTimeout(ctx, r.stopSendWait)
+	lockCtx, cancel := context.WithTimeout(ctx, r.StopSendWait)
 	defer cancel()
 	if err := r.interrupt(lockCtx, threadID); err != nil {
 		return nil, fmt.Errorf("workflow runner: interrupt %s: %w", runKey, err)
@@ -175,7 +175,7 @@ type workflowTakeoverElement struct {
 	contract    def.EnvelopeContract
 }
 
-// registerTakeover marks a thread as human-steered and, for Claude, restarts its
+// RegisterTakeover marks a thread as human-steered and, for Claude, restarts its
 // session without the phase schema so the human's turns are not held to it.
 //
 // ctx bounds that restart's start half — the join on somebody else's in-flight
@@ -183,7 +183,7 @@ type workflowTakeoverElement struct {
 // rather than invented here. The bound methods that also reach this have no
 // context of their own to give and pass `context.Background()`, which is what
 // they mean: a user action with no deadline behind it.
-func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, threadID string) error {
+func (r *Runner) RegisterTakeover(ctx context.Context, itemID, threadID string) error {
 	r.mu.Lock()
 	if existing, ok := r.takeovers[threadID]; ok && existing.itemID == itemID {
 		if existing.transitioning {
@@ -210,7 +210,7 @@ func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, thread
 	if _, err := element.contract.Schema(); err != nil {
 		return fmt.Errorf("workflow runner: takeover %s schema: %w", element.description, err)
 	}
-	_, sessionAlive := r.host.sessionManager().get(threadID)
+	sessionAlive := r.host.SessionActive(threadID)
 	r.mu.Lock()
 	if existing, ok := r.takeovers[threadID]; ok && existing.itemID == itemID {
 		sessionAlive = existing.schemaAttached
@@ -222,10 +222,10 @@ func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, thread
 	delete(r.schemas, threadID)
 	r.mu.Unlock()
 	if element.provider == string(provider.Claude) && sessionAlive {
-		if err := r.host.stopSession(threadID); err != nil {
+		if err := r.host.StopSession(threadID); err != nil {
 			return fmt.Errorf("workflow runner: stop schema-attached takeover session: %w", err)
 		}
-		if err := r.host.startSession(ctx, threadID); err != nil {
+		if err := r.host.StartSession(ctx, threadID); err != nil {
 			return fmt.Errorf("workflow runner: restart takeover session without schema: %w", err)
 		}
 	}
@@ -239,7 +239,7 @@ func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, thread
 // different state: taking over a phase parks the whole item, while taking over
 // one unit leaves the item running until its siblings rest. Checking the item's
 // state for a unit would refuse exactly the case unit takeover exists for.
-func (r *workflowAppRunner) takeoverElement(
+func (r *Runner) takeoverElement(
 	item store.WorkItem, workflow def.Workflow, threadID string,
 ) (workflowTakeoverElement, error) {
 	phases, err := r.store.ListWorkItemPhases(item.ID)
@@ -313,8 +313,8 @@ func findWorkflowPhase(workflow def.Workflow, phaseID string) (def.Phase, bool) 
 	return def.Phase{}, false
 }
 
-func (r *workflowAppRunner) beginTakeoverTransition(ctx context.Context, itemID, threadID string) error {
-	if err := r.registerTakeover(ctx, itemID, threadID); err != nil {
+func (r *Runner) BeginTakeoverTransition(ctx context.Context, itemID, threadID string) error {
+	if err := r.RegisterTakeover(ctx, itemID, threadID); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -328,7 +328,7 @@ func (r *workflowAppRunner) beginTakeoverTransition(ctx context.Context, itemID,
 	return nil
 }
 
-func (r *workflowAppRunner) cancelTakeoverTransition(itemID, threadID string) {
+func (r *Runner) CancelTakeoverTransition(itemID, threadID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	takeover, ok := r.takeovers[threadID]
@@ -338,10 +338,10 @@ func (r *workflowAppRunner) cancelTakeoverTransition(itemID, threadID string) {
 	}
 }
 
-// clearTakeoverThread drops one thread's steering registration. Unit recovery
+// ClearTakeoverThread drops one thread's steering registration. Unit recovery
 // uses it: retrying or dropping a taken-over unit ends that thread's role in the
 // run, while the item's other takeovers (a sibling unit, the phase) stay live.
-func (r *workflowAppRunner) clearTakeoverThread(threadID string) {
+func (r *Runner) ClearTakeoverThread(threadID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	takeover, ok := r.takeovers[threadID]
@@ -354,7 +354,7 @@ func (r *workflowAppRunner) clearTakeoverThread(threadID string) {
 	}
 }
 
-func (r *workflowAppRunner) clearTakeover(itemID string) {
+func (r *Runner) ClearTakeover(itemID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for threadID, takeover := range r.takeovers {
@@ -371,7 +371,7 @@ func (r *workflowAppRunner) clearTakeover(itemID string) {
 // removeTemporarySchema drops the schema a finalize-takeover start attached for
 // a Claude session restart that then failed, so a later takeover does not
 // inherit it.
-func (r *workflowAppRunner) removeTemporarySchema(threadID string) {
+func (r *Runner) removeTemporarySchema(threadID string) {
 	r.mu.Lock()
 	delete(r.schemas, threadID)
 	r.mu.Unlock()

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/workflow/engine"
+
+	"agent-overflow/internal/workflowhost"
 )
 
 // Auto-resume is the app-side half of an explicitly scheduled resume: the
@@ -57,7 +59,7 @@ const maxWorkflowResumeDelay = 30 * 24 * time.Hour
 // has genuinely moved on clears itself on the next fire instead of looping.
 const workflowAutoResumeRetryDelay = 5 * time.Minute
 
-func (a *App) workflowAutoResumeTimer(delay time.Duration, fire func()) workflowTimer {
+func (a *App) workflowAutoResumeTimer(delay time.Duration, fire func()) workflowhost.Timer {
 	if a.workflowAutoResume.newTimer != nil {
 		return a.workflowAutoResume.newTimer(delay, fire)
 	}
@@ -98,7 +100,7 @@ func (a *App) armWorkflowAutoResume(itemID string, delay time.Duration) {
 		existing.Stop()
 	}
 	if a.workflowAutoResume.timers == nil {
-		a.workflowAutoResume.timers = make(map[string]workflowTimer)
+		a.workflowAutoResume.timers = make(map[string]workflowhost.Timer)
 	}
 	a.workflowAutoResume.timers[itemID] = a.workflowAutoResumeTimer(delay, func() {
 		a.fireWorkflowAutoResume(itemID)

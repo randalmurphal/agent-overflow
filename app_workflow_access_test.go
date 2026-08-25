@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflowhost"
 )
 
 // TestWorkflowPhaseAccessMapsToThreadRuntimeMode is the end-to-end proof for
@@ -234,12 +235,12 @@ func TestCreateWorkflowThreadRejectsProviderThatCannotEnforceAccess(t *testing.T
 		Model:    "claude-opus-4-7",
 		Access:   def.AccessReadOnly,
 	}
-	_, err := app.createWorkflowThread(workflowThreadSpec{
-		itemID: "item-access", label: `phase "survey"`,
-		title:        workflowThreadTitle(phase.Name, phase.ID),
-		providerName: phase.Provider, model: phase.Model,
-		access:    phase.EffectiveAccess(),
-		workspace: preparedWorkflowWorkspace{path: repo, project: projectRow},
+	_, err := app.createWorkflowThread(workflowhost.ThreadSpec{
+		ItemID: "item-access", Label: `phase "survey"`,
+		Title:        workflowhost.ThreadTitle(phase.Name, phase.ID),
+		ProviderName: phase.Provider, Model: phase.Model,
+		Access:    phase.EffectiveAccess(),
+		Workspace: workflowhost.PreparedWorkspace{Path: repo, Project: projectRow},
 	})
 	if err == nil {
 		t.Fatal("createWorkflowThread accepted a provider that cannot enforce runtime modes")

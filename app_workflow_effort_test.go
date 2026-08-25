@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/def"
+	"agent-overflow/internal/workflowhost"
 )
 
 // effortTestModel is a Claude model whose advertised tiers are a strict subset
@@ -143,13 +144,13 @@ func TestWorkflowThreadTakesAuthoredEffort(t *testing.T) {
 // effort, reading the row back the way every later session start does.
 func createWorkflowThreadForTest(t *testing.T, app *App, projectRow store.Project, workspace, effort string) store.Thread {
 	t.Helper()
-	thread, err := app.createWorkflowThread(workflowThreadSpec{
-		itemID: "item-effort", label: `phase "survey"`,
-		title:        workflowThreadTitle("Survey", "survey"),
-		providerName: string(provider.Claude), model: effortTestModel,
-		effort:    effort,
-		access:    def.AccessReadOnly,
-		workspace: preparedWorkflowWorkspace{path: workspace, project: projectRow},
+	thread, err := app.createWorkflowThread(workflowhost.ThreadSpec{
+		ItemID: "item-effort", Label: `phase "survey"`,
+		Title:        workflowhost.ThreadTitle("Survey", "survey"),
+		ProviderName: string(provider.Claude), Model: effortTestModel,
+		Effort:    effort,
+		Access:    def.AccessReadOnly,
+		Workspace: workflowhost.PreparedWorkspace{Path: workspace, Project: projectRow},
 	})
 	if err != nil {
 		t.Fatal(err)

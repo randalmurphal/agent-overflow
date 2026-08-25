@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -20,7 +20,7 @@ type workflowFullPrompt func(workflowrunner.PromptContext) (string, error)
 
 type workflowAgentTurnPlan struct {
 	request       engine.RunRequest
-	thread        workflowThreadSpec
+	thread        ThreadSpec
 	schema        json.RawMessage
 	promptContext workflowrunner.PromptContext
 	buildFull     workflowFullPrompt
@@ -43,7 +43,7 @@ type preparedWorkflowAgentTurn struct {
 // the send. Failures before attachment erase their draft thread; failures after
 // attachment retain it as attempt provenance. Every element kind follows that
 // same boundary and cleanup path.
-func (r *workflowAppRunner) prepareAgentTurn(ctx context.Context, plan workflowAgentTurnPlan) (preparedWorkflowAgentTurn, error) {
+func (r *Runner) prepareAgentTurn(ctx context.Context, plan workflowAgentTurnPlan) (preparedWorkflowAgentTurn, error) {
 	var prepared preparedWorkflowAgentTurn
 	if plan.attach == nil {
 		return prepared, errors.New("workflow runner: agent turn attachment is required")
@@ -81,7 +81,7 @@ func (r *workflowAppRunner) prepareAgentTurn(ctx context.Context, plan workflowA
 	return prepared, nil
 }
 
-func (r *workflowAppRunner) prepareAgentTurnThread(ctx context.Context, plan workflowAgentTurnPlan) (preparedWorkflowAgentTurn, error) {
+func (r *Runner) prepareAgentTurnThread(ctx context.Context, plan workflowAgentTurnPlan) (preparedWorkflowAgentTurn, error) {
 	threadID := plan.request.Launch.ThreadID()
 	if threadID == "" {
 		prepared, err := r.createPreparedWorkflowThread(plan.thread)
@@ -113,8 +113,8 @@ func unavailableAgentTurn(threadID string, cause error) error {
 		fmt.Errorf("workflow runner: provider context for thread %q is unavailable: %w", threadID, cause))
 }
 
-func (r *workflowAppRunner) createPreparedWorkflowThread(spec workflowThreadSpec) (preparedWorkflowAgentTurn, error) {
-	thread, err := r.host.createWorkflowThread(spec)
+func (r *Runner) createPreparedWorkflowThread(spec ThreadSpec) (preparedWorkflowAgentTurn, error) {
+	thread, err := r.host.CreateWorkflowThread(spec)
 	if err != nil {
 		return preparedWorkflowAgentTurn{}, err
 	}
@@ -125,8 +125,8 @@ func (r *workflowAppRunner) createPreparedWorkflowThread(spec workflowThreadSpec
 // not an inference from a non-empty database cursor. A live process is proof
 // on its own. Cold Claude resumes are preflighted against the transcript; cold
 // Codex resumes are proven by its synchronous thread/resume handshake.
-func (r *workflowAppRunner) ensureReusableWorkflowSession(ctx context.Context, thread store.Thread, schema json.RawMessage) (bool, error) {
-	if _, active := r.host.sessionManager().get(thread.ID); active {
+func (r *Runner) ensureReusableWorkflowSession(ctx context.Context, thread store.Thread, schema json.RawMessage) (bool, error) {
+	if r.host.SessionActive(thread.ID) {
 		return false, nil
 	}
 	if thread.ResolvedSessionRef() == "" {
@@ -154,7 +154,7 @@ func (r *workflowAppRunner) ensureReusableWorkflowSession(ctx context.Context, t
 	if err := r.registerTemporarySchema(thread.ID, schema); err != nil {
 		return false, err
 	}
-	if err := r.host.startSessionTakingLock(ctx, thread.ID); err != nil {
+	if err := r.host.StartSessionTakingLock(ctx, thread.ID); err != nil {
 		r.removeTemporarySchema(thread.ID)
 		if codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows) {
 			return false, errors.Join(engine.ErrProviderContextUnavailable, err)
@@ -164,7 +164,7 @@ func (r *workflowAppRunner) ensureReusableWorkflowSession(ctx context.Context, t
 	return true, nil
 }
 
-func (r *workflowAppRunner) registerTemporarySchema(threadID string, schema json.RawMessage) error {
+func (r *Runner) registerTemporarySchema(threadID string, schema json.RawMessage) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.schemas[threadID]; exists {
@@ -174,11 +174,11 @@ func (r *workflowAppRunner) registerTemporarySchema(threadID string, schema json
 	return nil
 }
 
-func (p preparedWorkflowAgentTurn) discard(r *workflowAppRunner, cause error) error {
+func (p preparedWorkflowAgentTurn) discard(r *Runner, cause error) error {
 	var errs []error
 	errs = append(errs, cause)
 	if p.startedSession {
-		if err := r.host.stopSession(p.threadID); err != nil {
+		if err := r.host.StopSession(p.threadID); err != nil {
 			errs = append(errs, fmt.Errorf("stop prestarted workflow session %q: %w", p.threadID, err))
 		}
 		r.removeTemporarySchema(p.threadID)

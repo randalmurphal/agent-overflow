@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflowhost"
 )
 
 // A self-resume has two halves that must agree — the durable column and the
@@ -54,7 +55,7 @@ func newAutoResumeHarness(t *testing.T) *autoResumeHarness {
 		now: time.Unix(1_700_000_000, 0),
 	}
 	harness.app.workflowAutoResume.nowFn = func() time.Time { return harness.now }
-	harness.app.workflowAutoResume.newTimer = func(delay time.Duration, fire func()) workflowTimer {
+	harness.app.workflowAutoResume.newTimer = func(delay time.Duration, fire func()) workflowhost.Timer {
 		timer := &armedWorkflowTimer{callback: fire, delay: delay}
 		harness.pending = timer
 		return timer
@@ -406,7 +407,7 @@ func TestWorkflowAutoResumeRetriesAFailedResume(t *testing.T) {
 	harness.app.workflowAutoResume.mu.Lock()
 	registered := harness.app.workflowAutoResume.timers[item.ID]
 	harness.app.workflowAutoResume.mu.Unlock()
-	if registered != workflowTimer(retry) {
+	if registered != workflowhost.Timer(retry) {
 		t.Fatalf("registry holds %+v, want the retry timer", registered)
 	}
 

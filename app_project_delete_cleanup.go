@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/scheduler"
 )
@@ -229,7 +230,7 @@ func (a *App) removeProjectRunWorktrees(
 // rather than replaced by a guess.
 func (a *App) explainRetainedWorktree(path string, removeErr error) string {
 	if _, total, err := a.gitCore().WorkingTreeChanges(path, 0); err == nil && total > 0 {
-		return retainedDirtyReason(total)
+		return gitops.RetainedDirtyReason(total)
 	}
 	return removeErr.Error()
 }

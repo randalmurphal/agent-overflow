@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflowhost"
 
 	"github.com/google/uuid"
 )
@@ -31,15 +32,6 @@ type userMessageAttachmentMeta = usermessage.AttachmentMeta
 // immutable proposed-plan item. It is traceability metadata, not prompt text.
 type SourceProposedPlan = store.ProposedPlanSourceRef
 type SourceDiffReview = store.DiffReviewSourceRef
-
-// providerDispatchIdentity is the credential identity held stable across one
-// provider write. Workflow usage-limit attribution consumes it at the same
-// boundary as the send; it is not exposed on the wire and never gates a send.
-type providerDispatchIdentity struct {
-	Provider             string
-	AccountID            string
-	CredentialGeneration uint64
-}
 
 type sendMessageOptions struct {
 	AttachmentIDs                []string
@@ -70,7 +62,7 @@ type sendMessageOptions struct {
 	// before the provider write. It exists so an observer can attribute an error
 	// emitted as soon as stdin is written to the exact account generation that
 	// sent the turn; reading the session after Send returns is already too late.
-	onProviderDispatch func(providerDispatchIdentity)
+	onProviderDispatch func(workflowhost.DispatchIdentity)
 	// onCodexReviewStarted observes the review/start acknowledgement for the
 	// legacy structured binding. Composer sends leave it nil.
 	onCodexReviewStarted func(codex.ReviewStarted)
@@ -288,7 +280,7 @@ func (a *App) sendMessageWithOptions(
 	// InterruptTurn acquires this thread's action lock. Holding the lock
 	// across that round-trip deadlocks, so preparation runs BEFORE the
 	// critical section and is re-verified cheaply once the lock is held
-	// (registerTakeover is idempotent for a live registration and fails
+	// (RegisterTakeover is idempotent for a live registration and fails
 	// typed when the takeover raced away in between).
 	if len(opts.OutputSchema) == 0 {
 		peek, err := a.store.GetThread(threadID)
@@ -351,7 +343,7 @@ func (a *App) sendMessageLocked(
 		if prepared.takeoverItemID == "" {
 			return store.Item{}, fmt.Errorf("send message: workflow takeover: thread entered workflow mode mid-send; retry")
 		}
-		if err := a.workflowRunner.registerTakeover(ctx, prepared.takeoverItemID, threadID); err != nil {
+		if err := a.workflowRunner.RegisterTakeover(ctx, prepared.takeoverItemID, threadID); err != nil {
 			return store.Item{}, fmt.Errorf("send message: workflow takeover: %w", err)
 		}
 	}
@@ -529,7 +521,7 @@ func (a *App) sendMessageLocked(
 	defer unlockAccount()
 
 	if opts.onProviderDispatch != nil {
-		opts.onProviderDispatch(providerDispatchIdentity{
+		opts.onProviderDispatch(workflowhost.DispatchIdentity{
 			Provider: sess.provider, AccountID: sess.credentialAccountID,
 			CredentialGeneration: sess.credentialGeneration,
 		})
@@ -647,7 +639,7 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 		} else if active {
 			return "", fmt.Errorf("workflow takeover: the prior turn must yield before steering again")
 		}
-		if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
+		if err := a.workflowRunner.RegisterTakeover(ctx, item.ID, thread.ID); err != nil {
 			return "", err
 		}
 		return item.ID, nil
@@ -655,7 +647,7 @@ func (a *App) prepareWorkflowTakeoverSend(ctx context.Context, thread store.Thre
 	if err := workflowEngine.TakeOver(item.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach item: %w", err)
 	}
-	if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
+	if err := a.workflowRunner.RegisterTakeover(ctx, item.ID, thread.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: register schema-less steering: %w", err)
 	}
 	return item.ID, nil
@@ -678,7 +670,7 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 		} else if active {
 			return "", fmt.Errorf("workflow takeover: the prior turn must yield before steering again")
 		}
-		if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
+		if err := a.workflowRunner.RegisterTakeover(ctx, item.ID, thread.ID); err != nil {
 			return "", err
 		}
 		return item.ID, nil
@@ -692,7 +684,7 @@ func (a *App) prepareWorkflowUnitTakeoverSend(
 	if err := workflowEngine.TakeOverUnit(item.ID, unit.UnitID); err != nil {
 		return "", fmt.Errorf("workflow takeover: detach unit %q: %w", unit.UnitID, err)
 	}
-	if err := a.workflowRunner.registerTakeover(ctx, item.ID, thread.ID); err != nil {
+	if err := a.workflowRunner.RegisterTakeover(ctx, item.ID, thread.ID); err != nil {
 		return "", fmt.Errorf("workflow takeover: register schema-less steering: %w", err)
 	}
 	return item.ID, nil
@@ -1097,7 +1089,7 @@ func sendToProvider(sess session, threadID string, content string, opts provider
 
 func (a *App) sendWorkflowMessage(
 	ctx context.Context, threadID, content string,
-	outputSchema json.RawMessage, onDispatch func(providerDispatchIdentity),
+	outputSchema json.RawMessage, onDispatch func(workflowhost.DispatchIdentity),
 ) error {
 	if len(outputSchema) == 0 {
 		return fmt.Errorf("workflow send: output schema is required")

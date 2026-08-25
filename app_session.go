@@ -789,7 +789,7 @@ func (a *App) workflowSchemaForSession(thread store.Thread) (json.RawMessage, er
 	if a.workflowRunner == nil {
 		return nil, fmt.Errorf("start workflow session: runner unavailable")
 	}
-	schema, registered := a.workflowRunner.sessionSchemaForThread(thread.ID)
+	schema, registered := a.workflowRunner.SessionSchemaForThread(thread.ID)
 	if !registered {
 		return nil, fmt.Errorf("start workflow session %s: phase output schema is not registered", thread.ID)
 	}

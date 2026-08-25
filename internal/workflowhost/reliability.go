@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -40,7 +40,7 @@ const defaultWorkflowWatchdog = 15 * time.Minute
 // chose deliberately: a briefly over-subscribed provider beats a frozen engine.
 const workflowStopSendWait = 10 * time.Second
 
-type workflowTimer interface {
+type Timer interface {
 	Stop() bool
 	Reset(time.Duration) bool
 }
@@ -57,7 +57,7 @@ const (
 // Capacities, bindings, reliability defaults, and secrets all come from the
 // profile as it is on disk right now — editing it takes effect on the next
 // phase start, with no restart and no re-run.
-func (r *workflowAppRunner) projectProfile(ctx context.Context, projectID string) (*profile.Profile, error) {
+func (r *Runner) projectProfile(ctx context.Context, projectID string) (*profile.Profile, error) {
 	if r.profiles == nil {
 		return nil, fmt.Errorf("workflow runner: profile source unavailable")
 	}
@@ -71,7 +71,7 @@ func (r *workflowAppRunner) projectProfile(ctx context.Context, projectID string
 	return projectProfile, nil
 }
 
-func (r *workflowAppRunner) reliability(ctx context.Context, request engine.RunRequest) (time.Duration, []time.Duration, error) {
+func (r *Runner) reliability(ctx context.Context, request engine.RunRequest) (time.Duration, []time.Duration, error) {
 	projectProfile, err := r.projectProfile(ctx, request.Item.ProjectID)
 	if err != nil {
 		return 0, nil, err
@@ -123,14 +123,14 @@ func parseWorkflowDuration(value profile.Duration, name string) (time.Duration, 
 	return duration, nil
 }
 
-func (r *workflowAppRunner) armWatchdogLocked(runKey string, attempt *workflowAttempt) {
+func (r *Runner) armWatchdogLocked(runKey string, attempt *workflowAttempt) {
 	r.disarmTimerLocked(attempt)
 	attempt.timerMode = workflowTimerWatchdog
 	attempt.timerDeadline = r.now().Add(attempt.watchdog)
 	attempt.timer = r.newTimer(attempt.watchdog, func() { r.timerFired(runKey) })
 }
 
-func (r *workflowAppRunner) resetWatchdogLocked(attempt *workflowAttempt) {
+func (r *Runner) resetWatchdogLocked(attempt *workflowAttempt) {
 	if attempt.timerMode != workflowTimerWatchdog || attempt.timer == nil {
 		return
 	}
@@ -138,7 +138,7 @@ func (r *workflowAppRunner) resetWatchdogLocked(attempt *workflowAttempt) {
 	attempt.timer.Reset(attempt.watchdog)
 }
 
-func (r *workflowAppRunner) disarmTimerLocked(attempt *workflowAttempt) {
+func (r *Runner) disarmTimerLocked(attempt *workflowAttempt) {
 	if attempt.timer != nil {
 		attempt.timer.Stop()
 	}
@@ -149,7 +149,7 @@ func (r *workflowAppRunner) disarmTimerLocked(attempt *workflowAttempt) {
 
 // scheduleTransientLocked disarms the watchdog and starts the next configured
 // backoff. It returns true when the closed retry schedule is exhausted.
-func (r *workflowAppRunner) scheduleTransientLocked(runKey string, attempt *workflowAttempt) bool {
+func (r *Runner) scheduleTransientLocked(runKey string, attempt *workflowAttempt) bool {
 	r.disarmTimerLocked(attempt)
 	attempt.turnStarted = false
 	attempt.currentTurnID = ""
@@ -169,7 +169,7 @@ func (r *workflowAppRunner) scheduleTransientLocked(runKey string, attempt *work
 	return false
 }
 
-func (r *workflowAppRunner) timerFired(runKey string) {
+func (r *Runner) timerFired(runKey string) {
 	r.mu.Lock()
 	attempt := r.runs[runKey]
 	if attempt == nil || attempt.timerMode == workflowTimerNone {
@@ -188,7 +188,7 @@ func (r *workflowAppRunner) timerFired(runKey string) {
 		r.stopAndFinish(runKey, engine.Outcome{Kind: engine.OutcomeStalled})
 		return
 	}
-	// The session died while this backoff was pending. `sessionDisconnected` owns
+	// The session died while this backoff was pending. `SessionDisconnected` owns
 	// the next rung from here, so the held resend is dropped rather than fired
 	// into a process being reaped — which is how a transient ladder used to turn
 	// into an execution-failure park. The watchdog bounds the wait for a
@@ -232,7 +232,7 @@ func (r *workflowAppRunner) timerFired(runKey string) {
 	}()
 }
 
-func (r *workflowAppRunner) detach(runKey string) (*workflowAttempt, bool) {
+func (r *Runner) detach(runKey string) (*workflowAttempt, bool) {
 	r.mu.Lock()
 	attempt, ok := r.detachLocked(runKey)
 	r.mu.Unlock()
@@ -247,7 +247,7 @@ func (r *workflowAppRunner) detach(runKey string) (*workflowAttempt, bool) {
 // which reports an attempt dead and must not race an install of the same key.
 // The observer unsubscribe deliberately stays with `detach`: it runs outside the
 // runner lock, and a locked caller does it itself once it has released.
-func (r *workflowAppRunner) detachLocked(runKey string) (*workflowAttempt, bool) {
+func (r *Runner) detachLocked(runKey string) (*workflowAttempt, bool) {
 	attempt, ok := r.runs[runKey]
 	if !ok {
 		return nil, false
@@ -261,7 +261,7 @@ func (r *workflowAppRunner) detachLocked(runKey string) (*workflowAttempt, bool)
 	return attempt, true
 }
 
-func (r *workflowAppRunner) stopAndFinish(runKey string, outcome engine.Outcome) {
+func (r *Runner) stopAndFinish(runKey string, outcome engine.Outcome) {
 	attempt, ok := r.detach(runKey)
 	if !ok {
 		return
@@ -273,7 +273,7 @@ func (r *workflowAppRunner) stopAndFinish(runKey string, outcome engine.Outcome)
 // has been made unreachable to provider events. Keeping detach outside this
 // helper lets an on-wire caller establish that invariant synchronously and move
 // only the interrupt wait to another goroutine.
-func (r *workflowAppRunner) stopDetachedAttempt(runKey string, attempt *workflowAttempt, outcome engine.Outcome) {
+func (r *Runner) stopDetachedAttempt(runKey string, attempt *workflowAttempt, outcome engine.Outcome) {
 	r.interruptDetachedAttempt(runKey, attempt)
 	attempt.complete(outcome)
 }
@@ -287,7 +287,7 @@ func (r *workflowAppRunner) stopDetachedAttempt(runKey string, attempt *workflow
 // reported the attempt dead, and `Stop`'s bounded wait. Both run this on a
 // goroutine of their own, because the wedge they are escaping usually IS a send
 // holding `sendMu`, and the session comes down whenever that wedge clears.
-func (r *workflowAppRunner) interruptDetachedAttempt(runKey string, attempt *workflowAttempt) {
+func (r *Runner) interruptDetachedAttempt(runKey string, attempt *workflowAttempt) {
 	r.awaitInFlightSend(attempt)
 	// The wait above is deliberately unbounded — its callers bound THEMSELVES
 	// instead — so by the time it clears, this attempt's thread may belong to
@@ -322,7 +322,7 @@ func (r *workflowAppRunner) interruptDetachedAttempt(runKey string, attempt *wor
 // The scans are linear over maps holding one entry per live workflow element in
 // the process; an index keyed by thread would be a second registry to keep
 // coherent for maps this size.
-func (r *workflowAppRunner) threadReclaimed(attempt *workflowAttempt) (string, bool) {
+func (r *Runner) threadReclaimed(attempt *workflowAttempt) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for runKey, live := range r.runs {
@@ -348,13 +348,13 @@ func (r *workflowAppRunner) threadReclaimed(attempt *workflowAttempt) (string, b
 //
 // What it does NOT bound is a send already past admission and wedged on provider
 // IO. A caller that cannot afford that wait uses `runBoundedBySendWait`.
-func (r *workflowAppRunner) awaitInFlightSend(attempt *workflowAttempt) {
+func (r *Runner) awaitInFlightSend(attempt *workflowAttempt) {
 	attempt.sendMu.Lock()
 	attempt.sendMu.Unlock()
 }
 
 // runBoundedBySendWait runs work on its own goroutine and waits
-// `r.stopSendWait` for it, reporting whether it finished inside the bound.
+// `r.StopSendWait` for it, reporting whether it finished inside the bound.
 //
 // The goroutine is NOT abandoned when the bound expires: it runs to completion
 // whenever the wedge it is behind clears, so the interrupt still happens and the
@@ -365,13 +365,13 @@ func (r *workflowAppRunner) awaitInFlightSend(attempt *workflowAttempt) {
 // An expiry is counted on `wedgedStops` until the abandoned work completes, so
 // `Stop` can refuse to pay the bound again while a wedge is already known to be
 // outstanding — see the latch read there.
-func (r *workflowAppRunner) runBoundedBySendWait(work func()) bool {
+func (r *Runner) runBoundedBySendWait(work func()) bool {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		work()
 	}()
-	timer := time.NewTimer(r.stopSendWait)
+	timer := time.NewTimer(r.StopSendWait)
 	defer timer.Stop()
 	select {
 	case <-done:
@@ -390,12 +390,12 @@ func (r *workflowAppRunner) runBoundedBySendWait(work func()) bool {
 // session death, and parks the run when the schedule is spent.
 //
 // The latch (`pendingSessionDeath`) is the CLAIM, consumed here under the
-// runner lock: `observe` latches the death it saw, `sessionDisconnected` folds
+// runner lock: `observe` latches the death it saw, `SessionDisconnected` folds
 // it once the dead session has left the registry, and a second arrival for the
 // same death finds the latch spent.
 //
 // The caller must not hold the runner mutex.
-func (r *workflowAppRunner) foldSessionDeathIntoLadder(runKey string, attempt *workflowAttempt) {
+func (r *Runner) foldSessionDeathIntoLadder(runKey string, attempt *workflowAttempt) {
 	r.mu.Lock()
 	if r.runs[runKey] != attempt || !attempt.pendingSessionDeath {
 		r.mu.Unlock()
@@ -428,7 +428,7 @@ func (r *workflowAppRunner) foldSessionDeathIntoLadder(runKey string, attempt *w
 // `detach` is single-shot under the runner lock and happens before this method
 // returns to the event pipeline. Any later event therefore finds no attempt for
 // this key; only the interrupt wait and completion callback move off-wire.
-func (r *workflowAppRunner) stopAndFinishOffWire(runKey string, outcome engine.Outcome) {
+func (r *Runner) stopAndFinishOffWire(runKey string, outcome engine.Outcome) {
 	attempt, ok := r.detach(runKey)
 	if !ok {
 		return

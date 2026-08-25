@@ -50,11 +50,11 @@ func TestDeleteProjectCancelsLiveWorkflowRunBeforeTakingThreadLocks(t *testing.T
 	startWorkflowEngineForTest(t, app, configRoot)
 	// The stop bound would otherwise mask the regression: a lock-first cleanup
 	// blocks the interrupt on the caller's own thread lock, but `Runner.Stop`
-	// abandons that wait after `stopSendWait` and the deletion then finishes
+	// abandons that wait after `StopSendWait` and the deletion then finishes
 	// anyway — inside this test's timeout, hiding the reintroduced bug. Pinning
 	// the bound far above the timeout keeps the lock-order violation observable
 	// as the hang it really is; the correct ordering never touches the bound.
-	app.workflowRunner.stopSendWait = time.Hour
+	app.workflowRunner.StopSendWait = time.Hour
 
 	item, err := app.WorkflowStartRun(
 		projectRow.ID, "reliability-flow", "shared", "live run",

@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -21,18 +21,19 @@ import (
 // not: a call that is the root's *first* phase (nothing to copy yet) and a
 // deeper descendant of it.
 
-func callWorkspaceRunner(t *testing.T, app *App) *workflowAppRunner {
+func callWorkspaceRunner(t *testing.T, dataStore *store.Store) (*Runner, *fakeHost) {
 	t.Helper()
-	return newWorkflowAppRunner(app, t.TempDir(), staticWorkflowProfileSource{
+	host := &fakeHost{configDir: t.TempDir()}
+	return newTestRunner(t, host, dataStore, staticWorkflowProfileSource{
 		value: &profile.Profile{BaseBranch: "main"},
-	})
+	}), host
 }
 
 // callWorkspaceItem persists one run row. Callers hand it the workspace need to
 // freeze; the frozen definition deliberately contains only a call phase, so a
 // re-derivation from the definition alone would answer "project root" and the
 // test would catch it.
-func callWorkspaceItem(t *testing.T, app *App, id, projectID, parentID string, need def.WorkspaceNeed) store.WorkItem {
+func callWorkspaceItem(t *testing.T, dataStore *store.Store, id, projectID, parentID string, need def.WorkspaceNeed) store.WorkItem {
 	t.Helper()
 	snapshot, err := json.Marshal(engine.Snapshot{
 		Workflow: def.Workflow{
@@ -53,7 +54,7 @@ func callWorkspaceItem(t *testing.T, app *App, id, projectID, parentID string, n
 		item.Source, item.SourceRef = engine.WorkItemSourceCall, parentID+"/audit/1"
 		item.CallDepth = 1
 	}
-	if err := app.store.CreateWorkItem(item); err != nil {
+	if err := dataStore.CreateWorkItem(item); err != nil {
 		t.Fatal(err)
 	}
 	return item
@@ -71,16 +72,16 @@ func callWorkspaceRequest(item store.WorkItem, need def.WorkspaceNeed) engine.Ru
 }
 
 func TestCalledRunProvisionsItsRootWorktreeRatherThanItsOwn(t *testing.T) {
-	app, _ := setupE2EApp(t)
+	dataStore := newTestStore(t)
 	repo := testutil.InitGitRepo(t)
-	projectRow := testutil.EnsureProject(t, app.store, repo)
-	runner := callWorkspaceRunner(t, app)
+	projectRow := testutil.EnsureProject(t, dataStore, repo)
+	runner, host := callWorkspaceRunner(t, dataStore)
 
 	// The root's first phase is the call, so nothing has been provisioned when
 	// the child starts: the child is the one that has to cut the tree's worktree,
 	// and it must cut the ROOT's.
-	root := callWorkspaceItem(t, app, "call-root", projectRow.ID, "", def.WorkspaceWorktree)
-	child := callWorkspaceItem(t, app, "call-child", projectRow.ID, root.ID, def.WorkspaceProjectRoot)
+	root := callWorkspaceItem(t, dataStore, "call-root", projectRow.ID, "", def.WorkspaceWorktree)
+	child := callWorkspaceItem(t, dataStore, "call-child", projectRow.ID, root.ID, def.WorkspaceProjectRoot)
 
 	// The child's own request asks for the project root; the root's frozen need
 	// is what decides, because a child never gets a say in its workspace.
@@ -88,25 +89,25 @@ func TestCalledRunProvisionsItsRootWorktreeRatherThanItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, prepared.path, true) })
-	if prepared.path == repo || prepared.path == "" || prepared.branch == "" {
+	t.Cleanup(func() { _ = host.GitCore().RemoveWorktreeForce(repo, prepared.Path, true) })
+	if prepared.Path == repo || prepared.Path == "" || prepared.Branch == "" {
 		t.Fatalf("called run resolved to %+v, want a worktree outside %q", prepared, repo)
 	}
-	if info, statErr := os.Stat(prepared.path); statErr != nil || !info.IsDir() {
-		t.Fatalf("stat resolved worktree %q = %v", prepared.path, statErr)
+	if info, statErr := os.Stat(prepared.Path); statErr != nil || !info.IsDir() {
+		t.Fatalf("stat resolved worktree %q = %v", prepared.Path, statErr)
 	}
 
 	// Both rows record it: the root because it owns the worktree, the child so
 	// its run record shows where it ran and its later phases take the fast path.
-	storedRoot := mustWorkItem(t, app, root.ID)
-	storedChild := mustWorkItem(t, app, child.ID)
-	if storedRoot.WorktreePath != prepared.path || storedRoot.Branch != prepared.branch {
+	storedRoot := mustWorkItem(t, dataStore, root.ID)
+	storedChild := mustWorkItem(t, dataStore, child.ID)
+	if storedRoot.WorktreePath != prepared.Path || storedRoot.Branch != prepared.Branch {
 		t.Fatalf("root workspace = %q/%q, want %q/%q",
-			storedRoot.WorktreePath, storedRoot.Branch, prepared.path, prepared.branch)
+			storedRoot.WorktreePath, storedRoot.Branch, prepared.Path, prepared.Branch)
 	}
-	if storedChild.WorktreePath != prepared.path || storedChild.Branch != prepared.branch {
+	if storedChild.WorktreePath != prepared.Path || storedChild.Branch != prepared.Branch {
 		t.Fatalf("child workspace = %q/%q, want the root's %q/%q",
-			storedChild.WorktreePath, storedChild.Branch, prepared.path, prepared.branch)
+			storedChild.WorktreePath, storedChild.Branch, prepared.Path, prepared.Branch)
 	}
 	if storedChild.BaseBranch != storedRoot.BaseBranch || storedRoot.BaseBranch == "" {
 		t.Fatalf("child base branch = %q, want the root's %q", storedChild.BaseBranch, storedRoot.BaseBranch)
@@ -114,38 +115,38 @@ func TestCalledRunProvisionsItsRootWorktreeRatherThanItsOwn(t *testing.T) {
 
 	// The branch name is the ROOT's: a worktree named after the child would be a
 	// second one waiting to happen on the next crash-recovery adoption scan.
-	if prefix := workflowWorktreeBranchPrefix(app.worktreeBranchPrefix(), root.WorkflowID, root.ID); !strings.HasPrefix(prepared.branch, prefix) {
-		t.Fatalf("worktree branch %q is not the root's (%q)", prepared.branch, prefix)
+	if prefix := ItemBranchPrefix(host.WorktreeBranchPrefix(), root.WorkflowID, root.ID); !strings.HasPrefix(prepared.Branch, prefix) {
+		t.Fatalf("worktree branch %q is not the root's (%q)", prepared.Branch, prefix)
 	}
 
 	// A grandchild walks the whole chain, and the root — arriving last, as it
 	// does when its call phase returns — adopts what its child cut. One worktree
 	// for the tree, whichever member of it runs first.
-	grandchild := callWorkspaceItem(t, app, "call-grandchild", projectRow.ID, child.ID, def.WorkspaceProjectRoot)
+	grandchild := callWorkspaceItem(t, dataStore, "call-grandchild", projectRow.ID, child.ID, def.WorkspaceProjectRoot)
 	grandPrepared, err := runner.prepareWorkspace(context.Background(), callWorkspaceRequest(grandchild, def.WorkspaceProjectRoot))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grandPrepared.path != prepared.path {
-		t.Fatalf("grandchild workspace = %q, want the tree's %q", grandPrepared.path, prepared.path)
+	if grandPrepared.Path != prepared.Path {
+		t.Fatalf("grandchild workspace = %q, want the tree's %q", grandPrepared.Path, prepared.Path)
 	}
 	rootPrepared, err := runner.prepareWorkspace(context.Background(), callWorkspaceRequest(storedRoot, def.WorkspaceWorktree))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rootPrepared.path != prepared.path {
-		t.Fatalf("root workspace = %q, want the one its child cut %q", rootPrepared.path, prepared.path)
+	if rootPrepared.Path != prepared.Path {
+		t.Fatalf("root workspace = %q, want the one its child cut %q", rootPrepared.Path, prepared.Path)
 	}
 }
 
 func TestCalledRunOfAReadOnlyTreeRunsOnTheProjectRoot(t *testing.T) {
-	app, _ := setupE2EApp(t)
+	dataStore := newTestStore(t)
 	repo := testutil.InitGitRepo(t)
-	projectRow := testutil.EnsureProject(t, app.store, repo)
-	runner := callWorkspaceRunner(t, app)
+	projectRow := testutil.EnsureProject(t, dataStore, repo)
+	runner, _ := callWorkspaceRunner(t, dataStore)
 
-	root := callWorkspaceItem(t, app, "ro-root", projectRow.ID, "", def.WorkspaceProjectRoot)
-	child := callWorkspaceItem(t, app, "ro-child", projectRow.ID, root.ID, def.WorkspaceWorktree)
+	root := callWorkspaceItem(t, dataStore, "ro-root", projectRow.ID, "", def.WorkspaceProjectRoot)
+	child := callWorkspaceItem(t, dataStore, "ro-child", projectRow.ID, root.ID, def.WorkspaceWorktree)
 
 	// Even asking for a worktree, the child gets the root's project-root
 	// workspace: a child's write-need never cuts one (isolation comes from
@@ -155,30 +156,30 @@ func TestCalledRunOfAReadOnlyTreeRunsOnTheProjectRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.path != repo || prepared.branch != "" {
+	if prepared.Path != repo || prepared.Branch != "" {
 		t.Fatalf("called run of a read-only tree resolved to %+v, want the project root %q", prepared, repo)
 	}
-	if stored := mustWorkItem(t, app, child.ID); stored.WorktreePath != "" || stored.Branch != "" {
+	if stored := mustWorkItem(t, dataStore, child.ID); stored.WorktreePath != "" || stored.Branch != "" {
 		t.Fatalf("child stamped workspace %q/%q, want none", stored.WorktreePath, stored.Branch)
 	}
 }
 
 func TestRunWithoutAFrozenWorkspaceNeedIsRefused(t *testing.T) {
-	app, _ := setupE2EApp(t)
+	dataStore := newTestStore(t)
 	repo := testutil.InitGitRepo(t)
-	projectRow := testutil.EnsureProject(t, app.store, repo)
-	runner := callWorkspaceRunner(t, app)
+	projectRow := testutil.EnsureProject(t, dataStore, repo)
+	runner, _ := callWorkspaceRunner(t, dataStore)
 
-	item := callWorkspaceItem(t, app, "unfrozen", projectRow.ID, "", def.WorkspaceWorktree)
+	item := callWorkspaceItem(t, dataStore, "unfrozen", projectRow.ID, "", def.WorkspaceWorktree)
 	_, err := runner.prepareWorkspace(context.Background(), callWorkspaceRequest(item, ""))
 	if err == nil {
 		t.Fatal("a run request with no frozen workspace need was accepted")
 	}
 }
 
-func mustWorkItem(t *testing.T, app *App, id string) store.WorkItem {
+func mustWorkItem(t *testing.T, dataStore *store.Store, id string) store.WorkItem {
 	t.Helper()
-	item, err := app.store.GetWorkItem(id)
+	item, err := dataStore.GetWorkItem(id)
 	if err != nil {
 		t.Fatal(err)
 	}

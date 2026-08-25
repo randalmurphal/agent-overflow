@@ -1,8 +1,9 @@
-package main
+package workflowhost
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,37 +14,8 @@ import (
 	"agent-overflow/internal/workflow/profile"
 )
 
-type staticWorkflowProfileSource struct{ value *profile.Profile }
-
-func (s staticWorkflowProfileSource) Profile(context.Context, string) (*profile.Profile, error) {
-	return s.value, nil
-}
-
-type fakeWorkflowTimer struct {
-	callback func()
-	delay    time.Duration
-	active   bool
-	resets   []time.Duration
-}
-
-func (t *fakeWorkflowTimer) Stop() bool {
-	wasActive := t.active
-	t.active = false
-	return wasActive
-}
-
-func (t *fakeWorkflowTimer) Reset(delay time.Duration) bool {
-	wasActive := t.active
-	t.delay = delay
-	t.active = true
-	t.resets = append(t.resets, delay)
-	return wasActive
-}
-
-func (t *fakeWorkflowTimer) fire() { t.callback() }
-
 func TestWorkflowReliabilityResolutionPrecedenceAndDefaults(t *testing.T) {
-	runner := newWorkflowAppRunner(&App{}, t.TempDir(), staticWorkflowProfileSource{value: &profile.Profile{}})
+	runner := newTestRunner(t, nil, nil, staticWorkflowProfileSource{value: &profile.Profile{}})
 	request := engine.RunRequest{
 		Item: store.WorkItem{ProjectID: "project"}, Phase: def.Phase{ID: "phase"},
 		Launch: engine.FreshTurn(),
@@ -72,12 +44,17 @@ func TestWorkflowReliabilityResolutionPrecedenceAndDefaults(t *testing.T) {
 }
 
 func TestFailedTakeoverStopRestoresBackoffTimer(t *testing.T) {
-	app := newTestAppWithStore(t)
-	runner := newWorkflowAppRunner(app, t.TempDir(), staticWorkflowProfileSource{value: &profile.Profile{}})
+	runner := newTestRunner(t, nil, nil, staticWorkflowProfileSource{value: &profile.Profile{}})
+	// The interrupt is what fails here: production reaches a session whose
+	// provider it cannot name. What the test is about is the state the refusal
+	// leaves behind, not which refusal it was.
+	runner.interrupt = func(context.Context, string) error {
+		return errors.New("unknown provider")
+	}
 	now := time.Unix(100, 0)
 	runner.now = func() time.Time { return now }
 	var restored *fakeWorkflowTimer
-	runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+	runner.newTimer = func(delay time.Duration, callback func()) Timer {
 		restored = &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
 		return restored
 	}
@@ -94,7 +71,6 @@ func TestFailedTakeoverStopRestoresBackoffTimer(t *testing.T) {
 	runner.runs[runKey] = attempt
 	runner.schemas[attempt.threadID] = attempt.schema
 	runner.workItems[attempt.threadID] = key.ItemID
-	app.sessions[attempt.threadID] = session{provider: "unknown", token: "test"}
 
 	if _, err := runner.StopForTakeover(t.Context(), key); err == nil {
 		t.Fatal("StopForTakeover error = nil, want missing provider error")
@@ -148,10 +124,10 @@ func TestWorkflowTransientSignalAllowlist(t *testing.T) {
 
 func TestWorkflowWatchdogArmsResetsAndTripsDeterministically(t *testing.T) {
 	now := time.Unix(100, 0)
-	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
+	runner := newTestRunner(t, nil, nil, nil)
 	runner.now = func() time.Time { return now }
 	var timers []*fakeWorkflowTimer
-	runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+	runner.newTimer = func(delay time.Duration, callback func()) Timer {
 		timer := &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
 		timers = append(timers, timer)
 		return timer
@@ -201,15 +177,15 @@ func TestWorkflowWatchdogArmsResetsAndTripsDeterministically(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("watchdog trip did not complete")
 	}
-	if runner.runs[runKey] != nil || runner.schemaForThread("thread") != nil || runner.workItemForThread("thread") != "" {
+	if runner.runs[runKey] != nil || runner.schemaForThread("thread") != nil || runner.WorkItemForThread("thread") != "" {
 		t.Fatalf("watchdog cleanup left run/schema/attribution state")
 	}
 }
 
 func TestWorkflowStopDuringBackoffDisarmsRetry(t *testing.T) {
-	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
+	runner := newTestRunner(t, nil, nil, nil)
 	var timer *fakeWorkflowTimer
-	runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+	runner.newTimer = func(delay time.Duration, callback func()) Timer {
 		timer = &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
 		return timer
 	}
@@ -237,7 +213,7 @@ func TestWorkflowStopDuringBackoffDisarmsRetry(t *testing.T) {
 	if attempt.timerMode != workflowTimerWatchdog {
 		t.Fatalf("disconnected observer armed mode %v before session unregister", attempt.timerMode)
 	}
-	runner.sessionDisconnected("thread")
+	runner.SessionDisconnected("thread")
 	if attempt.timerMode != workflowTimerBackoff || timer == nil || !timer.active {
 		t.Fatalf("post-unregister death armed mode %v, want the backoff", attempt.timerMode)
 	}
@@ -248,13 +224,13 @@ func TestWorkflowStopDuringBackoffDisarmsRetry(t *testing.T) {
 		t.Fatal("Stop left backoff timer active")
 	}
 	timer.fire()
-	if completed || runner.runs[runKey] != nil || runner.workItemForThread("thread") != "" {
+	if completed || runner.runs[runKey] != nil || runner.WorkItemForThread("thread") != "" {
 		t.Fatal("stopped backoff retried or leaked registration")
 	}
 }
 
 func TestWorkflowTransientRetryExhaustionCleansAttempt(t *testing.T) {
-	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
+	runner := newTestRunner(t, nil, nil, nil)
 	key := engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 1}
 	runKey := workflowRunKey(key)
 	outcomes := make(chan engine.Outcome, 1)
@@ -268,7 +244,7 @@ func TestWorkflowTransientRetryExhaustionCleansAttempt(t *testing.T) {
 
 	runner.observe(runKey, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "error"})
 	runner.observe(runKey, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})
-	runner.sessionDisconnected("thread")
+	runner.SessionDisconnected("thread")
 	// The stop runs off the provider event path (`stopAndFinishOffWire`), so the
 	// completion is awaited rather than expected inline: the interrupt inside it
 	// must never be able to block the pipeline that would deliver its own
@@ -285,14 +261,14 @@ func TestWorkflowTransientRetryExhaustionCleansAttempt(t *testing.T) {
 	runner.mu.Lock()
 	leaked := runner.runs[runKey] != nil
 	runner.mu.Unlock()
-	if leaked || runner.workItemForThread("thread") != "" {
+	if leaked || runner.WorkItemForThread("thread") != "" {
 		t.Fatal("retry exhaustion leaked runner state")
 	}
 }
 
 func TestWorkflowCodexRetryIgnoresPriorTerminalUntilTurnStarts(t *testing.T) {
-	runner := newWorkflowAppRunner(&App{}, t.TempDir(), nil)
-	runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+	runner := newTestRunner(t, nil, nil, nil)
+	runner.newTimer = func(delay time.Duration, callback func()) Timer {
 		return &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
 	}
 	key := engine.RunKey{ItemID: "item", PhaseID: "phase", Attempt: 1}

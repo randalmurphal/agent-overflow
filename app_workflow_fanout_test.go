@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflowhost"
 )
 
 // TestWorkflowStaticFanOutRunsUnitsAndJoin is the end-to-end proof that a
@@ -74,8 +75,8 @@ reliability:
 		branches[branch.Name] = true
 	}
 	for _, id := range []string{"alpha", "beta"} {
-		want := workflowUnitBranch(item.Branch, workflowUnitWorkspaceRef{
-			itemID: item.ID, phaseID: "port", attempt: 1, unitID: id, unitAttempt: 1,
+		want := workflowhost.UnitBranch(item.Branch, workflowhost.UnitWorkspaceRef{
+			ItemID: item.ID, PhaseID: "port", Attempt: 1, UnitID: id, UnitAttempt: 1,
 		})
 		if units[id].Branch != want {
 			t.Fatalf("unit %q branch = %q, want %q", id, units[id].Branch, want)
@@ -195,15 +196,15 @@ reliability:
 // holds.
 func TestWorkflowUnitBranchNamesAreDerivedAndDeterministic(t *testing.T) {
 	const itemBranch = "ao-workflow-port-1234abcd-5f3a"
-	base := workflowUnitWorkspaceRef{
-		itemID: "9f1c3a4e-2b77-4d51-9c8a-3e6f0b2d1a55", phaseID: "implement",
-		attempt: 1, unitID: "port-0", unitAttempt: 1,
+	base := workflowhost.UnitWorkspaceRef{
+		ItemID: "9f1c3a4e-2b77-4d51-9c8a-3e6f0b2d1a55", PhaseID: "implement",
+		Attempt: 1, UnitID: "port-0", UnitAttempt: 1,
 	}
-	first := workflowUnitBranch(itemBranch, base)
+	first := workflowhost.UnitBranch(itemBranch, base)
 	if first != itemBranch+"-9f1c3a4e-implement-a1-port-0-1" {
 		t.Fatalf("unit branch = %q", first)
 	}
-	if again := workflowUnitBranch(itemBranch, base); again != first {
+	if again := workflowhost.UnitBranch(itemBranch, base); again != first {
 		t.Fatalf("unit branch is not deterministic: %q vs %q", again, first)
 	}
 
@@ -215,17 +216,17 @@ func TestWorkflowUnitBranchNamesAreDerivedAndDeterministic(t *testing.T) {
 	// that name their units alike.
 	for _, tc := range []struct {
 		name string
-		ref  workflowUnitWorkspaceRef
+		ref  workflowhost.UnitWorkspaceRef
 	}{
-		{"another wave's fan-out owner", withUnitRef(base, func(r *workflowUnitWorkspaceRef) {
-			r.itemID = "0d55e21b-88fa-4c19-b7d0-1a92c4e73f60"
+		{"another wave's fan-out owner", withUnitRef(base, func(r *workflowhost.UnitWorkspaceRef) {
+			r.ItemID = "0d55e21b-88fa-4c19-b7d0-1a92c4e73f60"
 		})},
-		{"another fan-out phase", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.phaseID = "review" })},
-		{"a re-expanded phase attempt", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.attempt = 2 })},
-		{"a sibling unit", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.unitID = "port-1" })},
-		{"a retry of the same unit", withUnitRef(base, func(r *workflowUnitWorkspaceRef) { r.unitAttempt = 2 })},
+		{"another fan-out phase", withUnitRef(base, func(r *workflowhost.UnitWorkspaceRef) { r.PhaseID = "review" })},
+		{"a re-expanded phase attempt", withUnitRef(base, func(r *workflowhost.UnitWorkspaceRef) { r.Attempt = 2 })},
+		{"a sibling unit", withUnitRef(base, func(r *workflowhost.UnitWorkspaceRef) { r.UnitID = "port-1" })},
+		{"a retry of the same unit", withUnitRef(base, func(r *workflowhost.UnitWorkspaceRef) { r.UnitAttempt = 2 })},
 	} {
-		branch := workflowUnitBranch(itemBranch, tc.ref)
+		branch := workflowhost.UnitBranch(itemBranch, tc.ref)
 		if branch == first {
 			t.Fatalf("%s derived the same branch %q", tc.name, branch)
 		}
@@ -241,16 +242,16 @@ func TestWorkflowUnitBranchNamesAreDerivedAndDeterministic(t *testing.T) {
 
 	// Author-controlled ids are sanitized into ref fragments, and an absent
 	// attempt or try can never produce a branch two of them would share.
-	sanitized := workflowUnitBranch(itemBranch, workflowUnitWorkspaceRef{
-		itemID: "9f1c3a4e-2b77-4d51-9c8a-3e6f0b2d1a55", phaseID: "Port Phase",
-		attempt: 0, unitID: "Port Section", unitAttempt: 0,
+	sanitized := workflowhost.UnitBranch(itemBranch, workflowhost.UnitWorkspaceRef{
+		ItemID: "9f1c3a4e-2b77-4d51-9c8a-3e6f0b2d1a55", PhaseID: "Port Phase",
+		Attempt: 0, UnitID: "Port Section", UnitAttempt: 0,
 	})
 	if want := itemBranch + "-9f1c3a4e-port-phase-a1-port-section-1"; sanitized != want {
 		t.Fatalf("sanitized unit branch = %q, want %q", sanitized, want)
 	}
 }
 
-func withUnitRef(base workflowUnitWorkspaceRef, edit func(*workflowUnitWorkspaceRef)) workflowUnitWorkspaceRef {
+func withUnitRef(base workflowhost.UnitWorkspaceRef, edit func(*workflowhost.UnitWorkspaceRef)) workflowhost.UnitWorkspaceRef {
 	edit(&base)
 	return base
 }

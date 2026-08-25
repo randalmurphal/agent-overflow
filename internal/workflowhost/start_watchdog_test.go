@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/profile"
@@ -29,8 +30,9 @@ import (
 // the start's own timers under the test's control.
 type startWatchdogFixture struct {
 	t        *testing.T
-	app      *App
-	runner   *workflowAppRunner
+	store    *store.Store
+	host     *fakeHost
+	runner   *Runner
 	project  store.Project
 	itemID   string
 	phaseID  string
@@ -46,35 +48,30 @@ type startWatchdogFixture struct {
 
 func newStartWatchdogFixture(t *testing.T) *startWatchdogFixture {
 	t.Helper()
-	app := newTestAppWithStore(t)
-	project, err := app.store.GetProject(defaultTestProjectID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dataStore := newTestStore(t)
+	project := testutil.EnsureProject(t, dataStore, t.TempDir())
 	fixture := &startWatchdogFixture{
-		t: t, app: app, project: project,
+		t: t, store: dataStore, host: &fakeHost{}, project: project,
 		itemID: "wedged-item", phaseID: "work",
 		outcomes: make(chan engine.Outcome, 4),
 		timers:   make(map[time.Duration][]*fakeWorkflowTimer),
 	}
-	fixture.runner = newWorkflowAppRunner(app, t.TempDir(), staticWorkflowProfileSource{value: &profile.Profile{}})
-	fixture.runner.newTimer = func(delay time.Duration, callback func()) workflowTimer {
+	fixture.runner = newTestRunner(t, fixture.host, dataStore, staticWorkflowProfileSource{value: &profile.Profile{}})
+	fixture.runner.newTimer = func(delay time.Duration, callback func()) Timer {
 		timer := &fakeWorkflowTimer{callback: callback, delay: delay, active: true}
 		fixture.mu.Lock()
 		fixture.timers[delay] = append(fixture.timers[delay], timer)
 		fixture.mu.Unlock()
 		return timer
 	}
-	app.workflowRunner = fixture.runner
-
-	if err := app.store.CreateWorkItem(store.WorkItem{
+	if err := dataStore.CreateWorkItem(store.WorkItem{
 		ID: fixture.itemID, ProjectID: project.ID, Goal: "wedge the start",
 		WorkflowID: "flow", WorkflowScope: "shared",
 		State: string(engine.StateRunning), Source: "manual", CreatedAt: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.store.CreateWorkItemPhase(store.WorkItemPhase{
+	if err := dataStore.CreateWorkItemPhase(store.WorkItemPhase{
 		ItemID: fixture.itemID, PhaseID: fixture.phaseID, Attempt: 1,
 		Status: "running", StartedAt: 1,
 	}); err != nil {
@@ -113,13 +110,17 @@ func (f *startWatchdogFixture) runKey() string {
 // start into `startSessionTakingLock`.
 func (f *startWatchdogFixture) seedPriorThread() string {
 	f.t.Helper()
-	thread := testThread("wedged-workflow-thread")
+	now := time.Now().UnixMilli()
+	thread := store.Thread{
+		ID: "wedged-workflow-thread", ProjectID: f.project.ID, ProjectPath: f.project.Path,
+		Title: "wedged", CreatedAt: now, UpdatedAt: now,
+	}
 	thread.Mode = "workflow"
 	thread.Provider = string(provider.Codex)
 	thread.Model = provider.NormalizeModelSlug(string(provider.Codex), "gpt-5.5")
 	thread.WorkspacePath = f.project.Path
 	thread.SessionRef = "codex-thread-cursor"
-	if err := f.app.store.CreateThread(thread); err != nil {
+	if err := f.store.CreateThread(thread); err != nil {
 		f.t.Fatal(err)
 	}
 	f.threadID = thread.ID
@@ -197,10 +198,13 @@ func TestWorkflowStartDeadlineCancelsAWedgedSessionProof(t *testing.T) {
 	fixture := newStartWatchdogFixture(t)
 	threadID := fixture.seedPriorThread()
 	// The incident's own wedge: a session restart blocked under the per-thread
-	// action lock. `startSessionTakingLock` waits for that lock on the start
-	// context, so cancelling the context is what unwinds it.
-	release := fixture.app.threadLocks().Lock(threadID)
-	defer release()
+	// action lock. The App's `startSessionTakingLock` waits for that lock on the
+	// start context, so cancelling the context is what unwinds it — which is the
+	// contract the seam is held to here.
+	fixture.host.startSessionTakingLock = func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 
 	continuation, err := engine.ContinueThread(threadID)
 	if err != nil {
@@ -249,7 +253,9 @@ func TestWorkflowStartGraceFallbackReportsAWedgedOpeningSendExactlyOnce(t *testi
 	sending := make(chan struct{})
 	hold := make(chan struct{})
 	var once sync.Once
-	fixture.app.sendMessageFn = func(string, string, []string) error {
+	fixture.host.send = func(
+		context.Context, string, string, json.RawMessage, func(DispatchIdentity),
+	) error {
 		// Deliberately deaf to the start context: this is the non-ctx-aware wait
 		// the grace fallback exists for.
 		once.Do(func() { close(sending) })
@@ -360,7 +366,7 @@ func TestWorkflowInstallRefusesAnAttemptTheFallbackAlreadyReportedDead(t *testin
 // forget one — which is why every reason is checked for its own line here rather
 // than one standing in for the rest.
 func TestWorkflowSendDropReasonsAreNamedAndLogged(t *testing.T) {
-	captured := captureLogOutput(t)
+	captured := testutil.CaptureLogOutput(t)
 
 	requireLogged := func(runKey, what string, reason workflowSendDropReason) {
 		t.Helper()
@@ -415,7 +421,9 @@ func TestWorkflowStartThatBeatsTheGraceWindowKeepsItsLiveAttempt(t *testing.T) {
 	sending := make(chan struct{})
 	hold := make(chan struct{})
 	var once sync.Once
-	fixture.app.sendMessageFn = func(string, string, []string) error {
+	fixture.host.send = func(
+		context.Context, string, string, json.RawMessage, func(DispatchIdentity),
+	) error {
 		once.Do(func() { close(sending) })
 		<-hold
 		return nil
@@ -592,12 +600,14 @@ func TestWorkflowStartGraceFallbackReleasesTheTakeoverRegistration(t *testing.T)
 // (the shared bucket no repair verb reaches) and then let the watchdog log the
 // start as a live success it kept.
 func TestWorkflowStartDeadlineCancelUnwindingTheOpeningSendParksSetupFailed(t *testing.T) {
-	logs := captureLogOutput(t)
+	logs := testutil.CaptureLogOutput(t)
 	fixture := newStartWatchdogFixture(t)
 	sending := make(chan struct{})
 	hold := make(chan error)
 	var once sync.Once
-	fixture.app.sendMessageFn = func(string, string, []string) error {
+	fixture.host.send = func(
+		context.Context, string, string, json.RawMessage, func(DispatchIdentity),
+	) error {
 		once.Do(func() { close(sending) })
 		return <-hold
 	}

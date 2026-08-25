@@ -16,6 +16,8 @@ import (
 	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/sessionimport"
 	"agent-overflow/internal/usagebackoff"
+
+	"agent-overflow/internal/workflowhost"
 )
 
 // The App struct's concern groups.
@@ -340,10 +342,10 @@ type appWorkflowAutoResumeState struct {
 	// park. The engine owns no timers by boundary, which is why the schedule
 	// lives here.
 	mu     sync.Mutex
-	timers map[string]workflowTimer
+	timers map[string]workflowhost.Timer
 	// newTimer and nowFn are test-only injections, mirroring idleReaperNowFn.
 	// Production leaves both nil.
-	newTimer func(time.Duration, func()) workflowTimer
+	newTimer func(time.Duration, func()) workflowhost.Timer
 	nowFn    func() time.Time
 }
 

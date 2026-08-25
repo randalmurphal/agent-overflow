@@ -43,13 +43,6 @@ const (
 	retainedNotRegistered  = "git no longer tracks this path as a worktree of the project"
 )
 
-// retainedDirtyReason is the ordinary case: `git worktree remove` refuses a
-// checkout carrying uncommitted or untracked work, and the app does not
-// override that refusal.
-func retainedDirtyReason(count int) string {
-	return fmt.Sprintf("%d uncommitted or untracked file%s", count, pluralSuffix(count))
-}
-
 // ProjectCleanupWorktree is one checkout the deletion will clean up, and what it
 // expects to manage to do with it.
 type ProjectCleanupWorktree struct {
@@ -157,13 +150,6 @@ func (f projectWorkflowFootprint) hasWork() bool {
 func (f projectWorkflowFootprint) sameAs(other projectWorkflowFootprint) bool {
 	return slices.Equal(f.runIDs, other.runIDs) &&
 		slices.Equal(f.automationIDs, other.automationIDs)
-}
-
-func pluralSuffix(count int) string {
-	if count == 1 {
-		return ""
-	}
-	return "s"
 }
 
 func (a *App) projectWorkflowFootprint(projectID string) (projectWorkflowFootprint, error) {
@@ -303,7 +289,7 @@ func (a *App) describeCleanupWorktree(
 	}
 	described.DirtyFileCount = total
 	if total > 0 {
-		described.Retained, described.Reason = true, retainedDirtyReason(total)
+		described.Retained, described.Reason = true, gitops.RetainedDirtyReason(total)
 	}
 	return described
 }

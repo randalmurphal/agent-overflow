@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -75,7 +75,7 @@ const (
 // reported it would install a live attempt under a run the engine has already
 // parked.
 type workflowStartProgress struct {
-	runner   *workflowAppRunner
+	runner   *Runner
 	runKey   string
 	cancel   context.CancelFunc
 	complete func(engine.Outcome)
@@ -90,8 +90,8 @@ type workflowStartProgress struct {
 
 	step     workflowStartStep
 	threadID string
-	deadline workflowTimer
-	grace    workflowTimer
+	deadline Timer
+	grace    Timer
 	// expired records that the deadline fired, and what it fired on. The step and
 	// thread are captured at that moment because the wedged goroutine may still
 	// advance either afterwards.
@@ -109,7 +109,7 @@ type workflowStartProgress struct {
 // every step of that start must run under. The caller rebinds its own `ctx`
 // parameter to the returned one, so no downstream site can accidentally keep
 // using the engine's uncancellable original.
-func (r *workflowAppRunner) beginStartProgress(
+func (r *Runner) beginStartProgress(
 	ctx context.Context, key engine.RunKey, complete func(engine.Outcome),
 ) (context.Context, *workflowStartProgress) {
 	startCtx, cancel := context.WithCancel(ctx)
@@ -173,7 +173,7 @@ func (p *workflowStartProgress) currentLocked() bool {
 // critical section, or a start that unwedges just after the fallback would
 // install a live attempt (or leave a spawned tool process unreaped) under a
 // run the engine has already parked.
-func (r *workflowAppRunner) startReportedDeadLocked(runKey string) bool {
+func (r *Runner) startReportedDeadLocked(runKey string) bool {
 	progress := r.startProgress[runKey]
 	return progress != nil && progress.reported
 }
@@ -186,7 +186,7 @@ func (r *workflowAppRunner) startReportedDeadLocked(runKey string) bool {
 //
 // A key with no live start is not an error — `Stop`, retries, and unit paths all
 // call into helpers that mark steps outside a start.
-func (r *workflowAppRunner) markStartStep(key engine.RunKey, step workflowStartStep) {
+func (r *Runner) markStartStep(key engine.RunKey, step workflowStartStep) {
 	r.mu.Lock()
 	if progress := r.startProgress[workflowRunKey(key)]; progress != nil {
 		progress.step = step
@@ -197,7 +197,7 @@ func (r *workflowAppRunner) markStartStep(key engine.RunKey, step workflowStartS
 // noteStartThread records the provider thread a start selected, so an expiry can
 // name it. Empty is ignored: a failed thread creation has no thread to name, and
 // it must not erase one an earlier step recorded.
-func (r *workflowAppRunner) noteStartThread(key engine.RunKey, threadID string) {
+func (r *Runner) noteStartThread(key engine.RunKey, threadID string) {
 	if threadID == "" {
 		return
 	}
@@ -211,7 +211,7 @@ func (r *workflowAppRunner) noteStartThread(key engine.RunKey, threadID string) 
 // armStartDeadline starts the clock. Every element shape calls it at the same
 // point: the moment its workspace is provisioned and only bounded internal work
 // remains. See workflowStartDeadline for why not earlier.
-func (r *workflowAppRunner) armStartDeadline(key engine.RunKey) {
+func (r *Runner) armStartDeadline(key engine.RunKey) {
 	r.mu.Lock()
 	progress := r.startProgress[workflowRunKey(key)]
 	if progress == nil || progress.returned || progress.deadline != nil {

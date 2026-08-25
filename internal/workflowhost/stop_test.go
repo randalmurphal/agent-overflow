@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -25,7 +25,7 @@ import (
 func newStopHarness(t *testing.T) (*observeHarness, chan string) {
 	t.Helper()
 	h := newObserveHarness(t, string(provider.Codex))
-	h.runner.stopSendWait = 20 * time.Millisecond
+	h.runner.StopSendWait = 20 * time.Millisecond
 	interrupted := make(chan string, 4)
 	h.runner.interrupt = func(_ context.Context, threadID string) error {
 		interrupted <- threadID
@@ -313,7 +313,7 @@ func TestWorkflowStopForTakeoverRefusesAWedgedSendAndRestoresTheAttempt(t *testi
 	}
 	// And provider events reach the turn machine again: the restore made a fresh
 	// observer subscription, not a dangling reference to the torn-down one.
-	h.app.dispatchTurnObservers(h.attempt.threadID, provider.ProviderEvent{Kind: provider.EventTurnStart})
+	h.host.dispatchTurnObservers(h.attempt.threadID, provider.ProviderEvent{Kind: provider.EventTurnStart})
 	if state := h.state(); !state.turnStarted {
 		t.Fatal("a provider event after the refused takeover never reached the attempt's turn machine")
 	}

@@ -61,3 +61,17 @@ func UniqueWorktreePath(path string) (string, error) {
 	}
 	return fmt.Sprintf("%s-%d", path, time.Now().UnixMilli()), nil
 }
+
+// RetainedDirtyReason names, in the words a user reads, why `git worktree
+// remove` refused a checkout: it carries uncommitted or untracked work, and no
+// caller here overrides that refusal. It lives beside the worktree helpers
+// because two unrelated callers report it — the project-deletion preview and
+// the workflow fan-out unit retirement — and a checkout kept for one reason
+// must not read differently depending on which one kept it.
+func RetainedDirtyReason(count int) string {
+	suffix := "s"
+	if count == 1 {
+		suffix = ""
+	}
+	return fmt.Sprintf("%d uncommitted or untracked file%s", count, suffix)
+}

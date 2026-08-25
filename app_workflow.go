@@ -227,7 +227,7 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	// Bare internal test apps may intentionally omit triage; production startup
 	// always installs it before the workflow engine.
 	if a.triage != nil {
-		a.triage.SetUsageWorkItemResolver(runner.workItemForThread)
+		a.triage.SetUsageWorkItemResolver(runner.WorkItemForThread)
 	}
 	// Transfer prior-process usage-attention claims before Engine.Start can emit
 	// recovery transitions and create claims owned by this process's in-memory
@@ -457,16 +457,16 @@ func (a *App) WorkflowResumeItem(ctx context.Context, itemID, targetPhase string
 			unlock()
 			return fmt.Errorf("resume workflow takeover %s: the steering turn must yield first", itemID)
 		}
-		if err := a.workflowRunner.beginTakeoverTransition(context.Background(), itemID, phase.ThreadID); err != nil {
+		if err := a.workflowRunner.BeginTakeoverTransition(context.Background(), itemID, phase.ThreadID); err != nil {
 			unlock()
 			return err
 		}
 		unlock()
 		if err := workflowEngine.Resume(itemID, targetPhase, refreshDefinition); err != nil {
-			a.workflowRunner.cancelTakeoverTransition(itemID, phase.ThreadID)
+			a.workflowRunner.CancelTakeoverTransition(itemID, phase.ThreadID)
 			return err
 		}
-		a.workflowRunner.clearTakeover(itemID)
+		a.workflowRunner.ClearTakeover(itemID)
 		return nil
 	}
 	if err := workflowEngine.Resume(itemID, targetPhase, refreshDefinition); err != nil {
@@ -506,13 +506,13 @@ func (a *App) WorkflowCompleteTakeover(itemID string) error {
 		unlock()
 		return fmt.Errorf("complete workflow takeover %s: runner unavailable", itemID)
 	}
-	if err := a.workflowRunner.beginTakeoverTransition(context.Background(), itemID, threadID); err != nil {
+	if err := a.workflowRunner.BeginTakeoverTransition(context.Background(), itemID, threadID); err != nil {
 		unlock()
 		return err
 	}
 	unlock()
 	if err := workflowEngine.CompleteTakeover(itemID); err != nil {
-		a.workflowRunner.cancelTakeoverTransition(itemID, threadID)
+		a.workflowRunner.CancelTakeoverTransition(itemID, threadID)
 		return err
 	}
 	return nil

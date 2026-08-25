@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/workflowhost"
 )
 
 // `agent-overflow run narrative` — the per-attempt account, by coordinate
@@ -87,7 +88,7 @@ func (a *App) WorkflowAgentRunNarrative(ctx context.Context, input WorkflowAgent
 	}
 	unitID := strings.TrimSpace(input.UnitID)
 	if unitID == "" {
-		narrative.Path, narrative.Present, err = workflowNarrativeLookup(
+		narrative.Path, narrative.Present, err = workflowhost.NarrativeLookup(
 			a.workflowDataRoot(), item.ID, selected.PhaseID, selected.Attempt)
 	} else {
 		var unit store.WorkItemUnit
@@ -96,7 +97,7 @@ func (a *App) WorkflowAgentRunNarrative(ctx context.Context, input WorkflowAgent
 			return WorkflowAgentNarrative{}, err
 		}
 		narrative.UnitID, narrative.UnitAttempt = unit.UnitID, unit.UnitAttempt
-		narrative.Path, narrative.Present, err = workflowUnitNarrativeLookup(
+		narrative.Path, narrative.Present, err = workflowhost.UnitNarrativeLookup(
 			a.workflowDataRoot(), item.ID, selected.PhaseID, selected.Attempt, unit.UnitID, unit.UnitAttempt)
 	}
 	if err != nil {

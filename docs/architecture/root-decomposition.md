@@ -122,8 +122,8 @@ neither critical section calls anything that takes another App mutex.
   `_workspace`, `_reliability`, `_start_watchdog`, `_takeover`,
   `_observe`, `_send`, `_agent_turn`, `_quota`) declare methods on
   `*workflowAppRunner`, whose first field was `app *App` — moving them IS
-  the stage-3 workflow-host extraction, not free mass. (That field is now
-  the host interface set below; the files still live in `main`.)
+  the stage-3 workflow-host extraction, not free mass. (They have since
+  moved, as stage 3 below, to `internal/workflowhost/`.)
   `app_worktree_setup_types.go` is generated-bindings surface
   (`WorktreeSetupRunState` et al. appear in
   `frontend/bindings/.../models.ts`). `app_updater_desktop.go` and
@@ -144,26 +144,47 @@ neither critical section calls anything that takes another App mutex.
   lifecycle) and the ambient set stayed top-level. `app_state.go`'s
   header states the rules a new group must follow.
 
-**Stage 3+ — workflow-host extraction (started; the move itself is still
-its own thread).** The workflow host is the largest coherent cluster and
-the best-isolated: 26 fields, of which **9 are workflow-only** and 17 are
-shared — and 14 of those 17 are the ambient set plus `triage`. Extract
-behind a `Deps` interface, keep the 53 exported methods registering as
-`main/App` (see (d)), and only then consider promoting other clusters
-(updater, mcp) the same way.
+**Stage 3+ — workflow-host extraction (landed).** The workflow host was
+the largest coherent cluster and the best-isolated: 26 fields, of which
+**9 were workflow-only** and 17 shared — and 14 of those 17 the ambient
+set plus `triage`.
 
-*Step 1 landed:* `workflowAppRunner` no longer holds `*App`. It holds
-`host workflowRunnerHost` — eight capability-named consumer-side
-interfaces composed in `app_workflow_runner_host.go`, covering the 19
-App members the runner actually reached — plus `*store.Store` directly,
-the way every other workflow collaborator in `main` already holds it.
-`*App` satisfies the seams implicitly, so there is no adapter. Moving
-the runner's files into `internal/workflowhost/` is the remaining step,
-and it is what will force the lower-case method names in those
-interfaces to be reconsidered: an unexported method name in an interface
-declared outside `main` is not satisfiable by `*App`.
+*Step 1:* `workflowAppRunner` stopped holding `*App`. It holds
+`host` — eight capability-named consumer-side interfaces — plus
+`*store.Store` directly, the way every other workflow collaborator in
+`main` already holds it.
 
-Do not start stage 3 as a rider on a stage-2 wave.
+*Step 2:* the runner's fifteen files moved to **`internal/workflowhost/`**
+(`workflowAppRunner` → `Runner`). The seams moved with them as
+`workflowhost.Host` with EXPORTED method names, which is what the move
+forced: an unexported method name in an interface declared outside
+`main` is not satisfiable by `*App`. `main` satisfies them through ONE
+adapter — `workflowHostAdapter` in `app_workflow_host.go`, eighteen
+four-line forwards to the App's own unexported methods and nothing else.
+Renaming eighteen App methods to exported would have rippled through
+`main` much further than the forwards do, and the adapter is glue with
+no behavior, so nothing about "where does this decision live" moved.
+
+Two seams were narrowed rather than carried across, because carrying
+them would have dragged `main` types with them: `sessionManager()`
+became `SessionActive(threadID) bool` (both callers discarded the handle
+and read only the boolean), and `turnObserver` — a `main`-declared func
+type — became its own underlying `func(string, provider.ProviderEvent)`.
+Three pieces the runner shared with `main` were promoted out on the way:
+`internal/keyedlock` (the keyed-lock registry `App.threadLocks`,
+`App.configApplyLocks` and `Runner.workspaceLocks` all use),
+`appdirs.PrivateDirPerm` / `SensitiveFilePerm`, and
+`gitops.RetainedDirtyReason`.
+
+What deliberately stayed in `main`: every bound method (they are the
+wire, see (d)), `App.createWorkflowThread` (model-profile seeding and
+the access→runtime-mode mapping are App policy), and `WorkflowArtifact`
+— a wire model already emitted into
+`frontend/bindings/agent-overflow/models.ts`, whose relocation would be
+a bindings regeneration, not a code move.
+
+Only now consider promoting other clusters (updater, mcp) the same way.
+Do not start one as a rider on another wave.
 
 ## (d) Wire compatibility
 

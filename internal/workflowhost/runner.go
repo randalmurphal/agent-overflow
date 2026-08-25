@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -19,25 +21,28 @@ import (
 	workflowrunner "agent-overflow/internal/workflow/runner"
 )
 
-type workflowAppRunner struct {
+// Runner is the app-side `engine.Runner`: it turns one piece of engine work
+// into a provider turn or a deterministic command, and reports the outcome.
+type Runner struct {
 	// host is the process around the runner, behind the capability seams in
-	// app_workflow_runner_host.go. It is those interfaces rather than *App so
-	// the runner's contract is what it actually uses, not everything the App
-	// happens to expose.
-	host workflowRunnerHost
+	// host.go. It is those interfaces rather than *App so the runner's contract
+	// is what it actually uses, not everything the App happens to expose.
+	host Host
 	// store is a dependency rather than a host capability, held the same way
 	// every other workflow collaborator in this package holds it.
 	store    *store.Store
 	dataRoot string
 	profiles engine.ProfileSource
 	now      func() time.Time
-	newTimer func(time.Duration, func()) workflowTimer
-	// stopSendWait is how long a stop taken on the engine's command loop waits
+	newTimer func(time.Duration, func()) Timer
+	// StopSendWait is how long a stop taken on the engine's command loop waits
 	// for an in-flight send before it leaves the rest to a goroutine. It is a
-	// field rather than a bare constant read so a test can shrink it: the bound's
-	// whole subject is a wait no test may actually sit through. See
+	// settable field rather than a bare constant read because the bound's whole
+	// subject is a wait nobody may actually sit through: a test shrinks it to
+	// observe the abandonment, or stretches it past its own timeout to keep a
+	// lock-order violation visible as the hang it really is. New installs
 	// workflowStopSendWait.
-	stopSendWait time.Duration
+	StopSendWait time.Duration
 	// interrupt fires a provider-level interrupt on a thread's active session,
 	// with ctx bounding only the thread-action-lock acquisition. It is a field
 	// rather than a direct call for the tests that assert an interrupt was — or,
@@ -55,7 +60,7 @@ type workflowAppRunner struct {
 	// workspaceLocks serializes primary-workspace provisioning per work item.
 	// It is its own registry rather than the App's thread locks because the key
 	// space is item ids, and the two must never contend.
-	workspaceLocks *keyedLockRegistry
+	workspaceLocks *keyedlock.Registry
 
 	mu        sync.Mutex
 	runs      map[string]*workflowAttempt
@@ -64,7 +69,7 @@ type workflowAppRunner struct {
 	takeovers map[string]workflowTakeover
 	// startProgress holds one entry per in-flight Runner.Start, keyed the same
 	// way runs are. It is where the start deadline and its once-guard live. See
-	// app_workflow_start_watchdog.go.
+	// start_watchdog.go.
 	startProgress map[string]*workflowStartProgress
 	// workItems attributes usage only while a phase or unit thread can emit a
 	// live turn. Startup crash recovery parks orphan attempts before any session
@@ -109,7 +114,7 @@ type workflowAttempt struct {
 	schema              json.RawMessage
 	contract            def.EnvelopeContract
 	provider            string
-	dispatchIdentity    providerDispatchIdentity
+	dispatchIdentity    DispatchIdentity
 	dispatchIdentitySet bool
 	phase               def.Phase
 	complete            func(engine.Outcome)
@@ -142,7 +147,7 @@ type workflowAttempt struct {
 	// advance invalidates what the previous state queued.
 	sendEpoch         int
 	providerRetryHint bool
-	timer             workflowTimer
+	timer             Timer
 	timerMode         workflowTimerMode
 	timerDeadline     time.Time
 	// lastFailure is the runner's account of the most recent provider failure
@@ -167,16 +172,22 @@ func (a *workflowAttempt) failureDetail(fallback string) string {
 	return workflowFailureDetail(fallback + " (" + a.lastFailure + ")")
 }
 
-func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSource) *workflowAppRunner {
-	return &workflowAppRunner{
-		host: app, store: app.store,
+// New builds the runner. `interrupt` fires a provider-level interrupt on a
+// thread's active session, with ctx bounding only the thread-action-lock
+// acquisition; production passes `App.interruptTurnCtx`. See the field.
+func New(
+	host Host, dataStore *store.Store, dataRoot string,
+	profiles engine.ProfileSource, interrupt func(context.Context, string) error,
+) *Runner {
+	return &Runner{
+		host: host, store: dataStore,
 		dataRoot: dataRoot, profiles: profiles, now: time.Now,
-		newTimer: func(delay time.Duration, callback func()) workflowTimer {
+		newTimer: func(delay time.Duration, callback func()) Timer {
 			return time.AfterFunc(delay, callback)
 		},
-		stopSendWait:   workflowStopSendWait,
-		interrupt:      app.interruptTurnCtx,
-		workspaceLocks: newKeyedLocks(),
+		StopSendWait:   workflowStopSendWait,
+		interrupt:      interrupt,
+		workspaceLocks: keyedlock.New(),
 		runs:           make(map[string]*workflowAttempt), tools: make(map[string]*workflowToolAttempt),
 		schemas:       make(map[string]json.RawMessage),
 		takeovers:     make(map[string]workflowTakeover),
@@ -198,20 +209,20 @@ func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSour
 //
 // Written this way there is no named return for a defer to mutate, and the order
 // is the reading order.
-func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest, entered func(), complete func(engine.Outcome)) error {
+func (r *Runner) Start(ctx context.Context, request engine.RunRequest, entered func(), complete func(engine.Outcome)) error {
 	entered()
 	// The body runs under the start's own cancellable context and inside its
 	// progress record. `ctx` is rebound rather than shadowed by a new name so no
 	// downstream site can keep using the engine's original: the deadline's whole
 	// mechanism is that cancelling this context unwinds the start. See
-	// app_workflow_start_watchdog.go.
+	// start_watchdog.go.
 	ctx, progress := r.beginStartProgress(ctx, request.Key, complete)
 	if request.Launch.FinalizesTakeover() {
 		// Registered on the record as well as handled below, because a wedged
 		// finalize start may never return: `reportDead` releases the registration
 		// for that channel. See the field.
 		itemID, threadID := request.Key.ItemID, request.Launch.ThreadID()
-		progress.cancelTakeover = func() { r.cancelTakeoverTransition(itemID, threadID) }
+		progress.cancelTakeover = func() { r.CancelTakeoverTransition(itemID, threadID) }
 	}
 	err := progress.finish(r.start(ctx, request, complete))
 	if err != nil && request.Launch.FinalizesTakeover() {
@@ -219,12 +230,12 @@ func (r *workflowAppRunner) Start(ctx context.Context, request engine.RunRequest
 		// registration in transitioning state: steering sends would be rejected
 		// until process restart. Success deletes the registration wholesale when
 		// the attempt is installed, so this is a no-op on that path.
-		r.cancelTakeoverTransition(request.Key.ItemID, request.Launch.ThreadID())
+		r.CancelTakeoverTransition(request.Key.ItemID, request.Launch.ThreadID())
 	}
 	return err
 }
 
-func (r *workflowAppRunner) start(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
+func (r *Runner) start(ctx context.Context, request engine.RunRequest, complete func(engine.Outcome)) error {
 	if err := request.Launch.Validate(); err != nil {
 		return fmt.Errorf("workflow runner: %w", err)
 	}
@@ -268,7 +279,7 @@ func (r *workflowAppRunner) start(ctx context.Context, request engine.RunRequest
 	// Provisioning and setup hooks are behind us; everything left is bounded by
 	// design, so this is where the start deadline starts running.
 	r.armStartDeadline(request.Key)
-	workspace := preparedWorkspace.path
+	workspace := preparedWorkspace.Path
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("workflow runner: startup cancelled: %w", err)
 	}
@@ -277,18 +288,18 @@ func (r *workflowAppRunner) start(ctx context.Context, request engine.RunRequest
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(narrativePath), appPrivateDirPerm); err != nil {
+	if err := os.MkdirAll(filepath.Dir(narrativePath), appdirs.PrivateDirPerm); err != nil {
 		return fmt.Errorf("workflow runner: create narrative directory: %w", err)
 	}
 
-	spec := workflowThreadSpec{
-		itemID: request.Key.ItemID, label: fmt.Sprintf("phase %q", request.Phase.ID),
-		title:        workflowThreadTitle(request.Phase.Name, request.Phase.ID),
-		providerName: request.Phase.Provider, model: request.Phase.Model,
-		effort: request.Phase.Effort,
-		access: request.Phase.EffectiveAccess(), workspace: preparedWorkspace,
+	spec := ThreadSpec{
+		ItemID: request.Key.ItemID, Label: fmt.Sprintf("phase %q", request.Phase.ID),
+		Title:        ThreadTitle(request.Phase.Name, request.Phase.ID),
+		ProviderName: request.Phase.Provider, Model: request.Phase.Model,
+		Effort: request.Phase.Effort,
+		Access: request.Phase.EffectiveAccess(), Workspace: preparedWorkspace,
 	}
-	promptContext := r.host.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
+	promptContext := r.host.WorkflowPromptAncestry(request.Key.ItemID, request.Workflow)
 	promptContext.NarrativePath = narrativePath
 	promptContext.Access = request.Phase.EffectiveAccess()
 	r.markStartStep(request.Key, workflowStartStepSessionProof)
@@ -321,7 +332,7 @@ func (r *workflowAppRunner) start(ctx context.Context, request engine.RunRequest
 	attempt := &workflowAttempt{
 		workflowCompletion: workflowCompletion{
 			key: request.Key, workflow: request.Workflow, narrativePath: narrativePath,
-			workspace: workspace, projectPath: preparedWorkspace.project.Path,
+			workspace: workspace, projectPath: preparedWorkspace.Project.Path,
 		},
 		threadID: prepared.threadID,
 		schema:   append(json.RawMessage(nil), schema...), contract: contract,
@@ -340,7 +351,7 @@ func (r *workflowAppRunner) start(ctx context.Context, request engine.RunRequest
 // blocked. The stop has no context to take — it tears a live session down and
 // that teardown has to complete — so a stop that hangs is the grace fallback's
 // case rather than the deadline's.
-func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(ctx context.Context, threadID string, schema json.RawMessage) (bool, error) {
+func (r *Runner) restartClaudeTakeoverWithSchema(ctx context.Context, threadID string, schema json.RawMessage) (bool, error) {
 	r.mu.Lock()
 	takeover, registered := r.takeovers[threadID]
 	restart := registered && !takeover.schemaAttached
@@ -351,11 +362,11 @@ func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(ctx context.Context,
 	if !restart {
 		return false, nil
 	}
-	if err := r.host.stopSession(threadID); err != nil {
+	if err := r.host.StopSession(threadID); err != nil {
 		r.removeTemporarySchema(threadID)
 		return false, fmt.Errorf("workflow runner: stop schema-less takeover session: %w", err)
 	}
-	if err := r.host.startSessionTakingLock(ctx, threadID); err != nil {
+	if err := r.host.StartSessionTakingLock(ctx, threadID); err != nil {
 		r.removeTemporarySchema(threadID)
 		return false, fmt.Errorf("workflow runner: restart takeover session with schema: %w", err)
 	}
@@ -366,11 +377,11 @@ func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(ctx context.Context,
 // prompt. Every agent-backed workflow turn — phase, unit, and join — ends here,
 // so registration, observer wiring, the cancellation window, and the send-failure
 // outcome are written once.
-func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflowAttempt, prepared preparedWorkflowAgentTurn) error {
+func (r *Runner) installAttempt(ctx context.Context, attempt *workflowAttempt, prepared preparedWorkflowAgentTurn) error {
 	key := workflowRunKey(attempt.key)
 	threadID := attempt.threadID
 	r.markStartStep(attempt.key, workflowStartStepInstall)
-	attempt.unsubscribe = r.host.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
+	attempt.unsubscribe = r.host.SubscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
 		r.observe(key, event)
 	})
 	r.mu.Lock()
@@ -434,7 +445,7 @@ func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflo
 // is the blocking half — waiting out an in-flight send, then interrupting the
 // turn — put on its own goroutine and given a bound. A send wedged on provider
 // IO used to hold this method, and with it the command loop, indefinitely.
-func (r *workflowAppRunner) Stop(_ context.Context, key engine.RunKey) (json.RawMessage, error) {
+func (r *Runner) Stop(_ context.Context, key engine.RunKey) (json.RawMessage, error) {
 	runKey := workflowRunKey(key)
 	// A tool phase has no turn to interrupt: teardown kills its process group
 	// and the reaping goroutine writes the attempt narrative.
@@ -470,13 +481,13 @@ func (r *workflowAppRunner) Stop(_ context.Context, key engine.RunKey) (json.Raw
 		log.Printf(
 			"workflow runner: stopping %s left its send barrier and interrupt on thread %s unfinished after %s; "+
 				"returning to the engine now and interrupting the turn when the wedge clears",
-			runKey, attempt.threadID, r.stopSendWait,
+			runKey, attempt.threadID, r.StopSendWait,
 		)
 	}
 	return nil, nil
 }
 
-func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
+func (r *Runner) finish(runKey string, outcome engine.Outcome) {
 	attempt, ok := r.detach(runKey)
 	if !ok {
 		return
@@ -496,7 +507,7 @@ func (r *workflowAppRunner) finish(runKey string, outcome engine.Outcome) {
 // read loop can deliver. Blocking the read loop on `sendMu` therefore deadlocks
 // the two against each other permanently; `stopAndFinishOffWire` documents the
 // same rule for the interrupt half.
-func (r *workflowAppRunner) finishOffWire(runKey string, outcome engine.Outcome) {
+func (r *Runner) finishOffWire(runKey string, outcome engine.Outcome) {
 	attempt, ok := r.detach(runKey)
 	if !ok {
 		return
@@ -504,7 +515,7 @@ func (r *workflowAppRunner) finishOffWire(runKey string, outcome engine.Outcome)
 	go r.finishDetachedAttempt(attempt, outcome)
 }
 
-func (r *workflowAppRunner) finishDetachedAttempt(attempt *workflowAttempt, outcome engine.Outcome) {
+func (r *Runner) finishDetachedAttempt(attempt *workflowAttempt, outcome engine.Outcome) {
 	r.awaitInFlightSend(attempt)
 	// Every agent-backed workflow turn — phase, unit, join, Answer continuation,
 	// takeover finalize — reports here, which makes this the one seam the
@@ -532,7 +543,7 @@ func (r *workflowAppRunner) finishDetachedAttempt(attempt *workflowAttempt, outc
 	// was about to appear.
 	if workflowOutcomeCarriesEnvelope(outcome.Kind) {
 		r.settleAttemptNarrative(attempt, authored, original)
-		r.host.recordEnvelopeMemory(attempt.key, notes)
+		r.host.RecordEnvelopeMemory(attempt.key, notes)
 	}
 	if outcome.Kind == engine.OutcomeDone {
 		go func() {
@@ -558,7 +569,7 @@ func workflowOutcomeCarriesEnvelope(kind engine.OutcomeKind) bool {
 	}
 }
 
-func (r *workflowAppRunner) sessionSchemaForThread(threadID string) (json.RawMessage, bool) {
+func (r *Runner) SessionSchemaForThread(threadID string) (json.RawMessage, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if schema, ok := r.schemas[threadID]; ok {
@@ -576,10 +587,19 @@ func (r *workflowAppRunner) sessionSchemaForThread(threadID string) (json.RawMes
 	return nil, ok
 }
 
-func (r *workflowAppRunner) workItemForThread(threadID string) string {
+func (r *Runner) WorkItemForThread(threadID string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.workItems[threadID]
+}
+
+// WorkspaceLockRefs is how many holders and waiters an item's workspace lock
+// currently has, and 0 for an item the registry holds no entry for. The
+// registry self-cleans when the last reference goes away — before it did, it
+// grew one entry per run for the life of the process — so this is the one way
+// to see from outside that a finished run left nothing behind.
+func (r *Runner) WorkspaceLockRefs(itemID string) int {
+	return r.workspaceLocks.Refs(itemID)
 }
 
 func findingsForEnvelopeError(err error) []def.EnvelopeFinding {
@@ -598,4 +618,14 @@ func workflowRunKey(key engine.RunKey) string {
 		return fmt.Sprintf("%s/%s/%d/%s", key.ItemID, key.PhaseID, key.Attempt, key.UnitID)
 	}
 	return fmt.Sprintf("%s/%s/%d", key.ItemID, key.PhaseID, key.Attempt)
+}
+
+// DataRoot is the app-managed directory the runner writes run files under
+// (narratives, envelopes, artifacts). `App.workflowDataRoot` reads it so every
+// reader of a run's files resolves the same root the writer used.
+func (r *Runner) DataRoot() string {
+	if r == nil {
+		return ""
+	}
+	return r.dataRoot
 }

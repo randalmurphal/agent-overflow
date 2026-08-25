@@ -97,7 +97,7 @@ func (a *App) WorkflowTakeOverUnit(itemID, unitID string) error {
 	if err := workflowEngine.TakeOverUnit(itemID, unitID); err != nil {
 		return err
 	}
-	if err := a.workflowRunner.registerTakeover(context.Background(), itemID, unit.ThreadID); err != nil {
+	if err := a.workflowRunner.RegisterTakeover(context.Background(), itemID, unit.ThreadID); err != nil {
 		return fmt.Errorf(
 			"take over workflow unit %q of item %s: register schema-less steering: %w",
 			unitID, itemID, err,
@@ -187,5 +187,5 @@ func (a *App) releaseWorkflowUnitTakeover(threadID string) {
 	if threadID == "" || a.workflowRunner == nil {
 		return
 	}
-	a.workflowRunner.clearTakeoverThread(threadID)
+	a.workflowRunner.ClearTakeoverThread(threadID)
 }

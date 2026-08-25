@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"context"
@@ -33,7 +33,7 @@ const (
 	// stopped, finished, or torn down while this send was queued.
 	workflowSendDropUnregistered workflowSendDropReason = "the attempt is no longer registered"
 	// workflowSendDropSessionDeath: a session death is latched, so
-	// `sessionDisconnected` owns what happens next.
+	// `SessionDisconnected` owns what happens next.
 	workflowSendDropSessionDeath workflowSendDropReason = "the attempt latched a session death"
 	// workflowSendDropStaleEpoch: the retry ladder advanced past the state that
 	// queued this send, so a newer send owns the next turn.
@@ -74,7 +74,7 @@ func logWorkflowSendDrop(runKey, what string, reason workflowSendDropReason) {
 //
 // `epoch` is the caller's `attempt.sendEpoch`, read under the runner lock at the
 // moment the send was decided. See the field.
-func (r *workflowAppRunner) sendIfActive(
+func (r *Runner) sendIfActive(
 	ctx context.Context, runKey, what, message string, schema json.RawMessage, epoch int,
 ) (drop workflowSendDropReason, err error) {
 	defer func() {
@@ -113,13 +113,13 @@ func (r *workflowAppRunner) sendIfActive(
 // dispatchSendLocked is `sendIfActive`'s admission and dispatch. The caller
 // must hold `attempt.sendMu`, which serializes it with Stop's wait on an
 // in-flight send.
-func (r *workflowAppRunner) dispatchSendLocked(
+func (r *Runner) dispatchSendLocked(
 	ctx context.Context, runKey string, attempt *workflowAttempt,
 	message string, schema json.RawMessage, epoch int,
 ) (workflowSendDropReason, error) {
 	r.mu.Lock()
 	// A latched session death makes the attempt as inactive as cancellation does:
-	// the session is being reaped and `sessionDisconnected` owns what happens
+	// the session is being reaped and `SessionDisconnected` owns what happens
 	// next. A send queued before the death would otherwise land in the dying
 	// process and convert a transient ladder into an execution-failure park.
 	//
@@ -142,7 +142,7 @@ func (r *workflowAppRunner) dispatchSendLocked(
 	if drop != workflowSendNotDropped {
 		return drop, nil
 	}
-	if err := r.host.sendWorkflowMessage(ctx, attempt.threadID, message, schema, func(identity providerDispatchIdentity) {
+	if err := r.host.SendWorkflowMessage(ctx, attempt.threadID, message, schema, func(identity DispatchIdentity) {
 		r.mu.Lock()
 		if r.runs[runKey] == attempt && attempt.sendEpoch == epoch {
 			attempt.dispatchIdentity = identity
@@ -206,8 +206,8 @@ func (r *workflowAppRunner) dispatchSendLocked(
 // unstamped note stays owed and is redelivered on the phase's next entry, so the
 // worst case here is a repeat, and a send already on the wire must not be
 // reported as failed because a bookkeeping write did not land.
-func (r *workflowAppRunner) ackFeedbackRendered(key engine.RunKey) {
-	workflowEngine, err := r.host.requireWorkflowEngine()
+func (r *Runner) ackFeedbackRendered(key engine.RunKey) {
+	workflowEngine, err := r.host.RequireWorkflowEngine()
 	if err != nil {
 		// No engine to tell: the process is shutting down, or this is a runner
 		// under test. Neither is a send failure and neither loses a note — an

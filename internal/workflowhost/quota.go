@@ -1,4 +1,4 @@
-package main
+package workflowhost
 
 import (
 	"fmt"
@@ -35,9 +35,9 @@ func workflowUsageLimitRefusal(event provider.ProviderEvent) bool {
 // refusal back into a retry: the run still parks under the typed reason and
 // receives an ordinary per-run wake. That fail-open fallback can duplicate
 // notifications, but cannot hide or hammer a spent account.
-func (r *workflowAppRunner) parkForUsageLimit(
+func (r *Runner) parkForUsageLimit(
 	runKey, itemID string,
-	identity providerDispatchIdentity,
+	identity DispatchIdentity,
 	identified bool,
 	detail string,
 ) {
@@ -54,7 +54,7 @@ func (r *workflowAppRunner) parkForUsageLimit(
 			)
 			if err != nil {
 				log.Printf("workflow runner: record provider usage scope for %s: %v; parking without cross-run notification coalescing", itemID, err)
-				r.host.emit(eventchan.WorkflowError, engine.ErrorEvent{
+				r.host.Emit(eventchan.WorkflowError, engine.ErrorEvent{
 					ItemID: itemID,
 					Error:  "the provider usage limit was recognized, but its notification correlation could not be recorded; the run was still parked without retries",
 				})
