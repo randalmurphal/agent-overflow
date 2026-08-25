@@ -204,6 +204,12 @@ func (s *Session) bindPendingTurnSchema(turnID string) {
 // and codex-rs/core/src/session/mod.rs — see classifySteerRejection for
 // the three refusals it can answer with.
 func (s *Session) Steer(ctx context.Context, content string, opts provider.SendOptions) error {
+	// Closed-session check MUST precede the activeTurnID read: Close zeroes
+	// s.turn, so without it a post-Close Steer would answer ErrNoActiveTurn
+	// and send the caller into the live-race retry (see ErrSessionClosed).
+	if s.closing.Load() {
+		return fmt.Errorf("codex: turn/steer: %w", ErrSessionClosed)
+	}
 	s.mu.Lock()
 	expectedTurnID := s.turn.activeTurnID
 	s.mu.Unlock()

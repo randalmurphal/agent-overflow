@@ -37,6 +37,15 @@ var ErrApprovalAlreadyResolved = fmt.Errorf("codex: approval already resolved: %
 // active-turn registry and the steer RPC arriving here).
 var ErrNoActiveTurn = errors.New("codex: no active turn to steer")
 
+// ErrSessionClosed is returned by turn dispatch on a Session whose Close has
+// begun. It exists because Close zeroes s.turn — after which a bare
+// activeTurnID check would answer ErrNoActiveTurn, and the app layer would
+// read that as the LIVE race above and retry the message as a fresh Send
+// against a dead process (regression caught by
+// TestDispatchFlush_PerItemFailure_AbortsBatch: the failure row persisted one
+// turn late). A closed session is not a race; it must say so.
+var ErrSessionClosed = errors.New("codex: session closed")
+
 // ErrTurnNotSteerable is returned by Steer when a turn IS running but cannot
 // take input: upstream refuses `turn/steer` on a review turn and on a
 // compaction turn (SteerInputError::ActiveTurnNotSteerable, surfaced as
