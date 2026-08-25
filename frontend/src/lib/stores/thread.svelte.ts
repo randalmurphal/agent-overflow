@@ -93,15 +93,16 @@ import {
 /** Shared "nothing was dropped" list, so the common replacement allocates none. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
 
-// ActiveTurn now lives in threadStatuses.svelte.ts (single source of
-// truth for the global active-turn registry). Re-exported here so
-// downstream importers (events.ts, panes, tests) don't have to rewire
-// their imports for the move.
-export type { ActiveTurn } from './threadStatuses.svelte';
-
-export { parseTokenUsage } from './threadTurnProjection';
-export type { SettledTurn } from './threadTurnProjection';
-
+// The only re-export left here is threadPaneShared's — the pane's OWN
+// vocabulary, which this module is the composition root for.
+//
+// Do not add a convenience barrel for the other sub-factories.
+// `ActiveTurn` lives in threadStatuses.svelte.ts,
+// `parseTokenUsage`/`SettledTurn` in threadTurnProjection.ts, and the
+// live-todo / activity-rail prefs in liveTodoState.svelte.ts — import
+// them from there. Re-exporting them here made `threads.svelte.ts`
+// reach the live-todo pref droppers through this module, which imports
+// `threads.svelte.ts` back: an import cycle bought for nothing.
 export {
   __setSmoothingClockForTest,
   paneWorkspacePath,
@@ -114,15 +115,6 @@ export type {
   PaneScrollController,
   PreserveViewportBottomOptions,
 } from './threadPaneShared';
-
-export {
-  __resetActivityRailUiPrefsForTest,
-  __resetLiveTodoUiPrefsForTest,
-  dropActivityRailUiPrefs,
-  dropLiveTodoUiPrefs,
-  LIVE_TODO_AUTOHIDE_MS,
-} from './liveTodoState.svelte';
-export type { LiveTodo } from './liveTodoState.svelte';
 
 /**
  * Creates a self-contained thread pane state instance.

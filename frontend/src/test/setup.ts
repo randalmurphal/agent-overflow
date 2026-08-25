@@ -8,7 +8,7 @@ import { resetDiffReviewCommentsForTest } from '../lib/stores/diffReviewComments
 import {
   __resetActivityRailUiPrefsForTest,
   __resetLiveTodoUiPrefsForTest,
-} from '../lib/stores/thread.svelte';
+} from '../lib/stores/liveTodoState.svelte';
 import { __resetPayloadCacheForTest } from '../lib/utils/payloadDataCache';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { resetProviderModelsForTest } from '../lib/stores/providerModels.svelte';

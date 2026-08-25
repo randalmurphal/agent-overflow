@@ -17,7 +17,7 @@ import { BUILTIN_SPINNER_VERBS } from '../../spinners/builtinVerbs';
 import { BUILTIN_SPRITES } from '../../spinners/catalog';
 import { __resetCustomSpinnersForTest } from '../../stores/spinners.svelte';
 import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../stores/sendQueue.svelte';
-import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/thread.svelte';
+import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/liveTodoState.svelte';
 import type { QueueItem } from '../../stores/sendQueue.svelte';
 
 function backgroundLaunch(overrides = {}) {

@@ -4,7 +4,7 @@ import { clearThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
 import { clearThreadSizePriors } from '../utils/virtual/priors';
 import { evictDiffSpansForThread } from '../utils/diffSpanCache.svelte';
 import { ListThreads } from './bindings';
-import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './thread.svelte';
+import { dropActivityRailUiPrefs, dropLiveTodoUiPrefs } from './liveTodoState.svelte';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
 import { dropThreadHistoryStamp } from './threadHistoryStamps';

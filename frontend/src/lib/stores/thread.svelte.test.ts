@@ -3,8 +3,8 @@ import { flushSync, tick } from 'svelte';
 import {
   __setSmoothingClockForTest,
   createThreadPane,
-  LIVE_TODO_AUTOHIDE_MS,
 } from './thread.svelte';
+import { LIVE_TODO_AUTOHIDE_MS } from './liveTodoState.svelte';
 import {
   MAX_ADAPTIVE_CHARS_PER_SEC,
   MAX_ADVANCE_PER_TICK_CHARS,

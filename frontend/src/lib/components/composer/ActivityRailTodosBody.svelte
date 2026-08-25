@@ -5,7 +5,8 @@
   // completed last. Wire order is preserved within each bucket so the
   // user can match the list against what the agent is doing.
 
-  import type { LiveTodo, ThreadPane } from '../../stores/thread.svelte';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { LiveTodo } from '../../stores/liveTodoState.svelte';
   import type { TodoStep, TodoStepStatus } from '../../types/events';
   import { getSettings } from '../../stores/settings.svelte';
   import Icon from '../primitives/Icon.svelte';
