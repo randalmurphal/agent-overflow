@@ -155,9 +155,11 @@ export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise
       // lets the credentialDead latch cover --connect clients too; the
       // manifest a 200 returns is the stub's own (wsUrl as configured,
       // mode:"client"), so nothing about the session shifts.
-      return fetchManifest(injected.token, '');
+      //
+      // Cross-origin by construction — see the same-origin note below.
+      return fetchManifest(injected.token, '', false);
     }
-    validateWsUrl(injected.wsUrl);
+    validateWsUrl(injected.wsUrl, false);
     const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
     setViewOnlySessionFromBootstrap(normalized.remote);
     setBackendIdentityFromBootstrap(normalized.backendId, normalized.replicaGeneration);
@@ -167,7 +169,12 @@ export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise
   const params = new URLSearchParams(search);
   const urlToken = params.get('t') ?? '';
   const token = urlToken !== '' ? urlToken : readStoredToken();
-  return fetchManifest(token, urlToken);
+  // Nothing injected this manifest, so the page was served by the
+  // transport itself (embedded webview, WSL launcher window, LAN
+  // browser, or dev — where the Go server proxies Vite and the page
+  // origin is still the Go server's). Its wsUrl is derived from this
+  // request's own Host header, so it must name this very origin.
+  return fetchManifest(token, urlToken, true);
 }
 
 // fetchManifest is the one /bootstrap.json fetch + validation path,
@@ -175,7 +182,14 @@ export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise
 // injected flow's revalidation (token from the injected manifest, and
 // the stub answers). urlToken gates the history scrub — only a page
 // that actually carries ?t= has anything to remove.
-async function fetchManifest(token: string, urlToken: string): Promise<Bootstrap> {
+//
+// requireSameOrigin is the CALLER's statement about which flow this is,
+// not something read out of the response. See validateWsUrl.
+async function fetchManifest(
+  token: string,
+  urlToken: string,
+  requireSameOrigin: boolean,
+): Promise<Bootstrap> {
   const url = `/bootstrap.json?t=${encodeURIComponent(token)}`;
   const resp = await fetch(url, { credentials: 'same-origin' });
   if (!resp.ok) {
@@ -203,7 +217,7 @@ async function fetchManifest(token: string, urlToken: string): Promise<Bootstrap
   if (typeof data.wsUrl !== 'string' || typeof data.token !== 'string') {
     throw new Error('bootstrap response missing wsUrl/token');
   }
-  validateWsUrl(data.wsUrl);
+  validateWsUrl(data.wsUrl, requireSameOrigin);
   data.mode = normalizeRunMode(data.mode);
   data.remote = data.remote === true;
   setViewOnlySessionFromBootstrap(data.remote);
@@ -245,11 +259,59 @@ function normalizeRunMode(mode: unknown): RunMode {
   return 'local';
 }
 
-// validateWsUrl rejects bootstrap responses pointing the client at a
-// scheme other than ws:/wss:. A boostrap fetch is over same-origin
-// HTTP(S), but defending here means a hijacked bootstrap response can't
-// pivot the WS connection to an arbitrary URL handler.
-function validateWsUrl(wsUrl: string): void {
+// wsUrlMatchesPageOrigin reports whether wsUrl addresses the same origin
+// the page was served from. Pure and exported so the comparison is
+// testable against origins this document will never have — the same
+// split as isLoopbackHostname / pageServedOverLoopback above.
+//
+// Origin here is scheme + host + PORT, with ws:/wss: mapped onto their
+// http:/https: counterparts. Host alone would not do: a second listener
+// on the same machine is a different security principal, and on a LAN
+// bind it need not be ours at all. The scheme pairing is what stops a
+// TLS-fronted page being downgraded onto a cleartext socket. Explicit
+// default ports normalise away on both sides (ws:/http: share 80,
+// wss:/https: share 443), so the two spellings still match.
+export function wsUrlMatchesPageOrigin(
+  wsUrl: string,
+  page: { protocol: string; host: string },
+): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(wsUrl);
+  } catch {
+    return false;
+  }
+  const wantProtocol = parsed.protocol === 'wss:' ? 'https:' : 'http:';
+  if (page.protocol.toLowerCase() !== wantProtocol) return false;
+  // location.host and URL.host are already lowercase-normalised by the
+  // URL parser; lowercase anyway so a hand-built page object matches.
+  return parsed.host.toLowerCase() === page.host.toLowerCase();
+}
+
+// validateWsUrl rejects a bootstrap manifest that points the client's
+// WebSocket somewhere it must not go. Two independent checks:
+//
+//  1. Scheme — always. A manifest can't pivot the connection to an
+//     arbitrary URL handler, whichever flow produced it.
+//  2. Origin — only when the CALL SITE asks for it. A manifest fetched
+//     from /bootstrap.json on the transport's own origin carries a wsUrl
+//     the server derived from that very request's Host header
+//     (internal/transport/server.go deriveWSURL), so anything naming
+//     another authority was tampered with in flight — and honouring it
+//     would hand the bootstrap token to the attacker's socket.
+//
+// The origin requirement is a PARAMETER rather than something inferred
+// from the manifest, and that is the whole security property: the two
+// legitimately cross-origin flows are both `--connect`
+// (internal/clientmode), where the local stub injects
+// window.__AO_BOOTSTRAP__ naming a remote backend and serves the same
+// manifest again from its own /bootstrap.json for the reconnect
+// revalidation. What distinguishes them is HOW the manifest reached the
+// page — an out-of-band injection by the shell that owns this process,
+// which already implies script execution — never a field inside the
+// manifest. Reading the exemption off `mode: "client"` would let any
+// spoofed manifest exempt itself by saying so.
+export function validateWsUrl(wsUrl: string, requireSameOrigin: boolean): void {
   let parsed: URL;
   try {
     parsed = new URL(wsUrl);
@@ -258,6 +320,17 @@ function validateWsUrl(wsUrl: string): void {
   }
   if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
     throw new Error(`bootstrap wsUrl scheme not ws/wss: ${clampString(parsed.protocol)}`);
+  }
+  if (!requireSameOrigin) return;
+  if (typeof window === 'undefined' || typeof window.location === 'undefined') {
+    // A same-origin requirement we cannot evaluate is a requirement we
+    // cannot meet. Unreachable in practice — this branch's only caller
+    // fetched a relative '/bootstrap.json', which already needs a
+    // document base — but it must fail closed, not open.
+    throw new Error('bootstrap wsUrl cannot be origin-checked: no document origin');
+  }
+  if (!wsUrlMatchesPageOrigin(wsUrl, window.location)) {
+    throw new Error(`bootstrap wsUrl not same-origin: ${clampString(wsUrl)}`);
   }
 }
 

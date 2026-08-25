@@ -470,6 +470,14 @@ const bootstrapTag = "<head>"
 // defaultBootstrap in wsClient.ts treats its absence as "local". The
 // separate remote bit is derived from the upstream endpoint, matching
 // the locality bit a browser receives from the transport bootstrap.
+//
+// wsUrl here names the UPSTREAM, so it is cross-origin to the page this
+// stub serves — deliberately. The SPA's validateWsUrl requires a
+// same-origin wsUrl on every path EXCEPT the two this builder feeds, and
+// it decides that from HOW the manifest reached the page, never from the
+// mode field below (a spoofed manifest would exempt itself for free).
+// See AGENTS.md § "The injected manifest is the SPA's same-origin
+// exemption".
 func manifestJSON(wsURL, token, clientID string) ([]byte, error) {
 	parsedWSURL, err := url.Parse(wsURL)
 	if err != nil {

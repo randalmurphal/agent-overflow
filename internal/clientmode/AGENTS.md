@@ -69,6 +69,23 @@ hostile token literal can't break out of the inline `<script>` tag.
   is the boot shim for the local Wails webview; nothing else should
   reach it.
 
+## The injected manifest is the SPA's same-origin exemption
+
+`validateWsUrl` (`frontend/src/lib/transport/bootstrap.ts`) refuses a
+manifest whose `wsUrl` names an origin other than the page's — the
+transport derives that field from the request's own `Host` header, so
+anything else was tampered with in flight. Both halves of `--connect`
+are legitimately cross-origin and are the only exemptions: the injected
+`window.__AO_BOOTSTRAP__` at first load, and the same manifest served
+again from this stub's `/bootstrap.json` for the reconnect revalidation.
+
+The SPA opts out per CALL SITE, keyed on how the manifest reached the
+page (an out-of-band injection by the shell that owns the process), and
+deliberately NOT on the `mode:"client"` field inside the manifest — a
+spoofed manifest would exempt itself for free. So: do not move the
+exemption's trigger into the manifest body, and do not make the stub
+serve a manifest from a path the SPA reaches without an injected global.
+
 ## References
 
 - `frontend/src/lib/transport/wsClient.ts` — `defaultBootstrap` reads

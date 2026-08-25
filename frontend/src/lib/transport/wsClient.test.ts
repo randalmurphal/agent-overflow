@@ -882,7 +882,7 @@ describe('WSClient', () => {
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: 'ws://example/ws', token: 'abc123', remote: true }),
+      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, token: 'abc123', remote: true }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -907,7 +907,7 @@ describe('WSClient', () => {
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: 'ws://example/ws', token: 'abc123' }),
+      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, token: 'abc123' }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
