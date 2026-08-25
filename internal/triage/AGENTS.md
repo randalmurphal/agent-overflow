@@ -44,10 +44,10 @@ none fits.
   consumption rule `handleUserText` pops through. See "Pending-send
   consumption" below.
 - `send_shape.go` — the typed `sendShape` a registrar stamps on every
-  pending entry (direct / flush / steer), and the drift assertion that
-  compares it against the `":flush:"` id sniff six sites still decide
-  by. Nothing reads the shape yet. See "Send shape is stamped, the
-  sniff still decides" below.
+  pending entry (direct / flush / steer) — the authoritative flush
+  classifier readers branch on — plus the registration-time assertion
+  pinning the stamp to the App layer's id grammar. See "Send shape is
+  stamped at registration" below.
 - `turn_telemetry.go` — live turn-span lifecycle plus the one outcome
   classifier shared by span status and completed/error counters.
 - `live_state.go` — refresh/reconnect snapshot of backend-owned live
@@ -855,36 +855,34 @@ five and not three: `RegisterPendingSteerSendWithExpectation` and
 `RegisterPendingFlushResendWithExpectation` are the direct surface's
 shape-carrying siblings, not new behaviour.
 
-### Send shape is stamped, the sniff still decides (`send_shape.go`)
+### Send shape is stamped at registration (`send_shape.go`)
 
-Six sites classify a pending entry as "a queued flush send" by looking
-for `":flush:"` in its `AOItemID` — an id grammar minted a package away
-(`nextFlushUserItemID` in `app_flush_queue.go` is the ONE mint site) and
-never pinned to the reader. `pendingSend.Shape` is the typed answer,
-stamped by the registrar the send path chose.
+`pendingSend.Shape` is the AUTHORITATIVE answer to "is this entry a
+queued flush send": readers branch on `Shape == sendShapeFlush`. It is
+stamped once, by the registrar the send path chose, and is immutable
+afterwards — which is what lets the readers trust it, because both the
+stamp and the `AOItemID` are AO-authored in the same
+`registerPendingSend` call, so a wire echo can never make them disagree.
+(These sites used to sniff the id for `":flush:"` — an id grammar minted
+a package away, `nextFlushUserItemID` in `app_flush_queue.go` being the
+ONE mint site — and the stamp replaced the sniff after a release-long
+comparison soak plus coverage proof that every production registration
+site is test-exercised.)
 
-**Nothing reads it to make a decision.** Every site still branches on the
-substring; `sniffFlushShape` returns the sniff's verdict and only
-*compares* the stamp against it. That is deliberate: the field earns the
-sniff's job by agreeing with it for a release, then the sites become
-`entry.Shape == sendShapeFlush` and the comparison helpers are deleted
-with the substring. The site constants in `send_shape.go` are that
-deletion's checklist.
+Registration is therefore the whole enforcement surface:
+`assertSendShapeMatchesID` panics in any test binary when a registrar's
+stamp contradicts its id grammar, and all six production registration
+sites are covered by the root suite, so a mis-chosen registrar fails CI
+at the surface that chose it rather than misplacing a queued user
+message in the timeline.
 
-A disagreement panics in a test binary and logs one bounded line per
-site in production — bounded because the sniff is still the answer, so a
-per-entry log would be noise on a thread that keeps sending. The
-comparison also runs at `registerPendingSend`, which is the only place
-that can name the REGISTRAR at fault rather than the reader it would
-have misled.
-
-Two things the sniff cannot see, and therefore the assertion cannot
-either: it only distinguishes flush from not-flush, so `sendShapeDirect`
-vs `sendShapeSteer` is new information with no cross-check, and a flush
-row registered through the direct surface (the Codex post-interrupt
-re-send) is flush-shaped despite carrying no queue item id — hence
-`RegisterPendingFlushResendWithExpectation` rather than a fourth
-inference rule.
+Two things the id grammar cannot express, and therefore the assertion
+cannot check: it only distinguishes flush from not-flush, so
+`sendShapeDirect` vs `sendShapeSteer` is stamp-only information, and a
+flush row registered through the direct surface (the Codex
+post-interrupt re-send) is flush-shaped despite carrying no queue item
+id — hence `RegisterPendingFlushResendWithExpectation` rather than a
+grammar-inference rule.
 
 ### Turn index is allocated once (`turn_lifecycle.go`)
 

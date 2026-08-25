@@ -273,7 +273,7 @@ func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
 	defer r.mu.Unlock()
 	count := 0
 	for _, pending := range r.pendingSendsLocked(threadID) {
-		if pending.DeferredItem != nil && r.sniffFlushShape(threadID, &pending, sendShapeSiteDeferredCount) {
+		if pending.DeferredItem != nil && pending.Shape == sendShapeFlush {
 			count++
 		}
 	}
@@ -292,11 +292,6 @@ func (r *Router) MaxPendingFlushSequence(threadID string, turnIndex int) int {
 		if pending.DeferredItem == nil || !strings.HasPrefix(pending.AOItemID, prefix) {
 			continue
 		}
-		// One-directional: the turn-scoped prefix already implies the
-		// ":flush:" substring, so this only asserts that an id the
-		// allocator produced carries the flush stamp. The result is
-		// discarded — the prefix, not the sniff, is this site's decision.
-		_ = r.sniffFlushShape(threadID, &pending, sendShapeSiteMaxFlushSequence)
 		seq, err := strconv.Atoi(strings.TrimPrefix(pending.AOItemID, prefix))
 		if err == nil && seq > maxSeq {
 			maxSeq = seq
@@ -525,7 +520,7 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 	if len(pending) > 0 {
 		kept := make([]pendingSend, 0, len(pending))
 		for _, entry := range pending {
-			if entry.QueueItemID == "" || !r.sniffFlushShape(threadID, &entry, sendShapeSiteDrainUnconfirmed) {
+			if entry.QueueItemID == "" || entry.Shape != sendShapeFlush {
 				kept = append(kept, entry)
 				continue
 			}

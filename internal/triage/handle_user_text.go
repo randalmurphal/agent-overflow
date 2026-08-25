@@ -666,7 +666,7 @@ func (r *Router) attachProviderItemIDToUserRow(threadID string, pending *pending
 	// gates them out.
 	boundary := -1
 	rebumpOverDrained := false
-	unanchoredEagerBump := r.sniffFlushShape(threadID, pending, sendShapeSiteEchoEagerBump) && !pending.AnchoredAtInterrupt && !selfHealed
+	unanchoredEagerBump := pending.Shape == sendShapeFlush && !pending.AnchoredAtInterrupt && !selfHealed
 	if pending.AnchoredAtInterrupt {
 		state, stateErr := itemmeta.DecodePromotionState(existing.Meta)
 		if stateErr != nil {

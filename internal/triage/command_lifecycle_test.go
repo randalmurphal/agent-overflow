@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,11 +61,11 @@ func countCommandLifecycleEmissions(emissions *emissionLog) int {
 // The registrar is picked from the id grammar so the entry's sendShape
 // matches what the App layer would have stamped — the ack tests exercise
 // both a direct send and a queued flush row, and registering a
-// `:flush:` id through the direct surface is exactly the drift
-// send_shape.go asserts against.
+// `:flush:` id through the direct surface is exactly the mismatch
+// send_shape.go panics on.
 func registerCommandPendingSend(r *Router, threadID, itemID, commandUUID string, turnIndex int) {
 	expect := PendingSendExpectation{ProviderItemID: commandUUID}
-	if flushIDSniff(itemID) {
+	if strings.Contains(itemID, ":flush:") {
 		r.RegisterPendingFlushResendWithExpectation(threadID, itemID, turnIndex, expect)
 		return
 	}

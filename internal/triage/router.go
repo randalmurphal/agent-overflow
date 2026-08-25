@@ -99,12 +99,6 @@ type Router struct {
 	// expected but the first sighting is worth flagging so a new
 	// provider subtype doesn't silently disappear.
 	unknownSessionStatusLogged map[string]struct{}
-	// sendShapeDrift carries the pendingSend.Shape-vs-":flush:"-sniff
-	// disagreement throttle. Embedded rather than declared inline
-	// because it owns its OWN mutex: most of the comparison sites run
-	// with r.mu already held, so the drift bookkeeping must never reach
-	// for it. See send_shape.go.
-	sendShapeDrift
 	// eventHook is a test-only seam: when set, the Router invokes it for
 	// every Handle call AFTER the routing switch runs. Production code
 	// never sets a hook (the call site in Handle is nil-checked so the

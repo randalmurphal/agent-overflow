@@ -63,11 +63,10 @@ type pendingSend struct {
 	QuietItem    *store.Item
 
 	// Shape is the send's grammar class, stamped by whichever registrar
-	// the send path called — the typed replacement for the six sites
-	// that still classify this entry by looking for ":flush:" in
-	// AOItemID. NOTHING reads it to make a decision yet: this release it
-	// is only compared against the sniff (sniffFlushShape), which stays
-	// authoritative until the field has soaked. See send_shape.go.
+	// the send path called. It is the authoritative flush classifier —
+	// readers branch on `Shape == sendShapeFlush` — and it is pinned to
+	// the App layer's id grammar by the registration-time assertion in
+	// send_shape.go.
 	Shape sendShape
 	// ExpectedProviderItemID is the wire id the send's echo will carry,
 	// when the app knows it at dispatch time. Claude-family sends mint a
@@ -320,13 +319,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 	if threadID == "" || aoItemID == "" {
 		return
 	}
-	// The earliest place the typed shape and the id grammar can be
-	// compared, and the only one that names the REGISTRAR at fault
-	// rather than the reader that would have been misled. Reported, not
-	// corrected: the sniff is still the answer everywhere downstream.
-	if sniffed := flushIDSniff(aoItemID); sniffed != (shape == sendShapeFlush) {
-		r.reportSendShapeDrift(sendShapeSiteRegister, threadID, aoItemID, sniffed, shape)
-	}
+	assertSendShapeMatchesID(threadID, aoItemID, shape)
 	if enqueuedAt == 0 {
 		enqueuedAt = time.Now().UnixMilli()
 	}
@@ -907,7 +900,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 		// not bump them again — the row's anchored position IS the
 		// boundary a later fork/revert slices at, and a re-bump would
 		// move it past content that arrived after the first interrupt.
-		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && r.sniffFlushShape(threadID, &pending[i], sendShapeSitePromoteQuiet) {
+		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && pending[i].Shape == sendShapeFlush {
 			ids = append(ids, pending[i].AOItemID)
 			pending[i].AnchoredAtInterrupt = true
 		}
@@ -976,7 +969,7 @@ func (r *Router) rebumpAnchoredQuietSiblings(threadID, echoedItemID string, turn
 		if entry.QuietItem == nil || entry.QuietItem.TurnIndex != turnIndex {
 			continue
 		}
-		if !r.sniffFlushShape(threadID, &entry, sendShapeSiteRebumpSiblings) {
+		if entry.Shape != sendShapeFlush {
 			continue
 		}
 		siblingIDs = append(siblingIDs, entry.AOItemID)

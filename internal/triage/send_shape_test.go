@@ -10,10 +10,9 @@ import (
 // TestSendShapeStampedAtEveryRegistrar drives one send of each shape
 // through the registration surface and pins two things at once: the
 // shape each registrar stamps, and that the stamp AGREES with the id
-// grammar the App layer allocates for that shape. The second half is
-// the whole point of the field this release — the sniff sites still
-// decide by substring, so a stamp that disagreed would be a silent lie
-// until the sniff is deleted.
+// grammar the App layer allocates for that shape. The stamp is the
+// authoritative flush classifier, so a registrar stamping the wrong
+// shape would misplace queued user messages in the timeline.
 func TestSendShapeStampedAtEveryRegistrar(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
@@ -58,35 +57,35 @@ func TestSendShapeStampedAtEveryRegistrar(t *testing.T) {
 		if entry.Shape != expected {
 			t.Errorf("%q stamped shape %s, want %s", entry.AOItemID, entry.Shape, expected)
 		}
-		// The grammar assertion: exactly the comparison every sniff site
-		// makes through sniffFlushShape, restated here so a registrar
-		// that starts stamping the wrong shape fails at the surface
-		// rather than at whichever reader happens to run first.
-		if got, sniffed := entry.Shape == sendShapeFlush, strings.Contains(entry.AOItemID, ":flush:"); got != sniffed {
-			t.Errorf("%q: stamped-flush=%v but the id grammar says %v", entry.AOItemID, got, sniffed)
+		// The grammar assertion, restated independently of
+		// assertSendShapeMatchesID so a registrar that starts stamping
+		// the wrong shape fails here even if the tripwire is edited.
+		if got, grammar := entry.Shape == sendShapeFlush, strings.Contains(entry.AOItemID, ":flush:"); got != grammar {
+			t.Errorf("%q: stamped-flush=%v but the id grammar says %v", entry.AOItemID, got, grammar)
 		}
 	}
 }
 
-// TestSendShapeDriftIsLoud pins the assertion itself: a send registered
-// through a registrar whose shape contradicts its id grammar must not
-// pass quietly. In a test binary that is a panic; in production it is
-// one bounded log line and the sniff's answer, unchanged.
-func TestSendShapeDriftIsLoud(t *testing.T) {
+// TestSendShapeMismatchPanicsAtRegistration pins the tripwire: a send
+// registered through a registrar whose shape contradicts its id grammar
+// must panic in a test binary. Registration is the only moment the two
+// can disagree — both are AO-authored in the same call and immutable
+// afterwards — so this is the whole enforcement surface.
+func TestSendShapeMismatchPanicsAtRegistration(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
-			t.Fatalf("registering a :flush: id through the direct registrar did not report drift")
+			t.Fatalf("registering a :flush: id through the direct registrar did not panic")
 		}
 		msg, ok := recovered.(string)
 		if !ok {
-			t.Fatalf("drift panic value = %T, want string", recovered)
+			t.Fatalf("mismatch panic value = %T, want string", recovered)
 		}
-		for _, want := range []string{sendShapeSiteRegister, "user:9:flush:1", "sniff=flush", "stamped=direct"} {
+		for _, want := range []string{"send-shape mismatch at registration", "user:9:flush:1", "stamped=direct"} {
 			if !strings.Contains(msg, want) {
-				t.Errorf("drift message %q missing %q", msg, want)
+				t.Errorf("mismatch message %q missing %q", msg, want)
 			}
 		}
 	}()
@@ -94,18 +93,15 @@ func TestSendShapeDriftIsLoud(t *testing.T) {
 	router.RegisterPendingSendWithExpectation("t1", "user:9:flush:1", 9, PendingSendExpectation{})
 }
 
-// TestSendShapeSniffStaysAuthoritative pins the no-behavior-change half
-// of the contract: a drifting entry that reaches a READER is still
-// classified by the substring, not by the stamp. The entry is built
-// directly (no registrar) so the registration-time assertion can't
-// intercept it, and the reader is exercised with the check disarmed —
-// production's posture, where the drift is logged and the decision is
-// made anyway.
-func TestSendShapeSniffStaysAuthoritative(t *testing.T) {
+// TestSendShapeStampDecides pins that a reader classifies by the STAMP,
+// not the id text: an entry stamped direct is excluded from the
+// deferred-flush count even when its id happens to contain ":flush:".
+// The entry is built directly (no registrar) because the registration
+// assertion makes that state unreachable through the public surface —
+// which is exactly why the readers may trust the stamp.
+func TestSendShapeStampDecides(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
-	// Stamped direct, spelled flush. The sniff says flush, so the
-	// deferred-flush count must include it.
 	item := store.Item{ID: "user:4:flush:1", ThreadID: "t1", TurnIndex: 4, Kind: "user_text", Role: "user"}
 	router.mu.Lock()
 	router.state("t1").pendingSends = []pendingSend{{
@@ -115,22 +111,10 @@ func TestSendShapeSniffStaysAuthoritative(t *testing.T) {
 	}}
 	router.mu.Unlock()
 
-	var got int
-	func() {
-		defer func() {
-			if recovered := recover(); recovered == nil {
-				t.Errorf("reader did not report the drift it read past")
-			}
-		}()
-		got = router.DeferredPendingFlushItemCount("t1")
-	}()
-
-	// The panic is the test-build posture, so the count above never
-	// returned. Re-read with the entry stamped truthfully to confirm the
-	// sniff's answer is what the site would have used either way.
-	if got != 0 {
-		t.Fatalf("count returned %d despite the drift panic", got)
+	if got := router.DeferredPendingFlushItemCount("t1"); got != 0 {
+		t.Fatalf("DeferredPendingFlushItemCount = %d for a direct-stamped entry, want 0", got)
 	}
+
 	router.mu.Lock()
 	router.state("t1").pendingSends[0].Shape = sendShapeFlush
 	router.mu.Unlock()
