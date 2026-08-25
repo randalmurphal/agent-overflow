@@ -492,7 +492,9 @@ func (p *Process) logEvent(direction string, data []byte) {
 		ThreadID:  p.threadID,
 		Direction: direction,
 		Provider:  p.provider,
-		Data:      string(data),
+		// Raw bytes, no string copy: the logger embeds valid JSON as-is
+		// and the line buffer is fresh per event, never reused.
+		Data: data,
 	}); err != nil {
 		log.Printf("provider: raw event log failed: %v", err)
 	}

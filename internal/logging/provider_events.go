@@ -1,18 +1,27 @@
 package logging
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"time"
 )
 
-// ProviderEventEntry is the raw provider I/O log schema.
+// ProviderEventEntry is the raw provider I/O log schema. Data is the
+// provider event embedded as a raw JSON value, not a string: provider
+// frames ARE JSON, and re-escaping every byte of a streaming turn into
+// a quoted string was ~24% of the backend's allocation while turns ran
+// (measured 2026-08-24, 242MB over one 16-minute window). The encoder
+// compacts the raw value, so multi-line input cannot break NDJSON
+// framing. A non-JSON payload still logs — LogProviderEvent falls back
+// to the old quoted-string form for it.
 type ProviderEventEntry struct {
-	Timestamp string `json:"ts"`
-	ThreadID  string `json:"threadId"`
-	Direction string `json:"direction"`
-	Provider  string `json:"provider"`
-	Data      string `json:"data"`
+	Timestamp string          `json:"ts"`
+	ThreadID  string          `json:"threadId"`
+	Direction string          `json:"direction"`
+	Provider  string          `json:"provider"`
+	Data      json.RawMessage `json:"data"`
 }
 
 // LogProviderEvent writes a raw provider stdin/stdout event as one NDJSON line.
@@ -22,6 +31,13 @@ type ProviderEventEntry struct {
 func (l *Logger) LogProviderEvent(entry ProviderEventEntry) error {
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if !json.Valid(entry.Data) {
+		quoted, err := json.Marshal(string(entry.Data))
+		if err != nil {
+			return fmt.Errorf("logging: quote non-JSON provider event: %w", err)
+		}
+		entry.Data = quoted
 	}
 	return l.logValue(entry)
 }

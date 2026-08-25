@@ -62,7 +62,7 @@ func (s *Session) logEnvelope(line json.RawMessage) {
 		ThreadID:  s.threadID,
 		Direction: "in",
 		Provider:  logProvider,
-		Data:      string(line),
+		Data:      line,
 	}); err != nil {
 		log.Printf("claudetui: envelope log failed: %v", err)
 	}
@@ -114,7 +114,7 @@ func (s *Session) logClassify(class requestClass, status int, body []byte) {
 		ThreadID:  s.threadID,
 		Direction: "classify",
 		Provider:  logProvider,
-		Data:      string(data),
+		Data:      data,
 	}); err != nil {
 		log.Printf("claudetui: classify log failed: %v", err)
 	}
@@ -171,7 +171,7 @@ func (s *Session) logDecision(d decisionLog) {
 		ThreadID:  s.threadID,
 		Direction: "decision",
 		Provider:  logProvider,
-		Data:      string(data),
+		Data:      data,
 	}); err != nil {
 		log.Printf("claudetui: decision log failed: %v", err)
 	}

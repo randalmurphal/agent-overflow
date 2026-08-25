@@ -73,7 +73,7 @@ func TestLogClassifyWritesCredentialFreeSummary(t *testing.T) {
 		t.Errorf("last_user_prefix missing <session> discriminator: %q", sum.LastUser)
 	}
 	for _, secret := range []string{"Authorization", "Bearer", "x-api-key"} {
-		if strings.Contains(entry.Data, secret) {
+		if strings.Contains(string(entry.Data), secret) {
 			t.Errorf("classify log leaked credential-shaped text %q: %q", secret, entry.Data)
 		}
 	}
@@ -98,7 +98,7 @@ func TestLogEnvelopeWritesParserFeed(t *testing.T) {
 	if entry.Direction != "in" || entry.Provider != logProvider {
 		t.Errorf("wrong envelope entry: %+v", entry)
 	}
-	if entry.Data != env {
+	if string(entry.Data) != env {
 		t.Errorf("data = %q, want %q", entry.Data, env)
 	}
 }
