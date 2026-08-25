@@ -293,8 +293,8 @@ func TestClearPendingSendsByItemIDs(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 
 	router.RegisterPendingSendWithExpectation("t1", "user:0", 0, PendingSendExpectation{})
-	router.RegisterPendingSendWithExpectation("t1", "user:0:flush:1", 0, PendingSendExpectation{})
-	router.RegisterPendingSendWithExpectation("t1", "user:0:flush:2", 0, PendingSendExpectation{})
+	router.RegisterPendingFlushResendWithExpectation("t1", "user:0:flush:1", 0, PendingSendExpectation{})
+	router.RegisterPendingFlushResendWithExpectation("t1", "user:0:flush:2", 0, PendingSendExpectation{})
 
 	router.ClearPendingSendsByItemIDs("t1", []string{"user:0:flush:1", "user:0:flush:2"})
 

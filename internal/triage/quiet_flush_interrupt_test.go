@@ -624,6 +624,7 @@ func TestEchoConsumedEntries_DrainSelfHealsInsteadOfRestoring(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
+		Shape:     sendShapeFlush,
 		QuietItem: &quietRow, EchoPromotedBoundary: -1,
 	})
 
@@ -637,6 +638,7 @@ func TestEchoConsumedEntries_DrainSelfHealsInsteadOfRestoring(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:2:flush:1", QueueItemID: "queue:q2", TurnIndex: 2,
+		Shape:        sendShapeFlush,
 		DeferredItem: &deferredRow, EchoPromotedBoundary: -1,
 	})
 
@@ -794,6 +796,7 @@ func TestEchoConsumedDrain_StampsStashedEchoIdentity(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
+		Shape:                sendShapeFlush,
 		QuietItem:            &quietRow,
 		EchoProviderItemID:   "uuid-echo-1",
 		EchoParentUUID:       "uuid-parent-1",
@@ -809,6 +812,7 @@ func TestEchoConsumedDrain_StampsStashedEchoIdentity(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:2:flush:1", QueueItemID: "queue:q2", TurnIndex: 2,
+		Shape:                sendShapeFlush,
 		DeferredItem:         &deferredRow,
 		EchoProviderItemID:   "uuid-echo-2",
 		EchoParentUUID:       "uuid-parent-2",
@@ -1663,6 +1667,7 @@ func TestEchoBoundaryAnchor_RecordedOnFailureNotReplacedOnRetry(t *testing.T) {
 	// again) must not re-capture.
 	entry := pendingSend{
 		AOItemID: "user:0:flush:1", QueueItemID: "queue:q1", TurnIndex: 0,
+		Shape:     sendShapeFlush,
 		QuietItem: &quietRow, ExpectedProviderItemID: "ao-uuid-1",
 		InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
 	}
@@ -1686,6 +1691,7 @@ func TestEchoBoundaryAnchor_RecordedOnFailureNotReplacedOnRetry(t *testing.T) {
 	}
 	deferredEntry := pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q2", TurnIndex: 1,
+		Shape:        sendShapeFlush,
 		DeferredItem: &deferredRow, InterruptedTurnIndex: -1, EchoPromotedBoundary: -1,
 	}
 	router.recordEchoBoundaryAnchor("t1", &deferredEntry)
@@ -1845,6 +1851,7 @@ func TestSelfHealUnanchoredBumpFailure_MarksBoundary(t *testing.T) {
 	// response then persists before the session dies.
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:0:flush:1", QueueItemID: "queue:q1", TurnIndex: 0,
+		Shape:                sendShapeFlush,
 		QuietItem:            &quietRow,
 		EchoProviderItemID:   "uuid-echo-1",
 		EchoParentUUID:       "uuid-parent-1",
@@ -2209,6 +2216,7 @@ func TestSelfHealDeferredEcho_PersistsPromptAboveItsResponse(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
+		Shape:                sendShapeFlush,
 		DeferredItem:         &deferredRow,
 		EchoConsumed:         true,
 		EchoProviderItemID:   "uuid-echo-1",
@@ -2253,6 +2261,7 @@ func TestDeferredEchoRetry_PersistsPromptAboveItsResponse(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
+		Shape:                sendShapeFlush,
 		DeferredItem:         &deferredRow,
 		EchoConsumed:         true,
 		EchoProviderItemID:   "uuid-echo-1",
@@ -2360,6 +2369,7 @@ func TestSelfHealFoundRow_EmitsUpsert(t *testing.T) {
 	}
 	router.reinsertPendingSendHead("t1", pendingSend{
 		AOItemID: "user:1:flush:1", QueueItemID: "queue:q1", TurnIndex: 1,
+		Shape:                sendShapeFlush,
 		QuietItem:            &quietRow,
 		EchoConsumed:         true,
 		EchoProviderItemID:   "uuid-echo-1",

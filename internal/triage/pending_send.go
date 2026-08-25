@@ -2,7 +2,6 @@ package triage
 
 import (
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +61,14 @@ type pendingSend struct {
 	EnqueuedAt   int64
 	DeferredItem *store.Item
 	QuietItem    *store.Item
+
+	// Shape is the send's grammar class, stamped by whichever registrar
+	// the send path called — the typed replacement for the six sites
+	// that still classify this entry by looking for ":flush:" in
+	// AOItemID. NOTHING reads it to make a decision yet: this release it
+	// is only compared against the sniff (sniffFlushShape), which stays
+	// authoritative until the field has soaked. See send_shape.go.
+	Shape sendShape
 	// ExpectedProviderItemID is the wire id the send's echo will carry,
 	// when the app knows it at dispatch time. Claude-family sends mint a
 	// uuidv4 and pass it as the outbound envelope's top-level `uuid`; the
@@ -259,7 +266,8 @@ type PendingSendExpectation struct {
 	ByClientID bool
 }
 
-// RegisterPendingSendWithExpectation registers a direct send. The echo
+// RegisterPendingSendWithExpectation registers a direct send — the
+// turn-opening `user:<turnIndex>` row. The echo
 // consumes the entry by the identity `expect` declares: ProviderItemID
 // for the Claude family, {ByClientID: true} for every Codex send and
 // steer, and the zero value for a send whose echo names nothing
@@ -268,7 +276,28 @@ type PendingSendExpectation struct {
 // diagnostics on stranded entries and the wall clock at the register
 // call is the natural reference.
 func (r *Router) RegisterPendingSendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeDirect)
+}
+
+// RegisterPendingSteerSendWithExpectation registers a mid-turn Codex
+// steer (`user:<turn>:steer:<n>`). Structurally identical to a direct
+// send — the row is already persisted at its intended slot and must
+// never be repositioned — but a DISTINCT shape, because "already
+// placed" is the only thing the two have in common and a steer is not a
+// turn opener.
+func (r *Router) RegisterPendingSteerSendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeSteer)
+}
+
+// RegisterPendingFlushResendWithExpectation registers a fresh entry for
+// a flush row that is ALREADY persisted at its interrupt position — the
+// Codex post-interrupt re-send (app_session.go). It is the flush shape
+// registered through the direct surface: no queue item id, no retained
+// copy, because the interrupt's eager persist already owns both. The
+// caller pairs it with MarkPendingSendAnchoredAtInterrupt so the echo
+// stamps without re-bumping.
+func (r *Router) RegisterPendingFlushResendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeFlush)
 }
 
 // RegisterPendingFlushSendWithExpectation registers a deferred user_text
@@ -277,19 +306,26 @@ func (r *Router) RegisterPendingSendWithExpectation(threadID, aoItemID string, t
 // message lands after content the model emitted between dispatch and
 // echo — see the pendingSend doc comment.
 func (r *Router) RegisterPendingFlushSendWithExpectation(threadID, queueItemID string, item store.Item, enqueuedAt int64, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expect)
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expect, sendShapeFlush)
 }
 
 // RegisterPendingQuietFlushSendWithExpectation is the quiet-flush
 // registration: the row was already persisted (eager persist) and the
 // echo only confirms it, at the caller-chosen turnIndex.
 func (r *Router) RegisterPendingQuietFlushSendWithExpectation(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect)
+	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect, sendShapeFlush)
 }
 
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expect PendingSendExpectation) {
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expect PendingSendExpectation, shape sendShape) {
 	if threadID == "" || aoItemID == "" {
 		return
+	}
+	// The earliest place the typed shape and the id grammar can be
+	// compared, and the only one that names the REGISTRAR at fault
+	// rather than the reader that would have been misled. Reported, not
+	// corrected: the sniff is still the answer everywhere downstream.
+	if sniffed := flushIDSniff(aoItemID); sniffed != (shape == sendShapeFlush) {
+		r.reportSendShapeDrift(sendShapeSiteRegister, threadID, aoItemID, sniffed, shape)
 	}
 	if enqueuedAt == 0 {
 		enqueuedAt = time.Now().UnixMilli()
@@ -312,6 +348,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		QuietItem:              quietItem,
 		ExpectedProviderItemID: expect.ProviderItemID,
 		ExpectedClientID:       expectedClientID,
+		Shape:                  shape,
 		InterruptedTurnIndex:   -1,
 		EchoPromotedBoundary:   -1,
 	})
@@ -858,7 +895,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 		// not bump them again — the row's anchored position IS the
 		// boundary a later fork/revert slices at, and a re-bump would
 		// move it past content that arrived after the first interrupt.
-		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && strings.Contains(pending[i].AOItemID, ":flush:") {
+		if pending[i].DeferredItem == nil && !pending[i].AnchoredAtInterrupt && r.sniffFlushShape(threadID, &pending[i], sendShapeSitePromoteQuiet) {
 			ids = append(ids, pending[i].AOItemID)
 			pending[i].AnchoredAtInterrupt = true
 		}
@@ -927,7 +964,7 @@ func (r *Router) rebumpAnchoredQuietSiblings(threadID, echoedItemID string, turn
 		if entry.QuietItem == nil || entry.QuietItem.TurnIndex != turnIndex {
 			continue
 		}
-		if !strings.Contains(entry.AOItemID, ":flush:") {
+		if !r.sniffFlushShape(threadID, &entry, sendShapeSiteRebumpSiblings) {
 			continue
 		}
 		siblingIDs = append(siblingIDs, entry.AOItemID)

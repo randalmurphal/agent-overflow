@@ -56,8 +56,19 @@ func countCommandLifecycleEmissions(emissions *emissionLog) int {
 // registerCommandPendingSend puts a pending send carrying the wire uuid in
 // the FIFO, which is the state every real send path leaves behind BEFORE
 // the stdin write the acks answer.
+//
+// The registrar is picked from the id grammar so the entry's sendShape
+// matches what the App layer would have stamped — the ack tests exercise
+// both a direct send and a queued flush row, and registering a
+// `:flush:` id through the direct surface is exactly the drift
+// send_shape.go asserts against.
 func registerCommandPendingSend(r *Router, threadID, itemID, commandUUID string, turnIndex int) {
-	r.RegisterPendingSendWithExpectation(threadID, itemID, turnIndex, PendingSendExpectation{ProviderItemID: commandUUID})
+	expect := PendingSendExpectation{ProviderItemID: commandUUID}
+	if flushIDSniff(itemID) {
+		r.RegisterPendingFlushResendWithExpectation(threadID, itemID, turnIndex, expect)
+		return
+	}
+	r.RegisterPendingSendWithExpectation(threadID, itemID, turnIndex, expect)
 }
 
 func TestCommandLifecycle_QueuedResolvesUserItemID(t *testing.T) {

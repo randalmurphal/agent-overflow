@@ -1215,7 +1215,7 @@ func TestDispatchFlush_ResolveTurnIndex_AccountsForInFlightPendingSends(t *testi
 	}
 
 	// Simulate first flush dispatch: registers pending send at turn 1.
-	app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:1:flush:1", 1, triage.PendingSendExpectation{})
+	app.triage.RegisterPendingFlushResendWithExpectation(thread.ID, "user:1:flush:1", 1, triage.PendingSendExpectation{})
 
 	claudeSess := session{provider: string(provider.Claude)}
 	got, _, err := app.resolveFlushTurnPlacement(thread.ID, claudeSess)

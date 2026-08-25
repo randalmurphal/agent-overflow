@@ -43,6 +43,11 @@ none fits.
   awaiting their wire echo, its registration surface, and the one
   consumption rule `handleUserText` pops through. See "Pending-send
   consumption" below.
+- `send_shape.go` — the typed `sendShape` a registrar stamps on every
+  pending entry (direct / flush / steer), and the drift assertion that
+  compares it against the `":flush:"` id sniff six sites still decide
+  by. Nothing reads the shape yet. See "Send shape is stamped, the
+  sniff still decides" below.
 - `turn_telemetry.go` — live turn-span lifecycle plus the one outcome
   classifier shared by span status and completed/error counters.
 - `live_state.go` — refresh/reconnect snapshot of backend-owned live
@@ -817,10 +822,45 @@ The expectation is declared at registration
 (`PendingSendExpectation{ProviderItemID, ByClientID}`) and `ByClientID`
 carries no value: the registrar copies the entry's own `AOItemID`, so
 the dispatched `clientUserMessageId` and the expected one cannot drift.
-The three `Register*WithExpectation` functions are the whole
+The five `Register*WithExpectation` functions are the whole
 registration surface — the pre-identity wrappers are deleted, so a new
 send path must state its expectation explicitly (the zero value is the
-claude-tui id-less shape, not a default to reach by omission).
+claude-tui id-less shape, not a default to reach by omission). Each
+registrar also stamps exactly one `sendShape`, which is why there are
+five and not three: `RegisterPendingSteerSendWithExpectation` and
+`RegisterPendingFlushResendWithExpectation` are the direct surface's
+shape-carrying siblings, not new behaviour.
+
+### Send shape is stamped, the sniff still decides (`send_shape.go`)
+
+Six sites classify a pending entry as "a queued flush send" by looking
+for `":flush:"` in its `AOItemID` — an id grammar minted a package away
+(`nextFlushUserItemID` in `app_flush_queue.go` is the ONE mint site) and
+never pinned to the reader. `pendingSend.Shape` is the typed answer,
+stamped by the registrar the send path chose.
+
+**Nothing reads it to make a decision.** Every site still branches on the
+substring; `sniffFlushShape` returns the sniff's verdict and only
+*compares* the stamp against it. That is deliberate: the field earns the
+sniff's job by agreeing with it for a release, then the sites become
+`entry.Shape == sendShapeFlush` and the comparison helpers are deleted
+with the substring. The site constants in `send_shape.go` are that
+deletion's checklist.
+
+A disagreement panics in a test binary and logs one bounded line per
+site in production — bounded because the sniff is still the answer, so a
+per-entry log would be noise on a thread that keeps sending. The
+comparison also runs at `registerPendingSend`, which is the only place
+that can name the REGISTRAR at fault rather than the reader it would
+have misled.
+
+Two things the sniff cannot see, and therefore the assertion cannot
+either: it only distinguishes flush from not-flush, so `sendShapeDirect`
+vs `sendShapeSteer` is new information with no cross-check, and a flush
+row registered through the direct surface (the Codex post-interrupt
+re-send) is flush-shaped despite carrying no queue item id — hence
+`RegisterPendingFlushResendWithExpectation` rather than a fourth
+inference rule.
 
 ### Turn index is allocated once (`turn_lifecycle.go`)
 

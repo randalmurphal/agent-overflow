@@ -200,7 +200,7 @@ func (a *App) steerMessageWithOptions(threadID string, content string, opts send
 	// pop a direct send's id-less echo). Wire stamp and expectation derived
 	// together — see providerSendIdentity.
 	steerClientID, steerExpect := providerSendIdentity(sess, userItem.ID, "")
-	a.triage.RegisterPendingSendWithExpectation(threadID, userItem.ID, turnIndex, steerExpect)
+	a.triage.RegisterPendingSteerSendWithExpectation(threadID, userItem.ID, turnIndex, steerExpect)
 
 	// Stamp activity before stdin write so the idle reaper can't race
 	// a slow Steer-and-respawn against its own teardown. Mirrors the

@@ -61,7 +61,7 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	}
 
 	for _, pending := range r.pendingByThread[threadID] {
-		if pending.DeferredItem == nil || !strings.Contains(pending.AOItemID, ":flush:") {
+		if pending.DeferredItem == nil || !r.sniffFlushShape(threadID, &pending, sendShapeSiteLiveSnapshot) {
 			continue
 		}
 		queueItemID := pending.QueueItemID

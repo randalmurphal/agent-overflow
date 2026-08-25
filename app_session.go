@@ -1039,7 +1039,7 @@ func (a *App) codexResendAfterInterrupt(
 	// item's provider correlation. The row was already persisted at its
 	// interrupt position by EagerPersistDeferredFlushSends — anchor the
 	// fresh entry so the echo's :flush: bump doesn't move it again.
-	a.triage.RegisterPendingSendWithExpectation(
+	a.triage.RegisterPendingFlushResendWithExpectation(
 		threadID, persisted[0].UserItemID, turnIndex, resendExpect)
 	a.triage.MarkPendingSendAnchoredAtInterrupt(threadID, persisted[0].UserItemID)
 	sess.liveness.bumpActivity(time.Now())
