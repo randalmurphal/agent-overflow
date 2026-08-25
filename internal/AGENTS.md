@@ -112,11 +112,20 @@ one closest to what you're touching.
 - What does NOT belong here:
   - `main`-package code (entry point, bindings wiring). That stays at
     the repo root (`app.go`, `app_*.go`).
-  - Frontend-facing shapes and event names — those are declared
-    alongside the bound method in `app*.go` so the Wails binding
-    generator picks them up.
+  - Binding registration and event emission. The bound method and the
+    `a.emit(name, ...)` call site live in `app*.go`; `main` owns which
+    methods reach the wire and under what name.
   - Cross-package coordination on behalf of callers. Packages expose
     functions; callers compose.
+- Frontend-facing SHAPES may live here. The Wails generator emits
+  per-package TS models — `frontend/bindings/agent-overflow/internal/<pkg>/models.ts`
+  exists for ~25 packages today, and the generated `app.ts` imports them
+  (`import * as store$0 from "./internal/store/models.js"`). A payload
+  type reachable from a bound method's signature is generated wherever
+  it is declared, so define it in the package that owns the concept
+  rather than mirroring it into `main`. What must stay in `main` is the
+  registration, not the struct. See
+  `docs/architecture/root-decomposition.md` § Wire compatibility.
 
 ## Extension points
 

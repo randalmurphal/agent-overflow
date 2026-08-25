@@ -40,6 +40,7 @@ Deep-dive design docs under [`architecture/`](architecture/).
 | [`discussion-deliberation.md`](architecture/discussion-deliberation.md) | Multi-agent discussion coordination FSM. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
 | [`workflow-campaigns.md`](architecture/workflow-campaigns.md) | Authoring guide for long multi-wave campaigns on the workflows system: the wave shape, the review/verification patterns and why, automation wiring, and the operating knobs. |
+| [`root-decomposition.md`](architecture/root-decomposition.md) | Measured field-ownership and seam map of the `*App` root receiver, the staged plan for cutting it, and the wire-compat facts that make a split byte-identical on the wire. |
 
 ## References
 
