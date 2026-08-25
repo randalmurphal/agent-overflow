@@ -345,14 +345,34 @@ channel is either delivered or dropped.
 
 ## Code generation
 
-`methodgen/` parses the Go AST of every `*.go` in the repo root for
-`func (a *App) <Name>(...)` declarations, honors `//wails:ignore`
-directives, and emits `methods_gen.go` with the static name → FNV-ID
-list. Run via `go run ./internal/transport/methodgen` and committed.
+`methodgen/` parses the Go AST of every `*.go` in each scanned
+directory for `func (a *<Receiver>) <Name>(...)` declarations, honors
+`//wails:ignore` directives, and emits `methods_gen.go` with the static
+name → FNV-ID list. Run via `go run ./internal/transport/methodgen` and
+committed.
+
+What it scans is the `receiverSpecs` list in `methodgen/main.go`: one
+`{Dir, Receiver, Package, TypeName}` tuple per receiver, merged and
+sorted by method name. `Package`/`TypeName` are the FQN labels the
+method hashes under, not facts about where the code lives — a service
+promoted into `internal/<pkg>` keeps `{Package: "main", TypeName:
+"App"}` and its IDs never move (see
+`docs/architecture/root-decomposition.md` § Wire compatibility). A
+method name claimed by two specs is a codegen error naming both FQNs,
+mirroring the dispatcher's `byName` collision refusal.
+
+Today the list holds exactly one entry: the repo-root `App`. `Harness`
+is deliberately not in it — the generated table is the App allow-list
+`bootTransport` passes on the App registration alone, while `Harness`
+registers unfiltered and receiver-level `LocalOnly` under `--harness`
+only. Adding a spec widens both the production allow-list and the
+LAN-safety classification gate in `methods_gen_test.go`.
 
 `methods_gen_test.go` is a CI gate: it re-runs the generator into a
 tempfile and bytes-diffs against the committed output. Adding a new
 exported `App` method without regenerating fails the test.
+`methodgen/main_test.go` covers the multi-spec path itself against
+`methodgen/testdata/`.
 
 ## Per-connection transport policy
 

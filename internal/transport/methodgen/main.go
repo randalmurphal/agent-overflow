@@ -1,6 +1,9 @@
 // methodgen produces internal/transport/methods_gen.go: a static map
-// of every exported App method that the wire-level dispatcher should
-// expose, keyed by name. Used by:
+// of every exported method the wire-level dispatcher should expose,
+// keyed by name. The scan targets are the receiverSpecs list below —
+// one entry today (the repo-root App), an explicit list because
+// docs/architecture/root-decomposition.md promotes services into
+// internal packages that keep registering under main.App. Used by:
 //
 //   - production: NewMethodRegistry() returns the map; the runtime
 //     dispatcher's allow-list is set to its keys, so methods marked
@@ -36,37 +39,69 @@ import (
 	"strings"
 )
 
-const (
-	defaultOut = "internal/transport/methods_gen.go"
+const defaultOut = "internal/transport/methods_gen.go"
 
-	// receiverTypeName is the App struct name. Hard-coded because there
-	// is exactly one bound service in this app and the FQN format
-	// (main.App.<Method>) is what Wails uses internally.
-	receiverTypeName = "App"
+// receiverSpec names one scan target: a directory of Go source, the
+// receiver type declared in it, and the package/type labels its
+// methods register under on the wire.
+//
+// Package and TypeName are the FQN parts, NOT facts about where the
+// code lives: the dispatcher takes both as plain strings from
+// RegisterOptions (see docs/architecture/root-decomposition.md § Wire
+// compatibility), so a service promoted into internal/<pkg> keeps
+// registering as "main"/"App" and its method IDs never move. That is
+// what lets this list grow a second directory without a wire
+// migration.
+type receiverSpec struct {
+	// Dir is the directory to scan, relative to the repo root.
+	Dir string
+	// Receiver is the receiver type name as spelled in SOURCE:
+	// func (x *Receiver) Method(...). Pointer receivers only, same as
+	// Wails' own generator.
+	Receiver string
+	// Package is the registered package label used in the FQN.
+	Package string
+	// TypeName is the registered type label used in the FQN. Empty
+	// means "same as Receiver" — set it only when a receiver registers
+	// under a different name than it is declared with.
+	TypeName string
+}
 
-	// pkgPath is the Go package path used in the FQN. The App lives in
-	// the main module's root package, so its import path is "main"
-	// from the runtime reflection perspective.
-	pkgPath = "main"
-)
+// fqnType is the type label this spec's methods hash under.
+func (s receiverSpec) fqnType() string {
+	if s.TypeName != "" {
+		return s.TypeName
+	}
+	return s.Receiver
+}
 
-// internalServiceMethods is loaded from internal/transport/
-// internalmethods.go via AST parse so the runtime dispatcher and the
-// codegen tool stay in sync. The +loaded set augments the framework
-// lifecycle list with App-level skips (today: nothing — //wails:ignore
-// directives carry that information in source).
-var internalServiceMethods = map[string]bool{}
+// receiverSpecs is the full set of receivers whose methods belong in
+// the generated table. One entry today: the App in the repo root,
+// registered as main.App.<Method>.
+//
+// Harness (also a repo-root receiver registered as main.Harness) is
+// deliberately absent. The generated table is the App allow-list —
+// bootTransport passes NewMethodAllowList() only on the App
+// registration — while Harness registers unfiltered, receiver-level
+// LocalOnly, and only under the --harness boot path. Listing it here
+// would put boot-mode-only methods into the production allow-list and
+// into the LAN-safety classification gate that partners it.
+var receiverSpecs = []receiverSpec{
+	{Dir: ".", Receiver: "App", Package: "main"},
+}
 
 // loadInternalSkipList parses internal/transport/internalmethods.go
-// for the var InternalServiceMethods literal and copies its keys into
-// internalServiceMethods. Failure to parse is fatal — methodgen would
-// otherwise silently expose framework lifecycle methods.
-func loadInternalSkipList(root string) error {
+// for the var InternalServiceMethods literal and returns its keys as a
+// skip set, so the runtime dispatcher and the codegen tool stay in
+// sync. Failure to parse is fatal — methodgen would otherwise silently
+// expose framework lifecycle methods.
+func loadInternalSkipList(root string) (map[string]bool, error) {
+	internalServiceMethods := map[string]bool{}
 	target := filepath.Join(root, "internal/transport/internalmethods.go")
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, target, nil, parser.ParseComments)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", target, err)
+		return nil, fmt.Errorf("parse %s: %w", target, err)
 	}
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -100,9 +135,9 @@ func loadInternalSkipList(root string) error {
 		}
 	}
 	if len(internalServiceMethods) == 0 {
-		return fmt.Errorf("InternalServiceMethods set is empty in %s", target)
+		return nil, fmt.Errorf("InternalServiceMethods set is empty in %s", target)
 	}
-	return nil
+	return internalServiceMethods, nil
 }
 
 // MethodEntry is one row in the generated map.
@@ -114,23 +149,22 @@ type MethodEntry struct {
 
 func main() {
 	out := flag.String("out", defaultOut, "output file path (relative to repo root)")
-	rootFlag := flag.String("root", ".", "repository root containing app.go and app_*.go")
+	rootFlag := flag.String("root", ".", "repository root every receiverSpec.Dir resolves against")
 	flag.Parse()
 
 	root := *rootFlag
 
-	if err := loadInternalSkipList(root); err != nil {
-		fmt.Fprintf(os.Stderr, "methodgen: %v\n", err)
-		os.Exit(1)
-	}
-
-	entries, err := scanRepo(root)
+	skip, err := loadInternalSkipList(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "methodgen: %v\n", err)
 		os.Exit(1)
 	}
 
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	entries, err := scanReceivers(root, receiverSpecs, skip)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "methodgen: %v\n", err)
+		os.Exit(1)
+	}
 
 	body, err := renderFile(entries)
 	if err != nil {
@@ -160,75 +194,94 @@ func main() {
 	fmt.Printf("methodgen: wrote %d methods to %s\n", len(entries), target)
 }
 
-// scanRepo walks the project root for *.go files in package main and
-// extracts every exported method on *App, honouring //wails:ignore.
-func scanRepo(root string) ([]MethodEntry, error) {
-	dirEntries, err := os.ReadDir(root)
-	if err != nil {
-		return nil, fmt.Errorf("read root %s: %w", root, err)
-	}
-
+// scanReceivers walks every spec's directory and extracts each
+// exported method on that spec's receiver type, honouring
+// //wails:ignore and the internal skip set. The merged result is
+// sorted by method name, so the emitted table does not depend on spec
+// order or on directory iteration order.
+//
+// Method names share ONE namespace across receivers — the dispatcher
+// falls back to name lookup when a frame carries no ID, and refuses a
+// duplicate at Register time (transport.Dispatcher.byName). Refuse it
+// here too, so a shadowing method fails codegen rather than boot.
+func scanReceivers(root string, specs []receiverSpec, skip map[string]bool) ([]MethodEntry, error) {
 	fset := token.NewFileSet()
 	var entries []MethodEntry
-	seen := map[string]bool{}
+	// method name -> the FQN that claimed it, for the collision report.
+	claimed := map[string]string{}
 
-	for _, de := range dirEntries {
-		if de.IsDir() || filepath.Ext(de.Name()) != ".go" {
-			continue
-		}
-		// Skip *_test.go — bindings only consider production code.
-		if strings.HasSuffix(de.Name(), "_test.go") {
-			continue
-		}
-
-		path := filepath.Join(root, de.Name())
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	for _, spec := range specs {
+		dir := filepath.Join(root, spec.Dir)
+		dirEntries, err := os.ReadDir(dir)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
-		}
-		if file.Name.Name != "main" {
-			continue
+			return nil, fmt.Errorf("read receiver dir %s: %w", dir, err)
 		}
 
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
+		for _, de := range dirEntries {
+			if de.IsDir() || filepath.Ext(de.Name()) != ".go" {
 				continue
 			}
-			if !isAppReceiver(fn.Recv.List[0].Type) {
+			// Skip *_test.go — bindings only consider production code.
+			if strings.HasSuffix(de.Name(), "_test.go") {
 				continue
 			}
-			name := fn.Name.Name
-			if !ast.IsExported(name) {
-				continue
-			}
-			if internalServiceMethods[name] {
-				continue
-			}
-			if hasWailsIgnore(fn.Doc) {
-				continue
-			}
-			if seen[name] {
-				return nil, fmt.Errorf("duplicate method %s.%s.%s in %s",
-					pkgPath, receiverTypeName, name, path)
-			}
-			seen[name] = true
 
-			fqn := fmt.Sprintf("%s.%s.%s", pkgPath, receiverTypeName, name)
-			entries = append(entries, MethodEntry{
-				Name: name,
-				ID:   fnvHash(fqn),
-				FQN:  fqn,
-			})
+			path := filepath.Join(dir, de.Name())
+			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			if err != nil {
+				return nil, fmt.Errorf("parse %s: %w", path, err)
+			}
+			// A directory holds exactly one non-test package, so the
+			// receiver-name match below already pins the package; the
+			// only extra filter worth keeping is the external test
+			// package that can legally share the directory.
+			if strings.HasSuffix(file.Name.Name, "_test") {
+				continue
+			}
+
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
+					continue
+				}
+				if !isPointerReceiver(fn.Recv.List[0].Type, spec.Receiver) {
+					continue
+				}
+				name := fn.Name.Name
+				if !ast.IsExported(name) {
+					continue
+				}
+				if skip[name] {
+					continue
+				}
+				if hasWailsIgnore(fn.Doc) {
+					continue
+				}
+
+				fqn := fmt.Sprintf("%s.%s.%s", spec.Package, spec.fqnType(), name)
+				if prev, ok := claimed[name]; ok {
+					return nil, fmt.Errorf("name collision between %s and %s on name %q (%s)",
+						prev, fqn, name, path)
+				}
+				claimed[name] = fqn
+
+				entries = append(entries, MethodEntry{
+					Name: name,
+					ID:   fnvHash(fqn),
+					FQN:  fqn,
+				})
+			}
 		}
 	}
+
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries, nil
 }
 
-// isAppReceiver returns true when expr is "*App" — the receiver type
-// for production-bound methods. Pointer-only because Wails' generator
-// also requires *T receivers.
-func isAppReceiver(expr ast.Expr) bool {
+// isPointerReceiver returns true when expr is "*<typeName>" — the
+// receiver form for production-bound methods. Pointer-only because
+// Wails' generator also requires *T receivers.
+func isPointerReceiver(expr ast.Expr, typeName string) bool {
 	star, ok := expr.(*ast.StarExpr)
 	if !ok {
 		return false
@@ -237,7 +290,7 @@ func isAppReceiver(expr ast.Expr) bool {
 	if !ok {
 		return false
 	}
-	return ident.Name == receiverTypeName
+	return ident.Name == typeName
 }
 
 // hasWailsIgnore returns true if any line in the doc comment is
