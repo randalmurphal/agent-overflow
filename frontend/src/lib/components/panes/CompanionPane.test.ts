@@ -33,7 +33,11 @@ describe('CompanionPane across a source-pane thread switch', () => {
     __resetAgentPaneStateForTest();
   });
 
-  it('mounts the agent body at the scope its companion was opened on', async () => {
+  // The 15s test timeout matches the findBy wait below: the agent body is
+  // a lazily-imported chunk, and under full-suite worker load the default
+  // 5s test timeout fired before the 10s findBy could (flake seen twice on
+  // full runs, passes solo in ~5s).
+  it('mounts the agent body at the scope its companion was opened on', { timeout: 15_000 }, async () => {
     const thread = makeThread({ id: 'thread-agent' });
     installPaneMocks([makeItem({ threadId: 'thread-agent' })]);
     const pane = createThreadPane({ paneId: 'main' });
