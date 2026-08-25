@@ -53,6 +53,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,6 +138,14 @@ const webviewLogEnv = "AGENT_OVERFLOW_WEBVIEW_LOG"
 // Microsoft WebView2Loader.dll feature). dev-wsl forwards this var
 // across the WSL→Windows interop hop via WSLENV.
 const webviewSoftwareEnv = "AGENT_OVERFLOW_WEBVIEW_SOFTWARE"
+
+// webviewExtraArgsEnv appends raw Chromium switches (space-separated) to
+// browserArgs. Diagnostic/experiment knob — memory-policy A/Bs like
+// --force-gpu-mem-available-mb run on the soak rig through this without a
+// launcher rebuild per flag. Not for production configuration: anything
+// proven out here graduates into browserArgs with its own rationale.
+// dev-wsl forwards it across the WSL→Windows interop hop via WSLENV.
+const webviewExtraArgsEnv = "AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS"
 
 // shutdownTimeout caps how long the launcher waits for the WSL-side
 // backend to drain before tearing the Job Object down.
@@ -1419,6 +1428,12 @@ func browserArgs(mode string) []string {
 	if os.Getenv(webviewSoftwareEnv) != "" {
 		args = append(args, "--disable-gpu")
 	}
+	// Raw switch pass-through for experiments (see webviewExtraArgsEnv).
+	// Appended last so an experiment can override an unconditional arg —
+	// Chromium keeps the final occurrence of a duplicated switch. A bare
+	// --disable-features would still clobber Wails' merged feature list
+	// (see the function comment); feature toggles stay out of this knob.
+	args = append(args, strings.Fields(os.Getenv(webviewExtraArgsEnv))...)
 	return args
 }
 

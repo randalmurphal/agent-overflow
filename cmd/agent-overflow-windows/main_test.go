@@ -791,6 +791,24 @@ func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
 	}
 }
 
+// TestBrowserArgsExtraArgsGate covers the raw-switch pass-through:
+// AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS is split on whitespace and appended
+// LAST (so an experiment can override an unconditional switch — Chromium
+// keeps the final occurrence), and an unset/blank var adds nothing.
+func TestBrowserArgsExtraArgsGate(t *testing.T) {
+	t.Setenv(webviewExtraArgsEnv, "")
+	base := browserArgs("dev")
+
+	t.Setenv(webviewExtraArgsEnv, "  --force-gpu-mem-available-mb=256   --disk-cache-size=4096 ")
+	got := browserArgs("dev")
+	if len(got) != len(base)+2 {
+		t.Fatalf("expected %d args, got %d: %v", len(base)+2, len(got), got)
+	}
+	if got[len(got)-2] != "--force-gpu-mem-available-mb=256" || got[len(got)-1] != "--disk-cache-size=4096" {
+		t.Errorf("extra args not appended last: %v", got[len(got)-2:])
+	}
+}
+
 // TestProbeBootstrapUnreachableIsRetryable pins the signal the
 // fresh-port retry keys on: a probe that never got a single HTTP
 // response back over Windows localhost. Nothing is listening on the
