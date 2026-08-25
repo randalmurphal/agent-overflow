@@ -251,10 +251,7 @@ func (a *App) validateAutomationInput(input WorkflowAutomationInput) (store.Auto
 	if _, err := a.store.GetProject(projectID); err != nil {
 		return store.Automation{}, err
 	}
-	definitions := workflowDefinitionSource{
-		store: a.store, configRoot: a.workflowDataRoot(),
-		profiles: workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()},
-	}
+	_, definitions := a.workflowSources()
 	if _, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
 		ProjectID: projectID, WorkflowID: workflowID, WorkflowScope: string(scope),
 	}); err != nil {

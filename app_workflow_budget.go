@@ -63,7 +63,7 @@ func (a *App) workflowRunBudget(ctx context.Context, item store.WorkItem) (*Work
 	}
 	view, err := engine.ResolveBudget(
 		ctx,
-		workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()},
+		a.workflowProfiles(),
 		workflowSpendSource{store: a.store},
 		engine.BudgetSubjectOf(root), time.Now(),
 	)

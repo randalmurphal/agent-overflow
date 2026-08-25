@@ -53,7 +53,7 @@ const workflowAssistantTextKind = "assistant_text"
 func (r *workflowAppRunner) settleAttemptNarrative(attempt *workflowAttempt, authored string, envelope json.RawMessage) {
 	if err := r.writeAttemptNarrative(attempt, authored, envelope); err != nil {
 		log.Printf("workflow narrative %s: %v", workflowRunKey(attempt.key), err)
-		r.app.emit(eventchan.WorkflowError, map[string]any{
+		r.host.emit(eventchan.WorkflowError, map[string]any{
 			"itemId": attempt.key.ItemID,
 			"error":  "workflow narrative could not be written from the phase's final envelope; inspect local diagnostics",
 		})
@@ -77,7 +77,7 @@ func (r *workflowAppRunner) writeAttemptNarrative(attempt *workflowAttempt, auth
 		// its envelope, so it is authored exactly as a file it wrote would be.
 		narrative = strings.TrimRight(authored, "\n") + "\n"
 	} else {
-		texts, err := r.app.threadAssistantTexts(attempt.threadID)
+		texts, err := r.host.threadAssistantTexts(attempt.threadID)
 		if err != nil {
 			return err
 		}

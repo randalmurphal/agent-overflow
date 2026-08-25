@@ -57,7 +57,7 @@ func (r *workflowAppRunner) prepareWorkspace(ctx context.Context, request engine
 }
 
 func (r *workflowAppRunner) resolveWorkspace(ctx context.Context, request engine.RunRequest) (preparedWorkflowWorkspace, error) {
-	project, err := r.app.store.GetProject(request.Item.ProjectID)
+	project, err := r.store.GetProject(request.Item.ProjectID)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("load project: %w", err)
 	}
@@ -72,7 +72,7 @@ func (r *workflowAppRunner) resolveWorkspace(ctx context.Context, request engine
 			"run request for item %q carries no frozen workspace need", request.Key.ItemID,
 		)
 	}
-	item, err := r.app.store.GetWorkItem(request.Key.ItemID)
+	item, err := r.store.GetWorkItem(request.Key.ItemID)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("load work item: %w", err)
 	}
@@ -132,7 +132,7 @@ func (r *workflowAppRunner) resolveCalledWorkspace(
 	// every later phase of this child resolves through the fast path above.
 	// The base branch comes from what provisioning resolved, not from the root row
 	// read before it: on the first cut of a tree, that read predates the answer.
-	if err := r.app.store.UpdateWorkItemWorkspace(
+	if err := r.store.UpdateWorkItemWorkspace(
 		item.ID, prepared.path, prepared.branch, prepared.baseBranch,
 	); err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("stamp called run %q workspace: %w", item.ID, err)
@@ -153,7 +153,7 @@ func (r *workflowAppRunner) resolveCalledWorkspace(
 func (r *workflowAppRunner) resolveUnitCallWorkspace(
 	ctx context.Context, item store.WorkItem, primary preparedWorkflowWorkspace,
 ) (preparedWorkflowWorkspace, error) {
-	unit, found, err := r.app.store.GetWorkItemUnit(
+	unit, found, err := r.store.GetWorkItemUnit(
 		item.ParentItemID, item.ParentPhaseID, item.ParentAttempt, item.ParentUnitID,
 	)
 	if err != nil {
@@ -179,7 +179,7 @@ func (r *workflowAppRunner) prepareRootWorkspace(
 ) (preparedWorkflowWorkspace, error) {
 	unlock := r.workspaceLocks.Lock(root.ID)
 	defer unlock()
-	current, err := r.app.store.GetWorkItem(root.ID)
+	current, err := r.store.GetWorkItem(root.ID)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("load root work item %q: %w", root.ID, err)
 	}
@@ -194,7 +194,7 @@ func (r *workflowAppRunner) rootWorkItem(item store.WorkItem) (store.WorkItem, e
 		if depth > engine.MaxCallDepth {
 			return store.WorkItem{}, fmt.Errorf("resolve root of work item %q: tree is deeper than %d", item.ID, engine.MaxCallDepth)
 		}
-		parent, err := r.app.store.GetWorkItem(current.ParentItemID)
+		parent, err := r.store.GetWorkItem(current.ParentItemID)
 		if err != nil {
 			return store.WorkItem{}, fmt.Errorf("resolve root of work item %q: %w", item.ID, err)
 		}
@@ -243,7 +243,7 @@ func (r *workflowAppRunner) recordedWorkspace(
 	if !info.IsDir() {
 		return preparedWorkflowWorkspace{}, false, fmt.Errorf("recorded worktree %q is not a directory", item.WorktreePath)
 	}
-	registered, ok, findErr := r.app.findWorktree(project.Path, item.WorktreePath)
+	registered, ok, findErr := r.host.findWorktree(project.Path, item.WorktreePath)
 	if findErr != nil {
 		return preparedWorkflowWorkspace{}, false, fmt.Errorf("verify recorded worktree %q: %w", item.WorktreePath, findErr)
 	}
@@ -274,24 +274,24 @@ func (r *workflowAppRunner) provisionWorkspace(
 		baseBranch = strings.TrimSpace(projectProfile.BaseBranch)
 	}
 	if baseBranch == "" {
-		baseBranch = strings.TrimSpace(r.app.gitCore().CurrentBranch(project.Path))
+		baseBranch = strings.TrimSpace(r.host.gitCore().CurrentBranch(project.Path))
 	}
 	if baseBranch == "" {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("resolve base branch: repository has no current branch")
 	}
-	core := r.app.gitCore()
-	branchPrefix := workflowWorktreeBranchPrefix(r.app.worktreeBranchPrefix(), workflowID, item.ID)
+	core := r.host.gitCore()
+	branchPrefix := workflowWorktreeBranchPrefix(r.host.worktreeBranchPrefix(), workflowID, item.ID)
 	branch, worktreePath, err := findInterruptedWorkflowProvisioning(core, project.Path, branchPrefix)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, err
 	}
 	if worktreePath == "" {
 		branch = gitops.BuildTemporaryWorktreeBranchNameWithPrefix(branchPrefix)
-		worktreePath, err = r.app.defaultWorktreePath(project.Path, branch)
+		worktreePath, err = r.host.defaultWorktreePath(project.Path, branch)
 		if err != nil {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("choose worktree path: %w", err)
 		}
-		if err := r.app.cutWorktreeFromFreshBase(ctx, project.Path, worktreePath, baseBranch, branch); err != nil {
+		if err := r.host.cutWorktreeFromFreshBase(ctx, project.Path, worktreePath, baseBranch, branch); err != nil {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("create worktree from %q: %w", baseBranch, err)
 		}
 	}
@@ -301,7 +301,7 @@ func (r *workflowAppRunner) provisionWorkspace(
 		}
 		// Clear provisioning state but keep the intake-time base branch: it is
 		// user intent from enqueue, not a product of the rolled-back provisioning.
-		if clearErr := r.app.store.UpdateWorkItemWorkspace(item.ID, "", "", item.BaseBranch); clearErr != nil {
+		if clearErr := r.store.UpdateWorkItemWorkspace(item.ID, "", "", item.BaseBranch); clearErr != nil {
 			return errors.Join(cause, fmt.Errorf("clear rolled-back worktree %q: %w", worktreePath, clearErr))
 		}
 		return cause
@@ -313,7 +313,7 @@ func (r *workflowAppRunner) provisionWorkspace(
 	if err := worktreesetup.Run(ctx, project.Path, worktreePath, setup); err != nil {
 		return preparedWorkflowWorkspace{}, rollback(err)
 	}
-	if err := r.app.store.UpdateWorkItemWorkspace(item.ID, worktreePath, branch, baseBranch); err != nil {
+	if err := r.store.UpdateWorkItemWorkspace(item.ID, worktreePath, branch, baseBranch); err != nil {
 		return preparedWorkflowWorkspace{}, rollback(fmt.Errorf("persist workspace: %w", err))
 	}
 	return preparedWorkflowWorkspace{
@@ -326,7 +326,7 @@ func (r *workflowAppRunner) provisionWorkspace(
 // recipe its project declared is broken in ways that only surface mid-turn.
 // An unconfigured project yields the zero config, which runs nothing.
 func (r *workflowAppRunner) worktreeSetup(projectID string) (worktreesetup.Config, error) {
-	setup, _, err := r.app.store.ProjectWorktreeSetup(projectID)
+	setup, _, err := r.store.ProjectWorktreeSetup(projectID)
 	if err != nil {
 		return worktreesetup.Config{}, fmt.Errorf("load worktree setup for project %q: %w", projectID, err)
 	}
@@ -381,13 +381,13 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 	if err := gitops.ValidateBranchName(branch); err != nil {
 		return preparedWorkflowWorkspace{}, fmt.Errorf("unit branch %q: %w", branch, err)
 	}
-	core := r.app.gitCore()
+	core := r.host.gitCore()
 	worktreePath, adopted, err := r.existingUnitWorktree(primary.project.Path, branch)
 	if err != nil {
 		return preparedWorkflowWorkspace{}, err
 	}
 	if !adopted {
-		worktreePath, err = r.app.defaultWorktreePath(primary.project.Path, branch)
+		worktreePath, err = r.host.defaultWorktreePath(primary.project.Path, branch)
 		if err != nil {
 			return preparedWorkflowWorkspace{}, fmt.Errorf("choose unit worktree path: %w", err)
 		}
@@ -415,7 +415,7 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 		}
 		return cause
 	}
-	if err := r.app.store.AttachWorkItemUnitWorkspace(
+	if err := r.store.AttachWorkItemUnitWorkspace(
 		ref.itemID, ref.phaseID, ref.attempt, ref.unitID, branch, worktreePath,
 	); err != nil {
 		return preparedWorkflowWorkspace{}, rollback(fmt.Errorf("register unit workspace: %w", err))
@@ -438,7 +438,7 @@ func (r *workflowAppRunner) provisionUnitWorktree(
 // branch. A found one is adopted rather than replaced: it is this unit's own
 // try, re-entered.
 func (r *workflowAppRunner) existingUnitWorktree(projectPath, branch string) (string, bool, error) {
-	worktrees, err := r.app.gitCore().ListWorktrees(projectPath)
+	worktrees, err := r.host.gitCore().ListWorktrees(projectPath)
 	if err != nil {
 		return "", false, fmt.Errorf("list worktrees before unit provisioning: %w", err)
 	}

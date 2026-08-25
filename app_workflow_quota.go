@@ -49,12 +49,12 @@ func (r *workflowAppRunner) parkForUsageLimit(
 		usageScopeID := store.WorkflowProviderUsageScopeID(0)
 		if identified {
 			var err error
-			usageScopeID, err = r.app.store.OpenWorkflowProviderUsageScope(
+			usageScopeID, err = r.store.OpenWorkflowProviderUsageScope(
 				identity.Provider, identity.AccountID, identity.CredentialGeneration, r.now().UnixMilli(),
 			)
 			if err != nil {
 				log.Printf("workflow runner: record provider usage scope for %s: %v; parking without cross-run notification coalescing", itemID, err)
-				r.app.emit(eventchan.WorkflowError, engine.ErrorEvent{
+				r.host.emit(eventchan.WorkflowError, engine.ErrorEvent{
 					ItemID: itemID,
 					Error:  "the provider usage limit was recognized, but its notification correlation could not be recorded; the run was still parked without retries",
 				})

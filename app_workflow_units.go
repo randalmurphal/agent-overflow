@@ -216,7 +216,7 @@ func (r *workflowAppRunner) enrichJoinUnits(request engine.RunRequest, primary p
 				"unit %q is on branch %q but the item workspace records no branch to count against",
 				unitID, branch,
 			))
-		} else if ahead, err := r.app.gitCore().CountCommitsAhead(projectPath, branch, base); err != nil {
+		} else if ahead, err := r.host.gitCore().CountCommitsAhead(projectPath, branch, base); err != nil {
 			errs = append(errs, fmt.Errorf("count commits on unit %q branch %q: %w", unitID, branch, err))
 		} else {
 			result["commitsAhead"] = ahead
@@ -228,7 +228,7 @@ func (r *workflowAppRunner) enrichJoinUnits(request engine.RunRequest, primary p
 			// "no answer" and "clean" are different facts to a merge script.
 			continue
 		}
-		changes, err := r.app.gitCore().CountWorkingTreeChanges(worktree)
+		changes, err := r.host.gitCore().CountWorkingTreeChanges(worktree)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("read unit %q worktree %q state: %w", unitID, worktree, err))
 			continue
@@ -273,7 +273,7 @@ func (r *workflowAppRunner) startAgentUnit(
 		effort: unit.Effort,
 		access: unit.EffectiveAccess(), workspace: plan.workspace,
 	}
-	promptContext := r.app.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
+	promptContext := r.host.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
 	promptContext.NarrativePath = plan.narrativePath
 	promptContext.Access = unit.EffectiveAccess()
 	// A join that opted into the merge contract is told the exact set it will be
@@ -369,11 +369,11 @@ func (r *workflowAppRunner) startToolUnit(
 func (r *workflowAppRunner) attachUnitRun(key engine.RunKey, plan workflowUnitPlan, threadID string) error {
 	var err error
 	if plan.kind == engine.UnitJoin {
-		err = r.app.store.AttachWorkItemJoinRun(
+		err = r.store.AttachWorkItemJoinRun(
 			key.ItemID, key.PhaseID, key.Attempt, key.UnitID, threadID, plan.narrativePath,
 		)
 	} else {
-		err = r.app.store.AttachWorkItemUnitRun(
+		err = r.store.AttachWorkItemUnitRun(
 			key.ItemID, key.PhaseID, key.Attempt, key.UnitID, threadID, plan.narrativePath,
 		)
 	}
@@ -410,7 +410,7 @@ func (r *workflowAppRunner) attachUnitRun(key engine.RunKey, plan workflowUnitPl
 // A removal failure is reported and never changes the phase's outcome: the join
 // is done, and an undeleted directory is not a reason to fail a run.
 func (r *workflowAppRunner) retireUnitWorktrees(done workflowCompletion) {
-	units, err := r.app.store.ListWorkItemPhaseUnits(done.key.ItemID, done.key.PhaseID, done.key.Attempt)
+	units, err := r.store.ListWorkItemPhaseUnits(done.key.ItemID, done.key.PhaseID, done.key.Attempt)
 	if err != nil {
 		r.reportUnitCleanupFailure(done.key.ItemID, fmt.Errorf("list units: %w", err))
 		return
@@ -419,11 +419,11 @@ func (r *workflowAppRunner) retireUnitWorktrees(done workflowCompletion) {
 		if unit.Kind == store.WorkItemUnitKindJoin || strings.TrimSpace(unit.WorktreePath) == "" {
 			continue
 		}
-		if err := r.app.gitCore().RemoveWorktree(done.projectPath, unit.WorktreePath); err != nil {
+		if err := r.host.gitCore().RemoveWorktree(done.projectPath, unit.WorktreePath); err != nil {
 			// Ask the checkout the same question `git worktree remove` decides
 			// on, rather than matching its refusal text: that sentence is
 			// localized and free to change between git versions.
-			if _, changes, stateErr := r.app.gitCore().WorkingTreeChanges(unit.WorktreePath, 0); stateErr == nil && changes > 0 {
+			if _, changes, stateErr := r.host.gitCore().WorkingTreeChanges(unit.WorktreePath, 0); stateErr == nil && changes > 0 {
 				r.reportUnitWorktreeRetained(done.key.ItemID, unit, changes)
 				continue
 			}
@@ -436,7 +436,7 @@ func (r *workflowAppRunner) retireUnitWorktrees(done workflowCompletion) {
 		}
 		// The row keeps its branch and loses only the path, which is exactly what
 		// is no longer true about the unit.
-		if err := r.app.store.AttachWorkItemUnitWorkspace(
+		if err := r.store.AttachWorkItemUnitWorkspace(
 			unit.ItemID, unit.PhaseID, unit.Attempt, unit.UnitID, unit.Branch, "",
 		); err != nil {
 			r.reportUnitCleanupFailure(done.key.ItemID, fmt.Errorf(
@@ -493,7 +493,7 @@ func (a *App) removeWorkflowUnitWorktrees(item store.WorkItem) error {
 
 func (r *workflowAppRunner) reportUnitCleanupFailure(itemID string, cause error) {
 	log.Printf("workflow unit worktree cleanup %s: %v", itemID, cause)
-	r.app.emit(eventchan.WorkflowError, map[string]any{
+	r.host.emit(eventchan.WorkflowError, map[string]any{
 		"itemId": itemID,
 		"error":  "workflow fan-out unit worktrees could not be cleaned up; inspect local diagnostics",
 	})
@@ -511,7 +511,7 @@ func (r *workflowAppRunner) reportUnitWorktreeRetained(itemID string, unit store
 		unit.UnitID, retainedDirtyReason(changes), unit.WorktreePath, unit.Branch,
 	)
 	log.Printf("workflow unit worktree retained %s: %s", itemID, message)
-	r.app.emit(eventchan.WorkflowError, map[string]any{
+	r.host.emit(eventchan.WorkflowError, map[string]any{
 		"itemId": itemID,
 		"error":  message,
 	})
@@ -522,7 +522,7 @@ func (r *workflowAppRunner) reportUnitWorktreeRetained(itemID string, unit store
 // absent — so this exists to keep "the count is missing" from being silent.
 func (r *workflowAppRunner) reportUnitGitStateFailure(itemID string, cause error) {
 	log.Printf("workflow join unit git state %s: %v", itemID, cause)
-	r.app.emit(eventchan.WorkflowError, map[string]any{
+	r.host.emit(eventchan.WorkflowError, map[string]any{
 		"itemId": itemID,
 		"error":  "some fan-out unit branch or worktree state could not be read for the join; inspect local diagnostics",
 	})

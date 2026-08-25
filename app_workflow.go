@@ -100,6 +100,31 @@ type workflowDefinitionSource struct {
 	profiles   workflowProfileSource
 }
 
+// workflowSources builds the two resolvers every workflow entry point needs,
+// from one config root. They are built together because the definition source
+// validates through the profile source: a site that assembled them from two
+// different roots would check a definition against a profile no run would ever
+// load. configRoot stays a parameter because the callers genuinely differ:
+// engine init runs BEFORE `a.workflowDataRoot()` can answer (that read resolves
+// through the runner it is about to install), and the harness seeds from its own
+// paths with no *App method in reach.
+func workflowSources(database *store.Store, configRoot string) (workflowProfileSource, workflowDefinitionSource) {
+	profiles := workflowProfileSource{store: database, configRoot: configRoot}
+	return profiles, workflowDefinitionSource{store: database, configRoot: configRoot, profiles: profiles}
+}
+
+// workflowProfiles is the profile half alone, for the readers that resolve
+// a budget or a project profile without touching a definition.
+func (a *App) workflowProfiles() workflowProfileSource {
+	profiles, _ := workflowSources(a.store, a.workflowDataRoot())
+	return profiles
+}
+
+// workflowSources is the App-bound pair, rooted at the live data root.
+func (a *App) workflowSources() (workflowProfileSource, workflowDefinitionSource) {
+	return workflowSources(a.store, a.workflowDataRoot())
+}
+
 type workflowSpendSource struct{ store *store.Store }
 
 // TreeSpend prices one run tree: the root's own ledger rows plus every run it
@@ -193,7 +218,7 @@ func (s workflowDefinitionSource) resolve(ctx context.Context, projectID, workfl
 
 func (a *App) initWorkflowEngine(dataRoot string) error {
 	settingsSnapshot := a.currentSettings()
-	profiles := workflowProfileSource{store: a.store, configRoot: dataRoot}
+	profiles, definitions := workflowSources(a.store, dataRoot)
 	runner := newWorkflowAppRunner(a, dataRoot, profiles)
 	// Live workflow turns are the only turns that need work-item usage
 	// attribution. Crash recovery parks every orphan running item before new
@@ -204,7 +229,6 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	if a.triage != nil {
 		a.triage.SetUsageWorkItemResolver(runner.workItemForThread)
 	}
-	definitions := workflowDefinitionSource{store: a.store, configRoot: dataRoot, profiles: profiles}
 	// Transfer prior-process usage-attention claims before Engine.Start can emit
 	// recovery transitions and create claims owned by this process's in-memory
 	// delivery queue. The rows they describe are surfaced only after Start has
@@ -316,7 +340,7 @@ func (a *App) startWorkflowRun(projectID, workflowID, workflowScope, goal string
 	// Definition/profile errors are synchronous validation failures, not
 	// provisioning failures. Resolve before persistence so an unknown or broken
 	// workflow is refused at the call under the fire-and-forget start contract.
-	profiles := workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()}
+	profiles, definitions := a.workflowSources()
 	projectProfile, err := profiles.Profile(a.lifeCtx(), projectID)
 	if err != nil {
 		return store.WorkItem{}, fmt.Errorf("start workflow run: load project profile: %w", err)
@@ -324,7 +348,6 @@ func (a *App) startWorkflowRun(projectID, workflowID, workflowScope, goal string
 	if baseBranch == "" {
 		baseBranch = strings.TrimSpace(projectProfile.BaseBranch)
 	}
-	definitions := workflowDefinitionSource{store: a.store, configRoot: a.workflowDataRoot(), profiles: profiles}
 	resolved, err := definitions.Resolve(a.lifeCtx(), store.WorkItem{
 		ProjectID: projectID, WorkflowID: workflowID, WorkflowScope: string(scope),
 	})

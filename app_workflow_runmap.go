@@ -482,7 +482,7 @@ func (a *App) workflowRunMapMoney(
 	}
 	view, err := engine.ResolveBudget(
 		ctx,
-		workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()},
+		a.workflowProfiles(),
 		resolvedTreeSpend{rootItemID: root.ItemID, spend: engine.Spend{
 			Tokens:    usage.TotalTokens,
 			USD:       priced.TotalUSD(),

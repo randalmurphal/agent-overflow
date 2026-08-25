@@ -13,13 +13,21 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	workflowrunner "agent-overflow/internal/workflow/runner"
 )
 
 type workflowAppRunner struct {
-	app      *App
+	// host is the process around the runner, behind the capability seams in
+	// app_workflow_runner_host.go. It is those interfaces rather than *App so
+	// the runner's contract is what it actually uses, not everything the App
+	// happens to expose.
+	host workflowRunnerHost
+	// store is a dependency rather than a host capability, held the same way
+	// every other workflow collaborator in this package holds it.
+	store    *store.Store
 	dataRoot string
 	profiles engine.ProfileSource
 	now      func() time.Time
@@ -161,7 +169,8 @@ func (a *workflowAttempt) failureDetail(fallback string) string {
 
 func newWorkflowAppRunner(app *App, dataRoot string, profiles engine.ProfileSource) *workflowAppRunner {
 	return &workflowAppRunner{
-		app: app, dataRoot: dataRoot, profiles: profiles, now: time.Now,
+		host: app, store: app.store,
+		dataRoot: dataRoot, profiles: profiles, now: time.Now,
 		newTimer: func(delay time.Duration, callback func()) workflowTimer {
 			return time.AfterFunc(delay, callback)
 		},
@@ -279,7 +288,7 @@ func (r *workflowAppRunner) start(ctx context.Context, request engine.RunRequest
 		effort: request.Phase.Effort,
 		access: request.Phase.EffectiveAccess(), workspace: preparedWorkspace,
 	}
-	promptContext := r.app.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
+	promptContext := r.host.workflowPromptAncestry(request.Key.ItemID, request.Workflow)
 	promptContext.NarrativePath = narrativePath
 	promptContext.Access = request.Phase.EffectiveAccess()
 	r.markStartStep(request.Key, workflowStartStepSessionProof)
@@ -290,7 +299,7 @@ func (r *workflowAppRunner) start(ctx context.Context, request engine.RunRequest
 			return workflowrunner.BuildPrompt(request.Phase, request.Vars, context)
 		},
 		attach: func(threadID string) error {
-			if err := r.app.store.AttachWorkItemPhaseRun(
+			if err := r.store.AttachWorkItemPhaseRun(
 				request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt, threadID, narrativePath,
 			); err != nil {
 				return fmt.Errorf("workflow runner: attach phase run: %w", err)
@@ -342,11 +351,11 @@ func (r *workflowAppRunner) restartClaudeTakeoverWithSchema(ctx context.Context,
 	if !restart {
 		return false, nil
 	}
-	if err := r.app.StopSession(threadID); err != nil {
+	if err := r.host.StopSession(threadID); err != nil {
 		r.removeTemporarySchema(threadID)
 		return false, fmt.Errorf("workflow runner: stop schema-less takeover session: %w", err)
 	}
-	if err := r.app.startSessionTakingLock(ctx, threadID); err != nil {
+	if err := r.host.startSessionTakingLock(ctx, threadID); err != nil {
 		r.removeTemporarySchema(threadID)
 		return false, fmt.Errorf("workflow runner: restart takeover session with schema: %w", err)
 	}
@@ -361,7 +370,7 @@ func (r *workflowAppRunner) installAttempt(ctx context.Context, attempt *workflo
 	key := workflowRunKey(attempt.key)
 	threadID := attempt.threadID
 	r.markStartStep(attempt.key, workflowStartStepInstall)
-	attempt.unsubscribe = r.app.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
+	attempt.unsubscribe = r.host.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
 		r.observe(key, event)
 	})
 	r.mu.Lock()
@@ -523,7 +532,7 @@ func (r *workflowAppRunner) finishDetachedAttempt(attempt *workflowAttempt, outc
 	// was about to appear.
 	if workflowOutcomeCarriesEnvelope(outcome.Kind) {
 		r.settleAttemptNarrative(attempt, authored, original)
-		r.app.recordEnvelopeMemory(attempt.key, notes)
+		r.host.recordEnvelopeMemory(attempt.key, notes)
 	}
 	if outcome.Kind == engine.OutcomeDone {
 		go func() {

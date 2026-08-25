@@ -322,7 +322,7 @@ func (a *App) validateWorkflowDispositionWorktree(item store.WorkItem) (store.Pr
 }
 
 func (a *App) workflowProjectProfile(projectID string) (*profile.Profile, error) {
-	source := workflowProfileSource{store: a.store, configRoot: a.workflowDataRoot()}
+	source := a.workflowProfiles()
 	return source.Profile(a.lifeCtx(), projectID)
 }
 

@@ -142,7 +142,7 @@ func (r *workflowAppRunner) dispatchSendLocked(
 	if drop != workflowSendNotDropped {
 		return drop, nil
 	}
-	if err := r.app.sendWorkflowMessage(ctx, attempt.threadID, message, schema, func(identity providerDispatchIdentity) {
+	if err := r.host.sendWorkflowMessage(ctx, attempt.threadID, message, schema, func(identity providerDispatchIdentity) {
 		r.mu.Lock()
 		if r.runs[runKey] == attempt && attempt.sendEpoch == epoch {
 			attempt.dispatchIdentity = identity
@@ -207,7 +207,7 @@ func (r *workflowAppRunner) dispatchSendLocked(
 // worst case here is a repeat, and a send already on the wire must not be
 // reported as failed because a bookkeeping write did not land.
 func (r *workflowAppRunner) ackFeedbackRendered(key engine.RunKey) {
-	workflowEngine, err := r.app.requireWorkflowEngine()
+	workflowEngine, err := r.host.requireWorkflowEngine()
 	if err != nil {
 		// No engine to tell: the process is shutting down, or this is a runner
 		// under test. Neither is a send failure and neither loses a note — an

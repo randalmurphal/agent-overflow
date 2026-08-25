@@ -80,7 +80,7 @@ func (r *workflowAppRunner) StopForTakeover(ctx context.Context, key engine.RunK
 func (r *workflowAppRunner) restoreTakeoverAttempt(
 	runKey string, attempt *workflowAttempt, restore workflowTakeoverRestore,
 ) {
-	attempt.unsubscribe = r.app.subscribeThreadTurnObserver(attempt.threadID, func(_ string, event provider.ProviderEvent) {
+	attempt.unsubscribe = r.host.subscribeThreadTurnObserver(attempt.threadID, func(_ string, event provider.ProviderEvent) {
 		r.observe(runKey, event)
 	})
 	r.mu.Lock()
@@ -126,7 +126,7 @@ func (r *workflowAppRunner) restoreTakeoverTimerLocked(runKey string, attempt *w
 
 func (r *workflowAppRunner) interruptAndWaitForYield(ctx context.Context, runKey, threadID string) (json.RawMessage, error) {
 	yielded := make(chan struct{}, 1)
-	unsubscribe := r.app.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
+	unsubscribe := r.host.subscribeThreadTurnObserver(threadID, func(_ string, event provider.ProviderEvent) {
 		if event.Kind == provider.EventTurnComplete {
 			select {
 			case yielded <- struct{}{}:
@@ -148,7 +148,7 @@ func (r *workflowAppRunner) interruptAndWaitForYield(ctx context.Context, runKey
 	if err := r.interrupt(lockCtx, threadID); err != nil {
 		return nil, fmt.Errorf("workflow runner: interrupt %s: %w", runKey, err)
 	}
-	if _, active, err := r.app.store.GetActiveTurn(threadID); err != nil {
+	if _, active, err := r.store.GetActiveTurn(threadID); err != nil {
 		return nil, fmt.Errorf("workflow runner: inspect interrupted turn %s: %w", runKey, err)
 	} else if !active {
 		return nil, nil
@@ -195,7 +195,7 @@ func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, thread
 		return nil
 	}
 	r.mu.Unlock()
-	item, err := r.app.store.GetWorkItem(itemID)
+	item, err := r.store.GetWorkItem(itemID)
 	if err != nil {
 		return fmt.Errorf("workflow runner: load takeover item: %w", err)
 	}
@@ -210,7 +210,7 @@ func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, thread
 	if _, err := element.contract.Schema(); err != nil {
 		return fmt.Errorf("workflow runner: takeover %s schema: %w", element.description, err)
 	}
-	_, sessionAlive := r.app.sessionManager().get(threadID)
+	_, sessionAlive := r.host.sessionManager().get(threadID)
 	r.mu.Lock()
 	if existing, ok := r.takeovers[threadID]; ok && existing.itemID == itemID {
 		sessionAlive = existing.schemaAttached
@@ -222,10 +222,10 @@ func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, thread
 	delete(r.schemas, threadID)
 	r.mu.Unlock()
 	if element.provider == string(provider.Claude) && sessionAlive {
-		if err := r.app.stopSession(threadID); err != nil {
+		if err := r.host.stopSession(threadID); err != nil {
 			return fmt.Errorf("workflow runner: stop schema-attached takeover session: %w", err)
 		}
-		if err := r.app.startSession(ctx, threadID); err != nil {
+		if err := r.host.startSession(ctx, threadID); err != nil {
 			return fmt.Errorf("workflow runner: restart takeover session without schema: %w", err)
 		}
 	}
@@ -242,7 +242,7 @@ func (r *workflowAppRunner) registerTakeover(ctx context.Context, itemID, thread
 func (r *workflowAppRunner) takeoverElement(
 	item store.WorkItem, workflow def.Workflow, threadID string,
 ) (workflowTakeoverElement, error) {
-	phases, err := r.app.store.ListWorkItemPhases(item.ID)
+	phases, err := r.store.ListWorkItemPhases(item.ID)
 	if err != nil {
 		return workflowTakeoverElement{}, fmt.Errorf("workflow runner: list takeover phases: %w", err)
 	}
@@ -267,7 +267,7 @@ func (r *workflowAppRunner) takeoverElement(
 			provider:    phase.Provider, contract: def.PhaseEnvelope(phase),
 		}, nil
 	}
-	row, found, err := r.app.store.GetWorkItemUnitByThread(threadID)
+	row, found, err := r.store.GetWorkItemUnitByThread(threadID)
 	if err != nil {
 		return workflowTakeoverElement{}, fmt.Errorf("workflow runner: resolve takeover unit: %w", err)
 	}

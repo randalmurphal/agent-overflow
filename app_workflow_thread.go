@@ -145,7 +145,7 @@ func workflowPhaseRuntimeMode(access def.Access) provider.RuntimeMode {
 // to cannot drift from the thread a fresh one would have been given — and a
 // phase, a unit, and a join are all held to them.
 func (r *workflowAppRunner) validatePriorThread(spec workflowThreadSpec, threadID string) (store.Thread, error) {
-	thread, err := r.app.store.GetThread(threadID)
+	thread, err := r.store.GetThread(threadID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("workflow runner: load prior thread %q for %s: %w", threadID, spec.label, err)
 	}

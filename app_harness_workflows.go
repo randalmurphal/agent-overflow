@@ -140,8 +140,7 @@ func (h *Harness) seedProjectWorkflowFiles(projectRow store.Project, spec Harnes
 		}
 	}
 
-	profiles := workflowProfileSource{store: h.app.store, configRoot: h.paths.DataDir}
-	definitions := workflowDefinitionSource{store: h.app.store, configRoot: h.paths.DataDir, profiles: profiles}
+	_, definitions := workflowSources(h.app.store, h.paths.DataDir)
 	for _, workflowID := range workflowIDs {
 		if _, err := definitions.Resolve(context.Background(), store.WorkItem{
 			ProjectID: projectRow.ID, WorkflowID: workflowID, WorkflowScope: string(def.ScopeProject),

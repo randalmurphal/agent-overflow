@@ -120,7 +120,7 @@ func (r *workflowAppRunner) startToolPhase(ctx context.Context, request engine.R
 	if err := prepareWorkflowToolFiles(narrativePath, envelopePath); err != nil {
 		return errors.Join(engine.ErrSetupFailed, err)
 	}
-	if err := r.app.store.AttachWorkItemPhaseRun(
+	if err := r.store.AttachWorkItemPhaseRun(
 		request.Key.ItemID, request.Key.PhaseID, request.Key.Attempt, "", narrativePath,
 	); err != nil {
 		return fmt.Errorf("workflow runner: attach tool phase run: %w", err)
@@ -149,7 +149,7 @@ func (r *workflowAppRunner) startToolRun(ctx context.Context, run workflowToolRu
 	// The process outlives Start, so it cannot hang off the engine's startup
 	// context — that one is cancelled as soon as Start returns. Application
 	// shutdown still tears the process down through the life context.
-	processCtx, cancel := context.WithCancel(r.app.lifeCtx())
+	processCtx, cancel := context.WithCancel(r.host.lifeCtx())
 	attempt := &workflowToolAttempt{
 		workflowToolRun: run,
 		output:          procutil.NewTailBuffer(workflowToolOutputTailBytes),
@@ -284,7 +284,7 @@ func (r *workflowAppRunner) awaitToolPhase(runKey string, attempt *workflowToolA
 	// agent does.
 	var notes []memory.Draft
 	notes, payload = def.SplitEnvelopeMemory(payload)
-	r.app.recordEnvelopeMemory(attempt.key, notes)
+	r.host.recordEnvelopeMemory(attempt.key, notes)
 	r.writeToolNarrative(attempt, report)
 	outcome, err := workflowrunner.OutcomeFromEnvelope(payload)
 	if err != nil {
@@ -373,7 +373,7 @@ func (r *workflowAppRunner) writeToolNarrative(attempt *workflowToolAttempt, rep
 	report.Truncated = attempt.output.Truncated()
 	if err := os.WriteFile(attempt.narrativePath, []byte(workflowrunner.ToolNarrative(report)), appSensitiveFilePerm); err != nil {
 		log.Printf("workflow runner: write tool narrative %s: %v", attempt.narrativePath, err)
-		r.app.emit(eventchan.WorkflowError, map[string]any{
+		r.host.emit(eventchan.WorkflowError, map[string]any{
 			"itemId": attempt.key.ItemID,
 			"error":  "workflow tool narrative could not be written; inspect local diagnostics",
 		})

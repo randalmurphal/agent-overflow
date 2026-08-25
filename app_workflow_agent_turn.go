@@ -114,7 +114,7 @@ func unavailableAgentTurn(threadID string, cause error) error {
 }
 
 func (r *workflowAppRunner) createPreparedWorkflowThread(spec workflowThreadSpec) (preparedWorkflowAgentTurn, error) {
-	thread, err := r.app.createWorkflowThread(spec)
+	thread, err := r.host.createWorkflowThread(spec)
 	if err != nil {
 		return preparedWorkflowAgentTurn{}, err
 	}
@@ -126,7 +126,7 @@ func (r *workflowAppRunner) createPreparedWorkflowThread(spec workflowThreadSpec
 // on its own. Cold Claude resumes are preflighted against the transcript; cold
 // Codex resumes are proven by its synchronous thread/resume handshake.
 func (r *workflowAppRunner) ensureReusableWorkflowSession(ctx context.Context, thread store.Thread, schema json.RawMessage) (bool, error) {
-	if _, active := r.app.sessionManager().get(thread.ID); active {
+	if _, active := r.host.sessionManager().get(thread.ID); active {
 		return false, nil
 	}
 	if thread.ResolvedSessionRef() == "" {
@@ -154,7 +154,7 @@ func (r *workflowAppRunner) ensureReusableWorkflowSession(ctx context.Context, t
 	if err := r.registerTemporarySchema(thread.ID, schema); err != nil {
 		return false, err
 	}
-	if err := r.app.startSessionTakingLock(ctx, thread.ID); err != nil {
+	if err := r.host.startSessionTakingLock(ctx, thread.ID); err != nil {
 		r.removeTemporarySchema(thread.ID)
 		if codex.IsThreadNotFound(err) || errors.Is(err, sql.ErrNoRows) {
 			return false, errors.Join(engine.ErrProviderContextUnavailable, err)
@@ -178,7 +178,7 @@ func (p preparedWorkflowAgentTurn) discard(r *workflowAppRunner, cause error) er
 	var errs []error
 	errs = append(errs, cause)
 	if p.startedSession {
-		if err := r.app.stopSession(p.threadID); err != nil {
+		if err := r.host.stopSession(p.threadID); err != nil {
 			errs = append(errs, fmt.Errorf("stop prestarted workflow session %q: %w", p.threadID, err))
 		}
 		r.removeTemporarySchema(p.threadID)
@@ -188,7 +188,7 @@ func (p preparedWorkflowAgentTurn) discard(r *workflowAppRunner, cause error) er
 	// later resume will see the intentionally cursor-less thread. Only an
 	// unattached draft is safe to erase here.
 	if p.createdThread && !p.attached {
-		if err := r.app.store.DeleteThread(p.threadID); err != nil {
+		if err := r.store.DeleteThread(p.threadID); err != nil {
 			errs = append(errs, err)
 		}
 	}

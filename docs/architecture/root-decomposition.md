@@ -121,8 +121,9 @@ neither critical section calls anything that takes another App mutex.
   misled:** ten of them (`app_workflow_runner.go`, `_tool`,
   `_workspace`, `_reliability`, `_start_watchdog`, `_takeover`,
   `_observe`, `_send`, `_agent_turn`, `_quota`) declare methods on
-  `*workflowAppRunner`, whose first field is `app *App` — moving them IS
-  the stage-3 workflow-host extraction, not free mass.
+  `*workflowAppRunner`, whose first field was `app *App` — moving them IS
+  the stage-3 workflow-host extraction, not free mass. (That field is now
+  the host interface set below; the files still live in `main`.)
   `app_worktree_setup_types.go` is generated-bindings surface
   (`WorktreeSetupRunState` et al. appear in
   `frontend/bindings/.../models.ts`). `app_updater_desktop.go` and
@@ -143,13 +144,24 @@ neither critical section calls anything that takes another App mutex.
   lifecycle) and the ambient set stayed top-level. `app_state.go`'s
   header states the rules a new group must follow.
 
-**Stage 3+ — workflow-host extraction (deferred, own thread).** The
-workflow host is the largest coherent cluster and the best-isolated: 26
-fields, of which **9 are workflow-only** and 17 are shared — and 14 of
-those 17 are the ambient set plus `triage`. Extract behind a `Deps`
-interface, keep the 53 exported methods registering as `main/App`
-(see (d)), and only then consider promoting other clusters (updater,
-mcp) the same way.
+**Stage 3+ — workflow-host extraction (started; the move itself is still
+its own thread).** The workflow host is the largest coherent cluster and
+the best-isolated: 26 fields, of which **9 are workflow-only** and 17 are
+shared — and 14 of those 17 are the ambient set plus `triage`. Extract
+behind a `Deps` interface, keep the 53 exported methods registering as
+`main/App` (see (d)), and only then consider promoting other clusters
+(updater, mcp) the same way.
+
+*Step 1 landed:* `workflowAppRunner` no longer holds `*App`. It holds
+`host workflowRunnerHost` — eight capability-named consumer-side
+interfaces composed in `app_workflow_runner_host.go`, covering the 19
+App members the runner actually reached — plus `*store.Store` directly,
+the way every other workflow collaborator in `main` already holds it.
+`*App` satisfies the seams implicitly, so there is no adapter. Moving
+the runner's files into `internal/workflowhost/` is the remaining step,
+and it is what will force the lower-case method names in those
+interfaces to be reconsidered: an unexported method name in an interface
+declared outside `main` is not satisfiable by `*App`.
 
 Do not start stage 3 as a rider on a stage-2 wave.
 
