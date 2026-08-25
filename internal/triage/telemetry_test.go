@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -57,11 +58,7 @@ func (*firstSpanStartBlocker) ForceFlush(context.Context) error { return nil }
 func newTestRouterWithTelemetry(t *testing.T) (*Router, *turnTelemetryProbe, *store.Store) {
 	t.Helper()
 
-	st, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := storetest.Clone(t)
 
 	// Pre-seed a project + thread so span attribute lookups succeed.
 	ensureTriageProject(t, st)

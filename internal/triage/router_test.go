@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // TestHandleEveryEventKindCovered guards against silent drops of newly-added
@@ -490,11 +491,7 @@ func (l *emissionLog) reset() {
 
 func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	t.Helper()
-	st, err := store.New(":memory:")
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
+	st := storetest.Clone(t)
 
 	emissions := &emissionLog{}
 	emit := func(eventName eventchan.Channel, data any) {

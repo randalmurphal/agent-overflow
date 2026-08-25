@@ -3,7 +3,6 @@ package triage
 import (
 	"database/sql"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 func taskCreateEvent(threadID, taskID, subject string) provider.ProviderEvent {
@@ -624,7 +624,8 @@ func TestWarmTaskMapIsTruthOverLaterColumnWrites(t *testing.T) {
 // reported. Blocking creates on a seed error would leave the blob in place
 // for the thread's lifetime.
 func TestTaskCreateHealsAnUnreadableStoredList(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "triage.db")
+	// ClonePath, not Clone: the second raw handle below needs the file path.
+	dbPath := storetest.ClonePath(t)
 	st, err := store.New(dbPath)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
