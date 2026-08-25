@@ -255,11 +255,6 @@ func isReservedUserInputQuestionID(id string) bool {
 // multi-select answers to match the frontend contract.
 type UserInputAnswer []string
 
-// SingleUserInputAnswer constructs a single-answer response value.
-func SingleUserInputAnswer(value string) UserInputAnswer {
-	return UserInputAnswer{value}
-}
-
 // MarshalJSON emits a bare string for single answers and an array for
 // multi-select answers.
 func (a UserInputAnswer) MarshalJSON() ([]byte, error) {

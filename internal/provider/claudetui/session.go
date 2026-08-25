@@ -504,21 +504,10 @@ func (s *Session) onPTYExit(threadID, terminalID string, status terminal.ExitSta
 	closing := s.closing
 	s.mu.Unlock()
 
-	if !closing {
-		s.emit(provider.ProviderEvent{
-			Kind:      provider.EventSessionStatus,
-			ThreadID:  s.threadID,
-			Content:   "error",
-			Meta:      ptyExitMeta(status),
-			Timestamp: time.Now(),
-		})
-	}
-	s.emit(provider.ProviderEvent{
-		Kind:      provider.EventSessionStatus,
-		ThreadID:  s.threadID,
-		Content:   "disconnected",
-		Timestamp: time.Now(),
-	})
+	// Same two events, same order, same reason as both stdio read loops —
+	// only the meta source differs (a PTY exit status, not a subprocess
+	// exit). See provider.EmitTeardownStatus for why the pair is load-bearing.
+	provider.EmitTeardownStatusWithMeta(s.emit, s.threadID, ptyExitMeta(status), closing)
 }
 
 // onProxyError surfaces a gateway/relay infrastructure failure as a non-fatal

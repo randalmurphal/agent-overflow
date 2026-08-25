@@ -38,14 +38,6 @@ type controlRequestEnvelope struct {
 	} `json:"request"`
 }
 
-// pendingApproval tracks a single in-flight interactive request so user
-// responses, provider cancels, and session close all resolve the same
-// request ID exactly once.
-type pendingApproval struct {
-	resolveKind        provider.EventKind
-	userInputQuestions []provider.UserInputQuestion
-}
-
 // RespondToApproval sends a tool-use approval decision back to the CLI.
 // Accepts both Codex-native values (accept, acceptForSession, decline, cancel)
 // and legacy values (allow, allow_session, deny) for backward compatibility.
@@ -56,7 +48,7 @@ type pendingApproval struct {
 // Responding twice for the same RequestID returns ErrApprovalAlreadyResolved
 // (Bug B9).
 func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalResponse) error {
-	if !s.claimApproval(resp.RequestID, provider.EventApprovalResolved) {
+	if !s.approvals.Claim(resp.RequestID, provider.EventApprovalResolved) {
 		return ErrApprovalAlreadyResolved
 	}
 	data, err := buildApprovalResponse(resp)
@@ -71,8 +63,8 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	if err != nil {
 		return err
 	}
-	questions := s.pendingUserInputQuestions(resp.RequestID)
-	if !s.claimApproval(resp.RequestID, provider.EventUserInputResolved) {
+	questions := s.approvals.Questions(resp.RequestID)
+	if !s.approvals.Claim(resp.RequestID, provider.EventUserInputResolved) {
 		return ErrApprovalAlreadyResolved
 	}
 	approval := provider.ApprovalResponse{
@@ -201,89 +193,29 @@ func (s *Session) trackPendingApproval(requestID string, resolveKind provider.Ev
 }
 
 func (s *Session) trackPendingApprovalWithQuestions(requestID string, resolveKind provider.EventKind, questions []provider.UserInputQuestion) {
-	if requestID == "" {
-		return
-	}
-	s.approvalsMu.Lock()
-	if s.approvalsClosed {
-		s.approvalsMu.Unlock()
-		return
-	}
-	if s.pendingApprovals == nil {
-		s.pendingApprovals = make(map[string]*pendingApproval)
-	}
-	s.pendingApprovals[requestID] = &pendingApproval{
-		resolveKind:        resolveKind,
-		userInputQuestions: append([]provider.UserInputQuestion(nil), questions...),
-	}
-	// Starting a new pending request re-opens the ID in case the provider
-	// re-sent the request after a response.
-	s.approvalDedup.Forget(requestID)
-	s.approvalsMu.Unlock()
-}
-
-func (s *Session) pendingUserInputQuestions(requestID string) []provider.UserInputQuestion {
-	s.approvalsMu.Lock()
-	defer s.approvalsMu.Unlock()
-	pending := s.pendingApprovals[requestID]
-	if pending == nil || len(pending.userInputQuestions) == 0 {
-		return nil
-	}
-	return append([]provider.UserInputQuestion(nil), pending.userInputQuestions...)
-}
-
-// claimApproval returns true when the caller is the first to answer the
-// approval for requestID. False means either we already answered (Bug B9
-// dedup) or the session is closing.
-func (s *Session) claimApproval(requestID string, expectedKind provider.EventKind) bool {
-	s.approvalsMu.Lock()
-	defer s.approvalsMu.Unlock()
-	if s.approvalDedup.IsResolved(requestID) {
-		return false
-	}
-	pending, hadPending := s.pendingApprovals[requestID]
-	if !hadPending || pending.resolveKind != expectedKind {
-		return false
-	}
-	delete(s.pendingApprovals, requestID)
-	s.approvalDedup.MarkResolved(requestID)
-	return true
+	s.approvals.Track(requestID, resolveKind, questions)
 }
 
 // clearPendingApprovals resolves every outstanding interactive request
-// with a "lost" decision. It also drops the dedup set: once Close has
-// been called, no duplicate response can land at the provider, so the
-// memory cost of keeping the IDs around is pure overhead.
+// with a "lost" decision and latches the registry shut.
+//
+// "lost" is the session-ended-mid-prompt signal triage maps to
+// status=errored (internal/triage/approvals.go). It is deliberately a
+// different word from the "cancel" the control_cancel_request handler emits:
+// that one means the CLI abandoned the request after an interrupt while the
+// session lives on, this one means the session is going away.
+//
+// Claude writes nothing back to the CLI here — unlike codex, whose drain
+// releases the app-server's in-flight server request. A Claude session is
+// torn down by closing stdin, so there is nobody left awaiting a
+// control_response.
 func (s *Session) clearPendingApprovals() {
-	s.approvalsMu.Lock()
-	s.approvalsClosed = true
-	pending := s.pendingApprovals
-	s.pendingApprovals = nil
-	s.approvalDedup.Reset()
-	s.approvalsMu.Unlock()
-	for requestID, p := range pending {
-		// Decision "lost" signals session-ended-mid-prompt to triage
-		// (internal/triage/approvals.go:198 maps it to status=errored
-		// in the store). Different from the user-driven "cancel" the
-		// control_cancel_request handler emits — that one means the
-		// CLI itself abandoned the request after an interrupt; this
-		// one means the session is going away.
-		metaFields := map[string]any{
-			"requestId": requestID,
-			"decision":  "lost",
-		}
-		if p.resolveKind == provider.EventUserInputResolved {
-			// Frontend expects answers on UserInputResolved events; empty
-			// map keeps the type contract clean even when no user reply
-			// was ever submitted.
-			metaFields["answers"] = map[string]any{}
-		}
-		meta, _ := json.Marshal(metaFields)
+	for _, released := range s.approvals.Drain(true) {
 		s.onEvent(provider.ProviderEvent{
-			Kind:      p.resolveKind,
+			Kind:      released.ResolveKind,
 			ThreadID:  s.threadID,
-			ItemID:    requestID,
-			Meta:      meta,
+			ItemID:    released.RequestID,
+			Meta:      released.Meta("lost"),
 			Timestamp: time.Now(),
 		})
 	}
@@ -413,37 +345,15 @@ func (s *Session) handleControlCancelRequestLine(line []byte) {
 // panel disappears. Idempotent: if the request is already resolved or
 // unknown, the call is a no-op.
 func (s *Session) cancelPendingApproval(requestID string) {
-	s.approvalsMu.Lock()
-	if s.approvalDedup.IsResolved(requestID) {
-		s.approvalsMu.Unlock()
-		return
-	}
-	pending, ok := s.pendingApprovals[requestID]
+	released, ok := s.approvals.Cancel(requestID)
 	if !ok {
-		s.approvalsMu.Unlock()
 		return
 	}
-	delete(s.pendingApprovals, requestID)
-	s.approvalDedup.MarkResolved(requestID)
-	resolveKind := pending.resolveKind
-	s.approvalsMu.Unlock()
-
-	metaFields := map[string]any{
-		"requestId": requestID,
-	}
-	switch resolveKind {
-	case provider.EventUserInputResolved:
-		metaFields["answers"] = map[string]any{}
-		metaFields["decision"] = "cancel"
-	default:
-		metaFields["decision"] = "cancel"
-	}
-	meta, _ := json.Marshal(metaFields)
 	s.onEvent(provider.ProviderEvent{
-		Kind:      resolveKind,
+		Kind:      released.ResolveKind,
 		ThreadID:  s.threadID,
-		ItemID:    requestID,
-		Meta:      meta,
+		ItemID:    released.RequestID,
+		Meta:      released.Meta("cancel"),
 		Timestamp: time.Now(),
 	})
 }

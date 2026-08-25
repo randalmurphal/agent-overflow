@@ -65,9 +65,10 @@ const queueListPageCap = 8
 // property of the binary, not of the request.
 var ErrThreadQueueUnsupported = errors.New("codex: thread/queue is unavailable on this app-server")
 
-// IsThreadQueueUnsupported reports the version-gate refusal. Exported so the
-// app layer's dispatcher can branch without importing the sentinel by value.
-func IsThreadQueueUnsupported(err error) bool {
+// isThreadQueueUnsupported reports the version-gate refusal without importing
+// the sentinel by value. Unexported: AO no longer writes to the provider's
+// queue, so every branch on it lives inside this package.
+func isThreadQueueUnsupported(err error) bool {
 	return errors.Is(err, ErrThreadQueueUnsupported)
 }
 

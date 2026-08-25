@@ -58,9 +58,12 @@ over stdio.
   approvals, MCP elicitation, structured user input, and dynamic tools.
 - `turn_input.go` — outbound `turn/start` / `turn/steer` user-input
   payload shaping.
-- `interactive_requests.go` — pending approval/user-input tracking,
-  dedupe, response claiming, interrupt/close drain, and lost-prompt
-  resolution events.
+- `interactive_requests.go` — the codex half of interactive-request
+  bookkeeping: what a released request means on this wire. The ledger itself
+  (track / claim / cancel / drain, with the Bug B9 dedupe) is
+  `provider.ApprovalRegistry`, shared with claude; what stays here is the
+  JSON-RPC id encoding, the `turnTransition` error write that unblocks the
+  server request, and the interrupt-vs-close drain distinction.
 - `plan_buffer.go` — proposed-plan delta buffering and fallback
   completion content.
 - `raw_tool_calls.go` — raw `rawResponseItem` function-call tracking,
@@ -343,10 +346,13 @@ over stdio.
 mu  →  childLifecycleMu  →  eventMu
 ```
 
-`approvalsMu` and `collabAsyncMu` are **leaves**: no other `Session` lock
-may be acquired while either is held. `drainPendingApprovals` releases
-`approvalsMu` before it emits, and `startCollabAsync` only hands work to a
-goroutine, which enters the order on its own stack.
+The approvals registry's own lock (`approvals`, a shared
+`provider.ApprovalRegistry`) and `collabAsyncMu` are **leaves**: no other
+`Session` lock may be acquired while either is held. `ApprovalRegistry.Drain`
+RETURNS the released requests instead of resolving them, which is what lets
+`drainPendingApprovals` write and emit with that lock already gone, and
+`startCollabAsync` only hands work to a goroutine, which enters the order on
+its own stack.
 
 Two edges are actually exercised today, both for the same reason — a child's
 lifecycle emission must not be overtaken, and the external callback must not

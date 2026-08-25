@@ -652,12 +652,42 @@ func TestWaitProcessExitErr(t *testing.T) {
 	}
 }
 
+// TestIsClosedPipeErr feeds the predicate errors produced by the real
+// syscalls rather than hand-written sentences: the point of matching on
+// identity is that the classification survives any rewording, and a test
+// built from strings could not tell the two apart.
 func TestIsClosedPipeErr(t *testing.T) {
-	if !isClosedPipeErr(errors.New("read |0: file already closed")) {
-		t.Fatal("expected file already closed to be treated as closed pipe")
+	// The reachable case: ReadLine's own shape, a read on a closed *os.File.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
 	}
-	if !isClosedPipeErr(errors.New("write broken pipe")) {
-		t.Fatal("expected broken pipe to be treated as closed pipe")
+	defer w.Close()
+	r.Close()
+	if _, readErr := r.Read(make([]byte, 8)); !isClosedPipeErr(readErr) {
+		t.Fatalf("read on closed pipe: isClosedPipeErr(%v) = false, want true", readErr)
+	}
+
+	// A real EPIPE, wrapped in *fs.PathError exactly as the write side
+	// produces it.
+	epipeR, epipeW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer epipeW.Close()
+	epipeR.Close()
+	if _, writeErr := epipeW.Write([]byte("x")); !isClosedPipeErr(writeErr) {
+		t.Fatalf("write to broken pipe: isClosedPipeErr(%v) = false, want true", writeErr)
+	}
+
+	if !isClosedPipeErr(fmt.Errorf("read stdout: %w", io.ErrClosedPipe)) {
+		t.Fatal("expected a wrapped io.ErrClosedPipe to match")
+	}
+
+	// Text that merely CONTAINS the old matcher's words is not a closed
+	// pipe — this is the class of false positive identity matching removes.
+	if isClosedPipeErr(errors.New("provider said: broken pipe detected upstream")) {
+		t.Fatal("unstructured text naming a broken pipe must not match")
 	}
 	if isClosedPipeErr(errors.New("permission denied")) {
 		t.Fatal("unexpected closed-pipe match")

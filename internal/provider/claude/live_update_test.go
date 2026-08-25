@@ -700,8 +700,8 @@ func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
 func TestApplyLiveUpdateCommandAxesRefusedDuringResumeRepair(t *testing.T) {
 	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort"})
-	s.leafTracker.ingestLine([]byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}`))
-	s.leafTracker.ingestLine([]byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
+	ingestTrackerLine(s.leafTracker, []byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}`))
+	ingestTrackerLine(s.leafTracker, []byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
 	s.leafTracker.markTurnComplete()
 	if !s.RequiresResumeAtBeforeUserSend() {
 		t.Fatal("test setup: session not in the resume-repair state")

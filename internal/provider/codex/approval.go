@@ -17,7 +17,7 @@ func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalR
 	if err != nil {
 		return err
 	}
-	if !s.claimApproval(resp.RequestID, provider.EventApprovalResolved) {
+	if !s.approvals.Claim(resp.RequestID, provider.EventApprovalResolved) {
 		return ErrApprovalAlreadyResolved
 	}
 	return s.writeResponse(rpcID, result)
@@ -28,7 +28,7 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 	if err != nil {
 		return err
 	}
-	if !s.claimApproval(resp.RequestID, provider.EventUserInputResolved) {
+	if !s.approvals.Claim(resp.RequestID, provider.EventUserInputResolved) {
 		return ErrApprovalAlreadyResolved
 	}
 	return s.writeResponse(rpcID, result)

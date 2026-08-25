@@ -198,6 +198,24 @@ func (u *TokenUsage) Add(other TokenUsage) {
 	u.TotalCostUSD += other.TotalCostUSD
 }
 
+// Sub subtracts other from u field-wise, CLAMPED AT ZERO on every field.
+//
+// The clamp is what makes this safe for the cumulative→delta subtraction both
+// parsers run: a provider cumulative is supposed to be monotonic, but a
+// session resume, a compaction, or a re-keyed model row can hand back a
+// snapshot lower than the one already accounted for. Clamping reports "no new
+// spend" for that turn, where a signed delta would emit a NEGATIVE usage row
+// that every downstream sum (ledger, dashboard, workflow budget) would then
+// subtract from real spend.
+func (u *TokenUsage) Sub(other TokenUsage) {
+	u.InputTokens = max(u.InputTokens-other.InputTokens, 0)
+	u.OutputTokens = max(u.OutputTokens-other.OutputTokens, 0)
+	u.CacheReadInputTokens = max(u.CacheReadInputTokens-other.CacheReadInputTokens, 0)
+	u.CacheCreationInputTokens = max(u.CacheCreationInputTokens-other.CacheCreationInputTokens, 0)
+	u.ReasoningOutputTokens = max(u.ReasoningOutputTokens-other.ReasoningOutputTokens, 0)
+	u.TotalCostUSD = max(u.TotalCostUSD-other.TotalCostUSD, 0)
+}
+
 // ModelTokenUsage attributes a per-turn usage delta to one model. A turn
 // that ran several models (parent + Task subagents on Claude) produces one
 // entry per model; Codex cannot attribute per-model and produces a single

@@ -3,7 +3,9 @@ package claude
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -106,4 +108,90 @@ func TestParseRealCLIFixture(t *testing.T) {
 
 	t.Logf("processed %d lines from real fixture: init=%v result=%v",
 		lineNum, foundInit, foundResult)
+}
+
+// TestParseLineWarnsOnceForUnknownEnvelopeType pins the area guide's rule
+// that no NDJSON line is dropped silently: an envelope type ParseLine has no
+// case for is ignored (never fatal, never a dropped read loop) but logged —
+// once per type per parser lifetime, no matter how often it repeats.
+func TestParseLineWarnsOnceForUnknownEnvelopeType(t *testing.T) {
+	p := NewParser()
+
+	out := captureLog(t, func() {
+		for range 5 {
+			events, err := p.ParseLine(testThread, []byte(`{"type":"quantum_flux","payload":{}}`))
+			if err != nil {
+				t.Fatalf("unknown envelope must not error: %v", err)
+			}
+			if len(events) != 0 {
+				t.Fatalf("unknown envelope emitted %d events, want 0", len(events))
+			}
+		}
+	})
+
+	if got := strings.Count(out, "quantum_flux"); got != 1 {
+		t.Fatalf("logged the unknown type %d times, want exactly 1:\n%s", got, out)
+	}
+	if !strings.Contains(out, "unknown NDJSON envelope type") {
+		t.Fatalf("log line does not name the drop:\n%s", out)
+	}
+
+	// A DIFFERENT unknown type is its own first sighting.
+	out = captureLog(t, func() {
+		if _, err := p.ParseLine(testThread, []byte(`{"type":"tachyon_pulse"}`)); err != nil {
+			t.Fatalf("unknown envelope must not error: %v", err)
+		}
+		// ...while the first one stays quiet.
+		if _, err := p.ParseLine(testThread, []byte(`{"type":"quantum_flux"}`)); err != nil {
+			t.Fatalf("unknown envelope must not error: %v", err)
+		}
+	})
+	if !strings.Contains(out, "tachyon_pulse") {
+		t.Fatalf("second unknown type was not logged:\n%s", out)
+	}
+	if strings.Contains(out, "quantum_flux") {
+		t.Fatalf("already-reported type logged again:\n%s", out)
+	}
+}
+
+// TestParseLineUnknownEnvelopeWarningIsBounded pins the cap: a stream
+// inventing a fresh type per line must not grow the dedup set for the
+// session's lifetime, and the suppression notice itself is logged once.
+func TestParseLineUnknownEnvelopeWarningIsBounded(t *testing.T) {
+	p := NewParser()
+
+	out := captureLog(t, func() {
+		for i := range maxUnknownEnvelopeTypes + 10 {
+			line := fmt.Appendf(nil, `{"type":"drift_%d"}`, i)
+			if _, err := p.ParseLine(testThread, line); err != nil {
+				t.Fatalf("unknown envelope must not error: %v", err)
+			}
+		}
+	})
+
+	if got := len(p.unknownEnvelopeTypes); got != maxUnknownEnvelopeTypes {
+		t.Fatalf("dedup set holds %d entries, want it capped at %d", got, maxUnknownEnvelopeTypes)
+	}
+	if got := strings.Count(out, "suppressing further drift warnings"); got != 1 {
+		t.Fatalf("suppression notice logged %d times, want exactly 1", got)
+	}
+}
+
+// TestParseLineUnknownEnvelopeOnNilParserIsSilent pins that the one-shot
+// stateless path stays usable: a nil parser has no lifetime to dedupe
+// against, so it must ignore the envelope without erroring or logging.
+func TestParseLineUnknownEnvelopeOnNilParserIsSilent(t *testing.T) {
+	var p *Parser
+	out := captureLog(t, func() {
+		events, err := p.ParseLine(testThread, []byte(`{"type":"quantum_flux"}`))
+		if err != nil {
+			t.Fatalf("unknown envelope must not error: %v", err)
+		}
+		if len(events) != 0 {
+			t.Fatalf("unknown envelope emitted %d events, want 0", len(events))
+		}
+	})
+	if out != "" {
+		t.Fatalf("nil parser logged %q, want silence", out)
+	}
 }

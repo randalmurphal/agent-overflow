@@ -82,8 +82,8 @@ func TestSessionLeafScannerIgnoresSidechainRows(t *testing.T) {
 // before searching, so the lookup could only ever miss.
 func TestLiveLeafTrackerIgnoresSidechainUserRowsByParentToolUseID(t *testing.T) {
 	tracker := newClaudeLeafTracker("")
-	tracker.ingestLine([]byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"run the agent"}}`))
-	tracker.ingestLine([]byte(`{"type":"assistant","uuid":"a-launch","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_task","name":"Agent","input":{}}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"run the agent"}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-launch","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_task","name":"Agent","input":{}}]}}`))
 	if got := tracker.canonicalLeaf(); got != "a-launch" {
 		t.Fatalf("canonicalLeaf after launch = %q, want a-launch", got)
 	}
@@ -91,14 +91,14 @@ func TestLiveLeafTrackerIgnoresSidechainUserRowsByParentToolUseID(t *testing.T) 
 	// The subagent's own prompt and tool_result envelopes. Both are
 	// `user` rows on the parent's stream, both carry parent_tool_use_id,
 	// neither carries isSidechain.
-	tracker.ingestLine([]byte(`{"type":"user","uuid":"side-u","parentUuid":"a-launch","parent_tool_use_id":"toolu_task","message":{"role":"user","content":"subagent prompt"}}`))
-	tracker.ingestLine([]byte(`{"type":"user","uuid":"side-result","parentUuid":"side-u","parent_tool_use_id":"toolu_task","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_inner","content":"done"}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"user","uuid":"side-u","parentUuid":"a-launch","parent_tool_use_id":"toolu_task","message":{"role":"user","content":"subagent prompt"}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"user","uuid":"side-result","parentUuid":"side-u","parent_tool_use_id":"toolu_task","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_inner","content":"done"}]}}`))
 	if got := tracker.canonicalLeaf(); got != "a-launch" {
 		t.Fatalf("canonicalLeaf after sidechain user rows = %q, want a-launch", got)
 	}
 
 	// The main chain's own tool_result for the Agent launch still moves it.
-	tracker.ingestLine([]byte(`{"type":"user","uuid":"u-result","parentUuid":"a-launch","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_task","content":"391"}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"user","uuid":"u-result","parentUuid":"a-launch","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_task","content":"391"}]}}`))
 	if got := tracker.canonicalLeaf(); got != "u-result" {
 		t.Fatalf("canonicalLeaf after main-chain tool_result = %q, want u-result", got)
 	}
@@ -152,9 +152,9 @@ func TestSessionLeafScannerResolvesNonAdvisorServerToolResults(t *testing.T) {
 
 func TestLiveLeafTrackerRequiresResumeOnlyAfterTurnComplete(t *testing.T) {
 	tracker := newClaudeLeafTracker("")
-	tracker.ingestLine([]byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"start"}}`))
-	tracker.ingestLine([]byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"msg-advisor","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
-	tracker.ingestLine([]byte(`{"type":"assistant","uuid":"a-final","parentUuid":"u1","message":{"id":"msg-final","role":"assistant","content":[{"type":"text","text":"final"}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"start"}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-advisor","parentUuid":"u1","message":{"id":"msg-advisor","role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}`))
+	ingestTrackerLine(tracker, []byte(`{"type":"assistant","uuid":"a-final","parentUuid":"u1","message":{"id":"msg-final","role":"assistant","content":[{"type":"text","text":"final"}]}}`))
 
 	if tracker.requiresResumeAtBeforeUserSend() {
 		t.Fatal("requiresResumeAtBeforeUserSend before turn complete = true, want false")

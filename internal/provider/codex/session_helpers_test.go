@@ -825,9 +825,14 @@ func TestReadRouteFieldsTopLevelFallback(t *testing.T) {
 	}
 }
 
-func TestBuildUserInputMeta(t *testing.T) {
+func TestBuildUserInputMetaFromQuestions(t *testing.T) {
 	params := json.RawMessage(`{"turn":{"id":"turn-2"},"questions":[{"id":"sandbox_mode","header":"Sandbox","question":"Which mode should be used?","options":[{"label":"workspace-write","description":"Allow workspace writes only"}],"multiSelect":true}]}`)
-	meta := buildUserInputMeta("t1", "turn-2", 42, params)
+	// Same three steps handleServerRequest takes for
+	// `item/tool/requestUserInput`: route fields off the envelope, questions
+	// off the payload, then the one builder.
+	turnID, itemID := readRouteFields(params)
+	questions := parseUserInputQuestions(params)
+	meta := buildUserInputMetaFromQuestions("t1", turnID, itemID, 42, questions)
 
 	var request provider.UserInputRequest
 	if err := json.Unmarshal(meta, &request); err != nil {

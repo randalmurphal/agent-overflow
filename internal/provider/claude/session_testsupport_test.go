@@ -269,3 +269,18 @@ func newStopTaskResponderSession(t *testing.T, mode string, stopTimeout time.Dur
 	})
 	return s
 }
+
+// ingestTrackerLine feeds one raw transcript line to a leaf tracker.
+//
+// Production has no line-oriented entry point: the cold scan
+// (scanSessionLeafReader) decodes each line once and calls ingestRow for both
+// consumers, and the live wire calls ingestRaw with the map ParseLine already
+// decoded. This is the tests' JSON-in shim over ingestRow, so a fixture can
+// stay written as wire text.
+func ingestTrackerLine(t *claudeLeafTracker, line []byte) {
+	var row claudeSessionRow
+	if err := json.Unmarshal(line, &row); err != nil {
+		return
+	}
+	t.ingestRow(row)
+}

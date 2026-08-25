@@ -28,7 +28,6 @@ type SessionMeta struct {
 	Cwd            string
 	Originator     string
 	CLIVersion     string
-	ThreadSource   string
 	SubagentKind   string
 	ModelProvider  string
 	GitBranch      string
@@ -76,11 +75,6 @@ type HistoryBase struct {
 	// inherited record.
 	EndByteOffset uint64
 }
-
-// IsSubagent reports whether this file is a spawned child's rollout. The
-// thread index excludes those from List; this is the file-level check for
-// callers that reached a path some other way.
-func (m SessionMeta) IsSubagent() bool { return m.ThreadSource == "subagent" }
 
 // headScanLines and headScanBytes bound ReadSessionMeta. Both meta lines of a
 // forked file are the first two records, so a handful of lines is generous;
@@ -206,7 +200,6 @@ func decodeSessionMeta(env envelope, sessionID string) (SessionMeta, bool) {
 		Cwd:            payload.Cwd,
 		Originator:     payload.Originator,
 		CLIVersion:     payload.CLIVersion,
-		ThreadSource:   strings.TrimSpace(payload.ThreadSource),
 		ModelProvider:  payload.ModelProvider,
 		HistoryMode:    strings.TrimSpace(payload.HistoryMode),
 	}

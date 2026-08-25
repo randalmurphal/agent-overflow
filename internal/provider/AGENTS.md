@@ -274,6 +274,14 @@ so normalize early and keep the frontend branches explicit:
   t3-code's separate `user-input.requested` / `user-input.resolved` flow.
 - The original provider shape is preserved where we need it to send a
   response back, but the frontend never sees it.
+- Which requests are outstanding, and who may answer each one ONCE, is
+  `ApprovalRegistry` (`approval_registry.go`) — one ledger both providers
+  hold. It never emits, never writes to a provider and never knows a thread
+  id, which is both what makes it shareable and what keeps its mutex a leaf:
+  `Drain` hands the released requests back so the emission happens after the
+  lock is gone. What a release MEANS on the wire stays provider-side (Codex
+  writes a `turnTransition` JSON-RPC error to unblock the server request;
+  Claude writes nothing), as do Claude's structured user-input questions.
 - When the provider introduces a new request type, add a new `Kind`
   or `UserInputRequest` shape here and make sure the frontend has a branch
   for it before shipping. A prompt the frontend doesn't render is a silent

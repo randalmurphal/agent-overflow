@@ -160,7 +160,6 @@ type sessionMetaPayload struct {
 	Cwd            string `json:"cwd"`
 	Originator     string `json:"originator"`
 	CLIVersion     string `json:"cli_version"`
-	ThreadSource   string `json:"thread_source"`
 	ModelProvider  string `json:"model_provider"`
 	Timestamp      string `json:"timestamp"`
 	HistoryMode    string `json:"history_mode"`

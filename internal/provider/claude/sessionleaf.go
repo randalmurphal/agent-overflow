@@ -62,22 +62,11 @@ type claudeSessionRow struct {
 	Message         json.RawMessage `json:"message"`
 }
 
-func (t *claudeLeafTracker) ingestLine(line []byte) {
-	if t == nil {
-		return
-	}
-	var row claudeSessionRow
-	if err := json.Unmarshal(line, &row); err != nil {
-		return
-	}
-	t.ingestRow(row)
-}
-
-// ingestRaw is the live-wire twin of ingestLine: it consumes the
-// top-level map Parser.ParseLine already decoded so the hot read loop
-// pays one json.Unmarshal per line instead of two. A field whose value
-// fails its typed decode skips the whole row, mirroring ingestLine's
-// whole-struct unmarshal failure.
+// ingestRaw is the live-wire twin of the cold-scan `ingestRow` path: it
+// consumes the top-level map Parser.ParseLine already decoded so the hot
+// read loop pays one json.Unmarshal per line instead of two. A field whose
+// value fails its typed decode skips the whole row, mirroring the cold
+// path's whole-struct unmarshal failure.
 func (t *claudeLeafTracker) ingestRaw(msgType string, raw map[string]json.RawMessage) {
 	if t == nil {
 		return

@@ -61,8 +61,8 @@ func TestClassifyThreadWriterConflict(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			classified := classifyThreadWriterConflict(tc.err)
-			if got := IsThreadWriterConflict(classified); got != tc.conflict {
-				t.Fatalf("IsThreadWriterConflict = %v, want %v (err %v)", got, tc.conflict, classified)
+			if got := isThreadWriterConflict(classified); got != tc.conflict {
+				t.Fatalf("isThreadWriterConflict = %v, want %v (err %v)", got, tc.conflict, classified)
 			}
 			if tc.err == nil {
 				if classified != nil {
@@ -165,7 +165,7 @@ func TestWriterConflictSurfacesOnEveryLockTakingCall(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected the refusal to surface as an error")
 			}
-			if !IsThreadWriterConflict(err) {
+			if !isThreadWriterConflict(err) {
 				t.Fatalf("not classified as a writer conflict: %v", err)
 			}
 			if !strings.Contains(err.Error(), ThreadWriterConflictMessage) {

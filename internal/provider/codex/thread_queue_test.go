@@ -173,13 +173,13 @@ func TestThreadQueueIsGatedOnTheHandshakeVersion(t *testing.T) {
 			}
 			// Every entry point refuses with the same typed sentinel, so the
 			// caller has one thing to branch on.
-			if _, err := s.QueueList(context.Background()); !IsThreadQueueUnsupported(err) {
+			if _, err := s.QueueList(context.Background()); !isThreadQueueUnsupported(err) {
 				t.Errorf("QueueList err = %v, want ErrThreadQueueUnsupported", err)
 			}
-			if _, err := s.QueueDelete(context.Background(), "sub-1"); !IsThreadQueueUnsupported(err) {
+			if _, err := s.QueueDelete(context.Background(), "sub-1"); !isThreadQueueUnsupported(err) {
 				t.Errorf("QueueDelete err = %v, want ErrThreadQueueUnsupported", err)
 			}
-			if _, err := s.PurgeQueue(context.Background()); !IsThreadQueueUnsupported(err) {
+			if _, err := s.PurgeQueue(context.Background()); !isThreadQueueUnsupported(err) {
 				t.Errorf("PurgeQueue err = %v, want ErrThreadQueueUnsupported", err)
 			}
 			// A refusal must not have put anything on the wire.

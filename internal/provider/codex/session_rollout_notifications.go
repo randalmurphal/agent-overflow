@@ -130,27 +130,6 @@ func normalizeRolloutNotificationPath(path string, threadID string) (string, err
 	return abs, nil
 }
 
-func waitForRolloutNotificationStartOffset(ctx context.Context, path string) (int64, bool) {
-	ticker := time.NewTicker(rolloutSubagentNotificationPollInterval)
-	defer ticker.Stop()
-
-	for {
-		size, err := rolloutNotificationFileSize(path)
-		if err == nil {
-			return size, true
-		}
-		if !os.IsNotExist(err) {
-			log.Printf("codex: stat rollout notifications %s: %v", path, err)
-			return 0, false
-		}
-		select {
-		case <-ctx.Done():
-			return 0, false
-		case <-ticker.C:
-		}
-	}
-}
-
 func rolloutNotificationFileSize(path string) (int64, error) {
 	info, err := os.Lstat(path)
 	if err != nil {

@@ -189,17 +189,22 @@ func TestWatchRolloutSubagentNotificationsEmitsSplitLine(t *testing.T) {
 }
 
 func TestReadRolloutAppendStartsAfterExistingHistory(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	const threadID = "0199c0de-dead-beef-cafe-000000000001"
+	path := filepath.Join(t.TempDir(), "rollout-2026-08-24T00-00-00-"+threadID+".jsonl")
 	historical := append(rolloutUserSubagentNotificationLine(t, "child-old", "completed"), '\n')
 	if err := os.WriteFile(path, historical, 0644); err != nil {
 		t.Fatalf("write rollout: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	offset, ok := waitForRolloutNotificationStartOffset(ctx, path)
-	if !ok {
-		t.Fatal("waitForRolloutNotificationStartOffset returned !ok")
+	// The production entry point is the observer's own preparation step: the
+	// start offset IS the file's current size, so everything already on disk
+	// is history and only appends are read.
+	resolved, offset, err := prepareRolloutSubagentNotificationObserver(path, threadID)
+	if err != nil {
+		t.Fatalf("prepareRolloutSubagentNotificationObserver: %v", err)
+	}
+	if resolved != path {
+		t.Fatalf("resolved path = %q, want %q", resolved, path)
 	}
 	if offset != int64(len(historical)) {
 		t.Fatalf("offset = %d, want %d", offset, len(historical))

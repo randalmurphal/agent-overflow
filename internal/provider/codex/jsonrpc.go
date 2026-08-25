@@ -251,8 +251,8 @@ func (e *ThreadWriterConflictError) Unwrap() error {
 	return e.err
 }
 
-// IsThreadWriterConflict reports whether err is a writer-ownership refusal.
-func IsThreadWriterConflict(err error) bool {
+// isThreadWriterConflict reports whether err is a writer-ownership refusal.
+func isThreadWriterConflict(err error) bool {
 	var conflict *ThreadWriterConflictError
 	return errors.As(err, &conflict)
 }
@@ -475,29 +475,11 @@ func (s *Session) readLoop() {
 		// The process is already gone, so only emit local resolution events.
 		s.drainPendingApprovals("lost", true, false)
 
-		if !s.closing.Load() {
-			// Any unexpected read-loop exit while we weren't the one
-			// closing is abnormal — including a clean exit-code-0
-			// without a host-initiated close. Triage gates synthesizing
-			// the truncated turn-complete on the "error" signal, so a
-			// missed emission here leaves the FE working indicator
-			// stuck. MarshalProcessExitMeta tolerates a nil exitErr.
-			exitErr := provider.WaitProcessExitErr(s.proc)
-			s.emitEvent(provider.ProviderEvent{
-				Kind:      provider.EventSessionStatus,
-				ThreadID:  s.threadID,
-				Content:   "error",
-				Meta:      provider.MarshalProcessExitMeta(exitErr, s.proc.StderrTail()),
-				Timestamp: time.Now(),
-			})
-		}
-
-		s.emitEvent(provider.ProviderEvent{
-			Kind:      provider.EventSessionStatus,
-			ThreadID:  s.threadID,
-			Content:   "disconnected",
-			Timestamp: time.Now(),
-		})
+		// The abnormal-exit "error" (host did not initiate this close) plus
+		// the unconditional "disconnected" — shared with claude so the two
+		// read loops cannot drift on the signal triage gates its synthesized
+		// turn-complete on. See provider.EmitTeardownStatus.
+		provider.EmitTeardownStatus(s.emitEvent, s.threadID, s.proc, s.closing.Load())
 	}()
 
 	for {

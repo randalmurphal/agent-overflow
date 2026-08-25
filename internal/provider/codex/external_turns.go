@@ -233,15 +233,6 @@ func (s *Session) turnIsExternal(turnID string) bool {
 	return s.turnOrigins[turnID] == turnOriginExternal
 }
 
-func (s *Session) forgetTurnOrigin(turnID string) {
-	if turnID == "" {
-		return
-	}
-	s.mu.Lock()
-	delete(s.turnOrigins, turnID)
-	s.mu.Unlock()
-}
-
 // maxTrackedTurnOrigins bounds the origin map. Entries are dropped on
 // `turn/completed`, so a healthy session holds at most one; the cap only
 // matters for turns whose completion never arrives (provider crash mid-turn,

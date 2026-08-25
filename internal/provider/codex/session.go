@@ -154,9 +154,10 @@ type Session struct {
 	nextID                           atomic.Int64
 	// LOCK ORDER: mu → childLifecycleMu → eventMu. Take them in that order or
 	// not at all; nothing in this package takes them in the reverse direction.
-	// approvalsMu and collabAsyncMu are LEAVES — no other Session lock may be
-	// acquired while either is held (drainPendingApprovals deliberately
-	// releases approvalsMu before it emits; startCollabAsync only starts a
+	// The approvals registry's own lock and collabAsyncMu are LEAVES — no
+	// other Session lock may be acquired while either is held
+	// (ApprovalRegistry.Drain returns its entries so drainPendingApprovals
+	// emits with the lock already released; startCollabAsync only starts a
 	// goroutine, which enters the order on its own stack).
 	//
 	// Two edges are actually exercised. Close takes childLifecycleMu under mu
@@ -184,22 +185,14 @@ type Session struct {
 	cancel             context.CancelFunc
 	closing            atomic.Bool
 	readDone           chan struct{}
-	// approvalsMu guards pendingApprovals, resolvedApprovals, and
-	// approvalsClosed. A LEAF in the lock order above: no other Session lock
-	// may be taken while it is held.
-	approvalsMu sync.Mutex
-	// pendingApprovals maps request ID (string form, matching the
-	// RequestID field of ApprovalResponse) to the in-flight request
-	// metadata needed to resolve, cancel, or drain it.
-	pendingApprovals map[string]*pendingApproval
-	// approvalDedup tracks request IDs already answered so a second
-	// RespondToApproval returns ErrApprovalAlreadyResolved (Bug B9)
-	// rather than silently writing another response to the provider.
-	// Guarded by approvalsMu.
-	approvalDedup provider.ApprovalDeduper
-	// approvalsClosed is set by Close so late-arriving approvals don't
-	// register new pending requests after teardown.
-	approvalsClosed bool
+	// approvals is the outstanding-interactive-request ledger: which
+	// server requests (approvals, MCP elicitation, structured user input)
+	// are unanswered, and who is allowed to answer each one. Shared with
+	// claude. It carries its own LEAF lock — the one referenced in the lock
+	// order above — and its Drain returns the released entries rather than
+	// resolving them, which is what keeps the emit and the JSON-RPC write in
+	// drainPendingApprovals outside that lock.
+	approvals provider.ApprovalRegistry
 	// seenTurnStarts dedupes EventTurnStart emissions (Bug B6). Keyed by
 	// turnID. Entries are added by claimTurnStart and cleared by
 	// clearTurnStart on EventTurnComplete so re-used turn IDs (rare,

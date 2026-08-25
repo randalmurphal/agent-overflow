@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -230,6 +231,63 @@ type Parser struct {
 	// type field is the exact predicate the read loop's former
 	// byte-prefix gate approximated.
 	leafTracker *claudeLeafTracker
+	// unknownEnvelopeTypes dedupes the drift log for NDJSON envelope
+	// `type` values ParseLine's dispatch has no case for — see
+	// warnUnknownEnvelopeType. Parser-lifetime, never cleared at a turn
+	// boundary: the point is one line per type per process, and clearing
+	// on `result` would re-log a per-turn envelope on every turn.
+	// Read-loop-goroutine state like the rest of this struct, no lock.
+	unknownEnvelopeTypes map[string]struct{}
+	// unknownEnvelopeTypesOverflowed records that the cap below was
+	// announced, so the suppression notice is itself logged once.
+	unknownEnvelopeTypesOverflowed bool
+}
+
+// maxUnknownEnvelopeTypes bounds the drift-log dedup set. The wire's `type`
+// values come from the CLI, not from user content, so the realistic ceiling
+// is a handful; the cap exists so a malformed or hostile stream inventing a
+// fresh type per line cannot grow the map for the session's lifetime.
+const maxUnknownEnvelopeTypes = 64
+
+// warnUnknownEnvelopeType reports an NDJSON envelope `type` ParseLine's
+// dispatch does not handle, once per type per parser lifetime.
+//
+// This is the Claude half of codex's `warnUnclaimedNotification`, and it
+// exists for the same reason: the area guide's rule is "every type must be
+// handled or explicitly logged as unknown type — ignored", and until this
+// existed the default branch returned nil silently, so a CLI release adding
+// an envelope reached production unnoticed. Log-and-continue by design — a
+// new envelope type must never break a live session — but never silent.
+//
+// Nil-safe, and a nil parser logs nothing: without a parser there is no
+// lifetime to dedupe against, and every such caller is a one-shot test
+// harness rather than a stream.
+func (p *Parser) warnUnknownEnvelopeType(msgType string) {
+	if p == nil || msgType == "" {
+		return
+	}
+	if _, seen := p.unknownEnvelopeTypes[msgType]; seen {
+		return
+	}
+	if len(p.unknownEnvelopeTypes) >= maxUnknownEnvelopeTypes {
+		if !p.unknownEnvelopeTypesOverflowed {
+			p.unknownEnvelopeTypesOverflowed = true
+			log.Printf(
+				"claude: %d unknown NDJSON envelope types on this session; suppressing further drift warnings",
+				maxUnknownEnvelopeTypes,
+			)
+		}
+		return
+	}
+	if p.unknownEnvelopeTypes == nil {
+		p.unknownEnvelopeTypes = make(map[string]struct{}, 1)
+	}
+	p.unknownEnvelopeTypes[msgType] = struct{}{}
+	log.Printf(
+		"claude: unknown NDJSON envelope type %q — ignored; "+
+			"add a case in ParseLine or document the drop in claude-wire.md",
+		stringsx.ClipRunes(msgType, 64),
+	)
 }
 
 // MarkInterruptAcked flags that the CLI just acked an interrupt
@@ -425,7 +483,9 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 	case "transcript_mirror":
 		return p.parseTranscriptMirror(threadID, raw, now)
 	default:
-		// Unknown type — skip gracefully.
+		// Unknown type — ignored, but never silently: one log line per
+		// type per parser lifetime (area-guide rule, warnUnknownEnvelopeType).
+		p.warnUnknownEnvelopeType(msgType)
 		return nil, nil
 	}
 }

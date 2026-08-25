@@ -381,12 +381,6 @@ func isJSONNull(raw json.RawMessage) bool {
 	return false
 }
 
-func buildUserInputMeta(threadID, turnID string, rpcID int64, params json.RawMessage) json.RawMessage {
-	questions := parseUserInputQuestions(params)
-	_, itemID := readRouteFields(params)
-	return buildUserInputMetaFromQuestions(threadID, turnID, itemID, rpcID, questions)
-}
-
 func buildUserInputMetaFromQuestions(threadID, turnID, toolUseID string, rpcID int64, questions []provider.UserInputQuestion) json.RawMessage {
 	request := provider.UserInputRequest{
 		RequestID: fmt.Sprintf("%d", rpcID),

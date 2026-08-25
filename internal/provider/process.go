@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -329,11 +328,26 @@ func (p *Process) readBoundedLine() ([]byte, error) {
 	}
 }
 
-// isClosedPipeErr returns true if err indicates a closed pipe or file descriptor.
-// This happens when cmd.Wait() closes stdout before the scanner finishes reading.
+// isClosedPipeErr returns true if err indicates a closed pipe or file
+// descriptor. This happens when the stdout pipe is closed out from under a
+// read in flight — Close/Kill teardown racing the last ReadLine.
+//
+// Identity, not message text: an *fs.PathError from an *os.File wraps the
+// syscall sentinel, and matching on the rendered sentence broke on any
+// wrapper that re-worded it (and would silently match a provider line that
+// merely CONTAINED the words). What each sentinel covers here:
+//
+//   - os.ErrClosed — the reachable one. Reading a closed *os.File yields
+//     `read |0: file already closed`.
+//   - syscall.EPIPE — `broken pipe`. A write-side errno; kept because the
+//     previous matcher covered it and a stdin-shaped caller would hit it.
+//   - io.ErrClosedPipe — io.Pipe's own sentinel. Not reachable through
+//     os.Pipe, listed so an in-process pipe substituted for the fd later
+//     lands in the same branch instead of surfacing as a session error.
 func isClosedPipeErr(err error) bool {
-	return strings.Contains(err.Error(), "file already closed") ||
-		strings.Contains(err.Error(), "broken pipe")
+	return errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, syscall.EPIPE)
 }
 
 // Done returns a channel that closes when the process exits.
@@ -363,7 +377,11 @@ func (p *Process) Err() error {
 // the read loop only when closing.Load() is false, so genuine crashes
 // still surface.
 func (p *Process) Close() error {
-	// Close stdin to signal the process to exit.
+	// Close stdin to signal the process to exit. Deliberately WITHOUT p.mu:
+	// WriteLine holds that lock across its stdin write, so a writer blocked on
+	// a full pipe (a child that stopped reading) owns mu until it drains — and
+	// the unlocked close is what unblocks it, so taking mu here would deadlock
+	// Close against the very caller it is recovering.
 	p.stdin.Close()
 
 	select {

@@ -1022,6 +1022,12 @@ run and update `docs/references/claude-wire.md` in the same commit.
 - Do NOT silently drop an NDJSON line. Every type must be handled or
   explicitly logged as "unknown type — ignored". Parser maps must be
   bounded or cleared on Close.
+  Enforced: an envelope `type` no `ParseLine` case claims reaches
+  `warnUnknownEnvelopeType` (`parser.go`), which logs it once per type per
+  parser lifetime — the peer of codex's `warnUnclaimedNotification`. It is
+  log-and-continue by design (a CLI release adding an envelope must not break
+  a live session) and bounded at 64 distinct types, after which one overflow
+  line is logged and further unknowns are silent.
 - Do NOT let a parse error kill the read loop. Log with enough context
   to reproduce, keep reading. There is a regression test — keep it
   passing.

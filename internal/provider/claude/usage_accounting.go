@@ -124,7 +124,8 @@ func (p *Parser) takeModelUsageDeltas(rawModelUsage json.RawMessage) (deltas []p
 		if p != nil {
 			prev = p.usageTotalsByModel[name]
 		}
-		delta := subtractUsageClamped(cumulative, prev)
+		delta := cumulative
+		delta.Sub(prev)
 		if p != nil {
 			if p.usageTotalsByModel == nil {
 				p.usageTotalsByModel = make(map[string]provider.TokenUsage)
@@ -182,17 +183,6 @@ func (p *Parser) advanceAccountedCost(cumulativeCostUSD float64) float64 {
 	}
 	p.usageAccountedCostUSD = cumulativeCostUSD
 	return delta
-}
-
-// subtractUsageClamped returns cur - prev with every field clamped at 0.
-func subtractUsageClamped(cur, prev provider.TokenUsage) provider.TokenUsage {
-	return provider.TokenUsage{
-		InputTokens:              max(cur.InputTokens-prev.InputTokens, 0),
-		OutputTokens:             max(cur.OutputTokens-prev.OutputTokens, 0),
-		CacheReadInputTokens:     max(cur.CacheReadInputTokens-prev.CacheReadInputTokens, 0),
-		CacheCreationInputTokens: max(cur.CacheCreationInputTokens-prev.CacheCreationInputTokens, 0),
-		TotalCostUSD:             max(cur.TotalCostUSD-prev.TotalCostUSD, 0),
-	}
 }
 
 // readRawFloat decodes a JSON number, returning 0 for empty or non-number.

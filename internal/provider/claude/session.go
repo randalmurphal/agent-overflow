@@ -189,19 +189,15 @@ type Session struct {
 	replayMu             sync.Mutex
 	expectedReplayByUUID map[string]replayExpectation
 	expectedReplayOrder  []string
-	// approvalsMu guards pendingApprovals, resolvedApprovals, and
-	// approvalsClosed.
-	approvalsMu sync.Mutex
-	// pendingApprovals maps approval request IDs to the in-flight request
-	// metadata needed to resolve, cancel, or drain it.
-	pendingApprovals map[string]*pendingApproval
-	// approvalDedup tracks request IDs already answered so duplicate
-	// responses return ErrApprovalAlreadyResolved (Bug B9) instead of
-	// writing a second control_response to the CLI. Guarded by approvalsMu.
-	approvalDedup provider.ApprovalDeduper
-	// approvalsClosed is set when Close has resolved all pending requests
-	// so late-arriving approvals do not register new ones.
-	approvalsClosed bool
+	// approvals is the outstanding-interactive-request ledger: which
+	// can_use_tool / AskUserQuestion requests are unanswered, and who is
+	// allowed to answer each one. Shared with codex — it owns its own leaf
+	// lock and the answered-id dedup that makes a second response return
+	// ErrApprovalAlreadyResolved (Bug B9) instead of writing another
+	// control_response to the CLI. The Claude-specific halves (the
+	// AskUserQuestion answer projection, the control_cancel_request wiring)
+	// stay in session_approvals.go.
+	approvals provider.ApprovalRegistry
 	// controlRequestTimeout overrides DefaultControlRequestTimeout when non-zero.
 	// Tests set this to a short window so a non-responsive fake CLI
 	// doesn't stall the suite. Production leaves it zero.

@@ -96,3 +96,50 @@ func TestComputeContextPercent_EdgeWindow(t *testing.T) {
 		t.Fatalf("Claude max==0: got %v, want 0", got)
 	}
 }
+
+// TestTokenUsageSubClampsEveryField pins the clamp that makes Sub safe for
+// the cumulative→delta subtraction both provider parsers run: a snapshot that
+// went BACKWARDS (resume baseline, re-keyed model row) must report no new
+// spend, never a negative row a downstream sum would subtract from real spend.
+func TestTokenUsageSubClampsEveryField(t *testing.T) {
+	cur := TokenUsage{
+		InputTokens: 10, OutputTokens: 20,
+		CacheReadInputTokens: 30, CacheCreationInputTokens: 40,
+		ReasoningOutputTokens: 50, TotalCostUSD: 1.5,
+	}
+
+	delta := cur
+	delta.Sub(TokenUsage{
+		InputTokens: 4, OutputTokens: 25,
+		CacheReadInputTokens: 30, CacheCreationInputTokens: 100,
+		ReasoningOutputTokens: 1, TotalCostUSD: 2,
+	})
+
+	want := TokenUsage{InputTokens: 6, ReasoningOutputTokens: 49}
+	if delta != want {
+		t.Fatalf("Sub = %+v, want %+v", delta, want)
+	}
+}
+
+// TestTokenUsageSubIsAddInverse pins that Sub undoes Add field-wise while
+// nothing has gone negative — the two must cover the same field set, or a
+// field Add accumulates would never be subtracted back out.
+func TestTokenUsageSubIsAddInverse(t *testing.T) {
+	base := TokenUsage{
+		InputTokens: 1, OutputTokens: 2,
+		CacheReadInputTokens: 3, CacheCreationInputTokens: 4,
+		ReasoningOutputTokens: 5, TotalCostUSD: 6,
+	}
+	other := TokenUsage{
+		InputTokens: 10, OutputTokens: 20,
+		CacheReadInputTokens: 30, CacheCreationInputTokens: 40,
+		ReasoningOutputTokens: 50, TotalCostUSD: 60,
+	}
+
+	got := base
+	got.Add(other)
+	got.Sub(other)
+	if got != base {
+		t.Fatalf("Add then Sub = %+v, want %+v", got, base)
+	}
+}
