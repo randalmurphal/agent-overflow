@@ -339,3 +339,21 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     whole link renderer. The default anchor now emits the title attribute
     when the token has one. Upstream bug, upstream-PR candidate. Regression:
     `ChatMarkdown.test.ts` (editor-link hover text).
+20. **theme and mermaidConfig resolution memoized** (`Streamdown.svelte`)
+    — upstream's context getters rebuilt their objects on every access:
+    `get theme()` ran `mergeTheme` (a deep merge invoking
+    `twMerge(clsx(...))` per subkey across the whole theme) and
+    `get mermaidConfig()` spread a fresh object, per read. Every template
+    effect of every element component reads `streamdown.theme.*`, so
+    sustained streaming re-ran the full merge thousands of times a
+    second — profiled at 33MB/45s of allocation on the soak burn rig,
+    plus a fresh object identity per read that defeated every downstream
+    equality check. Both are now `$derived` in the component body
+    (`resolvedTheme`, `resolvedMermaidConfig`), so the merge happens
+    once per (theme, baseTheme) / (mermaidConfig, darkMode) change and
+    the getters serve cached objects. No behavioral change: no consumer
+    could have relied on per-read identity (it was never stable), and
+    reactivity is preserved because the deriveds track the same props
+    the getters read. Upstream perf bug, upstream-PR candidate.
+    Regression: `markdown/streamdownThemeMemo.test.ts` (identity stable
+    across reads, re-mints on theme prop change).

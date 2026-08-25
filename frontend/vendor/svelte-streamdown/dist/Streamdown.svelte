@@ -53,6 +53,25 @@
 		mermaidConfig?.theme ? mermaidConfig.theme : darkMode.current ? 'dark' : 'default'
 	);
 
+	// Divergence entry 20: theme resolution is memoized. Upstream's context
+	// getter ran mergeTheme on EVERY `streamdown.theme` access — a full deep
+	// merge (per-subkey twMerge/clsx parse over the whole theme) per read,
+	// from every template effect of every element component, re-invoked on
+	// each streaming delta. Profiled at 33MB/45s of allocation during
+	// sustained streaming, plus a fresh object identity per read that
+	// defeated any downstream equality check. One $derived per (theme,
+	// baseTheme) change; the getters below serve the cached objects.
+	const resolvedTheme = $derived(
+		shouldMergeTheme
+			? mergeTheme(theme, baseTheme)
+			: theme || (baseTheme === 'shadcn' ? shadcnTheme : theme)
+	);
+
+	const resolvedMermaidConfig = $derived({
+		theme: mermaidThemedTheme,
+		...mermaidConfig
+	});
+
 	streamdown = new StreamdownContext({
 		get element() {
 			return element;
@@ -79,18 +98,13 @@
 			return snippets;
 		},
 		get theme() {
-			return shouldMergeTheme
-				? mergeTheme(theme, baseTheme)
-				: theme || (baseTheme === 'shadcn' ? shadcnTheme : theme);
+			return resolvedTheme;
 		},
 		get baseTheme() {
 			return baseTheme;
 		},
 		get mermaidConfig() {
-			return {
-				theme: mermaidThemedTheme,
-				...mermaidConfig
-			};
+			return resolvedMermaidConfig;
 		},
 		get katexConfig() {
 			return katexConfig;
