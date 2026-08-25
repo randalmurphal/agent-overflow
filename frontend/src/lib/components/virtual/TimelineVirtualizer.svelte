@@ -256,7 +256,7 @@
         noteCompensationForIndexScroll(compensation.delta);
       }
       convergeIndexScroll();
-      correctHeadSpliceAnchor();
+      const spliceCorrected = correctHeadSpliceAnchor();
       maybeDeliverContentGeometry();
       // Strictly last: row offsets and the container height are flushed
       // and the controller has performed any compensation write, so this
@@ -268,8 +268,14 @@
       // delta. Refreshing here would sample the already-grown DOM and erase
       // the shift. Geometry updates run this effect again after measurement;
       // structural key changes need a fresh anchor immediately.
-      if (geometryChanged || (dataChanged && currentData.mutation.kind !== 'unchanged')) {
-        refreshReadingAnchor();
+      const structuralChange = dataChanged && currentData.mutation.kind !== 'unchanged';
+      if (geometryChanged || structuralChange) {
+        const consumed = straddleShiftConsumed;
+        straddleShiftConsumed = false;
+        refreshReadingAnchor(
+          actualScrollOffset,
+          compensation !== null || spliceCorrected || consumed || structuralChange,
+        );
       }
     });
   });
@@ -473,6 +479,11 @@
   // ------------------------------------------------------------------
   let resizeObserver: ResizeObserver | undefined;
   const rowIndexes = new WeakMap<Element, number>();
+  // Reverse lookup for headAnchorAt. Entries go stale when a head splice
+  // re-indexes rows (the old index keeps pointing at its element until
+  // another row claims it), so every read is verified against rowIndexes
+  // before use.
+  const rowElementByIndex = new Map<number, HTMLElement>();
   let observedScroller: HTMLElement | undefined;
 
   // ------------------------------------------------------------------
@@ -485,9 +496,18 @@
   // against the state the previous batch left behind.
   let readingAnchor: ReadingAnchor | null = null;
   let anchorScrollTop = -1;
+  // Set when the engine consumed a nonzero straddle shift this batch: the
+  // sampled baseline was spent and MUST be re-sampled even when the batch
+  // nets to zero compensation (a shift exactly cancelled by growth above
+  // would otherwise leave a stale baseline that double-counts next pass).
+  let straddleShiftConsumed = false;
   interface HeadSpliceAnchor {
     rowEl: HTMLElement;
-    viewportTop: number;
+    /** Row top relative to the viewport top, in content px:
+     *  engine offset + header − scrollTop at sample time. Differences of
+     *  two samples equal client-rect deltas (rows are absolutely
+     *  positioned from engine offsets), without the forced-layout read. */
+    relativeTop: number;
   }
   let latestViewportAnchor: HeadSpliceAnchor | null = null;
   let headSpliceAnchor: HeadSpliceAnchor | null = null;
@@ -505,7 +525,22 @@
     return trackReadingAnchor?.() ?? true;
   }
 
-  function refreshReadingAnchor(): void {
+  // No DOM reads except the sub-row sample itself. This runs from the
+  // post-flush effect with the whole document freshly dirtied by the
+  // template flush, where ANY forced read (even a bare scrollTop) pays a
+  // whole-document style recalc — measured at 1,091 elements per call
+  // during two-pane streaming (perf trace 2026-08-25). The caller passes
+  // the scrollTop it already knows; both anchors below are answered from
+  // engine geometry.
+  //
+  // `forceSample` re-samples the sub-row anchor unconditionally (a scroll
+  // moved the viewport, a compensation moved the content, the previous
+  // baseline was consumed, or rows re-keyed). Without it a still-valid
+  // baseline is KEPT: growth strictly below the viewport moves neither
+  // the straddling row nor the anchor element inside it, so re-sampling
+  // per streaming beat would buy nothing and cost a whole-document hit
+  // test each time the reader sits in scrollback over a streaming tail.
+  function refreshReadingAnchor(offset: number, forceSample: boolean): void {
     const scroller = observedScroller;
     if (!scroller) {
       readingAnchor = null;
@@ -513,24 +548,40 @@
       latestViewportAnchor = null;
       return;
     }
-    readingAnchor = readingAnchorWanted() ? sampleReadingAnchor({ scroller, rowFor }) : null;
-    anchorScrollTop = scroller.scrollTop;
+    if (!readingAnchorWanted()) {
+      readingAnchor = null;
+    } else if (
+      forceSample ||
+      !readingAnchor ||
+      !readingAnchor.anchorEl.isConnected ||
+      !readingAnchor.rowEl.isConnected
+    ) {
+      readingAnchor = sampleReadingAnchor({ scroller, rowFor });
+    }
+    anchorScrollTop = offset;
     // A retained-row anchor is only needed near the head, where a prepend
     // can occur, or while a measurement cascade is already being held.
-    // Skip the extra hit test on the bottom-follow streaming hot path.
+    // Skip the bookkeeping on the bottom-follow streaming hot path.
     if (!headSpliceAnchor && engine.getWindow()[0] !== 0) {
       latestViewportAnchor = null;
       return;
     }
-    const viewport = scroller.getBoundingClientRect();
-    const dataStart = viewport.top + renderHeaderSize - scroller.scrollTop;
-    const y = Math.max(viewport.top + scroller.clientTop + 1, dataStart + 1);
-    const x = viewport.left + viewport.width / 2;
-    const hit = y < viewport.bottom ? document.elementFromPoint(x, y) : null;
-    const firstVisible = hit ? rowFor(hit)?.el : undefined;
-    latestViewportAnchor = firstVisible
-      ? { rowEl: firstVisible, viewportTop: firstVisible.getBoundingClientRect().top }
-      : null;
+    latestViewportAnchor = headAnchorAt(offset);
+  }
+
+  // The mounted row spanning the viewport top, located by engine
+  // arithmetic. Unmeasured rows answer null — they render
+  // visibility:hidden, so the old hit test also resolved no row there.
+  function headAnchorAt(offset: number): HeadSpliceAnchor | null {
+    if (engine.getItemCount() === 0) return null;
+    const index = engine.findItemIndex(engineOffsetFor(offset));
+    if (!engine.isMeasuredAt(index)) return null;
+    const rowEl = rowElementByIndex.get(index);
+    if (!rowEl || rowIndexes.get(rowEl) !== index || !rowEl.isConnected) return null;
+    return {
+      rowEl,
+      relativeTop: engine.getItemOffset(index) + renderHeaderSize - offset,
+    };
   }
 
   function syncEngineToLiveScrollTop(): void {
@@ -552,16 +603,32 @@
     headSpliceAnchor = anchor?.rowEl.isConnected ? { ...anchor } : null;
   }
 
-  function correctHeadSpliceAnchor(): void {
+  // Returns whether a correction was issued (the caller must then treat
+  // the reading-anchor baseline as spent). Delta comes from engine
+  // offsets: the retained row's (offset − scrollTop) now versus at sample
+  // time. Rows are absolutely positioned from those same offsets, so this
+  // equals the old client-rect delta without the forced-layout read — and
+  // it deliberately excludes scroll motion actualScrollOffset has not
+  // seen yet (a spring frame's write mid-flush), which the rect read used
+  // to fold into the "content shift". The one same-flush writer that must
+  // be visible is a pending index scroll's own write (delivered before
+  // this runs, its scroll event still in flight), so only then is the
+  // live scrollTop read — a cold path.
+  function correctHeadSpliceAnchor(): boolean {
     const anchor = headSpliceAnchor;
-    if (!anchor) return;
-    if (!anchor.rowEl.isConnected) {
+    if (!anchor) return false;
+    const index = anchor.rowEl.isConnected ? rowIndexes.get(anchor.rowEl) : undefined;
+    if (index === undefined) {
       headSpliceAnchor = null;
-      return;
+      return false;
     }
-    const delta = anchor.rowEl.getBoundingClientRect().top - anchor.viewportTop;
+    const currentTop = pendingIndexScroll
+      ? (observedScroller?.scrollTop ?? actualScrollOffset)
+      : actualScrollOffset;
+    const relativeNow = engine.getItemOffset(index) + renderHeaderSize - currentTop;
+    const delta = relativeNow - anchor.relativeTop;
+    let corrected = false;
     if (Math.abs(delta) > 0.01 && onCompensation) {
-      const currentTop = observedScroller?.scrollTop ?? actualScrollOffset;
       onCompensation({
         kind: 'head-splice',
         delta,
@@ -569,8 +636,10 @@
       });
       syncEngineToLiveScrollTop();
       noteCompensationForIndexScroll(delta);
+      corrected = true;
     }
     if (windowFullyMeasured()) headSpliceAnchor = null;
+    return corrected;
   }
 
   // Passed to the engine, which calls it ONLY for the row spanning the
@@ -589,7 +658,9 @@
     const anchor = readingAnchor;
     if (!anchor || !readingAnchorWanted()) return 0;
     if (rowIndexes.get(anchor.rowEl) !== index) return 0;
-    return measureReadingAnchorShift(anchor) ?? 0;
+    const shift = measureReadingAnchorShift(anchor) ?? 0;
+    if (shift !== 0) straddleShiftConsumed = true;
+    return shift;
   }
 
   function handleResizeEntries(entries: ResizeObserverEntry[]): void {
@@ -659,6 +730,10 @@
   function registerRow(element: HTMLElement): () => void {
     ensureResizeObserver().observe(element);
     return () => {
+      const index = rowIndexes.get(element);
+      if (index !== undefined && rowElementByIndex.get(index) === element) {
+        rowElementByIndex.delete(index);
+      }
       rowIndexes.delete(element);
       resizeObserver?.unobserve(element);
     };
@@ -666,6 +741,7 @@
 
   function setRowIndex(element: HTMLElement, index: number): void {
     rowIndexes.set(element, index);
+    rowElementByIndex.set(index, element);
   }
 
   // ------------------------------------------------------------------
@@ -703,7 +779,7 @@
     // the position is unchanged (the controller's own compensation write
     // already re-sampled from the post-flush effect, and its scroll event
     // arrives afterwards with nothing left to move).
-    if (offset !== anchorScrollTop) refreshReadingAnchor();
+    if (offset !== anchorScrollTop) refreshReadingAnchor(offset, true);
     armScrollEnd();
   }
 
