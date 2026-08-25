@@ -1,6 +1,7 @@
 package sessionimport
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -208,6 +209,21 @@ func ConvertSubagentTranscript(path, launchToolUseID string) (ConvertResult, err
 	rows, err := readSubagentRows(path)
 	if err != nil {
 		return ConvertResult{}, fmt.Errorf("sessionimport: read subagent transcript %q: %w", path, err)
+	}
+	return ConvertSubagentRows(rows, launchToolUseID), nil
+}
+
+// ConvertSubagentTranscriptData is the in-memory counterpart used when the
+// caller already read and bounded Claude's output_file for payload storage.
+// It avoids reading every terminal transcript twice while preserving the same
+// parser and projection as file-backed import.
+func ConvertSubagentTranscriptData(data []byte, launchToolUseID string) (ConvertResult, error) {
+	if strings.TrimSpace(launchToolUseID) == "" {
+		return ConvertResult{}, fmt.Errorf("sessionimport: convert subagent transcript data: empty launch tool_use id")
+	}
+	rows, err := readSubagentRowsFrom(bytes.NewReader(data), "")
+	if err != nil {
+		return ConvertResult{}, fmt.Errorf("sessionimport: read subagent transcript data: %w", err)
 	}
 	return ConvertSubagentRows(rows, launchToolUseID), nil
 }

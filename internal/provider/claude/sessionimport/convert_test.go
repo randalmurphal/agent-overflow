@@ -255,6 +255,8 @@ func TestConvertSkipsNonPromptUserRows(t *testing.T) {
 		{"isMeta caveat", userRow("u1", "", "[Image: 100x100]", "2026-01-01T00:00:00.000Z", with("isMeta", true))},
 		{"transcript-only injection", userRow("u1", "", "<context>…</context>", "2026-01-01T00:00:00.000Z",
 			with("isVisibleInTranscriptOnly", true))},
+		{"synthetic SDK context", userRow("u1", "", "internal context", "2026-01-01T00:00:00.000Z",
+			with("isSynthetic", true))},
 		{"whitespace only", userRow("u1", "", "   \n ", "2026-01-01T00:00:00.000Z")},
 	}
 	for _, tc := range cases {

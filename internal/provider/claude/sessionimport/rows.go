@@ -25,6 +25,7 @@ type Row struct {
 	IsSidechain      bool
 	IsMeta           bool
 	IsCompactSummary bool
+	IsSynthetic      bool
 
 	// Timestamp is epoch ms from the row's ISO `timestamp`, 0 when absent.
 	Timestamp int64
@@ -54,6 +55,7 @@ func newRow(raw map[string]any, index int) Row {
 		IsSidechain:             rawBool(raw, "isSidechain"),
 		IsMeta:                  rawBool(raw, "isMeta"),
 		IsCompactSummary:        rawBool(raw, "isCompactSummary"),
+		IsSynthetic:             rawBool(raw, "isSynthetic"),
 		Timestamp:               parseISOMillis(rawString(raw, "timestamp")),
 		Raw:                     raw,
 		Index:                   index,

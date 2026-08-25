@@ -696,6 +696,29 @@ describe('<ActivityRun>', () => {
       expect(getByTestId('activity-run-header-running').textContent).toContain('Grep');
     });
 
+    it('does not claim a child tool is running after its enclosing agent settled without a result', async () => {
+      await updateSetting('activityRunDefault', 'collapsed');
+      const sourcePane = await buildPane(undefined, [tool('t0', 0, { status: 'running' })]);
+      const settledTurns = new Proxy(sourcePane.timelineTurns, {
+        get(target, property, receiver) {
+          if (property === 'activeKey') return null;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+      const pane = new Proxy(sourcePane, {
+        get(target, property, receiver) {
+          if (property === 'agentScopeRootId') return 'agent-launch';
+          if (property === 'timelineTurns') return settledTurns;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+
+      const { getByTestId, queryByTestId } = render(MessageTimeline, { props: { pane } });
+
+      expect(getByTestId('activity-run-header-counts').textContent).toContain('1 Bash');
+      expect(queryByTestId('activity-run-header-running')).toBeNull();
+    });
+
     it('says nothing about failure or progress on a clean settled run', async () => {
       const { queryByTestId } = await collapsed([tool('t0', 0)]);
 

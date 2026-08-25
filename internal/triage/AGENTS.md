@@ -480,15 +480,16 @@ agent's TERMINAL and the last chance to say anything about the run.
   out — the merge is order-free and a launch with no counters is left
   untouched, so the only cost of not branching on the tool type is a
   comparison.
-- **`output_file` is terminal enrichment and old-process compatibility**
+- **`output_file` is terminal enrichment and authoritative reconciliation**
   (`subagent_transcript.go`). New Claude processes launch with
   `--session-mirror`; a mid-flight backgrounded agent's later rows are
-  projected live and stamp `transcript_mirrored` on the launch. Triage
-  still reads `output_file` for the completion payload, but skips transcript
-  replay when that marker is present. A provider process started before the
-  flag has no marker, so triage projects its sidechain JSONL with
-  `claude/sessionimport.ConvertSubagentTranscript` and replays the missing
-  tail. Only AGENT launches take this path. A `local_bash` task's
+  projected live and stamp `transcript_mirrored` on the launch. That marker
+  proves only that a prefix arrived. It cannot prove the final mirror batch
+  arrived before `task_notification`, so triage reconciles every agent's
+  sidechain JSONL at terminal with
+  `claude/sessionimport.ConvertSubagentTranscriptData` and replays the missing
+  tail. The projector reuses the bytes already read for the completion
+  payload, avoiding a second file read. Only AGENT launches take this path. A `local_bash` task's
   `output_file` is captured stdout, which the command-output payload owns.
 
 **Dedupe identity, and why the events are REPLAYED rather than written
@@ -511,12 +512,15 @@ text/thinking. It keys on the identity BOTH writers spell identically:
 | tool start / complete | the `tool_use_id`, which IS the row id on both sides. A completion additionally requires the row to have left `running` — a launch the live stream left running is the tool that was in flight at the cut, and nothing else will ever settle it. |
 | assistant text / thinking | `items.meta.provider_item_id` — the provider's own `<messageID>#<ordinal>`, written by the live parser (`recoveredBlockItemID`) and the importer (`nextBlockItemID`) in the same spelling, and queryable via `FindStreamItemByProviderItemID`. |
 | the agent's own prompt | `items.meta.provider_item_id` on the launch-scoped row `user:subagent-prompt:<launchID>`. New live launches create the row from tool input, then transcript projection binds its uuid without changing `item_index`; import marks the first scoped user row and writes the same id. Legacy `user:wire:<uuid>` rows remain recognised. |
-| everything else (errors, command results, compaction) | UNDECIDABLE. Their live ids are per-turn sequence numbers that say nothing about which event produced them. |
+| compaction | the provider boundary UUID embedded by `CompactionItemID`; reconciled independently because the SDK can omit it while forwarding later rows. Its exact summary remains an on-demand payload on that divider. |
+| everything else (errors, command results) | UNDECIDABLE. Their live ids are per-turn sequence numbers that say nothing about which event produced them. |
 
-`subagentBackfillCut` therefore finds the first decidable-and-missing
+`subagentBackfillCut` therefore finds the first ordinary decidable-and-missing
 event and replays the whole tail from there, which is the shape of the
 wire fact: backgrounding stops a sidechain at a POINT, so everything
-before it streamed and everything after it did not. Carrying the
+before it streamed and everything after it did not. A compaction boundary is
+reconciled separately by provider UUID because the SDK selectively omits it;
+it is not evidence of a cut. Carrying the
 undecidable events along with the neighbours they arrived between is the
 only way to place them at all. One store read builds the index — a
 subagent's rows all carry the launch's `turn_index` (invariant 10), so

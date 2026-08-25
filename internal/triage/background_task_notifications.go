@@ -258,14 +258,14 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		} else {
 			outputState = "loaded"
 			notificationPayload = payload
-			// The transcript backfill runs only once the file has proved
-			// readable — it reads the same bytes, so a read failure has
-			// already been reported and re-reporting it would say nothing
-			// new. A backfill failure is its OWN report: the file was
+			// The transcript reconciliation runs only once the file has proved
+			// readable and reuses the bounded payload bytes. A read failure has
+			// already been reported. A reconciliation failure is its OWN report:
+			// the file was
 			// readable but could not be projected, which is the one
 			// condition under which the payload loaded and the rows are
 			// still missing.
-			if backfillErr := r.maybeBackfillSubagentTranscript(evt.ThreadID, launch, meta); backfillErr != nil {
+			if backfillErr := r.maybeBackfillSubagentTranscript(evt.ThreadID, launch, meta, payload); backfillErr != nil {
 				outputState = "error"
 				readErrorString = backfillErr.Error()
 			}
@@ -285,11 +285,26 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // anything whose output file is not a sidechain JSONL — a background
 // Bash's output_file is captured command output, and the command_output
 // payload path already owns it.
-func (r *Router) maybeBackfillSubagentTranscript(threadID string, launch store.Item, meta backgroundTaskNotificationMeta) error {
-	if !isSubagentTranscriptLaunch(launch) || subagentTranscriptAlreadyMirrored(launch) {
+func (r *Router) maybeBackfillSubagentTranscript(threadID string, launch store.Item, meta backgroundTaskNotificationMeta, payload *store.Payload) error {
+	if !isSubagentTranscriptLaunch(launch) {
 		return nil
 	}
-	written, err := r.backfillSubagentTranscript(threadID, launch, meta.OutputFile)
+	if payload == nil {
+		return fmt.Errorf("subagent transcript payload is missing after a successful output_file read")
+	}
+	var payloadMeta struct {
+		OriginalBytes int64 `json:"originalBytes"`
+		Truncated     bool  `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(payload.Meta), &payloadMeta); err != nil {
+		return fmt.Errorf("decode subagent transcript payload metadata: %w", err)
+	}
+	if payloadMeta.Truncated {
+		return fmt.Errorf(
+			"subagent transcript is %s, above the %s ceiling",
+			formatByteCount(payloadMeta.OriginalBytes), formatByteCount(claudeTaskOutputFileMaxBytes))
+	}
+	written, err := r.backfillSubagentTranscript(threadID, launch, payload.Data)
 	if err != nil {
 		log.Printf("triage: backfill subagent transcript for %s from %q: %v", launch.ID, meta.OutputFile, err)
 		return err

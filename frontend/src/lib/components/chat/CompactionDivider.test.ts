@@ -71,6 +71,8 @@ describe('<CompactionDivider>', () => {
         'fix compaction grouping',
       );
     });
+    expect(getByTestId('compaction-detail').className).toContain('max-h-60');
+    expect(getByTestId('compaction-detail').className).toContain('overflow-y-auto');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(dataMock).toHaveBeenCalledTimes(1);
   });

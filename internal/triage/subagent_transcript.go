@@ -24,9 +24,9 @@ import (
 // JSONL that `system/task_notification` names as `output_file`.
 //
 // New Claude sessions also emit transcript_mirror frames, which the parser
-// projects live through the SAME converter and marks on the launch. This
-// terminal file path is compatibility recovery for a process started before
-// that flag existed. A mirrored launch skips it.
+// projects live through the SAME converter and marks on the launch. The
+// terminal transcript still reconciles every launch: a mirror is an
+// append-only delivery channel, not proof that its final batch arrived.
 //
 // Why the events are replayed rather than written as rows: see
 // internal/triage/AGENTS.md §task_notification path. Short version — a
@@ -43,22 +43,8 @@ import (
 // notification's output-file state — a silently incomplete agent
 // transcript reads exactly like a complete one, and no second signal
 // would ever correct it.
-func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, outputFile string) (int, error) {
-	resolvedPath, info, err := resolveClaudeTaskOutputPath(outputFile)
-	if err != nil {
-		return 0, fmt.Errorf("resolve subagent transcript: %w", err)
-	}
-	// The payload read TRUNCATES at this ceiling and still succeeds; a
-	// projection cannot. A transcript cut mid-line would replay into rows
-	// that silently lose the tail, so an oversized file is refused here
-	// even though its payload loaded.
-	if info.Size() > claudeTaskOutputFileMaxBytes {
-		return 0, fmt.Errorf(
-			"subagent transcript is %s, above the %s ceiling",
-			formatByteCount(info.Size()), formatByteCount(claudeTaskOutputFileMaxBytes))
-	}
-
-	converted, err := claudeimport.ConvertSubagentTranscript(resolvedPath, launch.ID)
+func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, data []byte) (int, error) {
+	converted, err := claudeimport.ConvertSubagentTranscriptData(data, launch.ID)
 	if err != nil {
 		return 0, fmt.Errorf("read subagent transcript: %w", err)
 	}
@@ -70,7 +56,7 @@ func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, 
 		// leaves a transcript with no convertible rows. Logged because
 		// an empty projection and one that was never attempted are
 		// otherwise indistinguishable after the fact.
-		log.Printf("triage: subagent transcript %s projected no events (%s)", launch.ID, resolvedPath)
+		log.Printf("triage: subagent transcript %s projected no events", launch.ID)
 		return 0, nil
 	}
 
@@ -107,6 +93,14 @@ func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, 
 // — and letting it decide the cut instead would replay every async
 // agent's whole transcript from row zero.
 func replaySubagentEventAt(index, cut int, evt provider.ProviderEvent, delivered subagentDeliveredRows) bool {
+	if evt.Kind == provider.EventCompactBoundary {
+		// The SDK's agent_progress mapper selectively drops the boundary and
+		// isCompactSummary marker while continuing to forward later rows. A
+		// missing compaction is therefore not evidence that the live stream
+		// stopped. Reconcile this exact provider UUID independently of the cut.
+		decidable, present := subagentEventDelivered(evt, delivered)
+		return decidable && !present
+	}
 	if index >= cut {
 		return true
 	}
@@ -124,6 +118,7 @@ func replaySubagentEventAt(index, cut int, evt provider.ProviderEvent, delivered
 // would be one SELECT per transcript line on the common path where
 // nothing is missing at all.
 type subagentDeliveredRows struct {
+	turnIndex int
 	// byID is every row of the launch's turn, keyed by row id. Tool
 	// calls live here: their row id IS the `tool_use_id`, on both the
 	// live path and in the transcript.
@@ -148,6 +143,7 @@ func (r *Router) subagentDeliveredRows(threadID string, launch store.Item) (suba
 		return subagentDeliveredRows{}, fmt.Errorf("list turn %d of %s: %w", launch.TurnIndex, threadID, err)
 	}
 	index := subagentDeliveredRows{
+		turnIndex:                   launch.TurnIndex,
 		byID:                        make(map[string]store.Item, len(items)),
 		byProviderItem:              map[string]store.Item{},
 		openingPromptByProviderItem: map[string]store.Item{},
@@ -193,12 +189,12 @@ func decodeProviderItemID(meta string) string {
 // A cut rather than a per-event filter, because that is the shape of the
 // wire fact. Backgrounding an agent stops its sidechain at a point;
 // everything before that point streamed and everything after it did not.
-// Working out the point from the events that DO carry a durable identity
-// (tool_use ids, `message.id#ordinal`) then carries the ones that do not
-// — an error row, a slash-command result, a compaction — along with the
-// neighbours they arrived between, which is the only way those can be
-// placed at all: their live ids are per-turn sequence numbers that say
-// nothing about which event produced them.
+// Working out the point from the ordinary streamed events that carry a
+// durable identity (tool_use ids and `message.id#ordinal`) then carries the
+// ones that do not — error rows and slash-command results — along with their
+// neighbours. Compaction is the exception: the SDK selectively omits it while
+// forwarding later rows, so its provider UUID is reconciled independently and
+// never moves the cut.
 //
 // len(events) when everything is already present, which is the async
 // agent's answer and makes the whole backfill a no-op.
@@ -207,6 +203,11 @@ func subagentBackfillCut(events []importir.Event, delivered subagentDeliveredRow
 		if events[i].Kind == provider.EventUserText {
 			// The prompt is not evidence about where streaming stopped —
 			// see replaySubagentEventAt.
+			continue
+		}
+		if events[i].Kind == provider.EventCompactBoundary {
+			// Selective SDK omission, not a sidechain delivery cut. It is
+			// reconciled by provider UUID in replaySubagentEventAt.
 			continue
 		}
 		decidable, present := subagentEventDelivered(events[i].ProviderEvent, delivered)
@@ -251,6 +252,15 @@ func subagentEventDelivered(evt provider.ProviderEvent, delivered subagentDelive
 		if !found {
 			_, found = delivered.byID["user:wire:"+itemID]
 		}
+		return true, found
+	case provider.EventCompactBoundary:
+		// Compaction rows use the boundary's provider UUID in their durable
+		// item id. Unlike sequenced error/notification rows, this is exact
+		// identity and can safely prove whether the boundary arrived live.
+		if NormalizeProviderCompactionID(itemID) == "" {
+			return false, false
+		}
+		_, found := delivered.byID[CompactionItemID(delivered.turnIndex, itemID, 0)]
 		return true, found
 	default:
 		return false, false
@@ -381,16 +391,4 @@ func isSubagentTranscriptLaunch(launch store.Item) bool {
 	return launch.Kind == itemKindToolCall &&
 		strings.TrimSpace(launch.ToolName) != "" &&
 		!isCommandOutputLaunch(launch)
-}
-
-func subagentTranscriptAlreadyMirrored(launch store.Item) bool {
-	if strings.TrimSpace(launch.Meta) == "" {
-		return false
-	}
-	var meta map[string]any
-	if json.Unmarshal([]byte(launch.Meta), &meta) != nil {
-		return false
-	}
-	mirrored, _ := meta[provider.MetaTranscriptMirroredKey].(bool)
-	return mirrored
 }

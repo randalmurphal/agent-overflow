@@ -67,12 +67,21 @@
   // replacement rewrites content under identical run membership without
   // going through the per-item write path, and it happens at settle/prune
   // cadence rather than per delta.
+  // A scoped agent pane has one authoritative outer lifecycle. Once that
+  // launch settles, an inner tool row whose result never arrived is unknown,
+  // not still running. Keep the row untouched, but stop claiming liveness in
+  // the aggregate header. Main-thread runs have no enclosing scope and retain
+  // their ordinary per-item status behavior.
+  let scopeCanBeRunning = $derived(
+    pane.agentScopeRootId === '' || pane.timelineTurns.activeKey !== null,
+  );
   let summaryKey = $derived(compositeKey(
     pane.thread?.provider ?? '',
     run.runId,
     run.membershipEpoch,
     pane.activityRuns.memberContentRevision(run.runId),
     pane.activityRuns.wholesaleGeneration,
+    scopeCanBeRunning,
   ));
   let summary = $derived.by(() => {
     void summaryKey;
@@ -80,7 +89,8 @@
       const items = run.summaryItemIds
         .map((id) => pane.getItemById(id))
         .filter((item) => item !== undefined);
-      return activityRunSummary(items, pane.thread?.provider);
+      const current = activityRunSummary(items, pane.thread?.provider);
+      return scopeCanBeRunning ? current : { ...current, runningLabel: null };
     });
   });
   // Each term wears its tool's own hue — the same `--ico-*` token the run's

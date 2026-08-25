@@ -105,8 +105,10 @@ func hasBlockOfType(blocks []map[string]json.RawMessage, blockType string) bool 
 //
 // The exclusions mirror the importer's `userPromptText` exactly, because
 // the same rows arrive through both doors: `isMeta` bookkeeping, the
-// compaction summary, and `isVisibleInTranscriptOnly` context injections
-// are CLI machinery, not something the agent was told.
+// compaction summary, and transcript-only/synthetic context injections are
+// CLI machinery, not something the agent was told. Claude's SDK progress
+// mapper drops `isCompactSummary` but maps `isVisibleInTranscriptOnly` to
+// `isSynthetic`, so both explicit forms are required.
 func subagentPromptEvents(
 	threadID string,
 	raw map[string]json.RawMessage,
@@ -119,6 +121,7 @@ func subagentPromptEvents(
 		return nil
 	}
 	if readBoolValue(raw, "isMeta") || readBoolValue(raw, "isCompactSummary") ||
+		readBoolValue(raw, "isSynthetic") ||
 		readBoolValue(raw, "isVisibleInTranscriptOnly") {
 		return nil
 	}

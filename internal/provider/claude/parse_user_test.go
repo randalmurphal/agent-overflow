@@ -1053,6 +1053,10 @@ func TestParseUser_ScopedPromptExclusions(t *testing.T) {
 		{"top level prose belongs to the replay echo", `{"type":"user","uuid":"u-1","message":{"role":"user","content":"what the user typed"}}`},
 		{"isMeta caveat", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","isMeta":true,"message":{"role":"user","content":"Caveat: ..."}}`},
 		{"compaction summary", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","isCompactSummary":true,"message":{"role":"user","content":"summary"}}`},
+		// The SDK's agent_progress mapper drops isCompactSummary, but preserves
+		// isVisibleInTranscriptOnly as isSynthetic. This is provider-declared
+		// internal context, not a prompt sent to the child.
+		{"synthetic SDK context", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","isSynthetic":true,"message":{"role":"user","content":"This session is being continued from a previous conversation..."}}`},
 		{"transcript-only injection", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"injected"}}`},
 		{"no uuid to dedup on", `{"type":"user","parent_tool_use_id":"t","message":{"role":"user","content":"unkeyed"}}`},
 		{"blank text", `{"type":"user","uuid":"u-1","parent_tool_use_id":"t","message":{"role":"user","content":"   "}}`},

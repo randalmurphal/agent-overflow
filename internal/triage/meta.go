@@ -43,13 +43,12 @@ type ThinkingMeta struct {
 }
 
 // CompactionMeta is the cheap, always-loaded view of a compaction payload.
-// The claudetui provider commits the compaction summarizer's summary onto the
-// boundary; this meta lets the frontend label the expandable "Compacted" row
-// (a short summary preview + character size) without pulling the full summary
-// from the payload data blob. The summarizer's reasoning streams separately as
-// its own `compaction_reasoning` row, so it is not part of this view. Headless
-// claude and Codex carry no summary, so they persist no compaction payload and
-// this view never materializes for them.
+// Claudetui commits the summarizer's summary onto the live boundary; Claude
+// subagent transcripts also pair their exact boundary and compact-summary
+// rows during import or terminal reconciliation. This meta lets the frontend
+// label the expandable divider without pulling the full summary. Summarizer
+// reasoning streams separately as `compaction_reasoning` and is not part of
+// this view. Codex and headless Claude's top-level boundary carry no summary.
 type CompactionMeta struct {
 	SummaryPreview string `json:"summaryPreview,omitempty"`
 	SummaryChars   int    `json:"summaryChars"`

@@ -24,9 +24,9 @@
   let detailDomId = $derived(chatRowDomId(pane, 'compaction-detail', item.id));
   const label = $derived(item.summary?.trim() || 'Context compacted');
 
-  // The claudetui provider links a "compaction" payload carrying the
-  // summarizer's reasoning + committed summary; headless claude / Codex
-  // boundaries carry none and stay a plain, non-interactive divider.
+  // Claudetui and reconciled/imported Claude subagents can link the provider's
+  // exact committed summary as a compaction payload. Boundaries without one
+  // stay plain and non-interactive.
   const hasCapture = $derived(
     item.payloadKind === 'compaction' && Boolean(item.payloadId),
   );
@@ -111,7 +111,7 @@
     <div
       id={detailDomId}
       data-testid="compaction-detail"
-      class="mx-auto mt-3 max-w-2xl rounded-[var(--radius-control)] border border-border-subtle bg-surface-2/20 px-4 py-3 text-xs leading-relaxed text-fg-muted"
+      class="mx-auto mt-3 max-h-60 max-w-2xl overflow-y-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-2/20 px-4 py-3 text-xs leading-relaxed text-fg-muted"
     >
       <div data-testid="compaction-summary" class="whitespace-pre-wrap">{summary}</div>
     </div>

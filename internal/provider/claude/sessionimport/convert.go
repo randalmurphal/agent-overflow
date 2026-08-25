@@ -263,9 +263,9 @@ func (c *converter) convertUser(row Row) {
 // userPromptText reports whether a user row is something the person
 // typed, and returns its text. Everything else on a `user` row is
 // machinery: tool-result echoes, `isMeta` caveats, the compaction
-// summary, and `isVisibleInTranscriptOnly` context injections.
+// summary, and synthetic/transcript-only context injections.
 func userPromptText(row Row) (string, bool) {
-	if row.Type != "user" || row.IsMeta || row.IsCompactSummary {
+	if row.Type != "user" || row.IsMeta || row.IsCompactSummary || row.IsSynthetic {
 		return "", false
 	}
 	if rawBool(row.Raw, "isVisibleInTranscriptOnly") {

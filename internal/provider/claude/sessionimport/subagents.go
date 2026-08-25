@@ -2,6 +2,7 @@ package sessionimport
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,7 +132,11 @@ func readSubagentRows(path string) ([]Row, error) {
 	}
 	defer f.Close()
 
-	entries, _, err := sessionfork.ParseTranscript(f, sessionfork.SessionIDFromPath(path))
+	return readSubagentRowsFrom(f, sessionfork.SessionIDFromPath(path))
+}
+
+func readSubagentRowsFrom(reader io.Reader, sourceSessionID string) ([]Row, error) {
+	entries, _, err := sessionfork.ParseTranscript(reader, sourceSessionID)
 	if err != nil {
 		return nil, err
 	}

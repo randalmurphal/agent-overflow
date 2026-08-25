@@ -132,13 +132,12 @@ func (r *Router) compactionRow(evt provider.ProviderEvent, turnIndex int, scope 
 		return store.Item{}, nil, err
 	}
 
-	// The claudetui provider commits the compaction summarizer's summary onto
-	// the boundary meta. Lift that (potentially multi-KB) summary into an
-	// on-demand payload so items.meta stays a cheap {trigger} blob (Core
-	// Principle 4: heavy payloads load on demand). The summarizer's reasoning
-	// streamed live as its own compaction_reasoning row, so it is not here.
-	// Headless claude and Codex carry no summary, so it is empty, restMeta is
-	// evt.Meta byte-for-byte, and the row persists exactly as before.
+	// Claudetui commits the summarizer's summary onto the live boundary;
+	// Claude subagent transcript projection pairs the boundary with its exact
+	// compact-summary row. Lift either form into an on-demand payload so
+	// items.meta stays a cheap {trigger} blob. Summarizer reasoning is a
+	// separate compaction_reasoning row. A boundary with no summary keeps its
+	// meta byte-for-byte and persists without a payload.
 	summary, restMeta := ExtractCompactionSummary(evt.Meta)
 
 	now := eventTimestampMillis(evt)
