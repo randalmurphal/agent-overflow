@@ -308,6 +308,12 @@ func (s *Session) Revert(ctx context.Context, beforeTurnID string) (RevertedThre
 			ErrThreadRevertUnsupported, threadID, mode, paginatedThreadHistoryMode,
 		)
 	}
+	// Closed-session check MUST precede the activeTurnID read: Close zeroes
+	// s.turn, so a post-Close call would read "idle" and proceed into a
+	// request on a dead pipe (see ErrSessionClosed).
+	if s.closing.Load() {
+		return RevertedThread{}, fmt.Errorf("codex: %s: %w", threadRevertMethod, ErrSessionClosed)
+	}
 	s.mu.Lock()
 	activeTurnID := s.turn.activeTurnID
 	s.mu.Unlock()

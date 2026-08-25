@@ -37,6 +37,13 @@ type reviewRun struct {
 }
 
 func (s *Session) reserveReview(turnIndex int, target ReviewTarget) error {
+	// Closed-session check MUST precede the busy reads: Close zeroes s.turn
+	// and s.review, so a post-Close call would read "idle", write a fresh
+	// reviewRun onto the closed session, and proceed into a request on a
+	// dead pipe (see ErrSessionClosed).
+	if s.closing.Load() {
+		return fmt.Errorf("codex: %s: %w", reviewStartMethod, ErrSessionClosed)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.review != nil {
