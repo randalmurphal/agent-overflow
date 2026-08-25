@@ -46,12 +46,27 @@ var nonChannelEmitters = []string{
 
 // TestEmitSitesNameAnEventChannelConstant walks every production Go
 // source under the build's package roots and fails on an emit call whose
-// channel argument is a bare string literal.
+// channel argument is a bare string literal — or a named UNTYPED string
+// constant from the same package, which is the same hole one indirection
+// away: `const fooChannel = "provider:foo"` is assignable to
+// eventchan.Channel without a conversion, so it evades the newtype AND
+// the literal check, and it is exactly the pattern X4 deleted from four
+// files (root/store lens finding 1, 2026-08-25). A TYPED constant
+// (`const x = eventchan.Foo`, screenshot.InstallEventName) and a typed
+// parameter/variable stay legitimate: the newtype already vouches for
+// those.
 func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
 	fset := token.NewFileSet()
 	var offenders []string
 
-	for _, path := range collectGoSources(t) {
+	// Pass 1: per-directory (= per-package) names of constants declared
+	// as an untyped string literal. Only those are assignable to
+	// eventchan.Channel without a conversion — `const x string = "…"`
+	// would not compile at an emit site.
+	untypedStringConsts := map[string]map[string]bool{}
+	sources := collectGoSources(t)
+	parsed := make(map[string]*ast.File, len(sources))
+	for _, path := range sources {
 		if strings.HasSuffix(path, "_test.go") || skipEmitScan(path) {
 			continue
 		}
@@ -59,6 +74,35 @@ func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
+		parsed[path] = file
+		dir := sourceDir(path)
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				value, ok := spec.(*ast.ValueSpec)
+				if !ok || value.Type != nil {
+					continue
+				}
+				for i, name := range value.Names {
+					if i >= len(value.Values) {
+						continue
+					}
+					if lit, ok := value.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+						if untypedStringConsts[dir] == nil {
+							untypedStringConsts[dir] = map[string]bool{}
+						}
+						untypedStringConsts[dir][name.Name] = true
+					}
+				}
+			}
+		}
+	}
+
+	for path, file := range parsed {
+		dir := sourceDir(path)
 		ast.Inspect(file, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok || len(call.Args) == 0 {
@@ -67,12 +111,18 @@ func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
 			if !eventEmitFuncNames[emitCallName(call.Fun)] {
 				return true
 			}
-			lit, ok := call.Args[0].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
+			switch arg := call.Args[0].(type) {
+			case *ast.BasicLit:
+				if arg.Kind == token.STRING {
+					offenders = append(offenders, fmt.Sprintf("%s: %s(%s, …)",
+						fset.Position(call.Pos()), emitCallName(call.Fun), arg.Value))
+				}
+			case *ast.Ident:
+				if untypedStringConsts[dir][arg.Name] {
+					offenders = append(offenders, fmt.Sprintf("%s: %s(%s, …) — %s is an untyped string constant",
+						fset.Position(call.Pos()), emitCallName(call.Fun), arg.Name, arg.Name))
+				}
 			}
-			offenders = append(offenders, fmt.Sprintf("%s: %s(%s, …)",
-				fset.Position(call.Pos()), emitCallName(call.Fun), lit.Value))
 			return true
 		})
 	}
@@ -86,6 +136,16 @@ func TestEmitSitesNameAnEventChannelConstant(t *testing.T) {
 		"caller-named (the harness escape hatches), spell eventchan.Channel(name) so "+
 		"the fail-closed loopback-only default is a visible choice.",
 		len(offenders), strings.Join(offenders, "\n  "))
+}
+
+// sourceDir is the per-package grouping key for the untyped-const scan:
+// one directory is one package in this repo.
+func sourceDir(path string) string {
+	normalized := strings.ReplaceAll(path, "\\", "/")
+	if i := strings.LastIndex(normalized, "/"); i >= 0 {
+		return normalized[:i]
+	}
+	return "."
 }
 
 func skipEmitScan(path string) bool {

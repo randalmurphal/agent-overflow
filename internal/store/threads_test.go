@@ -2673,6 +2673,38 @@ func updateThreadWrittenColumns(t *testing.T) map[string]bool {
 	return written
 }
 
+// threadColumnsNotWrittenByUpdateThread names every `threads` column that
+// updateThreadSetSQL deliberately does NOT write, with the reason it is
+// excluded. It is the positive partner to that SQL: together the two MUST
+// cover every column the table has, and no column may appear in both.
+// TestUpdateThreadColumnGate enforces both halves against
+// `PRAGMA table_info('threads')`, so a new column cannot land unclassified —
+// the same forcing-function shape transport's LocalOnlyMethods /
+// wireSafeMethods pair uses for App methods.
+//
+// A new column belongs in updateThreadSetSQL only if a whole-row write from a
+// stale `Thread` struct is the CORRECT outcome for it. Anything owned by a
+// narrow writer, a trigger, or the row's own lifecycle belongs here instead;
+// the five TestUpdateThreadPreserves* tests are the incident record of what
+// happens when that judgement goes the other way.
+//
+// This map is consulted by nothing at runtime — which is why it lives in the
+// test file rather than the production binary: the SQL is the behavior, and a
+// second list the writer derived from would only be able to agree with itself.
+var threadColumnsNotWrittenByUpdateThread = map[string]string{
+	"id":                   "the WHERE key — UpdateThread matches on it and must never rewrite it",
+	"created_at":           "the row's birth stamp; immutable after CreateThread",
+	"updated_at":           "the sidebar's activity clock, advanced only by writes that mean the user did something (TouchThread, archive/unarchive)",
+	"last_read_at":         "per-thread read state, owned by MarkThreadRead / MarkThreadUnread",
+	"pinned_at":            "sidebar pin state, owned by PinThread / UnpinThread",
+	"worktree_setup_state": "owned by SetThreadWorktreeSetupState (v47); a workspace switch must not clobber a setup run that is still in flight",
+	"import_source":        "write-once provenance (v50); CreateThread is the only writer and nothing may rewrite where a thread came from",
+	"history_rev":          "the replica-invalidation counter (v55), maintained by the items triggers and bumpHistoryRevTx — a Go-side whole-row write would rewind it",
+	"history_epoch":        "the replica-invalidation epoch (v55), maintained by the same triggers",
+	"history_bulk_load":    "a transaction-private flag ApplyImportBatch and DeleteThread raise to suppress the per-row triggers; it is never visible outside their transaction",
+	"live_todo":            "the provider's live todo list (v65), owned by SetThreadLiveTodo / ClearThreadLiveTodo; a rename must not drop a list the user is still working through",
+}
+
 // TestUpdateThreadColumnGate is the standing version of the five
 // TestUpdateThreadPreserves* fossils below and above it. Each of those pins one
 // column that a whole-row UpdateThread must not clobber, and each was written
