@@ -622,18 +622,14 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 // and deferred pending rows waiting for provider echo, because queued
 // sends no longer persist the user_text row optimistically.
 func (a *App) nextFlushSequenceForTurn(threadID string, turnIndex int) (int, error) {
-	next, err := a.nextSequenceForScope(threadID, turnIndex, "flush")
-	if err != nil {
-		return 0, err
+	if a.triage != nil {
+		// Both reads (persisted rows + deferred registry) run under the
+		// thread's flush anchor: an unanchored pair here could land
+		// inside the echo path's pop->persist section and re-issue a
+		// consumed message's sequence (triage.NextFlushSequence doc).
+		return a.triage.NextFlushSequence(threadID, turnIndex)
 	}
-	if a.triage == nil {
-		return next, nil
-	}
-	pendingNext := a.triage.MaxPendingFlushSequence(threadID, turnIndex) + 1
-	if pendingNext > next {
-		return pendingNext, nil
-	}
-	return next, nil
+	return a.nextSequenceForScope(threadID, turnIndex, "flush")
 }
 
 // resolveFlushTurnPlacement picks the turn index for a flush-dispatched

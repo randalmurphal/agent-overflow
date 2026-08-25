@@ -197,6 +197,9 @@ func (r *Router) persistDeferredUserText(pending *pendingSend, providerItemID st
 	if pending.DeferredItem == nil {
 		return nil
 	}
+	if r.deferredPersistGate != nil {
+		r.deferredPersistGate()
+	}
 	item := *pending.DeferredItem
 	if providerItemID == "" {
 		log.Printf("triage: handleUserText popped deferred pending entry %s/%s but wire echo carried no provider_item_id — leaving Zone 2 unconfirmed; check parser coverage for the wire shape", item.ThreadID, item.ID)

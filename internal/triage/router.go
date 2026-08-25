@@ -54,7 +54,12 @@ type Router struct {
 	usageWorkItemResolver func(threadID string) string
 	tracer                trace.Tracer
 	metrics               TurnMetrics
-	mu                    sync.Mutex
+	// deferredPersistGate is a test-only hook (same-package tests set it
+	// directly) called inside the anchored echo section AFTER the pending
+	// entry is popped and BEFORE its row persists — the window
+	// NextFlushSequence's anchor exists to close. Nil in production.
+	deferredPersistGate func()
+	mu                  sync.Mutex
 	// threads holds the per-thread correlation state, one entry per
 	// thread with a live (or recently torn-down) session. Guarded by
 	// r.mu. cleanupThread drops the whole entry, which is what makes the

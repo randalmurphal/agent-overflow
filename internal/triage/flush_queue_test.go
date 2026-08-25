@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
@@ -487,4 +488,87 @@ func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 	// items and must remain safe at unconditional settlement call sites.
 	(*FlushSettlement)(nil).Settle()
 	new(FlushSettlement).Settle()
+}
+
+// TestNextFlushSequence_SerializesWithDeferredEchoPersist pins the
+// allocation race behind the codex-steer e2e flake (2026-08-25): the
+// echo path pops a deferred entry and persists its row inside one
+// flush-anchored section, so while that section runs the message is in
+// NEITHER the registry nor SQLite. NextFlushSequence must take the same
+// anchor — an unanchored reader landing in the window re-issues the
+// consumed message's sequence, and the next steer's echo upserts over
+// its row (three queued steers, "second prompt" gone).
+//
+// deferredPersistGate holds the anchored section open at exactly the
+// pop->persist point. The allocation must (a) not return while the
+// section holds the anchor and (b) return the sequence PAST the
+// consumed message once it does.
+func TestNextFlushSequence_SerializesWithDeferredEchoPersist(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 1)
+
+	deferred := store.Item{
+		ID:        "user:1:flush:1",
+		ThreadID:  "t1",
+		TurnIndex: 1,
+		Kind:      "user_text",
+		Role:      "user",
+		Status:    "completed",
+		Summary:   "second prompt",
+		CreatedAt: time.Now().UnixMilli(),
+		UpdatedAt: time.Now().UnixMilli(),
+	}
+	router.RegisterPendingFlushSendWithExpectation(
+		"t1", "queue:second", deferred, 0, PendingSendExpectation{ByClientID: true})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	router.deferredPersistGate = func() {
+		close(entered)
+		<-release
+	}
+
+	echoDone := make(chan error, 1)
+	go func() {
+		echoDone <- router.Handle(provider.ProviderEvent{
+			Kind:      provider.EventUserText,
+			ThreadID:  "t1",
+			Content:   "second prompt",
+			Meta:      json.RawMessage(`{"provider_item_id":"item_second","client_id":"user:1:flush:1"}`),
+			Timestamp: time.Now(),
+		})
+	}()
+	<-entered // the echo now holds the anchor, entry popped, row not yet persisted
+
+	type allocResult struct {
+		seq int
+		err error
+	}
+	allocDone := make(chan allocResult, 1)
+	go func() {
+		seq, err := router.NextFlushSequence("t1", 1)
+		allocDone <- allocResult{seq, err}
+	}()
+
+	// (a) The allocation must block on the anchor. A result now means it
+	// read both sources inside the window — the collision.
+	select {
+	case res := <-allocDone:
+		t.Fatalf("NextFlushSequence returned %d (err=%v) inside the pop->persist window; want it blocked on the flush anchor", res.seq, res.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-echoDone; err != nil {
+		t.Fatalf("echo handle: %v", err)
+	}
+	res := <-allocDone
+	if res.err != nil {
+		t.Fatalf("NextFlushSequence: %v", res.err)
+	}
+	// (b) Past the persisted row: never 1 again.
+	if res.seq != 2 {
+		t.Fatalf("NextFlushSequence = %d after the echo persisted user:1:flush:1, want 2", res.seq)
+	}
 }

@@ -280,7 +280,52 @@ func (r *Router) DeferredPendingFlushItemCount(threadID string) int {
 	return count
 }
 
-func (r *Router) MaxPendingFlushSequence(threadID string, turnIndex int) int {
+// NextFlushSequence returns the next free flush sequence for
+// (threadID, turnIndex): 1 past the highest `user:<turn>:flush:<n>`
+// visible in EITHER the persisted rows or the deferred pending-send
+// registry. Both reads run under the thread's flush anchor lock, and
+// that is the whole point: a deferred flush row is in NEITHER source
+// while its echo is being consumed — handleUserText pops the registry
+// entry and commits the row inside one anchored section
+// (handle_user_text.go), so an unanchored reader landing between the
+// pop and the commit re-issues that message's sequence, and the next
+// echo upserts its own text over the consumed message's row. Observed
+// live as the codex-steer e2e flake (second of three queued steers
+// vanishing, 2026-08-25). The App's dispatch path
+// (nextFlushSequenceForTurn) is the one caller; it must not hold the
+// anchor already.
+func (r *Router) NextFlushSequence(threadID string, turnIndex int) (int, error) {
+	anchor := r.flushAnchor(threadID)
+	anchor.Lock()
+	defer anchor.Unlock()
+	maxSeq := 0
+	if r.store != nil {
+		items, err := r.store.ListItemsForTurn(threadID, turnIndex)
+		if err != nil {
+			return 0, err
+		}
+		prefix := fmt.Sprintf("user:%d:flush:", turnIndex)
+		for _, it := range items {
+			if !strings.HasPrefix(it.ID, prefix) {
+				continue
+			}
+			seq, err := strconv.Atoi(strings.TrimPrefix(it.ID, prefix))
+			if err == nil && seq > maxSeq {
+				maxSeq = seq
+			}
+		}
+	}
+	if pending := r.maxPendingFlushSequence(threadID, turnIndex); pending > maxSeq {
+		maxSeq = pending
+	}
+	return maxSeq + 1, nil
+}
+
+// maxPendingFlushSequence is the registry half of NextFlushSequence:
+// the highest sequence among deferred flush entries still awaiting
+// their echo. Takes r.mu itself; safe to call while holding the flush
+// anchor (anchor -> r.mu is the package-wide lock order).
+func (r *Router) maxPendingFlushSequence(threadID string, turnIndex int) int {
 	if threadID == "" {
 		return 0
 	}
