@@ -1,4 +1,4 @@
-package main
+package testutil
 
 import (
 	"bytes"
@@ -7,38 +7,38 @@ import (
 	"testing"
 )
 
-// syncLogBuffer is a mutex-guarded sink for log.SetOutput in tests. Test
+// SyncLogBuffer is a mutex-guarded sink for log.SetOutput in tests. Test
 // bodies read the captured text while detached goroutines the code under test
 // spawned (wake notifications, feedback acks, off-wire completions) may still
 // be logging, so an unguarded bytes.Buffer is a data race under -race.
-type syncLogBuffer struct {
+type SyncLogBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
 }
 
-func (b *syncLogBuffer) Write(p []byte) (int, error) {
+func (b *SyncLogBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.Write(p)
 }
 
-func (b *syncLogBuffer) String() string {
+func (b *SyncLogBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
 
-func (b *syncLogBuffer) Reset() {
+func (b *SyncLogBuffer) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.buf.Reset()
 }
 
-// captureLogOutput routes the standard logger into a race-safe buffer for the
+// CaptureLogOutput routes the standard logger into a race-safe buffer for the
 // duration of the test.
-func captureLogOutput(t *testing.T) *syncLogBuffer {
+func CaptureLogOutput(t *testing.T) *SyncLogBuffer {
 	t.Helper()
-	logs := &syncLogBuffer{}
+	logs := &SyncLogBuffer{}
 	previous := log.Writer()
 	log.SetOutput(logs)
 	t.Cleanup(func() { log.SetOutput(previous) })
