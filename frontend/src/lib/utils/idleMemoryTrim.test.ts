@@ -7,6 +7,15 @@ import {
   IDLE_TRIM_CHECK_MS,
 } from './idleMemoryTrim';
 
+// The drain gate reads the pane registry through revealDrainProbe; tests
+// drive it with a knob instead of mounting panes.
+let drainingPanes = 0;
+vi.mock('./revealDrainProbe', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./revealDrainProbe')>()),
+  revealDrainStats: () =>
+    Promise.resolve({ v: 1 as const, panes: 1, draining: drainingPanes, smoothers: 0, boundaries: 0 }),
+}));
+
 // Drives the detector through fake time. The mocked Date.now advances with
 // the timers, so "idle" is simply not dispatching input events while time
 // passes.
@@ -15,6 +24,7 @@ describe('idleMemoryTrim', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    drainingPanes = 0;
     setBindingMock('RequestWebviewMemoryTrim', () => Promise.resolve('requested'));
   });
 
@@ -73,6 +83,19 @@ describe('idleMemoryTrim', () => {
     window.dispatchEvent(new Event('keydown'));
     await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS + IDLE_TRIM_THRESHOLD_MS);
     expect(mock.mock.calls.at(-1)).toEqual([true]);
+  });
+
+  it('a draining pane holds the trim, and it fires on the next check, not a floor later', async () => {
+    drainingPanes = 1;
+    stop = startIdleMemoryTrim();
+    // Idle well past the threshold: the drain alone is what holds it.
+    await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + 4 * IDLE_TRIM_CHECK_MS);
+    expect(trimCalls()).toBe(0);
+    // Drain empties: the very next 5s check fires — a drain skip must not
+    // stamp the reattempt floor.
+    drainingPanes = 0;
+    await vi.advanceTimersByTimeAsync(IDLE_TRIM_CHECK_MS);
+    expect(trimCalls()).toBe(1);
   });
 
   it('a transient RPC failure stays armed and retries after the floor', async () => {

@@ -22,12 +22,25 @@
 // is the pacer; the stall budget is one 58ms hit per floor interval,
 // always with no turn running and no input for 10s.
 //
+// "Quiet" is three facts, not two: no input here, no provider turn on
+// the backend, AND no pane still draining its reveal queue. The drain
+// outlives `turn_completed` by ten seconds or more, and a reader
+// watching text glide in has hands off the input by definition — so
+// input silence plus turn-complete is exactly the window where a GC
+// stall lands mid-glide and reads as a stutter (live 1h capture
+// 2026-08-26: the trim's 30-58ms stalls on a 5s wall grid, one per
+// 5-6min quiet window, several mid-drain). The drain read is the same
+// cheap pane-registry fold the harness drain probe uses; a draining
+// pane skips the attempt WITHOUT stamping the floor, so the trim lands
+// on the first check after the reader has actually seen the stream.
+//
 // Cost while active: four passive listeners doing one timestamp
 // assignment, and one comparison every few seconds. No per-event
 // allocation, no reactive state.
 import { RequestWebviewMemoryTrim } from '../stores/bindings';
 import { isMethodUnavailableError } from '../stores/transportStatus.svelte';
 import { isViewOnlySession, runMode } from '../transport/runMode';
+import { revealDrainStats } from './revealDrainProbe';
 
 /** Input silence before a trim request. A pause this long means reading,
  * not typing; a 58ms GC stall under a still hand is invisible. */
@@ -80,11 +93,22 @@ export function startIdleMemoryTrim(): () => void {
     window.addEventListener(name, onInput, { passive: true, capture: true });
   }
 
-  const check = () => {
+  const check = async () => {
     if (disarmed || document.hidden) return;
-    const now = Date.now();
+    let now = Date.now();
     if (now - lastInputAt < IDLE_TRIM_THRESHOLD_MS) return;
     if (now - lastAttemptAt < IDLE_TRIM_REATTEMPT_MS) return;
+    // A pane mid-reveal means the reader is watching motion; a GC stall
+    // there is a visible stutter, not an invisible pause. Skip WITHOUT
+    // stamping the floor so the next 5s check retries — the trim lands
+    // on the first quiet check after the drain, not a floor later.
+    const drain = await revealDrainStats().catch(() => null);
+    if (drain !== null && drain.draining > 0) return;
+    if (disarmed) return;
+    // Re-read the clocks: input may have landed during the await, and
+    // the stamp must be the send time, not the pre-await time.
+    now = Date.now();
+    if (now - lastInputAt < IDLE_TRIM_THRESHOLD_MS) return;
     lastAttemptAt = now;
     // Captured before the round trip so input landing DURING it stays
     // "since the last trim" for the next request. `>=` because the idle
