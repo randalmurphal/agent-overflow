@@ -18,7 +18,15 @@ A pure client. It links `internal/harnessclient` (WS peer plus process
 supervisor) and no App code, so it cannot fabricate app state: every
 capability here is an RPC the backend already exposes, and every file it
 reads is one the backend already writes. That is what keeps the CLI from
-becoming a second, divergent way to drive the app.
+becoming a second, divergent way to drive the app. One named carve-out:
+`health` reads the backend's `/proc` tree directly (`procrss.SampleAll`)
+— liveness must not depend on the wire of the process being judged. It
+is the only sanctioned out-of-band read; anything else goes through an
+RPC.
+
+One caveat on `open --browser`: the URL it launches carries the RPC
+token, which lands on the browser's argv (`/proc/*/cmdline`) and in
+history. The default — printing the URL — does not.
 
 ## Command surface
 
@@ -57,8 +65,9 @@ will type either:
 ### Exit codes
 
 `0` success, `2` wrong invocation, `1` anything the harness or the
-filesystem refused. `bench --baseline` and `health` add `3`: the command
-ran fine and the ANSWER is bad news (a metric drifted, a concern is red).
+filesystem refused. `bench --baseline` and `health` add `exitBadNews`
+(`3`, defined once in `cli.go`): the command ran fine and the ANSWER is
+bad news (a metric drifted, a concern is red).
 A script can tell that from "the harness refused" without parsing prose.
 
 ### The frontend commands need a page
@@ -70,9 +79,13 @@ harness-window`, or open the URL `ao-harness open` prints. `bench` probes
 the bridge BEFORE it resets anything, so a caller who forgot the window
 gets their instance back untouched.
 
-- `ui snapshot [--pane id] [--settled-ms N] [--save]` prints the rows a
-  pane has mounted, with geometry and viewport membership. `--save` (and
-  every `ui diff`) writes `<dataDir>/ui-snapshots/last.json`.
+- `ui snapshot [--pane id] [--settled-ms N] [--text-head N]` prints the
+  rows a pane has mounted, with geometry and viewport membership.
+  `--save` defaults to TRUE for both `ui snapshot` and `ui diff`: each
+  writes `<dataDir>/ui-snapshots/last.json`, so consecutive diffs
+  compare against the previous look at the page; pass `--save=false` to
+  keep the standing baseline. `ui query` takes `--text-cap N` for the
+  same text-truncation control.
 - `ui diff [--threshold px]` compares the live page against that file:
   rows mounted and unmounted, rows that entered or left the viewport,
   geometry deltas past the threshold (2px by default, because sub-pixel
@@ -112,6 +125,20 @@ p50 becomes the reference, under a default 25% budget) or a hand-written
 budget wins over a derived reference. Drift exits 3. Without `--baseline`
 nothing is compared, so a bench is never a gate by accident.
 
+Two arithmetic rules the file's readers depend on. A budget of `0` is
+BINDING, not absent: `{"max": 0}` is the strictest thing the file can
+say, and reading it as "no opinion" would silently accept every value. A
+metric a run could not measure is OMITTED from the aggregate rather than
+folded in as zero — that covers a headless run with no frontend half and
+also the series meters (`domNodes`, `jsHeap`) a given engine may never
+sample. `sampleMs` in the document is the interval the backend RESOLVED,
+not the one the flag asked for, because a default run asks for `0`.
+
+The bench connection narrows its event subscription to the completion
+channel its drivers await. It is an instrument: leaving it on the default
+all-channel subscription makes the backend serialise every item delta
+onto a second socket during the exact window being measured.
+
 ### Health
 
 `health [--watch] [--interval 30s]` rolls up process liveness and uptime,
@@ -131,11 +158,18 @@ counted and reported as warn rather than filtered away: they mean layout
 work outran a frame, which this timeline cares about, but nothing threw.
 
 Every FILE concern is since-last-check, through
-`<dataDir>/health-cursor.json`. The cursor carries each file's size as
-well as its offset, which is how a rotation is detected: uitrace rotates
-at a size cap, and a reader that kept its offset would read past the end
-of the new file. `--watch` appends timestamped lines, one per section,
-with no clear-screen, so a long watch greps like any other log.
+`<dataDir>/health-cursor.json`. The cursor carries two facts beyond the
+offset, and each catches a rotation the other cannot. SIZE catches the
+file that SHRANK — uitrace rotates at a size cap, and a reader that kept
+its offset would read past the end of the new file. IDENTITY (device +
+inode, empty where the platform has no cheap answer) catches the file
+that was REPLACED and then grew back past the old offset, which looks
+like ordinary growth to the size check and would silently skip every line
+in between. Failing to WRITE the cursor is a stderr warning, never a
+failed command: the rollup is already computed and already correct, and
+the cost is one over-report next time. `--watch` appends timestamped
+lines, one per section, with no clear-screen, so a long watch greps like
+any other log.
 
 ## Instance resolution
 
@@ -173,6 +207,12 @@ is what decides when `list` may delete one:
   list it as stale. A second process is involved and the row is not ours
   to remove.
 
+`down` applies the same rule before it SIGNALS: a row's pid is only
+believed when the data root's own instance file names the same pid, and
+anything else is refused naming the root. Pruning a row on a bad guess
+costs a stale listing; SIGKILLing a recycled pid kills whatever inherited
+the number.
+
 `up` applies the mirror image before booting: it refuses a data root
 whose instance file names a live process (two backends on one SQLite
 file is the failure it exists to prevent) and allows a boot over a dead
@@ -180,8 +220,8 @@ one (otherwise every crash would need manual cleanup).
 
 ## Two guards worth keeping
 
-**`db` is read-only twice over.** The connection is opened
-`mode=ro&immutable=0&_pragma=query_only(1)`, and the statement is
+**`db` is read-only twice over, and harness-only.** The connection is
+opened `mode=ro&immutable=0&_pragma=query_only(1)`, and the statement is
 checked before it is sent: exactly one statement, first keyword in
 SELECT / PRAGMA / EXPLAIN. `WITH` is refused because
 `WITH x AS (...) DELETE FROM ...` is valid SQLite whose first keyword
@@ -189,7 +229,18 @@ says nothing about what it does. The scan understands SQLite's quoting
 and comment forms only well enough to know which semicolons are
 separators; it is not a SQL parser and must not grow into one. The
 safety comes from the connection, and the check is what turns a
-violation into a sentence instead of a driver error.
+violation into a sentence instead of a driver error. Note WHICH layer
+that is: `PRAGMA` is on the whitelist, so `PRAGMA query_only=0` reaches
+the handle and SQLite honours it — mode=ro is what still refuses the
+write, and one invocation runs one statement so nothing can loosen the
+flag and then use it. Never drop mode=ro on the theory that query_only
+covers it.
+
+`--file` is refused when it resolves (through symlinks) inside the OS
+config root's `agent-overflow` directory. Without the flag this command
+asks a HARNESS instance where its store is, and that instance already
+refused to boot on real app data; `--file` skipped both, so one path
+could page an agent through the developer's own threads.
 
 **`up` detaches.** The instance has to survive the CLI exiting, so the
 child gets its own session/process group, stderr goes to
@@ -217,15 +268,22 @@ One file per command family, plus the router. Adding a verb is a row in
 - `cmd_ui.go`, `cmd_perf.go`: the bridge-backed commands.
 - `ui_diff.go`: the typed viewport mirror of
   `frontend/src/lib/harness/snapshot.ts` and the comparison over it. The
-  ONE RPC result this CLI types in full, because a field name that
-  silently decoded to its zero value would render "nothing moved" about a
-  page that moved, which is the failure `ui diff` exists to catch. Keep
-  the shapes in step with the bridge.
+  rule for typing a result at all is "does this CLI compare or aggregate
+  it": the viewport does, because a field name that silently decoded to
+  its zero value would render "nothing moved" about a page that moved,
+  which is the failure `ui diff` exists to catch. Everything the CLI only
+  prints stays `json.RawMessage`. Keep the shapes in step with the bridge
+  — `e2e/tests/harness-bridge.spec.ts` runs this binary against a real
+  page and fails when a renamed TS field starts decoding to zero.
 - `cmd_bench.go`, `bench_drive.go`, `bench_seed.go`, `bench_report.go`:
   the run sequence, what a workload actually does to the app between
   arming and stopping the meters, the fixtures it seeds, and the
   arithmetic (aggregation, baselines) split out so the maths is testable
   without a backend.
+- `fileident_unix.go`, `fileident_other.go`: `fileIdentity`, the one
+  platform-split call in this binary. Unix answers device+inode from
+  `FileInfo.Sys()`; everywhere else answers empty and the cursor falls
+  back to its size heuristic alone.
 - `cmd_health.go`, `health.go`: the rollup and its pure half (cursor, log
   scanners, the verdict-to-exit-code rule), same split for the same
   reason.
@@ -251,10 +309,17 @@ prune rule in all three shapes, the `db` statement guard (accepted
 reads, refused writes, piggybacked statements, semicolons inside
 literals) against a real SQLite file, and the `--where` matcher. It also
 covers the three pure surfaces W5 added: the `ui diff` renderer on canned
-snapshots, the bench aggregation and baseline arithmetic (both baseline
-shapes, both drift directions, the report/baseline round trip), and the
-health cursor, log scanners and exit-code rules on canned files. Nothing
+snapshots (plus the snapshot FILE's own round trip and version check), the
+bench aggregation and baseline arithmetic (both baseline shapes, both
+drift directions, explicit zero budgets, unsampled series, the
+report/baseline round trip), and the health cursor, log scanners and
+exit-code rules on canned files. It also covers the two refusals a wrong
+answer would be destructive rather than merely wrong: `down` on a pid the
+data root does not confirm, and `db --file` aimed at real app data. Nothing
 here boots a backend; the client's own frame handling is tested against
 a fake transport server in `internal/harnessclient`, and the real boot
-is `make e2e`'s job (`e2e/tests/harness-bench.spec.ts` drives
-`bench burst-stream` as a subprocess against a page-attached harness).
+is `make e2e`'s job — `e2e/tests/harness-bench.spec.ts` drives
+`bench burst-stream` as a subprocess against a page-attached harness, and
+`e2e/tests/harness-bridge.spec.ts` runs `ui snapshot` the same way and
+reads its TEXT rendering, which is the only place the hand-kept
+`ui_diff.go` mirror is checked against the TS snapshot it copies.

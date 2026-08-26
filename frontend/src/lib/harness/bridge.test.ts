@@ -4,8 +4,9 @@
 // are covered by e2e/tests/harness-bridge.spec.ts.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { answerHarnessQuery, sinceLastMutationMs, stopHarnessBridge } from './bridge';
+import { answerHarnessQuery, isHarnessNoReply, sinceLastMutationMs, stopHarnessBridge } from './bridge';
 import { harnessGlobalNames } from './globals';
+import { PERF_WATCHDOG_MS } from './perf';
 
 interface ErrorEnvelope {
   error?: string;
@@ -104,6 +105,17 @@ describe('globals query', () => {
     expect(result.error).toContain('__stickState');
   });
 
+  // The reader table is an object literal, so a plain `READERS[name]`
+  // lookup resolves Object.prototype's own keys — `constructor` would have
+  // answered with the Object constructor and been CALLED. Inherited keys
+  // are not entries, and the whitelist has to say so.
+  it('refuses prototype keys rather than resolving them through Object.prototype', async () => {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+      const result = (await answerHarnessQuery({ v: 1, kind: 'globals', name })) as ErrorEnvelope;
+      expect(result.error, name).toContain(`unknown global ${JSON.stringify(name)}`);
+    }
+  });
+
   it('publishes the whitelist the spec names', () => {
     expect(harnessGlobalNames()).toEqual([
       '__agentOverflowTimelineMemoryStats',
@@ -166,6 +178,91 @@ describe('perf ops', () => {
   it('names an unknown op', async () => {
     const result = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'wat' })) as ErrorEnvelope;
     expect(result.error).toContain('unknown perf op "wat"');
+  });
+
+  // A meter name nobody knows filtered to a narrower set and armed anyway,
+  // so `--meter fps` answered {armed:true} and then reported zeros for the
+  // length of the run. Same rule as the globals whitelist: a typo must
+  // read as a typo.
+  it('refuses an unknown meter name instead of arming an empty set', async () => {
+    const result = (await answerHarnessQuery({
+      v: 1,
+      kind: 'perf',
+      op: 'start',
+      meters: ['fps', 'frames'],
+    })) as ErrorEnvelope;
+    expect(result.error).toContain('unknown perf meter "fps"');
+    expect(result.error).toContain('layout-shift');
+    const status = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'status' })) as {
+      armed: boolean;
+    };
+    expect(status.armed).toBe(false);
+  });
+
+  it('echoes the run id it armed, and answers a collect that names it', async () => {
+    const armed = (await answerHarnessQuery({
+      v: 1,
+      kind: 'perf',
+      op: 'start',
+      runId: 'perf-7',
+      meters: ['dom'],
+    })) as { armed: boolean; runId: string };
+    expect(armed).toMatchObject({ armed: true, runId: 'perf-7' });
+
+    const sample = (await answerHarnessQuery({
+      v: 1,
+      kind: 'perf',
+      op: 'collect',
+      runId: 'perf-7',
+    })) as { v: number };
+    expect(sample.v).toBe(1);
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop', runId: 'perf-7' });
+  });
+
+  // Every attached page sees every ui-query and the backend takes the
+  // FIRST reply. An unarmed second page answering "no perf run is armed"
+  // would win that race and poison the armed page's tick.
+  it('says nothing at all about another page\'s run', async () => {
+    for (const op of ['collect', 'stop']) {
+      const result = await answerHarnessQuery({ v: 1, kind: 'perf', op, runId: 'perf-elsewhere' });
+      expect(isHarnessNoReply(result), op).toBe(true);
+    }
+
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', runId: 'perf-mine', meters: ['dom'] });
+    const foreign = await answerHarnessQuery({
+      v: 1,
+      kind: 'perf',
+      op: 'collect',
+      runId: 'perf-elsewhere',
+    });
+    expect(isHarnessNoReply(foreign)).toBe(true);
+
+    // An unstamped spec keeps the pre-runId behaviour: this page answers.
+    const unstamped = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'collect' })) as {
+      v: number;
+    };
+    expect(unstamped.v).toBe(1);
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' });
+  });
+
+  // The watchdog exists because an abandoned run keeps the rAF loop firing
+  // for the life of the page. A caller that comes back afterwards must
+  // learn that, not read a bare "no perf run is armed" and go hunting for
+  // a sequencing bug of its own.
+  it('tells a late collect that the run self-disarmed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', meters: ['dom'] });
+      vi.advanceTimersByTime(PERF_WATCHDOG_MS);
+      for (const op of ['collect', 'stop']) {
+        const result = (await answerHarnessQuery({ v: 1, kind: 'perf', op })) as ErrorEnvelope;
+        expect(result.error, op).toBe(
+          `perf run self-disarmed after ${PERF_WATCHDOG_MS}ms without a collect`,
+        );
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -12,7 +12,9 @@ import (
 // The rule lives here rather than in package main because three parties
 // must agree on it and none of them can import the others: the backend's
 // own flag defaults (`--soak --window`), the Makefile's HARNESS_DATA_DIR
-// (`$(TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR))`), and the
+// (`$(HARNESS_TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR))`,
+// where HARNESS_TMPDIR mirrors os.TempDir()'s $TMPDIR-else-/tmp rule —
+// dataroot_test.go pins the Makefile's spelling), and the
 // ao-harness CLI, which has to name the instance belonging to the
 // checkout it was invoked from without having parsed anyone's stdout.
 // A second spelling of this rule means `make harness` and `ao-harness

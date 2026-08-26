@@ -130,7 +130,10 @@ func TestDiffViewportsReportsScrollAndStatus(t *testing.T) {
 	after.Panes[0].Scroll.AtBottom = true
 	after.ActiveThreadID = "thread-2"
 	after.DomNodes = 1500
-	after.Overlays = []uiOverlay{{Name: "command-palette", Kind: "modal"}}
+	// `dialog` and `popover` are the only two kinds the bridge can emit
+	// (frontend/src/lib/harness/snapshot.ts); a fixture inventing a third
+	// tests a string this diff will never be handed.
+	after.Overlays = []uiOverlay{{Name: "command-palette", Kind: "dialog"}}
 
 	diff := diffViewports(before, after, uiGeometryThresholdPx)
 	if diff.ActiveThreadChanged == nil || diff.ActiveThreadChanged.To != "thread-2" {
@@ -139,7 +142,7 @@ func TestDiffViewportsReportsScrollAndStatus(t *testing.T) {
 	if diff.DomNodes == nil || diff.DomNodes.To-diff.DomNodes.From != 300 {
 		t.Errorf("domNodes = %+v", diff.DomNodes)
 	}
-	if len(diff.OverlaysOpened) != 1 || diff.OverlaysOpened[0] != "modal:command-palette" {
+	if len(diff.OverlaysOpened) != 1 || diff.OverlaysOpened[0] != "dialog:command-palette" {
 		t.Errorf("overlaysOpened = %v", diff.OverlaysOpened)
 	}
 	pane := diff.Panes[0]
@@ -148,6 +151,42 @@ func TestDiffViewportsReportsScrollAndStatus(t *testing.T) {
 	}
 	if len(pane.StatusChanged) != 1 || pane.StatusChanged[0].To != "running+streaming" {
 		t.Errorf("statusChanged = %+v", pane.StatusChanged)
+	}
+}
+
+// A pane whose scroller appeared or vanished changes no number inside the
+// scroll block, so the "both non-nil" comparison sees nothing. Reporting
+// that as "no change" is the same lie the whole command exists to catch.
+func TestDiffViewportsReportsAScrollerAppearingAndVanishing(t *testing.T) {
+	withScroll := cannedViewport(cannedRow("a", 0, 10, true))
+	without := cannedViewport(cannedRow("a", 0, 10, true))
+	without.Panes[0].Scroll = nil
+
+	appeared := diffViewports(without, withScroll, uiGeometryThresholdPx)
+	if len(appeared.Panes) != 1 {
+		t.Fatalf("a pane that gained a scroller must be reported: %+v", appeared)
+	}
+	if c := appeared.Panes[0].ScrollerPresent; c == nil || c.From || !c.To {
+		t.Errorf("scrollerPresent = %+v, want false -> true", c)
+	}
+	if out := renderUIDiff(appeared, uiSnapshotFile{}, uiSnapshotFile{}); !strings.Contains(out, "gained a scroller") {
+		t.Errorf("the terminal form must say so:\n%s", out)
+	}
+
+	lost := diffViewports(withScroll, without, uiGeometryThresholdPx)
+	if len(lost.Panes) != 1 {
+		t.Fatalf("a pane that lost its scroller must be reported: %+v", lost)
+	}
+	if c := lost.Panes[0].ScrollerPresent; c == nil || !c.From || c.To {
+		t.Errorf("scrollerPresent = %+v, want true -> false", c)
+	}
+	if out := renderUIDiff(lost, uiSnapshotFile{}, uiSnapshotFile{}); !strings.Contains(out, "lost its scroller") {
+		t.Errorf("the terminal form must say so:\n%s", out)
+	}
+
+	// Two panes that never had one are not news.
+	if diff := diffViewports(without, without, uiGeometryThresholdPx); !diff.Empty() {
+		t.Errorf("neither snapshot has a scroller; nothing changed: %+v", diff)
 	}
 }
 

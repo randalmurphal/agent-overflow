@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -37,7 +38,7 @@ import (
 // `--output-format stream-json` and never passes `-p`, and the account probe
 // is discriminated before this by `--max-turns 0`.
 func isClaudeTextGenInvocation(args []string) bool {
-	return containsArg(args, "-p") && flagValue(args, "--output-format") == "json"
+	return slices.Contains(args, "-p") && flagValue(args, "--output-format") == "json"
 }
 
 // isCodexTextGenInvocation matches textgen.RunCodex's argv. It has to run
@@ -45,16 +46,7 @@ func isClaudeTextGenInvocation(args []string) bool {
 // Claude — `codex exec` has no such marker. `exec` plus `--ephemeral` is the
 // pair no other Codex spawn in this app carries.
 func isCodexTextGenInvocation(args []string) bool {
-	return containsArg(args, "exec") && containsArg(args, "--ephemeral")
-}
-
-func containsArg(args []string, want string) bool {
-	for _, a := range args {
-		if a == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, "exec") && slices.Contains(args, "--ephemeral")
 }
 
 // runClaudeTextGen answers `claude -p --output-format json --json-schema …`.

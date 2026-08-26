@@ -140,6 +140,12 @@ func TestUnknownSubcommandsAreUsageErrors(t *testing.T) {
 		{"replay", "frobnicate"},
 		{"record", "frobnicate"},
 		{"logs", "frobnicate"},
+		// The bridge-backed families route the same way, and their
+		// subcommand names are the ones an agent is most likely to guess
+		// wrong (`perf report`, `ui dump`, `bench everything`).
+		{"ui", "frobnicate"},
+		{"perf", "frobnicate"},
+		{"bench", "frobnicate"},
 	} {
 		code, _, stderr := run(t, args...)
 		if code != exitUsage {

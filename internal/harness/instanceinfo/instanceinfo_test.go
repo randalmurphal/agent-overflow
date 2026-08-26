@@ -14,7 +14,7 @@ func TestIDIsStableShortAndPerDataRoot(t *testing.T) {
 	if len(first) != idHexLen {
 		t.Fatalf("ID(%q) = %q, want %d chars", root, first, idHexLen)
 	}
-	if !validID(first) {
+	if !ValidID(first) {
 		t.Fatalf("ID(%q) = %q is not lowercase hex", root, first)
 	}
 	if again := ID(root); again != first {

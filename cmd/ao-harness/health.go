@@ -23,14 +23,22 @@ import (
 // deleting a data root takes its cursor with it.
 const healthCursorFileName = "health-cursor.json"
 
-// healthFileCursor remembers where a scan stopped. Size travels with the
-// offset because it is the only way to notice a ROTATION: uitrace rotates
-// at a size cap and `up` truncates the stderr capture, and a reader that
-// kept its old offset would then skip the head of the new file or read
-// past the end of the new one.
+// healthFileCursor remembers where a scan stopped, plus the two facts
+// that catch a ROTATION between checks — uitrace rotates at a size cap
+// and `up` truncates the stderr capture, and a reader that kept its old
+// offset would skip the head of the new file or read past the end of it.
+//
+// Size catches the file that SHRANK. Ident catches the one that was
+// replaced and then grew back PAST the old offset, which size alone
+// cannot see: the reader would resume mid-record in a file it has never
+// read, with no rotation signal at all. Ident is the filesystem's own
+// identity for the file (device + inode on unix); it is empty on a
+// platform that cannot cheaply produce one, where the size heuristic
+// remains the whole answer.
 type healthFileCursor struct {
-	Offset int64 `json:"offset"`
-	Size   int64 `json:"size"`
+	Offset int64  `json:"offset"`
+	Size   int64  `json:"size"`
+	Ident  string `json:"ident,omitempty"`
 }
 
 type healthCursor struct {
@@ -73,9 +81,10 @@ func saveHealthCursor(dataDir string, cursor healthCursor) error {
 }
 
 // scanNewLines reads whole lines from `from.Offset` to end of file and
-// reports where to resume. A file that SHRANK since the last check
-// rotated, so the scan restarts at zero and says so; a caller renders that
-// as "rotated" rather than as a suspiciously large burst of new lines.
+// reports where to resume. A file that was REPLACED since the last check
+// (a different inode) or that SHRANK rotated, so the scan restarts at
+// zero and says so; a caller renders that as "rotated" rather than as a
+// suspiciously large burst of new lines.
 func scanNewLines(path string, from healthFileCursor) (lines []string, next healthFileCursor, rotated bool, err error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -84,8 +93,14 @@ func scanNewLines(path string, from healthFileCursor) (lines []string, next heal
 		}
 		return nil, from, false, err
 	}
+	ident := fileIdentity(info)
 	start := from.Offset
-	if info.Size() < from.Size || start > info.Size() {
+	switch {
+	case from.Ident != "" && ident != "" && ident != from.Ident:
+		// A rotate-and-regrow past the old offset looks like ordinary
+		// growth to the size heuristic. Identity is what sees it.
+		start, rotated = 0, true
+	case info.Size() < from.Size || start > info.Size():
 		start, rotated = 0, true
 	}
 	file, err := os.Open(path)
@@ -113,7 +128,7 @@ func scanNewLines(path string, from healthFileCursor) (lines []string, next heal
 			lines = append(lines, trimmed)
 		}
 	}
-	return lines, healthFileCursor{Offset: consumed, Size: info.Size()}, rotated, nil
+	return lines, healthFileCursor{Offset: consumed, Size: info.Size(), Ident: ident}, rotated, nil
 }
 
 // healthOracleLabels are the ui-trace records that mean a standing
@@ -272,15 +287,15 @@ func (r healthReport) Worst() healthStatus {
 	return worst
 }
 
-// exitHealthRed is health's "the answer is bad news" code, the same third
-// code bench drift uses: 1 stays "the harness refused", 2 stays "you typed
-// it wrong". A warn is not a failure and exits 0: a rollup that failed on
-// every stderr warning would be ignored within a day.
-const exitHealthRed = 3
-
+// healthExitCode maps the rollup's worst verdict onto an exit code. Red
+// takes exitBadNews — the same third code bench drift uses, because a
+// script's question is the same either way: 1 stays "the harness
+// refused", 2 stays "you typed it wrong". A warn is not a failure and
+// exits 0: a rollup that failed on every stderr warning would be ignored
+// within a day.
 func healthExitCode(report healthReport) int {
 	if report.Worst() == healthRed {
-		return exitHealthRed
+		return exitBadNews
 	}
 	return exitOK
 }

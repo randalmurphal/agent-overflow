@@ -2,10 +2,10 @@
 // HarnessPerfStart through the ui-query channel, polled once per backend
 // tick, and summarised on HarnessPerfStop.
 //
-// THE BACKEND OWNS THE CADENCE. This module holds no timer of its own
-// except the rAF loop that IS the frame meter; every sample is pulled by
-// a `perf/collect` query. Two reasons, both learned the hard way from
-// two-clock instruments:
+// THE BACKEND OWNS THE CADENCE. This module holds no timer that produces
+// a sample: the rAF loop IS the frame meter and the watchdog below only
+// ever disarms, so every sample is pulled by a `perf/collect` query. Two
+// reasons, both learned the hard way from two-clock instruments:
 //
 //   1. One clock means one timeline. If the page sampled on its own
 //      interval and pushed, a reader correlating a frame stall against
@@ -43,6 +43,12 @@ export interface PerfStartOptions {
   longFrameMs?: number;
   /** Meter names to enable. Absent/empty means every available meter. */
   meters?: readonly string[];
+  /**
+   * The backend's id for this run, echoed back in the arm reply and
+   * matched against the `runId` a later collect/stop carries. Empty when
+   * the backend does not stamp them.
+   */
+  runId?: string;
 }
 
 export interface PerfSample {
@@ -53,6 +59,7 @@ export interface PerfSample {
   fps: number;
   frames: number;
   longFrames: number;
+  /** Worst frame IN THIS WINDOW, not the run-wide worst (that is the summary's). */
   maxFrameMs: number;
   longTasks: number;
   longAnimationFrames: number;
@@ -86,7 +93,62 @@ export interface PerfSummary {
 const ALL_METERS = ['frames', 'longtask', 'loaf', 'layout-shift', 'event', 'memory', 'dom'] as const;
 type MeterName = (typeof ALL_METERS)[number];
 
+function isMeterName(name: string): name is MeterName {
+  return (ALL_METERS as readonly string[]).includes(name);
+}
+
+/** The meter vocabulary, for error messages and docs. */
+export function perfMeterNames(): string[] {
+  return [...ALL_METERS].sort();
+}
+
+/**
+ * Meter names the caller asked for that this bridge does not know. A start
+ * that filters to an empty set would answer `{armed:true}` and then produce
+ * nothing but zeros, so an unknown name has to refuse rather than narrow.
+ */
+export function unknownPerfMeters(requested: readonly string[]): string[] {
+  return requested.filter((name) => !isMeterName(name));
+}
+
+/**
+ * A cumulative total plus the value it held at the previous collect. Every
+ * per-sample number in this module is one `total - mark` delta, and having
+ * that arithmetic hand-written once per counter is what let `maxFrameMark`
+ * rot inside the row of near-identical lines: it was reset to 0 each
+ * collect, so `hist.maxMs - mark` reported the RUN-wide worst frame under
+ * a name the CLI documents as the per-sample one.
+ */
+interface Counter {
+  total: number;
+  mark: number;
+}
+
+function newCounter(): Counter {
+  return { total: 0, mark: 0 };
+}
+
+/** What this counter accumulated since the previous collect. */
+function sinceMark(counter: Counter): number {
+  return counter.total - counter.mark;
+}
+
+/** Closes the window: the next `sinceMark` measures from here. */
+function advance(counter: Counter): void {
+  counter.mark = counter.total;
+}
+
+/**
+ * A run left armed with no matching stop keeps the rAF loop firing for the
+ * life of the page, and this rig exists to hunt idle-memory bugs — a meter
+ * that prevents idle is a meter that invalidates its own experiment. The
+ * backend collects at least once a second while a run is live, so five
+ * minutes of silence means the caller is gone.
+ */
+export const PERF_WATCHDOG_MS = 5 * 60_000;
+
 interface PerfRun {
+  runId: string;
   startedAt: number;
   lastCollectAt: number;
   meters: Set<MeterName>;
@@ -95,23 +157,28 @@ interface PerfRun {
   rafId: number | null;
   lastFrameAt: number | null;
   observers: PerformanceObserver[];
+  watchdog: ReturnType<typeof setTimeout> | null;
   // Cumulative counters. Per-sample numbers are deltas against the
   // snapshot taken at the previous collect, which is what makes a sample
   // answer "what happened in the last second" rather than "since boot".
-  frameMark: number;
-  longFrameMark: number;
-  longTasks: number;
-  longTaskMark: number;
+  // `frames`/`longFrames` mirror totals the histogram owns; the mirror is
+  // taken at collect so every counter here obeys the same delta rule.
+  frames: Counter;
+  longFrames: Counter;
+  longTasks: Counter;
+  loaf: Counter;
+  layoutShift: Counter;
+  slowEvents: Counter;
   longestTaskMs: number;
-  loaf: number;
-  loafMark: number;
   longestLoafMs: number;
-  layoutShift: number;
-  layoutShiftMark: number;
-  slowEvents: number;
-  slowEventMark: number;
   worstEventMs: number;
-  maxFrameMark: number;
+  /**
+   * Worst frame time observed since the previous collect. A true per-window
+   * max cannot be derived from the histogram — it folds every frame of the
+   * run and resetting it would destroy the percentiles — so it is tracked
+   * where the frame deltas are recorded and zeroed at each collect.
+   */
+  windowMaxMs: number;
   domNodes: Series;
   heapBytes: Series;
   panes: Map<string, Series>;
@@ -120,8 +187,61 @@ interface PerfRun {
 
 let run: PerfRun | null = null;
 
+/**
+ * Set when the watchdog disarmed a run behind the caller's back, and kept
+ * until the next arm: a collect or stop that arrives afterwards must learn
+ * WHY its meters are gone rather than read "no perf run is armed" and look
+ * like a caller sequencing bug.
+ */
+let selfDisarmed: { runId: string; afterMs: number } | null = null;
+
 export function perfRunActive(): boolean {
   return run !== null;
+}
+
+/** The id this page's run was armed with; empty when nothing is armed. */
+export function perfRunId(): string {
+  return run?.runId ?? '';
+}
+
+/**
+ * Whether a `collect`/`stop` naming `runId` is this page's business.
+ *
+ * Several pages can be attached to one backend (a browser tab beside the
+ * webview), and the ui-query event goes to all of them — so an UNARMED page
+ * answering `{error:"no perf run is armed"}` can win the first-reply race
+ * and poison the armed page's tick. A page with no run of that name stays
+ * silent and lets the armed one answer.
+ *
+ * Two ways to be addressed anyway, and both are about tolerating a backend
+ * that stamps ids in some specs and not others: an unstamped query is
+ * everyone's (the pre-runId behaviour), and a page armed WITHOUT an id
+ * cannot tell that a stamped query is not its own — silencing it there
+ * would silence the only page that can answer at all.
+ */
+export function perfRunAddressed(runId: string): boolean {
+  if (runId === '') return true;
+  if (run !== null) return run.runId === '' || run.runId === runId;
+  if (selfDisarmed === null) return false;
+  return selfDisarmed.runId === '' || selfDisarmed.runId === runId;
+}
+
+/**
+ * The refusal a late collect/stop is owed after the watchdog fired, or null
+ * when this page has not self-disarmed since its last arm.
+ */
+export function perfSelfDisarmMessage(): string | null {
+  if (selfDisarmed === null) return null;
+  return `perf run self-disarmed after ${selfDisarmed.afterMs}ms without a collect`;
+}
+
+/**
+ * Forgets a self-disarm. Called when the whole bridge goes away: the notice
+ * exists for the caller of THAT run, and nothing that arrives after a
+ * teardown is that caller.
+ */
+export function clearPerfSelfDisarm(): void {
+  selfDisarmed = null;
 }
 
 interface MemoryPerformance extends Performance {
@@ -166,15 +286,61 @@ interface LayoutShiftEntry extends PerformanceEntry {
   hadRecentInput?: boolean;
 }
 
+/** Stops the rAF loop and disconnects the observers. Leaves `run` alone. */
+function disarmMeters(state: PerfRun): void {
+  if (state.watchdog !== null && typeof clearTimeout === 'function') {
+    clearTimeout(state.watchdog);
+  }
+  state.watchdog = null;
+  if (state.rafId !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(state.rafId);
+  }
+  state.rafId = null;
+  for (const observer of state.observers) {
+    try {
+      observer.disconnect();
+    } catch {
+      // A disconnected observer is the goal; a throw here changes nothing.
+    }
+  }
+  state.observers = [];
+}
+
+/**
+ * (Re)arms the silence watchdog. Every collect pushes it out, so it only
+ * ever fires for a run whose caller stopped asking — a crashed spec, a
+ * killed CLI, a backend that went away mid-run.
+ */
+function armWatchdog(state: PerfRun): void {
+  if (typeof setTimeout !== 'function') return;
+  if (state.watchdog !== null && typeof clearTimeout === 'function') {
+    clearTimeout(state.watchdog);
+  }
+  state.watchdog = setTimeout(() => {
+    if (run !== state) return;
+    run = null;
+    disarmMeters(state);
+    // The summary is dropped rather than parked: nobody is left to collect
+    // it, and holding a run's histogram for a caller that vanished is the
+    // retention this rig is supposed to be measuring.
+    selfDisarmed = { runId: state.runId, afterMs: PERF_WATCHDOG_MS };
+  }, PERF_WATCHDOG_MS);
+  // A watchdog must never be the reason a Node-side test process (or a
+  // future SSR pass) stays alive.
+  (state.watchdog as { unref?: () => void }).unref?.();
+}
+
 /** Arms the meters. Re-arming replaces the previous run rather than stacking observers. */
 export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
   const previous = run ? stopPerfRun() : null;
+  selfDisarmed = null;
   const requested = opts.meters && opts.meters.length > 0 ? new Set(opts.meters) : null;
   const meters = new Set<MeterName>(
     ALL_METERS.filter((name) => requested === null || requested.has(name)),
   );
   const now = performance.now();
   const state: PerfRun = {
+    runId: opts.runId ?? '',
     startedAt: now,
     lastCollectAt: now,
     meters,
@@ -183,32 +349,39 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
     rafId: null,
     lastFrameAt: null,
     observers: [],
-    frameMark: 0,
-    longFrameMark: 0,
-    longTasks: 0,
-    longTaskMark: 0,
+    watchdog: null,
+    frames: newCounter(),
+    longFrames: newCounter(),
+    longTasks: newCounter(),
+    loaf: newCounter(),
+    layoutShift: newCounter(),
+    slowEvents: newCounter(),
     longestTaskMs: 0,
-    loaf: 0,
-    loafMark: 0,
     longestLoafMs: 0,
-    layoutShift: 0,
-    layoutShiftMark: 0,
-    slowEvents: 0,
-    slowEventMark: 0,
     worstEventMs: 0,
-    maxFrameMark: 0,
+    windowMaxMs: 0,
     domNodes: newSeries(),
     heapBytes: newSeries(),
     panes: new Map(),
     samples: 0,
   };
   run = state;
+  armWatchdog(state);
 
   if (meters.has('frames')) {
     if (typeof requestAnimationFrame === 'function') {
       const tick = (timestamp: number): void => {
         if (run !== state) return;
-        if (state.lastFrameAt !== null) recordFrame(state.hist, timestamp - state.lastFrameAt);
+        if (state.lastFrameAt !== null) {
+          const deltaMs = timestamp - state.lastFrameAt;
+          recordFrame(state.hist, deltaMs);
+          // Same admission rule recordFrame uses: rAF timestamps go
+          // backwards across a suspend/restore in more than one engine, and
+          // a bogus delta must not become the window's reported worst frame.
+          if (Number.isFinite(deltaMs) && deltaMs > state.windowMaxMs) {
+            state.windowMaxMs = deltaMs;
+          }
+        }
         state.lastFrameAt = timestamp;
         state.rafId = requestAnimationFrame(tick);
       };
@@ -220,13 +393,13 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
 
   observe(state, 'longtask', 'longtask', (entries) => {
     for (const entry of entries) {
-      state.longTasks += 1;
+      state.longTasks.total += 1;
       if (entry.duration > state.longestTaskMs) state.longestTaskMs = entry.duration;
     }
   });
   observe(state, 'loaf', 'long-animation-frame', (entries) => {
     for (const entry of entries) {
-      state.loaf += 1;
+      state.loaf.total += 1;
       if (entry.duration > state.longestLoafMs) state.longestLoafMs = entry.duration;
     }
   });
@@ -236,7 +409,7 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
       // web-vitals excludes them and so does this, or every click a spec
       // makes would score as instability.
       if (entry.hadRecentInput) continue;
-      state.layoutShift += entry.value ?? 0;
+      state.layoutShift.total += entry.value ?? 0;
     }
   });
   observe(
@@ -245,7 +418,7 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
     'event',
     (entries) => {
       for (const entry of entries) {
-        state.slowEvents += 1;
+        state.slowEvents.total += 1;
         if (entry.duration > state.worstEventMs) state.worstEventMs = entry.duration;
       }
     },
@@ -295,8 +468,14 @@ export function collectPerfSample(): PerfSample {
       panes: [],
     };
   }
-  const window = Math.max(0, now - state.lastCollectAt);
-  const frames = state.hist.count - state.frameMark;
+  armWatchdog(state);
+  const windowMs = Math.max(0, now - state.lastCollectAt);
+  // The histogram owns these two totals (it has to: the percentiles fold
+  // over the whole run), so they are mirrored in here, once, and then obey
+  // the same delta rule as every other counter.
+  state.frames.total = state.hist.count;
+  state.longFrames.total = state.hist.longFrames;
+  const frames = sinceMark(state.frames);
   // An unavailable memory meter keeps its series EMPTY (count 0) rather
   // than recording zeros: a zero sample would survive into the bench
   // aggregate and compare 0-against-0 in a baseline, hiding the fact
@@ -308,7 +487,10 @@ export function collectPerfSample(): PerfSample {
     state.meters.has('dom') && typeof document !== 'undefined'
       ? document.getElementsByTagName('*').length
       : 0;
-  const panes = countPaneRows();
+  // Gated on the same meter `nodes` is: countPaneRows walks the document
+  // twice per pane, and a run that excluded `dom` asked for that walk not
+  // to happen — a probe must not cost what it was told to skip.
+  const panes = state.meters.has('dom') ? countPaneRows() : [];
 
   if (heapMeasured) recordSeries(state.heapBytes, heap);
   recordSeries(state.domNodes, nodes);
@@ -325,31 +507,28 @@ export function collectPerfSample(): PerfSample {
   const sample: PerfSample = {
     v: 1,
     atMs: Math.round(now),
-    sinceLastMs: Math.round(window),
-    fps: window > 0 ? round2((frames * 1000) / window) : 0,
+    sinceLastMs: Math.round(windowMs),
+    fps: windowMs > 0 ? round2((frames * 1000) / windowMs) : 0,
     frames,
-    longFrames: state.hist.longFrames - state.longFrameMark,
-    maxFrameMs: round2(Math.max(0, state.hist.maxMs - state.maxFrameMark)),
-    longTasks: state.longTasks - state.longTaskMark,
-    longAnimationFrames: state.loaf - state.loafMark,
-    layoutShift: round2(state.layoutShift - state.layoutShiftMark),
-    slowEvents: state.slowEvents - state.slowEventMark,
+    longFrames: sinceMark(state.longFrames),
+    maxFrameMs: round2(state.windowMaxMs),
+    longTasks: sinceMark(state.longTasks),
+    longAnimationFrames: sinceMark(state.loaf),
+    layoutShift: round2(sinceMark(state.layoutShift)),
+    slowEvents: sinceMark(state.slowEvents),
     domNodes: nodes,
     heapBytes: heap,
     panes,
   };
 
   state.lastCollectAt = now;
-  state.frameMark = state.hist.count;
-  state.longFrameMark = state.hist.longFrames;
-  state.longTaskMark = state.longTasks;
-  state.loafMark = state.loaf;
-  state.layoutShiftMark = state.layoutShift;
-  state.slowEventMark = state.slowEvents;
-  // maxFrameMs is reported as "worst frame observed so far", so the mark
-  // only ever grows; a per-window max would need the histogram reset,
-  // which would destroy the run-wide percentiles.
-  state.maxFrameMark = 0;
+  state.windowMaxMs = 0;
+  advance(state.frames);
+  advance(state.longFrames);
+  advance(state.longTasks);
+  advance(state.loaf);
+  advance(state.layoutShift);
+  advance(state.slowEvents);
   return sample;
 }
 
@@ -358,16 +537,7 @@ export function stopPerfRun(): PerfSummary | null {
   const state = run;
   if (!state) return null;
   run = null;
-  if (state.rafId !== null && typeof cancelAnimationFrame === 'function') {
-    cancelAnimationFrame(state.rafId);
-  }
-  for (const observer of state.observers) {
-    try {
-      observer.disconnect();
-    } catch {
-      // A disconnected observer is the goal; a throw here changes nothing.
-    }
-  }
+  disarmMeters(state);
   const duration = Math.max(0, performance.now() - state.startedAt);
   return {
     v: 1,
@@ -376,12 +546,12 @@ export function stopPerfRun(): PerfSummary | null {
     meters: [...state.meters].filter((name) => !state.unavailable.has(name)).sort(),
     unavailableMeters: [...state.unavailable].sort(),
     frames: summarizeFrames(state.hist, duration),
-    longTasks: state.longTasks,
+    longTasks: state.longTasks.total,
     longestTaskMs: round2(state.longestTaskMs),
-    longAnimationFrames: state.loaf,
+    longAnimationFrames: state.loaf.total,
     longestAnimationFrameMs: round2(state.longestLoafMs),
-    layoutShift: round2(state.layoutShift),
-    slowEvents: state.slowEvents,
+    layoutShift: round2(state.layoutShift.total),
+    slowEvents: state.slowEvents.total,
     worstEventLatencyMs: round2(state.worstEventMs),
     domNodes: state.domNodes,
     heapBytes: state.heapBytes,

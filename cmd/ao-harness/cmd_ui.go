@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/harnessclient"
 )
 
@@ -300,20 +301,22 @@ func uiSnapshotPath(t target) string {
 
 func writeUISnapshot(t target, view uiViewport) error {
 	path := uiSnapshotPath(t)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
-	}
-	body, err := json.MarshalIndent(uiSnapshotFile{
+	if err := atomicfile.WriteJSON(path, uiSnapshotFile{
 		TakenAt:  time.Now().Format(time.RFC3339),
 		Instance: t.ID,
 		Viewport: view,
-	}, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode snapshot: %w", err)
+	}); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
 	}
-	return os.WriteFile(path, append(body, '\n'), 0o600)
+	return nil
 }
 
+// readUISnapshot loads the baseline `ui diff` compares against. The
+// viewport goes through decodeViewport's version check exactly as a live
+// reply does: a file written by an older bridge is the same "field names
+// moved, everything decoded to zero" trap, and it is easier to hit —
+// nothing rewrites the file when the app is upgraded, so a stale baseline
+// outlives the shape it was taken from.
 func readUISnapshot(t target) (uiSnapshotFile, error) {
 	path := uiSnapshotPath(t)
 	data, err := os.ReadFile(path)
@@ -324,9 +327,17 @@ func readUISnapshot(t target) (uiSnapshotFile, error) {
 		}
 		return uiSnapshotFile{}, err
 	}
-	var out uiSnapshotFile
+	var out struct {
+		TakenAt  string          `json:"takenAt"`
+		Instance string          `json:"instance"`
+		Viewport json.RawMessage `json:"viewport"`
+	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return uiSnapshotFile{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	return out, nil
+	view, err := decodeViewport(out.Viewport)
+	if err != nil {
+		return uiSnapshotFile{}, fmt.Errorf("read %s: %w (delete it and take a fresh snapshot)", path, err)
+	}
+	return uiSnapshotFile{TakenAt: out.TakenAt, Instance: out.Instance, Viewport: view}, nil
 }

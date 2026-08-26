@@ -19,6 +19,17 @@ import (
 // evidence files instead.
 const defaultEventLogCap = 10_000
 
+// logShedDivisor decides how much of the log is dropped when it fills:
+// the oldest 1/N of the cap, in one move, rather than one event per
+// event. Shifting by one on every arrival is O(cap) per event and so
+// quadratic over a sustained stream — with the default cap that is a
+// 10,000-element memmove per frame, on the read loop, under the mutex.
+// Shedding a quarter turns it into one memmove per 2,500 frames. The cost
+// is that a Count taken just after a shed sees fewer historical events
+// than the cap implies, which the log's own contract already allows: it
+// is an assertion surface over recent traffic, not a history store.
+const logShedDivisor = 4
+
 // Event is one pushed frame as a caller sees it.
 type Event struct {
 	Channel string          `json:"channel"`
@@ -101,7 +112,9 @@ func (c *Client) WaitForEvent(ctx context.Context, channel string, match func(Ev
 
 // Count reports how many events on a channel matched, consumed or not.
 // It is the absence half of an event assertion: a wait can only prove
-// something happened.
+// something happened. The twin of `countEvents` in e2e/src/harness.ts —
+// kept in step with it deliberately, so an assertion written against one
+// client reads the same against the other.
 func (c *Client) Count(channel string, match func(Event) bool) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -159,8 +172,18 @@ func (c *Client) Listen(fn func(Event)) (cancel func()) {
 func (c *Client) dispatch(event Event) {
 	c.mu.Lock()
 	entry := logEntry{Event: event}
-	// Offer to waiters before filing: the first matching waiter consumes
-	// it, exactly as the TS client's synchronous notification does.
+	// Offer to waiters before filing, exactly as the TS client's
+	// synchronous notification does. Waiter keys come off a monotonic
+	// counter, so the LOWEST matching key is the longest-waiting caller:
+	// picking it makes "which of two identical waits observes this event"
+	// a rule instead of whatever order Go's randomized map iteration
+	// produced this time. The scan runs to the end rather than breaking
+	// early — waiter predicates are pure by contract, and there are only
+	// ever a handful parked.
+	var (
+		chosen    *waiter
+		chosenKey int
+	)
 	for key, w := range c.waiters {
 		if w.channel != event.Channel {
 			continue
@@ -168,14 +191,30 @@ func (c *Client) dispatch(event Event) {
 		if w.match != nil && !w.match(event) {
 			continue
 		}
+		if chosen == nil || key < chosenKey {
+			chosen, chosenKey = w, key
+		}
+	}
+	if chosen != nil {
 		entry.consumed = true
-		delete(c.waiters, key)
-		w.out <- event
-		break
+		delete(c.waiters, chosenKey)
+		chosen.out <- event
 	}
 	c.log = append(c.log, entry)
 	if len(c.log) > c.logCap {
-		c.log = append(c.log[:0], c.log[1:]...)
+		drop := c.logCap / logShedDivisor
+		if drop < 1 {
+			drop = 1
+		}
+		if drop > len(c.log) {
+			drop = len(c.log)
+		}
+		kept := copy(c.log, c.log[drop:])
+		// Clear the vacated tail: those entries still hold the event
+		// payloads, and a backing array that keeps them alive would make
+		// the shed free only in wall time, not in memory.
+		clear(c.log[kept:])
+		c.log = c.log[:kept]
 	}
 	listeners := make([]func(Event), 0, len(c.listeners))
 	for _, fn := range c.listeners {

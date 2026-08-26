@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"time"
 
+	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harnessclient"
 )
@@ -25,10 +26,6 @@ func runPerf(e *env, args []string) error {
 		return perfStatus(e, args[1:])
 	case "watch":
 		return perfWatch(e, args[1:])
-	// `report` is the spec's older name for the same document stop returns;
-	// keeping it as an alias costs one line and saves a wrong guess.
-	case "report":
-		return perfStop(e, args[1:])
 	default:
 		return usagef("unknown perf subcommand %q (want start, stop, status, watch)", args[0])
 	}
@@ -38,7 +35,7 @@ func perfStart(e *env, args []string) error {
 	flags := e.newFlagSet("perf start")
 	sampleMs := flags.Int("sample-ms", 0, "backend sampling interval (default 1000, floor 250)")
 	longFrameMs := flags.Int("long-frame-ms", 0, "frame time above which a frame counts as long (bridge default 50)")
-	var meters channelList
+	var meters stringList
 	flags.Var(&meters, "meter", "arm only this meter (repeatable: frames, longtask, loaf, layout-shift, event, memory, dom)")
 	rest, err := e.parse(flags, args)
 	if err != nil {
@@ -84,7 +81,9 @@ func perfStop(e *env, args []string) error {
 			return err
 		}
 		if *out != "" {
-			if err := os.WriteFile(*out, append(indentJSON(raw), '\n'), 0o600); err != nil {
+			// atomicfile so a report read by another process is either the
+			// old one or the whole new one, never a half-written prefix.
+			if err := atomicfile.Write(*out, append(indentJSON(raw), '\n')); err != nil {
 				return fmt.Errorf("write %s: %w", *out, err)
 			}
 		}
@@ -173,7 +172,7 @@ func perfWatch(e *env, args []string) error {
 		channel := string(eventchan.HarnessPerf)
 		// The ring keeps every perf frame on purpose (a sample is a point in
 		// a series), so a watcher that attaches mid-run gets what it missed.
-		if err := subscribeAndReplay(ctx, client, channelList{channel}, true); err != nil {
+		if err := subscribeAndReplay(ctx, client, stringList{channel}, true); err != nil {
 			return err
 		}
 		select {
@@ -235,12 +234,13 @@ func humanBytes(n uint64) string {
 	}
 }
 
+// indentJSON re-indents the server's own bytes. MarshalIndent over a
+// RawMessage reformats without re-marshalling, so object key order and
+// integer spelling are the backend's, not Go's map iteration's.
 func indentJSON(raw json.RawMessage) []byte {
-	var out []byte
-	buf, err := json.MarshalIndent(json.RawMessage(raw), "", "  ")
+	buf, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return raw
 	}
-	out = buf
-	return out
+	return buf
 }

@@ -81,8 +81,13 @@ export async function readHarnessGlobal(
   name: string,
   args: readonly unknown[] = [],
 ): Promise<GlobalsResult> {
-  const reader = READERS[name];
-  if (!reader) throw new UnknownGlobalError(name);
+  // hasOwn, not a truthiness test on the lookup: `READERS` is an object
+  // literal, so `constructor`, `toString` and `__proto__` all resolve to
+  // something through Object.prototype. A plain `READERS[name]` would take
+  // `constructor` for a reader and call it — which is precisely the
+  // whitelist bypass this table exists to prevent.
+  if (!Object.hasOwn(READERS, name)) throw new UnknownGlobalError(name);
+  const reader = READERS[name]!;
   const value = await reader(win, args);
   if (value === undefined) return { v: 1, name, unavailable: true };
   return { v: 1, name, value };

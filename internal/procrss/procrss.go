@@ -3,6 +3,7 @@ package procrss
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -68,6 +69,19 @@ func SampleAllRoot(root string, pid int) (Tree, error) {
 	return sampleRoot(root, pid, func(string) bool { return true })
 }
 
+// sampleRoot walks the tree in TWO passes, and the split is the whole
+// performance story of this package. The parent map has to cover every
+// pid on the host — a re-parented renderer is only findable through
+// processes that are none of our business — but `status` is a long,
+// many-line file the kernel formats per read, and a perf run walks this
+// once a second. So pass one reads `stat` (one line, comm and ppid) for
+// every pid, and pass two reads `status` only for the handful of
+// processes that turned out to be ours: on a busy host that is hundreds
+// of cheap reads instead of hundreds of expensive ones.
+//
+// RSS still comes from `status`'s VmRSS, deliberately: `stat`'s field 24
+// is a page count over a slightly different set of pages, and switching
+// would silently move every number this package has ever reported.
 func sampleRoot(root string, pid int, match func(name string) bool) (Tree, error) {
 	self, err := readProcess(root, pid)
 	if err != nil {
@@ -78,11 +92,7 @@ func sampleRoot(root string, pid int, match func(name string) bool) (Tree, error
 		return Tree{}, err
 	}
 
-	type record struct {
-		proc Process
-		ppid int
-	}
-	records := make(map[int]record, len(entries))
+	names := make(map[int]string, len(entries))
 	childrenOf := make(map[int][]int, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -92,11 +102,11 @@ func sampleRoot(root string, pid int, match func(name string) bool) (Tree, error
 		if convErr != nil {
 			continue // /proc/self, /proc/meminfo, …
 		}
-		proc, ppid, readErr := readProcessWithParent(root, other)
+		name, ppid, readErr := readStat(root, other)
 		if readErr != nil {
 			continue // exited between the readdir and the read
 		}
-		records[other] = record{proc: proc, ppid: ppid}
+		names[other] = name
 		childrenOf[ppid] = append(childrenOf[ppid], other)
 	}
 
@@ -115,12 +125,16 @@ func sampleRoot(root string, pid int, match func(name string) bool) (Tree, error
 		}
 		visited[next] = true
 		queue = append(queue, childrenOf[next]...)
-		rec, ok := records[next]
-		if !ok || !match(rec.proc.Name) {
+		name, ok := names[next]
+		if !ok || !match(name) {
 			continue
 		}
-		tree.Children = append(tree.Children, rec.proc)
-		tree.ChildrenRSSBytes += rec.proc.RSSBytes
+		proc, readErr := readProcess(root, next)
+		if readErr != nil {
+			continue // exited between the two passes
+		}
+		tree.Children = append(tree.Children, proc)
+		tree.ChildrenRSSBytes += proc.RSSBytes
 	}
 	return tree, nil
 }
@@ -135,24 +149,64 @@ func matchesAnyPrefix(name string, prefixes []string) bool {
 }
 
 func readProcess(root string, pid int) (Process, error) {
-	proc, _, err := readProcessWithParent(root, pid)
-	return proc, err
-}
-
-func readProcessWithParent(root string, pid int) (Process, int, error) {
 	data, err := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "status"))
 	if err != nil {
-		return Process{}, 0, err
+		return Process{}, err
 	}
-	name, rssKB, ppid := ParseStatus(data)
-	return Process{PID: pid, Name: name, RSSBytes: rssKB * 1024}, ppid, nil
+	name, rssKB, _ := ParseStatus(data)
+	return Process{PID: pid, Name: name, RSSBytes: rssKB * 1024}, nil
 }
 
-// ParseStatus pulls the three fields a sample needs out of a
-// /proc/<pid>/status body: `Name`, `VmRSS` (kB), and `PPid`. Exported so the
-// parse is unit-tested directly against real-world status text, including
-// the shapes that make a naive parser wrong — a kernel thread with no VmRSS
-// line at all, and a `Name` the kernel truncated to 15 characters.
+func readStat(root string, pid int) (name string, ppid int, err error) {
+	data, err := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return "", 0, err
+	}
+	name, ppid, ok := ParseStat(data)
+	if !ok {
+		return "", 0, fmt.Errorf("procrss: /proc/%d/stat is not in the expected form", pid)
+	}
+	return name, ppid, nil
+}
+
+// ParseStat pulls the two fields the parent map needs out of a
+// /proc/<pid>/stat line: `comm` (field 2) and `ppid` (field 4). Exported
+// so the parse is unit-tested directly.
+//
+// Splitting on whitespace is WRONG here and that is the whole reason this
+// function exists: comm is the executable name in parentheses and may
+// contain spaces and parentheses of its own — a WebKit helper renamed to
+// "(Web Content) 1" would shift every later field. The scan takes the
+// LAST ')' in the line instead, which no later field can contain, and
+// counts fields from there.
+func ParseStat(data []byte) (name string, ppid int, ok bool) {
+	open := bytes.IndexByte(data, '(')
+	shut := bytes.LastIndexByte(data, ')')
+	if open < 0 || shut < open {
+		return "", 0, false
+	}
+	name = string(data[open+1 : shut])
+	// After comm come state (field 3) and ppid (field 4).
+	rest := bytes.Fields(data[shut+1:])
+	if len(rest) < 2 {
+		return "", 0, false
+	}
+	ppid, err := strconv.Atoi(string(rest[1]))
+	if err != nil {
+		return "", 0, false
+	}
+	return name, ppid, true
+}
+
+// ParseStatus pulls three fields out of a /proc/<pid>/status body:
+// `Name`, `VmRSS` (kB), and `PPid`. The walk uses the first two (the
+// parent map comes from the cheaper `stat` file); PPid is returned
+// because it is the same fact from the authoritative file, and a caller
+// that already paid for the read should not have to parse a second one.
+// Exported so the parse is unit-tested directly against real-world status
+// text, including the shapes that make a naive parser wrong — a kernel
+// thread with no VmRSS line at all, and a `Name` the kernel truncated to
+// 15 characters.
 func ParseStatus(data []byte) (name string, rssKB uint64, ppid int) {
 	for len(data) > 0 {
 		var line []byte

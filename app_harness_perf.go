@@ -1,7 +1,9 @@
 // app_harness_perf.go turns frames per second, heap and RSS into things a
-// test can assert on (docs/specs/testing-harness.md §5).
+// test can assert on (docs/specs/testing-harness.md §5). It owns a run's
+// LIFECYCLE — arming, stopping, the duration ceiling, the report; the
+// clock that fills one lives in app_harness_perf_sampler.go.
 //
-// One design decision drives the whole file: THE BACKEND OWNS THE CADENCE.
+// One design decision drives both files: THE BACKEND OWNS THE CADENCE.
 // The in-page meters accumulate continuously (rAF deltas, PerformanceObserver
 // entries), but they never push — each tick the sampler issues a
 // `perf/collect` ui-query, reads the frontend's instantaneous sample, folds
@@ -23,13 +25,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"runtime"
-	"runtime/metrics"
 	"sync"
 	"time"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/procrss"
 )
 
@@ -45,6 +43,19 @@ const (
 	// that cannot answer inside the sample interval is a SKIPPED sample
 	// (recorded as a frontend error on that frame), never a stalled run.
 	harnessPerfMaxCollectTimeout = 2 * time.Second
+	// harnessPerfStopQueryTimeout bounds the page-side `perf/stop` query.
+	// Deliberately far below harnessUIQueryTimeout: finishPerfRun also runs
+	// on the RESET path, where the page is usually already gone, and a
+	// bench repeat that paid the caller-facing 10s per reset would spend
+	// most of its wall clock waiting for a reply that is never coming. The
+	// summary is one already-accumulated object the bridge returns
+	// immediately or not at all — a longer wait buys nothing.
+	harnessPerfStopQueryTimeout = 2 * time.Second
+	// harnessPerfDefaultMaxDurationMs is the run's duration ceiling. An
+	// `ao-harness perf start` whose caller wandered off would otherwise
+	// sample (and hold an armed page meter) forever; past this the sampler
+	// self-finishes and parks the report for collection.
+	harnessPerfDefaultMaxDurationMs = 30 * 60 * 1000
 )
 
 // HarnessPerfSpec is what a caller arms a run with. Everything is optional;
@@ -61,6 +72,12 @@ type HarnessPerfSpec struct {
 	// WebviewPrefixes overrides which child process names count as webview
 	// processes in the /proc walk. Empty means procrss.DefaultWebviewPrefixes.
 	WebviewPrefixes []string `json:"webviewPrefixes,omitempty"`
+	// MaxDurationMs caps how long the run samples before it self-finishes.
+	// Zero means harnessPerfDefaultMaxDurationMs — NOT unlimited, because
+	// the common way a run outlives its purpose is a caller that never
+	// came back. Negative means no ceiling, for an hours-long soak that
+	// deliberately wants one.
+	MaxDurationMs int64 `json:"maxDurationMs,omitempty"`
 }
 
 // HarnessPerfStatusResult answers "is a run armed, and how is it doing".
@@ -69,6 +86,9 @@ type HarnessPerfStatusResult struct {
 	RunID  string `json:"runId,omitempty"`
 	// SampleMs is the resolved interval, after clamping.
 	SampleMs int `json:"sampleMs,omitempty"`
+	// MaxDurationMs is the resolved ceiling, after defaulting. Zero means
+	// the run has none.
+	MaxDurationMs int64 `json:"maxDurationMs,omitempty"`
 	// Samples counts the ticks EMITTED so far.
 	Samples int `json:"samples"`
 	// FrontendSamples counts the ticks whose collect query answered.
@@ -77,6 +97,16 @@ type HarnessPerfStatusResult struct {
 	LastError       string `json:"lastError,omitempty"`
 	// RSSAvailable reports whether this platform has a /proc to walk.
 	RSSAvailable bool `json:"rssAvailable"`
+	// WebviewRSSMeasurable reports whether any sample so far MATCHED a
+	// webview child process. False is the norm on the Windows/WSL
+	// topology, where WebView2 is the launcher's child rather than ours:
+	// the renderer's memory is real but unreachable from this process's
+	// /proc subtree, and a reader must be able to tell that from "the
+	// renderer used nothing".
+	WebviewRSSMeasurable bool `json:"webviewRssMeasurable"`
+	// EndedRunID names a run the duration ceiling self-finished whose
+	// report nobody has collected yet. The next HarnessPerfStop returns it.
+	EndedRunID string `json:"endedRunId,omitempty"`
 }
 
 // harnessPerfBackendSample is the Go-side half of one tick.
@@ -134,9 +164,15 @@ type harnessPerfBackendReport struct {
 	HeapBytes   harnessPerfSeries `json:"heapBytes"`
 	HeapObjects harnessPerfSeries `json:"heapObjects"`
 	Goroutines  harnessPerfSeries `json:"goroutines"`
-	// RSSBytes covers the backend process; WebviewRSSBytes covers the
-	// matched children summed. Count 0 means the platform had no /proc.
-	RSSBytes        harnessPerfSeries `json:"rssBytes"`
+	// RSSBytes covers the backend process. Count 0 means no sample landed:
+	// the platform has no /proc, or every read of it failed.
+	RSSBytes harnessPerfSeries `json:"rssBytes"`
+	// WebviewRSSBytes covers the matched children summed, and takes a
+	// sample only on a tick that MATCHED at least one. Count 0 therefore
+	// means "the renderer was not measurable from here" — the normal
+	// answer on Windows/WSL, where WebView2 belongs to the launcher rather
+	// than to this process — and never "the renderer used no memory". A
+	// zero-valued sample would have been indistinguishable from the latter.
 	WebviewRSSBytes harnessPerfSeries `json:"webviewRssBytes"`
 	// Processes is the LAST tick's per-process breakdown, which is what a
 	// "what is holding it" question wants; the series above carry the shape
@@ -164,15 +200,26 @@ type harnessPerfState struct {
 	mu     sync.Mutex
 	run    *harnessPerfRun
 	nextID uint64
+	// expired parks the report of a run the DURATION CEILING finished, so
+	// the caller who never got to call HarnessPerfStop can still collect
+	// it. At most one is held: the HarnessPerfStop that returns it clears
+	// it, and so does the next HarnessPerfStart — this is a handoff slot,
+	// not a history.
+	expired *HarnessPerfReport
+	// expiredHook fires after a self-finished report has been parked. Nil
+	// in production; a test installs one to synchronise on the ceiling
+	// rather than poll for it.
+	expiredHook func(HarnessPerfReport)
 }
 
 type harnessPerfRun struct {
-	id        string
-	sampleMs  int
-	prefixes  []string
-	startedAt time.Time
-	stop      chan struct{}
-	done      chan struct{}
+	id          string
+	sampleMs    int
+	maxDuration time.Duration
+	prefixes    []string
+	startedAt   time.Time
+	stop        chan struct{}
+	done        chan struct{}
 
 	seq             int
 	frontendSamples int
@@ -197,6 +244,13 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 	if len(prefixes) == 0 {
 		prefixes = procrss.DefaultWebviewPrefixes
 	}
+	maxDuration := time.Duration(spec.MaxDurationMs) * time.Millisecond
+	switch {
+	case spec.MaxDurationMs == 0:
+		maxDuration = harnessPerfDefaultMaxDurationMs * time.Millisecond
+	case spec.MaxDurationMs < 0:
+		maxDuration = 0
+	}
 
 	h.perf.mu.Lock()
 	if h.perf.run != nil {
@@ -206,20 +260,25 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 	}
 	h.perf.nextID++
 	run := &harnessPerfRun{
-		id:        fmt.Sprintf("perf-%d", h.perf.nextID),
-		sampleMs:  sampleMs,
-		prefixes:  prefixes,
-		startedAt: time.Now(),
-		stop:      make(chan struct{}),
-		done:      make(chan struct{}),
+		id:          fmt.Sprintf("perf-%d", h.perf.nextID),
+		sampleMs:    sampleMs,
+		maxDuration: maxDuration,
+		prefixes:    prefixes,
+		startedAt:   time.Now(),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 	h.perf.run = run
+	// A new run supersedes an uncollected self-finished one: keeping it
+	// would hand the NEXT stop a report from a run two arms ago.
+	h.perf.expired = nil
 	h.perf.mu.Unlock()
 
 	arm, err := json.Marshal(map[string]any{
 		"v":           1,
 		"kind":        "perf",
 		"op":          "start",
+		"runId":       run.id,
 		"longFrameMs": spec.LongFrameMs,
 		"meters":      spec.Meters,
 	})
@@ -238,13 +297,23 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 
 // HarnessPerfStop stops the sampler, tells the bridge to stop, and returns
 // the combined report.
+//
+// With no run armed it also collects a run the duration ceiling already
+// self-finished, so `perf start` / walk away / `perf stop` still returns
+// numbers rather than an error about a run that sampled for half an hour.
 func (h *Harness) HarnessPerfStop() (HarnessPerfReport, error) {
 	h.perf.mu.Lock()
 	run := h.perf.run
-	h.perf.mu.Unlock()
 	if run == nil {
+		expired := h.perf.expired
+		h.perf.expired = nil
+		h.perf.mu.Unlock()
+		if expired != nil {
+			return *expired, nil
+		}
 		return HarnessPerfReport{}, fmt.Errorf("no perf run is active")
 	}
+	h.perf.mu.Unlock()
 	return h.finishPerfRun(run), nil
 }
 
@@ -255,15 +324,22 @@ func (h *Harness) HarnessPerfStatus() (HarnessPerfStatusResult, error) {
 	result := HarnessPerfStatusResult{RSSAvailable: procrss.Supported()}
 	run := h.perf.run
 	if run == nil {
+		if h.perf.expired != nil {
+			result.EndedRunID = h.perf.expired.RunID
+			result.Samples = h.perf.expired.Samples
+			result.WebviewRSSMeasurable = h.perf.expired.Backend.WebviewRSSBytes.Count > 0
+		}
 		return result, nil
 	}
 	result.Active = true
 	result.RunID = run.id
 	result.SampleMs = run.sampleMs
+	result.MaxDurationMs = run.maxDuration.Milliseconds()
 	result.Samples = run.seq
 	result.FrontendSamples = run.frontendSamples
 	result.ElapsedMs = time.Since(run.startedAt).Milliseconds()
 	result.LastError = run.lastErr
+	result.WebviewRSSMeasurable = run.report.WebviewRSSBytes.Count > 0
 	return result, nil
 }
 
@@ -288,8 +364,19 @@ func (h *Harness) stopPerfRunForReset() {
 // summary, and folds the two halves. Safe to call twice on one run: the
 // second caller finds the run already cleared and gets what it accumulated.
 func (h *Harness) finishPerfRun(run *harnessPerfRun) HarnessPerfReport {
+	report, _ := h.finishPerfRunOwned(run)
+	return report
+}
+
+// finishPerfRunOwned is finishPerfRun plus the bit that says whether THIS
+// call was the one that unarmed the run. The self-finish path needs it:
+// only the winner of a race with a concurrent HarnessPerfStop may park
+// the report, or a caller who already collected it would be handed it
+// again by the next stop.
+func (h *Harness) finishPerfRunOwned(run *harnessPerfRun) (HarnessPerfReport, bool) {
 	h.perf.mu.Lock()
-	if h.perf.run == run {
+	owned := h.perf.run == run
+	if owned {
 		h.perf.run = nil
 		close(run.stop)
 	}
@@ -301,9 +388,9 @@ func (h *Harness) finishPerfRun(run *harnessPerfRun) HarnessPerfReport {
 		SampleMs:   run.sampleMs,
 		DurationMs: time.Since(run.startedAt).Milliseconds(),
 	}
-	stop, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "stop"})
+	stop, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "stop", "runId": run.id})
 	if err == nil {
-		summary, queryErr := h.queryUI(stop, harnessUIQueryTimeout)
+		summary, queryErr := h.queryUI(stop, harnessPerfStopQueryTimeout)
 		if queryErr != nil {
 			report.FrontendError = queryErr.Error()
 		} else {
@@ -317,7 +404,35 @@ func (h *Harness) finishPerfRun(run *harnessPerfRun) HarnessPerfReport {
 	report.Samples = run.seq
 	report.Backend = run.report
 	h.perf.mu.Unlock()
-	return report
+	return report, owned
+}
+
+// expirePerfRun self-finishes a run that outlived its ceiling and parks
+// the report for a later HarnessPerfStop.
+//
+// It runs on its OWN goroutine because finishPerfRun waits on run.done,
+// and run.done is closed by the sampler goroutine calling this — waiting
+// for yourself never returns.
+func (h *Harness) expirePerfRun(run *harnessPerfRun) {
+	go func() {
+		report, owned := h.finishPerfRunOwned(run)
+		if !owned {
+			// A concurrent HarnessPerfStop got there first and holds the
+			// report; parking a second copy would double-deliver it.
+			return
+		}
+		h.perf.mu.Lock()
+		h.perf.expired = &report
+		hook := h.perf.expiredHook
+		h.perf.mu.Unlock()
+		log.Printf(
+			"harness: perf: run %s hit its %s duration ceiling after %d samples and self-finished; collect the report with `ao-harness perf stop`",
+			run.id, run.maxDuration, report.Samples,
+		)
+		if hook != nil {
+			hook(report)
+		}
+	}()
 }
 
 // clearPerfRun unwinds a run that never started its sampler.
@@ -328,120 +443,4 @@ func (h *Harness) clearPerfRun(run *harnessPerfRun) {
 	}
 	h.perf.mu.Unlock()
 	close(run.done)
-}
-
-// runPerfSampler is the one clock. It sleeps a full interval BETWEEN cycles
-// rather than firing on a ticker, so a slow collect delays the next sample
-// instead of queueing a backlog of them.
-func (h *Harness) runPerfSampler(run *harnessPerfRun) {
-	defer close(run.done)
-	interval := time.Duration(run.sampleMs) * time.Millisecond
-	collectTimeout := interval
-	if collectTimeout > harnessPerfMaxCollectTimeout {
-		collectTimeout = harnessPerfMaxCollectTimeout
-	}
-	collect, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "collect"})
-	if err != nil {
-		log.Printf("harness: perf: encode collect query: %v", err)
-		return
-	}
-	for {
-		h.emitPerfSample(run, collect, collectTimeout)
-		timer := time.NewTimer(interval)
-		select {
-		case <-run.stop:
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-	}
-}
-
-func (h *Harness) emitPerfSample(run *harnessPerfRun, collect json.RawMessage, timeout time.Duration) {
-	backend := sampleHarnessPerfBackend(run.prefixes)
-	frontend, frontendErr := h.queryUI(collect, timeout)
-
-	event := harnessPerfEvent{
-		RunID:   run.id,
-		AtMs:    time.Since(run.startedAt).Milliseconds(),
-		Backend: backend,
-	}
-	if frontendErr != nil {
-		event.FrontendError = frontendErr.Error()
-	} else {
-		event.Frontend = frontend
-	}
-
-	h.perf.mu.Lock()
-	run.seq++
-	event.Seq = run.seq
-	if frontendErr != nil {
-		run.lastErr = frontendErr.Error()
-	} else {
-		run.frontendSamples++
-		run.lastErr = ""
-	}
-	run.report.HeapBytes.add(float64(backend.HeapBytes))
-	run.report.HeapObjects.add(float64(backend.HeapObjects))
-	run.report.Goroutines.add(float64(backend.Goroutines))
-	if backend.RSSBytes > 0 {
-		run.report.RSSBytes.add(float64(backend.RSSBytes))
-		run.report.WebviewRSSBytes.add(float64(backend.ChildrenRSSBytes))
-		run.report.Processes = backend.Processes
-	}
-	h.perf.mu.Unlock()
-
-	h.app.emit(eventchan.HarnessPerf, event)
-}
-
-// harnessPerfMetricNames are read through runtime/metrics rather than
-// runtime.ReadMemStats: ReadMemStats stops the world, which would make the
-// sampler a source of the very jank the run is measuring.
-var harnessPerfMetricNames = []string{
-	"/memory/classes/heap/objects:bytes",
-	"/gc/heap/objects:objects",
-	"/sched/goroutines:goroutines",
-}
-
-func sampleHarnessPerfBackend(prefixes []string) harnessPerfBackendSample {
-	samples := make([]metrics.Sample, len(harnessPerfMetricNames))
-	for i, name := range harnessPerfMetricNames {
-		samples[i].Name = name
-	}
-	metrics.Read(samples)
-	sample := harnessPerfBackendSample{}
-	for i, s := range samples {
-		value := uint64(0)
-		if s.Value.Kind() == metrics.KindUint64 {
-			value = s.Value.Uint64()
-		}
-		switch harnessPerfMetricNames[i] {
-		case "/memory/classes/heap/objects:bytes":
-			sample.HeapBytes = value
-		case "/gc/heap/objects:objects":
-			sample.HeapObjects = value
-		case "/sched/goroutines:goroutines":
-			sample.Goroutines = int(value)
-		}
-	}
-	// A runtime that ever stops publishing the scheduler metric must not
-	// report zero goroutines — that reads as a dead process.
-	if sample.Goroutines == 0 {
-		sample.Goroutines = runtime.NumGoroutine()
-	}
-
-	if !procrss.Supported() {
-		return sample
-	}
-	tree, err := procrss.Sample(os.Getpid(), prefixes)
-	if err != nil {
-		// A /proc read that fails leaves the series short by one sample
-		// rather than failing the run; the RSS series' Count is what says
-		// how many landed.
-		return sample
-	}
-	sample.RSSBytes = tree.Self.RSSBytes
-	sample.ChildrenRSSBytes = tree.ChildrenRSSBytes
-	sample.Processes = tree.Children
-	return sample
 }

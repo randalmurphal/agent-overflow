@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -75,70 +74,146 @@ func TestTailFileReportsAMissingFile(t *testing.T) {
 	}
 }
 
-func TestFollowFileEmitsOnlyCompleteAppendedLines(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "follow.log")
-	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+// follower drives FollowFile over one file with a short poll interval and
+// hands its emissions back on a channel. It blocks until the follower has
+// taken its starting offset, so a test can append knowing the follow is
+// already watching rather than sleeping and hoping.
+type follower struct {
+	path  string
+	lines chan string
+	done  chan error
+}
+
+func startFollowing(t *testing.T, path string) *follower {
+	t.Helper()
+	prevInterval := followPollInterval
+	followPollInterval = 2 * time.Millisecond
+	started := make(chan struct{})
+	followStartedHook = func() { close(started) }
+	t.Cleanup(func() {
+		followPollInterval = prevInterval
+		followStartedHook = nil
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var mu sync.Mutex
-	var seen []string
-	done := make(chan error, 1)
+	f := &follower{path: path, lines: make(chan string, 64), done: make(chan error, 1)}
 	go func() {
-		done <- FollowFile(ctx, path, func(line string) {
-			mu.Lock()
-			seen = append(seen, line)
-			mu.Unlock()
-		})
+		f.done <- FollowFile(ctx, path, func(line string) { f.lines <- line })
 	}()
+	<-started
+	t.Cleanup(func() {
+		cancel()
+		if err := <-f.done; err != nil {
+			t.Errorf("FollowFile: %v", err)
+		}
+	})
+	return f
+}
 
-	// Let the follower take its starting offset before anything is
-	// appended; it reads the file's end once, at start, and a test that
-	// raced that read would be asserting on which goroutine ran first.
-	time.Sleep(300 * time.Millisecond)
-
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+func (f *follower) append(t *testing.T, text string) {
+	t.Helper()
+	file, err := os.OpenFile(f.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		t.Fatalf("open for append: %v", err)
 	}
-	defer f.Close()
-	if _, err := f.WriteString("after\npartia"); err != nil {
+	defer file.Close()
+	if _, err := file.WriteString(text); err != nil {
 		t.Fatalf("append: %v", err)
 	}
+}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(seen)
-		mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+func (f *follower) next(t *testing.T) string {
+	t.Helper()
+	select {
+	case line := <-f.lines:
+		return line
+	case <-time.After(10 * time.Second):
+		t.Fatal("the follower emitted nothing")
+		return ""
 	}
+}
 
-	// Give the follower another poll interval to prove it does NOT emit
-	// the fragment.
-	time.Sleep(400 * time.Millisecond)
-	mu.Lock()
-	got := append([]string(nil), seen...)
-	mu.Unlock()
-	if len(got) != 1 || got[0] != "after" {
-		t.Fatalf("followed lines = %v, want exactly the one complete appended line", got)
+// quiet proves a negative, which needs a bound: several poll intervals
+// with nothing emitted.
+func (f *follower) quiet(t *testing.T) {
+	t.Helper()
+	select {
+	case line := <-f.lines:
+		t.Fatalf("follower emitted %q, want nothing yet", line)
+	case <-time.After(50 * followPollInterval):
 	}
-	// The pre-existing line was before the follow started; a tail -f does
-	// not replay history.
-	for _, line := range got {
-		if line == "before" {
-			t.Fatal("follow replayed a line written before it started")
-		}
-	}
+}
 
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("FollowFile: %v", err)
+func TestFollowFileEmitsOnlyCompleteAppendedLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "follow.log")
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := startFollowing(t, path)
+
+	f.append(t, "after\npartia")
+	// The pre-existing line was written before the follow started; a
+	// tail -f does not replay history.
+	if line := f.next(t); line != "after" {
+		t.Fatalf("first followed line = %q, want the one complete appended line", line)
+	}
+	f.quiet(t)
+
+	// The fragment completes on a later append and arrives whole, once.
+	f.append(t, "l\n")
+	if line := f.next(t); line != "partial" {
+		t.Fatalf("completed line = %q, want %q", line, "partial")
+	}
+	f.quiet(t)
+}
+
+// A partial line longer than one poll's read cap is the case the old
+// re-read-from-the-fragment loop paid for over and over. It must still
+// arrive exactly once, whole, and only after its newline.
+func TestFollowFileCarriesALongPartialLineAcrossPolls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "follow.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := startFollowing(t, path)
+
+	// Written in chunks, each smaller than the read cap and each landing
+	// on its own poll, so the fragment genuinely spans several reads.
+	const chunk = 64 * 1024
+	const chunks = 24 // 1.5 MiB, past followReadCap
+	body := strings.Repeat("x", chunk)
+	for i := 0; i < chunks; i++ {
+		f.append(t, body)
+	}
+	f.quiet(t)
+	f.append(t, "END\n")
+
+	line := f.next(t)
+	if len(line) != chunk*chunks+len("END") {
+		t.Fatalf("line is %d bytes, want %d", len(line), chunk*chunks+len("END"))
+	}
+	if !strings.HasSuffix(line, "END") || strings.Trim(line[:len(line)-3], "x") != "" {
+		t.Fatal("the reassembled line is not the bytes that were written")
+	}
+	f.quiet(t)
+}
+
+// A rotation drops the fragment with the file it belonged to: its newline
+// is never coming, and carrying it would prepend the dead file's tail to
+// the new file's first line.
+func TestFollowFileDropsTheFragmentOnRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "follow.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := startFollowing(t, path)
+
+	f.append(t, "half a line")
+	f.quiet(t)
+	if err := os.WriteFile(path, []byte("fresh\n"), 0o600); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if line := f.next(t); line != "fresh" {
+		t.Fatalf("after rotation = %q, want %q", line, "fresh")
 	}
 }

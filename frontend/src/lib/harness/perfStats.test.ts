@@ -29,8 +29,10 @@ describe('frame histogram', () => {
     const summary = summarizeFrames(hist, 2_384);
     expect(summary.p50Ms).toBe(16);
     expect(summary.p95Ms).toBe(16);
-    // The overflow bucket answers with the exact max, which is the only
-    // value in it we actually know.
+    // Nearest-rank over 100 frames puts p99 on the 99th, which is still a
+    // 16ms one — the single stall is the 100th. A percentile is a rank, so
+    // one outlier in a hundred moves the max and nothing below it; the
+    // overflow bucket is not involved at this rank (the case below is).
     expect(summary.p99Ms).toBe(16);
     expect(summary.maxMs).toBe(800);
     expect(summary.longFrames).toBe(1);

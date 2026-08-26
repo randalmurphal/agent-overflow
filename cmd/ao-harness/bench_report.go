@@ -153,7 +153,7 @@ func benchMetrics() []benchMetric {
 		{Name: "layoutShift", Unit: "score", LowerIsBetter: true,
 			read: frontendMetric(func(f perfFrontendSummary) float64 { return f.LayoutShift })},
 		{Name: "domNodes.max", Unit: "count", LowerIsBetter: true,
-			read: frontendMetric(func(f perfFrontendSummary) float64 { return f.DomNodes.Max })},
+			read: frontendSeriesMetric(func(f perfFrontendSummary) perfSeries { return f.DomNodes })},
 		{Name: "jsHeap.maxBytes", Unit: "bytes", LowerIsBetter: true,
 			read: frontendSeriesMetric(func(f perfFrontendSummary) perfSeries { return f.HeapBytes })},
 		{Name: "goHeap.maxBytes", Unit: "bytes", LowerIsBetter: true,
@@ -306,26 +306,32 @@ func evaluateTolerance(name string, agg benchAggregate, tol benchTolerance) benc
 		result.Reference = *tol.Value
 	}
 	if agg.LowerIsBetter {
-		limit, note := upperLimit(tol)
+		limit, note, resolved := upperLimit(tol)
 		result.Limit, result.Note = limit, note
-		result.Drift = limit > 0 && agg.P50 > limit
+		result.Drift = resolved && agg.P50 > limit
 		return result
 	}
-	limit, note := lowerLimit(tol)
+	limit, note, resolved := lowerLimit(tol)
 	result.Limit, result.Note = limit, note
-	result.Drift = limit > 0 && agg.P50 < limit
+	result.Drift = resolved && agg.P50 < limit
 	return result
 }
 
 // upperLimit resolves a lower-is-better budget. An explicit `max` is a
 // hard ceiling and wins; otherwise a percentage over the reference
 // applies, defaulting to benchDefaultTolerancePct.
-func upperLimit(tol benchTolerance) (float64, string) {
+//
+// The third return says whether a limit was resolved AT ALL, which is not
+// the same question as "is it above zero": `{"max": 0}` is a caller
+// writing down "this metric must stay at zero" — the strictest budget the
+// file can express — and gating drift on a positive limit would ignore it
+// silently, which is worse than any wrong verdict.
+func upperLimit(tol benchTolerance) (float64, string, bool) {
 	if tol.Max != nil {
-		return *tol.Max, "max"
+		return *tol.Max, "max", true
 	}
 	if tol.Value == nil {
-		return 0, "no reference"
+		return 0, "no reference", false
 	}
 	pct := benchDefaultTolerancePct
 	note := fmt.Sprintf("+%.0f%% (default)", pct)
@@ -333,15 +339,15 @@ func upperLimit(tol benchTolerance) (float64, string) {
 		pct = *tol.MaxPctOver
 		note = fmt.Sprintf("+%.0f%%", pct)
 	}
-	return *tol.Value * (1 + pct/100), note
+	return *tol.Value * (1 + pct/100), note, true
 }
 
-func lowerLimit(tol benchTolerance) (float64, string) {
+func lowerLimit(tol benchTolerance) (float64, string, bool) {
 	if tol.Min != nil {
-		return *tol.Min, "min"
+		return *tol.Min, "min", true
 	}
 	if tol.Value == nil {
-		return 0, "no reference"
+		return 0, "no reference", false
 	}
 	pct := benchDefaultTolerancePct
 	note := fmt.Sprintf("-%.0f%% (default)", pct)
@@ -349,7 +355,7 @@ func lowerLimit(tol benchTolerance) (float64, string) {
 		pct = *tol.MinPctUnder
 		note = fmt.Sprintf("-%.0f%%", pct)
 	}
-	return *tol.Value * (1 - pct/100), note
+	return *tol.Value * (1 - pct/100), note, true
 }
 
 func formatBenchValue(value float64, unit string) string {

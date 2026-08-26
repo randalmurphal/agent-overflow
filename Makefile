@@ -340,7 +340,11 @@ endif
 # worktrees from sharing a DB / generated workspaces (each boot rewrites
 # the provider settings to its own mock binary — a shared dir would
 # point one harness at the other's).
-HARNESS_DATA_DIR ?= /tmp/agent-overflow-harness$(subst /,-,$(CURDIR))
+# Mirror os.TempDir(): $TMPDIR (sans trailing slash) if set, else /tmp —
+# instanceinfo.DataRootFor must resolve the same root or `make harness`
+# and `ao-harness list` disagree about which instance a worktree has.
+HARNESS_TMPDIR := $(if $(TMPDIR),$(patsubst %/,%,$(TMPDIR)),/tmp)
+HARNESS_DATA_DIR ?= $(HARNESS_TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR))
 
 mockprovider:
 	go build -o bin/ao-mockprovider ./cmd/ao-mockprovider

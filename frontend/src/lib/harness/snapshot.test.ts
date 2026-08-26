@@ -9,6 +9,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_TEXT_HEAD,
+  MAX_ROWS_PER_PANE,
   readElement,
   readScroll,
   readViewport,
@@ -21,9 +23,20 @@ function html(markup: string): Document {
   return document;
 }
 
-function row(id: string, kind: string, role: string, status: string, text: string): string {
+// The row index is a PARAMETER because it is part of what the snapshot
+// reports: a reader diffing two viewports uses it to say which window of a
+// virtualized list is mounted. Deriving it from the id (as this helper
+// once did) made it unassertable.
+function row(
+  index: number,
+  id: string,
+  kind: string,
+  role: string,
+  status: string,
+  text: string,
+): string {
   return `
-    <div data-row-index="${id.length}">
+    <div data-row-index="${index}">
       <div data-item-id="${id}" data-item-kind="${kind}" data-item-role="${role}" data-item-status="${status}">
         ${status === 'running' ? '<span data-testid="indicator" data-state="running"></span>' : ''}
         <p>${text}</p>
@@ -51,6 +64,16 @@ describe('textHead', () => {
 
   it('answers empty for a zero cap', () => {
     expect(textHead('anything', 0)).toBe('');
+  });
+
+  // The point array is built over a `cap * 2`-unit prefix rather than the
+  // whole string, so the bounded slice itself can land mid-pair. It may
+  // only ever do so PAST the cap, which the point slice drops.
+  it('bounds the work it does without orphaning a surrogate at the bound', () => {
+    const capped = textHead(`a${'👩'.repeat(50)}`, 4);
+    expect(Array.from(capped)).toHaveLength(5); // four points plus the ellipsis
+    expect(capped.includes('�')).toBe(false);
+    expect(capped).toBe('a👩👩👩…');
   });
 });
 
@@ -85,9 +108,9 @@ describe('readViewport', () => {
       <section data-pane-id="pane-a" data-pane-kind="chat" data-pane-focused="true">
         <div data-ui-surface="chat" data-thread-id="thread-1">
           <div data-testid="message-timeline-scroll">
-            ${row('i1', 'user_text', 'user', 'completed', 'How do I sort an array?')}
-            ${row('i2', 'assistant_text', 'assistant', 'streaming', 'Use   Array.prototype.sort')}
-            ${row('i3', 'tool_call', 'assistant', 'running', 'Bash')}
+            ${row(12, 'i1', 'user_text', 'user', 'completed', 'How do I sort an array?')}
+            ${row(13, 'i2', 'assistant_text', 'assistant', 'streaming', 'Use   Array.prototype.sort')}
+            ${row(14, 'i3', 'tool_call', 'assistant', 'running', 'Bash')}
           </div>
         </div>
       </section>
@@ -105,6 +128,9 @@ describe('readViewport', () => {
     expect(pane.focused).toBe(true);
     expect(pane.mountedRows).toBe(3);
     expect(pane.rows.map((r) => r.itemId)).toEqual(['i1', 'i2', 'i3']);
+    // The virtualizer's own indices, not positions in this array: a
+    // snapshot of a scrolled timeline starts partway into the list.
+    expect(pane.rows.map((r) => r.rowIndex)).toEqual([12, 13, 14]);
     expect(pane.rows[1]).toMatchObject({
       kind: 'assistant_text',
       role: 'assistant',
@@ -147,11 +173,47 @@ describe('readViewport', () => {
     const doc = html(`
       <section data-pane-id="p">
         <div data-row-index="0"><div data-testid="response-divider"></div></div>
-        ${row('i1', 'assistant_text', 'assistant', 'completed', 'text')}
+        ${row(1, 'i1', 'assistant_text', 'assistant', 'completed', 'text')}
       </section>`);
     const pane = readViewport(doc, { sinceMutationMs: 0 }).panes[0]!;
     expect(pane.mountedRows).toBe(2);
     expect(pane.rows.map((r) => r.itemId)).toEqual(['i1']);
+  });
+
+  // The cap is plumbed from the CLI's `--text-head`, and for a long time it
+  // was accepted at the door and then dropped: every row came back at the
+  // default no matter what was asked for.
+  it('applies a caller-supplied text cap to every row', () => {
+    const long = 'y'.repeat(DEFAULT_TEXT_HEAD * 2);
+    const doc = html(`
+      <section data-pane-id="p">
+        ${row(0, 'i1', 'assistant_text', 'assistant', 'completed', long)}
+        ${row(1, 'i2', 'assistant_text', 'assistant', 'completed', long)}
+      </section>`);
+
+    const capped = readViewport(doc, { sinceMutationMs: 0, textHead: 10 }).panes[0]!;
+    expect(capped.rows.map((r) => r.textHead)).toEqual(['yyyyyyyyyy…', 'yyyyyyyyyy…']);
+
+    // 0 is what the int flag holds when the caller did not pass one, and
+    // absence means the same thing.
+    for (const opts of [{ sinceMutationMs: 0 }, { sinceMutationMs: 0, textHead: 0 }]) {
+      const row0 = readViewport(doc, opts).panes[0]!.rows[0]!;
+      expect(row0.textHead).toHaveLength(DEFAULT_TEXT_HEAD + 1);
+    }
+  });
+
+  // A pane cannot plausibly mount 400+ rows; a runaway is a finding, and
+  // dumping it into a terminal-read document would bury the finding.
+  it('truncates a runaway pane at the row ceiling while still counting them all', () => {
+    const rows: string[] = [];
+    for (let i = 0; i < MAX_ROWS_PER_PANE + 25; i += 1) {
+      rows.push(row(i, `i${i}`, 'assistant_text', 'assistant', 'completed', `row ${i}`));
+    }
+    const doc = html(`<section data-pane-id="p">${rows.join('')}</section>`);
+    const pane = readViewport(doc, { sinceMutationMs: 0 }).panes[0]!;
+    expect(pane.rows).toHaveLength(MAX_ROWS_PER_PANE);
+    expect(pane.mountedRows).toBe(MAX_ROWS_PER_PANE + 25);
+    expect(pane.rows.at(-1)!.rowIndex).toBe(MAX_ROWS_PER_PANE - 1);
   });
 });
 

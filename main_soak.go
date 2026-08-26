@@ -116,6 +116,12 @@ func runSoak(flags cliFlags) {
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
 		RequireReadyForBootstrap: true,
 		HarnessReceiver:          h,
+		// Same opt-in as --harness: booting a soak rig is already an
+		// explicit operator act on an isolated data root, so
+		// FRONTEND_DEVSERVER_URL is honoured here even in a
+		// production-stamped binary. Without this, `ao-harness up --soak
+		// --dev-assets` sets the variable and nothing reads it.
+		AllowDevServerAssets: true,
 	})
 	log.Printf("soak: data dir %s (mock provider %s)", paths.DataDir, paths.MockProvider)
 

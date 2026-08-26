@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/harnessclient"
 )
 
@@ -49,10 +50,6 @@ const (
 	// poll that waits for the page to catch up.
 	benchBridgeTimeout = 30 * time.Second
 	benchDirName       = "bench"
-	// exitBenchDrift is the third exit code: the bench ran fine, and a
-	// metric moved past its baseline budget. Separate from 1 so a script
-	// can tell "the harness refused" from "the numbers changed".
-	exitBenchDrift = 3
 )
 
 // benchWorkload is one named workload: the fixture it needs and the thing
@@ -105,11 +102,7 @@ func benchWorkloadByName(name string) (benchWorkload, error) {
 			return workload, nil
 		}
 	}
-	names := make([]string, 0, 4)
-	for _, workload := range benchWorkloads() {
-		names = append(names, workload.Name)
-	}
-	return benchWorkload{}, usagef("unknown workload %q (want %s)", name, strings.Join(names, ", "))
+	return benchWorkload{}, usagef("unknown workload %q (want %s)", name, strings.Join(benchWorkloadNames(), ", "))
 }
 
 // benchRun is the mutable state one repeat carries between its phases.
@@ -207,18 +200,17 @@ func runBench(e *env, args []string) error {
 	}
 	comparisons, unmeasured := compareToBaseline(document.Aggregate, *baseline)
 	e.printf("\n%s", renderBenchComparison(comparisons, unmeasured, *baselineFile))
-	for _, comparison := range comparisons {
-		if comparison.Drift {
-			return exitCodeError{code: exitBenchDrift, err: fmt.Errorf(
-				"%d metric(s) drifted past the baseline in %s", countDrift(comparisons), *baselineFile)}
-		}
+	if n := countDrift(comparisons); n > 0 {
+		return exitCodeError{code: exitBadNews, err: fmt.Errorf(
+			"%d metric(s) drifted past the baseline in %s", n, *baselineFile)}
 	}
 	return nil
 }
 
 func benchWorkloadNames() []string {
-	names := make([]string, 0, 4)
-	for _, workload := range benchWorkloads() {
+	workloads := benchWorkloads()
+	names := make([]string, 0, len(workloads))
+	for _, workload := range workloads {
 		names = append(names, workload.Name)
 	}
 	return names
@@ -251,11 +243,16 @@ func executeBench(
 		StartedAt:   time.Now().Format(time.RFC3339),
 		Instance:    t.ID,
 		Version:     bs.Version,
-		SampleMs:    sampleMs,
 	}
 	// Fail on the bridge BEFORE resetting anything: a caller who forgot to
 	// open a window should get their instance back untouched.
 	if err := probeBridge(ctx, e, client); err != nil {
+		return document, err
+	}
+	// And narrow the wire before anything streams: a bench measures the app
+	// under a flood, and an unnarrowed CLI connection makes the instrument
+	// part of the load.
+	if err := narrowBenchSubscription(ctx, client); err != nil {
 		return document, err
 	}
 
@@ -267,6 +264,12 @@ func executeBench(
 		report, err := executeBenchRun(ctx, run, sampleMs)
 		if err != nil {
 			return document, fmt.Errorf("run %d/%d: %w", i, repeat, err)
+		}
+		// The RESOLVED interval, not the requested one. A default run asks
+		// for 0 and the backend picks 1000; recording the request would put
+		// a sampleMs of 0 in a document that later serves as a baseline.
+		if i == 1 {
+			document.SampleMs = report.SampleMs
 		}
 		document.Runs = append(document.Runs, benchRunReport{
 			Run:        i,
@@ -370,17 +373,10 @@ func writeBenchDocument(document benchDocument, e *env, outDir string) (string, 
 		}
 		dir = filepath.Join(t.DataDir, benchDirName)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create %s: %w", dir, err)
-	}
 	name := fmt.Sprintf("%s-%s.json", document.Workload, time.Now().Format("20060102-150405"))
 	path := filepath.Join(dir, name)
-	body, err := json.MarshalIndent(document, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("encode bench report: %w", err)
-	}
-	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
-		return "", err
+	if err := atomicfile.WriteJSON(path, document); err != nil {
+		return "", fmt.Errorf("write bench report: %w", err)
 	}
 	return path, nil
 }

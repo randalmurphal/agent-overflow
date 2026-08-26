@@ -102,6 +102,44 @@ func TestScanNewLinesDetectsRotation(t *testing.T) {
 	}
 }
 
+// The rotation the size heuristic cannot see: the old file is moved
+// aside, a NEW one takes its name, and by the next check it has already
+// grown past the offset the last one stopped at. Every byte the reader
+// then skips is a line it never reported, with nothing marking the gap.
+func TestScanNewLinesDetectsARotatedAndRegrownFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log.jsonl")
+	writeLines(t, path, "a\nb\nc\nd\ne\n")
+	_, cursor, _, err := scanNewLines(path, healthFileCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor.Ident == "" {
+		t.Skip("this filesystem exposes no file identity; the size heuristic is the whole answer here")
+	}
+
+	// Rename-and-recreate, the shape logrotate uses, then regrow past the
+	// old offset before the next check looks.
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	writeLines(t, path, "one\ntwo\nthree\nfour\n")
+
+	lines, next, rotated, err := scanNewLines(path, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rotated {
+		t.Fatal("a replaced file that regrew past the old offset is still a rotation")
+	}
+	if len(lines) != 4 || lines[0] != "one" || lines[3] != "four" {
+		t.Errorf("lines = %v, want the new file read from its start", lines)
+	}
+	if next.Ident == cursor.Ident {
+		t.Error("the cursor kept the dead file's identity")
+	}
+}
+
 func TestScanNewLinesAbsentFileIsNotAnError(t *testing.T) {
 	// ui-trace only exists once the frontend traced something, which is the
 	// normal case for a fresh instance.
@@ -229,12 +267,12 @@ func TestHealthExitCodeRules(t *testing.T) {
 		{
 			name:     "one red is red",
 			sections: []healthSection{{Name: "process", Status: healthOK}, {Name: "frontend-errors", Status: healthRed}},
-			want:     exitHealthRed, worst: healthRed,
+			want:     exitBadNews, worst: healthRed,
 		},
 		{
 			name:     "red beats a later warn",
 			sections: []healthSection{{Name: "process", Status: healthRed}, {Name: "mocks", Status: healthWarn}},
-			want:     exitHealthRed, worst: healthRed,
+			want:     exitBadNews, worst: healthRed,
 		},
 	}
 	for _, tc := range cases {

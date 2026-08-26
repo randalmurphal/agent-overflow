@@ -38,6 +38,15 @@ Boot performs, in order (`prepareHarness`):
    its `agent-overflow` child, and the redirected home are also refused
    if any of them is a symlink (these dirs are seeded and wiped
    wholesale — a planted link would aim that at whatever it points to).
+   On unix the same three are refused if they are not owned by the
+   running uid or are group/world-writable, and a root the harness
+   CREATES is stamped 0700 past the umask: `make harness` derives a
+   predictable /tmp path from the checkout, and a stranger who creates
+   it first at 0777 hands the boot a `$HOME` on a tree they still
+   control — a writable `$HOME` is a writable `.gitconfig`, which is
+   their `core.pager` running as you. The symlink check catches the link
+   they might plant; this catches the directory. Windows is a no-op
+   (POSIX mode bits do not map onto its ACLs).
    The DB, settings, replay logs, and attachments live under
    `<dataRoot>/agent-overflow/`.
 2. **HOME redirect.** `$HOME` (and `%USERPROFILE%`) point at
@@ -391,10 +400,19 @@ in text.
 boots (`internal/transport/server.go`, set where `main.go` registers the
 `Harness` receiver — one flag, two surfaces, no way to have one without
 the other). The SPA reads it in `lib/transport/harnessMode.ts` and
-`lib/stores/harnessBridge.ts` arms on it. An ordinary boot reads a
-boolean and stops; the bridge modules are behind a dynamic import, so
-they are their own rolldown chunk that a normal page never fetches. That
-also means a production binary can serve a harness with no frontend
+`lib/stores/harnessBridge.ts` arms on it — LAZILY: the flag arms only
+the cheap event subscription, and the first `harness:ui-query` triggers
+the dynamic import and the document-wide mutation observer. A soak that
+is never queried therefore streams for hours with no observer allocating
+a MutationRecord per delta — the rig must not perturb the renderer it
+exists to watch. The consequence is honest, not free: the first query's
+`settled` reads false until the observer has a settle window of history.
+A view-only remote session never arms at all (`harness:ui-query` is
+loopback-only, so it could never receive a query). An ordinary boot
+reads a boolean and stops; the bridge modules are their own rolldown
+chunk that a normal page never fetches (`architecture.test.ts` bans any
+static import of `lib/harness/` outside the store's one dynamic door).
+That also means a production binary can serve a harness with no frontend
 rebuild.
 
 The protocol is request/reply over the same WebSocket:
@@ -458,12 +476,44 @@ whole distribution: frame times fold into a fixed 1ms-bucket histogram
 series as one report. **`HarnessReset` stops any active perf run** — it
 holds a sampler goroutine AND a set of armed in-page meters, and the
 caller reloads the page after a reset, so nothing else would ever disarm
-them.
+them. That stop query is bounded at 2s rather than the caller-facing 10s:
+on the reset path the page is usually already gone, and a bench repeat
+would otherwise pay ten seconds per repeat waiting for a reply that is
+never coming.
+
+**Every perf spec carries its run id**, `start` included. Two pages can
+be attached at once, and a page that never armed THIS run would otherwise
+win the first-reply race with an error; stamped with the id, it declines
+instead and the armed page answers. A bridge that ignores the field
+behaves exactly as it did before.
+
+**A run has a duration ceiling** (`maxDurationMs`, default 30 minutes;
+zero means the default, negative means none). Past it the sampler
+self-finishes, logs loudly, and PARKS its report: `HarnessPerfStatus`
+reports `endedRunId` and the next `HarnessPerfStop` hands the report over
+once. An abandoned `perf start` therefore costs a bounded run and a
+collectable report rather than a goroutine sampling until the instance
+dies. The page carries its own belt to that suspender: meters self-disarm
+after five minutes without a collect (the backend collects at least once
+a second while a run lives, so a silent backend means the run is gone),
+and a late collect/stop answers with a clear self-disarmed error. The
+worst frame in a sample (`maxFrameMs`) is per-window — reset at each
+collect — while the report's `frames.maxMs` stays run-wide; and an
+unknown meter name refuses the whole arm, naming the valid set, instead
+of silently arming nothing.
 
 `internal/procrss` matches webview processes by name PREFIX because the
 kernel truncates `/proc/<pid>/status`'s `Name:` at 15 characters
 (`WebKitWebProce`, never `WebKitWebProcess`). Off linux `Sample` returns
-`ErrUnsupported` and the RSS series is simply absent. `SampleAll` is the
+`ErrUnsupported` and the RSS series is simply absent.
+
+**The renderer series takes a sample only when a child actually
+matched.** `webviewRssBytes.count == 0` means "not measurable from this
+process", which is the NORMAL answer on the Windows/WSL topology, where
+WebView2 is the launcher's child and never appears in the backend's
+subtree — and `HarnessPerfStatus.webviewRssMeasurable` says so directly.
+Recording a zero on an unmatched tick would report a renderer that used
+no memory, which is a different and false claim. `SampleAll` is the
 sibling that takes EVERY descendant whatever it is named, which is what a
 whole-tree figure needs: an empty prefix list cannot express that, since
 prefix matching skips a process it does not recognise by design.
@@ -471,7 +521,8 @@ prefix matching skips a process it does not recognise by design.
 ## Driving an instance from a shell (`bin/ao-harness`)
 
 `cmd/ao-harness` is the same surface for a human or an agent at a
-terminal: `up` / `down` / `list` / `info`, `seed`, `rpc <Method> [json]`,
+terminal: `up` / `down` / `list` / `info` / `open`, `seed`, `reset`,
+`rpc <Method> [json]`,
 `threads` / `items` / `send`, `scenario`, `mock`, `events tail|await|count`,
 `record` / `bundles` / `replay`, `logs`, a read-only `db`, and the
 bridge-backed `ui` / `perf` / `bench` / `health`. `make

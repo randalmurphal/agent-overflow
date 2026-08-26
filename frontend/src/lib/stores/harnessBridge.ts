@@ -3,14 +3,34 @@
 // `lib/harness/`; this file is the subscription, the reply call, and the
 // gate that keeps both out of an ordinary boot.
 //
-// THE GATE. `installHarnessBridge` runs on every launch, but in a normal
-// session it does exactly one thing: read a boolean and register a
-// callback that is never invoked. The bridge modules are reached only
-// through `import('../harness/bridge')` inside that callback, so they are
-// a separate rolldown chunk that a non-harness page never fetches, never
-// parses and never evaluates. That is the "zero cost when the flag is
-// absent" the brief asks for, and it is checkable: the chunk must not
-// appear in `dist/index.html`'s modulepreload list.
+// THE GATE, in two stages.
+//
+// 1. NOT A HARNESS SESSION → nothing at all. `installHarnessBridge` runs
+//    on every launch, but in a normal session it does exactly one thing:
+//    read a boolean and register a callback that is never invoked. The
+//    bridge modules are reached only through `import('../harness/bridge')`
+//    inside the query handler, so they are a separate rolldown chunk that
+//    a non-harness page never fetches, never parses and never evaluates.
+//    That is the "zero cost when the flag is absent" the brief asks for,
+//    and it is checkable: the chunk must not appear in `dist/index.html`'s
+//    modulepreload list.
+//
+// 2. A HARNESS SESSION → the subscription, and NOTHING ELSE, until a query
+//    actually arrives. The chunk import and the document-wide
+//    MutationObserver it installs are deferred to the first
+//    `harness:ui-query`. A harness run that never asks the page anything —
+//    which is every soak run, streaming for hours to reproduce renderer
+//    memory and hang behaviour — therefore pays nothing but one idle event
+//    listener. An always-on observer allocating a MutationRecord per text
+//    delta is a probe that perturbs exactly the experiment the soak rig
+//    exists to run. What it costs is history: the first query's `settled`
+//    is answered from a clock that just started, so it reads false. See
+//    lib/harness/bridge.ts's header.
+//
+// A REMOTE SESSION NEVER ARMS. `harness:ui-query` is an
+// AudienceLoopbackOnly channel (internal/transport/event_channels.go), so
+// a browser attached over the LAN cannot receive one — arming there would
+// install the observer for a query that can never come.
 //
 // WHY Call.ByName AND NOT A GENERATED BINDING. `methodgen` scans the
 // repo-root `App` type only; `Harness` is deliberately not scanned, which
@@ -34,6 +54,7 @@
 
 import { Call } from '@wailsio/runtime';
 import { whenHarnessSession } from '../transport/harnessMode';
+import { isViewOnlySession } from '../transport/runMode';
 import { wailsEventOn } from './wailsEvents';
 
 interface UIQueryEvent {
@@ -47,9 +68,10 @@ let bridgeModule: Promise<BridgeModule> | null = null;
 
 function loadBridge(): Promise<BridgeModule> {
   bridgeModule ??= import('../harness/bridge').then((mod) => {
-    // The mutation clock has to start with the bridge, not with the first
-    // query: `settled` means "nothing changed in the last 300ms", and an
-    // observer installed at query time would answer that about itself.
+    // The mutation clock starts with the observer, which is now the first
+    // query rather than page load. A `settled` reading is only ever a
+    // claim about what the bridge WATCHED, so the first query reads false
+    // and the caller's next poll gets the real answer.
     mod.activateHarnessBridge();
     return mod;
   });
@@ -61,6 +83,10 @@ async function answer(id: string, spec: unknown): Promise<void> {
   try {
     const mod = await loadBridge();
     result = await mod.answerHarnessQuery(spec);
+    // A query addressed to another attached page's perf run. Answering
+    // would win the backend's first-reply race with a refusal and poison
+    // the run that CAN answer; see HARNESS_NO_REPLY in harness/bridge.ts.
+    if (mod.isHarnessNoReply(result)) return;
   } catch (err) {
     // A failure to even load the bridge still owes the backend a reply;
     // otherwise the caller waits the full 10s to learn nothing.
@@ -76,19 +102,26 @@ async function answer(id: string, spec: unknown): Promise<void> {
 }
 
 /**
- * Arms the harness bridge if (and when) this session turns out to be
- * attached to a `--harness` / `--soak` backend. Returns a teardown that
- * is safe to call whether or not the bridge ever armed.
+ * Subscribes to the ui-query channel if (and when) this session turns out
+ * to be a LOCAL page attached to a `--harness` / `--soak` backend. The
+ * bridge itself loads on the first query that arrives. Returns a teardown
+ * that is safe to call whether or not either half ever happened.
  */
 export function installHarnessBridge(): () => void {
   let stopSubscription: (() => void) | null = null;
   const cancelArm = whenHarnessSession(() => {
+    // Locality, read at ARM time rather than at install time: the manifest
+    // sets the remote bit before it sets the harness bit (see
+    // transport/bootstrap.ts), so by the time this runs the answer is
+    // final. A remote page can never be sent a `harness:ui-query`, so a
+    // subscription here would be a listener for an event that cannot
+    // arrive — and the module it would load is loopback-only tooling.
+    if (isViewOnlySession()) return;
     stopSubscription = wailsEventOn<UIQueryEvent>('harness:ui-query', (event) => {
       const id = typeof event?.id === 'string' ? event.id : '';
       if (!id) return;
       void answer(id, event.spec);
     });
-    void loadBridge();
   });
   return () => {
     cancelArm();

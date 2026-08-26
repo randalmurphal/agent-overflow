@@ -132,7 +132,9 @@ Instance selection for every command: `--instance <id|dataRoot>`, else
 exactly one running instance, else the current worktree's default data
 root. Ambiguity is an error listing candidates, never a guess.
 
-Command sheet (final shapes; `-o json` on every read command):
+Command sheet (design intent; `-o json` on every read command — the
+shipped surface of record is `ao-harness --help` and
+`cmd/ao-harness/AGENTS.md`, which carry flags this sheet omits):
 
 | Command | Behavior |
 |---|---|
@@ -151,7 +153,7 @@ Command sheet (final shapes; `-o json` on every read command):
 | `logs backend\|frontend-errors\|ui-trace [-f] [-n N]` | Tails the evidence files `HarnessInfo` names (backend = the stderr capture from `up`). |
 | `db <SELECT…>` | Read-only SQL against the instance DB (`mode=ro` open of the DB file; statement must be a single SELECT/PRAGMA — anything else refused). The ad-hoc assertion escape hatch. |
 | `ui snapshot [--pane P]` / `ui diff` / `ui query <selector>` / `ui state <name>` | Frontend bridge (§4). `diff` compares against the previous snapshot taken by this CLI for the instance. |
-| `perf start\|stop\|report [--json]` / `perf watch` | Perf meters (§5). |
+| `perf start\|stop\|status [--json]` / `perf watch` | Perf meters (§5). |
 | `bench <workload> [--repeat N] [--baseline file]` | Seed + run a bench workload, collect a perf report, print/compare (§5). |
 | `health [--watch]` | One-shot or continuous rollup (§6). |
 | `open` | Print the URL (and `xdg-open` it with `--browser`). |

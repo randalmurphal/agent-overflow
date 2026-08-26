@@ -261,10 +261,13 @@ func runDesktop(listenAddr string) {
 			// builds and on provider/init failure (logged) — updates stay unavailable
 			// and the app runs normally.
 			initUpdater(appService, app)
+			// An empty AppURL is refused by the shell, immediately after
+			// this returns and before the window options are built — one
+			// check, on the path that would actually hand Wails the empty
+			// URL. Repeating it here only added a second wording for one
+			// failure, and a fatalf that skipped the transport shutdown
+			// the shell's error return runs.
 			srv = bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedBindAll: true})
-			if srv.AppURL() == "" {
-				fatalf("transport: AppURL is empty after Start (server addr = %q); refusing to fall through to Wails IPC scheme", srv.Addr())
-			}
 		},
 		pageURL: func() string {
 			if srv == nil {

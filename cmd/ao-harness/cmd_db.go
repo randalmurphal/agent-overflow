@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"agent-overflow/internal/harnessclient"
@@ -45,6 +47,8 @@ func runDB(e *env, args []string) error {
 		if err != nil {
 			return err
 		}
+	} else if err := refuseRealAppDatabase(path); err != nil {
+		return err
 	}
 
 	db, err := openReadOnly(path)
@@ -82,6 +86,63 @@ func (e *env) dbPath() (string, error) {
 	return path, err
 }
 
+// refuseRealAppDatabase keeps `--file` inside the harness's own world.
+//
+// Without the flag this command asks a HARNESS instance where its store
+// is, and a harness boot has already refused to run against the OS config
+// root (main_harness.go's refuseRealDataDir). `--file` skips both, so
+// `ao-harness db --file ~/.config/agent-overflow/agent-overflow.db
+// 'SELECT * FROM items'` reads the developer's real threads through a
+// tool whose whole contract is "this only ever touches a test instance".
+// Read-only is not the point: those rows are the user's real
+// conversations, and an agent handed this CLI must not be able to page
+// through them by accident.
+//
+// The rule is deliberately reimplemented rather than imported: this
+// binary links no App code, which is what keeps it from becoming a second
+// way to drive the app.
+func refuseRealAppDatabase(path string) error {
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		// No resolvable config root means nothing to protect.
+		return nil
+	}
+	realDir, err := filepath.Abs(filepath.Join(configRoot, appDataDirName))
+	if err != nil {
+		return nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve --file %q: %w", path, err)
+	}
+	if !underDir(abs, realDir) {
+		return nil
+	}
+	return usagef(
+		"db refuses --file %s: it is inside the real app data dir %s, and this CLI only reads harness instances "+
+			"(drop --file to read the instance's own store, or point it at a harness data dir)", abs, realDir)
+}
+
+// underDir reports whether path is dir itself or sits beneath it, after
+// resolving links on whichever components exist. Symlinks are resolved
+// because a link planted in a scratch dir is the obvious way past a
+// string comparison, and EvalSymlinks on a missing path fails — so a
+// non-existent --file falls back to the lexical form, which is the right
+// answer for a path that names nothing yet.
+func underDir(path, dir string) bool {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // openReadOnly opens the store as a reader that cannot write.
 //
 // mode=ro is the file-open flag; immutable=0 is explicit because
@@ -90,6 +151,13 @@ func (e *env) dbPath() (string, error) {
 // this process a stale page cache with no WAL recovery. query_only is
 // the belt: mode=ro refuses at the OS layer, query_only refuses at the
 // statement layer, and a guard bug should hit the second one too.
+//
+// The belt is only a belt. `PRAGMA` is on the verb whitelist, so
+// `PRAGMA query_only=0` reaches this connection and SQLite honours it —
+// writes then fail anyway, at mode=ro. That is fine as long as mode=ro
+// stays: it is the layer doing the work, and one invocation runs one
+// statement, so nothing can loosen the flag and then use it. Never drop
+// mode=ro on the theory that query_only covers it.
 func openReadOnly(path string) (*sql.DB, error) {
 	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
 	dsn := "file:" + escaped + "?mode=ro&immutable=0&_pragma=busy_timeout(5000)&_pragma=query_only(1)"

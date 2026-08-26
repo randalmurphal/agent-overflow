@@ -65,12 +65,16 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `src/lib/harness/` — the agent-harness UI bridge: the semantic viewport
   snapshot, the element/globals probes and the in-page perf meters
   (`docs/architecture/agent-harness.md` § Frontend bridge and perf).
-  Reached ONLY through a dynamic import in `stores/harnessBridge.ts`,
-  which arms on the `harness` bootstrap flag — so an ordinary boot never
-  fetches the chunk, and nothing in here may be statically imported from
-  app code. It has no wire surface by design: the subscription and the
-  reply RPC live in the store, because `architecture.test.ts` rule 2
-  keeps event subscriptions inside `stores/`.
+  Reached ONLY through a dynamic import in `stores/harnessBridge.ts`
+  (enforced by an `architecture.test.ts` rule), which arms on the
+  `harness` bootstrap flag — LAZILY: the flag arms just the event
+  subscription, and the first `harness:ui-query` loads the chunk and
+  installs the mutation observer, so an unqueried soak carries no
+  observer and an ordinary boot never fetches the chunk. A view-only
+  remote session never arms (the query channel is loopback-only). It has
+  no wire surface by design: the subscription and the reply RPC live in
+  the store, because `architecture.test.ts` rule 2 keeps event
+  subscriptions inside `stores/`.
 - `bindings/` — Wails-generated TypeScript. Never edit by hand.
 - `vendor/` — in-repo third-party packages, linked in as pnpm workspace
   packages. Currently `svelte-streamdown`; edit it like any other source

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -111,8 +110,4 @@ func jsonScalarText(raw json.RawMessage) (string, bool) {
 		// stays "2" and never becomes "2e+00".
 		return trimmed, true
 	}
-}
-
-func (w whereMatcher) String() string {
-	return fmt.Sprintf("%s=%s", strings.Join(w.path, "."), w.value)
 }

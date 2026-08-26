@@ -93,6 +93,11 @@ func (e *env) printHealth(report healthReport, watch bool) error {
 // backend to be reachable: liveness and the evidence files are exactly
 // what a reader wants when the process has died, so an attach failure
 // degrades the RPC-backed sections rather than failing the command.
+//
+// Saving the since-last-check cursor is best-effort for the same reason:
+// an unwritable data dir costs the NEXT run its "what is new" framing,
+// and returning it as the command's error would throw away a rollup that
+// is already computed and already correct.
 func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 	t, err := e.resolveTarget()
 	if err != nil {
@@ -131,9 +136,7 @@ func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 			Name: "runtime", Status: healthWarn,
 			Detail: "database, mocks, replay and perf not read: no live backend to ask",
 		})
-		if err := saveHealthCursor(dataDir, cursor); err != nil {
-			return report, err
-		}
+		e.warnCursor(dataDir, cursor)
 		return report, nil
 	}
 
@@ -153,10 +156,18 @@ func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 			replaySection(ctx, client),
 			perfSection(ctx, client))
 	}
-	if err := saveHealthCursor(dataDir, cursor); err != nil {
-		return report, err
-	}
+	e.warnCursor(dataDir, cursor)
 	return report, nil
+}
+
+// warnCursor saves the since-last-check cursor, reporting a failure on
+// stderr rather than as the command's error. The report is already built
+// by the time this runs, and a cursor that could not be written costs the
+// next check its framing — it does not make this one wrong.
+func (e *env) warnCursor(dataDir string, cursor healthCursor) {
+	if err := saveHealthCursor(dataDir, cursor); err != nil {
+		fmt.Fprintf(e.stderr, "warning: health cursor not saved (%v); the next check re-reports from the same offsets\n", err)
+	}
 }
 
 func processSection(t target, bs harnessclient.Bootstrap, bsErr error, alive bool) healthSection {
@@ -360,16 +371,34 @@ func perfSection(ctx context.Context, client *harnessclient.Client) healthSectio
 		FrontendSamples int    `json:"frontendSamples"`
 		ElapsedMs       int64  `json:"elapsedMs"`
 		LastError       string `json:"lastError"`
+		// EndedRunID names a run the backend's duration ceiling
+		// self-finished. Its report is still there to collect, and saying
+		// so is the difference between "nothing is running" and "your run
+		// ended without you".
+		EndedRunID string `json:"endedRunId"`
+		// WebviewRSSMeasurable is false when no webview child ever matched
+		// the /proc walk — the normal answer on Windows/WSL, where
+		// WebView2 belongs to the launcher. Reporting it is what keeps a
+		// reader from taking an absent renderer figure for a zero one.
+		WebviewRSSMeasurable bool `json:"webviewRssMeasurable"`
 	}
 	if err := json.Unmarshal(raw, &status); err != nil {
 		return healthSection{Name: "perf", Status: healthOK, Detail: truncate(string(raw), 120)}
 	}
 	if !status.Active {
+		if status.EndedRunID != "" {
+			return healthSection{Name: "perf", Status: healthWarn,
+				Detail: fmt.Sprintf("%s hit its duration ceiling and self-finished after %d samples; collect it with `perf stop`",
+					status.EndedRunID, status.Samples)}
+		}
 		return healthSection{Name: "perf", Status: healthOK, Detail: "no run armed"}
 	}
 	section := healthSection{Name: "perf", Status: healthOK,
 		Detail: fmt.Sprintf("%s: %d samples (%d answered by the page) over %dms",
 			status.RunID, status.Samples, status.FrontendSamples, status.ElapsedMs)}
+	if !status.WebviewRSSMeasurable {
+		section.Detail += "; renderer RSS not measurable from this process"
+	}
 	if live := latestPerfSample(ctx, client); live != "" {
 		section.Detail += "; " + live
 	}
@@ -385,6 +414,13 @@ func perfSection(ctx context.Context, client *harnessclient.Client) healthSectio
 // counts ticks, and the percentiles only exist at HarnessPerfStop. The ring
 // retains the whole run, so a subscribe-and-replay is a read of history
 // rather than a wait for the next tick.
+//
+// The replay cursor is 0 because a fresh connection knows no other one:
+// the server's cursor semantics are "everything after seq N", and there is
+// no "last few" form to ask for. So the cost of asking is fixed, and what
+// this can control is the cost of READING the answer — hence the scan runs
+// BACKWARDS and stops at the first frame that decodes. A --watch loop
+// otherwise decoded a thousand frames per tick to keep the last one.
 func latestPerfSample(ctx context.Context, client *harnessclient.Client) string {
 	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -396,7 +432,9 @@ func latestPerfSample(ctx context.Context, client *harnessclient.Client) string 
 		return ""
 	}
 	var newest *perfSample
-	for _, event := range client.Events() {
+	events := client.Events()
+	for i := len(events) - 1; i >= 0 && newest == nil; i-- {
+		event := events[i]
 		if event.Channel != channel || event.Gap {
 			continue
 		}

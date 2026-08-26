@@ -242,6 +242,78 @@ func TestListKeepsAStaleRowWhoseDataRootNamesALiveProcess(t *testing.T) {
 	}
 }
 
+// A pid is a number the OS recycles; a registry row is written once and
+// never revised. `down` sends SIGTERM and then SIGKILL, so the row's word
+// alone is not enough — the data root's own instance file has to name the
+// same pid, or the CLI is one stale row away from killing whatever
+// inherited the number.
+func TestDownRefusesAPIDTheDataRootDoesNotClaim(t *testing.T) {
+	registry := t.TempDir()
+	root := t.TempDir()
+	// The row claims THIS process (alive, so the row is not stale), while
+	// the data root names somebody else. Signalling here would kill the
+	// test runner.
+	seedInstance(t, registry, root, os.Getpid())
+	writeInstanceFile(t, root, os.Getpid()+1)
+
+	e, _, _ := testEnv(registry)
+	err := runDown(e, nil)
+	if err == nil {
+		t.Fatal("down signalled a pid the data root does not claim")
+	}
+	if !strings.Contains(err.Error(), "refusing to signal") {
+		t.Fatalf("error = %v", err)
+	}
+	// The message has to name the root, because that is where the reader
+	// looks to work out which of the two claims is stale.
+	if !strings.Contains(err.Error(), filepath.Join(root, "agent-overflow")) {
+		t.Errorf("error does not name the data dir it read: %v", err)
+	}
+}
+
+// The same rule under --all: one unconfirmable row is reported, and the
+// confirmable ones are still stopped rather than the whole sweep aborting.
+func TestDownAllReportsUnconfirmableRowsWithoutSignallingThem(t *testing.T) {
+	registry := t.TempDir()
+	root := t.TempDir()
+	id := seedInstance(t, registry, root, os.Getpid())
+	// No instance file at all: nothing claims this root.
+
+	e, stdout, _ := testEnv(registry)
+	err := runDown(e, []string{"--all"})
+	if err == nil {
+		t.Fatal("down --all signalled a pid nothing confirms")
+	}
+	if !strings.Contains(err.Error(), id) || !strings.Contains(err.Error(), "refusing to signal") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(stdout.String(), "stopped") {
+		t.Fatalf("nothing should have been stopped:\n%s", stdout.String())
+	}
+}
+
+// The confirmable case still resolves a pid, which is what proves the
+// guard did not simply refuse everything.
+func TestDownAcceptsAPIDTheDataRootConfirms(t *testing.T) {
+	registry := t.TempDir()
+	root := t.TempDir()
+	seedInstance(t, registry, root, os.Getpid())
+	writeInstanceFile(t, root, os.Getpid())
+
+	e, _, _ := testEnv(registry)
+	got, err := e.resolveTarget()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := pidFor(got)
+	if err != nil {
+		t.Fatalf("a row confirmed by its own data root must resolve: %v", err)
+	}
+	if pid != os.Getpid() {
+		t.Fatalf("pid = %d, want %d", pid, os.Getpid())
+	}
+}
+
 func TestUpRefusesASecondInstanceOnALiveDataRoot(t *testing.T) {
 	root := t.TempDir()
 	writeInstanceFile(t, root, os.Getpid())

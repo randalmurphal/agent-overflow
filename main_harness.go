@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
@@ -204,6 +205,19 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 	if err := refuseSymlink(dataRoot); err != nil {
 		return harnessPaths{}, err
 	}
+	// The root gets created and vetted BEFORE anything below it, and the
+	// order is the point: refuseSymlink rules out a planted LINK at this
+	// predictable path, and refuseUnsafeHarnessDir rules out a planted
+	// world-writable DIRECTORY at it. Everything created afterwards is
+	// created inside a directory nobody else can write, so a pre-existing
+	// child cannot have been planted by a stranger.
+	if err := ensureHarnessPrivateDir(dataRoot); err != nil {
+		return harnessPaths{}, fmt.Errorf("create harness data root: %w", err)
+	}
+	if err := refuseUnsafeHarnessDir(dataRoot); err != nil {
+		return harnessPaths{}, err
+	}
+
 	dataDir := filepath.Join(dataRoot, "agent-overflow")
 	if err := refuseSymlink(dataDir); err != nil {
 		return harnessPaths{}, err
@@ -211,9 +225,17 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 	if err := ensureAppPrivateDir(dataDir); err != nil {
 		return harnessPaths{}, fmt.Errorf("create harness data dir: %w", err)
 	}
+	if err := refuseUnsafeHarnessDir(dataDir); err != nil {
+		return harnessPaths{}, err
+	}
 
 	homeDir, err := isolateHarnessHome(dataRoot)
 	if err != nil {
+		return harnessPaths{}, err
+	}
+	// Checked whether or not AO_HARNESS_KEEP_HOME left $HOME real: the
+	// credential surface is pinned under this directory either way.
+	if err := refuseUnsafeHarnessDir(filepath.Join(dataRoot, "home")); err != nil {
 		return harnessPaths{}, err
 	}
 
@@ -233,6 +255,26 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 		CredentialHome: filepath.Join(dataRoot, "home"),
 		MockProvider:   mockProvider,
 	}, nil
+}
+
+// ensureHarnessPrivateDir creates a harness-owned directory at 0700,
+// stamping the mode explicitly because MkdirAll only ever subtracts from
+// its argument through the umask (an 0022 process would get 0755, an
+// 0000 one 0777).
+//
+// A directory that ALREADY exists is left exactly as found, unlike
+// ensureAppPrivateDir: the caller's next move is to refuse a planted one,
+// and a chmod here would repair the very evidence that check reads.
+func ensureHarnessPrivateDir(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(path, appdirs.PrivateDirPerm); err != nil {
+		return err
+	}
+	return os.Chmod(path, appdirs.PrivateDirPerm)
 }
 
 // refuseRealDataDir rejects a --data-dir that resolves to the OS
@@ -305,7 +347,7 @@ func isolateHarnessHome(dataRoot string) (string, error) {
 	if err := refuseSymlink(homeDir); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+	if err := ensureHarnessPrivateDir(homeDir); err != nil {
 		return "", fmt.Errorf("create harness home: %w", err)
 	}
 	if os.Getenv(harnessKeepHomeEnv) != "" {

@@ -75,6 +75,30 @@ func readLines(r io.Reader) ([]string, error) {
 	return lines, scanner.Err()
 }
 
+// followPollInterval is how often FollowFile looks for new bytes. A
+// package var rather than a const so a test can shrink it: at 200ms every
+// case would otherwise be built out of real sub-second sleeps, which is
+// both slow and the kind of timing the repo's test discipline bans.
+// Production never writes it.
+var followPollInterval = 200 * time.Millisecond
+
+// followReadCap bounds ONE poll's read. A backend mid-burst can append
+// megabytes between two polls, and an uncapped read would pull all of it
+// into memory in one allocation to print a screen's worth of lines. What
+// does not fit is read by the next poll, one interval later.
+const followReadCap = 1 << 20
+
+// followMaxFragment bounds the carried partial line. Only a writer that
+// never emits a newline can reach it, and something that long is not a
+// log line; it is emitted as one rather than buffered without limit.
+const followMaxFragment = maxTailBytes
+
+// followStartedHook fires once FollowFile has taken its starting offset.
+// Nil in production. A test installs one so it can append AFTER the
+// follower has decided where the file ends — the alternative is sleeping
+// and hoping the goroutine got there first.
+var followStartedHook func()
+
 // FollowFile streams appended lines to emit until ctx ends, starting
 // from the current end of the file. A file that does not exist yet is
 // waited for rather than refused: `logs -f` on a fresh instance should
@@ -83,32 +107,43 @@ func readLines(r io.Reader) ([]string, error) {
 // Truncation (a rotated log) is detected by the file shrinking below the
 // read offset; the follow restarts from the new beginning so a rotation
 // costs at most a repeated line, never a silent stall.
+//
+// The read offset advances past everything READ, complete or not, and the
+// trailing fragment is carried in memory until its newline arrives. The
+// naive alternative — leave the offset before the fragment — re-reads and
+// re-scans it on every poll until the writer finishes the line, which for
+// a slow writer of a long line is the same bytes over and over.
 func FollowFile(ctx context.Context, path string, emit func(string)) error {
-	const pollInterval = 200 * time.Millisecond
 	var offset int64
+	var fragment []byte
 	if info, err := os.Stat(path); err == nil {
 		offset = info.Size()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if followStartedHook != nil {
+		followStartedHook()
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(pollInterval):
+		case <-time.After(followPollInterval):
 		}
 
 		info, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) {
-			offset = 0
+			offset, fragment = 0, nil
 			continue
 		}
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
 		if info.Size() < offset {
-			offset = 0
+			// Rotated or truncated: the fragment belonged to the old file
+			// and its newline is never coming.
+			offset, fragment = 0, nil
 		}
 		if info.Size() == offset {
 			continue
@@ -121,14 +156,14 @@ func FollowFile(ctx context.Context, path string, emit func(string)) error {
 			f.Close()
 			return fmt.Errorf("seek %s: %w", path, err)
 		}
-		data, err := io.ReadAll(f)
+		read, err := io.ReadAll(io.LimitReader(f, followReadCap))
 		f.Close()
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
-		// Advance only past COMPLETE lines: a writer caught mid-append
-		// leaves a fragment, and emitting it would print half a log line
-		// now and the other half next tick.
+		offset += int64(len(read))
+
+		data := append(fragment, read...)
 		consumed := 0
 		for {
 			at := bytes.IndexByte(data[consumed:], '\n')
@@ -138,6 +173,14 @@ func FollowFile(ctx context.Context, path string, emit func(string)) error {
 			emit(strings.TrimSuffix(string(data[consumed:consumed+at]), "\r"))
 			consumed += at + 1
 		}
-		offset += int64(consumed)
+		rest := data[consumed:]
+		if len(rest) > followMaxFragment {
+			emit(strings.TrimSuffix(string(rest), "\r"))
+			rest = nil
+		}
+		// append onto its own prefix: the copy is forward-overlapping,
+		// which is exactly what append's memmove handles, and it keeps the
+		// one buffer rather than allocating a fresh one per poll.
+		fragment = append(fragment[:0], rest...)
 	}
 }

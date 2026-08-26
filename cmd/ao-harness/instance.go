@@ -17,6 +17,11 @@ import (
 // is a wedged backend rather than a slow network.
 const dialTimeout = 10 * time.Second
 
+// appDataDirName is the app's directory inside a data root — and, under
+// the OS config root, the directory holding the user's REAL data, which
+// is why `db --file` has to be able to name it.
+const appDataDirName = "agent-overflow"
+
 // target is the instance a command acts on, resolved before anything is
 // opened. Row is nil when the target came from a path with no registry
 // entry — the common case for `up`, which is about to create one.
@@ -65,7 +70,9 @@ func (e *env) resolveTarget() (target, error) {
 				return targetFromRow(rows[i]), nil
 			}
 		}
-		if looksLikeInstanceID(selector) && !strings.ContainsAny(selector, `/\.`) {
+		// Shape-only, and only to pick the better error message: resolution
+		// itself keys on whether a row carries the value.
+		if instanceinfo.ValidID(selector) && !strings.ContainsAny(selector, `/\.`) {
 			return target{}, fmt.Errorf("no instance %q in the registry%s", selector, candidateList(rows))
 		}
 		return targetFromDataRoot(selector, rows)
@@ -101,7 +108,7 @@ func targetFromDataRoot(path string, rows []instanceinfo.Instance) (target, erro
 		return target{}, fmt.Errorf("resolve %q: %w", path, err)
 	}
 	id := instanceinfo.ID(abs)
-	t := target{ID: id, DataRoot: abs, DataDir: filepath.Join(abs, "agent-overflow")}
+	t := target{ID: id, DataRoot: abs, DataDir: filepath.Join(abs, appDataDirName)}
 	for i := range rows {
 		if rows[i].ID == id {
 			// A row exists for this root: prefer its recorded paths, which
@@ -110,21 +117,6 @@ func targetFromDataRoot(path string, rows []instanceinfo.Instance) (target, erro
 		}
 	}
 	return t, nil
-}
-
-// looksLikeInstanceID reports whether a selector has the shape an id
-// has. Used only to pick the better error message; resolution itself
-// keys on whether a row carries the value.
-func looksLikeInstanceID(s string) bool {
-	if len(s) != 8 {
-		return false
-	}
-	for _, r := range s {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 func candidateList(rows []instanceinfo.Instance) string {

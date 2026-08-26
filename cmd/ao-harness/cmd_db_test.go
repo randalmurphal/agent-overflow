@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -128,6 +129,15 @@ func TestDBQueriesAFileReadOnly(t *testing.T) {
 
 // mode=ro is the second half of the guard: even if the statement check
 // were bypassed, the connection cannot write.
+//
+// The pragma rows are the interesting ones, because the verb whitelist
+// ADMITS `PRAGMA` — so a caller can reach the two pragmas that aim at the
+// guard itself. Both are ACCEPTED by SQLite (`query_only=0` genuinely
+// clears the statement-layer flag on this handle), and the write still
+// fails: mode=ro is the layer that actually holds, exactly as
+// openReadOnly's comment claims. That asymmetry is worth a test of its
+// own, because a future change that dropped mode=ro and kept query_only
+// would look identically safe until this ran.
 func TestDBConnectionCannotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
 	seed, err := sql.Open("sqlite", path)
@@ -146,6 +156,80 @@ func TestDBConnectionCannotWrite(t *testing.T) {
 	defer db.Close()
 	if _, err := db.Exec(`INSERT INTO t VALUES ('x')`); err == nil {
 		t.Fatal("a read-only connection accepted a write")
+	}
+
+	// Loosen everything the statement layer offers, then try again.
+	for _, pragma := range []string{`PRAGMA query_only=0`, `PRAGMA journal_mode=DELETE`} {
+		if _, err := db.Exec(pragma); err != nil {
+			t.Logf("%s was refused outright (%v); the write below is the assertion either way", pragma, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO t VALUES ('y')`); err == nil {
+		t.Fatal("a write was accepted after query_only was cleared; mode=ro is no longer holding")
+	}
+	if _, err := db.Exec(`DELETE FROM t`); err == nil {
+		t.Fatal("a delete was accepted after query_only was cleared")
+	}
+}
+
+// `--file` is the one door around instance resolution, and the harness
+// boot's own refusal (main_harness.go) never sees it. Without this check
+// `ao-harness db --file ~/.config/agent-overflow/agent-overflow.db` reads
+// the developer's real threads through a tool whose contract is "test
+// instances only".
+func TestDBRefusesTheRealAppDataDir(t *testing.T) {
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		t.Skip("no OS config dir on this machine; nothing to protect")
+	}
+	realDir := filepath.Join(configRoot, "agent-overflow")
+
+	e, _, _ := testEnv(t.TempDir())
+	for _, file := range []string{
+		filepath.Join(realDir, "agent-overflow.db"),
+		filepath.Join(realDir, "nested", "agent-overflow.db"),
+		realDir,
+	} {
+		err := runDB(e, []string{"--file", file, "SELECT 1"})
+		if err == nil {
+			t.Errorf("db --file %s was accepted", file)
+			continue
+		}
+		var usage usageErr
+		if !errors.As(err, &usage) {
+			t.Errorf("db --file %s = %v, want a usage error", file, err)
+		}
+		if !strings.Contains(err.Error(), "real app data dir") {
+			t.Errorf("db --file %s error does not say why: %v", file, err)
+		}
+	}
+
+	// A sibling whose name merely starts the same way is not inside it.
+	if err := refuseRealAppDatabase(realDir + "-harness/agent-overflow.db"); err != nil {
+		t.Errorf("a sibling directory must not be refused: %v", err)
+	}
+	// And an ordinary scratch path is untouched.
+	if err := refuseRealAppDatabase(filepath.Join(t.TempDir(), "agent-overflow.db")); err != nil {
+		t.Errorf("a scratch path must not be refused: %v", err)
+	}
+}
+
+// The refusal must survive the obvious way past a string comparison.
+func TestDBRefusesASymlinkAimedAtTheRealAppDataDir(t *testing.T) {
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		t.Skip("no OS config dir on this machine; nothing to protect")
+	}
+	realDir := filepath.Join(configRoot, "agent-overflow")
+	if _, err := os.Stat(realDir); err != nil {
+		t.Skip("no real app data dir on this machine to link at")
+	}
+	link := filepath.Join(t.TempDir(), "innocent")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skip("cannot create symlinks here")
+	}
+	if err := refuseRealAppDatabase(filepath.Join(link, "agent-overflow.db")); err == nil {
+		t.Fatal("a symlinked path into the real app data dir was accepted")
 	}
 }
 

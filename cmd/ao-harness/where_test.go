@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -20,8 +21,8 @@ func TestParseWhereSplitsOnTheFirstEqualsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.String() != "a.b=x=y" {
-		t.Fatalf("matcher = %s", m.String())
+	if strings.Join(m.path, ".") != "a.b" || m.value != "x=y" {
+		t.Fatalf("matcher = %v / %q, want [a b] / \"x=y\"", m.path, m.value)
 	}
 	empty, err := parseWhere("error=")
 	if err != nil {

@@ -8,12 +8,17 @@ import (
 	"strings"
 )
 
-// The viewport snapshot is the ONE RPC result this CLI types in full.
-// `ui diff` has to compare two of them field by field, and a field name
-// that silently decoded to the zero value would render a diff that says
-// "nothing moved" about a page that moved, the failure mode the whole
+// The rule for typing an RPC result in this CLI: a result this command
+// COMPARES or AGGREGATES gets a full Go shape; a result it only passes
+// through to the terminal stays json.RawMessage. The viewport snapshot is
+// the compared one — `ui diff` reads two of them field by field, and a
+// field name that silently decoded to its zero value would render a diff
+// saying "nothing moved" about a page that moved, the failure the whole
 // command exists to catch. The shapes mirror
-// frontend/src/lib/harness/snapshot.ts; keep them in step.
+// frontend/src/lib/harness/snapshot.ts; keep them in step. A rename on
+// the TS side is caught by e2e/tests/harness-bridge.spec.ts, which runs
+// this binary against a real page and asserts the decoded rows carry
+// discriminating values rather than zeros.
 
 type uiRect struct {
 	X float64 `json:"x"`
@@ -109,12 +114,18 @@ type uiPaneDiff struct {
 	ScrollTop     *uiChange[float64] `json:"scrollTop,omitempty"`
 	ScrollHeight  *uiChange[float64] `json:"scrollHeight,omitempty"`
 	AtBottom      *uiChange[bool]    `json:"atBottom,omitempty"`
-	RowsMounted   []string           `json:"rowsMounted,omitempty"`
-	RowsUnmounted []string           `json:"rowsUnmounted,omitempty"`
-	EnteredView   []string           `json:"enteredViewport,omitempty"`
-	LeftView      []string           `json:"leftViewport,omitempty"`
-	RowsMoved     []uiRowMove        `json:"rowsMoved,omitempty"`
-	StatusChanged []uiRowStatus      `json:"statusChanged,omitempty"`
+	// ScrollerPresent is the pane GAINING or LOSING its scroller, which is
+	// a different event from any number moving inside it: the bridge
+	// reports `scroll: null` for a pane with no scroll container, so a
+	// timeline that unmounted (or one that finally mounted) shows up here
+	// and nowhere else.
+	ScrollerPresent *uiChange[bool] `json:"scrollerPresent,omitempty"`
+	RowsMounted     []string        `json:"rowsMounted,omitempty"`
+	RowsUnmounted   []string        `json:"rowsUnmounted,omitempty"`
+	EnteredView     []string        `json:"enteredViewport,omitempty"`
+	LeftView        []string        `json:"leftViewport,omitempty"`
+	RowsMoved       []uiRowMove     `json:"rowsMoved,omitempty"`
+	StatusChanged   []uiRowStatus   `json:"statusChanged,omitempty"`
 }
 
 type uiRowMove struct {
@@ -188,6 +199,9 @@ func diffPane(before, after uiPane, thresholdPx float64) (uiPaneDiff, bool) {
 	if before.MountedRows != after.MountedRows {
 		out.MountedRows = &uiChange[int]{before.MountedRows, after.MountedRows}
 	}
+	if (before.Scroll == nil) != (after.Scroll == nil) {
+		out.ScrollerPresent = &uiChange[bool]{before.Scroll != nil, after.Scroll != nil}
+	}
 	if before.Scroll != nil && after.Scroll != nil {
 		if math.Abs(before.Scroll.Top-after.Scroll.Top) >= thresholdPx {
 			out.ScrollTop = &uiChange[float64]{before.Scroll.Top, after.Scroll.Top}
@@ -233,7 +247,8 @@ func diffPane(before, after uiPane, thresholdPx float64) (uiPaneDiff, bool) {
 	}
 
 	changed := out.ThreadChanged != nil || out.MountedRows != nil || out.ScrollTop != nil ||
-		out.ScrollHeight != nil || out.AtBottom != nil || len(out.RowsMounted) > 0 ||
+		out.ScrollHeight != nil || out.AtBottom != nil || out.ScrollerPresent != nil ||
+		len(out.RowsMounted) > 0 ||
 		len(out.RowsUnmounted) > 0 || len(out.EnteredView) > 0 || len(out.LeftView) > 0 ||
 		len(out.RowsMoved) > 0 || len(out.StatusChanged) > 0
 	return out, changed
@@ -361,6 +376,13 @@ func renderUIDiff(diff uiDiff, before, after uiSnapshotFile) string {
 		}
 		if c := pane.AtBottom; c != nil {
 			fmt.Fprintf(&b, "    atBottom     %t -> %t\n", c.From, c.To)
+		}
+		if c := pane.ScrollerPresent; c != nil {
+			state := "lost its scroller"
+			if c.To {
+				state = "gained a scroller"
+			}
+			fmt.Fprintf(&b, "    scroller     %s\n", state)
 		}
 		writeIDLine(&b, "    mounted", pane.RowsMounted)
 		writeIDLine(&b, "    unmounted", pane.RowsUnmounted)

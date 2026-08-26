@@ -135,7 +135,7 @@ func Write(row Row) error {
 }
 
 // WriteIn is Write against an explicit registry directory (tests, and
-// any future --registry-dir).
+// `ao-harness --registry-dir`).
 func WriteIn(dir string, row Row) error {
 	path, err := rowPath(dir, row.ID)
 	if err != nil {
@@ -232,13 +232,17 @@ func rowPath(dir, id string) (string, error) {
 	if dir == "" {
 		return "", errors.New("instanceinfo: empty registry dir")
 	}
-	if !validID(id) {
+	if !ValidID(id) {
 		return "", fmt.Errorf("instanceinfo: %q is not an instance id (want %d lowercase hex chars)", id, idHexLen)
 	}
 	return filepath.Join(dir, id+".json"), nil
 }
 
-func validID(id string) bool {
+// ValidID reports whether a string has the shape ID returns: exactly
+// idHexLen lowercase hex chars. Exported because the shape is a fact
+// about this package's ids, and a caller that reimplemented it (to pick
+// a better error message, say) would carry its own copy of the length.
+func ValidID(id string) bool {
 	if len(id) != idHexLen {
 		return false
 	}

@@ -15,6 +15,12 @@ const (
 	exitOK    = 0
 	exitError = 1
 	exitUsage = 2
+	// exitBadNews is the third outcome: the command RAN, and the answer is
+	// bad — a metric drifted past its baseline, a health concern is red. It
+	// is one code rather than one per command because a script's question
+	// is the same either way: tell "the harness refused" (1) and "you typed
+	// it wrong" (2) apart from "the numbers are worse".
+	exitBadNews = 3
 )
 
 // env is one invocation: where output goes and what the global flags

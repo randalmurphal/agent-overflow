@@ -478,6 +478,24 @@ const bootstrapTag = "<head>"
 // mode field below (a spoofed manifest would exempt itself for free).
 // See AGENTS.md § "The injected manifest is the SPA's same-origin
 // exemption".
+//
+// KNOWN LIMITATION — the manifest carries no `harness` bit. The transport
+// bootstrap has one (transport.Bootstrap.Harness) and the SPA keys its
+// harness bridge on it, so `agent-overflow --connect` pointed at a
+// harness or soak instance gets a page whose bridge never arms: `ui
+// snapshot`, `perf` and `bench` go unanswered on that page even over
+// loopback, where the delivery would otherwise work.
+//
+// It stays that way because the bit is only knowable by ASKING the
+// upstream, and this manifest is built once at Serve time, before any
+// network call: the SPA reads window.__AO_BOOTSTRAP__ on first load
+// precisely so a briefly unreachable upstream costs nothing, and a
+// blocking probe here would trade that for a boot that stalls on a dead
+// backend. Forwarding it means giving the stub a refreshable manifest
+// (probe in the background, rebuild indexHTML and bootstrapJSON under a
+// lock, race the webview's first GET) — a real change to this file's
+// build-once invariant, for a workflow that is served today by opening
+// the harness URL directly.
 func manifestJSON(wsURL, token, clientID string) ([]byte, error) {
 	parsedWSURL, err := url.Parse(wsURL)
 	if err != nil {

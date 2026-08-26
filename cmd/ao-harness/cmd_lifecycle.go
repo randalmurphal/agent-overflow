@@ -35,19 +35,26 @@ func runDown(e *env, args []string) error {
 		dataRoot string
 	}
 	var victims []victim
+	var failures []error
 
 	if *all {
 		rows, err := e.listInstances()
 		if err != nil {
 			return err
 		}
+		live := 0
 		for _, row := range rows {
 			if row.Stale {
 				continue
 			}
+			live++
+			if err := confirmInstancePID(row.DataDir, row.PID); err != nil {
+				failures = append(failures, fmt.Errorf("instance %s: %w", row.ID, err))
+				continue
+			}
 			victims = append(victims, victim{row.ID, row.PID, row.DataRoot})
 		}
-		if len(victims) == 0 {
+		if live == 0 {
 			if e.jsonOutput() {
 				return e.writeJSON([]any{})
 			}
@@ -67,7 +74,6 @@ func runDown(e *env, args []string) error {
 	}
 
 	results := make([]map[string]any, 0, len(victims))
-	var failures []error
 	for _, v := range victims {
 		err := harnessclient.TerminateProcess(context.Background(), v.pid, stopGrace)
 		entry := map[string]any{"id": v.id, "pid": v.pid, "dataRoot": v.dataRoot, "stopped": err == nil}
@@ -97,8 +103,13 @@ func runDown(e *env, args []string) error {
 // pidFor answers "which process is this instance": the registry row when
 // there is one, otherwise the data-dir instance file. A target with
 // neither is not running, which is what the error says.
+//
+// A row's pid alone is never enough to SIGNAL. See confirmInstancePID.
 func pidFor(t target) (int, error) {
 	if t.Row != nil && t.Row.PID > 0 && !t.Row.Stale {
+		if err := confirmInstancePID(t.DataDir, t.Row.PID); err != nil {
+			return 0, err
+		}
 		return t.Row.PID, nil
 	}
 	bs, err := harnessclient.ReadInstanceFile(t.DataDir)
@@ -109,6 +120,29 @@ func pidFor(t target) (int, error) {
 		return 0, fmt.Errorf("instance %s names pid %d, which is not running", t.ID, bs.PID)
 	}
 	return bs.PID, nil
+}
+
+// confirmInstancePID is safeToPrune's inverse, and it exists for the same
+// reason: a registry row is discovery state about a DATA ROOT, written
+// once and never revised, while a pid is a number the OS recycles. Pruning
+// a row on a dead pid costs a stale listing if it is wrong; SIGTERM then
+// SIGKILL on a recycled pid kills whatever inherited the number — an
+// editor, a build, the developer's own shell. So the row's claim only
+// counts when the root's own instance file, which the running backend
+// wrote and withdraws on shutdown, names the SAME pid.
+func confirmInstancePID(dataDir string, pid int) error {
+	bs, err := harnessclient.ReadInstanceFile(dataDir)
+	if err != nil {
+		return fmt.Errorf(
+			"the registry names pid %d but %s claims no instance (%v); refusing to signal a pid nothing confirms (`ao-harness list` prunes the row)",
+			pid, dataDir, err)
+	}
+	if bs.PID != pid {
+		return fmt.Errorf(
+			"the registry names pid %d but %s names pid %d; refusing to signal a pid the data root does not claim",
+			pid, dataDir, bs.PID)
+	}
+	return nil
 }
 
 func runList(e *env, args []string) error {
@@ -130,35 +164,37 @@ func runList(e *env, args []string) error {
 		return err
 	}
 
-	live := make([]instanceinfo.Instance, 0, len(rows))
+	// kept, not live: this slice accumulates stale rows too — the ones the
+	// prune rule refused to delete — and they list with their own state.
+	kept := make([]instanceinfo.Instance, 0, len(rows))
 	pruned := make([]string, 0)
 	for _, row := range rows {
 		if !row.Stale {
-			live = append(live, row)
+			kept = append(kept, row)
 			continue
 		}
 		if !safeToPrune(row) {
 			// Stale by pid, but the data dir names somebody else. Report it
 			// rather than deleting a row we cannot explain.
-			live = append(live, row)
+			kept = append(kept, row)
 			continue
 		}
 		if err := instanceinfo.RemoveIn(dir, row.ID); err != nil {
 			fmt.Fprintf(e.stderr, "ao-harness: prune %s: %v\n", row.ID, err)
-			live = append(live, row)
+			kept = append(kept, row)
 			continue
 		}
 		pruned = append(pruned, row.ID)
 	}
 
 	if e.jsonOutput() {
-		return e.writeJSON(map[string]any{"instances": live, "pruned": pruned})
+		return e.writeJSON(map[string]any{"instances": kept, "pruned": pruned})
 	}
-	if len(live) == 0 {
+	if len(kept) == 0 {
 		e.printf("no instances\n")
 	} else {
-		tableRows := make([][]string, 0, len(live))
-		for _, row := range live {
+		tableRows := make([][]string, 0, len(kept))
+		for _, row := range kept {
 			state := "live"
 			if row.Stale {
 				state = "stale"

@@ -8,6 +8,12 @@
 // complaint is actually about. gopsutil (internal/sysstat) reports host
 // totals, not a process tree, so it cannot answer either.
 //
+// The walk reads TWO of the kernel's files per sample and the division is
+// deliberate: `stat` (one line) for every pid on the host, because the
+// parent map needs them all to find a re-parented renderer, and `status`
+// (the expensive, many-line one) only for the processes that turned out
+// to be ours. RSS is always VmRSS from `status`.
+//
 // The walk is a plain filesystem read of a directory tree, so the whole of
 // it is exercised against canned testdata; only the exported entry point
 // carries a build split, because /proc exists on linux alone.

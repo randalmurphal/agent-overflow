@@ -197,6 +197,28 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
 const PERFPROBE_ROOT = resolve(SRC_ROOT, '..', '..', 'scripts', 'perfprobe');
 
 // ---------------------------------------------------------------------------
+// Rule 4 — the harness bridge is reachable only by dynamic import.
+//
+// `lib/harness/` is the agent test harness's in-page tooling: a document-wide
+// MutationObserver, a rAF frame meter, a whitelisted read of the diagnostic
+// globals. None of it may run in an ordinary boot, and the mechanism that
+// guarantees that is bundling, not discipline — a STATIC import from anywhere
+// in the app graph pulls the whole thing into the startup chunk, where it is
+// fetched, parsed and evaluated on every launch by every user. The failure is
+// silent: the modules do nothing until armed, so the only symptom is a bigger
+// startup graph nobody looks at.
+//
+// The one door is the `import('../harness/bridge')` inside
+// `stores/harnessBridge.ts`, which is why that file is the sole allowance and
+// why the allowance is spelled as a DYNAMIC import: a static one from the same
+// file would defeat the split just as thoroughly.
+const HARNESS_DIR = join(SRC_ROOT, 'lib', 'harness');
+const HARNESS_BRIDGE_OWNER = 'lib/stores/harnessBridge.ts';
+// Files outside lib/harness/ that statically import from it. Empty, and it is
+// the claim that the chunk boundary is real.
+const HARNESS_STATIC_IMPORT_ALLOWLIST: Record<string, string> = {};
+
+// ---------------------------------------------------------------------------
 
 interface ParsedImport {
   /** Module specifier as written. */
@@ -205,6 +227,8 @@ interface ParsedImport {
   readonly names: readonly string[];
   /** `import * as x` or `import('…')` — grants the module's whole surface. */
   readonly wholeModule: boolean;
+  /** `import('…')`, which puts the target in its own chunk rather than this one. */
+  readonly dynamic: boolean;
 }
 
 /**
@@ -229,13 +253,13 @@ const DYNAMIC_IMPORT = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
 function parseImports(source: string): ParsedImport[] {
   const imports: ParsedImport[] = [];
   for (const match of source.matchAll(STATIC_IMPORT)) {
-    imports.push({ specifier: match[3]!, ...parseClause(match[1]!) });
+    imports.push({ specifier: match[3]!, ...parseClause(match[1]!), dynamic: false });
   }
   for (const match of source.matchAll(SIDE_EFFECT_IMPORT)) {
-    imports.push({ specifier: match[2]!, names: [], wholeModule: false });
+    imports.push({ specifier: match[2]!, names: [], wholeModule: false, dynamic: false });
   }
   for (const match of source.matchAll(DYNAMIC_IMPORT)) {
-    imports.push({ specifier: match[2]!, names: [], wholeModule: true });
+    imports.push({ specifier: match[2]!, names: [], wholeModule: true, dynamic: true });
   }
   return imports;
 }
@@ -367,6 +391,38 @@ describe('architecture', () => {
       WAILS_EVENT_ALLOWLIST,
       'New violations.',
       'Route the event through the store that owns the entity it describes; see frontend/CLAUDE.md → State Boundaries.',
+    );
+  });
+
+  it('keeps lib/harness/ behind its one dynamic import', () => {
+    const offenders = new Map<string, string[]>();
+    let door = 0;
+    for (const source of sources) {
+      const inHarness = source.file.startsWith(HARNESS_DIR + sep);
+      const reasons: string[] = [];
+      for (const parsed of source.imports) {
+        const local = resolveLocalModule(source.file, parsed.specifier);
+        if (local === null || !local.startsWith(HARNESS_DIR + sep)) continue;
+        if (parsed.dynamic) {
+          if (source.path === HARNESS_BRIDGE_OWNER) door += 1;
+          continue;
+        }
+        if (inHarness) continue;
+        reasons.push(
+          `statically imports '${parsed.specifier}', which pulls the harness chunk into the startup graph`,
+        );
+      }
+      if (reasons.length > 0) offenders.set(source.path, reasons);
+    }
+    // Without this the rule would keep passing after the door itself was
+    // deleted or renamed, and a passing rule over a tree it no longer
+    // describes is worse than no rule.
+    expect(door, `${HARNESS_BRIDGE_OWNER} must reach the bridge by import()`).toBeGreaterThan(0);
+    expectAllowlistExact(
+      offenders,
+      HARNESS_STATIC_IMPORT_ALLOWLIST,
+      'New violations.',
+      `Reach the bridge through the dynamic import in ${HARNESS_BRIDGE_OWNER}; see frontend/CLAUDE.md → Layout, src/lib/harness/.`,
     );
   });
 

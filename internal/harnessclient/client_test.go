@@ -340,3 +340,84 @@ func waitForCount(t *testing.T, client *Client, channel string, n int) {
 	}
 	t.Fatalf("client never received %d events on %s (has %d)", n, channel, client.Count(channel, nil))
 }
+
+// newLogOnlyClient is a Client with just the event-log machinery wired:
+// dispatch, the waiter registry, and the log itself need no connection,
+// and building one without a server keeps these cases about the log.
+func newLogOnlyClient(logCap int) *Client {
+	return &Client{
+		pending:   map[string]*pendingCall{},
+		replays:   map[string]chan struct{}{},
+		waiters:   map[int]*waiter{},
+		listeners: map[int]func(Event){},
+		logCap:    logCap,
+		readDone:  make(chan struct{}),
+	}
+}
+
+// At the cap the log sheds a CHUNK. Shifting by one per arrival would be
+// O(cap) on every event — quadratic over a sustained stream, on the read
+// loop, under the mutex.
+func TestEventLogShedsAChunkAtItsCap(t *testing.T) {
+	const logCap = 8
+
+	// The event that first exceeds the cap costs a whole chunk, not one
+	// entry: one-at-a-time eviction would leave the log sitting exactly
+	// at the cap here, and would go on paying that memmove per event.
+	atCap := newLogOnlyClient(logCap)
+	for i := 0; i <= logCap; i++ {
+		atCap.dispatch(Event{Channel: "harness:perf", Seq: uint64(i)})
+	}
+	if got, want := len(atCap.Events()), logCap+1-logCap/logShedDivisor; got != want {
+		t.Fatalf("log holds %d events after one shed, want %d", got, want)
+	}
+
+	client := newLogOnlyClient(logCap)
+	for i := 0; i < 40; i++ {
+		client.dispatch(Event{Channel: "harness:perf", Seq: uint64(i)})
+	}
+	events := client.Events()
+	if len(events) > logCap {
+		t.Fatalf("log holds %d events over a cap of %d", len(events), logCap)
+	}
+	if len(events) == 0 || events[len(events)-1].Seq != 39 {
+		t.Fatalf("newest event = %+v, want seq 39", events[len(events)-1:])
+	}
+	// What survives is the newest contiguous run: a shed drops from the
+	// front and never punches a hole.
+	for i, event := range events {
+		want := events[0].Seq + uint64(i)
+		if event.Seq != want {
+			t.Fatalf("event %d has seq %d, want %d (the retained run must be contiguous)", i, event.Seq, want)
+		}
+	}
+}
+
+// Two identical waits are ordered: the longest-waiting one consumes the
+// event. Map iteration is randomized, so this is a property the dispatch
+// has to enforce rather than one it inherits.
+func TestTheLongestWaitingWaiterConsumesTheEvent(t *testing.T) {
+	// Repeated, because a randomized map with two entries picks the right
+	// one half the time by accident.
+	for attempt := 0; attempt < 50; attempt++ {
+		client := newLogOnlyClient(defaultEventLogCap)
+		first := &waiter{channel: "thread:updated", out: make(chan Event, 1)}
+		second := &waiter{channel: "thread:updated", out: make(chan Event, 1)}
+		client.mu.Lock()
+		client.nextHook++
+		client.waiters[client.nextHook] = first
+		client.nextHook++
+		client.waiters[client.nextHook] = second
+		client.mu.Unlock()
+
+		client.dispatch(Event{Channel: "thread:updated", Seq: 1})
+		select {
+		case <-first.out:
+		default:
+			t.Fatalf("attempt %d: the event went to the later waiter", attempt)
+		}
+		if len(second.out) != 0 {
+			t.Fatalf("attempt %d: both waiters were served one event", attempt)
+		}
+	}
+}

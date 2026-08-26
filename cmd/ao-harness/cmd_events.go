@@ -23,11 +23,13 @@ const defaultAwaitTimeout = 15 * time.Second
 // already attached; a command invoked from a shell always is late.
 const ringReplayCursor = 0
 
-// channelList is a repeatable --channel flag.
-type channelList []string
+// stringList is a repeatable string flag: --channel here, --meter in
+// `perf start`. One type because the parsing is the parsing — the flag's
+// name is what says what the strings mean.
+type stringList []string
 
-func (c *channelList) String() string     { return strings.Join(*c, ",") }
-func (c *channelList) Set(v string) error { *c = append(*c, v); return nil }
+func (c *stringList) String() string     { return strings.Join(*c, ",") }
+func (c *stringList) Set(v string) error { *c = append(*c, v); return nil }
 
 func runEvents(e *env, args []string) error {
 	if len(args) == 0 {
@@ -49,7 +51,7 @@ func runEvents(e *env, args []string) error {
 // per event; -o json is NDJSON, because a stream has no closing bracket.
 func eventsTail(e *env, args []string) error {
 	flags := e.newFlagSet("events tail")
-	var channels channelList
+	var channels stringList
 	flags.Var(&channels, "channel", "only this channel (repeatable; default: every channel this peer may see)")
 	history := flags.Bool("history", true, "replay the server's retained ring for the named channels before streaming")
 	rest, err := e.parse(flags, args)
@@ -141,7 +143,7 @@ func eventsAwait(e *env, args []string) error {
 	defer cancel()
 
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		if err := subscribeAndReplay(ctx, client, channelList{*channel}, *history); err != nil {
+		if err := subscribeAndReplay(ctx, client, stringList{*channel}, *history); err != nil {
 			return err
 		}
 		event, err := client.WaitForEvent(ctx, *channel, func(ev harnessclient.Event) bool {
@@ -165,7 +167,7 @@ func eventsAwait(e *env, args []string) error {
 // cannot be done by waiting for it.
 func eventsCount(e *env, args []string) error {
 	flags := e.newFlagSet("events count")
-	var channels channelList
+	var channels stringList
 	flags.Var(&channels, "channel", "count this channel (repeatable; default: every channel replayed)")
 	where := flags.String("where", "", "count only events matching dotted.path=value")
 	settle := flags.Duration("settle", 250*time.Millisecond, "how long to keep receiving before counting")

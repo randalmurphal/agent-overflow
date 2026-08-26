@@ -9,12 +9,29 @@ import (
 
 func TestDataRootForMatchesTheMakefileRule(t *testing.T) {
 	// The Makefile computes HARNESS_DATA_DIR as
-	// $(TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR)); the backend's
-	// flag default and ao-harness must resolve the same instance.
+	// $(HARNESS_TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR)); the
+	// backend's flag default and ao-harness must resolve the same instance.
 	got := DataRootFor("/home/dev/repos/agent-overflow")
 	want := filepath.Join(os.TempDir(), "agent-overflow-harness-home-dev-repos-agent-overflow")
 	if got != want {
 		t.Fatalf("DataRootFor = %q, want %q", got, want)
+	}
+	// Comparing against os.TempDir() alone would be tautological — pin the
+	// OTHER party: the Makefile must spell the same tmpdir rule ($TMPDIR
+	// sans trailing slash, else /tmp — what os.TempDir() does) and the same
+	// prefix + flattening. Drift here broke macOS silently once: the
+	// Makefile hardcoded /tmp while DataRootFor honored $TMPDIR.
+	makefile, err := os.ReadFile(filepath.Join("..", "..", "..", "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	for _, line := range []string{
+		"HARNESS_TMPDIR := $(if $(TMPDIR),$(patsubst %/,%,$(TMPDIR)),/tmp)",
+		"HARNESS_DATA_DIR ?= $(HARNESS_TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR))",
+	} {
+		if !strings.Contains(string(makefile), line) {
+			t.Fatalf("Makefile no longer carries the data-root rule line %q; keep it in step with DataRootFor", line)
+		}
 	}
 	if a, b := DataRootFor("/a/b"), DataRootFor("/a/c"); a == b {
 		t.Fatalf("two checkouts collapsed onto one data root: %q", a)

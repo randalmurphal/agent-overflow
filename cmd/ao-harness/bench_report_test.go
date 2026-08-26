@@ -93,6 +93,23 @@ func TestAggregateBenchMetricsOmitsUnmeasured(t *testing.T) {
 	if _, ok := agg["webviewRss.maxBytes"]; ok {
 		t.Error("webviewRss.maxBytes should be absent: no sample carried it")
 	}
+
+	// A page that answered but whose series meters never sampled is the
+	// other half of the same rule, and the one a series-shaped metric read
+	// through frontendMetric would get wrong: the summary is present, so
+	// the run looks measured, and a zero would fold in as a real reading.
+	unmetered := benchTestReport(1000, 60, 12, 8<<20)
+	unmetered.Frontend.DomNodes = perfSeries{}
+	unmetered.Frontend.HeapBytes = perfSeries{}
+	agg = aggregateBenchMetrics([]perfReport{unmetered, benchTestReport(1200, 59, 14, 8<<20)})
+	for _, name := range []string{"domNodes.max", "jsHeap.maxBytes"} {
+		if got := agg[name].Runs; got != 1 {
+			t.Errorf("%s folded %d runs, want 1 (one run never sampled it)", name, got)
+		}
+		if agg[name].Min == 0 {
+			t.Errorf("%s folded an unsampled run in as zero: %+v", name, agg[name])
+		}
+	}
 }
 
 func floatPtr(v float64) *float64 { return &v }
@@ -123,6 +140,37 @@ func TestCompareToBaselineExplicitBudget(t *testing.T) {
 	}
 	if comparisons[1].Metric != "frames.p95Ms" || !comparisons[1].Drift {
 		t.Errorf("24ms over a 20ms ceiling must drift: %+v", comparisons[1])
+	}
+}
+
+// A budget of zero is the strictest thing the file can say, not an absent
+// one. Reading it as "no opinion" would silently accept every value.
+func TestCompareToBaselineHonoursAnExplicitZeroBudget(t *testing.T) {
+	current := map[string]benchAggregate{
+		"frames.long": {Runs: 1, P50: 3, Unit: "count", LowerIsBetter: true},
+		"clean.long":  {Runs: 1, P50: 0, Unit: "count", LowerIsBetter: true},
+		"frames.fps":  {Runs: 1, P50: 0, Unit: "fps", LowerIsBetter: false},
+	}
+	baseline := benchBaseline{Metrics: map[string]benchTolerance{
+		"frames.long": {Max: floatPtr(0)},
+		"clean.long":  {Max: floatPtr(0)},
+		"frames.fps":  {Min: floatPtr(0)},
+	}}
+	byName := map[string]benchComparison{}
+	comparisons, _ := compareToBaseline(current, baseline)
+	for _, comparison := range comparisons {
+		byName[comparison.Metric] = comparison
+	}
+	if got := byName["frames.long"]; !got.Drift || got.Note != "max" {
+		t.Errorf("3 long frames against a `max: 0` budget must drift: %+v", got)
+	}
+	if got := byName["clean.long"]; got.Drift {
+		t.Errorf("0 long frames meets a `max: 0` budget: %+v", got)
+	}
+	// A zero floor on a higher-is-better metric is satisfied, not drifted:
+	// the rule is resolved and the value is not below it.
+	if got := byName["frames.fps"]; got.Drift || got.Note != "min" {
+		t.Errorf("0 fps against a `min: 0` floor must not drift: %+v", got)
 	}
 }
 

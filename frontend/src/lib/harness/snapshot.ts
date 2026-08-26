@@ -94,7 +94,7 @@ export interface ViewportOptions {
   settledMs?: number;
   /** Milliseconds since the last observed DOM mutation. */
   sinceMutationMs: number;
-  /** Cap for each row's textHead. */
+  /** Cap for each row's textHead. Absent or 0 means DEFAULT_TEXT_HEAD. */
   textHead?: number;
 }
 
@@ -117,12 +117,21 @@ export const MAX_ROWS_PER_PANE = 400;
  * Counting is by CODE POINT, not UTF-16 unit: cutting a surrogate pair in
  * half produces a lone surrogate, which JSON.stringify happily emits and
  * some readers render as a replacement char that looks like real content.
+ *
+ * The point array is built over a BOUNDED prefix, never the whole string.
+ * A row's textContent is the row's entire rendered text — a long tool
+ * output or a markdown answer is tens of kilobytes — and `Array.from` over
+ * it allocates one string per character to keep ~120 of them. A code point
+ * is at most two UTF-16 units, so `cap * 2` units always contain at least
+ * `cap` points; the slice can only ever orphan a surrogate PAST the cap,
+ * which the point slice then drops.
  */
 export function textHead(raw: string, cap = DEFAULT_TEXT_HEAD): string {
-  const collapsed = raw.replace(/\s+/g, ' ').trim();
   if (cap <= 0) return '';
-  const points = Array.from(collapsed);
-  if (points.length <= cap) return collapsed;
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  const bounded = collapsed.length > cap * 2 ? collapsed.slice(0, cap * 2) : collapsed;
+  const points = Array.from(bounded);
+  if (points.length <= cap && bounded.length === collapsed.length) return collapsed;
   return points.slice(0, cap).join('') + '…';
 }
 
@@ -181,7 +190,7 @@ function rectOf(el: Element): HarnessRect {
   return roundRect(el.getBoundingClientRect());
 }
 
-function readRow(rowEl: Element, viewport: HarnessRect | null): HarnessRow | null {
+function readRow(rowEl: Element, viewport: HarnessRect | null, textCap: number): HarnessRow | null {
   const leaf = rowEl.querySelector('[data-item-id]');
   if (!leaf) return null;
   const rect = rectOf(leaf);
@@ -197,11 +206,11 @@ function readRow(rowEl: Element, viewport: HarnessRect | null): HarnessRow | nul
     rowIndex: Number.parseInt(attr(rowEl, 'data-row-index'), 10) || 0,
     inViewport: viewport === null ? false : rectsOverlapVertically(rect, viewport),
     rect,
-    textHead: textHead(leaf.textContent ?? ''),
+    textHead: textHead(leaf.textContent ?? '', textCap),
   };
 }
 
-function readPane(paneEl: Element): HarnessPane {
+function readPane(paneEl: Element, textCap: number): HarnessPane {
   const chat = paneEl.querySelector('[data-ui-surface="chat"]');
   const scroller = paneEl.querySelector('[data-testid="message-timeline-scroll"]');
   const scroll = scroller ? readScroll(scroller as HTMLElement) : null;
@@ -210,7 +219,7 @@ function readPane(paneEl: Element): HarnessPane {
   const rows: HarnessRow[] = [];
   for (const rowEl of rowEls) {
     if (rows.length >= MAX_ROWS_PER_PANE) break;
-    const row = readRow(rowEl, viewport);
+    const row = readRow(rowEl, viewport, textCap);
     if (row) rows.push(row);
   }
   return {
@@ -263,9 +272,14 @@ function readOverlays(doc: Document): HarnessOverlay[] {
  */
 export function readViewport(doc: Document, opts: ViewportOptions): HarnessViewport {
   const settledMs = opts.settledMs ?? DEFAULT_SETTLED_MS;
+  // A caller asking for more (or less) text per row is asking about EVERY
+  // row, so the cap rides the walk down rather than being re-read at the
+  // leaf. 0 and absent both mean "the default" — the CLI's `--text-head`
+  // is an int flag whose unset value is 0.
+  const textCap = opts.textHead && opts.textHead > 0 ? opts.textHead : DEFAULT_TEXT_HEAD;
   const panes: HarnessPane[] = [];
   for (const paneEl of doc.querySelectorAll('[data-pane-id]')) {
-    panes.push(readPane(paneEl));
+    panes.push(readPane(paneEl, textCap));
   }
   const focused = panes.find((pane) => pane.focused) ?? panes[0];
   return {
