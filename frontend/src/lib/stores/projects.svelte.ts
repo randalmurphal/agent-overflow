@@ -11,6 +11,7 @@
 import type { Project, ProjectWithCounts } from '../types/models';
 import { ListProjects } from './bindings';
 import { addToast } from './toast.svelte';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import {
   disambiguatedProjectLabels,
   formatProjectLabel,
@@ -19,6 +20,12 @@ import {
 
 let projects: ProjectWithCounts[] = $state([]);
 let loaded = $state(false);
+
+// Per-project live-activity bumps (streaming beats). Kept out of the
+// `projects` array signal for the same reason as the threads store's
+// liveActivityAt box: a bump is a field patch, and rewriting the array
+// re-sorted and re-rendered the whole sidebar on every streamed item.
+const liveActivityAt = createKeyedSignalRegistry<number>(0);
 
 /** Read-only view of the current project list for consumers. */
 export function getProjects(): readonly ProjectWithCounts[] {
@@ -111,24 +118,31 @@ export function updateProjectLocal(p: Project): void {
  */
 export function touchProjectActivity(projectId: string | undefined, updatedAt: number): void {
   if (!projectId || !Number.isFinite(updatedAt)) return;
-  const index = projects.findIndex((p) => p.project.id === projectId);
-  if (index === -1) return;
+  const existing = projects.find((p) => p.project.id === projectId);
+  if (existing === undefined) return;
+  if (getProjectLiveActivityAt(existing) >= updatedAt) return;
+  liveActivityAt.set(projectId, updatedAt);
+}
 
-  const existing = projects[index];
-  if ((existing.lastActive ?? 0) >= updatedAt) return;
-
-  const next = [...projects];
-  next[index] = { ...existing, lastActive: updatedAt };
-  projects = next;
+/**
+ * The project's newest activity timestamp: the backend's lastActive or
+ * the live streaming bump, whichever is ahead. Reactive on the
+ * per-project box — see the threads store's getThreadLiveActivityAt for
+ * why bumps stay out of the array signal.
+ */
+export function getProjectLiveActivityAt(p: ProjectWithCounts): number {
+  return Math.max(p.lastActive ?? 0, liveActivityAt.get(p.project.id));
 }
 
 /** Drop a project row and any related thread counts. */
 export function removeProjectLocal(id: string): void {
   projects = projects.filter((p) => p.project.id !== id);
+  liveActivityAt.drop(id);
 }
 
 /** Test helper — clears state between tests. */
 export function resetProjectsForTest(): void {
   projects = [];
   loaded = false;
+  liveActivityAt.reset();
 }

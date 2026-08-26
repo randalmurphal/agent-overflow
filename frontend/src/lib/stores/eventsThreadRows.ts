@@ -11,7 +11,7 @@ import { ListThreads } from './bindings';
 import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 
@@ -64,7 +64,10 @@ function mergeThreadRowWithLocal(
 ): Thread {
   const readMarkers = [updated.lastReadAt];
   const latestCompletions = [updated.latestTurnCompletedAt];
-  const activityMarkers = [updated.updatedAt];
+  // getThreadLiveActivityAt folds in the live streaming box, so a row
+  // snapshotted before recent stream beats catches the durable
+  // updatedAt up to the newest live bump here.
+  const activityMarkers = [updated.updatedAt, getThreadLiveActivityAt(updated)];
   if (cachedThread?.lastReadAt !== undefined) {
     readMarkers.push(cachedThread.lastReadAt);
   }
@@ -118,17 +121,22 @@ export function syncLatestTurnCompleted(evt: TurnCompletedEvent): void {
 
 export function syncThreadActivity(threadId: string, updatedAt: number): void {
   if (!threadId || !Number.isFinite(updatedAt)) return;
+  // Live bumps land in per-entity boxes (threads/projects stores), not
+  // in the row arrays or pane.thread — this runs on every streaming
+  // flush, and replacing those objects here re-rendered the sidebar and
+  // every pane.thread reader per beat. Row objects catch up via
+  // mergeThreadRowWithLocal on the next full row sync.
   const thread = touchThreadActivity(threadId, updatedAt);
   let projectId = thread?.projectId;
-  let latestUpdatedAt = thread?.updatedAt ?? updatedAt;
+  let latestUpdatedAt = Math.max(thread ? getThreadLiveActivityAt(thread) : 0, updatedAt);
 
-  for (const pane of ingestPanes()) {
-    if (pane.threadId !== threadId || !pane.thread) continue;
-    projectId = projectId ?? pane.thread.projectId;
-    const paneUpdatedAt = Math.max(pane.thread.updatedAt ?? 0, updatedAt);
-    latestUpdatedAt = Math.max(latestUpdatedAt, paneUpdatedAt);
-    if (pane.thread.updatedAt === paneUpdatedAt) continue;
-    pane.replaceThread({ ...pane.thread, updatedAt: paneUpdatedAt });
+  if (projectId === undefined) {
+    for (const pane of ingestPanes()) {
+      if (pane.threadId !== threadId || !pane.thread) continue;
+      projectId = pane.thread.projectId;
+      latestUpdatedAt = Math.max(latestUpdatedAt, pane.thread.updatedAt ?? 0);
+      break;
+    }
   }
 
   touchProjectActivity(projectId, latestUpdatedAt);

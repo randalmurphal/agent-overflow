@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   getThreads,
+  getThreadLiveActivityAt,
   refreshThreads,
   prependThread,
   removeThread,
@@ -123,15 +124,24 @@ describe('threads store', () => {
       expect(getThreads()[0].id).toBe('a');
     });
 
-    it('touchThreadActivity bumps updatedAt when newer and returns the row', async () => {
+    it('touchThreadActivity bumps the live box and leaves the array signal silent', async () => {
       setBindingMock('ListThreads', async () => [makeThread('a', { updatedAt: 100 })]);
       await refreshThreads();
+      const before = getThreads();
+      const rowBefore = before[0];
 
       const touched = touchThreadActivity('a', 500);
 
       expect(touched?.id).toBe('a');
-      expect(touched?.updatedAt).toBe(500);
-      expect(getThreads()[0].updatedAt).toBe(500);
+      // Tripwire for the per-beat sidebar re-render class (2026-08-26):
+      // an activity bump is a field patch and must NOT mint a new
+      // threads array or row object — that identity churn is what made
+      // every streaming flush reconcile the sidebar's animated
+      // each-blocks (FLIP measure = forced layout per beat).
+      expect(getThreads()).toBe(before);
+      expect(getThreads()[0]).toBe(rowBefore);
+      expect(getThreads()[0].updatedAt).toBe(100);
+      expect(getThreadLiveActivityAt(rowBefore)).toBe(500);
     });
 
     it('touchThreadActivity ignores stale timestamps and missing threads', async () => {
@@ -145,7 +155,17 @@ describe('threads store', () => {
       expect(stale?.updatedAt).toBe(500);
       expect(missing).toBeUndefined();
       expect(invalid).toBeUndefined();
-      expect(getThreads()[0].updatedAt).toBe(500);
+      expect(getThreadLiveActivityAt(getThreads()[0])).toBe(500);
+    });
+
+    it('removeThread drops the live-activity box so a recycled id starts clean', async () => {
+      setBindingMock('ListThreads', async () => [makeThread('a', { updatedAt: 100 })]);
+      await refreshThreads();
+      touchThreadActivity('a', 900);
+      removeThread('a');
+
+      prependThread(makeThread('a', { updatedAt: 200 }));
+      expect(getThreadLiveActivityAt(getThreads()[0])).toBe(200);
     });
   });
 });

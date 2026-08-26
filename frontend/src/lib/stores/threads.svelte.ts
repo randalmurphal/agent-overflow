@@ -12,10 +12,24 @@ import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addToast } from './toast.svelte';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
+import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn'>>;
 
 let threads: Thread[] = $state([]);
+
+// Live-activity bumps arrive on every streaming flush (tens per second
+// while a turn runs). They are FIELD patches, not membership or order
+// changes, so they live in a per-thread box and the `threads` array
+// signal stays silent for them. Rewriting the array here was the
+// per-beat trigger for the sidebar's animated each-blocks: every flush
+// re-derived every project's thread tree and svelte's FLIP measure pass
+// then forced synchronous layout twice per visible row (2026-08-26,
+// perf-investigation REFERENCE.md). Readers that need the live value —
+// tree sort, time labels, project ranking, the row-sync merge — read
+// through getThreadLiveActivityAt; the durable row catches up on the
+// next full row sync.
+const liveActivityAt = createKeyedSignalRegistry<number>(0);
 
 export function getThreads(): Thread[] {
   return threads;
@@ -31,6 +45,7 @@ export function getThreads(): Thread[] {
  */
 export async function loadThreads(): Promise<Thread[]> {
   threads = await ListThreads() as Thread[];
+  liveActivityAt.reset();
   return threads;
 }
 
@@ -51,6 +66,10 @@ export async function refreshThreads(): Promise<void> {
  */
 export function replaceAllThreads(rows: Thread[]): void {
   threads = rows;
+  // Callers hand rows already reconciled against local state (including
+  // the live-activity box, via mergeThreadRowWithLocal), so the boxes'
+  // content is folded into the rows and stale entries can go.
+  liveActivityAt.reset();
 }
 
 export function prependThread(thread: Thread): void {
@@ -59,6 +78,7 @@ export function prependThread(thread: Thread): void {
 
 export function removeThread(id: string): void {
   threads = threads.filter((t) => t.id !== id);
+  liveActivityAt.drop(id);
   // Drop any live-status entry so the sidebar doesn't keep painting a
   // dot for a thread that no longer exists in the list.
   clearThreadStatus(id);
@@ -102,19 +122,22 @@ export function replaceThread(thread: Thread): void {
  */
 export function touchThreadActivity(id: string, updatedAt: number): Thread | undefined {
   if (!id || !Number.isFinite(updatedAt)) return undefined;
-  const index = threads.findIndex((t) => t.id === id);
-  if (index === -1) return undefined;
+  const existing = threads.find((t) => t.id === id);
+  if (existing === undefined) return undefined;
 
-  const existing = threads[index];
-  if ((existing.updatedAt ?? 0) >= updatedAt) {
-    return existing;
+  if (getThreadLiveActivityAt(existing) < updatedAt) {
+    liveActivityAt.set(id, updatedAt);
   }
+  return existing;
+}
 
-  const updated = { ...existing, updatedAt };
-  const next = [...threads];
-  next[index] = updated;
-  threads = next;
-  return updated;
+/**
+ * The thread's newest activity timestamp: the durable row value or the
+ * live streaming bump, whichever is ahead. Reactive on the per-thread
+ * box, so a reader wakes only for its own thread's beats.
+ */
+export function getThreadLiveActivityAt(thread: Pick<Thread, 'id' | 'updatedAt'>): number {
+  return Math.max(thread.updatedAt ?? 0, liveActivityAt.get(thread.id));
 }
 
 /**

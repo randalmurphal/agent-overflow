@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addProjectLocal,
   getProject,
+  getProjectLiveActivityAt,
   getProjects,
   isLoaded,
   refreshProjects,
@@ -114,9 +115,14 @@ describe('projects store', () => {
       ]);
       await refreshProjects();
 
+      const before = getProjects();
       touchProjectActivity('a', 500);
 
-      expect(getProject('a')?.lastActive).toBe(500);
+      // The bump lands in the live box; the array signal stays silent
+      // (per-beat array churn was the sidebar re-render trigger).
+      expect(getProjects()).toBe(before);
+      expect(getProject('a')?.lastActive).toBe(100);
+      expect(getProjectLiveActivityAt(getProject('a')!)).toBe(500);
     });
 
     it('touchProjectActivity ignores stale timestamps and missing projects', async () => {

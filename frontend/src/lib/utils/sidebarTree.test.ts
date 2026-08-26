@@ -7,6 +7,8 @@ import {
   nextSidebarThreadRevealLimit,
   previewSidebarThreads,
   rollupDisplayStatus,
+  sameSidebarVisibleNodes,
+  sameThreadStatusPill,
   syncExpandedTreeForActiveThread,
   toggleSidebarTreeThreadExpansion,
 } from './sidebarTree';
@@ -674,5 +676,98 @@ describe('sidebarTree ancestor expansion survives a parentThreadId cycle', () =>
 
     expect([...next].sort()).toEqual(['mid', 'root']);
     expect(await diagnostics.messages()).toEqual([]);
+  });
+});
+
+describe('activityOf', () => {
+  it('drives latestActivityAt and the within-tier sort in place of row updatedAt', () => {
+    const stale = mkThread('stale', { updatedAt: 1000 });
+    const fresh = mkThread('fresh', { updatedAt: 9000 });
+    // Live box says the stale ROW is actually the most recently active.
+    const live: Record<string, number> = { stale: 20_000, fresh: 9000 };
+    const tree = buildSidebarThreadTree({
+      threads: [fresh, stale],
+      liveStatusOf: () => 'idle',
+      activityOf: (t) => live[t.id] ?? t.updatedAt ?? 0,
+    });
+    expect(tree.map((n) => n.thread.id)).toEqual(['stale', 'fresh']);
+    expect(tree[0].latestActivityAt).toBe(20_000);
+  });
+
+  it('bubbles a child activityOf value into the parent', () => {
+    const parent = mkThread('parent', { updatedAt: 1000 });
+    const child = mkThread('child', { parentThreadId: 'parent', updatedAt: 500 });
+    const tree = buildSidebarThreadTree({
+      threads: [parent, child],
+      liveStatusOf: () => 'idle',
+      activityOf: (t) => (t.id === 'child' ? 50_000 : (t.updatedAt ?? 0)),
+    });
+    expect(tree[0].thread.id).toBe('parent');
+    expect(tree[0].latestActivityAt).toBe(50_000);
+  });
+});
+
+describe('sameThreadStatusPill', () => {
+  const pill = { label: 'Running', dotClass: 'a', labelClass: 'b', pulse: true };
+  it('compares by content, both-null, and null-vs-pill', () => {
+    expect(sameThreadStatusPill(null, null)).toBe(true);
+    expect(sameThreadStatusPill(pill, { ...pill })).toBe(true);
+    expect(sameThreadStatusPill(pill, null)).toBe(false);
+    expect(sameThreadStatusPill(pill, { ...pill, label: 'Failed' })).toBe(false);
+    expect(sameThreadStatusPill(pill, { ...pill, glowClass: 'g' })).toBe(false);
+  });
+});
+
+describe('sameSidebarVisibleNodes', () => {
+  // The cutoff that keeps streaming beats away from the animated
+  // each-block: equal render content must compare true even though tree
+  // builds mint new node and pill objects every run.
+  it('is true across an activity-only change (fresh node + pill objects)', () => {
+    const t = mkThread('a', { updatedAt: 1000 });
+    const build = (activity: number) =>
+      flattenSidebarThreadTree({
+        nodes: buildSidebarThreadTree({
+          threads: [t],
+          liveStatusOf: () => 'running',
+          activityOf: () => activity,
+        }),
+        expandedThreadIds: new Set<string>(),
+      });
+    const a = build(1000);
+    const b = build(99_000);
+    expect(a[0]).not.toBe(b[0]);
+    expect(sameSidebarVisibleNodes(a, b)).toBe(true);
+  });
+
+  it('is false when order, status, expansion, or membership changes', () => {
+    const t1 = mkThread('a', { updatedAt: 1000 });
+    const t2 = mkThread('b', { updatedAt: 2000 });
+    const build = (
+      threads: Thread[],
+      status: ThreadLiveStatus,
+      expanded: ReadonlySet<string> = new Set<string>(),
+    ) =>
+      flattenSidebarThreadTree({
+        nodes: buildSidebarThreadTree({
+          threads,
+          liveStatusOf: () => status,
+        }),
+        expandedThreadIds: expanded,
+      });
+
+    expect(sameSidebarVisibleNodes(build([t1, t2], 'idle'), build([t2, t1], 'idle'))).toBe(true);
+    expect(sameSidebarVisibleNodes(build([t1, t2], 'idle'), build([t1], 'idle'))).toBe(false);
+    expect(sameSidebarVisibleNodes(build([t1, t2], 'idle'), build([t1, t2], 'running'))).toBe(false);
+    // Order flip via activity.
+    const byActivity = (order: [number, number]) =>
+      flattenSidebarThreadTree({
+        nodes: buildSidebarThreadTree({
+          threads: [t1, t2],
+          liveStatusOf: () => 'idle',
+          activityOf: (t) => (t.id === 'a' ? order[0] : order[1]),
+        }),
+        expandedThreadIds: new Set<string>(),
+      });
+    expect(sameSidebarVisibleNodes(byActivity([1, 2]), byActivity([2, 1]))).toBe(false);
   });
 });

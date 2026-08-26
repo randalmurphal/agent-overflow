@@ -5,9 +5,10 @@
   // matching threads).
 
   import { onDestroy } from 'svelte';
-  import type { Thread } from '../../types/models';
+  import type { ProjectWithCounts, Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
+    getProjectLiveActivityAt,
     getProjects,
     refreshProjects,
     updateProjectLocal,
@@ -83,6 +84,13 @@
   //   - lastActivity: most-recently-touched thread first (sidebar default).
   //   - createdAt: project creation time, newest first.
   //   - manual: user-defined via DnD; persisted in Project.sortPosition.
+  // Identity cutoff: streaming beats bump the per-project activity box
+  // (getProjectLiveActivityAt), which wakes this derived on every flush
+  // while a turn runs. The rows themselves are stable references, so
+  // when the re-sort lands in the same order the PREVIOUS array is
+  // returned and the animated project each-block (FLIP measure = forced
+  // layout) never reconciles for a beat that changed no ordering.
+  let prevVisibleProjects: ProjectWithCounts[] = [];
   let visibleProjects = $derived.by(() => {
     const mode = getProjectSortMode();
     const entries = getProjects()
@@ -92,7 +100,7 @@
         if (p.project.name.toLowerCase().includes(query)) return true;
         return (threadsByProject.get(p.project.id)?.length ?? 0) > 0;
       });
-    return [...entries].sort((a, b) => {
+    const next = [...entries].sort((a, b) => {
       switch (mode) {
         case 'manual': {
           const cmp = a.project.sortPosition - b.project.sortPosition;
@@ -103,8 +111,8 @@
           return b.project.createdAt - a.project.createdAt;
         case 'lastActivity':
         default: {
-          const aActive = a.lastActive ?? 0;
-          const bActive = b.lastActive ?? 0;
+          const aActive = getProjectLiveActivityAt(a);
+          const bActive = getProjectLiveActivityAt(b);
           // Fall back to project.updatedAt when no thread has touched
           // this project yet — the sidebar still surfaces a freshly
           // renamed / added project even with zero threads.
@@ -115,6 +123,14 @@
         }
       }
     });
+    if (
+      next.length === prevVisibleProjects.length
+      && next.every((p, i) => p === prevVisibleProjects[i])
+    ) {
+      return prevVisibleProjects;
+    }
+    prevVisibleProjects = next;
+    return next;
   });
 
   // When a search is active, auto-expand any project whose threads

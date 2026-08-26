@@ -7,7 +7,8 @@
   import { getSettings } from '../../stores/settings.svelte';
   import { clearSidebarCursor, getSidebarCursorThreadId } from '../../stores/sidebarCursor.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { getThreadById } from '../../stores/threads.svelte';
+  import { getThreadById, getThreadLiveActivityAt } from '../../stores/threads.svelte';
+  import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { openThreadFromNavigation, openThreadInNewPane, openThreadInPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import {
@@ -251,6 +252,15 @@
     return label === 'just now' ? 'now' : label.replace(/ ago$/, '');
   }
 
+  // The row's activity stamp. getThreadLiveActivityAt folds in the
+  // per-thread streaming box (row objects no longer churn per beat),
+  // and getMinuteNow keeps an idle row's relative label creeping
+  // forward now that unrelated beats no longer re-render every row.
+  let timeLabel = $derived.by(() => {
+    getMinuteNow();
+    return sidebarTimeLabel(getThreadLiveActivityAt(thread));
+  });
+
   function handleContextMenu(e: MouseEvent) {
     // Cancel an in-flight rename so the menu anchor is a stable row
     // element and the input doesn't swallow the menu's outside-click.
@@ -474,7 +484,7 @@
           class="text-[0.625rem] tabular-nums text-fg-hint transition-opacity duration-150 pointer-events-none group-hover/thread-item:opacity-0 group-has-[:focus-visible]/thread-row:opacity-0"
           data-testid="thread-row-time"
         >
-          {sidebarTimeLabel(thread.updatedAt)}
+          {timeLabel}
         </span>
         <!--
           Hover actions stay unmounted while the jump-hint pill is up —

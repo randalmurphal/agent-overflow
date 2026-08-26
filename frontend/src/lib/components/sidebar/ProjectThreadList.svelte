@@ -31,6 +31,7 @@
   import {
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
+  import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import { flip } from 'svelte/animate';
   import { SIDEBAR_FLIP, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import Plus from '@lucide/svelte/icons/plus';
@@ -42,6 +43,8 @@
     nextSidebarThreadRevealLimit,
     previewSidebarThreads,
     rollupDisplayStatus,
+    sameSidebarVisibleNodes,
+    sameThreadStatusPill,
     syncExpandedTreeForActiveThread,
   } from '../../utils/sidebarTree';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
@@ -58,11 +61,16 @@
   let lastNewThreadContextMenuAt = 0;
 
   // Tree is built per-render: cheap (small N) and lets us reactively
-  // pick up effective live-status changes from the status store.
+  // pick up effective live-status changes from the status store and
+  // live-activity ordering from the per-thread activity boxes. Streaming
+  // beats DO wake this derived (activity is sort input); the identity
+  // cutoff on visibleNodes below is what keeps those beats from
+  // reaching the DOM.
   let tree = $derived(
     buildSidebarThreadTree({
       threads,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
+      activityOf: (thread) => getThreadLiveActivityAt(thread),
     }),
   );
 
@@ -82,7 +90,22 @@
   let hiddenThreadCount = $derived(preview.hiddenNodes.length);
   let nextRevealCount = $derived(Math.min(THREAD_REVEAL_INCREMENT, hiddenThreadCount));
 
-  let hiddenStatus = $derived(rollupDisplayStatus(preview.hiddenNodes));
+  // Identity cutoff: the rollup object is minted per tree build, so
+  // return the previous one when its content is unchanged — otherwise
+  // every streaming beat re-renders the show-more footer.
+  let prevHiddenStatus: ReturnType<typeof rollupDisplayStatus> = null;
+  let hiddenStatus = $derived.by(() => {
+    const next = rollupDisplayStatus(preview.hiddenNodes);
+    if (
+      prevHiddenStatus !== null && next !== null
+      && prevHiddenStatus.liveStatus === next.liveStatus
+      && sameThreadStatusPill(prevHiddenStatus.pill, next.pill)
+    ) {
+      return prevHiddenStatus;
+    }
+    prevHiddenStatus = next;
+    return next;
+  });
 
   // Auto-expand the chain of ancestors leading to the active thread so
   // a freshly-switched discussion participant shows up without a manual
@@ -97,12 +120,22 @@
     setExpandedDiscussions(next);
   });
 
-  let visibleNodes = $derived(
-    flattenSidebarThreadTree({
+  // Identity cutoff: return the PREVIOUS array when nothing the rows
+  // render has changed, so svelte's derived cutoff stops the animated
+  // each-block from reconciling. This is load-bearing for streaming
+  // performance — without it every item-event flush re-ran the FLIP
+  // measure pass (a forced synchronous layout per beat). See
+  // sameSidebarVisibleNodes.
+  let prevVisibleNodes: ReturnType<typeof flattenSidebarThreadTree> = [];
+  let visibleNodes = $derived.by(() => {
+    const next = flattenSidebarThreadTree({
       nodes: preview.visibleNodes,
       expandedThreadIds: getExpandedDiscussions(),
-    }),
-  );
+    });
+    if (sameSidebarVisibleNodes(prevVisibleNodes, next)) return prevVisibleNodes;
+    prevVisibleNodes = next;
+    return next;
+  });
 
   function handleShowMore(e: MouseEvent): void {
     e.stopPropagation();

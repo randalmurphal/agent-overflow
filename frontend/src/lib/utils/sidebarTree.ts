@@ -111,6 +111,13 @@ export interface BuildSidebarThreadTreeInput {
   threads: readonly Thread[];
   statusOf?: (thread: Thread) => ThreadLiveStatus;
   liveStatusOf?: (threadId: string) => ThreadLiveStatus;
+  /**
+   * Newest activity timestamp for a thread. Callers pass the threads
+   * store's getThreadLiveActivityAt so streaming bumps (which live in a
+   * per-thread box, not on the row) still drive the activity sort.
+   * Defaults to the row's own updatedAt.
+   */
+  activityOf?: (thread: Thread) => number;
   maxDepth?: number;
 }
 
@@ -153,8 +160,12 @@ function getStatusSortGroup(
   }
 }
 
-function resolveLatestActivityAt(thread: Thread, children: readonly SidebarTreeNode[]): number {
-  let latest = thread.updatedAt ?? 0;
+function resolveLatestActivityAt(
+  thread: Thread,
+  children: readonly SidebarTreeNode[],
+  activityOf: ((thread: Thread) => number) | undefined,
+): number {
+  let latest = activityOf ? activityOf(thread) : (thread.updatedAt ?? 0);
   for (const child of children) {
     if (child.latestActivityAt > latest) latest = child.latestActivityAt;
   }
@@ -287,7 +298,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     const ownPill = resolveThreadStatusPill(thread, ownLiveStatus);
     const ownGroup = getStatusSortGroup(thread, ownLiveStatus, ownPill);
     const display = resolveDisplay(ownLiveStatus, ownPill, ownGroup, children);
-    const latestActivityAt = resolveLatestActivityAt(thread, children);
+    const latestActivityAt = resolveLatestActivityAt(thread, children, input.activityOf);
 
     return {
       thread,
@@ -331,6 +342,53 @@ export function flattenSidebarThreadTree(
 
   for (const node of input.nodes) visit(node);
   return visibleNodes;
+}
+
+/**
+ * Content equality for status pills. Pills are minted fresh on every
+ * tree build, so the identity cutoffs below must compare fields, not
+ * references.
+ */
+export function sameThreadStatusPill(
+  a: ThreadStatusPill | null,
+  b: ThreadStatusPill | null,
+): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return a.label === b.label
+    && a.dotClass === b.dotClass
+    && a.labelClass === b.labelClass
+    && a.pulse === b.pulse
+    && a.glowClass === b.glowClass;
+}
+
+/**
+ * Render-content equality for the flattened sidebar list. The
+ * ProjectThreadList derived returns its PREVIOUS array when this holds,
+ * so svelte's derived cutoff stops the animated each-block from
+ * reconciling — and the FLIP measure pass (getBoundingClientRect per
+ * visible row, a forced layout mid-flush) only runs when membership,
+ * order, or a row's rendered fields actually changed. latestActivityAt
+ * is deliberately NOT compared: it moves on every streaming beat, it is
+ * sort input rather than render input, and comparing it would defeat
+ * the cutoff.
+ */
+export function sameSidebarVisibleNodes(
+  a: readonly SidebarTreeVisibleNode[],
+  b: readonly SidebarTreeVisibleNode[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.thread !== y.thread) return false;
+    if (x.depth !== y.depth) return false;
+    if (x.isExpanded !== y.isExpanded || x.isExpandable !== y.isExpandable) return false;
+    if (x.ownLiveStatus !== y.ownLiveStatus || x.displayLiveStatus !== y.displayLiveStatus) return false;
+    if (!sameThreadStatusPill(x.ownStatus, y.ownStatus)) return false;
+    if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;
+  }
+  return true;
 }
 
 /**

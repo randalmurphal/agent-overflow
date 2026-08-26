@@ -4,6 +4,8 @@ import ProjectThreadList from '../ProjectThreadList.svelte';
 import { createThreadPane } from '../../../stores/thread.svelte';
 import type { Thread } from '../../../types/models';
 import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
+import { replaceAllThreads, touchThreadActivity } from '../../../stores/threads.svelte';
+import { tick } from 'svelte';
 import { resetForTest as resetThreadStatuses } from '../../../stores/threadStatuses.svelte';
 
 function mkThread(id: string, overrides: Partial<Thread> = {}): Thread {
@@ -178,5 +180,35 @@ describe('<ProjectThreadList>', () => {
     await fireEvent.click(firstShowMore);
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(27);
     expect(getByTestId('project-thread-list-show-more')).toHaveTextContent('Show 4 More');
+  });
+
+  it('a live-activity beat does not reconcile the FLIP each-block; a real reorder does', async () => {
+    // Tripwire for the streaming machine-gun stutter class (2026-08-26):
+    // per-flush activity bumps used to rewrite the threads array, and the
+    // animated each-block then ran svelte's FLIP measure pass — a forced
+    // synchronous layout (getBoundingClientRect per visible row) on every
+    // streamed item. A beat that changes no ordering must stay identity-
+    // stable all the way to the each; a genuine overtake must still
+    // reconcile so FLIP animates it.
+    const t1 = mkThread('t1', { updatedAt: 1000 });
+    const t2 = mkThread('t2', { updatedAt: 2000 });
+    replaceAllThreads([t1, t2]);
+    const pane = createThreadPane();
+    render(ProjectThreadList, {
+      props: { projectId: 'p1', threads: [t1, t2], pane },
+    });
+    await tick();
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect');
+
+    // Same-order beat (what every streaming flush does).
+    touchThreadActivity('t1', 1500);
+    await tick();
+    expect(spy).not.toHaveBeenCalled();
+
+    // Real overtake: t1 passes t2, the each reconciles, FLIP measures.
+    touchThreadActivity('t1', 3000);
+    await tick();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

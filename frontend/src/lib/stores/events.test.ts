@@ -11,9 +11,9 @@ import {
 } from './threadStatuses.svelte';
 import { resetForTest as resetSendQueue } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
-import { getThreads, refreshThreads } from './threads.svelte';
+import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
 import { getToasts } from './toast.svelte';
-import { getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
+import { getProjectLiveActivityAt, getProjects, refreshProjects, resetProjectsForTest } from './projects.svelte';
 import {
   getProviderRateLimit,
   resetForTest as resetRateLimitsInfo,
@@ -58,6 +58,20 @@ function projectWithCounts(id: string, lastActive = 0): ProjectWithCounts {
     threadCount: 1,
     lastActive,
   };
+}
+
+// Live-activity reads: streaming bumps live in per-entity boxes, not on
+// the row objects (see threads/projects stores), so activity assertions
+// go through the live getters. This also keeps the negative tests
+// honest — a bump that lands in the box alone still trips them.
+function liveThreadActivity(id: string): number | undefined {
+  const thread = getThreads().find((t) => t.id === id);
+  return thread ? getThreadLiveActivityAt(thread) : undefined;
+}
+
+function liveProjectActivity(id: string): number | undefined {
+  const project = getProjects().find((p) => p.project.id === id);
+  return project ? getProjectLiveActivityAt(project) : undefined;
 }
 
 function nextFrame(): Promise<void> {
@@ -1628,9 +1642,9 @@ describe('setupEventListeners', () => {
 
     // assistant_text upserts must not advance the sidebar activity —
     // that's the bug fix for "sidebar reshuffles on every chunk".
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(liveThreadActivity('thread-stale')).toBe(100);
     expect(pane.thread?.updatedAt).toBe(100);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+    expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
   it('does NOT bump cached project activity from item_event deltas', async () => {
@@ -1657,8 +1671,8 @@ describe('setupEventListeners', () => {
 
     // Streaming deltas are the most-frequent firing path; they must
     // never advance the sidebar timestamp.
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+    expect(liveThreadActivity('thread-stale')).toBe(100);
+    expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
   it('bumps cached project activity from user_text item_event upserts', async () => {
@@ -1692,9 +1706,11 @@ describe('setupEventListeners', () => {
 
     // user_text is one of three sidebar-bump boundaries: send →
     // surface the thread to the top.
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
-    expect(pane.thread?.updatedAt).toBe(10_000);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
+    expect(liveThreadActivity('thread-stale')).toBe(10_000);
+    // pane.thread is deliberately NOT replaced per activity beat any
+    // more — per-beat object churn re-rendered every pane.thread reader.
+    expect(pane.thread?.updatedAt).toBe(100);
+    expect(liveProjectActivity('project-stale')).toBe(10_000);
   });
 
   it('does NOT bump cached project activity from wire-only user_text upserts', async () => {
@@ -1725,9 +1741,9 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-	expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+	expect(liveThreadActivity('thread-stale')).toBe(100);
 	expect(getThreads().find((thread) => thread.id === 'thread-stale')?.latestTurnCompletedAt).toBe(100);
-	expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+	expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
   it('does NOT bump cached project activity when an item upsert is explicitly non-activity', async () => {
@@ -1753,8 +1769,8 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+    expect(liveThreadActivity('thread-stale')).toBe(100);
+    expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
   it('does NOT bump cached project activity from parented user_text upserts', async () => {
@@ -1780,8 +1796,8 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+    expect(liveThreadActivity('thread-stale')).toBe(100);
+    expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
   it('bumps cached project activity on provider:turn_completed', async () => {
@@ -1808,8 +1824,8 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(12_000);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(12_000);
+    expect(liveThreadActivity('thread-stale')).toBe(12_000);
+    expect(liveProjectActivity('project-stale')).toBe(12_000);
   });
 
   it('does NOT bump cached project activity when provider:turn_completed is internal', async () => {
@@ -1842,9 +1858,9 @@ describe('setupEventListeners', () => {
     });
     await nextFrame();
 
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
+    expect(liveThreadActivity('thread-stale')).toBe(100);
     expect(getThreads().find((thread) => thread.id === 'thread-stale')?.latestTurnCompletedAt).toBe(100);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+    expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
   it('bumps cached project activity on provider:approval request', async () => {
@@ -1881,8 +1897,8 @@ describe('setupEventListeners', () => {
     // Wire-pushed requestedAt is what the backend wrote to
     // threads.updated_at via MarkThreadActivity; the cached value
     // should match exactly so live order and persisted order agree.
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(requestedAt);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(requestedAt);
+    expect(liveThreadActivity('thread-stale')).toBe(requestedAt);
+    expect(liveProjectActivity('project-stale')).toBe(requestedAt);
   });
 
   it('bumps cached project activity on provider:user_input request', async () => {
@@ -1927,8 +1943,8 @@ describe('setupEventListeners', () => {
     // Wire-pushed requestedAt is what the backend wrote to
     // threads.updated_at; the cached value should match exactly so live
     // and persisted order agree.
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(requestedAt);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(requestedAt);
+    expect(liveThreadActivity('thread-stale')).toBe(requestedAt);
+    expect(liveProjectActivity('project-stale')).toBe(requestedAt);
   });
 
   it('does NOT bump activity on provider:approval resolve', async () => {
@@ -1951,8 +1967,8 @@ describe('setupEventListeners', () => {
 
     // Approval resolutions ride on the user's reply (a user_text
     // upsert path) — no separate bump here.
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(100);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(100);
+    expect(liveThreadActivity('thread-stale')).toBe(100);
+    expect(liveProjectActivity('project-stale')).toBe(100);
   });
 
   it('does not regress project activity from stale thread:updated events', async () => {
@@ -2008,8 +2024,8 @@ describe('setupEventListeners', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(getThreads().find((thread) => thread.id === 'thread-stale')?.updatedAt).toBe(10_000);
-    expect(getProjects().find((project) => project.project.id === 'project-stale')?.lastActive).toBe(10_000);
+    expect(liveThreadActivity('thread-stale')).toBe(10_000);
+    expect(liveProjectActivity('project-stale')).toBe(10_000);
   });
 
   it('refreshes the context meter via GetThread after a provider:usage transport gap', async () => {
