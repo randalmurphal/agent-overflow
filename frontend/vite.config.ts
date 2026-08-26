@@ -36,7 +36,15 @@ export default defineConfig({
     // Production builds ship without sourcemaps. Vite 8 already defaults
     // to false; pinned explicitly so a future default flip can't leak the
     // source map into a shipped binary.
-    sourcemap: false,
+    //
+    // AO_SOURCEMAP=1 is the perf-investigation escape hatch: 'hidden'
+    // emits `assets/*.js.map` beside the bundles with NO sourceMappingURL
+    // comment, so the served JS is byte-identical and DevTools stays
+    // unaware — only the perfprobe scripts fetch the maps to resolve
+    // profile frames to real file:line (`scripts/perfprobe/lib/
+    // sourcemap.mjs`). Never set it for a release build: the maps get
+    // embedded into the binary's assets like any other dist file.
+    sourcemap: process.env.AO_SOURCEMAP === '1' ? 'hidden' : false,
     rolldownOptions: {
       output: {
         codeSplitting: {
