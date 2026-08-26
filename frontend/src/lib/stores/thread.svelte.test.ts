@@ -3485,7 +3485,7 @@ describe('createThreadPane', () => {
     it('loadNewer preserves the newer-history gap when pruning older head rows', async () => {
       const pane = createThreadPane();
       const initial = Array.from(
-        { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
+        { length: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS },
         (_, index) =>
           makeItem({
             id: `t${index}`,
@@ -3497,7 +3497,7 @@ describe('createThreadPane', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS - 1,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: true,
@@ -3505,14 +3505,14 @@ describe('createThreadPane', () => {
       setBindingMock('ListItemsAfterCursor', async () => ({
         items: [
           makeItem({
-            id: `t${ACTIVE_TIMELINE_WINDOW_MAX_ITEMS}`,
+            id: `t${ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS}`,
             threadId: 't',
-            turnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+            turnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
             itemIndex: 0,
           }),
         ],
-        oldestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
-        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+        oldestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
         hasMore: true,
         hasMoreOlder: true,
         hasMoreNewer: true,
@@ -3533,7 +3533,7 @@ describe('createThreadPane', () => {
     it('loadOlder prepends and tail-prunes in one render flush', async () => {
       const pane = createThreadPane();
       const initial = Array.from(
-        { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
+        { length: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS },
         (_, index) =>
           makeItem({
             id: `t${index}`,
@@ -3545,7 +3545,7 @@ describe('createThreadPane', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 1000,
-        newestTurnIndex: 1000 + ACTIVE_TIMELINE_WINDOW_MAX_ITEMS - 1,
+        newestTurnIndex: 1000 + ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS - 1,
         hasMore: true,
         hasMoreOlder: true,
         hasMoreNewer: false,
@@ -3560,7 +3560,7 @@ describe('createThreadPane', () => {
       );
 
       await pane.switchThread(makeThread({ id: 't' }));
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS);
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS);
 
       const pending = pane.loadOlder();
       releaseOlder({
@@ -3591,7 +3591,7 @@ describe('createThreadPane', () => {
     it('loadNewer appends and head-prunes in one render flush', async () => {
       const pane = createThreadPane();
       const initial = Array.from(
-        { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS },
+        { length: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS },
         (_, index) =>
           makeItem({
             id: `t${index}`,
@@ -3603,7 +3603,7 @@ describe('createThreadPane', () => {
       setBindingMock('ListThreadSliceAround', async () => ({
         items: initial,
         oldestTurnIndex: 0,
-        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS - 1,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS - 1,
         hasMore: false,
         hasMoreOlder: false,
         hasMoreNewer: true,
@@ -3611,14 +3611,14 @@ describe('createThreadPane', () => {
       setBindingMock('ListItemsAfterCursor', async () => ({
         items: [
           makeItem({
-            id: `t${ACTIVE_TIMELINE_WINDOW_MAX_ITEMS}`,
+            id: `t${ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS}`,
             threadId: 't',
-            turnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+            turnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
             itemIndex: 0,
           }),
         ],
-        oldestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
-        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
+        oldestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
+        newestTurnIndex: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
         hasMore: true,
         hasMoreOlder: true,
         hasMoreNewer: true,
@@ -3643,10 +3643,73 @@ describe('createThreadPane', () => {
         stop();
       }
 
-      expect(snapshots).not.toContain(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1);
+      expect(snapshots).not.toContain(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS + 1);
       expect(snapshots).toContain(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.hasMoreHistory).toBe(true);
+    });
+
+    // Incident 2026-08-25: one giant activity run (~700 tool rows rendering
+    // as a single collapsed node) held most of the item budget, so paging
+    // older past MAX_ITEMS evicted the on-screen conversation tail and
+    // flipped the pane into windowed mid-history. The paged prunes now
+    // tolerate up to the hard ceiling; only the streaming prune keeps the
+    // tight MAX bound.
+    it('loadOlder keeps the conversation tail while paging through a giant activity run', async () => {
+      const pane = createThreadPane();
+      const runChildren = Array.from(
+        { length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 90 },
+        (_, index) =>
+          makeItem({
+            id: `run${index}`,
+            threadId: 't',
+            turnIndex: 1000,
+            itemIndex: index,
+            kind: 'tool_call',
+            role: 'assistant',
+          }),
+      );
+      const tail = Array.from({ length: 10 }, (_, index) =>
+        makeItem({
+          id: `tail${index}`,
+          threadId: 't',
+          turnIndex: 1001 + index,
+          itemIndex: 0,
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [...runChildren, ...tail],
+        oldestTurnIndex: 1000,
+        newestTurnIndex: 1010,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+      setBindingMock('ListItemsBeforeCursor', async () => ({
+        items: Array.from({ length: 200 }, (_, index) =>
+          makeItem({
+            id: `older${index}`,
+            threadId: 't',
+            turnIndex: 999,
+            itemIndex: index,
+            kind: 'tool_call',
+            role: 'assistant',
+          }),
+        ),
+        oldestTurnIndex: 999,
+        hasMore: true,
+        hasMoreOlder: true,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      const beforeCount = pane.items.length;
+      await pane.loadOlder();
+
+      // Every prior item survives — no tail eviction, no mid-history gap.
+      expect(pane.items).toHaveLength(beforeCount + 200);
+      expect(pane.items[0]?.id).toBe('older0');
+      expect(pane.items.at(-1)?.id).toBe('tail9');
+      expect(pane.hasMoreNewer).toBe(false);
     });
 
     it('loadOlder does not invent a newer-history gap from the older page response', async () => {

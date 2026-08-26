@@ -74,6 +74,12 @@ export const ACTIVE_TIMELINE_WINDOW_MAX_ITEMS = 800;
  * repaints the visible timeline — incident 2026-06-10); a single turn
  * that streams past this ceiling gets pruned anyway, accepting the
  * repaint over unbounded growth.
+ *
+ * Also the trigger for the paged (click-driven) prunes: "Load older" /
+ * "Load newer" tolerate up to this ceiling before dropping the opposite
+ * edge, because pruning at MAX_ITEMS evicted the on-screen conversation
+ * when one giant activity run held most of the item budget (see
+ * pruneToHeadWindowIfNeeded in threadTimelineWindow.svelte.ts).
  */
 export const ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS = 1600;
 

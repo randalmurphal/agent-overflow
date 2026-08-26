@@ -425,9 +425,19 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = result === 'deferred';
   }
 
+  // Paged (click-driven) prunes tolerate up to the HARD ceiling, not the
+  // MAX cap the streaming prune uses. Item count is a proxy for "screens of
+  // content below the reader", and one giant activity run breaks it: 500+
+  // tool rows render as a single collapsed node a few hundred px tall, so
+  // pruning at MAX evicted the on-screen conversation right below the run
+  // ("Load older" visibly ATE the thread tail — incident 2026-08-25, the
+  // 700-item soak run). Tool rows are summary-only (~1-2KB), so the extra
+  // headroom is ~1-3MB held only after explicit back-paging; the streaming
+  // settle prune still trims the window back to TARGET, so steady state is
+  // unchanged.
   function pruneToHeadWindowIfNeeded(): void {
     const items = options.getItems();
-    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    if (items.length <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS) return;
     const next = keepHeadWindowItems(
       items,
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
@@ -439,7 +449,7 @@ export function createThreadTimelineWindow(
 
   function prunePagedRecentWindowIfNeeded(hasMoreNewerAfterPrune: boolean): void {
     const items = options.getItems();
-    if (items.length <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
+    if (items.length <= ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS) return;
     const next = keepRecentWindowItems(items, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
     applyPagedPrune(next, {
       hasMoreHistoryAfterPrune: true,
