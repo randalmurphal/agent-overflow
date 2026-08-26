@@ -39,6 +39,14 @@ func main() {
 		log.Fatalf("getwd: %v", err)
 	}
 
+	// `codex exec --ephemeral` is checked before the protocol sniff below,
+	// which reads every argv without `app-server` as Claude — a one-shot Codex
+	// text-generation run carries no such marker (see textgen.go).
+	if isCodexTextGenInvocation(args) {
+		runCodexTextGen(args)
+		return
+	}
+
 	protocol := scenario.ProviderClaude
 	if slices.Contains(args, "app-server") {
 		protocol = scenario.ProviderCodex
@@ -49,6 +57,13 @@ func main() {
 	// invocation, not a session — serve it without registering a mock.
 	if protocol == scenario.ProviderClaude && isClaudeProbeInvocation(args) {
 		runClaudeProbe(cwd)
+		return
+	}
+
+	// Same for one-shot text generation (`claude -p --output-format json`):
+	// a prompt in, one structured answer out, no turn lifecycle.
+	if protocol == scenario.ProviderClaude && isClaudeTextGenInvocation(args) {
+		runClaudeTextGen(args)
 		return
 	}
 
@@ -126,14 +141,7 @@ func isClaudeProbeInvocation(args []string) bool {
 // structured-output schema it cannot accept, naming every broken rule so the
 // harness failure points at the generator instead of at a mystery timeout.
 func rejectInvalidOutputSchema(source string, schema []byte) {
-	violations := providerschema.Validate(schema)
-	if len(violations) == 0 {
-		return
-	}
-	for _, violation := range violations {
-		log.Printf("%s is not a valid provider schema: %s", source, violation.Error())
-	}
-	log.Fatalf("%s broke %d provider schema rule(s); a real provider would reject this turn", source, len(violations))
+	rejectSchema(source, providerschema.Validate(schema))
 }
 
 // flagValue returns the argument following the given flag, or "".

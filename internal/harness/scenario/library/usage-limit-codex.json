@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "usage-limit-codex",
+  "description": "Codex turn that starts normally, then hits the account's usage limit: an `error` notification with codexErrorInfo \"usageLimitExceeded\" and willRetry false, followed by turn/completed with turn.status \"failed\" and turn.error populated. Pins that the fatal branch classifies the failure as FailureReasonUsageLimit (transient, turn-bounded) rather than a plain fatal error, which is what parks a workflow run as OutcomeProviderUsageLimited instead of failing it, and that the turn still closes through the wire lifecycle rather than a synthesized completion. Wire shape verified against codex-rs/app-server-protocol/src/protocol/v2 (ErrorNotification, TurnError, CodexErrorInfo::UsageLimitExceeded, which serializes as the bare camelCase string).",
+  "provider": "codex",
+  "turns": [
+    {
+      "label": "usage-limit-mid-turn",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 30,
+            "lines": [
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/started\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"item\":{\"type\":\"agentMessage\",\"id\":\"msg-${TURN}\",\"status\":\"inProgress\",\"text\":\"\"}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"itemId\":\"msg-${TURN}\",\"delta\":\"Starting on that now\"}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"error\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turnId\":\"${TURN_ID}\",\"willRetry\":false,\"error\":{\"message\":\"You've hit your usage limit. Try again later.\",\"codexErrorInfo\":\"usageLimitExceeded\",\"additionalDetails\":null}}}",
+              "{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"threadId\":\"${THREAD_ID}\",\"turn\":{\"id\":\"${TURN_ID}\",\"status\":\"failed\",\"error\":{\"message\":\"You've hit your usage limit. Try again later.\",\"codexErrorInfo\":\"usageLimitExceeded\"}}}}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

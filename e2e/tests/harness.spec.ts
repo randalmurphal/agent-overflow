@@ -164,3 +164,52 @@ test('reset returns the harness to a blank slate', async ({ harness, page }) => 
   await page.reload();
   await expect(page.getByText('Doomed thread')).toBeVisible();
 });
+
+test('a session-scoped scenario rule binds only after the session resumes', async ({
+  harness,
+}) => {
+  // sessionRef is matched against the mock's registration ResumeRef, which
+  // is argv-derived: it is EMPTY on a session's first spawn, because there
+  // is nothing to resume yet. Proving that boundary needs a real restart —
+  // no backend unit test can produce it — so this test does the whole
+  // sequence: first spawn, read the provider session id off the thread,
+  // install the session-scoped rule, restart, and watch the second spawn
+  // pick it up.
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'session-scoped', repo: {}, threads: [{ title: 'Scoped thread' }] }],
+  });
+  const threadId = seed.projects[0].threadIds[0];
+
+  // A catch-all rule, so the first spawn has something specific to match
+  // and "the session rule won" cannot be confused with "the default ran".
+  await harness.rpc('HarnessSetScenario', { name: 'thinking-then-text' });
+
+  await harness.rpc('StartSession', threadId);
+  const firstSpawn = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'registered',
+  );
+  expect(firstSpawn.scenario).toBe('thinking-then-text');
+
+  // The session id only exists once a turn has run against the provider.
+  await harness.rpc('SendMessage', threadId, 'first turn', null);
+  await harness.waitForEvent('provider:turn_completed');
+  const thread = await harness.rpc<{ sessionRef: string }>('GetThread', threadId);
+  expect(thread.sessionRef).not.toBe('');
+
+  // Same provider, same workspace, narrower selector: this must beat the
+  // catch-all on the resumed spawn.
+  await harness.rpc('HarnessSetScenario', {
+    name: 'streaming-text',
+    sessionRef: thread.sessionRef,
+  });
+
+  await harness.rpc('StopSession', threadId);
+  await harness.rpc('StartSession', threadId);
+  const resumedSpawn = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'registered',
+  );
+  expect(resumedSpawn.mockId).not.toBe(firstSpawn.mockId);
+  expect(resumedSpawn.scenario).toBe('streaming-text');
+});

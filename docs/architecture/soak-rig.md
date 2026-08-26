@@ -19,6 +19,16 @@ make soak-check   # read-only: uptime, stalls, recovery episodes, controller reb
 make soak-contract # verify scrollTop quantization + compositor ownership in WebView2
 ```
 
+This document describes the **Windows launcher** shell, which is the one
+that reproduces the WebView2 renderer hang. The same `--soak` backend
+also runs behind a native Wails window (`make soak-window`, i.e.
+`--soak --window`) on linux/macOS, with its own per-worktree data root
+and instance registry row — see
+[agent-harness.md § Windowed mode](agent-harness.md#windowed-mode---window)
+and `docs/specs/testing-harness.md`. Everything below about provider
+isolation applies to both; the profile/launcher table is
+Windows-specific.
+
 ## What makes it safe to run beside your own app
 
 Two independent isolations, one axis each.

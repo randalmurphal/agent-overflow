@@ -2154,3 +2154,35 @@ func TestBindRebindListener_PermissionErrorKeepsOldListener(t *testing.T) {
 		t.Fatalf("bindRebindListener closed the live listener for an unrecoverable bind error (%v); close reported %v", err, closeErr)
 	}
 }
+
+func TestServer_BootstrapAnnouncesHarnessMode(t *testing.T) {
+	// The SPA keys its harness bridge on this flag, so it must be absent
+	// (not false-y-but-present-and-wrong) on an ordinary boot and true on
+	// a harness one.
+	plain := newServerFixture(t)
+	if bootstrapDoc(t, plain).Harness {
+		t.Error("an ordinary boot advertised harness mode")
+	}
+
+	harness := newServerFixtureWith(t, func(cfg *Config) { cfg.Harness = true })
+	if !bootstrapDoc(t, harness).Harness {
+		t.Error("a harness boot did not advertise harness mode")
+	}
+}
+
+func bootstrapDoc(t *testing.T, f *serverFixture) Bootstrap {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json?t=test-token", f.srv.Addr()))
+	if err != nil {
+		t.Fatalf("fetch bootstrap: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("bootstrap status: %d", resp.StatusCode)
+	}
+	var b Bootstrap
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	return b
+}

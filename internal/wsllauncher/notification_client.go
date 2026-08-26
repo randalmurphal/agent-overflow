@@ -87,9 +87,9 @@ type NotificationClient struct {
 	// frame must be redelivered on every connection. They ride the replay
 	// request with a cursor of zero — see HandleKeepAwake.
 	levelChannels []string
-	logf     func(string, ...any)
-	minWait  time.Duration
-	maxWait  time.Duration
+	logf          func(string, ...any)
+	minWait       time.Duration
+	maxWait       time.Duration
 	// rpcTimeout bounds one RPC exchange (notificationBridgeRPCTimeout in
 	// production; tests inject a short one so the disconnected-bridge path is
 	// asserted rather than slept through).

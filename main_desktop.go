@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"log"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/theme"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/windowgeom"
@@ -93,11 +95,53 @@ func runClient(rawURL string) {
 	}
 }
 
-// runDesktop is the original Wails-window entry point used on
-// macOS/Linux/Windows native builds. The Windows binary that proxies
-// into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
-func runDesktop(listenAddr string) {
-	appService := newApp()
+// webviewShell is the window half of a GUI boot: it builds the Wails
+// application, opens one WebviewWindow on a live transport URL, restores
+// and tracks the window's geometry, and runs the app loop until the
+// window closes.
+//
+// Two callers with different backends share it. runDesktop registers the
+// App as a Wails service and lets Wails drive its lifecycle; the
+// isolated windowed boots (--harness/--soak --window, see
+// main_harness_window.go) have already started and MarkReady'd their
+// backend by the time they get here, so they register no services, no
+// single instance, and no updater. Everything that does NOT differ —
+// window size, background colour, keybindings, cid threading, the
+// ApplicationStarted creation order and the post-Run geometry flush —
+// lives here once, so a windowed harness is the same shell the user
+// runs rather than a lookalike of it.
+type webviewShell struct {
+	// title is both the application name and the window title.
+	title string
+	// singleInstance registers the desktop single-instance id. Isolated
+	// instances leave it off: they are collision-free by construction and
+	// N of them (one per checkout) may be open at once, so bouncing a
+	// second launch into the first window would be wrong.
+	singleInstance bool
+	// services builds the Wails service list, given a getter for the
+	// window (which does not exist until ApplicationStarted). Nil
+	// registers none.
+	services func(getWindow func() *application.WebviewWindow) []application.Service
+	// beforeRun runs after application.New and before the app loop
+	// starts. runDesktop boots its transport here, because the updater
+	// must observe the application first.
+	beforeRun func(app *application.App)
+	// pageURL returns the CURRENT page URL (the transport's AppURL). A
+	// getter, not a value: Ctrl+R re-reads it so a rebind (the LAN
+	// toggle) reloads onto the new origin.
+	pageURL func() string
+	// loadGeometry / persistGeometry are the saved window placement's
+	// reader and writer. Both resolve through the boot data dir, so an
+	// isolated instance remembers its own window, not the user's.
+	loadGeometry    func() windowgeom.Geometry
+	persistGeometry func(windowgeom.Geometry)
+}
+
+// run opens the window and blocks until the app loop exits, returning
+// the Wails run error. It does not tear down the backend: what
+// shutdown means differs per caller, and the shell knows nothing about
+// transports or App lifecycles.
+func (s webviewShell) run() error {
 	// window + its tracker flush are created on the ApplicationStarted handler
 	// goroutine (see below) and read by the single-instance callback and the
 	// post-Run backstop, so guard both.
@@ -111,23 +155,18 @@ func runDesktop(listenAddr string) {
 		defer winMu.Unlock()
 		return window
 	}
-	notificationService := newDesktopNotificationService(appService, getWindow)
-	title := appidentity.AppTitle(nativeSingleInstanceMode())
-	appOpts := desktopApplicationOptions(title)
-	appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
-	appOpts.Services = []application.Service{
-		application.NewService(notificationService),
-		application.NewService(appService),
+
+	appOpts := desktopApplicationOptions(s.title)
+	if s.singleInstance {
+		appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
+	}
+	if s.services != nil {
+		appOpts.Services = s.services(getWindow)
 	}
 	app := application.New(appOpts)
-
-	// Configure in-app self-update before the transport serves, so the updater
-	// RPC handlers observe appService.updater.handle without a race. No-op for dev
-	// builds and on provider/init failure (logged) — updates stay unavailable
-	// and the app runs normally.
-	initUpdater(appService, app)
-
-	srv := bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedBindAll: true})
+	if s.beforeRun != nil {
+		s.beforeRun(app)
+	}
 
 	// Assert non-empty before constructing the WebviewWindowOptions.
 	// Wails maps URL "" back to its built-in scheme, which would expose
@@ -136,9 +175,9 @@ func runDesktop(listenAddr string) {
 	// listener addresses fail to parse — both are pathological boot
 	// states that warrant an obvious failure rather than a silent IPC
 	// fallthrough or a port-less URL hitting port 80.
-	appURL := srv.AppURL()
+	appURL := s.pageURL()
 	if appURL == "" {
-		fatalf("transport: AppURL is empty after Start (server addr = %q); refusing to fall through to Wails IPC scheme", srv.Addr())
+		return errors.New("transport: page URL is empty after Start; refusing to fall through to the Wails IPC scheme")
 	}
 
 	// Thread the durable UI-state client ID onto the page URL (and the
@@ -152,7 +191,7 @@ func runDesktop(listenAddr string) {
 		}
 		return pageURL + "&cid=" + url.QueryEscape(clientID)
 	}
-	reloadURL := func() string { return withClientID(srv.AppURL()) }
+	reloadURL := func() string { return withClientID(s.pageURL()) }
 
 	// Context-menu policy lives in the frontend guard
 	// (browserHistoryGuard.ts): native menu allowed in editable fields
@@ -162,7 +201,7 @@ func runDesktop(listenAddr string) {
 	// anything at all). F12 devtools is a compiled no-op in production
 	// builds, so WithDevTools is safe unconditionally here.
 	opts := application.WebviewWindowOptions{
-		Title:            title,
+		Title:            s.title,
 		Width:            1280,
 		Height:           800,
 		MinWidth:         800,
@@ -178,7 +217,7 @@ func runDesktop(listenAddr string) {
 	// flashing at normal size or always landing on the primary. See
 	// uiwindow.RestoreAndTrack for why creation must happen here.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		w, flush := uiwindow.RestoreAndTrack(app, opts, loadPersistedWindowGeometry(), appService.persistWindowGeometry)
+		w, flush := uiwindow.RestoreAndTrack(app, opts, s.loadGeometry(), s.persistGeometry)
 		winMu.Lock()
 		window = w
 		flushGeometry = flush
@@ -194,11 +233,57 @@ func runDesktop(listenAddr string) {
 	if flush != nil {
 		flush()
 	}
+	return runErr
+}
+
+// runDesktop is the original Wails-window entry point used on
+// macOS/Linux/Windows native builds. The Windows binary that proxies
+// into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
+func runDesktop(listenAddr string) {
+	appService := newApp()
+	// Assigned inside beforeRun, on this goroutine, before the app loop
+	// starts — so every later read (the reload keybinding on the UI
+	// thread, the shutdown below) sees the started server.
+	var srv *transport.Server
+
+	shell := webviewShell{
+		title:          appidentity.AppTitle(nativeSingleInstanceMode()),
+		singleInstance: true,
+		services: func(getWindow func() *application.WebviewWindow) []application.Service {
+			return []application.Service{
+				application.NewService(newDesktopNotificationService(appService, getWindow)),
+				application.NewService(appService),
+			}
+		},
+		beforeRun: func(app *application.App) {
+			// Configure in-app self-update before the transport serves, so the updater
+			// RPC handlers observe appService.updater.handle without a race. No-op for dev
+			// builds and on provider/init failure (logged) — updates stay unavailable
+			// and the app runs normally.
+			initUpdater(appService, app)
+			srv = bootTransport(appService, listenAddr, bootTransportOptions{LoadPersistedBindAll: true})
+			if srv.AppURL() == "" {
+				fatalf("transport: AppURL is empty after Start (server addr = %q); refusing to fall through to Wails IPC scheme", srv.Addr())
+			}
+		},
+		pageURL: func() string {
+			if srv == nil {
+				return ""
+			}
+			return srv.AppURL()
+		},
+		loadGeometry:    loadPersistedWindowGeometry,
+		persistGeometry: appService.persistWindowGeometry,
+	}
+
+	runErr := shell.run()
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), transportShutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(shutCtx); err != nil {
-		log.Printf("transport: shutdown: %v", err)
+	if srv != nil {
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Printf("transport: shutdown: %v", err)
+		}
 	}
 	if runErr != nil {
 		fatalf("wails run: %v", runErr)

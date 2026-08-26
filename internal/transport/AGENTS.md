@@ -212,6 +212,14 @@ on the wire at all. Rules for any future receiver:
   needs per-method classification, extend `internalmethods.go` rather
   than re-checking origin in method bodies.
 
+`Config.Harness` is the manifest half of the same switch: it makes
+`/bootstrap.json` carry `"harness": true`, and `main.go` sets it from
+the very expression that registers the receiver, so the manifest can
+never claim a harness whose methods are absent from the wire. It
+announces a mode; it grants nothing, and the receiver stays LocalOnly
+either way. The SPA keys its (W3) harness bridge import on it so an
+ordinary boot never loads that module.
+
 ## Event-channel policy registry
 
 `event_channels.go` holds `channelPolicies`, ONE authored row per

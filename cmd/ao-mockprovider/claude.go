@@ -20,10 +20,43 @@ import (
 // and internal/testutil/app.go WriteMockClaudeInit.
 const claudeAccountJSON = `{"email":"mock@agent-overflow.test","subscriptionType":"Claude Max","apiProvider":"firstParty","tokenSource":"claude.ai"}`
 
+// claudeModelsJSON is the `models` array the initialize control_response
+// carries. It is the ONLY input to internal/claudemodels' merge — the account
+// probe hands it over through claude.ProbeConfig.OnModels — so without it a
+// harness run exercises the un-enriched catalog and the merge policy never
+// runs at all.
+//
+// Two rows, modelled on the real 2.1.219 capture in
+// docs/references/fixtures/claude/initialize_models_20260802.json:
+//
+//   - The `default` POINTER row, whose displayName names the pointer rather
+//     than a model and whose `resolvedModel` carries the `[1m]` marker.
+//     Exercises CanonicalSlug's alias/marker normalization and
+//     IsDefaultPointer; its capabilities match the catalog's claude-opus-5
+//     exactly, so it contributes no drift.
+//   - A `claude-haiku-4-5` row claiming `supportsFastMode: true`, which the
+//     catalog does not. That single divergence is deliberate: it is what makes
+//     the merge OBSERVABLE under harness — Merge reports one DriftCapability
+//     line and appends ModelCapabilityFastMode to a model that shipped without
+//     it. A payload that agreed with the catalog everywhere would be
+//     indistinguishable from no payload at all.
+//
+// Haiku's effort fields stay at the wire's real answer (no effort support), so
+// the row produces exactly ONE drift line rather than two.
+const claudeModelsJSON = `[` +
+	`{"value":"default","resolvedModel":"claude-opus-5[1m]","displayName":"Default (recommended)",` +
+	`"description":"Opus 5 with 1M context","supportsEffort":true,` +
+	`"supportedEffortLevels":["low","medium","high","xhigh","max"],` +
+	`"supportsAdaptiveThinking":true,"supportsFastMode":true,"supportsAutoMode":true},` +
+	`{"value":"claude-haiku-4-5","resolvedModel":"claude-haiku-4-5","displayName":"Haiku",` +
+	`"description":"Haiku 4.5","supportsEffort":false,"supportedEffortLevels":[],` +
+	`"supportsAdaptiveThinking":false,"supportsFastMode":true,"supportsAutoMode":true}]`
+
 // claudeInitializeResponsePayload is the inner response payload for a
 // control_request{subtype:"initialize"} ack — the probe reads
-// `account` out of it.
-const claudeInitializeResponsePayload = `{"commands":[],"agents":[],"account":` + claudeAccountJSON + `}`
+// `account` and `models` out of it.
+const claudeInitializeResponsePayload = `{"commands":[],"agents":[],"models":` + claudeModelsJSON +
+	`,"account":` + claudeAccountJSON + `}`
 
 // claudeContextUsageResponsePayload is the inner response payload for a
 // control_request{subtype:"get_context_usage"} ack. Static: the mock has no

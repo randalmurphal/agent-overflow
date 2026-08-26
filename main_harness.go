@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
@@ -64,9 +65,21 @@ type harnessPaths struct {
 // bootTransportOptions.HarnessReceiver), and the harness bootstrap line
 // that hands agents the URL, token, and data paths in one place.
 func runHarness(flags cliFlags) {
+	if flags.window {
+		// Before any work: a nogui payload can never open a window, and
+		// finding that out after seeding a data directory would be a worse
+		// error message for the same mistake.
+		requireWindowedBuild()
+	}
 	paths, err := prepareHarness(flags)
 	if err != nil {
 		fatalf("harness: %v", err)
+	}
+	if flags.window {
+		// After prepareHarness (its refusals compare against the real
+		// config root) and before the first GLib call. See
+		// isolateWebviewStorage.
+		isolateWebviewStorage(paths.DataRoot)
 	}
 
 	appService := newIsolatedProviderApp(paths, "the agent test harness has no OS notification presenter")
@@ -110,6 +123,20 @@ func runHarness(flags cliFlags) {
 	if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil); err != nil {
 		shutdownHeadless(appService, srv)
 		fatalf("harness: write bootstrap: %v", err)
+	}
+
+	// Discovery files last: they advertise an instance that is ready to
+	// attach, which is true only now.
+	instance := publishInstance(srv, paths, instanceinfo.ModeHarness, flags.window)
+	defer instance.remove()
+
+	if flags.window {
+		if err := runWindowedShell(appService, srv, isolatedWindowTitle(instanceinfo.ModeHarness, instance.id)); err != nil {
+			instance.remove()
+			h.shutdownControl()
+			fatalf("harness: %v", err)
+		}
+		return
 	}
 	waitForHeadlessShutdown(appService, srv)
 }
@@ -377,7 +404,11 @@ type harnessBootstrap struct {
 	StartupError string `json:"startupError,omitempty"`
 }
 
-func writeHarnessBootstrap(out *os.File, srv *transport.Server, paths harnessPaths, startupErr error) error {
+// newHarnessBootstrap assembles the payload. Split from the write so
+// the same fields reach the stdout line and <dataDir>/harness-instance.json
+// (main_harness_instance.go) — a tool that attaches to a running
+// instance must not be reading a second, drifting description of it.
+func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr error) harnessBootstrap {
 	bs := harnessBootstrap{
 		URL:          srv.AppURL(),
 		Port:         portFromAddr(srv.Addr()),
@@ -392,7 +423,11 @@ func writeHarnessBootstrap(out *os.File, srv *transport.Server, paths harnessPat
 	if startupErr != nil {
 		bs.StartupError = startupErr.Error()
 	}
-	payload, err := json.Marshal(bs)
+	return bs
+}
+
+func writeHarnessBootstrap(out *os.File, srv *transport.Server, paths harnessPaths, startupErr error) error {
+	payload, err := json.Marshal(newHarnessBootstrap(srv, paths, startupErr))
 	if err != nil {
 		return fmt.Errorf("marshal harness bootstrap: %w", err)
 	}

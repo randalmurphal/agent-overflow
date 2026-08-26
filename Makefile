@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl launch-wsl soak soak-check soak-contract build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness e2e
+.PHONY: install dev dev-wsl launch-wsl soak soak-check soak-contract build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider
@@ -357,6 +357,21 @@ harness-build: mockprovider
 
 harness: harness-build
 	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"
+
+# harness-window / soak-window are the same two backends behind a REAL
+# webview window instead of a headless port (docs/specs/testing-harness.md
+# §1): isolated data root, mock providers, no single-instance
+# registration, webview storage under the data root. Under WSLg the
+# window lands on the Windows desktop, so this is live-testable from the
+# dev environment. Both block; Ctrl-C or closing the window ends them.
+harness-window: harness-build
+	bin/agent-overflow --harness --window --data-dir "$(HARNESS_DATA_DIR)"
+
+# The -soak suffix mirrors the binary's own windowed-soak default
+# (perWorktreeSoakDataRoot): the soak autopilot refuses a data dir
+# holding threads it did not seed, so it cannot share the harness root.
+soak-window: harness-build
+	bin/agent-overflow --soak --window --data-dir "$(HARNESS_DATA_DIR)-soak"
 
 # e2e runs the Playwright harness suite (e2e/) against a fresh
 # harness-build. Chromium comes from `make install`'s playwright cache.

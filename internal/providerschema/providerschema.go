@@ -52,6 +52,31 @@ func (v Violation) Error() string { return v.Path + ": " + v.Message }
 // Validate reports every rule the schema breaks. An empty result means both
 // provider CLIs accept it.
 func Validate(schema []byte) []Violation {
+	return validate(schema, true)
+}
+
+// ValidateClaude reports only the rules CLAUDE's `--json-schema` validator
+// enforces: the `$schema` draft, the strict-mode keyword vocabulary, and a
+// declared `type` on every node. The two object rules Validate also applies
+// (`additionalProperties: false`, a `required` naming every property) are
+// codex-400 rejections; Claude accepts an open object and a partial
+// `required`, and the package doc records that tolerance.
+//
+// It exists for a schema that is CLAUDE'S ALONE and can never be re-targeted:
+// `internal/commitmsg` and `internal/threadtitle` each keep a separate Claude
+// constant from their Codex one, and the Claude commit-message schema
+// deliberately requires only `subject` so an empty body stays legal. Judging
+// those against the union would report a working invocation as broken.
+//
+// Anything sent to BOTH providers — every generated workflow envelope schema —
+// must still go through Validate. Reaching for this function to quiet a
+// violation on a shared schema re-opens the exact class of defect the union
+// exists to catch.
+func ValidateClaude(schema []byte) []Violation {
+	return validate(schema, false)
+}
+
+func validate(schema []byte, strictObjects bool) []Violation {
 	var root map[string]any
 	if err := json.Unmarshal(schema, &root); err != nil {
 		return []Violation{{Path: "$", Message: "invalid JSON: " + err.Error()}}
@@ -63,10 +88,10 @@ func Validate(schema []byte) []Violation {
 			Message: fmt.Sprintf("$schema %v is not accepted by every provider; omit it or declare %q", declared, Draft07),
 		})
 	}
-	return append(violations, walk(root, "$")...)
+	return append(violations, walk(root, "$", strictObjects)...)
 }
 
-func walk(node map[string]any, path string) []Violation {
+func walk(node map[string]any, path string, strictObjects bool) []Violation {
 	var violations []Violation
 	for _, keyword := range sortedKeys(node) {
 		if path == "$" && keyword == "$schema" {
@@ -83,15 +108,15 @@ func walk(node map[string]any, path string) []Violation {
 		violations = append(violations, Violation{Path: path, Message: "schema must declare a type"})
 	}
 	if items, ok := node["items"].(map[string]any); ok {
-		violations = append(violations, walk(items, path+".items")...)
+		violations = append(violations, walk(items, path+".items", strictObjects)...)
 	}
 	properties, _ := node["properties"].(map[string]any)
 	for _, name := range sortedKeys(properties) {
 		if child, ok := properties[name].(map[string]any); ok {
-			violations = append(violations, walk(child, path+".properties."+name)...)
+			violations = append(violations, walk(child, path+".properties."+name, strictObjects)...)
 		}
 	}
-	if !declaresObject(node["type"]) {
+	if !strictObjects || !declaresObject(node["type"]) {
 		return violations
 	}
 	if closed, ok := node["additionalProperties"].(bool); !ok || closed {

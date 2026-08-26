@@ -81,6 +81,96 @@ func TestHarnessScenarioRulesResolveAndFallBack(t *testing.T) {
 	}
 }
 
+// TestHarnessScenarioRulesScopeBySession pins the specificity ladder the
+// per-session selector adds: sessionRef beats cwd beats catch-all, a rule
+// naming both beats either alone, and — the part a test author has to know —
+// an empty ResumeRef matches no session-scoped rule, because that is what a
+// session's FIRST spawn looks like.
+func TestHarnessScenarioRulesScopeBySession(t *testing.T) {
+	h, _ := newHarnessTestApp(t)
+
+	named := func(name string) json.RawMessage {
+		return json.RawMessage(`{
+			"version": 1, "name": "` + name + `", "provider": "claude",
+			"turns": [{"steps": [{"emit": {"lines": ["{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"]}}]}]
+		}`)
+	}
+
+	for _, spec := range []HarnessScenarioSpec{
+		{Scenario: named("any-claude")},
+		{Scenario: named("in-ws-a"), Cwd: "/ws/a"},
+		{Scenario: named("session-only"), SessionRef: "sess-1"},
+		{Scenario: named("session-in-ws-a"), Cwd: "/ws/a", SessionRef: "sess-2"},
+	} {
+		if _, err := h.HarnessSetScenario(spec); err != nil {
+			t.Fatalf("HarnessSetScenario %+v: %v", spec, err)
+		}
+	}
+
+	cases := []struct {
+		name      string
+		cwd       string
+		resumeRef string
+		want      string
+	}{
+		// A first spawn has no resume ref at all, so it can only reach the
+		// path-scoped rules. This is the limitation an e2e test works around
+		// by restarting the session.
+		{"first spawn in a scoped workspace", "/ws/a", "", "in-ws-a"},
+		{"first spawn elsewhere", "/ws/other", "", "any-claude"},
+		// A resumed session outranks the workspace it resumed in.
+		{"session rule beats cwd rule", "/ws/a", "sess-1", "session-only"},
+		{"session rule beats catch-all", "/ws/other", "sess-1", "session-only"},
+		// Both selectors present is narrower than either alone.
+		{"cwd plus session beats session alone", "/ws/a", "sess-2", "session-in-ws-a"},
+		// A rule naming a cwd does not match a different one, even for the
+		// session it names.
+		{"cwd selector still constrains", "/ws/b", "sess-2", "any-claude"},
+		// An unknown session falls back rather than matching arbitrarily.
+		{"unknown session falls back to cwd", "/ws/a", "sess-99", "in-ws-a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := h.resolveScenario(control.Registration{
+				Protocol: "claude", Cwd: tc.cwd, ResumeRef: tc.resumeRef,
+			})
+			if err != nil {
+				t.Fatalf("resolveScenario: %v", err)
+			}
+			if got.ScenarioName != tc.want {
+				t.Errorf("scenario = %q, want %q", got.ScenarioName, tc.want)
+			}
+		})
+	}
+
+	// Replacement keys on all three selectors: re-setting the session-scoped
+	// rule swaps it, and leaves the three others alone.
+	if _, err := h.HarnessSetScenario(HarnessScenarioSpec{
+		Scenario: named("session-only-v2"), SessionRef: "sess-1",
+	}); err != nil {
+		t.Fatalf("HarnessSetScenario replace: %v", err)
+	}
+	list, err := h.HarnessListScenarios()
+	if err != nil {
+		t.Fatalf("HarnessListScenarios: %v", err)
+	}
+	if len(list.Rules) != 4 {
+		t.Fatalf("rules = %+v, want 4 (replaced, not appended)", list.Rules)
+	}
+	var sawSessionRef bool
+	for _, rule := range list.Rules {
+		if rule.SessionRef == "sess-1" {
+			sawSessionRef = true
+			if rule.Name != "session-only-v2" {
+				t.Errorf("session rule = %q, want the replacement", rule.Name)
+			}
+		}
+	}
+	if !sawSessionRef {
+		t.Error("HarnessListScenarios dropped the sessionRef selector")
+	}
+}
+
 func TestHarnessSetScenarioValidation(t *testing.T) {
 	h, _ := newHarnessTestApp(t)
 	if _, err := h.HarnessSetScenario(HarnessScenarioSpec{}); err == nil {
@@ -112,6 +202,17 @@ func TestHarnessSetScenarioValidation(t *testing.T) {
 	}
 	if _, err := h.HarnessSetScenario(HarnessScenarioSpec{Scenario: fixtureScenario(h.paths.DataRoot)}); err == nil {
 		t.Fatal("HarnessSetScenario accepted a fixture path that resolves to a directory")
+	}
+
+	// A session-scoped Codex rule can never match (the app-server resumes
+	// via the thread/resume method, so the mock's ResumeRef is always
+	// empty) — the refusal at set time is what keeps that from surfacing
+	// as a test hanging on a rule that silently never binds.
+	if _, err := h.HarnessSetScenario(HarnessScenarioSpec{Name: "codex-basic", SessionRef: "thread-1"}); err == nil {
+		t.Fatal("HarnessSetScenario accepted sessionRef scoping on a codex scenario")
+	}
+	if _, err := h.HarnessSetScenario(HarnessScenarioSpec{Name: "streaming-text", SessionRef: "sess-1"}); err != nil {
+		t.Fatalf("HarnessSetScenario refused sessionRef scoping on a claude scenario: %v", err)
 	}
 }
 

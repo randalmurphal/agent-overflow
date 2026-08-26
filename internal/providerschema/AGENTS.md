@@ -15,8 +15,30 @@ so schema *generation* (`internal/workflow/def`) and schema *consumption*
 | Symbol | Purpose |
 |---|---|
 | `Validate(schema []byte) []Violation` | Every rule the schema breaks. Empty result means both CLIs accept it. |
+| `ValidateClaude(schema []byte) []Violation` | Only the rules Claude's `--json-schema` validator enforces. For a schema that is Claude's ALONE — see below. |
 | `Violation` | `Path` + `Message`; implements `error`. |
 | `Draft07` | The only `$schema` value verified to pass both CLIs. |
+
+## `ValidateClaude` — the narrow door, and when it is legitimate
+
+`Validate` is the union. Two of its rules (`additionalProperties: false`,
+a `required` naming every property) are **codex-400 rejections only**;
+Claude accepts an open object and a partial `required`, and this package
+has always recorded that tolerance.
+
+`ValidateClaude` drops exactly those two and keeps the rest (the `$schema`
+draft, the strict-mode vocabulary, a declared `type` on every node). It
+exists because two schemas in this repo are Claude's alone and can never be
+re-targeted: `internal/commitmsg` and `internal/threadtitle` each keep a
+separate Claude constant beside their Codex one, and the Claude
+commit-message schema deliberately requires only `subject` so an empty body
+stays legal. Judging those against the union reports a working invocation
+as broken.
+
+Anything sent to BOTH providers — every generated workflow envelope schema,
+the workflow digest — still goes through `Validate`. Reaching for
+`ValidateClaude` to quiet a violation on a shared schema re-opens the exact
+class of defect the union exists to catch.
 
 ## The rules, and the failure each one prevents
 
@@ -52,7 +74,9 @@ both directions, and guessing tightens the union for no reason.
 - `internal/workflow/def` (test-only) — pins `EnvelopeSchema` output to the
   rules. The non-test package stays free of this dependency.
 - `cmd/ao-mockprovider` — rejects an illegal schema the way a real CLI
-  does, in both Claude (`--json-schema`) and Codex (`outputSchema`) modes.
+  does, in both Claude (`--json-schema`) and Codex (`outputSchema`) modes,
+  and on the one-shot text-generation paths (`claude -p` uses
+  `ValidateClaude`, `codex exec --output-schema` uses `Validate`).
   Without this the mock accepts anything and a workflow suite passes green
   while every real provider run fails at spawn — which is exactly how the
   original five schema defects survived a full green harness.

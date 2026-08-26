@@ -285,6 +285,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		EventBus:                 bus,
 		AssetHandler:             assetHandler,
 		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
+		// One condition, two surfaces: the boots that register the Harness
+		// receiver are exactly the boots whose /bootstrap.json says
+		// harness, so the SPA's bridge can never load against a wire that
+		// has no harness methods on it.
+		Harness: opts.HarnessReceiver != nil,
 		// Late-bound: appService.DesignServer is a bound method value,
 		// not the result of calling it. The transport server consults
 		// this getter per-request so the /design/ route registers

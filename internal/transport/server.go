@@ -25,6 +25,13 @@ type Bootstrap struct {
 	WSURL  string `json:"wsUrl"`
 	Token  string `json:"token"`
 	Remote bool   `json:"remote,omitempty"`
+	// Harness marks a backend booted as the agent test harness or the
+	// soak rig (Config.Harness). The SPA keys its harness bridge on it —
+	// the bridge module ships in every bundle but is only imported when
+	// this is true, so an ordinary boot pays nothing and a production
+	// binary can serve a harness without a frontend rebuild. Never a
+	// capability: it announces a mode, it does not grant one.
+	Harness bool `json:"harness,omitempty"`
 	// BackendID and ReplicaGeneration identify the backend's history
 	// store for the client-side thread replica
 	// (docs/specs/thread-replica-sync.md §3.3): the first keys the
@@ -172,6 +179,13 @@ type Config struct {
 	// ServiceStartup. Headless launchers use this to publish the port
 	// early but hold navigation until the backend is actually ready.
 	RequireReadyForBootstrap bool
+
+	// Harness announces harness/soak mode in the bootstrap manifest.
+	// main.go sets it exactly where it registers the Harness RPC
+	// receiver, so "the manifest says harness" and "the harness methods
+	// exist on this wire" can never disagree. It is a mode announcement,
+	// not an authorization: the receiver stays LocalOnly regardless.
+	Harness bool
 
 	// CrossOriginIsolate makes every asset and design response carry
 	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
@@ -768,6 +782,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		// Use the exact predicate captured by handleWS before upgrade so
 		// the client posture cannot disagree with LocalOnly enforcement.
 		Remote:            !remoteAddrIsLoopback(r.RemoteAddr),
+		Harness:           s.cfg.Harness,
 		BackendID:         backendID,
 		ReplicaGeneration: replicaGeneration,
 	})

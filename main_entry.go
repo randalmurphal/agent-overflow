@@ -105,6 +105,7 @@ type bootFlags struct {
 	dataDir            *string
 	harness            *bool
 	soak               *bool
+	window             *bool
 	mockProvider       *string
 	resetTransportPort *bool
 }
@@ -123,6 +124,7 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 		dataDir:      flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness."),
 		harness:      flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md."),
 		soak:         flagSet.Bool("soak", false, "soak rig backend: harness-grade isolation (mock providers, isolated data dir + HOME) behind the ORDINARY headless bootstrap, so the Windows launcher can host it in a real WebView2 window. Defaults --data-dir to ~/.agent-overflow-soak. See docs/architecture/soak-rig.md."),
+		window:       flagSet.Bool("window", false, "harness/soak mode only: open the real Wails webview window on the isolated backend instead of running headless. GUI builds only. See docs/specs/testing-harness.md."),
 		mockProvider: flagSet.String("mock-provider", "", "harness/soak mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
 		resetTransportPort: flagSet.Bool(resetTransportPortFlag, false,
 			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
@@ -159,6 +161,11 @@ type cliFlags struct {
 	// to soakDefaultDataRoot() when the operator (or the launcher, which
 	// cannot know a Linux path) leaves it off.
 	soak bool
+	// window opens the real Wails webview window over an isolated
+	// (--harness / --soak) backend instead of leaving it headless. Only
+	// those two modes accept it, and only a GUI (!nogui) build can honor
+	// it — see main_harness_window.go.
+	window bool
 	// mockProvider optionally overrides where --harness finds the
 	// ao-mockprovider binary (default: next to this executable).
 	mockProvider string
@@ -186,6 +193,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		dataDir:            *values.dataDir,
 		harness:            *values.harness,
 		soak:               *values.soak,
+		window:             *values.window,
 		mockProvider:       *values.mockProvider,
 		resetTransportPort: *values.resetTransportPort,
 	}
@@ -223,7 +231,35 @@ func parseFlags(args []string) (cliFlags, error) {
 			// Windows launcher spells only `--soak` on the WSL child's argv.
 			// The default is still an isolated, non-config-root path, and
 			// prepareHarness re-checks it.
-			out.dataDir = soakDefaultDataRoot()
+			//
+			// Which default depends on who is booting us. The launcher path
+			// keeps the single well-known ~/.agent-overflow-soak, because the
+			// launcher owns exactly one soak profile and `make soak-check`
+			// looks there. A native `--soak --window` is started per checkout
+			// by hand, so it takes the per-worktree root instead — two
+			// worktrees soaking at once must not share a database.
+			if out.window {
+				out.dataDir = perWorktreeSoakDataRoot()
+			} else {
+				out.dataDir = soakDefaultDataRoot()
+			}
+		}
+	}
+	if out.window {
+		// --window is a SHELL choice for an isolated backend, not a mode of
+		// its own: it decides whether the harness/soak boot ends in a
+		// webview window or in the headless signal wait.
+		if !out.harness && !out.soak {
+			return cliFlags{}, errors.New("--window requires --harness or --soak (the ordinary desktop boot is already windowed)")
+		}
+		if out.connect != "" {
+			return cliFlags{}, errors.New("cannot combine --window with --connect")
+		}
+		if *values.printURLFD != "" {
+			// --print-url-fd means "somebody else hosts the window" (the
+			// Windows launcher). Honoring both would open a second window
+			// onto the same backend.
+			return cliFlags{}, errors.New("cannot combine --window with --print-url-fd (that bootstrap channel exists for a launcher-hosted window)")
 		}
 	}
 	if out.dataDir != "" && out.connect != "" {

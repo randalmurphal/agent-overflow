@@ -43,9 +43,17 @@ type Registration struct {
 	// to a thread.
 	Cwd string `json:"cwd"`
 	PID int    `json:"pid"`
-	// ResumeRef carries Claude's --resume value or Codex's
-	// thread/resume id when the app is resuming, so scenario ${VAR}
-	// substitution and assignment logic can react.
+	// ResumeRef carries Claude's `--resume` value when the app is
+	// resuming, so scenario ${VAR} substitution and assignment logic
+	// (harnessScenarioRule.SessionRef) can react.
+	//
+	// It is argv-derived and read once, at process start, which bounds
+	// what it can say. It is EMPTY on a session's first spawn — there is
+	// nothing to resume yet — and always empty for Codex, whose
+	// app-server resumes a thread through the thread/resume JSON-RPC
+	// method on an already-registered process rather than through a
+	// launch flag. Anything keyed on it must treat empty as "no session
+	// identity available", never as a match.
 	ResumeRef string `json:"resumeRef,omitempty"`
 }
 

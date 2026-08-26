@@ -77,6 +77,27 @@ __AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?token=...","port":PORT,"token":".
 `url` goes straight into a browser / `page.goto()`. `token` opens the
 RPC WebSocket. All subsequent logging goes to stderr.
 
+The same payload is written to `<dataDir>/harness-instance.json` (0600)
+once the backend is ready, plus a token-free discovery row at
+`<user cache dir>/agent-overflow/harness-instances/<instance-id>.json`
+(`internal/harness/instanceinfo`). That is how a tool attaches to an
+instance whose stdout it never had; both files are removed on graceful
+shutdown, and a row whose pid is gone is stale. The instance id is the
+first 8 hex chars of the SHA-256 of the canonical data root.
+
+### Windowed mode (`--window`)
+
+`--harness --window` / `--soak --window` boot exactly the backend above
+and then open the real Wails webview window on it instead of waiting
+headless (`make harness-window`, `make soak-window`; GUI builds only —
+the `nogui` WSL payload refuses the flag at boot). Versus the ordinary
+desktop boot: no single-instance registration, no updater, a window
+titled `Agent Overflow (harness · <instance-id>)`, and — on linux —
+`XDG_{DATA,CACHE,CONFIG}_HOME` pointed at `<dataRoot>/home/xdg/*` so the
+webview's cookies, localStorage, IndexedDB replica and shader caches
+stay inside the data root. Under WSLg the window lands on the Windows
+desktop. Full contract: `docs/specs/testing-harness.md` §1-§2.
+
 ## RPC surface
 
 One WebSocket carries everything:
@@ -94,7 +115,7 @@ One WebSocket carries everything:
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
 | `HarnessSeed(spec)` | Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, plus project-scoped workflow definitions/profile/items. Returns created ids. |
 | `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords` — production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
-| `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` scope). Validated at set time. |
+| `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` and `sessionRef` scopes — see "Scoping a scenario" below). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order. |
 | `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
@@ -112,6 +133,30 @@ gaps), `startPaused`, `threadFilter`. Status transitions push on the
 (no event escapes after Pause returns); a step during a pause releases
 the next event immediately, skipping the recorded gap; a second Step
 while one is still pending errors instead of silently coalescing.
+
+### Scoping a scenario
+
+A rule may name a `cwd`, a `sessionRef`, both, or neither. Every selector
+it declares must match; the narrowest matching rule wins
+(`sessionRef` > `cwd` > catch-all, and a rule naming both beats either
+alone). Ties keep the earliest rule installed. Setting a rule with the
+same three selectors REPLACES it.
+
+`sessionRef` is matched against the mock's registration `ResumeRef`, which
+is argv-derived and read once at process start. That bounds it in two ways
+a test has to plan around:
+
+- It is **empty on a session's first spawn** — there is nothing to resume
+  yet — so a session-scoped rule binds only RESUMED sessions. The sequence
+  is: start the turn (which matches the cwd-scoped or catch-all rule), read
+  `sessionRef` off the thread row, install the session-scoped rule, then
+  `StopSession` + `StartSession` so the app respawns with `--resume`.
+  `e2e/tests/harness.spec.ts` walks exactly that.
+- It is **always empty for Codex**, whose app-server resumes a thread
+  through the `thread/resume` JSON-RPC method on an already-registered
+  process rather than through a launch flag — so `HarnessSetScenario`
+  refuses `sessionRef` on a codex scenario at set time. Scope Codex
+  mocks by `cwd`.
 
 ### Seeding vs. live turns
 
@@ -222,6 +267,18 @@ General-purpose scripts: `streaming-text` (Claude default),
 `soak-background-agents` (three async `local_agent` subagents streaming
 forever; see [soak-rig.md](soak-rig.md)), `codex-basic` (Codex
 default), `codex-approval`.
+
+Usage-limit scripts, one per provider: `usage-limit-claude` (a
+`rate_limit_event` with `status: "rejected"` plus an `assistant` envelope
+carrying the `rate_limit` error enum) and `usage-limit-codex` (an `error`
+notification with `codexErrorInfo: "usageLimitExceeded"` and
+`willRetry: false`, then `turn/completed` with `status: "failed"`). Both
+drive the same downstream decision: `provider.FailureReasonUsageLimit`,
+which parks a workflow run as `OutcomeProviderUsageLimited` rather than
+failing it. Neither can arm `internal/usagebackoff`'s durable per-account
+hold — that ledger is fed exclusively by an HTTP 429 from Anthropic's OAuth
+usage endpoint (`claude.ProbeRateLimits`), which is out of band from both
+stdio streams, so no scenario can reach it.
 
 Codex wire-shape fixtures, each written against a specific behaviour
 the typed stream alone cannot express — read the scenario's own

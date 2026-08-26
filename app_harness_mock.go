@@ -19,15 +19,34 @@ import (
 )
 
 // harnessScenarioRule maps registering mocks to a scenario. Provider
-// comes from the scenario document itself; Cwd is the optional
-// workspace selector (empty matches any workspace). One rule per
-// (provider, cwd) pair — setting again replaces.
+// comes from the scenario document itself; Cwd and SessionRef are
+// optional selectors (empty matches anything). One rule per
+// (provider, cwd, sessionRef) triple — setting again replaces.
 type harnessScenarioRule struct {
-	Provider    string          `json:"provider"`
-	Cwd         string          `json:"cwd,omitempty"`
+	Provider string `json:"provider"`
+	Cwd      string `json:"cwd,omitempty"`
+	// SessionRef scopes the rule to one provider session, matched against
+	// control.Registration.ResumeRef. See HarnessScenarioSpec.SessionRef
+	// for what that can and cannot bind.
+	SessionRef  string          `json:"sessionRef,omitempty"`
 	Name        string          `json:"name"`
 	FixtureRoot string          `json:"fixtureRoot"`
 	scenarioDoc json.RawMessage `json:"-"`
+}
+
+// specificity ranks a rule against the others that also matched, so the
+// narrowest one wins. sessionRef outranks cwd because a session lives inside a
+// workspace, never the other way round, and a rule carrying both is narrower
+// than either alone.
+func (r harnessScenarioRule) specificity() int {
+	score := 0
+	if r.SessionRef != "" {
+		score += 2
+	}
+	if r.Cwd != "" {
+		score++
+	}
+	return score
 }
 
 // HarnessScenarioSpec is the HarnessSetScenario input.
@@ -43,6 +62,25 @@ type HarnessScenarioSpec struct {
 	// thread tests drive different scripts per project). Empty matches
 	// any workspace of the scenario's provider.
 	Cwd string `json:"cwd,omitempty"`
+	// SessionRef scopes the rule to ONE provider session, matched against
+	// the mock's registration ResumeRef. Empty matches any session.
+	//
+	// LIMITATION, and it decides how a test must be written: ResumeRef is
+	// the RESUME argument the app spawned the process with, so it is empty
+	// on a session's FIRST spawn — nothing has a session id to resume yet.
+	// A sessionRef rule therefore binds only RESUMED sessions. A test that
+	// wants per-session scoping must: start the thread's turn (first spawn,
+	// which matches the cwd-scoped or provider-wide rule), read the
+	// provider session id off the thread, install the sessionRef rule, then
+	// restart the session so the app respawns with --resume.
+	//
+	// Codex is narrower still: the app-server carries no --resume flag at
+	// all (a thread is resumed by the thread/resume JSON-RPC method on an
+	// already-running process), so cmd/ao-mockprovider registers every
+	// Codex process with an empty ResumeRef and a sessionRef rule could
+	// never match one — HarnessSetScenario refuses the combination at set
+	// time. Scope Codex mocks by cwd.
+	SessionRef string `json:"sessionRef,omitempty"`
 	// FixtureRoot resolves the scenario's relative fixture paths.
 	// Defaults to the harness data root.
 	FixtureRoot string `json:"fixtureRoot,omitempty"`
@@ -104,9 +142,13 @@ func (h *Harness) shutdownControl() {
 }
 
 // resolveScenario picks the scenario for a registering mock: the most
-// specific matching rule (cwd-scoped beats catch-all), falling back to
-// the provider's shipped default so a zero-config harness still streams
-// a sensible first reply.
+// specific matching rule (sessionRef beats cwd beats catch-all, and a rule
+// naming both beats either alone), falling back to the provider's shipped
+// default so a zero-config harness still streams a sensible first reply.
+//
+// Every selector a rule declares must match — the selectors narrow, they never
+// combine as alternatives. Ties keep the earliest rule, which is the order
+// HarnessSetScenario appended them in.
 func (h *Harness) resolveScenario(reg control.Registration) (control.Assignment, error) {
 	h.mu.Lock()
 	var best *harnessScenarioRule
@@ -118,7 +160,13 @@ func (h *Harness) resolveScenario(reg control.Registration) (control.Assignment,
 		if r.Cwd != "" && !sameCanonicalPath(r.Cwd, reg.Cwd) {
 			continue
 		}
-		if best == nil || (best.Cwd == "" && r.Cwd != "") {
+		// Exact match: a resume ref is a provider session id, not a path.
+		// An empty ResumeRef (first spawn, or any Codex process) matches no
+		// session-scoped rule at all — see HarnessScenarioSpec.SessionRef.
+		if r.SessionRef != "" && r.SessionRef != reg.ResumeRef {
+			continue
+		}
+		if best == nil || r.specificity() > best.specificity() {
 			best = r
 		}
 	}
@@ -183,6 +231,15 @@ func (h *Harness) HarnessSetScenario(spec HarnessScenarioSpec) (harnessScenarioR
 		return harnessScenarioRule{}, fmt.Errorf("set either name (library scenario) or scenario (inline JSON)")
 	}
 
+	if spec.SessionRef != "" && parsed.Provider == scenario.ProviderCodex {
+		// The Codex mock's ResumeRef is always empty (the app-server
+		// resumes via the thread/resume METHOD, not a launch flag), so a
+		// session-scoped Codex rule could never match anything. Refuse at
+		// set time rather than letting the test hang on a rule that is
+		// inert by construction.
+		return harnessScenarioRule{}, fmt.Errorf("scenario %q: sessionRef scoping is Claude-only (a Codex spawn carries no resume ref on its argv, so the rule could never match)", parsed.Name)
+	}
+
 	fixtureRoot := spec.FixtureRoot
 	if fixtureRoot == "" {
 		fixtureRoot = h.paths.DataRoot
@@ -208,6 +265,7 @@ func (h *Harness) HarnessSetScenario(spec HarnessScenarioSpec) (harnessScenarioR
 	rule := harnessScenarioRule{
 		Provider:    parsed.Provider,
 		Cwd:         spec.Cwd,
+		SessionRef:  spec.SessionRef,
 		Name:        parsed.Name,
 		FixtureRoot: fixtureRoot,
 		scenarioDoc: raw,
@@ -216,7 +274,9 @@ func (h *Harness) HarnessSetScenario(spec HarnessScenarioSpec) (harnessScenarioR
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i := range h.scenarioRules {
-		if h.scenarioRules[i].Provider == rule.Provider && h.scenarioRules[i].Cwd == rule.Cwd {
+		if h.scenarioRules[i].Provider == rule.Provider &&
+			h.scenarioRules[i].Cwd == rule.Cwd &&
+			h.scenarioRules[i].SessionRef == rule.SessionRef {
 			h.scenarioRules[i] = rule
 			return rule, nil
 		}

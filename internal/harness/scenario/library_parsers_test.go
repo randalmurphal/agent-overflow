@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 )
@@ -114,4 +115,102 @@ func checkCodexScenario(t *testing.T, s *scenario.Scenario, vars scenario.Vars) 
 			}
 		}
 	}
+}
+
+// TestUsageLimitScenariosCarryTheUsageLimitReason asserts what the two
+// usage-limit scenarios claim in their descriptions, which the blanket
+// parse-every-line sweep above cannot: that the wire lines reach the app as a
+// USAGE-LIMIT failure specifically, not as a generic provider error.
+//
+// The distinction is the whole point of the scenarios. provider.
+// FailureReasonUsageLimit is what internal/workflowhost/quota.go keys on to
+// PARK a workflow run (engine.OutcomeProviderUsageLimited) rather than fail it,
+// so a wire shape that classified one step lower would send a run to its
+// failure path with no test noticing.
+//
+// What these scenarios deliberately do NOT reach is internal/usagebackoff's
+// durable per-account hold. That ledger is fed exclusively by
+// claude.RateLimitedError, raised inside the out-of-band HTTPS probe of
+// Anthropic's OAuth usage endpoint (claude.ProbeRateLimits, driven by
+// app_claude_ratelimits.go). No line on either provider's stdio stream reaches
+// Ledger.Note, so no scenario can arm a backoff hold.
+func TestUsageLimitScenariosCarryTheUsageLimitReason(t *testing.T) {
+	vars := scenario.TestVars
+
+	t.Run("usage-limit-claude", func(t *testing.T) {
+		_, s, err := scenario.LoadLibrary("usage-limit-claude")
+		if err != nil {
+			t.Fatalf("LoadLibrary: %v", err)
+		}
+		parser := claude.NewParser()
+		var sawUsageLimit, sawSpentWindow bool
+		for _, line := range collectEmitLines(s, vars) {
+			events, err := parser.ParseLine("thread-test", []byte(line))
+			if err != nil {
+				t.Fatalf("parse %s: %v", line, err)
+			}
+			for _, event := range events {
+				if event.Failure != nil && event.Failure.Reason == provider.FailureReasonUsageLimit {
+					sawUsageLimit = true
+				}
+				if event.Kind == provider.EventRateLimits {
+					var snapshot provider.RateLimitsSnapshot
+					if err := json.Unmarshal(event.Meta, &snapshot); err != nil {
+						t.Fatalf("decode rate limits meta: %v", err)
+					}
+					for _, limit := range snapshot.Limits {
+						// A refused window is spent by definition, and the
+						// reset time is the only thing that tells the user
+						// when it clears.
+						if limit.UsedPercent == 100 && limit.ResetsAt > 0 {
+							sawSpentWindow = true
+						}
+					}
+				}
+			}
+		}
+		if !sawUsageLimit {
+			t.Error("no event carried FailureReasonUsageLimit; a workflow run would fail instead of parking")
+		}
+		if !sawSpentWindow {
+			t.Error("no rate-limit snapshot reported a spent window with a reset time")
+		}
+	})
+
+	t.Run("usage-limit-codex", func(t *testing.T) {
+		_, s, err := scenario.LoadLibrary("usage-limit-codex")
+		if err != nil {
+			t.Fatalf("LoadLibrary: %v", err)
+		}
+		var sawUsageLimit, sawFailedTurn bool
+		for _, line := range collectEmitLines(s, vars) {
+			var frame struct {
+				Method string          `json:"method"`
+				Params json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal([]byte(line), &frame); err != nil {
+				t.Fatalf("decode frame %s: %v", line, err)
+			}
+			for _, event := range codex.ClassifyNotification("thread-test", frame.Method, frame.Params) {
+				if event.Failure != nil && event.Failure.Reason == provider.FailureReasonUsageLimit {
+					sawUsageLimit = true
+				}
+				// The turn must still close through the wire lifecycle:
+				// a synthesized completion would hide the failed status.
+				if event.Kind != provider.EventTurnComplete {
+					continue
+				}
+				if meta, ok := event.TurnComplete.(*provider.WireTurnCompleteMeta); ok &&
+					meta.StopReason == "error" {
+					sawFailedTurn = true
+				}
+			}
+		}
+		if !sawUsageLimit {
+			t.Error("no event carried FailureReasonUsageLimit; a workflow run would fail instead of parking")
+		}
+		if !sawFailedTurn {
+			t.Error("the turn did not close as failed through turn/completed")
+		}
+	})
 }

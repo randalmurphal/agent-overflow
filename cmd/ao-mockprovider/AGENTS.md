@@ -9,8 +9,56 @@ sniffs argv to pick a mode:
 - `--input-format stream-json ...` → Claude NDJSON session
   (`claude.go`); `--max-turns 0` → the account probe (`probe.go`).
 - `app-server` → Codex JSON-RPC 2.0 (`codex.go`).
+- `-p --output-format json` → Claude one-shot text generation
+  (`textgen.go`).
+- `exec --ephemeral` → Codex one-shot text generation (`textgen.go`).
+  Checked BEFORE the protocol sniff, which reads every argv without
+  `app-server` as Claude — `codex exec` carries no such marker.
 - `--version` → a string satisfying both providers' version gates
   (`version.go`).
+
+## One-shot text generation
+
+The third invocation shape, beside a session and the probe: a prompt on
+stdin, one structured answer, exit. No scenario, no control-channel
+registration, no turn lifecycle. `internal/textgen`'s `RunClaude` /
+`RunCodex` build both argvs; the answer travels differently per provider
+and `textgen.go` matches each side exactly — Claude prints a `result`
+line carrying `structured_output` (the LAST non-empty stdout line is what
+`DecodeClaudeStructuredLastLine` reads), Codex writes the bare JSON to the
+`--output-last-message` FILE and stdout is ignored.
+
+The answer is generated FROM the schema rather than hardcoded, so it
+satisfies whichever decoder the caller runs (thread title, commit message,
+workflow digest) instead of only the ones that existed when it was written.
+Every declared property is emitted; `cannedText` gives the known field
+names plausible values so a wrong-field bug reads as itself in the UI.
+
+Without this mode the Claude branch fell through to the NDJSON session
+adapter, which answers a bare prompt with nothing ("claude returned empty
+output" three layers away), and the Codex branch was sniffed as Claude
+entirely.
+
+The Claude path validates its schema with `providerschema.ValidateClaude`,
+not the two-provider union: `internal/commitmsg` and `internal/threadtitle`
+each keep a Claude-only schema that the union legitimately rejects. See
+`internal/providerschema/AGENTS.md`.
+
+## The account probe reports models, and they disagree on purpose
+
+The `initialize` control_response carries `account`, `commands` and
+`models` (`claude.go`). The `models` array is the ONLY input to
+`internal/claudemodels`' merge, so without it a harness run exercises the
+un-enriched catalog and the merge policy never runs at all.
+
+One row deliberately DISAGREES with the shipped catalog: `claude-haiku-4-5`
+claims `supportsFastMode: true`, which `provider.ClaudeModels` does not.
+That single divergence is what makes the merge observable — it produces one
+`DriftCapability` line and adds `ModelCapabilityFastMode`. A payload that
+agreed everywhere would be indistinguishable from no payload at all. The
+other row is the `default` POINTER (`resolvedModel: "claude-opus-5[1m]"`),
+which exercises alias/marker normalization and matches the catalog on every
+capability, so it contributes no drift.
 
 ## Structured-output schemas are validated, not accepted
 

@@ -19,6 +19,15 @@ this file covers the package boundaries.
   long-poll command delivery, progress reports), `Client` +
   `FromEnv` (the mock side), and the `AO_HARNESS_CONTROL` /
   `AO_HARNESS_CONTROL_TOKEN` env contract.
+- `instanceinfo/` — instance discovery for `--harness` / `--soak`
+  boots: `ID(dataRoot)` (first 8 hex of the canonical root's SHA-256),
+  the `Row` written to
+  `<user cache dir>/agent-overflow/harness-instances/<id>.json`, and
+  `List` with a signal-0 liveness probe so a reader can tell a live row
+  from a killed process's leftovers. Deliberately token-free — the
+  token lives in `<dataDir>/harness-instance.json`, inside the data
+  root a reader must already be able to open — so a planted row can at
+  worst name a path.
 - `scenario/` — the mock scenario document: `Parse`/`Validate`, step
   types, `${VAR}` substitution, and the `//go:embed`-shipped library
   (`library/*.json`) with `LoadLibrary` / `Library` / `DefaultName`.

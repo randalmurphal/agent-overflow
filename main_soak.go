@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/harness"
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harness/scenario"
 )
 
@@ -74,13 +75,62 @@ func soakDefaultDataRoot() string {
 	return filepath.Join(home, ".agent-overflow-soak")
 }
 
+// perWorktreeDataRoot is the default data root for an isolated boot
+// somebody started BY HAND from a checkout: the same value the
+// Makefile's HARNESS_DATA_DIR computes (`make harness`, `make
+// soak-window`), derived in Go so a flag default and a Make target
+// never disagree about which instance they mean.
+//
+// One root per checkout is the point: two worktrees running windowed
+// soaks at once must not share a database, and the same worktree
+// restarted must reuse its seeded state.
+func perWorktreeDataRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return filepath.Join(os.TempDir(), harnessDataRootPrefix)
+	}
+	return perWorktreeDataRootFor(cwd)
+}
+
+// harnessDataRootPrefix is the shared prefix of every per-worktree data
+// root; the checkout path (separators flattened) is appended verbatim,
+// leading separator included, exactly as `$(subst /,-,$(CURDIR))` does.
+const harnessDataRootPrefix = "agent-overflow-harness"
+
+// perWorktreeSoakDataRoot is perWorktreeDataRoot with a "-soak" suffix:
+// the default for a hand-started `--soak --window`. The suffix keeps a
+// windowed soak off the checkout's harness root — the soak autopilot
+// refuses a data dir holding threads it did not seed, so sharing one
+// root would make `make harness` then `make soak-window` fail on the
+// second boot.
+func perWorktreeSoakDataRoot() string {
+	return perWorktreeDataRoot() + "-soak"
+}
+
+// perWorktreeDataRootFor is the pure half of perWorktreeDataRoot, split
+// out so the naming rule is testable without chdir'ing a test process.
+func perWorktreeDataRootFor(checkout string) string {
+	// Windows drive letters carry a colon, which cannot appear inside a
+	// path component; it flattens with the separators.
+	flattened := strings.NewReplacer("/", "-", `\`, "-", ":", "-").Replace(filepath.Clean(checkout))
+	return filepath.Join(os.TempDir(), harnessDataRootPrefix+flattened)
+}
+
 // runSoak boots the soak backend: harness-grade isolation, the headless
 // bootstrap channel the Windows launcher parses, and the autopilot that
 // puts the app into its steady state.
 func runSoak(flags cliFlags) {
+	if flags.window {
+		requireWindowedBuild()
+	}
 	paths, err := prepareHarness(flags)
 	if err != nil {
 		fatalf("soak: %v", err)
+	}
+	if flags.window {
+		// After prepareHarness, before the first GLib call — see
+		// isolateWebviewStorage for why both ends of that window matter.
+		isolateWebviewStorage(paths.DataRoot)
 	}
 
 	appService := newIsolatedProviderApp(paths, "the soak rig has no OS notification presenter")
@@ -124,6 +174,13 @@ func runSoak(flags cliFlags) {
 	}
 	srv.MarkReady()
 
+	// Same contract as the harness: discovery files describe an instance
+	// that is ready to attach, so they land after MarkReady and go away on
+	// a graceful exit. A soak is exactly the instance a tool wants to
+	// attach to hours later, when nobody still has its stdout.
+	instance := publishInstance(srv, paths, instanceinfo.ModeSoak, flags.window)
+	defer instance.remove()
+
 	// Off the boot goroutine: the autopilot waits for the window to
 	// attach and then blocks on a live session start. A soak whose
 	// autopilot fails still serves — the operator sees the error in
@@ -139,6 +196,17 @@ func runSoak(flags cliFlags) {
 		}
 	}()
 
+	if flags.window {
+		// The autopilot goroutine above keeps running: --window changes
+		// only who hosts the window (this process instead of the Windows
+		// launcher), never what the soak drives.
+		if err := runWindowedShell(appService, srv, isolatedWindowTitle(instanceinfo.ModeSoak, instance.id)); err != nil {
+			instance.remove()
+			h.shutdownControl()
+			fatalf("soak: %v", err)
+		}
+		return
+	}
 	waitForHeadlessShutdown(appService, srv)
 }
 
