@@ -57,6 +57,8 @@ frontend/.vitest-attachments/
 
 # Binaries built into the repo root
 /agent-overflow
+/ao-harness
+/ao-mockprovider
 /db-rebake
 /dump-schema
 
