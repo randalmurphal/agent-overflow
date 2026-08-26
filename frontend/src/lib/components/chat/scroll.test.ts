@@ -1111,26 +1111,26 @@ describe('scroll integration — composer height + layout invariance', () => {
     expect(scroll.style.overflowAnchor).toBe('none');
   });
 
-  it('reserves a symmetric scrollbar gutter so centered rows stay aligned with the composer', async () => {
-    // Regression guard: the styled `::-webkit-scrollbar` (app.css) is a
-    // classic, space-consuming bar, not an overlay. Without a reserved
-    // gutter the centered `mx-auto max-w-[62rem]` rows jump ~5px left — out
-    // of alignment with ChatView's absolute composer overlay — the moment
-    // the bar appears. `both-edges` is required, not single-edge `stable`:
-    // WebKitGTK reserves the gutter only while the bar is actually present,
-    // so a single edge still shifts the column on the idle→scrolling
-    // transition; symmetric reservation holds the center in both states.
-    // Verified empirically in WebKitGTK 6.0 2.52.3. The shift itself can't
-    // be measured under happy-dom's zero geometry, so this guards the
-    // directive's presence and exact value. See
-    // docs/architecture/frontend-scroll.md.
+  it('suppresses the native bar and mounts the overlay scrollbar instead', async () => {
+    // The scroller draws no native bar (`pane-scroll-surface` in app.css:
+    // scrollbar-width none + zero-width ::-webkit-scrollbar + the
+    // composited-scrolling hint) and the <OverlayScrollbar> sibling is the
+    // surface's scrollbar, consuming zero layout width in every state.
+    // This retired the `scrollbar-gutter: stable both-edges` reservation
+    // that used to hold the centered column still across the classic bar's
+    // appearance — with no bar, a reservation would inset the column for
+    // nothing, so its ABSENCE is asserted too. happy-dom has zero
+    // geometry, so this guards the class, the directive's absence, and the
+    // overlay's presence. See docs/architecture/frontend-scroll.md.
     const pane = await buildPane(makeThread(), [
       makeItem({ id: 'tail', summary: 'tail' }),
     ]);
     const { getByTestId } = render(MessageTimeline, { props: { pane } });
     await tick();
     const scroll = getByTestId('message-timeline-scroll') as HTMLElement;
-    expect(scroll.style.getPropertyValue('scrollbar-gutter')).toBe('stable both-edges');
+    expect(scroll.classList.contains('pane-scroll-surface')).toBe(true);
+    expect(scroll.style.getPropertyValue('scrollbar-gutter')).toBe('');
+    expect(getByTestId('overlay-scrollbar')).toBeTruthy();
   });
 });
 

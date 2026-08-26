@@ -496,6 +496,36 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
+ * Pane scroll surfaces: the chat timeline and the discussion channel
+ * (MessageTimeline.svelte, ChannelView.svelte — both mount an
+ * <OverlayScrollbar> sibling as their scrollbar).
+ *
+ * `will-change: scroll-position` gives the scroller a composited
+ * scrolling layer. Without one, EVERY scroll offset change — the follow
+ * spring's per-frame write and real wheel input alike — runs a full
+ * main-frame compositor update (Layerize ~1.1ms × 155/s during two-pane
+ * streaming, measured 2026-08-25; with the hint, main-thread busy
+ * halves and the Oilpan geometry-mapper churn family disappears).
+ * `scroll-position` is NOT the transform promotion the app-wide
+ * will-change ban targets: it composits the scrollTop chokepoint's own
+ * mechanism rather than creating a second paint position. Costs ~9-14MB
+ * of raster tiles per visible pane.
+ *
+ * The native bar is suppressed for the same reason as the activity-run
+ * clip below: a classic bar consumes width, so overflow transitions
+ * re-wrap the content they announce.
+ */
+.pane-scroll-surface {
+  will-change: scroll-position;
+  scrollbar-width: none;
+}
+
+.pane-scroll-surface::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/*
  * Activity runs suppress the native bar entirely and draw their own
  * (components/shared/OverlayScrollbar.svelte).
  *

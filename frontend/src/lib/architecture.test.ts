@@ -154,9 +154,15 @@ const WAILS_EVENT_ALLOWLIST: Record<string, string> = {
 
 // Authored promotion creates a second paint position outside the scrollTop
 // chokepoint and can leave WebView2 presenting stale layer pixels. `will-change`
-// is prohibited app-wide. Transform state is additionally reviewed across the
-// whole chat/discussion/virtual/scroll tree, not a list of today's plane files:
-// adding a new row component must not create an enforcement blind spot.
+// is prohibited app-wide. ONE value is carved out below:
+// `will-change: scroll-position` on the pane scroll surfaces (app.css
+// `.pane-scroll-surface`) composits the scrollTop chokepoint's own mechanism —
+// there is no second paint position, the scroll offset IS the chokepoint's
+// value — and without it every offset change runs a full main-frame Layerize
+// (measured 2026-08-25, user-approved same day). Transform state is
+// additionally reviewed across the whole chat/discussion/virtual/scroll tree,
+// not a list of today's plane files: adding a new row component must not
+// create an enforcement blind spot.
 const SCROLL_PRESENTATION_PREFIXES = [
   'lib/components/chat/',
   'lib/components/discussion/',
@@ -168,6 +174,7 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
   // a fixed-size SVG spinner glyph and the composer's one-frame sprite window,
   // both leaves outside the timeline planes. They animate transform precisely
   // so Blink runs them off the main thread — see the notes in app.css.
+  'app.css|will-change declaration|will-change: scroll-position;',
   'app.css|transform declaration or keyframe|to { transform: rotate(360deg); }',
   'app.css|transform declaration or keyframe|to { transform: translateX(calc(-1 * var(--working-sprite-strip-w))); }',
   'lib/components/chat/CompactionDivider.svelte|Tailwind transform utility|class:rotate-90={expanded}',

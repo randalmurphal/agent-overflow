@@ -31,6 +31,7 @@
     target,
     content,
     ariaLabel,
+    placement = 'inset-y-0 -right-3 w-1.5',
     ownerDrivenPosition,
     onUserScrollStart,
     onUserScrollEnd,
@@ -44,6 +45,12 @@
      */
     content?: HTMLElement | undefined;
     ariaLabel: string;
+    /**
+     * Positioning utilities for the track within its `relative` host. The
+     * default hangs the strip in the activity-run column's padding; a
+     * full-pane scroller keeps it inside its own right edge instead.
+     */
+    placement?: string;
     /**
      * True while the position is the OWNER's to move rather than the reader's
      * — a bottom-following controller pinning to content as it streams in.
@@ -267,7 +274,7 @@
      pointerdown cannot suppress that — only `touch-action` can. -->
 <div
   bind:this={trackEl}
-  class="absolute inset-y-0 -right-3 w-1.5 touch-none transition-opacity duration-150"
+  class={`absolute ${placement} touch-none transition-opacity duration-150`}
   class:pointer-events-none={!thumb.visible}
   class:opacity-0={!thumb.visible || (!recentlyActive && !dragging)}
   class:opacity-100={thumb.visible && (recentlyActive || dragging)}

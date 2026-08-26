@@ -1106,22 +1106,27 @@ moving bottom instead of sync-pinning mid-chase.
 also set on the virtualizer's spacer). Browser scroll anchoring otherwise
 fights the engine's compensation targets and the controller's sync-pin.
 
-`scrollbar-gutter: stable both-edges` belongs on the chat scroll
-container. The styled `::-webkit-scrollbar` (app.css) is a classic,
-space-consuming bar, not an overlay, so a bare `overflow-y: auto` shifts
-the centered `mx-auto max-w-[62rem]` rows ~5px left — out of alignment
-with the absolute composer overlay — the moment the bar appears.
-`both-edges`, not single-edge `stable`, is required: WebKitGTK reserves
-the gutter only while the bar is actually present, so a single edge still
-shifts the column on the idle→scrolling transition. Symmetric reservation
-holds the center in both states and reserves nothing when idle (no
-always-visible bar). `ChannelView` is left-aligned, so the bar reflows
-only its right edge and needs no gutter — keep this directive chat-only.
+The pane scroll surfaces (chat timeline, discussion channel) draw no
+native bar: `.pane-scroll-surface` (app.css) suppresses it and applies
+`will-change: scroll-position`, and an `<OverlayScrollbar>` sibling is
+the surface's scrollbar — zero layout width in every state, so an
+overflow transition can never re-wrap the transcript, and gestures on
+the strip state intent through `onUserScrollStart` / `onUserScrollEnd`
+(the intent machine's geometric gutter hit test reads
+`offsetWidth − clientWidth`, always 0 here by design). The
+composited-scrolling hint is why the follow spring's per-frame
+`scrollTop` write is cheap: without a composited scrolling layer, every
+offset change ran a full main-frame Layerize (~1.1ms × 155/s during
+two-pane streaming, 2026-08-25). This retired the
+`scrollbar-gutter: stable both-edges` reservation the chat scroller
+carried while it had a classic space-consuming bar (the reservation
+held the centered column aligned with the composer overlay across the
+bar's appearance; with no bar it would inset the column for nothing).
 
-A gutter does not transfer to a scroller *inside* the centered column: it
-would inset that box's content relative to the prose above and below. The
-activity-run clip therefore suppresses its native bar to zero width and
-renders an out-of-flow overlay thumb instead — see
+A gutter never transferred to a scroller *inside* the centered column
+either: it would inset that box's content relative to the prose above
+and below. The activity-run clip suppresses its native bar the same way
+and renders the same overlay thumb — see
 [Nested scrollers](#the-activity-run-a-nested-scroller-with-the-panes-physics).
 
 Status banners are absolute overlays, not reserved layout slots. They

@@ -8,11 +8,11 @@
 // Content-box (ResizeObserver `contentRect.width`) is the ONLY width this
 // signal may carry, and it must arrive ASYNCHRONOUSLY. NEVER seed from
 // getBoundingClientRect() / clientWidth here: those are border-box — they
-// include the `scrollbar-gutter: stable both-edges` reservation, disagree with
-// `contentRect` by the gutter width, and a second disagreeing source turns the
-// width signal into a self-sustaining oscillation that re-renders every
-// visible row forever (idle CPU/heap-churn incident 2026-06-26, commit
-// a5a5d032). One box, one source, asynchronous only.
+// disagree with `contentRect` by whatever the box carries (padding; until
+// 2026-08-25 also a scrollbar-gutter reservation), and a second disagreeing
+// source turns the width signal into a self-sustaining oscillation that
+// re-renders every visible row forever (idle CPU/heap-churn incident
+// 2026-06-26, commit a5a5d032). One box, one source, asynchronous only.
 //
 // Sibling observer: TimelineVirtualizer's scroller RO reads the same
 // content-box width for `ContentGeometrySample.width`. The two stay

@@ -72,6 +72,19 @@ class FireableResizeObserver {
   }
 }
 
+// The controller's contentRO is the one observing the scroller's content
+// host (its first child). Identity, not elimination: the surface also
+// mounts an OverlayScrollbar whose RO observes the scroller itself, so
+// "any RO that isn't the composer's" no longer names one observer.
+function findContentRO(scroll: HTMLElement): FireableResizeObserver {
+  const contentHost = scroll.firstElementChild;
+  const ro = FireableResizeObserver.instances.find(
+    (observer) => observer.observed[0] === contentHost,
+  );
+  if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver on the content element');
+  return ro;
+}
+
 function makeThread(): Thread {
   return makeBaseThread({
     id: 'parent-thread',
@@ -562,9 +575,7 @@ describe('<ChannelView>', () => {
     // Initial load completes; ChannelView's post-load forceStick()
     // writes scrollTop to the current target (= 1000 - 600 = 400).
     await settleInitialLoad();
-    const composerSection = getByTestId('channel-composer-section');
-    const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
-    if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
+    const ro = findContentRO(scroll);
     const contentEl = ro.observed[0] as HTMLElement;
 
     // First RO fire seeds previousHeight. The first-fire branch writes
@@ -623,9 +634,7 @@ describe('<ChannelView>', () => {
     // Initial state: sticky + at-bottom, chip hidden. Fire the
     // first-mount RO callback so the controller seeds previousHeight.
     await settleInitialLoad();
-    const composerSection = getByTestId('channel-composer-section');
-    const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
-    if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
+    const ro = findContentRO(scroll);
     const contentEl = ro.observed[0] as HTMLElement;
     ro.fire(contentEl, 400);
     expect(queryByTestId('scroll-to-bottom')).toBeNull();
@@ -686,9 +695,7 @@ describe('<ChannelView>', () => {
     Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 600 });
 
     await settleInitialLoad();
-    const composerSection = getByTestId('channel-composer-section');
-    const ro = FireableResizeObserver.instances.find((observer) => observer.observed[0] !== composerSection);
-    if (!ro) throw new Error('expected useStickToBottom to install a ResizeObserver');
+    const ro = findContentRO(scroll);
     const contentEl = ro.observed[0] as HTMLElement;
     ro.fire(contentEl, 400);
 
@@ -773,8 +780,7 @@ describe('<ChannelView>', () => {
 
     // Seed: user is sticky + at-bottom. Fire the content RO once so
     // previousHeight is set inside the controller.
-    const contentRO = FireableResizeObserver.instances.find((r) => r !== composerRO);
-    if (!contentRO) throw new Error('expected useStickToBottom to install a content RO');
+    const contentRO = findContentRO(scroll);
     contentRO.fire(contentRO.observed[0], 400);
     scroll.scrollTop = 400; // = scrollHeight - clientHeight
     await fireEvent.scroll(scroll);

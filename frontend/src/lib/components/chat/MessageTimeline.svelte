@@ -22,6 +22,7 @@
   import Button from '../primitives/Button.svelte';
   import MessageNavRail from './MessageNavRail.svelte';
   import ReadGroupRow from './ReadGroupRow.svelte';
+  import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
   import SubagentGroup from './SubagentGroup.svelte';
   import ActivityRun from './ActivityRun.svelte';
@@ -767,32 +768,28 @@
      scrollHeight/clientHeight/scrollTop and stays clear of the
      controller. See the TOP_FADE_PX comment for why it is not a mask
      on this element.
-     `scrollbar-gutter: stable both-edges` keeps the centered row column
-     aligned with ChatView's composer overlay. (The row column is
-     deliberately 8px-per-side INSIDE the composer's 62rem — 61rem +
-     pl-8 — so the nav rail's grown ticks clear the text; the centers
-     still coincide, which is what the symmetric gutter preserves.)
-     The styled `::-webkit-scrollbar` (app.css) is a classic, space-consuming
-     bar, not an overlay, so without a reserved gutter the centered column
-     jumps ~5px left the moment the bar appears. `both-edges` is required,
-     not single-edge `stable`: WebKitGTK reserves the gutter only while the
-     bar is actually present, so a single-edge gutter still shifts the column
-     on the idle→scrolling transition. Symmetric reservation holds the center
-     in both states, and idle reserves zero (no always-visible bar, no idle
-     offset). Verified in WebKitGTK 6.0 2.52.3; see
-     docs/architecture/frontend-scroll.md.
-     ChannelView.svelte is left-aligned, so the bar only reflows its right
-     edge and it needs no gutter — that is why this directive is chat-only.
+     The scroller draws NO native bar (`pane-scroll-surface` suppresses it;
+     the styled `::-webkit-scrollbar` in app.css is a classic,
+     space-consuming bar): the <OverlayScrollbar> sibling after the top
+     fade is the scrollbar, consuming zero layout width in every state.
+     That retires the `scrollbar-gutter: stable both-edges` reservation
+     that used to hold the centered column still across the bar's
+     appearance — with no bar there is nothing to reserve against, and
+     the centered column cannot shift when content first overflows
+     mid-stream. Intent is stated, not inferred: the overlay bar's
+     gestures report through onUserScrollStart/onUserScrollEnd (the
+     intent machine's geometric gutter hit test reads offsetWidth −
+     clientWidth, which is now always 0 — dead on this surface by
+     design). See the contract notes in OverlayScrollbar.svelte.
      Layout shape mirrors discussion/ChannelView.svelte
      (`relative flex h-full flex-col` + `flex-1 min-h-0 overflow-y-auto`)
      so the two surfaces stay in lockstep. -->
 <div class="relative flex h-full flex-col">
   <div
     bind:this={scrollEl}
-    class="flex-1 min-h-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/25"
+    class="pane-scroll-surface flex-1 min-h-0 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/25"
     style:overscroll-behavior-y="contain"
     style:overflow-anchor="none"
-    style:scrollbar-gutter="stable both-edges"
     style:padding-bottom={`calc(var(--composer-height, 0px) + ${BOTTOM_PAD_PX}px)`}
     tabindex="-1"
     data-testid="message-timeline-scroll"
@@ -1038,6 +1035,27 @@
     style:height={`${TOP_FADE_PX}px`}
     style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
   ></div>
+
+  <!-- The pane's scrollbar. A sibling of the scroller (nothing that starts
+       on the strip reaches the scroller on its own), consuming zero layout
+       width so overflow transitions can never re-wrap the transcript.
+       Gestures state intent through the callback pair, mirroring what the
+       native-gutter hit test used to arm: a drag/track-click/strip-wheel
+       escapes bottom-follow (which also bails any in-flight spring), and
+       releasing at the bottom re-sticks exactly like the jump chip. Owner
+       writes (the follow spring pinning per streamed chunk) keep the bar
+       faded via ownerDrivenPosition. -->
+  <OverlayScrollbar
+    target={scrollEl}
+    content={contentEl}
+    ariaLabel="Scroll message history"
+    placement="inset-y-0 right-0.5 w-1.5"
+    ownerDrivenPosition={() => stick.isSticky}
+    onUserScrollStart={() => stick.setEscapedFromLock(true)}
+    onUserScrollEnd={(atBottom) => {
+      if (atBottom) stick.forceStick();
+    }}
+  />
 
   <!-- Landing flash for explicit jumps (nav rail, jump-to-first): an
        instant teleport needs a "you landed here" cue. Overlay on the

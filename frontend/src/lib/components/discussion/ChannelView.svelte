@@ -11,6 +11,7 @@
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
+  import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ChannelHeader from './ChannelHeader.svelte';
   import ChannelMessageCard from './ChannelMessageCard.svelte';
   import ScrollToBottomButton from '../chat/ScrollToBottomButton.svelte';
@@ -289,7 +290,7 @@
          docs/architecture/frontend-scroll.md. -->
     <div
       bind:this={scrollEl}
-      class="flex-1 min-h-0 overflow-y-auto px-5 py-4"
+      class="pane-scroll-surface flex-1 min-h-0 overflow-y-auto px-5 py-4"
       style:overflow-anchor="none"
       role="log"
       aria-live="polite"
@@ -343,6 +344,21 @@
         {/if}
       </div>
     </div>
+    <!-- This surface's scrollbar: a zero-width sibling overlay, same
+         contract and intent wiring as MessageTimeline's (which carries
+         the full rationale, including the composited-scrolling hint the
+         shared pane-scroll-surface class applies). -->
+    <OverlayScrollbar
+      target={scrollEl}
+      content={contentEl}
+      ariaLabel="Scroll discussion messages"
+      placement="inset-y-0 right-0.5 w-1.5"
+      ownerDrivenPosition={() => stick.isSticky}
+      onUserScrollStart={() => stick.setEscapedFromLock(true)}
+      onUserScrollEnd={(atBottom) => {
+        if (atBottom) stick.forceStick();
+      }}
+    />
     <ScrollToBottomButton visible={!stick.isAtBottom} onClick={() => stick.forceStick()} />
   </div>
 
