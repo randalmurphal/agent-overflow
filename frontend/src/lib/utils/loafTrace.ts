@@ -32,6 +32,55 @@ const MAX_SCRIPTS_PER_RECORD = 3;
 
 const LOAF_ENTRY_TYPE = 'long-animation-frame';
 
+// ===== JS-heap sampling (GC discrimination) =====
+// A script-less LoAF (no scripts, no blocking, renderStart delayed the
+// whole stall) is either a major GC pause or something outside the
+// renderer (compositor, OS contention). The two need different fixes,
+// and telling them apart used to need a live devtools session at the
+// moment of the stall. `performance.memory.usedJSHeapSize` is the
+// always-on discriminator: a heap DROP of tens of MB across the stall
+// window is a GC verdict; flat heap exonerates the renderer. The
+// sampler is a coarse interval (no rAF cost), the ring holds enough
+// history to cover LoAF delivery delay, and everything degrades to
+// absent fields where `performance.memory` doesn't exist.
+const HEAP_SAMPLE_INTERVAL_MS = 2000;
+const HEAP_RING_SIZE = 8;
+
+interface HeapSample {
+  t: number; // performance.now() timebase, comparable to entry.startTime
+  usedMb: number;
+}
+
+interface ChromeMemory {
+  usedJSHeapSize: number;
+}
+
+function readHeapMb(): number | null {
+  const memory = (performance as { memory?: ChromeMemory }).memory;
+  if (!memory || typeof memory.usedJSHeapSize !== 'number') return null;
+  return Math.round(memory.usedJSHeapSize / 1048576);
+}
+
+const heapRing: HeapSample[] = [];
+
+function sampleHeap(): void {
+  const usedMb = readHeapMb();
+  if (usedMb === null) return;
+  heapRing.push({ t: performance.now(), usedMb });
+  if (heapRing.length > HEAP_RING_SIZE) heapRing.shift();
+}
+
+// Latest sample taken at-or-before the frame started — the heap the
+// stall entered with. LoAF entries arrive batched and late, so "the
+// previous callback's value" would straddle the wrong window.
+function heapBefore(startTime: number): number | null {
+  for (let i = heapRing.length - 1; i >= 0; i--) {
+    const sample = heapRing[i];
+    if (sample.t <= startTime) return sample.usedMb;
+  }
+  return null;
+}
+
 // lib.dom does not ship LoAF typings yet; these mirror the spec fields
 // this module reads (https://w3c.github.io/long-animation-frames/).
 interface PerformanceScriptTiming extends PerformanceEntry {
@@ -63,6 +112,8 @@ function shortSourceURL(url: string): string {
 }
 
 function buildLoafRecord(entry: PerformanceLongAnimationFrameTiming): unknown {
+  const heapNowMb = readHeapMb();
+  const heapBeforeMb = heapBefore(entry.startTime);
   const scripts = [...entry.scripts]
     .sort((a, b) => b.duration - a.duration)
     .slice(0, MAX_SCRIPTS_PER_RECORD)
@@ -86,6 +137,12 @@ function buildLoafRecord(entry: PerformanceLongAnimationFrameTiming): unknown {
     renderStart: round(entry.renderStart),
     styleAndLayoutStart: round(entry.styleAndLayoutStart),
     firstUIEventTimestamp: round(entry.firstUIEventTimestamp),
+    // GC discrimination for script-less stalls: heap at record time vs
+    // the last interval sample before the frame started. A large drop
+    // says the stall was a major GC; flat says look outside the
+    // renderer. Absent where performance.memory doesn't exist.
+    heapNowMb: heapNowMb ?? undefined,
+    heapBeforeMb: heapBeforeMb ?? undefined,
     scriptCount: entry.scripts.length,
     scripts,
   };
@@ -134,8 +191,18 @@ export function installLoafTrace(): () => void {
     return () => {};
   }
   recordUiTrace('frame.loaf.install', { supported: true });
+  // Heap sampler armed only where the heap is readable at all — a
+  // permanently-null reading buys nothing for its interval.
+  let heapTimer: ReturnType<typeof setInterval> | null = null;
+  if (readHeapMb() !== null) {
+    sampleHeap();
+    heapTimer = setInterval(sampleHeap, HEAP_SAMPLE_INTERVAL_MS);
+  }
   return () => {
     observer?.disconnect();
     observer = null;
+    if (heapTimer !== null) clearInterval(heapTimer);
+    heapTimer = null;
+    heapRing.length = 0;
   };
 }

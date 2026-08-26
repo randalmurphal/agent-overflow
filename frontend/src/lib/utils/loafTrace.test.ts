@@ -178,6 +178,39 @@ describe('loafTrace', () => {
     expect(data.scripts.map((s) => s.durationMs)).toEqual([40, 25, 15]);
   });
 
+  it('stamps heap before/now when performance.memory is readable', () => {
+    installFake();
+    setUiRenderTraceEnabled(true);
+    const memory = { usedJSHeapSize: 300 * 1048576 };
+    vi.stubGlobal('performance', { now: () => 500, memory });
+    const cleanup = installLoafTrace();
+
+    // Install sampled 300MB at t=500; a GC then drops the heap before
+    // the LoAF entry (startTime 1000) is delivered.
+    memory.usedJSHeapSize = 180 * 1048576;
+    FakePerformanceObserver.instances[0]?.emit([makeLoafEntry({ startTime: 1000 })]);
+
+    const loaf = getUiRenderTraceRecords().filter((r) => r.label === 'frame.loaf');
+    const data = loaf[0]?.data as { heapBeforeMb: number; heapNowMb: number };
+    expect(data.heapBeforeMb).toBe(300);
+    expect(data.heapNowMb).toBe(180);
+    cleanup();
+  });
+
+  it('omits heap fields when performance.memory is absent', () => {
+    installFake();
+    setUiRenderTraceEnabled(true);
+    const cleanup = installLoafTrace();
+
+    FakePerformanceObserver.instances[0]?.emit([makeLoafEntry()]);
+
+    const loaf = getUiRenderTraceRecords().filter((r) => r.label === 'frame.loaf');
+    const data = loaf[0]?.data as Record<string, unknown>;
+    expect('heapNowMb' in data && data.heapNowMb !== undefined).toBe(false);
+    expect('heapBeforeMb' in data && data.heapBeforeMb !== undefined).toBe(false);
+    cleanup();
+  });
+
   it('cleanup disconnects the observer', () => {
     installFake();
     setUiRenderTraceEnabled(true);
