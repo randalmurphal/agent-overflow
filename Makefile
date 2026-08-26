@@ -351,9 +351,15 @@ mockprovider:
 # spec drives by verb (D30) — there is no second binary to build. UI_TRACE=1
 # bakes the render-trace instrumentation into the SPA (see the flag docs at
 # the top of this file).
+#
+# bin/ao-harness rides along: it is the shell/agent driver for a running
+# instance (docs/specs/testing-harness.md §3, cmd/ao-harness/AGENTS.md),
+# and it resolves the backend binary as its own sibling, so building the
+# two together is what makes `bin/ao-harness up` need no configuration.
 harness-build: mockprovider
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
 	go build -o bin/agent-overflow .
+	go build -o bin/ao-harness ./cmd/ao-harness
 
 harness: harness-build
 	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"
@@ -368,7 +374,7 @@ harness-window: harness-build
 	bin/agent-overflow --harness --window --data-dir "$(HARNESS_DATA_DIR)"
 
 # The -soak suffix mirrors the binary's own windowed-soak default
-# (perWorktreeSoakDataRoot): the soak autopilot refuses a data dir
+# (instanceinfo.SoakDataRootFor): the soak autopilot refuses a data dir
 # holding threads it did not seed, so it cannot share the harness root.
 soak-window: harness-build
 	bin/agent-overflow --soak --window --data-dir "$(HARNESS_DATA_DIR)-soak"

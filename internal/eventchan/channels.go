@@ -35,8 +35,10 @@ const (
 // intended forger, gated by --harness/--soak + LocalOnly), and an
 // unrecognized name lands on transport's fail-closed default.
 const (
-	HarnessMock   Channel = "harness:mock"
-	HarnessReplay Channel = "harness:replay"
+	HarnessMock    Channel = "harness:mock"
+	HarnessPerf    Channel = "harness:perf"
+	HarnessReplay  Channel = "harness:replay"
+	HarnessUIQuery Channel = "harness:ui-query"
 )
 
 // highlight:* — syntax-span cache warmers pushed alongside streaming

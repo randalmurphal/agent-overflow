@@ -49,8 +49,10 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 var (
 	frozenLoopbackOnlyChannels = []string{
 		"git:status",
-		"harness:mock",   // 2026-08-25 pass
-		"harness:replay", // 2026-08-25 pass
+		"harness:mock",     // 2026-08-25 pass
+		"harness:perf",     // W3 bridge: per-process RSS + host detail
+		"harness:replay",   // 2026-08-25 pass
+		"harness:ui-query", // W3 bridge: a directive carrying DOM reads back
 		"mcp:oauth-completed",
 		"mcp:status",
 		"notification:activated",
@@ -88,6 +90,7 @@ var (
 		"highlight:seed",
 	}
 	frozenEphemeralChannels = []string{
+		"harness:ui-query", // a one-shot query directive; a replayed one has no waiter
 		"highlight:diff_seed",
 		"highlight:seed",
 		"updater:install",

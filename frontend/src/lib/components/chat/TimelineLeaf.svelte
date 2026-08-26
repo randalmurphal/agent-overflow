@@ -50,7 +50,21 @@
   });
 </script>
 
-<div data-item-id={displayItem.id}>
+<!-- kind / role / status ride the row root beside the id because the
+     harness bridge's viewport snapshot (lib/harness/snapshot.ts) has to
+     answer "what is on screen" WITHOUT re-deriving item semantics from
+     class names or renderer shapes. They are the row's own discriminators
+     (frontend/AGENTS.md: discriminate by `kind`, never role or content),
+     read straight off the resolved item so the DOM cannot disagree with
+     what the pane thinks it rendered. Three attributes, no state, no
+     cost: keep it that way rather than growing a per-renderer vocabulary
+     here. -->
+<div
+  data-item-id={displayItem.id}
+  data-item-kind={displayItem.kind}
+  data-item-role={displayItem.role}
+  data-item-status={displayItem.status}
+>
   {#if orphan}
     <div
       class="mb-1 flex items-center gap-2 text-xs text-warning"

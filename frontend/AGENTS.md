@@ -62,6 +62,15 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
 - `src/lib/utils/` — pure helpers.
 - `src/lib/transport/` — WebSocket client + `@wailsio/runtime` shim.
   Feature code should go through `stores/bindings.ts`, not this package.
+- `src/lib/harness/` — the agent-harness UI bridge: the semantic viewport
+  snapshot, the element/globals probes and the in-page perf meters
+  (`docs/architecture/agent-harness.md` § Frontend bridge and perf).
+  Reached ONLY through a dynamic import in `stores/harnessBridge.ts`,
+  which arms on the `harness` bootstrap flag — so an ordinary boot never
+  fetches the chunk, and nothing in here may be statically imported from
+  app code. It has no wire surface by design: the subscription and the
+  reply RPC live in the store, because `architecture.test.ts` rule 2
+  keeps event subscriptions inside `stores/`.
 - `bindings/` — Wails-generated TypeScript. Never edit by hand.
 - `vendor/` — in-repo third-party packages, linked in as pnpm workspace
   packages. Currently `svelte-streamdown`; edit it like any other source

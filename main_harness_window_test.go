@@ -65,13 +65,13 @@ func TestParseFlagsSoakWindowDefaultsToThePerWorktreeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if want := perWorktreeSoakDataRoot(); flags.dataDir != want {
+	if want := instanceinfo.DefaultSoakDataRoot(); flags.dataDir != want {
 		t.Fatalf("dataDir = %q, want the per-worktree soak root %q", flags.dataDir, want)
 	}
 	if flags.dataDir == soakDefaultDataRoot() {
 		t.Fatal("windowed soak fell back to the launcher's shared data root")
 	}
-	if flags.dataDir == perWorktreeDataRoot() {
+	if flags.dataDir == instanceinfo.DefaultDataRoot() {
 		// The -soak suffix keeps a windowed soak off the checkout's
 		// harness root: the soak autopilot refuses a data dir holding
 		// threads it did not seed, so sharing one root would fail the
@@ -93,24 +93,6 @@ func TestParseFlagsLauncherSoakKeepsItsDefaultRoot(t *testing.T) {
 	}
 	if flags.dataDir != soakDefaultDataRoot() {
 		t.Fatalf("dataDir = %q, want %q", flags.dataDir, soakDefaultDataRoot())
-	}
-}
-
-func TestPerWorktreeDataRootMatchesTheMakefileRule(t *testing.T) {
-	// The Makefile computes HARNESS_DATA_DIR as
-	// $(TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR)); `ao-harness`
-	// and this flag default must resolve the same instance.
-	got := perWorktreeDataRootFor("/home/dev/repos/agent-overflow")
-	want := filepath.Join(os.TempDir(), "agent-overflow-harness-home-dev-repos-agent-overflow")
-	if got != want {
-		t.Fatalf("perWorktreeDataRootFor = %q, want %q", got, want)
-	}
-	if a, b := perWorktreeDataRootFor("/a/b"), perWorktreeDataRootFor("/a/c"); a == b {
-		t.Fatalf("two checkouts collapsed onto one data root: %q", a)
-	}
-	// Trailing separators are a spelling, not a different checkout.
-	if a, b := perWorktreeDataRootFor("/a/b"), perWorktreeDataRootFor("/a/b/"); a != b {
-		t.Fatalf("trailing separator changed the root: %q vs %q", a, b)
 	}
 }
 

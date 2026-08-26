@@ -10,6 +10,16 @@ not even from this repo, so every layer that emits can depend on it.
 - One exported constant per registered channel, grouped by prefix family
   (`provider:*`, `workflow:*`, `updater:*`, …).
 
+The `harness:*` family carries four, and two of them exist only because
+the harness now reaches INTO the frontend rather than only watching it:
+
+| Channel | What rides it |
+|---|---|
+| `harness:mock` | mock-provider progress reports |
+| `harness:replay` | replay playback state |
+| `harness:ui-query` | `{id, spec}` — one request for the frontend bridge (`HarnessUIQuery`). Ephemeral: it is a directive whose waiter is gone in 10s, so replaying it to a reconnecting client is pure waste. |
+| `harness:perf` | one folded frontend+backend sample per tick of an armed perf run (`HarnessPerfStart`). Full ring: a sample is a point in a series, and a watcher that reconnects wants what it missed. |
+
 ## The two-edit contract
 
 A channel exists only when BOTH halves are present:

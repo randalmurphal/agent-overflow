@@ -1,0 +1,447 @@
+// app_harness_perf.go turns frames per second, heap and RSS into things a
+// test can assert on (docs/specs/testing-harness.md §5).
+//
+// One design decision drives the whole file: THE BACKEND OWNS THE CADENCE.
+// The in-page meters accumulate continuously (rAF deltas, PerformanceObserver
+// entries), but they never push — each tick the sampler issues a
+// `perf/collect` ui-query, reads the frontend's instantaneous sample, folds
+// it together with the Go-side numbers, and emits ONE `harness:perf` event.
+// A bridge that pushed on its own timer would give the run two clocks: the
+// two halves would interleave out of order on the wire, a reader would have
+// to re-pair them by timestamp, and a frontend that went away would simply
+// stop appearing rather than showing up as a labelled gap. With one clock,
+// sample N is one frame with both halves or one frame that says which half
+// is missing, and `ao-harness perf watch` is a `tail`.
+//
+// The frontend summary is the BRIDGE's, computed over the whole run: frame
+// percentiles need the full distribution, and shipping every frame delta over
+// the wire to recompute them backend-side would cost more than the meters do.
+// So the tick carries instantaneous numbers and the stop carries the summary.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"runtime"
+	"runtime/metrics"
+	"sync"
+	"time"
+
+	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/procrss"
+)
+
+const (
+	// harnessPerfDefaultSampleMs is one sample a second: fine enough to see
+	// a turn's shape, coarse enough that the sampling is not the load.
+	harnessPerfDefaultSampleMs = 1000
+	// harnessPerfMinSampleMs floors the interval. Below this the collect
+	// round-trip is a meaningful share of the interval and the run measures
+	// itself.
+	harnessPerfMinSampleMs = 250
+	// harnessPerfMaxCollectTimeout bounds one tick's ui-query. A collect
+	// that cannot answer inside the sample interval is a SKIPPED sample
+	// (recorded as a frontend error on that frame), never a stalled run.
+	harnessPerfMaxCollectTimeout = 2 * time.Second
+)
+
+// HarnessPerfSpec is what a caller arms a run with. Everything is optional;
+// the zero value is a 1s run with default meters and the default long-frame
+// threshold.
+type HarnessPerfSpec struct {
+	SampleMs int `json:"sampleMs,omitempty"`
+	// LongFrameMs is the frame-time above which a frame counts as long.
+	// Forwarded to the bridge verbatim; 0 means the bridge's default (50ms).
+	LongFrameMs int `json:"longFrameMs,omitempty"`
+	// Meters narrows which in-page meters arm. Empty means all of them.
+	// Forwarded verbatim — the vocabulary is the bridge's.
+	Meters []string `json:"meters,omitempty"`
+	// WebviewPrefixes overrides which child process names count as webview
+	// processes in the /proc walk. Empty means procrss.DefaultWebviewPrefixes.
+	WebviewPrefixes []string `json:"webviewPrefixes,omitempty"`
+}
+
+// HarnessPerfStatusResult answers "is a run armed, and how is it doing".
+type HarnessPerfStatusResult struct {
+	Active bool   `json:"active"`
+	RunID  string `json:"runId,omitempty"`
+	// SampleMs is the resolved interval, after clamping.
+	SampleMs int `json:"sampleMs,omitempty"`
+	// Samples counts the ticks EMITTED so far.
+	Samples int `json:"samples"`
+	// FrontendSamples counts the ticks whose collect query answered.
+	FrontendSamples int    `json:"frontendSamples"`
+	ElapsedMs       int64  `json:"elapsedMs,omitempty"`
+	LastError       string `json:"lastError,omitempty"`
+	// RSSAvailable reports whether this platform has a /proc to walk.
+	RSSAvailable bool `json:"rssAvailable"`
+}
+
+// harnessPerfBackendSample is the Go-side half of one tick.
+type harnessPerfBackendSample struct {
+	HeapBytes   uint64 `json:"heapBytes"`
+	HeapObjects uint64 `json:"heapObjects"`
+	Goroutines  int    `json:"goroutines"`
+	// RSSBytes / Processes are absent off linux, and Processes is empty for
+	// a headless harness (there is no webview child to find).
+	RSSBytes         uint64            `json:"rssBytes,omitempty"`
+	ChildrenRSSBytes uint64            `json:"childrenRssBytes,omitempty"`
+	Processes        []procrss.Process `json:"processes,omitempty"`
+}
+
+// harnessPerfEvent is the `harness:perf` wire shape: one folded sample.
+type harnessPerfEvent struct {
+	RunID   string                   `json:"runId"`
+	Seq     int                      `json:"seq"`
+	AtMs    int64                    `json:"atMs"`
+	Backend harnessPerfBackendSample `json:"backend"`
+	// Frontend is the bridge's instantaneous sample, forwarded verbatim.
+	// Absent when the collect query did not answer — FrontendError says why,
+	// so a gap in the series is legible rather than invisible.
+	Frontend      json.RawMessage `json:"frontend,omitempty"`
+	FrontendError string          `json:"frontendError,omitempty"`
+}
+
+// harnessPerfSeries accumulates one numeric series without retaining it.
+// A run is unbounded in length; the summary is not.
+type harnessPerfSeries struct {
+	Count int     `json:"count"`
+	Min   float64 `json:"min"`
+	Max   float64 `json:"max"`
+	Mean  float64 `json:"mean"`
+	Last  float64 `json:"last"`
+
+	sum float64
+}
+
+func (s *harnessPerfSeries) add(value float64) {
+	if s.Count == 0 || value < s.Min {
+		s.Min = value
+	}
+	if s.Count == 0 || value > s.Max {
+		s.Max = value
+	}
+	s.Count++
+	s.sum += value
+	s.Last = value
+	s.Mean = s.sum / float64(s.Count)
+}
+
+// harnessPerfBackendReport folds every backend sample of a run.
+type harnessPerfBackendReport struct {
+	HeapBytes   harnessPerfSeries `json:"heapBytes"`
+	HeapObjects harnessPerfSeries `json:"heapObjects"`
+	Goroutines  harnessPerfSeries `json:"goroutines"`
+	// RSSBytes covers the backend process; WebviewRSSBytes covers the
+	// matched children summed. Count 0 means the platform had no /proc.
+	RSSBytes        harnessPerfSeries `json:"rssBytes"`
+	WebviewRSSBytes harnessPerfSeries `json:"webviewRssBytes"`
+	// Processes is the LAST tick's per-process breakdown, which is what a
+	// "what is holding it" question wants; the series above carry the shape
+	// over time.
+	Processes []procrss.Process `json:"processes,omitempty"`
+}
+
+// HarnessPerfReport is what HarnessPerfStop returns.
+type HarnessPerfReport struct {
+	RunID      string `json:"runId"`
+	SampleMs   int    `json:"sampleMs"`
+	DurationMs int64  `json:"durationMs"`
+	Samples    int    `json:"samples"`
+	// Frontend is the bridge's whole-run summary (frame histogram, observer
+	// counts, heap/DOM), forwarded verbatim. Absent when no frontend
+	// answered the stop query; FrontendError then says why.
+	Frontend      json.RawMessage          `json:"frontend,omitempty"`
+	FrontendError string                   `json:"frontendError,omitempty"`
+	Backend       harnessPerfBackendReport `json:"backend"`
+}
+
+// harnessPerfState is the one armed run. Its own mutex: the sampler
+// goroutine touches it every tick.
+type harnessPerfState struct {
+	mu     sync.Mutex
+	run    *harnessPerfRun
+	nextID uint64
+}
+
+type harnessPerfRun struct {
+	id        string
+	sampleMs  int
+	prefixes  []string
+	startedAt time.Time
+	stop      chan struct{}
+	done      chan struct{}
+
+	seq             int
+	frontendSamples int
+	lastErr         string
+	report          harnessPerfBackendReport
+}
+
+// HarnessPerfStart arms the in-page meters and begins backend sampling.
+//
+// The arm goes through the same ui-query mechanism everything else does, so
+// "no frontend attached" fails HERE — loudly, at the call that asked for
+// meters — rather than producing a run of half-empty samples.
+func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResult, error) {
+	sampleMs := spec.SampleMs
+	if sampleMs <= 0 {
+		sampleMs = harnessPerfDefaultSampleMs
+	}
+	if sampleMs < harnessPerfMinSampleMs {
+		sampleMs = harnessPerfMinSampleMs
+	}
+	prefixes := spec.WebviewPrefixes
+	if len(prefixes) == 0 {
+		prefixes = procrss.DefaultWebviewPrefixes
+	}
+
+	h.perf.mu.Lock()
+	if h.perf.run != nil {
+		active := h.perf.run.id
+		h.perf.mu.Unlock()
+		return HarnessPerfStatusResult{}, fmt.Errorf("perf run %s is already active; stop it first", active)
+	}
+	h.perf.nextID++
+	run := &harnessPerfRun{
+		id:        fmt.Sprintf("perf-%d", h.perf.nextID),
+		sampleMs:  sampleMs,
+		prefixes:  prefixes,
+		startedAt: time.Now(),
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
+	}
+	h.perf.run = run
+	h.perf.mu.Unlock()
+
+	arm, err := json.Marshal(map[string]any{
+		"v":           1,
+		"kind":        "perf",
+		"op":          "start",
+		"longFrameMs": spec.LongFrameMs,
+		"meters":      spec.Meters,
+	})
+	if err != nil {
+		h.clearPerfRun(run)
+		return HarnessPerfStatusResult{}, err
+	}
+	if _, err := h.queryUI(arm, harnessUIQueryTimeout); err != nil {
+		h.clearPerfRun(run)
+		return HarnessPerfStatusResult{}, fmt.Errorf("arm frontend meters: %w", err)
+	}
+
+	go h.runPerfSampler(run)
+	return h.HarnessPerfStatus()
+}
+
+// HarnessPerfStop stops the sampler, tells the bridge to stop, and returns
+// the combined report.
+func (h *Harness) HarnessPerfStop() (HarnessPerfReport, error) {
+	h.perf.mu.Lock()
+	run := h.perf.run
+	h.perf.mu.Unlock()
+	if run == nil {
+		return HarnessPerfReport{}, fmt.Errorf("no perf run is active")
+	}
+	return h.finishPerfRun(run), nil
+}
+
+// HarnessPerfStatus reports the armed run, or `{active:false}`.
+func (h *Harness) HarnessPerfStatus() (HarnessPerfStatusResult, error) {
+	h.perf.mu.Lock()
+	defer h.perf.mu.Unlock()
+	result := HarnessPerfStatusResult{RSSAvailable: procrss.Supported()}
+	run := h.perf.run
+	if run == nil {
+		return result, nil
+	}
+	result.Active = true
+	result.RunID = run.id
+	result.SampleMs = run.sampleMs
+	result.Samples = run.seq
+	result.FrontendSamples = run.frontendSamples
+	result.ElapsedMs = time.Since(run.startedAt).Milliseconds()
+	result.LastError = run.lastErr
+	return result, nil
+}
+
+// stopPerfRunForReset drops any armed run without collecting a report.
+// HarnessReset's contract is "harness-owned state does not survive", and a
+// perf run is a goroutine plus a set of armed in-page meters — the next
+// spec must not inherit either. The bridge is told to stop on a best-effort
+// basis: the page is about to be reloaded anyway, and a reset must not fail
+// because no frontend was attached.
+func (h *Harness) stopPerfRunForReset() {
+	h.perf.mu.Lock()
+	run := h.perf.run
+	h.perf.mu.Unlock()
+	if run == nil {
+		return
+	}
+	report := h.finishPerfRun(run)
+	log.Printf("harness: reset: stopped perf run %s after %d samples", report.RunID, report.Samples)
+}
+
+// finishPerfRun stops the sampler goroutine, asks the bridge for its
+// summary, and folds the two halves. Safe to call twice on one run: the
+// second caller finds the run already cleared and gets what it accumulated.
+func (h *Harness) finishPerfRun(run *harnessPerfRun) HarnessPerfReport {
+	h.perf.mu.Lock()
+	if h.perf.run == run {
+		h.perf.run = nil
+		close(run.stop)
+	}
+	h.perf.mu.Unlock()
+	<-run.done
+
+	report := HarnessPerfReport{
+		RunID:      run.id,
+		SampleMs:   run.sampleMs,
+		DurationMs: time.Since(run.startedAt).Milliseconds(),
+	}
+	stop, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "stop"})
+	if err == nil {
+		summary, queryErr := h.queryUI(stop, harnessUIQueryTimeout)
+		if queryErr != nil {
+			report.FrontendError = queryErr.Error()
+		} else {
+			report.Frontend = summary
+		}
+	} else {
+		report.FrontendError = err.Error()
+	}
+
+	h.perf.mu.Lock()
+	report.Samples = run.seq
+	report.Backend = run.report
+	h.perf.mu.Unlock()
+	return report
+}
+
+// clearPerfRun unwinds a run that never started its sampler.
+func (h *Harness) clearPerfRun(run *harnessPerfRun) {
+	h.perf.mu.Lock()
+	if h.perf.run == run {
+		h.perf.run = nil
+	}
+	h.perf.mu.Unlock()
+	close(run.done)
+}
+
+// runPerfSampler is the one clock. It sleeps a full interval BETWEEN cycles
+// rather than firing on a ticker, so a slow collect delays the next sample
+// instead of queueing a backlog of them.
+func (h *Harness) runPerfSampler(run *harnessPerfRun) {
+	defer close(run.done)
+	interval := time.Duration(run.sampleMs) * time.Millisecond
+	collectTimeout := interval
+	if collectTimeout > harnessPerfMaxCollectTimeout {
+		collectTimeout = harnessPerfMaxCollectTimeout
+	}
+	collect, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "collect"})
+	if err != nil {
+		log.Printf("harness: perf: encode collect query: %v", err)
+		return
+	}
+	for {
+		h.emitPerfSample(run, collect, collectTimeout)
+		timer := time.NewTimer(interval)
+		select {
+		case <-run.stop:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (h *Harness) emitPerfSample(run *harnessPerfRun, collect json.RawMessage, timeout time.Duration) {
+	backend := sampleHarnessPerfBackend(run.prefixes)
+	frontend, frontendErr := h.queryUI(collect, timeout)
+
+	event := harnessPerfEvent{
+		RunID:   run.id,
+		AtMs:    time.Since(run.startedAt).Milliseconds(),
+		Backend: backend,
+	}
+	if frontendErr != nil {
+		event.FrontendError = frontendErr.Error()
+	} else {
+		event.Frontend = frontend
+	}
+
+	h.perf.mu.Lock()
+	run.seq++
+	event.Seq = run.seq
+	if frontendErr != nil {
+		run.lastErr = frontendErr.Error()
+	} else {
+		run.frontendSamples++
+		run.lastErr = ""
+	}
+	run.report.HeapBytes.add(float64(backend.HeapBytes))
+	run.report.HeapObjects.add(float64(backend.HeapObjects))
+	run.report.Goroutines.add(float64(backend.Goroutines))
+	if backend.RSSBytes > 0 {
+		run.report.RSSBytes.add(float64(backend.RSSBytes))
+		run.report.WebviewRSSBytes.add(float64(backend.ChildrenRSSBytes))
+		run.report.Processes = backend.Processes
+	}
+	h.perf.mu.Unlock()
+
+	h.app.emit(eventchan.HarnessPerf, event)
+}
+
+// harnessPerfMetricNames are read through runtime/metrics rather than
+// runtime.ReadMemStats: ReadMemStats stops the world, which would make the
+// sampler a source of the very jank the run is measuring.
+var harnessPerfMetricNames = []string{
+	"/memory/classes/heap/objects:bytes",
+	"/gc/heap/objects:objects",
+	"/sched/goroutines:goroutines",
+}
+
+func sampleHarnessPerfBackend(prefixes []string) harnessPerfBackendSample {
+	samples := make([]metrics.Sample, len(harnessPerfMetricNames))
+	for i, name := range harnessPerfMetricNames {
+		samples[i].Name = name
+	}
+	metrics.Read(samples)
+	sample := harnessPerfBackendSample{}
+	for i, s := range samples {
+		value := uint64(0)
+		if s.Value.Kind() == metrics.KindUint64 {
+			value = s.Value.Uint64()
+		}
+		switch harnessPerfMetricNames[i] {
+		case "/memory/classes/heap/objects:bytes":
+			sample.HeapBytes = value
+		case "/gc/heap/objects:objects":
+			sample.HeapObjects = value
+		case "/sched/goroutines:goroutines":
+			sample.Goroutines = int(value)
+		}
+	}
+	// A runtime that ever stops publishing the scheduler metric must not
+	// report zero goroutines — that reads as a dead process.
+	if sample.Goroutines == 0 {
+		sample.Goroutines = runtime.NumGoroutine()
+	}
+
+	if !procrss.Supported() {
+		return sample
+	}
+	tree, err := procrss.Sample(os.Getpid(), prefixes)
+	if err != nil {
+		// A /proc read that fails leaves the series short by one sample
+		// rather than failing the run; the RSS series' Count is what says
+		// how many landed.
+		return sample
+	}
+	sample.RSSBytes = tree.Self.RSSBytes
+	sample.ChildrenRSSBytes = tree.ChildrenRSSBytes
+	sample.Processes = tree.Children
+	return sample
+}

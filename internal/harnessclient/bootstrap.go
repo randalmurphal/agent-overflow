@@ -1,0 +1,135 @@
+// Package harnessclient is the Go client for a running agent test
+// harness (or soak) instance: how to find one, how to start one, and how
+// to speak the transport wire to it.
+//
+// It is the twin of e2e/src/harness.ts, kept importable so Go tests and
+// cmd/ao-harness share one implementation of the bootstrap contract and
+// the frame handling. It links no App code and no transport server code:
+// everything here is what a foreign process can observe — a JSON line on
+// stdout, a 0600 file in the data dir, and one WebSocket.
+//
+// The frame shapes below mirror internal/transport/frame.go. They are
+// restated rather than imported so a CLI does not link the server; a
+// drift guard in the tests decodes this package's frames through the
+// transport structs, so the two cannot disagree silently.
+package harnessclient
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"agent-overflow/internal/harness/instanceinfo"
+)
+
+// BootstrapPrefix marks the harness bootstrap line on the backend's
+// stdout. Same spelling as main's harnessStdoutPrefix; a launcher
+// scanning stdout matches on it verbatim.
+const BootstrapPrefix = "__AO_HARNESS__:"
+
+// Bootstrap is everything needed to attach to an instance. It is the
+// payload of the stdout line AND the whole content of
+// <dataDir>/harness-instance.json, which additionally carries the
+// identity block (empty on a line parsed off stdout, since the id is
+// assigned after the line is written).
+type Bootstrap struct {
+	URL          string `json:"url"`
+	Port         int    `json:"port"`
+	Token        string `json:"token"`
+	DataRoot     string `json:"dataRoot"`
+	DataDir      string `json:"dataDir"`
+	HomeDir      string `json:"homeDir,omitempty"`
+	MockProvider string `json:"mockProvider"`
+	PID          int    `json:"pid"`
+	Version      string `json:"version"`
+	// StartupError is set when App.Start failed. The transport still
+	// serves so logs are readable, but the instance is not usable.
+	StartupError string `json:"startupError,omitempty"`
+
+	// Identity ties the payload to a registry row. Embedded from the
+	// package that writes it, so a field added there reaches this reader
+	// without a second declaration.
+	instanceinfo.Identity
+}
+
+// WSURL is the authenticated WebSocket endpoint for this instance.
+func (b Bootstrap) WSURL() string {
+	return fmt.Sprintf("ws://127.0.0.1:%d/ws?token=%s", b.Port, url.QueryEscape(b.Token))
+}
+
+// InstanceFilePath names the data-dir file that carries a live
+// instance's bootstrap payload.
+func InstanceFilePath(dataDir string) string {
+	return filepath.Join(dataDir, instanceinfo.InstanceFileName)
+}
+
+// ReadInstanceFile attaches to an already-running instance by reading
+// the file its boot published. This is the path that does not require
+// having spawned the backend: the token lives in a 0600 file inside the
+// data root, so anyone who can open the data root can attach.
+func ReadInstanceFile(dataDir string) (Bootstrap, error) {
+	path := InstanceFilePath(dataDir)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Bootstrap{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	var bs Bootstrap
+	if err := json.Unmarshal(data, &bs); err != nil {
+		return Bootstrap{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if bs.Port == 0 || bs.Token == "" {
+		return Bootstrap{}, fmt.Errorf("%s names no port or token; the instance is not attachable", path)
+	}
+	return bs, nil
+}
+
+// ParseBootstrapLine extracts the payload from one line of backend
+// stdout. ok is false for any line that is not a bootstrap line, so a
+// caller can feed it every line it reads; a line that carries the prefix
+// but will not parse is an error rather than a miss, because that is a
+// broken contract and not noise.
+func ParseBootstrapLine(line string) (bs Bootstrap, ok bool, err error) {
+	at := strings.Index(line, BootstrapPrefix)
+	if at < 0 {
+		return Bootstrap{}, false, nil
+	}
+	payload := strings.TrimSpace(line[at+len(BootstrapPrefix):])
+	if err := json.Unmarshal([]byte(payload), &bs); err != nil {
+		return Bootstrap{}, false, fmt.Errorf("unparseable harness bootstrap line %q: %w", line, err)
+	}
+	return bs, true, nil
+}
+
+// scanBootstrap reads lines until one carries the bootstrap payload.
+// Returns io.EOF when the stream ended without one — the caller knows
+// far more than this function does about why (the process exited, the
+// deadline passed) and owns the message.
+func scanBootstrap(r io.Reader, onLine func(string)) (Bootstrap, error) {
+	scanner := bufio.NewScanner(r)
+	// The payload is a single JSON object with a handful of paths in it;
+	// 1 MiB is orders of magnitude of headroom and bounds a stdout that
+	// turns out to be something else entirely.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if onLine != nil {
+			onLine(line)
+		}
+		bs, ok, err := ParseBootstrapLine(line)
+		if err != nil {
+			return Bootstrap{}, err
+		}
+		if ok {
+			return bs, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Bootstrap{}, err
+	}
+	return Bootstrap{}, io.EOF
+}

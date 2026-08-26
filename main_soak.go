@@ -75,46 +75,11 @@ func soakDefaultDataRoot() string {
 	return filepath.Join(home, ".agent-overflow-soak")
 }
 
-// perWorktreeDataRoot is the default data root for an isolated boot
-// somebody started BY HAND from a checkout: the same value the
-// Makefile's HARNESS_DATA_DIR computes (`make harness`, `make
-// soak-window`), derived in Go so a flag default and a Make target
-// never disagree about which instance they mean.
-//
-// One root per checkout is the point: two worktrees running windowed
-// soaks at once must not share a database, and the same worktree
-// restarted must reuse its seeded state.
-func perWorktreeDataRoot() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return filepath.Join(os.TempDir(), harnessDataRootPrefix)
-	}
-	return perWorktreeDataRootFor(cwd)
-}
-
-// harnessDataRootPrefix is the shared prefix of every per-worktree data
-// root; the checkout path (separators flattened) is appended verbatim,
-// leading separator included, exactly as `$(subst /,-,$(CURDIR))` does.
-const harnessDataRootPrefix = "agent-overflow-harness"
-
-// perWorktreeSoakDataRoot is perWorktreeDataRoot with a "-soak" suffix:
-// the default for a hand-started `--soak --window`. The suffix keeps a
-// windowed soak off the checkout's harness root — the soak autopilot
-// refuses a data dir holding threads it did not seed, so sharing one
-// root would make `make harness` then `make soak-window` fail on the
-// second boot.
-func perWorktreeSoakDataRoot() string {
-	return perWorktreeDataRoot() + "-soak"
-}
-
-// perWorktreeDataRootFor is the pure half of perWorktreeDataRoot, split
-// out so the naming rule is testable without chdir'ing a test process.
-func perWorktreeDataRootFor(checkout string) string {
-	// Windows drive letters carry a colon, which cannot appear inside a
-	// path component; it flattens with the separators.
-	flattened := strings.NewReplacer("/", "-", `\`, "-", ":", "-").Replace(filepath.Clean(checkout))
-	return filepath.Join(os.TempDir(), harnessDataRootPrefix+flattened)
-}
+// The per-worktree default data root a hand-started isolated boot uses
+// (`make harness`, `make soak-window`, `ao-harness up`) lives in
+// internal/harness/instanceinfo — the backend, the Makefile and the CLI
+// all have to name the same directory for a checkout, and the CLI cannot
+// import package main. See instanceinfo.DataRootFor.
 
 // runSoak boots the soak backend: harness-grade isolation, the headless
 // bootstrap channel the Windows launcher parses, and the autopilot that

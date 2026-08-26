@@ -234,12 +234,38 @@ var channelPolicies = []ChannelPolicy{
 			"consumers are loopback test tooling by construction.",
 	},
 	{
+		Channel:   eventchan.HarnessPerf,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionDefault,
+		Why: "One fps/heap/RSS sample per tick of an armed perf run " +
+			"(app_harness_perf.go). Frames carry backend process names and " +
+			"per-process RSS read from /proc — host detail no LAN peer may " +
+			"see — and the run is harness-only either way. Full ring on " +
+			"purpose: a sample is a POINT in a series, and a watcher that " +
+			"reconnects mid-run wants the samples it missed rather than only " +
+			"the newest one.",
+	},
+	{
 		Channel:   eventchan.HarnessReplay,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
 		Why: "Progress frames name the local NDJSON replay-log path and pass " +
 			"IO/parse errors verbatim. Harness-only; loopback consumers by " +
 			"construction (same story as harness:mock).",
+	},
+	{
+		Channel:   eventchan.HarnessUIQuery,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionEphemeral,
+		Why: "A DIRECTIVE, not a state frame: each event asks the attached " +
+			"frontend bridge to answer query <id>, and the backend waiter for " +
+			"that id is gone 10s later. Ephemeral for the same reason " +
+			"updater:install is — replaying it to a reconnecting client would " +
+			"re-run every query of the last ring's worth against a backend " +
+			"with nothing left to receive the answers, so the replies land as " +
+			"unknown ids and the work is pure waste. Loopback-only because " +
+			"the answers (DOM text, local paths in diagnostic globals) and " +
+			"the harness itself are.",
 	},
 	{
 		Channel:   eventchan.HighlightDiffSeed,

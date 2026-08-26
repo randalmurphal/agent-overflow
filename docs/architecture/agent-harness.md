@@ -125,6 +125,9 @@ One WebSocket carries everything:
 | `HarnessListBundles()` | Enumerate saved bundles. |
 | `HarnessReplayStart(path, opts)` | Replay a raw event-log NDJSON file (no DB restore). |
 | `HarnessReplayPause/Resume/Step/Stop/Status()` | Playback control; `Step` releases exactly one event while paused. |
+| `HarnessUIQuery(spec)` | Ask the attached frontend bridge a question and wait up to 10s for the answer. See "Frontend bridge and perf" below. |
+| `HarnessUIQueryReply(id, result)` | The bridge's answer path. Called by the page, not by a test. A reply for an id with no waiter is dropped silently. |
+| `HarnessPerfStart(spec)` / `HarnessPerfStop()` / `HarnessPerfStatus()` | Arm, stop and inspect a perf run. Stop returns one report folding the in-page meters and the Go-side samples. |
 
 `ReplayOptions`: `speed` (multiplier), `maxGapMs` (cap long recorded
 gaps), `startPaused`, `threadFilter`. Status transitions push on the
@@ -371,6 +374,113 @@ generated workspaces even though the bundle artifact itself survives.
 Heavy timeline payloads (diffs, command output, thinking) live in
 SQLite, so the core flicker-repro workflow is unaffected.
 
+## Frontend bridge and perf
+
+Screenshots are a bad instrument for an agent: they cost tokens, they
+cannot be diffed, and they answer "what does this look like" when the
+question is "what is on screen". The bridge answers the second question
+in text.
+
+`/bootstrap.json` carries `harness: true` in `--harness` / `--soak`
+boots (`internal/transport/server.go`, set where `main.go` registers the
+`Harness` receiver — one flag, two surfaces, no way to have one without
+the other). The SPA reads it in `lib/transport/harnessMode.ts` and
+`lib/stores/harnessBridge.ts` arms on it. An ordinary boot reads a
+boolean and stops; the bridge modules are behind a dynamic import, so
+they are their own rolldown chunk that a normal page never fetches. That
+also means a production binary can serve a harness with no frontend
+rebuild.
+
+The protocol is request/reply over the same WebSocket:
+
+1. `HarnessUIQuery(spec)` assigns an id, emits `harness:ui-query
+   {id, spec}` and parks on a waiter keyed by that id.
+2. The page answers with `HarnessUIQueryReply(id, result)`. A `result` of
+   `{"error": "..."}` surfaces as the RPC's error, so a refusal reads as
+   a failed call rather than a successful empty one.
+3. First reply wins. Several attached frontends, a late reply after the
+   10s timeout, and a duplicate are all the same case: the id has no
+   waiter, and the reply is dropped silently.
+
+`harness:ui-query` is `RetentionEphemeral` on purpose. It is a
+DIRECTIVE, not a state frame: replaying a ring's worth of them to a
+reconnecting client would re-run queries whose waiters are long gone.
+`harness:perf` is the opposite and keeps the full ring, because a sample
+is a point in a series and a watcher that reconnects mid-run wants what
+it missed.
+
+Query kinds, versioned `v: 1`:
+
+| kind | Answers |
+|---|---|
+| `viewport` | The semantic snapshot: per pane, the mounted timeline rows with `{itemId, kind, role, status, streaming, badge, rect, textHead}`, scroll position, open overlays by accessible name, the active thread id, and `settled` (no DOM mutation for 300ms). |
+| `element` | `{count, first:{rect, visible, clipped, text, aria}}` for a CSS selector. A malformed selector errors; one that matches nothing answers `count: 0`. |
+| `globals` | Whitelisted read of a diagnostic global. A name outside the whitelist errors; a whitelisted name this build did not install answers `{unavailable: true}` — `__paneGeometry` and `uiTrace.recent` are genuinely absent in a harness build, because `make harness` builds with `UI_TRACE` unset. |
+| `perf` | Meter control. Driven by `HarnessPerf*`, not by a test directly. |
+
+The snapshot reads the DOM through attributes the components declare,
+never through class names: `[data-pane-id]`, `[data-ui-surface="chat"]`,
+`[data-testid="message-timeline-scroll"]`, `[data-row-index]`,
+`[data-item-id|-kind|-role|-status]`, `[data-testid="indicator"]`,
+`[role="dialog"]`, `[data-popover]`. Only the three `data-item-*`
+attributes were added for it. Extend that list rather than
+pattern-matching a class, and put the attribute on the element that owns
+the concept.
+
+"Visible rows" means the rows the virtualizer has MOUNTED, each flagged
+`inViewport`. For a virtualized list that is the honest reading: the
+mounted window is what the DOM contains, the intersecting subset is what
+a human sees, and most timeline bugs live in the difference.
+
+**Perf runs are backend-clocked.** `HarnessPerfStart` arms the in-page
+meters through one ui-query, then samples on its own ticker (default
+1000ms, floor 250ms): each tick reads Go heap/goroutines through
+`runtime/metrics`, reads the backend's own RSS and its WebKit children's
+from `/proc` (`internal/procrss`, linux only), pulls one frontend sample
+with a `perf/collect` query, and emits both halves as one `harness:perf`
+frame. Two reasons for one clock rather than a page-side push: a reader
+correlating a frame stall against the Go heap gets one timeline instead
+of two drifting ones, and a page that cannot answer becomes a labelled
+`frontendError` on a frame that still arrives, rather than silence
+indistinguishable from a healthy idle run.
+
+The frontend SUMMARY is computed page-side, because percentiles need the
+whole distribution: frame times fold into a fixed 1ms-bucket histogram
+(constant memory over an hours-long soak) plus the exact max.
+`HarnessPerfStop` collects that summary and returns it beside the backend
+series as one report. **`HarnessReset` stops any active perf run** — it
+holds a sampler goroutine AND a set of armed in-page meters, and the
+caller reloads the page after a reset, so nothing else would ever disarm
+them.
+
+`internal/procrss` matches webview processes by name PREFIX because the
+kernel truncates `/proc/<pid>/status`'s `Name:` at 15 characters
+(`WebKitWebProce`, never `WebKitWebProcess`). Off linux `Sample` returns
+`ErrUnsupported` and the RSS series is simply absent.
+
+## Driving an instance from a shell (`bin/ao-harness`)
+
+`cmd/ao-harness` is the same surface for a human or an agent at a
+terminal: `up` / `down` / `list` / `info`, `seed`, `rpc <Method> [json]`,
+`threads` / `items` / `send`, `scenario`, `mock`, `events tail|await|count`,
+`record` / `bundles` / `replay`, `logs`, and a read-only `db`. `make
+harness-build` builds it alongside `bin/agent-overflow`, and it finds the
+backend binary as its own sibling, so a fresh checkout needs no
+configuration.
+
+It resolves which instance to talk to from the registry above: an
+explicit `--instance <id|dataRoot>`, else the single live row, else this
+worktree's default data root. Two live instances is an error listing the
+candidates rather than a guess.
+
+The reusable half is `internal/harnessclient`: bootstrap discovery
+(instance file or a spawned backend's stdout line), the WS client with
+the same consume-on-match `WaitForEvent` semantics as
+`e2e/src/harness.ts`, detached launch, and file tailing. A Go test that
+needs a real instance imports that rather than re-implementing the
+frames. Details and the registry prune rule:
+[cmd/ao-harness/AGENTS.md](../../cmd/ao-harness/AGENTS.md).
+
 ## e2e/ (Playwright)
 
 `e2e/src/harness.ts` is the TS client: `launchHarness()` spawns the
@@ -401,6 +511,10 @@ hand-written provider homes written into the harness's redirected `HOME`
 (`session-import-fixtures.ts`) — the seeding pattern for anything that reads
 `~/.claude` or `~/.codex`. Read
 `harness.spec.ts` and `workflows.spec.ts` as references for new specs.
+`e2e/tests/harness-bridge.spec.ts` covers the frontend bridge: the viewport
+snapshot's row ids matching what the backend seeded, element and globals
+queries, a perf run streaming frames and stopping with a two-sided report,
+reset disarming a run, and the no-page timeout plus its dropped late reply.
 
 ```
 make e2e          # harness-build + playwright test

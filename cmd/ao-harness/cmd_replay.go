@@ -1,0 +1,194 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"agent-overflow/internal/harness"
+	"agent-overflow/internal/harnessclient"
+)
+
+func runRecord(e *env, args []string) error {
+	if len(args) == 0 {
+		return usagef("record needs a subcommand: start, stop")
+	}
+	switch args[0] {
+	case "start":
+		return recordStart(e, args[1:])
+	case "stop":
+		return recordStop(e, args[1:])
+	default:
+		return usagef("unknown record subcommand %q (want start, stop)", args[0])
+	}
+}
+
+func recordStart(e *env, args []string) error {
+	flags := e.newFlagSet("record start")
+	thread := flags.String("thread", "", "thread whose event log is captured")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 || strings.TrimSpace(rest[0]) == "" {
+		return usagef("record start needs a bundle name")
+	}
+	if *thread == "" {
+		return usagef("record start needs --thread <id> (the snapshot/event boundary is per thread)")
+	}
+	ctx := context.Background()
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		result, err := client.Call(ctx, "HarnessRecordStart", rest[0], *thread)
+		if err != nil {
+			return err
+		}
+		return e.writeRawJSON(result)
+	})
+}
+
+func recordStop(e *env, args []string) error {
+	flags := e.newFlagSet("record stop")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usagef("record stop takes no positional arguments (got %v)", rest)
+	}
+	ctx := context.Background()
+	return e.call(ctx, "HarnessRecordStop")
+}
+
+func runBundles(e *env, args []string) error {
+	flags := e.newFlagSet("bundles")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usagef("bundles takes no positional arguments (got %v)", rest)
+	}
+	ctx := context.Background()
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		raw, err := client.Call(ctx, "HarnessListBundles")
+		if err != nil {
+			return err
+		}
+		if e.jsonOutput() {
+			return e.writeRawJSON(raw)
+		}
+		var bundles []struct {
+			Name       string `json:"name"`
+			ThreadID   string `json:"threadId"`
+			CreatedAt  int64  `json:"createdAt"`
+			EventCount int    `json:"eventCount"`
+		}
+		if err := json.Unmarshal(raw, &bundles); err != nil {
+			return fmt.Errorf("decode bundles: %w", err)
+		}
+		if len(bundles) == 0 {
+			e.printf("no bundles\n")
+			return nil
+		}
+		rows := make([][]string, 0, len(bundles))
+		for _, bundle := range bundles {
+			rows = append(rows, []string{bundle.Name, bundle.ThreadID, fmt.Sprint(bundle.EventCount), fmt.Sprint(bundle.CreatedAt)})
+		}
+		return e.table([]string{"NAME", "THREAD", "EVENTS", "CREATED"}, rows)
+	})
+}
+
+func runReplay(e *env, args []string) error {
+	if len(args) == 0 {
+		return usagef("replay needs a subcommand: bundle, file, pause, resume, step, stop, status")
+	}
+	switch args[0] {
+	case "bundle":
+		return replayStart(e, "HarnessReplayBundle", "replay bundle", "bundle name", args[1:])
+	case "file":
+		return replayStart(e, "HarnessReplayStart", "replay file", "event-log path", args[1:])
+	case "pause", "resume", "step", "stop", "status":
+		return replayControl(e, args[0], args[1:])
+	default:
+		return usagef("unknown replay subcommand %q (want bundle, file, pause, resume, step, stop, status)", args[0])
+	}
+}
+
+// replayStart drives the two entry points that take a source plus
+// options. They differ only in what the first argument names — a saved
+// bundle (which also restores its DB snapshot) or a raw event log
+// (which replays events over whatever state is live).
+func replayStart(e *env, method, command, argName string, args []string) error {
+	flags := e.newFlagSet(command)
+	speed := flags.Float64("speed", 0, "playback rate multiplier (0 = recorded speed)")
+	maxGapMs := flags.Int("max-gap-ms", 0, "cap any recorded gap in ms (0 = the server default, negative = uncapped)")
+	startPaused := flags.Bool("start-paused", false, "begin paused so `replay step` releases one event at a time")
+	threadFilter := flags.String("thread-filter", "", "drop records for other threads")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 || strings.TrimSpace(rest[0]) == "" {
+		return usagef("%s needs a %s", command, argName)
+	}
+	opts := harness.ReplayOptions{
+		Speed:        *speed,
+		MaxGapMs:     *maxGapMs,
+		StartPaused:  *startPaused,
+		ThreadFilter: *threadFilter,
+	}
+	ctx := context.Background()
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		result, err := client.Call(ctx, method, rest[0], opts)
+		if err != nil {
+			return err
+		}
+		return e.printReplayStatus(result)
+	})
+}
+
+func replayControl(e *env, verb string, args []string) error {
+	flags := e.newFlagSet("replay " + verb)
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usagef("replay %s takes no positional arguments (got %v)", verb, rest)
+	}
+	method := map[string]string{
+		"pause":  "HarnessReplayPause",
+		"resume": "HarnessReplayResume",
+		"step":   "HarnessReplayStep",
+		"stop":   "HarnessReplayStop",
+		"status": "HarnessReplayStatus",
+	}[verb]
+	ctx := context.Background()
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		result, err := client.Call(ctx, method)
+		if err != nil {
+			return err
+		}
+		return e.printReplayStatus(result)
+	})
+}
+
+func (e *env) printReplayStatus(raw json.RawMessage) error {
+	if e.jsonOutput() {
+		return e.writeRawJSON(raw)
+	}
+	var status harness.ReplayStatus
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return e.writeRawJSON(raw)
+	}
+	e.printf("%s %d/%d", status.State, status.Position, status.Total)
+	if status.File != "" {
+		e.printf(" %s", status.File)
+	}
+	if status.Error != "" {
+		e.printf(" (%s)", status.Error)
+	}
+	e.printf("\n")
+	return nil
+}

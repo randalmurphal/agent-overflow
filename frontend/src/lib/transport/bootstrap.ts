@@ -4,6 +4,7 @@
 // connection to an arbitrary scheme.
 
 import { setViewOnlySessionFromBootstrap } from './runMode';
+import { setHarnessSessionFromBootstrap } from './harnessMode';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
 
@@ -101,6 +102,13 @@ export interface Bootstrap {
    */
   backendId?: string;
   replicaGeneration?: string;
+  /**
+   * The backend was booted as the agent test harness or the soak rig
+   * (`--harness` / `--soak`), which is the only thing that arms the
+   * frontend harness bridge. Absent on every ordinary boot; see
+   * ./harnessMode.ts.
+   */
+  harness?: boolean;
 }
 
 // Session-scoped stash for the bootstrap token. The token arrives once
@@ -173,6 +181,7 @@ export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise
     validateWsUrl(injected.wsUrl, false);
     const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
     setViewOnlySessionFromBootstrap(normalized.remote);
+    setHarnessSessionFromBootstrap(normalized.harness === true);
     setBackendIdentityFromBootstrap(normalized.backendId, normalized.replicaGeneration);
     return normalized;
   }
@@ -232,6 +241,7 @@ async function fetchManifest(
   data.mode = normalizeRunMode(data.mode);
   data.remote = data.remote === true;
   setViewOnlySessionFromBootstrap(data.remote);
+  setHarnessSessionFromBootstrap(data.harness === true);
   // Re-validated on every manifest resolution, which is what makes a
   // mid-session generation re-mint (a restored backend) observable on
   // the reconnect refetch rather than at the next app launch.

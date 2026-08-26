@@ -43,6 +43,13 @@ type Harness struct {
 	recording     *harnessRecording     // the one in-flight bundle capture
 	control       *control.Server       // mock-provider control channel
 	scenarioRules []harnessScenarioRule // mock → scenario assignment
+
+	// Frontend bridge (app_harness_ui.go) and the perf run it arms
+	// (app_harness_perf.go). Both carry their own locks: a ui query parks
+	// for up to 10s and a perf run holds a sampler goroutine, neither of
+	// which may sit on the mutex above.
+	ui   harnessUIBridge
+	perf harnessPerfState
 }
 
 // newHarness wires the receiver. Engines that need App subsystems

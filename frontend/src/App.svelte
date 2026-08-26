@@ -79,6 +79,7 @@
   import { registerBuiltinCommands, makeCommandContext } from './lib/stores/builtinCommands.svelte';
   import { installUiRenderTraceApi } from './lib/utils/uiRenderTrace';
   import { installLoafTrace } from './lib/utils/loafTrace';
+  import { installHarnessBridge } from './lib/stores/harnessBridge';
   import { warmHighlightTables } from './lib/utils/syntaxSpans';
   import { dispatchTextEditing } from './lib/utils/textEditingKeymap';
   import { installExternalLinkDelegate } from './lib/utils/externalLinks';
@@ -412,6 +413,11 @@
     void loadSettingsAndWarmModelCatalogs();
     installUiRenderTraceApi();
     const cleanupLoafTrace = installLoafTrace();
+    // Harness ui-query bridge. In an ordinary boot this reads one
+    // bootstrap boolean and registers a callback nothing ever fires; the
+    // bridge chunk is dynamically imported and stays out of the startup
+    // graph. See lib/stores/harnessBridge.ts.
+    const cleanupHarnessBridge = installHarnessBridge();
     const cleanupExternalLinks = installExternalLinkDelegate();
     const cleanupZoomKeys = installZoomKeybindings();
 
@@ -485,6 +491,7 @@
       cleanupExternalLinks();
       cleanupZoomKeys();
       cleanupLoafTrace();
+      cleanupHarnessBridge();
       window.removeEventListener('pagehide', flushPaneLayout);
       window.removeEventListener('beforeunload', flushPaneLayout);
       document.removeEventListener('visibilitychange', handleVisibilityChange);

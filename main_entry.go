@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -239,7 +240,7 @@ func parseFlags(args []string) (cliFlags, error) {
 			// by hand, so it takes the per-worktree root instead — two
 			// worktrees soaking at once must not share a database.
 			if out.window {
-				out.dataDir = perWorktreeSoakDataRoot()
+				out.dataDir = instanceinfo.DefaultSoakDataRoot()
 			} else {
 				out.dataDir = soakDefaultDataRoot()
 			}

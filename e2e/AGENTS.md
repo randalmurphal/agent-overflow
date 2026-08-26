@@ -16,6 +16,20 @@ headless, isolated data dir, mocked providers. Full harness guide:
   `harness.reset()`.
 - `tests/harness.spec.ts` — the reference specs: boot, seeded history,
   live mock turn, frame-by-frame `step-gated` stepping, reset.
+- `tests/harness-bridge.spec.ts` — the frontend harness bridge (§4/§5 of
+  `docs/specs/testing-harness.md`): a `viewport` snapshot whose row ids are the
+  ones `HarnessSeed` created and whose geometry is non-degenerate under a real
+  layout engine, `element` measuring the timeline scroller (with a miss and a
+  malformed selector reading differently), `globals` answering present /
+  `unavailable` / refused, a perf run streaming two `harness:perf` frames and
+  stopping with a report carrying both halves, `HarnessReset` disarming an
+  active run, and — with no page attached at all — the 10s `HarnessUIQuery`
+  timeout followed by its late reply being accepted and dropped. The perf case
+  wheels the timeline between frames on purpose: rAF only turns while the page
+  renders, so measuring an idle tab would assert on nothing. The unit suites
+  own the shapes (`frontend/src/lib/harness/*.test.ts`,
+  `app_harness_ui_test.go`, `app_harness_perf_test.go`); this file owns the
+  wiring.
 - `tests/workflows.spec.ts` — RPC/event-only workflow coverage: two-phase
   chain, human gate approval, same-session question answer, watchdog stall,
   and cancel/interrupt.

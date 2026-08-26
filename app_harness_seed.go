@@ -368,7 +368,11 @@ func (h *Harness) seedItem(threadID string, turnIndex, itemIndex int, at int64, 
 func (h *Harness) HarnessReset() (err error) {
 	// Harness-owned state first: a running replay emits events and an
 	// in-flight recording holds a capture window — both must die before
-	// the state they reference does.
+	// the state they reference does. A perf run is the same shape one
+	// layer out: it holds a sampler goroutine AND a set of armed in-page
+	// meters, and the caller reloads the page after a reset, so nothing
+	// would ever disarm them.
+	h.stopPerfRunForReset()
 	h.mu.Lock()
 	replayer := h.replayer
 	recording := h.recording
