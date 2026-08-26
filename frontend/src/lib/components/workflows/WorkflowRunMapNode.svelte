@@ -129,6 +129,9 @@
     -->
     <div
       class={[
+        // run-map-node: spine children need a class feature for the
+        // connector selector (see the app.css `.run-map-spine` comment).
+        'run-map-node',
         boxed ? RUN_MAP_NODE_BOX : RUN_MAP_GHOST_ROW,
         boxed ? `${style.border} ${style.glow}` : '',
         isNow ? 'rounded-md bg-accent/10' : boxed ? style.fill : '',
@@ -195,7 +198,7 @@
   {/each}
 
   {#if note}
-    <p class="text-[0.625rem] text-fg-hint" data-testid="workflow-map-node-note">{note}</p>
+    <p class="run-map-node text-[0.625rem] text-fg-hint" data-testid="workflow-map-node-note">{note}</p>
   {/if}
 
   {#if node.kind === 'decision'}

@@ -57,9 +57,12 @@ describe('timeline row margin containment (settle-flicker fix)', () => {
   });
 
   it('keeps a markdown row flush at the top (BFC x edge-reset coupling)', () => {
-    // .markdown-body > .md-committed > h1: h1 has an intrinsic 0.75rem top
-    // margin (app.css `.markdown-body h1`), zeroed by the
-    // `> :first-child > :first-child { margin-top: 0 }` reset. The BFC is flush
+    // .markdown-body > .md-committed > h1.md-blk: h1 has an intrinsic 0.75rem
+    // top margin (app.css `.markdown-body h1`), zeroed by the
+    // `> :is(.md-committed, .md-volatile):first-child > .md-blk:first-child`
+    // reset (every compound carries a class so the rule stays out of Blink's
+    // universal invalidation sets -- streamdownTheme.ts MD_BLOCK_MARKER stamps
+    // md-blk on every block-level element in production). The BFC is flush
     // -safe ONLY because of that reset -- a BFC traps a child's top margin as
     // stray top space. If the reset regresses, this fails (the coupling guard).
     const body = document.createElement('div');
@@ -67,6 +70,7 @@ describe('timeline row margin containment (settle-flicker fix)', () => {
     const committed = document.createElement('div');
     committed.className = 'md-committed';
     const h1 = document.createElement('h1');
+    h1.className = 'md-blk';
     h1.textContent = 'Heading';
     committed.appendChild(h1);
     body.appendChild(committed);

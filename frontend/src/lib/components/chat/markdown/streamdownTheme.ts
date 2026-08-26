@@ -41,6 +41,18 @@
 // structural type so we don't depend on the internal path.
 type ThemeOverride = Record<string, Record<string, string>>;
 
+// `md-blk` marks every element that can be a DIRECT child of the
+// .md-committed / .md-volatile wrapper — the app.css edge-margin resets
+// (`.markdown-body > … > .md-blk:first-child`) key on it. The class is
+// not decorative: with a bare `:first-child` in that position, Blink
+// files the rule in its UNIVERSAL invalidation sets, and every
+// sibling-list change anywhere in the document paid a whole-subtree
+// style recalc (measured 2026-08-25: 131 subtree invalidations/15s,
+// 1,091-element passes during two-pane streaming). A block-level theme
+// entry missing the marker keeps its own edge margin when it lands
+// first/last in a message — streamdownTheme.test.ts pins the roster.
+export const MD_BLOCK_MARKER = 'md-blk';
+
 export const chatMarkdownTheme: ThemeOverride = {
   code: {
     // Drop the border + rounded-xl card; use a single rounded-md
@@ -62,7 +74,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     // `border-0` alone leaves the vendor's gray-200 border color
     // standing. Inert at zero width today, but one `border` away from
     // painting a light-mode gray in dark mode.
-    base: 'my-3 w-full overflow-hidden rounded-md border-0 border-border-subtle flex flex-col bg-code-block',
+    base: 'md-blk my-3 w-full overflow-hidden rounded-md border-0 border-border-subtle flex flex-col bg-code-block',
     // Same background as base — the inner container is mostly there
     // for the relative positioning the host's copy overlay expects.
     container: 'relative overflow-visible bg-transparent p-0 font-mono text-[0.8125rem]',
@@ -90,7 +102,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     // and `border-0` cancels only the WIDTH. Without a colliding border
     // COLOR the vendor's light-mode gray survived the merge — inert at
     // zero width, one `border` away from painting.
-    base: 'overflow-visible max-w-full my-3 border-0 border-border-subtle rounded-none',
+    base: 'md-blk overflow-visible max-w-full my-3 border-0 border-border-subtle rounded-none',
     // table-auto (not fixed): app.css `.markdown-body … table` already forces
     // table-layout:auto via higher specificity, so `table-fixed` here was a
     // silently-overridden no-op. Keep them in agreement — columns size to
@@ -118,7 +130,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     base: 'px-3 py-1.5 text-[0.8125rem] font-medium min-w-0 max-w-none break-words text-fg-muted text-left',
   },
   hr: {
-    base: 'border-border-subtle my-5',
+    base: 'md-blk border-border-subtle my-5',
   },
   blockquote: {
     // `text-md-blockquote` exists to CANCEL the vendor default's palette
@@ -126,7 +138,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     // `.markdown-body blockquote` rule in app.css owns the color
     // (var(--md-blockquote)), and the alias names the same token so the
     // class cannot disagree with what the cascade renders.
-    base: 'border-border-subtle text-md-blockquote my-3 border-l-2 pl-3 italic',
+    base: 'md-blk border-border-subtle text-md-blockquote my-3 border-l-2 pl-3 italic',
   },
   // GFM alerts (`> [!NOTE]` … ). Each vendor key carries a full literal
   // palette for its variant — blue-600 for note, green-600 for tip,
@@ -138,6 +150,7 @@ export const chatMarkdownTheme: ThemeOverride = {
   // same thing everywhere else in the app; the border is toned down to
   // /45 so a 4px rule doesn't out-shout the prose it introduces.
   alert: {
+    base: 'md-blk',
     note: '[&>[data-alert-title]]:text-info stroke-info border-info/45',
     tip: '[&>[data-alert-title]]:text-success stroke-success border-success/45',
     warning: '[&>[data-alert-title]]:text-warning stroke-warning border-warning/45',
@@ -152,7 +165,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     // `code.base` above. Background stays on the elevation tier, NOT on
     // `--code-block`: a diagram is not code and must not move when a
     // code theme changes.
-    base: 'group relative my-3 h-auto rounded-md border-0 border-border-subtle bg-surface-1 overflow-hidden items-center min-h-[300px]',
+    base: 'md-blk group relative my-3 h-auto rounded-md border-0 border-border-subtle bg-surface-1 overflow-hidden items-center min-h-[300px]',
     icon: 'size-4',
     buttons: 'absolute right-1 top-1 flex h-fit w-fit items-center gap-1',
   },
@@ -176,18 +189,23 @@ export const chatMarkdownTheme: ThemeOverride = {
   // text-3xl` — chat surfaces want compact heading sizing that
   // matches `app.css` `.markdown-body` rules. Clearing each entry
   // hands control back to the cascade.
-  h1: { base: 'mt-3 mb-1 text-lg font-semibold' },
-  h2: { base: 'mt-3 mb-1 text-base font-semibold' },
-  h3: { base: 'mt-2 mb-1 text-[0.9375rem] font-semibold' },
-  h4: { base: 'mt-2 mb-1 text-sm font-semibold' },
-  h5: { base: 'mt-2 mb-1 text-sm font-semibold' },
-  h6: { base: 'mt-2 mb-1 text-sm font-semibold' },
+  h1: { base: 'md-blk mt-3 mb-1 text-lg font-semibold' },
+  h2: { base: 'md-blk mt-3 mb-1 text-base font-semibold' },
+  h3: { base: 'md-blk mt-2 mb-1 text-[0.9375rem] font-semibold' },
+  h4: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
+  h5: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
+  h6: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
   // pl matches `.markdown-body ul/ol` in app.css (which wins the
   // cascade): 2em of marker room so wide fonts don't clip — see the
   // comment there.
-  ul: { base: 'ml-0 pl-[2em] list-outside list-disc whitespace-normal' },
-  ol: { base: 'ml-0 pl-[2em] list-outside whitespace-normal' },
+  ul: { base: 'md-blk ml-0 pl-[2em] list-outside list-disc whitespace-normal' },
+  ol: { base: 'md-blk ml-0 pl-[2em] list-outside whitespace-normal' },
   li: { base: 'py-0.5', checkbox: 'mr-2' },
+  // Block-level entries the override otherwise leaves to the vendor:
+  // named here ONLY to carry the md-blk marker (see its doc above).
+  paragraph: { base: 'md-blk' },
+  math: { block: 'md-blk' },
+  descriptionList: { base: 'md-blk' },
   // `~~strike~~`. Vendor ships gray-600 text; de-emphasis here means
   // the same thing `.markdown-body del` means, so use the same tier.
   del: { base: 'text-fg-subtle' },

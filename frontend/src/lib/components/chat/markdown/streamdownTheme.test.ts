@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { mergeTheme, theme as vendorTheme } from 'svelte-streamdown';
-import { chatMarkdownTheme } from './streamdownTheme';
+import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
 
 // Tailwind palette scales and the raw black/white utilities the vendor base
 // theme reaches for. None of these may survive the merge on any key the
@@ -162,6 +162,66 @@ describe('chatMarkdownTheme', () => {
       expect('hover:bg-gray-' + '100/50').toMatch(PALETTE_CLASS);
       // Our own vocabulary must not read as a leak.
       expect('border-border-subtle bg-surface-1 text-fg-muted').not.toMatch(PALETTE_CLASS);
+    });
+  });
+
+  describe('md-blk block marker', () => {
+    // Every element that can render as a DIRECT child of the streamdown
+    // root (the .md-committed / .md-volatile wrapper) carries md-blk, and
+    // nothing else does. The app.css edge-margin resets key on the marker
+    // (`.markdown-body > … > .md-blk:first-child`) precisely so that
+    // position in the selector is never a bare structural pseudo — see the
+    // MD_BLOCK_MARKER doc in streamdownTheme.ts and
+    // src/lib/styleInvalidation.test.ts for the invalidation-set mechanism.
+    //
+    // A block-level key missing the marker keeps its own edge margin when
+    // it lands first/last in a message; an inline key carrying it would
+    // hand the resets an element that is never a wrapper child. Both
+    // directions are asserted, over the MERGED theme (what reaches the
+    // DOM), so a tailwind-merge behavior change that dropped the unknown
+    // class would fail here too.
+    const BLOCK_KEYS = [
+      'alert.base',
+      'blockquote.base',
+      'code.base',
+      'descriptionList.base',
+      'h1.base',
+      'h2.base',
+      'h3.base',
+      'h4.base',
+      'h5.base',
+      'h6.base',
+      'hr.base',
+      'math.block',
+      'mermaid.base',
+      'ol.base',
+      'paragraph.base',
+      'table.base',
+      'ul.base',
+    ];
+
+    const markerRe = new RegExp(`(?:^|\\s)${MD_BLOCK_MARKER}(?:\\s|$)`);
+
+    for (const key of BLOCK_KEYS) {
+      it(`stamps ${key} with the marker after the merge`, () => {
+        const [group, sub] = key.split('.') as [string, string];
+        const value = (merged[group] as Record<string, string> | undefined)?.[sub];
+        expect(value).toBeTypeOf('string');
+        expect(value).toMatch(markerRe);
+      });
+    }
+
+    it('keeps the marker off every non-block key', () => {
+      const offenders: string[] = [];
+      for (const [group, entry] of Object.entries(merged)) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        for (const [sub, value] of Object.entries(entry as Record<string, unknown>)) {
+          if (typeof value !== 'string') continue;
+          if (BLOCK_KEYS.includes(`${group}.${sub}`)) continue;
+          if (markerRe.test(value)) offenders.push(`${group}.${sub}`);
+        }
+      }
+      expect(offenders).toEqual([]);
     });
   });
 });

@@ -176,7 +176,9 @@
     behind an indent guide — and the scalar groups are wrapping rows in the
     same flow. Nothing here can create horizontal overflow.
   -->
-  <div class="w-full" data-testid="workflow-map-fan" data-fan-layout={fan.layout}>
+  <!-- run-map-node on both roots: a fan is a direct spine child, and the
+       connector selector keys on the class (see app.css `.run-map-spine`). -->
+  <div class="run-map-node w-full" data-testid="workflow-map-fan" data-fan-layout={fan.layout}>
     {#each fan.columns as column (column.key)}
       <div
         class="w-full pt-1"
@@ -216,7 +218,7 @@
   </div>
 {:else}
   <div
-    class="w-full"
+    class="run-map-node w-full"
     style:--run-map-lane-min={RUN_MAP_LANE_MIN}
     style:--run-map-lane-max={RUN_MAP_LANE_MAX}
     data-testid="workflow-map-fan"

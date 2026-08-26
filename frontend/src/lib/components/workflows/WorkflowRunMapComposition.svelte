@@ -66,11 +66,16 @@
   those.
 -->
 <div
-  class={composition.collapsed
-    ? 'max-w-full'
-    : composition.headerless
-      ? 'w-full'
-      : `${RUN_MAP_CARD} w-full border-border-subtle bg-surface-1/30`}
+  class={[
+    // run-map-node: a chained composition is a direct spine child, and the
+    // connector selector keys on the class (see app.css `.run-map-spine`).
+    'run-map-node',
+    composition.collapsed
+      ? 'max-w-full'
+      : composition.headerless
+        ? 'w-full'
+        : `${RUN_MAP_CARD} w-full border-border-subtle bg-surface-1/30`,
+  ].join(' ')}
   data-testid="workflow-map-composition"
   data-composition-item-id={composition.itemId}
   data-collapsed={composition.collapsed}
