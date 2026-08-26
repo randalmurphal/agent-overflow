@@ -207,6 +207,13 @@ instance's own evidence files, not the Windows launcher log), and is the
 only checker for a `make soak-window` instance. The Windows shell has
 its launcher-side view too:
 
+One teardown asymmetry on this shell: `ao-harness down` stops only the
+WSL backend. The launcher deliberately does not exit when its child
+dies — a launcher that vanished on backend death would take the window,
+and its evidence, with it — so the WebView2 window stays up dead. End a
+Windows-shell soak by closing the window (which kills the backend), and
+keep `down` for the windowless half of a crashed run.
+
 `make soak-check` (`scripts/soak-check.sh`) is read-only. It resolves
 `%APPDATA%\agent-overflow\launcher-soak.log` through cmd.exe interop,
 scopes everything to the **current run** (the log is append-only across

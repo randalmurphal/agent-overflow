@@ -42,7 +42,7 @@ will type either:
 | Command | Purpose |
 |---|---|
 | `up` | boot a detached instance; `--window --soak --data-dir --binary --mock-provider --dev-assets --keep-home --timeout` |
-| `down [--all]` | SIGTERM, then kill after 5s |
+| `down [--all]` | SIGTERM, then kill after 5s. Stops the BACKEND only: a Windows-launcher soak's window deliberately outlives it (soak-rig.md § Reading the results) — close the window to end that shell |
 | `list` | known instances, pruning rows whose process is gone |
 | `info` | identity, URL, and every evidence path |
 | `open [--browser]` | print the instance URL |
