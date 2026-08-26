@@ -158,6 +158,29 @@ export function captureTimelineTailAnchor(
 }
 
 /**
+ * Precondition for BOTH auto-load zones: the scroller is long enough that
+ * the top zone and the bottom zone are disjoint. The top zone is
+ * `offset < offsetThreshold` and the bottom zone is
+ * `range - offset < offsetThreshold`, so with `range < 2 × offsetThreshold`
+ * every offset sits in at least one zone — and a timeline whose items
+ * collapse into a few tall nodes (a single giant activity run: 700 items,
+ * ~3 nodes, ~150px of outer range) sits in BOTH at once, forever. The
+ * per-zone index gates cannot save it: they count NODES, and the run is one
+ * node. In that state any scroll event with an armed gate fired
+ * `loadOlder`, which escaped bottom-follow and head-pruned the live tail
+ * out of the window (soak incident 2026-08-25: follow died mid-stream,
+ * then the two zones ping-ponged loadOlder/loadNewer under the reader).
+ * Auto-paging stands down until the geometry can express reader intent;
+ * the manual chips and jump-to-latest remain the affordance.
+ */
+export function autoLoadZonesDisjoint(
+  scrollRange: number,
+  thresholds: AutoLoadZoneThresholds,
+): boolean {
+  return scrollRange >= thresholds.offsetThreshold * 2;
+}
+
+/**
  * Older edge: viewport within `offsetThreshold` px of the top AND the
  * topmost rendered row within the first `indexThreshold` nodes. The
  * `firstVisibleIndex` thunk is invoked only after the cheap offset

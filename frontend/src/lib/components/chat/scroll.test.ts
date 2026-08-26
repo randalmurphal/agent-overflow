@@ -1585,8 +1585,10 @@ describe('scroll integration — auto-load-older trigger', () => {
     Object.defineProperty(scrollEl, 'scrollTop', {
       configurable: true, get: () => 0, set: () => {},
     });
+    // Range 2400 >= 2x AUTO_LOAD_OFFSET_PX: the zones-disjoint guard passes,
+    // so each test below fails on ITS OWN pinned guard, not on geometry.
     Object.defineProperty(scrollEl, 'scrollHeight', {
-      configurable: true, get: () => 1000,
+      configurable: true, get: () => 3000,
     });
     Object.defineProperty(scrollEl, 'clientHeight', {
       configurable: true, get: () => 600,
@@ -1630,6 +1632,33 @@ describe('scroll integration — auto-load-older trigger', () => {
     expect(loadOlder).not.toHaveBeenCalled();
   });
 
+  it('does not fire pane.loadOlder when the scroller is too short for disjoint zones', async () => {
+    // The giant-single-run incident (2026-08-25): 700 items collapse into a
+    // few nodes and ~150px of outer range, so the top and bottom trigger
+    // zones cover every offset simultaneously and ANY scroll event fired
+    // loadOlder — escaping bottom-follow and head-pruning the live tail.
+    // Auto-paging must stand down when range < 2x AUTO_LOAD_OFFSET_PX.
+    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreHistory', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingOlder', { configurable: true, get: () => false });
+    Object.defineProperty(pane, 'oldestLoadedCursor', { configurable: true, get: () => ({ turnIndex: 5, itemIndex: 0 }) });
+    const loadOlder = vi.spyOn(pane, 'loadOlder');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const scrollEl = container.querySelector(
+      '[data-testid="message-timeline-scroll"]',
+    ) as HTMLElement;
+    Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, get: () => 0, set: () => {} });
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 750 });
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await tick();
+
+    expect(loadOlder).not.toHaveBeenCalled();
+  });
+
   it('does not fire pane.loadOlder while a load is already in flight', async () => {
     const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
     const pane = await buildPane(undefined, items);
@@ -1659,10 +1688,11 @@ describe('scroll integration — auto-load-newer trigger', () => {
     ) as HTMLElement;
     expect(scrollEl).not.toBeNull();
     Object.defineProperty(scrollEl, 'scrollTop', {
-      configurable: true, get: () => 400, set: () => {},
+      configurable: true, get: () => 2400, set: () => {},
     });
+    // Range 2400 >= 2x AUTO_LOAD_OFFSET_PX: see the older-trigger helper.
     Object.defineProperty(scrollEl, 'scrollHeight', {
-      configurable: true, get: () => 1000,
+      configurable: true, get: () => 3000,
     });
     Object.defineProperty(scrollEl, 'clientHeight', {
       configurable: true, get: () => 600,
@@ -1696,6 +1726,31 @@ describe('scroll integration — auto-load-newer trigger', () => {
     await tick();
     dispatchScrollAtBottom(container);
     dispatchScrollAtBottom(container);
+    await tick();
+
+    expect(loadNewer).not.toHaveBeenCalled();
+  });
+
+  it('does not fire pane.loadNewer when the scroller is too short for disjoint zones', async () => {
+    // Mirror of the older-trigger degenerate-geometry pin: overlapping zones
+    // ping-ponged loadOlder/loadNewer under the reader in the giant-run
+    // incident. Same stand-down.
+    const items = [makeItem({ id: 'a', turnIndex: 5, summary: 'a' })];
+    const pane = await buildPane(undefined, items);
+    Object.defineProperty(pane, 'hasMoreNewer', { configurable: true, get: () => true });
+    Object.defineProperty(pane, 'loadingNewer', { configurable: true, get: () => false });
+    Object.defineProperty(pane, 'newestLoadedCursor', { configurable: true, get: () => ({ turnIndex: 5, itemIndex: 0 }) });
+    const loadNewer = vi.spyOn(pane, 'loadNewer');
+
+    const { container } = render(MessageTimeline, { props: { pane } });
+    await tick();
+    const scrollEl = container.querySelector(
+      '[data-testid="message-timeline-scroll"]',
+    ) as HTMLElement;
+    Object.defineProperty(scrollEl, 'scrollTop', { configurable: true, get: () => 150, set: () => {} });
+    Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, get: () => 750 });
+    Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, get: () => 600 });
+    scrollEl.dispatchEvent(new Event('scroll', { bubbles: true }));
     await tick();
 
     expect(loadNewer).not.toHaveBeenCalled();

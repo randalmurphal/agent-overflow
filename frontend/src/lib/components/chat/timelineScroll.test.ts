@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { makeItem } from '../../../test/helpers/chat';
 import { groupItemsBySubagent } from '../../utils/subagentGrouping';
 import {
+  autoLoadZonesDisjoint,
   bottomEdgeGeometry,
   captureTimelineAnchor,
   captureTimelineTailAnchor,
@@ -45,6 +46,23 @@ function gateState(overrides: Partial<AutoLoadGateState> = {}): AutoLoadGateStat
 }
 
 describe('timelineScroll', () => {
+  describe('autoLoadZonesDisjoint', () => {
+    const thresholds = { offsetThreshold: 800, indexThreshold: 5 };
+
+    it('refuses a range where the top and bottom zones overlap', () => {
+      // The giant-single-run incident: ~150px of outer range put every
+      // offset inside BOTH zones, so any scroll event auto-paged and the
+      // head-prune evicted the live streaming tail.
+      expect(autoLoadZonesDisjoint(150, thresholds)).toBe(false);
+      expect(autoLoadZonesDisjoint(1599, thresholds)).toBe(false);
+    });
+
+    it('accepts exactly-disjoint and longer ranges', () => {
+      expect(autoLoadZonesDisjoint(1600, thresholds)).toBe(true);
+      expect(autoLoadZonesDisjoint(30000, thresholds)).toBe(true);
+    });
+  });
+
   it('resolves hidden Codex child rows back to their visible timeline row', () => {
     const spawn = makeItem({
       id: 'codex-agent',

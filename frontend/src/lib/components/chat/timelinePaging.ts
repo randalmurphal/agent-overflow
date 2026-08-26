@@ -15,6 +15,7 @@ import type { UseStickToBottomController } from '../../utils/scroll/index.svelte
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import {
+  autoLoadZonesDisjoint,
   bottomEdgeGeometry,
   createAutoLoadGate,
   isWithinBottomTriggerZone,
@@ -77,7 +78,14 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     // authoritative gate; this just keeps the allocation off the hot path.
     const pane = options.getPane();
     const listRef = options.getListRef();
-    if (!listRef || !pane.hasMoreHistory) return false;
+    const viewport = options.getScrollEl();
+    if (!listRef || !viewport || !pane.hasMoreHistory) return false;
+    // Degenerate geometry: with the top and bottom zones overlapping, a
+    // scroll event cannot express WHICH edge the reader is heading for, and
+    // auto-firing here is what evicted a live streaming tail (see
+    // autoLoadZonesDisjoint). Manual chips remain.
+    if (!autoLoadZonesDisjoint(viewport.scrollHeight - viewport.clientHeight, AUTO_LOAD_ZONE))
+      return false;
     if (
       !autoLoadOlderGate.shouldLoad({
         hasMore: pane.hasMoreHistory,
@@ -110,6 +118,9 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     const listRef = options.getListRef();
     const viewport = options.getScrollEl();
     if (!listRef || !viewport || !pane.hasMoreNewer) return false;
+    // Same degenerate-geometry stand-down as maybeAutoLoadOlder.
+    if (!autoLoadZonesDisjoint(viewport.scrollHeight - viewport.clientHeight, AUTO_LOAD_ZONE))
+      return false;
     if (
       !autoLoadNewerGate.shouldLoad({
         hasMore: pane.hasMoreNewer,
