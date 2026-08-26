@@ -39,6 +39,19 @@ function expectHeightNear(actual: number, expected: number): void {
 }
 
 /**
+ * Past the next ResizeObserver delivery. The observer reports its height from
+ * the RO callback (post-layout, where the reads are free — see
+ * observeActivityRunExpansion), so an assertion right after observe/toggle
+ * would read the pre-delivery value. Two rAFs: the first fires before the
+ * same frame's RO deliveries, the second lands after them.
+ */
+function afterDelivery(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
+/**
  * A faithful slice of the column a run renders inside: the timeline's
  * `mx-auto max-w-[62rem] px-6` wrapper, holding a prose row and a run whose
  * rail indents the clip. The prose row is the reference the run's content must
@@ -146,7 +159,7 @@ describe('activity run clip — the cap', () => {
     expect(clip.clientHeight).toBe(3 * 40);
   });
 
-  it('grows by exactly what an expanded body added', () => {
+  it('grows by exactly what an expanded body added', async () => {
     const { clip, content } = mountColumn();
     rows(content, 40);
 
@@ -165,6 +178,7 @@ describe('activity run clip — the cap', () => {
     const stop = observeActivityRunExpansion(clip, (px) => {
       reported = px;
     });
+    await afterDelivery();
     clip.style.maxHeight = activityRunClipMaxHeight(reported);
 
     // Reading a diff inside a run must not mean scroll-within-scroll: the cap
@@ -192,18 +206,19 @@ describe('activity run clip — the cap', () => {
     const stop = observeActivityRunExpansion(clip, (px) => {
       reported = px;
     });
+    await afterDelivery();
     // Collapsed contributes nothing — the preview is activity, not expansion.
     expect(reported).toBe(0);
 
     trigger.setAttribute('aria-expanded', 'true');
     body.style.height = '220px';
-    await Promise.resolve();
+    await afterDelivery();
 
     expect(reported).toBe(220 - 58);
     stop();
   });
 
-  it('subtracts a declared line clamp from a body mounted already expanded', () => {
+  it('subtracts a declared line clamp from a body mounted already expanded', async () => {
     // A reasoning row remounting already-expanded from its lease never
     // renders its collapsed clamp, so there is nothing to measure — the
     // body's `data-collapsed-lines` declaration carries the baseline.
@@ -222,12 +237,13 @@ describe('activity run clip — the cap', () => {
     const stop = observeActivityRunExpansion(clip, (px) => {
       reported = px;
     });
+    await afterDelivery();
 
     expect(reported).toBe(220 - 3 * 20);
     stop();
   });
 
-  it('reports zero for an expanded body no taller than its declared clamp', () => {
+  it('reports zero for an expanded body no taller than its declared clamp', async () => {
     // The reported defect: expanding a think block whose full text already
     // fit under the 3-line clamp added no height to the row, yet grew the
     // run by three lines of cap.
@@ -246,6 +262,7 @@ describe('activity run clip — the cap', () => {
     const stop = observeActivityRunExpansion(clip, (px) => {
       reported = px;
     });
+    await afterDelivery();
 
     expect(reported).toBe(0);
     stop();
@@ -271,11 +288,12 @@ describe('activity run clip — the cap', () => {
     const stop = observeActivityRunExpansion(clip, (px) => {
       reported = px;
     });
+    await afterDelivery();
     expect(reported).toBe(0); // measured at 40 while collapsed
 
     trigger.setAttribute('aria-expanded', 'true');
     body.style.height = '220px';
-    await Promise.resolve();
+    await afterDelivery();
 
     expect(reported).toBe(220 - 3 * 20);
     stop();
@@ -297,8 +315,9 @@ describe('activity run clip — the cap', () => {
       seen.push(px);
     });
     trigger.setAttribute('aria-expanded', 'false');
-    // The mutation observer delivers on a microtask.
-    await Promise.resolve();
+    // The mutation observer delivers on a microtask, the height on the
+    // ResizeObserver pass after it.
+    await afterDelivery();
 
     expect(seen.at(-1)).toBe(0);
     clip.style.maxHeight = activityRunClipMaxHeight(0);

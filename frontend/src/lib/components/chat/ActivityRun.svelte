@@ -169,6 +169,10 @@
           pane.lastLiveContentAt,
           LIVE_CONTENT_ACTIVE_HOLD_MS,
         ),
+      // Every controller write states the fade from the written value, so
+      // the scroll event it fires needs no geometry read (`onClipScroll`
+      // skips non-reader frames entirely).
+      onScrollTopWritten: syncPositionFromWrittenTop,
     });
   }
 
@@ -241,12 +245,18 @@
       // the DOM has the new rows and before the user can see the frame.
       const grew = clip.scrollHeight - beforeHeight;
       if (grew > 0) clip.scrollTop = beforeTop + grew;
-      // Read back before the settle observer sees the same growth: rows
+      // Stated before the settle observer sees the same growth: rows
       // arriving ABOVE the reader must not be mistaken for the run growing
       // under one who is resting on its last row. The follow state carries
       // through unchanged — compensation keeps the distance to the run's last
       // row exactly as it was, so it says nothing new about the reader.
-      positionWritten(clip, followingBottom);
+      // The reads above already flushed layout, so refresh the height cache
+      // for free while it is exact.
+      if (knownMetrics) {
+        knownMetrics.scrollHeight = clip.scrollHeight;
+        knownMetrics.clientHeight = clip.clientHeight;
+      }
+      positionWritten(clip, followingBottom, beforeTop + Math.max(grew, 0));
     } finally {
       mountingEarlier = false;
     }
@@ -276,14 +286,13 @@
     });
   });
 
-  // Persisted per frame, not only at teardown: a thread switch clears the
-  // registry synchronously with the data change, well before Svelte tears
-  // this row down, so a teardown-only save would archive a position several
-  // reads stale. One small write against a Map — the overlay scrollbar
-  // already samples geometry on the same event.
-  function saveInnerScroll(): void {
-    const clip = clipEl;
-    if (!clip) return;
+  // Persisted per reader-owned scroll frame, not only at teardown: a thread
+  // switch clears the registry synchronously with the data change, well
+  // before Svelte tears this row down, so a teardown-only save would archive
+  // a position several reads stale. Takes the metrics the caller already
+  // read — re-reading them here was a second forced style recalc on the same
+  // event (2026-08-26, the 165Hz frame-drop attribution).
+  function saveInnerScroll(metrics: ScrollMetrics): void {
     // Only a laid-out, scrollable clip has a position worth archiving. During
     // unmount the content collapses before the row is gone, the browser clamps
     // `scrollTop` to 0 and fires a scroll event for it — and that artifact
@@ -291,9 +300,9 @@
     // scrolled), so every remount parked the run at its top with the fade off.
     // An unscrollable clip can only ever be at 0 anyway; refusing the save
     // keeps the last meaningful position for the restore path.
-    if (clip.scrollHeight <= clip.clientHeight) return;
+    if (metrics.scrollHeight <= metrics.clientHeight) return;
     pane.activityRuns.saveScrollSnapshot(runId, {
-      scrollTop: clip.scrollTop,
+      scrollTop: metrics.scrollTop,
       // One fact — "the reader has left bottom-follow" — recorded from
       // whichever half of the run owns it. The tail run's controller tracks it
       // as `escapedFromLock`; a run without one tracks it as the absence of
@@ -326,14 +335,44 @@
   let followingBottom = $state(false);
 
   /**
+   * The last geometry actually read from the clip. Kept so authored writes
+   * can state where the clip is without asking the DOM: every getter on a
+   * style-dirty tree forces a style recalc, and during streaming the tree is
+   * dirty on exactly the frames the follow writes land in — re-reading per
+   * write was one of the two extra forced-recalc passes per streamed frame
+   * (2026-08-26 attribution: `readScrollMetrics` 1310 forced recalcs/120s).
+   * Refreshed wherever a read is free or already owed: the mount seed, the
+   * ResizeObserver callbacks (which run AFTER layout, so their reads force
+   * nothing), and reader-owned scroll events.
+   */
+  let knownMetrics: ScrollMetrics | null = null;
+
+  /**
    * Re-read what the clip's position looks like. Paint only — the fade is the
    * one thing that IS a pure function of the current geometry, so it is the
    * one thing read back from it after every move.
    */
   function syncPosition(clip: HTMLElement): ScrollMetrics {
     const metrics = readScrollMetrics(clip);
+    knownMetrics = metrics;
     fadedTop = metrics.scrollTop > FADE_EPSILON_PX;
     return metrics;
+  }
+
+  /**
+   * State the fade from a position this component (or the controller) just
+   * WROTE, using cached heights instead of a DOM read. The browser clamps a
+   * write against max-scroll, so the cached clamp is applied here too; a
+   * cache staler than the current frame is corrected by the next observer
+   * fire, which is at most one frame away for any size change.
+   */
+  function syncPositionFromWrittenTop(top: number): void {
+    const known = knownMetrics;
+    if (!known) return;
+    const max = Math.max(0, known.scrollHeight - known.clientHeight);
+    const clamped = Math.min(Math.max(top, 0), max);
+    known.scrollTop = clamped;
+    fadedTop = clamped > FADE_EPSILON_PX;
   }
 
   // Whether the reader is driving the clip's position right now.
@@ -363,9 +402,24 @@
     pendingRestoreTop = null;
   }
 
+  // The pointer-press arm is deliberately lighter: a press says "scroll
+  // events until the next authored write are the reader's" (selection drag,
+  // middle-click autoscroll), but unlike a wheel notch it is not yet a
+  // scrolling gesture, so it must not kill a clamped mount restore that a
+  // click-to-expand inside the run still wants re-applied.
+  function armReaderPress(): void {
+    readerScrolling = true;
+  }
+
   /**
-   * Arm on the gestures that scroll a clip: wheel, touch drag, and the keys a
-   * focused row inside it responds to.
+   * Arm on the gestures that scroll a clip: wheel, touch drag, the keys a
+   * focused row inside it responds to, and a pointer press — a selection drag
+   * past the clip's edge and middle-click autoscroll both begin with
+   * `pointerdown` and then move `scrollTop` with no wheel or key event, and
+   * since `onClipScroll` only reads geometry on reader-owned frames, an
+   * unarmed browser-driven scroll would leave the fade and snapshot stale.
+   * A press that leads to no scrolling arms harmlessly: the next authored
+   * write disarms through `positionWritten`.
    *
    * An action rather than markup handlers because these observe a gesture
    * rather than answer one — the clip is a scroll surface, not a control, and
@@ -378,11 +432,13 @@
     el.addEventListener('wheel', armReaderScroll, opts);
     el.addEventListener('touchmove', armReaderScroll, opts);
     el.addEventListener('keydown', armReaderScroll, opts);
+    el.addEventListener('pointerdown', armReaderPress, opts);
     return {
       destroy() {
         el.removeEventListener('wheel', armReaderScroll);
         el.removeEventListener('touchmove', armReaderScroll);
         el.removeEventListener('keydown', armReaderScroll);
+        el.removeEventListener('pointerdown', armReaderPress);
       },
     };
   }
@@ -396,23 +452,38 @@
    * history. `following` is stated by each write rather than measured, for the
    * reason `followingBottom` exists: at the instant of a write the rows inside
    * are routinely unmeasured, so the geometry cannot answer it yet.
+   *
+   * `writtenTop` is the value the caller just wrote. When given, the fade is
+   * stated from it against cached heights — no DOM read, because the write
+   * paths run on exactly the style-dirty frames where a read forces a recalc.
+   * Callers that have no value in hand (the mount seed, a jump that already
+   * read geometry to center) omit it and pay one real read.
    */
-  function positionWritten(clip: HTMLElement, following: boolean): void {
+  function positionWritten(clip: HTMLElement, following: boolean, writtenTop?: number): void {
     readerScrolling = false;
     followingBottom = following;
     // A newer authored position supersedes a clamped mount restore — the
     // prepend compensation, the head-splice hold, the handoff, and a jump all
     // own the position from here.
     pendingRestoreTop = null;
-    syncPosition(clip);
+    if (writtenTop !== undefined && knownMetrics) {
+      syncPositionFromWrittenTop(writtenTop);
+    } else {
+      syncPosition(clip);
+    }
   }
 
-  // One handler for everything the clip's position drives. Cheap by
-  // construction: three numeric compares and a Map write, and the `$state`
-  // write only invalidates anything on the frame the answer changes.
+  // One handler for everything the READER's position drives. Scroll events
+  // this component's own writes (and the controller's) produce are skipped
+  // wholesale: their positions were stated at the write site from cached
+  // geometry, and reading here forced a second style recalc per streamed
+  // frame against the reveal flush's dirty tree (2026-08-26 attribution).
+  // The skip also swallows the unmount clamp artifact (content collapses,
+  // browser clamps to 0, fires a scroll event) that `saveInnerScroll`'s
+  // scrollable guard exists to refuse.
   function onClipScroll(): void {
     const clip = clipEl;
-    if (!clip) return;
+    if (!clip || !readerScrolling) return;
     const metrics = syncPosition(clip);
     // The two reader-owned decisions, both behind the same gate. Leaving the
     // run's last row is a decision, so it is read from the geometry only when
@@ -422,13 +493,10 @@
     // gate offers. The boundary stays a button: it is the affordance for
     // jumping a chunk without scrolling for it, and the only one the "N later"
     // edge has.
-    if (readerScrolling) {
-      followingBottom = activityRunAtBottom(metrics);
-    }
+    followingBottom = activityRunAtBottom(metrics);
     // After the flag, so the snapshot archives this frame's answer rather than
     // the previous one's.
-    saveInnerScroll();
-    if (!readerScrolling) return;
+    saveInnerScroll(metrics);
     if (activityRunShouldMountEarlier(metrics, hiddenEarlier)) void mountEarlier();
   }
 
@@ -519,8 +587,19 @@
       // owner-driven scrollbar classification would hide the thumb while
       // it happened.
       if (controller && !collapsed && clip.isConnected) {
-        if (!escaped) clip.scrollTop = clip.scrollHeight;
-        positionWritten(clip, !escaped);
+        if (!escaped) {
+          // One read pair on a rare path (tail displacement), and the write's
+          // own value states the fade — no re-read behind it.
+          const bottom = clip.scrollHeight;
+          clip.scrollTop = bottom;
+          if (knownMetrics) {
+            knownMetrics.scrollHeight = bottom;
+            knownMetrics.clientHeight = clip.clientHeight;
+          }
+          positionWritten(clip, true, bottom);
+        } else {
+          positionWritten(clip, false);
+        }
       }
       // Same laid-out-and-scrollable refusal as `saveInnerScroll`: on a
       // windowing eviction this teardown can run against a clip whose content
@@ -566,7 +645,17 @@
     if (!clip || !content || stick) return;
     const settle = new ResizeObserver(() => {
       if (!followingBottom) return;
+      // ResizeObserver callbacks run after layout, so these reads are free —
+      // this is also the cache refresh that keeps the write paths honest.
+      syncPosition(clip);
       clip.scrollTop = clip.scrollHeight;
+      if (knownMetrics) {
+        knownMetrics.scrollTop = Math.max(
+          0,
+          knownMetrics.scrollHeight - knownMetrics.clientHeight,
+        );
+        fadedTop = knownMetrics.scrollTop > FADE_EPSILON_PX;
+      }
       // Our write, so it must not be mistaken for the reader arriving at the
       // top of a run whose content has not grown past the runway yet.
       readerScrolling = false;
@@ -596,6 +685,14 @@
     const content = contentEl;
     if (!clip || !content) return;
     const restore = new ResizeObserver(() => {
+      // The cache refresh runs on EVERY size change, restore pending or not:
+      // this observer watches every mounted clip (unlike the settle observer,
+      // which only controller-less runs get), it fires after layout where
+      // reads are free, and the cached heights are what let the authored
+      // write paths state the fade without forcing a recalc. It also covers
+      // the browser's own scrollTop clamp when content shrinks under a
+      // resting clip — the clamp implies a resize, so the fade heals here.
+      syncPosition(clip);
       const target = pendingRestoreTop;
       if (target === null) return;
       const max = clip.scrollHeight - clip.clientHeight;
@@ -691,7 +788,10 @@
     }
     // Ours, so it is not the reader arriving anywhere; the follow state carries
     // through untouched, because holding the anchor says nothing new about them.
-    positionWritten(clip, followingBottom);
+    // (The controller branch's compensation goes through the chokepoint, whose
+    // onScrollTopWritten already stated the fade; passing `target` here is the
+    // same statement for both branches.)
+    positionWritten(clip, followingBottom, target);
   });
 
   // Jump resolution, inner half: a search hit, review jump, or tray row

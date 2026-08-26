@@ -232,7 +232,12 @@ describe('<ActivityRun>', () => {
       expect(fade.getAttribute('data-faded')).toBe('false');
       expect(fade.className).toContain('opacity-0');
 
+      // The gesture is what licenses the scroll handler to read geometry at
+      // all — an unarmed scroll event is one of the run's own writes, whose
+      // fade is stated at the write (2026-08-26, the 165Hz frame-drop
+      // attribution).
       stampScroll(clip, { scrollTop: 120, clientHeight: 300, scrollHeight: 1500 });
+      await fireEvent.wheel(clip, { deltaY: 120 });
       await fireEvent.scroll(clip);
 
       expect(fade.getAttribute('data-faded')).toBe('true');
@@ -351,6 +356,9 @@ describe('<ActivityRun>', () => {
       const clip = getByTestId('activity-run-clip');
       const id = getByTestId('activity-run').getAttribute('data-run-id') ?? '';
       stampScroll(clip, { scrollTop: 120, clientHeight: 300, scrollHeight: 1500 });
+      // The wheel is the license: only a reader-owned scroll frame archives a
+      // position (an unarmed scroll event is one of the run's own writes).
+      await fireEvent.wheel(clip, { deltaY: 120 });
       await fireEvent.scroll(clip);
       expect(pane.activityRuns.scrollSnapshot(id)).not.toBeNull();
 

@@ -202,6 +202,15 @@ export function activityRunExpandedHeight(bodies: readonly HTMLElement[]): numbe
  * too — their size is tomorrow's baseline, and for a body whose trigger
  * remounts on toggle (a command result swapping its load control) the
  * content swap's resize is the only signal the toggle emits.
+ *
+ * Retargeting is attribute-only; every geometry read lives in the
+ * ResizeObserver delivery the reobserve schedules. That delivery runs after
+ * layout, where the same reads are free — retarget itself runs against a
+ * tree the caller's effect (or a toggle's flush) just dirtied, and its
+ * `offsetHeight` loop was the timeline's only source of full forced layouts,
+ * once per window advance while streaming (2026-08-26, the 165Hz frame-drop
+ * attribution). The height still lands before the same frame paints: the
+ * initial RO delivery is part of that frame's rendering update.
  */
 export function observeActivityRunExpansion(
   clip: HTMLElement,
@@ -216,11 +225,14 @@ export function observeActivityRunExpansion(
     onHeight(activityRunExpandedHeight(measure().expanded));
   });
   function retarget(): void {
-    const bodies = measure();
+    const bodies = activityRunDisclosureBodies(clip);
     sizes.disconnect();
     for (const body of bodies.expanded) sizes.observe(body);
     for (const body of bodies.collapsed) sizes.observe(body);
-    onHeight(activityRunExpandedHeight(bodies.expanded));
+    // Nothing observed means no delivery will fire, and the answer needs no
+    // geometry: no bodies, no lift. This is also what retracts the cap when
+    // the last expanded mount-on-expand body collapses out of the DOM.
+    if (bodies.expanded.length === 0 && bodies.collapsed.length === 0) onHeight(0);
   }
   const disclosures = new MutationObserver(retarget);
   disclosures.observe(clip, {
