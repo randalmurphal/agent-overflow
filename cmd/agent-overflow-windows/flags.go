@@ -32,15 +32,17 @@ type launcherFlags struct {
 	// normal boot still runs so Wails can register the toast callback while
 	// the WSL backend and bridge come online.
 	Embedding bool
-	// Profile selects a launch profile: "" (the normal instance) or
-	// "soak" (appidentity.ProfileSoak — the isolated second instance the
-	// soak rig runs; see docs/architecture/soak-rig.md). It is the ONE
-	// axis behind every piece of per-instance state the launcher owns:
+	// Profile selects a launch profile: "" (the normal instance),
+	// "harness" (appidentity.ProfileHarness — the isolated mocked
+	// instance an agent or a developer drives), or "soak"
+	// (appidentity.ProfileSoak — that same instance with the soak
+	// autopilot armed; docs/architecture/soak-rig.md). It is the ONE axis
+	// behind every piece of per-instance state the launcher owns:
 	// single-instance id, window title, WebView2 user-data dir, CDP port,
 	// launcher log, window placement, and the backend's own isolation
-	// flag. A single axis is deliberate — three ad-hoc flags would let a
-	// soak run share one of them and quietly reach into the developer's
-	// real instance.
+	// flags. A single axis is deliberate — three ad-hoc flags would let an
+	// isolated run share one of them and quietly reach into the
+	// developer's real instance.
 	Profile string
 }
 
@@ -65,15 +67,15 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	profile := fs.String(
 		"profile",
 		os.Getenv(profileEnv),
-		"launch profile: empty for the normal instance, `soak` for the isolated soak-rig instance (docs/architecture/soak-rig.md)",
+		"launch profile: empty for the normal instance, `harness` for the isolated mocked instance, or soak for that instance with the soak autopilot armed (docs/architecture/soak-rig.md)",
 	)
 	if err := fs.Parse(args); err != nil {
 		return launcherFlags{}, fmt.Errorf("parse flags: %w", err)
 	}
 	// An unknown profile is an error, never a silent fall-back to the
-	// default instance: a typo that resolved to "" would run the soak
-	// against the developer's own launcher.log, WebView2 profile, and
-	// single-instance identity.
+	// default instance: a typo that resolved to "" would run the isolated
+	// instance against the developer's own launcher.log, WebView2
+	// profile, and single-instance identity.
 	normalizedProfile, err := appidentity.NormalizeProfile(*profile)
 	if err != nil {
 		return launcherFlags{}, err

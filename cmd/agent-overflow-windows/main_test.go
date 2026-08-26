@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -606,54 +607,66 @@ func TestWebviewDataDir(t *testing.T) {
 	if got, want := webviewDataDir(appidentity.ModeSoak), filepath.Join(base, "webview2-soak"); got != want {
 		t.Errorf("soak dir = %q, want %q", got, want)
 	}
+	if got, want := webviewDataDir(appidentity.ModeHarness), filepath.Join(base, "webview2-harness"); got != want {
+		t.Errorf("harness dir = %q, want %q", got, want)
+	}
 }
 
-// TestSoakProfileFoldsEveryPerInstanceName is the launcher half of the
-// isolation guard: with --profile soak set, every name the launcher
-// derives must differ from what the same build would use without it.
-// One of them sharing would put the soak instance inside the
-// developer's live app (same single-instance id → the soak URL opens in
-// their window; same WebView2 dir → same localStorage/IndexedDB).
-func TestSoakProfileFoldsEveryPerInstanceName(t *testing.T) {
+// TestIsolatedProfilesFoldEveryPerInstanceName is the launcher half of
+// the isolation guard: with --profile set, every name the launcher
+// derives must differ from what the same build would use without it, AND
+// from what the other profile uses. One of them sharing would put an
+// isolated instance inside the developer's live app (same single-instance
+// id → its URL opens in their window; same WebView2 dir → same
+// localStorage/IndexedDB) or inside the other profile's.
+func TestIsolatedProfilesFoldEveryPerInstanceName(t *testing.T) {
 	appData := t.TempDir()
 	t.Setenv("APPDATA", appData)
 	origMode, origProfile := launcherMode, activeProfile
 	t.Cleanup(func() { launcherMode, activeProfile = origMode, origProfile })
 	launcherMode = "dev"
 
-	activeProfile = ""
-	devMode := launcherRuntimeMode()
-	devState, _ := windowStatePath()
-	devWebview := webviewDataDir(devMode)
-	devInstance := wslSingleInstanceMode()
-
-	activeProfile = appidentity.ProfileSoak
-	soakMode := launcherRuntimeMode()
-	soakState, _ := windowStatePath()
-	soakWebview := webviewDataDir(soakMode)
-	soakInstance := wslSingleInstanceMode()
-
-	if soakMode != appidentity.ModeSoak {
-		t.Fatalf("runtime mode = %q, want %q (a soak launched from the dev build is soak)", soakMode, appidentity.ModeSoak)
-	}
-	for _, pair := range []struct {
-		name       string
-		dev, soaky string
-	}{
-		{"window state path", devState, soakState},
-		{"webview data dir", devWebview, soakWebview},
-		{"single-instance mode", devInstance, soakInstance},
-	} {
-		if pair.dev == pair.soaky {
-			t.Errorf("%s is shared between the dev instance and the soak instance (%q)", pair.name, pair.dev)
+	// axis name -> profile -> value.
+	seen := map[string]map[string]string{}
+	for _, profile := range []string{"", appidentity.ProfileHarness, appidentity.ProfileSoak} {
+		activeProfile = profile
+		mode := launcherRuntimeMode()
+		if want := map[string]string{
+			"":                         appidentity.ModeDev,
+			appidentity.ProfileHarness: appidentity.ModeHarness,
+			appidentity.ProfileSoak:    appidentity.ModeSoak,
+		}[profile]; mode != want {
+			t.Fatalf("profile %q folded to mode %q, want %q (a profile launched from the dev build keeps its own identity)", profile, mode, want)
+		}
+		state, _ := windowStatePath()
+		for axis, value := range map[string]string{
+			"window state path":    state,
+			"webview data dir":     webviewDataDir(mode),
+			"single-instance mode": wslSingleInstanceMode(),
+			"log file":             appidentity.StateFileName("launcher.log", mode),
+		} {
+			if seen[axis] == nil {
+				seen[axis] = map[string]string{}
+			}
+			for other, otherValue := range seen[axis] {
+				if otherValue == value {
+					t.Errorf("%s is shared between profile %q and profile %q (%q)", axis, other, profile, value)
+				}
+			}
+			seen[axis][profile] = value
 		}
 	}
 }
 
-// TestProfileBackendArgs: the soak profile must spell --soak on the WSL
-// backend's argv. Without it the launcher would point at a backend
-// running with the developer's real data dir and real provider binaries
-// — the exact failure the profile axis exists to make impossible.
+// TestProfileBackendArgs pins the launcher↔backend wire contract. Both
+// isolated profiles spell --soak — the internal name for "isolated mocked
+// instance speaking the launcher bootstrap" — and ONLY the soak profile
+// adds --autopilot, which is what makes it a soak rather than the Windows
+// harness. Without --soak the launcher would point at a backend running
+// on the developer's real data dir and real provider binaries, the exact
+// failure the profile axis exists to make impossible; with a stray
+// --autopilot the harness instance would seed threads and start a turn
+// nobody asked for.
 func TestProfileBackendArgs(t *testing.T) {
 	orig := activeProfile
 	t.Cleanup(func() { activeProfile = orig })
@@ -663,10 +676,19 @@ func TestProfileBackendArgs(t *testing.T) {
 		t.Errorf("default profile backend args = %v, want none", got)
 	}
 
-	activeProfile = appidentity.ProfileSoak
-	got := profileBackendArgs()
-	if len(got) != 1 || got[0] != "--soak" {
-		t.Fatalf("soak backend args = %v, want [--soak]", got)
+	self := strconv.Itoa(os.Getpid())
+	for _, tc := range []struct {
+		profile string
+		want    []string
+	}{
+		{appidentity.ProfileHarness, []string{"--soak", "--launcher-pid", self}},
+		{appidentity.ProfileSoak, []string{"--soak", "--autopilot", "--launcher-pid", self}},
+	} {
+		activeProfile = tc.profile
+		got := profileBackendArgs()
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s backend args = %v, want %v", tc.profile, got, tc.want)
+		}
 	}
 }
 
@@ -679,12 +701,15 @@ func TestSoakWindowIsSmallEnoughToParkBesideRealWork(t *testing.T) {
 	}
 }
 
-// TestWailsLogLevelSoakIsDebug: the fork logs half the render-watchdog
-// narrative ("armed", "standing down", "re-navigating") at debug. A soak
-// that drops those has episode starts with no story.
-func TestWailsLogLevelSoakIsDebug(t *testing.T) {
-	if got := wailsLogLevel(appidentity.ModeSoak); got != slog.LevelDebug {
-		t.Fatalf("soak wails log level = %v, want debug", got)
+// TestWailsLogLevelIsolatedProfilesAreDebug: the fork logs half the
+// render-watchdog narrative ("armed", "standing down", "re-navigating")
+// at debug. An isolated instance that drops those has episode starts with
+// no story, and the noise lands only in its own launcher-<profile>.log.
+func TestWailsLogLevelIsolatedProfilesAreDebug(t *testing.T) {
+	for _, mode := range []string{appidentity.ModeSoak, appidentity.ModeHarness} {
+		if got := wailsLogLevel(mode); got != slog.LevelDebug {
+			t.Errorf("%s wails log level = %v, want debug", mode, got)
+		}
 	}
 }
 

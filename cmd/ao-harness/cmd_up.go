@@ -29,7 +29,8 @@ const (
 func runUp(e *env, args []string) error {
 	flags := e.newFlagSet("up")
 	window := flags.Bool("window", false, "open the real webview window instead of running headless (GUI builds only)")
-	soak := flags.Bool("soak", false, "boot the soak shell (autopilot + soak defaults) instead of the harness shell")
+	soak := flags.Bool("soak", false, "boot the launcher shell (the ordinary {port,token} bootstrap) instead of the harness shell")
+	autopilot := flags.Bool("autopilot", false, "with --soak: arm the soak preset (seeded threads plus a turn that streams forever)")
 	dataDir := flags.String("data-dir", "", "data root to boot on (default: this worktree's per-checkout root)")
 	binary := flags.String("binary", "", "agent-overflow binary to run (default: $AO_HARNESS_BIN, else bin/agent-overflow beside this CLI)")
 	mockProvider := flags.String("mock-provider", "", "ao-mockprovider path (default: the backend resolves it beside itself)")
@@ -44,7 +45,10 @@ func runUp(e *env, args []string) error {
 		return usagef("up takes no positional arguments (got %v)", rest)
 	}
 
-	dataRoot, err := upDataRoot(*dataDir, *soak)
+	if *autopilot && !*soak {
+		return usagef("--autopilot requires --soak (it arms the soak preset on the launcher-shell backend)")
+	}
+	dataRoot, err := upDataRoot(*dataDir, *autopilot)
 	if err != nil {
 		return err
 	}
@@ -69,6 +73,7 @@ func runUp(e *env, args []string) error {
 		DataRoot:     dataRoot,
 		MockProvider: *mockProvider,
 		Soak:         *soak,
+		Autopilot:    *autopilot,
 		Window:       *window,
 		DevAssetsURL: *devAssets,
 		KeepHome:     *keepHome,
@@ -83,8 +88,11 @@ func runUp(e *env, args []string) error {
 
 	bs := launched.Bootstrap
 	id := instanceinfo.ID(dataRoot)
+	// Mode follows the AUTOPILOT, not the shell: that is what the instance
+	// itself stamps on its registry row, and a listing that disagreed with
+	// the row would send a reader looking for the wrong instance.
 	mode := instanceinfo.ModeHarness
-	if *soak {
+	if *autopilot {
 		mode = instanceinfo.ModeSoak
 	}
 	if e.jsonOutput() {
@@ -110,11 +118,14 @@ func windowSuffix(window bool) string {
 }
 
 // upDataRoot picks where a new instance lives: the flag, else the
-// per-worktree default for the shell being booted. The soak default
+// per-worktree default for the PRESET being booted. The soak default
 // carries its own suffix, exactly as the backend's own flag default
-// does — the two must agree or `up --soak` and `make soak-window` would
-// mean different instances.
-func upDataRoot(flagValue string, soak bool) (string, error) {
+// does — the two must agree or `up --soak --autopilot` and `make
+// soak-window` would mean different instances. It keys on the autopilot
+// rather than the shell because the suffix exists to stop a soak landing
+// on a root holding threads it did not seed, which is a property of the
+// preset.
+func upDataRoot(flagValue string, autopilot bool) (string, error) {
 	if flagValue != "" {
 		abs, err := filepath.Abs(flagValue)
 		if err != nil {
@@ -122,7 +133,7 @@ func upDataRoot(flagValue string, soak bool) (string, error) {
 		}
 		return abs, nil
 	}
-	if soak {
+	if autopilot {
 		return instanceinfo.DefaultSoakDataRoot(), nil
 	}
 	return instanceinfo.DefaultDataRoot(), nil

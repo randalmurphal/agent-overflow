@@ -38,17 +38,18 @@ Ubuntu 23.04+ / Debian 13+).
 - `make release` — builds direct-install artifacts in `dist/release/<version>/`
 - `make harness` — boots the agent test harness (real app, isolated data
   dir, mocked providers); `make harness-window` opens the real webview
-  window on it; `make e2e` runs the Playwright suite against it.
-  `bin/ao-harness` (built by `make harness-build`) drives any instance
-  from a shell: boot, seed, scenario, events, read-only db, semantic UI
-  snapshots, perf runs, bench workloads, health rollup.
+  window on it; `make harness-wsl` is the Windows shell (real launcher +
+  WebView2 window, own profile beside your dev instance); `make e2e`
+  runs the Playwright suite against it. `bin/ao-harness` (built by
+  `make harness-build`) drives any instance from a shell: boot, seed,
+  scenario, events, read-only db, semantic UI snapshots, perf runs,
+  bench workloads, health rollup.
   See [docs/architecture/agent-harness.md](docs/architecture/agent-harness.md).
-- `make soak` — boots a SECOND, fully isolated instance of the real
-  Windows app (own profile: instance id, window, WebView2 dir, log, data
-  dir) with harness-grade provider mocking, streaming background-subagent
-  activity indefinitely. For hours-long renderer/hang reproductions
-  beside your own running app; `make soak-check` summarizes it.
-  `make soak-window` is the native-window equivalent on linux/macOS.
+- `make soak` — the harness-wsl shell plus the soak preset
+  (`--autopilot`): streams background-subagent activity indefinitely,
+  for hours-long renderer/hang reproductions beside your own running
+  app; `make soak-check` summarizes it. `make soak-window` is the
+  native-window equivalent on linux/macOS.
   See [docs/architecture/soak-rig.md](docs/architecture/soak-rig.md).
 - `make provider-smoke` — manual real-provider gate; **spends real model
   tokens** and needs authenticated `claude` + `codex` CLIs on PATH. Run it

@@ -54,13 +54,16 @@ func seedInstance(t *testing.T, registryDir, dataRoot string, pid int, opts ...f
 	return id
 }
 
-func writeInstanceFile(t *testing.T, dataRoot string, pid int) {
+func writeInstanceFile(t *testing.T, dataRoot string, pid int, opts ...func(*harnessclient.Bootstrap)) {
 	t.Helper()
 	dataDir := filepath.Join(dataRoot, "agent-overflow")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	bs := harnessclient.Bootstrap{URL: "http://127.0.0.1:4321", Port: 4321, Token: "t", PID: pid, DataRoot: dataRoot, DataDir: dataDir}
+	for _, opt := range opts {
+		opt(&bs)
+	}
 	data, err := json.Marshal(bs)
 	if err != nil {
 		t.Fatal(err)

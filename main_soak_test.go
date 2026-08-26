@@ -6,15 +6,17 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/harness/instanceinfo"
 )
 
 func TestParseFlagsSoakDefaultsAnIsolatedDataDir(t *testing.T) {
-	flags, err := parseFlags([]string{"--soak", "--listen", "127.0.0.1:0", "--print-url-fd", "0"})
+	flags, err := parseFlags([]string{"--soak", "--autopilot", "--listen", "127.0.0.1:0", "--print-url-fd", "0"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
 	if !flags.soak {
-		t.Fatal("--soak did not select soak mode")
+		t.Fatal("--soak did not select the launcher-shell isolated backend")
 	}
 	if flags.dataDir == "" {
 		t.Fatal("--soak left --data-dir empty; the Windows launcher cannot supply a Linux path")
@@ -50,11 +52,75 @@ func TestParseFlagsSoakConflicts(t *testing.T) {
 	cases := [][]string{
 		{"--soak", "--harness", "--data-dir", "/tmp/x"},
 		{"--soak", "--connect", "ws://host:1?token=t"},
+		// Both flags are meaningless outside the isolated backend, and a
+		// stray --launcher-pid would publish a pid `ao-harness down` might
+		// later signal.
+		{"--autopilot"},
+		{"--harness", "--data-dir", "/tmp/x", "--autopilot"},
+		{"--launcher-pid", "4242"},
+		{"--soak", "--launcher-pid", "-4242"},
 	}
 	for _, args := range cases {
 		if _, err := parseFlags(args); err == nil {
 			t.Errorf("parseFlags(%v) accepted conflicting flags, want error", args)
 		}
+	}
+}
+
+// The rename's central rule: --soak is the isolated launcher-shell
+// BACKEND, and --autopilot is the soak preset on top of it. A --soak boot
+// with no autopilot is the Windows harness — different default data root,
+// different stamped mode — and must never seed threads or start a turn.
+func TestParseFlagsSoakWithoutAutopilotIsTheHarnessInstance(t *testing.T) {
+	flags, err := parseFlags([]string{"--soak", "--print-url-fd", "0"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if flags.autopilot {
+		t.Fatal("--soak armed the autopilot on its own; the soak preset must be explicit")
+	}
+	if got, want := flags.dataDir, harnessDefaultDataRoot(); got != want {
+		t.Fatalf("data dir = %q, want %q", got, want)
+	}
+	if got := isolatedBootMode(flags); got != instanceinfo.ModeHarness {
+		t.Fatalf("mode = %q, want %q", got, instanceinfo.ModeHarness)
+	}
+
+	soak, err := parseFlags([]string{"--soak", "--autopilot", "--print-url-fd", "0"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got, want := soak.dataDir, soakDefaultDataRoot(); got != want {
+		t.Fatalf("soak data dir = %q, want %q", got, want)
+	}
+	if got := isolatedBootMode(soak); got != instanceinfo.ModeSoak {
+		t.Fatalf("mode = %q, want %q", got, instanceinfo.ModeSoak)
+	}
+	// The two roots cannot be one directory: the autopilot refuses a data
+	// dir holding threads it did not seed, so a shared root would make
+	// whichever booted second fail to arm.
+	if flags.dataDir == soak.dataDir {
+		t.Fatalf("harness and soak share the data root %q", flags.dataDir)
+	}
+}
+
+// The launcher pid crosses the WSL boundary as an explicit arg and is
+// published for a teardown to signal, so it has to survive parsing
+// exactly.
+func TestParseFlagsCarriesTheLauncherPID(t *testing.T) {
+	flags, err := parseFlags([]string{"--soak", "--launcher-pid", "4242", "--print-url-fd", "0"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if flags.launcherPID != 4242 {
+		t.Fatalf("launcherPID = %d, want 4242", flags.launcherPID)
+	}
+	bare, err := parseFlags([]string{"--soak", "--print-url-fd", "0"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if bare.launcherPID != 0 {
+		t.Fatalf("launcherPID = %d with no launcher, want 0", bare.launcherPID)
 	}
 }
 

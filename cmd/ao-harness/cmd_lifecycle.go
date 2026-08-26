@@ -33,6 +33,9 @@ func runDown(e *env, args []string) error {
 		id       string
 		pid      int
 		dataRoot string
+		// launcherPID is read BEFORE anything is stopped: a graceful
+		// shutdown withdraws the instance file that carries it.
+		launcherPID int
 	}
 	var victims []victim
 	var failures []error
@@ -52,7 +55,7 @@ func runDown(e *env, args []string) error {
 				failures = append(failures, fmt.Errorf("instance %s: %w", row.ID, err))
 				continue
 			}
-			victims = append(victims, victim{row.ID, row.PID, row.DataRoot})
+			victims = append(victims, victim{row.ID, row.PID, row.DataRoot, launcherPIDFor(row.DataDir, &row.Row)})
 		}
 		if live == 0 {
 			if e.jsonOutput() {
@@ -70,7 +73,11 @@ func runDown(e *env, args []string) error {
 		if err != nil {
 			return err
 		}
-		victims = append(victims, victim{t.ID, pid, t.DataRoot})
+		var row *instanceinfo.Row
+		if t.Row != nil {
+			row = &t.Row.Row
+		}
+		victims = append(victims, victim{t.ID, pid, t.DataRoot, launcherPIDFor(t.DataDir, row)})
 	}
 
 	results := make([]map[string]any, 0, len(victims))
@@ -80,6 +87,20 @@ func runDown(e *env, args []string) error {
 		if err != nil {
 			entry["error"] = err.Error()
 			failures = append(failures, fmt.Errorf("instance %s (pid %d): %w", v.id, v.pid, err))
+		}
+		// The window second, after the stop attempt: the launcher outlives
+		// its child on purpose (that is what preserves a crash's evidence),
+		// so nothing else will close it. Attempted even when the stop
+		// failed — the launcher pins the WSL child to a Job Object, so
+		// closing it is the backstop for a backend that would not die.
+		// Never a failure of its own: `down`'s verdict is about the backend.
+		if v.launcherPID > 0 {
+			killed, note := stopLauncherWindow(v.launcherPID)
+			entry["launcherPid"] = v.launcherPID
+			entry["launcherStopped"] = killed
+			if note != "" {
+				entry["launcherNote"] = note
+			}
 		}
 		results = append(results, entry)
 	}
@@ -95,9 +116,31 @@ func runDown(e *env, args []string) error {
 			} else {
 				e.printf("failed  %v (pid %v): %v\n", entry["id"], entry["pid"], entry["error"])
 			}
+			if entry["launcherStopped"] == true {
+				e.printf("closed  launcher window (pid %v)\n", entry["launcherPid"])
+			}
+			if note, ok := entry["launcherNote"].(string); ok {
+				e.printf("note    %s\n", note)
+			}
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// launcherPIDFor answers "which Windows launcher hosts this instance's
+// window", preferring the data root's own instance file — the backend
+// wrote it and withdraws it on shutdown, so it is the statement about
+// the process that is running right now — and falling back to the
+// registry row when the file is unreadable. 0 means nobody hosts a
+// window, which is every instance outside the Windows launcher shell.
+func launcherPIDFor(dataDir string, row *instanceinfo.Row) int {
+	if bs, err := harnessclient.ReadInstanceFile(dataDir); err == nil && bs.LauncherPid > 0 {
+		return bs.LauncherPid
+	}
+	if row != nil {
+		return row.LauncherPid
+	}
+	return 0
 }
 
 // pidFor answers "which process is this instance": the registry row when

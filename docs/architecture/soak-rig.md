@@ -19,11 +19,14 @@ make soak-check   # read-only: uptime, stalls, recovery episodes, controller reb
 make soak-contract # verify scrollTop quantization + compositor ownership in WebView2
 ```
 
-This document describes the **Windows launcher** shell, which is the one
-that reproduces the WebView2 renderer hang. The same `--soak` backend
-also runs behind a native Wails window (`make soak-window`, i.e.
-`--soak --window`) on linux/macOS, with its own per-worktree data root
-and instance registry row — see
+A soak is a **preset**, not a mode. `make soak` is `make harness-wsl`
+— the Windows launcher shell of the [agent test
+harness](agent-harness.md) — plus `--autopilot`, the flag that arms the
+scenario below. This document describes that preset on the Windows
+shell, which is the one that reproduces the WebView2 renderer hang. The
+same preset also runs behind a native Wails window (`make soak-window`,
+i.e. `--soak --autopilot --window`) on linux/macOS, with its own
+per-worktree data root and instance registry row — see
 [agent-harness.md § Windowed mode](agent-harness.md#windowed-mode---window)
 and `docs/specs/testing-harness.md`. Everything below about provider
 isolation applies to both; the profile/launcher table is
@@ -87,10 +90,12 @@ Why one axis and not three flags: a soak that shared *any single one* of
 these reaches into the developer's live instance — a shared
 single-instance id means the soak URL opens in **their** window; a
 shared WebView2 dir means shared localStorage and the same IndexedDB
-thread replica. `TestSoakProfileFoldsEveryPerInstanceName`
+thread replica. The `harness` profile (`make harness-wsl`) is a third
+point on the same axis, isolated from dev AND soak alike.
+`TestIsolatedProfilesFoldEveryPerInstanceName`
 (`cmd/agent-overflow-windows/main_test.go`) asserts every row above
-differs, and an unknown profile string is a hard error rather than a
-silent fall back to the default instance
+differs across all three, and an unknown profile string is a hard error
+rather than a silent fall back to the default instance
 (`appidentity.NormalizeProfile`).
 
 Debug is the soak's Wails log level because half the watchdog narrative
@@ -109,12 +114,12 @@ launch it through Windows. The soak leg adds two things:
    the WSL payload installs the backend at `~/.local/bin/agent-overflow`
    and `resolveMockProvider` looks *beside the running executable*
    (`main_harness.go:318`), so that is where the mock has to be.
-2. `--profile soak` on the launcher's argv, which becomes `--soak` on
-   the WSL backend's argv (`profileBackendArgs`,
-   `cmd/agent-overflow-windows/main.go:728`). It rides argv rather than
-   an env var deliberately — WSLENV passthrough is for diagnostics, and
-   anything load-bearing across the WSL boundary belongs in explicit
-   launch args.
+2. `--profile soak` on the launcher's argv, which becomes
+   `--soak --autopilot --launcher-pid <pid>` on the WSL backend's argv
+   (`profileBackendArgs`, `cmd/agent-overflow-windows/main.go`). These
+   ride argv rather than env vars deliberately — WSLENV passthrough is
+   for diagnostics, and anything load-bearing across the WSL boundary
+   belongs in explicit launch args.
 
 `--data-dir` is deliberately *not* spelled by the launcher: it runs on
 the Windows side and has no Linux path to offer, so the backend resolves
@@ -126,8 +131,11 @@ Same isolation, different shell. `--harness` prints an `__AO_HARNESS__`
 line and expects a browser to be pointed at it; the launcher can only
 parse the ordinary `__AO_BOOTSTRAP__` `{port, token, clientId}` contract
 (`internal/wsllauncher`). `--soak` is that contract plus harness
-isolation plus an autopilot — nothing is duplicated: `runSoak`
-(`main_soak.go:80`) calls the same `prepareHarness`,
+isolation — the launcher-owned wire name for the launcher-shell
+instance, historical and never typed by a user. What makes it a SOAK is
+`--autopilot`, which arms the steady state below; without it the same
+boot is the Windows harness, waiting to be driven. Nothing is
+duplicated: `runSoak` calls the same `prepareHarness`,
 `newIsolatedProviderApp`, `newHarness`, and registers the same `Harness`
 RPC receiver, so a running soak is inspectable with the tools an agent
 already has (`HarnessInfo` for evidence paths, replay capture).
@@ -207,12 +215,15 @@ instance's own evidence files, not the Windows launcher log), and is the
 only checker for a `make soak-window` instance. The Windows shell has
 its launcher-side view too:
 
-One teardown asymmetry on this shell: `ao-harness down` stops only the
-WSL backend. The launcher deliberately does not exit when its child
-dies — a launcher that vanished on backend death would take the window,
-and its evidence, with it — so the WebView2 window stays up dead. End a
-Windows-shell soak by closing the window (which kills the backend), and
-keep `down` for the windowless half of a crashed run.
+Teardown on this shell: `ao-harness down` stops the WSL backend, then
+closes the launcher window too — the backend publishes the launcher's
+Windows pid (`--launcher-pid`) in its discovery files, and `down`
+taskkills it over WSL interop after confirming the pid's image name is
+an agent-overflow launcher (`cmd/ao-harness/launcher_kill.go`). The
+launcher still deliberately does not exit when its child **crashes** —
+a launcher that vanished on backend death would take the window, and
+its evidence, with it — so a crashed run's window stays up for autopsy
+until you close it or run `down`.
 
 `make soak-check` (`scripts/soak-check.sh`) is read-only. It resolves
 `%APPDATA%\agent-overflow\launcher-soak.log` through cmd.exe interop,
@@ -220,8 +231,9 @@ scopes everything to the **current run** (the log is append-only across
 launches; the `launcher: profile=soak` boot marker is the separator) and
 reports:
 
-- whether a `--soak` backend is alive in this distro (checked WSL-side
-  via argv, so it can never be confused with your dev backend);
+- whether an `--autopilot` backend is alive in this distro (checked
+  WSL-side via argv — `--soak` alone would also match a harness-wsl
+  instance, which is not a soak);
 - start time and uptime;
 - counts of `renderer ran no script`, `render recovery episode N
   started` / `closed`, `rebuilding controller` — and an explicit warning

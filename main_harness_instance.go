@@ -67,7 +67,11 @@ type publishedInstance struct {
 
 // publishInstance writes both discovery files for a live isolated boot.
 // Never fails a boot: every problem is a log line.
-func publishInstance(srv *transport.Server, paths harnessPaths, mode instanceinfo.Mode, windowed bool) publishedInstance {
+//
+// launcherPID is the Windows launcher hosting this backend's window, or
+// 0 when nobody does — the caller knows, because it is the boot flag the
+// launcher spelled.
+func publishInstance(srv *transport.Server, paths harnessPaths, mode instanceinfo.Mode, windowed bool, launcherPID int) publishedInstance {
 	identity := instanceinfo.Identity{
 		ID:     instanceinfo.ID(paths.DataRoot),
 		Mode:   mode,
@@ -76,8 +80,9 @@ func publishInstance(srv *transport.Server, paths harnessPaths, mode instanceinf
 		// process may chdir later (relocateOffWindowsDriveMount already
 		// does on the launcher path) and "which worktree started this" is
 		// a fact about the launch, not about the current directory.
-		Worktree:  bootWorkingDir(),
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Worktree:    bootWorkingDir(),
+		StartedAt:   time.Now().UTC().Format(time.RFC3339),
+		LauncherPid: launcherPID,
 	}
 	published := publishedInstance{
 		id:          identity.ID,

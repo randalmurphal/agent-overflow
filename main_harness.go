@@ -128,7 +128,9 @@ func runHarness(flags cliFlags) {
 
 	// Discovery files last: they advertise an instance that is ready to
 	// attach, which is true only now.
-	instance := publishInstance(srv, paths, instanceinfo.ModeHarness, flags.window)
+	// No launcher pid: --harness is never spawned by the Windows launcher
+	// (that shell is --soak), so nobody but this process hosts a window.
+	instance := publishInstance(srv, paths, instanceinfo.ModeHarness, flags.window, 0)
 	defer instance.remove()
 
 	if flags.window {

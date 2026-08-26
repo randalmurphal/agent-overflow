@@ -49,18 +49,29 @@ The user-facing flags are for the dev path:
   warning to `launcher.log` and falls through to the picker; we
   deliberately do not fall back to saved config so the dev mismatch is
   surfaced rather than silently masked.
-- `--profile soak` (or `AGENT_OVERFLOW_PROFILE=soak`) — run as the
-  isolated **soak** instance: `make soak`, [the soak
-  rig](../../docs/architecture/soak-rig.md). This one flag is THE axis
-  behind every piece of per-instance state — single-instance id, window
-  title, WebView2 user-data dir, CDP port, `launcher-soak.log`,
-  `window-soak.json`, the small 800x600 window, debug-level Wails
-  logging, a refusal to persist `wsl.json`, and `--soak` on the WSL
-  backend's argv (`profileBackendArgs`). Everything folds through
-  `launcherRuntimeMode()` → `internal/appidentity`, so a soak launched
-  from the dev build is `soak`, never `dev`. An unknown profile string is
-  an error, never a silent fall-back to the default instance: that would
-  point a soak at the developer's own log, profile, and window.
+- `--profile harness|soak` (or `AGENT_OVERFLOW_PROFILE=...`) — run as an
+  isolated instance beside the developer's own. This one flag is THE
+  axis behind every piece of per-instance state — single-instance id,
+  window title, WebView2 user-data dir, CDP port (harness 9225, soak
+  9224), `launcher-<profile>.log`, `window-<profile>.json`, debug-level
+  Wails logging, a refusal to persist `wsl.json`, and the WSL backend's
+  argv (`profileBackendArgs`). Everything folds through
+  `launcherRuntimeMode()` → `internal/appidentity`, so an isolated
+  instance launched from the dev build is its profile name, never `dev`.
+  An unknown profile string is an error, never a silent fall-back to the
+  default instance: that would point it at the developer's own log,
+  profile, and window.
+  - **harness** (`make harness-wsl`) is the Windows agent test harness:
+    normal window, waits to be driven by `bin/ao-harness`. See
+    [agent-harness.md](../../docs/architecture/agent-harness.md).
+  - **soak** (`make soak`) is the same instance with the soak preset
+    armed (`--autopilot` on the backend argv: seeded threads plus a
+    never-ending streaming turn) and a small 800x600 window, built to
+    sit on a monitor for hours. See
+    [soak-rig.md](../../docs/architecture/soak-rig.md).
+  - Both pass `--launcher-pid <own pid>` so `ao-harness down` can close
+    the launcher window; the launcher still outlives a crashed child on
+    purpose (evidence preservation).
 
 `parseLauncherFlags` (in `flags.go`) is the single source of truth for
 the CLI shape; `resolveChosenDistro` in `main.go` is where the

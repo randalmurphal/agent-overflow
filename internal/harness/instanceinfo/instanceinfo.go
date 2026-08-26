@@ -25,8 +25,19 @@ import (
 	"agent-overflow/internal/atomicfile"
 )
 
-// Mode names the boot shell a row describes. Both boot through
-// prepareHarness; they differ in bootstrap contract and autopilot.
+// Mode names what a row describes. All three shapes boot through
+// prepareHarness and differ only in shell and preset:
+//
+//   - ModeHarness is an isolated mocked instance nobody is driving yet —
+//     the `--harness` browser shell AND the Windows launcher's harness
+//     profile (`--soak` with no autopilot), which are the same instance
+//     behind two bootstrap contracts.
+//   - ModeSoak is that instance with the soak autopilot armed
+//     (docs/architecture/soak-rig.md): seeded threads and a live turn
+//     streaming forever.
+//
+// So "soak" on a row means the autopilot is running, never merely that
+// the backend was spawned by the launcher.
 type Mode string
 
 const (
@@ -60,6 +71,17 @@ type Identity struct {
 	// StartedAt is RFC3339. A string rather than a time.Time so a reader
 	// that only prints it never has to care about parse failures.
 	StartedAt string `json:"startedAt"`
+	// LauncherPid is the Windows launcher process hosting this instance's
+	// window, or 0 when nobody hosts one (a headless harness, a native
+	// --window boot). It lives in the identity block because it is a fact
+	// about the LAUNCH, and because a teardown reads it from whichever of
+	// the two files it could open.
+	//
+	// It exists because the launcher deliberately outlives its backend
+	// child — that is what preserves the evidence of a crash — so a
+	// deliberate `ao-harness down` has to close the window itself, and
+	// nothing else in the tree knows which Windows process it is.
+	LauncherPid int `json:"launcherPid,omitempty"`
 }
 
 // Row is one registry entry: everything a discovery reader needs to

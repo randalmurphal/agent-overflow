@@ -34,12 +34,17 @@ type LaunchOptions struct {
 	// MockProvider overrides where the boot finds ao-mockprovider
 	// (default: alongside Binary, which is what the boot itself resolves).
 	MockProvider string
-	// Soak boots the soak shell instead of the harness shell. Both
-	// isolate identically; only the autopilot and the bootstrap contract
-	// differ, and a soak still prints the harness line when --window is
-	// set... which it is not here, so Soak implies the caller reads the
-	// registry rather than stdout.
+	// Soak boots the LAUNCHER shell instead of the harness shell. Both
+	// isolate identically; only the bootstrap contract differs, and this
+	// shell still prints the harness line when --window is set... which it
+	// is not here, so Soak implies the caller reads the registry rather
+	// than stdout.
 	Soak bool
+	// Autopilot arms the soak preset on a Soak boot (seeded threads plus a
+	// turn that streams forever). It is what makes the instance a SOAK
+	// rather than a harness behind the launcher bootstrap, and what the
+	// instance stamps as its mode.
+	Autopilot bool
 	// Window opens the real webview window instead of running headless.
 	Window bool
 	// DevAssetsURL points the boot's asset handler at a Vite dev server
@@ -107,6 +112,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 		mode = "--soak"
 	}
 	args := []string{mode, "--data-dir", opts.DataRoot}
+	if opts.Autopilot {
+		args = append(args, "--autopilot")
+	}
 	if opts.Window {
 		args = append(args, "--window")
 	}

@@ -61,7 +61,7 @@ func TestParseFlagsSoakWindowDefaultsToThePerWorktreeRoot(t *testing.T) {
 	// A native windowed soak is started by hand, once per checkout, so it
 	// must not land on the single launcher-owned ~/.agent-overflow-soak
 	// that a second worktree would also claim.
-	flags, err := parseFlags([]string{"--soak", "--window"})
+	flags, err := parseFlags([]string{"--soak", "--window", "--autopilot"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
@@ -81,18 +81,36 @@ func TestParseFlagsSoakWindowDefaultsToThePerWorktreeRoot(t *testing.T) {
 	if err := refuseRealDataDir(flags.dataDir); err != nil {
 		t.Fatalf("per-worktree soak root is not isolated: %v", err)
 	}
+
+	// The same boot WITHOUT the autopilot is a windowed harness, and takes
+	// the checkout's harness root — the suffix exists to separate presets,
+	// not shells.
+	harness, err := parseFlags([]string{"--soak", "--window"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if want := instanceinfo.DefaultDataRoot(); harness.dataDir != want {
+		t.Fatalf("windowed harness dataDir = %q, want %q", harness.dataDir, want)
+	}
 }
 
 func TestParseFlagsLauncherSoakKeepsItsDefaultRoot(t *testing.T) {
-	// The launcher spells `--soak --print-url-fd 0` and nothing else;
-	// that path must keep pointing at the well-known root make soak-check
-	// reads.
-	flags, err := parseFlags([]string{"--soak", "--print-url-fd", "0", "--listen", "127.0.0.1:0"})
+	// The launcher spells the profile's flags and nothing else; the soak
+	// profile must keep pointing at the well-known root make soak-check
+	// reads, and the harness profile at its own.
+	flags, err := parseFlags([]string{"--soak", "--autopilot", "--print-url-fd", "0", "--listen", "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
 	if flags.dataDir != soakDefaultDataRoot() {
 		t.Fatalf("dataDir = %q, want %q", flags.dataDir, soakDefaultDataRoot())
+	}
+	harness, err := parseFlags([]string{"--soak", "--print-url-fd", "0", "--listen", "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if harness.dataDir != harnessDefaultDataRoot() {
+		t.Fatalf("harness-profile dataDir = %q, want %q", harness.dataDir, harnessDefaultDataRoot())
 	}
 }
 

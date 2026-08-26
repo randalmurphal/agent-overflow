@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +79,10 @@ func newRow(id string, pid int) Row {
 			Window:    true,
 			Worktree:  "/repo",
 			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			// A launcher-hosted instance is the case the field exists for;
+			// the round-trip test compares whole rows, so a field that
+			// failed to survive the file would fail there.
+			LauncherPid: 4242,
 		},
 		PID:      pid,
 		Port:     4321,
@@ -218,13 +223,26 @@ func TestRowJSONShapeIsFlat(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, key := range []string{"id", "pid", "mode", "window", "port", "dataRoot", "dataDir", "worktree", "version", "startedAt"} {
+	for _, key := range []string{"id", "pid", "mode", "window", "port", "dataRoot", "dataDir", "worktree", "version", "startedAt", "launcherPid"} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("registry row is missing %q: %s", key, data)
 		}
 	}
 	if _, ok := raw["token"]; ok {
 		t.Errorf("registry row carries a token; it must not: %s", data)
+	}
+
+	// launcherPid is omitempty: every instance that is NOT hosted by the
+	// Windows launcher has none, and a reader must see its absence rather
+	// than a zero it could mistake for a pid.
+	unhosted := newRow("0123abcd", 7)
+	unhosted.LauncherPid = 0
+	data, err = json.Marshal(unhosted)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "launcherPid") {
+		t.Errorf("row with no launcher still spells launcherPid: %s", data)
 	}
 }
 

@@ -14,10 +14,13 @@ Everything below is reachable two ways, by design:
   Playwright MCP (or any browser), and drive the backend over the same
   WebSocket RPCs the specs use.
 
-A third consumer reuses the same isolation with a different shell: the
-**soak rig** (`--soak`, `make soak`) runs the real Windows launcher and
-WebView2 window against mocked providers for hours.
-See [soak-rig.md](soak-rig.md).
+On Windows the harness has its own shell: **`make harness-wsl`** runs
+the real launcher and WebView2 window (`--profile harness`) against this
+same isolated backend — the backend rides the `--soak` wire flag, the
+launcher-owned historical name for "isolated launcher-shell instance".
+**`make soak`** is that shell plus the soak preset (`--autopilot`:
+seeded threads and a never-ending streaming turn, left running for
+hours). See [soak-rig.md](soak-rig.md).
 
 ## Boot
 

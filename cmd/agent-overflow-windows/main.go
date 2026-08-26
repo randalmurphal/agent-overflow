@@ -53,6 +53,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -101,7 +102,9 @@ var launcherMode = "prod"
 // activeProfile is the runtime launch profile (--profile / the
 // AGENT_OVERFLOW_PROFILE env var), set once in main() right after flag
 // parsing and read-only afterwards. Empty is the normal instance;
-// appidentity.ProfileSoak is the soak rig's isolated second instance.
+// appidentity.ProfileHarness is the isolated instance an agent or a
+// developer drives, and appidentity.ProfileSoak is that same instance
+// with the soak autopilot armed.
 //
 // It is a package variable for the same reason launcherMode is: every
 // per-instance name (single-instance id, title, WebView2 profile, CDP
@@ -117,10 +120,12 @@ func launcherRuntimeMode() string {
 	return appidentity.LauncherMode(launcherMode, activeProfile)
 }
 
-// soakWindowSize is the soak instance's initial window. Small on
+// soakWindowSize is the SOAK instance's initial window. Small on
 // purpose: a soak sits visible on a real monitor for hours next to the
 // developer's actual work, and it only has to be big enough to keep the
-// renderer compositing a live thread.
+// renderer compositing a live thread. The harness profile deliberately
+// does NOT share it — that instance is a working surface somebody reads
+// and clicks, so it takes the ordinary default window size.
 const (
 	soakWindowWidth  = 800
 	soakWindowHeight = 600
@@ -723,22 +728,39 @@ func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string
 }
 
 // profileBackendArgs returns the backend flags this launch profile
-// implies. The soak profile passes `--soak`, which is what makes the WSL
-// backend rewrite both provider binaries to ao-mockprovider, redirect
-// HOME, and open its own data dir — the isolation cannot be left to the
-// operator remembering a second flag.
+// implies.
 //
-// It rides the child's argv rather than an env var deliberately: WSLENV
-// passthrough is for diagnostics, and anything load-bearing across the
-// WSL boundary belongs in explicit launch args
+// `--soak` is the internal launcher↔backend WIRE FLAG meaning "isolated
+// mocked instance speaking the launcher bootstrap contract": it makes
+// the WSL backend rewrite both provider binaries to ao-mockprovider,
+// redirect HOME, and open its own data dir, while still printing the
+// ordinary headless {port, token} line this launcher parses. The name is
+// historical — the soak rig was the first thing to need it — and it is
+// launcher-owned, never typed by a user. Both isolated profiles ride it;
+// what separates them is `--autopilot`, which arms the soak preset (seed
+// two threads, start a never-ending streaming turn). The harness profile
+// boots the same instance and then waits for whoever is driving it.
+//
+// `--launcher-pid` hands the backend this launcher's own Windows pid so
+// a deliberate teardown (`ao-harness down`) can close the window too: the
+// launcher survives its child's death on purpose, to preserve the
+// evidence of a crash.
+//
+// These ride the child's argv rather than an env var deliberately:
+// WSLENV passthrough is for diagnostics, and anything load-bearing
+// across the WSL boundary belongs in explicit launch args
 // (internal/wsllauncher/AGENTS.md). --data-dir is deliberately NOT
 // spelled here: the launcher runs on the Windows side and has no Linux
 // path to offer, so the backend resolves its own default.
 func profileBackendArgs() []string {
-	if activeProfile == appidentity.ProfileSoak {
-		return []string{"--soak"}
+	switch activeProfile {
+	case appidentity.ProfileHarness:
+		return []string{"--soak", "--launcher-pid", strconv.Itoa(os.Getpid())}
+	case appidentity.ProfileSoak:
+		return []string{"--soak", "--autopilot", "--launcher-pid", strconv.Itoa(os.Getpid())}
+	default:
+		return nil
 	}
-	return nil
 }
 
 // launchBackend spawns the WSL child and records it as the live
@@ -1522,18 +1544,19 @@ func rotateChromeDebugLog(dataDir string) {
 }
 
 // wailsLogLevel picks how much of Wails' internal slog reaches launcher.log:
-// debug in a soak run, info in dev (WebView2 recovery narration, window
-// lifecycle), warn+ in production so user logs only carry actionable
-// problems.
+// debug in the isolated profile instances, info in dev (WebView2 recovery
+// narration, window lifecycle), warn+ in production so user logs only carry
+// actionable problems.
 //
-// Soak takes debug because the whole point of the run is the render
-// watchdog's narrative, and half of it — "render watchdog armed",
-// "standing down", "render recovery re-navigating" — is logged at debug
-// by the pinned wails fork. Losing those leaves an episode with a start
-// line and no story.
+// Both isolated profiles take debug because they are where a render hang
+// is reproduced, and half the watchdog narrative — "render watchdog
+// armed", "standing down", "render recovery re-navigating" — is logged at
+// debug by the pinned wails fork. Losing those leaves an episode with a
+// start line and no story. The cost lands only on their own
+// launcher-<profile>.log, never on the developer's.
 func wailsLogLevel(mode string) slog.Level {
 	switch mode {
-	case appidentity.ModeSoak:
+	case appidentity.ModeSoak, appidentity.ModeHarness:
 		return slog.LevelDebug
 	case appidentity.ModeDev:
 		return slog.LevelInfo

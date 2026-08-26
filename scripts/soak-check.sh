@@ -2,6 +2,12 @@
 # soak-check.sh — read-only status report for the soak rig
 # (docs/architecture/soak-rig.md).
 #
+# SOAK ONLY. The sibling `harness` profile (make harness-wsl) is the same
+# isolated Windows instance without the autopilot; its checker is
+# `ao-harness health`, which reads that instance's own evidence files.
+# Everything below is scoped to the soak by its log path
+# (launcher-soak.log) and by the --autopilot argv match.
+#
 # The soak instance is a GUI-subsystem .exe: nothing it does reaches a
 # terminal, so its whole narrative lives in
 # %APPDATA%\agent-overflow\launcher-soak.log — the launcher's own log,
@@ -54,12 +60,17 @@ if [ ! -f "$LOG" ]; then
 fi
 
 # Backend liveness is checked WSL-side rather than by scanning the
-# Windows task list: `--soak` is on the backend's argv, so this can never
-# be confused with the developer's own dev-wsl backend.
-if pgrep -f -- '--soak' >/dev/null 2>&1; then
+# Windows task list: the profile's flags are on the backend's argv, so
+# this can never be confused with the developer's own dev-wsl backend.
+#
+# The match is on --autopilot, NOT --soak: --soak is the wire flag BOTH
+# isolated profiles ride, so matching it would report a harness-wsl
+# instance as a running soak. --autopilot is only ever spelled for the
+# soak profile.
+if pgrep -f -- '--autopilot' >/dev/null 2>&1; then
 	printf 'status:   RUNNING (soak backend alive in this distro)\n'
 else
-	printf 'status:   not running (no --soak backend in this distro)\n'
+	printf 'status:   not running (no --autopilot backend in this distro)\n'
 fi
 
 # Everything below is scoped to the current run: the log is append-only
