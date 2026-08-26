@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 // The REAL production stylesheet: every assertion here is coupled to the
-// `.activity-run-clip` rules in app.css (zero-width native bar) and to the
+// `.pane-scroll-surface` rules in app.css (zero-width native bar — the clip
+// carries that class alongside `.activity-run-clip`) and to the
 // centered-column classes the run renders inside. Delete the scrollbar rules
 // and the width guard below fails — that is the point of importing it.
 import '../../../app.css';
@@ -53,7 +54,7 @@ function mountColumn(): { prose: HTMLElement; clip: HTMLElement; content: HTMLEl
   // Matches ActivityRun's rail geometry.
   run.className = 'relative ml-[14px] border-l border-border-subtle pl-[18px]';
   const clip = document.createElement('div');
-  clip.className = 'activity-run-clip overflow-y-auto overflow-x-hidden';
+  clip.className = 'activity-run-clip pane-scroll-surface overflow-y-auto overflow-x-hidden';
   clip.style.maxHeight = activityRunClipMaxHeight(0);
   const content = document.createElement('div');
   clip.appendChild(content);
@@ -108,7 +109,7 @@ describe('activity run clip — scrollbar suppression', () => {
 
     expect(getComputedStyle(clip).scrollbarWidth).toBe('none');
     const bar = styleRules().find(
-      (rule) => rule.selectorText === '.activity-run-clip::-webkit-scrollbar',
+      (rule) => rule.selectorText === '.pane-scroll-surface::-webkit-scrollbar',
     );
     expect(bar?.style.width).toBe('0px');
     expect(bar?.style.height).toBe('0px');

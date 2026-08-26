@@ -60,7 +60,7 @@
 <div class="relative" data-testid="subagent-group-scroll-host">
   <div
     bind:this={scrollEl}
-    class="activity-run-clip max-h-[min(50vh,20rem)] overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+    class="activity-run-clip pane-scroll-surface max-h-[min(50vh,20rem)] overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
     use:nestedScroll
     data-testid="subagent-group-scroll"
     data-scroll-owner="controller"

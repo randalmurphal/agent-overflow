@@ -623,10 +623,11 @@ bar; measured in WebKitGTK 6.0 (2.52.3), a single-edge `stable` gutter is
 byte-identical to no gutter at all — content is 45px overflowing and 50px
 idle either way — so a non-shifting native bar needs `both-edges`, 20px,
 whose left 10px pushes the run's rows off the rail the run itself draws. The
-outer scroller can afford a gutter because it is the centered column's
-*parent*; the clip sits inside `mx-auto max-w-[62rem]`, so a gutter there
-insets the run's rows relative to the prose above and below. That reads as a
-card, and the run is a window onto activity, not a card.
+outer scroller could afford a gutter as the centered column's *parent* (and
+used one until 2026-08-25, when it adopted the clip's overlay-bar approach);
+the clip sits inside `mx-auto max-w-[62rem]`, so a gutter there insets the
+run's rows relative to the prose above and below. That reads as a card, and
+the run is a window onto activity, not a card.
 
 The shift is self-inflicted, and worth knowing when this comes up again: with
 no `::-webkit-scrollbar` rule at all, WebKitGTK's own bar is already an
@@ -636,9 +637,10 @@ Scoping that rule per platform is the general fix and is out of scope here.
 
 So the bar is suppressed on the clip (`scrollbar-width: none` for the
 standards path, `::-webkit-scrollbar { width: 0; height: 0 }` for WebKit —
-both, because the two engines honor different ones; scoped to
-`.activity-run-clip` so no other surface changes appearance) and the
-affordance is rendered out of flow:
+both, because the two engines honor different ones; via the shared
+`.pane-scroll-surface` class since 2026-08-25, when the pane scrollers
+adopted the same suppression plus `will-change: scroll-position` — see
+`app.css`) and the affordance is rendered out of flow:
 `components/shared/OverlayScrollbar.svelte` over
 `utils/scroll/overlayScrollbar.ts`, absolutely positioned in the column's
 existing `px-6` padding. Drag uses pointer capture so it survives the pointer

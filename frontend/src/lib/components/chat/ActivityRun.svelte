@@ -854,7 +854,7 @@
         <div
           bind:this={clipEl}
           id={clipId}
-          class="activity-run-clip overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+          class="activity-run-clip pane-scroll-surface overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
           style:max-height={maxHeight}
           use:nestedScroll
           use:readerGestures

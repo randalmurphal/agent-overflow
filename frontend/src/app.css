@@ -496,24 +496,37 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
- * Pane scroll surfaces: the chat timeline and the discussion channel
- * (MessageTimeline.svelte, ChannelView.svelte — both mount an
- * <OverlayScrollbar> sibling as their scrollbar).
+ * Pane scroll surfaces: the chat timeline, the discussion channel, and
+ * the activity-run clip (MessageTimeline.svelte, ChannelView.svelte,
+ * ActivityRun.svelte — all three mount an <OverlayScrollbar> sibling as
+ * their scrollbar). These are the surfaces the follow spring glides.
  *
  * `will-change: scroll-position` gives the scroller a composited
  * scrolling layer. Without one, EVERY scroll offset change — the follow
  * spring's per-frame write and real wheel input alike — runs a full
  * main-frame compositor update (Layerize ~1.1ms × 155/s during two-pane
  * streaming, measured 2026-08-25; with the hint, main-thread busy
- * halves and the Oilpan geometry-mapper churn family disappears).
- * `scroll-position` is NOT the transform promotion the app-wide
- * will-change ban targets: it composits the scrollTop chokepoint's own
- * mechanism rather than creating a second paint position. Costs ~9-14MB
- * of raster tiles per visible pane.
+ * halves and the Oilpan geometry-mapper churn family disappears. Same
+ * mechanism A/B'd on the clip during a long streaming run: Layerize
+ * 127→46ms/12s). `scroll-position` is NOT the transform promotion the
+ * app-wide will-change ban targets: it composits the scrollTop
+ * chokepoint's own mechanism rather than creating a second paint
+ * position. Costs ~9-14MB of raster tiles per visible pane and ~5MB per
+ * visible overflowing clip; off-viewport clip layers hold no tiles
+ * (NOW/SOON-bin rasterization).
  *
- * The native bar is suppressed for the same reason as the activity-run
- * clip below: a classic bar consumes width, so overflow transitions
- * re-wrap the content they announce.
+ * The native bar is suppressed because a classic bar CONSUMES width, so
+ * overflow transitions re-wrap the content they announce. The clip is
+ * where that bites hardest: a run's overflow toggles constantly (content
+ * crossing the cap, the cap inflating on expansion, a chunk mounting,
+ * the chip toggle), and each toggle would re-wrap the run's text by
+ * 10px. `scrollbar-gutter` is no fix there — the run sits INSIDE the
+ * centered column, so a gutter would inset its rows relative to the
+ * prose above and below and knock them off the rail the run draws.
+ *
+ * Scoped deliberately. Other nested boxes in the app have the same
+ * latent shift; adopting the overlay bar there is a separate, visible
+ * change.
  */
 .pane-scroll-surface {
   will-change: scroll-position;
@@ -521,30 +534,6 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 .pane-scroll-surface::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
-/*
- * Activity runs suppress the native bar entirely and draw their own
- * (components/shared/OverlayScrollbar.svelte).
- *
- * The rules above are a classic, space-CONSUMING bar — every surface in
- * this app inherits them. A run's overflow toggles constantly (content
- * crossing the cap, the cap inflating on expansion, a chunk mounting, the
- * chip toggle), and each toggle would re-wrap the run's text by 10px.
- * `scrollbar-gutter` is not available as a fix here: the run sits INSIDE
- * the centered column, so a gutter would inset its rows relative to the
- * prose above and below and knock them off the rail the run draws.
- *
- * Scoped deliberately. Other nested boxes in the app have the same latent
- * shift; adopting the overlay bar there is a separate, visible change.
- */
-.activity-run-clip {
-  scrollbar-width: none;
-}
-
-.activity-run-clip::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
