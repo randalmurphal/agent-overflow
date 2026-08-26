@@ -565,8 +565,9 @@ Query kinds, versioned `v: 1`:
 |---|---|
 | `viewport` | The semantic snapshot: per pane, the mounted timeline rows with `{itemId, kind, role, status, streaming, badge, rect, textHead}`, scroll position, open overlays by accessible name, the active thread id, and `settled` (no DOM mutation for 300ms). |
 | `element` | `{count, first:{rect, visible, clipped, text, aria}}` for a CSS selector. A malformed selector errors; one that matches nothing answers `count: 0`. |
-| `globals` | Whitelisted read of a diagnostic global. A name outside the whitelist errors; a whitelisted name this build did not install answers `{unavailable: true}` — `__paneGeometry` and `uiTrace.recent` are genuinely absent in a harness build, because `make harness` builds with `UI_TRACE` unset. |
+| `globals` | Whitelisted read of a diagnostic global. A name outside the whitelist errors; a whitelisted name this build did not install answers `{unavailable: true}` — `__paneGeometry` and `uiTrace.recent` are genuinely absent in a harness build, because `make harness` builds with `UI_TRACE` unset. `__aoMemoryReport` and `__aoRevealDrain` are installed in EVERY build (main.ts) precisely because the things that read them — a memory probe, a measurement window's end — run against a harness binary. |
 | `perf` | Meter control. Driven by `HarnessPerf*`, not by a test directly. |
+| `open` | Mount a thread in a pane, `newPane` for a new one beside the others. The ONLY mutating kind, and it exists for one door: the plain open already has an out-of-page spelling (`notification:activated`, the channel an OS-notification click rides) and deliberately keeps using it, but `openThreadInNewPane` is reached in-page only — ctrl-click on a sidebar row, the thread context menu, a builtin command — so a shell driver has no other way to reach it. It calls that same function; it does not mint a pane of its own. Answers `{opened, threadId, paneId, newPane}`, or an error naming THIS PAGE's thread registry when the id is not in it (a thread the backend has but the page has not listed is a real state and reads very differently from a typo). |
 | `reload` | Navigate the page. `HarnessReset`'s contract ends with "reload the page after" — the SPA is holding rows that no longer exist — and nothing outside a browser could do that. The answer is sent BEFORE the reload (a short deferred timeout, capped at 5s), because the socket the reply rides is about to drop; a caller treats a failed reload query as inconclusive and re-probes the bridge. |
 
 The snapshot reads the DOM through attributes the components declare,
@@ -627,7 +628,19 @@ they are the figure a `--baseline` gates on. A run that measured no tick
 answers `ticks: 0` and 0%, never 100%: "every tick fit" is a claim a
 meter that never armed has not earned, and every consumer down the chain
 (the bench aggregate, the `perf stop` rendering, the watch columns)
-reads `ticks` to tell an unmeasured run from a flawless one. **`HarnessReset` stops any active perf run** — it
+reads `ticks` to tell an unmeasured run from a flawless one.
+
+`busy.worst` is the histogram's complement: the run's eight most expensive
+ticks, descending, each with `atMs` — the tick's rAF-callback entry on the
+page clock — beside the summary's one `timeOriginMs`, which is what turns
+those into wall-clock instants a trace or a log can be opened at. A
+percentile says what the distribution was; this says where to look. It is
+maintained as a bounded insertion into two preallocated number arrays with
+an early exit, because it rides the hot meter and an instrument that
+allocates per tick is measuring itself. Like `--trace`'s call-site ranking
+it is EVIDENCE and is deliberately absent from the bench aggregate.
+
+**`HarnessReset` stops any active perf run** — it
 holds a sampler goroutine AND a set of armed in-page meters, and the
 caller reloads the page after a reset, so nothing else would ever disarm
 them. That stop query is bounded at 2s rather than the caller-facing 10s:
@@ -704,19 +717,140 @@ needs a real instance imports that rather than re-implementing the
 frames. Details and the registry prune rule:
 [cmd/ao-harness/AGENTS.md](../../cmd/ao-harness/AGENTS.md).
 
+### The state-clone repro rig
+
+Every fixture above is synthetic, which is the point — and also the
+limit. Threads seeded from a spec have the sizes and shapes whoever wrote
+the spec imagined, so a stall that only appears at the developer's own
+scale, or with the exact item mix one real turn produced, has nowhere to
+happen. Two verbs close that gap from opposite ends: `clone` brings the
+DATA over, `scenario from-thread` brings one thread's BEHAVIOUR back onto
+the mock wire.
+
+`ao-harness clone --from <real dataDir>` builds a harness data root from
+a copy of a real app data dir and stops — it prints the `up` line rather
+than booting. The source app may be RUNNING, so the database is never
+file-copied: the source is opened read-only and snapshotted with
+`VACUUM INTO`, which yields one consistent file with the WAL folded in.
+Nothing is ever opened writable on the source side. The TARGET copy is
+then scrubbed of everything resume- or identity-shaped — each thread's
+`session_ref` / `pending_fork_session_ref` / `pending_fork_resume_at`,
+`thread_import_state`'s source ids (rows kept, identity emptied), and
+`ui_state` wholesale, that last one being the stale client-scoped restore
+state `HarnessReset` already had to fix once. Only `attachments/` comes
+across besides the database; settings, provider accounts, replay bundles,
+traces, logs and the instance file are all left behind. The target must
+pass `up`'s own refusals plus three more: no live instance holds it, it
+is not the source or a parent of it, and an existing database needs
+`--force`.
+
+That the result is SAFE to boot is structural rather than a promise from
+the scrub: credentials live under the provider home, which an isolated
+boot redirects to `<dataRoot>/home`, and provider binary paths are
+re-pointed at the mock on every harness boot regardless of what any
+settings file says. What the clone DOES carry, verbatim, is real
+conversation content.
+
+**The privacy rule, then, is one sentence: a clone lives in its target
+root and is never committed anywhere.** Not to this repo, not to a
+gist, not into a bug report. The verb prints that line itself every
+time it runs.
+
+`ao-harness scenario from-thread --thread <sel> [--turns N]` is the other
+half. It reads the booted instance's own store read-only and rebuilds the
+thread's last N turns as a mock scenario document: streamed text and
+thinking cut into deltas at the recorded `payload_chunks` boundaries (so
+the replay has the original stream's shape, not a re-chunking of the
+final text), tool calls and completions in recorded order with their
+pairing intact, app-internal kinds skipped and counted. It replays
+ASSISTANT work only — a real `send` is what opens each Turn — so it
+finishes by printing the drive recipe. The Codex leg covers what the
+scenario library demonstrates (agent-message streaming and the turn
+envelope) and REFUSES reasoning and tool items, naming the wire facts the
+store does not record; a guessed dialect would be worse than a refusal.
+
+End to end:
+
+```
+ao-harness clone --from ~/.local/share/agent-overflow
+ao-harness up --data-dir <root the clone printed> --window
+ao-harness scenario from-thread --thread last --turns 3 --set
+ao-harness send --thread <id> --wait '<the recorded prompt>'
+```
+
+Now the perf verbs above — `perf`, `bench --trace`, `profile` — run
+against the real thread list, the real thread sizes, and a turn that
+actually happened.
+
 ### Bench workloads
 
 `ao-harness bench <workload>` is a soak that ENDS: it seeds its own
 fixture, arms the perf meters, drives a scripted load, and writes
-`<dataDir>/bench/<workload>-<timestamp>.json`. Four workloads:
+`<dataDir>/bench/<workload>-<timestamp>.json`. Five workloads:
 `burst-stream` (chunked text-delta flood), `giant-turn` (225 items in one
-turn), `subagent-fanout` (three bounded async subagents), and
-`many-threads` (30 seeded threads, then a switch storm). The first three
-are `bench-*` entries in the scenario library and finish on
+turn), `subagent-fanout` (three bounded async subagents),
+`multi-pane-stream` (three panes each flooding at once), and
+`many-threads` (30 seeded threads, then a switch storm). All but the last
+are `bench-*` entries in the scenario library and wait on
 `provider:turn_completed` for their thread — the mock's own
 `scenario_done` fires when the mock stopped WRITING, upstream of parse,
 triage, persist and render, so it would time a shorter pipeline than the
 one under test.
+
+#### The window ends at drain-empty, not at turn completion
+
+Turn completion is where the WIRE stops. What a reader watches is the
+reveal queue handing the text over afterwards, and under the mock
+providers that outlives the turn by an order of magnitude: a burst-stream
+turn closes in about a second and keeps revealing for ten or more. Every
+measurement window here — every bench workload and `profile` — therefore
+continues past `provider:turn_completed` until the reveal queue is empty,
+then takes its settle beat, then stops the meters.
+
+**Baselines taken before this change read shorter.** `duration.ms` in
+particular now covers the drain, so an old report compared against a new
+one shows a large "regression" on that metric that is purely the window
+moving. Re-take the baseline; do not tune to it.
+
+The drain signal is deliberately NOT the bridge's settledness machinery.
+`perf start` / `perf stop` force-disarm the document-wide MutationObserver
+precisely so a run measures a renderer with no observer on it, and
+re-arming one to detect quiet would perturb the experiment it is timing.
+It is cheap store state instead: `window.__aoRevealDrain()`
+(`frontend/src/lib/utils/revealDrainProbe.ts`, whitelisted in the bridge's
+globals table) folds the pane registry into `{panes, draining, smoothers,
+boundaries}` — one SvelteMap size and one nullable field per pane, no DOM
+walk. The CLI polls it at 250ms and needs two consecutive empty readings,
+because a drain empties BETWEEN rows and a single reading taken in that
+gap would close the window mid-stream.
+
+It is a READ, and that is a rule rather than an implementation detail: the
+reveal queue's behaviour is unchanged by the presence of a reader.
+Nothing in the measurement path may skip, rush or pop the drain.
+
+Three degradations, none of which fails a run: a page that does not
+install the probe (an older build) answers `unavailable`, a bridge whose
+whitelist has never heard of it answers with a query error, and a drain
+still going after 60s ends the window anyway. All three print one operator
+note and the window ends at turn completion instead.
+
+#### multi-pane-stream
+
+Three seeded threads, one pane each, all three streaming the burst-stream
+flood at once. A single streaming pane is not the shape a heavy session
+takes: three panes revealing simultaneously share one main thread, one
+style and layout pass and one frame budget, and the per-pane work that
+looks free in isolation is what saturates a tick here.
+
+The first pane opens the way every other workload's does. The other two go
+through the bridge's `open` query kind with `newPane`, which calls the
+app's own `openThreadInNewPane` — the function a ctrl-click on a sidebar
+row reaches. That door has no event channel (it is an in-page gesture
+only), which is why it is the one page move a bench makes through the
+bridge rather than over the wire; minting a pane harness-side would put a
+pane nobody ships on the screen. The pane opens happen in the workload's
+PREPARE step, before the meters and the trace are armed: mounting three
+timelines is setup, not the thing being measured.
 
 `many-threads` has no scenario. It drives each switch by emitting
 `notification:activated`, which the SPA routes through

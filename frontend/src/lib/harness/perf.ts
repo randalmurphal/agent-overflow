@@ -102,6 +102,15 @@ export interface PerfSummary {
   v: 1;
   startedAtMs: number;
   durationMs: number;
+  /**
+   * `performance.timeOrigin` for this document, in epoch milliseconds.
+   * Every other time in this report is on the page clock, and the busy
+   * meter's worst-tick list is only useful if a reader can place those
+   * ticks against a Chromium trace or a wall-clock log — which needs
+   * exactly this one number, reported once rather than added to every
+   * entry.
+   */
+  timeOriginMs: number;
   meters: string[];
   unavailableMeters: string[];
   frames: FrameSummary;
@@ -428,7 +437,10 @@ function armBusyProbe(state: PerfRun): boolean {
       if (event.data !== state.busySeq) return;
       state.busyPending = false;
       const busyMs = performance.now() - state.busyStartedAt;
-      recordBusy(state.busy, busyMs);
+      // The tick's own ENTRY timestamp rides along, not the reply's: the
+      // worst-tick list names when the expensive work STARTED, which is
+      // where a trace has to be opened.
+      recordBusy(state.busy, busyMs, state.busyStartedAt);
       if (!Number.isFinite(busyMs) || busyMs < 0) return;
       if (busyMs > state.windowBusyMaxMs) state.windowBusyMaxMs = busyMs;
       state.windowBusySumMs += busyMs;
@@ -715,6 +727,7 @@ export function stopPerfRun(): PerfSummary | null {
     v: 1,
     startedAtMs: Math.round(state.startedAt),
     durationMs: Math.round(duration),
+    timeOriginMs: round2(typeof performance.timeOrigin === 'number' ? performance.timeOrigin : 0),
     meters: [...state.meters].filter((name) => !state.unavailable.has(name)).sort(),
     unavailableMeters: [...state.unavailable].sort(),
     frames: summarizeFrames(state.hist, duration),

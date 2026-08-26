@@ -29,6 +29,7 @@ export interface GlobalsResult {
 
 interface HarnessWindow {
   __aoMemoryReport?: () => Promise<unknown>;
+  __aoRevealDrain?: () => Promise<unknown>;
   __paneGeometry?: () => unknown;
   __agentOverflowTimelineMemoryStats?: () => unknown;
   __agentOverflowTimelineMemoryStatsByPane?: () => unknown;
@@ -49,6 +50,12 @@ const READERS: Record<string, GlobalReader> = {
   // imports the collector, deliberately keeping that chunk out of the
   // startup graph. The bridge awaits it like any other answer.
   __aoMemoryReport: (win) => win.__aoMemoryReport?.(),
+  // How much of the reveal queue is still draining. Async for the same
+  // reason as the memory report: main.ts installs it as a dynamic-import
+  // stub. Unlike the diagnostics globals below it is present in every
+  // build, because the measurement windows that poll it (bench, profile)
+  // run against a harness binary with UI_TRACE unset.
+  __aoRevealDrain: (win) => win.__aoRevealDrain?.(),
   __paneGeometry: (win) => win.__paneGeometry?.(),
   __agentOverflowTimelineMemoryStats: (win) => win.__agentOverflowTimelineMemoryStats?.(),
   __agentOverflowTimelineMemoryStatsByPane: (win) =>

@@ -13,7 +13,7 @@ import (
 	"agent-overflow/internal/harnessclient"
 )
 
-var scenarioSubcommands = []string{"set", "list", "show", "clear", "validate"}
+var scenarioSubcommands = []string{"set", "list", "show", "clear", "validate", "from-thread"}
 
 func runScenario(e *env, args []string) error {
 	if done, err := groupHelp(e, "scenario", args, scenarioSubcommands...); done {
@@ -33,6 +33,8 @@ func runScenario(e *env, args []string) error {
 		return scenarioClear(e, args[1:])
 	case "validate":
 		return scenarioValidate(e, args[1:])
+	case "from-thread":
+		return scenarioFromThread(e, args[1:])
 	default:
 		return usagef("unknown scenario subcommand %q (want %s)", args[0], strings.Join(scenarioSubcommands, ", "))
 	}

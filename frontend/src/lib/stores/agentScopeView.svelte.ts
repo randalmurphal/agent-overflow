@@ -464,6 +464,9 @@ export function createAgentScopeView(
     get attachmentCacheFor() { return sourcePane.attachmentCacheFor; },
     get liveThinkingTailForItem() { return sourcePane.liveThinkingTailForItem; },
     get isItemSmoothing() { return sourcePane.isItemSmoothing; },
+    // Forwarded, not overridden: the source pane owns the smoothers, and
+    // the scope view is a projection of the same drain, not a second one.
+    get smoothingItemCount() { return sourcePane.smoothingItemCount; },
     get snapSmoothersToReceived() { return sourcePane.snapSmoothersToReceived; },
     get setPaneError() { return sourcePane.setPaneError; },
     get clearPaneError() { return sourcePane.clearPaneError; },

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BUSY_BUCKET_CEILING_MS,
   BUSY_BUCKET_MS,
+  BUSY_WORST_KEEP,
   DEFAULT_BUSY_BUDGETS_MS,
   FRAME_BUCKET_CEILING_MS,
   MAX_BUSY_BUDGETS,
@@ -157,6 +158,81 @@ describe('busy histogram', () => {
     // A clamped -2 would become a 0ms tick that fits every budget.
     expect(summarizeBusy(hist).budgets[0]?.withinTicks).toBe(0);
     expect(hist.count).toBe(0);
+    // And a dropped measurement must not reserve a worst-tick slot either.
+    expect(summarizeBusy(hist).worst).toEqual([]);
+  });
+});
+
+// The worst-tick list is the histogram's complement: percentiles say what
+// the distribution was, this says WHEN to look. It is evidence, so the
+// rules that matter are that it is ordered, bounded, and reset per run.
+describe('busy worst ticks', () => {
+  it('keeps the worst ticks descending, with the moment each started', () => {
+    const hist = newBusyHistogram([6]);
+    recordBusy(hist, 3, 100);
+    recordBusy(hist, 41, 220);
+    recordBusy(hist, 12, 340);
+    const worst = summarizeBusy(hist).worst;
+    expect(worst).toEqual([
+      { atMs: 220, busyMs: 41 },
+      { atMs: 340, busyMs: 12 },
+      { atMs: 100, busyMs: 3 },
+    ]);
+  });
+
+  it('never grows past the keep bound, whatever order the ticks arrive in', () => {
+    const ascending = newBusyHistogram([6]);
+    const descending = newBusyHistogram([6]);
+    const total = BUSY_WORST_KEEP * 4;
+    for (let i = 1; i <= total; i += 1) {
+      recordBusy(ascending, i, i * 10);
+      recordBusy(descending, total + 1 - i, i * 10);
+    }
+    for (const hist of [ascending, descending]) {
+      const worst = summarizeBusy(hist).worst;
+      expect(worst).toHaveLength(BUSY_WORST_KEEP);
+      // The K largest values, whichever order they were recorded in.
+      expect(worst.map((tick) => tick.busyMs)).toEqual(
+        Array.from({ length: BUSY_WORST_KEEP }, (_unused, i) => total - i),
+      );
+      expect(hist.count).toBe(total);
+    }
+  });
+
+  it('keeps the earlier tick ahead on a tie', () => {
+    const hist = newBusyHistogram([6]);
+    recordBusy(hist, 9, 10);
+    recordBusy(hist, 9, 20);
+    recordBusy(hist, 9, 30);
+    expect(summarizeBusy(hist).worst.map((tick) => tick.atMs)).toEqual([10, 20, 30]);
+  });
+
+  it('does not let a full list be displaced by a tick that ties its floor', () => {
+    const hist = newBusyHistogram([6]);
+    for (let i = 0; i < BUSY_WORST_KEEP; i += 1) recordBusy(hist, 5, i);
+    recordBusy(hist, 5, 999);
+    expect(summarizeBusy(hist).worst.map((tick) => tick.atMs)).toEqual(
+      Array.from({ length: BUSY_WORST_KEEP }, (_unused, i) => i),
+    );
+  });
+
+  it('answers 0 for a tick recorded with no clock rather than NaN', () => {
+    const hist = newBusyHistogram([6]);
+    recordBusy(hist, 7);
+    recordBusy(hist, 6, Number.NaN);
+    expect(summarizeBusy(hist).worst).toEqual([
+      { atMs: 0, busyMs: 7 },
+      { atMs: 0, busyMs: 6 },
+    ]);
+  });
+
+  // A histogram is per RUN. Nothing carries over, and the check is here
+  // rather than in perf.ts because this is where the state lives.
+  it('starts empty in a fresh histogram', () => {
+    const first = newBusyHistogram([6]);
+    recordBusy(first, 50, 1);
+    expect(summarizeBusy(first).worst).toHaveLength(1);
+    expect(summarizeBusy(newBusyHistogram([6])).worst).toEqual([]);
   });
 });
 

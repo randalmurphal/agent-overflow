@@ -83,6 +83,14 @@ export interface ThreadStreamingReveal {
   liveThinkingTailFor(itemId: string): string | null;
   /** Row-UI prune hook: drop retained settled tails not in the retention set. */
   pruneSettledThinkingTails(retainedItemIds: ReadonlySet<string>): void;
+  /**
+   * How many per-item smoothers are live right now — i.e. how many rows the
+   * reveal queue is still draining. The cheap half of `debugStats()`: one
+   * map size, no walk over the retained thinking tails, so a poll loop (the
+   * harness's reveal-drain probe) can ask it every few hundred milliseconds
+   * without becoming part of the load it is measuring.
+   */
+  smootherCount(): number;
   debugStats(): {
     itemSmoothers: number;
     liveThinkingTails: number;
@@ -811,6 +819,10 @@ export function createThreadStreamingReveal(
     }
   }
 
+  function smootherCount(): number {
+    return itemSmoothers.size;
+  }
+
   function debugStats(): {
     itemSmoothers: number;
     liveThinkingTails: number;
@@ -850,7 +862,7 @@ export function createThreadStreamingReveal(
   }
 
   function __smootherCountForTest(): number {
-    return itemSmoothers.size;
+    return smootherCount();
   }
 
   return {
@@ -867,6 +879,7 @@ export function createThreadStreamingReveal(
     snapAllToReceived,
     liveThinkingTailFor,
     pruneSettledThinkingTails,
+    smootherCount,
     debugStats,
     __flushForTest,
     __smootherCountForTest,

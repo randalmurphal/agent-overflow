@@ -213,8 +213,18 @@ func profileOneTurn(
 		_, _ = stop()
 		return nil, err
 	}
+	// The profiler keeps running through the reveal drain. The turn closing
+	// is the WIRE finishing; the reveal queue then hands the result to the
+	// reader over several more seconds, and that tail is main-thread work
+	// like any other — a profile that stopped at turn completion attributed
+	// none of it. Degradations (an older page, a drain past the bound) are
+	// a note, never a failed profile: the samples already taken are good.
+	if err := waitForRevealDrain(ctx, e, client, benchDrainTimeout); err != nil {
+		_, _ = stop()
+		return nil, err
+	}
 	if !e.jsonOutput() {
-		e.printf("turn completed; stopping the profiler\n")
+		e.printf("turn completed and the reveal queue drained; stopping the profiler\n")
 	}
 	raw, err := stop()
 	if err != nil {

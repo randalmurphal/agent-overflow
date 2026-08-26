@@ -191,12 +191,42 @@ export function normalizeBudgetsMs(budgetsMs?: readonly number[]): number[] {
   return [...seen].sort((a, b) => a - b).slice(0, MAX_BUSY_BUDGETS);
 }
 
+/**
+ * How many of the run's worst busy ticks are kept with their timestamps.
+ *
+ * The histogram answers "what was the distribution"; it cannot answer
+ * "WHEN did the bad ticks happen", which is the question that turns a p99
+ * into a trace range worth opening. Eight is enough to see whether the tail
+ * is one stall or a pattern, and small enough that maintaining it is a
+ * bounded insertion into a preallocated pair of arrays — no per-tick
+ * allocation, no sort, and an early exit for the overwhelming majority of
+ * ticks that cannot displace the current worst.
+ */
+export const BUSY_WORST_KEEP = 8;
+
+/** One remembered bad tick: how long it cost, and when it started. */
+export interface BusyWorstTick {
+  /** performance.now() at the tick's rAF-callback entry. */
+  atMs: number;
+  busyMs: number;
+}
+
 export interface BusyHistogram {
   /** One counter per BUSY_BUCKET_MS, index 0..BUSY_BUCKET_COUNT-1. */
   readonly buckets: number[];
   count: number;
   sumMs: number;
   maxMs: number;
+  /**
+   * The worst ticks so far, DESCENDING by busyMs, kept as two parallel
+   * preallocated arrays with a live length. Parallel arrays rather than an
+   * array of objects because this is maintained on the hot meter: an object
+   * per displaced entry would allocate exactly where the instrument must
+   * not.
+   */
+  readonly worstBusyMs: number[];
+  readonly worstAtMs: number[];
+  worstCount: number;
   /** Ascending, fixed at construction. */
   readonly budgetsMs: number[];
   /** withinBudget[i] counts ticks whose busy time was <= budgetsMs[i]. */
@@ -224,6 +254,12 @@ export interface BusySummary {
   maxMs: number;
   meanMs: number;
   budgets: BusyBudgetFit[];
+  /**
+   * The run's worst ticks, descending. EVIDENCE, not a metric: it names
+   * where in the run to look, and is deliberately kept out of anything that
+   * gates (same rule as the bench's forced-layout call-site ranking).
+   */
+  worst: BusyWorstTick[];
 }
 
 export function newBusyHistogram(budgetsMs?: readonly number[]): BusyHistogram {
@@ -233,6 +269,9 @@ export function newBusyHistogram(budgetsMs?: readonly number[]): BusyHistogram {
     count: 0,
     sumMs: 0,
     maxMs: 0,
+    worstBusyMs: new Array<number>(BUSY_WORST_KEEP).fill(0),
+    worstAtMs: new Array<number>(BUSY_WORST_KEEP).fill(0),
+    worstCount: 0,
     budgetsMs: budgets,
     withinBudget: new Array<number>(budgets.length).fill(0),
     dropped: 0,
@@ -240,16 +279,49 @@ export function newBusyHistogram(budgetsMs?: readonly number[]): BusyHistogram {
 }
 
 /**
+ * Bounded insertion into the worst-tick list. Ordered DESCENDING, so the
+ * cheapest possible check comes first: once the list is full, a tick that
+ * cannot beat the smallest entry returns without touching anything, which
+ * is what nearly every tick of a healthy run does.
+ *
+ * Ties keep the EARLIER tick ahead of the later one (strict `>` when
+ * scanning for the insertion point), because a list of identical durations
+ * is most useful read in the order they happened.
+ */
+function recordWorstBusy(hist: BusyHistogram, busyMs: number, atMs: number): void {
+  const full = hist.worstCount === BUSY_WORST_KEEP;
+  if (full && busyMs <= (hist.worstBusyMs[BUSY_WORST_KEEP - 1] ?? 0)) return;
+  let at = full ? BUSY_WORST_KEEP - 1 : hist.worstCount;
+  // Shift the entries this tick outranks one slot down. The loop runs at
+  // most BUSY_WORST_KEEP times and writes numbers into arrays that already
+  // exist — nothing is allocated here.
+  while (at > 0 && busyMs > (hist.worstBusyMs[at - 1] ?? 0)) {
+    hist.worstBusyMs[at] = hist.worstBusyMs[at - 1] ?? 0;
+    hist.worstAtMs[at] = hist.worstAtMs[at - 1] ?? 0;
+    at -= 1;
+  }
+  hist.worstBusyMs[at] = busyMs;
+  hist.worstAtMs[at] = atMs;
+  if (!full) hist.worstCount += 1;
+}
+
+/**
  * Folds one busy measurement in. Same admission rule as recordFrame:
  * non-finite and negative are dropped rather than clamped, because a
  * clock that went backwards must not manufacture a 0ms tick that fits
  * every budget.
+ *
+ * `atMs` is the tick's rAF-callback-entry timestamp on the page clock
+ * (`performance.now()`), carried only so the worst ticks can be located in
+ * a trace. A caller with no clock to offer passes nothing and gets a 0,
+ * which is honest: the durations are still exact.
  */
-export function recordBusy(hist: BusyHistogram, busyMs: number): void {
+export function recordBusy(hist: BusyHistogram, busyMs: number, atMs = 0): void {
   if (!Number.isFinite(busyMs) || busyMs < 0) return;
   hist.count += 1;
   hist.sumMs += busyMs;
   if (busyMs > hist.maxMs) hist.maxMs = busyMs;
+  recordWorstBusy(hist, busyMs, Number.isFinite(atMs) ? atMs : 0);
   const bucket = Math.min(BUSY_BUCKET_COUNT - 1, Math.floor(busyMs / BUSY_BUCKET_MS));
   hist.buckets[bucket] = (hist.buckets[bucket] ?? 0) + 1;
   // Ascending budgets, so the first budget this tick FITS is also the
@@ -308,6 +380,12 @@ export function summarizeBusy(hist: BusyHistogram): BusySummary {
         withinPct: hist.count > 0 ? round2((within * 100) / hist.count) : 0,
       };
     }),
+    // Materialised here and only here: the hot path keeps two number
+    // arrays, and the objects a reader wants are built once, at stop.
+    worst: Array.from({ length: hist.worstCount }, (_unused, i) => ({
+      atMs: round2(hist.worstAtMs[i] ?? 0),
+      busyMs: round2(hist.worstBusyMs[i] ?? 0),
+    })),
   };
 }
 

@@ -50,6 +50,41 @@ func seedSingleThread(run *benchRun) (json.RawMessage, error) {
 	return json.Marshal(spec)
 }
 
+// benchMultiPaneCount is how many panes stream at once. Three is what a
+// wide monitor actually holds side by side, and it is past the point where
+// the panes stop being independent: one main thread, one style and layout
+// pass, one frame budget shared between them.
+const benchMultiPaneCount = 3
+
+// seedMultiPaneThreads is seedSingleThread widened. Same deliberately thin
+// history for the same reason — the load under test arrives on the wire —
+// but one thread per pane, each with the one completed turn App.ListThreads
+// needs to show a row at all.
+func seedMultiPaneThreads(run *benchRun) (json.RawMessage, error) {
+	threads := make([]map[string]any, 0, benchMultiPaneCount)
+	for i := 1; i <= benchMultiPaneCount; i++ {
+		threads = append(threads, map[string]any{
+			"title":    fmt.Sprintf("bench pane %02d", i),
+			"provider": "claude",
+			"turns": []map[string]any{{
+				"userText": fmt.Sprintf("warm up bench pane %02d", i),
+				"items": []map[string]any{{
+					"kind":    "assistant_text",
+					"summary": "Ready for the bench workload.",
+				}},
+			}},
+		})
+	}
+	spec := map[string]any{
+		"projects": []map[string]any{{
+			"name":    "bench-" + run.workload.Name,
+			"repo":    benchProjectRepo(),
+			"threads": threads,
+		}},
+	}
+	return json.Marshal(spec)
+}
+
 // benchManyThreadsCount is how wide the sidebar gets. Thirty is past the
 // point where the list virtualizes and past what a reader can hold on one
 // screen, which is the regime the workload is about.

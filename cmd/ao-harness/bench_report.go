@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The shapes a bench report is built from, and the arithmetic over them.
@@ -47,6 +48,15 @@ type perfBusyBudget struct {
 	WithinPct   float64 `json:"withinPct"`
 }
 
+// perfBusyWorstTick is one of the run's worst main-thread ticks: how long
+// it cost, and when it started on the page clock (`performance.now()` at
+// the tick's rAF-callback entry). Pair `atMs` with the summary's
+// `timeOriginMs` to place it against a trace or a wall-clock log.
+type perfBusyWorstTick struct {
+	AtMs   float64 `json:"atMs"`
+	BusyMs float64 `json:"busyMs"`
+}
+
 // perfBusySummary is the whole-run busy-time fold. `ticks` is the count of
 // MEASURED ticks — zero means this engine never armed the meter, which is
 // not the same claim as "every tick fit", so every reader here gates on it.
@@ -58,11 +68,20 @@ type perfBusySummary struct {
 	MaxMs   float64          `json:"maxMs"`
 	MeanMs  float64          `json:"meanMs"`
 	Budgets []perfBusyBudget `json:"budgets"`
+	// Worst is the run's worst ticks, descending. It rides the report and
+	// the per-repeat rows of a bench document, and is deliberately NOT a
+	// metric: a baseline compares numbers, and a list of timestamps is
+	// EVIDENCE — the same rule the forced-layout call-site ranking follows.
+	Worst []perfBusyWorstTick `json:"worst,omitempty"`
 }
 
 type perfFrontendSummary struct {
-	V                 int              `json:"v"`
-	DurationMs        float64          `json:"durationMs"`
+	V          int     `json:"v"`
+	DurationMs float64 `json:"durationMs"`
+	// TimeOriginMs is the document's performance.timeOrigin in epoch
+	// milliseconds — the one number that turns every page-clock time in
+	// this document (the busy meter's worst ticks) into a wall clock.
+	TimeOriginMs      float64          `json:"timeOriginMs,omitempty"`
 	Meters            []string         `json:"meters"`
 	UnavailableMeters []string         `json:"unavailableMeters"`
 	Frames            perfFrameSummary `json:"frames"`
@@ -529,6 +548,39 @@ func renderBusyFit(budgets []perfBusyBudget) string {
 	return "fit " + strings.Join(parts, " / ")
 }
 
+// renderBusyWorst is the worst-tick strip: the run's most expensive main
+// thread ticks, worst first, each with the moment it started.
+//
+// TWO CLOCKS, on purpose. `atMs` is the page clock (`performance.now()`),
+// which is what a Chromium trace and the rest of this report are on; the
+// wall-clock column is that same instant through `timeOrigin`, which is
+// what a backend log or a ui-trace record is on. A reader correlating a
+// stall has one of the two and would otherwise have to do the arithmetic
+// by hand. The wall column is omitted entirely when the page reported no
+// time origin, rather than printing the epoch.
+func renderBusyWorst(worst []perfBusyWorstTick, timeOriginMs float64) string {
+	if len(worst) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  worst   %d worst tick(s), page clock; correlate with a trace\n", len(worst))
+	rows := make([][]string, 0, len(worst))
+	for i, tick := range worst {
+		wall := "-"
+		if timeOriginMs > 0 {
+			wall = time.UnixMilli(int64(timeOriginMs + tick.AtMs)).Format("15:04:05.000")
+		}
+		rows = append(rows, []string{
+			fmt.Sprint(i + 1),
+			fmt.Sprintf("%.2f", tick.BusyMs),
+			fmt.Sprintf("%.1f", tick.AtMs),
+			wall,
+		})
+	}
+	b.WriteString(tableString([]string{"    #", "BUSYMS", "AT(PAGE)", "AT(WALL)"}, rows))
+	return b.String()
+}
+
 // droppedSuffix names the ticks whose measurement could not be attributed
 // to one frame. Silent at zero, which is the normal case.
 func droppedSuffix(dropped int) string {
@@ -561,6 +613,7 @@ func renderPerfReport(report perfReport) string {
 			if fit := renderBusyFit(f.Busy.Budgets); fit != "" {
 				fmt.Fprintf(&b, "  budget  %s\n", fit)
 			}
+			b.WriteString(renderBusyWorst(f.Busy.Worst, f.TimeOriginMs))
 		}
 		fmt.Fprintf(&b, "  tasks   %d long tasks (worst %.1fms); layout shift %.4f; %d slow events\n",
 			f.LongTasks, f.LongestTaskMs, f.LayoutShift, f.SlowEvents)

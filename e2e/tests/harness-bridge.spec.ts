@@ -249,6 +249,23 @@ test("globals answer present, unavailable, or refused", async ({
   expect(memory.name).toBe("__aoMemoryReport");
   expect(memory.value).toBeTruthy();
 
+  // Also always installed, and this is the build that has to prove it: a
+  // bench and a profile end their measurement window on this probe, and a
+  // harness binary ships with UI_TRACE unset. If it were gated the way the
+  // diagnostics globals below are, every window would silently fall back
+  // to ending at turn completion.
+  const drain = await harness.rpc<{
+    name: string;
+    unavailable?: true;
+    value?: { panes: number; draining: number; smoothers: number; boundaries: number };
+  }>("HarnessUIQuery", { v: 1, kind: "globals", name: "__aoRevealDrain" });
+  expect(drain.unavailable).toBeUndefined();
+  expect(drain.value).toBeTruthy();
+  // One pane is open (seedAndOpen), and it is not streaming.
+  expect(drain.value!.panes).toBeGreaterThan(0);
+  expect(drain.value!.draining).toBe(0);
+  expect(drain.value!.smoothers).toBe(0);
+
   // `make harness` builds with UI_TRACE unset (UI_TRACE ?= $(DEBUG)), so
   // the trace api is genuinely absent here. That is an ANSWER, not a
   // fault — the caller has to be able to tell it from a bad name.

@@ -219,8 +219,8 @@ async function dispatch(spec: Record<string, unknown>): Promise<unknown> {
   switch (str(spec, 'kind')) {
     case 'viewport':
       // The one query kind that reports settledness, and therefore the one
-      // that pays for the observer. `element`, `globals`, `perf` and
-      // `reload` answer without it and must not install it.
+      // that pays for the observer. `element`, `globals`, `perf`, `reload`
+      // and `open` answer without it and must not install it.
       armMutationClock();
       return readViewport(document, {
         settledMs: num(spec, 'settledMs', DEFAULT_SETTLED_MS),
@@ -253,6 +253,8 @@ async function dispatch(spec: Record<string, unknown>): Promise<unknown> {
       return dispatchPerf(spec);
     case 'reload':
       return dispatchReload(num(spec, 'delayMs', DEFAULT_RELOAD_DELAY_MS));
+    case 'open':
+      return dispatchOpen(str(spec, 'threadId'), spec.newPane === true);
     case '':
       return fail('query spec has no kind');
     default:
@@ -285,6 +287,47 @@ function dispatchReload(delayMs: number): unknown {
   const wait = Math.min(Math.max(delayMs, 0), 5000);
   setTimeout(() => window.location.reload(), wait);
   return { v: 1, reloading: true, delayMs: wait };
+}
+
+// ---------------------------------------------------------------------------
+// open
+//
+// The out-of-page spelling of "open this thread in a NEW pane". The plain
+// open already has one — `notification:activated`, the channel an OS
+// notification click rides, which the SPA turns into `openThreadInPane` —
+// and that path is deliberately left alone (cmd/ao-harness/bench_drive.go
+// #activateThread): it exercises a production door end to end, and a bench
+// built on it measures what a notification click costs.
+//
+// There is no such channel for the new-pane door. `openThreadInNewPane` is
+// reached only by ctrl-clicking a sidebar row, the thread context menu, and
+// a builtin command — all in-page gestures a shell driver cannot make. So
+// this kind calls the SAME production function those three call, rather
+// than reimplementing pane minting harness-side, which would measure a pane
+// nobody ships.
+//
+// The stores are reached by DYNAMIC import, not a static one. The bridge is
+// itself a lazily-imported chunk, so this costs nothing at run time (panes
+// and threads are already in the startup graph) — but a static import here
+// would drag the whole pane/thread store graph into every unit test that
+// merely asks this module about a malformed spec.
+async function dispatchOpen(threadId: string, newPane: boolean): Promise<unknown> {
+  if (!threadId) return fail('open query requires a threadId');
+  const [panes, threads] = await Promise.all([
+    import('../stores/panes.svelte'),
+    import('../stores/threads.svelte'),
+  ]);
+  const thread = threads.getThreadById(threadId);
+  if (!thread) {
+    // The registry, not the store: a thread the backend has but the page
+    // has not listed yet is a real state and reads very differently from a
+    // typo'd id. Naming the page is what tells the two apart.
+    return fail(`this page's thread registry has no thread ${JSON.stringify(threadId)}`);
+  }
+  const pane = newPane
+    ? await panes.openThreadInNewPane(thread)
+    : await panes.openThreadInPane(thread);
+  return { v: 1, opened: true, threadId, paneId: pane.paneId, newPane };
 }
 
 function dispatchPerf(spec: Record<string, unknown>): unknown {

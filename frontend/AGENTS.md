@@ -87,6 +87,23 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   no wire surface by design: the subscription and the reply RPC live in
   the store, because `architecture.test.ts` rule 2 keeps event
   subscriptions inside `stores/`.
+  One query kind MUTATES — `open`, which mounts a thread in a pane. It is
+  there for exactly one door: the plain open is driven from outside the
+  browser over `notification:activated` and stays that way, but
+  `openThreadInNewPane` is an in-page gesture only (ctrl-click on a
+  sidebar row, the thread context menu, a builtin command), so a shell
+  driver has no other way to reach the pane strip. It calls that same
+  production function through a DYNAMIC import of the pane/thread stores —
+  static would drag the whole store graph into every bridge unit test —
+  and mints nothing of its own.
+  Beside it, `utils/revealDrainProbe.ts` folds the pane registry into
+  `window.__aoRevealDrain()`: how much of the reveal queue is still
+  draining, so a bench or a profile can end its measurement window when
+  the reader has actually seen the stream rather than when the wire
+  finished. Cheap store state (one map size and one nullable field per
+  pane) precisely because the alternative — the mutation clock — is
+  force-disarmed during a perf run on purpose. It is a READ; nothing in a
+  measurement path may skip, rush or pop the drain.
 - `bindings/` — Wails-generated TypeScript. Never edit by hand.
 - `vendor/` — in-repo third-party packages, linked in as pnpm workspace
   packages. Currently `svelte-streamdown`; edit it like any other source

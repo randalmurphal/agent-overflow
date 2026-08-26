@@ -80,9 +80,24 @@ func uiReload(e *env, args []string) error {
 	})
 }
 
+// uiOpen has two doors and they are deliberately different mechanisms.
+//
+// The default rides `notification:activated` — the event channel an OS
+// notification click arrives on — so the SPA resolves the thread and calls
+// `openThreadInPane` itself. That is a whole production path exercised from
+// outside the browser with no bridge in the loop, which is exactly why it
+// must stay as it is: it is what `bench many-threads` measures a switch
+// with.
+//
+// `--new-pane` cannot work that way, because the new-pane door has no event
+// channel. `openThreadInNewPane` is reached only by in-page gestures —
+// ctrl-click on a sidebar row, the thread context menu, a builtin command —
+// so this asks the bridge to call that same function. Minting a pane
+// harness-side instead would put a pane nobody ships on the screen.
 func uiOpen(e *env, args []string) error {
-	flags := e.newFlagSet("ui open --thread <id|#N|last|title-prefix>")
+	flags := e.newFlagSet("ui open --thread <id|#N|last|title-prefix> [--new-pane]")
 	thread := flags.String("thread", "", "thread selector: id, #N from `threads`, `last`, or a unique title prefix")
+	newPane := flags.Bool("new-pane", false, "open in a NEW pane beside the others, the way a ctrl-click on a sidebar row does")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
@@ -92,7 +107,7 @@ func uiOpen(e *env, args []string) error {
 		rest = nil
 	}
 	if len(rest) != 0 {
-		return usagef("ui open takes only --thread (got %v)", rest)
+		return usagef("ui open takes only --thread and --new-pane (got %v)", rest)
 	}
 	if *thread == "" {
 		return usagef("ui open needs --thread <id|#N|last|title-prefix>")
@@ -103,16 +118,21 @@ func uiOpen(e *env, args []string) error {
 		if err != nil {
 			return err
 		}
-		// The production open path, driven from outside the browser: this
-		// is the channel an OS-notification click rides, so the SPA runs
-		// its own openThreadInPane rather than anything harness-shaped.
-		if err := openThreadOnPage(ctx, e, client, row.ID); err != nil {
+		open := openThreadOnPage
+		if *newPane {
+			open = openThreadInNewPaneOnPage
+		}
+		if err := open(ctx, e, client, row.ID); err != nil {
 			return err
 		}
 		if e.jsonOutput() {
-			return e.writeJSON(map[string]any{"threadId": row.ID, "opened": true})
+			return e.writeJSON(map[string]any{"threadId": row.ID, "opened": true, "newPane": *newPane})
 		}
-		e.printf("opened %s (%s)\n", row.ID, truncate(row.Title, 60))
+		where := ""
+		if *newPane {
+			where = " in a new pane"
+		}
+		e.printf("opened %s (%s)%s\n", row.ID, truncate(row.Title, 60), where)
 		return nil
 	})
 }

@@ -62,7 +62,13 @@ type benchWorkload struct {
 	Scenario string
 	Summary  string
 	seed     func(run *benchRun) (json.RawMessage, error)
-	drive    func(ctx context.Context, run *benchRun) error
+	// prepare runs after the page has been reloaded and pointed at the
+	// first thread, and BEFORE the meters (and the trace) are armed. It is
+	// where a workload puts the app into the shape it wants to measure —
+	// mounting the other panes, for instance — so that setup cost stays out
+	// of the window. Nil for a workload whose fixture is enough.
+	prepare func(ctx context.Context, run *benchRun) error
+	drive   func(ctx context.Context, run *benchRun) error
 }
 
 func benchWorkloads() []benchWorkload {
@@ -87,6 +93,14 @@ func benchWorkloads() []benchWorkload {
 			Summary:  "three bounded async subagents streaming into their own cards",
 			seed:     seedSingleThread,
 			drive:    driveOneTurn,
+		},
+		{
+			Name:     "multi-pane-stream",
+			Scenario: "bench-burst-stream",
+			Summary:  fmt.Sprintf("%d panes side by side, each streaming a delta flood at once", benchMultiPaneCount),
+			seed:     seedMultiPaneThreads,
+			prepare:  openPanesForMultiPaneStream,
+			drive:    driveMultiPaneStream,
 		},
 		{
 			Name:    "many-threads",
@@ -426,6 +440,14 @@ func executeBenchRun(ctx context.Context, run *benchRun, perf benchPerfSpec) (pe
 	}
 	if len(run.threadIDs) > 0 {
 		if err := openThreadOnPage(ctx, run.env, run.client, run.threadIDs[0]); err != nil {
+			return perfReport{}, err
+		}
+	}
+	// Anything else the workload needs ON SCREEN happens here, before the
+	// trace and the meters: setup a workload is not about must not be
+	// inside the window it is measured in.
+	if run.workload.prepare != nil {
+		if err := run.workload.prepare(ctx, run); err != nil {
 			return perfReport{}, err
 		}
 	}

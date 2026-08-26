@@ -2091,6 +2091,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /**
+     * How many rows the reveal queue is still draining in this pane.
+     * Mirrors `isItemSmoothing` one level up: that answers the question per
+     * row, this answers it for the pane, in one map-size read.
+     *
+     * It exists for MEASUREMENT and nothing else — the harness's
+     * reveal-drain probe (utils/revealDrainProbe.ts) polls it so a bench or
+     * a profile window can end when the user-visible stream has actually
+     * finished rather than when the wire did. Nothing here may be used to
+     * skip, rush or pop the drain.
+     */
+    get smoothingItemCount(): number {
+      return streamingReveal.smootherCount();
+    },
+
+    /**
      * The pane's error-writing chokepoint. Every writer below is a thin
      * wrapper over this pair; see the `paneErrors` declaration for the
      * kinds and the resolution rule.

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The bench arithmetic is the part a wrong answer would be believed: a
@@ -567,5 +568,90 @@ func TestRenderPerfReportBusyLine(t *testing.T) {
 	quiet := renderPerfReport(benchTestReport(1000, 60, 12, 8<<20))
 	if strings.Contains(quiet, "busy") {
 		t.Errorf("an unmeasured run printed a busy line:\n%s", quiet)
+	}
+}
+
+// The worst-tick strip is EVIDENCE, and its whole value is being able to
+// go from a number in a report to a moment in a trace. Two rules carry
+// that: the ordering the page produced is preserved, and the wall-clock
+// column is derived from the page's own time origin rather than guessed.
+func TestRenderPerfReportWorstBusyTicks(t *testing.T) {
+	report := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3.25, 9.5, 41,
+		perfBusyBudget{BudgetMs: 6, WithinTicks: 700, WithinPct: 77.83})
+	report.Frontend.TimeOriginMs = 1700000000000
+	report.Frontend.Busy.Worst = []perfBusyWorstTick{
+		{AtMs: 4210.5, BusyMs: 41},
+		{AtMs: 1200.25, BusyMs: 22.5},
+	}
+	rendered := renderPerfReport(report)
+	for _, want := range []string{"2 worst tick(s)", "41.00", "4210.5", "22.50", "1200.2"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered report is missing %q:\n%s", want, rendered)
+		}
+	}
+	wall := time.UnixMilli(1700000000000 + 4210).Format("15:04:05.000")
+	if !strings.Contains(rendered, wall) {
+		t.Errorf("rendered report is missing the wall-clock column %q:\n%s", wall, rendered)
+	}
+}
+
+// A page that reported no time origin must not have one invented for it:
+// an epoch-relative timestamp printed as a wall clock is worse than a
+// dash, because it looks like an answer.
+func TestRenderPerfReportWorstBusyTicksWithoutATimeOrigin(t *testing.T) {
+	report := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3.25, 9.5, 41)
+	report.Frontend.Busy.Worst = []perfBusyWorstTick{{AtMs: 12, BusyMs: 41}}
+	rendered := renderPerfReport(report)
+	if !strings.Contains(rendered, "1 worst tick(s)") {
+		t.Errorf("rendered report is missing the worst strip:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "1970-") || strings.Contains(rendered, "00:00:00.012") {
+		t.Errorf("rendered report invented a wall clock:\n%s", rendered)
+	}
+}
+
+// A run whose page carried no worst list (an older bridge) prints no strip
+// rather than an empty table with a header nothing follows.
+func TestRenderPerfReportOmitsAnEmptyWorstStrip(t *testing.T) {
+	report := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3.25, 9.5, 41)
+	rendered := renderPerfReport(report)
+	if strings.Contains(rendered, "worst tick(s)") || strings.Contains(rendered, "AT(PAGE)") {
+		t.Errorf("a report with no worst ticks printed the strip:\n%s", rendered)
+	}
+}
+
+// The worst list is deliberately NOT a metric: a baseline compares numbers
+// a headless run can also produce, and a list of timestamps is evidence.
+func TestWorstBusyTicksAreNotAggregated(t *testing.T) {
+	report := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3.25, 9.5, 41,
+		perfBusyBudget{BudgetMs: 6, WithinTicks: 700, WithinPct: 77.8})
+	report.Frontend.Busy.Worst = []perfBusyWorstTick{{AtMs: 10, BusyMs: 41}}
+	for name := range aggregateBenchMetrics([]perfReport{report}) {
+		if strings.Contains(name, "worst") {
+			t.Errorf("aggregate carries an evidence-only field: %s", name)
+		}
+	}
+}
+
+// The report is the durable artifact, so the shapes the page added have to
+// survive a round trip through it — a field the CLI decoded but never
+// re-marshalled would vanish from every bench document silently.
+func TestPerfReportRoundTripsWorstTicksAndTimeOrigin(t *testing.T) {
+	report := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3.25, 9.5, 41)
+	report.Frontend.TimeOriginMs = 1700000000000
+	report.Frontend.Busy.Worst = []perfBusyWorstTick{{AtMs: 4210.5, BusyMs: 41}}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	decoded, err := decodePerfReport(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.Frontend.TimeOriginMs != 1700000000000 {
+		t.Errorf("timeOriginMs did not survive: %v", decoded.Frontend.TimeOriginMs)
+	}
+	if len(decoded.Frontend.Busy.Worst) != 1 || decoded.Frontend.Busy.Worst[0].BusyMs != 41 {
+		t.Errorf("worst ticks did not survive: %#v", decoded.Frontend.Busy.Worst)
 	}
 }

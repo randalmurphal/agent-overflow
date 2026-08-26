@@ -23,6 +23,7 @@ afterEach(() => {
   stopHarnessBridge();
   delete (window as { __stickState?: unknown }).__stickState;
   delete (window as { __agentOverflowUiTrace?: unknown }).__agentOverflowUiTrace;
+  delete (window as { __aoRevealDrain?: unknown }).__aoRevealDrain;
 });
 
 describe('answerHarnessQuery', () => {
@@ -128,10 +129,60 @@ describe('globals query', () => {
       '__agentOverflowTimelineMemoryStats',
       '__agentOverflowTimelineMemoryStatsByPane',
       '__aoMemoryReport',
+      '__aoRevealDrain',
       '__paneGeometry',
       '__stickState',
       'uiTrace.recent',
     ]);
+  });
+
+  // The drain probe is what a bench and a profile poll to learn when the
+  // reveal queue has finished. It is async (main.ts installs it as a
+  // dynamic-import stub), so the reader has to await it rather than
+  // reporting a Promise as the value.
+  it('awaits the reveal-drain probe rather than answering with its promise', async () => {
+    (window as { __aoRevealDrain?: () => Promise<unknown> }).__aoRevealDrain = () =>
+      Promise.resolve({ v: 1, panes: 2, draining: 1, smoothers: 3, boundaries: 1 });
+    const result = (await answerHarnessQuery({
+      v: 1,
+      kind: 'globals',
+      name: '__aoRevealDrain',
+    })) as { value: unknown };
+    expect(result.value).toEqual({ v: 1, panes: 2, draining: 1, smoothers: 3, boundaries: 1 });
+  });
+
+  // A page from before the probe existed must read as "no drain info",
+  // which the CLI degrades on with a note. An error would fail the run.
+  it('answers a page with no drain probe as unavailable, not an error', async () => {
+    const result = (await answerHarnessQuery({
+      v: 1,
+      kind: 'globals',
+      name: '__aoRevealDrain',
+    })) as { unavailable?: true; error?: string };
+    expect(result.error).toBeUndefined();
+    expect(result.unavailable).toBe(true);
+  });
+});
+
+// The `open` kind is the only door in this bridge that MUTATES the page. It
+// exists because `openThreadInNewPane` has no event channel — the plain
+// open rides `notification:activated` and deliberately still does. What is
+// asserted here is the refusal surface; the mounting itself needs a real
+// pane registry and is covered by the e2e suite.
+describe('open kind', () => {
+  it('requires a threadId', async () => {
+    const result = (await answerHarnessQuery({ v: 1, kind: 'open' })) as ErrorEnvelope;
+    expect(result.error).toContain('requires a threadId');
+  });
+
+  it('names the page registry when the thread is not in it', async () => {
+    const result = (await answerHarnessQuery({
+      v: 1,
+      kind: 'open',
+      threadId: 'no-such-thread',
+    })) as ErrorEnvelope;
+    expect(result.error).toContain('thread registry');
+    expect(result.error).toContain('no-such-thread');
   });
 });
 

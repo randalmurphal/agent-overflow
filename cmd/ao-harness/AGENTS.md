@@ -41,6 +41,7 @@ will type either:
 
 | Command | Purpose |
 |---|---|
+| `clone --from <real dataDir>` | build a harness data root from a scrubbed copy of a real app data dir; `--data-dir --force`. Does not boot |
 | `up` | boot a detached instance; `--window --soak --autopilot --data-dir --binary --mock-provider --dev-assets --keep-home --timeout` |
 | `down [--all]` | SIGTERM, then kill after 5s. On a Windows-launcher instance it then closes the launcher window too, via WSL interop against the `launcherPid` the backend published — after confirming the pid's image name is an agent-overflow launcher (see `launcher_kill.go`). Refusals are one operator note, never a failed command |
 | `list` | known instances, pruning rows whose process is gone |
@@ -51,7 +52,7 @@ will type either:
 | `reset` | wipe app state without rebooting |
 | `threads`, `items --thread <sel> [--turn N]` | read the store through the app's own listings; `threads` prints the `#` index the selector uses |
 | `send --thread <sel> <text>` | send a message; `--wait [--timeout 30s] [--items]` blocks until that thread's turn completes |
-| `scenario set\|list\|show\|clear\|validate` | mock scenario rules; `show` and `validate` are offline (the library is compiled in) |
+| `scenario set\|list\|show\|clear\|validate\|from-thread` | mock scenario rules; `show` and `validate` are offline (the library is compiled in), and `from-thread` rebuilds a real thread's last turns into a scenario document |
 | `mock list\|advance\|emit\|exit` | drive registered mock providers; `mock list` carries the open GATE, and `mock advance [mock-id] [gate]` reports what the release actually did |
 | `events tail\|await\|count\|channels` | the event wire; `--channel`, `--where`, `--timeout`, and `await`'s `--since`. `channels` is offline |
 | `record start\|stop`, `bundles`, `replay ...` | bundle capture and playback |
@@ -110,6 +111,17 @@ gets their instance back untouched.
   `note: a page is attached — run 'ao-harness ui reload'` rather than
   reloading on its own: a reset that moved someone's page without being
   asked is a surprise in the middle of a debugging session.
+- `ui open --new-pane` opens beside the others instead of in the focused
+  pane, and it is a DIFFERENT mechanism from the plain open — deliberately.
+  The plain one emits `notification:activated`, the channel an
+  OS-notification click rides, so the SPA resolves the thread and calls
+  `openThreadInPane` itself: a whole production path exercised with no
+  bridge in the loop, which is what `bench many-threads` measures a switch
+  with, and it must stay that way. The new-pane door has no event channel
+  — `openThreadInNewPane` is reached only in-page (ctrl-click on a sidebar
+  row, the thread context menu, a builtin command) — so `--new-pane` asks
+  the bridge's `open` query kind to call that same function. Minting a
+  pane harness-side instead would put a pane nobody ships on the screen.
 - `perf watch` prints one line per backend sample. There is no per-sample
   p95 and no per-sample budget fit: both come from whole-run histograms
   the page keeps, so only `perf stop` can answer one. Watch prints the
@@ -124,6 +136,14 @@ gets their instance back untouched.
   work cost. An entry that does not parse, or is not positive, is
   REFUSED rather than skipped — a shortened budget list is a gate
   quietly not being enforced.
+- `perf stop` also prints the run's eight WORST busy ticks, each with the
+  moment it started on the page clock and, when the page reported a
+  `performance.timeOrigin`, the same instant as a wall clock. The
+  histogram says what the distribution was; this says WHERE TO LOOK, which
+  is what turns a p99 into a trace range worth opening. It rides the same
+  busy block into a bench report's per-run rows and is deliberately absent
+  from `aggregate` — a list of timestamps is evidence, not a metric, the
+  same rule `--trace`'s call-site ranking follows.
 
 ### The event wire
 
@@ -163,6 +183,116 @@ BEFORE the command's own RPC — `items --thread garbage` used to print "no
 items" and exit 0, which reads as "that thread is empty", the wrong
 finding entirely and the one a caller is least likely to double-check.
 
+### The state-clone repro rig
+
+Two verbs answer the same question — "reproduce this on MY state" — from
+opposite ends. `clone` copies the DATA (thousands of real threads, real
+sizes, real shapes) into a harness root. `scenario from-thread` copies
+one thread's BEHAVIOUR back onto the mock wire. Neither one needs the
+other, and together they turn "it only janks on my machine" into a
+scripted, repeatable run.
+
+**`clone --from <real dataDir> [--data-dir <root>] [--force]`** builds a
+harness data root from a copy of a real app data dir and stops. It does
+not boot; it prints the `up` line.
+
+The source may be LIVE, so the database is never file-copied. The source
+is opened `mode=ro` and snapshotted with `VACUUM INTO`, which produces
+one consistent file with the WAL folded in. One measured divergence from
+`db`'s DSN: `query_only(1)` REFUSES `VACUUM INTO` outright ("attempt to
+write a readonly database"), even though the statement writes only to the
+output path, so the snapshot connection carries `mode=ro` alone — which
+is the layer that actually enforces read-only anyway, exactly as the `db`
+guard's own note says. One honest caveat: a read-only WAL open makes
+SQLite create `-shm` / `-wal` sidecars beside the source when they are
+absent. No database CONTENT is touched (a test hashes the source file
+before and after), and a running app already has both.
+
+Then the TARGET copy — opened read-write, the source never is — is
+scrubbed:
+
+- every `threads` row loses its resume handles: `session_ref = NULL`,
+  `pending_fork_session_ref = NULL`, `pending_fork_resume_at = ''`, the
+  triple the store always writes together.
+- `thread_import_state` keeps its rows and loses its identity:
+  `source_session_id`, `leaf_uuid`, `source_parent_session_id` are
+  emptied.
+- `ui_state` is DELETEd wholesale. It is client-scoped restore state, and
+  carrying it over is the stale-reference toast storm `HarnessReset`
+  already fixed once.
+
+A table missing from an older database is a stderr note and an "absent in
+this database" receipt, not a failure.
+
+Only `attachments/` comes across besides the database. Deliberately NOT
+copied: `settings.json` (harness boot re-points the binaries at the mock
+every time anyway), `provider-accounts.json` (its `providerHome` stamp
+names the REAL home), `replay/`, `ui-trace/`, `design-workdirs/`,
+`logs/`, `account-audit.log`, `usage-backoff.json`,
+`harness-instance.json`.
+
+The target runs `up`'s own refusals (config root, real app data dir,
+symlinked components) plus three of its own, all BEFORE anything is
+created: a root whose instance file names a LIVE pid, a target that is
+the source or contains it either way round, and an existing target
+database unless `--force`. `--from` accepts either the data dir itself or
+its parent. It does NOT apply `db --file`'s real-data-dir refusal — this
+verb's contract is the exact opposite, an explicit operator choice to
+read real data.
+
+**The privacy rule.** The clone carries real conversation content
+VERBATIM. Credentials do not travel (they live under the provider home,
+which the harness redirects to `<dataRoot>/home`) and nothing can resume
+a real session (every handle above is neutralized), but the threads are
+the developer's own. The clone lives in its target root, and it is never
+committed anywhere. The command says so in its own output.
+
+**`scenario from-thread --thread <sel> [--turns N] [--out f] [--set]
+[--delay-ms 15]`** reads the TARGET INSTANCE's store read-only and
+rebuilds its last N turns (default 1) as a scenario document.
+
+Streamed text and thinking are cut into deltas at the RECORDED chunk
+boundaries: `payloads.data` is the head and each `payload_chunks` row is
+one flushed delta, so one emitted line per piece reproduces the original
+stream shape rather than a re-chunking of the final text. Tool pairs keep
+their recorded `(turn_index, item_index)` order and their `completion_of`
+pairing; a completion with no pairing is an error, not a silent drop.
+App-internal kinds (notification, api_retry, compaction, …) are skipped
+and COUNTED, and the counts print.
+
+Reads go through `timeline_items` / `timeline_payloads` (the v61 logical
+views), not the base tables, so an IMPORTED thread does not rebuild
+empty. Every statement filters `thread_id` — `payloads` has been keyed
+`(thread_id, id)` since v58 precisely because ids repeat across threads,
+and `frontend/scripts/generate-freeze-replay-fixture.mjs` predates that
+and still has the bug.
+
+The document replays ASSISTANT work only. User text is never a frame,
+because a real `send` is what opens each Turn — so the command finishes
+by printing the drive recipe, one `send --thread <id> --wait '<text>'`
+per rebuilt turn carrying the recorded prompt.
+
+The Codex half is deliberately PARTIAL. `agentMessage` streaming and the
+turn envelope are demonstrated verbatim by the library's `codex-basic`,
+so those replay. Reasoning and tool items are REFUSED with a message
+naming what is missing: a reasoning item needs its delta method
+(`textDelta` vs `summaryTextDelta`, model-class dependent) and its
+summary structure; a tool item needs its wire item type
+(commandExecution / fileChange / mcpToolCall / …) and that type's own
+payload and completion fields. A normalized `tool_name` plus a rendered
+result cannot reconstruct any of it, and the repo does not guess provider
+behavior — a refusal that says what it lacks is worth more than a
+plausible fabricated dialect.
+
+The whole recipe:
+
+```
+ao-harness clone --from ~/.local/share/agent-overflow
+ao-harness up --data-dir <root the clone printed> --window
+ao-harness scenario from-thread --thread last --turns 3 --set
+ao-harness send --thread <id> --wait '<the recorded prompt>'
+```
+
 ### Bench
 
 `bench <workload> [--repeat N] [--sample-ms] [--budgets 6,8,16]
@@ -175,16 +305,55 @@ workload and stops them.
 | `burst-stream` | sustained text-delta flood, chunked partial writes |
 | `giant-turn` | one turn producing 225 items (tool pairs plus text) |
 | `subagent-fanout` | three bounded async subagents streaming at once |
+| `multi-pane-stream` | three panes side by side, all flooding at once |
 | `many-threads` | 30 seeded threads, then a thread-switch storm |
 
-The first three run the `bench-*` scenarios in the library and finish on
-`provider:turn_completed` for their thread, which is the first moment the
-whole pipeline under test is done: `harness:mock`'s `scenario_done` fires
-when the MOCK stopped writing, upstream of parse, triage, persist and
-render. `many-threads` drives switches by emitting
-`notification:activated`, the channel an OS-notification click rides, so
-each switch runs the production `openThreadInPane` path. It does not
-exercise the sidebar row itself (hit-testing, hover).
+The first four run the `bench-*` scenarios in the library and wait on
+`provider:turn_completed` for their thread (one wait per thread for
+`multi-pane-stream`), which is the first moment the WIRE half of the
+pipeline under test is done: `harness:mock`'s `scenario_done` fires when
+the MOCK stopped writing, upstream of parse, triage, persist and render.
+`many-threads` drives switches by emitting `notification:activated`, the
+channel an OS-notification click rides, so each switch runs the production
+`openThreadInPane` path. It does not exercise the sidebar row itself
+(hit-testing, hover).
+
+**The measured window does not end at turn completion.** It ends when the
+REVEAL QUEUE is empty, which is later — the mock finishes a burst-stream
+turn in about a second and the reveal keeps handing text to the reader for
+ten or more, so every number taken before this covered the flood and
+excluded the half a human spends the most time watching. Every workload
+(including `many-threads`, which normally passes on its first reading)
+waits the same way, and so does `profile`.
+
+Consequence for old reports: **`duration.ms` in a baseline taken before
+this reads shorter.** Comparing across the change shows a large drift on
+that metric that is purely the window moving. Re-take the baseline.
+
+The signal is `window.__aoRevealDrain()` — panes, panes still draining,
+total live smoothers, engaged reveal gates — polled at 250ms through the
+`globals` query kind, and it needs two consecutive empty readings because
+a drain empties BETWEEN rows. It is cheap store state deliberately, NOT
+the bridge's mutation clock: `perf start`/`stop` force-disarm that
+observer precisely so a run measures a renderer without one, and re-arming
+it to detect quiet would perturb the experiment being timed. It is also
+strictly a read — nothing here may skip, rush or pop the drain.
+
+Three degradations, none of them a failed run, each one operator note: a
+page that does not install the probe answers `unavailable`, a bridge whose
+whitelist has never heard of it answers with a query error, and a drain
+still going after 60s (`benchDrainTimeout`) ends the window anyway naming
+what was outstanding. A slow drain is a finding to read in the report, not
+a reason to throw away the run that produced it.
+
+`multi-pane-stream` is the one workload with a PREPARE step. Its first
+pane opens like everyone else's; the other two go through the bridge's
+`open` kind with `newPane` (see `ui open --new-pane` above) BEFORE the
+meters and the trace are armed, because mounting three timelines is setup
+rather than the thing being measured. Then all three turns are sent back
+to back — three panes revealing at once share one main thread, one
+style/layout pass and one frame budget, which is the whole point; sending
+serially would measure three sequential turns.
 
 Reports land in `<dataDir>/bench/<workload>-<timestamp>.json` and double
 as baselines: `--baseline` reads either that file's `aggregate` map (its
@@ -251,7 +420,10 @@ One scripted turn under the V8 sampling profiler, written out as a
 plus a three-way rollup of the sampled time. It attaches the debugger,
 settles, opens the thread (the same `ui open` activation), settles again,
 arms the profiler at a 100µs interval, installs the scenario, sends the
-message, waits for `provider:turn_completed`, and stops.
+message, waits for `provider:turn_completed`, waits for the reveal queue
+to drain (same rule and same degradations as a bench — the tail a reader
+watches is main-thread work like any other, and a profile that stopped at
+turn completion attributed none of it), and stops.
 
 It does NOT reload the page, and that is the difference from `bench`. A
 reload is how a bench gets a blank slate; here it would profile the mount
@@ -463,6 +635,15 @@ One file per command family, plus the router. Adding a verb is a row in
   before anyone said no.
 - `cmd_rpc.go`: rpc, seed, reset, threads, items, send.
 - `cmd_scenario.go`, `cmd_mock.go`: the mock-provider surface.
+- `cmd_clone.go`, `cmd_scenario_from_thread.go`, `scenario_synth.go`: the
+  state-clone repro rig. `cmd_clone.go` opens on the threat model, so a
+  reviewer can check it without reading the body, and writes its scrub as
+  literal SQL for the same reason `cmd_up.go` reimplements the boot
+  refusals — this binary links no store code. `scenario_synth.go` is the
+  pure half (recorded items in, wire frames out, nothing touching a
+  database) split out so every framing rule is testable with no instance
+  anywhere; `cmd_scenario_from_thread.go` is the command and its
+  thread-scoped reads.
 - `cmd_events.go`, `where.go`: the event wire, its `--where` filter, and
   `parseSince` — the one place `--since` and `--history` are reconciled,
   so the two flags cannot disagree about which window a wait covers.
@@ -549,6 +730,21 @@ on and a wrong answer would be BELIEVED: a never-booted root, an `n/a`
 that must not read as a pass, and a `--baseline` run whose budgeted
 metric was never measured.
 
+`bench_workload_test.go` covers the workload TABLE and the fixtures behind
+it, which is where a mistake is otherwise only visible by running a bench
+for real: every workload has a summary, a seed and a drive; only
+`multi-pane-stream` prepares (a workload that grew a prepare by accident
+would move mount cost back inside the measured window) and it names a
+scenario; its seed gives every pane its own thread with the completed turn
+`ListThreads` needs to show a row at all; and `revealDrain.empty()` needs
+BOTH counters clear, because a pane whose last smoother is gone can still
+be holding the gate for the row about to start. The worst-tick strip is
+tested where it is rendered: its ordering, its dash for a page that
+reported no time origin, its absence for a run that carried none, its
+exclusion from `aggregate`, and its survival of the report round trip —
+a field the CLI decoded but never re-marshalled would vanish from every
+bench document silently.
+
 The two CDP verbs are tested at their pure halves and their refusals,
 never against a browser: the profile rollup over a hand-built
 `.cpuprofile` (including the case the split exists for — an `internal_set`
@@ -568,6 +764,23 @@ launcher-kill tests pin that unparseable tasklist output is an ERROR
 rather than "the process is gone" — the two used to collapse into one
 answer and leave a live launcher's window on the desktop with nothing
 said.
+
+The state-clone rig is tested entirely on SYNTHETIC data — a `t.TempDir`
+source dir holding a real SQLite file with the store's real column names,
+never a copy of anyone's app — because a test that reached for real data
+to prove it handles real data safely would have already lost. `clone`'s
+tests pin each scrub (the session-ref triple, import identity neutralized
+without dropping the row, `ui_state` emptied), the copy set in both
+directions (attachments come, nothing else does), every refusal, and the
+one property the whole verb rests on: the SOURCE database is byte-identical
+after a clone of a database a writer still holds open. `from-thread` is
+tested at its pure halves — the frame sequence for a three-chunk text
+item, thinking's own block vocabulary, tool pairing and its unpaired
+refusal, per-turn id namespacing, skipped-kind counting, a document that
+survives the real `scenario.Parse`, the Codex leg's demonstrated shape and
+its explicit refusal of the rest — and at its reads: turn windowing, the
+head-then-chunks assembly, and two threads sharing a payload id that must
+not cross.
 
 Finally, the refusals whose wrong answer would be destructive rather than
 merely wrong: `down` on a pid the data root does not confirm, `db --file`
