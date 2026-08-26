@@ -746,15 +746,31 @@ export function subagentGroupKeysFor(itemId: string): [string, string, string] {
  * and by anything else that needs to identify a node across renders. The
  * key is unique within a thread; including the threadId guards against
  * stale-thread collisions when a snapshot is restored after a switch.
+ *
+ * Memoized per node object: every input is immutable for the node's
+ * lifetime (a leaf's `item`, a group's `groupKey`, a run's `runId` are
+ * all fixed at mint — the mutable run stamps are not key inputs), and
+ * leaf/read_group nodes are reference-stable across projection passes,
+ * so the virtualizer's getKey and the run's `{#each}` keys stop minting
+ * strings per render.
  */
+const nodeKeyByNode = new WeakMap<TimelineNode, string>();
+
 export function timelineNodeKey(node: TimelineNode): string {
-  if (node.kind === 'leaf') return `l:${node.item.threadId}:${node.item.id}`;
-  if (node.kind === 'group') return `g:${node.parent.threadId}:${node.groupKey}`;
-  if (node.kind === 'wait_group') return `wg:${node.parent.threadId}:${node.groupKey}`;
-  if (node.kind === 'read_group') return `rg:${node.threadId}:${node.groupKey}`;
-  if (node.kind === 'activity_run') return `ar:${node.threadId}:${node.runId}`;
-  const _exhaustive: never = node;
-  return _exhaustive;
+  const cached = nodeKeyByNode.get(node);
+  if (cached !== undefined) return cached;
+  let key: string;
+  if (node.kind === 'leaf') key = `l:${node.item.threadId}:${node.item.id}`;
+  else if (node.kind === 'group') key = `g:${node.parent.threadId}:${node.groupKey}`;
+  else if (node.kind === 'wait_group') key = `wg:${node.parent.threadId}:${node.groupKey}`;
+  else if (node.kind === 'read_group') key = `rg:${node.threadId}:${node.groupKey}`;
+  else if (node.kind === 'activity_run') key = `ar:${node.threadId}:${node.runId}`;
+  else {
+    const _exhaustive: never = node;
+    return _exhaustive;
+  }
+  nodeKeyByNode.set(node, key);
+  return key;
 }
 
 /**

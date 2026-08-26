@@ -1,15 +1,12 @@
 import type { Item } from '../../types/models';
-import { compositeKey } from '../../utils/compositeKey';
 import type { TimelineNode } from '../../utils/subagentGrouping';
-import { isRowUiRetentionActive } from '../../utils/rowUiRetention';
-import type {
-  PayloadExpansionRetentionKey,
-  RowUiStateRetention,
-} from '../../stores/threadRowUiState.svelte';
+import { isRowUiRetentionActive, itemPayloadRetentionKey } from '../../utils/rowUiRetention';
+import type { RowUiStateRetention } from '../../stores/threadRowUiState.svelte';
 
 interface RetentionAccumulator {
   itemIds: Set<string>;
-  payloads: Map<string, PayloadExpansionRetentionKey>;
+  /** `payloadRetentionKey` strings — the registry's own key shape. */
+  payloads: Set<string>;
   groupKeys: Set<string>;
 }
 
@@ -89,7 +86,7 @@ export function collectTimelineRowUiRetention(
 ): RowUiStateRetention {
   const retained: RetentionAccumulator = {
     itemIds: new Set<string>(),
-    payloads: new Map<string, PayloadExpansionRetentionKey>(),
+    payloads: new Set<string>(),
     groupKeys: new Set<string>(),
   };
   const retainStart = Math.max(0, range.first - options.nodeBuffer);
@@ -116,11 +113,7 @@ export function collectTimelineRowUiRetention(
     }
   }
 
-  return {
-    itemIds: retained.itemIds,
-    payloads: [...retained.payloads.values()],
-    groupKeys: retained.groupKeys,
-  };
+  return retained;
 }
 
 type RetainableItem = Pick<Item, 'id' | 'threadId' | 'payloadId'>;
@@ -151,14 +144,11 @@ function retainItem(
   item: RetainableItem,
 ): void {
   retained.itemIds.add(item.id);
-  if (!item.payloadId) return;
   // The same key the expansion registry files this payload under, built
-  // by the same helper so the two cannot drift.
-  const payloadKey = compositeKey(item.threadId, item.payloadId);
-  retained.payloads.set(payloadKey, {
-    threadId: item.threadId,
-    payloadId: item.payloadId,
-  });
+  // by the same helper so the two cannot drift — and memoized per Item,
+  // because this runs for the whole retention band on every collection.
+  const payloadKey = itemPayloadRetentionKey(item);
+  if (payloadKey !== null) retained.payloads.add(payloadKey);
 }
 
 function retainNode(

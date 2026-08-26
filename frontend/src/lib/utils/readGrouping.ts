@@ -15,7 +15,9 @@
 // Read arrives: the row appends another file link instead of swapping
 // from GenericToolCallRow to ReadGroupRow.
 //
-// The function is pure — fresh array out, no mutation of `nodes`.
+// The function is pure and never mutates `nodes`; it returns the SAME
+// array reference when there is no Read leaf to fold (matching
+// `sliceRevealedNodes` / `groupActivityRuns`), a fresh array otherwise.
 //
 // Group nodes are cached per first-member Item: a run of Reads whose
 // member Items are all reference-identical to the previous pass reuses
@@ -66,6 +68,16 @@ function isReadLeaf(node: TimelineNode): node is TimelineLeaf {
 
 export function groupConsecutiveReads(nodes: TimelineNode[]): TimelineNode[] {
   if (nodes.length === 0) return nodes;
+  // Same array reference when there is nothing to fold — a window with no
+  // Read leaves (most agent burns) must not pay a full copy per pass.
+  let hasReadLeaf = false;
+  for (let i = 0; i < nodes.length; i += 1) {
+    if (isReadLeaf(nodes[i])) {
+      hasReadLeaf = true;
+      break;
+    }
+  }
+  if (!hasReadLeaf) return nodes;
   const out: TimelineNode[] = [];
   let i = 0;
   while (i < nodes.length) {

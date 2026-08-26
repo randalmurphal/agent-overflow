@@ -7,6 +7,7 @@ import {
   writePayloadCache,
 } from '../utils/payloadDataCache';
 import { THINKING_PAYLOAD_EXPANSION_STATE_KEY } from '../utils/payloadVersion';
+import { payloadRetentionKey } from '../utils/rowUiRetention';
 import { createThreadRowUiState } from './threadRowUiState.svelte';
 import { loadSettings, resetSettingsForTest } from './settings.svelte';
 import { makeSettings } from '../../test/helpers/settings';
@@ -723,7 +724,7 @@ describe('createThreadRowUiState', () => {
 
       rowUiState.pruneRowUiState({
         itemIds: new Set(),
-        payloads: [],
+        payloads: new Set<string>(),
         groupKeys: new Set(),
       });
 
@@ -775,7 +776,7 @@ describe('createThreadRowUiState', () => {
 
     rowUiState.pruneRowUiState({
       itemIds: new Set(),
-      payloads: [],
+      payloads: new Set<string>(),
       groupKeys: new Set(),
     });
     rowUiState.appendLivePayloadDeltaForItem(
@@ -866,7 +867,7 @@ describe('createThreadRowUiState', () => {
 
     rowUiState.pruneRowUiState({
       itemIds: new Set([retainedItem.id]),
-      payloads: [{ threadId: 'thread-a', payloadId: 'payload-retained' }],
+      payloads: new Set([payloadRetentionKey('thread-a', 'payload-retained')]),
       groupKeys: new Set(['group-retained']),
     });
 
@@ -1253,7 +1254,7 @@ describe('createThreadRowUiState', () => {
 
       const lease = rowUiState.retainExpansionStateFor(item);
       await lease.handle.expand();
-      rowUiState.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
+      rowUiState.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
 
       expect(rowUiState.hasUserExpansionWithin([item.id])).toBe(true);
 

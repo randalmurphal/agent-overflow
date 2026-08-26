@@ -7085,13 +7085,13 @@ describe('createThreadPane', () => {
         expect(pane.liveThinkingTailForItem('think:0:1')).toBe('second reasoning ');
 
         // Retention keeps the settled row → both tails survive.
-        pane.pruneRowUiState({ itemIds: new Set(['think:0:0']), payloads: [], groupKeys: new Set() });
+        pane.pruneRowUiState({ itemIds: new Set(['think:0:0']), payloads: new Set<string>(), groupKeys: new Set() });
         expect(pane.liveThinkingTailForItem('think:0:0')).toBe('first reasoning ');
         expect(pane.liveThinkingTailForItem('think:0:1')).toBe('second reasoning ');
 
         // Empty retention: the settled tail drops; the live one is owned
         // by its smoother and must survive.
-        pane.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
+        pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
         expect(pane.liveThinkingTailForItem('think:0:0')).toBeNull();
         expect(pane.liveThinkingTailForItem('think:0:1')).toBe('second reasoning ');
       } finally {

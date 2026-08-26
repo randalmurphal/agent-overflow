@@ -20,6 +20,7 @@
 // the reveal cadence.
 
 import type { Item } from '../types/models';
+import { compositeKey } from './compositeKey';
 
 /**
  * Rows the retention pass keeps regardless of window position. Mirrored
@@ -28,6 +29,37 @@ import type { Item } from '../types/models';
  */
 export function isRowUiRetentionActive(item: Pick<Item, 'status'>): boolean {
   return item.status === 'running' || item.status === 'streaming';
+}
+
+/**
+ * THE registry key for a payload's row-UI state — the expansion
+ * registry files payload-owned entries under it and the retention pass
+ * names retained payloads by it. One helper, shared by the store and
+ * the prune, so the two sides cannot drift; retention itself carries
+ * these strings (`RowUiStateRetention.payloads`) rather than
+ * `{threadId, payloadId}` pairs the pruner would have to re-join.
+ */
+export function payloadRetentionKey(threadId: string, payloadId: string): string {
+  return compositeKey(threadId, payloadId);
+}
+
+// Keyed by the Item OBJECT: `writeItemAt` replaces a row's Item on every
+// content write, so `threadId`/`payloadId` are immutable for the object's
+// lifetime and the memo needs no invalidation. The prune collects
+// retention at quiet-work cadence over a ~300-row band; joining the key
+// fresh per item per pass was part of the 26.8MB/30s the prune pipeline
+// allocated during two-pane streaming (2026-08-25 alloc profile).
+const payloadKeyByItem = new WeakMap<object, string | null>();
+
+/** `payloadRetentionKey` for an item's payload, memoized per Item; null when it has none. */
+export function itemPayloadRetentionKey(
+  item: Pick<Item, 'threadId' | 'payloadId'>,
+): string | null {
+  const cached = payloadKeyByItem.get(item);
+  if (cached !== undefined) return cached;
+  const key = item.payloadId ? payloadRetentionKey(item.threadId, item.payloadId) : null;
+  payloadKeyByItem.set(item, key);
+  return key;
 }
 
 /**

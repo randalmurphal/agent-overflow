@@ -10,6 +10,7 @@ import type {
   ImagePreviewItem,
 } from '../utils/attachmentPreview.svelte';
 import { compositeKey } from '../utils/compositeKey';
+import { payloadRetentionKey } from '../utils/rowUiRetention';
 import { subagentGroupKeysFor } from '../utils/subagentGrouping';
 import { getSettings } from './settings.svelte';
 
@@ -141,11 +142,6 @@ export interface ThreadRowUiState {
   };
 }
 
-export interface PayloadExpansionRetentionKey {
-  threadId: string;
-  payloadId: string;
-}
-
 export interface PayloadExpansionLease {
   handle: PayloadExpansionHandle;
   release(): void;
@@ -157,7 +153,13 @@ export interface PayloadExpansionLease {
 // iterator here would silently starve the second consumer.
 export interface RowUiStateRetention {
   itemIds: ReadonlySet<string>;
-  payloads: readonly PayloadExpansionRetentionKey[];
+  /**
+   * `payloadRetentionKey` strings (`utils/rowUiRetention.ts`) — the same
+   * shape the expansion registry keys payload owners by, so the pruner
+   * tests membership directly instead of re-joining `{threadId,
+   * payloadId}` pairs on every pass.
+   */
+  payloads: ReadonlySet<string>;
   groupKeys: ReadonlySet<string>;
 }
 
@@ -267,6 +269,14 @@ type ExpansionRegistryOwner =
       kind: 'payload';
       threadId: string;
       payloadId: string;
+      /**
+       * `payloadRetentionKey(threadId, payloadId)`, stamped once at
+       * creation: the index/unindex pair and the retention prune all read
+       * it per entry, and the prune runs at quiet-work cadence — joining
+       * it fresh there was part of the prune pipeline's 26.8MB/30s
+       * (2026-08-25 alloc profile).
+       */
+      payloadKey: string;
     };
 
 /**
@@ -438,6 +448,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         kind: 'payload',
         threadId,
         payloadId,
+        payloadKey: payloadRetentionKey(threadId, payloadId),
       },
       payloadOptions.loadOnMount === true,
       () => createPayloadExpansion(
@@ -564,11 +575,10 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       return;
     }
 
-    const payloadKey = payloadExpansionRegistryKey(owner.threadId, owner.payloadId);
-    let keys = payloadExpansionKeysByPayload.get(payloadKey);
+    let keys = payloadExpansionKeysByPayload.get(owner.payloadKey);
     if (!keys) {
       keys = new Set();
-      payloadExpansionKeysByPayload.set(payloadKey, keys);
+      payloadExpansionKeysByPayload.set(owner.payloadKey, keys);
     }
     keys.add(key);
   }
@@ -583,15 +593,14 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
       return;
     }
 
-    const payloadKey = payloadExpansionRegistryKey(owner.threadId, owner.payloadId);
-    const keys = payloadExpansionKeysByPayload.get(payloadKey);
+    const keys = payloadExpansionKeysByPayload.get(owner.payloadKey);
     keys?.delete(key);
-    if (keys && keys.size === 0) payloadExpansionKeysByPayload.delete(payloadKey);
+    if (keys && keys.size === 0) payloadExpansionKeysByPayload.delete(owner.payloadKey);
   }
 
-  function payloadExpansionRegistryKey(threadId: string, payloadId: string): string {
-    return compositeKey(threadId, payloadId);
-  }
+  // Alias for the shared helper: retention hands the store these exact
+  // strings, so the one definition lives in utils/rowUiRetention.ts.
+  const payloadExpansionRegistryKey = payloadRetentionKey;
 
   function disposeItemExpansionStates(itemId: string): void {
     const states = itemExpansionKeysByState.get(itemId);
@@ -671,10 +680,9 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
 
   function pruneRowUiState(retention: RowUiStateRetention): void {
     const retainedItemIds = retention.itemIds;
-    const retainedPayloads = new Set<string>();
-    for (const payload of retention.payloads) {
-      retainedPayloads.add(payloadExpansionRegistryKey(payload.threadId, payload.payloadId));
-    }
+    // Registry-key strings straight from the collector — same helper on
+    // both sides, so membership is a direct lookup with no re-join.
+    const retainedPayloads = retention.payloads;
     const retainedGroupKeys = retention.groupKeys;
 
     for (const [key, entry] of expansionStates) {
@@ -683,8 +691,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
         continue;
       }
 
-      const payloadKey = payloadExpansionRegistryKey(entry.owner.threadId, entry.owner.payloadId);
-      if (!retainedPayloads.has(payloadKey)) disposeExpansionKey(key);
+      if (!retainedPayloads.has(entry.owner.payloadKey)) disposeExpansionKey(key);
     }
 
     for (const itemId of attachmentBlobs.keys()) {

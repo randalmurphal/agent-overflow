@@ -157,7 +157,7 @@ describe('createAgentScopeView', () => {
     const view = createAgentScopeView(pane, agent, 'launch-1');
     pane.setUserMessageExpanded('main-text', true);
 
-    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
+    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
 
     expect(pane.isUserMessageExpanded('main-text')).toBe(true);
     view.dispose();
@@ -173,7 +173,7 @@ describe('createAgentScopeView', () => {
     expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
     const emptyRetention = () => ({
       itemIds: new Set<string>(),
-      payloads: [],
+      payloads: new Set<string>(),
       groupKeys: new Set<string>(),
     });
 
@@ -260,7 +260,7 @@ describe('createAgentScopeView', () => {
     pane.setDiffCardExpanded('main-text', 'src/app.ts', false);
     expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
 
-    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: [], groupKeys: new Set() });
+    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
 
     expect(pane.isUserMessageExpanded('main-text')).toBe(true);
     expect(pane.diffCardExpandedOverride('main-text', 'src/app.ts')).toBe(false);

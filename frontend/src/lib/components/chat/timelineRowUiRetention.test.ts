@@ -6,6 +6,7 @@ import {
   collectTimelineRowUiRetention,
   timelineRowUiPruneSignature,
 } from './timelineRowUiRetention';
+import { payloadRetentionKey } from '../../utils/rowUiRetention';
 
 /** The pane's `getItemById`, over the rows a case says are loaded. */
 function resolveFrom(items: readonly Item[]): (itemId: string) => Item | undefined {
@@ -41,7 +42,7 @@ describe('timeline row UI retention', () => {
 
     expect(new Set(result.itemIds)).toEqual(new Set(['agent-parent']));
     expect([...result.payloads]).toEqual([
-      { threadId: 'thread-a', payloadId: 'payload-parent' },
+      payloadRetentionKey('thread-a', 'payload-parent'),
     ]);
     expect(new Set(result.groupKeys)).toEqual(new Set(['group:agent-parent']));
   });
@@ -75,9 +76,10 @@ describe('timeline row UI retention', () => {
       'agent-parent',
       'agent-child',
     ]));
-    expect(new Set([...result.payloads].map((payload) => payload.payloadId))).toEqual(
-      new Set(['payload-parent', 'payload-child']),
-    );
+    expect(new Set(result.payloads)).toEqual(new Set([
+      payloadRetentionKey('thread-a', 'payload-parent'),
+      payloadRetentionKey('thread-a', 'payload-child'),
+    ]));
   });
 
   it('retains group keys for active offscreen descendants', () => {
@@ -146,7 +148,7 @@ describe('timeline row UI retention', () => {
 
     expect(new Set(result.itemIds)).toEqual(new Set(['tool:1']));
     expect([...result.payloads]).toEqual([
-      { threadId: 'thread-a', payloadId: 'payload-landed' },
+      payloadRetentionKey('thread-a', 'payload-landed'),
     ]);
   });
 
@@ -169,9 +171,10 @@ describe('timeline row UI retention', () => {
       },
     );
 
-    expect(new Set([...result.payloads].map((payload) => payload.payloadId))).toEqual(
-      new Set(['payload-parent', 'payload-new']),
-    );
+    expect(new Set(result.payloads)).toEqual(new Set([
+      payloadRetentionKey('thread-a', 'payload-parent'),
+      payloadRetentionKey('thread-a', 'payload-new'),
+    ]));
   });
 
   // A row that has left the store — folded into a subagent aggregate, or
@@ -200,7 +203,7 @@ describe('timeline row UI retention', () => {
 
     expect(new Set(result.itemIds)).toEqual(new Set(['agent-child']));
     expect([...result.payloads]).toEqual([
-      { threadId: 'thread-a', payloadId: 'payload-evicted' },
+      payloadRetentionKey('thread-a', 'payload-evicted'),
     ]);
   });
 

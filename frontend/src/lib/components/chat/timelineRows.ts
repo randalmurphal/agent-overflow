@@ -23,14 +23,23 @@ export interface TimelineRowDecorationSets {
  * turns with no `tool` role on record, and the assistant message closing
  * one of them would lose its response divider.
  */
-function nodeTurnKeys(node: TimelineNode, turnKeyOf: (item: Item) => number): number[] {
-  if (node.kind !== 'activity_run') return [turnKeyOf(timelineNodeRepresentativeItem(node))];
-  const turns: number[] = [];
-  for (const child of node.children) {
-    const turnKey = turnKeyOf(timelineNodeRepresentativeItem(child));
-    if (turns[turns.length - 1] !== turnKey) turns.push(turnKey);
+// Writes rather than returns: the single-node case is every non-run row,
+// and returning a one-element array allocated per node per decorations
+// pass (which runs on every structural bump). `Map.set` on an already-set
+// key is idempotent, so the old array's consecutive-dedupe is unneeded.
+function stampNodeTurnRoles(
+  node: TimelineNode,
+  role: 'tool' | 'text',
+  turnKeyOf: (item: Item) => number,
+  lastRenderableRoleByTurn: Map<number, 'tool' | 'text'>,
+): void {
+  if (node.kind !== 'activity_run') {
+    lastRenderableRoleByTurn.set(turnKeyOf(timelineNodeRepresentativeItem(node)), role);
+    return;
   }
-  return turns;
+  for (const child of node.children) {
+    lastRenderableRoleByTurn.set(turnKeyOf(timelineNodeRepresentativeItem(child)), role);
+  }
 }
 
 /**
@@ -70,9 +79,7 @@ export function timelineRowDecorations(
     }
 
     if (role === 'tool' || role === 'text') {
-      for (const turnKey of nodeTurnKeys(node, turnKeyOf)) {
-        lastRenderableRoleByTurn.set(turnKey, role);
-      }
+      stampNodeTurnRoles(node, role, turnKeyOf, lastRenderableRoleByTurn);
     }
   }
 

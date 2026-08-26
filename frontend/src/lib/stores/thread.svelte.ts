@@ -49,7 +49,7 @@ import { collectAgentScopeRetainedIds } from './agentScopeView.svelte';
 import { errString } from '../utils/errors';
 import { itemTurnIndexKey, type RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
-import { rowUiRetentionChanged } from '../utils/rowUiRetention';
+import { itemPayloadRetentionKey, rowUiRetentionChanged } from '../utils/rowUiRetention';
 import { activityRunSummaryFieldsChanged } from '../utils/activityRunGrouping';
 import type { ApplyItemUpsertsToWindowResult } from './threadItems';
 import { sameNormalizedPath } from '../utils/path';
@@ -590,13 +590,15 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     if (scopeIds.size === 0) return retention;
     const itemIds = new Set(retention.itemIds);
     const groupKeys = new Set(retention.groupKeys);
-    const payloads = [...retention.payloads];
+    const payloads = new Set(retention.payloads);
     for (const id of scopeIds) {
       groupKeys.add(id);
       if (itemIds.has(id)) continue;
       itemIds.add(id);
       const item = getItemById(id);
-      if (item?.payloadId) payloads.push({ threadId: item.threadId, payloadId: item.payloadId });
+      if (!item) continue;
+      const payloadKey = itemPayloadRetentionKey(item);
+      if (payloadKey !== null) payloads.add(payloadKey);
     }
     return { itemIds, payloads, groupKeys };
   }
