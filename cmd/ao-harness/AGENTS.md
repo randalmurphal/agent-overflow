@@ -221,8 +221,24 @@ scrubbed:
   carrying it over is the stale-reference toast storm `HarnessReset`
   already fixed once.
 
+Each scrub statement runs with its table's TRIGGERS dropped and restored
+around it, from the DDL `sqlite_master` holds so the restore cannot drift
+from the source's schema version. The scrub is an offline neutralization
+of a dead copy, and the store's integrity triggers judge it as live
+traffic: migration v63's `thread_import_state_unique_source_update`
+ABORTs when a second row of one provider reaches the same
+`source_session_id`, which is exactly what blanking every row's identity
+does on any store with two imports from one provider (found live
+2026-08-26, 1811 rows). A trigger whose DDL cannot be read back, or that
+fails to recreate, is a loud error — a copy that silently enforces less
+than its source is not a clone.
+
 A table missing from an older database is a stderr note and an "absent in
-this database" receipt, not a failure.
+this database" receipt, not a failure. The receipt also carries the
+copy's schema version (`MAX(version) FROM migration_versions`) as a
+diagnostic: the CLI links no store code so it cannot gate on it, but boot
+migrates an older store forward and refuses a newer one loudly, and the
+line is what makes that refusal attributable to the clone.
 
 Only `attachments/` comes across besides the database. Deliberately NOT
 copied: `settings.json` (harness boot re-points the binaries at the mock
@@ -773,7 +789,13 @@ tests pin each scrub (the session-ref triple, import identity neutralized
 without dropping the row, `ui_state` emptied), the copy set in both
 directions (attachments come, nothing else does), every refusal, and the
 one property the whole verb rests on: the SOURCE database is byte-identical
-after a clone of a database a writer still holds open. `from-thread` is
+after a clone of a database a writer still holds open. The fixture
+carries migration v63's uniqueness triggers VERBATIM plus two
+same-provider import rows — the shape the real store aborts a naive
+scrub on — and the trigger test asserts both halves of the
+stash/restore: the triggers exist in the copy afterwards, and the
+restored copy still ABORTS a duplicate claim (an inert restored row
+would weaken the schema in silence). `from-thread` is
 tested at its pure halves — the frame sequence for a three-chunk text
 item, thinking's own block vocabulary, tool pairing and its unpaired
 refusal, per-turn id namespacing, skipped-kind counting, a document that

@@ -59,7 +59,8 @@ func newCloneSource(t *testing.T, opts cloneSourceOptions) string {
 		)`,
 		`INSERT INTO threads VALUES
 		    ('t1','one','claude','claude-session-aaaa','pending-bbbb','leaf-cccc'),
-		    ('t2','two','codex','codex-thread-dddd',NULL,'')`,
+		    ('t2','two','codex','codex-thread-dddd',NULL,''),
+		    ('t3','three','claude','claude-session-eeee',NULL,'')`,
 		`CREATE TABLE ui_state (
 		    scope      TEXT NOT NULL,
 		    key        TEXT NOT NULL,
@@ -80,7 +81,62 @@ func newCloneSource(t *testing.T, opts cloneSourceOptions) string {
 			    source_parent_session_id TEXT NOT NULL DEFAULT '',
 			    imported_at              INTEGER NOT NULL
 			)`,
-			`INSERT INTO thread_import_state VALUES ('t1','claude','/home/real/.claude/x.jsonl','sess-1111','leaf-2222','parent-3333',1)`,
+			// TWO rows on the SAME provider: the shape that fired migration
+			// v63's uniqueness trigger when the scrub blanked both to ''
+			// (found live 2026-08-26 against a real store, 1811 rows).
+			`INSERT INTO thread_import_state VALUES
+			    ('t1','claude','/home/real/.claude/x.jsonl','sess-1111','leaf-2222','parent-3333',1),
+			    ('t3','claude','/home/real/.claude/y.jsonl','sess-4444','leaf-5555','',1)`,
+			// The v63 uniqueness triggers, verbatim from
+			// internal/store/migrate.go (migration 63). A fixture without
+			// them passed a scrub the real store aborts.
+			`CREATE TRIGGER thread_import_state_unique_source_insert
+			BEFORE INSERT ON thread_import_state
+			WHEN NOT EXISTS (
+			    SELECT 1 FROM thread_import_state AS own
+			     WHERE own.thread_id = NEW.thread_id
+			       AND own.provider = NEW.provider
+			       AND own.source_session_id = NEW.source_session_id
+			)
+			 AND (EXISTS (
+			    SELECT 1 FROM thread_import_state AS existing
+			     WHERE existing.provider = NEW.provider
+			       AND existing.source_session_id = NEW.source_session_id
+			       AND existing.thread_id <> NEW.thread_id
+			) OR EXISTS (
+			    SELECT 1 FROM threads AS existing
+			     WHERE existing.id <> NEW.thread_id
+			       AND CASE existing.provider
+			             WHEN 'claude-tui' THEN 'claude'
+			             ELSE existing.provider
+			           END = NEW.provider
+			       AND (existing.session_ref = NEW.source_session_id
+			            OR existing.pending_fork_session_ref = NEW.source_session_id)
+			))
+			BEGIN
+			    SELECT RAISE(ABORT, 'provider session is already claimed by another thread');
+			END`,
+			`CREATE TRIGGER thread_import_state_unique_source_update
+			BEFORE UPDATE OF provider, source_session_id ON thread_import_state
+			WHEN (OLD.provider <> NEW.provider OR OLD.source_session_id <> NEW.source_session_id)
+			 AND (EXISTS (
+			    SELECT 1 FROM thread_import_state AS existing
+			     WHERE existing.provider = NEW.provider
+			       AND existing.source_session_id = NEW.source_session_id
+			       AND existing.thread_id <> NEW.thread_id
+			) OR EXISTS (
+			    SELECT 1 FROM threads AS existing
+			     WHERE existing.id <> NEW.thread_id
+			       AND CASE existing.provider
+			             WHEN 'claude-tui' THEN 'claude'
+			             ELSE existing.provider
+			           END = NEW.provider
+			       AND (existing.session_ref = NEW.source_session_id
+			            OR existing.pending_fork_session_ref = NEW.source_session_id)
+			))
+			BEGIN
+			    SELECT RAISE(ABORT, 'provider session is already claimed by another thread');
+			END`,
 		)
 	}
 	for _, statement := range statements {
@@ -150,8 +206,8 @@ func TestCloneClearsEverySessionRefColumn(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM threads`).Scan(&threads); err != nil {
 		t.Fatal(err)
 	}
-	if threads != 2 {
-		t.Fatalf("threads = %d, want 2 (the clone dropped rows)", threads)
+	if threads != 3 {
+		t.Fatalf("threads = %d, want 3 (the clone dropped rows)", threads)
 	}
 }
 
@@ -164,18 +220,60 @@ func TestCloneNeutralizesImportIdentityWithoutDroppingTheRow(t *testing.T) {
 	_, targetDB := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
 
 	db := openClone(t, targetDB)
-	var sessionID, leaf, parent, path string
+	// BOTH same-provider rows: the second is the one migration v63's
+	// uniqueness trigger used to abort on when it reached ''.
+	for _, threadID := range []string{"t1", "t3"} {
+		var sessionID, leaf, parent, path string
+		if err := db.QueryRow(
+			`SELECT source_session_id, leaf_uuid, source_parent_session_id, source_path
+			   FROM thread_import_state WHERE thread_id = ?`, threadID,
+		).Scan(&sessionID, &leaf, &parent, &path); err != nil {
+			t.Fatalf("%s: %v", threadID, err)
+		}
+		if sessionID != "" || leaf != "" || parent != "" {
+			t.Fatalf("%s import identity survived: session=%q leaf=%q parent=%q", threadID, sessionID, leaf, parent)
+		}
+		if path == "" {
+			t.Fatalf("%s import row was rewritten past its identity columns", threadID)
+		}
+	}
+}
+
+// The scrub drops each table's triggers to run and restores them from
+// sqlite_master afterwards. Both halves are asserted: the triggers exist
+// in the copy, and the restored copy still ENFORCES — a restore that
+// produced an inert row would weaken the clone's schema in silence.
+func TestCloneRestoresTheTriggersItDroppedForTheScrub(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{})
+	_, targetDB := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
+
+	db := openClone(t, targetDB)
+	var triggers int
 	if err := db.QueryRow(
-		`SELECT source_session_id, leaf_uuid, source_parent_session_id, source_path
-		   FROM thread_import_state WHERE thread_id = 't1'`,
-	).Scan(&sessionID, &leaf, &parent, &path); err != nil {
+		`SELECT count(*) FROM sqlite_master WHERE type = 'trigger'
+		  AND name IN ('thread_import_state_unique_source_insert',
+		               'thread_import_state_unique_source_update')`,
+	).Scan(&triggers); err != nil {
 		t.Fatal(err)
 	}
-	if sessionID != "" || leaf != "" || parent != "" {
-		t.Fatalf("import identity survived: session=%q leaf=%q parent=%q", sessionID, leaf, parent)
+	if triggers != 2 {
+		t.Fatalf("copy holds %d of the 2 uniqueness triggers after the scrub", triggers)
 	}
-	if path == "" {
-		t.Fatal("the import row was rewritten past its identity columns")
+
+	rw, err := sql.Open("sqlite", "file:"+targetDB+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rw.Close()
+	// Claim an id from one row, then claim the same id from the other:
+	// the second write is exactly what the update trigger exists to abort.
+	if _, err := rw.Exec(`UPDATE thread_import_state SET source_session_id = 'claimed' WHERE thread_id = 't1'`); err != nil {
+		t.Fatalf("first re-claim should pass: %v", err)
+	}
+	_, err = rw.Exec(`UPDATE thread_import_state SET source_session_id = 'claimed' WHERE thread_id = 't3'`)
+	if err == nil || !strings.Contains(err.Error(), "already claimed") {
+		t.Fatalf("restored trigger did not enforce: err = %v", err)
 	}
 }
 

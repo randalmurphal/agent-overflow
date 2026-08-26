@@ -123,9 +123,10 @@ func runClone(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
+	schemaVersion, schemaKnown := readSchemaVersion(targetDB)
 
 	if e.jsonOutput() {
-		return e.writeJSON(map[string]any{
+		out := map[string]any{
 			"sourceDataDir": sourceDir,
 			"dataRoot":      targetRoot,
 			"dataDir":       targetDir,
@@ -134,10 +135,21 @@ func runClone(e *env, args []string) error {
 			"attachments":   attachments,
 			"instance":      instanceinfo.ID(targetRoot),
 			"up":            fmt.Sprintf("ao-harness up --data-dir %s", targetRoot),
-		})
+		}
+		if schemaKnown {
+			out["schemaVersion"] = schemaVersion
+		}
+		return e.writeJSON(out)
 	}
 	e.printf("cloned %s\n", sourceDB)
 	e.printf("     → %s\n", targetDB)
+	if schemaKnown {
+		// A diagnostic, not a gate: the CLI links no store code, so it
+		// cannot say what version the booting binary expects. Boot
+		// migrates an older store forward and refuses a newer one loudly;
+		// this line is what makes that refusal attributable to the clone.
+		e.printf("  %-28s v%d (boot migrates forward; a newer store than the binary fails at boot)\n", "schema version", schemaVersion)
+	}
 	for _, row := range scrubbed {
 		e.printf("  %-28s %s\n", row.What, row.Detail)
 	}
@@ -370,8 +382,78 @@ func scrubStatements() []scrubStatement {
 	}
 }
 
+// stashedTrigger is one trigger's identity plus the DDL sqlite_master
+// holds for it — the exact text to recreate it from, so the restore
+// cannot drift from whatever schema version the source store was at.
+type stashedTrigger struct {
+	name string
+	sql  string
+}
+
+// stashTableTriggers reads and DROPs every trigger attached to the named
+// table, returning the DDL to recreate each one.
+//
+// It exists because the scrub is an offline neutralization of a dead
+// copy, not an app write, and the store's integrity triggers judge it as
+// if it were live traffic. Migration v63's
+// thread_import_state_unique_source_update ABORTs when a second row of
+// one provider reaches the same source_session_id — which is exactly
+// what blanking every row's identity to the empty string does on any
+// real store with two imports from one provider (found live 2026-08-26,
+// 1811 rows).
+// Generic over the table rather than naming that trigger, so a future
+// trigger on a scrubbed table cannot re-open the hole.
+func stashTableTriggers(db *sql.DB, table string) ([]stashedTrigger, error) {
+	rows, err := db.Query(
+		`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?`, table)
+	if err != nil {
+		return nil, fmt.Errorf("list triggers on %s: %w", table, err)
+	}
+	defer rows.Close()
+	var stashed []stashedTrigger
+	for rows.Next() {
+		var t stashedTrigger
+		var ddl sql.NullString
+		if err := rows.Scan(&t.name, &ddl); err != nil {
+			return nil, fmt.Errorf("scan trigger on %s: %w", table, err)
+		}
+		if !ddl.Valid || strings.TrimSpace(ddl.String) == "" {
+			// A trigger whose DDL cannot be read back cannot be restored;
+			// dropping it anyway would silently weaken the copy's schema.
+			return nil, fmt.Errorf("trigger %s on %s has no DDL in sqlite_master; refusing to drop what cannot be restored", t.name, table)
+		}
+		t.sql = ddl.String
+		stashed = append(stashed, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list triggers on %s: %w", table, err)
+	}
+	for _, t := range stashed {
+		if _, err := db.Exec(`DROP TRIGGER "` + strings.ReplaceAll(t.name, `"`, `""`) + `"`); err != nil {
+			return nil, fmt.Errorf("drop trigger %s on %s: %w", t.name, table, err)
+		}
+	}
+	return stashed, nil
+}
+
+// restoreTableTriggers re-executes the stashed DDL. A failure here is a
+// loud error: a clone whose copy silently lost its integrity triggers
+// would enforce less than the store it claims to reproduce.
+func restoreTableTriggers(db *sql.DB, table string, stashed []stashedTrigger) error {
+	for _, t := range stashed {
+		if _, err := db.Exec(t.sql); err != nil {
+			return fmt.Errorf("restore trigger %s on %s: %w", t.name, table, err)
+		}
+	}
+	return nil
+}
+
 // scrubClonedDatabase runs the neutralization against the COPY, opened
 // read-write. The source is never opened this way.
+//
+// Each statement runs with its table's triggers dropped and restored
+// around it — see stashTableTriggers for why the store's own integrity
+// triggers must not judge an offline scrub.
 func scrubClonedDatabase(e *env, targetDB string) ([]scrubResult, error) {
 	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(targetDB)
 	db, err := sql.Open("sqlite", "file:"+escaped+"?_pragma=busy_timeout(10000)")
@@ -399,8 +481,15 @@ func scrubClonedDatabase(e *env, targetDB string) ([]scrubResult, error) {
 			results = append(results, scrubResult{What: statement.what, Detail: "absent in this database"})
 			continue
 		}
+		triggers, err := stashTableTriggers(db, statement.table)
+		if err != nil {
+			return nil, fmt.Errorf("scrub %s in %s: %w", statement.table, targetDB, err)
+		}
 		result, err := db.Exec(statement.sql)
 		if err != nil {
+			return nil, fmt.Errorf("scrub %s in %s: %w", statement.table, targetDB, err)
+		}
+		if err := restoreTableTriggers(db, statement.table, triggers); err != nil {
 			return nil, fmt.Errorf("scrub %s in %s: %w", statement.table, targetDB, err)
 		}
 		rows, err := result.RowsAffected()
@@ -410,6 +499,26 @@ func scrubClonedDatabase(e *env, targetDB string) ([]scrubResult, error) {
 		results = append(results, scrubResult{What: statement.what, Detail: statement.detail(rows), Rows: rows})
 	}
 	return results, nil
+}
+
+// readSchemaVersion reads the copy's migration level
+// (MAX(version) FROM migration_versions) for the clone receipt. Best
+// effort: a database with no version table, or one that cannot be
+// opened for this read, answers "unknown" rather than failing a clone
+// that already succeeded.
+func readSchemaVersion(targetDB string) (int64, bool) {
+	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(targetDB)
+	db, err := sql.Open("sqlite", "file:"+escaped+"?mode=ro")
+	if err != nil {
+		return 0, false
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var version sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(version) FROM migration_versions`).Scan(&version); err != nil || !version.Valid {
+		return 0, false
+	}
+	return version.Int64, true
 }
 
 func tableExists(db *sql.DB, name string) (bool, error) {
