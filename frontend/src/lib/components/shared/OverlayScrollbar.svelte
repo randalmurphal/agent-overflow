@@ -86,6 +86,10 @@
   let idleHandle: ReturnType<typeof setTimeout> | undefined;
 
   function markActive(): void {
+    // Reveal transition: geometry went stale while the bar was hidden
+    // (hidden bars skip every sample — see onScroll), so the thumb must
+    // be repositioned before this frame shows it.
+    if (!recentlyActive && !dragging) sample();
     recentlyActive = true;
     if (idleHandle !== undefined) clearTimeout(idleHandle);
     idleHandle = setTimeout(() => {
@@ -106,16 +110,25 @@
       return;
     }
     function onScroll(): void {
-      sample();
       // A streaming surface pins itself to new content on every chunk, and
       // each pin is a scroll event. Fading on those would mean never fading.
       if (!ownerDrivenPosition?.()) markActive();
+      // A hidden bar is inert: sampling here writes `style:top` on an
+      // opacity-0 thumb on EVERY glide frame (× every mounted bar), which
+      // alone kept style→paint→layerize→raster running for whole streaming
+      // turns (measured 2026-08-25: the dominant renderer garbage source).
+      // markActive() re-samples on the hidden→visible transition, so the
+      // thumb is fresh the frame it can first be seen.
+      if (recentlyActive || dragging) sample();
     }
     el.addEventListener('scroll', onScroll, { passive: true });
     // Both edges move the thumb: the scroller resizing (cap inflation,
     // window resize) and the content growing inside it (streaming, a
-    // mounted chunk). Neither implies the other.
-    const sizes = new ResizeObserver(sample);
+    // mounted chunk). Neither implies the other. Same hidden gate as
+    // onScroll — content growth per streamed chunk fires this too.
+    const sizes = new ResizeObserver(() => {
+      if (recentlyActive || dragging) sample();
+    });
     sizes.observe(el);
     if (content) sizes.observe(content);
     if (trackEl) sizes.observe(trackEl);
@@ -218,9 +231,14 @@
   // outer machine reacts normally. That is the same rule attribution applies to
   // a nested box, which is why the edge test is the same function.
   function onWheel(event: WheelEvent): void {
-    if (!target || !thumb.visible || event.deltaY === 0) return;
+    if (!target || event.deltaY === 0) return;
     // Browser zoom, not a scroll.
     if (event.ctrlKey) return;
+    // Metrics can be stale while the bar is hidden (hidden bars skip
+    // every sample); both the visibility test and the wheel target read
+    // from them.
+    sample();
+    if (!thumb.visible) return;
     if (drag) {
       // The drag owns the position until it ends. A wheel would move the
       // surface out from under an origin that still describes the old offset.

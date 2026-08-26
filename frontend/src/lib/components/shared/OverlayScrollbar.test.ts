@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import OverlayScrollbar from './OverlayScrollbar.svelte';
@@ -437,6 +437,33 @@ describe('<OverlayScrollbar>', () => {
     target.scrollTop = 200;
     await tick();
     expect(track.className).toContain('opacity-100');
+  });
+
+  it('leaves the hidden thumb untouched while the owner drives, and repositions it on reveal', async () => {
+    vi.useFakeTimers();
+    try {
+      let ownerDriven = false;
+      const { getByTestId, target, track } = await mount({ ownerDrivenPosition: () => ownerDriven });
+      expect(getByTestId('overlay-scrollbar-thumb').style.top).toBe('0px');
+
+      // Streaming pins: owner-driven scroll events land while the bar is
+      // hidden (mount's sample has faded by then). Restyling the invisible
+      // thumb on each one kept the paint pipeline hot for entire streaming
+      // turns (2026-08-25), so a hidden bar must not redraw at all.
+      ownerDriven = true;
+      vi.advanceTimersByTime(2000);
+      target.scrollTop = 300;
+      await tick();
+      expect(getByTestId('overlay-scrollbar-thumb').style.top).toBe('0px');
+
+      // The reveal transition re-samples, so the first frame the bar can
+      // be seen already shows the true position.
+      await fireEvent(track, new MouseEvent('pointerenter', { bubbles: true }));
+      await tick();
+      expect(getByTestId('overlay-scrollbar-thumb').style.top).toBe('150px');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('redraws when the content grows inside a scroller that did not', async () => {
