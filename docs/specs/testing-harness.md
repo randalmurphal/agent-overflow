@@ -155,8 +155,16 @@ shipped surface of record is `ao-harness --help` and
 | `ui snapshot [--pane P]` / `ui diff` / `ui query <selector>` / `ui state <name>` | Frontend bridge (§4). `diff` compares against the previous snapshot taken by this CLI for the instance. |
 | `perf start\|stop\|status [--json]` / `perf watch` | Perf meters (§5). |
 | `bench <workload> [--repeat N] [--baseline file]` | Seed + run a bench workload, collect a perf report, print/compare (§5). |
+| `profile --thread T --scenario N [--cdp E]` | One scripted turn under the V8 sampling profiler; writes a `.cpuprofile` and splits sampled time into Svelte flush execution / write-side marking / other. Chromium-only (see below). |
 | `health [--watch]` | One-shot or continuous rollup (§6). |
 | `open` | Print the URL (and `xdg-open` it with `--browser`). |
+
+`profile` and `bench --trace` are the only two verbs here that do not go
+through the bridge: a CPU profile and a timeline trace are Chromium
+instruments, spoken over the DevTools protocol (`internal/cdpclient`)
+against an endpoint named by `--cdp` / `$AO_CDP_URL` / `$AO_CDP_PORT`. A
+WebKitGTK window serves none, and both refuse with that stated rather
+than timing out.
 
 The CLI's WS client implements the full frame contract
 (rpc/event/batch/replay/subscribe/ping) per internal/transport/AGENTS.md
@@ -207,6 +215,12 @@ walk, computed-style probes); one union, one version field.
 
 - Frame cadence: rAF-delta collector → fps series + frame-time
   histogram (p50/p95/p99/max, long-frame count over threshold).
+- Main-thread busy time: rAF-callback entry → a task posted on one reused
+  MessageChannel → busy histogram (p50/p95/max/mean) plus the share of
+  ticks fitting each of `budgetsMs` (default 6/8/16). The frame cadence
+  above cannot answer a budget question — a vsync-locked compositor reads
+  ~16.7ms for a 3ms tick and a 9ms one alike — and LoAF only reports past
+  50ms.
 - `PerformanceObserver`: `longtask` + `long-animation-frame` (where
   supported — Chromium; WebKit degrades to longtask/rAF), `layout-shift`,
   `event` (input latency).
@@ -214,7 +228,7 @@ walk, computed-style probes); one union, one version field.
   count, listener-ish proxies (row count per pane, detached-pane stats
   via the existing timeline memory diagnostics).
 
-`HarnessPerfStart({sampleMs, meters})` arms them; samples stream on
+`HarnessPerfStart({sampleMs, meters, budgetsMs})` arms them; samples stream on
 `harness:perf`; `HarnessPerfStop()` returns the summary document.
 **Backend-side samples** ride the same report: Go runtime heap/goroutine
 counts, and on linux the RSS of the backend + webview child processes

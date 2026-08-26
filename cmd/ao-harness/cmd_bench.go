@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/cdpclient"
 	"agent-overflow/internal/harnessclient"
 )
 
@@ -105,6 +106,26 @@ func benchWorkloadByName(name string) (benchWorkload, error) {
 	return benchWorkload{}, usagef("unknown workload %q (want %s)", name, strings.Join(benchWorkloadNames(), ", "))
 }
 
+// benchPerfSpec is what every repeat arms its meters with, carried as one
+// value so a new knob is a field rather than another positional threaded
+// through three call sites. Zero/empty fields are simply not sent, which
+// leaves the backend's and the bridge's own defaults in force.
+type benchPerfSpec struct {
+	SampleMs  int
+	BudgetsMs []float64
+}
+
+func (s benchPerfSpec) armSpec() map[string]any {
+	spec := map[string]any{}
+	if s.SampleMs > 0 {
+		spec["sampleMs"] = s.SampleMs
+	}
+	if len(s.BudgetsMs) > 0 {
+		spec["budgetsMs"] = s.BudgetsMs
+	}
+	return spec
+}
+
 // benchRun is the mutable state one repeat carries between its phases.
 type benchRun struct {
 	env      *env
@@ -112,21 +133,37 @@ type benchRun struct {
 	target   target
 	workload benchWorkload
 	index    int
+	// cdp is the attached debugger when --trace is on, nil otherwise. It
+	// is the ONE thing in a bench that is not engine-agnostic, which is
+	// why it is opt-in rather than part of the run.
+	cdp *cdpclient.Conn
 
 	threadIDs []string
 	// switches counts the thread opens a storm workload drove, so the
 	// report says what the numbers are numbers OF.
 	switches int
+	// trace is this repeat's forced-layout answer, nil without --trace.
+	trace *traceSummary
+}
+
+// benchRunTrace is the per-repeat trace headline. The call-site table is
+// merged across repeats at the document level rather than repeated per
+// run: a reader wants the ranking once, over the whole bench.
+type benchRunTrace struct {
+	ForcedEvents int     `json:"forcedEvents"`
+	ForcedMs     float64 `json:"forcedMs"`
+	CallSites    int     `json:"callSites"`
 }
 
 // benchRunReport is one repeat's row in the report file.
 type benchRunReport struct {
-	Run        int        `json:"run"`
-	StartedAt  string     `json:"startedAt"`
-	DurationMs int64      `json:"durationMs"`
-	Threads    int        `json:"threads,omitempty"`
-	Switches   int        `json:"switches,omitempty"`
-	Perf       perfReport `json:"perf"`
+	Run        int            `json:"run"`
+	StartedAt  string         `json:"startedAt"`
+	DurationMs int64          `json:"durationMs"`
+	Threads    int            `json:"threads,omitempty"`
+	Switches   int            `json:"switches,omitempty"`
+	Trace      *benchRunTrace `json:"trace,omitempty"`
+	Perf       perfReport     `json:"perf"`
 }
 
 // benchDocument is what lands on disk. It doubles as a baseline: the
@@ -142,15 +179,24 @@ type benchDocument struct {
 	SampleMs    int                       `json:"sampleMs"`
 	Runs        []benchRunReport          `json:"runs"`
 	Aggregate   map[string]benchAggregate `json:"aggregate"`
+	// Trace is the forced-layout answer merged over every repeat, present
+	// only for a `--trace` run. It is deliberately NOT part of `aggregate`:
+	// a baseline compares numbers a headless run can also produce, and a
+	// call-site ranking is evidence rather than a metric.
+	Trace *traceSummary `json:"trace,omitempty"`
 }
 
 func runBench(e *env, args []string) error {
 	flags := e.newFlagSet("bench <workload>")
 	repeat := flags.Int("repeat", 1, "run the workload this many times and aggregate")
 	sampleMs := flags.Int("sample-ms", 0, "perf sampling interval (default 1000, floor 250)")
+	budgets := flags.String("budgets", "",
+		"comma-separated main-thread budgets in ms for the busy-time fit report (bridge default 6,8,16)")
 	baselineFile := flags.String("baseline", "", "compare the aggregate against this baseline (a budget file or a previous bench report)")
 	outDir := flags.String("out", "", "write the report here instead of <dataDir>/bench")
 	asJSON := flags.Bool("json", false, "print the whole report document instead of a summary table")
+	trace := flags.Bool("trace", false, "also record a Chromium timeline trace and report the JS call sites that forced layout (needs --cdp)")
+	cdp := bindCDPFlag(flags)
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
@@ -165,6 +211,27 @@ func runBench(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
+	budgetsMs, err := parseBudgetsMs(*budgets)
+	if err != nil {
+		return err
+	}
+	perfSpec := benchPerfSpec{SampleMs: *sampleMs, BudgetsMs: budgetsMs}
+	// --trace is resolved BEFORE anything attaches, for the same reason the
+	// bridge is probed before the first reset: a caller who asked for a
+	// trace and named no endpoint should get their instance back untouched
+	// rather than a bench that ran and answered half the question.
+	var traceEndpoint *cdpclient.Endpoint
+	if *trace {
+		t, err := e.resolveTarget()
+		if err != nil {
+			return err
+		}
+		endpoint, err := resolveCDPEndpoint(*cdp, t)
+		if err != nil {
+			return err
+		}
+		traceEndpoint = &endpoint
+	}
 	var baseline *benchBaseline
 	if *baselineFile != "" {
 		loaded, err := readBenchBaseline(*baselineFile)
@@ -177,7 +244,7 @@ func runBench(e *env, args []string) error {
 	ctx := context.Background()
 	var document benchDocument
 	err = e.withClient(ctx, func(client *harnessclient.Client, t target, bs harnessclient.Bootstrap) error {
-		document, err = executeBench(ctx, e, client, t, bs, workload, *repeat, *sampleMs)
+		document, err = executeBench(ctx, e, client, t, bs, workload, *repeat, perfSpec, traceEndpoint)
 		return err
 	})
 	if err != nil {
@@ -250,7 +317,9 @@ func executeBench(
 	t target,
 	bs harnessclient.Bootstrap,
 	workload benchWorkload,
-	repeat, sampleMs int,
+	repeat int,
+	perf benchPerfSpec,
+	traceEndpoint *cdpclient.Endpoint,
 ) (benchDocument, error) {
 	document := benchDocument{
 		Workload:    workload.Name,
@@ -272,13 +341,30 @@ func executeBench(
 	if err := narrowBenchSubscription(ctx, client); err != nil {
 		return document, err
 	}
+	// The debugger is attached BEFORE the first reset too, and for the
+	// stronger version of the same reason: `Tracing.start` is refused by a
+	// browser that is already recording, and an unreachable endpoint
+	// discovered after run 1 has already destroyed the instance's state.
+	var conn *cdpclient.Conn
+	if traceEndpoint != nil {
+		attached, page, err := attachCDP(ctx, *traceEndpoint, t, bs)
+		if err != nil {
+			return document, err
+		}
+		defer attached.Close()
+		conn = attached
+		if !e.jsonOutput() {
+			e.printf("tracing %s\n", orDash(page.URL))
+		}
+	}
 
+	traces := make([]traceSummary, 0, repeat)
 	reports := make([]perfReport, 0, repeat)
 	for i := 1; i <= repeat; i++ {
-		run := &benchRun{env: e, client: client, target: t, workload: workload, index: i}
+		run := &benchRun{env: e, client: client, target: t, workload: workload, index: i, cdp: conn}
 		startedAt := time.Now()
 		e.printf("bench %s: run %d/%d\n", workload.Name, i, repeat)
-		report, err := executeBenchRun(ctx, run, sampleMs)
+		report, err := executeBenchRun(ctx, run, perf)
 		if err != nil {
 			return document, fmt.Errorf("run %d/%d: %w", i, repeat, err)
 		}
@@ -288,23 +374,33 @@ func executeBench(
 		if i == 1 {
 			document.SampleMs = report.SampleMs
 		}
-		document.Runs = append(document.Runs, benchRunReport{
+		row := benchRunReport{
 			Run:        i,
 			StartedAt:  startedAt.Format(time.RFC3339),
 			DurationMs: time.Since(startedAt).Milliseconds(),
 			Threads:    len(run.threadIDs),
 			Switches:   run.switches,
 			Perf:       report,
-		})
+		}
+		if run.trace != nil {
+			traces = append(traces, *run.trace)
+			row.Trace = &benchRunTrace{
+				ForcedEvents: run.trace.ForcedEvents,
+				ForcedMs:     run.trace.ForcedMs,
+				CallSites:    len(run.trace.Groups),
+			}
+		}
+		document.Runs = append(document.Runs, row)
 		reports = append(reports, report)
 	}
 	document.Aggregate = aggregateBenchMetrics(reports)
+	document.Trace = mergeTraceSummaries(traces)
 	return document, nil
 }
 
 // executeBenchRun is one repeat: blank slate, fixture, armed meters, the
 // workload, the report.
-func executeBenchRun(ctx context.Context, run *benchRun, sampleMs int) (perfReport, error) {
+func executeBenchRun(ctx context.Context, run *benchRun, perf benchPerfSpec) (perfReport, error) {
 	if _, err := run.client.Call(ctx, "HarnessReset"); err != nil {
 		return perfReport{}, err
 	}
@@ -334,23 +430,43 @@ func executeBenchRun(ctx context.Context, run *benchRun, sampleMs int) (perfRepo
 		}
 	}
 
-	spec := map[string]any{}
-	if sampleMs > 0 {
-		spec["sampleMs"] = sampleMs
+	// Tracing starts after the page has been reloaded, settled and pointed
+	// at its thread, so the recording covers the WORKLOAD rather than the
+	// mount that precedes every repeat.
+	var tracing *traceSession
+	if run.cdp != nil {
+		started, err := startTracing(ctx, run.cdp)
+		if err != nil {
+			return perfReport{}, err
+		}
+		tracing = started
 	}
-	if _, err := run.client.Call(ctx, "HarnessPerfStart", spec); err != nil {
+
+	if _, err := run.client.Call(ctx, "HarnessPerfStart", perf.armSpec()); err != nil {
+		_, _ = tracing.stop(ctx)
 		return perfReport{}, uiQueryError(err)
 	}
 	driveErr := run.workload.drive(ctx, run)
 	// Stop the meters whatever happened: a failed drive still produced
 	// numbers, and leaving a run armed would refuse the next repeat.
 	raw, stopErr := run.client.Call(ctx, "HarnessPerfStop")
+	// And end the recording whatever happened too, for the harder version
+	// of the same reason: a browser left recording refuses the next
+	// repeat's Tracing.start, so one failed run would fail every run after
+	// it with an unrelated message. The trace is read AFTER the meters
+	// stop, because draining tens of megabytes over the debugger socket is
+	// itself main-thread work on the page being measured.
+	traceSummaryValue, traceErr := readTraceSummary(ctx, tracing)
 	if driveErr != nil {
 		return perfReport{}, driveErr
 	}
 	if stopErr != nil {
 		return perfReport{}, stopErr
 	}
+	if traceErr != nil {
+		return perfReport{}, traceErr
+	}
+	run.trace = traceSummaryValue
 	report, err := decodePerfReport(raw)
 	if err != nil {
 		return perfReport{}, err
@@ -457,6 +573,10 @@ func renderBenchDocument(document benchDocument, path string) string {
 		})
 	}
 	b.WriteString(tableString([]string{"METRIC", "P50", "P95", "MIN", "MAX", "RUNS"}, rows))
+	if document.Trace != nil {
+		b.WriteString("\n")
+		b.WriteString(renderTraceSummary(*document.Trace))
+	}
 	fmt.Fprintf(&b, "\nreport: %s\n", path)
 	return b.String()
 }

@@ -23,10 +23,65 @@ import {
 
 const realRaf = globalThis.requestAnimationFrame;
 const realCancelRaf = globalThis.cancelAnimationFrame;
+const realMessageChannel = globalThis.MessageChannel;
+const realNow = performance.now.bind(performance);
 let pendingFrames: FrameRequestCallback[] = [];
+
+/**
+ * The busy meter measures an INTERVAL across an async hop, so the test has
+ * to own both ends of it: a clock it names and a channel it delivers by
+ * hand. `clock` is what `performance.now()` answers, in milliseconds.
+ */
+let clock = 0;
+
+/** Messages posted and not yet delivered, in post order. */
+let pendingMessages: Array<() => void> = [];
+/** Every channel the module built this test, so a close can be asserted. */
+let openedChannels: FakeMessageChannel[] = [];
+
+class FakeMessagePort {
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  closed = false;
+  peer: FakeMessagePort | null = null;
+
+  postMessage(data: unknown): void {
+    if (this.closed) throw new Error('port is closed');
+    const peer = this.peer;
+    if (peer === null) return;
+    pendingMessages.push(() => {
+      if (!peer.closed) peer.onmessage?.({ data });
+    });
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
+class FakeMessageChannel {
+  port1 = new FakeMessagePort();
+  port2 = new FakeMessagePort();
+  constructor() {
+    this.port1.peer = this.port2;
+    this.port2.peer = this.port1;
+    openedChannels.push(this);
+  }
+}
+
+/** Runs every posted probe reply, as the task queue would. */
+function deliver(): void {
+  const due = pendingMessages;
+  pendingMessages = [];
+  for (const run of due) run();
+}
 
 beforeEach(() => {
   pendingFrames = [];
+  pendingMessages = [];
+  openedChannels = [];
+  clock = 0;
+  performance.now = () => clock;
+  globalThis.MessageChannel = FakeMessageChannel as unknown as typeof MessageChannel;
   globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) =>
     pendingFrames.push(cb)) as typeof requestAnimationFrame;
   globalThis.cancelAnimationFrame = (() => {
@@ -36,6 +91,8 @@ beforeEach(() => {
 
 afterEach(() => {
   if (perfRunActive()) stopPerfRun();
+  performance.now = realNow;
+  globalThis.MessageChannel = realMessageChannel;
   globalThis.requestAnimationFrame = realRaf;
   globalThis.cancelAnimationFrame = realCancelRaf;
   document.body.innerHTML = '';
@@ -99,6 +156,152 @@ describe('frame window', () => {
     startPerfRun({ meters: ['frames'] });
     paint(1000, 900);
     expect(collectPerfSample()).toMatchObject({ frames: 0, maxFrameMs: 0 });
+  });
+});
+
+describe('busy meter', () => {
+  // The point of the meter: a vsync-quantised frame gap cannot tell a 3ms
+  // tick from a 9ms one, and busy time can. Both ticks below are one 16ms
+  // frame apart and their busy times differ by 6ms.
+  it('measures each tick from callback entry to the probe reply', () => {
+    startPerfRun({ meters: ['busy'], budgetsMs: [6, 8, 16] });
+    clock = 0;
+    paint(0);
+    clock = 3;
+    deliver();
+    clock = 16;
+    paint(16);
+    clock = 25;
+    deliver();
+
+    const sample = collectPerfSample();
+    expect(sample).toMatchObject({
+      busyTicks: 2,
+      busyDropped: 0,
+      maxBusyMs: 9,
+      meanBusyMs: 6,
+    });
+
+    const summary = stopPerfRun();
+    expect(summary?.busy).toMatchObject({ ticks: 2, dropped: 0, maxMs: 9 });
+    expect(summary?.busy.budgets).toEqual([
+      { budgetMs: 6, withinTicks: 1, withinPct: 50 },
+      { budgetMs: 8, withinTicks: 1, withinPct: 50 },
+      { budgetMs: 16, withinTicks: 2, withinPct: 100 },
+    ]);
+  });
+
+  // A probe that has not answered by the next tick would be charged to
+  // whichever tick is running when it lands — the misattribution the
+  // pending flag exists to prevent. It is dropped, and SAID to be dropped.
+  it('drops a measurement the next tick overtook rather than misattributing it', () => {
+    startPerfRun({ meters: ['busy'], budgetsMs: [6] });
+    clock = 0;
+    paint(0);
+    // Second tick with the first probe still out: the first is voided.
+    clock = 10;
+    paint(16);
+    // Both replies arrive together; the stale one carries the old sequence.
+    clock = 12;
+    deliver();
+
+    const sample = collectPerfSample();
+    expect(sample).toMatchObject({ busyTicks: 1, busyDropped: 1, maxBusyMs: 2 });
+    const summary = stopPerfRun();
+    expect(summary?.busy).toMatchObject({ ticks: 1, dropped: 1, maxMs: 2 });
+  });
+
+  it('resets the per-window busy numbers at each collect', () => {
+    startPerfRun({ meters: ['busy'] });
+    clock = 0;
+    paint(0);
+    clock = 40;
+    deliver();
+    expect(collectPerfSample()).toMatchObject({ busyTicks: 1, maxBusyMs: 40 });
+
+    clock = 48;
+    paint(16);
+    clock = 50;
+    deliver();
+    const calm = collectPerfSample();
+    expect(calm).toMatchObject({ busyTicks: 1, maxBusyMs: 2 });
+    // The run-wide worst is still the summary's, exactly as for frames.
+    expect(stopPerfRun()?.busy.maxMs).toBe(40);
+  });
+
+  // The two meters share one rAF loop, and a run that asked for one must
+  // not pay for the other: no probe channel exists at all without `busy`.
+  it('posts no probe when only the frame meter is armed', () => {
+    startPerfRun({ meters: ['frames'] });
+    clock = 0;
+    paint(0);
+    clock = 5;
+    paint(16);
+    deliver();
+    expect(openedChannels).toHaveLength(0);
+    const summary = stopPerfRun();
+    expect(summary?.busy.ticks).toBe(0);
+    expect(summary?.frames.frames).toBe(1);
+  });
+
+  it('records no frame delta when only the busy meter is armed', () => {
+    startPerfRun({ meters: ['busy'] });
+    clock = 0;
+    paint(0);
+    clock = 4;
+    deliver();
+    clock = 16;
+    paint(16);
+    clock = 20;
+    deliver();
+    const summary = stopPerfRun();
+    expect(summary?.frames.frames).toBe(0);
+    expect(summary?.busy.ticks).toBe(2);
+  });
+
+  // One channel for the life of the run: building one per frame would make
+  // the instrument a meaningful share of the load it is measuring.
+  it('reuses one channel across every tick and closes it on stop', () => {
+    startPerfRun({ meters: ['busy'] });
+    for (let frame = 0; frame < 5; frame += 1) {
+      clock = frame * 16;
+      paint(frame * 16);
+      clock += 2;
+      deliver();
+    }
+    expect(openedChannels).toHaveLength(1);
+    expect(stopPerfRun()?.busy.ticks).toBe(5);
+    const channel = openedChannels[0];
+    expect(channel?.port1.closed).toBe(true);
+    expect(channel?.port2.closed).toBe(true);
+  });
+
+  // Feature detection, never engine sniffing — and an engine without the
+  // API reports the meter absent rather than failing the whole run.
+  it('reports itself unavailable when the engine has no MessageChannel', () => {
+    globalThis.MessageChannel = undefined as unknown as typeof MessageChannel;
+    startPerfRun({ meters: ['frames', 'busy'] });
+    clock = 0;
+    paint(0);
+    clock = 16;
+    paint(16);
+    const summary = stopPerfRun();
+    expect(summary?.unavailableMeters).toContain('busy');
+    expect(summary?.meters).toContain('frames');
+    // The frame meter kept working; one absent meter does not stop the loop.
+    expect(summary?.frames.frames).toBe(1);
+  });
+
+  it('is armed by default, alongside every other meter', () => {
+    startPerfRun();
+    clock = 0;
+    paint(0);
+    clock = 5;
+    deliver();
+    const summary = stopPerfRun();
+    expect(summary?.meters).toContain('busy');
+    expect(summary?.busy.ticks).toBe(1);
+    expect(summary?.busy.budgets.map((budget) => budget.budgetMs)).toEqual([6, 8, 16]);
   });
 });
 

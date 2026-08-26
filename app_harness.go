@@ -119,6 +119,13 @@ type HarnessInfoResult struct {
 	// instance looked identical to a working one to every tool. Anything
 	// deciding whether the soak is actually producing load reads this.
 	SoakAutopilot string `json:"soakAutopilot"`
+	// AssetsFreshness is the embedded-frontend-bundle verdict from boot:
+	// "match" (embed equals the adjacent frontend/dist), "stale" (they
+	// differ — rebuild the binary before trusting any measurement),
+	// "unknown" (no on-disk dist to compare against), or "dev-server"
+	// (FRONTEND_DEVSERVER_URL assets are being served instead of the
+	// embed). `ao-harness health` flags "stale".
+	AssetsFreshness string `json:"assetsFreshness,omitempty"`
 }
 
 // The four values HarnessInfoResult.SoakAutopilot can carry. A failure
@@ -167,6 +174,7 @@ func (h *Harness) HarnessInfo() (HarnessInfoResult, error) {
 		UITracePath:        filepath.Join(dataDir, uitrace.DirName, uitrace.FileName),
 		FrontendErrorsPath: filepath.Join(dataDir, uitrace.DirName, uitrace.ErrorFileName),
 		SoakAutopilot:      h.soakAutopilotState(),
+		AssetsFreshness:    h.paths.AssetsFreshness,
 	}, nil
 }
 

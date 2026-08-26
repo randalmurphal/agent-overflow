@@ -64,7 +64,16 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   Feature code should go through `stores/bindings.ts`, not this package.
 - `src/lib/harness/` — the agent-harness UI bridge: the semantic viewport
   snapshot, the element/globals probes and the in-page perf meters
-  (`docs/architecture/agent-harness.md` § Frontend bridge and perf).
+  (`docs/architecture/agent-harness.md` § Frontend bridge and perf). Two
+  of those meters ride one rAF loop and answer different questions:
+  `frames` measures the GAP between callbacks, which a vsync-locked
+  compositor quantises to ~16.7ms whatever the work cost, and `busy`
+  measures the WORK INSIDE one tick — callback entry to the moment a task
+  posted on a reused MessageChannel runs, i.e. after style, layout and
+  paint — which is the number an N-ms frame budget is written against.
+  Budget fit is counted exactly at record time, never derived from the
+  histogram buckets, and a run that measured no tick reports `ticks: 0`
+  and 0% rather than a fit of 100%.
   Reached ONLY through a dynamic import in `stores/harnessBridge.ts`
   (enforced by an `architecture.test.ts` rule), which arms on the
   `harness` bootstrap flag — LAZILY: the flag arms just the event

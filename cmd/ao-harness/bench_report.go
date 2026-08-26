@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -37,12 +38,35 @@ type perfFrameSummary struct {
 	LongFrameMs float64 `json:"longFrameMs"`
 }
 
+// perfBusyBudget is one budget's fit. `withinPct` is the number a gate is
+// written against: the share of measured ticks whose main-thread busy time
+// fit inside `budgetMs`.
+type perfBusyBudget struct {
+	BudgetMs    float64 `json:"budgetMs"`
+	WithinTicks int     `json:"withinTicks"`
+	WithinPct   float64 `json:"withinPct"`
+}
+
+// perfBusySummary is the whole-run busy-time fold. `ticks` is the count of
+// MEASURED ticks — zero means this engine never armed the meter, which is
+// not the same claim as "every tick fit", so every reader here gates on it.
+type perfBusySummary struct {
+	Ticks   int              `json:"ticks"`
+	Dropped int              `json:"dropped"`
+	P50Ms   float64          `json:"p50Ms"`
+	P95Ms   float64          `json:"p95Ms"`
+	MaxMs   float64          `json:"maxMs"`
+	MeanMs  float64          `json:"meanMs"`
+	Budgets []perfBusyBudget `json:"budgets"`
+}
+
 type perfFrontendSummary struct {
 	V                 int              `json:"v"`
 	DurationMs        float64          `json:"durationMs"`
 	Meters            []string         `json:"meters"`
 	UnavailableMeters []string         `json:"unavailableMeters"`
 	Frames            perfFrameSummary `json:"frames"`
+	Busy              perfBusySummary  `json:"busy"`
 	LongTasks         int              `json:"longTasks"`
 	LongestTaskMs     float64          `json:"longestTaskMs"`
 	LayoutShift       float64          `json:"layoutShift"`
@@ -73,6 +97,39 @@ func decodePerfReport(raw json.RawMessage) (perfReport, error) {
 	var out perfReport
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return perfReport{}, fmt.Errorf("decode perf report: %w", err)
+	}
+	return out, nil
+}
+
+// parseBudgetsMs reads the `--budgets` flag: a comma-separated list of
+// main-thread budgets in milliseconds. Empty means "say nothing", which
+// leaves the bridge's own default (6, 8, 16) in force — spelling the
+// default here too would make two places to change it.
+//
+// A budget that does not parse, or is not positive, is a REFUSAL rather
+// than a skipped entry: the flag exists to say which numbers to gate on,
+// and quietly gating on fewer than the caller typed is how a budget stops
+// being enforced without anyone noticing.
+func parseBudgetsMs(flag string) ([]float64, error) {
+	trimmed := strings.TrimSpace(flag)
+	if trimmed == "" {
+		return nil, nil
+	}
+	fields := strings.Split(trimmed, ",")
+	out := make([]float64, 0, len(fields))
+	for _, field := range fields {
+		text := strings.TrimSpace(field)
+		if text == "" {
+			return nil, usagef("--budgets has an empty entry in %q", flag)
+		}
+		value, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return nil, usagef("--budgets entry %q is not a number", text)
+		}
+		if value <= 0 || math.IsInf(value, 0) {
+			return nil, usagef("--budgets entry %q must be a positive number of milliseconds", text)
+		}
+		out = append(out, value)
 	}
 	return out, nil
 }
@@ -116,6 +173,68 @@ func frontendSeriesMetric(read func(perfFrontendSummary) perfSeries) func(perfRe
 	}
 }
 
+// frontendBusyMetric is frontendMetric for a busy figure. A run whose page
+// never MEASURED a tick — the meter was not armed, or this engine has no
+// MessageChannel to probe with — is ABSENT rather than zero, because zero
+// busy time reads as a flawless renderer.
+func frontendBusyMetric(read func(perfBusySummary) float64) func(perfReport) (float64, bool) {
+	return func(r perfReport) (float64, bool) {
+		if r.Frontend == nil || r.Frontend.Busy.Ticks == 0 {
+			return 0, false
+		}
+		return read(r.Frontend.Busy), true
+	}
+}
+
+// busyFitMetricName is how a budget becomes a gateable metric name. The
+// number is spelled the way the caller wrote it (`6`, `4.5`), so a
+// hand-written baseline key matches what `--budgets` asked for.
+func busyFitMetricName(budgetMs float64) string {
+	return "busy.fitPct." + strconv.FormatFloat(budgetMs, 'f', -1, 64) + "ms"
+}
+
+// benchBudgetMetrics derives one metric per budget the REPORTS carry.
+// Unlike everything in benchMetrics the budget set is a run-time flag, so
+// the vocabulary cannot be a constant here; taking the union across repeats
+// means a bench whose repeats disagreed (a page rearmed mid-run) still
+// names every budget exactly once, with the repeats that lack it simply
+// not folded in — the same rule every other unmeasured metric follows.
+func benchBudgetMetrics(reports []perfReport) []benchMetric {
+	seen := map[float64]bool{}
+	for _, report := range reports {
+		if report.Frontend == nil {
+			continue
+		}
+		for _, budget := range report.Frontend.Busy.Budgets {
+			seen[budget.BudgetMs] = true
+		}
+	}
+	budgets := make([]float64, 0, len(seen))
+	for budget := range seen {
+		budgets = append(budgets, budget)
+	}
+	sort.Float64s(budgets)
+	out := make([]benchMetric, 0, len(budgets))
+	for _, budgetMs := range budgets {
+		out = append(out, benchMetric{
+			// Higher is better: this is the share of ticks that FIT.
+			Name: busyFitMetricName(budgetMs), Unit: "pct", LowerIsBetter: false,
+			read: func(r perfReport) (float64, bool) {
+				if r.Frontend == nil || r.Frontend.Busy.Ticks == 0 {
+					return 0, false
+				}
+				for _, fit := range r.Frontend.Busy.Budgets {
+					if fit.BudgetMs == budgetMs {
+						return fit.WithinPct, true
+					}
+				}
+				return 0, false
+			},
+		})
+	}
+	return out
+}
+
 func backendMetric(read func(perfBackendReport) perfSeries) func(perfReport) (float64, bool) {
 	return func(r perfReport) (float64, bool) {
 		series := read(r.Backend)
@@ -146,6 +265,12 @@ func benchMetrics() []benchMetric {
 			read: frontendMetric(func(f perfFrontendSummary) float64 { return f.Frames.MaxMs })},
 		{Name: "frames.long", Unit: "count", LowerIsBetter: true,
 			read: frontendMetric(func(f perfFrontendSummary) float64 { return float64(f.Frames.LongFrames) })},
+		{Name: "busy.p50Ms", Unit: "ms", LowerIsBetter: true,
+			read: frontendBusyMetric(func(b perfBusySummary) float64 { return b.P50Ms })},
+		{Name: "busy.p95Ms", Unit: "ms", LowerIsBetter: true,
+			read: frontendBusyMetric(func(b perfBusySummary) float64 { return b.P95Ms })},
+		{Name: "busy.maxMs", Unit: "ms", LowerIsBetter: true,
+			read: frontendBusyMetric(func(b perfBusySummary) float64 { return b.MaxMs })},
 		{Name: "longTasks", Unit: "count", LowerIsBetter: true,
 			read: frontendMetric(func(f perfFrontendSummary) float64 { return float64(f.LongTasks) })},
 		{Name: "longestTaskMs", Unit: "ms", LowerIsBetter: true,
@@ -183,8 +308,9 @@ type benchAggregate struct {
 // interpolated: with three repeats an interpolated p95 invents a number
 // between two runs that never happened.
 func aggregateBenchMetrics(reports []perfReport) map[string]benchAggregate {
-	out := make(map[string]benchAggregate, len(benchMetrics()))
-	for _, metric := range benchMetrics() {
+	metrics := append(benchMetrics(), benchBudgetMetrics(reports)...)
+	out := make(map[string]benchAggregate, len(metrics))
+	for _, metric := range metrics {
 		values := make([]float64, 0, len(reports))
 		for _, report := range reports {
 			if value, ok := metric.read(report); ok {
@@ -381,9 +507,35 @@ func formatBenchValue(value float64, unit string) string {
 		return fmt.Sprintf("%.0f", value)
 	case "score":
 		return fmt.Sprintf("%.4f", value)
+	case "pct":
+		return fmt.Sprintf("%.1f%%", value)
 	default:
 		return fmt.Sprintf("%.1f", value)
 	}
+}
+
+// renderBusyFit is the budget-fit strip: `fit 6ms 72.1% / 8ms 88.4%`.
+// Empty for a run that carried no budget at all, so the caller can skip
+// the line rather than print a label with nothing after it.
+func renderBusyFit(budgets []perfBusyBudget) string {
+	if len(budgets) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(budgets))
+	for _, budget := range budgets {
+		parts = append(parts, fmt.Sprintf("%sms %.1f%%",
+			strconv.FormatFloat(budget.BudgetMs, 'f', -1, 64), budget.WithinPct))
+	}
+	return "fit " + strings.Join(parts, " / ")
+}
+
+// droppedSuffix names the ticks whose measurement could not be attributed
+// to one frame. Silent at zero, which is the normal case.
+func droppedSuffix(dropped int) string {
+	if dropped == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d dropped)", dropped)
 }
 
 // renderPerfReport is the terminal form of one perf run, shared by
@@ -399,6 +551,17 @@ func renderPerfReport(report perfReport) string {
 		fmt.Fprintf(&b, "  frames  %.1f fps over %d frames; p50 %.1fms p95 %.1fms p99 %.1fms max %.1fms; %d long (> %.0fms)\n",
 			f.Frames.FPS, f.Frames.Frames, f.Frames.P50Ms, f.Frames.P95Ms, f.Frames.P99Ms,
 			f.Frames.MaxMs, f.Frames.LongFrames, f.Frames.LongFrameMs)
+		// The busy line is printed only when a tick was measured. A row of
+		// zeros would read as "the main thread was never busy", which is
+		// the opposite of "this engine never armed the meter".
+		if f.Busy.Ticks > 0 {
+			fmt.Fprintf(&b, "  busy    p50 %.2fms p95 %.2fms max %.2fms mean %.2fms over %d ticks%s\n",
+				f.Busy.P50Ms, f.Busy.P95Ms, f.Busy.MaxMs, f.Busy.MeanMs, f.Busy.Ticks,
+				droppedSuffix(f.Busy.Dropped))
+			if fit := renderBusyFit(f.Busy.Budgets); fit != "" {
+				fmt.Fprintf(&b, "  budget  %s\n", fit)
+			}
+		}
 		fmt.Fprintf(&b, "  tasks   %d long tasks (worst %.1fms); layout shift %.4f; %d slow events\n",
 			f.LongTasks, f.LongestTaskMs, f.LayoutShift, f.SlowEvents)
 		fmt.Fprintf(&b, "  page    dom %.0f -> %.0f (max %.0f); js heap max %s\n",

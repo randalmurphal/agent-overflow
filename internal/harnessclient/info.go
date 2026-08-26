@@ -30,6 +30,11 @@ type HarnessInfo struct {
 	// a backend too old to answer, which every reader treats as "unknown"
 	// rather than "off".
 	SoakAutopilot string `json:"soakAutopilot,omitempty"`
+	// AssetsFreshness is the embedded-bundle verdict from boot: "match",
+	// "stale", "unknown", or "dev-server". "stale" means the binary was
+	// built against a different frontend/dist than the one on disk and
+	// every measurement describes the old bundle.
+	AssetsFreshness string `json:"assetsFreshness,omitempty"`
 }
 
 // Info calls HarnessInfo on the instance.

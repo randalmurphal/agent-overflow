@@ -312,9 +312,17 @@ function dispatchPerf(spec: Record<string, unknown>): unknown {
       // expired yet. A caller that wants settledness DURING the run just
       // asks, and re-arms it.
       disarmMutationClock();
+      // Budgets are cleaned page-side (normalizeBudgetsMs), so a caller that
+      // sends them unsorted or with a stray zero gets a report rather than a
+      // refusal — unlike a meter NAME, a bad budget cannot silently narrow
+      // the run to nothing.
+      const budgetsMs = Array.isArray(spec.budgetsMs)
+        ? spec.budgetsMs.filter((value): value is number => typeof value === 'number')
+        : [];
       const options: PerfStartOptions = {
         longFrameMs: num(spec, 'longFrameMs', 0) || undefined,
         meters: requested.length > 0 ? requested : undefined,
+        budgetsMs: budgetsMs.length > 0 ? budgetsMs : undefined,
         runId: str(spec, 'runId'),
       };
       const superseded = startPerfRun(options);

@@ -25,15 +25,30 @@
 // `long-animation-frame` and no `performance.memory`, Chromium has both.
 // Each observer is registered inside its own try/catch and a meter that
 // cannot start reports itself absent instead of failing the run.
+//
+// TWO METERS RIDE ONE rAF LOOP, and they answer different questions.
+// `frames` measures the GAP between callbacks, which a vsync-locked
+// compositor quantises: under headless Chromium a 3ms tick and a 9ms tick
+// both read ~16.7ms, so a gap histogram can never say whether the work fits
+// a 6ms budget. `busy` measures the WORK INSIDE one tick — callback entry to
+// the moment a cheap posted task runs, which is after style, layout and
+// paint — and that is the number a budget is written against. LoAF is not a
+// substitute: it starts reporting at 50ms, eight budgets too late.
 
 import {
   DEFAULT_LONG_FRAME_MS,
+  newBusyHistogram,
   newFrameHistogram,
   newSeries,
+  recordBusy,
+  recordBusyDrop,
   recordFrame,
   recordSeries,
   round2,
+  summarizeBusy,
   summarizeFrames,
+  type BusyHistogram,
+  type BusySummary,
   type FrameHistogram,
   type FrameSummary,
   type Series,
@@ -43,6 +58,11 @@ export interface PerfStartOptions {
   longFrameMs?: number;
   /** Meter names to enable. Absent/empty means every available meter. */
   meters?: readonly string[];
+  /**
+   * Main-thread budgets, in milliseconds, the busy meter reports fit
+   * against. Absent/empty means DEFAULT_BUSY_BUDGETS_MS ([6, 8, 16]).
+   */
+  budgetsMs?: readonly number[];
   /**
    * The backend's id for this run, echoed back in the arm reply and
    * matched against the `runId` a later collect/stop carries. Empty when
@@ -61,6 +81,14 @@ export interface PerfSample {
   longFrames: number;
   /** Worst frame IN THIS WINDOW, not the run-wide worst (that is the summary's). */
   maxFrameMs: number;
+  /** Busy measurements folded IN THIS WINDOW. */
+  busyTicks: number;
+  /** Measurements voided in this window because the previous probe was still out. */
+  busyDropped: number;
+  /** Worst busy time IN THIS WINDOW. Percentiles are the summary's. */
+  maxBusyMs: number;
+  /** Mean busy time over this window's measurements. */
+  meanBusyMs: number;
   longTasks: number;
   longAnimationFrames: number;
   layoutShift: number;
@@ -77,6 +105,7 @@ export interface PerfSummary {
   meters: string[];
   unavailableMeters: string[];
   frames: FrameSummary;
+  busy: BusySummary;
   longTasks: number;
   longestTaskMs: number;
   longAnimationFrames: number;
@@ -90,7 +119,16 @@ export interface PerfSummary {
   samples: number;
 }
 
-const ALL_METERS = ['frames', 'longtask', 'loaf', 'layout-shift', 'event', 'memory', 'dom'] as const;
+const ALL_METERS = [
+  'frames',
+  'busy',
+  'longtask',
+  'loaf',
+  'layout-shift',
+  'event',
+  'memory',
+  'dom',
+] as const;
 type MeterName = (typeof ALL_METERS)[number];
 
 function isMeterName(name: string): name is MeterName {
@@ -154,10 +192,26 @@ interface PerfRun {
   meters: Set<MeterName>;
   unavailable: Set<MeterName>;
   hist: FrameHistogram;
+  busy: BusyHistogram;
   rafId: number | null;
   lastFrameAt: number | null;
   observers: PerformanceObserver[];
   watchdog: ReturnType<typeof setTimeout> | null;
+  /**
+   * The busy probe's channel, created ONCE at arm and reused for every
+   * tick. Null when the busy meter is off or this engine has no
+   * MessageChannel. A channel per frame would make the instrument the load.
+   */
+  busyChannel: MessageChannel | null;
+  /**
+   * The sequence number of the probe in flight. A voided probe still
+   * ARRIVES — closing the port would mean building a new one per tick — so
+   * its reply is recognised by carrying a stale sequence and ignored.
+   */
+  busySeq: number;
+  busyPending: boolean;
+  /** performance.now() at the pending probe's rAF-callback entry. */
+  busyStartedAt: number;
   // Cumulative counters. Per-sample numbers are deltas against the
   // snapshot taken at the previous collect, which is what makes a sample
   // answer "what happened in the last second" rather than "since boot".
@@ -165,6 +219,8 @@ interface PerfRun {
   // taken at collect so every counter here obeys the same delta rule.
   frames: Counter;
   longFrames: Counter;
+  busyTicks: Counter;
+  busyDropped: Counter;
   longTasks: Counter;
   loaf: Counter;
   layoutShift: Counter;
@@ -179,6 +235,13 @@ interface PerfRun {
    * where the frame deltas are recorded and zeroed at each collect.
    */
   windowMaxMs: number;
+  /**
+   * Worst busy time since the previous collect, and the sum over that same
+   * window. Same reason as windowMaxMs: the run histogram cannot be reset
+   * without destroying the percentiles a stop reports.
+   */
+  windowBusyMaxMs: number;
+  windowBusySumMs: number;
   domNodes: Series;
   heapBytes: Series;
   panes: Map<string, Series>;
@@ -296,6 +359,18 @@ function disarmMeters(state: PerfRun): void {
     cancelAnimationFrame(state.rafId);
   }
   state.rafId = null;
+  if (state.busyChannel !== null) {
+    const channel = state.busyChannel;
+    state.busyChannel = null;
+    try {
+      channel.port1.onmessage = null;
+      channel.port1.close();
+      channel.port2.close();
+    } catch {
+      // A closed port is the goal; a throw here changes nothing.
+    }
+  }
+  state.busyPending = false;
   for (const observer of state.observers) {
     try {
       observer.disconnect();
@@ -330,6 +405,64 @@ function armWatchdog(state: PerfRun): void {
   (state.watchdog as { unref?: () => void }).unref?.();
 }
 
+/**
+ * Builds the busy meter's probe channel, once, for the life of the run.
+ * False when this engine has none — feature detection, never engine
+ * sniffing, and the run reports the meter absent rather than failing.
+ *
+ * The measurement is "time until the main thread could service a cheap
+ * task", so the task has to BE cheap and has to be a task: a MessageChannel
+ * post is the standard zero-work macrotask, and a macrotask is what the
+ * engine runs only after this tick's remaining callbacks, style, layout and
+ * paint are done. A microtask would resolve inside the callback and measure
+ * nothing.
+ */
+function armBusyProbe(state: PerfRun): boolean {
+  if (typeof MessageChannel !== 'function') return false;
+  try {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = (event: MessageEvent): void => {
+      if (run !== state || !state.busyPending) return;
+      // A probe whose tick was superseded still arrives. Its sequence is
+      // stale, and the interval it would report spans two ticks.
+      if (event.data !== state.busySeq) return;
+      state.busyPending = false;
+      const busyMs = performance.now() - state.busyStartedAt;
+      recordBusy(state.busy, busyMs);
+      if (!Number.isFinite(busyMs) || busyMs < 0) return;
+      if (busyMs > state.windowBusyMaxMs) state.windowBusyMaxMs = busyMs;
+      state.windowBusySumMs += busyMs;
+    };
+    state.busyChannel = channel;
+    return true;
+  } catch {
+    // A channel the engine lists but refuses to build. Absent, not fatal.
+    return false;
+  }
+}
+
+/**
+ * Posts one tick's probe. ONE measurement is in flight at a time: when the
+ * previous tick's probe has not answered, the frame it would be attributed
+ * to is already over, so it is DROPPED (and counted as such) rather than
+ * charged to whichever tick happens to be running when it lands.
+ */
+function startBusyProbe(state: PerfRun, entryMs: number): void {
+  const channel = state.busyChannel;
+  if (channel === null) return;
+  if (state.busyPending) recordBusyDrop(state.busy);
+  state.busySeq += 1;
+  state.busyPending = true;
+  state.busyStartedAt = entryMs;
+  try {
+    channel.port2.postMessage(state.busySeq);
+  } catch {
+    // Nothing is in flight if the post never happened; leaving `pending`
+    // set would drop the NEXT tick too, for a failure that was this one's.
+    state.busyPending = false;
+  }
+}
+
 /** Arms the meters. Re-arming replaces the previous run rather than stacking observers. */
 export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
   const previous = run ? stopPerfRun() : null;
@@ -346,12 +479,19 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
     meters,
     unavailable: new Set(),
     hist: newFrameHistogram(opts.longFrameMs ?? DEFAULT_LONG_FRAME_MS),
+    busy: newBusyHistogram(opts.budgetsMs),
     rafId: null,
     lastFrameAt: null,
     observers: [],
     watchdog: null,
+    busyChannel: null,
+    busySeq: 0,
+    busyPending: false,
+    busyStartedAt: 0,
     frames: newCounter(),
     longFrames: newCounter(),
+    busyTicks: newCounter(),
+    busyDropped: newCounter(),
     longTasks: newCounter(),
     loaf: newCounter(),
     layoutShift: newCounter(),
@@ -360,6 +500,8 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
     longestLoafMs: 0,
     worstEventMs: 0,
     windowMaxMs: 0,
+    windowBusyMaxMs: 0,
+    windowBusySumMs: 0,
     domNodes: newSeries(),
     heapBytes: newSeries(),
     panes: new Map(),
@@ -368,26 +510,41 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
   run = state;
   armWatchdog(state);
 
-  if (meters.has('frames')) {
+  // One loop serves two meters. `frames` reads the GAP between callbacks and
+  // `busy` reads the WORK inside one, so either alone is enough reason to
+  // turn the loop, and a run that asked for only one must not pay for the
+  // other: `busy` with no `frames` never touches the histogram, and `frames`
+  // with no `busy` posts no probe.
+  const wantsFrames = meters.has('frames');
+  const wantsBusy = meters.has('busy');
+  if (wantsFrames || wantsBusy) {
     if (typeof requestAnimationFrame === 'function') {
+      if (wantsBusy && !armBusyProbe(state)) state.unavailable.add('busy');
       const tick = (timestamp: number): void => {
         if (run !== state) return;
-        if (state.lastFrameAt !== null) {
-          const deltaMs = timestamp - state.lastFrameAt;
-          recordFrame(state.hist, deltaMs);
-          // Same admission rule recordFrame uses: rAF timestamps go
-          // backwards across a suspend/restore in more than one engine, and
-          // a bogus delta must not become the window's reported worst frame.
-          if (Number.isFinite(deltaMs) && deltaMs > state.windowMaxMs) {
-            state.windowMaxMs = deltaMs;
+        // t0 at callback ENTRY, before this loop does anything: everything
+        // the tick costs — the remaining rAF callbacks, then style, layout
+        // and paint — lands between here and the probe's reply.
+        if (state.busyChannel !== null) startBusyProbe(state, performance.now());
+        if (wantsFrames) {
+          if (state.lastFrameAt !== null) {
+            const deltaMs = timestamp - state.lastFrameAt;
+            recordFrame(state.hist, deltaMs);
+            // Same admission rule recordFrame uses: rAF timestamps go
+            // backwards across a suspend/restore in more than one engine, and
+            // a bogus delta must not become the window's reported worst frame.
+            if (Number.isFinite(deltaMs) && deltaMs > state.windowMaxMs) {
+              state.windowMaxMs = deltaMs;
+            }
           }
+          state.lastFrameAt = timestamp;
         }
-        state.lastFrameAt = timestamp;
         state.rafId = requestAnimationFrame(tick);
       };
       state.rafId = requestAnimationFrame(tick);
     } else {
-      state.unavailable.add('frames');
+      if (wantsFrames) state.unavailable.add('frames');
+      if (wantsBusy) state.unavailable.add('busy');
     }
   }
 
@@ -459,6 +616,10 @@ export function collectPerfSample(): PerfSample {
       frames: 0,
       longFrames: 0,
       maxFrameMs: 0,
+      busyTicks: 0,
+      busyDropped: 0,
+      maxBusyMs: 0,
+      meanBusyMs: 0,
       longTasks: 0,
       longAnimationFrames: 0,
       layoutShift: 0,
@@ -475,7 +636,10 @@ export function collectPerfSample(): PerfSample {
   // the same delta rule as every other counter.
   state.frames.total = state.hist.count;
   state.longFrames.total = state.hist.longFrames;
+  state.busyTicks.total = state.busy.count;
+  state.busyDropped.total = state.busy.dropped;
   const frames = sinceMark(state.frames);
+  const busyTicks = sinceMark(state.busyTicks);
   // An unavailable memory meter keeps its series EMPTY (count 0) rather
   // than recording zeros: a zero sample would survive into the bench
   // aggregate and compare 0-against-0 in a baseline, hiding the fact
@@ -512,6 +676,10 @@ export function collectPerfSample(): PerfSample {
     frames,
     longFrames: sinceMark(state.longFrames),
     maxFrameMs: round2(state.windowMaxMs),
+    busyTicks,
+    busyDropped: sinceMark(state.busyDropped),
+    maxBusyMs: round2(state.windowBusyMaxMs),
+    meanBusyMs: busyTicks > 0 ? round2(state.windowBusySumMs / busyTicks) : 0,
     longTasks: sinceMark(state.longTasks),
     longAnimationFrames: sinceMark(state.loaf),
     layoutShift: round2(sinceMark(state.layoutShift)),
@@ -523,8 +691,12 @@ export function collectPerfSample(): PerfSample {
 
   state.lastCollectAt = now;
   state.windowMaxMs = 0;
+  state.windowBusyMaxMs = 0;
+  state.windowBusySumMs = 0;
   advance(state.frames);
   advance(state.longFrames);
+  advance(state.busyTicks);
+  advance(state.busyDropped);
   advance(state.longTasks);
   advance(state.loaf);
   advance(state.layoutShift);
@@ -546,6 +718,7 @@ export function stopPerfRun(): PerfSummary | null {
     meters: [...state.meters].filter((name) => !state.unavailable.has(name)).sort(),
     unavailableMeters: [...state.unavailable].sort(),
     frames: summarizeFrames(state.hist, duration),
+    busy: summarizeBusy(state.busy),
     longTasks: state.longTasks.total,
     longestTaskMs: round2(state.longestTaskMs),
     longAnimationFrames: state.loaf.total,

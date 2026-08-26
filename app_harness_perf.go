@@ -69,6 +69,12 @@ type HarnessPerfSpec struct {
 	// Meters narrows which in-page meters arm. Empty means all of them.
 	// Forwarded verbatim — the vocabulary is the bridge's.
 	Meters []string `json:"meters,omitempty"`
+	// BudgetsMs are the main-thread budgets the busy meter reports fit
+	// against, in milliseconds. Forwarded verbatim; empty means the
+	// bridge's default (6, 8, 16). Unlike Meters an unrecognised value is
+	// not a refusal — the bridge cleans the list — because a bad budget
+	// narrows nothing, it just would not have been reported.
+	BudgetsMs []float64 `json:"budgetsMs,omitempty"`
 	// WebviewPrefixes overrides which child process names count as webview
 	// processes in the /proc walk. Empty means procrss.DefaultWebviewPrefixes.
 	WebviewPrefixes []string `json:"webviewPrefixes,omitempty"`
@@ -281,6 +287,7 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 		"runId":       run.id,
 		"longFrameMs": spec.LongFrameMs,
 		"meters":      spec.Meters,
+		"budgetsMs":   spec.BudgetsMs,
 	})
 	if err != nil {
 		h.clearPerfRun(run)

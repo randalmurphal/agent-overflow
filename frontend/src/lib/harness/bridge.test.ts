@@ -182,6 +182,29 @@ describe('perf ops', () => {
     await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' });
   });
 
+  // Unlike a meter NAME, a bad budget cannot narrow the run to nothing, so
+  // the spec's list is cleaned rather than refused — and a spec that names
+  // none keeps the bridge's own default set.
+  it('takes the arm spec budgets, cleaned, and defaults when it names none', async () => {
+    await answerHarnessQuery({
+      v: 1,
+      kind: 'perf',
+      op: 'start',
+      meters: ['busy'],
+      budgetsMs: [16, 4, 'nonsense', 0, 4],
+    });
+    const chosen = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' })) as {
+      busy: { budgets: Array<{ budgetMs: number }> };
+    };
+    expect(chosen.busy.budgets.map((budget) => budget.budgetMs)).toEqual([4, 16]);
+
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', meters: ['busy'] });
+    const fallback = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' })) as {
+      busy: { budgets: Array<{ budgetMs: number }> };
+    };
+    expect(fallback.busy.budgets.map((budget) => budget.budgetMs)).toEqual([6, 8, 16]);
+  });
+
   it('names an unknown op', async () => {
     const result = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'wat' })) as ErrorEnvelope;
     expect(result.error).toContain('unknown perf op "wat"');

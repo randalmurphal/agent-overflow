@@ -17,6 +17,9 @@
 //     max is tracked separately, because the one frame time a reader
 //     always wants exactly is the worst one.
 //
+//   * BUSY TIMES want the same distribution at a FINER grain, plus exact
+//     budget-fit counters. See the busy section below for why both.
+//
 //   * EVERYTHING ELSE (heap bytes, DOM node counts, per-pane row counts)
 //     is a slow-moving level, sampled once per backend tick. count / min
 //     / max / mean / last is the whole answer and folds in O(1).
@@ -119,6 +122,192 @@ export function summarizeFrames(hist: FrameHistogram, elapsedMs: number): FrameS
     meanMs: hist.count > 0 ? round2(hist.sumMs / hist.count) : 0,
     longFrames: hist.longFrames,
     longFrameMs: hist.longFrameMs,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Busy time
+//
+// The frame histogram above answers "how far apart were the frames", and
+// under a vsync-locked compositor that question has exactly one answer: a
+// 3ms tick and a 9ms tick both read ~16.7ms. It cannot say whether the work
+// FITS a budget, which is the question anyone tuning a 165Hz renderer is
+// actually asking, and LoAF cannot either — it only reports frames past
+// 50ms, three whole budgets too late.
+//
+// BUSY TIME is that question's own instrument: how long the main thread was
+// occupied by one tick's callbacks, style, layout and paint before it could
+// service a cheap task. It is not quantised by vsync, and unlike a frame gap
+// it shrinks when the work shrinks.
+//
+// Two accumulators again, and the split is sharper than the frame one:
+//
+//   * PERCENTILES fold into a histogram at QUARTER-millisecond buckets,
+//     not the frame histogram's whole ones. A 6ms budget read through 1ms
+//     buckets reports p50 as an integer, and resolving work below one frame
+//     is the entire point of this meter.
+//
+//   * BUDGET FIT is counted EXACTLY — one counter per budget, incremented
+//     at record time, never derived from the buckets. "72% of ticks fit
+//     6ms" is the headline number a `--baseline` gates on, and reading it
+//     off a bucketed distribution would put a quarter millisecond of
+//     quantisation error on the one figure that has to be right.
+
+/** Busy times are bucketed at this resolution. */
+export const BUSY_BUCKET_MS = 0.25;
+
+/** Busy times at or above this are quantised into the overflow bucket. */
+export const BUSY_BUCKET_CEILING_MS = 250;
+
+const BUSY_BUCKET_COUNT = Math.round(BUSY_BUCKET_CEILING_MS / BUSY_BUCKET_MS) + 1;
+
+/**
+ * The budgets a run reports fit against when the caller names none. 6ms is
+ * one frame at 165Hz minus the compositor's share, 8ms is 120Hz, 16ms is
+ * 60Hz — the three refresh rates a desktop app actually meets.
+ */
+export const DEFAULT_BUSY_BUDGETS_MS: readonly number[] = [6, 8, 16];
+
+/**
+ * How many budgets one run may carry. Every budget is a comparison per
+ * measured tick, so this is a bound on the meter's own cost; nobody reads
+ * eight columns of fit percentages anyway.
+ */
+export const MAX_BUSY_BUDGETS = 8;
+
+/**
+ * Cleans a caller's budget list: positive and finite only, deduplicated,
+ * ASCENDING (recordBusy stops at the first miss, which is only correct on a
+ * sorted list), capped. An empty or wholly invalid list falls back to the
+ * default rather than producing a report with no fit column at all.
+ */
+export function normalizeBudgetsMs(budgetsMs?: readonly number[]): number[] {
+  const seen = new Set<number>();
+  for (const value of budgetsMs ?? []) {
+    if (!Number.isFinite(value) || value <= 0) continue;
+    seen.add(value);
+  }
+  if (seen.size === 0) return [...DEFAULT_BUSY_BUDGETS_MS];
+  return [...seen].sort((a, b) => a - b).slice(0, MAX_BUSY_BUDGETS);
+}
+
+export interface BusyHistogram {
+  /** One counter per BUSY_BUCKET_MS, index 0..BUSY_BUCKET_COUNT-1. */
+  readonly buckets: number[];
+  count: number;
+  sumMs: number;
+  maxMs: number;
+  /** Ascending, fixed at construction. */
+  readonly budgetsMs: number[];
+  /** withinBudget[i] counts ticks whose busy time was <= budgetsMs[i]. */
+  readonly withinBudget: number[];
+  /**
+   * Ticks whose measurement was thrown away because the previous tick's
+   * probe had not answered yet. Reported rather than hidden: a run that
+   * dropped most of its ticks measured a different thing than it claims.
+   */
+  dropped: number;
+}
+
+/** One budget's verdict: how many ticks fit, and what share that is. */
+export interface BusyBudgetFit {
+  budgetMs: number;
+  withinTicks: number;
+  withinPct: number;
+}
+
+export interface BusySummary {
+  ticks: number;
+  dropped: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  meanMs: number;
+  budgets: BusyBudgetFit[];
+}
+
+export function newBusyHistogram(budgetsMs?: readonly number[]): BusyHistogram {
+  const budgets = normalizeBudgetsMs(budgetsMs);
+  return {
+    buckets: new Array<number>(BUSY_BUCKET_COUNT).fill(0),
+    count: 0,
+    sumMs: 0,
+    maxMs: 0,
+    budgetsMs: budgets,
+    withinBudget: new Array<number>(budgets.length).fill(0),
+    dropped: 0,
+  };
+}
+
+/**
+ * Folds one busy measurement in. Same admission rule as recordFrame:
+ * non-finite and negative are dropped rather than clamped, because a
+ * clock that went backwards must not manufacture a 0ms tick that fits
+ * every budget.
+ */
+export function recordBusy(hist: BusyHistogram, busyMs: number): void {
+  if (!Number.isFinite(busyMs) || busyMs < 0) return;
+  hist.count += 1;
+  hist.sumMs += busyMs;
+  if (busyMs > hist.maxMs) hist.maxMs = busyMs;
+  const bucket = Math.min(BUSY_BUCKET_COUNT - 1, Math.floor(busyMs / BUSY_BUCKET_MS));
+  hist.buckets[bucket] = (hist.buckets[bucket] ?? 0) + 1;
+  // Ascending budgets, so the first budget this tick FITS is also the
+  // smallest, and every budget after it fits by construction.
+  for (let i = 0; i < hist.budgetsMs.length; i += 1) {
+    if (busyMs > (hist.budgetsMs[i] ?? 0)) continue;
+    for (let j = i; j < hist.withinBudget.length; j += 1) {
+      hist.withinBudget[j] = (hist.withinBudget[j] ?? 0) + 1;
+    }
+    break;
+  }
+}
+
+/** Records a tick whose measurement could not be attributed to one tick. */
+export function recordBusyDrop(hist: BusyHistogram): void {
+  hist.dropped += 1;
+}
+
+/**
+ * Percentile over the bucketed distribution, reported as the bucket's
+ * LOWER edge. The overflow bucket answers with the exact max, which is the
+ * only value in it we know.
+ */
+export function busyPercentile(hist: BusyHistogram, fraction: number): number {
+  if (hist.count === 0) return 0;
+  const target = Math.min(hist.count, Math.max(1, Math.ceil(fraction * hist.count)));
+  let seen = 0;
+  for (let bucket = 0; bucket < hist.buckets.length; bucket += 1) {
+    seen += hist.buckets[bucket] ?? 0;
+    if (seen >= target) {
+      return bucket >= BUSY_BUCKET_COUNT - 1 ? round2(hist.maxMs) : round2(bucket * BUSY_BUCKET_MS);
+    }
+  }
+  return round2(hist.maxMs);
+}
+
+/**
+ * A run with no measured tick answers 0% fit rather than 100%: "every tick
+ * fit the budget" is a claim, and a meter that measured nothing has not
+ * earned it. `ticks: 0` is what a reader (and the CLI's unmeasured rule)
+ * checks to tell the two apart.
+ */
+export function summarizeBusy(hist: BusyHistogram): BusySummary {
+  return {
+    ticks: hist.count,
+    dropped: hist.dropped,
+    p50Ms: busyPercentile(hist, 0.5),
+    p95Ms: busyPercentile(hist, 0.95),
+    maxMs: round2(hist.maxMs),
+    meanMs: hist.count > 0 ? round2(hist.sumMs / hist.count) : 0,
+    budgets: hist.budgetsMs.map((budgetMs, i) => {
+      const within = hist.withinBudget[i] ?? 0;
+      return {
+        budgetMs,
+        withinTicks: within,
+        withinPct: hist.count > 0 ? round2((within * 100) / hist.count) : 0,
+      };
+    }),
   };
 }
 

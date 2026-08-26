@@ -192,7 +192,7 @@ One WebSocket carries everything:
 
 | Method | Purpose |
 |---|---|
-| `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log), the instance's `clientId`, and `soakAutopilot` — `"off"` / `"arming"` / `"armed"` / `"failed: <reason>"`. The autopilot arms on a goroutine that starts *after* the instance is published as a soak, so without the latch a soak that never armed looks identical to a working one. |
+| `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log), the instance's `clientId`, `soakAutopilot` — `"off"` / `"arming"` / `"armed"` / `"failed: <reason>"` (the autopilot arms on a goroutine that starts *after* the instance is published as a soak, so without the latch a soak that never armed looks identical to a working one) — and `assetsFreshness`: the boot's embedded-bundle verdict (`match` / `stale` / `unknown` / `dev-server`). The binary embeds `frontend/dist` at BUILD time, so a `vite build` followed by a not-rebuilt harness binary silently serves the previous bundle; boot compares the embed against the adjacent on-disk dist, warns loudly on `stale`, and `ao-harness health` flags it. |
 | `HarnessListMethods()` | Every method name reachable on the wire, sorted — the App's bindings and the Harness surface in one array of bare wire names. Lets a caller check an instance has the RPC it is about to call instead of discovering a version mismatch as an opaque `method_not_found`. |
 | `HarnessEmit(channel, payload)` | Publish a raw event on the bus — escape hatch for injecting one-off frames at the frontend. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
@@ -599,7 +599,35 @@ The frontend SUMMARY is computed page-side, because percentiles need the
 whole distribution: frame times fold into a fixed 1ms-bucket histogram
 (constant memory over an hours-long soak) plus the exact max.
 `HarnessPerfStop` collects that summary and returns it beside the backend
-series as one report. **`HarnessReset` stops any active perf run** — it
+series as one report.
+
+**The frame gap cannot answer a budget question; busy time can.** Under a
+vsync-locked compositor the gap between rAF callbacks has one value — a
+3ms tick and a 9ms tick both read ~16.7ms — so a gap histogram can never
+say whether the work FITS a 6ms frame budget at 165Hz, and LoAF starts
+reporting at 50ms, far too late to see it. The `busy` meter measures the
+other quantity, per tick: `performance.now()` at rAF-callback entry, a
+task posted through ONE MessageChannel reused for the whole run, and
+`performance.now()` again in its handler. What lands in between is that
+tick's remaining callbacks plus style, layout and paint — "time until the
+main thread could service a cheap task", which is what a budget is
+written against. One measurement is in flight at a time: a probe the next
+tick overtook is DROPPED and counted (`busy.dropped`), never charged to
+whichever tick it lands in. Both meters ride the one rAF loop and either
+arms it alone, so `--meter busy` pays for no frame histogram and
+`--meter frames` posts no probe.
+
+`busy` reports p50/p95/max/mean over a quarter-millisecond histogram —
+finer than the frame one because resolving work below a frame is the
+point — plus, per budget in `budgetsMs` (`HarnessPerfSpec.budgetsMs`,
+`ao-harness perf start --budgets` / `bench --budgets`, default `6,8,16`),
+the share of measured ticks that fit it. Those fit counters are exact,
+incremented at record time rather than derived from the buckets, because
+they are the figure a `--baseline` gates on. A run that measured no tick
+answers `ticks: 0` and 0%, never 100%: "every tick fit" is a claim a
+meter that never armed has not earned, and every consumer down the chain
+(the bench aggregate, the `perf stop` rendering, the watch columns)
+reads `ticks` to tell an unmeasured run from a flawless one. **`HarnessReset` stops any active perf run** — it
 holds a sampler goroutine AND a set of armed in-page meters, and the
 caller reloads the page after a reset, so nothing else would ever disarm
 them. That stop query is bounded at 2s rather than the caller-facing 10s:
@@ -624,9 +652,15 @@ after five minutes without a collect (the backend collects at least once
 a second while a run lives, so a silent backend means the run is gone),
 and a late collect/stop answers with a clear self-disarmed error. The
 worst frame in a sample (`maxFrameMs`) is per-window — reset at each
-collect — while the report's `frames.maxMs` stays run-wide; and an
+collect, as are `maxBusyMs`, `meanBusyMs`, `busyTicks` and `busyDropped`
+— while the report's `frames.maxMs` and `busy.*` stay run-wide; and an
 unknown meter name refuses the whole arm, naming the valid set, instead
-of silently arming nothing.
+of silently arming nothing. A bad BUDGET does not refuse, because unlike
+a meter name it cannot narrow the run to nothing: the page sorts,
+deduplicates and drops non-positive entries, and an empty list falls back
+to the default set. (`ao-harness` is stricter at its own edge and refuses
+a `--budgets` entry it cannot parse, since a silently shortened budget
+list is a gate quietly not being enforced.)
 
 `internal/procrss` matches webview processes by name PREFIX because the
 kernel truncates `/proc/<pid>/status`'s `Name:` at 15 characters
@@ -650,8 +684,9 @@ prefix matching skips a process it does not recognise by design.
 terminal: `up` / `down` / `list` / `info` / `open`, `seed`, `reset`,
 `rpc <Method> [json]`,
 `threads` / `items` / `send`, `scenario`, `mock`, `events tail|await|count`,
-`record` / `bundles` / `replay`, `logs`, a read-only `db`, and the
-bridge-backed `ui` / `perf` / `bench` / `health`. `make
+`record` / `bundles` / `replay`, `logs`, a read-only `db`, the
+bridge-backed `ui` / `perf` / `bench` / `health`, and the two
+CDP-backed instruments `profile` and `bench --trace`. `make
 harness-build` builds it alongside `bin/agent-overflow`, and it finds the
 backend binary as its own sibling, so a fresh checkout needs no
 configuration.
@@ -697,6 +732,72 @@ report (its `aggregate` p50 becomes the reference under a default 25%
 budget) or a hand-written `metrics` budget, and drift exits 3. There is
 no default baseline, so a bench never becomes a gate by accident.
 
+`bench --trace --cdp <endpoint>` adds a Chromium timeline trace around
+each repeat and reports the JS call sites that FORCED layout or style
+recalculation — `UpdateLayoutTree` / `Layout` events carrying
+`args.beginData.stackTrace`, grouped by their top frame. The stack is the
+signal rather than a heuristic over it: the engine's own end-of-frame
+pass has no JS stack to carry, so only a script-triggered invalidation
+gets one, and stackless events are counted separately as engine-scheduled.
+The recording starts after the reload and thread open (so it covers the
+workload, not the mount) and ends after the meters stop (so draining the
+trace is not itself main-thread work on the page being measured). The
+merged top 15 land in the report's `trace`, outside `aggregate` — a
+call-site ranking is evidence, not a metric to gate on. Needs a devtools
+endpoint; see the section below.
+
+### CPU profiling one turn
+
+`ao-harness profile --thread <sel> --scenario <name>` records a V8
+sampling profile (100µs) of ONE scripted turn and writes
+`<dataDir>/profiles/profile-<timestamp>.cpuprofile`. It attaches the
+debugger, settles, opens the thread through the same `notification:activated`
+path `ui open` uses, settles again, arms the profiler, installs the
+scenario, sends, waits for `provider:turn_completed`, and stops. It never
+reloads the page: a reload would profile the mount instead of the turn.
+
+The rollup it prints splits sampled time three ways. FLUSH is Svelte
+running queued effects (`flush_queued_root_effects`, `flush_queued_effects`,
+`process_effects`, `update_effect`, `update_derived`, `execute_derived`,
+`update_reaction` anywhere in a sample's ancestry). MARKING is the write
+side (`internal_set` / `mark_reactions`), which fires from any state write
+INCLUDING from inside an effect — so it is checked first and wins wherever
+it appears, because charging a dirty-walk inside a flush to "flush
+execution" is the exact misattribution the split exists to prevent.
+Everything else is `other`.
+
+### The two CDP verbs need a Chromium page
+
+`profile` and `bench --trace` are the only harness commands that bypass
+the frontend bridge, because a CPU profile and a timeline trace are
+Chromium instruments no bridge can synthesize. They speak the Chrome
+DevTools Protocol through `internal/cdpclient` against an endpoint named
+by `--cdp` (port, `host:port`, `http://host:port`, or a `ws://` page url)
+or by `$AO_CDP_URL` / `$AO_CDP_PORT`.
+
+**WebKitGTK serves no DevTools protocol.** A Linux `make harness-window`
+instance answers every other command in this CLI and can serve neither of
+these two; the refusal says so rather than timing out. What DOES serve one:
+the Windows WebView2 shells, on the loopback ports `appidentity.DevToolsPort`
+assigns per mode (dev 9223, soak 9224, harness 9225 — three ports because
+all three can be up at once), an external Chrome or Edge started with
+`--remote-debugging-port`, and a Playwright-driven headless Chromium.
+An absent endpoint exits 2; an unreachable one exits 1. Page selection
+prefers the target on the instance's own origin, falls back to the only
+page, and refuses ambiguity with a candidate list — profiling whichever
+tab a listing happened to put first yields plausible numbers about the
+wrong document.
+
+The busy meter is gateable the same way, through metric names the
+aggregate carries alongside the frame ones: `busy.p50Ms`, `busy.p95Ms`
+and `busy.maxMs` (lower is better), plus one `busy.fitPct.<budget>ms` per
+budget the run carried — `busy.fitPct.6ms`, `busy.fitPct.8ms`,
+`busy.fitPct.16ms` by default, HIGHER is better, so a floor is written
+`{"busy.fitPct.6ms": {"min": 90}}`. The fit vocabulary is derived from
+the reports rather than fixed here, because `--budgets` is a run-time
+flag; repeats that disagree contribute the union, each budget folded over
+only the repeats that measured it.
+
 ### Health rollup
 
 `ao-harness health` is the generalized `make soak-check`: process
@@ -704,7 +805,10 @@ liveness and uptime, new `frontend-errors.jsonl` lines, ui-trace oracle
 triggers (`timeline.margin.diverge`, `timeline.reasoning.tailJump` — not
 the continuous `timeline.row.resize` tracker), new backend stderr, the
 process tree's RSS via `procrss.SampleAll`, database size, mock liveness,
-replay state, and any armed perf run. One line per concern with an
+replay state, any armed perf run, and embedded-asset freshness (a
+`stale` or `dev-server` verdict from `HarnessInfo.assetsFreshness` is
+warn: the instance works, but every measurement describes a bundle
+nobody ships). One line per concern with an
 ok/warn/red marker; red exits 3, warn exits 0.
 
 Every file concern is since-last-check through

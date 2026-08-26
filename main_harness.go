@@ -57,6 +57,11 @@ type harnessPaths struct {
 	// MockProvider is the resolved ao-mockprovider binary path that
 	// both provider binary settings point at.
 	MockProvider string
+	// AssetsFreshness is the embedded-bundle verdict from
+	// checkEmbeddedDistFreshness: "match", "stale", "unknown", or
+	// "dev-server". Computed once at boot; HarnessInfo exposes it and
+	// `ao-harness health` flags "stale".
+	AssetsFreshness string
 }
 
 // runHarness boots the agent test harness. The shape mirrors
@@ -76,6 +81,7 @@ func runHarness(flags cliFlags) {
 	if err != nil {
 		fatalf("harness: %v", err)
 	}
+	paths.AssetsFreshness = warnIfEmbeddedDistStale()
 	if flags.window {
 		// After prepareHarness (its refusals compare against the real
 		// config root) and before the first GLib call. See

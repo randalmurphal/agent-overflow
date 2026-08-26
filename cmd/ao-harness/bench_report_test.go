@@ -392,3 +392,180 @@ func TestDriftFailsTheGateWithTheSameCode(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d", code, exitBadNews)
 	}
 }
+
+// The busy meter answers the question a vsync-quantised frame gap cannot:
+// does one tick's main-thread work fit an N-ms budget. Its report arithmetic
+// gets the same scrutiny as the frame half, and for the same reason — a
+// `--baseline` gates CI on these numbers.
+
+// withBusy stamps a busy summary onto a report. `benchTestReport` leaves the
+// busy half at zero on purpose, which is the "this engine never armed the
+// meter" case every unmeasured rule below turns on.
+func withBusy(report perfReport, ticks int, p50, p95, max float64, fits ...perfBusyBudget) perfReport {
+	report.Frontend.Busy = perfBusySummary{
+		Ticks: ticks, P50Ms: p50, P95Ms: p95, MaxMs: max, MeanMs: p50, Budgets: fits,
+	}
+	return report
+}
+
+func TestBusyMetricsAreGateableInBothDirections(t *testing.T) {
+	reports := []perfReport{
+		withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3.25, 9.5, 41,
+			perfBusyBudget{BudgetMs: 6, WithinTicks: 700, WithinPct: 77.8},
+			perfBusyBudget{BudgetMs: 16, WithinTicks: 880, WithinPct: 97.8}),
+	}
+	agg := aggregateBenchMetrics(reports)
+
+	for name, want := range map[string]float64{
+		"busy.p50Ms": 3.25, "busy.p95Ms": 9.5, "busy.maxMs": 41,
+		"busy.fitPct.6ms": 77.8, "busy.fitPct.16ms": 97.8,
+	} {
+		metric, ok := agg[name]
+		if !ok {
+			t.Fatalf("%s missing from the aggregate", name)
+		}
+		if metric.P50 != want {
+			t.Errorf("%s p50 = %v, want %v", name, metric.P50, want)
+		}
+	}
+	// A percentile is lower-is-better and a FIT is higher-is-better. Getting
+	// this backwards would report a renderer that got worse as an
+	// improvement, which is the one direction a gate must never invert.
+	if !agg["busy.p95Ms"].LowerIsBetter {
+		t.Error("busy.p95Ms must be lower-is-better")
+	}
+	if agg["busy.fitPct.6ms"].LowerIsBetter {
+		t.Error("busy.fitPct.6ms must be higher-is-better: it is the share of ticks that FIT")
+	}
+	if unit := agg["busy.fitPct.6ms"].Unit; unit != "pct" {
+		t.Errorf("busy.fitPct.6ms unit = %q, want pct", unit)
+	}
+
+	// And it gates: a run that fits 6ms only 77.8% of the time fails a
+	// budget demanding 90%.
+	baseline := benchBaseline{Metrics: map[string]benchTolerance{
+		"busy.fitPct.6ms": {Min: floatPtr(90)},
+	}}
+	comparisons, _, unbudgeted := compareToBaselineDetailed(agg, baseline)
+	if len(comparisons) != 1 || !comparisons[0].Drift {
+		t.Fatalf("comparisons = %+v, want one drifting fit metric", comparisons)
+	}
+	if err := benchGateVerdict(comparisons, unbudgeted, "budget.json"); err == nil {
+		t.Fatal("a fit percentage below its floor passed the gate")
+	}
+}
+
+func TestBusyMetricsAreAbsentWhenNoTickWasMeasured(t *testing.T) {
+	// Zero busy time and no measurement are opposite findings; folding the
+	// second in as the first reports a renderer that was never busy and a
+	// 0% fit that reads as a catastrophic regression.
+	unmeasured := benchTestReport(1000, 60, 12, 8<<20)
+	agg := aggregateBenchMetrics([]perfReport{unmeasured})
+	for _, name := range []string{"busy.p50Ms", "busy.p95Ms", "busy.maxMs"} {
+		if _, ok := agg[name]; ok {
+			t.Errorf("%s present for a run that measured no tick", name)
+		}
+	}
+
+	// A budget on a metric this run could not measure is bad news, not a
+	// pass — the same rule the frontend metrics already follow.
+	baseline := benchBaseline{Metrics: map[string]benchTolerance{
+		"busy.fitPct.6ms": {Min: floatPtr(90)},
+	}}
+	comparisons, unmeasuredNames, unbudgeted := compareToBaselineDetailed(agg, baseline)
+	if len(comparisons) != 0 {
+		t.Errorf("comparisons = %+v, want none", comparisons)
+	}
+	if !slices.Contains(unmeasuredNames, "busy.fitPct.6ms") {
+		t.Errorf("unmeasured = %v, want the budgeted fit metric named", unmeasuredNames)
+	}
+	err := benchGateVerdict(comparisons, unbudgeted, "budget.json")
+	if err == nil {
+		t.Fatal("a budgeted-but-unmeasured busy metric passed the gate")
+	}
+	if code := exitCodeOf(t, err); code != exitBadNews {
+		t.Fatalf("exit code = %d, want %d", code, exitBadNews)
+	}
+}
+
+func TestBusyFitMetricsAreTheUnionOfTheRepeats(t *testing.T) {
+	// The budget set is a run-time flag, not a constant, so the metric
+	// vocabulary is derived from the reports. Repeats that disagree still
+	// name every budget once, with only the repeats that carried it folded.
+	first := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3, 9, 40,
+		perfBusyBudget{BudgetMs: 6, WithinPct: 80})
+	second := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3, 9, 40,
+		perfBusyBudget{BudgetMs: 6, WithinPct: 60},
+		perfBusyBudget{BudgetMs: 8, WithinPct: 95})
+	agg := aggregateBenchMetrics([]perfReport{first, second})
+
+	if got := agg["busy.fitPct.6ms"].Runs; got != 2 {
+		t.Errorf("busy.fitPct.6ms folded %d runs, want 2", got)
+	}
+	eight, ok := agg["busy.fitPct.8ms"]
+	if !ok {
+		t.Fatal("busy.fitPct.8ms missing: a budget only one repeat carried must still be named")
+	}
+	if eight.Runs != 1 || eight.P50 != 95 {
+		t.Errorf("busy.fitPct.8ms = %+v, want one run at 95", eight)
+	}
+}
+
+func TestBusyFitMetricNameSpellsTheBudgetAsWritten(t *testing.T) {
+	// A baseline file's key has to match what `--budgets` asked for, so the
+	// number is spelled the way a caller writes it rather than padded.
+	for budget, want := range map[float64]string{
+		6: "busy.fitPct.6ms", 16: "busy.fitPct.16ms", 4.5: "busy.fitPct.4.5ms",
+	} {
+		if got := busyFitMetricName(budget); got != want {
+			t.Errorf("busyFitMetricName(%v) = %q, want %q", budget, got, want)
+		}
+	}
+}
+
+func TestParseBudgetsMs(t *testing.T) {
+	// Empty says nothing, which leaves the bridge's own default in force —
+	// spelling the default in two places is how they drift apart.
+	got, err := parseBudgetsMs("")
+	if err != nil || got != nil {
+		t.Errorf("parseBudgetsMs(\"\") = %v, %v; want nil, nil", got, err)
+	}
+	got, err = parseBudgetsMs(" 6, 8.5 ,16 ")
+	if err != nil {
+		t.Fatalf("parseBudgetsMs on a spaced list: %v", err)
+	}
+	if !slices.Equal(got, []float64{6, 8.5, 16}) {
+		t.Errorf("parseBudgetsMs = %v, want [6 8.5 16]", got)
+	}
+	// A bad entry REFUSES rather than being skipped: silently gating on
+	// fewer budgets than the caller typed is how a budget stops being
+	// enforced with nobody the wiser.
+	for _, bad := range []string{"6,,8", "6,fast", "6,0", "6,-2", "6,Inf"} {
+		if _, err := parseBudgetsMs(bad); err == nil {
+			t.Errorf("parseBudgetsMs(%q) accepted a bad entry", bad)
+		}
+	}
+}
+
+func TestRenderPerfReportBusyLine(t *testing.T) {
+	report := withBusy(benchTestReport(1000, 60, 12, 8<<20), 900, 3.25, 9.5, 41,
+		perfBusyBudget{BudgetMs: 6, WithinTicks: 700, WithinPct: 77.83},
+		perfBusyBudget{BudgetMs: 16, WithinTicks: 880, WithinPct: 97.78})
+	report.Frontend.Busy.Dropped = 4
+	rendered := renderPerfReport(report)
+	for _, want := range []string{
+		"p50 3.25ms", "max 41.00ms", "over 900 ticks", "(4 dropped)",
+		"fit 6ms 77.8% / 16ms 97.8%",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered report is missing %q:\n%s", want, rendered)
+		}
+	}
+
+	// A run that measured no tick prints no busy line at all: a row of
+	// zeros reads as "the main thread was never busy".
+	quiet := renderPerfReport(benchTestReport(1000, 60, 12, 8<<20))
+	if strings.Contains(quiet, "busy") {
+		t.Errorf("an unmeasured run printed a busy line:\n%s", quiet)
+	}
+}

@@ -41,8 +41,10 @@ func perfStart(e *env, args []string) error {
 	flags := e.newFlagSet("perf start")
 	sampleMs := flags.Int("sample-ms", 0, "backend sampling interval (default 1000, floor 250)")
 	longFrameMs := flags.Int("long-frame-ms", 0, "frame time above which a frame counts as long (bridge default 50)")
+	budgets := flags.String("budgets", "",
+		"comma-separated main-thread budgets in ms for the busy-time fit report (bridge default 6,8,16)")
 	var meters stringList
-	flags.Var(&meters, "meter", "arm only this meter (repeatable: frames, longtask, loaf, layout-shift, event, memory, dom)")
+	flags.Var(&meters, "meter", "arm only this meter (repeatable: frames, busy, longtask, loaf, layout-shift, event, memory, dom)")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
@@ -50,12 +52,19 @@ func perfStart(e *env, args []string) error {
 	if len(rest) != 0 {
 		return usagef("perf start takes no positional arguments (got %v)", rest)
 	}
+	budgetsMs, err := parseBudgetsMs(*budgets)
+	if err != nil {
+		return err
+	}
 	spec := map[string]any{}
 	if *sampleMs > 0 {
 		spec["sampleMs"] = *sampleMs
 	}
 	if *longFrameMs > 0 {
 		spec["longFrameMs"] = *longFrameMs
+	}
+	if len(budgetsMs) > 0 {
+		spec["budgetsMs"] = budgetsMs
 	}
 	if len(meters) > 0 {
 		spec["meters"] = []string(meters)
@@ -169,10 +178,11 @@ func perfStatus(e *env, args []string) error {
 // perfSample is the frontend half of one `harness:perf` frame. The fields
 // are the ones a watcher reads per line; anything else stays in -o json.
 //
-// There is deliberately no per-sample p95: the frame histogram is folded
-// over the WHOLE run (constant memory over an hours-long soak) and only
-// `perf stop` can answer a percentile. `maxMs` is the per-sample worst
-// frame, which is what a live watcher can honestly show.
+// There is deliberately no per-sample p95 and no per-sample budget fit:
+// both histograms are folded over the WHOLE run (constant memory over an
+// hours-long soak) and only `perf stop` can answer a percentile or a fit
+// percentage. `maxFrameMs` and `maxBusyMs` are the per-sample worsts, which
+// is what a live watcher can honestly show.
 type perfSample struct {
 	AtMs    int64 `json:"atMs"`
 	Seq     int   `json:"seq"`
@@ -187,6 +197,9 @@ type perfSample struct {
 		Frames     int     `json:"frames"`
 		LongFrames int     `json:"longFrames"`
 		MaxFrameMs float64 `json:"maxFrameMs"`
+		BusyTicks  int     `json:"busyTicks"`
+		MaxBusyMs  float64 `json:"maxBusyMs"`
+		MeanBusyMs float64 `json:"meanBusyMs"`
 		LongTasks  int     `json:"longTasks"`
 		DomNodes   int     `json:"domNodes"`
 		HeapBytes  float64 `json:"heapBytes"`
@@ -238,9 +251,12 @@ func perfWatch(e *env, args []string) error {
 	})
 }
 
+// BUSYP50 is deliberately absent: a percentile needs the whole run. The
+// two busy columns are this window's mean and worst, which is everything a
+// per-sample line can honestly claim.
 func perfWatchHeader() string {
-	return fmt.Sprintf("%-6s %-6s %6s %8s %6s %9s %8s %9s %9s",
-		"SEQ", "AT", "FPS", "MAXMS", "LONG", "JSHEAP", "DOM", "GOHEAP", "WEBVIEW")
+	return fmt.Sprintf("%-6s %-6s %6s %8s %6s %8s %8s %9s %8s %9s %9s",
+		"SEQ", "AT", "FPS", "MAXMS", "LONG", "BUSYAVG", "BUSYMAX", "JSHEAP", "DOM", "GOHEAP", "WEBVIEW")
 }
 
 func (e *env) printPerfSample(ev harnessclient.Event) error {
@@ -264,11 +280,22 @@ func (e *env) printPerfSample(ev harnessclient.Event) error {
 		return nil
 	}
 	front := sample.Frontend
-	e.printf("%-6d %-6s %6.1f %8.1f %6d %9s %8d %9s %9s\n",
+	e.printf("%-6d %-6s %6.1f %8.1f %6d %8s %8s %9s %8d %9s %9s\n",
 		sample.Seq, at, front.FPS, front.MaxFrameMs, front.LongFrames,
+		busyCell(front.BusyTicks, front.MeanBusyMs), busyCell(front.BusyTicks, front.MaxBusyMs),
 		humanBytes(uint64(front.HeapBytes)), front.DomNodes,
 		humanBytes(sample.Backend.HeapBytes), humanBytes(sample.Backend.ChildrenRSSBytes))
 	return nil
+}
+
+// busyCell prints a dash rather than 0.00 for a window that measured no
+// tick. Zero busy time and no measurement are opposite findings, and a
+// column of zeros is the one that lies.
+func busyCell(ticks int, value float64) string {
+	if ticks == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", value)
 }
 
 func humanBytes(n uint64) string {

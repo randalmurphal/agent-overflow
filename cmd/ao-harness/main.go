@@ -57,6 +57,7 @@ func commands() []command {
 		{"ui", "snapshot|query|state|diff the attached frontend", runUI},
 		{"perf", "start|stop|status|watch the perf meters", runPerf},
 		{"bench", "run a bench workload and write a perf report", runBench},
+		{"profile", "record a CPU profile of one scripted turn (needs a Chromium devtools endpoint)", runProfile},
 		{"health", "roll up an instance's liveness, errors, memory and mocks", runHealth},
 		{"version", "print this CLI's build stamp", runVersion},
 		{"help", "print this help", runHelp},

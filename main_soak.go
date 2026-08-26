@@ -125,6 +125,7 @@ func runSoak(flags cliFlags) {
 	if err != nil {
 		fatalf("%s: %v", label, err)
 	}
+	paths.AssetsFreshness = warnIfEmbeddedDistStale()
 	if flags.window {
 		// After prepareHarness, before the first GLib call — see
 		// isolateWebviewStorage for why both ends of that window matter.

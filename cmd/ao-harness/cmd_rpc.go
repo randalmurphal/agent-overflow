@@ -467,14 +467,19 @@ func runSend(e *env, args []string) error {
 	})
 }
 
-// sendAndWait is the single-command observe-a-turn path. The order is
-// the whole point: subscribe, PARK the wait, and only then send. A mock
-// can finish a scripted turn inside the SendMessage round trip, so a
-// wait registered after the RPC returns is a wait for the next turn.
-func (e *env) sendAndWait(ctx context.Context, client *harnessclient.Client, row threadRow, text string, withItems bool) error {
+// awaitTurnAfterSend sends one message and blocks until the app closes
+// that thread's turn. The order is the whole point: subscribe, PARK the
+// wait, and only then send. A mock can finish a scripted turn inside the
+// SendMessage round trip, so a wait registered after the RPC returns is a
+// wait for the NEXT turn.
+//
+// Shared by `send --wait` and `profile`, which need the identical
+// sequence and must not grow two spellings of it — the parked-before-send
+// rule is the sort of thing a second copy quietly gets wrong.
+func awaitTurnAfterSend(ctx context.Context, client *harnessclient.Client, threadID, text string) (harnessclient.Event, error) {
 	channel := string(eventchan.ProviderTurnCompleted)
 	if err := client.Subscribe(ctx, channel); err != nil {
-		return err
+		return harnessclient.Event{}, err
 	}
 	awaiting := client.Await(channel, func(ev harnessclient.Event) bool {
 		if ev.Gap {
@@ -483,15 +488,24 @@ func (e *env) sendAndWait(ctx context.Context, client *harnessclient.Client, row
 		var payload struct {
 			ThreadID string `json:"threadId"`
 		}
-		return json.Unmarshal(ev.Data, &payload) == nil && payload.ThreadID == row.ID
+		return json.Unmarshal(ev.Data, &payload) == nil && payload.ThreadID == threadID
 	})
-	if _, err := client.Call(ctx, "SendMessage", row.ID, text, nil); err != nil {
+	if _, err := client.Call(ctx, "SendMessage", threadID, text, nil); err != nil {
 		awaiting.Close()
-		return err
+		return harnessclient.Event{}, err
 	}
 	event, err := awaiting.Wait(ctx)
 	if err != nil {
-		return fmt.Errorf("the turn on %s never completed: %w", row.ID, err)
+		return harnessclient.Event{}, fmt.Errorf("the turn on %s never completed: %w", threadID, err)
+	}
+	return event, nil
+}
+
+// sendAndWait is the single-command observe-a-turn path.
+func (e *env) sendAndWait(ctx context.Context, client *harnessclient.Client, row threadRow, text string, withItems bool) error {
+	event, err := awaitTurnAfterSend(ctx, client, row.ID, text)
+	if err != nil {
+		return err
 	}
 	if e.jsonOutput() && !withItems {
 		return e.writeJSON(map[string]any{"threadId": row.ID, "sent": true, "completed": json.RawMessage(event.Data)})

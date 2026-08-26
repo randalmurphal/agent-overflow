@@ -164,6 +164,7 @@ func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 		defer client.Close()
 		report.Sections = append(report.Sections,
 			autopilotSection(ctx, client, bs),
+			assetsSection(ctx, client),
 			dbSection(ctx, client),
 			mockSection(ctx, client),
 			replaySection(ctx, client),
@@ -327,6 +328,37 @@ func autopilotSection(ctx context.Context, client *harnessclient.Client, bs harn
 		return healthSection{Name: "soak-autopilot", Status: healthOK, Detail: "off (not a soak instance)"}
 	default:
 		return healthSection{Name: "soak-autopilot", Status: healthOK, Detail: state}
+	}
+}
+
+// assetsSection reports the embedded-bundle freshness verdict the boot
+// computed (HarnessInfo.assetsFreshness). "stale" is warn, not red: the
+// instance works, but every asset it serves — and every measurement
+// taken against it — is of a bundle the developer no longer has, which
+// once cost a full profiling round (minified names from an old embed
+// after an unminified build). "dev-server" is warned for the same
+// reason the boot already shouts it: measurements describe the dev
+// bundle. Backends that predate the field are n/a, not judged.
+func assetsSection(ctx context.Context, client *harnessclient.Client) healthSection {
+	info, err := client.Info(ctx)
+	if err != nil {
+		return healthSection{Name: "assets", Status: healthNA, Detail: err.Error()}
+	}
+	switch strings.TrimSpace(info.AssetsFreshness) {
+	case "":
+		return healthSection{Name: "assets", Status: healthNA,
+			Detail: "this backend does not report embedded-asset freshness"}
+	case "stale":
+		return healthSection{Name: "assets", Status: healthWarn,
+			Detail: "the binary's embedded frontend bundle does not match frontend/dist on disk — rebuild (make harness-build) before trusting measurements"}
+	case "dev-server":
+		return healthSection{Name: "assets", Status: healthWarn,
+			Detail: "serving dev-server assets (FRONTEND_DEVSERVER_URL) — measurements describe the dev bundle"}
+	case "unknown":
+		return healthSection{Name: "assets", Status: healthOK,
+			Detail: "no adjacent frontend/dist to compare the embed against"}
+	default:
+		return healthSection{Name: "assets", Status: healthOK, Detail: "embedded bundle matches frontend/dist"}
 	}
 }
 

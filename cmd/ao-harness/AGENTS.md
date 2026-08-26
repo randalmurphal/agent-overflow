@@ -60,6 +60,7 @@ will type either:
 | `ui snapshot\|query\|state\|diff\|reload\|open` | the attached frontend, through the harness bridge |
 | `perf start\|stop\|status\|watch` | the perf meters |
 | `bench <workload>` | run a scripted workload with the meters armed and write a report |
+| `profile` | record a CPU profile of one scripted turn (needs a Chromium devtools endpoint) |
 | `health [--watch]` | roll one instance's liveness, errors, memory and mocks into a verdict |
 | `version` | this CLI's build stamp (`--version` answers the same, before any instance is resolved) |
 
@@ -110,8 +111,19 @@ gets their instance back untouched.
   reloading on its own: a reset that moved someone's page without being
   asked is a surprise in the middle of a debugging session.
 - `perf watch` prints one line per backend sample. There is no per-sample
-  p95: percentiles come from a whole-run histogram the page keeps, so
-  only `perf stop` can answer one. Watch prints the sample's max instead.
+  p95 and no per-sample budget fit: both come from whole-run histograms
+  the page keeps, so only `perf stop` can answer one. Watch prints the
+  sample's worsts instead — `MAXMS` for the frame gap, `BUSYAVG` /
+  `BUSYMAX` for main-thread busy time, dashed out when the window
+  measured no tick (zero busy time and no measurement are opposite
+  findings).
+- `perf start --budgets 6,8,16` sets the busy meter's budgets, and
+  `perf stop` reports the share of ticks that fit each. That is the
+  question a frame-gap histogram cannot answer at all: under a
+  vsync-locked compositor every tick's gap reads ~16.7ms whatever the
+  work cost. An entry that does not parse, or is not positive, is
+  REFUSED rather than skipped — a shortened budget list is a gate
+  quietly not being enforced.
 
 ### The event wire
 
@@ -153,9 +165,10 @@ finding entirely and the one a caller is least likely to double-check.
 
 ### Bench
 
-`bench <workload> [--repeat N] [--sample-ms] [--baseline file] [--out
-dir] [--json]`. Each repeat resets the instance, reloads the page, seeds
-its own fixture, arms the meters, drives the workload and stops them.
+`bench <workload> [--repeat N] [--sample-ms] [--budgets 6,8,16]
+[--baseline file] [--out dir] [--json] [--trace --cdp <endpoint>]`. Each repeat resets the instance,
+reloads the page, seeds its own fixture, arms the meters, drives the
+workload and stops them.
 
 | Workload | Shape |
 |---|---|
@@ -184,22 +197,122 @@ Two arithmetic rules the file's readers depend on. A budget of `0` is
 BINDING, not absent: `{"max": 0}` is the strictest thing the file can
 say, and reading it as "no opinion" would silently accept every value. A
 metric a run could not measure is OMITTED from the aggregate rather than
-folded in as zero — that covers a headless run with no frontend half and
-also the series meters (`domNodes`, `jsHeap`) a given engine may never
-sample. `sampleMs` in the document is the interval the backend RESOLVED,
-not the one the flag asked for, because a default run asks for `0`.
+folded in as zero — that covers a headless run with no frontend half,
+the series meters (`domNodes`, `jsHeap`) a given engine may never
+sample, and a busy half whose `ticks` is zero (a 0% fit would read as a
+catastrophic regression rather than as an unarmed meter). `sampleMs` in
+the document is the interval the backend RESOLVED, not the one the flag
+asked for, because a default run asks for `0`.
+
+The busy meter's metrics gate like any other: `busy.p50Ms`, `busy.p95Ms`,
+`busy.maxMs` (lower is better) and one `busy.fitPct.<budget>ms` per
+budget the run carried — HIGHER is better, so its budget is a floor
+(`{"busy.fitPct.6ms": {"min": 90}}`). Those fit names are the only part
+of the metric vocabulary derived from the REPORTS rather than declared in
+`benchMetrics()`, because `--budgets` is a run-time flag; repeats that
+disagree contribute the union, each folded over only the repeats that
+measured it.
+
+`--trace` adds the one thing the bridge cannot answer: which JS call
+sites FORCED layout or style recalculation. It records a Chromium timeline
+trace around each repeat — started after the reload, settle and thread
+open so the recording covers the WORKLOAD rather than the mount, ended
+after the meters stop so draining tens of megabytes over the debugger
+socket is not itself main-thread work on the page being measured — and
+groups `UpdateLayoutTree` / `Layout` events by the top frame of their
+stack. The stack IS the signal, not a heuristic over it: only a
+script-triggered invalidation has a JS stack to carry, because the
+engine's own end-of-frame pass runs from nothing. Events with no stack are
+counted separately as engine-scheduled rather than dropped, so a reader
+sees the ratio.
+
+The result lands in the report as `trace` (merged over the repeats, top 15
+call sites, with the tail COUNTED rather than silently cut) and per repeat
+as `runs[].trace`'s two headline numbers. It is deliberately NOT part of
+`aggregate`: a baseline compares numbers a headless run can also produce,
+and a call-site ranking is evidence, not a metric. Requires a devtools
+endpoint (see Profile below); `--trace` with none is refused BEFORE the
+first reset, so a caller who forgot the flag gets their instance back
+untouched.
 
 The bench connection narrows its event subscription to the completion
 channel its drivers await. It is an instrument: leaving it on the default
 all-channel subscription makes the backend serialise every item delta
 onto a second socket during the exact window being measured.
 
+### Profile
+
+`profile --thread <sel> --scenario <name> [message] [--out file]
+[--cdp <endpoint>] [--settle-ms 2000] [--open-settle-ms 2500]
+[--interval-us 100] [--timeout 90s]`.
+
+One scripted turn under the V8 sampling profiler, written out as a
+`.cpuprofile` (default `<dataDir>/profiles/profile-<timestamp>.cpuprofile`)
+plus a three-way rollup of the sampled time. It attaches the debugger,
+settles, opens the thread (the same `ui open` activation), settles again,
+arms the profiler at a 100µs interval, installs the scenario, sends the
+message, waits for `provider:turn_completed`, and stops.
+
+It does NOT reload the page, and that is the difference from `bench`. A
+reload is how a bench gets a blank slate; here it would profile the mount
+instead of the turn, on a document that has not been alive long enough to
+hold the state the investigation is about.
+
+The rollup splits sampled time three ways, and the split is the whole
+point. FLUSH is Svelte running queued effects (`flush_queued_root_effects`,
+`flush_queued_effects`, `process_effects`, `update_effect`,
+`update_derived`, `execute_derived`, `update_reaction` anywhere in a
+sample's ancestry). MARKING is the write side — `internal_set` /
+`mark_reactions` — which fires from ANY state write, including from inside
+an effect. So marking is checked FIRST and wins wherever it appears: a
+sample inside `mark_reactions` under an effect flush is marking cost, and
+folding it into flush would attribute the write side's dirty-walk to the
+framework's render pass, which is exactly the confusion the split exists
+to prevent. Everything else is `other`.
+
+The named split only works on a build that KEEPS those names: the
+embedded production dist is minified, so against a plain harness instance
+every sample lands in `other`. The rollup detects that (no named svelte
+frames matched, yet `svelte-vendor-*.js` time is present), says so
+outright instead of printing a misleading 0%, and always prints a
+by-script table — self time per chunk basename, which minification does
+not rename. For the flush/marking split itself, profile an instance
+serving the dev server (unminified names).
+
+#### Both CDP verbs need a Chromium page
+
+`profile` and `bench --trace` are the only two commands here that do not
+go through the harness bridge, because a CPU profile and a timeline trace
+are Chromium instruments and no bridge can synthesize them. They need a
+DevTools endpoint, named by `--cdp` (a port, `host:port`,
+`http://host:port`, or a `ws://` page url) or by `$AO_CDP_URL` /
+`$AO_CDP_PORT`.
+
+**A WebKitGTK window serves no DevTools protocol at all.** `make
+harness-window` on Linux produces an instance every other command here
+drives perfectly and these two cannot touch — the refusal says so, and
+names this instance's own port when the registry row knows its mode (the
+Windows WebView2 shells publish soak on 9224 and harness on 9225; an
+external Chrome or Edge does with `--remote-debugging-port`). An absent
+endpoint is exit 2 (under-specified invocation), an unreachable one is
+exit 1, and both carry that note.
+
+Target selection never guesses: the page whose URL is on the instance's
+own origin wins, a single page is taken when nothing matched, and anything
+else is an error listing the candidates with their debugger urls. A
+browser with three tabs open must not be profiled at whichever one the
+listing put first — the numbers would look plausible and describe the
+wrong document.
+
 ### Health
 
 `health [--watch] [--interval 30s]` rolls up process liveness and uptime,
 new `frontend-errors.jsonl` lines, ui-trace oracle triggers, new backend
 stderr, the process tree's RSS, database size, mock liveness, replay
-state, any armed perf run, and whether a soak's autopilot actually armed.
+state, any armed perf run, whether a soak's autopilot actually armed, and
+embedded-asset freshness (`HarnessInfo.assetsFreshness`: a binary built
+against a different `frontend/dist` than the one on disk serves — and
+measures — a bundle nobody ships; `stale` and `dev-server` are warn).
 Red is a dead process, a new renderer FAULT, a panic in new stderr, or a
 `soakAutopilot` the backend reports as `failed:` — a soak whose autopilot
 threw looks identical to a healthy idle instance from the outside, so an
@@ -369,6 +482,14 @@ One file per command family, plus the router. Adding a verb is a row in
   arming and stopping the meters, the fixtures it seeds, and the
   arithmetic (aggregation, baselines) split out so the maths is testable
   without a backend.
+- `cdp.go`, `cmd_profile.go`, `cpuprofile.go`, `bench_trace.go`: the two
+  CDP-backed verbs. `cdp.go` is the shared half (endpoint resolution from
+  `--cdp` / the env, page attachment, and the one sentence about which
+  engines serve the protocol); `cpuprofile.go` and `bench_trace.go` hold
+  the pure document arithmetic — the flush/marking rollup and the
+  forced-layout grouping — split out for the same reason `bench_report.go`
+  is, so the maths is testable with no browser anywhere. The wire itself
+  is `internal/cdpclient`.
 - `threadsel.go`: the `--thread` selector and its resolution, with
   `pickThread` split out pure so every spelling and every refusal is
   testable without a backend.
@@ -417,10 +538,28 @@ version check); the bench aggregation and baseline arithmetic (both
 baseline shapes, both drift directions, explicit zero budgets, unsampled
 series, the report/baseline round trip) and the gate verdict over it; the
 health cursor, log scanners and exit-code rules on canned files; and
-`parseSince`'s window table. Three of those are verdicts a caller gates
+`parseSince`'s window table. The busy half of a report gets the same
+scrutiny for the same reason: both directions of its gate (a percentile
+ceiling and a fit-percentage FLOOR — the one place an inverted
+`LowerIsBetter` would report a regression as an improvement), the budget
+spelling a baseline key has to match, the union rule across repeats,
+`--budgets` parsing, and the unmeasured rule that keeps a `ticks: 0` run
+out of the aggregate rather than scoring it 0% fit. Three of those are verdicts a caller gates
 on and a wrong answer would be BELIEVED: a never-booted root, an `n/a`
 that must not read as a pass, and a `--baseline` run whose budgeted
 metric was never measured.
+
+The two CDP verbs are tested at their pure halves and their refusals,
+never against a browser: the profile rollup over a hand-built
+`.cpuprofile` (including the case the split exists for — an `internal_set`
+NESTED inside an effect flush, which must count as marking — plus unknown
+sample ids, negative deltas, short delta arrays and a looped tree that
+must not hang), the forced-layout grouping over a canned trace (both
+container shapes, a malformed `args` that must not fail the document,
+stackless events counted as engine-scheduled, the merge across repeats and
+its counted truncation), and the endpoint refusals: `bench --trace` with
+no endpoint exits 2 without driving anything, and `profile` refuses in
+order (thread, scenario, endpoint) before it attaches.
 
 Two cross-checks earn their keep here rather than in a review:
 `TestKnownChannelsCoversTheEventChannelRegistry` AST-parses
