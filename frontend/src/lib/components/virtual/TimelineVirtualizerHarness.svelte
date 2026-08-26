@@ -36,6 +36,11 @@
     onCompensation?: (compensation: EngineCompensation) => void;
     onContentGeometry?: (sample: ContentGeometrySample) => void;
     trackReadingAnchor?: () => boolean;
+    /** Called from a template expression inside the row snippet, so it
+     * fires once per snippet-content re-render for that row. The row-reuse
+     * tripwire counts these: a projection pass that reuses an unchanged
+     * row's object must not re-fire mounted rows. */
+    onRowRender?: (id: string) => void;
   }
 
   let {
@@ -50,6 +55,7 @@
     onCompensation,
     onContentGeometry,
     trackReadingAnchor,
+    onRowRender,
   }: Props = $props();
 
   // svelte-ignore state_referenced_locally -- seed copy by design; the
@@ -103,6 +109,13 @@
   function applyScrollTarget(top: number): void {
     if (scrollEl) scrollEl.scrollTop = top;
   }
+
+  /** Renders as '' — exists so the row snippet carries a template
+   * expression whose re-execution the reuse tripwire can count. */
+  function tapRowRender(id: string): string {
+    onRowRender?.(id);
+    return '';
+  }
 </script>
 
 <!-- The fixed viewport lives on the HOST, not the scroller: a
@@ -137,7 +150,7 @@
       <div data-testid="virtual-header" style="height: 100%;">Header</div>
     {/snippet}
     {#snippet children(row: HarnessRow, index: number)}
-      <div data-row-index={index} data-row-id={row.id} style="height: {row.heightPx}px;">
+      <div data-row-index={index} data-row-id={row.id} style="height: {row.heightPx}px;">{tapRowRender(row.id)}
         {#if row.headPx}
           <div data-row-head style="height: {row.headPx}px;">{row.label}</div>
           <div data-row-body style="height: {row.heightPx - row.headPx}px;"></div>

@@ -365,6 +365,11 @@
   };
   let planeDataSnapshot: object | null = null;
 
+  // Rows from the previous projection pass, by key, for identity reuse
+  // below. Plain Map, replaced wholesale each pass — entries for keys that
+  // left the window die with the old Map.
+  let rowReuse = new Map<unknown, RenderRow>();
+
   const projection = $derived.by(() => {
     void geometryVersion;
     const current = reconciledData;
@@ -397,7 +402,34 @@
       newDataSnapshot && (current.mutation.kind === 'head' || current.mutation.kind === 'keyed'),
     );
     planeState = plane;
-    for (const row of rows) row.offset = plane.localOffsets.get(row.key) ?? 0;
+    // An unchanged row keeps its previous OBJECT, not just its values. This
+    // derived re-runs on every reveal tick and every geometry bump, and the
+    // keyed each writes each row into a per-key signal — a fresh object
+    // there reads as a change, so every mounted row re-ran its wrapper
+    // effects (position style, setRowIndex) and re-validated its snippet on
+    // every streamed chunk, O(window) per tick with almost every value
+    // identical (2026-08-26, the 165Hz frame-drop attribution — same
+    // identity-churn class as the projection node caches). Reused objects
+    // are never mutated: a candidate replaces the cached row unless EVERY
+    // field matches.
+    const reused = new Map<unknown, RenderRow>();
+    for (let i = 0; i < rows.length; i++) {
+      const candidate = rows[i];
+      candidate.offset = plane.localOffsets.get(candidate.key) ?? 0;
+      const previous = rowReuse.get(candidate.key);
+      if (
+        previous &&
+        previous.item === candidate.item &&
+        previous.index === candidate.index &&
+        previous.offset === candidate.offset &&
+        previous.measured === candidate.measured &&
+        previous.observe === candidate.observe
+      ) {
+        rows[i] = previous;
+      }
+      reused.set(candidate.key, rows[i]);
+    }
+    rowReuse = reused;
     return { rows, plane: plane.geometry };
   });
 
