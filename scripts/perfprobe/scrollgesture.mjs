@@ -1,8 +1,9 @@
-// Input-gesture scroll on the pane timeline: probe scrollgesture [seconds=15] [index=0] [selector] [osc|down]
+// Input-gesture scroll on the pane timeline: probe scrollgesture [seconds=15] [index=0] [selector] [osc|down|fling]
 // osc oscillates ±1500px and parks the pane above the bottom-follow band
 // (odd leg count ends upward); down rides to the bottom, which is the one
 // way to RE-ENGAGE bottom-follow from outside (programmatic writes are not
-// reader intent in either direction).
+// reader intent in either direction); fling oscillates violently (12000px/s
+// over up to 6000px legs) to hunt for checkerboard over unrasterized tiles.
 // Drives Input.synthesizeScrollGesture (mouse-wheel source) up and down over
 // the first matching scroller, so the scroll is a real input gesture instead
 // of a JS scrollTop write — the A/B partner for the spring's per-frame write.
@@ -28,13 +29,15 @@ try {
   console.log(`scroller ${SEL}: scrollTop=${start.scrollTop.toFixed(0)} range=${start.range.toFixed(0)} center=(${start.x.toFixed(0)},${start.y.toFixed(0)})`);
   if (start.range < 500) { console.error('probe: scroller has under 500px of range, nothing to drive'); process.exit(1); }
   const t0 = Date.now();
-  const MODE = process.argv[5] || 'osc'; // osc | down (down = ride to the bottom and re-engage follow)
+  const MODE = process.argv[5] || 'osc'; // osc | down (ride to the bottom and re-engage follow) | fling (violent legs, checkerboard hunt)
   let dir = MODE === 'down' ? 1 : -1; // osc leads upward (yDistance > 0), so an odd leg count parks the pane AWAY from the bottom-follow re-engage band
+  const speed = MODE === 'fling' ? 12000 : 1200;
+  const maxDist = MODE === 'fling' ? 6000 : 1500;
   let legs = 0;
   while (Date.now() - t0 < SECS * 1000) {
-    const dist = Math.min(1500, start.range - 100);
+    const dist = Math.min(maxDist, start.range - 100);
     await page.send('Input.synthesizeScrollGesture', {
-      x: start.x, y: start.y, yDistance: -dir * dist, speed: 1200, gestureSourceType: 'mouse',
+      x: start.x, y: start.y, yDistance: -dir * dist, speed, gestureSourceType: 'mouse',
     });
     if (MODE !== 'down') dir = -dir;
     legs++;
