@@ -502,14 +502,17 @@ func (c *converter) applyCollabAgentToolCallItem(p itemCompletedPayload, item tu
 }
 
 // applySubAgentActivityItem is the paginated counterpart of
-// `sub_agent_activity`. The linkage is the same one collab.go documents: the
-// item id IS the spawning call's `call_id`, so the row parents under the
-// spawn_agent row and the agent path is remembered for the later delivery.
+// `sub_agent_activity`. Started lifecycle keeps the spawn linkage and agent
+// path for later delivery; interacted lifecycle becomes a standalone tool.
 func (c *converter) applySubAgentActivityItem(item turnItem) {
 	agentPath := strings.TrimSpace(item.AgentPath)
 	parent := c.toolItemIDs[strings.TrimSpace(item.ID)]
 	if parent != "" && agentPath != "" {
 		c.agentParents[agentPath] = parent
+	}
+	if strings.TrimSpace(item.Kind) == "interacted" {
+		c.emitCollabInteraction(item.ID, agentPath, strings.TrimSpace(item.AgentThreadID))
+		return
 	}
 	meta := map[string]any{
 		"kind":         "subagent_activity",

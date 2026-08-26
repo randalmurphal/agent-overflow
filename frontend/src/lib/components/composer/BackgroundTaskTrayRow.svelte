@@ -15,6 +15,8 @@
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
   import { formatToolUses, resolveSubagentProgress } from '../../utils/subagentProgress';
   import { formatTokens } from '../../utils/format';
+  import { parseJsonObject } from '../../utils/parseJsonObject';
+  import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
   import type { Item } from '../../types/models';
   import type { ProviderID } from '../../providers/catalog';
   import Icon from '../primitives/Icon.svelte';
@@ -97,7 +99,14 @@
   let tokensLabel = $derived(
     progress && progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
   );
-  let activityLine = $derived(progress && task.status === 'running' ? progress.activity : '');
+  let latestToolSummary = $derived.by(() => {
+    if (task.status !== 'running' || agentInfo?.provider !== 'codex') return '';
+    const value = parseJsonObject(task.launch?.meta)?.[CODEX_LATEST_TOOL_META.summary];
+    return typeof value === 'string' ? value.trim() : '';
+  });
+  let activityLine = $derived(
+    task.status === 'running' ? (progress?.activity || latestToolSummary) : '',
+  );
   let hasStopAction = $derived(
     stopTarget !== null || opensAgentPane || toolCountLabel !== '' || tokensLabel !== '',
   );
@@ -199,8 +208,9 @@
     {/if}
   </div>
   {#if activityLine}
-    <!-- The agent's current activity (`task_progress.description`), in
-         the card's preview style. Live only: a settled row has no "now". -->
+    <!-- The agent's current activity in the card's preview style. Claude
+         supplies task_progress.description; Codex falls back to the latest
+         direct child tool summary projected onto the tray-only launch copy. -->
     <div
       class="ml-[5.25rem] truncate px-1 pb-0.5 text-[0.6875rem] text-fg-hint/85"
       data-testid="background-task-tray-row-activity"

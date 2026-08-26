@@ -2,7 +2,6 @@ package triage
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -1502,8 +1501,12 @@ func TestCodexSubagentStatusAggregatesMultiChildFailures(t *testing.T) {
 		t.Fatalf("spawn row missing: found=%v err=%v", found, err)
 	}
 	meta := decodeItemMetaMap(t, launch.Meta)
-	if meta["codex_child_status"] != "errored" {
-		t.Fatalf("codex_child_status = %v, want errored", meta["codex_child_status"])
+	if _, exists := meta["codex_child_status"]; exists {
+		t.Fatalf("spawn row exposes aggregate child status: %s", launch.Meta)
+	}
+	statuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
+	if statuses["child-a"] != "errored" || statuses["child-b"] != "completed" {
+		t.Fatalf("terminal bookkeeping = %+v", statuses)
 	}
 	completion, found, err := st.GetThreadItem("t1", ToolCompletionID("spawn-mixed-status"))
 	if err != nil || found {
@@ -2787,25 +2790,18 @@ func seedCodexSpawnCard(t *testing.T, router *Router, st *store.Store, threadID,
 	}
 }
 
-func launchInteractions(t *testing.T, st *store.Store, threadID, launchID string) []codexCollabInteraction {
-	t.Helper()
-	launch, found, err := st.GetThreadItem(threadID, launchID)
-	if err != nil || !found {
-		t.Fatalf("launch %s: found=%v err=%v", launchID, found, err)
-	}
-	return decodeCodexCollabInteractionLog(json.RawMessage(launch.Meta)).Interactions
-}
-
-// TestCodexCollabInteractionLandsOnSpawnCard covers G3/F2/F3: a V2
-// `subAgentActivity kind:"interacted"` must attach to the child's spawn card
-// with its raw verb preserved, not mint a top-level "Sent input to X" row.
-func TestCodexCollabInteractionLandsOnSpawnCard(t *testing.T) {
+// TestCodexCollabInteractionIsAStandaloneTimelineRow pins the immutable-launch
+// contract: a later message to the child is activity at the current write head,
+// never an append onto the historical spawn event.
+func TestCodexCollabInteractionIsAStandaloneTimelineRow(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
-
-	before := len(findItemsByKind(t, st, "t1", itemKindToolCall))
+	launchBefore, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("launch before interaction: found=%v err=%v", found, err)
+	}
 
 	interactionMeta, _ := json.Marshal(map[string]any{
 		"item_status": "completed",
@@ -2818,77 +2814,62 @@ func TestCodexCollabInteractionLandsOnSpawnCard(t *testing.T) {
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "call-interact-1",
-		ItemType: "send_input", ParentToolUseID: "spawn-1", Meta: interactionMeta,
+		ItemType: "send_input", Meta: interactionMeta,
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("interaction complete: %v", err)
 	}
+	row, found, err := st.GetThreadItem("t1", "call-interact-1")
+	if err != nil || !found {
+		t.Fatalf("standalone interaction row: found=%v err=%v", found, err)
+	}
+	if row.Kind != itemKindToolCall || row.ToolName != "send_input" || row.ParentID != "" || row.Status != statusCompleted {
+		t.Fatalf("standalone interaction row = %+v", row)
+	}
+	if row.TurnIndex != launchBefore.TurnIndex || row.ItemIndex <= launchBefore.ItemIndex {
+		t.Fatalf("interaction position = (%d,%d), want write head after spawn (%d,%d)",
+			row.TurnIndex, row.ItemIndex, launchBefore.TurnIndex, launchBefore.ItemIndex)
+	}
+	launchAfter, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("launch after interaction: found=%v err=%v", found, err)
+	}
+	if launchAfter.Meta != launchBefore.Meta || launchAfter.UpdatedAt != launchBefore.UpdatedAt {
+		t.Fatalf("interaction mutated spawn row: before=%s after=%s", launchBefore.Meta, launchAfter.Meta)
+	}
 
-	if after := len(findItemsByKind(t, st, "t1", itemKindToolCall)); after != before {
-		t.Fatalf("tool_call rows = %d, want %d (no top-level send_input row)", after, before)
-	}
-	interactions := launchInteractions(t, st, "t1", "spawn-1")
-	if len(interactions) != 1 {
-		t.Fatalf("interactions = %+v, want one entry on the card", interactions)
-	}
-	if interactions[0].ID != "call-interact-1" || interactions[0].Kind != codexCollabInteractionInteracted {
-		t.Fatalf("interaction = %+v", interactions[0])
-	}
-	if interactions[0].Tool != "followup_task" {
-		t.Fatalf("interaction tool = %q, want the raw activityTool verb", interactions[0].Tool)
-	}
-
-	// Replay is idempotent: no second sub-line for the same activity item.
+	// Replay is idempotent by the activity item's own stable id.
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "call-interact-1",
-		ItemType: "send_input", ParentToolUseID: "spawn-1", Meta: interactionMeta,
+		ItemType: "send_input", Meta: interactionMeta,
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("interaction replay: %v", err)
 	}
-	if again := launchInteractions(t, st, "t1", "spawn-1"); len(again) != 1 {
-		t.Fatalf("replayed interaction duplicated: %+v", again)
+	rows := findItemsByKind(t, st, "t1", itemKindToolCall)
+	count := 0
+	for _, item := range rows {
+		if item.ID == "call-interact-1" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("replayed interaction count = %d, want one", count)
 	}
 }
 
-// TestCodexCollabInteractionWithoutRawVerbStaysNeutral pins invariant 25 for
-// the messaging verbs: a resumed session sees the typed activity item with no
-// raw function-call name, and the typed wire cannot tell `send_message` from
-// `followup_task`. The row must carry no verb rather than a guessed one.
-func TestCodexCollabInteractionWithoutRawVerbStaysNeutral(t *testing.T) {
+// TestCodexMailboxProgressDeliveryCreatesStandaloneActivity covers G4/F4: a
+// `Message Type: MESSAGE` delivery is a timeline activity row, not the answer
+// and not a mutation of the spawn event.
+func TestCodexMailboxProgressDeliveryCreatesStandaloneActivity(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
-
-	interactionMeta, _ := json.Marshal(map[string]any{
-		"item_status": "completed",
-		"toolName":    "send_input",
-		"input": map[string]any{
-			"tool":              "send_input",
-			"receiverThreadIds": []string{"child-1"},
-		},
-	})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "call-interact-2",
-		ItemType: "send_input", ParentToolUseID: "spawn-1", Meta: interactionMeta,
-		Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("interaction complete: %v", err)
+	launchBefore, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("launch before progress: found=%v err=%v", found, err)
 	}
-	interactions := launchInteractions(t, st, "t1", "spawn-1")
-	if len(interactions) != 1 || interactions[0].Tool != "" {
-		t.Fatalf("interactions = %+v, want one neutral entry", interactions)
-	}
-}
-
-// TestCodexMailboxProgressDeliveryDoesNotCompleteTheChild covers G4/F4: a
-// `Message Type: MESSAGE` delivery is progress, not the answer.
-func TestCodexMailboxProgressDeliveryDoesNotCompleteTheChild(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
 
 	progressMeta, _ := json.Marshal(map[string]any{
 		"agent_path":       "/root/reviewer",
@@ -2896,6 +2877,7 @@ func TestCodexMailboxProgressDeliveryDoesNotCompleteTheChild(t *testing.T) {
 		"message_type":     "MESSAGE",
 		"mailbox_delivery": true,
 		"delivery_id":      "content:progress-1",
+		"message":          "Running focused tests",
 	})
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-1",
@@ -2911,30 +2893,36 @@ func TestCodexMailboxProgressDeliveryDoesNotCompleteTheChild(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("launch: found=%v err=%v", found, err)
 	}
+	if launch.Meta != launchBefore.Meta || launch.UpdatedAt != launchBefore.UpdatedAt {
+		t.Fatalf("progress mutated spawn row: before=%s after=%s", launchBefore.Meta, launch.Meta)
+	}
 	if status := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))["child-1"]; status != "" {
 		t.Fatalf("progress delivery marked the child terminal: %q", status)
 	}
-	interactions := decodeCodexCollabInteractionLog(json.RawMessage(launch.Meta)).Interactions
-	if len(interactions) != 1 || interactions[0].Kind != codexCollabInteractionProgress {
-		t.Fatalf("interactions = %+v, want one progress beat", interactions)
+	var progressRows []store.Item
+	for _, item := range findItemsByKind(t, st, "t1", itemKindToolCall) {
+		if item.ToolName == "send_input" {
+			progressRows = append(progressRows, item)
+		}
+	}
+	if len(progressRows) != 1 || progressRows[0].ParentID != "" || !strings.Contains(progressRows[0].Meta, `"activityKind":"progress"`) {
+		t.Fatalf("progress rows = %+v, want one standalone activity", progressRows)
+	}
+	if progressRows[0].TurnIndex != launchBefore.TurnIndex || progressRows[0].ItemIndex <= launchBefore.ItemIndex {
+		t.Fatalf("progress position = (%d,%d), want write head after spawn (%d,%d)",
+			progressRows[0].TurnIndex, progressRows[0].ItemIndex, launchBefore.TurnIndex, launchBefore.ItemIndex)
 	}
 }
 
-// TestCodexResumeInteractionIDComesFromTheDurableGeneration: the resume
-// sub-line's id is minted from `codex_child_resume_generations`, which only
-// ever counts up, not from the number of `resumed` entries still in the capped
-// list. Counting off the list walks BACKWARDS after the first trim, so every
-// resume past the cap re-mints one id and the upsert folds them all onto a
-// single sub-line.
-func TestCodexResumeInteractionIDComesFromTheDurableGeneration(t *testing.T) {
+// Resume generations remain durable because completion identity uses them to
+// distinguish identical answers from different child turns. They are internal
+// bookkeeping, not timeline presentation state.
+func TestCodexResumeGenerationRemainsDurable(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
 
-	// A card that has already been through seven resumes and whose sub-line
-	// list has since been trimmed of every one of them — the state the cap
-	// produces on a long-lived agent.
 	launch, found, err := st.GetThreadItem("t1", "spawn-1")
 	if err != nil || !found {
 		t.Fatalf("launch: found=%v err=%v", found, err)
@@ -2942,9 +2930,6 @@ func TestCodexResumeInteractionIDComesFromTheDurableGeneration(t *testing.T) {
 	seeded, _ := json.Marshal(map[string]any{
 		"codex_child_resume_generations": map[string]int{"child-1": 7},
 		"codex_child_terminal_statuses":  map[string]string{"child-1": "completed"},
-		"codex_collab_interactions": []codexCollabInteraction{
-			{ID: "progress:1", Kind: codexCollabInteractionProgress, At: 1},
-		},
 	})
 	if err := st.UpdateItemMeta("t1", "spawn-1", mergeItemMetaJSON(launch.Meta, seeded)); err != nil {
 		t.Fatalf("seed launch meta: %v", err)
@@ -2958,217 +2943,11 @@ func TestCodexResumeInteractionIDComesFromTheDurableGeneration(t *testing.T) {
 		t.Fatalf("child resume: %v", err)
 	}
 
-	interactions := launchInteractions(t, st, "t1", "spawn-1")
-	var resumed []codexCollabInteraction
-	for _, interaction := range interactions {
-		if interaction.Kind == codexCollabInteractionResumed {
-			resumed = append(resumed, interaction)
-		}
-	}
-	if len(resumed) != 1 {
-		t.Fatalf("interactions = %+v, want exactly one resumed section", interactions)
-	}
-	if resumed[0].ID != "resumed:child-1:8" {
-		t.Fatalf("resume interaction id = %q, want it minted from the durable generation", resumed[0].ID)
-	}
 	stored, _, err := st.GetThreadItem("t1", "spawn-1")
 	if err != nil {
 		t.Fatalf("launch: %v", err)
 	}
 	if got := decodeCodexChildResumeGenerations(json.RawMessage(stored.Meta))["child-1"]; got != 8 {
 		t.Fatalf("resume generation = %d, want 8", got)
-	}
-}
-
-// TestMergeCodexCollabInteractionDropsAReplayOfATrimmedEntry: the upsert is
-// keyed on entry id but can only see the retained tail, so without the
-// eviction ledger a duplicate that arrives after its original was trimmed
-// re-appends as the NEWEST sub-line and evicts a live one.
-func TestMergeCodexCollabInteractionDropsAReplayOfATrimmedEntry(t *testing.T) {
-	log := codexCollabInteractionLog{}
-	for i := 0; i < maxCodexCollabInteractions+1; i++ {
-		var changed bool
-		log, changed = mergeCodexCollabInteraction(log, codexCollabInteraction{
-			ID:   fmt.Sprintf("interaction-%d", i),
-			Kind: codexCollabInteractionInteracted,
-			At:   int64(i),
-		})
-		if !changed {
-			t.Fatalf("entry %d reported no change", i)
-		}
-	}
-	if len(log.Interactions) != maxCodexCollabInteractions {
-		t.Fatalf("retained %d entries, want the cap", len(log.Interactions))
-	}
-	if len(log.Evicted) != 1 || log.Evicted[0] != codexCollabInteractionEvictedDigest("interaction-0") {
-		t.Fatalf("evicted ledger = %v, want the trimmed id's digest", log.Evicted)
-	}
-
-	replay := codexCollabInteraction{ID: "interaction-0", Kind: codexCollabInteractionInteracted, At: 0}
-	after, changed := mergeCodexCollabInteraction(log, replay)
-	if changed {
-		t.Fatalf("a replay of a trimmed entry was recorded again: %+v", after.Interactions)
-	}
-	if newest := after.Interactions[len(after.Interactions)-1].ID; newest != fmt.Sprintf("interaction-%d", maxCodexCollabInteractions) {
-		t.Fatalf("newest sub-line = %q, want the real newest interaction", newest)
-	}
-	if len(after.Interactions) != maxCodexCollabInteractions {
-		t.Fatalf("retained %d entries after the replay, want the cap", len(after.Interactions))
-	}
-}
-
-// TestMergeCodexCollabInteractionBoundsTheEvictionLedger: the ledger is ids
-// only and capped, so a card that runs for a long time cannot grow its meta
-// without bound.
-func TestMergeCodexCollabInteractionBoundsTheEvictionLedger(t *testing.T) {
-	log := codexCollabInteractionLog{}
-	total := maxCodexCollabInteractions + maxCodexCollabInteractionsEvicted + 10
-	for i := 0; i < total; i++ {
-		log, _ = mergeCodexCollabInteraction(log, codexCollabInteraction{
-			ID:   fmt.Sprintf("interaction-%d", i),
-			Kind: codexCollabInteractionInteracted,
-			At:   int64(i),
-		})
-	}
-	if len(log.Evicted) != maxCodexCollabInteractionsEvicted {
-		t.Fatalf("evicted ledger holds %d ids, want the cap %d", len(log.Evicted), maxCodexCollabInteractionsEvicted)
-	}
-	// Oldest first: the ids nearest the retained window are the ones a replay
-	// is most likely to name.
-	wantOldest := codexCollabInteractionEvictedDigest(
-		fmt.Sprintf("interaction-%d", total-maxCodexCollabInteractions-maxCodexCollabInteractionsEvicted))
-	if log.Evicted[0] != wantOldest {
-		t.Fatalf("evicted[0] = %q, want %q", log.Evicted[0], wantOldest)
-	}
-}
-
-// TestMergeCodexCollabInteractionRemembersPastTheRenderedRetention: the
-// ledger's horizon is DECOUPLED from the rendered list's.
-//
-// It used to be `maxCodexCollabInteractionsEvicted = maxCodexCollabInteractions`,
-// which meant 32 retained plus 32 remembered: at the 65th unique interaction
-// on one card the first was in neither, so a replay of it (a reconnect, a
-// duplicate completion leg) appended as the NEWEST sub-line — evicting a live
-// entry AND re-dating an interaction that happened long ago. The failure the
-// ledger exists to prevent simply moved to a higher entry count.
-//
-// The number below is deliberately BEYOND the old horizon and inside the new
-// one, so it fails on the coupled bound and passes on the decoupled one.
-func TestMergeCodexCollabInteractionRemembersPastTheRenderedRetention(t *testing.T) {
-	if maxCodexCollabInteractionsEvicted <= maxCodexCollabInteractions {
-		t.Fatalf("eviction horizon %d does not outlive the retained %d, so a replay past "+
-			"the rendered window is unrecognisable again",
-			maxCodexCollabInteractionsEvicted, maxCodexCollabInteractions)
-	}
-	log := codexCollabInteractionLog{}
-	// One past the horizon the coupled bound would have given.
-	total := 2*maxCodexCollabInteractions + 1
-	for i := 0; i < total; i++ {
-		log, _ = mergeCodexCollabInteraction(log, codexCollabInteraction{
-			ID:   fmt.Sprintf("interaction-%d", i),
-			Kind: codexCollabInteractionInteracted,
-			At:   int64(i),
-		})
-	}
-	newestBefore := log.Interactions[len(log.Interactions)-1]
-
-	// The very first interaction, replayed long after it left the rendered
-	// list. Its `At` is what makes the damage visible: appending it would
-	// place an hour-old interaction at the head of the card.
-	replay := codexCollabInteraction{ID: "interaction-0", Kind: codexCollabInteractionInteracted, At: 0}
-	after, changed := mergeCodexCollabInteraction(log, replay)
-	if changed {
-		t.Fatalf("a replay of interaction-0 was recorded again after %d entries", total)
-	}
-	newestAfter := after.Interactions[len(after.Interactions)-1]
-	if newestAfter != newestBefore {
-		t.Fatalf("newest sub-line moved from %+v to %+v — the replay evicted a live entry",
-			newestBefore, newestAfter)
-	}
-}
-
-// A row written before the digest form holds RAW ids in the ledger. Both
-// forms have to be recognised, or the first merge after an upgrade forgets
-// everything those rows already knew.
-func TestMergeCodexCollabInteractionHonoursARawIDEvictionLedger(t *testing.T) {
-	log := codexCollabInteractionLog{
-		Interactions: []codexCollabInteraction{
-			{ID: "interaction-9", Kind: codexCollabInteractionInteracted, At: 9},
-		},
-		Evicted: []string{"interaction-0"},
-	}
-	replay := codexCollabInteraction{ID: "interaction-0", Kind: codexCollabInteractionInteracted, At: 0}
-	after, changed := mergeCodexCollabInteraction(log, replay)
-	if changed || len(after.Interactions) != 1 {
-		t.Fatalf("a raw-id ledger entry was not honoured: changed=%v interactions=%+v",
-			changed, after.Interactions)
-	}
-}
-
-// TestCodexChildResumeAfterDeliveryRecordsResumedSection covers the card
-// acceptance criterion that a child's LATER turns appear under the same card.
-func TestCodexChildResumeAfterDeliveryRecordsResumedSection(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
-
-	// First turn's answer lands.
-	deliverMeta, _ := json.Marshal(map[string]any{
-		"agent_path":       "/root/reviewer",
-		"status":           "completed",
-		"message_type":     "FINAL_ANSWER",
-		"mailbox_delivery": true,
-		"delivery_id":      "content:answer-1",
-		"message":          "First answer",
-	})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventSubagentNotification, ThreadID: "t1", ItemID: "spawn-1",
-		Meta: deliverMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("first delivery: %v", err)
-	}
-	launch, _, err := st.GetThreadItem("t1", "spawn-1")
-	if err != nil {
-		t.Fatalf("launch: %v", err)
-	}
-	var delivered struct {
-		At int64 `json:"codex_collab_delivered_at"`
-	}
-	if json.Unmarshal([]byte(launch.Meta), &delivered) != nil || delivered.At == 0 {
-		t.Fatalf("delivered stamp missing: %s", launch.Meta)
-	}
-
-	// The child then starts a new turn.
-	statusMeta, _ := json.Marshal(map[string]any{
-		"agent_path": "child-1",
-		"status":     "running",
-	})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-1",
-		Meta: statusMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("child resume: %v", err)
-	}
-
-	interactions := launchInteractions(t, st, "t1", "spawn-1")
-	if len(interactions) != 1 || interactions[0].Kind != codexCollabInteractionResumed {
-		t.Fatalf("interactions = %+v, want one resumed section", interactions)
-	}
-
-	// A child that was never terminal is still on its first turn: no section.
-	seedCodexSpawnCard(t, router, st, "t1", "spawn-2", "child-2")
-	statusMeta2, _ := json.Marshal(map[string]any{
-		"agent_path": "child-2",
-		"status":     "running",
-	})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventSubagentStatus, ThreadID: "t1", ItemID: "spawn-2",
-		Meta: statusMeta2, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("first-turn status: %v", err)
-	}
-	if again := launchInteractions(t, st, "t1", "spawn-2"); len(again) != 0 {
-		t.Fatalf("first-turn status recorded a resumed section: %+v", again)
 	}
 }

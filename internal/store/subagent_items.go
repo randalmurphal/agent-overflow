@@ -24,6 +24,13 @@ import (
 const (
 	metaKeySubagentDescendantCount    = "subagentDescendantCount"
 	metaKeySubagentLatestChildSummary = "subagentLatestChildSummary"
+	// metaKeySubagentLatestToolSummary is a read-time decoration for the
+	// background tray. It is deliberately not persisted on the launch: the
+	// timeline spawn row's presentation is a fixed launch event, while the tray
+	// is the live projection that may show the child's latest direct tool call.
+	metaKeySubagentLatestToolSummary = "subagentLatestToolSummary"
+	metaKeySubagentLatestToolTurn    = "subagentLatestToolTurnIndex"
+	metaKeySubagentLatestToolItem    = "subagentLatestToolItemIndex"
 )
 
 // maxSubagentDescendants caps one expansion load, mirroring the
@@ -191,6 +198,104 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		items[i].Meta = mergeSubagentAnchorMeta(items[i].Meta, agg)
 	}
 	return items, nil
+}
+
+// decorateLatestDirectSubagentTools merges the newest direct, non-launch tool
+// summary under each supplied launch into a read-time copy of that launch.
+// Direct ownership matters: a nested agent has its own tray row, so its tools
+// must not also appear as the parent's latest activity. The one query handles
+// every live launch in the thread and keeps tray refreshes free of N+1 reads.
+func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
+	rootIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Kind == "tool_call" && strings.TrimSpace(item.ID) != "" {
+			rootIDs = append(rootIDs, item.ID)
+		}
+	}
+	if len(rootIDs) == 0 {
+		return items, nil
+	}
+
+	args := make([]any, 0, len(rootIDs)+1)
+	args = append(args, threadID)
+	for _, id := range rootIDs {
+		args = append(args, id)
+	}
+	rows, err := q.Query(`
+		SELECT parent_id, summary, turn_index, item_index FROM (
+			SELECT parent_id,
+			       summary,
+			       turn_index,
+			       item_index,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY parent_id
+			           ORDER BY turn_index DESC, item_index DESC, id
+			       ) AS rn
+			  FROM items
+			 WHERE thread_id = ?
+			   AND parent_id IN (`+placeholders(len(rootIDs))+`)
+			   AND parent_id <> ''
+			   AND kind = 'tool_call'
+			   AND tool_name <> 'collab_agent'
+			   AND TRIM(summary) <> ''
+		) WHERE rn = 1`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query latest direct subagent tools for %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	type latestTool struct {
+		summary              string
+		turnIndex, itemIndex int
+	}
+	latestByRoot := make(map[string]latestTool, len(rootIDs))
+	for rows.Next() {
+		var rootID, summary string
+		var turnIndex, itemIndex int
+		if err := rows.Scan(&rootID, &summary, &turnIndex, &itemIndex); err != nil {
+			return nil, fmt.Errorf("store: scan latest direct subagent tool: %w", err)
+		}
+		latestByRoot[rootID] = latestTool{
+			summary: strings.TrimSpace(summary), turnIndex: turnIndex, itemIndex: itemIndex,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate latest direct subagent tools for %s: %w", threadID, err)
+	}
+
+	for i := range items {
+		latest := latestByRoot[items[i].ID]
+		if latest.summary == "" {
+			continue
+		}
+		decorated, err := mergeReadTimeMeta(items[i].Meta, map[string]any{
+			metaKeySubagentLatestToolSummary: latest.summary,
+			metaKeySubagentLatestToolTurn:    latest.turnIndex,
+			metaKeySubagentLatestToolItem:    latest.itemIndex,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("store: decorate latest direct subagent tool for %s/%s: %w", threadID, items[i].ID, err)
+		}
+		items[i].Meta = decorated
+	}
+	return items, nil
+}
+
+func mergeReadTimeMeta(itemMeta string, decoration map[string]any) (string, error) {
+	merged := map[string]any{}
+	if strings.TrimSpace(itemMeta) != "" {
+		if err := json.Unmarshal([]byte(itemMeta), &merged); err != nil {
+			return "", err
+		}
+	}
+	for key, value := range decoration {
+		merged[key] = value
+	}
+	data, err := json.Marshal(merged)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // subagentAggregatesByRoot returns, for each root id that has visible

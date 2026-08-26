@@ -19,6 +19,7 @@ import { __resetCustomSpinnersForTest } from '../../stores/spinners.svelte';
 import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../stores/sendQueue.svelte';
 import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/liveTodoState.svelte';
 import type { QueueItem } from '../../stores/sendQueue.svelte';
+import { applyItemStreamEvent, flushItemEventQueue } from '../../stores/eventsItemStream';
 
 function backgroundLaunch(overrides = {}) {
   return makeItem({
@@ -787,6 +788,74 @@ describe('<ActivityRail>', () => {
     // ignores this upsert before the debounce starts.
     await Promise.resolve();
     await tick();
+    expect(fetches).toBe(baseline);
+  });
+
+  it('projects a direct Codex child tool without re-fetching the tray', async () => {
+    vi.useFakeTimers();
+    let fetches = 0;
+    const launch = backgroundLaunch({
+      id: 'spawn-agent',
+      toolName: 'collab_agent',
+      meta: JSON.stringify({ input: { tool: 'spawn_agent' } }),
+    });
+    setBindingMock('ListLiveBackgroundTasks', async () => {
+      fetches++;
+      return [launch];
+    });
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+    const { getByTestId } = render(ActivityRailHost, { props: { pane } });
+    await tick();
+    await tick();
+    await fireEvent.click(getByTestId('activity-rail-background-toggle'));
+    await tick();
+    const baseline = fetches;
+
+    const childTool = makeItem({
+      id: 'child-tool',
+      threadId: pane.threadId!,
+      kind: 'tool_call',
+      role: 'assistant',
+      parentId: 'spawn-agent',
+      toolName: 'Bash',
+      summary: 'Bash: pnpm test',
+      itemIndex: 1,
+    });
+    applyItemStreamEvent({
+      action: 'upsert',
+      threadId: pane.threadId!,
+      item: childTool,
+    });
+    flushItemEventQueue();
+    await tick();
+
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Bash: pnpm test');
+
+    const newerTool = makeItem({
+      id: 'child-tool-newer',
+      threadId: pane.threadId!,
+      kind: 'tool_call',
+      role: 'assistant',
+      parentId: 'spawn-agent',
+      toolName: 'Read',
+      summary: 'Read: newest.ts',
+      itemIndex: 2,
+    });
+    applyItemStreamEvent({ action: 'upsert', threadId: pane.threadId!, item: newerTool });
+    flushItemEventQueue();
+    await tick();
+
+    const lateOlderTool = {
+      ...childTool,
+      status: 'completed' as const,
+      summary: 'Bash: pnpm test (done)',
+    };
+    applyItemStreamEvent({ action: 'upsert', threadId: pane.threadId!, item: lateOlderTool });
+    flushItemEventQueue();
+    await tick();
+
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Read: newest.ts');
+    await vi.advanceTimersByTimeAsync(101);
     expect(fetches).toBe(baseline);
   });
 

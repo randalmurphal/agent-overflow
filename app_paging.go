@@ -255,7 +255,7 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list live background tasks: %w", err)
 	}
-	codexSubagents, err := a.store.ListLiveCodexSubagentLaunches(threadID)
+	codexSubagents, err := a.store.ListLiveCodexSubagentLaunchesForTray(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("list live Codex subagent launches: %w", err)
 	}

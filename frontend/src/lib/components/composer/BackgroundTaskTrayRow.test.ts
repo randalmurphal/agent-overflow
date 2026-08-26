@@ -171,6 +171,28 @@ describe('<BackgroundTaskTrayRow>', () => {
     expect(getByTestId('collab-tool-row-status-slot').querySelector('[data-state="running"]')).not.toBeNull();
   });
 
+  it('shows the latest projected Codex child tool beneath the live tray row', () => {
+    const launch = makeItem({
+      id: 'bg-collab-tool',
+      threadId: 'thread-1',
+      kind: 'tool_call',
+      toolName: 'collab_agent',
+      summary: 'spawn agent',
+      status: 'running',
+      meta: JSON.stringify({
+        input: {
+          tool: 'spawn_agent',
+          receiverThreadIds: ['agent-1'],
+        },
+        subagentLatestToolSummary: 'Bash: pnpm test',
+      }),
+    });
+
+    const { getByTestId } = renderTrayRow(taskFor(launch));
+
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Bash: pnpm test');
+  });
+
   it('routes generic tray rows through GenericToolCallRow', () => {
     const launch = makeItem({
       id: 'bg-generic',

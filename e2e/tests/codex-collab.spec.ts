@@ -25,13 +25,6 @@ interface Item {
   payloadMeta?: string;
 }
 
-interface CollabInteraction {
-  id: string;
-  kind: string;
-  tool?: string;
-  at: number;
-}
-
 async function startCollabThread(harness: HarnessApp, scenario: string): Promise<string> {
   await harness.rpc('HarnessSetScenario', { name: scenario });
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -58,12 +51,7 @@ function parseMeta(item: Item | undefined): Record<string, unknown> {
   }
 }
 
-function interactions(item: Item | undefined): CollabInteraction[] {
-  const raw = parseMeta(item).codex_collab_interactions;
-  return Array.isArray(raw) ? (raw as CollabInteraction[]) : [];
-}
-
-/** The spawn LAUNCH rows — the cards. One per spawned child. */
+/** Immutable spawn events. One per spawned child. */
 function spawnCards(items: Item[]): Item[] {
   return items.filter((i) => i.kind === 'tool_call' && i.toolName === 'collab_agent');
 }
@@ -104,7 +92,7 @@ test('two FINAL_ANSWERs in one parent turn become two rows, not one overwritten 
   expect(items.filter((i) => i.status === 'running' || i.status === 'streaming')).toEqual([]);
 });
 
-test('a queue-only send_message lands on the spawn card with its raw verb, not a top-level row', async ({
+test('a queue-only send_message becomes its own chronological activity row', async ({
   harness,
 }) => {
   const threadId = await startCollabThread(harness, 'codex-collab-send-message-queueonly');
@@ -114,16 +102,16 @@ test('a queue-only send_message lands on the spawn card with its raw verb, not a
   await expect
     .poll(async () => {
       const items = await harness.rpc<Item[]>('ListItems', threadId);
-      const card = spawnCards(items)[0];
-      return interactions(card).map((entry) => `${entry.kind}:${entry.tool ?? ''}`);
+      return items
+        .filter((item) => item.toolName === 'send_input')
+        .map((item) => String((parseMeta(item).input as any)?.activityTool ?? ''));
     })
-    .toEqual(['interacted:send_message']);
+    .toEqual(['send_message']);
 
-  // The whole point of moving it onto the card: no orphan "Sent input to X"
-  // row scattered across the timeline.
   const items = await harness.rpc<Item[]>('ListItems', threadId);
-  expect(items.filter((i) => i.toolName === 'send_input')).toEqual([]);
-  expect(items.some((i) => i.summary.includes('Sent input to'))).toBe(false);
+  const activity = items.find((item) => item.toolName === 'send_input');
+  expect(activity?.completionOf ?? '').toBe('');
+  expect(parseMeta(spawnCards(items)[0]).codex_collab_interactions).toBeUndefined();
 });
 
 test('an encrypted MESSAGE delivery is a progress beat, not a completion', async ({ harness }) => {
@@ -135,19 +123,24 @@ test('an encrypted MESSAGE delivery is a progress beat, not a completion', async
     .poll(async () => {
       const items = await harness.rpc<Item[]>('ListItems', threadId);
       const card = spawnCards(items)[0];
+      const progress = items.filter(
+        (item) => item.toolName === 'send_input' && (parseMeta(item).input as any)?.activityKind === 'progress',
+      );
       if (!card) return null;
       return {
-        kinds: interactions(card).map((entry) => entry.kind),
+        progress: progress.length,
         completions: completionsFor(items, card.id).length,
       };
     })
-    .toEqual({ kinds: ['progress'], completions: 1 });
+    .toEqual({ progress: 1, completions: 1 });
 
-  // The ciphertext body never becomes a summary: the progress entry carries a
-  // beat and nothing else.
+  // The ciphertext body never becomes timeline text.
   const items = await harness.rpc<Item[]>('ListItems', threadId);
   const card = spawnCards(items)[0];
-  expect(interactions(card)[0].tool ?? '').toBe('');
+  const progress = items.find(
+    (item) => item.toolName === 'send_input' && (parseMeta(item).input as any)?.activityKind === 'progress',
+  );
+  expect((parseMeta(progress).input as any)?.message ?? '').toBe('');
   const completion = completionsFor(items, card.id)[0];
   expect(JSON.parse(completion.payloadMeta ?? '{}').preview).toContain('Review complete.');
 });
@@ -188,13 +181,14 @@ test('a reloaded child resumes on the same card and both answers survive', async
         answers: completionsFor(items, cards[0].id)
           .map((row) => String(JSON.parse(row.payloadMeta ?? '{}').preview ?? '').trim())
           .sort(),
-        kinds: interactions(cards[0]).map((entry) => entry.kind),
+        followups: items.filter(
+          (item) => item.toolName === 'send_input' && (parseMeta(item).input as any)?.activityKind === 'interacted',
+        ).length,
       };
     })
     .toEqual({
       cards: 1,
       answers: ['First answer.', 'Second answer.'],
-      // The follow-up, then the child waking up again on the same card.
-      kinds: ['interacted', 'resumed'],
+      followups: 1,
     });
 });

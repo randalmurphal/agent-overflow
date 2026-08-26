@@ -84,7 +84,7 @@ func extractSubagentCompletionFromRawAgentMessageItem(item map[string]json.RawMe
 // (agent path, MESSAGE, "", "") tuple. Admitting it would hand one delivery a
 // second identity (the raw `agent_message` carrier keys the same beat on its
 // ciphertext tail digest, which this record does not have), duplicating the
-// sub-line the card shows, while every later beat from that child collapsed
+// standalone progress activity, while every later beat from that child collapsed
 // onto the one id this carrier can mint. The raw carrier is the only one that
 // can tell these apart, so it is the only one allowed to report them.
 //

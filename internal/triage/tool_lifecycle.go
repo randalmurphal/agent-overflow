@@ -533,15 +533,12 @@ func (r *Router) persistToolCallCompletedWithoutLaunch(evt provider.ProviderEven
 // item/completed is the WHOLE lifecycle — no item/started row precedes them —
 // and which therefore have to mint their own top-level row.
 //
-// `send_input` is deliberately NOT here. MultiAgentV2 renders both messaging
-// verbs as `subAgentActivity kind:"interacted"`, and those land on the spawn
-// card as sub-lines (`observeCodexCollabInteractionComplete`) instead of
-// scattering a "Sent input to X" row per message across the timeline. A V1
-// `sendInput` whose spawn card cannot be resolved is dropped by the same rule
-// rather than reappearing as an orphan top-level row with no agent context.
+// MultiAgentV2's `send_input` item is completion-only too. It remains an
+// independent chronological activity row: a message sent now must never mutate
+// the historical spawn event that established the child.
 func shouldPersistCodexCompletionWithoutLaunch(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case "collab_agent", "close_agent":
+	case "collab_agent", "close_agent", "send_input":
 		return true
 	default:
 		return false

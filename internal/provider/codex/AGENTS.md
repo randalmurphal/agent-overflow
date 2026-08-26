@@ -687,10 +687,10 @@ context meter, title, or compact state (ADR-002).
 suppression set. It is intercepted in `interceptChildNotification`
 (`session_notifications.go`) BEFORE the child-state branch and converted, by
 `emitChildTokenUsageProgress`, into an `EventSubagentProgress` scoped to
-the spawn card:
+the live background projection for that spawn:
 
-- `ItemID` is the spawn's `parentToolUseID` — the launch row the tick
-  renders on;
+- `ItemID` is the spawn's `parentToolUseID` — the launch identity the live
+  projection renders against;
 - `ParentToolUseID` is that spawn's OWN parent, resolved by trimming the
   child's canonical agent path (`/root/reviewer/deep` → `/root/reviewer`)
   and mapping it back to a launch. Depth-1 children and path-less builds

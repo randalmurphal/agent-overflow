@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "codex-collab-progress-message",
-  "description": "MultiAgentV2 progress delivery: the child sends `Message Type: MESSAGE` mid-run as an ENCRYPTED envelope (leading input_text header ending at \"Payload:\\n\" plus an encrypted_content block, which is what a single-text-block parser drops on the floor), then later sends its real FINAL_ANSWER. Expect a progress beat on the card with no body and NO terminal status, followed by exactly one completion row.",
+  "description": "MultiAgentV2 progress delivery: the child sends `Message Type: MESSAGE` mid-run as an ENCRYPTED envelope (leading input_text header ending at \"Payload:\\n\" plus an encrypted_content block, which is what a single-text-block parser drops on the floor), then later sends its real FINAL_ANSWER. Expect a standalone progress activity with no body and NO terminal status, an unchanged spawn event, and exactly one completion row.",
   "provider": "codex",
   "turns": [
     {

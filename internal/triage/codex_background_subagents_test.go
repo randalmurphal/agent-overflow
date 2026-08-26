@@ -94,47 +94,8 @@ func TestIdenticalMailboxAnswersAcrossAResumeGetTwoRows(t *testing.T) {
 	}
 }
 
-// The delivered/idle axis describes the CURRENT child turn. A resumed child
-// that goes terminal again with nothing drained is idle, not delivered.
-func TestResumeClearsTheDeliveredStamp(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createCodexBackgroundTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-	seedCodexSpawnCard(t, router, st, "t1", "spawn-1", "child-1")
-
-	deliveredAt := func() int64 {
-		t.Helper()
-		launch, found, err := st.GetThreadItem("t1", "spawn-1")
-		if err != nil || !found {
-			t.Fatalf("launch: found=%v err=%v", found, err)
-		}
-		var parsed struct {
-			At int64 `json:"codex_collab_delivered_at"`
-		}
-		if err := json.Unmarshal([]byte(launch.Meta), &parsed); err != nil {
-			t.Fatalf("decode launch meta: %v", err)
-		}
-		return parsed.At
-	}
-
-	deliverMailbox(t, router, "t1", "spawn-1", mailboxDelivery(t, "/root/reviewer", "First answer"))
-	if deliveredAt() == 0 {
-		t.Fatal("first answer did not stamp delivered")
-	}
-
-	resumeChild(t, router, "t1", "spawn-1", "child-1")
-	if at := deliveredAt(); at != 0 {
-		t.Fatalf("delivered stamp survived the resume: %d", at)
-	}
-
-	deliverMailbox(t, router, "t1", "spawn-1", mailboxDelivery(t, "/root/reviewer", "Second answer"))
-	if deliveredAt() == 0 {
-		t.Fatal("the resumed turn's answer did not stamp delivered")
-	}
-}
-
-// A PLAINTEXT progress note's body is the only copy of that text — nothing
-// else persists it. An encrypted envelope has no body and keeps none.
+// Progress is a chronological activity row. The launch's visible content stays
+// the spawn event, and the body is bounded before it reaches the timeline.
 func TestMailboxProgressStoresABoundedBody(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
@@ -156,29 +117,58 @@ func TestMailboxProgressStoresABoundedBody(t *testing.T) {
 		return meta
 	}
 
+	launchBefore, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("launch before progress: found=%v err=%v", found, err)
+	}
 	deliverMailbox(t, router, "t1", "spawn-1", progress("halfway; tests failing in X\nsecond line dropped"))
-	deliverMailbox(t, router, "t1", "spawn-1", progress(""))
-
-	interactions := launchInteractions(t, st, "t1", "spawn-1")
-	if len(interactions) != 2 {
-		t.Fatalf("interactions = %+v, want two progress beats", interactions)
-	}
-	if interactions[0].Kind != codexCollabInteractionProgress ||
-		interactions[0].Text != "halfway; tests failing in X" {
-		t.Fatalf("plaintext beat = %+v", interactions[0])
-	}
-	if interactions[1].Text != "" {
-		t.Fatalf("encrypted beat kept a body: %+v", interactions[1])
-	}
 
 	long := ""
 	for range codexCollabProgressTextRunes + 40 {
 		long += "x"
 	}
 	deliverMailbox(t, router, "t1", "spawn-1", progress(long))
-	interactions = launchInteractions(t, st, "t1", "spawn-1")
-	body := interactions[len(interactions)-1].Text
-	if runes := []rune(body); len(runes) > codexCollabProgressTextRunes+1 {
+
+	launchAfter, found, err := st.GetThreadItem("t1", "spawn-1")
+	if err != nil || !found {
+		t.Fatalf("launch after progress: found=%v err=%v", found, err)
+	}
+	if launchAfter.Meta != launchBefore.Meta || launchAfter.UpdatedAt != launchBefore.UpdatedAt {
+		t.Fatalf("progress mutated launch: before=%+v after=%+v", launchBefore, launchAfter)
+	}
+
+	var rows []store.Item
+	for _, item := range findItemsByKind(t, st, "t1", itemKindToolCall) {
+		if item.ToolName == "send_input" {
+			rows = append(rows, item)
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("progress rows = %+v, want two standalone rows", rows)
+	}
+	if rows[0].ParentID != "" || !json.Valid([]byte(rows[0].Meta)) ||
+		!containsJSONField(rows[0].Meta, "message", "halfway; tests failing in X") {
+		t.Fatalf("plaintext progress row = %+v", rows[0])
+	}
+	var latestMeta struct {
+		Input struct {
+			Message string `json:"message"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(rows[1].Meta), &latestMeta); err != nil {
+		t.Fatalf("decode latest progress: %v", err)
+	}
+	if runes := []rune(latestMeta.Input.Message); len(runes) > codexCollabProgressTextRunes+1 {
 		t.Fatalf("progress body ran to %d runes", len(runes))
 	}
+}
+
+func containsJSONField(raw, key, want string) bool {
+	var value map[string]any
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return false
+	}
+	input, _ := value["input"].(map[string]any)
+	got, _ := input[key].(string)
+	return got == want
 }

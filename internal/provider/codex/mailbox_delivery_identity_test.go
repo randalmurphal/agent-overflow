@@ -126,9 +126,9 @@ func TestIdenticalDeliveriesSurviveAcrossChildTurns(t *testing.T) {
 //
 // So the durable carrier cannot name an encrypted progress beat at all. Letting
 // it mint an id from an empty tail gives ONE delivery TWO ids: the raw carrier's
-// tail-keyed one and this degenerate one, which is a duplicate sub-line on the
-// card — and every later beat from that child then collapses onto the same
-// degenerate id, so the card shows one stuck entry instead of a conversation.
+// tail-keyed one and this degenerate one, which is a duplicate timeline
+// activity — and every later beat from that child then collapses onto the same
+// degenerate id, so the timeline shows one stuck entry instead of a conversation.
 // It refuses instead.
 func TestDurableCarrierRefusesAnEncryptedProgressBeatItCannotIdentify(t *testing.T) {
 	// The plaintext header of an encrypted MESSAGE: everything after
@@ -168,8 +168,8 @@ func TestDurableCarrierRefusesAnEncryptedProgressBeatItCannotIdentify(t *testing
 
 // The refusal is scoped to the identity-incomplete case only. A PLAINTEXT
 // progress beat has its body in the header, so both carriers see the same
-// bytes and agree on one id — refusing it would drop a sub-line the card is
-// supposed to show.
+// bytes and agree on one id — refusing it would drop a progress activity the
+// timeline is supposed to show.
 func TestDurableCarrierStillReportsAPlaintextProgressBeat(t *testing.T) {
 	header := "Message Type: MESSAGE\nTask name: /root\nSender: /root/review_perf\nPayload:\nHalfway through the sweep."
 	encoded, err := json.Marshal(header)

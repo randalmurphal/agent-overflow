@@ -144,7 +144,7 @@ Authoritative method list from
 | `thread/queue/changed` | 0.148. The thread's provider-side queue changed. `{threadId}` and nothing else — no depth, no item id, no text. Below 0.148 the classifier's own notice is the answer; on a queue-native session the session layer replaces it with a `thread/queue/list` diffed against AO's own client ids. See §Externally queued turns in the package guide. |
 | `thread/compacted` | Thread housekeeping. Compaction boundary event (deprecated upstream in favour of the `contextCompaction` item; both feed `EventCompactBoundary`). |
 | `thread/name/updated` | Thread housekeeping. Thread name/title changed. |
-| `thread/tokenUsage/updated` | Thread housekeeping. Rolling CUMULATIVE token-usage snapshot; per-turn deltas are derived (`usage_accounting.go`). On a SPAWNED CHILD thread it is the one thread-wide notification not suppressed — it is re-scoped onto the spawn card as `EventSubagentProgress` and never meters the parent. See below. |
+| `thread/tokenUsage/updated` | Thread housekeeping. Rolling CUMULATIVE token-usage snapshot; per-turn deltas are derived (`usage_accounting.go`). On a SPAWNED CHILD thread it is the one thread-wide notification not suppressed — it is re-scoped onto that spawn's live background projection as `EventSubagentProgress` and never meters the parent. See below. |
 | `thread/settings/updated` | Codex's authoritative config echo. Reconciled into the session's observed snapshot; emits nothing. |
 | `skills/changed` | Side channel. An EMPTY struct upstream — no cwd, no scope, no name — so the whole `internal/codexskills` cache is dropped rather than narrowed. |
 | `account/rateLimits/updated` | Account-wide quota snapshot. Surfaced as `EventRateLimits` / `provider:usage action:"rate_limits"`. |
@@ -424,10 +424,10 @@ and normalizes them before triage:
 (`core/src/tools/handlers/multi_agents_v2/message_tool.rs`) and both end in a
 single `kind:"interacted"` item with no verb field. The ONLY signal is the raw
 function-call `name` on `rawResponseItem/completed`, which is live-only: a
-resumed session never sees it. Agent Overflow persists it onto the spawn launch
-at interaction time (`input.activityTool` → `codex_collab_interactions[].tool`)
-so it survives a restart, and labels the interaction neutrally when it is
-absent. It must never be inferred from whether a child turn followed — that is
+resumed session never sees it. Agent Overflow persists it on the standalone
+`send_input` activity row as `input.activityTool`, and labels the operation
+neutrally when it is absent. It must never be inferred from whether a child
+turn followed — that is
 exactly the ordering heuristic
 [invariant 25](../architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics)
 forbids.
@@ -576,7 +576,7 @@ transient reads/resumes retry, conflicting/self-referential ownership is
 rejected, and traversal stops after 256 descendants with a visible warning.
 
 Known child `turn/started` is normalized to a launch-keyed running status. This
-reactivates a previously completed child's spawn card when `followup_task`
+reactivates a previously completed child's background projection when `followup_task`
 starts another turn; its later `turn/completed` marks that launch inactive
 again. Neither lifecycle event is allowed to mutate the root turn.
 
@@ -674,7 +674,8 @@ That envelope—not child `turn/completed` and not `wait_agent` returning—is t
 MultiAgentV2 transcript-completion boundary, and only for `FINAL_ANSWER`. Agent
 Overflow emits one flat completion row per DELIVERY (a child that answers twice
 in one parent turn produces two rows); a `MESSAGE` delivery produces no
-completion row at all, only a progress beat on the child's spawn card. Fresh
+completion row, but does produce its own chronological `send_input` progress
+row. Fresh
 sessions see the model-input projection as a raw `agent_message` response item;
 resumed sessions see the durable record above. Older rollouts that persisted the
 projected response item remain supported.
@@ -767,9 +768,9 @@ The parent's `spawn_agent` item carries `agentsStates` — a map of
 `thread_id → CollabAgentStatus`. Updated on the item envelope as
 state changes. Surfaced by `enrichItemMeta` in `protocol.go` (the
 `collabAgentToolCall` branch copies it into `extras.input.agentsStates`
-alongside `tool` / `prompt` / `receiverThreadIds`) so the frontend can
-render a live child-status badge without subscribing to every child
-thread's session-status events. See
+alongside `tool` / `prompt` / `receiverThreadIds`) for launch correlation and
+background projection. The immutable timeline spawn row does not render that
+live child state. See
 `CodexMonitor/src/utils/threadItems.collab.ts:299-369` for the
 reference rendering.
 

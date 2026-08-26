@@ -57,8 +57,8 @@ import (
 //     resolution, the child terminal-status ledger and the synthesized
 //     completion row. Two narrower concerns sit beside it:
 //     codex_background_mailbox.go (Codex's injected <subagent_notification>
-//     deliveries) and codex_background_interactions.go (the spawn card's
-//     bounded collab-interaction list).
+//     deliveries) and codex_background_activity.go (standalone progress rows
+//     and durable child-turn identity).
 
 const codexLiveCommandOutputMaxBytes = 1024 * 1024
 
@@ -271,12 +271,6 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 	itemID := strings.TrimSpace(evt.ItemID)
 	if itemID == "" {
 		return nil
-	}
-
-	// A collab interaction (send_message / followup_task, and V1 sendInput)
-	// belongs on the spawn card, not on a top-level row of its own.
-	if claimed, err := r.observeCodexCollabInteractionComplete(evt); err != nil || claimed {
-		return err
 	}
 
 	r.mu.Lock()

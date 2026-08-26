@@ -69,7 +69,7 @@ func isChildTurnLifecycleNotification(method string) bool {
 // (`if parentToolUseID != "" { return events }`).
 //
 // `turn/started` / `turn/completed` are intentionally NOT here — they
-// drive the EventSubagentStatus emission that the spawn card needs.
+// drive the EventSubagentStatus emission the background projection needs.
 // Routing for those lives in `isChildTurnLifecycleNotification` above
 // (adding child notification handling in one helper but not the matching
 // lifecycle / suppression helper is a subtle bug).
@@ -295,8 +295,8 @@ func (s *Session) childStatusEvent(providerThreadID, parentToolUseID, status str
 // elapsed time for a child, so tokens are the whole tick — which is why
 // SubagentProgressMeta is merged rather than replaced downstream.
 //
-//   - ItemID is the spawn tool_use, so the tick lands on the spawn card
-//     the child belongs to.
+//   - ItemID is the spawn tool_use, so the tick lands on the live background
+//     projection for the child.
 //   - ParentToolUseID is the SPAWN's own parent when the wire lets us
 //     resolve one, so a nested spawn's tick is attributable without a
 //     row lookup. Codex publishes no direct edge; the canonical agent
@@ -890,20 +890,6 @@ func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, p
 		evt.Kind == provider.EventSubagentStatus {
 		if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
 			evt.ItemID = parentToolUseID
-			evt.ParentToolUseID = parentToolUseID
-		}
-		return
-	}
-	if readRawString(item, "type") == "subAgentActivity" &&
-		readRawString(item, "kind") == "interacted" &&
-		evt.ItemType == "send_input" {
-		// The interaction belongs to the child's spawn card, but it keeps its
-		// OWN id: the activity item id is the tool call id (upstream's
-		// `SubAgentActivityItem { id: call_id }`), which is what makes each
-		// message a distinct, idempotent sub-line — and what
-		// `enrichRawToolCallMetadata` joins the raw `send_message` /
-		// `followup_task` name onto immediately after this.
-		if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
 			evt.ParentToolUseID = parentToolUseID
 		}
 		return

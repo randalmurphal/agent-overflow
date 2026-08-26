@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "codex-collab-reload-after-unload",
-  "description": "MultiAgentV2 residency reload: a child answers and goes terminal, then a `followup_task` re-loads it (ensure_v2_agent_loaded re-fires notify_thread_created, so the SAME spawn activity arrives a second time) and it runs another turn and answers again. Expect ONE spawn card \u2014 the repeated ownership registration is idempotent \u2014 carrying a resumed section and BOTH answers, not a second card and not one overwritten row.",
+  "description": "MultiAgentV2 residency reload: a child answers and goes terminal, then a `followup_task` re-loads it (ensure_v2_agent_loaded re-fires notify_thread_created, so the SAME spawn activity arrives a second time) and it runs another turn and answers again. Expect ONE immutable spawn event \u2014 repeated ownership registration is idempotent \u2014 plus a standalone follow-up activity and BOTH completion rows, not a second spawn and not one overwritten answer.",
   "provider": "codex",
   "turns": [
     {

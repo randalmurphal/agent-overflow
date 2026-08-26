@@ -67,6 +67,15 @@ func (c *converter) startToolCall(env envelope) {
 	if callID == "" {
 		callID = strings.TrimSpace(p.ID)
 	}
+	if _, projected := c.collabActivityRows[callID]; projected && callID != "" {
+		if isCollabMessageToolName(p.Name) {
+			return
+		}
+		// The typed activity claimed this id as a message, but the raw call
+		// says it belongs to a different tool. Preserve the raw tool and make
+		// the malformed collision visible instead of silently relabelling it.
+		c.corrupt++
+	}
 	if _, done := c.itemRows[callID]; done && callID != "" {
 		// A paginated `item_completed` already emitted the complete row
 		// for this call one line earlier, with detail this response item
@@ -161,10 +170,21 @@ func toolIdentity(kind, name string) (toolName, itemType string) {
 		return "Bash", "commandExecution"
 	case "apply_patch":
 		return "file_change", "fileChange"
+	case "send_message", "followup_task":
+		return "send_input", "send_input"
 	case "":
 		return "tool", "toolCall"
 	default:
 		return name, "toolCall"
+	}
+}
+
+func isCollabMessageToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "send_message", "followup_task", "send_input", "sendInput":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -196,6 +216,13 @@ func (c *converter) toolInput(p responseCallPayload, toolName string) (json.RawM
 		obj = map[string]json.RawMessage{"command": encoded}
 	}
 	normalizeCommandKeys(obj)
+	if toolName == "send_input" {
+		obj["tool"] = json.RawMessage(`"send_input"`)
+		obj["activityKind"] = json.RawMessage(`"interacted"`)
+		if activityTool, err := json.Marshal(strings.TrimSpace(p.Name)); err == nil {
+			obj["activityTool"] = activityTool
+		}
+	}
 	command, _ := rawString(obj, "command")
 	encoded, err := json.Marshal(obj)
 	if err != nil {

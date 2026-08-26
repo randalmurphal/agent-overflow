@@ -108,7 +108,7 @@ function parseCodexSubagentInput(item: Item): ParsedCodexSubagentInput {
   };
 }
 
-function agentPathLabel(agentPath: string): string {
+export function agentPathLabel(agentPath: string): string {
   const segments = agentPath.split('/').map((segment) => segment.trim()).filter(Boolean);
   return segments.at(-1) ?? '';
 }

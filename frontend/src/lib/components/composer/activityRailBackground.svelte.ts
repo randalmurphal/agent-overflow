@@ -26,12 +26,63 @@ import type { Item } from '../../types/models';
 import { asProviderID, type ProviderID } from '../../types/providers';
 import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { debounce } from '../../utils/debounce';
+import { parseJsonObject } from '../../utils/parseJsonObject';
+import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
 
 // Brief retention so a completion has time to flicker into view as the
 // terminal state but doesn't linger after the user has read it. Just
 // long enough to register; not long enough to feel sticky.
 const COMPLETION_RETENTION_MS = 200;
 const REFRESH_DEBOUNCE_MS = 100;
+
+function projectLatestCodexTool(items: Item[], tool: Item): Item[] {
+  const parentId = tool.parentId?.trim();
+  const summary = tool.summary.trim();
+  if (!parentId || !summary || tool.toolName === 'collab_agent') return items;
+
+  let changed = false;
+  const projected = items.map((item) => {
+    if (item.id !== parentId || item.toolName !== 'collab_agent' || item.status !== 'running') {
+      return item;
+    }
+    const parsedMeta = parseJsonObject(item.meta);
+    if (item.meta?.trim() && parsedMeta === null) {
+      console.error(`ActivityRail: malformed Codex launch meta for ${item.id}`);
+      return item;
+    }
+    const meta = parsedMeta ?? {};
+    const currentTurnValue = meta[CODEX_LATEST_TOOL_META.turnIndex];
+    const currentItemValue = meta[CODEX_LATEST_TOOL_META.itemIndex];
+    const currentTurn = typeof currentTurnValue === 'number'
+      ? currentTurnValue
+      : -1;
+    const currentItem = typeof currentItemValue === 'number'
+      ? currentItemValue
+      : -1;
+    if (
+      tool.turnIndex < currentTurn
+      || (tool.turnIndex === currentTurn && tool.itemIndex < currentItem)
+    ) {
+      return item;
+    }
+    if (
+      meta[CODEX_LATEST_TOOL_META.summary] === summary
+      && tool.turnIndex === currentTurn
+      && tool.itemIndex === currentItem
+    ) return item;
+    changed = true;
+    return {
+      ...item,
+      meta: JSON.stringify({
+        ...meta,
+        [CODEX_LATEST_TOOL_META.summary]: summary,
+        [CODEX_LATEST_TOOL_META.turnIndex]: tool.turnIndex,
+        [CODEX_LATEST_TOOL_META.itemIndex]: tool.itemIndex,
+      }),
+    };
+  });
+  return changed ? projected : items;
+}
 
 export interface BackgroundController {
   readonly tasks: TrayTask[];
@@ -110,7 +161,22 @@ export function createBackgroundController(
     mount(): () => void {
       const cancelItemUpsert = onItemUpsert((item) => {
         if (item.threadId !== threadId) return;
-        if (item.isBackground || item.completionOf) {
+        if (provider === 'codex' && item.parentId && item.kind === 'tool_call') {
+          if (item.toolName === 'collab_agent') {
+            // A nested launch needs a store refresh so its own tray row joins
+            // the hierarchy. Ordinary child tools can update the existing
+            // tray projection directly and avoid a full recursive query per
+            // tool call; reconnect hydration still comes from the store.
+            debouncedRefresh();
+          } else {
+            backgroundItems = projectLatestCodexTool(backgroundItems, item);
+          }
+          return;
+        }
+        if (
+          item.isBackground
+          || item.completionOf
+        ) {
           debouncedRefresh();
         }
       });

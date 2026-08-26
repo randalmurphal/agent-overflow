@@ -18,10 +18,10 @@
  *
  * - `send_message` / `followup_task` both end in one `subAgentActivity`
  *   `kind:"interacted"` item that AO normalizes to `send_input`. The raw verb
- *   rides along as `input.activityTool` and is persisted onto the spawn card;
+ *   rides along as `input.activityTool` on the standalone chronological row;
  *   the typed wire cannot distinguish the two.
  * - `interrupt_agent` produces `kind:"interrupted"`, which AO routes as a
- *   subagent STATUS signal onto the existing spawn card — never its own row.
+ *   hidden lifecycle signal for the existing launch — never its own row.
  * - `list_agents` emits no item.
  *
  * So `interrupt_agent` / `list_agents` are deliberately absent (nothing can

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -390,6 +391,61 @@ func TestListLiveCodexSubagentLaunches_ReturnsCompletedActiveSpawn(t *testing.T)
 		t.Fatalf("has live Codex subagent launch: %v", err)
 	} else if !active {
 		t.Fatal("HasLiveCodexSubagentLaunch = false, want true")
+	}
+}
+
+func TestListLiveCodexSubagentLaunches_DecoratesLatestDirectToolWithoutMutatingLaunch(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	spawn := Item{
+		ID: "spawn-active", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "completed",
+		Summary: "spawn_agent", IsBackground: true, ToolName: "collab_agent",
+		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`, CreatedAt: 1000,
+	}
+	if err := s.InsertItem(spawn); err != nil {
+		t.Fatalf("seed spawn: %v", err)
+	}
+	for _, item := range []Item{
+		{ID: "child-read", ThreadID: "t", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "Read: README.md", ToolName: "Read", ParentID: spawn.ID, CreatedAt: 1001},
+		{ID: "child-bash", ThreadID: "t", TurnIndex: 0, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Bash: pnpm test", ToolName: "command_execution", ParentID: spawn.ID, CreatedAt: 1002},
+		// A nested launch is represented by its own tray row and must not replace
+		// the owning agent's latest ordinary tool summary.
+		{ID: "nested-spawn", ThreadID: "t", TurnIndex: 0, ItemIndex: 3, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "spawn_agent", ToolName: "collab_agent", ParentID: spawn.ID, CreatedAt: 1003},
+		{ID: "nested-tool", ThreadID: "t", TurnIndex: 0, ItemIndex: 4, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Grep: nested", ToolName: "grep", ParentID: "nested-spawn", CreatedAt: 1004},
+	} {
+		if err := s.InsertItem(item); err != nil {
+			t.Fatalf("seed %s: %v", item.ID, err)
+		}
+	}
+
+	got, err := s.ListLiveCodexSubagentLaunchesForTray("t")
+	if err != nil {
+		t.Fatalf("list launches: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("launches = %v, want one", collectIDs(got))
+	}
+	var projected map[string]any
+	if err := json.Unmarshal([]byte(got[0].Meta), &projected); err != nil {
+		t.Fatalf("decode projected meta: %v", err)
+	}
+	if got := projected[metaKeySubagentLatestToolSummary]; got != "Bash: pnpm test" {
+		t.Fatalf("latest tool summary = %#v, want Bash command", got)
+	}
+
+	stored, found, err := s.GetThreadItem("t", spawn.ID)
+	if err != nil || !found {
+		t.Fatalf("reload spawn: found=%v err=%v", found, err)
+	}
+	var persisted map[string]any
+	if err := json.Unmarshal([]byte(stored.Meta), &persisted); err != nil {
+		t.Fatalf("decode persisted meta: %v", err)
+	}
+	if _, exists := persisted[metaKeySubagentLatestToolSummary]; exists {
+		t.Fatalf("read-time latest tool leaked into persisted spawn meta: %s", stored.Meta)
 	}
 }
 

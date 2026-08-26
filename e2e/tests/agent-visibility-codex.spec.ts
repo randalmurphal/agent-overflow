@@ -107,6 +107,29 @@ const CHILD_TOKENS_LINE = rpc('thread/tokenUsage/updated', {
   },
 });
 
+const CHILD_TOOL_LINES = [
+  rpc('item/started', {
+    threadId: CHILD_THREAD,
+    turnId: 'child-turn',
+    item: { id: 'child-tool-read', type: 'commandExecution', status: 'inProgress', command: 'rg TODO' },
+  }),
+  rpc('item/completed', {
+    threadId: CHILD_THREAD,
+    turnId: 'child-turn',
+    item: { id: 'child-tool-read', type: 'commandExecution', status: 'completed', command: 'rg TODO', exitCode: 0 },
+  }),
+  rpc('item/started', {
+    threadId: CHILD_THREAD,
+    turnId: 'child-turn',
+    item: { id: 'child-tool-test', type: 'commandExecution', status: 'inProgress', command: 'pnpm test' },
+  }),
+  rpc('item/completed', {
+    threadId: CHILD_THREAD,
+    turnId: 'child-turn',
+    item: { id: 'child-tool-test', type: 'commandExecution', status: 'completed', command: 'pnpm test', exitCode: 0 },
+  }),
+];
+
 // What a Codex child actually does: its transcript streams to the parent
 // thread, parented to the spawn (`isUnsafeChildProjectionEvent` lets
 // assistant text through). Its final message IS the answer — the
@@ -174,6 +197,8 @@ async function startSpawnTurn(
             // Claude's task_progress.
             { waitSignal: { name: 'tokens' } },
             { emit: { lines: [CHILD_TOKENS_LINE], delayBetweenMs: 5 } },
+            { waitSignal: { name: 'tools' } },
+            { emit: { lines: CHILD_TOOL_LINES, delayBetweenMs: 5 } },
             { waitSignal: { name: 'answer' } },
             { emit: { lines: CHILD_TRANSCRIPT_LINES, delayBetweenMs: 5 } },
             { emit: { lines: FINAL_ANSWER_LINES, delayBetweenMs: 5 } },
@@ -219,6 +244,14 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   // cached prompt each round and not the 4.4k latest-input figure.
   await expect(trayRow.getByTestId('background-task-tray-row-tokens')).toHaveText('3.4k tokens');
 
+  // Child tool calls stay in the pane transcript. The live tray keeps only
+  // the newest direct call, and the historical spawn row does not grow.
+  await waitForGate(harness, 'tools');
+  await advance(harness, mockId, 'tools');
+  await expect(trayRow.getByTestId('background-task-tray-row-activity')).toContainText('pnpm test');
+  await expect(trayRow.getByTestId('background-task-tray-row-activity')).not.toContainText('rg TODO');
+  await expect(spawnRow).not.toContainText('pnpm test');
+
   // --- The same pane ------------------------------------------------
   await spawnRow.hover();
   await spawnRow.getByTestId('collab-tool-row-open-pane').click();
@@ -236,9 +269,10 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   // `close_agent` is a model tool, so the pane offers no Stop.
   await expect(pane.getByTestId('agent-pane-stop')).toHaveCount(0);
 
-  // The pane body is empty until the child says something: its rows
-  // reach this scope only once they stream.
-  await expect(pane.getByTestId('agent-pane-empty')).toBeVisible();
+  // The full child transcript keeps both calls even though the tray shows
+  // only the latest one.
+  await expect(pane.getByTestId('agent-pane-timeline')).toContainText('rg TODO');
+  await expect(pane.getByTestId('agent-pane-timeline')).toContainText('pnpm test');
 
   // --- The child's answer lands: the card, at the completion ---------
   await waitForGate(harness, 'answer');
@@ -278,6 +312,8 @@ test('a Codex child\u2019s answer renders once, as a normal message', async ({
   const mockId = await startSpawnTurn(harness, page, 'codex-answer-app', 'Codex answer');
   await waitForGate(harness, 'tokens');
   await advance(harness, mockId, 'tokens');
+  await waitForGate(harness, 'tools');
+  await advance(harness, mockId, 'tools');
   await waitForGate(harness, 'answer');
   await advance(harness, mockId, 'answer');
   await harness.waitForEvent('provider:turn_completed');

@@ -20,8 +20,8 @@ import (
 // (`codexMailboxCompletionID`), and the launch resolution both paths share.
 //
 // The spawn/launch state machine these writers mutate lives in
-// codex_background_subagents.go; the bounded sub-line list a progress beat
-// appends to lives in codex_background_interactions.go.
+// codex_background_subagents.go. Progress deliveries are independent timeline
+// activities; they never mutate the historical spawn row.
 
 // observeCodexSubagentNotification handles the detached-child closure
 // signal: Codex core injects a <subagent_notification> tag into the
@@ -41,7 +41,7 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 		// `Message Type: MESSAGE` is a mid-run progress note, not the child's
 		// answer: it must never mark the child terminal or synthesize a
 		// completion row. On an encrypted envelope its payload never leaves the
-		// ciphertext, so the card shows the beat and no body.
+		// ciphertext, so the activity row shows the beat and no body.
 		return r.recordCodexMailboxProgress(evt, parsed)
 	}
 	status := strings.TrimSpace(parsed.Status)
@@ -60,27 +60,13 @@ func (r *Router) observeCodexSubagentNotification(evt provider.ProviderEvent) er
 		if !ok {
 			continue
 		}
-		// Read BEFORE the meta merges below: the delivery belongs to the child
+		// Read before the terminal merge: the delivery belongs to the child
 		// turn that is settling now, which is the generation the card already
 		// carries. reactivateCodexSpawnChild is what advances it.
 		resumeGeneration := decodeCodexChildResumeGenerations(json.RawMessage(launch.item.Meta))[childID]
 		if parsed.MailboxDelivery {
 			if recorded := strings.TrimSpace(decodeCodexChildTerminalStatuses(json.RawMessage(launch.item.Meta))[childID]); recorded != "" {
 				status = recorded
-			}
-			// The card's "delivered" state is the FINAL_ANSWER reaching parent
-			// model context — not the child merely going terminal, which is the
-			// weaker "idle" state (it finished; nothing has been drained yet).
-			// markCodexSpawnChildTerminal persists this merge below.
-			// map[string]any{string: int64} cannot fail to marshal, but the
-			// stamp is the whole delivered/idle distinction on the card, so a
-			// future field added here must not disappear silently.
-			if delivered, err := json.Marshal(map[string]any{
-				"codex_collab_delivered_at": eventTimestampMillis(evt),
-			}); err != nil {
-				log.Printf("triage: codex-background delivered stamp %s: %v", launch.item.ID, err)
-			} else {
-				launch.item.Meta = mergeItemMetaJSON(launch.item.Meta, delivered)
 			}
 		}
 		allTerminal, aggregateStatus, err := r.markCodexSpawnChildTerminal(launch.item, launch.meta, childID, status)
@@ -193,28 +179,17 @@ func (r *Router) persistedSubagentNotificationLaunches(
 	return out, nil
 }
 
-// recordCodexMailboxProgress lands a child -> parent `MESSAGE` delivery on the
-// spawn card as a progress beat: no terminal status and no completion row, the
-// delivery only proves the child reported in. A PLAINTEXT envelope's body is
-// kept, bounded to one line, because it is the only place that text exists —
-// the raw carrier is projected as an internal event and nothing else persists
-// it, so without this the note is gone from SQLite the moment the card
-// reloads. An ENCRYPTED envelope carries no body at all and keeps none.
+// recordCodexMailboxProgress lands a child -> parent `MESSAGE` delivery as an
+// independent timeline activity: no terminal status and no completion row.
+// Plaintext keeps one bounded line; encrypted delivery still records the beat.
 func (r *Router) recordCodexMailboxProgress(evt provider.ProviderEvent, parsed codexSubagentSignalMeta) error {
 	launches, err := r.codexSubagentNotificationLaunches(evt, parsed)
 	if err != nil || len(launches) == 0 {
 		return err
 	}
-	digest := sha256.Sum256([]byte(strings.TrimSpace(parsed.AgentPath) + "\x00" + strings.TrimSpace(parsed.DeliveryID)))
-	entry := codexCollabInteraction{
-		ID:   fmt.Sprintf("progress:%x", digest[:8]),
-		Kind: codexCollabInteractionProgress,
-		Text: codexCollabProgressText(parsed.Message),
-		At:   eventTimestampMillis(evt),
-	}
 	var firstErr error
 	for _, launch := range launches {
-		if err := r.appendCodexCollabInteraction(launch.item, entry); err != nil && firstErr == nil {
+		if err := r.persistCodexMailboxProgress(evt, launch, parsed); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

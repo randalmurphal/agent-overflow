@@ -354,6 +354,9 @@ func TestMultiAgentV2InteractionDoesNotExposeEncryptedRawMessage(t *testing.T) {
 	if len(events) != 1 || events[0].Kind != provider.EventToolComplete || events[0].ItemType != "send_input" {
 		t.Fatalf("interaction events = %+v", events)
 	}
+	if events[0].ParentToolUseID != "" {
+		t.Fatalf("interaction parent = %q, want a top-level timeline event", events[0].ParentToolUseID)
+	}
 	var meta struct {
 		Input struct {
 			Tool         string `json:"tool"`

@@ -230,10 +230,10 @@ the typed stream alone cannot express — read the scenario's own
 | Scenario | What it reproduces |
 |---|---|
 | `codex-collab-two-deliveries` | One child answers TWICE in a single parent turn, both envelopes stamped with the same passthrough `turn_id`. Keying delivery identity on that turn id collapses them onto one row. |
-| `codex-collab-parallel-children` | Two children spawned in one parent turn, both answering into it. Each `FINAL_ANSWER` must land on ITS OWN spawn card. |
+| `codex-collab-parallel-children` | Two children spawned in one parent turn, both answering into it. Each `FINAL_ANSWER` must land on its own completion row linked to the correct spawn. |
 | `codex-collab-progress-message` | A `Message Type: MESSAGE` progress delivery in its ENCRYPTED form — plaintext header block plus an `encrypted_content` tail — followed by the real `FINAL_ANSWER`. A single-text-block parser drops the progress beat entirely. |
 | `codex-collab-send-message-queueonly` | `send_message` (QueueOnly): the parent messages a running child, no child turn starts, and the typed wire is indistinguishable from `followup_task` — the raw function-call name is the only verb evidence. |
-| `codex-collab-reload-after-unload` | A terminal child re-loaded by `followup_task`, which re-fires the SAME spawn activity. The repeated ownership registration must not mint a second spawn card. |
+| `codex-collab-reload-after-unload` | A terminal child re-loaded by `followup_task`, which re-fires the SAME spawn activity. The repeated ownership registration must not mint a second spawn event. |
 | `codex-steer-while-running` | A turn that parks mid-stream so sends reach it through `turn/steer`. The mock answers each steer with the `userMessage` echo carrying the `clientUserMessageId` back as `clientId` — the identity every codex pending send is registered by. |
 | `codex-revert-paginated` | A thread on a current app-server that takes the paginated history AO asks for at >= 0.148, so edit-and-resend cuts it in place with `thread/revert`. |
 | `codex-revert-legacy` | The same thread against an app-server reporting `codex_cli_rs/0.147.0`: legacy history for life, so edit-and-resend must fall back to `thread/fork` and repoint at a new provider thread id. |

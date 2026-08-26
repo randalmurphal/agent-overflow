@@ -1,7 +1,7 @@
 {
   "version": 1,
   "name": "codex-collab-send-message-queueonly",
-  "description": "MultiAgentV2 `send_message` (QueueOnly): the parent messages a running child, which queues into the child's mailbox and starts NO child turn. The typed wire shows only `subAgentActivity kind:\"interacted\"` \u2014 identical to `followup_task` \u2014 so the raw function-call name is the only verb evidence. Expect the interaction on the spawn card (no top-level \"Sent input to X\" row) carrying tool `send_message`, and no child turn.",
+  "description": "MultiAgentV2 `send_message` (QueueOnly): the parent messages a running child, which queues into the child's mailbox and starts NO child turn. The typed wire shows only `subAgentActivity kind:\"interacted\"` \u2014 identical to `followup_task` \u2014 so the raw function-call name is the only verb evidence. Expect a standalone chronological send activity carrying tool `send_message`, an unchanged spawn event, and no child turn.",
   "provider": "codex",
   "turns": [
     {

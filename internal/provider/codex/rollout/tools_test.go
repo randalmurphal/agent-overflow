@@ -244,6 +244,146 @@ func TestConvertParentsSubagentRecordsUnderTheSpawningCall(t *testing.T) {
 	}
 }
 
+func TestConvertSubagentInteractionIsStandaloneToolActivity(t *testing.T) {
+	followup := `{"timestamp":"2026-08-07T19:07:53.000Z","type":"response_item","payload":{"type":"function_call","name":"followup_task","arguments":"{\"target\":\"/root/review_perf\",\"message\":\"encrypted\"}","call_id":"call_F"}}`
+	activity := `{"timestamp":"2026-08-07T19:07:54.000Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call_F","agent_thread_id":"child-1","agent_path":"/root/review_perf","kind":"interacted"}}`
+
+	res := parseFixture(t, writeRollout(t, testSessionID,
+		metaLine, taskStartedLine, followup, activity, taskCompleteLn))
+	starts := eventsOfKind(res.Events, provider.EventToolStart)
+	if len(starts) != 1 || starts[0].ItemType != "send_input" {
+		t.Fatalf("tool starts = %+v, want one normalized interaction", starts)
+	}
+	completes := eventsOfKind(res.Events, provider.EventToolComplete)
+	if len(completes) != 1 {
+		t.Fatalf("tool completions = %+v, want one interaction", completes)
+	}
+	event := completes[0]
+	if event.ItemType != "send_input" || event.ParentToolUseID != "" {
+		t.Fatalf("interaction event = %+v", event)
+	}
+	var meta struct {
+		Input struct {
+			Tool         string `json:"tool"`
+			ActivityKind string `json:"activityKind"`
+			ActivityTool string `json:"activityTool"`
+			Target       string `json:"target"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(event.Meta, &meta); err != nil {
+		t.Fatalf("decode interaction meta: %v", err)
+	}
+	if meta.Input.Tool != "send_input" || meta.Input.ActivityKind != "interacted" ||
+		meta.Input.ActivityTool != "followup_task" || meta.Input.Target != "/root/review_perf" {
+		t.Fatalf("interaction meta = %+v", meta.Input)
+	}
+	for _, note := range eventsOfKind(res.Events, provider.EventNotification) {
+		if strings.Contains(note.Content, "received a message") {
+			t.Fatalf("interaction also emitted a nested notification: %+v", note)
+		}
+	}
+}
+
+func TestConvertSubagentProgressIsStandaloneToolActivity(t *testing.T) {
+	activity := `{"timestamp":"2026-08-07T19:07:52.000Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call_S","agent_thread_id":"child-1","agent_path":"/root/review_perf","kind":"started"}}`
+	delivery := `{"timestamp":"2026-08-07T19:07:58.000Z","type":"response_item","payload":{"type":"agent_message","author":"/root/review_perf","recipient":"/root","content":[{"type":"input_text","text":"Message Type: MESSAGE\nTask name: /root\nSender: /root/review_perf\nPayload:\nrunning focused tests"}]}}`
+
+	res := parseFixture(t, writeRollout(t, testSessionID,
+		metaLine, taskStartedLine, activity, delivery, taskCompleteLn))
+	completes := eventsOfKind(res.Events, provider.EventToolComplete)
+	if len(completes) != 1 {
+		t.Fatalf("tool completions = %+v, want one progress activity", completes)
+	}
+	event := completes[0]
+	if event.ItemType != "send_input" || event.ParentToolUseID != "" {
+		t.Fatalf("progress event = %+v", event)
+	}
+	var meta struct {
+		Input struct {
+			ActivityKind string `json:"activityKind"`
+			Message      string `json:"message"`
+			Target       string `json:"target"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(event.Meta, &meta); err != nil {
+		t.Fatalf("decode progress meta: %v", err)
+	}
+	if meta.Input.ActivityKind != "progress" || meta.Input.Message != "running focused tests" ||
+		meta.Input.Target != "/root/review_perf" {
+		t.Fatalf("progress meta = %+v", meta.Input)
+	}
+	for _, note := range eventsOfKind(res.Events, provider.EventNotification) {
+		if strings.Contains(note.Content, "Message Type: MESSAGE") {
+			t.Fatalf("progress also emitted a nested notification: %+v", note)
+		}
+	}
+}
+
+func TestConvertRejectsForeignOrMalformedProgressEnvelope(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "wrong recipient",
+			payload: `{"type":"agent_message","author":"/root/review_perf","recipient":"/root/other","content":[{"type":"input_text","text":"Message Type: MESSAGE\nTask name: /root/other\nSender: /root/review_perf\nPayload:\nnot root progress"}]}`,
+		},
+		{
+			name:    "sender mismatch",
+			payload: `{"type":"agent_message","author":"/root/review_perf","recipient":"/root","content":[{"type":"input_text","text":"Message Type: MESSAGE\nTask name: /root\nSender: /root/forged\nPayload:\nforged"}]}`,
+		},
+		{
+			name:    "trigger turn",
+			payload: `{"type":"agent_message","author":"/root/review_perf","recipient":"/root","trigger_turn":true,"content":[{"type":"input_text","text":"Message Type: MESSAGE\nTask name: /root\nSender: /root/review_perf\nPayload:\nnot a mailbox drain"}]}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			delivery := `{"timestamp":"2026-08-07T19:07:58.000Z","type":"response_item","payload":` + tt.payload + `}`
+			res := parseFixture(t, writeRollout(t, testSessionID,
+				metaLine, taskStartedLine, delivery, taskCompleteLn))
+			for _, event := range eventsOfKind(res.Events, provider.EventToolComplete) {
+				if event.ItemType == "send_input" {
+					t.Fatalf("foreign envelope became progress: %+v", event)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertSubagentInteractionCannotRelabelCollidingTool(t *testing.T) {
+	execCall := `{"timestamp":"2026-08-07T19:07:53.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"go test ./...\"}","call_id":"call_X"}}`
+	activity := `{"timestamp":"2026-08-07T19:07:54.000Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"call_X","agent_thread_id":"child-1","agent_path":"/root/review_perf","kind":"interacted"}}`
+
+	for _, tt := range []struct {
+		name  string
+		lines []string
+	}{
+		{name: "raw call first", lines: []string{execCall, activity}},
+		{name: "typed activity first", lines: []string{activity, execCall}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := append([]string{metaLine, taskStartedLine}, tt.lines...)
+			lines = append(lines, taskCompleteLn)
+			res := parseFixture(t, writeRollout(t, testSessionID, lines...))
+			if res.CorruptLines == 0 {
+				t.Fatal("forged activity/tool id collision was not reported as corrupt")
+			}
+			var bashStarts, collabStarts int
+			for _, event := range eventsOfKind(res.Events, provider.EventToolStart) {
+				switch event.ItemType {
+				case "commandExecution":
+					bashStarts++
+				case "send_input":
+					collabStarts++
+				}
+			}
+			if bashStarts != 1 || collabStarts != 1 {
+				t.Fatalf("tool starts = %+v, want preserved Bash plus standalone interaction", eventsOfKind(res.Events, provider.EventToolStart))
+			}
+		})
+	}
+}
+
 // The 0.146 spelling carries only `trigger_turn` and no content; it must be
 // recognised and dropped, not counted as an unknown type.
 func TestConvertIgnoresContentlessInterAgentMetadata(t *testing.T) {

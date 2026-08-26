@@ -21,14 +21,13 @@ import (
 // The authorization rule it implements is invariant 25's second signal: a
 // spawn is BACKGROUND only while its own `agentsStates` still reports a
 // non-terminal child. Transcript presentation is a separate boundary again —
-// a child going terminal is "idle", and only Codex draining its answer into
-// parent model context is "delivered".
+// a child going terminal and Codex draining its answer into parent model
+// context remain operational lifecycle facts, never presentation appended to
+// the historical spawn event.
 //
 // Two narrower concerns split out of here and read as their own files:
 // codex_background_mailbox.go owns Codex's injected `<subagent_notification>`
-// deliveries (FINAL_ANSWER completions and MESSAGE progress beats), and
-// codex_background_interactions.go owns the bounded collab-interaction list
-// the spawn card renders as sub-lines.
+// deliveries (FINAL_ANSWER completions and MESSAGE progress activities).
 //
 // The unified-exec half lives in codex_background_exec.go; the shared
 // per-thread state, the two tool-lifecycle entry points that dispatch into
@@ -72,7 +71,7 @@ type codexBackgroundCompletionOptions struct {
 	completionID    string
 }
 
-func codexSubagentTerminalMeta(childID, status string, allTerminal bool, aggregateStatus string) json.RawMessage {
+func codexSubagentTerminalMeta(childID, status string, allTerminal bool) json.RawMessage {
 	childID = strings.TrimSpace(childID)
 	status = strings.TrimSpace(status)
 	if status == "" {
@@ -83,7 +82,6 @@ func codexSubagentTerminalMeta(childID, status string, allTerminal bool, aggrega
 	}
 	if allTerminal {
 		meta["live_background_active"] = false
-		meta["codex_child_status"] = aggregateStatus
 	}
 	encoded, err := json.Marshal(meta)
 	if err != nil {
@@ -326,65 +324,30 @@ func (r *Router) reactivateCodexSpawnChild(threadID, launchID, childID string) e
 		return err
 	}
 	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.item.Meta))
-	// A child that was already terminal and is running again started a NEW
-	// turn — a `followup_task` woke it, or it was interrupted and resumed. The
-	// card shows that as a "resumed" section so the later turns read as part of
-	// the same agent rather than appearing out of nowhere. A child that was
-	// never terminal is simply still on its first turn.
+	// A child that was already terminal and is running again started a new turn
+	// (`followup_task` or resume). Advance the durable generation so a repeated
+	// FINAL_ANSWER remains a distinct completion row.
 	resumed := strings.TrimSpace(terminalStatuses[childID]) != ""
 	// mergeItemMetaJSON deep-merges maps, so an explicit empty value clears
 	// this child logically without requiring a delete sentinel in stored JSON.
 	terminalStatuses[childID] = ""
 	fields := map[string]any{
 		"codex_child_terminal_statuses": terminalStatuses,
-		"codex_child_status":            "running",
 		"live_background_active":        true,
 	}
-	resumeGeneration := 0
 	if resumed {
-		// `codex_collab_delivered_at` describes the answer of the turn that
-		// just ENDED. The child is running again, so nothing has been drained
-		// for the new turn — leaving the stamp in place makes collabCardState
-		// report "delivered" the moment that turn goes terminal, before its
-		// answer reaches the mailbox, which is exactly the "idle" state the
-		// two are meant to distinguish. Zero rather than absent, for the same
-		// deep-merge reason as the terminal status above.
-		fields["codex_collab_delivered_at"] = 0
 		// The resume generation is what keeps a child that legitimately
 		// answers identically twice (followup_task -> "Done." again) on two
 		// rows: it is mixed into codexMailboxCompletionID, which is otherwise
-		// a pure content hash. It lives in its own counter map rather than
-		// being counted off codex_collab_interactions because that list is
-		// capped at maxCodexCollabInteractions — a trimmed list would walk the
-		// generation BACKWARDS and re-collide the ids it exists to separate.
+		// a pure content hash. The counter is durable so reconnects and live
+		// delivery carriers agree on the same identity.
 		generations := decodeCodexChildResumeGenerations(json.RawMessage(launch.item.Meta))
 		generations[childID]++
-		resumeGeneration = generations[childID]
 		fields["codex_child_resume_generations"] = generations
 	}
 	extra, err := json.Marshal(fields)
 	if err != nil {
 		return err
-	}
-	if resumed {
-		// The entry id is minted from the DURABLE resume generation, never
-		// from a count of the retained `resumed` entries: that list is capped
-		// at maxCodexCollabInteractions, so counting off it walks backwards
-		// after the first trim and every later resume re-mints the same id
-		// (`resumed:<child>:33` forever), which the upsert then folds onto one
-		// sub-line. It is the same reason codexMailboxCompletionID mixes the
-		// generation rather than a list position.
-		log := decodeCodexCollabInteractionLog(json.RawMessage(launch.item.Meta))
-		log, _ = mergeCodexCollabInteraction(log, codexCollabInteraction{
-			ID:   fmt.Sprintf("resumed:%s:%d", childID, resumeGeneration),
-			Kind: codexCollabInteractionResumed,
-			At:   time.Now().UnixMilli(),
-		})
-		interactionsMeta, err := codexCollabInteractionsMeta(log)
-		if err != nil {
-			return err
-		}
-		extra = json.RawMessage(mergeItemMetaJSON(string(extra), interactionsMeta))
 	}
 	launch.item.Meta = mergeItemMetaJSON(launch.item.Meta, extra)
 	launch.item.UpdatedAt = time.Now().UnixMilli()
@@ -448,7 +411,7 @@ func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMe
 	terminalStatuses[childID] = status
 	allTerminal := allCodexSpawnChildrenTerminal(meta.ReceiverThreadIDs, terminalStatuses)
 	aggregateStatus := aggregateCodexSubagentTerminalStatus(meta.ReceiverThreadIDs, terminalStatuses)
-	launch.Meta = mergeItemMetaJSON(launch.Meta, codexSubagentTerminalMeta(childID, status, allTerminal, aggregateStatus))
+	launch.Meta = mergeItemMetaJSON(launch.Meta, codexSubagentTerminalMeta(childID, status, allTerminal))
 	launch.UpdatedAt = time.Now().UnixMilli()
 	if err := r.persistItem(launch, nil); err != nil {
 		return allTerminal, aggregateStatus, err

@@ -63,6 +63,11 @@ type converter struct {
 	// tool the item already reported in full. See items.go
 	// applyItemEndEvent and tools.go.
 	itemRows map[string]struct{}
+	// collabActivityRows is the paginated interacted-item twin of itemRows,
+	// kept separate so the later raw function call is skipped only when its
+	// name independently confirms a collaboration message. A forged id must
+	// never hide an unrelated command/file tool.
+	collabActivityRows map[string]struct{}
 
 	// Turn state (turns.go).
 	turnIndex  int
@@ -105,14 +110,15 @@ func newConverter(opts ParseOptions, pre preScanResult) *converter {
 		// The pre-scan reads from offset 0 and the conversion pass may start
 		// past it, so a `compacted` record the pre-scan happened to see
 		// before short-circuiting is carried over rather than re-derived.
-		sawCompacted: pre.sawCompacted,
-		paginated:    pre.meta.HistoryMode == HistoryModePaginated,
-		itemRows:     map[string]struct{}{},
-		unknown:      map[string]int{},
-		usedTurnIDs:  map[string]struct{}{},
-		tools:        map[string]*openTool{},
-		toolItemIDs:  map[string]string{},
-		agentParents: map[string]string{},
+		sawCompacted:       pre.sawCompacted,
+		paginated:          pre.meta.HistoryMode == HistoryModePaginated,
+		itemRows:           map[string]struct{}{},
+		collabActivityRows: map[string]struct{}{},
+		unknown:            map[string]int{},
+		usedTurnIDs:        map[string]struct{}{},
+		tools:              map[string]*openTool{},
+		toolItemIDs:        map[string]string{},
+		agentParents:       map[string]string{},
 	}
 	// Seed the clock from the session header, so an event read off a line
 	// whose own timestamp is unparseable still carries one. Every imported

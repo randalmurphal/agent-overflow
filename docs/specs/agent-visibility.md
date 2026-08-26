@@ -125,8 +125,8 @@ launch, how do progress and terminal signals arrive, which controls exist
   summarizes collapsed with the child's FINAL_ANSWER preview; the answer
   itself is a normal message in the body, never a second block. While
   the agent runs there is no card: the pane and the tray are its live
-  surfaces, and the tray row shows the live tool count, tokens and
-  activity line. The bell is hidden on the strength of the completion
+  surfaces, and the tray row shows tokens plus only the latest direct tool
+  call as its activity line. The bell is hidden on the strength of the completion
   rendering (`utils/notificationFilter.ts`), which is why the card sits
   at the sibling rather than folding it onto a card at the launch (the
   fold-and-drop version left the transcript with no trace of the agent

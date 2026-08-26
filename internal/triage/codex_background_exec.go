@@ -23,7 +23,7 @@ import (
 // here may infer that from event ordering.
 //
 // The spawn/subagent half lives in codex_background_subagents.go and its
-// codex_background_mailbox.go / codex_background_interactions.go siblings; the
+// codex_background_mailbox.go / codex_background_activity.go siblings; the
 // shared per-thread state, the two tool-lifecycle entry points that dispatch
 // into both, and the file-level doc are in codex_background.go.
 

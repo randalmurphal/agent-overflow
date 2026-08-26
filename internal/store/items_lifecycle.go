@@ -483,6 +483,17 @@ func (s *Store) ListLiveCodexSubagentLaunches(threadID string) ([]Item, error) {
 	return items, rows.Err()
 }
 
+// ListLiveCodexSubagentLaunchesForTray decorates the canonical live launch
+// rows with tray-only latest-tool state. Operational callers use
+// ListLiveCodexSubagentLaunches so display hydration cannot fail ingestion.
+func (s *Store) ListLiveCodexSubagentLaunchesForTray(threadID string) ([]Item, error) {
+	items, err := s.ListLiveCodexSubagentLaunches(threadID)
+	if err != nil {
+		return nil, err
+	}
+	return s.decorateLatestDirectSubagentTools(s.reader(), threadID, items)
+}
+
 func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item, bool, error) {
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`

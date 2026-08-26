@@ -131,14 +131,14 @@ none fits.
   Codex's injected `<subagent_notification>` closure signal. A FINAL_ANSWER
   delivery records terminal status on the owning launch and synthesizes the
   transcript completion row once every child in that spawn is terminal; a
-  `MESSAGE` progress beat must do NEITHER and lands as a sub-line instead.
+  `MESSAGE` progress beat must do NEITHER and lands as its own chronological
+  `send_input` activity row instead.
   `codexMailboxCompletionID` is the row identity one delivery gets, and the
   launch resolution both paths share lives here too.
-- `codex_background_interactions.go` — the bounded ordered list the spawn
-  card renders as sub-lines (`codex_collab_interactions`), its ids-only
-  eviction ledger, the per-child resume-generation counter every per-child
-  ordinal is minted from, and the `send_input` completion path that appends
-  to it. See "Collab interactions" below.
+- `codex_background_activity.go` — the standalone mailbox-progress activity
+  writer and the per-child resume-generation decoder used for durable mailbox
+  delivery identity. Parent-to-child `send_input` completions take the normal
+  tool lifecycle path and are never parented to or folded into the spawn row.
 - `codex_background_meta.go` — the pure decoders and formatters the three
   projection files share: `codexItemMeta` / `codexSubagentSignalMeta` and
   their decoders, the child terminal-status readers, and the completion
@@ -953,50 +953,35 @@ corruption, not a race to be smoothed over. Three rules keep it honest:
   value, never from what they asked for — which is why `handleTurnStart`
   writes the row before `setOpenTurn`.
 
-### Collab interactions on the Codex spawn card
+### Chronological Codex collab activity
 
-MultiAgentV2 has no per-interaction transcript row, so a parent -> child
-message, a child -> parent progress beat, and a child resume are recorded ON
-the owning spawn launch as a bounded ordered list under
-`codex_collab_interactions` (`codex_background_interactions.go`). Rules:
+The spawn row's timeline presentation is the immutable historical event that
+the child launched. It keeps launch identity and the open-pane action; later
+collaboration operations never append presentation state to it. The row still
+serves as the operational correlation anchor: hidden terminal/resume/live
+metadata may be patched there until the child settles because there is no
+separate persisted background row.
 
-- **The three `kind` values are wire constants.** They are persisted in
-  `items.meta` and consumed verbatim by the frontend's
-  `COLLAB_INTERACTION_KINDS`; a rename on either side silently BLANKS every
-  stored sub-line rather than erroring, so
-  `TestCodexCollabInteractionKindsMatchTheFrontendMirror` parses the TS.
-- **`mergeCodexCollabInteraction` is the one upsert-and-bound rule.** Both
-  writers go through it — the persisting wrapper and the resume path, which
-  folds its entry into a larger meta merge. Entries are idempotent by id.
-- **The stored cap (`maxCodexCollabInteractions`) is deliberately larger than
-  what the card renders.** Everything past it is gone from SQLite for good, so
-  the headroom is what lets the visible window grow without a migration.
-- **Idempotency outlives the cap, and its horizon is DECOUPLED from the
-  rendered one.** The upsert only sees the retained tail, so a duplicate
-  arriving after its original was trimmed (reconnect replay, duplicate
-  completion leg) would append as the NEWEST sub-line and evict a live one.
-  `codex_collab_interactions_evicted` is the bounded ledger of what fell off;
-  an entry named there is dropped, not re-recorded. It stores a 4-byte digest
-  of each id (`codexCollabInteractionEvictedDigest`) and reads BOTH that and
-  the raw ids older rows hold, which is what pays for a horizon four times the
-  retained cap at less meta than the raw-id ledger it replaced.
-  `maxCodexCollabInteractionsEvicted` must stay strictly greater than
-  `maxCodexCollabInteractions`: tying them together (it was `=` once) means the
-  entry `maxCodexCollabInteractions + 1` positions back is in NEITHER structure,
-  so the exact failure the ledger exists to prevent simply reappears at a higher
-  count. A digest collision costs one dropped sub-line, never a wrong one — the
-  direction the ledger already errs in. Past the horizon a replay is
-  unrecognisable again; that is the bound's price, not an oversight.
-- **A PLAINTEXT progress note keeps its body; an encrypted one has none.** The
-  raw carrier is projected as an internal event and nothing else persists that
-  text, so an empty `text` means "no body on the wire", never "the child said
-  nothing".
-- **Every per-child ordinal comes from the durable generation counter, never
-  from a list position.** The `resumed` sub-line's id is
-  `resumed:<child>:<codex_child_resume_generations[child]>`. Counting the
-  retained `resumed` entries instead walks BACKWARDS after the first trim, so
-  every later resume re-mints one id and the upsert folds them onto a single
-  sub-line.
+- Parent-to-child `send_message` / `followup_task` completions persist as
+  top-level `send_input` tool rows at the current write head. V2's raw
+  function-call name is preserved as `input.activityTool` when available.
+- Child-to-parent `MESSAGE` mailbox deliveries persist as top-level
+  `send_input` rows with `input.activityKind:"progress"`. A plaintext body is
+  trimmed to one bounded line; encrypted deliveries carry no body.
+- Child resume status remains operational bookkeeping only. It creates no
+  timeline row and no visual sub-line on the old spawn event.
+- Legacy `codex_collab_interactions`, delivery-status, and aggregate-status
+  metadata may exist on imported/older rows. The frontend deliberately ignores
+  it; no new writes add those fields.
+- The background tray is the live projection. Its store read decorates each
+  running Codex launch copy with only the latest direct child tool summary;
+  nested-agent tools stay with that nested agent. The decoration is never
+  written back to the launch.
+
+- **Every per-child completion ordinal comes from the durable generation
+  counter.** Resume generations remain in launch operational metadata because
+  mailbox completion identity must distinguish byte-identical answers from
+  different child turns.
 - **Row identity for a mailbox delivery mixes the child's resume generation.**
   `codexMailboxCompletionID` is otherwise a pure content hash, which collapsed
   a child that legitimately answered identically twice. The generation is

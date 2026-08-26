@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"agent-overflow/internal/provider"
 )
 
 // Collab-agent records in a PARENT rollout.
@@ -14,9 +16,9 @@ import (
 // reaches the parent's file is the child's lifecycle and its delivered
 // result, and both carry the wire's own linkage back to the spawning call:
 //
-//   - `sub_agent_activity.event_id` IS the spawning tool call's `call_id`
-//     (codex-rs SubAgentActivityEvent), which is how an activity row is
-//     parented under the `spawn_agent` row.
+//   - a `started` sub_agent_activity.event_id is the spawning tool call's
+//     `call_id`, which records ownership. An `interacted` activity names the
+//     message call and settles it as a standalone timeline tool row.
 //   - the FINAL_ANSWER delivery (`response_item/agent_message`, or
 //     `inter_agent_communication` on 0.142-era files) names the child by
 //     `author` agent path, which the activity records already mapped to that
@@ -26,8 +28,8 @@ import (
 // imported range — the row is emitted top-level as a notification rather than
 // dropped, and never parented under a guess.
 
-// applySubAgentActivity emits the child-lifecycle row and records the
-// agent-path → parent-row mapping the later delivery is parented by.
+// applySubAgentActivity emits child lifecycle, records the agent-path → spawn
+// mapping for later final delivery, and promotes messages to timeline tools.
 func (c *converter) applySubAgentActivity(env envelope) {
 	var p subAgentActivityPayload
 	if json.Unmarshal(env.Payload, &p) != nil {
@@ -38,6 +40,10 @@ func (c *converter) applySubAgentActivity(env envelope) {
 	parent := c.toolItemIDs[strings.TrimSpace(p.EventID)]
 	if parent != "" && agentPath != "" {
 		c.agentParents[agentPath] = parent
+	}
+	if strings.TrimSpace(p.Kind) == "interacted" {
+		c.emitCollabInteraction(p.EventID, agentPath, strings.TrimSpace(p.AgentThreadID))
+		return
 	}
 	meta := map[string]any{
 		"kind":         "subagent_activity",
@@ -50,6 +56,88 @@ func (c *converter) applySubAgentActivity(env envelope) {
 		meta["agentThreadId"] = id
 	}
 	c.emitNotification(subAgentSummary(agentPath, p.Kind), meta, parent)
+}
+
+// emitCollabInteraction projects a parent-to-child message at the point it
+// happened. It completes the raw function call when that call is present in
+// the imported range; paginated/migrated rollouts may only retain the activity
+// item, in which case a self-contained start/complete pair keeps the event
+// visible and top-level. Neither path nests it under the historical spawn.
+func (c *converter) emitCollabInteraction(eventID, agentPath, agentThreadID string) {
+	eventID = strings.TrimSpace(eventID)
+	agentPath = strings.TrimSpace(agentPath)
+	agentThreadID = strings.TrimSpace(agentThreadID)
+	activityTool := ""
+	if tool := c.tools[eventID]; tool != nil && eventID != "" {
+		if !isCollabMessageToolName(tool.rawToolName) {
+			c.corrupt++
+			eventID = lineUUID(c.lineStart) + ":collab-interaction"
+		} else {
+			activityTool = strings.TrimSpace(tool.rawToolName)
+			tool.toolName = "send_input"
+			tool.itemType = "send_input"
+			tool.parentToolUseID = ""
+			tool.input = c.collabInteractionInput(tool.input, activityTool, agentPath, agentThreadID)
+			c.finishTool(tool, "", "completed", false)
+			return
+		}
+	}
+
+	if eventID == "" {
+		eventID = lineUUID(c.lineStart)
+	}
+	input := c.collabInteractionInput(nil, "", agentPath, agentThreadID)
+	c.emitStandaloneCollabActivity(eventID, input)
+}
+
+func (c *converter) emitStandaloneCollabActivity(itemID string, input json.RawMessage) {
+	c.ensureTurn()
+	meta := metaJSON(map[string]any{
+		"toolName": "send_input",
+		"input":    json.RawMessage(input),
+	})
+	base := provider.ProviderEvent{
+		TurnID:    c.turn.id,
+		TurnIndex: c.turn.index,
+		ItemID:    itemID,
+		ItemType:  "send_input",
+		Role:      "assistant",
+		Meta:      meta,
+		Timestamp: c.lastTimestamp,
+	}
+	start := base
+	start.Kind = provider.EventToolStart
+	c.emit(start)
+	complete := base
+	complete.Kind = provider.EventToolComplete
+	complete.ContentPresent = true
+	c.emit(complete)
+	c.collabActivityRows[itemID] = struct{}{}
+}
+
+func (c *converter) collabInteractionInput(existing json.RawMessage, activityTool, agentPath, agentThreadID string) json.RawMessage {
+	input := map[string]any{}
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &input); err != nil {
+			// toolInput produces object JSON, so this indicates a malformed
+			// imported record. Keep the activity visible with the normalized
+			// fields below, while preserving the reader's corruption signal.
+			c.corrupt++
+			input = map[string]any{}
+		}
+	}
+	input["tool"] = "send_input"
+	input["activityKind"] = "interacted"
+	if activityTool != "" {
+		input["activityTool"] = activityTool
+	}
+	if agentPath != "" {
+		input["target"] = agentPath
+	}
+	if agentThreadID != "" {
+		input["receiverThreadIds"] = []string{agentThreadID}
+	}
+	return metaJSON(input)
 }
 
 func subAgentSummary(agentPath, kind string) string {
@@ -84,7 +172,7 @@ func (c *converter) convertInterAgentMessage(env envelope) {
 		c.corrupt++
 		return
 	}
-	c.emitInterAgent(p)
+	c.emitInterAgent(p, true)
 }
 
 // convertInterAgent handles the standalone envelope forms. The 0.146
@@ -100,15 +188,36 @@ func (c *converter) convertInterAgent(env envelope) {
 	if strings.TrimSpace(p.Author) == "" && len(p.Content) == 0 {
 		return
 	}
-	c.emitInterAgent(p)
+	c.emitInterAgent(p, false)
 }
 
-func (c *converter) emitInterAgent(p interAgentPayload) {
+func (c *converter) emitInterAgent(p interAgentPayload, rawAgentMessage bool) {
 	text, present := contentText(p.Content)
 	if !present || strings.TrimSpace(text) == "" {
 		return
 	}
 	author := strings.TrimSpace(p.Author)
+	messageType, message, mailboxEnvelope := parseInterAgentEnvelope(p.Author, p.Recipient, text)
+	progressAuthorized := rawAgentMessage
+	if !rawAgentMessage {
+		progressAuthorized = p.TriggerTurn != nil && !*p.TriggerTurn && message != ""
+	} else if p.TriggerTurn != nil && *p.TriggerTurn {
+		progressAuthorized = false
+	}
+	if mailboxEnvelope && messageType == "MESSAGE" && progressAuthorized {
+		input := map[string]any{
+			"tool":         "send_input",
+			"activityKind": "progress",
+		}
+		if author != "" {
+			input["target"] = author
+		}
+		if message = boundedRolloutProgress(message); message != "" {
+			input["message"] = message
+		}
+		c.emitStandaloneCollabActivity(lineUUID(c.lineStart)+":collab-progress", metaJSON(input))
+		return
+	}
 	meta := map[string]any{"kind": "agent_message"}
 	if author != "" {
 		meta["agentPath"] = author
@@ -117,6 +226,53 @@ func (c *converter) emitInterAgent(p interAgentPayload) {
 		meta["recipient"] = recipient
 	}
 	c.emitNotification(text, meta, c.agentParents[author])
+}
+
+func parseInterAgentEnvelope(author, recipient, text string) (messageType, message string, ok bool) {
+	author = strings.TrimSpace(author)
+	recipient = strings.TrimSpace(recipient)
+	if author == "" || recipient != "/root" || !strings.HasPrefix(text, "Message Type: ") {
+		return "", "", false
+	}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	if len(lines) < 5 {
+		return "", "", false
+	}
+	messageType = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[0]), "Message Type:"))
+	if messageType != "MESSAGE" && messageType != "FINAL_ANSWER" {
+		return "", "", false
+	}
+	if !strings.HasPrefix(lines[1], "Task name:") ||
+		strings.TrimSpace(strings.TrimPrefix(lines[1], "Task name:")) != recipient {
+		return "", "", false
+	}
+	if !strings.HasPrefix(lines[2], "Sender:") ||
+		strings.TrimSpace(strings.TrimPrefix(lines[2], "Sender:")) != author {
+		return "", "", false
+	}
+	if strings.TrimSpace(lines[3]) != "Payload:" {
+		return "", "", false
+	}
+	return messageType, strings.TrimSpace(strings.Join(lines[4:], "\n")), true
+}
+
+func boundedRolloutProgress(message string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(message), "\n")
+	line = strings.TrimSpace(line)
+	runes := make([]rune, 0, 240)
+	truncated := false
+	for _, value := range line {
+		if len(runes) == 240 {
+			truncated = true
+			break
+		}
+		runes = append(runes, value)
+	}
+	bounded := strings.TrimSpace(string(runes))
+	if !truncated {
+		return bounded
+	}
+	return bounded + "\u2026"
 }
 
 // collabEndKind names which MultiAgentV1 tool a collab end record finishes.

@@ -354,6 +354,24 @@ func TestParsePaginatedMapsTheRemainingItemVariants(t *testing.T) {
 	}
 }
 
+func TestParsePaginatedInteractionAndRawMirrorProduceOneStandaloneActivity(t *testing.T) {
+	interaction := pagLine(t, 5, "2026-08-07T19:07:50.000Z", map[string]any{
+		"type": "SubAgentActivity", "id": "followup-1", "kind": "interacted",
+		"agent_thread_id": "child-1", "agent_path": "/root/reviewer",
+	}, 1786133870000, 1786133870100)
+	rawMirror := `{"timestamp":"2026-08-07T19:07:50.100Z","ordinal":6,"type":"response_item","payload":{"type":"function_call","name":"followup_task","arguments":"{\"target\":\"/root/reviewer\",\"message\":\"encrypted\"}","call_id":"followup-1"}}`
+
+	res := parseFixture(t, writeRollout(t, testSessionID,
+		paginatedMetaLine, taskStartedLine, interaction, rawMirror, taskCompleteLn))
+	activities := toolsByName(res.Events, "send_input")
+	if len(activities) != 1 {
+		t.Fatalf("send activities = %+v, want one typed item with its raw mirror deduplicated", activities)
+	}
+	if activities[0].ParentToolUseID != "" {
+		t.Fatalf("interaction parent = %q, want top-level", activities[0].ParentToolUseID)
+	}
+}
+
 // A migrated rollout writes `started_at_ms: null` for every item it
 // synthesises, because the legacy record it came from carried no start time.
 // The gap must degrade to the line's own clock, never to a zero timestamp —

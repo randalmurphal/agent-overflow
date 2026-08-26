@@ -6,7 +6,6 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -118,41 +117,25 @@ func TestModelFallbackKindsMatchTheParserSubtypes(t *testing.T) {
 	}
 }
 
-// The collab-interaction kind values are persisted in items.meta and consumed
-// verbatim by the frontend. A rename on either side blanks every stored
-// sub-line: collabInteractions() drops an entry whose kind is not in
-// COLLAB_INTERACTION_KINDS, so the failure is silent data loss, not an error.
-func TestCodexCollabInteractionKindsMatchTheFrontendMirror(t *testing.T) {
-	const mirror = "frontend/src/lib/components/chat/collabToolRowData.ts"
-	source, err := os.ReadFile(repoRelativePath(t, mirror))
+func TestCodexLatestToolTrayMetaKeysMatchFrontendMirror(t *testing.T) {
+	const backend = "internal/store/subagent_items.go"
+	const frontend = "frontend/src/lib/utils/codexTrayProjection.ts"
+	backendValues := goStringConstants(t, backend)
+	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
 	if err != nil {
-		t.Fatalf("read %s: %v", mirror, err)
+		t.Fatalf("read %s: %v", frontend, err)
 	}
-	start := strings.Index(string(source), "export const COLLAB_INTERACTION_KINDS")
-	if start < 0 {
-		t.Fatalf("%s: no `export const COLLAB_INTERACTION_KINDS` — this pin cannot find its mirror", mirror)
-	}
-	block := string(source)[start:]
-	open, close := strings.Index(block, "["), strings.Index(block, "]")
-	if open < 0 || close < open {
-		t.Fatalf("%s: COLLAB_INTERACTION_KINDS is not a bracketed array literal", mirror)
-	}
-	matches := regexp.MustCompile(`'([^']*)'`).FindAllStringSubmatch(block[open:close], -1)
-	frontend := map[string]struct{}{}
-	for _, match := range matches {
-		frontend[match[1]] = struct{}{}
-	}
-	owned := map[string]struct{}{
-		codexCollabInteractionInteracted: {},
-		codexCollabInteractionProgress:   {},
-		codexCollabInteractionResumed:    {},
-	}
-	if len(frontend) != len(owned) {
-		t.Fatalf("%s lists %d kinds, triage writes %d", mirror, len(frontend), len(owned))
-	}
-	for kind := range owned {
-		if _, ok := frontend[kind]; !ok {
-			t.Errorf("triage writes interaction kind %q that %s does not render", kind, mirror)
+	for _, name := range []string{
+		"metaKeySubagentLatestToolSummary",
+		"metaKeySubagentLatestToolTurn",
+		"metaKeySubagentLatestToolItem",
+	} {
+		value, ok := backendValues[name]
+		if !ok || value == "" {
+			t.Fatalf("%s no longer declares %s", backend, name)
+		}
+		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
+			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
 		}
 	}
 }
