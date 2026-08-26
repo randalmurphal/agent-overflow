@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "name": "bench-subagent-fanout",
+  "description": "Bench workload: the soak-background-agents shape, BOUNDED. Three async local_agent subagents are launched, each streams four passes of text + tool_use + tool_result + task_progress into its own card, then each reports task_updated{status:completed} FOLLOWED BY its task_notification, the parent summarises, and the turn ends with `result`. Both terminal signals are required, and in that order: task_updated only stashes the host-side exit, and the completion sibling that ends a launch's running state is written when the notification (or a TaskOutput drain) arrives. Measures the subagent card tree, the tray counters and the per-agent activity runs under concurrent background traffic. Tool and message ids carry both ${TURN} and ${ITER} so nothing collides across passes or across repeated turns. Run it with `ao-harness bench subagent-fanout`.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "bounded-background-agents",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-fanout-parent-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Launching three background agents; they will report a few passes and finish.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-fanout-parent-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Launching three background agents; they will report a few passes and finish.\"}]}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-launch1-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-agent1-${TURN}\",\"name\":\"Agent\",\"input\":{\"description\":\"Bench lens 1: perf/memory\",\"subagent_type\":\"general-purpose\",\"model\":\"fable\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 1: perf/memory lens.\"}}]}}",
+              "{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"bench-agent1-${TURN}\",\"tool_use_id\":\"tu-bench-agent1-${TURN}\",\"description\":\"Bench lens 1: perf/memory\",\"subagent_type\":\"general-purpose\",\"task_type\":\"local_agent\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 1: perf/memory lens.\"}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-bench-agent1-${TURN}\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully.\\nagentId: bench-agent1-${TURN}\"}]}]},\"tool_use_result\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"bench-agent1-${TURN}\",\"description\":\"Bench lens 1: perf/memory\",\"resolvedModel\":\"claude-fable-5\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 1: perf/memory lens.\",\"outputFile\":\"${CWD}/.bench/bench-agent1-${TURN}.output\",\"canReadOutputFile\":true}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-launch2-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-agent2-${TURN}\",\"name\":\"Agent\",\"input\":{\"description\":\"Bench lens 2: correctness\",\"subagent_type\":\"general-purpose\",\"model\":\"fable\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 2: correctness lens.\"}}]}}",
+              "{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"bench-agent2-${TURN}\",\"tool_use_id\":\"tu-bench-agent2-${TURN}\",\"description\":\"Bench lens 2: correctness\",\"subagent_type\":\"general-purpose\",\"task_type\":\"local_agent\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 2: correctness lens.\"}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-bench-agent2-${TURN}\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully.\\nagentId: bench-agent2-${TURN}\"}]}]},\"tool_use_result\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"bench-agent2-${TURN}\",\"description\":\"Bench lens 2: correctness\",\"resolvedModel\":\"claude-fable-5\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 2: correctness lens.\",\"outputFile\":\"${CWD}/.bench/bench-agent2-${TURN}.output\",\"canReadOutputFile\":true}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-launch3-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-agent3-${TURN}\",\"name\":\"Agent\",\"input\":{\"description\":\"Bench lens 3: consistency\",\"subagent_type\":\"general-purpose\",\"model\":\"fable\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 3: consistency lens.\"}}]}}",
+              "{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"bench-agent3-${TURN}\",\"tool_use_id\":\"tu-bench-agent3-${TURN}\",\"description\":\"Bench lens 3: consistency\",\"subagent_type\":\"general-purpose\",\"task_type\":\"local_agent\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 3: consistency lens.\"}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"tu-bench-agent3-${TURN}\",\"type\":\"tool_result\",\"content\":[{\"type\":\"text\",\"text\":\"Async agent launched successfully.\\nagentId: bench-agent3-${TURN}\"}]}]},\"tool_use_result\":{\"isAsync\":true,\"status\":\"async_launched\",\"agentId\":\"bench-agent3-${TURN}\",\"description\":\"Bench lens 3: consistency\",\"resolvedModel\":\"claude-fable-5\",\"prompt\":\"You are a read-only reviewer; report findings for the Bench lens 3: consistency lens.\",\"outputFile\":\"${CWD}/.bench/bench-agent3-${TURN}.output\",\"canReadOutputFile\":true}}"
+            ]
+          }
+        },
+        {
+          "repeat": {
+            "count": 4,
+            "steps": [
+              {
+                "emit": {
+                  "delayBetweenMs": 20,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-a1-${TURN}-${ITER}\",\"role\":\"assistant\"}},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Bench lens 1: perf/memory (pass ${ITER}): sampling the workspace and folding the findings.\"}},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-a1-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Bench lens 1: perf/memory (pass ${ITER}): sampling the workspace and folding the findings.\"}]},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-a1t-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-a1-${TURN}-${ITER}\",\"name\":\"Bash\",\"input\":{\"command\":\"rg -n 'useMemo' frontend/src\",\"description\":\"scan for memo hotspots\"}}]},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-bench-a1-${TURN}-${ITER}\",\"content\":\"frontend/src/lib/utils/scroll/chokepoint.ts:41:  const budget = useMemo(...)\"}]},\"parent_tool_use_id\":\"tu-bench-agent1-${TURN}\"}",
+                    "{\"type\":\"system\",\"subtype\":\"task_progress\",\"task_id\":\"bench-agent1-${TURN}\",\"tool_use_id\":\"tu-bench-agent1-${TURN}\",\"description\":\"Bench lens 1: perf/memory (pass ${ITER})\",\"subagent_type\":\"general-purpose\",\"last_tool_name\":\"Bash\"}"
+                  ]
+                }
+              },
+              {
+                "delayMs": 60
+              },
+              {
+                "emit": {
+                  "delayBetweenMs": 20,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-a2-${TURN}-${ITER}\",\"role\":\"assistant\"}},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Bench lens 2: correctness (pass ${ITER}): sampling the workspace and folding the findings.\"}},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-a2-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Bench lens 2: correctness (pass ${ITER}): sampling the workspace and folding the findings.\"}]},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-a2t-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-a2-${TURN}-${ITER}\",\"name\":\"Read\",\"input\":{\"file_path\":\"${CWD}/README.md\"}}]},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-bench-a2-${TURN}-${ITER}\",\"content\":\"# bench workspace\\nGenerated by the bench runner.\"}]},\"parent_tool_use_id\":\"tu-bench-agent2-${TURN}\"}",
+                    "{\"type\":\"system\",\"subtype\":\"task_progress\",\"task_id\":\"bench-agent2-${TURN}\",\"tool_use_id\":\"tu-bench-agent2-${TURN}\",\"description\":\"Bench lens 2: correctness (pass ${ITER})\",\"subagent_type\":\"general-purpose\",\"last_tool_name\":\"Read\"}"
+                  ]
+                }
+              },
+              {
+                "delayMs": 60
+              },
+              {
+                "emit": {
+                  "delayBetweenMs": 20,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-a3-${TURN}-${ITER}\",\"role\":\"assistant\"}},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Bench lens 3: consistency (pass ${ITER}): sampling the workspace and folding the findings.\"}},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-a3-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Bench lens 3: consistency (pass ${ITER}): sampling the workspace and folding the findings.\"}]},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-a3t-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-a3-${TURN}-${ITER}\",\"name\":\"Grep\",\"input\":{\"pattern\":\"TODO\",\"path\":\"${CWD}\"}}]},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-bench-a3-${TURN}-${ITER}\",\"content\":\"no matches\"}]},\"parent_tool_use_id\":\"tu-bench-agent3-${TURN}\"}",
+                    "{\"type\":\"system\",\"subtype\":\"task_progress\",\"task_id\":\"bench-agent3-${TURN}\",\"tool_use_id\":\"tu-bench-agent3-${TURN}\",\"description\":\"Bench lens 3: consistency (pass ${ITER})\",\"subagent_type\":\"general-purpose\",\"last_tool_name\":\"Grep\"}"
+                  ]
+                }
+              },
+              {
+                "delayMs": 60
+              }
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 20,
+            "lines": [
+              "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"bench-agent1-${TURN}\",\"patch\":{\"status\":\"completed\"}}",
+              "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"bench-agent2-${TURN}\",\"patch\":{\"status\":\"completed\"}}",
+              "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"bench-agent3-${TURN}\",\"patch\":{\"status\":\"completed\"}}",
+              "{\"type\":\"system\",\"subtype\":\"task_notification\",\"task_id\":\"bench-agent1-${TURN}\",\"tool_use_id\":\"tu-bench-agent1-${TURN}\",\"status\":\"completed\",\"summary\":\"Agent 1 finished its bench sweep.\",\"uuid\":\"notify-bench-agent1-${TURN}\"}",
+              "{\"type\":\"system\",\"subtype\":\"task_notification\",\"task_id\":\"bench-agent2-${TURN}\",\"tool_use_id\":\"tu-bench-agent2-${TURN}\",\"status\":\"completed\",\"summary\":\"Agent 2 finished its bench sweep.\",\"uuid\":\"notify-bench-agent2-${TURN}\"}",
+              "{\"type\":\"system\",\"subtype\":\"task_notification\",\"task_id\":\"bench-agent3-${TURN}\",\"tool_use_id\":\"tu-bench-agent3-${TURN}\",\"status\":\"completed\",\"summary\":\"Agent 3 finished its bench sweep.\",\"uuid\":\"notify-bench-agent3-${TURN}\"}",
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-fanout-summary-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"All three background agents finished; folding their findings into one answer.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-fanout-summary-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"All three background agents finished; folding their findings into one answer.\"}]}}",
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

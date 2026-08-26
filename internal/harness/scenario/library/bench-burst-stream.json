@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "name": "bench-burst-stream",
+  "description": "Bench workload: a sustained text-delta flood. Six bursts, each a whole assistant message streamed as sixteen deltas at 1ms spacing with every line split into 48-byte partial writes, then a short gap. The turn ENDS with a normal `result`: a bench runs to completion, unlike the soak scenarios. Drives NDJSON reassembly, streaming markdown re-render, row re-measure and tail-follow under the tightest cadence the mock can produce. Run it with `ao-harness bench burst-stream`.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "delta-flood",
+      "steps": [
+        {
+          "repeat": {
+            "count": 6,
+            "steps": [
+              {
+                "emit": {
+                  "delayBetweenMs": 1,
+                  "chunkBytes": 48,
+                  "chunkIntervalMs": 1,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-burst-${TURN}-${ITER}\",\"role\":\"assistant\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Streaming burst ${ITER} \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"of the bench flood: \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"each of these deltas \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"arrives on its own wire line, \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"and the emit step splits every line \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"into partial writes, \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"so the app's NDJSON reassembler \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"sees mid-frame boundaries \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"on essentially every read. \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"The text keeps growing \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"so the markdown pipeline \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"re-renders a longer block each frame, \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"the virtualizer re-measures the row, \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"and the scroll controller has to decide \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"whether to keep following the tail. \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"End of burst ${ITER}.\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-burst-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Streaming burst ${ITER} of the bench flood: each of these deltas arrives on its own wire line, and the emit step splits every line into partial writes, so the app's NDJSON reassembler sees mid-frame boundaries on essentially every read. The text keeps growing so the markdown pipeline re-renders a longer block each frame, the virtualizer re-measures the row, and the scroll controller has to decide whether to keep following the tail. End of burst ${ITER}.\"}]}}"
+                  ]
+                }
+              },
+              {
+                "delayMs": 40
+              }
+            ]
+          }
+        },
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

@@ -54,6 +54,10 @@ func commands() []command {
 		{"replay", "bundle|file|pause|resume|step|stop|status", runReplay},
 		{"logs", "tail backend|frontend-errors|ui-trace", runLogs},
 		{"db", "run one read-only SELECT against the instance database", runDB},
+		{"ui", "snapshot|query|state|diff the attached frontend", runUI},
+		{"perf", "start|stop|status|watch the perf meters", runPerf},
+		{"bench", "run a bench workload and write a perf report", runBench},
+		{"health", "roll up an instance's liveness, errors, memory and mocks", runHealth},
 		{"help", "print this help", runHelp},
 	}
 }
@@ -118,6 +122,10 @@ func fail(e *env, err error) int {
 		return exitUsage
 	}
 	fmt.Fprintf(e.stderr, "ao-harness: %v\n", err)
+	var coded exitCodeError
+	if errors.As(err, &coded) {
+		return coded.code
+	}
 	return exitError
 }
 

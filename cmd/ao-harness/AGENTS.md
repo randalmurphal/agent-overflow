@@ -49,9 +49,93 @@ will type either:
 | `record start\|stop`, `bundles`, `replay ...` | bundle capture and playback |
 | `logs backend\|frontend-errors\|ui-trace [-f] [-n N]` | evidence files |
 | `db '<SELECT ...>'` | one read-only statement against the instance database |
+| `ui snapshot\|query\|state\|diff` | the attached frontend, through the harness bridge |
+| `perf start\|stop\|status\|watch` | the perf meters |
+| `bench <workload>` | run a scripted workload with the meters armed and write a report |
+| `health [--watch]` | roll one instance's liveness, errors, memory and mocks into a verdict |
 
-`ui`, `perf`, `bench` and `health` are not here yet: they are the
-frontend bridge's RPCs and land with it.
+### Exit codes
+
+`0` success, `2` wrong invocation, `1` anything the harness or the
+filesystem refused. `bench --baseline` and `health` add `3`: the command
+ran fine and the ANSWER is bad news (a metric drifted, a concern is red).
+A script can tell that from "the harness refused" without parsing prose.
+
+### The frontend commands need a page
+
+`ui`, `perf` and `bench` all ride `HarnessUIQuery`, which is answered by
+the harness bridge inside the document. A headless instance answers none
+of them, and the error says so and names the two fixes: `make
+harness-window`, or open the URL `ao-harness open` prints. `bench` probes
+the bridge BEFORE it resets anything, so a caller who forgot the window
+gets their instance back untouched.
+
+- `ui snapshot [--pane id] [--settled-ms N] [--save]` prints the rows a
+  pane has mounted, with geometry and viewport membership. `--save` (and
+  every `ui diff`) writes `<dataDir>/ui-snapshots/last.json`.
+- `ui diff [--threshold px]` compares the live page against that file:
+  rows mounted and unmounted, rows that entered or left the viewport,
+  geometry deltas past the threshold (2px by default, because sub-pixel
+  layout noise is not a finding), status and overlay changes.
+- `ui query <selector>` and `ui state <name> [json args]` are the
+  element and globals query kinds.
+- `perf watch` prints one line per backend sample. There is no per-sample
+  p95: percentiles come from a whole-run histogram the page keeps, so
+  only `perf stop` can answer one. Watch prints the sample's max instead.
+
+### Bench
+
+`bench <workload> [--repeat N] [--sample-ms] [--baseline file] [--out
+dir] [--json]`. Each repeat resets the instance, reloads the page, seeds
+its own fixture, arms the meters, drives the workload and stops them.
+
+| Workload | Shape |
+|---|---|
+| `burst-stream` | sustained text-delta flood, chunked partial writes |
+| `giant-turn` | one turn producing 225 items (tool pairs plus text) |
+| `subagent-fanout` | three bounded async subagents streaming at once |
+| `many-threads` | 30 seeded threads, then a thread-switch storm |
+
+The first three run the `bench-*` scenarios in the library and finish on
+`provider:turn_completed` for their thread, which is the first moment the
+whole pipeline under test is done: `harness:mock`'s `scenario_done` fires
+when the MOCK stopped writing, upstream of parse, triage, persist and
+render. `many-threads` drives switches by emitting
+`notification:activated`, the channel an OS-notification click rides, so
+each switch runs the production `openThreadInPane` path. It does not
+exercise the sidebar row itself (hit-testing, hover).
+
+Reports land in `<dataDir>/bench/<workload>-<timestamp>.json` and double
+as baselines: `--baseline` reads either that file's `aggregate` map (its
+p50 becomes the reference, under a default 25% budget) or a hand-written
+`{"metrics": {"frames.p95Ms": {"max": 20}}}` budget, and an explicit
+budget wins over a derived reference. Drift exits 3. Without `--baseline`
+nothing is compared, so a bench is never a gate by accident.
+
+### Health
+
+`health [--watch] [--interval 30s]` rolls up process liveness and uptime,
+new `frontend-errors.jsonl` lines, ui-trace oracle triggers, new backend
+stderr, the process tree's RSS, database size, mock liveness, replay
+state and any armed perf run. Red is a dead process, a new renderer
+FAULT, or a panic in new stderr; oracle triggers and plain error lines
+are warn. Warn exits 0 on purpose: a rollup that failed on every stderr
+warning would be ignored within a day.
+
+`frontend-errors.jsonl` holds two different things, so the scan splits
+them. A fault is an application error nothing caught, and is red. A
+notice is the engine talking through `window.onerror` with no stack, and
+the only member so far is "ResizeObserver loop completed with undelivered
+notifications", which a heavy stream produces routinely. Notices are
+counted and reported as warn rather than filtered away: they mean layout
+work outran a frame, which this timeline cares about, but nothing threw.
+
+Every FILE concern is since-last-check, through
+`<dataDir>/health-cursor.json`. The cursor carries each file's size as
+well as its offset, which is how a rotation is detected: uitrace rotates
+at a size cap, and a reader that kept its offset would read past the end
+of the new file. `--watch` appends timestamped lines, one per section,
+with no clear-screen, so a long watch greps like any other log.
 
 ## Instance resolution
 
@@ -130,6 +214,21 @@ One file per command family, plus the router. Adding a verb is a row in
 - `cmd_scenario.go`, `cmd_mock.go`: the mock-provider surface.
 - `cmd_events.go`, `where.go`: the event wire and its `--where` filter.
 - `cmd_replay.go`, `cmd_logs.go`, `cmd_db.go`: bundles, evidence, store.
+- `cmd_ui.go`, `cmd_perf.go`: the bridge-backed commands.
+- `ui_diff.go`: the typed viewport mirror of
+  `frontend/src/lib/harness/snapshot.ts` and the comparison over it. The
+  ONE RPC result this CLI types in full, because a field name that
+  silently decoded to its zero value would render "nothing moved" about a
+  page that moved, which is the failure `ui diff` exists to catch. Keep
+  the shapes in step with the bridge.
+- `cmd_bench.go`, `bench_drive.go`, `bench_seed.go`, `bench_report.go`:
+  the run sequence, what a workload actually does to the app between
+  arming and stopping the meters, the fixtures it seeds, and the
+  arithmetic (aggregation, baselines) split out so the maths is testable
+  without a backend.
+- `cmd_health.go`, `health.go`: the rollup and its pure half (cursor, log
+  scanners, the verdict-to-exit-code rule), same split for the same
+  reason.
 
 ## Anti-patterns
 
@@ -150,7 +249,12 @@ One file per command family, plus the router. Adding a verb is a row in
 instance-resolution precedence and its ambiguity errors, the registry
 prune rule in all three shapes, the `db` statement guard (accepted
 reads, refused writes, piggybacked statements, semicolons inside
-literals) against a real SQLite file, and the `--where` matcher. Nothing
+literals) against a real SQLite file, and the `--where` matcher. It also
+covers the three pure surfaces W5 added: the `ui diff` renderer on canned
+snapshots, the bench aggregation and baseline arithmetic (both baseline
+shapes, both drift directions, the report/baseline round trip), and the
+health cursor, log scanners and exit-code rules on canned files. Nothing
 here boots a backend; the client's own frame handling is tested against
 a fake transport server in `internal/harnessclient`, and the real boot
-is `make e2e`'s job.
+is `make e2e`'s job (`e2e/tests/harness-bench.spec.ts` drives
+`bench burst-stream` as a subprocess against a page-attached harness).

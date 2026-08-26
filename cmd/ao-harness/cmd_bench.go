@@ -1,0 +1,465 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"agent-overflow/internal/harnessclient"
+)
+
+// A bench run is a scripted workload driven against a REAL attached page,
+// with the perf meters armed around it. Three things make it a bench
+// rather than a soak: it seeds its own fixture, it runs to a completion
+// signal instead of forever, and it writes a report a later run can be
+// compared against.
+//
+// WHICH COMPLETION SIGNAL. Two candidates exist, and they answer different
+// questions. `harness:mock`'s `scenario_done` says the MOCK finished
+// writing its script, which is upstream of everything a bench measures:
+// the app has not yet parsed the tail, triaged it, persisted it, or
+// rendered it. `provider:turn_completed` is emitted by triage after the
+// terminal `result` envelope has been classified and the round closed, so
+// it is the first moment the whole pipeline under test is done. That is
+// the one this waits on, per thread id. A short settle follows, so the
+// frames the tail produced land in a sample before the meters stop.
+//
+// WHY IT DOES NOT BOOT AN INSTANCE. Perf needs a page: the frame meters
+// live in the document. A backend this command started would be headless
+// and could not answer a single ui-query, so "boot one for you" would just
+// move the failure later. It attaches, and a bridge that does not answer
+// is an error naming the two ways to get a page onto the instance.
+
+const (
+	// benchSettleMs is how long the meters keep running after the turn
+	// completes. One default sample interval plus a beat: the last frames
+	// of a turn are the ones a regression usually lives in.
+	benchSettleMs = 1200
+	// benchTurnTimeout bounds one workload's turn. bench-giant-turn writes
+	// 750 wire lines; a minute is far more than any of them need and short
+	// enough that a wedged run fails inside a coffee break.
+	benchTurnTimeout = 90 * time.Second
+	// benchBridgeTimeout bounds the "is a page attached" probe and every
+	// poll that waits for the page to catch up.
+	benchBridgeTimeout = 30 * time.Second
+	benchDirName       = "bench"
+	// exitBenchDrift is the third exit code: the bench ran fine, and a
+	// metric moved past its baseline budget. Separate from 1 so a script
+	// can tell "the harness refused" from "the numbers changed".
+	exitBenchDrift = 3
+)
+
+// benchWorkload is one named workload: the fixture it needs and the thing
+// it does between arming and stopping the meters.
+type benchWorkload struct {
+	Name string
+	// Scenario is the library entry the mock runs, empty for a workload
+	// that drives no provider turn.
+	Scenario string
+	Summary  string
+	seed     func(run *benchRun) (json.RawMessage, error)
+	drive    func(ctx context.Context, run *benchRun) error
+}
+
+func benchWorkloads() []benchWorkload {
+	return []benchWorkload{
+		{
+			Name:     "burst-stream",
+			Scenario: "bench-burst-stream",
+			Summary:  "sustained text-delta flood with chunked partial writes",
+			seed:     seedSingleThread,
+			drive:    driveOneTurn,
+		},
+		{
+			Name:     "giant-turn",
+			Scenario: "bench-giant-turn",
+			Summary:  "one turn producing 225 items (tool pairs plus text blocks)",
+			seed:     seedSingleThread,
+			drive:    driveOneTurn,
+		},
+		{
+			Name:     "subagent-fanout",
+			Scenario: "bench-subagent-fanout",
+			Summary:  "three bounded async subagents streaming into their own cards",
+			seed:     seedSingleThread,
+			drive:    driveOneTurn,
+		},
+		{
+			Name:    "many-threads",
+			Summary: "30 threads with history, then a thread-switch storm",
+			seed:    seedManyThreads,
+			drive:   driveThreadSwitchStorm,
+		},
+	}
+}
+
+func benchWorkloadByName(name string) (benchWorkload, error) {
+	for _, workload := range benchWorkloads() {
+		if workload.Name == name {
+			return workload, nil
+		}
+	}
+	names := make([]string, 0, 4)
+	for _, workload := range benchWorkloads() {
+		names = append(names, workload.Name)
+	}
+	return benchWorkload{}, usagef("unknown workload %q (want %s)", name, strings.Join(names, ", "))
+}
+
+// benchRun is the mutable state one repeat carries between its phases.
+type benchRun struct {
+	env      *env
+	client   *harnessclient.Client
+	target   target
+	workload benchWorkload
+	index    int
+
+	threadIDs []string
+	// switches counts the thread opens a storm workload drove, so the
+	// report says what the numbers are numbers OF.
+	switches int
+}
+
+// benchRunReport is one repeat's row in the report file.
+type benchRunReport struct {
+	Run        int        `json:"run"`
+	StartedAt  string     `json:"startedAt"`
+	DurationMs int64      `json:"durationMs"`
+	Threads    int        `json:"threads,omitempty"`
+	Switches   int        `json:"switches,omitempty"`
+	Perf       perfReport `json:"perf"`
+}
+
+// benchDocument is what lands on disk. It doubles as a baseline: the
+// `aggregate` map is exactly what --baseline reads back.
+type benchDocument struct {
+	Workload    string                    `json:"workload"`
+	Description string                    `json:"description"`
+	Scenario    string                    `json:"scenario,omitempty"`
+	Repeat      int                       `json:"repeat"`
+	StartedAt   string                    `json:"startedAt"`
+	Instance    string                    `json:"instance"`
+	Version     string                    `json:"version"`
+	SampleMs    int                       `json:"sampleMs"`
+	Runs        []benchRunReport          `json:"runs"`
+	Aggregate   map[string]benchAggregate `json:"aggregate"`
+}
+
+func runBench(e *env, args []string) error {
+	flags := e.newFlagSet("bench")
+	repeat := flags.Int("repeat", 1, "run the workload this many times and aggregate")
+	sampleMs := flags.Int("sample-ms", 0, "perf sampling interval (default 1000, floor 250)")
+	baselineFile := flags.String("baseline", "", "compare the aggregate against this baseline (a budget file or a previous bench report)")
+	outDir := flags.String("out", "", "write the report here instead of <dataDir>/bench")
+	asJSON := flags.Bool("json", false, "print the whole report document instead of a summary table")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 {
+		return usagef("bench needs exactly one workload: %s", strings.Join(benchWorkloadNames(), ", "))
+	}
+	if *repeat < 1 {
+		return usagef("--repeat must be at least 1")
+	}
+	workload, err := benchWorkloadByName(rest[0])
+	if err != nil {
+		return err
+	}
+	var baseline *benchBaseline
+	if *baselineFile != "" {
+		loaded, err := readBenchBaseline(*baselineFile)
+		if err != nil {
+			return err
+		}
+		baseline = &loaded
+	}
+
+	ctx := context.Background()
+	var document benchDocument
+	err = e.withClient(ctx, func(client *harnessclient.Client, t target, bs harnessclient.Bootstrap) error {
+		document, err = executeBench(ctx, e, client, t, bs, workload, *repeat, *sampleMs)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+
+	path, err := writeBenchDocument(document, e, *outDir)
+	if err != nil {
+		return err
+	}
+	if *asJSON || e.jsonOutput() {
+		if err := e.writeJSON(document); err != nil {
+			return err
+		}
+	} else {
+		e.printf("%s", renderBenchDocument(document, path))
+	}
+	if baseline == nil {
+		return nil
+	}
+	comparisons, unmeasured := compareToBaseline(document.Aggregate, *baseline)
+	e.printf("\n%s", renderBenchComparison(comparisons, unmeasured, *baselineFile))
+	for _, comparison := range comparisons {
+		if comparison.Drift {
+			return exitCodeError{code: exitBenchDrift, err: fmt.Errorf(
+				"%d metric(s) drifted past the baseline in %s", countDrift(comparisons), *baselineFile)}
+		}
+	}
+	return nil
+}
+
+func benchWorkloadNames() []string {
+	names := make([]string, 0, 4)
+	for _, workload := range benchWorkloads() {
+		names = append(names, workload.Name)
+	}
+	return names
+}
+
+func countDrift(comparisons []benchComparison) int {
+	n := 0
+	for _, comparison := range comparisons {
+		if comparison.Drift {
+			n++
+		}
+	}
+	return n
+}
+
+func executeBench(
+	ctx context.Context,
+	e *env,
+	client *harnessclient.Client,
+	t target,
+	bs harnessclient.Bootstrap,
+	workload benchWorkload,
+	repeat, sampleMs int,
+) (benchDocument, error) {
+	document := benchDocument{
+		Workload:    workload.Name,
+		Description: workload.Summary,
+		Scenario:    workload.Scenario,
+		Repeat:      repeat,
+		StartedAt:   time.Now().Format(time.RFC3339),
+		Instance:    t.ID,
+		Version:     bs.Version,
+		SampleMs:    sampleMs,
+	}
+	// Fail on the bridge BEFORE resetting anything: a caller who forgot to
+	// open a window should get their instance back untouched.
+	if err := probeBridge(ctx, e, client); err != nil {
+		return document, err
+	}
+
+	reports := make([]perfReport, 0, repeat)
+	for i := 1; i <= repeat; i++ {
+		run := &benchRun{env: e, client: client, target: t, workload: workload, index: i}
+		startedAt := time.Now()
+		e.printf("bench %s: run %d/%d\n", workload.Name, i, repeat)
+		report, err := executeBenchRun(ctx, run, sampleMs)
+		if err != nil {
+			return document, fmt.Errorf("run %d/%d: %w", i, repeat, err)
+		}
+		document.Runs = append(document.Runs, benchRunReport{
+			Run:        i,
+			StartedAt:  startedAt.Format(time.RFC3339),
+			DurationMs: time.Since(startedAt).Milliseconds(),
+			Threads:    len(run.threadIDs),
+			Switches:   run.switches,
+			Perf:       report,
+		})
+		reports = append(reports, report)
+	}
+	document.Aggregate = aggregateBenchMetrics(reports)
+	return document, nil
+}
+
+// executeBenchRun is one repeat: blank slate, fixture, armed meters, the
+// workload, the report.
+func executeBenchRun(ctx context.Context, run *benchRun, sampleMs int) (perfReport, error) {
+	if _, err := run.client.Call(ctx, "HarnessReset"); err != nil {
+		return perfReport{}, err
+	}
+	run.client.Clear()
+	if err := run.workload.seedFixture(run); err != nil {
+		return perfReport{}, err
+	}
+	if run.workload.Scenario != "" {
+		if _, err := run.client.Call(ctx, "HarnessSetScenario",
+			map[string]any{"name": run.workload.Scenario}); err != nil {
+			return perfReport{}, err
+		}
+	}
+	// The reload comes AFTER the seed, and both halves of that order are
+	// load-bearing. HarnessReset's contract ends with "reload the page
+	// after", because the SPA is holding rows that no longer exist. And
+	// HarnessSeed writes straight to the store without emitting the
+	// creation events a live thread would, so a page reloaded BEFORE the
+	// seed never learns the new rows exist and cannot open one. One reload,
+	// placed once, answers both.
+	if err := reloadPage(ctx, run.env, run.client); err != nil {
+		return perfReport{}, err
+	}
+	if len(run.threadIDs) > 0 {
+		if err := openThread(ctx, run, run.threadIDs[0]); err != nil {
+			return perfReport{}, err
+		}
+	}
+
+	spec := map[string]any{}
+	if sampleMs > 0 {
+		spec["sampleMs"] = sampleMs
+	}
+	if _, err := run.client.Call(ctx, "HarnessPerfStart", spec); err != nil {
+		return perfReport{}, uiQueryError(err)
+	}
+	driveErr := run.workload.drive(ctx, run)
+	// Stop the meters whatever happened: a failed drive still produced
+	// numbers, and leaving a run armed would refuse the next repeat.
+	raw, stopErr := run.client.Call(ctx, "HarnessPerfStop")
+	if driveErr != nil {
+		return perfReport{}, driveErr
+	}
+	if stopErr != nil {
+		return perfReport{}, stopErr
+	}
+	return decodePerfReport(raw)
+}
+
+func (w benchWorkload) seedFixture(run *benchRun) error {
+	raw, err := w.seed(run)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	result, err := run.client.CallRaw(ctx, "HarnessSeed", []json.RawMessage{raw})
+	if err != nil {
+		return err
+	}
+	var decoded struct {
+		Projects []struct {
+			ThreadIDs []string `json:"threadIds"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(result, &decoded); err != nil {
+		return fmt.Errorf("decode seed result: %w", err)
+	}
+	for _, project := range decoded.Projects {
+		run.threadIDs = append(run.threadIDs, project.ThreadIDs...)
+	}
+	if len(run.threadIDs) == 0 {
+		return errors.New("seed created no threads")
+	}
+	return nil
+}
+
+func writeBenchDocument(document benchDocument, e *env, outDir string) (string, error) {
+	dir := outDir
+	if dir == "" {
+		t, err := e.resolveTarget()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(t.DataDir, benchDirName)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create %s: %w", dir, err)
+	}
+	name := fmt.Sprintf("%s-%s.json", document.Workload, time.Now().Format("20060102-150405"))
+	path := filepath.Join(dir, name)
+	body, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("encode bench report: %w", err)
+	}
+	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func readBenchBaseline(path string) (benchBaseline, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return benchBaseline{}, err
+	}
+	var baseline benchBaseline
+	if err := json.Unmarshal(data, &baseline); err != nil {
+		return benchBaseline{}, fmt.Errorf("read baseline %s: %w", path, err)
+	}
+	if len(baseline.Metrics) == 0 && len(baseline.Aggregate) == 0 {
+		return benchBaseline{}, fmt.Errorf(
+			"baseline %s carries neither `metrics` (a budget) nor `aggregate` (a previous bench report)", path)
+	}
+	return baseline, nil
+}
+
+func renderBenchDocument(document benchDocument, path string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "bench %s  (%s)\n", document.Workload, document.Description)
+	fmt.Fprintf(&b, "  instance %s  version %s  runs %d\n",
+		document.Instance, orDash(document.Version), len(document.Runs))
+	for _, run := range document.Runs {
+		extra := ""
+		if run.Switches > 0 {
+			extra = fmt.Sprintf("  %d switches over %d threads", run.Switches, run.Threads)
+		}
+		fmt.Fprintf(&b, "  run %d: %dms%s\n", run.Run, run.DurationMs, extra)
+	}
+	b.WriteString("\n")
+	names := make([]string, 0, len(document.Aggregate))
+	for name := range document.Aggregate {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	rows := make([][]string, 0, len(names))
+	for _, name := range names {
+		agg := document.Aggregate[name]
+		rows = append(rows, []string{
+			name,
+			formatBenchValue(agg.P50, agg.Unit),
+			formatBenchValue(agg.P95, agg.Unit),
+			formatBenchValue(agg.Min, agg.Unit),
+			formatBenchValue(agg.Max, agg.Unit),
+			fmt.Sprint(agg.Runs),
+		})
+	}
+	b.WriteString(tableString([]string{"METRIC", "P50", "P95", "MIN", "MAX", "RUNS"}, rows))
+	fmt.Fprintf(&b, "\nreport: %s\n", path)
+	return b.String()
+}
+
+func renderBenchComparison(comparisons []benchComparison, unmeasured []string, baselinePath string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "baseline %s\n", baselinePath)
+	if len(comparisons) == 0 {
+		b.WriteString("  nothing to compare\n")
+	}
+	rows := make([][]string, 0, len(comparisons))
+	for _, comparison := range comparisons {
+		verdict := "ok"
+		if comparison.Drift {
+			verdict = "DRIFT"
+		}
+		rows = append(rows, []string{
+			comparison.Metric,
+			fmt.Sprintf("%.2f", comparison.Current),
+			fmt.Sprintf("%.2f", comparison.Reference),
+			fmt.Sprintf("%.2f", comparison.Limit),
+			comparison.Note,
+			verdict,
+		})
+	}
+	b.WriteString(tableString([]string{"METRIC", "CURRENT", "BASELINE", "LIMIT", "RULE", ""}, rows))
+	if len(unmeasured) > 0 {
+		fmt.Fprintf(&b, "  not measured this run: %s\n", strings.Join(unmeasured, ", "))
+	}
+	return b.String()
+}

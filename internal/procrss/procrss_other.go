@@ -8,5 +8,8 @@ package procrss
 // WebView2 process the launcher owns, not our child at all).
 func Sample(_ int, _ []string) (Tree, error) { return Tree{}, ErrUnsupported }
 
+// SampleAll refuses for the same reason Sample does.
+func SampleAll(_ int) (Tree, error) { return Tree{}, ErrUnsupported }
+
 // Supported reports whether Sample can answer on this platform.
 func Supported() bool { return false }

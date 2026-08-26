@@ -135,11 +135,40 @@ async function dispatch(spec: Record<string, unknown>): Promise<unknown> {
     }
     case 'perf':
       return dispatchPerf(spec);
+    case 'reload':
+      return dispatchReload(num(spec, 'delayMs', DEFAULT_RELOAD_DELAY_MS));
     case '':
       return fail('query spec has no kind');
     default:
       return fail(`unknown query kind ${JSON.stringify(str(spec, 'kind'))}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// reload
+//
+// `HarnessReset` wipes app state behind the page's back and its contract ends
+// with "reload the page after". A Playwright spec does that with
+// `page.reload()`; a shell tool has no browser driver, so without this the CLI
+// could reset an instance but never make the attached window agree — every
+// bench and every scripted flow would be reading a stale registry.
+//
+// The reload is DEFERRED rather than immediate because the reply to this very
+// query is an RPC on the socket the reload is about to tear down. Answering
+// first and navigating a beat later means the caller learns the reload was
+// accepted; a caller that gets a timeout instead has still had its page
+// reloaded, which is why `ao-harness` treats a failed reload query as
+// non-fatal and re-probes the bridge rather than aborting.
+
+const DEFAULT_RELOAD_DELAY_MS = 50;
+
+function dispatchReload(delayMs: number): unknown {
+  if (typeof window === 'undefined' || typeof window.location?.reload !== 'function') {
+    return fail('reload is not available in this environment');
+  }
+  const wait = Math.min(Math.max(delayMs, 0), 5000);
+  setTimeout(() => window.location.reload(), wait);
+  return { v: 1, reloading: true, delayMs: wait };
 }
 
 function dispatchPerf(spec: Record<string, unknown>): unknown {

@@ -52,6 +52,23 @@ func (t Tree) TotalRSSBytes() uint64 { return t.Self.RSSBytes + t.ChildrenRSSByt
 // sample: process trees are racy by nature and a perf series must not
 // develop holes because a renderer restarted.
 func SampleRoot(root string, pid int, prefixes []string) (Tree, error) {
+	return sampleRoot(root, pid, func(name string) bool { return matchesAnyPrefix(name, prefixes) })
+}
+
+// SampleAllRoot reports EVERY descendant, whatever it is named.
+//
+// Two questions, two walks: a perf run asks "how big did the renderer get"
+// and wants the webview processes alone, while a health rollup asks "how
+// much memory is this instance holding" and a provider mock or a spawned
+// git is as much part of the answer as the renderer is. An empty prefix
+// cannot express the second question, because a prefix that matches
+// everything would also have to match a process whose status file carried
+// no name at all.
+func SampleAllRoot(root string, pid int) (Tree, error) {
+	return sampleRoot(root, pid, func(string) bool { return true })
+}
+
+func sampleRoot(root string, pid int, match func(name string) bool) (Tree, error) {
 	self, err := readProcess(root, pid)
 	if err != nil {
 		return Tree{}, err
@@ -99,7 +116,7 @@ func SampleRoot(root string, pid int, prefixes []string) (Tree, error) {
 		visited[next] = true
 		queue = append(queue, childrenOf[next]...)
 		rec, ok := records[next]
-		if !ok || !matchesAnyPrefix(rec.proc.Name, prefixes) {
+		if !ok || !match(rec.proc.Name) {
 			continue
 		}
 		tree.Children = append(tree.Children, rec.proc)

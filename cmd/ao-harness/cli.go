@@ -58,6 +58,18 @@ func usagef(format string, args ...any) error {
 	return usageErr{fmt.Errorf(format, args...)}
 }
 
+// exitCodeError carries a specific exit code for a command that has more
+// than two outcomes. `bench --baseline` and `health` both do: the command
+// SUCCEEDED and the answer is bad news, which a script must be able to
+// tell from "the harness refused" (1) and "you typed it wrong" (2).
+type exitCodeError struct {
+	code int
+	err  error
+}
+
+func (e exitCodeError) Error() string { return e.err.Error() }
+func (e exitCodeError) Unwrap() error { return e.err }
+
 // parsePermuted parses flags that may appear before, between, or after
 // positional arguments, and returns the positionals. `--` ends flag
 // parsing, which is how `send` passes a message that starts with a dash.
@@ -151,14 +163,24 @@ func (e *env) printf(format string, args ...any) {
 // table writes aligned rows. Terse by design: a terminal reader wants
 // the columns that identify a row, and -o json carries everything else.
 func (e *env) table(header []string, rows [][]string) error {
-	w := tabwriter.NewWriter(e.stdout, 0, 4, 2, ' ', 0)
+	_, err := io.WriteString(e.stdout, tableString(header, rows))
+	return err
+}
+
+// tableString is table's renderer, split out because the bench and health
+// rollups compose a table INTO a larger block of prose rather than writing
+// it straight to the terminal.
+func tableString(header []string, rows [][]string) string {
+	var buf bytes.Buffer
+	w := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
 	if len(header) > 0 {
 		fmt.Fprintln(w, strings.Join(header, "\t"))
 	}
 	for _, row := range rows {
 		fmt.Fprintln(w, strings.Join(row, "\t"))
 	}
-	return w.Flush()
+	_ = w.Flush()
+	return buf.String()
 }
 
 // truncate keeps a table cell readable. Runes, not bytes: a title is

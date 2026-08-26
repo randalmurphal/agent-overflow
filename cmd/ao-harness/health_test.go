@@ -1,0 +1,312 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// The health rollup's whole point is that a second run reports what
+// happened SINCE the first. These tests drive the cursor and the scanners
+// over canned files; nothing here needs an instance.
+
+func writeLines(t *testing.T, path string, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScanNewLinesAdvancesCursor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	writeLines(t, path, "one\ntwo\n")
+
+	lines, cursor, rotated, err := scanNewLines(path, healthFileCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated {
+		t.Error("a first read is not a rotation")
+	}
+	if len(lines) != 2 {
+		t.Fatalf("lines = %v, want 2", lines)
+	}
+
+	// Nothing appended: the same cursor must report nothing.
+	lines, cursor, _, err = scanNewLines(path, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("a second read with no writes returned %v", lines)
+	}
+
+	writeLines(t, path, "one\ntwo\nthree\n")
+	lines, _, _, err = scanNewLines(path, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != "three" {
+		t.Errorf("lines = %v, want [three]", lines)
+	}
+}
+
+func TestScanNewLinesLeavesPartialLine(t *testing.T) {
+	// uitrace appends; a reader that consumed a half-written record would
+	// report a torn line once and never see the whole one.
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	writeLines(t, path, "whole\npart")
+
+	lines, cursor, _, err := scanNewLines(path, healthFileCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != "whole" {
+		t.Fatalf("lines = %v, want [whole]", lines)
+	}
+
+	writeLines(t, path, "whole\npartial\n")
+	lines, _, _, err = scanNewLines(path, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != "partial" {
+		t.Errorf("lines = %v, want [partial] read whole on the second pass", lines)
+	}
+}
+
+func TestScanNewLinesDetectsRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log.jsonl")
+	writeLines(t, path, "a\nb\nc\nd\ne\n")
+	_, cursor, _, err := scanNewLines(path, healthFileCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// uitrace rotates at a size cap; the new file is smaller than the old
+	// offset, so a cursor-keeping reader would seek past its end.
+	writeLines(t, path, "fresh\n")
+	lines, next, rotated, err := scanNewLines(path, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rotated {
+		t.Error("a shrunk file is a rotation")
+	}
+	if len(lines) != 1 || lines[0] != "fresh" {
+		t.Errorf("lines = %v, want [fresh]", lines)
+	}
+	if next.Offset != int64(len("fresh\n")) {
+		t.Errorf("offset = %d, want %d", next.Offset, len("fresh\n"))
+	}
+}
+
+func TestScanNewLinesAbsentFileIsNotAnError(t *testing.T) {
+	// ui-trace only exists once the frontend traced something, which is the
+	// normal case for a fresh instance.
+	lines, cursor, rotated, err := scanNewLines(filepath.Join(t.TempDir(), "nope.jsonl"), healthFileCursor{Offset: 40})
+	if err != nil {
+		t.Fatalf("absent file returned %v", err)
+	}
+	if len(lines) != 0 || rotated || cursor.Offset != 0 {
+		t.Errorf("lines=%v rotated=%t cursor=%+v", lines, rotated, cursor)
+	}
+}
+
+func TestHealthCursorRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if got := loadHealthCursor(dir); got.Instance != "" {
+		t.Errorf("an absent cursor should load empty, got %+v", got)
+	}
+	want := healthCursor{
+		Instance:       "abcd1234",
+		CheckedAt:      "2026-08-26T10:00:00Z",
+		FrontendErrors: healthFileCursor{Offset: 12, Size: 12},
+		UITrace:        healthFileCursor{Offset: 40, Size: 44},
+	}
+	if err := saveHealthCursor(dir, want); err != nil {
+		t.Fatal(err)
+	}
+	got := loadHealthCursor(dir)
+	if got != want {
+		t.Errorf("round trip = %+v, want %+v", got, want)
+	}
+
+	// A corrupt cursor must not stop a check: the cost is one over-report.
+	writeLines(t, healthCursorPath(dir), "{not json")
+	if got := loadHealthCursor(dir); got.Instance != "" {
+		t.Errorf("a corrupt cursor should load empty, got %+v", got)
+	}
+}
+
+func TestCountOracleTriggers(t *testing.T) {
+	lines := []string{
+		`{"label":"timeline.margin.diverge","delta":9}`,
+		`{"label":"timeline.row.resize","rows":3}`,
+		`{"label":"timeline.margin.diverge","delta":11}`,
+		`{"label":"timeline.reasoning.tailJump"}`,
+		`not json at all`,
+		`{"label":"something.else"}`,
+	}
+	counts := countOracleTriggers(lines)
+	if counts["timeline.margin.diverge"] != 2 {
+		t.Errorf("diverge = %d, want 2", counts["timeline.margin.diverge"])
+	}
+	if counts["timeline.reasoning.tailJump"] != 1 {
+		t.Errorf("tailJump = %d, want 1", counts["timeline.reasoning.tailJump"])
+	}
+	// The row-resize tracker emits continuously in an oracle build and says
+	// nothing about correctness; counting it would bury the two that do.
+	if _, ok := counts["timeline.row.resize"]; ok {
+		t.Error("timeline.row.resize is a tracker, not an oracle")
+	}
+	if got := formatOracleCounts(counts); got != "timeline.margin.diverge x2, timeline.reasoning.tailJump x1" {
+		t.Errorf("formatOracleCounts = %q", got)
+	}
+}
+
+func TestScanBackendLogSeverityOrder(t *testing.T) {
+	scan := scanBackendLog([]string{
+		"2026/08/26 10:00:00 starting up",
+		"2026/08/26 10:00:01 warn: mock provider is pinned",
+		"2026/08/26 10:00:02 error: could not read settings",
+		"panic: runtime error: invalid memory address",
+		"goroutine 1 [running]:",
+	})
+	if scan.Total != 5 {
+		t.Errorf("Total = %d, want 5", scan.Total)
+	}
+	if scan.Fatal != 1 || scan.Errors != 1 || scan.Warns != 1 {
+		t.Errorf("fatal/errors/warns = %d/%d/%d, want 1/1/1", scan.Fatal, scan.Errors, scan.Warns)
+	}
+	if len(scan.Sample) != 3 {
+		t.Errorf("sample = %v, want the three classified lines", scan.Sample)
+	}
+}
+
+func TestScanBackendLogPanicWinsOverError(t *testing.T) {
+	// One line that says both is one panic, not a panic plus an error.
+	scan := scanBackendLog([]string{"panic: error decoding frame"})
+	if scan.Fatal != 1 || scan.Errors != 0 {
+		t.Errorf("fatal/errors = %d/%d, want 1/0", scan.Fatal, scan.Errors)
+	}
+}
+
+func TestScanBackendLogSampleIsCapped(t *testing.T) {
+	lines := make([]string, 0, 20)
+	for i := 0; i < 20; i++ {
+		lines = append(lines, "error: something went wrong")
+	}
+	scan := scanBackendLog(lines)
+	if scan.Errors != 20 {
+		t.Errorf("Errors = %d, want 20 (the count is always exact)", scan.Errors)
+	}
+	if len(scan.Sample) != healthLogSampleCap {
+		t.Errorf("sample = %d lines, want %d", len(scan.Sample), healthLogSampleCap)
+	}
+}
+
+func TestHealthExitCodeRules(t *testing.T) {
+	cases := []struct {
+		name     string
+		sections []healthSection
+		want     int
+		worst    healthStatus
+	}{
+		{
+			name:     "all ok",
+			sections: []healthSection{{Name: "process", Status: healthOK}, {Name: "mocks", Status: healthOK}},
+			want:     exitOK, worst: healthOK,
+		},
+		{
+			// A rollup that failed on every stderr warning would be ignored
+			// within a day, so a warn is reported and exits 0.
+			name:     "warn does not fail",
+			sections: []healthSection{{Name: "process", Status: healthOK}, {Name: "ui-oracles", Status: healthWarn}},
+			want:     exitOK, worst: healthWarn,
+		},
+		{
+			name:     "one red is red",
+			sections: []healthSection{{Name: "process", Status: healthOK}, {Name: "frontend-errors", Status: healthRed}},
+			want:     exitHealthRed, worst: healthRed,
+		},
+		{
+			name:     "red beats a later warn",
+			sections: []healthSection{{Name: "process", Status: healthRed}, {Name: "mocks", Status: healthWarn}},
+			want:     exitHealthRed, worst: healthRed,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report := healthReport{At: "2026-08-26T10:00:00Z", Instance: "abcd1234", Sections: tc.sections}
+			if got := report.Worst(); got != tc.worst {
+				t.Errorf("Worst = %q, want %q", got, tc.worst)
+			}
+			if got := healthExitCode(report); got != tc.want {
+				t.Errorf("exit = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderHealthWatchLinesAreGreppable(t *testing.T) {
+	report := healthReport{
+		At:       "2026-08-26T10:00:00Z",
+		Instance: "abcd1234",
+		Sections: []healthSection{
+			{Name: "process", Status: healthOK, Detail: "pid 42 harness on port 1234, up 5m0s"},
+			{Name: "frontend-errors", Status: healthRed, Detail: "2 new since the last check", Lines: []string{"boom"}},
+		},
+	}
+	out := renderHealthWatchLines(report)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("watch printed %d lines, want one per section:\n%s", len(lines), out)
+	}
+	for _, line := range lines {
+		if line[:len(report.At)] != report.At {
+			t.Errorf("every watch line must start with the timestamp: %q", line)
+		}
+	}
+	// No clear-screen or cursor movement: the output has to survive a pipe.
+	if strings.ContainsAny(out, "\x1b\r") {
+		t.Errorf("watch output carries terminal control codes: %q", out)
+	}
+}
+
+func TestRenderHealthReportShowsEvidenceLines(t *testing.T) {
+	report := healthReport{
+		At:       "2026-08-26T10:00:00Z",
+		Instance: "abcd1234",
+		Sections: []healthSection{
+			{Name: "backend-stderr", Status: healthWarn, Detail: "3 new line(s)", Lines: []string{"error: nope"}},
+		},
+	}
+	out := renderHealthReport(report)
+	if !strings.Contains(out, "health warn") {
+		t.Errorf("the header must carry the overall verdict: %q", out)
+	}
+	if !strings.Contains(out, "error: nope") {
+		t.Errorf("a section's evidence lines must print: %q", out)
+	}
+}
+
+func TestScanFrontendErrorsSplitsNoticesFromFaults(t *testing.T) {
+	scan := scanFrontendErrors([]string{
+		`{"kind":"error","message":"ResizeObserver loop completed with undelivered notifications.","stack":""}`,
+		`{"kind":"error","message":"TypeError: undefined is not a function","stack":"at render"}`,
+		`{"kind":"error","message":"ResizeObserver loop limit exceeded","stack":""}`,
+	})
+	if scan.Faults != 1 {
+		t.Errorf("Faults = %d, want 1", scan.Faults)
+	}
+	// The notice is still counted: it means layout work outran a frame,
+	// which this timeline cares about. It just is not a thrown error.
+	if scan.Notices != 2 {
+		t.Errorf("Notices = %d, want 2", scan.Notices)
+	}
+	if len(scan.Sample) != 1 || !strings.Contains(scan.Sample[0], "TypeError") {
+		t.Errorf("sample = %v, want only the fault", scan.Sample)
+	}
+}

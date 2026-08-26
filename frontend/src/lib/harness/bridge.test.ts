@@ -3,7 +3,7 @@
 // meter, the mutation clock's own cadence) — those need a real engine and
 // are covered by e2e/tests/harness-bridge.spec.ts.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { answerHarnessQuery, sinceLastMutationMs, stopHarnessBridge } from './bridge';
 import { harnessGlobalNames } from './globals';
 
@@ -166,6 +166,33 @@ describe('perf ops', () => {
   it('names an unknown op', async () => {
     const result = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'wat' })) as ErrorEnvelope;
     expect(result.error).toContain('unknown perf op "wat"');
+  });
+});
+
+describe('reload op', () => {
+  it('answers before it navigates, and clamps the delay it was handed', async () => {
+    const reload = vi.fn();
+    const original = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...original, reload },
+    });
+    vi.useFakeTimers();
+    try {
+      const answer = (await answerHarnessQuery({ v: 1, kind: 'reload', delayMs: 99_000 })) as {
+        reloading: boolean;
+        delayMs: number;
+      };
+      // The answer is what proves the reply can win the race with the
+      // navigation that is about to drop the socket.
+      expect(answer).toMatchObject({ reloading: true, delayMs: 5000 });
+      expect(reload).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(5000);
+      expect(reload).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      Object.defineProperty(window, 'location', { configurable: true, value: original });
+    }
   });
 });
 

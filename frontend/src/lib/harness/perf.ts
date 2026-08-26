@@ -297,14 +297,20 @@ export function collectPerfSample(): PerfSample {
   }
   const window = Math.max(0, now - state.lastCollectAt);
   const frames = state.hist.count - state.frameMark;
-  const heap = state.meters.has('memory') ? heapBytes() : 0;
+  // An unavailable memory meter keeps its series EMPTY (count 0) rather
+  // than recording zeros: a zero sample would survive into the bench
+  // aggregate and compare 0-against-0 in a baseline, hiding the fact
+  // that this engine (WebKitGTK has no performance.memory) never
+  // measured anything.
+  const heapMeasured = state.meters.has('memory') && !state.unavailable.has('memory');
+  const heap = heapMeasured ? heapBytes() : 0;
   const nodes =
     state.meters.has('dom') && typeof document !== 'undefined'
       ? document.getElementsByTagName('*').length
       : 0;
   const panes = countPaneRows();
 
-  recordSeries(state.heapBytes, heap);
+  if (heapMeasured) recordSeries(state.heapBytes, heap);
   recordSeries(state.domNodes, nodes);
   for (const pane of panes) {
     let series = state.panes.get(pane.paneId);

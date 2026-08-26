@@ -271,6 +271,12 @@ General-purpose scripts: `streaming-text` (Claude default),
 forever; see [soak-rig.md](soak-rig.md)), `codex-basic` (Codex
 default), `codex-approval`.
 
+Bench scripts (`bench-burst-stream`, `bench-giant-turn`,
+`bench-subagent-fanout`) are the load workloads, and their one shared
+difference from the soak scripts is that they TERMINATE: each ends with a
+`result` envelope so a bench can wait on turn completion instead of a
+wall clock. See the bench section below.
+
 Usage-limit scripts, one per provider: `usage-limit-claude` (a
 `rate_limit_event` with `status: "rejected"` plus an `assistant` envelope
 carrying the `rate_limit` error enum) and `usage-limit-codex` (an `error`
@@ -417,6 +423,7 @@ Query kinds, versioned `v: 1`:
 | `element` | `{count, first:{rect, visible, clipped, text, aria}}` for a CSS selector. A malformed selector errors; one that matches nothing answers `count: 0`. |
 | `globals` | Whitelisted read of a diagnostic global. A name outside the whitelist errors; a whitelisted name this build did not install answers `{unavailable: true}` — `__paneGeometry` and `uiTrace.recent` are genuinely absent in a harness build, because `make harness` builds with `UI_TRACE` unset. |
 | `perf` | Meter control. Driven by `HarnessPerf*`, not by a test directly. |
+| `reload` | Navigate the page. `HarnessReset`'s contract ends with "reload the page after" — the SPA is holding rows that no longer exist — and nothing outside a browser could do that. The answer is sent BEFORE the reload (a short deferred timeout, capped at 5s), because the socket the reply rides is about to drop; a caller treats a failed reload query as inconclusive and re-probes the bridge. |
 
 The snapshot reads the DOM through attributes the components declare,
 never through class names: `[data-pane-id]`, `[data-ui-surface="chat"]`,
@@ -456,7 +463,10 @@ them.
 `internal/procrss` matches webview processes by name PREFIX because the
 kernel truncates `/proc/<pid>/status`'s `Name:` at 15 characters
 (`WebKitWebProce`, never `WebKitWebProcess`). Off linux `Sample` returns
-`ErrUnsupported` and the RSS series is simply absent.
+`ErrUnsupported` and the RSS series is simply absent. `SampleAll` is the
+sibling that takes EVERY descendant whatever it is named, which is what a
+whole-tree figure needs: an empty prefix list cannot express that, since
+prefix matching skips a process it does not recognise by design.
 
 ## Driving an instance from a shell (`bin/ao-harness`)
 
@@ -480,6 +490,51 @@ the same consume-on-match `WaitForEvent` semantics as
 needs a real instance imports that rather than re-implementing the
 frames. Details and the registry prune rule:
 [cmd/ao-harness/AGENTS.md](../../cmd/ao-harness/AGENTS.md).
+
+### Bench workloads
+
+`ao-harness bench <workload>` is a soak that ENDS: it seeds its own
+fixture, arms the perf meters, drives a scripted load, and writes
+`<dataDir>/bench/<workload>-<timestamp>.json`. Four workloads:
+`burst-stream` (chunked text-delta flood), `giant-turn` (225 items in one
+turn), `subagent-fanout` (three bounded async subagents), and
+`many-threads` (30 seeded threads, then a switch storm). The first three
+are `bench-*` entries in the scenario library and finish on
+`provider:turn_completed` for their thread — the mock's own
+`scenario_done` fires when the mock stopped WRITING, upstream of parse,
+triage, persist and render, so it would time a shorter pipeline than the
+one under test.
+
+`many-threads` has no scenario. It drives each switch by emitting
+`notification:activated`, which the SPA routes through
+`parseNotificationTarget` and `applyNotificationActivated` into
+`openThreadInPane` — the same function a sidebar click reaches. That
+keeps the workload honest (30 real timeline unmounts and 30 real
+bounded-window loads out of SQLite for one tiny RPC each) while being
+explicit about what it does NOT cover: the sidebar row's own hit-testing
+and hover.
+
+A report doubles as a baseline. `--baseline` takes either a previous
+report (its `aggregate` p50 becomes the reference under a default 25%
+budget) or a hand-written `metrics` budget, and drift exits 3. There is
+no default baseline, so a bench never becomes a gate by accident.
+
+### Health rollup
+
+`ao-harness health` is the generalized `make soak-check`: process
+liveness and uptime, new `frontend-errors.jsonl` lines, ui-trace oracle
+triggers (`timeline.margin.diverge`, `timeline.reasoning.tailJump` — not
+the continuous `timeline.row.resize` tracker), new backend stderr, the
+process tree's RSS via `procrss.SampleAll`, database size, mock liveness,
+replay state, and any armed perf run. One line per concern with an
+ok/warn/red marker; red exits 3, warn exits 0.
+
+Every file concern is since-last-check through
+`<dataDir>/health-cursor.json`, which stores each file's size beside its
+offset so a rotation (uitrace's size cap, `up`'s stderr truncation) is
+detected rather than silently skipping or over-reading. `--watch` appends
+timestamped lines with no clear-screen, so an hours-long watch is
+greppable evidence.
 
 ## e2e/ (Playwright)
 

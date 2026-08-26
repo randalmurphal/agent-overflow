@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "name": "bench-giant-turn",
+  "description": "Bench workload: ONE turn with a very large item count. Seventy-five iterations of (Read tool_use + tool_result, Bash tool_use + tool_result, a streamed text block), which is 225 timeline items and 750 wire lines, then a normal `result`. This is the item-count axis rather than the delta-rate axis: it measures persistence, timeline windowing, virtualizer row recycling and pane memory as one turn grows past what fits on screen. Run it with `ao-harness bench giant-turn`.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "giant-item-count",
+      "steps": [
+        {
+          "repeat": {
+            "count": 75,
+            "steps": [
+              {
+                "emit": {
+                  "delayBetweenMs": 1,
+                  "lines": [
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-giantr-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-read-${TURN}-${ITER}\",\"name\":\"Read\",\"input\":{\"file_path\":\"${CWD}/pkg/slice-${ITER}.go\"}}]}}",
+                    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-bench-read-${TURN}-${ITER}\",\"content\":\"package slice\\n\\n// slice ${ITER}\\nfunc Slice${ITER}() int { return ${ITER} }\\n\"}]}}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-giantb-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-bash-${TURN}-${ITER}\",\"name\":\"Bash\",\"input\":{\"command\":\"rg -n 'Slice${ITER}' pkg\",\"description\":\"confirm slice ${ITER}\"}}]}}",
+                    "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-bench-bash-${TURN}-${ITER}\",\"content\":\"pkg/slice-${ITER}.go:4:func Slice${ITER}() int { return ${ITER} }\"}]}}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-giant-${TURN}-${ITER}\",\"role\":\"assistant\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Checked slice ${ITER}: the read and the grep agree, nothing to change here.\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+                    "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+                    "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-giant-${TURN}-${ITER}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"Checked slice ${ITER}: the read and the grep agree, nothing to change here.\"}]}}"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

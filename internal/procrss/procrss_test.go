@@ -109,6 +109,42 @@ func TestSampleRootCollectsMatchingDescendants(t *testing.T) {
 	}
 }
 
+// TestSampleAllRootTakesEveryDescendant pins the difference between the two
+// walks on one canned tree: the prefix walk answers "how big is the
+// renderer", SampleAllRoot answers "how big is this instance", so the
+// non-webview child counts and the foreign webview still does not.
+func TestSampleAllRootTakesEveryDescendant(t *testing.T) {
+	root := writeProc(t, map[int]string{
+		1:   status("systemd", 0, "9000"),
+		100: status("agent-overflow", 1, "51200"),
+		101: status("WebKitWebProce", 100, "204800"),
+		104: status("ao-mockprovide", 100, "4096"),
+		105: status("git", 104, "2048"),
+		200: status("WebKitWebProce", 1, "999999"),
+	}, nil)
+
+	tree, err := SampleAllRoot(root, 100)
+	if err != nil {
+		t.Fatalf("SampleAllRoot: %v", err)
+	}
+	got := map[int]uint64{}
+	for _, child := range tree.Children {
+		got[child.PID] = child.RSSBytes
+	}
+	want := map[int]uint64{101: 204800 * 1024, 104: 4096 * 1024, 105: 2048 * 1024}
+	if len(got) != len(want) {
+		t.Fatalf("children = %+v, want pids %v", tree.Children, []int{101, 104, 105})
+	}
+	for pid, bytes := range want {
+		if got[pid] != bytes {
+			t.Errorf("child %d rss = %d, want %d", pid, got[pid], bytes)
+		}
+	}
+	if tree.TotalRSSBytes() != (51200+204800+4096+2048)*1024 {
+		t.Errorf("TotalRSSBytes = %d", tree.TotalRSSBytes())
+	}
+}
+
 func TestSampleRootFailsWhenTheNamedProcessIsGone(t *testing.T) {
 	root := writeProc(t, map[int]string{1: status("systemd", 0, "9000")}, nil)
 	if _, err := SampleRoot(root, 4242, DefaultWebviewPrefixes); err == nil {

@@ -30,6 +30,13 @@ headless, isolated data dir, mocked providers. Full harness guide:
   own the shapes (`frontend/src/lib/harness/*.test.ts`,
   `app_harness_ui_test.go`, `app_harness_perf_test.go`); this file owns the
   wiring.
+- `tests/harness-bench.spec.ts` — `bin/ao-harness` as a SUBPROCESS against
+  the worker's harness with a page attached: `bench burst-stream` resets,
+  reloads the page, seeds, streams a whole turn to `provider:turn_completed`
+  and writes a report whose frame counts came from a real browser, and
+  `health` rolls the same instance up without going red. The arithmetic is
+  unit-tested in `cmd/ao-harness/`; this owns the join between a CLI outside
+  the app and the bridge inside it.
 - `tests/workflows.spec.ts` — RPC/event-only workflow coverage: two-phase
   chain, human gate approval, same-session question answer, watchdog stall,
   and cancel/interrupt.
