@@ -3,6 +3,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { connectPage, done, sleep } from './lib/cdp.mjs';
 import { pad, ms } from './lib/format.mjs';
+import { createFrameResolver } from './lib/sourcemap.mjs';
 
 const SECS = +(process.argv[2] || 60);
 const LABEL = process.argv[3] || 'run';
@@ -25,14 +26,26 @@ c.close();
 const byId = new Map(profile.nodes.map((n) => [n.id, n]));
 const parent = new Map();
 for (const n of profile.nodes) for (const ch of n.children || []) parent.set(ch, n.id);
+// One resolver over every bundle URL in the profile (hidden maps; a build
+// without AO_SOURCEMAP resolves nothing and frames print raw).
+const resolve = await createFrameResolver(profile.nodes.map((n) => n.callFrame.url).filter(Boolean));
 const selfUs = new Map();
 for (let i = 0; i < profile.samples.length; i++) {
   const id = profile.samples[i];
   selfUs.set(id, (selfUs.get(id) || 0) + (profile.timeDeltas[i] || 0));
 }
 const total = [...selfUs.values()].reduce((a, b) => a + b, 0);
-const file_ = (n) => (n.callFrame.url || '').split('/').pop() || '(native)';
-const key = (n) => `${n.callFrame.functionName || '(anon)'} ${file_(n)}:${n.callFrame.lineNumber + 1}`;
+const mappedOf = (n) => (n.callFrame.url ? resolve(n.callFrame.url, n.callFrame.lineNumber, n.callFrame.columnNumber) : null);
+const file_ = (n) => {
+  const m = mappedOf(n);
+  if (m) return m.source;
+  return (n.callFrame.url || '').split('/').pop() || '(native)';
+};
+const key = (n) => {
+  const m = mappedOf(n);
+  if (m) return `${n.callFrame.functionName || m.name || '(anon)'} ${m.source}:${m.line}`;
+  return `${n.callFrame.functionName || '(anon)'} ${file_(n)}:${n.callFrame.lineNumber + 1}`;
+};
 const selfBy = new Map(), inclBy = new Map(), fileBy = new Map();
 let idle = 0, gc = 0, program = 0;
 for (const [id, us] of selfUs) {

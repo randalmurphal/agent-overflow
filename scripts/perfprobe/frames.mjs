@@ -3,6 +3,7 @@
 // offline-with --file
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { pad, ms, fail } from './lib/format.mjs';
+import { createFrameResolver } from './lib/sourcemap.mjs';
 
 const args = process.argv.slice(2);
 const fileIdx = args.indexOf('--file');
@@ -48,7 +49,22 @@ for (const e of main) { if (e.ts < t0) t0 = e.ts; if (e.ts + e.dur > t1) t1 = e.
 if (!SECS) SECS = Math.max(1, (t1 - t0) / 1e6);
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 const top = (map, n, by = (v) => v) => [...map.entries()].sort((a, b) => by(b[1]) - by(a[1])).slice(0, n);
-const frameOf = (st) => (st && st[0] ? `${st[0].functionName || '(anon)'} ${(st[0].url || '').split('/').pop()}:${st[0].lineNumber}` : '');
+// One resolver over every bundle URL in the trace (hidden maps served
+// beside the assets; offline --file runs or builds without AO_SOURCEMAP
+// resolve nothing and frames print raw). Trace stack frames and
+// FunctionCall data both carry v8's 0-based line/column.
+const traceUrls = new Set();
+for (const e of main) {
+  if (e.args?.data?.url) traceUrls.add(e.args.data.url);
+  for (const f of e.args?.beginData?.stackTrace || []) if (f.url) traceUrls.add(f.url);
+}
+const resolve = await createFrameResolver([...traceUrls]);
+const label = (fn, url, line0, col0) => {
+  const m = url ? resolve(url, line0 || 0, col0 || 0) : null;
+  if (m) return `${fn || m.name || '(anon)'} ${m.source}:${m.line}`;
+  return `${fn || '(anon)'} ${(url || '').split('/').pop()}:${line0}`;
+};
+const frameOf = (st) => (st && st[0] ? label(st[0].functionName, st[0].url, st[0].lineNumber, st[0].columnNumber) : '');
 
 const agg = new Map();
 for (const e of main) { const a = agg.get(e.name) || { n: 0, us: 0, max: 0 }; a.n++; a.us += e.dur; a.max = Math.max(a.max, e.dur); agg.set(e.name, a); }
@@ -76,7 +92,7 @@ const enclosingJs = (e) => {
 const jsLabel = (j) => {
   if (!j) return '(frame-time, no JS on stack)';
   const d = j.args?.data || {};
-  if (j.name === 'FunctionCall') return `FunctionCall ${d.functionName || '(anon)'} ${(d.url || '').split('/').pop()}:${d.lineNumber}`;
+  if (j.name === 'FunctionCall') return `FunctionCall ${label(d.functionName, d.url, d.lineNumber, d.columnNumber)}`;
   if (j.name === 'EventDispatch') return `EventDispatch ${d.type}`;
   if (j.name === 'TimerFire') return `TimerFire #${d.timerId}`;
   return j.name;
@@ -96,7 +112,7 @@ console.log(`-- layout: ${layouts.length} passes ${ms(sum(layouts.map((e) => e.d
 for (const [k, a] of top(forcedBy, 10, (v) => v.us)) console.log(`  ${pad(a.n, 5)}x ${pad(ms(a.us), 7)}ms  ${k}`);
 
 const fnBy = new Map();
-for (const e of main) if (e.name === 'FunctionCall' && e.args?.data) { const d = e.args.data; const k = `${d.functionName || '(anon)'} ${(d.url || '').split('/').pop()}:${d.lineNumber}`; const a = fnBy.get(k) || { n: 0, us: 0, max: 0 }; a.n++; a.us += e.dur; a.max = Math.max(a.max, e.dur); fnBy.set(k, a); }
+for (const e of main) if (e.name === 'FunctionCall' && e.args?.data) { const d = e.args.data; const k = label(d.functionName, d.url, d.lineNumber, d.columnNumber); const a = fnBy.get(k) || { n: 0, us: 0, max: 0 }; a.n++; a.us += e.dur; a.max = Math.max(a.max, e.dur); fnBy.set(k, a); }
 console.log('-- JS entry points by inclusive main-thread time (incl. forced style/layout inside)');
 for (const [k, a] of top(fnBy, 18, (v) => v.us)) console.log(`  ${pad(ms(a.us), 7)}ms ${pad(a.n, 6)}x max ${pad(ms(a.max), 6)}ms  ${k}`);
 const evBy = new Map();
