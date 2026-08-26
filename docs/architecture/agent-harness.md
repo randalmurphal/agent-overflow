@@ -473,7 +473,8 @@ prefix matching skips a process it does not recognise by design.
 `cmd/ao-harness` is the same surface for a human or an agent at a
 terminal: `up` / `down` / `list` / `info`, `seed`, `rpc <Method> [json]`,
 `threads` / `items` / `send`, `scenario`, `mock`, `events tail|await|count`,
-`record` / `bundles` / `replay`, `logs`, and a read-only `db`. `make
+`record` / `bundles` / `replay`, `logs`, a read-only `db`, and the
+bridge-backed `ui` / `perf` / `bench` / `health`. `make
 harness-build` builds it alongside `bin/agent-overflow`, and it finds the
 backend binary as its own sibling, so a fresh checkout needs no
 configuration.

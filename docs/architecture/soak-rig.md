@@ -202,6 +202,11 @@ step. `${ITER}` (1-based) is available inside the body.
 
 ## Reading the results
 
+`ao-harness health --watch` works against any soak (it reads the
+instance's own evidence files, not the Windows launcher log), and is the
+only checker for a `make soak-window` instance. The Windows shell has
+its launcher-side view too:
+
 `make soak-check` (`scripts/soak-check.sh`) is read-only. It resolves
 `%APPDATA%\agent-overflow\launcher-soak.log` through cmd.exe interop,
 scopes everything to the **current run** (the log is append-only across

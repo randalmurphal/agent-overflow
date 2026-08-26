@@ -312,4 +312,7 @@ backend side. `kill -USR1` (goroutine dump) and the pprof listener
 - **W6 — docs**: agent-harness.md absorbs this surface, soak-rig.md
   narrows to the Windows launcher shell, AGENTS.md pointers, glossary.
 
-Waves land in order; each leaves every gate green.
+All waves landed 2026-08-26 (W1+W4 `da4f3002`, W2+W3 `bfb6f1f1`,
+W5 `eea8645a`, W6 docs). `docs/architecture/agent-harness.md` is the
+living description of the built surface; this spec stays as the design
+rationale and contract reference.
