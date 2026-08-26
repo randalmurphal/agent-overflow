@@ -217,3 +217,40 @@ func TestFollowFileDropsTheFragmentOnRotation(t *testing.T) {
 		t.Fatalf("after rotation = %q, want %q", line, "fresh")
 	}
 }
+
+// The rotation the size heuristic cannot see: the file is REPLACED (a new
+// inode renamed over the name) and the replacement is already LONGER than
+// the offset the follower held. Nothing shrank, so a size-only check
+// resumes mid-record inside a file it has never read and silently skips
+// everything before that point. Identity is what catches it.
+func TestFollowFileFollowsAReplacedFileThatIsAlreadyLonger(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "follow.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	f := startFollowing(t, path)
+
+	// Grow the original so the follower carries a non-trivial offset.
+	f.append(t, strings.Repeat("old line padding\n", 12))
+	for i := 0; i < 12; i++ {
+		if line := f.next(t); line != "old line padding" {
+			t.Fatalf("pre-rotation line = %q", line)
+		}
+	}
+
+	// The replacement: a different inode, renamed into place, whose first
+	// line sits at offset 0 and whose total length exceeds the old file's.
+	replacement := filepath.Join(dir, "follow.log.new")
+	body := "FIRST AFTER ROTATE\n" + strings.Repeat("new line padding\n", 30)
+	if err := os.WriteFile(replacement, []byte(body), 0o600); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	if line := f.next(t); line != "FIRST AFTER ROTATE" {
+		t.Fatalf("after a rotate-and-regrow the follower resumed at %q, want the new file's first line", line)
+	}
+}

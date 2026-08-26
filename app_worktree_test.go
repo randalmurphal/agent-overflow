@@ -2126,7 +2126,7 @@ func TestGitRemoveWorktreeRelocatesClaudeSessionAndKeepsRef(t *testing.T) {
 	if _, err := os.Stat(wantDest); err != nil {
 		t.Errorf("transcript not relocated to project-root slug %q: %v", wantDest, err)
 	}
-	if located, err := sessionfork.LocateSessionFile(sessionID, repo); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, repo); err != nil {
 		t.Errorf("LocateSessionFile from repo root: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
@@ -2246,7 +2246,7 @@ func TestGitRemoveWorktreeRelocatesPendingForkRef(t *testing.T) {
 
 	for _, id := range []string{sessionID, forkID} {
 		want := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), id+".jsonl")
-		if located, err := sessionfork.LocateSessionFile(id, env.repo); err != nil {
+		if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), id, env.repo); err != nil {
 			t.Errorf("LocateSessionFile(%s) from repo root: %v", id, err)
 		} else if !samePath(located, want) {
 			t.Errorf("LocateSessionFile(%s) = %q, want relocated %q", id, located, want)
@@ -2288,7 +2288,7 @@ func TestGitRemoveWorktreeRelocatesClaudeTUISession(t *testing.T) {
 	// Relocated under the project-root slug so `claude --resume` with cwd == repo
 	// resolves it.
 	wantDest := filepath.Join(env.home, ".claude", "projects", claudeProjectSlugForTest(t, env.repo), sessionID+".jsonl")
-	if located, err := sessionfork.LocateSessionFile(sessionID, env.repo); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, env.repo); err != nil {
 		t.Errorf("LocateSessionFile from repo root: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
@@ -2343,7 +2343,7 @@ func TestGitRemoveWorktreeMissingTranscriptPreservesRefAndDoesNotFabricate(t *te
 	}
 	// Positive proof of "bricked, not fabricated": the session stays
 	// unresolvable from the reattach target.
-	if _, err := sessionfork.LocateSessionFile(sessionID, env.repo); !errors.Is(err, sessionfork.ErrSessionFileNotFound) {
+	if _, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, env.repo); !errors.Is(err, sessionfork.ErrSessionFileNotFound) {
 		t.Errorf("LocateSessionFile err = %v, want ErrSessionFileNotFound (bricked, not silently rehomed)", err)
 	}
 }
@@ -2417,7 +2417,7 @@ func TestGitRemoveWorktreeSubagentCopyFailureDoesNotFailReattach(t *testing.T) {
 
 	// The transcript itself relocated, so resume resolves at the root slug.
 	wantDest := filepath.Join(rootSlugDir, sessionID+".jsonl")
-	if located, err := sessionfork.LocateSessionFile(sessionID, env.repo); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, env.repo); err != nil {
 		t.Errorf("LocateSessionFile from repo root: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)
@@ -2486,7 +2486,7 @@ func assertSessionMovedTo(t *testing.T, env relocateTestEnv, destWorkspace, srcT
 	if _, err := os.Stat(wantDest); err != nil {
 		t.Errorf("transcript not relocated to destination slug %q: %v", wantDest, err)
 	}
-	if located, err := sessionfork.LocateSessionFile(sessionID, destWorkspace); err != nil {
+	if located, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, destWorkspace); err != nil {
 		t.Errorf("LocateSessionFile from destination: %v", err)
 	} else if !samePath(located, wantDest) {
 		t.Errorf("LocateSessionFile = %q, want relocated %q", located, wantDest)

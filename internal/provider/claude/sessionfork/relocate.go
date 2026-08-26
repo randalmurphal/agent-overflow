@@ -53,10 +53,10 @@ var ErrSubagentCopyIncomplete = errors.New("sessionfork: subagent subdir copy in
 // will read. Returns
 // ErrSubagentCopyIncomplete with destFile SET (soft) when only the subagent
 // subdir copy is partial: resume works, so the move is not refused.
-func RelocateSession(sessionID, fromWorkspace, destWorkspace string) (srcFile, destFile string, err error) {
+func RelocateSession(projectsDir, sessionID, fromWorkspace, destWorkspace string) (srcFile, destFile string, err error) {
 	// fromWorkspace is only the primary-lookup hint; LocateSessionFile scans
 	// every project dir on miss, so a now-deleted worktree path still resolves.
-	src, err := LocateSessionFile(sessionID, fromWorkspace)
+	src, err := LocateSessionFile(projectsDir, sessionID, fromWorkspace)
 	if err != nil {
 		return "", "", err
 	}
@@ -66,11 +66,10 @@ func RelocateSession(sessionID, fromWorkspace, destWorkspace string) (srcFile, d
 		return src, "", err
 	}
 
-	pdir, err := defaultProjectsDir()
-	if err != nil {
-		return src, "", err
-	}
-	destDir := filepath.Join(pdir, slug)
+	// Source and destination share ONE projects dir by construction: a
+	// relocation moves a transcript between slugs inside the provider home
+	// it was read from, never across homes.
+	destDir := filepath.Join(projectsDir, slug)
 	dest := filepath.Join(destDir, sessionID+".jsonl")
 
 	// Source already lives at the destination slug — nothing to move, and

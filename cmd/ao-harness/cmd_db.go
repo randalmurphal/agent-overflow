@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/harnessclient"
 
 	_ "modernc.org/sqlite"
@@ -25,13 +25,22 @@ var readOnlyVerbs = []string{"SELECT", "PRAGMA", "EXPLAIN"}
 // buffers a million rows to align a table is a memory bug.
 const maxDBRows = 10_000
 
+// defaultDBColWidth keeps a table cell readable. It is not a data
+// limit: --max-col-width 0 prints whole values, and -o json never
+// truncates at all.
+const defaultDBColWidth = 64
+
 func runDB(e *env, args []string) error {
-	flags := e.newFlagSet("db")
+	flags := e.newFlagSet("db '<SELECT ...>'")
 	dbPath := flags.String("file", "", "database file to open (default: the instance's own)")
 	limit := flags.Int("limit", maxDBRows, "stop after this many rows")
+	colWidth := flags.Int("max-col-width", defaultDBColWidth, "truncate text cells at this many runes (0 = print them whole)")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
+	}
+	if *colWidth < 0 {
+		return usagef("--max-col-width must not be negative (0 means no truncation)")
 	}
 	if len(rest) != 1 || strings.TrimSpace(rest[0]) == "" {
 		return usagef("db needs exactly one SQL statement (quote it)")
@@ -62,7 +71,7 @@ func runDB(e *env, args []string) error {
 		return fmt.Errorf("query %s: %w", path, err)
 	}
 	defer rows.Close()
-	return e.printRows(rows, *limit)
+	return e.printRows(rows, *limit, *colWidth)
 }
 
 // dbPath asks the running instance where its database is. Unlike `logs`
@@ -98,18 +107,27 @@ func (e *env) dbPath() (string, error) {
 // conversations, and an agent handed this CLI must not be able to page
 // through them by accident.
 //
-// The rule is deliberately reimplemented rather than imported: this
-// binary links no App code, which is what keeps it from becoming a second
-// way to drive the app.
+// The app-managed root comes from internal/appdirs — the same
+// UserConfigDir-then-UserHomeDir chain the app itself resolves. Using
+// os.UserConfigDir alone here was a hole rather than a simplification:
+// on a machine with no config dir the app falls back to $HOME and this
+// check returned nil, so --file could reach exactly the real store it
+// exists to keep out. Importing appdirs (a stdlib-only path helper, no
+// App code) is what makes the two answers one answer.
+//
+// A root that cannot be resolved AT ALL is a refusal, not a pass: with
+// nothing to compare against, "this is not the real database" is a claim
+// this function cannot make.
 func refuseRealAppDatabase(path string) error {
-	configRoot, err := os.UserConfigDir()
+	realDir, err := appdirs.Root()
 	if err != nil {
-		// No resolvable config root means nothing to protect.
-		return nil
+		return usagef(
+			"db refuses --file %s: neither a config dir nor a home dir resolves on this machine, "+
+				"so there is no way to prove the path is not the real app data dir (drop --file to read the instance's own store)", path)
 	}
-	realDir, err := filepath.Abs(filepath.Join(configRoot, appDataDirName))
+	realDir, err = filepath.Abs(realDir)
 	if err != nil {
-		return nil
+		return usagef("db refuses --file %s: cannot resolve the app data dir to compare against (%v)", path, err)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -302,15 +320,16 @@ func leadingKeyword(statement string) string {
 // printRows renders a result set. Text output is an aligned table; JSON
 // is an array of objects keyed by column name, which is what a script
 // pipes into jq.
-func (e *env) printRows(rows *sql.Rows, limit int) error {
+func (e *env) printRows(rows *sql.Rows, limit, colWidth int) error {
 	columns, err := rows.Columns()
 	if err != nil {
 		return err
 	}
 	var (
-		textRows [][]string
-		objects  []map[string]any
-		count    int
+		textRows  [][]string
+		objects   []map[string]any
+		count     int
+		truncated bool
 	)
 	for rows.Next() {
 		if limit > 0 && count >= limit {
@@ -336,7 +355,17 @@ func (e *env) printRows(rows *sql.Rows, limit int) error {
 		}
 		cells := make([]string, len(columns))
 		for i := range columns {
-			cells[i] = truncate(textValue(scanned[i]), 64)
+			value := textValue(scanned[i])
+			if colWidth > 0 {
+				cut := truncate(value, colWidth)
+				truncated = truncated || cut != value
+				value = cut
+			} else {
+				// Newlines and tabs still have to go: they are the tabwriter's
+				// own delimiters, and a multi-line cell would shear the table.
+				value = strings.ReplaceAll(strings.ReplaceAll(value, "\n", " "), "\t", " ")
+			}
+			cells[i] = value
 		}
 		textRows = append(textRows, cells)
 	}
@@ -353,7 +382,15 @@ func (e *env) printRows(rows *sql.Rows, limit int) error {
 		e.printf("no rows\n")
 		return nil
 	}
-	return e.table(columns, textRows)
+	if err := e.table(columns, textRows); err != nil {
+		return err
+	}
+	if truncated {
+		// Say it once, and say what the recourse is. A silently cut value
+		// is how a reader concludes a column holds something it does not.
+		e.printf("(truncated — use -o json or --max-col-width 0)\n")
+	}
+	return nil
 }
 
 // jsonValue keeps SQLite's own types where JSON has them. A BLOB

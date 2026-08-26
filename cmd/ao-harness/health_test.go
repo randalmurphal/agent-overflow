@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -346,5 +347,63 @@ func TestScanFrontendErrorsSplitsNoticesFromFaults(t *testing.T) {
 	}
 	if len(scan.Sample) != 1 || !strings.Contains(scan.Sample[0], "TypeError") {
 		t.Errorf("sample = %v, want only the fault", scan.Sample)
+	}
+}
+
+// "Nothing was ever started here" is its own answer, and it is not a red
+// rollup. With no registry row AND no instance file, the target was
+// invented by the default-data-root fallback — health reported a dead
+// process for an instance that never existed, at exitBadNews, which reads
+// as "your harness crashed".
+func TestHealthOnANeverBootedRootIsItsOwnVerdict(t *testing.T) {
+	e, _, _ := testEnv(t.TempDir())
+	e.instance = t.TempDir()
+
+	_, err := e.collectHealth(context.Background())
+	if err == nil {
+		t.Fatal("health reported on a root nothing ever claimed")
+	}
+	if code := exitCodeOf(t, err); code != exitError {
+		t.Fatalf("exit code = %d, want %d (a refusal, not bad news about a run)", code, exitError)
+	}
+	if !strings.Contains(err.Error(), "ao-harness up") {
+		t.Fatalf("the verdict does not name how to start one: %v", err)
+	}
+}
+
+// n/a is "this concern could not be evaluated", distinct from ok, which
+// claims it WAS evaluated and came back clean. It must never worsen the
+// rollup, and it must never be mistaken for a pass.
+func TestNotApplicableSectionsNeverWorsenTheVerdict(t *testing.T) {
+	report := healthReport{Sections: []healthSection{
+		{Name: "process", Status: healthOK},
+		{Name: "ui-oracles", Status: healthNA},
+		{Name: "soak-autopilot", Status: healthNA},
+	}}
+	if worst := report.Worst(); worst != healthOK {
+		t.Fatalf("worst = %q, want %q", worst, healthOK)
+	}
+	if healthExitCode(report) != exitOK {
+		t.Fatalf("an n/a section failed the rollup")
+	}
+	if healthNA == healthOK {
+		t.Fatal("n/a and ok must stay distinguishable in the rendered report")
+	}
+}
+
+// A ui-oracle section over ZERO trace records is the case that forced the
+// third status: reading "ok" there means "the oracles did not fire", and
+// the truth is "no oracle ran" — which is what a caller relying on the
+// rollup as a gate most needs to be told.
+func TestUIOraclesWithNoTraceRecordsIsNotApplicable(t *testing.T) {
+	dataDir := t.TempDir()
+	e, _, _ := testEnv(t.TempDir())
+
+	section, _ := e.oracleSection(dataDir, healthFileCursor{})
+	if section.Status != healthNA {
+		t.Fatalf("status = %q, want %q for a build with no trace at all", section.Status, healthNA)
+	}
+	if !strings.Contains(section.Detail, "UI_TRACE=1") {
+		t.Fatalf("the detail does not name the build flag that arms it: %q", section.Detail)
 	}
 }

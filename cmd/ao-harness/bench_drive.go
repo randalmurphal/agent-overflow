@@ -96,31 +96,32 @@ func reloadPage(ctx context.Context, e *env, client *harnessclient.Client) error
 // sidebar interaction.
 //
 // Both the single-thread open and the switch storm go through here, so
-// the two never drift into emitting subtly different payloads.
-func activateThread(ctx context.Context, run *benchRun, threadID string) error {
+// the two never drift into emitting subtly different payloads — and so
+// does `ui open`, which is the same move typed by a person.
+func activateThread(ctx context.Context, client *harnessclient.Client, threadID string) error {
 	payload, err := json.Marshal(map[string]any{"kind": "thread", "threadId": threadID})
 	if err != nil {
 		return err
 	}
-	_, err = run.client.Call(ctx, "HarnessEmit",
+	_, err = client.Call(ctx, "HarnessEmit",
 		string(eventchan.NotificationActivated), json.RawMessage(payload))
 	return err
 }
 
-// openThread activates a thread and waits for the page to show it.
-func openThread(ctx context.Context, run *benchRun, threadID string) error {
-	if err := activateThread(ctx, run, threadID); err != nil {
+// openThreadOnPage activates a thread and waits for the page to show it.
+func openThreadOnPage(ctx context.Context, e *env, client *harnessclient.Client, threadID string) error {
+	if err := activateThread(ctx, client, threadID); err != nil {
 		return err
 	}
-	return waitForActiveThread(ctx, run, threadID)
+	return waitForActiveThread(ctx, e, client, threadID)
 }
 
-func waitForActiveThread(ctx context.Context, run *benchRun, threadID string) error {
+func waitForActiveThread(ctx context.Context, e *env, client *harnessclient.Client, threadID string) error {
 	deadline := time.Now().Add(benchBridgeTimeout)
 	var last string
 	for time.Now().Before(deadline) {
 		probeCtx, cancel := context.WithTimeout(ctx, benchProbeTimeout)
-		view, _, err := run.env.takeViewport(probeCtx, run.client, 0, 0)
+		view, _, err := e.takeViewport(probeCtx, client, 0, 0)
 		cancel()
 		if err != nil {
 			return err
@@ -177,7 +178,7 @@ func driveThreadSwitchStorm(ctx context.Context, run *benchRun) error {
 	defer cancel()
 	for pass := 0; pass < passes; pass++ {
 		for _, threadID := range run.threadIDs {
-			if err := activateThread(stormCtx, run, threadID); err != nil {
+			if err := activateThread(stormCtx, run.client, threadID); err != nil {
 				return err
 			}
 			run.switches++
@@ -188,7 +189,7 @@ func driveThreadSwitchStorm(ctx context.Context, run *benchRun) error {
 	}
 	// The storm is only honest if the switches actually landed, so the
 	// final thread is confirmed on the page rather than assumed.
-	if err := waitForActiveThread(stormCtx, run, run.threadIDs[len(run.threadIDs)-1]); err != nil {
+	if err := waitForActiveThread(stormCtx, run.env, run.client, run.threadIDs[len(run.threadIDs)-1]); err != nil {
 		return err
 	}
 	return sleepCtx(stormCtx, benchSettleMs*time.Millisecond)

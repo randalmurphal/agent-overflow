@@ -116,7 +116,7 @@ func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) 
 		t.Fatalf("seed WIP draft: %v", err)
 	}
 
-	sessionPath, err := sessionfork.LocateSessionFile(resendSourceSessionID, workspace)
+	sessionPath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), resendSourceSessionID, workspace)
 	if err != nil {
 		t.Fatalf("resolve claude session path: %v", err)
 	}

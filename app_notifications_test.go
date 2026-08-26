@@ -104,3 +104,66 @@ func TestHarnessNotifySurfacesDegradedSendAndSynthesizesActivation(t *testing.T)
 		t.Fatalf("activation event = %q, want %q", eventName, notify.ActivatedChannel)
 	}
 }
+
+// TestIsolatedBootInstallsTheRealNotificationSender: --harness and --soak
+// used to take a refusal stub, which made HarnessNotify answer "OS
+// notifications are unavailable" before emitting anything — so the e2e
+// spec covering the notification pipe asserted the stub's error text and
+// the emission path was never executed at all.
+func TestIsolatedBootInstallsTheRealNotificationSender(t *testing.T) {
+	app := newIsolatedProviderApp(harnessPaths{
+		DataRoot:       t.TempDir(),
+		CredentialHome: t.TempDir(),
+		MockProvider:   "/nonexistent/ao-mockprovider",
+	})
+	if _, ok := app.osNotifications.(*transportNotificationSender); !ok {
+		t.Fatalf("isolated boot installed %T, want the production transport sender", app.osNotifications)
+	}
+
+	// And it actually emits: the bus is wired after the App is built (as
+	// bootTransport does), which the sender must tolerate because it
+	// resolves the bus per send.
+	bus := transport.NewEventBus(8)
+	t.Cleanup(bus.Close)
+	app.SetEventBus(bus)
+
+	h := &Harness{app: app}
+	target := notify.Target{Kind: "thread", ThreadID: "thread-abc"}
+	if err := h.HarnessNotify("Ready", "Open the finished thread", target); err != nil {
+		t.Fatalf("HarnessNotify on an isolated boot: %v", err)
+	}
+
+	events := bus.Replay(map[string]uint64{notify.SendChannel: 0})
+	if len(events) != 1 {
+		t.Fatalf("replayed notification:send events = %d, want 1", len(events))
+	}
+	var frame transport.ServerFrame
+	if err := json.Unmarshal(events[0].WireBytes, &frame); err != nil {
+		t.Fatalf("decode wire frame: %v", err)
+	}
+	var got notify.Send
+	if err := json.Unmarshal(frame.Data, &got); err != nil {
+		t.Fatalf("decode notification send: %v", err)
+	}
+	if got.ID == "" || got.Title != "Ready" || !reflect.DeepEqual(got.Target, target) {
+		t.Fatalf("notification payload = %#v", got)
+	}
+}
+
+// TestIsolatedNotificationSendSucceedsWithNoSubscriber pins the
+// degradation: a headless harness has no launcher listening, and that
+// must be a log line and a success, never an error the caller has to
+// special-case.
+func TestIsolatedNotificationSendSucceedsWithNoSubscriber(t *testing.T) {
+	app := newIsolatedProviderApp(harnessPaths{DataRoot: t.TempDir(), CredentialHome: t.TempDir()})
+	bus := transport.NewEventBus(8)
+	t.Cleanup(bus.Close)
+	app.SetEventBus(bus)
+
+	if got := bus.ChannelSubscriberCount(notify.SendChannel); got != 0 {
+		t.Fatalf("fixture has %d explicit subscribers, want none", got)
+	}
+	if err := app.notifyOS("Ready", "Body", notify.Target{Kind: "none"}); err != nil {
+		t.Fatalf("send with no subscriber: %v, want success", err)
+	}
+}

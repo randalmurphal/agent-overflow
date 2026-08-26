@@ -46,7 +46,10 @@ func (b *appMCPStatusBus) Emit(s mcpstatus.ServerStatus) {
 }
 
 // claudeConfig returns the lazy-init Claude config-file adapter bound
-// to ~/.claude.json by default. Tests can pre-populate
+// to `<providerHome>/.claude.json`. This adapter WRITES (MCP server add /
+// remove / toggle), so it resolves its path through the one provider-home
+// seam rather than $HOME — an isolated boot must never edit the real
+// file. Tests can pre-populate
 // a.mcp.claudeConfigStore before calling this; production callers rely on
 // the default path.
 func (a *App) claudeConfig() (*claudeconfig.Store, error) {
@@ -54,7 +57,7 @@ func (a *App) claudeConfig() (*claudeconfig.Store, error) {
 		return a.mcp.claudeConfigStore, nil
 	}
 	a.mcp.claudeConfigOnce.Do(func() {
-		path, err := claudeconfig.DefaultPath()
+		path, err := a.claudeConfigJSONPath()
 		if err != nil {
 			a.mcp.claudeConfigErr = err
 			return
@@ -68,14 +71,14 @@ func (a *App) claudeConfig() (*claudeconfig.Store, error) {
 }
 
 // codexConfig returns the lazy-init Codex TOML adapter bound to
-// ~/.codex/config.toml by default. Same test-injection pattern as
-// claudeConfig.
+// `<providerHome>/.codex/config.toml`. Same write posture and same
+// test-injection pattern as claudeConfig.
 func (a *App) codexConfig() (*codexconfig.Store, error) {
 	if a.mcp.codexConfigStore != nil {
 		return a.mcp.codexConfigStore, nil
 	}
 	a.mcp.codexConfigOnce.Do(func() {
-		path, err := codexconfig.DefaultPath()
+		path, err := a.codexConfigTOMLPath()
 		if err != nil {
 			a.mcp.codexConfigErr = err
 			return

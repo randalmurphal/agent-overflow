@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -25,7 +26,20 @@ import (
 
 // HarnessSeedSpec is the root fixture document.
 type HarnessSeedSpec struct {
-	Projects []HarnessSeedProject `json:"projects"`
+	// ProviderHome writes files under the harness-owned provider home
+	// (<dataRoot>/home) before any project seeds: `.claude.json` MCP
+	// config, `.claude/settings.json`, skills, or a pre-baked
+	// `.claude/projects/...` transcript to pair with a thread's
+	// SessionRef. Paths are slash-separated and relative to that home;
+	// anything resolving outside it is refused.
+	ProviderHome []HarnessSeedHomeFile `json:"providerHome,omitempty"`
+	Projects     []HarnessSeedProject  `json:"projects,omitempty"`
+}
+
+// HarnessSeedHomeFile is one file written under the provider home.
+type HarnessSeedHomeFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
 }
 
 // HarnessSeedProject creates (or reuses) a workspace and its threads.
@@ -97,7 +111,9 @@ type HarnessSeedPayload struct {
 
 // HarnessSeedResult reports what was created, in spec order.
 type HarnessSeedResult struct {
-	Projects []HarnessSeedProjectResult `json:"projects"`
+	// HomeFiles lists the providerHome paths written, home-relative.
+	HomeFiles []string                   `json:"homeFiles,omitempty"`
+	Projects  []HarnessSeedProjectResult `json:"projects"`
 }
 
 // HarnessSeedProjectResult pairs created ids with their workspace path.
@@ -108,13 +124,47 @@ type HarnessSeedProjectResult struct {
 	WorkItemIDs []string `json:"workItemIds"`
 }
 
-// HarnessSeed applies the spec. Not transactional across projects: a
+// HarnessSeed decodes and applies a seed spec.
+//
+// It takes RAW JSON rather than a typed parameter so the decode is
+// STRICT: `internal/harness/scenario`'s parser has always refused unknown
+// fields, and until this the seed half of the same document format
+// accepted them — so a caller's `treads: [...]` seeded nothing, returned
+// success, and failed several assertions later as a missing thread. See
+// app_harness_json.go. In-process callers use seed() with a typed spec.
+//
+// Harness methods are not in the generated TS bindings (the receiver is
+// registered only by an isolated boot), so the wire shape is unchanged by
+// this: the dispatcher hands any JSON object straight through.
+func (h *Harness) HarnessSeed(raw json.RawMessage) (HarnessSeedResult, error) {
+	var spec HarnessSeedSpec
+	if err := decodeStrictJSON("seed spec", raw, &spec); err != nil {
+		return HarnessSeedResult{}, err
+	}
+	return h.seed(spec)
+}
+
+// seed applies the spec. Not transactional across projects: a
 // mid-spec failure returns the error with earlier projects already
 // created — HarnessReset is the recovery tool, and partial state plus a
 // loud error beats a bespoke rollback engine inside a test harness.
-func (h *Harness) HarnessSeed(spec HarnessSeedSpec) (result HarnessSeedResult, err error) {
-	if len(spec.Projects) == 0 {
-		return HarnessSeedResult{}, fmt.Errorf("seed spec has no projects")
+func (h *Harness) seed(spec HarnessSeedSpec) (result HarnessSeedResult, err error) {
+	// See Harness.mutate: a concurrent reset would RemoveAll the workspaces
+	// tree this seed is writing repositories into.
+	h.mutate.Lock()
+	defer h.mutate.Unlock()
+	if len(spec.Projects) == 0 && len(spec.ProviderHome) == 0 {
+		return HarnessSeedResult{}, fmt.Errorf("seed spec has no projects and no providerHome files")
+	}
+	// Home files first: a thread with a SessionRef pairs with a transcript
+	// under `<home>/.claude/projects`, and resume probes the file the
+	// moment the thread's session starts.
+	for fi, file := range spec.ProviderHome {
+		written, err := h.seedHomeFile(file)
+		if err != nil {
+			return result, fmt.Errorf("seed providerHome file %d (%s): %w", fi+1, file.Path, err)
+		}
+		result.HomeFiles = append(result.HomeFiles, written)
 	}
 	workflowSeed := specHasWorkflowSeed(spec)
 	if workflowSeed {
@@ -138,6 +188,35 @@ func (h *Harness) HarnessSeed(spec HarnessSeedSpec) (result HarnessSeedResult, e
 		}
 	}
 	return result, nil
+}
+
+// seedHomeFile writes one providerHome file under the harness-owned
+// credential home. CredentialHome, not HomeDir: HomeDir is empty under
+// AO_HARNESS_KEEP_HOME, while CredentialHome is always `<dataRoot>/home`
+// — the home App.providerHome() resolves against — so a seeded fixture
+// can never land in the developer's real `~/.claude`.
+func (h *Harness) seedHomeFile(file HarnessSeedHomeFile) (string, error) {
+	if h.paths.CredentialHome == "" {
+		return "", fmt.Errorf("no harness provider home configured")
+	}
+	rel := path.Clean(file.Path)
+	// Backslashes and colons are refused even where the OS would accept
+	// them as filename bytes: the spec is slash-separated portable paths,
+	// and `C:\...` or `a\b` from a Windows-minded caller must fail the
+	// same way on every platform rather than seed a literally-named file.
+	if file.Path == "" || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, "../") || path.IsAbs(rel) ||
+		strings.ContainsAny(rel, `\:`) {
+		return "", fmt.Errorf("path must be relative to the provider home (slash-separated, no traversal)")
+	}
+	dest := filepath.Join(h.paths.CredentialHome, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(dest, []byte(file.Content), 0o600); err != nil {
+		return "", err
+	}
+	return rel, nil
 }
 
 func (h *Harness) seedProject(spec HarnessSeedProject) (HarnessSeedProjectResult, error) {
@@ -366,6 +445,11 @@ func (h *Harness) seedItem(threadID string, turnIndex, itemIndex int, at int64, 
 // test state. The caller reloads the page afterwards; DB-derived
 // frontend state rebuilds from zero.
 func (h *Harness) HarnessReset() (err error) {
+	// See Harness.mutate: two resets would both list the same projects and
+	// double-cascade them, and a concurrent seed would leave a project row
+	// pointing at a workspace this reset is about to delete.
+	h.mutate.Lock()
+	defer h.mutate.Unlock()
 	// Harness-owned state first: a running replay emits events and an
 	// in-flight recording holds a capture window — both must die before
 	// the state they reference does. A perf run is the same shape one
@@ -445,6 +529,15 @@ func (h *Harness) HarnessReset() (err error) {
 			return fmt.Errorf("delete project %s: %w", p.Project.ID, err)
 		}
 	}
+	// Persisted UI view state names entity ids — the workflows overlay
+	// stack persists work-item ids — so left in place the next test's
+	// fresh page restores a selection onto rows this reset just deleted
+	// (observed as WorkflowGetItem sql.ErrNoRows toasts). The caller
+	// reloads the page after a reset, so a cleared scope rebuilds from
+	// defaults.
+	if err := h.app.store.ClearUIState(); err != nil {
+		return fmt.Errorf("clear persisted ui state: %w", err)
+	}
 	// The session-import scan is a cached projection OF the rows just
 	// deleted: its dedup subtracts sessions AO already has, so a scan taken
 	// before this reset would keep hiding provider sessions whose threads no
@@ -465,6 +558,22 @@ func (h *Harness) HarnessReset() (err error) {
 	} {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove workflow harness state %q: %w", dir, err)
+		}
+	}
+	// Provider trees under the harness-owned home: seeded providerHome
+	// fixtures AND the transcripts mock providers wrote during the test
+	// (EnvTranscriptHome points here). Left in place they leak into the
+	// next test's session-import scan and resume probes. CredentialHome is
+	// always `<dataRoot>/home` — never the developer's real home, even
+	// under AO_HARNESS_KEEP_HOME. The boot-written `.gitconfig` beside
+	// these trees survives. The empty-path guard covers test fixtures
+	// that build a Harness without a provider home.
+	if h.paths.CredentialHome != "" {
+		for _, name := range []string{".claude", ".claude.json", ".codex"} {
+			p := filepath.Join(h.paths.CredentialHome, name)
+			if err := os.RemoveAll(p); err != nil {
+				return fmt.Errorf("remove provider home state %q: %w", p, err)
+			}
 		}
 	}
 	return nil

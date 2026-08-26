@@ -356,7 +356,11 @@ func (a *App) rollbackClaudeThreadToMessage(thread store.Thread, anchor store.Me
 	if sourceSessionRef == "" {
 		return fmt.Errorf("claude rollback: anchor for turn %d requires Claude session reference", anchor.TurnIndex)
 	}
-	srcPath, err := sessionfork.LocateSessionFile(sourceSessionRef, thread.WorkspacePath)
+	projectsDir, err := a.claudeProjectsDir()
+	if err != nil {
+		return fmt.Errorf("claude rollback: %w", err)
+	}
+	srcPath, err := sessionfork.LocateSessionFile(projectsDir, sourceSessionRef, thread.WorkspacePath)
 	if err != nil {
 		return fmt.Errorf("locate claude session: %w", err)
 	}

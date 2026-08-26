@@ -48,7 +48,10 @@ func runWindowedShell(appService *App, srv *transport.Server, title string) erro
 	shell := webviewShell{
 		title:     title,
 		beforeRun: quitOnSignal,
-		pageURL:   srv.AppURL,
+		// Raw URL on purpose: webviewShell.run threads the client id on
+		// (its `withClientID`), and it is the one place that rule lives for
+		// every windowed boot.
+		pageURL: srv.AppURL,
 		// Geometry rides the instance's own settings.json: both sides
 		// resolve through the --data-dir override (bootSettingsDir for the
 		// read, App.settings for the write), so a windowed harness

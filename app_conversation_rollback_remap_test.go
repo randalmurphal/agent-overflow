@@ -76,7 +76,7 @@ func TestConversationRollbackRemapsSurvivingProviderIDs(t *testing.T) {
 
 	// The new session's leaf scan only succeeds on uuids that exist in
 	// the new file — use it to build the "valid uuid" check.
-	newState, err := claude.ScanSessionLeaf(afterFirst.SessionRef, workspace)
+	newState, err := claude.ScanSessionLeaf(testProviderProjectsDir(t), afterFirst.SessionRef, workspace)
 	if err != nil {
 		t.Fatalf("scan new session leaf: %v", err)
 	}
@@ -205,14 +205,16 @@ func TestConversationRollbackSlicesPoisonedAPIErrorTail(t *testing.T) {
 	// the app would pass is one claude accepts. Without the rechain the
 	// sliced file ends with off-branch api_error rows and the branch
 	// walk would skip reply 1's row.
-	state, err := claude.ScanSessionLeaf(after.SessionRef, workspace)
+	state, err := claude.ScanSessionLeaf(testProviderProjectsDir(t), after.SessionRef, workspace)
 	if err != nil {
 		t.Fatalf("scan sliced session leaf: %v", err)
 	}
 	if state.CanonicalLeafUUID == "" {
 		t.Fatalf("sliced session has no usable leaf")
 	}
-	onBranch, err := claude.ResumeAtOnActiveBranch(after.SessionRef, workspace, state.CanonicalLeafUUID)
+	onBranch, err := claude.ResumeAtOnActiveBranch(
+		testProviderProjectsDir(t), after.SessionRef, workspace, state.CanonicalLeafUUID,
+	)
 	if err != nil {
 		t.Fatalf("validate sliced leaf: %v", err)
 	}

@@ -22,7 +22,7 @@ import (
 func TestHarnessSeedRefusesTraversalProjectNames(t *testing.T) {
 	h, _ := newHarnessTestApp(t)
 	for _, name := range []string{"../outside", "a/b", `a\b`, ".", ".."} {
-		_, err := h.HarnessSeed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		_, err := h.seed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
 			Name: name,
 			Repo: &harness.RepoSpec{},
 		}}})
@@ -33,6 +33,62 @@ func TestHarnessSeedRefusesTraversalProjectNames(t *testing.T) {
 	// "../outside" resolves to <dataRoot>/outside — nothing may exist there.
 	if _, err := os.Stat(filepath.Join(h.paths.DataRoot, "outside")); !os.IsNotExist(err) {
 		t.Fatalf("traversal seed escaped the workspaces root (stat err %v)", err)
+	}
+}
+
+// TestHarnessSeedProviderHomeFilesWriteAndResetWipes: providerHome seed
+// entries land under the harness-owned credential home, traversal paths
+// are refused, and HarnessReset removes the provider trees (seeded
+// fixtures plus mock-written transcripts) while leaving the boot-written
+// .gitconfig alone.
+func TestHarnessSeedProviderHomeFilesWriteAndResetWipes(t *testing.T) {
+	h, _ := newHarnessTestApp(t)
+	home := filepath.Join(h.paths.DataRoot, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h.paths.CredentialHome = home
+	gitconfig := filepath.Join(home, ".gitconfig")
+	if err := os.WriteFile(gitconfig, []byte("[user]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := h.seed(HarnessSeedSpec{ProviderHome: []HarnessSeedHomeFile{
+		{Path: ".claude.json", Content: `{"mcpServers":{}}`},
+		{Path: ".claude/projects/-tmp-x/abc.jsonl", Content: `{"type":"summary"}`},
+	}})
+	if err != nil {
+		t.Fatalf("seed providerHome: %v", err)
+	}
+	if len(result.HomeFiles) != 2 {
+		t.Fatalf("HomeFiles = %v, want 2 entries", result.HomeFiles)
+	}
+	for _, rel := range []string{".claude.json", ".claude/projects/-tmp-x/abc.jsonl"} {
+		if _, err := os.Stat(filepath.Join(home, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("seeded home file %s: %v", rel, err)
+		}
+	}
+
+	for _, bad := range []string{"", ".", "..", "../outside", "/etc/passwd", `C:\evil`, ".claude/../../out"} {
+		if _, err := h.seed(HarnessSeedSpec{ProviderHome: []HarnessSeedHomeFile{{Path: bad, Content: "x"}}}); err == nil {
+			t.Fatalf("seed providerHome path %q: no error, want traversal refusal", bad)
+		}
+	}
+	// The traversal attempts must not have produced files outside home.
+	if _, err := os.Stat(filepath.Join(h.paths.DataRoot, "out")); !os.IsNotExist(err) {
+		t.Fatalf("traversal seed escaped the home root (stat err %v)", err)
+	}
+
+	if err := h.HarnessReset(); err != nil {
+		t.Fatalf("HarnessReset: %v", err)
+	}
+	for _, rel := range []string{".claude.json", ".claude"} {
+		if _, err := os.Stat(filepath.Join(home, rel)); !os.IsNotExist(err) {
+			t.Fatalf("reset left provider home state %s (stat err %v)", rel, err)
+		}
+	}
+	if _, err := os.Stat(gitconfig); err != nil {
+		t.Fatalf("reset removed .gitconfig: %v", err)
 	}
 }
 
@@ -96,7 +152,7 @@ cleanup: manual
 			Items:   items,
 		}
 	}
-	result, err := h.HarnessSeed(HarnessSeedSpec{Projects: []HarnessSeedProject{
+	result, err := h.seed(HarnessSeedSpec{Projects: []HarnessSeedProject{
 		{
 			Name: "workflow-seed",
 			Repo: &harness.RepoSpec{},
@@ -158,7 +214,7 @@ cleanup: manual
 	if err := app.WorkflowSetGlobalPause(true); err != nil {
 		t.Fatal(err)
 	}
-	held, err := h.HarnessSeed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
+	held, err := h.seed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
 		Name: "workflow-seed-held",
 		Repo: &harness.RepoSpec{},
 		Workflows: workflowSeed([]HarnessSeedWorkflowItem{
@@ -230,7 +286,7 @@ func TestHarnessSeedWorkflowTargetValidationNamesTarget(t *testing.T) {
 
 func TestHarnessSeedWorkflowCountIsBoundedBeforeMutation(t *testing.T) {
 	h, app := newHarnessTestApp(t)
-	_, err := h.HarnessSeed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
+	_, err := h.seed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
 		Name: "too-many",
 		Repo: &harness.RepoSpec{},
 		Workflows: &HarnessSeedWorkflows{Items: []HarnessSeedWorkflowItem{{
@@ -294,7 +350,7 @@ phases:
         - to: done
 cleanup: manual
 `
-	seed, err := h.HarnessSeed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
+	seed, err := h.seed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
 		Name: "reset-running",
 		Repo: &harness.RepoSpec{},
 		Workflows: &HarnessSeedWorkflows{Definitions: []HarnessSeedWorkflowDefinition{{

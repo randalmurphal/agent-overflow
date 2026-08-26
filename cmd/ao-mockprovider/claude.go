@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -129,9 +130,10 @@ func (a *claudeAdapter) readStdin() {
 type claudeStdinEnvelope struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
-	Request   struct {
-		Subtype string `json:"subtype"`
-	} `json:"request"`
+	// Request stays RAW so the ack path can check the request's KEYS
+	// against the real wire shape, not just its subtype — see
+	// writeClaudeControlAck.
+	Request  json.RawMessage `json:"request"`
 	Response struct {
 		Subtype   string `json:"subtype"`
 		RequestID string `json:"request_id"`
@@ -149,11 +151,14 @@ func (a *claudeAdapter) handleLine(line []byte) {
 	}
 	switch env.Type {
 	case "control_request":
-		// Success-ack every inbound control_request without consuming a
-		// turn — matches the real CLI's out-of-band handling of
-		// interrupt / set_permission_mode / set_model / mcp_*.
-		writeClaudeControlAck(a.w, env.RequestID, env.Request.Subtype)
-		if env.Request.Subtype == "interrupt" {
+		// Answer every inbound control_request out of band, without
+		// consuming a turn — matches the real CLI's handling of
+		// interrupt / set_permission_mode / set_model / mcp_*. The answer
+		// is subtype-aware and validates the request's keys; see
+		// writeClaudeControlAck.
+		subtype := claudeControlRequestSubtype(env.Request)
+		writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
+		if subtype == "interrupt" {
 			a.e.interruptTurn("")
 		}
 	case "control_response":
@@ -186,6 +191,18 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		a.writeCommandLifecycle(commandUUID, "started")
 		a.e.enqueueTurn(n)
 	}
+}
+
+// claudeControlRequestSubtype reads the routing key off a raw inbound
+// control_request body.
+func claudeControlRequestSubtype(request json.RawMessage) string {
+	var body struct {
+		Subtype string `json:"subtype"`
+	}
+	if json.Unmarshal(request, &body) != nil {
+		return ""
+	}
+	return body.Subtype
 }
 
 // writeCommandLifecycle emits the CLI's per-message delivery ack. Skipped
@@ -246,7 +263,12 @@ func (a *claudeAdapter) sendInterruptedTurn(vars scenario.Vars) {
 
 // writeInit emits the per-turn system/init line. Built with
 // json.Marshal so cwd/session values survive any characters.
+//
+// This is the frame that tells AO the provider is up (triage opens the
+// logical turn on it), so it is where a scenario's startupDelayMs is
+// spent — once, before the first one.
 func (a *claudeAdapter) writeInit(vars scenario.Vars) {
+	a.e.awaitStartupDelay()
 	a.w.writeLine(mustJSON(map[string]any{
 		"type":                "system",
 		"subtype":             "init",
@@ -254,7 +276,7 @@ func (a *claudeAdapter) writeInit(vars scenario.Vars) {
 		"model":               "claude-opus-4-7",
 		"cwd":                 vars["CWD"],
 		"tools":               []string{"Task", "Bash", "Read", "Write", "Edit"},
-		"claude_code_version": mockVersionNumber,
+		"claude_code_version": a.e.providerVersion(),
 	}), 0, 0)
 }
 
@@ -365,28 +387,156 @@ func (a *claudeAdapter) persistTranscript(line string) {
 // A scenario that wants the refusal shape emits the control_response itself.
 const claudeBackgroundTasksResponsePayload = `{"backgrounded":true}`
 
-// writeClaudeControlAck answers an inbound control_request with the
-// standard success control_response. The initialize, get_context_usage and
-// background_tasks subtypes carry the payloads their callers actually read;
-// everything else gets an empty response object.
+// claudeMCPStatusResponsePayload is the inner response payload for a
+// control_request{subtype:"mcp_status"} ack. `mcpServers` is the only key
+// QueryMCPStatus decodes, and an EMPTY response object made the whole
+// surface render blank while looking successful — so the mock names two
+// servers whose statuses differ on purpose.
+//
+// Only the keys the app projects are here (`name`, `status`, `scope`,
+// `error`, `tools[].name`); `config` is deliberately absent, matching the
+// rule that says it must never be decoded because it can carry live
+// tokens. The needs-auth row is what makes the sign-in affordance
+// reachable at all under harness.
+const claudeMCPStatusResponsePayload = `{"mcpServers":[` +
+	`{"name":"mock-fs","status":"connected","scope":"user","tools":[{"name":"read_file"},{"name":"write_file"}]},` +
+	`{"name":"plugin:mock:oauth","status":"needs-auth","scope":"user","error":"Server requires authentication","tools":[]}]}`
+
+// claudeMCPAuthenticateResponsePayload is the inner response payload for
+// a control_request{subtype:"mcp_authenticate"} ack — the BROWSER-HOP
+// success body of the two the CLI produces (2.1.237), the one carrying an
+// authUrl. AuthenticateMCP fails a success response with no payload at
+// all ("success response carried no payload"), so the old empty ack made
+// MCP sign-in fail in the harness no matter what the app did.
+//
+// The settled-without-a-hop body (`{"requiresUserAction":false}`) is the
+// other legal answer; a scenario that wants it writes the
+// control_response itself.
+const claudeMCPAuthenticateResponsePayload = `{"authUrl":"https://mock.agent-overflow.test/oauth/authorize?state=mock","requiresUserAction":true}`
+
+// claudeControlRequestKeys is the required-key set of every
+// control_request subtype AO sends, matching the CLI's own destructures
+// as pinned by internal/provider/claude's TestControlRequestWireKeys.
+//
+// The mock VALIDATES against it rather than blind-acking, because the
+// real CLI's failure mode for a mis-spelled key is invisible: it
+// destructures what it wants off `request`, never validates the object,
+// and an unknown key is silently dropped so the field reads `undefined`.
+// That is exactly how `server_name` shipped for months where the CLI
+// reads `serverName`, answering "Server not found: undefined" for every
+// server. A mock that acks anything cannot catch the next one; a mock
+// that names the missing key catches it in the failing test's message.
+//
+// `subtype` itself is not listed — it is how the request was routed here.
+var claudeControlRequestKeys = map[string][]string{
+	"mcp_status":              nil,
+	"mcp_authenticate":        {"serverName"},
+	"mcp_toggle":              {"serverName", "enabled"},
+	"mcp_reconnect":           {"serverName"},
+	"mcp_oauth_callback_url":  {"serverName", "callbackUrl"},
+	"set_model":               {"model"},
+	"set_permission_mode":     {"mode"},
+	"stop_task":               {"task_id"},
+	"background_tasks":        nil,
+	"initialize":              nil,
+	"get_context_usage":       nil,
+	"get_settings":            nil,
+	"interrupt":               nil,
+	"set_max_thinking_tokens": nil,
+}
+
+// claudeControlAckPayloads is the success payload each subtype answers
+// with. A subtype absent from this map (but present in
+// claudeControlRequestKeys) answers a bare `{}`, which is what the CLI
+// itself returns for the apply-style requests — set_model, mcp_toggle,
+// interrupt and friends all answer `{subtype:"success"}` with no body,
+// and their callers only interpret success-vs-error.
+var claudeControlAckPayloads = map[string]string{
+	"initialize":        claudeInitializeResponsePayload,
+	"get_context_usage": claudeContextUsageResponsePayload,
+	"background_tasks":  claudeBackgroundTasksResponsePayload,
+	"mcp_status":        claudeMCPStatusResponsePayload,
+	"mcp_authenticate":  claudeMCPAuthenticateResponsePayload,
+}
+
+// writeClaudeControlAck answers an inbound control_request, subtype-aware
+// and strict: the request's required keys are checked against the real
+// wire shape and a mismatch answers an ERROR control_response naming the
+// offending key.
 //
 // The ack is the whole answer for background_tasks: the CLI's follow-up
 // `system/task_updated {patch:{is_backgrounded:true}}` (and the level set
-// that rides with it) is scenario-authored, because only the scenario knows
-// which task_id it started.
-func writeClaudeControlAck(w *lineWriter, requestID, subtype string) {
-	payload := "{}"
-	switch subtype {
-	case "initialize":
-		payload = claudeInitializeResponsePayload
-	case "get_context_usage":
-		payload = claudeContextUsageResponsePayload
-	case "background_tasks":
-		payload = claudeBackgroundTasksResponsePayload
+// that rides with it) is scenario-authored, because only the scenario
+// knows which task_id it started.
+//
+// An UNKNOWN subtype keeps the permissive `{}` ack and logs — forward
+// compatibility, since the app gaining a control_request the mock has
+// never heard of must not turn into a harness failure with no diagnosis.
+// The moment such a subtype gets a caller worth testing it earns a row in
+// claudeControlRequestKeys.
+func writeClaudeControlAck(w *lineWriter, requestID, subtype string, request json.RawMessage) {
+	required, known := claudeControlRequestKeys[subtype]
+	if !known {
+		log.Printf("claude: control_request subtype %q is unknown to this mock; acking permissively", subtype)
+		writeClaudeControlSuccess(w, requestID, "{}")
+		return
 	}
+	if missing := missingControlRequestKeys(request, required); missing != "" {
+		writeClaudeControlError(w, requestID, fmt.Sprintf(
+			"control_request %s: %s — this mock validates the request against the CLI's own destructure "+
+				"(see internal/provider/claude TestControlRequestWireKeys); a key the CLI does not read is "+
+				"silently dropped by the real binary and reads as undefined", subtype, missing))
+		return
+	}
+	payload, ok := claudeControlAckPayloads[subtype]
+	if !ok {
+		payload = "{}"
+	}
+	writeClaudeControlSuccess(w, requestID, payload)
+}
+
+// missingControlRequestKeys returns a human sentence naming the first
+// required key the request does not carry, or "" when every one is
+// present. An unparseable request object is itself the answer.
+func missingControlRequestKeys(request json.RawMessage, required []string) string {
+	if len(required) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(request, &fields); err != nil {
+		return fmt.Sprintf("request object is not readable (%v)", err)
+	}
+	for _, key := range required {
+		if _, ok := fields[key]; !ok {
+			return fmt.Sprintf("missing required key %q (request carried %s)", key, strings.Join(sortedKeys(fields), ", "))
+		}
+	}
+	return ""
+}
+
+func sortedKeys(fields map[string]json.RawMessage) []string {
+	out := make([]string, 0, len(fields))
+	for k := range fields {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func writeClaudeControlSuccess(w *lineWriter, requestID, payload string) {
 	w.writeLine(fmt.Sprintf(
 		`{"type":"control_response","response":{"subtype":"success","request_id":%s,"response":%s}}`,
 		mustJSON(requestID), payload), 0, 0)
+}
+
+// writeClaudeControlError answers with the CLI's error control_response
+// shape — `subtype:"error"` plus `error` — which is what
+// session_control.go's reader turns into the caller's error message.
+func writeClaudeControlError(w *lineWriter, requestID, message string) {
+	log.Printf("claude: refusing control_request: %s", message)
+	w.writeLine(fmt.Sprintf(
+		`{"type":"control_response","response":{"subtype":"error","request_id":%s,"error":%s}}`,
+		mustJSON(requestID), mustJSON(message)), 0, 0)
 }
 
 // sendApproval emits a CanUseTool control_request and registers a

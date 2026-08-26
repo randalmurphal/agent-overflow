@@ -106,6 +106,15 @@ type ProcessLifetime interface {
 	LifeCtx() context.Context
 }
 
+// ProviderHomeSource answers where the process's provider state lives. It is a
+// capability of the process, not of this package: an isolated boot (--harness /
+// --soak) and a test fixture both pin a provider home that is not $HOME, and a
+// runner that resolved `~/.claude/projects` itself would read the developer's
+// real transcripts there. See App.providerHome.
+type ProviderHomeSource interface {
+	ClaudeProjectsDir() (string, error)
+}
+
 // Host composes the seams above into the single field the runner holds.
 // Composition rather than one flat interface is what keeps each capability
 // nameable on its own, and is what the move of the runner into this package
@@ -119,6 +128,7 @@ type Host interface {
 	EventEmitter
 	EngineSource
 	ProcessLifetime
+	ProviderHomeSource
 }
 
 // DispatchIdentity is the credential identity held stable across one provider

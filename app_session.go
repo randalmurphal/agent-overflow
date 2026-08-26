@@ -201,16 +201,20 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// unpinned fork (idle source at fork time) keeps the CLI's own
 	// tail-cut semantics.
 	if t.Provider == string(provider.Claude) && opts.Resume != "" {
+		projectsDir, err := a.claudeProjectsDir()
+		if err != nil {
+			return fmt.Errorf("start session: %w", err)
+		}
 		if opts.ForkSession {
 			if t.PendingForkResumeAt != "" {
-				cursor, err := resolveClaudeForkResumeAt(opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
+				cursor, err := resolveClaudeForkResumeAt(projectsDir, opts.Resume, opts.WorkDir, t.PendingForkResumeAt)
 				if err != nil {
 					return fmt.Errorf("start session: resolve fork resume cursor: %w", err)
 				}
 				opts.ResumeAt = cursor
 			}
 		} else {
-			opts.ResumeAt = resolveClaudeResumeAt(opts.Resume, opts.WorkDir, claudeResumeAt)
+			opts.ResumeAt = resolveClaudeResumeAt(projectsDir, opts.Resume, opts.WorkDir, claudeResumeAt)
 		}
 	}
 
@@ -334,9 +338,9 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 // Off-branch or unverifiable cursors are rejected loudly and the
 // branch-aware file scan decides instead; scan failure resumes with no
 // cursor at all (claude's own default-leaf semantics).
-func resolveClaudeResumeAt(sessionRef, workDir, explicit string) string {
+func resolveClaudeResumeAt(projectsDir, sessionRef, workDir, explicit string) string {
 	if explicit != "" {
-		onBranch, err := claude.ResumeAtOnActiveBranch(sessionRef, workDir, explicit)
+		onBranch, err := claude.ResumeAtOnActiveBranch(projectsDir, sessionRef, workDir, explicit)
 		switch {
 		case err != nil:
 			log.Printf("start session: validate Claude resume-at %s against session %s: %v — falling back to file scan", explicit, sessionRef, err)
@@ -346,7 +350,7 @@ func resolveClaudeResumeAt(sessionRef, workDir, explicit string) string {
 			log.Printf("start session: Claude resume-at %s is off the active branch of session %s — rejecting, falling back to file scan", explicit, sessionRef)
 		}
 	}
-	state, err := claude.ScanSessionLeaf(sessionRef, workDir)
+	state, err := claude.ScanSessionLeaf(projectsDir, sessionRef, workDir)
 	if err != nil {
 		log.Printf("start session: scan Claude session leaf %s: %v", sessionRef, err)
 		return ""
@@ -381,13 +385,13 @@ const (
 // surviving on-disk cursor. Only two shapes fail the start: a real I/O
 // fault reading the source, and a source that holds no resumable row at
 // all — both would otherwise spawn a fork whose cut is a lie.
-func resolveClaudeForkResumeAt(sourceRef, workDir, pin string) (string, error) {
+func resolveClaudeForkResumeAt(projectsDir, sourceRef, workDir, pin string) (string, error) {
 	var last claude.ForkResumeCursor
 	for attempt := range claudeForkPinRetries {
 		if attempt > 0 {
 			time.Sleep(claudeForkPinBackoff)
 		}
-		res, err := claude.ResolveForkResumeCursor(sourceRef, workDir, pin)
+		res, err := claude.ResolveForkResumeCursor(projectsDir, sourceRef, workDir, pin)
 		if err != nil {
 			return "", fmt.Errorf("resolve fork cut %s in source session %s: %w", pin, sourceRef, err)
 		}
@@ -572,6 +576,15 @@ func (a *App) spawnProviderSession(
 		cfg.EventLogger = a.logger
 		cfg.MCPServers = designCfg.MCPServers
 		cfg.MergeMCPServers = designCfg.MergeMCPServers
+		// Injected, never resolved inside the provider package: a session
+		// that read the transcript home from $HOME would hand its readers
+		// (and every writer downstream of them) the developer's real
+		// ~/.claude on any boot whose provider home is pinned elsewhere.
+		if projectsDir, dirErr := a.claudeProjectsDir(); dirErr != nil {
+			log.Printf("start session: resolve claude projects dir: %v", dirErr)
+		} else {
+			cfg.ProjectsDir = projectsDir
+		}
 		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so

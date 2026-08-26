@@ -102,7 +102,11 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 		return forkResumeState{PendingForkRef: source.SessionRef}, nil
 	}
 
-	srcPath, err := sessionfork.LocateSessionFile(source.SessionRef, source.WorkspacePath)
+	projectsDir, err := a.claudeProjectsDir()
+	if err != nil {
+		return forkResumeState{}, fmt.Errorf("fork thread: %w", err)
+	}
+	srcPath, err := sessionfork.LocateSessionFile(projectsDir, source.SessionRef, source.WorkspacePath)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork thread: locate claude session: %w", err)
 	}
@@ -140,6 +144,10 @@ type claudeMidTurnCut struct {
 	WorkspacePath string
 	SourcePath    string
 	Leaf          string
+	// ProjectsDir is the provider-home-resolved `<home>/.claude/projects`
+	// SourcePath was located under (App.claudeProjectsDir). Carried on the
+	// cut so the cold scan reads the same home the locate did.
+	ProjectsDir string
 }
 
 func (c claudeMidTurnCut) degenerate() bool {
@@ -178,7 +186,11 @@ func (a *App) captureClaudeMidTurnCut(source store.Thread) (claudeMidTurnCut, er
 		log.Printf("%s: thread %s has no Claude session reference yet — fork starts a fresh provider thread", op, source.ID)
 		return claudeMidTurnCut{}, nil
 	}
-	srcPath, err := sessionfork.LocateSessionFile(sourceRef, source.WorkspacePath)
+	projectsDir, err := a.claudeProjectsDir()
+	if err != nil {
+		return claudeMidTurnCut{}, fmt.Errorf("%s: %w", op, err)
+	}
+	srcPath, err := sessionfork.LocateSessionFile(projectsDir, sourceRef, source.WorkspacePath)
 	if err != nil {
 		if errors.Is(err, sessionfork.ErrSessionFileNotFound) {
 			log.Printf("%s: thread %s session %s not on disk yet — fork starts a fresh provider thread", op, source.ID, sourceRef)
@@ -187,7 +199,7 @@ func (a *App) captureClaudeMidTurnCut(source store.Thread) (claudeMidTurnCut, er
 		return claudeMidTurnCut{}, fmt.Errorf("%s: locate claude session %s: %w", op, sourceRef, err)
 	}
 
-	cut := claudeMidTurnCut{SessionRef: sourceRef, WorkspacePath: source.WorkspacePath, SourcePath: srcPath}
+	cut := claudeMidTurnCut{SessionRef: sourceRef, WorkspacePath: source.WorkspacePath, SourcePath: srcPath, ProjectsDir: projectsDir}
 	if sess, ok := a.activeClaudeSession(source.ID); ok {
 		if leaf := sess.CanonicalLeafUUID(); leaf != "" {
 			cut.Leaf = leaf
@@ -214,7 +226,7 @@ func (a *App) captureClaudeMidTurnCut(source store.Thread) (claudeMidTurnCut, er
 // parsed and holds no settled leaf; an error is a real I/O fault (stat,
 // open, over the scanner's byte or row bound) and fails the fork.
 func (a *App) scanClaudeSessionLeaf(op string, cut claudeMidTurnCut) (string, error) {
-	state, err := claude.ScanSessionLeaf(cut.SessionRef, cut.WorkspacePath)
+	state, err := claude.ScanSessionLeaf(cut.ProjectsDir, cut.SessionRef, cut.WorkspacePath)
 	if err != nil {
 		return "", fmt.Errorf("%s: scan claude session leaf for %s: %w", op, cut.SessionRef, err)
 	}
@@ -237,7 +249,11 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, anchor store.Me
 	if sourceSessionRef == "" {
 		return forkResumeState{}, fmt.Errorf("fork thread from message: source thread %q is missing a Claude session reference", source.ID)
 	}
-	srcPath, err := sessionfork.LocateSessionFile(sourceSessionRef, source.WorkspacePath)
+	projectsDir, err := a.claudeProjectsDir()
+	if err != nil {
+		return forkResumeState{}, fmt.Errorf("fork thread from message: %w", err)
+	}
+	srcPath, err := sessionfork.LocateSessionFile(projectsDir, sourceSessionRef, source.WorkspacePath)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork thread from message: locate claude session: %w", err)
 	}

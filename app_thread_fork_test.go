@@ -375,7 +375,7 @@ func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
 // assert non-empty before keying into it.
 func readForkUUIDMap(t *testing.T, workspace, forkSessionRef string) map[string]string {
 	t.Helper()
-	path, err := sessionfork.LocateSessionFile(forkSessionRef, workspace)
+	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), forkSessionRef, workspace)
 	if err != nil {
 		t.Fatalf("locate fork session %q: %v", forkSessionRef, err)
 	}

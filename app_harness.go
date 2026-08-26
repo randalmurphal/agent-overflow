@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -43,6 +44,34 @@ type Harness struct {
 	recording     *harnessRecording     // the one in-flight bundle capture
 	control       *control.Server       // mock-provider control channel
 	scenarioRules []harnessScenarioRule // mock → scenario assignment
+	// soakAutopilot latches how the --autopilot arming went. Empty means
+	// this boot has no autopilot at all; see soakAutopilotState.
+	soakAutopilot string
+	// wireMethods is every method name the dispatcher registered, sorted.
+	// Handed over by bootTransport once registration finishes; see
+	// setWireMethods.
+	wireMethods []string
+
+	// mutate serializes the three RPCs that rewrite the harness's WORLD —
+	// HarnessSeed, HarnessReset, and HarnessReplayBundle's restore. It is a
+	// separate lock from `mu` above, which guards this struct's own fields
+	// for microseconds; these operations run for seconds, spawn git, stop
+	// sessions, and touch the store and the filesystem.
+	//
+	// The races it closes are real and silent: reset's
+	// `RemoveAll(<dataRoot>/workspaces)` can delete a repo a concurrent
+	// seed's CreateRepo just finished writing (leaving a project row
+	// pointing at nothing), two resets both list the same projects and the
+	// second DeleteProject fails on rows the first already cascaded, and a
+	// bundle restore swapping the SQLite file under a running seed leaves
+	// the seed's remaining inserts in a database nobody will read. Nothing
+	// in the wire layer serializes RPCs — the transport dispatches each
+	// frame on its own goroutine — so the guard has to live here.
+	//
+	// Deliberately NOT extended to the read RPCs or the scenario/mock
+	// setters: those are short, independently locked, and blocking them
+	// behind a multi-second reset would make a harness feel wedged.
+	mutate sync.Mutex
 
 	// Frontend bridge (app_harness_ui.go) and the perf run it arms
 	// (app_harness_perf.go). Both carry their own locks: a ui query parks
@@ -80,6 +109,47 @@ type HarnessInfoResult struct {
 	// the error log is always on.
 	UITracePath        string `json:"uiTracePath"`
 	FrontendErrorsPath string `json:"frontendErrorsPath"`
+	// SoakAutopilot reports how the --autopilot preset went on this boot:
+	// "off" (not requested), "arming" (the pre-arm delay or the arming
+	// itself is still in flight), "armed", or "failed: <reason>".
+	//
+	// It exists because the arming runs on a goroutine that starts AFTER
+	// publishInstance has already stamped the instance as a soak — so a
+	// failure used to be a single log line in launcher-soak.log and the
+	// instance looked identical to a working one to every tool. Anything
+	// deciding whether the soak is actually producing load reads this.
+	SoakAutopilot string `json:"soakAutopilot"`
+}
+
+// The four values HarnessInfoResult.SoakAutopilot can carry. A failure
+// renders as soakAutopilotFailedPrefix + the reason, so a consumer tests
+// for the prefix rather than an exact string.
+const (
+	soakAutopilotOff          = "off"
+	soakAutopilotArming       = "arming"
+	soakAutopilotArmed        = "armed"
+	soakAutopilotFailedPrefix = "failed: "
+)
+
+// setSoakAutopilot latches the arming outcome. Called from the boot
+// goroutine and from the arming goroutine, read by HarnessInfo on a
+// transport goroutine — hence the lock.
+func (h *Harness) setSoakAutopilot(state string) {
+	h.mu.Lock()
+	h.soakAutopilot = state
+	h.mu.Unlock()
+}
+
+// soakAutopilotState renders the latch. An unset latch is "off": only a
+// --autopilot boot ever writes one, so nothing having written means
+// nothing was asked for.
+func (h *Harness) soakAutopilotState() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.soakAutopilot == "" {
+		return soakAutopilotOff
+	}
+	return h.soakAutopilot
 }
 
 // HarnessInfo reports the harness's identity and evidence paths.
@@ -96,7 +166,43 @@ func (h *Harness) HarnessInfo() (HarnessInfoResult, error) {
 		EventLogDir:        filepath.Join(dataDir, "replay"),
 		UITracePath:        filepath.Join(dataDir, uitrace.DirName, uitrace.FileName),
 		FrontendErrorsPath: filepath.Join(dataDir, uitrace.DirName, uitrace.ErrorFileName),
+		SoakAutopilot:      h.soakAutopilotState(),
 	}, nil
+}
+
+// setWireMethods records the dispatcher's registered method names. Called
+// once by bootTransport, after BOTH receivers are registered and before
+// the listener serves anything, so no RPC can observe a partial list.
+//
+// The list is pushed rather than pulled deliberately: the Harness holds
+// an *App, not a *transport.Dispatcher, and giving it one would hand the
+// harness surface a way to reach the wire layer directly — the exact
+// back-channel the transport-boundary invariant forbids.
+func (h *Harness) setWireMethods(names []string) {
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	sorted = slices.Compact(sorted)
+	h.mu.Lock()
+	h.wireMethods = sorted
+	h.mu.Unlock()
+}
+
+// HarnessListMethods reports every method name reachable on the wire,
+// sorted — the App's bindings and the Harness surface in one list.
+//
+// It is the harness's self-description for callers that cannot read the
+// Go source: a CLI can check whether the instance it just attached to
+// actually has the RPC it is about to call, instead of discovering a
+// version mismatch as an opaque "unknown method" mid-run.
+//
+// Names are the bare wire names ({"method":"HarnessInfo"}), not FQNs,
+// because that is what a caller puts on the frame.
+func (h *Harness) HarnessListMethods() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Cloned: the caller gets a value, and a mutating caller must not be
+	// able to edit the registry's record of itself.
+	return slicesx.OrEmpty(slices.Clone(h.wireMethods))
 }
 
 // HarnessSessionEnv returns the AO_* environment a thread's LIVE provider
@@ -158,8 +264,8 @@ func (h *Harness) HarnessEmit(channel string, payload json.RawMessage) error {
 	if len(payload) == 0 {
 		return fmt.Errorf("payload must be non-empty JSON (use null to send an empty event)")
 	}
-	if !json.Valid(payload) {
-		return fmt.Errorf("payload is not valid JSON")
+	if err := requireValidJSON("payload", payload); err != nil {
+		return err
 	}
 	// Deliberate escape hatch. NOT unregistrable: a caller that spells a
 	// REGISTERED name inherits that row's audience, AudienceAny included —

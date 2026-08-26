@@ -296,8 +296,8 @@ func sortedServerToolUUIDs(refs map[string]map[string]struct{}) []string {
 // ScanSessionLeaf reconstructs the canonical settled leaf for a Claude
 // session JSONL. It is intended for cold start/recovery only; live sessions
 // use claudeLeafTracker fed directly from stdout.
-func ScanSessionLeaf(sessionID, workspacePath string) (SessionLeafState, error) {
-	path, err := sessionfork.LocateSessionFile(sessionID, workspacePath)
+func ScanSessionLeaf(projectsDir, sessionID, workspacePath string) (SessionLeafState, error) {
+	path, err := sessionfork.LocateSessionFile(projectsDir, sessionID, workspacePath)
 	if err != nil {
 		return SessionLeafState{}, err
 	}
@@ -372,12 +372,18 @@ func scanSessionTrackerAndBranch(r io.Reader) (*claudeLeafTracker, *claudeBranch
 	return tracker, branch, nil
 }
 
-func findReplayUserParent(sessionID, workspacePath, replayUUID string) (string, bool, error) {
+func findReplayUserParent(projectsDir, sessionID, workspacePath, replayUUID string) (string, bool, error) {
 	replayUUID = strings.TrimSpace(replayUUID)
 	if replayUUID == "" {
 		return "", false, nil
 	}
-	path, err := sessionfork.LocateSessionFile(sessionID, workspacePath)
+	// No projects dir means nobody injected one: the caller reports
+	// "could not verify" rather than falling back to $HOME, which is the
+	// only way this lookup could reach a foreign provider home.
+	if strings.TrimSpace(projectsDir) == "" {
+		return "", false, nil
+	}
+	path, err := sessionfork.LocateSessionFile(projectsDir, sessionID, workspacePath)
 	if err != nil {
 		return "", false, err
 	}

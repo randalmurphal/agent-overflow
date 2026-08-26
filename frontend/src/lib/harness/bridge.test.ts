@@ -4,7 +4,14 @@
 // are covered by e2e/tests/harness-bridge.spec.ts.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { answerHarnessQuery, isHarnessNoReply, sinceLastMutationMs, stopHarnessBridge } from './bridge';
+import {
+  MUTATION_CLOCK_LINGER_MS,
+  answerHarnessQuery,
+  isHarnessNoReply,
+  mutationClockArmed,
+  sinceLastMutationMs,
+  stopHarnessBridge,
+} from './bridge';
 import { harnessGlobalNames } from './globals';
 import { PERF_WATCHDOG_MS } from './perf';
 
@@ -264,6 +271,56 @@ describe('perf ops', () => {
       vi.useRealTimers();
     }
   });
+
+  // A perf run lives entirely in module state, so a reload takes it with
+  // the page. The failure this pins is the SILENT one: a reloaded page that
+  // answered the stop would hand back a fresh, empty histogram for a run it
+  // never armed, and the report's frontend half would read as measured-and-
+  // flat instead of absent. Staying silent is what makes the backend stamp
+  // its own FrontendError on the report instead.
+  it('says nothing about a run its page reloaded away from', async () => {
+    const armed = (await answerHarnessQuery({
+      v: 1,
+      kind: 'perf',
+      op: 'start',
+      runId: 'perf-reload',
+      meters: ['dom'],
+    })) as { armed: boolean; runId: string };
+    expect(armed).toMatchObject({ armed: true, runId: 'perf-reload' });
+
+    // The reload: a brand-new module graph, which is exactly the state the
+    // page comes back in. The original module is still armed and is what
+    // afterEach tears down.
+    vi.resetModules();
+    const reloaded = await import('./bridge');
+    try {
+      const stopped = await reloaded.answerHarnessQuery({
+        v: 1,
+        kind: 'perf',
+        op: 'stop',
+        runId: 'perf-reload',
+      });
+      expect(reloaded.isHarnessNoReply(stopped)).toBe(true);
+
+      const collected = await reloaded.answerHarnessQuery({
+        v: 1,
+        kind: 'perf',
+        op: 'collect',
+        runId: 'perf-reload',
+      });
+      expect(reloaded.isHarnessNoReply(collected)).toBe(true);
+
+      // Nothing was resurrected on the way past, either.
+      const status = (await reloaded.answerHarnessQuery({
+        v: 1,
+        kind: 'perf',
+        op: 'status',
+      })) as { armed: boolean; runId: string };
+      expect(status).toMatchObject({ armed: false, runId: '' });
+    } finally {
+      reloaded.stopHarnessBridge();
+    }
+  });
 });
 
 describe('reload op', () => {
@@ -293,8 +350,129 @@ describe('reload op', () => {
   });
 });
 
+// The observer is document-wide over childList/characterData/attributes,
+// so it allocates a MutationRecord per streaming text delta. Every perf run
+// and every bench workload is a measurement of the renderer, so an observer
+// that outlives the query that needed it is a probe that invalidates the
+// numbers it sits beside. These cases pin its lifetime, not its readings.
 describe('mutation clock', () => {
   it('reports a non-negative age even before the observer is installed', () => {
     expect(sinceLastMutationMs()).toBeGreaterThanOrEqual(0);
+  });
+
+  it('arms for a settledness query and for nothing else', async () => {
+    expect(mutationClockArmed()).toBe(false);
+
+    // Everything that answers without a `settled` field leaves it alone —
+    // including the whole perf lifecycle, which is the case that matters:
+    // an armed run must measure a renderer with no observer on it unless
+    // somebody explicitly asked the page whether it had settled.
+    await answerHarnessQuery({ v: 1, kind: 'element', selector: 'body' });
+    expect(mutationClockArmed()).toBe(false);
+    await answerHarnessQuery({ v: 1, kind: 'globals', name: '__stickState' });
+    expect(mutationClockArmed()).toBe(false);
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', meters: ['dom'] });
+    expect(mutationClockArmed()).toBe(false);
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'collect' });
+    expect(mutationClockArmed()).toBe(false);
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' });
+    expect(mutationClockArmed()).toBe(false);
+
+    await answerHarnessQuery({ v: 1, kind: 'viewport' });
+    expect(mutationClockArmed()).toBe(true);
+  });
+
+  it('disarms after the linger and re-arms transparently', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await answerHarnessQuery({ v: 1, kind: 'viewport' });
+      expect(mutationClockArmed()).toBe(true);
+
+      vi.advanceTimersByTime(MUTATION_CLOCK_LINGER_MS - 1);
+      expect(mutationClockArmed()).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(mutationClockArmed()).toBe(false);
+
+      // Re-armable: the caller does nothing different, it just asks again.
+      await answerHarnessQuery({ v: 1, kind: 'viewport' });
+      expect(mutationClockArmed()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A settle POLL must observe ONE continuous history. Re-installing the
+  // observer per lap would restart the clock every lap, and `settled` could
+  // then never become true no matter how quiet the document went.
+  it('does not reinstall the observer for a poll inside the linger', async () => {
+    const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await answerHarnessQuery({ v: 1, kind: 'viewport' });
+      expect(observe).toHaveBeenCalledTimes(1);
+
+      for (let lap = 0; lap < 3; lap += 1) {
+        vi.advanceTimersByTime(MUTATION_CLOCK_LINGER_MS - 1);
+        await answerHarnessQuery({ v: 1, kind: 'viewport' });
+      }
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(mutationClockArmed()).toBe(true);
+
+      // The poll stops; the linger runs out; the next query pays for a
+      // fresh install.
+      vi.advanceTimersByTime(MUTATION_CLOCK_LINGER_MS);
+      expect(mutationClockArmed()).toBe(false);
+      await answerHarnessQuery({ v: 1, kind: 'viewport' });
+      expect(observe).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      observe.mockRestore();
+    }
+  });
+
+  // Both ends of a run, and both matter for the same reason. Bench setup
+  // opens a thread by polling `viewport` and then arms immediately, so a
+  // run that inherited the linger would measure its first seconds with an
+  // observer on; and a report is the number most damaged by one, so the
+  // stop must not leave it running either.
+  it('starts and ends a perf run with no observer, whatever preceded it', async () => {
+    await answerHarnessQuery({ v: 1, kind: 'viewport' });
+    expect(mutationClockArmed()).toBe(true);
+
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', meters: ['dom'] });
+    expect(mutationClockArmed()).toBe(false);
+
+    // A caller that wants settledness mid-run just asks for it.
+    await answerHarnessQuery({ v: 1, kind: 'viewport' });
+    expect(mutationClockArmed()).toBe(true);
+
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' });
+    expect(mutationClockArmed()).toBe(false);
+  });
+
+  // The perf watchdog is the backstop for a caller that vanished mid-run.
+  // It still disarms the meters, and the clock is gone by then too — the
+  // linger is three orders of magnitude shorter than the watchdog.
+  it('leaves no observer behind when the perf watchdog fires', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', meters: ['dom'] });
+      await answerHarnessQuery({ v: 1, kind: 'viewport' });
+      expect(mutationClockArmed()).toBe(true);
+
+      vi.advanceTimersByTime(PERF_WATCHDOG_MS);
+      const late = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' })) as ErrorEnvelope;
+      expect(late.error).toContain('self-disarmed');
+      expect(mutationClockArmed()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('disarms on teardown', async () => {
+    await answerHarnessQuery({ v: 1, kind: 'viewport' });
+    expect(mutationClockArmed()).toBe(true);
+    stopHarnessBridge();
+    expect(mutationClockArmed()).toBe(false);
   });
 });

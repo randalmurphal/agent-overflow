@@ -42,6 +42,27 @@ import (
 // enough that an unattended CLI invocation fails inside a human's patience.
 const harnessUIQueryTimeout = 10 * time.Second
 
+// harnessUIQueryNoClientGrace bounds how long a query waits when NO client
+// is connected to the event bus at all.
+//
+// The headless case is the common one — `ao-harness ui …` against an
+// instance nobody has opened a page on, a bridge command in a script that
+// forgot the window — and burning the full 10s per call there turns a
+// loop of twenty probes into a four-minute wait for an answer the backend
+// already had at millisecond zero. A connection is either present or it
+// is not; there is nothing to wait for.
+//
+// The grace is not zero because a page LOADING is a real state: the
+// WebSocket attaches a beat after the navigation, and a query issued in
+// that window would otherwise fail on a frontend that is arriving. It is
+// polled rather than signalled to keep the bus free of a bridge-specific
+// callback — a 10ms poll over 250ms is 25 mutex reads, against a 10s
+// stall.
+const (
+	harnessUIQueryNoClientGrace = 250 * time.Millisecond
+	harnessUIQueryClientPoll    = 10 * time.Millisecond
+)
+
 // harnessUIQueryEvent is the `harness:ui-query` wire shape. `spec` is
 // forwarded verbatim: the tagged union it carries is the BRIDGE's contract
 // (frontend/src/lib/harness/), and the backend deliberately knows nothing
@@ -133,8 +154,8 @@ func (h *Harness) HarnessUIQueryReply(id string, result json.RawMessage) error {
 	if len(result) == 0 {
 		result = json.RawMessage("null")
 	}
-	if !json.Valid(result) {
-		return fmt.Errorf("result is not valid JSON")
+	if err := requireValidJSON("result", result); err != nil {
+		return err
 	}
 	if !h.ui.deliver(id, result) {
 		log.Printf("harness: ui-query reply for unknown id %q dropped (late, duplicate, or timed out)", id)
@@ -149,12 +170,30 @@ func (h *Harness) queryUI(spec json.RawMessage, timeout time.Duration) (json.Raw
 	if len(spec) == 0 {
 		return nil, fmt.Errorf("spec must be non-empty JSON")
 	}
-	if !json.Valid(spec) {
-		return nil, fmt.Errorf("spec is not valid JSON")
+	if err := requireValidJSON("spec", spec); err != nil {
+		return nil, err
 	}
 	id, ch := h.ui.register()
 	defer h.ui.release(id)
 	h.app.emit(eventchan.HarnessUIQuery, harnessUIQueryEvent{ID: id, Spec: spec})
+
+	if timeout > harnessUIQueryNoClientGrace {
+		// Only shorten the wait; never lengthen one. The perf sampler
+		// passes a deadline tighter than the grace and owns its own
+		// skipped-sample semantics.
+		if answered, result, err := h.awaitClientOrGrace(ch); answered {
+			return result, err
+		}
+		if h.connectedClients() == 0 {
+			// Same sentence a timeout produces, because it names the same
+			// two fixable states — it just arrives immediately instead of
+			// ten seconds later.
+			return nil, fmt.Errorf(
+				"harness ui query failed after %s: no frontend attached or harness bridge inactive",
+				harnessUIQueryNoClientGrace,
+			)
+		}
+	}
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -167,6 +206,57 @@ func (h *Harness) queryUI(spec json.RawMessage, timeout time.Duration) (json.Raw
 			timeout,
 		)
 	}
+}
+
+// awaitClientOrGrace polls for a client to appear on the event bus,
+// returning as soon as one is connected — or as soon as the query is
+// answered, which a fast local bridge can manage inside the grace.
+//
+// Reports answered=true only when the reply actually arrived; a false
+// return means the caller should re-check connectedClients and decide.
+func (h *Harness) awaitClientOrGrace(ch <-chan json.RawMessage) (answered bool, result json.RawMessage, err error) {
+	if h.connectedClients() > 0 {
+		return false, nil, nil
+	}
+	deadline := time.NewTimer(harnessUIQueryNoClientGrace)
+	defer deadline.Stop()
+	poll := time.NewTicker(harnessUIQueryClientPoll)
+	defer poll.Stop()
+	for {
+		select {
+		case raw := <-ch:
+			res, resErr := harnessUIResult(raw)
+			return true, res, resErr
+		case <-poll.C:
+			if h.connectedClients() > 0 {
+				return false, nil, nil
+			}
+		case <-deadline.C:
+			return false, nil, nil
+		}
+	}
+}
+
+// connectedClients reports how many clients are attached to the event
+// bus — the only thing the backend can actually know about the bridge.
+//
+// SubscriberCount, not ChannelSubscriberCount: the SPA subscribes to
+// every channel by default, and ChannelSubscriberCount deliberately
+// counts only EXPLICIT per-channel subscribers, so it reads zero for a
+// perfectly healthy attached page. Zero here means no client at all,
+// which is the one state a query can rule out cheaply. A connected client
+// whose bundle carries no bridge is indistinguishable from a slow one, so
+// that case still waits out the full timeout.
+//
+// No bus (a test App with only testEmitHook) reports 1: absence of a bus
+// is not evidence of absence of a listener, and fast-failing there would
+// break every fixture that answers queries directly.
+func (h *Harness) connectedClients() int {
+	bus := h.app.eventBus.Load()
+	if bus == nil {
+		return 1
+	}
+	return bus.SubscriberCount()
 }
 
 // harnessUIResult unwraps a bridge answer. `{"error": "..."}` is the

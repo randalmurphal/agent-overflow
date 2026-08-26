@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,7 +41,23 @@ var (
 // runInterop runs one Windows tool and returns its stdout. A package var
 // for the same reason the paths are.
 var runInterop = func(ctx context.Context, exe string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, exe, args...).Output()
+	out, err := exec.CommandContext(ctx, exe, args...).Output()
+	if err == nil {
+		return out, nil
+	}
+	// A Windows tool that refuses says WHY on stderr, and Output() throws
+	// that away: the operator note read "exit status 1" for everything
+	// from a bad filter to a denied kill. Splice it back in.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(bytes.TrimSpace(exitErr.Stderr)) > 0 {
+		return out, fmt.Errorf("%w: %s", err, firstLine(string(exitErr.Stderr)))
+	}
+	return out, err
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(line)
 }
 
 // launcherImagePrefix is what a tasklist image name must start with
@@ -112,8 +130,17 @@ func interopAvailable() bool {
 	return true
 }
 
-// launcherImageName asks tasklist for one pid's image name, or "" when
-// no process carries that pid.
+// tasklistNoTasksPrefix is the notice tasklist prints instead of CSV
+// when its filter matches nothing. Recognizing it BY NAME is what lets
+// everything else that fails to parse be an error rather than a silent
+// "the process is gone" — the two used to collapse into one answer, so a
+// tasklist whose output format changed (a locale, a newer Windows, a
+// truncated pipe) reported a live launcher as already exited and left
+// the window on the desktop with nothing said.
+const tasklistNoTasksPrefix = "INFO: No tasks"
+
+// launcherImageName asks tasklist for one pid's image name, "" when no
+// process carries that pid, and an error when the answer is neither.
 //
 // /FO CSV /NH is the machine-readable shape: no header, one quoted
 // record per process, image name first. It is parsed with encoding/csv
@@ -124,17 +151,21 @@ func launcherImageName(ctx context.Context, pid int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// A filter that matches nothing answers with a plain-text notice
-	// ("INFO: No tasks are running which match...") instead of CSV, so an
-	// unparseable answer — or one that is not a real 5-column record —
-	// means "no such process", not a broken contract. Getting that wrong
-	// in the other direction would hand the caller a bogus image name to
-	// compare the prefix against.
-	reader := csv.NewReader(strings.NewReader(strings.TrimSpace(string(out))))
+	trimmed := strings.TrimSpace(string(out))
+	// The two shapes that legitimately mean "no such process": the notice,
+	// and nothing at all.
+	if trimmed == "" || strings.HasPrefix(trimmed, tasklistNoTasksPrefix) {
+		return "", nil
+	}
+	reader := csv.NewReader(strings.NewReader(trimmed))
 	reader.FieldsPerRecord = -1
 	record, err := reader.Read()
-	if err != nil || len(record) < 2 {
-		return "", nil
+	if err != nil {
+		return "", fmt.Errorf("tasklist output is not CSV (%v): %s", err, truncate(firstLine(trimmed), 120))
+	}
+	if len(record) < 2 {
+		return "", fmt.Errorf("tasklist answered with a %d-field record, want the 5-column CSV form: %s",
+			len(record), truncate(firstLine(trimmed), 120))
 	}
 	return strings.TrimSpace(record[0]), nil
 }

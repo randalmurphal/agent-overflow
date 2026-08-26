@@ -131,7 +131,7 @@ func runSoak(flags cliFlags) {
 		isolateWebviewStorage(paths.DataRoot)
 	}
 
-	appService := newIsolatedProviderApp(paths, "an isolated launcher-shell instance has no OS notification presenter")
+	appService := newIsolatedProviderApp(paths)
 	h := newHarness(appService, paths)
 	// Before App.Start, exactly as in harness mode: the control server
 	// publishes its address/token through providerExtraEnv (write-once
@@ -187,6 +187,9 @@ func runSoak(flags cliFlags) {
 	defer instance.remove()
 
 	if flags.autopilot {
+		// Latched BEFORE the goroutine starts, so there is no window in
+		// which a --autopilot instance reports "off".
+		h.setSoakAutopilot(soakAutopilotArming)
 		// Off the boot goroutine: the autopilot waits for the window to
 		// attach and then blocks on a live session start. A soak whose
 		// autopilot fails still serves — the operator sees the error in
@@ -197,9 +200,16 @@ func runSoak(flags cliFlags) {
 				return
 			case <-time.After(soakArmDelay):
 			}
+			// The outcome is latched as well as logged: publishInstance has
+			// already stamped this instance ModeSoak, so without the latch a
+			// soak that never armed is indistinguishable from a working one
+			// to everything except whoever is tailing launcher-soak.log.
 			if err := h.armSoakSteadyState(); err != nil {
 				log.Printf("soak: arm steady state: %v", err)
+				h.setSoakAutopilot(soakAutopilotFailedPrefix + err.Error())
+				return
 			}
+			h.setSoakAutopilot(soakAutopilotArmed)
 		}()
 	}
 
@@ -285,7 +295,7 @@ func (h *Harness) ensureSoakThreads() (string, error) {
 			len(threads), soakActiveThreadTitle)
 	}
 
-	result, err := h.HarnessSeed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
+	result, err := h.seed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
 		Name: soakProjectName,
 		Repo: &harness.RepoSpec{Commits: []harness.CommitSpec{{
 			Message: "soak workspace",

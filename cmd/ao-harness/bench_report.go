@@ -269,7 +269,21 @@ type benchComparison struct {
 // about. A metric the baseline does not mention is not compared, and a
 // baseline that mentions a metric this run could not measure is reported
 // as unmeasured rather than as a pass.
+//
+// Unmeasured is split in two, because the two halves are opposite
+// verdicts. A metric that came from a previous report's `aggregate` and
+// is missing today is often legitimate — a series meter this engine
+// never samples (jsHeap on WebKitGTK) is absent by design. A metric an
+// EXPLICIT `metrics` budget names is a caller writing down "gate this",
+// and silence is the one answer a gate must never give: a headless run
+// whose page answered nothing produced zero comparisons and exited 0,
+// which is a green light for a bench that measured nothing at all.
 func compareToBaseline(current map[string]benchAggregate, baseline benchBaseline) ([]benchComparison, []string) {
+	comparisons, unmeasured, _ := compareToBaselineDetailed(current, baseline)
+	return comparisons, unmeasured
+}
+
+func compareToBaselineDetailed(current map[string]benchAggregate, baseline benchBaseline) (out []benchComparison, unmeasured, unmeasuredBudgeted []string) {
 	tolerances := map[string]benchTolerance{}
 	for name, agg := range baseline.Aggregate {
 		value := agg.P50
@@ -287,17 +301,18 @@ func compareToBaseline(current map[string]benchAggregate, baseline benchBaseline
 	}
 	sort.Strings(names)
 
-	var out []benchComparison
-	var unmeasured []string
 	for _, name := range names {
 		agg, ok := current[name]
 		if !ok {
 			unmeasured = append(unmeasured, name)
+			if _, explicit := baseline.Metrics[name]; explicit {
+				unmeasuredBudgeted = append(unmeasuredBudgeted, name)
+			}
 			continue
 		}
 		out = append(out, evaluateTolerance(name, agg, tolerances[name]))
 	}
-	return out, unmeasured
+	return out, unmeasured, unmeasuredBudgeted
 }
 
 func evaluateTolerance(name string, agg benchAggregate, tol benchTolerance) benchComparison {

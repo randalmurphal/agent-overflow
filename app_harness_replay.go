@@ -308,6 +308,11 @@ func (h *Harness) copyEventSlice(rec *harnessRecording) (int, error) {
 // reload + Resume is the deterministic sequence; the e2e helper does
 // exactly that).
 func (h *Harness) HarnessReplayBundle(name string, opts harness.ReplayOptions) (harness.ReplayStatus, error) {
+	// See Harness.mutate: this swaps the SQLite file wholesale, so it may
+	// not run beside a seed writing rows into the outgoing database or a
+	// reset cascading deletes through it.
+	h.mutate.Lock()
+	defer h.mutate.Unlock()
 	dir := name
 	if !filepath.IsAbs(name) {
 		if err := validateBundleName(name); err != nil {

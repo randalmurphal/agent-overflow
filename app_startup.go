@@ -223,16 +223,13 @@ func (a *App) initStores() (string, *store.Store, error) {
 			errorsx.WrapLifecycle("close store after provider account initialization failure", closeErr),
 		)
 	}
-	userHome, homeErr := os.UserHomeDir()
+	userHome, homeErr := a.providerHome()
 	if homeErr != nil {
 		closeErr := st.Close()
 		return "", nil, errors.Join(
 			fmt.Errorf("failed to locate provider credential home: %w", homeErr),
 			errorsx.WrapLifecycle("close store after provider credential initialization failure", closeErr),
 		)
-	}
-	if a.credentialHomeOverride != "" {
-		userHome = a.credentialHomeOverride
 	}
 	newCredentials := provideraccounts.NewCredentials
 	if a.fileKeychainOverride {

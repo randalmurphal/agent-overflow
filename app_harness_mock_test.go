@@ -256,7 +256,11 @@ func TestHarnessControlRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("control.FromEnv rejected the staged spawn env")
 	}
-	resp, err := client.Register(control.Registration{Protocol: "claude", Cwd: "/ws/rt", PID: 12345})
+	// The pid must be a LIVE one: the control server sweeps registrations
+	// whose process is gone and refuses to queue commands for them, so a
+	// fabricated pid would read as an already-exited mock. The test process
+	// itself stands in for the mock provider.
+	resp, err := client.Register(control.Registration{Protocol: "claude", Cwd: "/ws/rt", PID: os.Getpid()})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -384,5 +388,45 @@ func waitForCond(t *testing.T, what string, cond func() bool) {
 			t.Fatalf("timeout waiting for %s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestStartControlAlwaysPinsTheMockTranscriptHome covers the keep-home half
+// of the provider-home seam on the MOCK's side of the wire.
+//
+// The transcript home used to be set only when `paths.HomeDir != ""`, which is
+// exactly the field `AO_HARNESS_KEEP_HOME` leaves empty — so a keep-home run
+// spawned mocks that wrote no transcript at all, and the cold-resume preflight
+// silently stopped being exercised in the one mode most likely to be
+// reproducing a resume bug. CredentialHome is `<dataRoot>/home` in BOTH modes
+// and is the same home `App.providerHome()` resolves, so what the mock writes
+// is what the backend reads.
+func TestStartControlAlwaysPinsTheMockTranscriptHome(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		homeDir string // empty == AO_HARNESS_KEEP_HOME
+	}{
+		{name: "isolated home", homeDir: "/harness/root/home"},
+		{name: "keep-home opt-out", homeDir: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &App{sessions: make(map[string]session)}
+			credentialHome := filepath.Join(t.TempDir(), "home")
+			h := newHarness(app, harnessPaths{
+				DataRoot:       filepath.Dir(credentialHome),
+				HomeDir:        tc.homeDir,
+				CredentialHome: credentialHome,
+			})
+			if err := h.startControl(); err != nil {
+				t.Fatalf("startControl: %v", err)
+			}
+			defer h.shutdownControl()
+
+			got := app.providerExtraEnv[control.EnvTranscriptHome]
+			if got != credentialHome {
+				t.Fatalf("%s = %q, want the credential home %q",
+					control.EnvTranscriptHome, got, credentialHome)
+			}
+		})
 	}
 }

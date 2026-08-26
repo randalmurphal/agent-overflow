@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +136,7 @@ func TestResolveForkResumeCursorReadsSessionFile(t *testing.T) {
 		t.Fatalf("write session file: %v", err)
 	}
 
-	got, err := ResolveForkResumeCursor("sess-forkpin", workspace, "a1")
+	got, err := ResolveForkResumeCursor(sessionfork.ProjectsDirForHome(home), "sess-forkpin", workspace, "a1")
 	if err != nil {
 		t.Fatalf("ResolveForkResumeCursor(pin on disk): %v", err)
 	}
@@ -143,7 +144,7 @@ func TestResolveForkResumeCursorReadsSessionFile(t *testing.T) {
 		t.Fatalf("cursor = %+v, want {Cursor:a1 PinOnDisk:true}", got)
 	}
 
-	got, err = ResolveForkResumeCursor("sess-forkpin", workspace, "a2-not-flushed")
+	got, err = ResolveForkResumeCursor(sessionfork.ProjectsDirForHome(home), "sess-forkpin", workspace, "a2-not-flushed")
 	if err != nil {
 		t.Fatalf("ResolveForkResumeCursor(pin missing): %v", err)
 	}
@@ -151,11 +152,11 @@ func TestResolveForkResumeCursorReadsSessionFile(t *testing.T) {
 		t.Fatalf("cursor = %+v, want {Cursor:a1 PinOnDisk:false}", got)
 	}
 
-	if _, err := ResolveForkResumeCursor("sess-nonexistent", workspace, "a1"); err == nil {
+	if _, err := ResolveForkResumeCursor(sessionfork.ProjectsDirForHome(home), "sess-nonexistent", workspace, "a1"); err == nil {
 		t.Fatal("ResolveForkResumeCursor(missing session file) = nil error, want the locate failure")
 	}
 
-	if _, err := ResolveForkResumeCursor("sess-forkpin", workspace, "   "); err == nil {
+	if _, err := ResolveForkResumeCursor(sessionfork.ProjectsDirForHome(home), "sess-forkpin", workspace, "   "); err == nil {
 		t.Fatal("ResolveForkResumeCursor(blank pin) = nil error, want a refusal")
 	}
 }

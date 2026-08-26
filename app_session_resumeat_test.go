@@ -36,7 +36,7 @@ func writeResumeAtTestSession(t *testing.T) (workspace string) {
 // pre-init.
 func TestResolveClaudeResumeAtRejectsOffBranchExplicit(t *testing.T) {
 	workspace := writeResumeAtTestSession(t)
-	got := resolveClaudeResumeAt("resume-at-session", workspace, "a3-final")
+	got := resolveClaudeResumeAt(testProviderProjectsDir(t), "resume-at-session", workspace, "a3-final")
 	if got == "a3-final" {
 		t.Fatalf("resolveClaudeResumeAt passed off-branch explicit cursor a3-final through")
 	}
@@ -49,7 +49,7 @@ func TestResolveClaudeResumeAtAcceptsOnBranchExplicit(t *testing.T) {
 	workspace := writeResumeAtTestSession(t)
 	// u1 is on-branch but NOT the scan's pick (u2 is deeper) — proves the
 	// explicit cursor was honored rather than recomputed.
-	if got := resolveClaudeResumeAt("resume-at-session", workspace, "u1"); got != "u1" {
+	if got := resolveClaudeResumeAt(testProviderProjectsDir(t), "resume-at-session", workspace, "u1"); got != "u1" {
 		t.Fatalf("resolveClaudeResumeAt = %q, want explicit on-branch cursor u1 honored", got)
 	}
 }
@@ -57,12 +57,12 @@ func TestResolveClaudeResumeAtAcceptsOnBranchExplicit(t *testing.T) {
 func TestResolveClaudeResumeAtFallsBackToScan(t *testing.T) {
 	workspace := writeResumeAtTestSession(t)
 	// No explicit cursor → branch-aware scan decides.
-	if got := resolveClaudeResumeAt("resume-at-session", workspace, ""); got != "u2" {
+	if got := resolveClaudeResumeAt(testProviderProjectsDir(t), "resume-at-session", workspace, ""); got != "u2" {
 		t.Fatalf("resolveClaudeResumeAt = %q, want u2 from the branch-aware scan", got)
 	}
 	// Unverifiable explicit cursor (session file missing) → empty, the
 	// app then omits --resume-session-at entirely.
-	if got := resolveClaudeResumeAt("no-such-session", workspace, "u1"); got != "" {
+	if got := resolveClaudeResumeAt(testProviderProjectsDir(t), "no-such-session", workspace, "u1"); got != "" {
 		t.Fatalf("resolveClaudeResumeAt = %q, want empty when the session file is missing", got)
 	}
 }

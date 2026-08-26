@@ -15,6 +15,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/workflow/def"
@@ -56,6 +57,9 @@ type fakeHost struct {
 	emit           func(eventchan.Channel, any)
 	requireEngine  func() (*engine.Engine, error)
 	lifeCtx        context.Context
+	// claudeProjectsDir is the fixture's own <temp home>/.claude/projects.
+	// Never the developer's: newTestRunner points it at a t.TempDir().
+	claudeProjectsDir string
 
 	observerMu     sync.Mutex
 	observers      map[string]map[int]func(string, provider.ProviderEvent)
@@ -251,6 +255,15 @@ func (h *fakeHost) RequireWorkflowEngine() (*engine.Engine, error) {
 	return h.requireEngine()
 }
 
+// ClaudeProjectsDir answers with the fixture's own temp home, so nothing in
+// this package can read the developer's real ~/.claude/projects.
+func (h *fakeHost) ClaudeProjectsDir() (string, error) {
+	if h.claudeProjectsDir == "" {
+		return "", errors.New("fakeHost: no claude projects dir configured")
+	}
+	return h.claudeProjectsDir, nil
+}
+
 func (h *fakeHost) LifeCtx() context.Context {
 	if h.lifeCtx == nil {
 		return context.Background()
@@ -271,12 +284,17 @@ func newTestRunner(t *testing.T, host *fakeHost, dataStore *store.Store, profile
 	// (`claude.ScanSessionLeaf`). Detaching HOME here is what keeps that read off
 	// the developer's real `~/.claude`, and the poisoned binary is the tripwire
 	// if a path ever does reach for a CLI.
-	kerneltest.IsolateSpawns(t)
+	isolation := kerneltest.IsolateSpawns(t)
 	if host == nil {
 		host = &fakeHost{}
 	}
 	if host.dataStore == nil {
 		host.dataStore = dataStore
+	}
+	if host.claudeProjectsDir == "" {
+		// The preflight's transcript read is INJECTED now, so the isolated
+		// home is what it resolves against rather than whatever $HOME says.
+		host.claudeProjectsDir = sessionfork.ProjectsDirForHome(isolation.Home)
 	}
 	return New(host, dataStore, t.TempDir(), profiles, func(context.Context, string) error { return nil })
 }

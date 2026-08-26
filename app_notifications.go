@@ -144,18 +144,20 @@ func (s *transportNotificationSender) send(title, body string, target notify.Tar
 	return nil
 }
 
+// unavailableNotificationSender refuses every send with a typed
+// NotificationUnavailable. It has no production installer any more: the
+// isolated boot modes that used to take it now install the real transport
+// sender (`newIsolatedProviderApp`), because a stub there made the one
+// pipe an isolated boot exists to exercise the one pipe it did not run.
+// The platform senders in app_notifications_desktop.go still return the
+// same typed code when the OS itself refuses, which is what the frontend
+// branches on; this type survives as the shape those tests assert against.
 type unavailableNotificationSender struct {
 	reason error
 }
 
 func (s unavailableNotificationSender) send(string, string, notify.Target) error {
 	return &NotificationError{Code: NotificationUnavailable, Cause: s.reason}
-}
-
-func (a *App) configureUnavailableNotifications(reason string) {
-	err := errors.New(reason)
-	a.osNotifications = unavailableNotificationSender{reason: err}
-	log.Printf("notifications: unavailable: %v", err)
 }
 
 var _ osNotificationSender = (*transportNotificationSender)(nil)

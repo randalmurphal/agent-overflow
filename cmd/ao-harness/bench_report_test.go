@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -315,5 +316,79 @@ func TestFormatBenchValueUnits(t *testing.T) {
 	}
 	if got := formatBenchValue(14.26, "ms"); got != "14.3" {
 		t.Errorf("ms = %q", got)
+	}
+}
+
+// A gate that could not READ the number it was told to gate is bad news,
+// not a pass. The case that forced this: a headless run answers no
+// frontend metric, so the comparison table came back empty and `bench
+// --baseline` exited 0 — a run that measured nothing reporting success.
+func TestABudgetedMetricThatWasNeverMeasuredFailsTheGate(t *testing.T) {
+	current := map[string]benchAggregate{
+		"goHeap.maxBytes": {Runs: 1, P50: 10 << 20, Unit: "bytes", LowerIsBetter: true},
+	}
+	baseline := benchBaseline{Metrics: map[string]benchTolerance{
+		"goHeap.maxBytes": {Max: floatPtr(64 << 20)},
+		"frames.p95Ms":    {Max: floatPtr(20)},
+	}}
+
+	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(current, baseline)
+	if len(unbudgeted) != 1 || unbudgeted[0] != "frames.p95Ms" {
+		t.Fatalf("unbudgeted = %v, want the explicitly budgeted metric that was not measured", unbudgeted)
+	}
+	if !slices.Contains(unmeasured, "frames.p95Ms") {
+		t.Errorf("unmeasured = %v, want it to carry the same metric", unmeasured)
+	}
+	if countDrift(comparisons) != 0 {
+		t.Fatalf("nothing should have drifted: %+v", comparisons)
+	}
+
+	err := benchGateVerdict(comparisons, unbudgeted, "budget.json")
+	if err == nil {
+		t.Fatal("the gate passed a run that measured no budgeted metric")
+	}
+	if code := exitCodeOf(t, err); code != exitBadNews {
+		t.Fatalf("exit code = %d, want %d (the command ran; the answer is bad news)", code, exitBadNews)
+	}
+	if !strings.Contains(err.Error(), "frames.p95Ms") || !strings.Contains(err.Error(), "harness-window") {
+		t.Fatalf("the error names neither the metric nor the fix: %v", err)
+	}
+}
+
+// A metric the baseline never mentions is not a gate failure: a previous
+// report carries every series the run that wrote it sampled, and a
+// different engine legitimately samples fewer.
+func TestAnUnbudgetedUnmeasuredMetricDoesNotFailTheGate(t *testing.T) {
+	current := map[string]benchAggregate{
+		"frames.p95Ms": {Runs: 1, P50: 10, Unit: "ms", LowerIsBetter: true},
+	}
+	baseline := benchBaseline{Aggregate: map[string]benchAggregate{
+		"frames.p95Ms": {Runs: 1, P50: 10, Unit: "ms", LowerIsBetter: true},
+		"domNodes.max": {Runs: 1, P50: 900, Unit: "count", LowerIsBetter: true},
+	}}
+
+	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(current, baseline)
+	if len(unbudgeted) != 0 {
+		t.Fatalf("unbudgeted = %v, want none: a derived reference is not an explicit budget", unbudgeted)
+	}
+	if !slices.Contains(unmeasured, "domNodes.max") {
+		t.Errorf("unmeasured = %v, want the unsampled series reported", unmeasured)
+	}
+	if err := benchGateVerdict(comparisons, unbudgeted, "previous.json"); err != nil {
+		t.Fatalf("gate failed on an unsampled series: %v", err)
+	}
+}
+
+func TestDriftFailsTheGateWithTheSameCode(t *testing.T) {
+	current := map[string]benchAggregate{"frames.p95Ms": {Runs: 1, P50: 40, Unit: "ms", LowerIsBetter: true}}
+	baseline := benchBaseline{Metrics: map[string]benchTolerance{"frames.p95Ms": {Max: floatPtr(20)}}}
+
+	comparisons, _, unbudgeted := compareToBaselineDetailed(current, baseline)
+	err := benchGateVerdict(comparisons, unbudgeted, "budget.json")
+	if err == nil {
+		t.Fatal("drift passed the gate")
+	}
+	if code := exitCodeOf(t, err); code != exitBadNews {
+		t.Fatalf("exit code = %d, want %d", code, exitBadNews)
 	}
 }

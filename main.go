@@ -151,6 +151,11 @@ func main() {
 	// Opt-in loopback pprof listener (AGENT_OVERFLOW_PPROF=1). Started
 	// for every backend mode — headless, embedded webview, client —
 	// because memory questions don't care which shell the process wears.
+	// Isolated boots first give up the fixed default port; see
+	// unpinIsolatedPprofPort.
+	if flags.harness || flags.soak {
+		unpinIsolatedPprofPort()
+	}
 	if pprofAddr, _, pprofErr := pprofserve.StartIfEnabled(); pprofErr != nil {
 		// The operator explicitly asked for profiling; a silent no-op
 		// listener would waste their next hour. Loud, not fatal.
@@ -267,6 +272,17 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 			fatalf("transport: register Harness methods: %v", err)
 		}
 		log.Printf("transport: registered %d harness methods", len(harnessMethods))
+		// Hand the receiver the full wire surface (App methods included) so
+		// HarnessListMethods can answer without reaching into the
+		// dispatcher. Set before the listener serves, so no RPC can observe
+		// a half-filled list.
+		if sink, ok := opts.HarnessReceiver.(interface{ setWireMethods([]string) }); ok {
+			names := make([]string, 0, len(methods)+len(harnessMethods))
+			for _, m := range append(append([]*transport.Method{}, methods...), harnessMethods...) {
+				names = append(names, m.Name)
+			}
+			sink.setWireMethods(names)
+		}
 	}
 	logBootPhase("transport.register", phaseStarted)
 
@@ -277,6 +293,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	assetHandler, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
 	if err != nil {
 		fatalf("transport: build asset handler: %v", err)
+	}
+	if opts.AllowDevServerAssets {
+		if warning := isolatedDevAssetWarning(os.Getenv("FRONTEND_DEVSERVER_URL")); warning != "" {
+			log.Print(warning)
+		}
 	}
 	logBootPhase("transport.assets", phaseStarted)
 
@@ -686,6 +707,23 @@ func ensureClientID() string {
 	return ensureClientIDIn(bootSettingsDir())
 }
 
+// appURLWithClientID threads the durable UI-state client ID onto a page
+// URL as `&cid=`. The `&` (not `?`) is correct: every page URL the
+// transport hands out already carries the auth token query param.
+//
+// One helper because every window-opening boot needs the same rule and
+// they are spread across three files (runDesktop, runWindowedShell, the
+// harness bootstrap the Windows launcher reads). An empty id or URL
+// passes through untouched — the frontend then falls back to its
+// browser-cached identity, which is a degraded bucket rather than a
+// broken page.
+func appURLWithClientID(pageURL, clientID string) string {
+	if pageURL == "" || clientID == "" {
+		return pageURL
+	}
+	return pageURL + "&cid=" + url.QueryEscape(clientID)
+}
+
 // ensureClientIDIn is the dir-parameterized core of ensureClientID,
 // split out so initStores' settings→ui_state migration can resolve the
 // same identity under a test-overridden config dir.
@@ -727,6 +765,67 @@ func loadPersistedNetworkSettings() settings.NetworkSettings {
 		return settings.NetworkSettings{}
 	}
 	return settings.NewService(dir).Get().Network
+}
+
+// isolatedPprofEphemeralAddr answers what an isolated boot should bind
+// pprof to, given the raw AGENT_OVERFLOW_PPROF value. Empty means "leave
+// it exactly as the operator wrote it".
+//
+// The rule: a BARE enable ("1"/"true") becomes an ephemeral loopback port
+// on an isolated boot, because a bare enable expresses "profile this
+// process", not "own port 6363". pprofserve's DefaultAddr is a fixed
+// singleton, and isolated boots are the one shape that is deliberately
+// run N-at-a-time — a soak beside the developer's own app, a harness per
+// checkout, an e2e run beside both — so the second instance's listener
+// fails to bind and logs an error for a resource nobody asked it to
+// claim. An EXPLICIT host:port is honored verbatim: the operator naming
+// a port is choosing one, and silently moving it would break the
+// bookmark they are about to open.
+func isolatedPprofEphemeralAddr(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "1", "true", "TRUE", "True":
+		// Port 0: the kernel picks. The bound address is logged, and an
+		// isolated instance's discovery files already tell a tool where
+		// that instance lives.
+		return "127.0.0.1:0"
+	}
+	return ""
+}
+
+// unpinIsolatedPprofPort applies isolatedPprofEphemeralAddr to the
+// environment, in place, before pprofserve reads it. Rewriting the
+// variable rather than passing an address keeps pprofserve's single
+// entry point (and its loopback refusal) as the only binder.
+func unpinIsolatedPprofPort() {
+	addr := isolatedPprofEphemeralAddr(os.Getenv(pprofserve.EnvVar))
+	if addr == "" {
+		return
+	}
+	if err := os.Setenv(pprofserve.EnvVar, addr); err != nil {
+		log.Printf("pprof: keep the default port (rewrite %s: %v)", pprofserve.EnvVar, err)
+	}
+}
+
+// isolatedDevAssetWarning is the boot-time notice an isolated
+// (--harness / --soak) instance prints when it is actually serving a Vite
+// dev server's assets instead of the embedded bundle. Empty when
+// FRONTEND_DEVSERVER_URL is unset, i.e. the ordinary case.
+//
+// It exists because the opt-in is INHERITED, not chosen: the variable is
+// exported by `make dev` and by the wails3 dev shell, so a harness or
+// soak launched from that terminal silently measures an unminified,
+// HMR-instrumented bundle. Every number a perf run or a renderer-hang
+// soak produces then describes a build nobody ships, and nothing on
+// screen says so. Loud at boot is the only place it can be said before
+// the measurements start.
+func isolatedDevAssetWarning(devURL string) string {
+	if devURL == "" {
+		return ""
+	}
+	return "WARNING: isolated boot is serving DEV-SERVER assets from " + devURL +
+		" (FRONTEND_DEVSERVER_URL is set and --harness/--soak honors it). " +
+		"Every measurement from this instance — perf runs, memory samples, soak observations — " +
+		"is of the DEV bundle, not the shipped one. Unset FRONTEND_DEVSERVER_URL to measure the embedded build."
 }
 
 // buildAssetHandler returns the http.Handler that the transport mounts

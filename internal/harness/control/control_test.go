@@ -61,7 +61,7 @@ func TestRegisterCommandReportRoundTrip(t *testing.T) {
 	})
 	c := clientFor(t, srv)
 
-	resp, err := c.Register(Registration{Protocol: "claude", Cwd: "/ws", PID: 42})
+	resp, err := c.Register(Registration{Protocol: "claude", Cwd: "/ws", PID: os.Getpid()})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestCommandUnknownMock(t *testing.T) {
 func TestShutdownReleasesLongPoll(t *testing.T) {
 	srv := startTestServer(t, nil)
 	c := clientFor(t, srv)
-	if _, err := c.Register(Registration{Protocol: "claude", Cwd: "/ws", PID: 1}); err != nil {
+	if _, err := c.Register(Registration{Protocol: "claude", Cwd: "/ws", PID: os.Getpid()}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestShutdownReleasesLongPoll(t *testing.T) {
 func TestCommandRefusedAfterExit(t *testing.T) {
 	srv := startTestServer(t, nil)
 	c := clientFor(t, srv)
-	resp, err := c.Register(Registration{Protocol: "claude", Cwd: "/ws", PID: 1})
+	resp, err := c.Register(Registration{Protocol: "claude", Cwd: "/ws", PID: os.Getpid()})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -215,10 +215,10 @@ func TestCommandRefusedAfterExit(t *testing.T) {
 func TestClearMocksDropsRegistrationsKeepsIDSequence(t *testing.T) {
 	srv := startTestServer(t, nil)
 	c := clientFor(t, srv)
-	if _, err := c.Register(Registration{Protocol: "claude", Cwd: "/a", PID: 1}); err != nil {
+	if _, err := c.Register(Registration{Protocol: "claude", Cwd: "/a", PID: os.Getpid()}); err != nil {
 		t.Fatalf("Register 1: %v", err)
 	}
-	if _, err := c.Register(Registration{Protocol: "codex", Cwd: "/b", PID: 2}); err != nil {
+	if _, err := c.Register(Registration{Protocol: "codex", Cwd: "/b", PID: os.Getpid()}); err != nil {
 		t.Fatalf("Register 2: %v", err)
 	}
 	if got := srv.Mocks(); len(got) != 2 {
@@ -233,7 +233,7 @@ func TestClearMocksDropsRegistrationsKeepsIDSequence(t *testing.T) {
 		t.Fatal("Command addressed a cleared mock")
 	}
 
-	resp, err := c.Register(Registration{Protocol: "claude", Cwd: "/c", PID: 3})
+	resp, err := c.Register(Registration{Protocol: "claude", Cwd: "/c", PID: os.Getpid()})
 	if err != nil {
 		t.Fatalf("Register after clear: %v", err)
 	}

@@ -45,6 +45,32 @@ func (lw *lineWriter) writeLine(line string, chunkBytes, chunkIntervalMs int) {
 	}
 }
 
+// writeLines writes every line, each newline-terminated, in ONE write
+// under the same lock writeLine takes — several NDJSON frames landing in
+// a single read on the app's side.
+//
+// This is the shape a real node CLI produces under load (its stdout
+// stream flushes a batch), and the one the per-line default can never
+// produce. An app reader that only ever sees one frame per read is
+// untested against it.
+func (lw *lineWriter) writeLines(lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	total := 0
+	for _, line := range lines {
+		total += len(line) + 1
+	}
+	data := make([]byte, 0, total)
+	for _, line := range lines {
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	lw.write(data)
+}
+
 func (lw *lineWriter) write(data []byte) {
 	if _, err := lw.w.Write(data); err != nil {
 		// Stdout gone means the app-side reader is gone; nothing useful

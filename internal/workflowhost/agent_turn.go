@@ -137,7 +137,11 @@ func (r *Runner) ensureReusableWorkflowSession(ctx context.Context, thread store
 		return false, fmt.Errorf("workflow runner: startup cancelled: %w", err)
 	}
 	if thread.Provider == string(provider.Claude) {
-		leaf, err := claude.ScanSessionLeaf(thread.ResolvedSessionRef(), thread.WorkspacePath)
+		projectsDir, dirErr := r.host.ClaudeProjectsDir()
+		if dirErr != nil {
+			return false, fmt.Errorf("workflow runner: resolve Claude projects dir: %w", dirErr)
+		}
+		leaf, err := claude.ScanSessionLeaf(projectsDir, thread.ResolvedSessionRef(), thread.WorkspacePath)
 		if errors.Is(err, sessionfork.ErrSessionFileNotFound) {
 			return false, errors.Join(engine.ErrProviderContextUnavailable,
 				fmt.Errorf("workflow runner: Claude session %q has no transcript", thread.ResolvedSessionRef()))

@@ -46,8 +46,11 @@ SDK `fork_session(session_id, up_to_message_id)`:
   through the previous turn's full assistant response. Filters
   tool-result echoes and sidechain entries. Early-terminates as soon
   as the requested index is found.
-- `locate.go` — `LocateSessionFile`: resolves
-  `~/.claude/projects/<slug>/<sessionID>.jsonl`. `claudeProjectDirName` is a
+- `locate.go` — `LocateSessionFile(projectsDir, sessionID, workspacePath)`:
+  resolves `<projectsDir>/<slug>/<sessionID>.jsonl`, where `projectsDir` is
+  the caller's `~/.claude/projects` (see the PARAMETER rule below).
+  `ProjectsDirForHome(home)` is the one place that layout is spelled.
+  `claudeProjectDirName` is a
   verbatim port of the CLI's own encoder (`W9`/`z$o`/`y__`/`Act` in the 2.1.237
   bundle), applied to the workspace's CANONICAL absolute path:
 
@@ -84,16 +87,24 @@ SDK `fork_session(session_id, up_to_message_id)`:
   resolution without a session id: the directory `claude --resume` run in
   that workspace reads from.
 
-  The projects dir is a PARAMETER, and that is load-bearing. `LocateSessionFile`
-  and `RelocateSession` serve live threads and resolve `~/.claude/projects`
-  themselves (`defaultProjectsDir`), but a caller WRITING beside an existing
-  transcript must not: the app can run against an injected Claude home
-  (credential-home override, `AO_HARNESS_KEEP_HOME`) where `$HOME` and the
-  home a transcript was read from are different directories, and resolving
-  through `$HOME` would land the write in the developer's real
-  `~/.claude/projects`. `importedBranchDestDir` derives it from the source
-  file's own path (`<projectsDir>/<slug>/<id>.jsonl`, up two), so the
-  destination cannot leave the home the source came from.
+  The projects dir is a PARAMETER on EVERY entry point, and that is
+  load-bearing. Nothing in this package resolves `$HOME` — `defaultProjectsDir`
+  is gone and must not come back. The app can run against an injected Claude
+  home (credential-home override, `AO_HARNESS_KEEP_HOME`) where `$HOME` and
+  the home a transcript was read from are different directories, so resolving
+  through `$HOME` here would land a read — and, worse, a WRITE — in the
+  developer's real `~/.claude/projects` during an isolated boot. App-layer
+  callers get theirs from the one seam, `App.claudeProjectsDir()`
+  (`app_provider_home.go`), which is `ProjectsDirForHome(App.providerHome())`;
+  `internal/provider/claude` threads it through `Config.ProjectsDir` and the
+  `ScanSessionLeaf` / `ResumeAtOnActiveBranch` / `ResolveForkResumeCursor`
+  parameter. An EMPTY projects dir is refused (or, on the leaf scanners,
+  answered as "no transcript available") rather than defaulted — a missing
+  injection must fail visibly, never silently fall back to a real home.
+  A caller WRITING beside an existing transcript does not even use the
+  injected dir: `importedBranchDestDir` derives it from the source file's own
+  path (`<projectsDir>/<slug>/<id>.jsonl`, up two), so the destination cannot
+  leave the home the source came from.
 - `relocate.go` — moves a session's transcript JSONL (+ its
   `<sessionID>/` subagent subdir) between project slugs so `claude
   --resume` run with cwd == destWorkspace resolves it. Claude keys resume
@@ -102,7 +113,7 @@ SDK `fork_session(session_id, up_to_message_id)`:
   strand the transcript under the old slug ("No conversation found"). We
   move it, never clear the ref / start fresh. Split into the two halves of
   a move so the caller can sequence them around its own commit:
-  - `RelocateSession(sessionID, fromWorkspace, destWorkspace) ->
+  - `RelocateSession(projectsDir, sessionID, fromWorkspace, destWorkspace) ->
     (srcFile, destFile, err)` is the COPY half. It writes the source (the
     authoritative latest — Claude only appends under the running cwd) OVER
     any stale copy at the destination, then leaves the source in place.

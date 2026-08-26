@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -65,7 +66,16 @@ func (c *Client) Register(reg Registration) (RegisterResponse, error) {
 
 // Poll long-polls for commands until ctx is cancelled, invoking handle
 // for each command in order on the polling goroutine. Transient errors
-// back off and retry; the loop only exits with ctx.
+// back off and retry; the loop exits with ctx, or when the backend
+// stops recognising this mock.
+//
+// The second exit is the important one. A harness reset drops every
+// registration, and a mock that outlives it gets 404 "unknown mock" on
+// every poll forever after — which used to be treated as transient, so
+// the process spun at 1Hz logging a failure per second for the rest of
+// its life. There is no recovery: registration happens once, at boot.
+// The mock keeps running its scenario standalone, exactly as it does
+// when the control vars were never set.
 func (c *Client) Poll(ctx context.Context, handle func(Command)) {
 	for {
 		if ctx.Err() != nil {
@@ -74,6 +84,10 @@ func (c *Client) Poll(ctx context.Context, handle func(Command)) {
 		cmds, err := c.pollOnce(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, ErrUnknownMock) {
+				log.Printf("mockprovider: control channel dropped this mock (%s); continuing standalone", c.mockID)
 				return
 			}
 			log.Printf("mockprovider: control poll: %v", err)
@@ -137,7 +151,18 @@ func (c *Client) do(req *http.Request, out any) error {
 	}
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("%s %s: %s (%s)", req.Method, req.URL.Path, resp.Status, bytes.TrimSpace(msg))
+		trimmed := bytes.TrimSpace(msg)
+		// The server answers a request naming a mock it has no
+		// registration for with this exact body. A bare 404 is NOT enough
+		// to conclude it: the auth wrapper also answers 404 (the
+		// don't-fingerprint convention) and a bad token is worth retrying
+		// no more or less than any other transport failure — but it is not
+		// this condition, and conflating them would make a token typo look
+		// like a reset.
+		if resp.StatusCode == http.StatusNotFound && bytes.Equal(trimmed, []byte(unknownMockBody)) {
+			return fmt.Errorf("%w: %s %s", ErrUnknownMock, req.Method, req.URL.Path)
+		}
+		return fmt.Errorf("%s %s: %s (%s)", req.Method, req.URL.Path, resp.Status, trimmed)
 	}
 	if out == nil {
 		return nil

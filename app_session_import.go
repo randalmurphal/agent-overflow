@@ -259,9 +259,9 @@ func (a *App) sessionImportDeps() (sessionimport.Deps, error) {
 			return sessionimport.Deps{}, errors.New(
 				"tests must not scan the real provider homes; set app.credentialHomeOverride to a temp home")
 		}
-		resolved, err := os.UserHomeDir()
+		resolved, err := a.providerHome()
 		if err != nil {
-			return sessionimport.Deps{}, fmt.Errorf("session import: locate provider home: %w", err)
+			return sessionimport.Deps{}, fmt.Errorf("session import: %w", err)
 		}
 		home = resolved
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 )
 
@@ -48,6 +49,31 @@ func (s *stubAdapter) sendApproval(*scenario.ApprovalStep, scenario.Vars) (<-cha
 }
 
 func (s *stubAdapter) sendInterruptedTurn(scenario.Vars) {}
+
+// recordingReporter captures every control report the engine posts, so a
+// unit test can assert on a surface whose real consumer is another
+// process.
+type recordingReporter struct {
+	reporter *reporter
+	mu       sync.Mutex
+	reports  []control.Report
+}
+
+func newRecordingReporter() *recordingReporter {
+	rec := &recordingReporter{}
+	rec.reporter = &reporter{observe: func(rep control.Report) {
+		rec.mu.Lock()
+		rec.reports = append(rec.reports, rep)
+		rec.mu.Unlock()
+	}}
+	return rec
+}
+
+func (r *recordingReporter) snapshot() []control.Report {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]control.Report(nil), r.reports...)
+}
 
 func newUnitEngine(t *testing.T, buf *bytes.Buffer) *engine {
 	t.Helper()
@@ -272,11 +298,187 @@ func TestWaitSignalGateAdvance(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("gate not released by matching advance")
 	}
+
+	// The stranded "other" advance dies WITH ITS TURN. Left buffered it
+	// would release the first gate of some later turn, which reads as a
+	// mock skipping a step for no reason.
+	e.finishTurn(1)
+	e.mu.Lock()
+	stranded := len(e.pendingAdvances)
+	e.mu.Unlock()
+	if stranded != 0 {
+		t.Fatalf("pendingAdvances after the turn ended = %d, want 0 (the stranded advance must be discarded)", stranded)
+	}
 }
 
+// TestAdvanceReportsReleaseAndBuffering pins the two control reports a
+// driving test reads to tell "my advance opened the gate" from "my
+// advance did nothing" — the pair is otherwise unobservable outside the
+// mock process, since a buffered advance looks exactly like one that was
+// never delivered.
+func TestAdvanceReportsReleaseAndBuffering(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	rec := newRecordingReporter()
+	e.rep = rec.reporter
+	e.startTurn(1)
+
+	// Buffered: no gate open at all.
+	e.advance("early")
+	// Buffered against a gate that does not match.
+	released := make(chan struct{})
+	go func() {
+		e.runWaitSignal(1, &scenario.WaitSignalStep{Name: "g1"})
+		close(released)
+	}()
+	waitForGate(t, e)
+	e.advance("mismatch")
+	e.advance("g1")
+	select {
+	case <-released:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gate not released")
+	}
+
+	reports := rec.snapshot()
+	var buffered []control.Report
+	var releases []control.Report
+	for _, rep := range reports {
+		switch rep.Kind {
+		case control.ReportAdvanceBuffered:
+			buffered = append(buffered, rep)
+		case control.ReportAdvanceReleased:
+			releases = append(releases, rep)
+		}
+	}
+	if len(buffered) != 2 {
+		t.Fatalf("advance_buffered reports = %+v, want 2", buffered)
+	}
+	if buffered[0].Gate != "early" || buffered[0].OpenGate != "" {
+		t.Errorf("first buffered report = %+v, want gate=early with no open gate", buffered[0])
+	}
+	if buffered[1].Gate != "mismatch" || buffered[1].OpenGate != "g1" {
+		t.Errorf("second buffered report = %+v, want gate=mismatch openGate=g1", buffered[1])
+	}
+	if len(releases) != 1 || releases[0].Gate != "g1" {
+		t.Fatalf("advance_released reports = %+v, want one for g1", releases)
+	}
+}
+
+// TestBufferedAdvanceDoesNotCrossTurns is the leak this buffering used to
+// have: an advance stranded in one turn released the first gate of a
+// later one, minutes and turns away from the command that caused it.
+func TestBufferedAdvanceDoesNotCrossTurns(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	e.startTurn(1)
+	e.advance("") // unnamed: releases whichever gate opens next, in TURN 1
+	e.finishTurn(1)
+
+	e.startTurn(2)
+	defer e.finishTurn(2)
+	done := make(chan struct{})
+	go func() {
+		e.runWaitSignal(2, &scenario.WaitSignalStep{Name: "g1"})
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("an advance buffered in turn 1 released a gate in turn 2")
+	case <-time.After(50 * time.Millisecond):
+	}
+	e.advance("g1")
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("gate not released by its own turn's advance")
+	}
+}
+
+// TestInterruptDiscardsBufferedAdvances: an interrupt ends the turn, so
+// the advances it was holding end with it. Otherwise the abort leaves a
+// live command behind that fires into the next turn.
+func TestInterruptDiscardsBufferedAdvances(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	e.adapter = &stubAdapter{}
+	e.startTurn(1)
+	e.advance("stranded")
+	e.mu.Lock()
+	buffered := len(e.pendingAdvances)
+	e.mu.Unlock()
+	if buffered != 1 {
+		t.Fatalf("pendingAdvances before interrupt = %d, want 1", buffered)
+	}
+	if !e.interruptTurn("") {
+		t.Fatal("active turn was not interrupted")
+	}
+	e.mu.Lock()
+	buffered = len(e.pendingAdvances)
+	e.mu.Unlock()
+	if buffered != 0 {
+		t.Fatalf("pendingAdvances after interrupt = %d, want 0", buffered)
+	}
+}
+
+// TestAdvanceBufferIsCapped: the buffer tolerates a command RACING its
+// gate, not a driver queueing dozens of them. Past the cap an advance is
+// discarded with a report rather than parked where nothing reads it.
+func TestAdvanceBufferIsCapped(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	rec := newRecordingReporter()
+	e.rep = rec.reporter
+	e.startTurn(1)
+	defer e.finishTurn(1)
+
+	for i := 0; i < maxPendingAdvances+3; i++ {
+		e.advance("g")
+	}
+	e.mu.Lock()
+	buffered := len(e.pendingAdvances)
+	e.mu.Unlock()
+	if buffered != maxPendingAdvances {
+		t.Fatalf("buffered advances = %d, want the cap %d", buffered, maxPendingAdvances)
+	}
+	drops := 0
+	for _, rep := range rec.snapshot() {
+		if rep.Kind == control.ReportAdvanceBuffered && rep.Detail == control.AdvanceDroppedDetail {
+			drops++
+		}
+	}
+	if drops != 3 {
+		t.Fatalf("reported drops = %d, want 3", drops)
+	}
+}
+
+// waitForGate blocks until the engine has a gate open.
+func waitForGate(t *testing.T, e *engine) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		e.mu.Lock()
+		open := e.gate != nil
+		e.mu.Unlock()
+		if open {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("gate never opened")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestWaitSignalConsumesBufferedAdvance is the race tolerance the buffer
+// exists for: an advance command that beats the gate it targets by a few
+// milliseconds still releases it — WITHIN the turn it was issued in
+// (TestBufferedAdvanceDoesNotCrossTurns covers the other side).
 func TestWaitSignalConsumesBufferedAdvance(t *testing.T) {
 	var buf bytes.Buffer
 	e := newUnitEngine(t, &buf)
+	e.startTurn(1)
+	defer e.finishTurn(1)
 	e.advance("") // arrives before the gate opens
 
 	done := make(chan struct{})
@@ -504,5 +706,163 @@ func TestRepeatStepUnboundedStopsOnInterrupt(t *testing.T) {
 	}
 	if len(outputLines(&buf)) == 0 {
 		t.Fatal("unbounded repeat emitted nothing before the interrupt")
+	}
+}
+
+// TestScenarioDoneFiresOncePerTurn is the fix for a latch that fired
+// once per PROCESS.
+//
+// Under the default afterTurns:repeatLast, turns 2..N re-run the last
+// scripted turn and finish exactly as turn 1 did — but the old
+// doneReported bool meant only turn 1 ever announced it. A harness test
+// that awaits the scenario boundary per turn (the normal shape: send,
+// await, assert, send again) hung forever on the second send against a
+// mock that had already done the work.
+func TestScenarioDoneFiresOncePerTurn(t *testing.T) {
+	var buf bytes.Buffer
+	rec := newRecordingReporter()
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "repeat-last",
+		Provider: scenario.ProviderClaude,
+		// One scripted turn, so turns 2 and 3 both land on repeatLast.
+		Turns: []scenario.Turn{{Label: "only", Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{`{"t":${TURN}}`}}}}}},
+	}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), rec.reporter, scenario.Vars{"SESSION_ID": "s1"})
+	e.exitFn = func(code int) { t.Fatalf("unexpected exit(%d)", code) }
+	e.adapter = &stubAdapter{}
+
+	for n := 1; n <= 3; n++ {
+		e.runTurn(n)
+	}
+
+	var doneTurns []int
+	for _, rep := range rec.snapshot() {
+		if rep.Kind == control.ReportScenarioDone {
+			doneTurns = append(doneTurns, rep.Turn)
+		}
+	}
+	if len(doneTurns) != 3 {
+		t.Fatalf("scenario_done turns = %v, want one per turn (1,2,3)", doneTurns)
+	}
+	for i, turn := range doneTurns {
+		if turn != i+1 {
+			t.Fatalf("scenario_done turns = %v, want them stamped 1,2,3 so a per-turn await can match", doneTurns)
+		}
+	}
+}
+
+// TestScenarioDoneDedupesWithinOneTurn: the per-turn dedupe still has to
+// hold, because runTurn can reach the report from more than one path
+// inside a single turn number.
+func TestScenarioDoneDedupesWithinOneTurn(t *testing.T) {
+	var buf bytes.Buffer
+	rec := newRecordingReporter()
+	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), rec.reporter, scenario.Vars{"SESSION_ID": "s1"})
+
+	e.reportScenarioDone(2)
+	e.reportScenarioDone(2)
+
+	var count int
+	for _, rep := range rec.snapshot() {
+		if rep.Kind == control.ReportScenarioDone {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("scenario_done reported %d times for one turn, want 1", count)
+	}
+}
+
+// TestScenarioDoneEntriesDoNotAccumulate: the dedupe map is bounded by
+// the live turn, not by process lifetime. A soak runs unboundedly many
+// turns, and a map that grew one entry per turn would be a leak with a
+// fixed rate.
+func TestScenarioDoneEntriesDoNotAccumulate(t *testing.T) {
+	var buf bytes.Buffer
+	e := newUnitEngine(t, &buf)
+	e.adapter = &stubAdapter{}
+	for n := 1; n <= 50; n++ {
+		e.startTurn(n)
+		e.reportScenarioDone(n)
+		e.finishTurn(n)
+	}
+	e.mu.Lock()
+	remaining := len(e.doneTurns)
+	e.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("doneTurns retained %d entries after every turn finished", remaining)
+	}
+}
+
+// TestCoalescedEmitIsOneWrite: a scenario asking for coalesce must reach
+// the provider's stdin as ONE write, because the defect it reproduces
+// (a reader that mishandles several NDJSON lines arriving in a single
+// read) is invisible when each line gets its own syscall.
+func TestCoalescedEmitIsOneWrite(t *testing.T) {
+	rec := &recordingWriter{}
+	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(rec), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
+
+	lines := []string{`{"a":1}`, `{"b":"${SESSION_ID}"}`, `{"c":3}`}
+	e.runEmit(e.varsForTurn(0), &scenario.EmitStep{Lines: lines, Coalesce: true})
+
+	writes := rec.snapshot()
+	if len(writes) != 1 {
+		t.Fatalf("coalesced emit made %d writes, want 1: %q", len(writes), writes)
+	}
+	got := strings.Split(strings.TrimRight(writes[0], "\n"), "\n")
+	want := []string{`{"a":1}`, `{"b":"s1"}`, `{"c":3}`}
+	if len(got) != len(want) {
+		t.Fatalf("coalesced write = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("coalesced write line %d = %q, want %q (substitution must still run)", i, got[i], want[i])
+		}
+	}
+}
+
+// TestUncoalescedEmitStaysOneWritePerLine guards the default: coalesce
+// is opt-in, and every existing scenario depends on line-at-a-time
+// delivery.
+func TestUncoalescedEmitStaysOneWritePerLine(t *testing.T) {
+	rec := &recordingWriter{}
+	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(rec), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
+
+	e.runEmit(e.varsForTurn(0), &scenario.EmitStep{Lines: []string{`{"a":1}`, `{"b":2}`, `{"c":3}`}})
+
+	if writes := rec.snapshot(); len(writes) != 3 {
+		t.Fatalf("plain emit made %d writes, want one per line: %q", len(writes), writes)
+	}
+}
+
+// TestStartupDelayHoldsTheFirstFrameOnce: startupDelayMs exists to
+// reproduce a slow provider start, which is only observable BEFORE the
+// first frame. It must also be paid once — a per-frame sleep would turn
+// a 5s spawn-delay scenario into a 5s-per-turn scenario.
+func TestStartupDelayHoldsTheFirstFrameOnce(t *testing.T) {
+	var buf bytes.Buffer
+	sc := &scenario.Scenario{
+		Version:        scenario.CurrentVersion,
+		Name:           "slow-start",
+		Provider:       scenario.ProviderClaude,
+		StartupDelayMs: 40,
+	}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), &reporter{}, scenario.Vars{"SESSION_ID": "s1"})
+
+	start := time.Now()
+	e.awaitStartupDelay()
+	first := time.Since(start)
+	if first < 30*time.Millisecond {
+		t.Fatalf("first frame waited %v, want roughly the scenario's 40ms", first)
+	}
+
+	start = time.Now()
+	e.awaitStartupDelay()
+	if second := time.Since(start); second > 20*time.Millisecond {
+		t.Fatalf("the delay was paid again (%v); it must hold only the FIRST frame", second)
 	}
 }

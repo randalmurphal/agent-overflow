@@ -1,12 +1,12 @@
 //go:build !unix
 
-package main
+package harnessclient
 
 import "os"
 
-// fileIdentity has no cheap answer off unix: Windows would need a
+// FileIdentity has no cheap answer off unix: Windows would need a
 // GetFileInformationByHandle round trip on an open handle, which is a
 // syscall and a handle per file per check for a heuristic the size
 // comparison already covers in the common case. Empty means "no
-// identity", and scanNewLines falls back to the size heuristic alone.
-func fileIdentity(os.FileInfo) string { return "" }
+// identity", and every caller falls back to the size heuristic alone.
+func FileIdentity(os.FileInfo) string { return "" }

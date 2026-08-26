@@ -48,16 +48,34 @@ func (e *env) listInstances() ([]instanceinfo.Instance, error) {
 	return instanceinfo.ListIn(dir, nil)
 }
 
+// minIDPrefix is the shortest --instance value read as an instance-id
+// PREFIX rather than as a relative path. Ids are 8 hex chars, so four is
+// half of one — long enough that a directory named for it is a
+// contrivance, short enough to be worth typing. Below it, a hex-looking
+// word is still a path, because `--instance abc` naming a directory is
+// the likelier reading.
+const minIDPrefix = 4
+
+// instanceEnv is the default for --instance. An agent driving one
+// instance for a whole session exports it once instead of threading the
+// flag through every invocation; the flag still wins.
+const instanceEnv = "AO_HARNESS_INSTANCE"
+
 // resolveTarget picks the instance to act on:
 //
-//  1. --instance, read as an instance id when a row carries it and as a
-//     data root otherwise.
+//  1. --instance (or $AO_HARNESS_INSTANCE), read as a full instance id,
+//     then as a unique id PREFIX, then as a data root.
 //  2. Exactly one LIVE registry row.
-//  3. This worktree's default data root — the same value `make harness`
+//  3. Several live rows, one of which is THIS worktree's default data
+//     root — the checkout you are standing in wins over the instance
+//     somebody left running in another one.
+//  4. This worktree's default data root — the same value `make harness`
 //     and the backend's own flag default compute.
 //
-// Ambiguity is an error listing the candidates. Guessing between two
-// live instances would send a reset at the wrong one.
+// Anything still ambiguous is an error listing the candidates, and it
+// exits 2: two live instances means the invocation was under-specified,
+// not that the harness refused something. Guessing would send a reset at
+// the wrong one.
 func (e *env) resolveTarget() (target, error) {
 	rows, err := e.listInstances()
 	if err != nil {
@@ -65,17 +83,7 @@ func (e *env) resolveTarget() (target, error) {
 	}
 
 	if selector := strings.TrimSpace(e.instance); selector != "" {
-		for i := range rows {
-			if rows[i].ID == selector {
-				return targetFromRow(rows[i]), nil
-			}
-		}
-		// Shape-only, and only to pick the better error message: resolution
-		// itself keys on whether a row carries the value.
-		if instanceinfo.ValidID(selector) && !strings.ContainsAny(selector, `/\.`) {
-			return target{}, fmt.Errorf("no instance %q in the registry%s", selector, candidateList(rows))
-		}
-		return targetFromDataRoot(selector, rows)
+		return e.resolveSelector(selector, rows)
 	}
 
 	var live []instanceinfo.Instance
@@ -84,17 +92,77 @@ func (e *env) resolveTarget() (target, error) {
 			live = append(live, row)
 		}
 	}
-	switch len(live) {
-	case 1:
+	switch {
+	case len(live) == 1:
 		return targetFromRow(live[0]), nil
-	case 0:
+	case len(live) == 0:
 		// No instance is running. Name this worktree's default so `up`
 		// starts the one this checkout would have, and so every other
 		// command's error says which data root it looked in.
 		return targetFromDataRoot(instanceinfo.DefaultDataRoot(), rows)
-	default:
-		return target{}, fmt.Errorf("%d instances are running; name one with --instance%s", len(live), candidateList(live))
 	}
+	// Several are live. Before declaring ambiguity, check whether one of
+	// them is the instance this CHECKOUT owns: a developer with a soak in
+	// one worktree and a harness in another means "mine" every time, and
+	// making them type eight hex characters to say so is friction with no
+	// safety behind it — the default root is not a guess, it is the same
+	// derivation `make harness` used to create it.
+	mine := instanceinfo.ID(instanceinfo.DefaultDataRoot())
+	for _, row := range live {
+		if row.ID == mine {
+			return targetFromRow(row), nil
+		}
+	}
+	return target{}, exitCodeError{code: exitUsage, err: fmt.Errorf(
+		"%d instances are running and none is this worktree's; name one with --instance (or $%s)%s",
+		len(live), instanceEnv, candidateList(live))}
+}
+
+// resolveSelector reads an explicit --instance value. Order matters: a
+// full id is unambiguous, a unique prefix is the git-style convenience,
+// and only then is the value a path.
+func (e *env) resolveSelector(selector string, rows []instanceinfo.Instance) (target, error) {
+	for i := range rows {
+		if rows[i].ID == selector {
+			return targetFromRow(rows[i]), nil
+		}
+	}
+	if looksLikeIDPrefix(selector) {
+		var matches []instanceinfo.Instance
+		for i := range rows {
+			if strings.HasPrefix(rows[i].ID, selector) {
+				matches = append(matches, rows[i])
+			}
+		}
+		switch len(matches) {
+		case 1:
+			return targetFromRow(matches[0]), nil
+		case 0:
+			return target{}, fmt.Errorf("no instance %q in the registry%s", selector, candidateList(rows))
+		default:
+			return target{}, exitCodeError{code: exitUsage, err: fmt.Errorf(
+				"%q matches %d instances; type more of the id%s", selector, len(matches), candidateList(matches))}
+		}
+	}
+	if instanceinfo.ValidID(selector) && !strings.ContainsAny(selector, `/\.`) {
+		return target{}, fmt.Errorf("no instance %q in the registry%s", selector, candidateList(rows))
+	}
+	return targetFromDataRoot(selector, rows)
+}
+
+// looksLikeIDPrefix is shape-only, and only decides which NAMESPACE a
+// selector is read in: hex, no path punctuation, at least minIDPrefix
+// characters. It never asserts a row exists.
+func looksLikeIDPrefix(selector string) bool {
+	if len(selector) < minIDPrefix || len(selector) > 8 {
+		return false
+	}
+	for _, r := range selector {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func targetFromRow(row instanceinfo.Instance) target {
@@ -130,7 +198,11 @@ func candidateList(rows []instanceinfo.Instance) string {
 		if row.Stale {
 			state = "stale"
 		}
-		fmt.Fprintf(&b, "\n  %s  %s  %s  %s", row.ID, row.Mode, state, row.DataRoot)
+		// The WORKTREE is what actually tells two candidates apart for a
+		// human: the data roots are /tmp paths derived from it, and the ids
+		// are hashes of those. Without it the list is three columns of
+		// noise and one path nobody reads to the end of.
+		fmt.Fprintf(&b, "\n  %s  %s  %s  %s  %s", row.ID, row.Mode, state, orUnknown(row.Worktree), row.DataRoot)
 	}
 	return b.String()
 }
@@ -161,6 +233,7 @@ func (e *env) attach(ctx context.Context) (*harnessclient.Client, target, harnes
 	if err != nil {
 		return nil, t, bs, err
 	}
+	e.warnVersionSkew(bs)
 	return client, t, bs, nil
 }
 

@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/harnessclient"
 )
 
 // The pure half of `ao-harness health`: the since-last-check cursor, the
@@ -93,7 +95,7 @@ func scanNewLines(path string, from healthFileCursor) (lines []string, next heal
 		}
 		return nil, from, false, err
 	}
-	ident := fileIdentity(info)
+	ident := harnessclient.FileIdentity(info)
 	start := from.Offset
 	switch {
 	case from.Ident != "" && ident != "" && ident != from.Ident:
@@ -255,6 +257,13 @@ const (
 	healthOK   healthStatus = "ok"
 	healthWarn healthStatus = "warn"
 	healthRed  healthStatus = "red"
+	// healthNA is "this concern could not be evaluated" — distinct from
+	// ok, which claims it WAS evaluated and came back clean. A ui-oracle
+	// section over zero trace records is the case that forced it: reading
+	// "ok" there means "the oracles did not fire", and the truth is "no
+	// oracle ran", which is what a caller relying on the rollup as a gate
+	// most needs to be told. It never worsens the verdict.
+	healthNA healthStatus = "n/a"
 )
 
 // healthSection is one concern's answer.

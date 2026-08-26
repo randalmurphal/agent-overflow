@@ -864,9 +864,9 @@ func TestResolveClaudeForkResumeAtPinOnDisk(t *testing.T) {
 	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
 
 	// a1 is a plain text assistant row — survives every filter.
-	cursor, err := resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a1")
+	cursor, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a1")
 	if err != nil {
-		t.Fatalf("resolveClaudeForkResumeAt(surviving pin): %v", err)
+		t.Fatalf("resolveClaudeForkResumeAt(testProviderProjectsDir(t), surviving pin): %v", err)
 	}
 	if cursor != "a1" {
 		t.Errorf("cursor = %q, want the pin a1 verbatim", cursor)
@@ -878,9 +878,9 @@ func TestResolveClaudeForkResumeAtPinOnDisk(t *testing.T) {
 	if err := os.WriteFile(fixture.jsonlPath, []byte(midTurnSourceJSONL+dangling), 0o600); err != nil {
 		t.Fatalf("append dangling tool_use: %v", err)
 	}
-	cursor, err = resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a2")
+	cursor, err = resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a2")
 	if err != nil {
-		t.Fatalf("resolveClaudeForkResumeAt(filter-dropped pin): %v", err)
+		t.Fatalf("resolveClaudeForkResumeAt(testProviderProjectsDir(t), filter-dropped pin): %v", err)
 	}
 	if cursor != "a1" {
 		t.Errorf("cursor = %q, want a1 (the pin's deepest surviving ancestor)", cursor)
@@ -896,9 +896,9 @@ func TestResolveClaudeForkResumeAtWaitsOutAppendGapThenFallsBack(t *testing.T) {
 	fixture := newMidTurnForkFixture(t, "mid-turn-session", midTurnSourceJSONL)
 
 	start := time.Now()
-	cursor, err := resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a2-never-flushed")
+	cursor, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a2-never-flushed")
 	if err != nil {
-		t.Fatalf("resolveClaudeForkResumeAt(pin never lands): %v", err)
+		t.Fatalf("resolveClaudeForkResumeAt(testProviderProjectsDir(t), pin never lands): %v", err)
 	}
 	if cursor != "a1" {
 		t.Errorf("cursor = %q, want the deepest on-disk survivor a1", cursor)
@@ -916,8 +916,8 @@ func TestResolveClaudeForkResumeAtFailsWithNoResumableRow(t *testing.T) {
 	jsonl := `{"type":"assistant","uuid":"a-dangling","parentUuid":null,"sessionId":"mid-turn-session","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"tool-x","name":"Bash","input":{}}]}}` + "\n"
 	fixture := newMidTurnForkFixture(t, "mid-turn-session", jsonl)
 
-	if _, err := resolveClaudeForkResumeAt(fixture.sessionID, fixture.workspace, "a-dangling"); err == nil {
-		t.Fatal("resolveClaudeForkResumeAt(no resumable row) = nil error, want a loud failure")
+	if _, err := resolveClaudeForkResumeAt(testProviderProjectsDir(t), fixture.sessionID, fixture.workspace, "a-dangling"); err == nil {
+		t.Fatal("resolveClaudeForkResumeAt(testProviderProjectsDir(t), no resumable row) = nil error, want a loud failure")
 	}
 }
 

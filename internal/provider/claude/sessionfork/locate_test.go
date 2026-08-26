@@ -87,7 +87,7 @@ func TestLocateSessionFile_PrimaryHit(t *testing.T) {
 	}
 	decoy := writeScanDecoy(t, home, "abc123")
 
-	got, err := LocateSessionFile("abc123", workspace)
+	got, err := LocateSessionFile(ProjectsDirForHome(home), "abc123", workspace)
 	if err != nil {
 		t.Fatalf("LocateSessionFile: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestLocateSessionFile_FallbackScan(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
-	got, err := LocateSessionFile("stray-uuid", workspace)
+	got, err := LocateSessionFile(ProjectsDirForHome(home), "stray-uuid", workspace)
 	if err != nil {
 		t.Fatalf("LocateSessionFile: %v", err)
 	}
@@ -137,14 +137,14 @@ func TestLocateSessionFile_NotFound(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	_, err := LocateSessionFile("does-not-exist", "/any/workspace")
+	_, err := LocateSessionFile(ProjectsDirForHome(home), "does-not-exist", "/any/workspace")
 	if !errors.Is(err, ErrSessionFileNotFound) {
 		t.Fatalf("err=%v, want ErrSessionFileNotFound", err)
 	}
 }
 
 func TestLocateSessionFile_EmptySessionID(t *testing.T) {
-	_, err := LocateSessionFile("", "/some/path")
+	_, err := LocateSessionFile(ProjectsDirForHome(t.TempDir()), "", "/some/path")
 	if err == nil {
 		t.Fatal("expected error for empty sessionID")
 	}
@@ -342,7 +342,7 @@ func TestLocateSessionFile_PrimaryHitOverLengthWorkspace(t *testing.T) {
 	}
 	decoy := writeScanDecoy(t, home, "overlong-session")
 
-	got, err := LocateSessionFile("overlong-session", ws)
+	got, err := LocateSessionFile(ProjectsDirForHome(home), "overlong-session", ws)
 	if err != nil {
 		t.Fatalf("LocateSessionFile: %v", err)
 	}

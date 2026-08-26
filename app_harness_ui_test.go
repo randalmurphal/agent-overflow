@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/transport"
 )
 
 // newUIQueryHarness builds the smallest Harness that can emit: a zero-value
@@ -195,5 +196,107 @@ func TestHarnessUIQueryRefusesMalformedInput(t *testing.T) {
 	}
 	if err := h.HarnessUIQueryReply("uq-1", json.RawMessage(`{oops`)); err == nil {
 		t.Error("a non-JSON result must be refused")
+	}
+}
+
+// newBusBackedUIQueryHarness is newUIQueryHarness with a REAL event bus,
+// so connectedClients answers from actual subscriber state rather than
+// the no-bus fixture default.
+func newBusBackedUIQueryHarness(t *testing.T) (*Harness, *transport.EventBus) {
+	t.Helper()
+	h, _ := newUIQueryHarness(t)
+	bus := transport.NewEventBus(16)
+	t.Cleanup(bus.Close)
+	h.app.SetEventBus(bus)
+	return h, bus
+}
+
+// TestHarnessUIQueryFailsFastWithNoClientAttached: a bridge command run
+// against a headless instance used to burn the whole 10s timeout per
+// call, so a script probing twenty things waited four minutes for an
+// answer the backend had at millisecond zero.
+func TestHarnessUIQueryFailsFastWithNoClientAttached(t *testing.T) {
+	h, bus := newBusBackedUIQueryHarness(t)
+	if bus.SubscriberCount() != 0 {
+		t.Fatalf("fixture has %d subscribers, want a headless bus", bus.SubscriberCount())
+	}
+
+	started := time.Now()
+	_, err := h.HarnessUIQuery(json.RawMessage(`{"v":1,"kind":"viewport"}`))
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("a query with no client attached must fail")
+	}
+	// Same sentence the timeout produces — it names the two states a
+	// caller can fix, and only the latency changed.
+	if !strings.Contains(err.Error(), "no frontend attached or harness bridge inactive") {
+		t.Errorf("error = %q, want it to name the missing bridge", err)
+	}
+	if elapsed >= harnessUIQueryTimeout {
+		t.Fatalf("query took %s — it waited out the full %s timeout", elapsed, harnessUIQueryTimeout)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("query took %s, want the ~%s grace", elapsed, harnessUIQueryNoClientGrace)
+	}
+	if h.ui.pending() != 0 {
+		t.Errorf("%d waiters left parked after a fast fail", h.ui.pending())
+	}
+}
+
+// TestHarnessUIQueryWaitsWhileAClientIsAttached: a connected client whose
+// bundle carries no bridge is indistinguishable from a slow one, so the
+// fast path must not fire — shortening THAT wait would break a query
+// issued against a page still hydrating its panes.
+func TestHarnessUIQueryWaitsWhileAClientIsAttached(t *testing.T) {
+	h, bus := newBusBackedUIQueryHarness(t)
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	started := time.Now()
+	_, err := h.queryUI(json.RawMessage(`{"v":1,"kind":"viewport"}`), 2*harnessUIQueryNoClientGrace)
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("a query nobody answers must still fail")
+	}
+	if !strings.Contains(err.Error(), "timed out after") {
+		t.Errorf("error = %q, want the ordinary timeout", err)
+	}
+	if elapsed < harnessUIQueryNoClientGrace {
+		t.Fatalf("query returned in %s — the fast path fired with a client attached", elapsed)
+	}
+}
+
+// TestHarnessUIQueryAnswersInsideTheGrace: a client that attaches during
+// page load, or a bridge quick enough to answer within the grace, must
+// get its answer rather than a refusal.
+func TestHarnessUIQueryAnswersInsideTheGrace(t *testing.T) {
+	h, _ := newUIQueryHarness(t)
+	bus := transport.NewEventBus(16)
+	t.Cleanup(bus.Close)
+	h.app.SetEventBus(bus)
+
+	// Re-hook the emitter so the reply can be sent from the emit itself,
+	// which lands inside the grace window.
+	h.app.testEmitHook = func(channel string, data any) {
+		if channel != string(eventchan.HarnessUIQuery) {
+			return
+		}
+		event, ok := data.(harnessUIQueryEvent)
+		if !ok {
+			return
+		}
+		go func() {
+			_ = h.HarnessUIQueryReply(event.ID, json.RawMessage(`{"v":1,"panes":[]}`))
+		}()
+	}
+
+	result, err := h.HarnessUIQuery(json.RawMessage(`{"v":1,"kind":"viewport"}`))
+	if err != nil {
+		t.Fatalf("a reply inside the grace was refused: %v", err)
+	}
+	if string(result) != `{"v":1,"panes":[]}` {
+		t.Fatalf("result = %s", result)
 	}
 }

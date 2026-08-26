@@ -146,3 +146,87 @@ func TestRepeatFixturePathsAreCollected(t *testing.T) {
 		t.Fatalf("FixturePaths = %v, want the path nested inside the repeat", paths)
 	}
 }
+
+// TestStartupDelayValidation: the field is a deliberate stall, so its
+// bounds are what stop a typo (a stray zero, a negative) from becoming a
+// harness run that looks hung rather than slow.
+func TestStartupDelayValidation(t *testing.T) {
+	doc := func(ms string) string {
+		return `{"version":1,"name":"x","provider":"claude","startupDelayMs":` + ms +
+			`,"turns":[{"steps":[{"delayMs":1}]}]}`
+	}
+	for _, ms := range []string{"0", "1", "30000"} {
+		if _, err := Parse([]byte(doc(ms))); err != nil {
+			t.Errorf("startupDelayMs %s was rejected: %v", ms, err)
+		}
+	}
+	for _, ms := range []string{"-1", "30001", "600000"} {
+		if _, err := Parse([]byte(doc(ms))); err == nil {
+			t.Errorf("startupDelayMs %s was accepted; the cap is %d", ms, MaxStartupDelayMs)
+		}
+	}
+}
+
+// TestCoalesceIsExclusiveWithPacing: coalesce says "one write", the
+// pacing knobs say "several writes, spread out". A scenario asking for
+// both has no meaning, and silently honouring one of them is how a test
+// ends up asserting against delivery it never actually got.
+func TestCoalesceIsExclusiveWithPacing(t *testing.T) {
+	step := func(extra string) string {
+		return `{"version":1,"name":"x","provider":"claude","turns":[{"steps":[{"emit":{"lines":["a","b"],"coalesce":true` +
+			extra + `}}]}]}`
+	}
+	if _, err := Parse([]byte(step(""))); err != nil {
+		t.Fatalf("plain coalesce was rejected: %v", err)
+	}
+	for label, extra := range map[string]string{
+		"delayBetweenMs":  `,"delayBetweenMs":5`,
+		"chunkBytes":      `,"chunkBytes":8`,
+		"chunkIntervalMs": `,"chunkIntervalMs":5`,
+	} {
+		if _, err := Parse([]byte(step(extra))); err == nil {
+			t.Errorf("coalesce + %s was accepted; they contradict each other", label)
+		}
+	}
+}
+
+// TestProviderVersionValidation: the value is pasted into a userAgent
+// string and into Claude's system/init, both of which are PARSED on the
+// other side. Anything that is not a dotted number would read as an
+// unparseable version rather than as the downgrade the author meant.
+func TestProviderVersionValidation(t *testing.T) {
+	doc := func(v string) string {
+		return `{"version":1,"name":"x","provider":"codex","providerVersion":` + v +
+			`,"turns":[{"steps":[{"delayMs":1}]}]}`
+	}
+	for _, v := range []string{`""`, `"0.147.0"`, `"99"`, `"1.2.3.4"`} {
+		if _, err := Parse([]byte(doc(v))); err != nil {
+			t.Errorf("providerVersion %s was rejected: %v", v, err)
+		}
+	}
+	for _, v := range []string{`"v0.147.0"`, `" 0.147.0"`, `"0.147.0-beta"`, `"latest"`} {
+		if _, err := Parse([]byte(doc(v))); err == nil {
+			t.Errorf("providerVersion %s was accepted; it is not a dotted version", v)
+		}
+	}
+}
+
+// TestNewFieldsDefaultToOff: every field added here is opt-in, and the
+// library scenarios (plus every scenario anyone has already written)
+// carry none of them.
+func TestNewFieldsDefaultToOff(t *testing.T) {
+	s, err := Parse([]byte(validScenarioJSON()))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if s.StartupDelayMs != 0 || s.ProviderVersion != "" {
+		t.Fatalf("scenario defaults changed: startupDelayMs=%d providerVersion=%q", s.StartupDelayMs, s.ProviderVersion)
+	}
+	for _, turn := range s.Turns {
+		for _, st := range turn.Steps {
+			if st.Emit != nil && st.Emit.Coalesce {
+				t.Fatal("emit defaulted to coalesce")
+			}
+		}
+	}
+}

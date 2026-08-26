@@ -70,7 +70,14 @@ func (a *App) probeClaudeRateLimits(ctx context.Context) error {
 			remaining.Round(time.Second),
 		)
 	}
-	snap, err := claude.ProbeRateLimits(ctx, a.rateLimitProbeClient())
+	// The credential this reads and the bearer it sends both come from the
+	// one provider-home seam: an isolated boot must never authenticate as
+	// the developer's real login, keep-home included.
+	home, homeErr := a.providerHome()
+	if homeErr != nil {
+		return homeErr
+	}
+	snap, err := claude.ProbeRateLimits(ctx, a.rateLimitProbeClient(), home)
 	a.usageProbe.backoff.Note(string(provider.Claude), "", err)
 	if err != nil {
 		if errors.Is(err, claude.ErrNoCredentials) {

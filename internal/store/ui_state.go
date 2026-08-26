@@ -146,4 +146,16 @@ func (s *Store) DeleteUIState(scope string, keys []string) error {
 	return nil
 }
 
+// ClearUIState removes every scope's persisted UI view state. The one
+// production-shaped caller is HarnessReset: view state names entity ids
+// (the workflows overlay stack persists work-item ids), so state
+// surviving a reset makes the next test's fresh page restore a
+// selection onto rows the reset deleted.
+func (s *Store) ClearUIState() error {
+	if _, err := s.db.Exec(`DELETE FROM ui_state`); err != nil {
+		return fmt.Errorf("store: clear ui state: %w", err)
+	}
+	return nil
+}
+
 var _ = sql.ErrNoRows // keep database/sql imported alongside future single-row reads

@@ -68,9 +68,12 @@ Svelte 5 + Vite 8 (Rolldown) + Tailwind 4 + TypeScript.
   Reached ONLY through a dynamic import in `stores/harnessBridge.ts`
   (enforced by an `architecture.test.ts` rule), which arms on the
   `harness` bootstrap flag — LAZILY: the flag arms just the event
-  subscription, and the first `harness:ui-query` loads the chunk and
-  installs the mutation observer, so an unqueried soak carries no
-  observer and an ordinary boot never fetches the chunk. A view-only
+  subscription, and the first `harness:ui-query` loads the chunk. The
+  chunk installs nothing document-wide; only a `viewport` (settledness)
+  query arms the mutation observer, and it disarms after a short linger
+  past the last settle query and at perf start/stop — so an unqueried
+  soak carries no observer, a perf run measures a renderer without one,
+  and an ordinary boot never fetches the chunk. A view-only
   remote session never arms (the query channel is loopback-only). It has
   no wire surface by design: the subscription and the reply RPC live in
   the store, because `architecture.test.ts` rule 2 keeps event

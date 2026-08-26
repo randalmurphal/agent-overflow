@@ -82,7 +82,10 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		// the >= 0.149 approval-policy remap. The mock answers `--version`
 		// with 99.0.0 and says the same here, so a harness session behaves
 		// like the newest supported app-server rather than an unknown one.
-		"initialize": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"userAgent":"codex_cli_rs/` + mockVersionNumber + ` (mock; ao-mockprovider)"}}`,
+		// A scenario's `providerVersion` pins it LOWER, which is the only
+		// way a spec can drive the fails-closed side of one of those gates
+		// — the mock otherwise answers above every gate there is.
+		"initialize": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"userAgent":"codex_cli_rs/` + e.providerVersion() + ` (mock; ao-mockprovider)"}}`,
 		// ${HISTORY_MODE} is bound by respond(), not by a scenario: the
 		// thread's history contract is decided by the thread/start params
 		// (codex_revert.go), and it is what makes `thread/revert` available
@@ -136,6 +139,11 @@ func (a *codexAdapter) handleLine(line []byte) {
 
 func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params json.RawMessage) {
 	switch method {
+	case "initialize":
+		// The handshake response is what proves the app-server is up, so
+		// it is where a scenario's startupDelayMs is spent.
+		a.e.awaitStartupDelay()
+		a.respond(id, method, a.e.currentVars())
 	case "thread/start":
 		// Codex carries its permission configuration in the thread/start
 		// params rather than argv, so this is the earliest observable point.
@@ -214,11 +222,98 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		if a.handleQueueRequest(id, method, params) {
 			return
 		}
-		if _, known := a.responses[method]; !known {
-			log.Printf("codex: request method %q has no scenario response; answering with empty result", method)
+		// A scenario's own response template is the most specific
+		// statement there is and wins over everything below.
+		if _, scripted := a.responses[method]; scripted {
+			a.respond(id, method, a.e.currentVars())
+			return
 		}
-		a.respond(id, method, a.e.currentVars())
+		if a.handleReadRequest(id, method) {
+			return
+		}
+		// -32601, not `{"result":{}}`. An empty success is a LIE that no
+		// real app-server tells, and it defeated the app's own fallback
+		// machinery: codex.IsMethodUnsupported keys on this code, so under
+		// the old default it could never fire and every optional surface
+		// (thread compaction, review, config writes, MCP OAuth, terminal
+		// termination) reported success against a server that had done
+		// nothing. The honest answer exercises those fallback branches.
+		log.Printf("codex: request method %q is not implemented by this mock; answering -32601", method)
+		a.writeRPCError(id, -32601, fmt.Sprintf("Method not found: %s", method))
 	}
+}
+
+// handleReadRequest answers the READ-shaped methods the app calls as a
+// matter of course — the ones a default harness session needs answered
+// for the UI to render at all. Each answer is minimal but REAL: it
+// decodes cleanly through the app's own decoder for that method, and an
+// empty collection is a truthful answer rather than a placeholder.
+//
+// What is deliberately NOT here stays -32601: the optional and newer
+// surfaces (thread/compact/start, review/start, config/batchWrite,
+// config/mcpServer/reload, mcpServer/oauth/login, the background
+// terminal terminate/clean pair). "This build does not have it" is a
+// real thing for an app-server to say, and those are exactly the
+// branches worth exercising in a harness.
+//
+// Returns false when the method is not one of them.
+func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string) bool {
+	var result string
+	switch method {
+	case "account/read":
+		// provider.AccountInfo comes off `account.{type,email,planType}`;
+		// a response with no `account` decodes to a zero AccountInfo,
+		// which is how "signed out" would read.
+		result = `{"account":{"type":"chatgpt","email":"mock@agent-overflow.test","planType":"pro"}}`
+	case "account/usage/read":
+		// `summary` + `dailyUsageBuckets` are the two keys the decoder
+		// reads; every summary field is a pointer, so an empty summary is
+		// a legal "this build reports no lifetime numbers".
+		result = `{"summary":{},"dailyUsageBuckets":[]}`
+	case "thread/read":
+		// `thread.status.type` is REQUIRED by decodeProbeResponse — it
+		// errors on an absent one — so the reconcile probe needs a real
+		// status here or every reopen reports a broken session.
+		// agentNickname/agentRole stay absent: those name a COLLAB CHILD
+		// thread, and claiming them for the root thread would make every
+		// harness thread look like someone's subagent.
+		result = `{"thread":{"id":"${THREAD_ID}","status":{"type":"idle","activeFlags":[]}}}`
+	case "thread/turns/list":
+		// Turn shells, and the mock keeps no rollout to list them from.
+		// An empty page with a null cursor is the honest answer and the
+		// one the revert-boundary probe handles as "no durable turns".
+		result = `{"data":[],"nextCursor":null}`
+	case "thread/settings/update":
+		// Upstream answers a bare result; the app only checks for an error.
+		result = `{}`
+	case "skills/list":
+		// One entry per requested cwd would be more faithful, but the
+		// params carry the cwd list and an EMPTY data array is already a
+		// complete answer ("no skills visible"), which is what a workspace
+		// with no SKILL.md files really returns.
+		result = `{"data":[]}`
+	case "config/read":
+		// `config.review_model` is the only key any caller reads, and an
+		// absent one means "fall back to the turn's model" — a real
+		// configuration, not a gap.
+		result = `{"config":{}}`
+	case "mcpServerStatus/list":
+		result = `{"data":[],"nextCursor":null}`
+	case "thread/backgroundTerminals/list":
+		// The mock spawns no PTYs, so nothing is running. A null cursor
+		// terminates the app's paging walk on the first page.
+		result = `{"data":[],"nextCursor":null}`
+	default:
+		return false
+	}
+	vars := a.e.currentVars()
+	sub := make(scenario.Vars, len(vars)+1)
+	for k, v := range vars {
+		sub[k] = v
+	}
+	sub["REQUEST_ID"] = string(id)
+	a.w.writeLine(sub.Substitute(`{"jsonrpc":"2.0","id":${REQUEST_ID},"result":`+result+`}`), 0, 0)
+	return true
 }
 
 // forkThread answers `thread/fork`: a NEW thread id plus the turn tail

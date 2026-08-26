@@ -51,12 +51,12 @@ type ForkResumeCursor struct {
 // scanner's bounds) and should fail the session start loudly; the
 // missing-pin case is NOT an error — it returns PinOnDisk=false so the
 // caller can wait out the append gap.
-func ResolveForkResumeCursor(sessionID, workspacePath, pin string) (ForkResumeCursor, error) {
+func ResolveForkResumeCursor(projectsDir, sessionID, workspacePath, pin string) (ForkResumeCursor, error) {
 	pin = strings.TrimSpace(pin)
 	if pin == "" {
 		return ForkResumeCursor{}, fmt.Errorf("claude: empty fork resume pin")
 	}
-	path, err := sessionfork.LocateSessionFile(sessionID, workspacePath)
+	path, err := sessionfork.LocateSessionFile(projectsDir, sessionID, workspacePath)
 	if err != nil {
 		return ForkResumeCursor{}, err
 	}

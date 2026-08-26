@@ -153,3 +153,117 @@ func TestUnknownSubcommandsAreUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// `events -h` asking what the family holds used to be answered as a
+// mistake — `unknown events subcommand "-h"`, exit 2 — because every
+// family routes on args[0].
+func TestGroupDashHPrintsItsSubcommandsAndExitsZero(t *testing.T) {
+	for group, want := range map[string]string{
+		"events":   "channels",
+		"ui":       "reload",
+		"mock":     "advance",
+		"scenario": "show",
+		"perf":     "watch",
+		"record":   "start",
+		"replay":   "bundle",
+	} {
+		for _, flag := range []string{"-h", "--help"} {
+			code, stdout, stderr := run(t, group, flag)
+			if code != exitOK {
+				t.Errorf("%s %s: exit = %d (%s)", group, flag, code, stderr)
+				continue
+			}
+			if !strings.Contains(stdout, want) {
+				t.Errorf("%s %s did not list %q:\n%s", group, flag, want, stdout)
+			}
+		}
+	}
+}
+
+// A rejected flag is answered with THIS command's flag list. The generic
+// "run `ao-harness help`" sends a caller to the command table, which is
+// never where the answer is: they already picked the command and got one
+// flag wrong.
+func TestAnUndefinedFlagPrintsThatCommandsFlags(t *testing.T) {
+	code, _, stderr := run(t, "events", "tail", "--chanel", "provider:usage")
+	if code != exitUsage {
+		t.Fatalf("exit = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(stderr, "-channel") || !strings.Contains(stderr, "-where") {
+		t.Fatalf("stderr does not carry `events tail`'s own flags:\n%s", stderr)
+	}
+}
+
+// flag.PrintDefaults reads the FIRST backquoted word in a usage string as
+// the value placeholder, so a help string that backquoted prose renamed
+// the flag's argument to that word.
+func TestFlagHelpDoesNotRenameAnArgumentFromProse(t *testing.T) {
+	code, stdout, _ := run(t, "ui", "snapshot", "-h")
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	found := false
+	for _, line := range strings.Split(stdout, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "-save") {
+			continue
+		}
+		found = true
+		// A boolean flag's declaration line is the flag and nothing else.
+		// Anything after it is a value placeholder PrintDefaults lifted out
+		// of the first backquoted word in the usage prose.
+		if strings.TrimSpace(line) != "-save" {
+			t.Fatalf("--save picked up a value placeholder from its help prose: %q", line)
+		}
+	}
+	if !found {
+		t.Fatalf("ui snapshot -h did not list --save:\n%s", stdout)
+	}
+}
+
+func TestVersionPrintsTheBuildStamp(t *testing.T) {
+	code, stdout, _ := run(t, "version")
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.HasPrefix(stdout, "ao-harness ") {
+		t.Fatalf("version output = %q", stdout)
+	}
+
+	// --version is a question about the binary, answered before any
+	// instance is resolved.
+	code, flagOut, _ := run(t, "--version")
+	if code != exitOK {
+		t.Fatalf("--version exit = %d", code)
+	}
+	if strings.TrimSpace(flagOut) != version {
+		t.Fatalf("--version printed %q, want %q", flagOut, version)
+	}
+}
+
+// Piping a spec is the only shape `seed` takes; a shell that expanded the
+// JSON onto argv got "seed takes no positional arguments", which names
+// the symptom and not the fix.
+func TestSeedNamesThePipeWhenHandedInlineJSON(t *testing.T) {
+	code, _, stderr := run(t, "seed", `{"threads":[]}`)
+	if code != exitUsage {
+		t.Fatalf("exit = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(stderr, "pipe it") {
+		t.Fatalf("stderr does not name the fix:\n%s", stderr)
+	}
+}
+
+// A bundle listing that printed a raw epoch made the reader paste it into
+// another tool before it said anything.
+func TestBundleTimestampsMatchTheOtherListings(t *testing.T) {
+	if got := bundleTime(0); got != "-" {
+		t.Fatalf("an absent stamp rendered %q", got)
+	}
+	got := bundleTime(1756166400000)
+	if !strings.HasPrefix(got, "2025-08-26") && !strings.HasPrefix(got, "2025-08-25") {
+		t.Fatalf("bundleTime = %q, want an RFC3339 date", got)
+	}
+	if !strings.Contains(got, "T") {
+		t.Fatalf("bundleTime = %q, want RFC3339", got)
+	}
+}

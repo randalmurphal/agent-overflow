@@ -16,16 +16,19 @@
 //    modulepreload list.
 //
 // 2. A HARNESS SESSION → the subscription, and NOTHING ELSE, until a query
-//    actually arrives. The chunk import and the document-wide
-//    MutationObserver it installs are deferred to the first
-//    `harness:ui-query`. A harness run that never asks the page anything —
-//    which is every soak run, streaming for hours to reproduce renderer
-//    memory and hang behaviour — therefore pays nothing but one idle event
-//    listener. An always-on observer allocating a MutationRecord per text
-//    delta is a probe that perturbs exactly the experiment the soak rig
-//    exists to run. What it costs is history: the first query's `settled`
-//    is answered from a clock that just started, so it reads false. See
-//    lib/harness/bridge.ts's header.
+//    actually arrives. The chunk import is deferred to the first
+//    `harness:ui-query`, and the document-wide MutationObserver is deferred
+//    further still: loading the chunk installs nothing, and only a query
+//    that reports settledness (`viewport`) arms the clock — which then
+//    disarms itself again once nothing is asking. A harness run that never
+//    asks the page anything — which is every soak run, streaming for hours
+//    to reproduce renderer memory and hang behaviour — therefore pays
+//    nothing but one idle event listener, and a perf run or a bench
+//    workload measures a renderer with no observer on it. An always-on
+//    observer allocating a MutationRecord per text delta is a probe that
+//    perturbs exactly the experiment the rig exists to run. What it costs
+//    is history: a freshly armed clock has none, so that query's `settled`
+//    reads false. See lib/harness/bridge.ts's header.
 //
 // A REMOTE SESSION NEVER ARMS. `harness:ui-query` is an
 // AudienceLoopbackOnly channel (internal/transport/event_channels.go), so
@@ -68,10 +71,11 @@ let bridgeModule: Promise<BridgeModule> | null = null;
 
 function loadBridge(): Promise<BridgeModule> {
   bridgeModule ??= import('../harness/bridge').then((mod) => {
-    // The mutation clock starts with the observer, which is now the first
-    // query rather than page load. A `settled` reading is only ever a
-    // claim about what the bridge WATCHED, so the first query reads false
-    // and the caller's next poll gets the real answer.
+    // Activation installs no observer — the mutation clock is armed by the
+    // queries that report `settled` and disarmed again when they stop
+    // arriving. What this call does is give the chunk a clean slate: the
+    // module survives a teardown, so a re-installed bridge must not inherit
+    // the previous one's clock or its perf self-disarm notice.
     mod.activateHarnessBridge();
     return mod;
   });

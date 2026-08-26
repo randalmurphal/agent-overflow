@@ -116,9 +116,16 @@ func (h *Harness) startControl() error {
 		control.EnvAddr:  srv.Addr(),
 		control.EnvToken: srv.Token(),
 	}
-	if h.paths.HomeDir != "" {
-		h.app.providerExtraEnv[control.EnvTranscriptHome] = h.paths.HomeDir
-	}
+	// CredentialHome, not HomeDir: HomeDir is empty under
+	// AO_HARNESS_KEEP_HOME, and gating the transcript home on it meant a
+	// keep-home run wrote no mock transcript at all — the cold-resume
+	// preflight silently stopped being exercised in exactly the mode most
+	// likely to be reproducing a resume bug. CredentialHome is
+	// `<dataRoot>/home` in BOTH modes and is the same home the backend's own
+	// provider-home seam resolves against (App.credentialHomeOverride), so
+	// what the mock writes is what the preflight reads — and never the
+	// developer's real `~/.claude`.
+	h.app.providerExtraEnv[control.EnvTranscriptHome] = h.paths.CredentialHome
 	h.mu.Lock()
 	h.control = srv
 	h.mu.Unlock()
@@ -217,6 +224,14 @@ func (h *Harness) HarnessSetScenario(spec HarnessScenarioSpec) (harnessScenarioR
 	var err error
 	switch {
 	case len(spec.Scenario) > 0:
+		// Position first: scenario.Parse is strict (it has always refused
+		// unknown fields), but encoding/json's message names a character
+		// and no location, which in a hand-edited soak-scenario.json is
+		// unactionable. A syntactically valid document falls straight
+		// through to Parse for the schema verdict.
+		if err = requireValidJSON("scenario", spec.Scenario); err != nil {
+			return harnessScenarioRule{}, err
+		}
 		parsed, err = scenario.Parse(spec.Scenario)
 		if err != nil {
 			return harnessScenarioRule{}, err

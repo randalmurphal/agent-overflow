@@ -104,9 +104,14 @@ var followStartedHook func()
 // waited for rather than refused: `logs -f` on a fresh instance should
 // start printing when the first line lands, not fail.
 //
-// Truncation (a rotated log) is detected by the file shrinking below the
-// read offset; the follow restarts from the new beginning so a rotation
-// costs at most a repeated line, never a silent stall.
+// Rotation is detected two ways, because either one alone misses a real
+// case. SIZE catches the file that SHRANK (an in-place truncate).
+// IDENTITY (device+inode, empty where the platform has no cheap answer)
+// catches the file that was REPLACED and then grew back past the old
+// offset — to the size check that is indistinguishable from ordinary
+// growth, so the follow would resume mid-record in a file it has never
+// read and silently skip everything before it. Either signal restarts
+// from the new beginning, so a rotation costs at most a repeated line.
 //
 // The read offset advances past everything READ, complete or not, and the
 // trailing fragment is carried in memory until its newline arrives. The
@@ -116,8 +121,10 @@ var followStartedHook func()
 func FollowFile(ctx context.Context, path string, emit func(string)) error {
 	var offset int64
 	var fragment []byte
+	var ident string
 	if info, err := os.Stat(path); err == nil {
 		offset = info.Size()
+		ident = FileIdentity(info)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
@@ -134,17 +141,20 @@ func FollowFile(ctx context.Context, path string, emit func(string)) error {
 
 		info, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) {
-			offset, fragment = 0, nil
+			offset, fragment, ident = 0, nil, ""
 			continue
 		}
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
-		if info.Size() < offset {
-			// Rotated or truncated: the fragment belonged to the old file
-			// and its newline is never coming.
+		current := FileIdentity(info)
+		replaced := ident != "" && current != "" && current != ident
+		if replaced || info.Size() < offset {
+			// Rotated, replaced or truncated: the fragment belonged to the
+			// old file and its newline is never coming.
 			offset, fragment = 0, nil
 		}
+		ident = current
 		if info.Size() == offset {
 			continue
 		}

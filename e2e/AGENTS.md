@@ -37,6 +37,21 @@ headless, isolated data dir, mocked providers. Full harness guide:
   `health` rolls the same instance up without going red. The arithmetic is
   unit-tested in `cmd/ao-harness/`; this owns the join between a CLI outside
   the app and the bridge inside it.
+- `tests/harness-localonly.spec.ts` — LAN-bound authorization, the one
+  spec with a NON-loopback peer: it owns its backend (it persists a
+  setting and rebinds the listener), flips
+  `SetNetworkSettings({bindAll:true})` over loopback (the toggle is
+  itself LocalOnly — the point), then dials one of this host's own
+  non-loopback interface addresses so `remoteAddrIsLoopback` is false.
+  `HarnessInfo` (receiver-level `LocalOnly`), `GetGitStatus` and
+  `OpenInEditor` (name-keyed `LocalOnlyMethods`) come back
+  `method_not_found: method not registered` — the same envelope a
+  genuinely unregistered method gets, the unfingerprintability property —
+  while `Version` / `ListProjects` still answer. `--listen 0.0.0.0:0`
+  cannot substitute: a bare LAN bind leaves the origin allow-list empty
+  and `loopbackHostGuard` 404s the handshake before the dispatcher sees
+  it. Skips with a reason when the host has no non-loopback IPv4
+  interface.
 - `tests/workflows.spec.ts` — RPC/event-only workflow coverage: two-phase
   chain, human gate approval, same-session question answer, watchdog stall,
   and cancel/interrupt.
@@ -246,9 +261,13 @@ headless, isolated data dir, mocked providers. Full harness guide:
   completion's `payloadMeta.preview`.
   Live progress is in-memory UI state, so these specs open the page
   BEFORE starting the session and gate every tick behind a `waitSignal`.
-- `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`'s
-  typed degraded send error, cold activation through transport replay and
-  the pre-hydration queue, and the `none`-target no-op log.
+- `tests/notifications.spec.ts` — OS-notification pipe: `HarnessNotify`
+  raising a real `notification:send` (isolated boots install the
+  production transport sender, so only the OS presentation is absent —
+  the spec asserts the emitted payload, not an error), cold activation
+  through transport replay and the pre-hydration queue, the
+  `none`-target's send-then-no-op-click, and per-send id distinctness
+  (a presenter dedupes by id).
 - `tests/boundary-probe.spec.ts`, `tests/reveal-drain-probe.spec.ts`, and
   `tests/reveal-slide-probe.spec.ts` —
   opt-in **instruments**, not assertions: they drive a real turn and dump

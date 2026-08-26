@@ -204,12 +204,12 @@ func repairLeafForActiveBranch(state SessionLeafState, idx *claudeBranchIndex) S
 // canonical leaf onto an assistant row with unresolved server tools in
 // the first place. If a new explicit-cursor source appears, it must
 // either inherit that guarantee or this validator grows the exclusion.
-func ResumeAtOnActiveBranch(sessionID, workspacePath, resumeAt string) (bool, error) {
+func ResumeAtOnActiveBranch(projectsDir, sessionID, workspacePath, resumeAt string) (bool, error) {
 	resumeAt = strings.TrimSpace(resumeAt)
 	if resumeAt == "" {
 		return false, fmt.Errorf("claude: empty resume-at uuid")
 	}
-	path, err := sessionfork.LocateSessionFile(sessionID, workspacePath)
+	path, err := sessionfork.LocateSessionFile(projectsDir, sessionID, workspacePath)
 	if err != nil {
 		return false, err
 	}

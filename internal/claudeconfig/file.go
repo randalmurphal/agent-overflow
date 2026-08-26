@@ -32,15 +32,15 @@ func New(path string) *Store {
 	}
 }
 
-// DefaultPath returns ~/.claude.json based on the current user. The
-// helper exists so callers can build a Store with one line; tests
-// should always inject an explicit path through New() instead.
-func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("locate home dir: %w", err)
-	}
-	return filepath.Join(home, ".claude.json"), nil
+// PathForHome returns `<home>/.claude.json`.
+//
+// The home is INJECTED, never resolved here (the same rule
+// internal/sessionimport states): this package writes, and the app layer
+// owns the one seam that decides whether a write lands in the user's real
+// provider home or in an isolated boot's pinned one. There is deliberately
+// no $HOME-reading variant for a caller to reach for by accident.
+func PathForHome(home string) string {
+	return filepath.Join(home, ".claude.json")
 }
 
 // snapshot is the in-memory view used for read+mutate+write cycles.

@@ -247,3 +247,74 @@ func TestDBNeedsExactlyOneStatementArgument(t *testing.T) {
 		}
 	}
 }
+
+// A silently cut value is how a reader concludes a column holds something
+// it does not, so the default truncation says so once and names both
+// recourses.
+func TestDBTruncatesWideCellsAndSaysSo(t *testing.T) {
+	path := seedWideCellDB(t)
+
+	e, stdout, _ := testEnv(t.TempDir())
+	if err := runDB(e, []string{"--file", path, "SELECT body FROM notes"}); err != nil {
+		t.Fatal(err)
+	}
+	out := stdout.String()
+	if strings.Contains(out, strings.Repeat("x", defaultDBColWidth+1)) {
+		t.Fatalf("cell was not truncated at the default width:\n%s", out)
+	}
+	if !strings.Contains(out, "--max-col-width 0") || !strings.Contains(out, "-o json") {
+		t.Fatalf("truncation note does not name both recourses:\n%s", out)
+	}
+}
+
+func TestDBMaxColWidthZeroPrintsTheWholeValue(t *testing.T) {
+	path := seedWideCellDB(t)
+
+	e, stdout, _ := testEnv(t.TempDir())
+	if err := runDB(e, []string{"--file", path, "--max-col-width", "0", "SELECT body FROM notes"}); err != nil {
+		t.Fatal(err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, strings.Repeat("x", 200)) {
+		t.Fatalf("--max-col-width 0 still truncated:\n%s", out)
+	}
+	if strings.Contains(out, "truncated") {
+		t.Fatalf("an untruncated table claimed truncation:\n%s", out)
+	}
+	// A multi-line cell must still be flattened: newlines and tabs are the
+	// tabwriter's own delimiters and would shear the table.
+	if strings.Count(out, "\n") != 2 {
+		t.Fatalf("an embedded newline reached the table:\n%q", out)
+	}
+}
+
+func TestDBMaxColWidthRefusesANegativeWidth(t *testing.T) {
+	e, _, _ := testEnv(t.TempDir())
+	err := runDB(e, []string{"--file", seedWideCellDB(t), "--max-col-width", "-1", "SELECT 1"})
+	if err == nil {
+		t.Fatal("a negative width was accepted")
+	}
+	if code := exitCodeOf(t, err); code != exitUsage {
+		t.Fatalf("exit code = %d, want %d", code, exitUsage)
+	}
+}
+
+func seedWideCellDB(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "wide.db")
+	seed, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("x", 200) + "\nsecond line"
+	if _, err := seed.Exec(`CREATE TABLE notes (body TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Exec(`INSERT INTO notes VALUES (?)`, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

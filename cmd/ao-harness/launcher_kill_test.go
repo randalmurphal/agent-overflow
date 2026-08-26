@@ -179,3 +179,60 @@ func TestStopLauncherWindowIgnoresAnAbsentLauncher(t *testing.T) {
 		t.Fatalf("ran %v for an instance with no launcher", fake.calls)
 	}
 }
+
+// Unparseable output is NOT "the process is gone". The two used to
+// collapse into one answer, so a tasklist whose format changed (a locale,
+// a newer Windows, a truncated pipe) reported a live launcher as already
+// exited and left the window on the desktop with nothing said.
+func TestUnparseableTasklistOutputIsAnErrorNotAnAbsence(t *testing.T) {
+	for _, output := range []string{
+		"Image Name                     PID Session Name", // the table form, not CSV
+		"FEHLER: Der Prozess wurde nicht gefunden.",       // a localised notice we do not know
+		`"agent-overflow.exe"`,                            // truncated: one field, not five
+	} {
+		fake := &fakeInterop{tasklist: output}
+		fake.install(t)
+
+		killed, note := stopLauncherWindow(4242)
+		if killed || fake.killed() {
+			t.Fatalf("killed on output %q", output)
+		}
+		if note == "" {
+			t.Fatalf("output %q was read as `the process is gone` and reported nothing", output)
+		}
+		if !strings.Contains(note, "could not identify Windows pid 4242") {
+			t.Errorf("note for %q = %q, want it to say identification failed", output, note)
+		}
+	}
+}
+
+// Empty output means the filter matched nothing, same as the notice.
+func TestEmptyTasklistOutputIsAGoneProcess(t *testing.T) {
+	fake := &fakeInterop{tasklist: "   \n"}
+	fake.install(t)
+
+	killed, note := stopLauncherWindow(4242)
+	if killed || fake.killed() {
+		t.Fatal("killed on empty tasklist output")
+	}
+	if note != "" {
+		t.Errorf("note = %q, want silence", note)
+	}
+}
+
+// A Windows tool that refuses says WHY on stderr, and Output() throws that
+// away: every failure read "exit status 1", from a bad filter to a denied
+// kill. runInterop splices the first stderr line back in.
+func TestRunInteropCarriesTheToolsOwnStderr(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh to act out a failing tool")
+	}
+	_, err := runInterop(context.Background(), "/bin/sh", "-c",
+		"echo 'ERROR: Access is denied.' >&2; exit 1")
+	if err == nil {
+		t.Fatal("a failing tool reported success")
+	}
+	if !strings.Contains(err.Error(), "Access is denied") {
+		t.Fatalf("error = %v, want the tool's own stderr spliced in", err)
+	}
+}

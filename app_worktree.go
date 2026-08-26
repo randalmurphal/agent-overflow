@@ -555,9 +555,13 @@ func (a *App) copyClaudeSessionForWorkspaceChange(t store.Thread, fromWorkspace 
 	if t.Provider != string(provider.Claude) && t.Provider != string(provider.ClaudeTUI) {
 		return nil, nil
 	}
+	projectsDir, err := a.claudeProjectsDir()
+	if err != nil {
+		return nil, err
+	}
 	var purge []string
 	for _, ref := range claudeSessionRefs(t) {
-		src, dest, err := sessionfork.RelocateSession(ref, fromWorkspace, t.WorkspacePath)
+		src, dest, err := sessionfork.RelocateSession(projectsDir, ref, fromWorkspace, t.WorkspacePath)
 		switch {
 		case err == nil:
 			if src != dest {

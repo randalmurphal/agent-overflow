@@ -14,7 +14,16 @@
 // connection.
 package control
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+)
+
+// ErrUnknownMock is what a request naming a mock the server has no
+// registration for answers with. It is TERMINAL for the mock that hit
+// it: the harness dropped the registration (reset, reap) and no later
+// poll can ever succeed, so Poll stops instead of re-dialling forever.
+var ErrUnknownMock = errors.New("control: unknown mock")
 
 // Env variable names through which the backend hands mocks the control
 // endpoint. Set by runHarness before App.Start so every provider spawn
@@ -117,6 +126,17 @@ type Report struct {
 	SessionRef string `json:"sessionRef,omitempty"`
 	// SessionConfig is set only on ReportSessionConfig reports.
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
+	// Gate names the waitSignal gate an advance report concerns: the gate
+	// that was RELEASED (ReportAdvanceReleased) or the name the buffered
+	// advance carried (ReportAdvanceBuffered). Empty is a real value on
+	// both — an unnamed advance releases whichever gate is open, and an
+	// unnamed gate (an indefinite `stall`) is released by any advance.
+	Gate string `json:"gate,omitempty"`
+	// OpenGate is the gate that was open at the moment an advance was
+	// BUFFERED, i.e. the gate the advance did not match. Empty when no
+	// gate was open at all, which is the ordinary racing-ahead case.
+	// Set only on ReportAdvanceBuffered.
+	OpenGate string `json:"openGate,omitempty"`
 }
 
 // Report kinds. Tests await these via harness:mock events; renaming any
@@ -146,12 +166,40 @@ const (
 	// symptom (a thread id that did or did not change) cannot say
 	// whether a refused revert was even attempted.
 	ReportHistoryCut = "history_cut"
+	// ReportAdvanceReleased is posted when an advance command actually
+	// opens a gate — either because the gate was already open when the
+	// advance arrived, or because a buffered advance was consumed the
+	// moment the gate opened. Gate carries the gate's name.
+	ReportAdvanceReleased = "advance_released"
+	// ReportAdvanceBuffered is posted when an advance matched nothing and
+	// was parked for the gate that has not opened yet (the documented
+	// race tolerance). Gate carries the advance's name, OpenGate the gate
+	// that was open and did not match (empty when none was).
+	//
+	// Detail is empty for a real buffering and AdvanceDroppedDetail when
+	// the advance was DISCARDED instead — the per-turn buffer was already
+	// at maxPendingAdvances. Both are visible on the same kind because
+	// both answer the same question ("my advance did nothing, why?");
+	// only the discard is a mistake in the driving test.
+	ReportAdvanceBuffered = "advance_buffered"
+	// ReportFixtureError names a step that could not do its job: a
+	// fixture file that would not read, a writeFile that was rejected or
+	// failed. Detail is the reason. Without it such a turn emits nothing
+	// and the app sees a silent provider with no signal anywhere but the
+	// mock's stderr.
+	ReportFixtureError = "fixture_error"
 	// ReportSessionConfig carries the permission/sandbox configuration the
 	// app actually launched this session with. Posted once per mock as soon
 	// as it is observable — for Claude that is argv at boot, for Codex the
 	// thread/start params.
 	ReportSessionConfig = "session_config"
 )
+
+// AdvanceDroppedDetail is the ReportAdvanceBuffered Detail marking an
+// advance that was thrown away rather than parked, because the turn's
+// buffer was full. The control server keys on it too: a dropped advance
+// must not join MockInfo.PendingAdvances.
+const AdvanceDroppedDetail = "dropped: advance buffer full"
 
 // SessionConfig is the permission/sandbox configuration a mock observed the
 // app request. It exists so a test can assert what the app ASKED the provider

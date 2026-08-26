@@ -62,13 +62,11 @@ func New(path string) *Store {
 	return &Store{path: path}
 }
 
-// DefaultPath returns ~/.codex/config.toml based on the current user.
-func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("locate home dir: %w", err)
-	}
-	return filepath.Join(home, ".codex", "config.toml"), nil
+// PathForHome returns `<home>/.codex/config.toml`. The home is INJECTED,
+// never resolved here — see claudeconfig.PathForHome for why this package
+// has no $HOME-reading variant.
+func PathForHome(home string) string {
+	return filepath.Join(home, ".codex", "config.toml")
 }
 
 // ListServers returns every entry under [mcp_servers.*] in stable

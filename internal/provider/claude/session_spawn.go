@@ -13,9 +13,19 @@ import (
 
 // Config for creating a Claude session.
 type Config struct {
-	Binary      string // default: "claude"
-	Model       string
-	WorkDir     string
+	Binary  string // default: "claude"
+	Model   string
+	WorkDir string
+	// ProjectsDir is the `<providerHome>/.claude/projects` this session's
+	// transcript lives under, injected by the app layer's one provider-home
+	// seam (App.providerHome → sessionfork.ProjectsDirForHome). It is
+	// INJECTED rather than resolved from $HOME because the process may run
+	// against a pinned provider home (isolated boots, test fixtures) that is
+	// not the OS home, and every transcript path this session resolves is a
+	// path something later writes beside. Empty means "no transcript lookup
+	// available": the one reader (findReplayUserParent) reports "could not
+	// verify" instead of guessing a home.
+	ProjectsDir string
 	Resume      string // session ID to resume, empty for new
 	ResumeAt    string // transcript UUID to resume at inside Resume
 	ForkSession bool

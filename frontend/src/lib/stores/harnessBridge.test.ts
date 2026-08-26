@@ -120,8 +120,8 @@ describe('installHarnessBridge', () => {
   });
 
   // harness:ui-query is an AudienceLoopbackOnly channel, so a LAN browser
-  // cannot be sent one. Arming there would install a document-wide
-  // MutationObserver for a query that can never arrive.
+  // cannot be sent one. Arming there would subscribe, and eventually load a
+  // loopback-only tooling chunk, for a query that can never arrive.
   it('does not arm for a remote page attached to a harness backend', async () => {
     const s = await session({ harness: true, remote: true });
     const teardown = s.install();
@@ -132,10 +132,10 @@ describe('installHarnessBridge', () => {
     teardown();
   });
 
-  // The chunk installs the mutation observer, and the soak rig runs for
-  // hours specifically to reproduce renderer memory behaviour: a probe
-  // that is always on perturbs the experiment. A run that never queries
-  // the page must cost nothing but the listener.
+  // The soak rig runs for hours specifically to reproduce renderer memory
+  // behaviour, and the chunk is where every probe the bridge owns lives: a
+  // run that never queries the page must cost nothing but the listener —
+  // no fetch, no parse, no evaluation.
   it('subscribes without loading the chunk, and loads it on the first query', async () => {
     const s = await session({ harness: true });
     const teardown = s.install();
@@ -156,6 +156,32 @@ describe('installHarnessBridge', () => {
     expect(chunk.activations).toBe(1);
     expect(s.replies()).toHaveLength(2);
     teardown();
+  });
+
+  // The second half of the same promise, and the one a perf run depends
+  // on: reaching the chunk is not the same as arming the document-wide
+  // MutationObserver. A bench workload's queries are `perf` ops, and a run
+  // that measured a renderer carrying an observer production does not have
+  // is a run measuring the instrument.
+  it('loads the chunk for a perf query without installing the observer', async () => {
+    const s = await session({ harness: true });
+    const bridge = await import('../harness/bridge');
+    const teardown = s.install();
+
+    s.emitQuery('uq-1', { v: 1, kind: 'perf', op: 'start', meters: ['dom'] });
+    await settle(() => s.replies().length > 0);
+    expect(chunk.activations).toBe(1);
+    expect(s.replies()[0]![1]).toMatchObject({ armed: true });
+    expect(bridge.mutationClockArmed()).toBe(false);
+
+    // A settledness query is what pays for it, through the same door.
+    s.emitQuery('uq-2', { v: 1, kind: 'viewport' });
+    await settle(() => s.replies().length > 1);
+    expect(bridge.mutationClockArmed()).toBe(true);
+
+    teardown();
+    await settle(() => chunk.stops > 0);
+    expect(bridge.mutationClockArmed()).toBe(false);
   });
 
   it('ignores a query event with no id rather than replying to nothing', async () => {

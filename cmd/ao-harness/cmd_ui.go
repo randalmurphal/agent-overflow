@@ -22,9 +22,18 @@ const (
 	uiSnapshotFileName = "last.json"
 )
 
+// bridgeProbeTimeout bounds one "is a page attached" question. A page
+// that has not answered in five seconds is not mid-render; it is gone.
+const bridgeProbeTimeout = 5 * time.Second
+
+var uiSubcommands = []string{"snapshot", "query", "state", "diff", "reload", "open"}
+
 func runUI(e *env, args []string) error {
+	if done, err := groupHelp(e, "ui", args, uiSubcommands...); done {
+		return err
+	}
 	if len(args) == 0 {
-		return usagef("ui needs a subcommand: snapshot, query, state, diff")
+		return usagef("ui needs a subcommand: %s", strings.Join(uiSubcommands, ", "))
 	}
 	switch args[0] {
 	case "snapshot":
@@ -35,9 +44,77 @@ func runUI(e *env, args []string) error {
 		return uiState(e, args[1:])
 	case "diff":
 		return uiDiffCommand(e, args[1:])
+	case "reload":
+		return uiReload(e, args[1:])
+	case "open":
+		return uiOpen(e, args[1:])
 	default:
-		return usagef("unknown ui subcommand %q (want snapshot, query, state, diff)", args[0])
+		return usagef("unknown ui subcommand %q (want %s)", args[0], strings.Join(uiSubcommands, ", "))
 	}
+}
+
+// uiReload and uiOpen expose two things the bench drivers have been
+// doing privately since W5. Both are ordinary operator moves — "the page
+// is stale after a reset", "put this thread on screen so I can look at
+// it" — and neither had a spelling outside a bench run.
+
+func uiReload(e *env, args []string) error {
+	flags := e.newFlagSet("ui reload")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usagef("ui reload takes no positional arguments (got %v)", rest)
+	}
+	ctx := context.Background()
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := reloadPage(ctx, e, client); err != nil {
+			return err
+		}
+		if e.jsonOutput() {
+			return e.writeJSON(map[string]any{"reloaded": true})
+		}
+		e.printf("page reloaded\n")
+		return nil
+	})
+}
+
+func uiOpen(e *env, args []string) error {
+	flags := e.newFlagSet("ui open --thread <id|#N|last|title-prefix>")
+	thread := flags.String("thread", "", "thread selector: id, #N from `threads`, `last`, or a unique title prefix")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if *thread == "" && len(rest) == 1 {
+		*thread = rest[0]
+		rest = nil
+	}
+	if len(rest) != 0 {
+		return usagef("ui open takes only --thread (got %v)", rest)
+	}
+	if *thread == "" {
+		return usagef("ui open needs --thread <id|#N|last|title-prefix>")
+	}
+	ctx := context.Background()
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		row, err := resolveThreadSelector(ctx, client, *thread)
+		if err != nil {
+			return err
+		}
+		// The production open path, driven from outside the browser: this
+		// is the channel an OS-notification click rides, so the SPA runs
+		// its own openThreadInPane rather than anything harness-shaped.
+		if err := openThreadOnPage(ctx, e, client, row.ID); err != nil {
+			return err
+		}
+		if e.jsonOutput() {
+			return e.writeJSON(map[string]any{"threadId": row.ID, "opened": true})
+		}
+		e.printf("opened %s (%s)\n", row.ID, truncate(row.Title, 60))
+		return nil
+	})
 }
 
 // queryUI is the one call every ui verb makes: a HarnessUIQuery carrying a
@@ -73,7 +150,11 @@ func uiSnapshot(e *env, args []string) error {
 	pane := flags.String("pane", "", "print only this pane id")
 	settledMs := flags.Int("settled-ms", 0, "how long the DOM must be quiet to report settled (bridge default: 300)")
 	textHead := flags.Int("text-head", 0, "characters of each row's text to include (bridge default)")
-	save := flags.Bool("save", true, "store this snapshot as the baseline `ui diff` compares against")
+	// No backquotes in this string: flag.PrintDefaults reads the first
+	// backquoted word as the value PLACEHOLDER, so "`ui diff`" turned the
+	// flag's own help into "-save ui diff" — a name for the argument
+	// rather than a reference to another command.
+	save := flags.Bool("save", true, "store this snapshot as the baseline that 'ui diff' compares against")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
@@ -162,7 +243,7 @@ func (e *env) renderViewport(view uiViewport, only string) {
 }
 
 func uiQuery(e *env, args []string) error {
-	flags := e.newFlagSet("ui query")
+	flags := e.newFlagSet("ui query <selector>")
 	textCap := flags.Int("text-cap", 0, "characters of textContent to include (bridge default)")
 	rest, err := e.parse(flags, args)
 	if err != nil {
@@ -220,7 +301,7 @@ func uiQuery(e *env, args []string) error {
 }
 
 func uiState(e *env, args []string) error {
-	flags := e.newFlagSet("ui state")
+	flags := e.newFlagSet("ui state <name> [json args...]")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err

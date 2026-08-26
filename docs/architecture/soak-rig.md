@@ -36,6 +36,18 @@ Windows-specific.
 
 Two independent isolations, one axis each.
 
+Two measurement caveats before drawing renderer conclusions from a
+Windows-shell run. First, `make soak` / `make harness-wsl` build the SPA
+with `--minify false` (the `launch-wsl` recipe is the dev-wsl one), so
+the renderer executes the unminified bundle — identifier names retained,
+larger script text; `import.meta.env.DEV` gates stay off, so behavior is
+production, but byte-for-byte memory numbers are not. Second, if
+`FRONTEND_DEVSERVER_URL` is set in the launching shell, the backend
+proxies the Vite dev server (HMR WebSocket included) instead of serving
+the embedded bundle — a different renderer workload entirely; the boot
+log announces it loudly. Unset it for any run whose numbers matter.
+
+
 ### Provider isolation — it is the harness's, not a copy of it
 
 The soak backend boots through **`prepareHarness`** and

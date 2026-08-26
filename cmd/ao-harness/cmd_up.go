@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
 )
@@ -50,6 +51,14 @@ func runUp(e *env, args []string) error {
 	}
 	dataRoot, err := upDataRoot(*dataDir, *autopilot)
 	if err != nil {
+		return err
+	}
+	// The backend's own refusals, run BEFORE this command creates
+	// anything. `up` used to MkdirAll a log directory into a root the
+	// backend was about to refuse, so a mistyped --data-dir left a
+	// half-made tree inside (say) the real config root and then failed
+	// with a message about the boot.
+	if err := refuseUnsafeDataRoot(dataRoot); err != nil {
 		return err
 	}
 	if err := refuseSecondInstance(e, dataRoot); err != nil {
@@ -137,6 +146,69 @@ func upDataRoot(flagValue string, autopilot bool) (string, error) {
 		return instanceinfo.DefaultSoakDataRoot(), nil
 	}
 	return instanceinfo.DefaultDataRoot(), nil
+}
+
+// refuseUnsafeDataRoot mirrors the two refusals prepareHarness runs at
+// boot: the data root must not resolve to the OS config root or the real
+// app data dir, and neither the root nor its app directory may BE a
+// symlink. An isolated boot seeds and wipes those directories wholesale,
+// so a planted link aims that at whatever it points to, and one mistyped
+// flag must not point it at real threads.
+//
+// Deliberately reimplemented rather than imported: this binary links no
+// App code, which is what keeps it from becoming a second way to drive
+// the app. The duplication is three small checks, and the cost of them
+// drifting is a worse ERROR MESSAGE — the backend still refuses. The
+// cost of not having them is a directory tree created inside the config
+// root before anyone says no.
+func refuseUnsafeDataRoot(dataRoot string) error {
+	realRoot, err := appdirs.Root()
+	if err == nil {
+		configRoot := filepath.Dir(realRoot)
+		for _, forbidden := range []string{configRoot, realRoot} {
+			if sameResolvedPath(dataRoot, forbidden) {
+				return fmt.Errorf(
+					"--data-dir %s is %s, where the real app data lives; an isolated boot refuses to run against it (pick a scratch dir, or omit --data-dir for this worktree's own root)",
+					dataRoot, forbidden)
+			}
+		}
+	}
+	for _, path := range []string{dataRoot, filepath.Join(dataRoot, appDataDirName)} {
+		if err := refuseSymlinkedPath(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refuseSymlinkedPath refuses a path that EXISTS as a symlink. A path
+// that does not exist yet is fine: `up` is about to create it, and the
+// backend re-checks after it does.
+func refuseSymlinkedPath(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf(
+			"%s is a symlink; an isolated boot refuses to operate through links (it seeds and wipes this directory wholesale)", path)
+	}
+	return nil
+}
+
+// sameResolvedPath compares two paths after symlink resolution, falling
+// back to a lexical comparison for a path that does not exist yet —
+// which is what a fresh data root is.
+func sameResolvedPath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return ra == rb
 }
 
 // refuseSecondInstance stops a boot onto a data root something is

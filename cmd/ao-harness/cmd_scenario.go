@@ -7,31 +7,39 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"agent-overflow/internal/harness/scenario"
 	"agent-overflow/internal/harnessclient"
 )
 
+var scenarioSubcommands = []string{"set", "list", "show", "clear", "validate"}
+
 func runScenario(e *env, args []string) error {
+	if done, err := groupHelp(e, "scenario", args, scenarioSubcommands...); done {
+		return err
+	}
 	if len(args) == 0 {
-		return usagef("scenario needs a subcommand: set, list, clear, validate")
+		return usagef("scenario needs a subcommand: %s", strings.Join(scenarioSubcommands, ", "))
 	}
 	switch args[0] {
 	case "set":
 		return scenarioSet(e, args[1:])
 	case "list":
 		return scenarioList(e, args[1:])
+	case "show":
+		return scenarioShow(e, args[1:])
 	case "clear":
 		return scenarioClear(e, args[1:])
 	case "validate":
 		return scenarioValidate(e, args[1:])
 	default:
-		return usagef("unknown scenario subcommand %q (want set, list, clear, validate)", args[0])
+		return usagef("unknown scenario subcommand %q (want %s)", args[0], strings.Join(scenarioSubcommands, ", "))
 	}
 }
 
 func scenarioSet(e *env, args []string) error {
-	flags := e.newFlagSet("scenario set")
+	flags := e.newFlagSet("scenario set [<library-name>]")
 	name := flags.String("name", "", "library scenario name")
 	file := flags.String("f", "", "inline scenario JSON file, or - for stdin")
 	cwd := flags.String("cwd", "", "scope the rule to mocks spawned in this workspace")
@@ -86,8 +94,42 @@ func scenarioSet(e *env, args []string) error {
 		if err != nil {
 			return err
 		}
-		return e.writeRawJSON(result)
+		if e.jsonOutput() {
+			return e.writeRawJSON(result)
+		}
+		var rule struct {
+			Name       string `json:"name"`
+			Provider   string `json:"provider"`
+			Cwd        string `json:"cwd"`
+			SessionRef string `json:"sessionRef"`
+		}
+		if err := json.Unmarshal(result, &rule); err != nil {
+			return e.writeRawJSON(result)
+		}
+		e.printf("rule set: %s (%s) cwd=%s sessionRef=%s\n",
+			orDash(rule.Name), orDash(rule.Provider), orDash(rule.Cwd), orDash(rule.SessionRef))
+		return nil
 	})
+}
+
+// scenarioShow prints the embedded library entry a `--name` would run.
+// It answers the question `scenario set --name X` used to make a caller
+// answer by reading the repo: what does X actually script? Offline, for
+// the same reason `validate` is — the library is compiled in.
+func scenarioShow(e *env, args []string) error {
+	flags := e.newFlagSet("scenario show <library-name>")
+	rest, err := e.parse(flags, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 1 || strings.TrimSpace(rest[0]) == "" {
+		return usagef("scenario show needs exactly one library name (see `ao-harness scenario list`)")
+	}
+	raw, _, err := scenario.LoadLibrary(rest[0])
+	if err != nil {
+		return err
+	}
+	return e.writeRawJSON(raw)
 }
 
 func scenarioList(e *env, args []string) error {
@@ -191,14 +233,14 @@ type scenarioValidation struct {
 // author is usually not holding a running harness, and because a test
 // wants this verdict without booting anything.
 func scenarioValidate(e *env, args []string) error {
-	flags := e.newFlagSet("scenario validate")
+	flags := e.newFlagSet("scenario validate <file.json|library-name>...")
 	fixtureRoot := flags.String("fixture-root", ".", "resolve relative fixture paths against this directory")
 	paths, err := e.parse(flags, args)
 	if err != nil {
 		return err
 	}
 	if len(paths) == 0 {
-		return usagef("scenario validate needs at least one file")
+		return usagef("scenario validate needs at least one file or library name")
 	}
 	root, err := filepath.Abs(*fixtureRoot)
 	if err != nil {
@@ -236,12 +278,38 @@ func scenarioValidate(e *env, args []string) error {
 	return nil
 }
 
+// looksLikeLibraryName decides which namespace a `validate` argument is
+// read in. A bare word with no path separator and no .json suffix is a
+// library name — `scenario set --name X` takes one, so `scenario
+// validate X` meaning "open ./X" was a trap with a file-not-found for a
+// diagnosis.
+func looksLikeLibraryName(arg string) bool {
+	if arg == "" || strings.ContainsAny(arg, `/\`) || strings.HasSuffix(arg, ".json") {
+		return false
+	}
+	return true
+}
+
 func validateScenarioFile(path, fixtureRoot string) scenarioValidation {
 	out := scenarioValidation{Path: path}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		out.Error = err.Error()
-		return out
+	var data []byte
+	var err error
+	if looksLikeLibraryName(path) {
+		var raw json.RawMessage
+		raw, _, err = scenario.LoadLibrary(path)
+		if err != nil {
+			// LoadLibrary's own error already lists every shipped name; the
+			// pointer that is missing is where to READ one.
+			out.Error = err.Error() + " (`ao-harness scenario show <name>` prints one)"
+			return out
+		}
+		data = raw
+	} else {
+		data, err = os.ReadFile(path)
+		if err != nil {
+			out.Error = err.Error()
+			return out
+		}
 	}
 	parsed, err := scenario.Parse(data)
 	if err != nil {

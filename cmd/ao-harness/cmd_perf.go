@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/atomicfile"
@@ -13,9 +14,14 @@ import (
 	"agent-overflow/internal/harnessclient"
 )
 
+var perfSubcommands = []string{"start", "stop", "status", "watch"}
+
 func runPerf(e *env, args []string) error {
+	if done, err := groupHelp(e, "perf", args, perfSubcommands...); done {
+		return err
+	}
 	if len(args) == 0 {
-		return usagef("perf needs a subcommand: start, stop, status, watch")
+		return usagef("perf needs a subcommand: %s", strings.Join(perfSubcommands, ", "))
 	}
 	switch args[0] {
 	case "start":
@@ -27,7 +33,7 @@ func runPerf(e *env, args []string) error {
 	case "watch":
 		return perfWatch(e, args[1:])
 	default:
-		return usagef("unknown perf subcommand %q (want start, stop, status, watch)", args[0])
+		return usagef("unknown perf subcommand %q (want %s)", args[0], strings.Join(perfSubcommands, ", "))
 	}
 }
 
@@ -60,8 +66,47 @@ func perfStart(e *env, args []string) error {
 		if err != nil {
 			return uiQueryError(err)
 		}
-		return e.writeRawJSON(raw)
+		return e.printPerfStatus(raw)
 	})
+}
+
+// perfStatusResult is the shape both `perf start` and `perf status`
+// answer with. Typed for the -o text line only; -o json stays the
+// server's own bytes.
+type perfStatusResult struct {
+	Active          bool   `json:"active"`
+	RunID           string `json:"runId"`
+	SampleMs        int    `json:"sampleMs"`
+	Samples         int    `json:"samples"`
+	FrontendSamples int    `json:"frontendSamples"`
+	ElapsedMs       int64  `json:"elapsedMs"`
+	LastError       string `json:"lastError"`
+}
+
+// printPerfStatus is the -o text form of the two verbs that used to print
+// a raw status document in both formats. The frontend-sample count is on
+// the line on purpose: a run whose samples climb while frontendSamples
+// stays at zero is the headless-instance mistake, and it is invisible in
+// a line that only reports "active".
+func (e *env) printPerfStatus(raw json.RawMessage) error {
+	if e.jsonOutput() {
+		return e.writeRawJSON(raw)
+	}
+	var status perfStatusResult
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return e.writeRawJSON(raw)
+	}
+	state := "idle"
+	if status.Active {
+		state = "armed"
+	}
+	e.printf("perf %s %s  sample %dms  samples %d (frontend %d)  elapsed %s\n",
+		state, orDash(status.RunID), status.SampleMs, status.Samples, status.FrontendSamples,
+		(time.Duration(status.ElapsedMs) * time.Millisecond).Round(time.Second))
+	if status.LastError != "" {
+		e.printf("  last error: %s\n", truncate(status.LastError, 160))
+	}
+	return nil
 }
 
 func perfStop(e *env, args []string) error {
@@ -111,7 +156,14 @@ func perfStatus(e *env, args []string) error {
 	if len(rest) != 0 {
 		return usagef("perf status takes no positional arguments (got %v)", rest)
 	}
-	return e.call(context.Background(), "HarnessPerfStatus")
+	ctx := context.Background()
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		raw, err := client.Call(ctx, "HarnessPerfStatus")
+		if err != nil {
+			return err
+		}
+		return e.printPerfStatus(raw)
+	})
 }
 
 // perfSample is the frontend half of one `harness:perf` frame. The fields

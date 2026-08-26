@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,7 +221,7 @@ func TestResumeAtOnActiveBranchRejectsFilteredRows(t *testing.T) {
 		{"a-think", false},      // orphaned with its sibling — CLI drops it
 	}
 	for _, tc := range cases {
-		got, err := ResumeAtOnActiveBranch("sess-crash", workspace, tc.resumeAt)
+		got, err := ResumeAtOnActiveBranch(sessionfork.ProjectsDirForHome(home), "sess-crash", workspace, tc.resumeAt)
 		if err != nil {
 			t.Fatalf("ResumeAtOnActiveBranch(%q): %v", tc.resumeAt, err)
 		}

@@ -106,7 +106,7 @@ func writeClaudeProjectSession(t *testing.T, home, workspace, sessionID, jsonl s
 
 func assertClaudeSessionText(t *testing.T, workspace, sessionID string, wantPresent []string, wantAbsent []string) {
 	t.Helper()
-	path, err := sessionfork.LocateSessionFile(sessionID, workspace)
+	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, workspace)
 	if err != nil {
 		t.Fatalf("locate claude session %q: %v", sessionID, err)
 	}

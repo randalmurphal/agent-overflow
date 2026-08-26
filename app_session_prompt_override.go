@@ -461,11 +461,13 @@ func (a *App) promptOverrideGitFacts(workDir string, needBlock bool) (isRepo, bl
 // placeholder renders empty there rather than pointing a Codex session at
 // a Claude path.
 //
-// The home is os.UserHomeDir() because that is what the spawned CLI
-// itself resolves: the headless spawn clears CLAUDE_CONFIG_DIR outright
-// and both Claude providers refuse it from a user's custom environment
-// (provider.ReservedEnvNames), so `~/.claude` under $HOME is the home the
-// session will read its memory from.
+// The home is App.providerHome() — ordinarily the OS home, because that
+// is what the spawned CLI itself resolves: the headless spawn clears
+// CLAUDE_CONFIG_DIR outright and both Claude providers refuse it from a
+// user's custom environment (provider.ReservedEnvNames), so `~/.claude`
+// under $HOME is the home the session will read its memory from. Under an
+// isolated boot it is the pinned harness home, so the mkdir below can
+// never reach the developer's real `~/.claude/projects`.
 //
 // The bool means "this thread HAS a memory directory" — false for a Codex
 // thread or a workspace-less one, both of which are ordinary states rather
@@ -478,9 +480,9 @@ func (a *App) claudeMemoryDirForThread(t store.Thread, workDir string) (string, 
 	if strings.TrimSpace(workDir) == "" {
 		return "", false, nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := a.providerHome()
 	if err != nil {
-		return "", false, fmt.Errorf("resolve home directory: %w", err)
+		return "", false, err
 	}
 	dir, err := promptoverride.ClaudeMemoryDir(home, workDir)
 	if err != nil {

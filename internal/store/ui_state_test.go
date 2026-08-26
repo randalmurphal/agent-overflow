@@ -158,3 +158,25 @@ func TestUIState_EmptyKeyRejected(t *testing.T) {
 		t.Fatalf("rejected batch must not persist anything: %v", got)
 	}
 }
+
+func TestUIState_ClearRemovesEveryScope(t *testing.T) {
+	s := newTestStore(t)
+
+	for _, scope := range []string{"client:a", "client:b"} {
+		if err := s.SetUIState(scope, map[string]string{"overlay:stack": `["run-1"]`}); err != nil {
+			t.Fatalf("SetUIState(%s): %v", scope, err)
+		}
+	}
+	if err := s.ClearUIState(); err != nil {
+		t.Fatalf("ClearUIState: %v", err)
+	}
+	for _, scope := range []string{"client:a", "client:b"} {
+		got, err := s.GetUIState(scope)
+		if err != nil {
+			t.Fatalf("GetUIState(%s): %v", scope, err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("scope %s survived clear: %v", scope, got)
+		}
+	}
+}

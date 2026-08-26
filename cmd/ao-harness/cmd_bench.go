@@ -145,7 +145,7 @@ type benchDocument struct {
 }
 
 func runBench(e *env, args []string) error {
-	flags := e.newFlagSet("bench")
+	flags := e.newFlagSet("bench <workload>")
 	repeat := flags.Int("repeat", 1, "run the workload this many times and aggregate")
 	sampleMs := flags.Int("sample-ms", 0, "perf sampling interval (default 1000, floor 250)")
 	baselineFile := flags.String("baseline", "", "compare the aggregate against this baseline (a budget file or a previous bench report)")
@@ -198,11 +198,28 @@ func runBench(e *env, args []string) error {
 	if baseline == nil {
 		return nil
 	}
-	comparisons, unmeasured := compareToBaseline(document.Aggregate, *baseline)
-	e.printf("\n%s", renderBenchComparison(comparisons, unmeasured, *baselineFile))
+	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(document.Aggregate, *baseline)
+	e.printf("\n%s", renderBenchComparison(comparisons, unmeasured, unbudgeted, *baselineFile))
+	return benchGateVerdict(comparisons, unbudgeted, *baselineFile)
+}
+
+// benchGateVerdict is what `--baseline` actually gates on, split out so
+// the exit code is testable without a backend.
+//
+// Two ways to fail, one code. Drift is the obvious one. The other is a
+// budgeted metric the run never MEASURED: without it a headless bench (no
+// page, so every frontend metric is absent) printed an empty comparison
+// table and exited 0 — a run that measured nothing reporting success,
+// which is worse than a red, because CI believes it.
+func benchGateVerdict(comparisons []benchComparison, unbudgeted []string, baselineFile string) error {
 	if n := countDrift(comparisons); n > 0 {
 		return exitCodeError{code: exitBadNews, err: fmt.Errorf(
-			"%d metric(s) drifted past the baseline in %s", n, *baselineFile)}
+			"%d metric(s) drifted past the baseline in %s", n, baselineFile)}
+	}
+	if len(unbudgeted) > 0 {
+		return exitCodeError{code: exitBadNews, err: fmt.Errorf(
+			"%d budgeted metric(s) were not measured this run: %s (a headless run answers no frontend metric — open a page with `make harness-window`)",
+			len(unbudgeted), strings.Join(unbudgeted, ", "))}
 	}
 	return nil
 }
@@ -312,7 +329,7 @@ func executeBenchRun(ctx context.Context, run *benchRun, sampleMs int) (perfRepo
 		return perfReport{}, err
 	}
 	if len(run.threadIDs) > 0 {
-		if err := openThread(ctx, run, run.threadIDs[0]); err != nil {
+		if err := openThreadOnPage(ctx, run.env, run.client, run.threadIDs[0]); err != nil {
 			return perfReport{}, err
 		}
 	}
@@ -334,7 +351,19 @@ func executeBenchRun(ctx context.Context, run *benchRun, sampleMs int) (perfRepo
 	if stopErr != nil {
 		return perfReport{}, stopErr
 	}
-	return decodePerfReport(raw)
+	report, err := decodePerfReport(raw)
+	if err != nil {
+		return perfReport{}, err
+	}
+	// The page failing to answer is a FAILED RUN, not a run with fewer
+	// columns. Ignoring it produced a report whose frontend half was
+	// silently absent — indistinguishable from a headless instance, and
+	// folded into an aggregate that a later `--baseline` would compare
+	// against as if it were a measurement.
+	if report.FrontendError != "" {
+		return perfReport{}, fmt.Errorf("the page did not answer the perf meters: %s", report.FrontendError)
+	}
+	return report, nil
 }
 
 func (w benchWorkload) seedFixture(run *benchRun) error {
@@ -432,7 +461,7 @@ func renderBenchDocument(document benchDocument, path string) string {
 	return b.String()
 }
 
-func renderBenchComparison(comparisons []benchComparison, unmeasured []string, baselinePath string) string {
+func renderBenchComparison(comparisons []benchComparison, unmeasured, unbudgeted []string, baselinePath string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "baseline %s\n", baselinePath)
 	if len(comparisons) == 0 {
@@ -456,6 +485,9 @@ func renderBenchComparison(comparisons []benchComparison, unmeasured []string, b
 	b.WriteString(tableString([]string{"METRIC", "CURRENT", "BASELINE", "LIMIT", "RULE", ""}, rows))
 	if len(unmeasured) > 0 {
 		fmt.Fprintf(&b, "  not measured this run: %s\n", strings.Join(unmeasured, ", "))
+	}
+	if len(unbudgeted) > 0 {
+		fmt.Fprintf(&b, "  FAILED (explicitly budgeted, not measured): %s\n", strings.Join(unbudgeted, ", "))
 	}
 	return b.String()
 }

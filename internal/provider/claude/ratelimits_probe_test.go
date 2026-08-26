@@ -228,7 +228,7 @@ func TestProbeRateLimits_EndToEnd(t *testing.T) {
 		Transport: redirectTransport{target: srvURL, inner: http.DefaultTransport},
 	}
 
-	snap, err := ProbeRateLimits(context.Background(), client)
+	snap, err := ProbeRateLimits(context.Background(), client, tmpHome)
 	if err != nil {
 		t.Fatalf("ProbeRateLimits: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestProbeRateLimits_MissingCredentials(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
 
-	_, err := ProbeRateLimits(context.Background(), http.DefaultClient)
+	_, err := ProbeRateLimits(context.Background(), http.DefaultClient, tmpHome)
 	if !errors.Is(err, ErrNoCredentials) {
 		t.Fatalf("err: got %v, want ErrNoCredentials", err)
 	}
@@ -302,7 +302,7 @@ func TestProbeRateLimits_EmptyToken(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := ProbeRateLimits(context.Background(), http.DefaultClient)
+	_, err := ProbeRateLimits(context.Background(), http.DefaultClient, tmpHome)
 	if !errors.Is(err, ErrNoCredentials) {
 		t.Fatalf("err: got %v, want ErrNoCredentials", err)
 	}
@@ -328,7 +328,7 @@ func TestProbeRateLimits_Unauthorized(t *testing.T) {
 	srvURL, _ := url.Parse(srv.URL)
 	client := &http.Client{Transport: redirectTransport{target: srvURL, inner: http.DefaultTransport}}
 
-	_, err := ProbeRateLimits(context.Background(), client)
+	_, err := ProbeRateLimits(context.Background(), client, tmpHome)
 	if err == nil {
 		t.Fatalf("expected error for 401, got nil")
 	}
@@ -361,7 +361,7 @@ func TestProbeRateLimits_TooManyRequests(t *testing.T) {
 	srvURL, _ := url.Parse(srv.URL)
 	client := &http.Client{Transport: redirectTransport{target: srvURL, inner: http.DefaultTransport}}
 
-	_, err := ProbeRateLimits(context.Background(), client)
+	_, err := ProbeRateLimits(context.Background(), client, tmpHome)
 	var limited *RateLimitedError
 	if !errors.As(err, &limited) {
 		t.Fatalf("err: got %v, want *RateLimitedError", err)
@@ -394,7 +394,7 @@ func TestProbeRateLimits_TooManyRequestsNoRetryAfter(t *testing.T) {
 	srvURL, _ := url.Parse(srv.URL)
 	client := &http.Client{Transport: redirectTransport{target: srvURL, inner: http.DefaultTransport}}
 
-	_, err := ProbeRateLimits(context.Background(), client)
+	_, err := ProbeRateLimits(context.Background(), client, tmpHome)
 	var limited *RateLimitedError
 	if !errors.As(err, &limited) {
 		t.Fatalf("err: got %v, want *RateLimitedError", err)

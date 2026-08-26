@@ -202,10 +202,22 @@ func installSignalHandler(e *engine) {
 // engine code can report unconditionally.
 type reporter struct {
 	client *control.Client
+	// observe, when set, receives every report before it goes on the
+	// wire. Unit-test seam: in production the other end of the control
+	// channel is a different process, and a test asserting that the
+	// engine REPORTED something has nowhere else to read it from.
+	// Production construction never sets it.
+	observe func(control.Report)
 }
 
 func (r *reporter) report(rep control.Report) {
-	if r != nil && r.client != nil {
+	if r == nil {
+		return
+	}
+	if r.observe != nil {
+		r.observe(rep)
+	}
+	if r.client != nil {
 		r.client.Report(rep)
 	}
 }

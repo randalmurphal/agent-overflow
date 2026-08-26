@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -106,6 +108,16 @@ func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 	report := healthReport{At: time.Now().Format(time.RFC3339), Instance: t.ID}
 
 	bs, bsErr := harnessclient.ReadInstanceFile(t.DataDir)
+	// "Nothing was ever started here" is its own answer, and it is not a
+	// red rollup. With no registry row AND no instance file, the target
+	// was invented by the default-data-root fallback — health was
+	// reporting a dead process for an instance that never existed, at
+	// exitBadNews, which reads as "your harness crashed".
+	if errors.Is(bsErr, os.ErrNotExist) && t.Row == nil {
+		return healthReport{}, fmt.Errorf(
+			"no instance is running here: nothing claims %s (start one with `ao-harness up`, or name another with --instance / `ao-harness list`)",
+			t.DataRoot)
+	}
 	alive := bsErr == nil && instanceinfo.ProcessAlive(bs.PID)
 	report.Sections = append(report.Sections, processSection(t, bs, bsErr, alive))
 
@@ -151,6 +163,7 @@ func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 	} else {
 		defer client.Close()
 		report.Sections = append(report.Sections,
+			autopilotSection(ctx, client, bs),
 			dbSection(ctx, client),
 			mockSection(ctx, client),
 			replaySection(ctx, client),
@@ -224,13 +237,16 @@ func (e *env) oracleSection(dataDir string, from healthFileCursor) (healthSectio
 	}
 	counts := countOracleTriggers(lines)
 	if len(counts) == 0 {
-		detail := fmt.Sprintf("no triggers in %d new trace record(s)%s", len(lines), rotatedSuffix(rotated))
 		if len(lines) == 0 {
-			// A harness build ships with UI_TRACE unset, so an empty trace
-			// is the norm rather than a silence worth flagging.
-			detail = "no trace records (this build may have UI_TRACE unset)"
+			// Zero records is NOT "the oracles are clean": a harness build
+			// ships with UI_TRACE unset, so the usual reason there is nothing
+			// to read is that nothing was ever written. Reporting ok there
+			// tells a caller the oracles passed when they never ran.
+			return healthSection{Name: "ui-oracles", Status: healthNA,
+				Detail: "no trace records — this build has UI_TRACE unset (`make harness-build UI_TRACE=1` arms it)"}, next
 		}
-		return healthSection{Name: "ui-oracles", Status: healthOK, Detail: detail}, next
+		return healthSection{Name: "ui-oracles", Status: healthOK,
+			Detail: fmt.Sprintf("no triggers in %d new trace record(s)%s", len(lines), rotatedSuffix(rotated))}, next
 	}
 	return healthSection{Name: "ui-oracles", Status: healthWarn,
 		Detail: formatOracleCounts(counts) + rotatedSuffix(rotated)}, next
@@ -277,6 +293,41 @@ func rssSection(pid int, alive bool) healthSection {
 		Detail: fmt.Sprintf("tree %s (backend %s + %d child process(es) %s)",
 			humanBytes(tree.TotalRSSBytes()), humanBytes(tree.Self.RSSBytes),
 			len(tree.Children), humanBytes(tree.ChildrenRSSBytes))}
+}
+
+// autopilotSection reports whether the soak preset actually armed.
+//
+// It is red when it failed, and that is the point of the section: a soak
+// whose autopilot threw looks identical to a healthy idle instance from
+// the outside — live process, seeded database, no traffic — so an
+// hours-long run can sit there measuring nothing. The field is optional
+// on the wire; an instance that does not answer it is not judged, and a
+// non-soak instance answers "off", which is not a finding.
+func autopilotSection(ctx context.Context, client *harnessclient.Client, bs harnessclient.Bootstrap) healthSection {
+	info, err := client.Info(ctx)
+	if err != nil {
+		return healthSection{Name: "soak-autopilot", Status: healthNA, Detail: err.Error()}
+	}
+	state := strings.TrimSpace(info.SoakAutopilot)
+	switch {
+	case state == "":
+		return healthSection{Name: "soak-autopilot", Status: healthNA,
+			Detail: "this backend does not report autopilot state"}
+	case strings.HasPrefix(state, "failed"):
+		return healthSection{Name: "soak-autopilot", Status: healthRed,
+			Detail: "the soak preset did not arm: " + strings.TrimSpace(strings.TrimPrefix(state, "failed:"))}
+	case state == "off":
+		if bs.Mode == instanceinfo.ModeSoak {
+			// The registry says soak and the backend says the preset is not
+			// running. One of the two is wrong, and either way nothing is
+			// streaming into a run somebody expects traffic from.
+			return healthSection{Name: "soak-autopilot", Status: healthWarn,
+				Detail: "this instance is registered as a soak but its autopilot is off"}
+		}
+		return healthSection{Name: "soak-autopilot", Status: healthOK, Detail: "off (not a soak instance)"}
+	default:
+		return healthSection{Name: "soak-autopilot", Status: healthOK, Detail: state}
+	}
 }
 
 // dbSection asks the instance where its store is rather than composing a

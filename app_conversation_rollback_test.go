@@ -455,7 +455,7 @@ func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T)
 	// A row appended AFTER the partial failure (the session resumed and
 	// streamed before the user retried). The through-parent re-slice
 	// must cut it (R5-6).
-	sessionPath, err := sessionfork.LocateSessionFile(sessionID, thread.WorkspacePath)
+	sessionPath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, thread.WorkspacePath)
 	if err != nil {
 		t.Fatalf("locate session: %v", err)
 	}

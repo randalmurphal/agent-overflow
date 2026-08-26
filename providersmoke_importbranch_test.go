@@ -119,7 +119,7 @@ func TestProviderSmokeClaudeImportedBranchResume(t *testing.T) {
 	})
 	driver.requireSameSession(t, "--resume-session-at", sessionID, active)
 
-	sourcePath, err := sessionfork.LocateSessionFile(sessionID, driver.workspace)
+	sourcePath, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, driver.workspace)
 	if err != nil {
 		driver.fail(t, "IMPORTED-BRANCH RESUME FAILED: the transcript for session %s is not where production looks for it: %v", sessionID, err)
 	}
@@ -398,7 +398,7 @@ func (d *providerSmokeClaudeDriver) removeTranscripts(t *testing.T) {
 	d.mu.Unlock()
 
 	for _, sessionID := range sessionIDs {
-		path, err := sessionfork.LocateSessionFile(sessionID, d.workspace)
+		path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, d.workspace)
 		if err != nil {
 			t.Logf("provider smoke (claude): locate transcript for session %s to clean up: %v", sessionID, err)
 			continue

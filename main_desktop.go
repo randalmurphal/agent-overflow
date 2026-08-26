@@ -15,7 +15,6 @@ import (
 	"errors"
 	"io/fs"
 	"log"
-	"net/url"
 	"sync"
 
 	"agent-overflow/internal/appidentity"
@@ -185,12 +184,7 @@ func (s webviewShell) run() error {
 	// survives the per-launch origin change. Empty cid degrades to the
 	// frontend's browser-cached fallback identity.
 	clientID := ensureClientID()
-	withClientID := func(pageURL string) string {
-		if clientID == "" || pageURL == "" {
-			return pageURL
-		}
-		return pageURL + "&cid=" + url.QueryEscape(clientID)
-	}
+	withClientID := func(pageURL string) string { return appURLWithClientID(pageURL, clientID) }
 	reloadURL := func() string { return withClientID(s.pageURL()) }
 
 	// Context-menu policy lives in the frontend guard

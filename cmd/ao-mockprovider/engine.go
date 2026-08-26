@@ -30,12 +30,34 @@ type protocolAdapter interface {
 	sendInterruptedTurn(vars scenario.Vars)
 }
 
+// maxPendingAdvances bounds the per-turn buffered-advance backlog. The
+// buffer exists only to tolerate an advance command that RACES the gate
+// it targets by a few milliseconds; a dozen of them queued behind one
+// gate is a driving mistake, not a race, and an unbounded slice on a
+// soak-length process is a leak. Past the cap an advance is discarded
+// with a report rather than parked where nothing will ever read it.
+const maxPendingAdvances = 16
+
 // gate is one open waitSignal/stall block. An unnamed gate matches any
 // advance; a named gate matches advances with the same name or none.
 type gate struct {
 	turn int
 	name string
 	ch   chan struct{}
+}
+
+// pendingAdvance is one buffered advance command, stamped with the turn
+// it arrived during.
+//
+// The stamp is what keeps the race tolerance from becoming a leak. An
+// advance that matched nothing is parked so a gate opening microseconds
+// later still sees it — but only within the turn it was issued in.
+// Without the stamp, an unnamed advance stranded in turn 1 silently
+// released the FIRST gate of turn 4, three turns and minutes later,
+// which reads as a mock that skipped a step for no reason.
+type pendingAdvance struct {
+	turn int
+	name string
 }
 
 type scenarioTurn struct {
@@ -62,15 +84,48 @@ type engine struct {
 	// adapter that knows something about the turn the scenario file cannot —
 	// the text of a provider-queued message, which only exists at dispatch
 	// time. Merged over base in varsForTurn and dropped with the turn.
-	turnVars        map[int]scenario.Vars
-	turnSeq         int // last begun user-turn number (1-based)
-	activeTurn      int // turn currently executing scenario steps
-	turns           map[int]*scenarioTurn
-	doneReported    bool
+	turnVars   map[int]scenario.Vars
+	turnSeq    int // last begun user-turn number (1-based)
+	activeTurn int // turn currently executing scenario steps
+	turns      map[int]*scenarioTurn
+	// doneTurns records which turn numbers already reported scenario_done.
+	// Per TURN, not per process: under afterTurns:repeatLast every turn
+	// past the last scripted one runs the same steps and finishes just as
+	// completely, so a once-per-process latch left turns 2..N reporting
+	// nothing and a per-turn await hanging forever.
+	doneTurns       map[int]bool
 	gate            *gate
-	pendingAdvances []string
+	pendingAdvances []pendingAdvance
 
 	turnCh chan int
+
+	// startupDelay fires once, immediately before the adapter writes the
+	// first frame proving the provider is up. sync.Once rather than a
+	// flag because both adapters call it from their stdin goroutine while
+	// the engine goroutine is already running.
+	startupDelay sync.Once
+}
+
+// awaitStartupDelay blocks for the scenario's startupDelayMs the FIRST
+// time an adapter is about to announce itself, and returns immediately
+// every time after. See scenario.Scenario.StartupDelayMs.
+func (e *engine) awaitStartupDelay() {
+	e.startupDelay.Do(func() {
+		if e.sc.StartupDelayMs > 0 {
+			log.Printf("startupDelayMs: holding the first provider frame for %dms", e.sc.StartupDelayMs)
+			sleepMs(e.sc.StartupDelayMs)
+		}
+	})
+}
+
+// providerVersion is the version the mock claims to be: the scenario's
+// override when it declares one, otherwise the mock's own (which sits
+// above every version gate the app applies).
+func (e *engine) providerVersion() string {
+	if v := e.sc.ProviderVersion; v != "" {
+		return v
+	}
+	return mockVersionNumber
 }
 
 func newEngine(sc *scenario.Scenario, fixtureRoot, cwd string, w *lineWriter, rep *reporter, base scenario.Vars) *engine {
@@ -84,6 +139,7 @@ func newEngine(sc *scenario.Scenario, fixtureRoot, cwd string, w *lineWriter, re
 		base:        base,
 		turnVars:    make(map[int]scenario.Vars),
 		turns:       make(map[int]*scenarioTurn),
+		doneTurns:   make(map[int]bool),
 		turnCh:      make(chan int, turnQueueCap),
 	}
 }
@@ -313,7 +369,28 @@ func (e *engine) finishTurn(n int) {
 	}
 	delete(e.turns, n)
 	delete(e.turnVars, n)
+	// The dedupe is within-turn only, so the entry dies with the turn —
+	// a soak runs unboundedly many of them.
+	delete(e.doneTurns, n)
+	dropped := e.dropTurnAdvancesLocked(n)
 	e.mu.Unlock()
+	e.reportDroppedAdvances(n, dropped)
+}
+
+// reportDroppedAdvances says on the control channel what a turn boundary
+// threw away. An advance that outlived its turn is a command a test
+// issued and nothing consumed; leaving that silent is how a scenario
+// appears to skip a gate for no reason.
+func (e *engine) reportDroppedAdvances(turn int, dropped []pendingAdvance) {
+	for _, pending := range dropped {
+		log.Printf("advance %q discarded at the end of turn %d (its gate never opened)", pending.name, pending.turn)
+		e.rep.report(control.Report{
+			Kind:   control.ReportAdvanceBuffered,
+			Turn:   turn,
+			Gate:   pending.name,
+			Detail: control.AdvanceDroppedDetail,
+		})
+	}
 }
 
 // interruptTurn marks the current scenario turn aborted and releases a gate
@@ -346,8 +423,13 @@ func (e *engine) interruptTurn(turnID string) bool {
 		e.gate = nil
 		close(g.ch)
 	}
+	// An interrupt ends the turn, so its buffered advances end with it —
+	// otherwise a stranded advance survives the abort and releases the
+	// first gate of whatever turn comes next.
+	dropped := e.dropTurnAdvancesLocked(n)
 	e.mu.Unlock()
 	e.rep.report(control.Report{Kind: control.ReportTurnInterrupted, Turn: n})
+	e.reportDroppedAdvances(n, dropped)
 	return true
 }
 
@@ -372,10 +454,20 @@ func (e *engine) turnAbortSignal(n int) <-chan struct{} {
 	return turn.abort
 }
 
+// reportScenarioDone posts scenario_done once per TURN.
+//
+// Once per PROCESS is what this used to be, and under the default
+// afterTurns:repeatLast — where turns 2..N re-run the last scripted turn
+// and finish exactly as turn 1 did — that latch meant every turn after
+// the first reported nothing at all. A test awaiting the boundary for
+// turn 2 waited forever on a mock that had already finished.
+//
+// The dedupe is still needed per turn: runTurn can reach the report from
+// more than one path within one turn number.
 func (e *engine) reportScenarioDone(turn int) {
 	e.mu.Lock()
-	already := e.doneReported
-	e.doneReported = true
+	already := e.doneTurns[turn]
+	e.doneTurns[turn] = true
 	e.mu.Unlock()
 	if !already {
 		e.rep.report(control.Report{Kind: control.ReportScenarioDone, Turn: turn})
@@ -402,33 +494,86 @@ func (e *engine) handleCommand(cmd control.Command) {
 
 // advance releases the open gate when it matches, otherwise buffers the
 // advance so a command racing the gate's opening is not lost.
+//
+// Both outcomes report, because "my advance did nothing" is otherwise
+// unobservable from outside the process: the buffered case looks
+// identical to a command that was never delivered.
 func (e *engine) advance(name string) {
 	e.mu.Lock()
 	if g := e.gate; g != nil && gateMatches(g.name, name) {
 		e.gate = nil
+		released := g.name
 		e.mu.Unlock()
 		close(g.ch)
+		e.rep.report(control.Report{Kind: control.ReportAdvanceReleased, Turn: g.turn, Gate: released})
 		return
 	}
-	e.pendingAdvances = append(e.pendingAdvances, name)
+	turn := e.currentTurnLocked()
+	openGate := ""
+	if e.gate != nil {
+		openGate = e.gate.name
+	}
+	dropped := len(e.pendingAdvances) >= maxPendingAdvances
+	if !dropped {
+		e.pendingAdvances = append(e.pendingAdvances, pendingAdvance{turn: turn, name: name})
+	}
 	e.mu.Unlock()
-	log.Printf("advance %q buffered (no matching open gate yet)", name)
+
+	rep := control.Report{Kind: control.ReportAdvanceBuffered, Turn: turn, Gate: name, OpenGate: openGate}
+	if dropped {
+		rep.Detail = control.AdvanceDroppedDetail
+		log.Printf("advance %q DISCARDED: %d advances already buffered for turn %d", name, maxPendingAdvances, turn)
+	} else {
+		log.Printf("advance %q buffered for turn %d (no matching open gate yet)", name, turn)
+	}
+	e.rep.report(rep)
+}
+
+// currentTurnLocked is the turn an out-of-band command belongs to: the
+// one executing steps, or — between enqueue and pickup — the last one
+// begun. Callers hold mu.
+func (e *engine) currentTurnLocked() int {
+	if e.activeTurn != 0 {
+		return e.activeTurn
+	}
+	return e.turnSeq
+}
+
+// dropTurnAdvancesLocked discards every buffered advance from turn n or
+// earlier. Called at both ends a turn can finish through (completion and
+// interrupt), which is what bounds the race tolerance to one turn.
+// Callers hold mu.
+func (e *engine) dropTurnAdvancesLocked(n int) []pendingAdvance {
+	kept := e.pendingAdvances[:0]
+	var dropped []pendingAdvance
+	for _, pending := range e.pendingAdvances {
+		if pending.turn <= n {
+			dropped = append(dropped, pending)
+			continue
+		}
+		kept = append(kept, pending)
+	}
+	e.pendingAdvances = kept
+	return dropped
 }
 
 // openGate registers a gate for the engine goroutine to block on. A
-// buffered matching advance is consumed instead (nil return = don't
-// block).
+// buffered matching advance from THIS turn is consumed instead (nil
+// return = don't block).
 func (e *engine) openGate(turn int, name string) <-chan struct{} {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if state := e.turns[turn]; state != nil && state.aborted {
+		e.mu.Unlock()
 		return nil
 	}
 	for i, pending := range e.pendingAdvances {
-		if gateMatches(name, pending) {
-			e.pendingAdvances = append(e.pendingAdvances[:i], e.pendingAdvances[i+1:]...)
-			return nil
+		if pending.turn != turn || !gateMatches(name, pending.name) {
+			continue
 		}
+		e.pendingAdvances = append(e.pendingAdvances[:i], e.pendingAdvances[i+1:]...)
+		e.mu.Unlock()
+		e.rep.report(control.Report{Kind: control.ReportAdvanceReleased, Turn: turn, Gate: name})
+		return nil
 	}
 	if e.gate != nil {
 		// Steps run on one goroutine, so two open gates means a bug here.
@@ -436,11 +581,17 @@ func (e *engine) openGate(turn int, name string) <-chan struct{} {
 	}
 	g := &gate{turn: turn, name: name, ch: make(chan struct{})}
 	e.gate = g
+	e.mu.Unlock()
 	return g.ch
 }
 
 // gateMatches: an empty advance releases any gate, an unnamed gate is
 // released by any advance, otherwise names must agree.
+//
+// The unnamed-advance tolerance is deliberate and stays SCOPED TO ONE
+// TURN by the caller: "release whichever gate opens next" is a useful
+// thing for a driving test to say about the turn it is watching, and a
+// dangerous thing to let carry into the next one.
 func gateMatches(gateName, advanceName string) bool {
 	return advanceName == "" || gateName == "" || advanceName == gateName
 }

@@ -42,11 +42,11 @@ func (e *engine) runStep(vars scenario.Vars, turn int, step scenario.Step) {
 	case step.Emit != nil:
 		e.runEmit(vars, step.Emit)
 	case step.Fixture != nil:
-		e.runFixture(vars, step.Fixture)
+		e.runFixture(vars, turn, step.Fixture)
 	case step.DelayMs != 0:
 		sleepMs(step.DelayMs)
 	case step.WriteFile != nil:
-		e.runWriteFile(step.WriteFile)
+		e.runWriteFile(turn, step.WriteFile)
 	case step.Approval != nil:
 		e.runApproval(vars, turn, step.Approval)
 	case step.WaitSignal != nil:
@@ -115,6 +115,14 @@ func (e *engine) runRepeat(vars scenario.Vars, turn int, rp *scenario.RepeatStep
 }
 
 func (e *engine) runEmit(vars scenario.Vars, em *scenario.EmitStep) {
+	if em.Coalesce {
+		lines := make([]string, len(em.Lines))
+		for i, line := range em.Lines {
+			lines[i] = vars.Substitute(line)
+		}
+		e.w.writeLines(lines)
+		return
+	}
 	for i, line := range em.Lines {
 		if i > 0 && em.DelayBetweenMs > 0 {
 			sleepMs(em.DelayBetweenMs)
@@ -123,17 +131,27 @@ func (e *engine) runEmit(vars scenario.Vars, em *scenario.EmitStep) {
 	}
 }
 
+// stepFailed records a step that could not do its job on BOTH surfaces:
+// the mock's stderr (where a human reading a harness log finds it) and
+// the control channel (where a test's health rollup or await can see
+// it). Stderr alone is what made a missing fixture look like a silent
+// provider — the turn ran, emitted nothing, and the app waited.
+func (e *engine) stepFailed(turn int, detail string) {
+	log.Print(detail)
+	e.rep.report(control.Report{Kind: control.ReportFixtureError, Turn: turn, Detail: detail})
+}
+
 // runFixture streams a captured wire log. FromLine/ToLine are 1-indexed
 // inclusive against the ORIGINAL file line numbers (before blank/#
 // filtering) so ranges quoted in fixture READMEs stay valid.
-func (e *engine) runFixture(vars scenario.Vars, fx *scenario.FixtureStep) {
+func (e *engine) runFixture(vars scenario.Vars, turn int, fx *scenario.FixtureStep) {
 	path := fx.Path
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(e.fixtureRoot, path)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Printf("fixture step failed: %v (step skipped)", err)
+		e.stepFailed(turn, fmt.Sprintf("fixture step failed: %v (step skipped)", err))
 		return
 	}
 	emitted := false
@@ -161,15 +179,15 @@ func (e *engine) runFixture(vars scenario.Vars, fx *scenario.FixtureStep) {
 // runWriteFile mutates the workspace (the mock's cwd). Escaping paths
 // fail the step loudly but keep the scenario running — a bad path in a
 // test script must not take the whole mock down mid-scenario.
-func (e *engine) runWriteFile(wf *scenario.WriteFileStep) {
+func (e *engine) runWriteFile(turn int, wf *scenario.WriteFileStep) {
 	rel, err := normalizeWorkspaceRel(wf.Path)
 	if err != nil {
-		log.Printf("writeFile step rejected: %v (step skipped)", err)
+		e.stepFailed(turn, fmt.Sprintf("writeFile step rejected: %v (step skipped)", err))
 		return
 	}
 	full := filepath.Join(e.cwd, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		log.Printf("writeFile step failed: %v (step skipped)", err)
+		e.stepFailed(turn, fmt.Sprintf("writeFile step failed: %v (step skipped)", err))
 		return
 	}
 	flags := os.O_CREATE | os.O_WRONLY
@@ -180,13 +198,13 @@ func (e *engine) runWriteFile(wf *scenario.WriteFileStep) {
 	}
 	f, err := os.OpenFile(full, flags, 0o644)
 	if err != nil {
-		log.Printf("writeFile step failed: %v (step skipped)", err)
+		e.stepFailed(turn, fmt.Sprintf("writeFile step failed: %v (step skipped)", err))
 		return
 	}
 	_, werr := f.WriteString(wf.Content)
 	cerr := f.Close()
 	if werr != nil || cerr != nil {
-		log.Printf("writeFile step failed: write=%v close=%v", werr, cerr)
+		e.stepFailed(turn, fmt.Sprintf("writeFile step failed: write=%v close=%v", werr, cerr))
 	}
 }
 

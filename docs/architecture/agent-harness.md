@@ -56,22 +56,51 @@ Boot performs, in order (`prepareHarness`):
    `<dataRoot>/home`, so `~/.claude` scans, `~/.codex` tails, and git's
    global config are harness-local and seedable. A minimal `.gitconfig`
    is written so fixture commits work. Set `AO_HARNESS_KEEP_HOME=1` to
-   opt out (e.g. replaying against real provider session files) —
-   **read-only widening only**: the credential surface (account slots,
-   canonical credential, orphan prune) stays pinned under
-   `<dataRoot>/home` via `App.credentialHomeOverride` in both modes, so
-   a keep-home run can read the real session trees but can never write
-   to or prune the real `~/.claude` / `~/.codex` credential state.
-   (Before that pin, a keep-home run with a reused data dir handed the
-   boot prune a foreign keep-set aimed at the real home — the
-   2026-07-29 incident class.)
-3. **Mock provider resolution.** `--mock-provider`, else the
+   opt out — **child-process widening only**. What the flag changes is
+   what SPAWNED processes see: `$HOME` stays real, so a provider CLI (or
+   `ao-mockprovider`, or git) launched by the harness resolves the real
+   trees. What it does NOT change is where the BACKEND resolves provider
+   state: every `~/.claude` / `~/.codex` path the backend builds goes
+   through `App.providerHome()`, which returns
+   `App.credentialHomeOverride` — always `<dataRoot>/home` — in both
+   modes. That covers the credential surface (account slots, canonical
+   credential, orphan prune), the session-import scan, the MCP config
+   writers (`~/.claude.json`, `~/.codex/config.toml`), the Claude
+   memory-directory mkdir, the authenticated rate-limit probe's
+   credential read, and every `sessionfork` locate/fork/relocate — so a
+   keep-home run can never read, write, or prune the developer's real
+   provider state from inside the backend.
+   `TestAppLayerResolvesProviderHomesThroughOneSeam`
+   (`app_provider_home_test.go`) is what keeps that true: it fails on a
+   bare `os.UserHomeDir()` in `app_*.go`, `internal/provider/`,
+   `internal/claudeconfig` or `internal/codexconfig` outside a
+   reasoned allowlist. Before the seam, only the credential surface and
+   the import scan honoured the pin and eight other sites read `$HOME`
+   directly. (And before the pin existed at all, a keep-home run with a
+   reused data dir handed the boot prune a foreign keep-set aimed at the
+   real home — the 2026-07-29 incident class.)
+3. **Single-instance lock.** An OS-held advisory lock on
+   `<dataDir>/harness.lock` (`flock` on unix, `LockFileEx` on Windows),
+   taken before ANY write into the root and held for the process's
+   lifetime. Two backends on one data root open the same SQLite file and
+   the second's `publishInstance` overwrites the first's registry row, so
+   every tool then points at the wrong backend. The refusal names the
+   holder's pid and boot mode. It lives in the backend rather than in a
+   launcher because every entry point has to be covered: `make harness`
+   and the wails3 dev harness path boot directly, and `ao-harness up`'s
+   registry pre-check is skippable and TOCTOU. Because the kernel drops
+   the lock when the process dies however it dies, a crashed boot leaves
+   the next one free with no stale-pid reaping.
+4. **Mock provider resolution.** `--mock-provider`, else the
    `ao-mockprovider` binary next to the running executable (where
    `make harness-build` puts it). Validated eagerly.
-4. **Settings seed.** `claudeBinaryPath` and `codexBinaryPath` both
+5. **Settings seed.** `claudeBinaryPath` and `codexBinaryPath` both
    point at the mock; the NDJSON event log
    (`observabilityEventLogEnabled`) is switched on so every session is
-   recordable for wire-level replay. The mock path is additionally
+   recordable for wire-level replay. Measurement caveat: that writer is
+   OFF by default in production, so every perf/bench number a harness
+   produces includes per-event NDJSON serialization a user's run
+   doesn't pay. The mock path is additionally
    pinned at spawn-resolution time (`App.providerBinaryOverride`), so
    even an `UpdateSettings` call after boot cannot repoint a spawn at a
    real `claude`/`codex` binary.
@@ -83,11 +112,21 @@ stdout carries exactly one parseable line:
 ```
 __AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?token=...","port":PORT,"token":"...",
                  "dataRoot":"...","dataDir":"...","homeDir":"...","mockProvider":"...",
-                 "pid":123,"version":"...","startupError":"only on failed boot"}
+                 "pid":123,"version":"...","clientId":"...",
+                 "startupError":"only on failed boot"}
 ```
 
-`url` goes straight into a browser / `page.goto()`. `token` opens the
-RPC WebSocket. All subsequent logging goes to stderr.
+`url` goes straight into a browser / `page.goto()` — it already carries
+`&cid=` — and `token` opens the RPC WebSocket. All subsequent logging goes
+to stderr.
+
+`clientId` is the instance's durable UI-state identity, resolved under its
+OWN `--data-dir` and therefore never the developer's. It is reported
+separately as well as threaded onto `url` because a caller that builds its
+own page URL (the Windows launcher opening a WebView2 window on a `--soak`
+backend, a Playwright run pointing at the instance) must attach the SAME
+id, or the frontend's per-client `ui_state` bucket changes identity on
+every port churn and every persisted UI preference reads back as unset.
 
 The same payload is written to `<dataDir>/harness-instance.json` (0600)
 once the backend is ready, plus a token-free discovery row at
@@ -110,6 +149,37 @@ webview's cookies, localStorage, IndexedDB replica and shader caches
 stay inside the data root. Under WSLg the window lands on the Windows
 desktop. Full contract: `docs/specs/testing-harness.md` §1-§2.
 
+### What an isolated boot does NOT stub
+
+The premise is that everything except the provider processes is
+production code, so three things that look like they could be stubbed
+are not:
+
+- **OS notifications.** `newIsolatedProviderApp` installs the real
+  `transportNotificationSender`, the same one `runHeadless` does.
+  `HarnessNotify` therefore SUCCEEDS and the send is observable on
+  `notification:send`; presentation is the subscriber's job (the Windows
+  launcher under `--soak`, nobody under a headless `--harness`, where the
+  sender logs one line and returns nil). It used to install a refusal
+  stub, which meant the e2e spec covering the notification pipe asserted
+  the stub's error string and never executed the emission at all.
+- **pprof.** Still opt-in via `AGENT_OVERFLOW_PPROF`, but a BARE enable
+  (`1`/`true`) binds an ephemeral loopback port on an isolated boot
+  instead of `pprofserve`'s fixed `127.0.0.1:6363`. Isolated boots are
+  the one shape deliberately run N-at-a-time (a soak beside your own app,
+  a harness per checkout), and the variable is usually INHERITED from a
+  `make dev` shell rather than chosen — so the second instance's listener
+  used to fail to bind and log an error for a port nobody asked it to
+  claim. An explicit `host:port` is honoured verbatim.
+- **Frontend assets.** `--harness` / `--soak` honour
+  `FRONTEND_DEVSERVER_URL` even in a production-stamped binary (an
+  isolated boot is already an explicit operator act). That variable is
+  EXPORTED by `make dev`, so a harness launched from that terminal
+  silently serves an unminified, HMR-instrumented bundle — and every
+  number a perf run or a soak then produces describes a build nobody
+  ships. The boot logs a loud `WARNING:` line naming the dev server when
+  this is actually happening.
+
 ## RPC surface
 
 One WebSocket carries everything:
@@ -122,14 +192,15 @@ One WebSocket carries everything:
 
 | Method | Purpose |
 |---|---|
-| `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log). |
+| `HarnessInfo()` | Identity + evidence paths (DB, event-log dir, UI trace, frontend error log), the instance's `clientId`, and `soakAutopilot` — `"off"` / `"arming"` / `"armed"` / `"failed: <reason>"`. The autopilot arms on a goroutine that starts *after* the instance is published as a soak, so without the latch a soak that never armed looks identical to a working one. |
+| `HarnessListMethods()` | Every method name reachable on the wire, sorted — the App's bindings and the Harness surface in one array of bare wire names. Lets a caller check an instance has the RPC it is about to call instead of discovering a version mismatch as an opaque `method_not_found`. |
 | `HarnessEmit(channel, payload)` | Publish a raw event on the bus — escape hatch for injecting one-off frames at the frontend. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
-| `HarnessSeed(spec)` | Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, plus project-scoped workflow definitions/profile/items. Returns created ids. |
-| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords` — production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
+| `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported — a mistyped `treads:` used to seed nothing and return success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files — slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
+| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords` — production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex` — seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids — the workflows overlay stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` and `sessionRef` scopes — see "Scoping a scenario" below). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
-| `HarnessListMocks()` | Registered mock processes in spawn order. |
+| `HarnessListMocks()` | Registered mock processes in spawn order, dead ones pruned by a PID probe (30s grace so a just-exited mock's terminal reports still land). Each row carries `openGate` (the `waitSignal` gate the mock is currently blocked on, empty when none) and `pendingAdvances` (advances buffered for gates that have not opened yet) — the state a stuck `advance` await is diagnosed from. |
 | `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
 | `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code). |
 | `HarnessRecordStart(name, threadId)` / `HarnessRecordStop()` | Capture a replay bundle: DB snapshot at start + the event-log slice recorded until stop. Start requires the thread to be idle (no turn in flight) so the snapshot/event boundary is exact; a failed stop discards the recording and frees the name. |
@@ -137,7 +208,7 @@ One WebSocket carries everything:
 | `HarnessListBundles()` | Enumerate saved bundles. |
 | `HarnessReplayStart(path, opts)` | Replay a raw event-log NDJSON file (no DB restore). |
 | `HarnessReplayPause/Resume/Step/Stop/Status()` | Playback control; `Step` releases exactly one event while paused. |
-| `HarnessUIQuery(spec)` | Ask the attached frontend bridge a question and wait up to 10s for the answer. See "Frontend bridge and perf" below. |
+| `HarnessUIQuery(spec)` | Ask the attached frontend bridge a question and wait up to 10s for the answer — but only ~250ms when NO client is connected to the event bus at all, since there is nothing to wait for and a headless script's twenty probes should not cost four minutes. A connected client with no bridge in its bundle is indistinguishable from a slow one and still waits the full timeout. See "Frontend bridge and perf" below. |
 | `HarnessUIQueryReply(id, result)` | The bridge's answer path. Called by the page, not by a test. A reply for an id with no waiter is dropped silently. |
 | `HarnessPerfStart(spec)` / `HarnessPerfStop()` / `HarnessPerfStatus()` | Arm, stop and inspect a perf run. Stop returns one report folding the in-page meters and the Go-side samples. |
 
@@ -230,6 +301,17 @@ One binary impersonates both providers, sniffing argv: Claude's
 `--input-format stream-json` NDJSON session (plus the `--max-turns 0`
 probe), and Codex's `app-server` JSON-RPC 2.0 (plus `--version`
 satisfying both version gates). Scenarios script what it streams.
+Protocol strictness is deliberate on both adapters: Claude
+`control_request`s are acked with the real CLI's wire keys per subtype
+(pinned against the 2.1.237 binary), and a Codex request the mock does
+not implement answers JSON-RPC `-32601` rather than silence — so
+`codex.IsMethodUnsupported` fallbacks are reachable under the harness.
+
+**Known limitation — auth is always healthy.** The mock never models
+login state: both adapters present a logged-in, non-expired account, and
+no scenario step can drive logout, token expiry, or an auth error shape.
+Auth/credential UX is testable only against real CLIs
+(`make provider-smoke`).
 
 ### Scenarios (`internal/harness/scenario`)
 
@@ -238,7 +320,9 @@ list consumed per user message), and `afterTurns`
 (`repeatLast` | `silent` | `exit`). Steps:
 
 - `emit` — write wire lines (`delayBetweenMs`, or `chunkBytes` +
-  `chunkIntervalMs` for partial-line stress),
+  `chunkIntervalMs` for partial-line stress, or `coalesce` for the
+  opposite: every line in ONE stdout write, the multi-envelope read a
+  fast provider produces),
 - `fixture` — stream a recorded NDJSON fixture file (`fromLine`/`toLine`),
 - `delayMs`, `writeFile` (real workspace mutations so diffs/git are real),
 - `approval` — raise a permission request, branch `onAllow`/`onDeny`;
@@ -254,6 +338,17 @@ list consumed per user message), and `afterTurns`
 Lines substitute `${SESSION_ID}`, `${THREAD_ID}`, `${TURN}`,
 `${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`, and inside a `repeat` body
 `${ITER}` (1-based iteration).
+
+Two scenario-level knobs sit beside the step lists. `startupDelayMs`
+delays the first frame that proves the provider is up (Claude's first
+`system/init`, Codex's `initialize` response) — once per process, capped
+at 30s — so the app's cold-start window is drivable. `providerVersion`
+downgrades the version the mock claims (Codex `initialize` userAgent,
+Claude `system/init.claude_code_version`), which is what every
+per-method version gate reads; the default is above every gate, so this
+is the only way a spec exercises a gate's fails-closed branch. It does
+not reach `--version`, the account probe, or one-shot text generation —
+those invocations answer and exit before a scenario loads.
 
 An unbounded `repeat` must contain a pacing step among its direct
 children (`delayMs > 0`, `stall`, `waitSignal`, `approval`, or an `emit`
@@ -352,10 +447,28 @@ process-wide — terminals, git hooks, and other harness children don't
 inherit the control credentials. The mock then long-polls for
 commands and posts progress reports — `registered`, `turn_started`,
 `user_input`, `step_started`, `step_completed`, `waiting_signal`,
-`approval_pending`, `approval_decided`, `turn_interrupted`, `scenario_done`, `exiting` —
+`advance_released`, `advance_buffered`, `approval_pending`,
+`approval_decided`, `turn_interrupted`, `history_cut`, `fixture_error`,
+`session_config`, `scenario_done`, `exiting` —
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
-instead of sleeping. `user_input` additionally carries `report.input` and
+instead of sleeping.
+
+The advance pair makes gate handshakes assertable instead of inferred:
+`advance_released` (gate named in `report.gate`) fires when an advance
+actually opens a gate — immediately, or later when a buffered advance is
+consumed by the gate opening. `advance_buffered` fires when an advance
+matched nothing and was parked (`report.openGate` names the gate that
+WAS open and didn't match, empty when none); its `detail` is empty for a
+real buffering and marks a DISCARD when the per-turn buffer was full.
+`fixture_error` reports a step that could not do its job (unreadable
+fixture file, rejected `writeFile`) — without it such a turn is a silent
+provider with evidence only in the mock's stderr. `session_config`
+posts once per mock with the permission/sandbox configuration the app
+actually launched it with. `scenario_done` is per TURN: every turn that
+runs its step list to completion reports it for its own 1-based turn
+number, repeated (`repeatLast`) turns included — await it with the turn
+you drove, not just its first occurrence. `user_input` additionally carries `report.input` and
 `report.sessionRef`: the exact text the adapter received and the Claude
 session/Codex thread that received it. This is the assertion surface for both
 prompt selection and session routing; neither can be recovered reliably from
@@ -403,15 +516,25 @@ in text.
 boots (`internal/transport/server.go`, set where `main.go` registers the
 `Harness` receiver — one flag, two surfaces, no way to have one without
 the other). The SPA reads it in `lib/transport/harnessMode.ts` and
-`lib/stores/harnessBridge.ts` arms on it — LAZILY: the flag arms only
-the cheap event subscription, and the first `harness:ui-query` triggers
-the dynamic import and the document-wide mutation observer. A soak that
-is never queried therefore streams for hours with no observer allocating
-a MutationRecord per delta — the rig must not perturb the renderer it
-exists to watch. The consequence is honest, not free: the first query's
-`settled` reads false until the observer has a settle window of history.
-A view-only remote session never arms at all (`harness:ui-query` is
-loopback-only, so it could never receive a query). An ordinary boot
+`lib/stores/harnessBridge.ts` arms on it — LAZILY, in two steps: the flag
+arms only the cheap event subscription, the first `harness:ui-query`
+triggers the dynamic import, and the document-wide mutation observer is
+installed only by a query that reports settledness (`viewport`). It is
+then DISARMED again as soon as nothing needs it — a few seconds' linger
+past the last such query so a settle poll keeps one continuous history,
+and immediately at BOTH ends of a perf run (`HarnessPerfStart` clears
+whatever the bench's own thread-open polling left armed;
+`HarnessPerfStop` does not wait out the linger); the next `viewport`
+re-arms it transparently, mid-run included. A soak that is never queried therefore streams for hours
+with no observer allocating a MutationRecord per delta, and a perf run or
+a bench workload measures a renderer carrying no observer either unless
+the caller explicitly asked the page whether it had settled — the rig
+must not perturb the renderer it exists to watch, least of all while it
+is taking the numbers. The consequence is honest, not free: a freshly
+armed clock has no history, so that query's `settled` reads false until
+the observer has a settle window of it. A view-only remote session never
+arms at all (`harness:ui-query` is loopback-only, so it could never
+receive a query). An ordinary boot
 reads a boolean and stops; the bridge modules are their own rolldown
 chunk that a normal page never fetches (`architecture.test.ts` bans any
 static import of `lib/harness/` outside the store's one dynamic door).

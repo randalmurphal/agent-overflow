@@ -15,9 +15,23 @@ import (
 // other project dir under ~/.claude/projects/).
 var ErrSessionFileNotFound = errors.New("sessionfork: session file not found")
 
-// LocateSessionFile resolves the on-disk path of a Claude session JSONL.
+// ProjectsDirForHome returns `<home>/.claude/projects`.
 //
-// Claude stores sessions at ~/.claude/projects/<slug>/<sessionID>.jsonl
+// The home is INJECTED, never resolved here. Every path this package
+// returns becomes a WRITE target one call later — WriteForkFile* writes
+// beside the transcript LocateSessionFile found — so a $HOME read here
+// would put a fork into the developer's real `~/.claude/projects` on any
+// boot whose provider home is pinned elsewhere (AO_HARNESS_KEEP_HOME, a
+// test fixture's temp home). The app layer's App.providerHome() is the
+// one seam that decides which home this is.
+func ProjectsDirForHome(home string) string {
+	return filepath.Join(home, ".claude", "projects")
+}
+
+// LocateSessionFile resolves the on-disk path of a Claude session JSONL
+// under projectsDir (see ProjectsDirForHome).
+//
+// Claude stores sessions at <projectsDir>/<slug>/<sessionID>.jsonl
 // where slug is the workspace's CANONICAL absolute path (symlinks
 // resolved) run through the CLI's own encoder — every non-alphanumeric
 // UTF-16 code unit becomes '-', and a sanitized form past
@@ -26,10 +40,13 @@ var ErrSessionFileNotFound = errors.New("sessionfork: session file not found")
 // slug is `-private-tmp-<...>` not `-tmp-<...>`.
 //
 // If the file isn't where we expect, fall back to scanning every project
-// dir under ~/.claude/projects/ — sessions migrate when a workspace is
+// dir under projectsDir — sessions migrate when a workspace is
 // moved, and a pre-2.1.224 CLI wrote long paths under the untruncated
 // name the primary candidate no longer spells.
-func LocateSessionFile(sessionID, workspacePath string) (string, error) {
+func LocateSessionFile(projectsDir, sessionID, workspacePath string) (string, error) {
+	if strings.TrimSpace(projectsDir) == "" {
+		return "", fmt.Errorf("sessionfork: empty projects dir")
+	}
 	if strings.TrimSpace(sessionID) == "" {
 		return "", fmt.Errorf("sessionfork: empty sessionID")
 	}
@@ -43,10 +60,7 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 		return "", fmt.Errorf("sessionfork: sessionID contains path separator, NUL, or traversal: %q", sessionID)
 	}
 
-	pdir, err := defaultProjectsDir()
-	if err != nil {
-		return "", err
-	}
+	pdir := projectsDir
 
 	// Primary lookup: compute the slug for the workspace's canonical path.
 	if workspacePath != "" {
@@ -86,18 +100,6 @@ func LocateSessionFile(sessionID, workspacePath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("%w: %s", ErrSessionFileNotFound, sessionID)
-}
-
-// defaultProjectsDir returns ~/.claude/projects, resolving the user's home
-// dir from $HOME (or os.UserHomeDir as fallback). It is the LIVE-thread
-// answer; a caller writing beside an existing transcript derives the projects
-// dir from that file instead (see WorkspaceProjectDir).
-func defaultProjectsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("sessionfork: resolve home dir: %w", err)
-	}
-	return filepath.Join(home, ".claude", "projects"), nil
 }
 
 // MaxSanitizedSlugLen mirrors MAX_SANITIZED_LENGTH (`kie` in the minified

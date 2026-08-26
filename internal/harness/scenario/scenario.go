@@ -16,6 +16,7 @@ package scenario
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -52,7 +53,41 @@ type Scenario struct {
 	// "repeatLast" re-runs the final turn's steps (default), "silent"
 	// consumes the message and emits nothing (the turn hangs — useful
 	// for interrupt/stall testing), "exit" ends the process cleanly.
+	//
+	// Every turn a scenario runs to completion reports scenario_done for
+	// its own turn number, repeated turns included — so a per-turn await
+	// works under repeatLast rather than only for the first turn.
 	AfterTurns string `json:"afterTurns,omitempty"`
+
+	// StartupDelayMs makes the app's COLD-START window drivable: the
+	// adapter sleeps this long before writing the first frame that proves
+	// the provider is up — Claude's first per-turn `system/init`, Codex's
+	// `initialize` response. Once per process, not per turn: the thing
+	// under test is a slow provider launch, not slow turns.
+	//
+	// Zero (the default) is no delay at all. Capped at MaxStartupDelayMs;
+	// a scenario asking for more is a typo, and a mock that sleeps past
+	// the app's own spawn timeout tests the timeout rather than the
+	// window.
+	StartupDelayMs int `json:"startupDelayMs,omitempty"`
+
+	// ProviderVersion overrides the version the mock claims to be, which
+	// is what every per-method version gate in the app reads: Codex's
+	// `initialize` userAgent (`codex_cli_rs/<version>`, parsed by
+	// internal/provider/codex/app_server_version.go) and Claude's
+	// `system/init.claude_code_version`. The mock otherwise reports a
+	// version above every gate, so a downgrade is the only way a spec can
+	// exercise the fails-closed branch of one.
+	//
+	// It does NOT reach `--version`, the account probe, or one-shot text
+	// generation: none of those invocations loads a scenario at all (they
+	// answer and exit before the control channel is dialled), so a
+	// scenario cannot speak for them. Pin those through the mock binary
+	// itself if a spec ever needs to.
+	//
+	// A Codex scenario that declares its own `initialize` response
+	// template still wins — the template is the more specific statement.
+	ProviderVersion string `json:"providerVersion,omitempty"`
 
 	// Codex maps JSON-RPC request methods to response templates for the
 	// session-establishment handshake (initialize, thread/start,
@@ -125,11 +160,25 @@ type Step struct {
 //   - ChunkBytes > 0 splits each line's bytes into flushed writes of
 //     that size, ChunkIntervalMs apart — mid-line partial writes, the
 //     input that shakes out NDJSON reassembly and reconnect bugs.
+//   - Coalesce writes every line of the step in ONE write, the opposite
+//     stress: real node CLIs batch their output under load, so an app
+//     reader that only ever sees one frame per read is untested against
+//     the shape it will actually meet.
 type EmitStep struct {
 	Lines           []string `json:"lines"`
 	DelayBetweenMs  int      `json:"delayBetweenMs,omitempty"`
 	ChunkBytes      int      `json:"chunkBytes,omitempty"`
 	ChunkIntervalMs int      `json:"chunkIntervalMs,omitempty"`
+	// Coalesce writes all of Lines as a single stdout write — several
+	// NDJSON frames arriving in one read, which is what a provider CLI
+	// under load actually produces and the only path the split-per-line
+	// default never exercises.
+	//
+	// Mutually exclusive with the pacing knobs, which all exist to SPLIT
+	// output: a coalesced write has no between-lines moment to delay at
+	// and no sub-line boundary to chunk on, so declaring both is an
+	// author contradiction rather than a resolvable combination.
+	Coalesce bool `json:"coalesce,omitempty"`
 }
 
 // FixtureStep streams a captured wire log. FromLine/ToLine are
@@ -258,6 +307,19 @@ func (v Vars) Substitute(line string) string {
 	return out
 }
 
+// MaxStartupDelayMs caps Scenario.StartupDelayMs at 30 seconds. The
+// knob exists to drive the app's cold-start WINDOW; a delay longer than
+// any spawn timeout the app applies stops testing the window and starts
+// testing the timeout, which is a different scenario and should say so.
+const MaxStartupDelayMs = 30_000
+
+// providerVersionPattern bounds Scenario.ProviderVersion. Empty (the
+// default: report the mock's own version) or a dotted numeric version.
+// It is interpolated verbatim into wire strings the app then parses, so
+// anything else would be injecting text into a userAgent rather than
+// pinning a version.
+var providerVersionPattern = regexp.MustCompile(`^(\d+(\.\d+)*)?$`)
+
 // afterTurnsModes enumerates Scenario.AfterTurns values.
 var afterTurnsModes = map[string]bool{
 	"":           true, // default: repeatLast
@@ -284,6 +346,18 @@ func (s *Scenario) Validate() error {
 	}
 	if !afterTurnsModes[s.AfterTurns] {
 		return fmt.Errorf("scenario %q: afterTurns %q must be repeatLast, silent, or exit", s.Name, s.AfterTurns)
+	}
+	if s.StartupDelayMs < 0 || s.StartupDelayMs > MaxStartupDelayMs {
+		return fmt.Errorf("scenario %q: startupDelayMs %d must be between 0 and %d", s.Name, s.StartupDelayMs, MaxStartupDelayMs)
+	}
+	if strings.TrimSpace(s.ProviderVersion) != s.ProviderVersion {
+		return fmt.Errorf("scenario %q: providerVersion %q must not carry surrounding whitespace", s.Name, s.ProviderVersion)
+	}
+	if !providerVersionPattern.MatchString(s.ProviderVersion) {
+		return fmt.Errorf(
+			"scenario %q: providerVersion %q must be a dotted version like %q "+
+				"(it is interpolated into a userAgent string the app parses)",
+			s.Name, s.ProviderVersion, "0.147.0")
 	}
 	if len(s.Turns) == 0 && len(s.OnStart) == 0 {
 		return fmt.Errorf("scenario %q: needs at least one turn or onStart step", s.Name)
@@ -315,6 +389,11 @@ func (st *Step) validate() error {
 		}
 		if st.Emit.ChunkBytes < 0 || st.Emit.DelayBetweenMs < 0 || st.Emit.ChunkIntervalMs < 0 {
 			return fmt.Errorf("emit: pacing values must be >= 0")
+		}
+		if st.Emit.Coalesce && (st.Emit.ChunkBytes > 0 || st.Emit.DelayBetweenMs > 0 || st.Emit.ChunkIntervalMs > 0) {
+			return fmt.Errorf(
+				"emit: coalesce writes every line in one write, so it cannot be combined with " +
+					"the pacing knobs that split output (delayBetweenMs, chunkBytes, chunkIntervalMs)")
 		}
 	}
 	if st.Fixture != nil {

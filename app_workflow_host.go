@@ -99,6 +99,10 @@ func (h workflowHostAdapter) RequireWorkflowEngine() (*engine.Engine, error) {
 
 func (h workflowHostAdapter) LifeCtx() context.Context { return h.app.lifeCtx() }
 
+func (h workflowHostAdapter) ClaudeProjectsDir() (string, error) {
+	return h.app.claudeProjectsDir()
+}
+
 // newWorkflowAppRunner builds the workflow runner against this App. It is the
 // one place the adapter is constructed, so nothing else in `main` has to know
 // the seam exists.

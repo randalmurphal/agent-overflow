@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,25 @@ const longPollWindow = 25 * time.Second
 // the enqueue error should surface to the RPC caller.
 const commandQueueCap = 64
 
+// defaultReapGrace is how long a mock's registration outlives the
+// evidence that its process is gone — an `exiting` report, or a failed
+// liveness probe of its pid.
+//
+// It exists so the two things a test does after a mock dies still work:
+// read the final reports off HarnessListMocks, and see the row itself
+// marked dead rather than simply absent (an absent row and a row that
+// never registered are indistinguishable). Past the grace the row is
+// removed, because otherwise every session stop outside HarnessReset —
+// thread stop/delete, session restart, provider crash — leaks a
+// registration and its 64-slot command channel for the life of the
+// process, which over a soak is thousands of them.
+const defaultReapGrace = 30 * time.Second
+
+// maxTrackedPendingAdvances bounds MockInfo.PendingAdvances. The mock's
+// own buffer is capped at the same order of magnitude; this is only the
+// projection of it, and a runaway driver must not grow the registry.
+const maxTrackedPendingAdvances = 32
+
 // MockInfo is the backend-side view of a registered mock, exposed
 // through HarnessListMocks.
 type MockInfo struct {
@@ -33,15 +53,31 @@ type MockInfo struct {
 	Registration Registration `json:"registration"`
 	Scenario     string       `json:"scenario"`
 	RegisteredAt time.Time    `json:"registeredAt"`
-	// Exited is set when the mock posts its exiting report. Commands to
-	// an exited mock are refused — nothing will ever drain them. A mock
-	// killed without reporting (SIGKILL) stays Exited=false; liveness
-	// tracking is report-based by design.
+	// Exited is set when the mock posts its exiting report, AND when a
+	// liveness probe of Registration.PID finds the process gone. Commands
+	// to an exited mock are refused — nothing will ever drain them.
+	//
+	// The pid probe is what makes a SIGKILLed mock read dead: it reports
+	// nothing on its way out, and a registry that only believed reports
+	// answered "live" for a corpse while Command() happily enqueued into
+	// a channel with no reader and returned success.
 	Exited bool `json:"exited"`
 	// SessionConfig is the permission/sandbox configuration this mock
 	// observed the app launch it with, latched from its ReportSessionConfig.
 	// nil until that report arrives (or for a mock that never posts one).
 	SessionConfig *SessionConfig `json:"sessionConfig,omitempty"`
+	// OpenGate names the waitSignal gate this mock is currently blocked
+	// on ("stall" for an indefinite stall step), empty when it is not
+	// blocked. Projected from the mock's own waiting_signal /
+	// advance_released reports: the mock is the only process that knows,
+	// and it is by definition parked when the answer is interesting.
+	OpenGate string `json:"openGate"`
+	// PendingAdvances lists the advance commands the mock buffered
+	// against a gate that had not opened yet, in arrival order. The
+	// buffer is per-turn and the mock discards it at every turn boundary,
+	// so an entry still here on a settled mock is a driving command that
+	// did nothing.
+	PendingAdvances []string `json:"pendingAdvances"`
 }
 
 // Assignment is what the backend's resolver hands a registering mock.
@@ -75,6 +111,11 @@ type Server struct {
 	seq   int
 	mocks map[string]*mockConn
 
+	// reapGrace and alive are the two reaping knobs, injectable so the
+	// tests can drive the sweep without sleeping or forking a process.
+	reapGrace time.Duration
+	alive     func(pid int) bool
+
 	// done releases active long-polls on Shutdown. http.Server.Shutdown
 	// waits for handlers but does not cancel their request contexts, so
 	// without this a connected /commands poll would pin shutdown for
@@ -86,8 +127,22 @@ type Server struct {
 }
 
 type mockConn struct {
+	// seq is the registration ordinal, and the sort key Mocks() uses.
+	// RegisteredAt cannot be it: two mocks spawned in the same
+	// millisecond tie, and time is not monotonic across a suspend.
+	seq      int
 	info     MockInfo
 	commands chan Command
+	// front holds a batch that was dequeued for a long-poll whose
+	// response write then failed. The mock never received those bytes,
+	// so they are re-queued AHEAD of the channel rather than lost — the
+	// CLI has already told its caller the command was accepted.
+	front []Command
+	// exitedAt is when the mock reported exiting; deadSince is when a pid
+	// probe first found the process gone. Either one starts the reap
+	// clock. Both zero means the mock is live as far as anyone knows.
+	exitedAt  time.Time
+	deadSince time.Time
 }
 
 // NewServer builds an unstarted server.
@@ -100,10 +155,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("control: generate token: %w", err)
 	}
 	return &Server{
-		cfg:   cfg,
-		token: base64.RawURLEncoding.EncodeToString(buf[:]),
-		mocks: make(map[string]*mockConn),
-		done:  make(chan struct{}),
+		cfg:       cfg,
+		token:     base64.RawURLEncoding.EncodeToString(buf[:]),
+		mocks:     make(map[string]*mockConn),
+		reapGrace: defaultReapGrace,
+		alive:     processAlive,
+		done:      make(chan struct{}),
 	}, nil
 }
 
@@ -159,9 +216,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // Command queues a live command for a mock. Errors when the mock is
-// unknown, has exited, or its queue is full (not draining).
+// unknown, has exited or died, or its queue is full (not draining).
+//
+// The liveness probe is the load-bearing half: without it a SIGKILLed
+// mock accepted commands forever, the enqueue succeeded, the RPC
+// answered OK, and the driving test waited on a gate nothing would ever
+// release.
 func (s *Server) Command(mockID string, cmd Command) error {
 	s.mu.Lock()
+	s.sweepLocked(time.Now())
 	conn, ok := s.mocks[mockID]
 	var exited bool
 	if ok {
@@ -169,7 +232,7 @@ func (s *Server) Command(mockID string, cmd Command) error {
 	}
 	s.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("control: unknown mock %q", mockID)
+		return fmt.Errorf("%w %q", ErrUnknownMock, mockID)
 	}
 	if exited {
 		return fmt.Errorf("control: mock %q has exited; nothing will consume the command", mockID)
@@ -186,31 +249,61 @@ func (s *Server) Command(mockID string, cmd Command) error {
 // after all provider sessions are stopped so no live mock is orphaned.
 // The id sequence keeps counting so mock ids never repeat across a
 // reset (a stale id from a previous test can only miss, never alias a
-// new mock). A straggler poll from a dying process gets "unknown mock"
-// and the mock client falls back to standalone behaviour on its way
-// out.
+// new mock). A straggler poll from a dying process gets "unknown mock",
+// which its client treats as terminal and stops polling on.
 func (s *Server) ClearMocks() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clear(s.mocks)
 }
 
-// Mocks lists registered mocks in registration order.
+// Mocks lists registered mocks in registration order, after sweeping
+// dead ones: a mock whose pid is gone reads Exited, and one that has
+// been gone longer than the reap grace is removed entirely.
 func (s *Server) Mocks() []MockInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.sweepLocked(time.Now())
 	out := make([]MockInfo, 0, len(s.mocks))
-	for _, conn := range s.mocks {
-		out = append(out, conn.info)
+	seqs := make(map[string]int, len(s.mocks))
+	for id, conn := range s.mocks {
+		info := conn.info
+		info.PendingAdvances = slices.Clone(conn.info.PendingAdvances)
+		if info.PendingAdvances == nil {
+			info.PendingAdvances = []string{}
+		}
+		seqs[id] = conn.seq
+		out = append(out, info)
 	}
-	// Registration order == numeric suffix order; a simple sort keeps
-	// the list stable for tests.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1].RegisteredAt.After(out[j].RegisteredAt); j-- {
-			out[j-1], out[j] = out[j], out[j-1]
+	slices.SortFunc(out, func(a, b MockInfo) int { return seqs[a.MockID] - seqs[b.MockID] })
+	return out
+}
+
+// sweepLocked folds pid liveness into every registration and removes the
+// ones that have been dead longer than the reap grace. Callers hold mu.
+//
+// A registration with no usable pid (<= 0 — a hand-built test
+// registration, or a mock that could not read its own) is never probed:
+// no pid is an absence of evidence, and reaping on it would drop live
+// mocks.
+func (s *Server) sweepLocked(now time.Time) {
+	for id, conn := range s.mocks {
+		if pid := conn.info.Registration.PID; pid > 0 && s.alive != nil && !s.alive(pid) {
+			if conn.deadSince.IsZero() {
+				conn.deadSince = now
+			}
+			conn.info.Exited = true
+		} else {
+			conn.deadSince = time.Time{}
+		}
+		since := conn.exitedAt
+		if since.IsZero() || (!conn.deadSince.IsZero() && conn.deadSince.Before(since)) {
+			since = conn.deadSince
+		}
+		if !since.IsZero() && now.Sub(since) >= s.reapGrace {
+			delete(s.mocks, id)
 		}
 	}
-	return out
 }
 
 // auth wraps a handler with bearer-token verification. Mismatches get
@@ -241,13 +334,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.seq++
+	seq := s.seq
 	info := MockInfo{
-		MockID:       fmt.Sprintf("mock-%d", s.seq),
-		Registration: reg,
-		Scenario:     assignment.ScenarioName,
-		RegisteredAt: time.Now(),
+		MockID:          fmt.Sprintf("mock-%d", seq),
+		Registration:    reg,
+		Scenario:        assignment.ScenarioName,
+		RegisteredAt:    time.Now(),
+		PendingAdvances: []string{},
 	}
 	s.mocks[info.MockID] = &mockConn{
+		seq:      seq,
 		info:     info,
 		commands: make(chan Command, commandQueueCap),
 	}
@@ -255,48 +351,91 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	s.report(info, Report{Kind: ReportRegistered, Detail: assignment.ScenarioName})
 
-	writeJSON(w, RegisterResponse{
+	if err := writeJSON(w, RegisterResponse{
 		MockID:      info.MockID,
 		Scenario:    assignment.ScenarioJSON,
 		FixtureRoot: assignment.FixtureRoot,
-	})
+	}); err != nil {
+		log.Printf("harness control: %s never received its registration: %v", info.MockID, err)
+	}
 }
 
 func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
 	mockID := r.URL.Query().Get("mock")
 	s.mu.Lock()
 	conn, ok := s.mocks[mockID]
+	var out []Command
+	if ok {
+		out, conn.front = conn.front, nil
+	}
 	s.mu.Unlock()
 	if !ok {
-		http.Error(w, "unknown mock", http.StatusNotFound)
+		http.Error(w, unknownMockBody, http.StatusNotFound)
+		return
+	}
+
+	// A batch requeued by a previous failed write goes out first, in its
+	// original order, ahead of anything that arrived since.
+	if len(out) > 0 {
+		s.deliver(w, conn, out)
 		return
 	}
 
 	// Long-poll: wait for the first command, then drain whatever else
 	// is immediately available so a burst arrives as one response.
-	var out []Command
 	select {
 	case cmd := <-conn.commands:
-		out = append(out, cmd)
-		for {
-			select {
-			case cmd := <-conn.commands:
-				out = append(out, cmd)
-			default:
-				writeJSON(w, out)
-				return
-			}
-		}
+		s.deliver(w, conn, append(out, cmd))
 	case <-time.After(longPollWindow):
-		writeJSON(w, []Command{})
+		_ = writeJSON(w, []Command{})
 	case <-s.done:
 		// Server shutting down; release the poll with an empty batch so
 		// Shutdown isn't pinned for the rest of the window.
-		writeJSON(w, []Command{})
+		_ = writeJSON(w, []Command{})
 	case <-r.Context().Done():
 		// Client went away; nothing to write.
 	}
 }
+
+// deliver drains whatever else is immediately available onto out and
+// writes the batch. A failed write means the mock did NOT receive the
+// batch — the response never left — so the whole thing goes back on the
+// front of the queue rather than evaporating while HarnessMockCommand
+// has already reported success to its caller.
+func (s *Server) deliver(w http.ResponseWriter, conn *mockConn, out []Command) {
+	for drained := false; !drained; {
+		select {
+		case cmd := <-conn.commands:
+			out = append(out, cmd)
+		default:
+			drained = true
+		}
+	}
+	if err := writeJSON(w, out); err != nil {
+		s.requeueFront(conn, out)
+		s.mu.Lock()
+		info := conn.info
+		s.mu.Unlock()
+		log.Printf("harness control: %s command delivery failed, %d command(s) requeued: %v", info.MockID, len(out), err)
+		s.report(info, Report{
+			Kind:   ReportFixtureError,
+			Detail: fmt.Sprintf("command delivery failed; %d command(s) requeued: %v", len(out), err),
+		})
+	}
+}
+
+// requeueFront puts a batch back at the head of the mock's queue,
+// preserving order across repeated failures.
+func (s *Server) requeueFront(conn *mockConn, batch []Command) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conn.front = append(slices.Clone(batch), conn.front...)
+}
+
+// unknownMockBody is the 404 body a mock's client recognises as
+// terminal (control.ErrUnknownMock). Kept as one constant because the
+// two halves live in different processes.
+const unknownMockBody = "unknown mock"
 
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	mockID := r.URL.Query().Get("mock")
@@ -304,7 +443,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	conn, ok := s.mocks[mockID]
 	s.mu.Unlock()
 	if !ok {
-		http.Error(w, "unknown mock", http.StatusNotFound)
+		http.Error(w, unknownMockBody, http.StatusNotFound)
 		return
 	}
 	var rep Report
@@ -312,26 +451,72 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad report", http.StatusBadRequest)
 		return
 	}
-	switch {
-	case rep.Kind == ReportExiting:
-		s.mu.Lock()
-		conn.info.Exited = true
-		s.mu.Unlock()
-	case rep.Kind == ReportSessionConfig && rep.SessionConfig != nil:
-		// Latched onto MockInfo as well as fanned out as an event so a test
-		// can read it after the fact (HarnessListMocks) instead of racing the
-		// harness:mock stream — the config is observable before the first
-		// turn, long before a test knows to start listening.
-		s.mu.Lock()
-		observed := *rep.SessionConfig
-		conn.info.SessionConfig = &observed
-		s.mu.Unlock()
-	}
 	s.mu.Lock()
+	s.applyReportLocked(conn, rep)
 	info := conn.info
+	info.PendingAdvances = slices.Clone(conn.info.PendingAdvances)
 	s.mu.Unlock()
 	s.report(info, rep)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// applyReportLocked folds a report into the registration's latched
+// state. Callers hold mu.
+//
+// The gate projection is derived rather than queried because the mock
+// is the only process that knows and is parked precisely when the
+// answer matters. It resyncs at every turn boundary, which is exactly
+// where the engine clears its own advance buffer, so a missed or
+// out-of-order report cannot accumulate.
+func (s *Server) applyReportLocked(conn *mockConn, rep Report) {
+	switch rep.Kind {
+	case ReportExiting:
+		conn.info.Exited = true
+		if conn.exitedAt.IsZero() {
+			conn.exitedAt = time.Now()
+		}
+	case ReportSessionConfig:
+		if rep.SessionConfig != nil {
+			// Latched onto MockInfo as well as fanned out as an event so a test
+			// can read it after the fact (HarnessListMocks) instead of racing the
+			// harness:mock stream — the config is observable before the first
+			// turn, long before a test knows to start listening.
+			observed := *rep.SessionConfig
+			conn.info.SessionConfig = &observed
+		}
+	case ReportWaitingSignal:
+		conn.info.OpenGate = rep.Detail
+	case ReportAdvanceReleased:
+		conn.info.OpenGate = ""
+		conn.info.PendingAdvances = dropFirstMatchingAdvance(conn.info.PendingAdvances, rep.Gate)
+	case ReportAdvanceBuffered:
+		conn.info.OpenGate = rep.OpenGate
+		if rep.Detail == AdvanceDroppedDetail {
+			return
+		}
+		if len(conn.info.PendingAdvances) < maxTrackedPendingAdvances {
+			conn.info.PendingAdvances = append(conn.info.PendingAdvances, rep.Gate)
+		}
+	case ReportTurnStarted, ReportTurnInterrupted, ReportScenarioDone:
+		// Turn boundary: the engine drops its advance buffer here, so the
+		// projection resyncs rather than carrying a stale entry forward.
+		conn.info.OpenGate = ""
+		conn.info.PendingAdvances = nil
+	}
+}
+
+// dropFirstMatchingAdvance removes the buffered advance that released
+// gate, using the engine's own matching rule (an unnamed advance
+// releases any gate). A release with nothing buffered — the ordinary
+// case, where the advance arrived while the gate was already open —
+// drops nothing.
+func dropFirstMatchingAdvance(pending []string, gate string) []string {
+	for i, name := range pending {
+		if name == "" || gate == "" || name == gate {
+			return append(pending[:i:i], pending[i+1:]...)
+		}
+	}
+	return pending
 }
 
 func (s *Server) report(info MockInfo, rep Report) {
@@ -340,9 +525,10 @@ func (s *Server) report(info MockInfo, rep Report) {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
+func writeJSON(w http.ResponseWriter, v any) error {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("harness control: encode response: %v", err)
+		return fmt.Errorf("control: encode response: %w", err)
 	}
+	return nil
 }

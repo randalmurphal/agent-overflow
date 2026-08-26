@@ -22,18 +22,16 @@ func runClaudeProbe(cwd string) {
 
 	forEachStdinLine(func(line []byte) {
 		var env struct {
-			Type      string `json:"type"`
-			RequestID string `json:"request_id"`
-			Request   struct {
-				Subtype string `json:"subtype"`
-			} `json:"request"`
+			Type      string          `json:"type"`
+			RequestID string          `json:"request_id"`
+			Request   json.RawMessage `json:"request"`
 		}
 		if err := json.Unmarshal(line, &env); err != nil {
 			log.Printf("probe: malformed stdin line ignored: %v", err)
 			return
 		}
 		if env.Type == "control_request" {
-			writeClaudeControlAck(w, env.RequestID, env.Request.Subtype)
+			writeClaudeControlAck(w, env.RequestID, claudeControlRequestSubtype(env.Request), env.Request)
 		}
 	})
 	// EOF: the probe closes stdin to tear us down.

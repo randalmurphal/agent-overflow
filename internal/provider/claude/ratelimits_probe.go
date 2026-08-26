@@ -71,27 +71,33 @@ var ratelimitWindows = []struct {
 	{headerSegment: "7d", rateLimitType: "seven_day"},
 }
 
-// ProbeRateLimits reads Claude's OAuth usage endpoint and returns every
-// advertised account limit.
+// CredentialPathForHome returns `<home>/.claude/.credentials.json`.
 //
-// Returns ErrNoCredentials when ~/.claude/.credentials.json is missing
-// (user hasn't run `claude login` yet) — callers should treat this as
-// "probe not available" rather than a hard error.
+// The home is INJECTED, never resolved here. This probe reads a live
+// bearer token and sends it to api.anthropic.com; an isolated boot
+// (--harness / --soak, including AO_HARNESS_KEEP_HOME) must be unable to
+// pick up the developer's real login, so the app layer's one provider-home
+// seam decides which home this is.
+func CredentialPathForHome(home string) string {
+	return filepath.Join(home, ".claude", ".credentials.json")
+}
+
+// ProbeRateLimits reads Claude's OAuth usage endpoint for the login stored
+// under home and returns every advertised account limit.
+//
+// Returns ErrNoCredentials when `<home>/.claude/.credentials.json` is
+// missing (user hasn't run `claude login` yet) — callers should treat this
+// as "probe not available" rather than a hard error.
 //
 // Returns a wrapped error for transport failures, non-2xx responses,
 // or an unusable response. Errors
 // are logged at the app layer; the global rate-limit store keeps its
 // last-known value rather than wiping on a transient failure.
-func ProbeRateLimits(ctx context.Context, httpClient *http.Client) (provider.RateLimitsSnapshot, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return provider.RateLimitsSnapshot{}, fmt.Errorf("claude: locate home dir: %w", err)
+func ProbeRateLimits(ctx context.Context, httpClient *http.Client, home string) (provider.RateLimitsSnapshot, error) {
+	if strings.TrimSpace(home) == "" {
+		return provider.RateLimitsSnapshot{}, fmt.Errorf("claude: rate-limit probe: empty provider home")
 	}
-	return ProbeRateLimitsFromCredentialPath(
-		ctx,
-		httpClient,
-		filepath.Join(home, ".claude", ".credentials.json"),
-	)
+	return ProbeRateLimitsFromCredentialPath(ctx, httpClient, CredentialPathForHome(home))
 }
 
 // ProbeRateLimitsFromCredentialPath reads one native credential file.

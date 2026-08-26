@@ -90,6 +90,36 @@ active turn aborted, releases `waitSignal`/indefinite `stall`, skips remaining
 steps at the next boundary, and reports `turn_interrupted`. The adapters only
 own their genuine terminal frames and write the interrupt ack/response first.
 
+### A turn is the unit, not the process
+
+Two engine facts follow from that, and both used to be per-process:
+
+- **`scenario_done` fires once per TURN.** Under the default
+  `afterTurns: repeatLast`, turns 2..N re-run the last scripted turn and
+  finish exactly as turn 1 did — a once-per-process latch meant every
+  turn after the first reported nothing, so the ordinary
+  send/await/assert/send-again shape hung on the second await. The
+  dedupe is still per turn (one turn can reach the report by more than
+  one path) and its entry dies with the turn.
+- **A buffered `advance` cannot cross a turn boundary.** `advance`
+  arriving before its gate opens is parked, stamped with the turn that
+  was live when it landed, and only satisfies a gate of that same turn.
+  `finishTurn` and an interrupt both discard whatever is left, reporting
+  each discard — an advance that outlived its turn is a command a test
+  issued and nothing consumed, and letting it survive is how the next
+  turn appears to skip its first gate for no reason. Within one turn an
+  UNNAMED advance still releases whichever gate opens next; that is the
+  documented wildcard. The buffer is capped, and an advance beyond the
+  cap is dropped with a report rather than parked.
+
+Both are visible on the control channel: `advance_released {gate}` and
+`advance_buffered {gate, openGate}` join the report vocabulary, and the
+control server projects them into `MockInfo.openGate` /
+`MockInfo.pendingAdvances` so "which gate is this mock sitting on"
+has an answer that does not require reading stderr. `fixture_error`
+carries what `fixture` / `writeFile` failures and undelivered command
+batches used to say only in the mock's log.
+
 ## Claude adapter contract
 
 `claude.go` owns two protocol behaviours the real CLI exhibits, so
@@ -118,6 +148,29 @@ Claude interrupted turns end with the verified 2.1.170
 `result{subtype:error_during_execution,is_error:true,
 terminal_reason:aborted_streaming}` shape. Codex interrupted turns end with
 `turn/completed{turn.status:interrupted}` per the upstream v2 protocol.
+
+### `control_request` acks are subtype-aware and strict
+
+The mock used to answer every `control_request` with a success carrying
+`{}`. That is worse than useless: `mcp_status` rendered an empty server
+list, `mcp_authenticate` FAILED every time (the app rejects a success
+response with no payload), and — the real cost — an outbound wire-KEY
+bug was invisible, because a mock that acks anything acks a misspelled
+request too. The CLI destructures the fields it wants off `request` and
+never validates the object, so `server_name` where it reads `serverName`
+reads as `undefined` with the round trip, the error path and the status
+projection all working correctly around it. That shipped, for months.
+
+So `writeClaudeControlAck` validates each subtype's REQUIRED keys and
+answers an error `control_response` naming the key it wanted, and
+answers the successful ones with a minimally real payload. The key
+spellings come from `internal/provider/claude`'s
+`TestControlRequestWireKeys`, read off the binary — not from what looks
+consistent, because the CLI mixes camelCase and snake_case per handler
+with no rule (`mcp_toggle.serverName` beside `stop_task.task_id`). A
+subtype the mock has never heard of still gets the permissive `{}`, and
+logs; forward compatibility beats strictness for an assertion nobody has
+written yet.
 
 ## Codex adapter contract
 
@@ -173,6 +226,45 @@ refused on a STARTED one. The mock keeps no rollout, so on a resumed
 thread not knowing a turn is ignorance rather than evidence — and every
 real rollback lands there. On a thread this process started it ran the
 whole history, so an unknown anchor is nonsense and stays an error.
+
+### An unimplemented method answers -32601, never an empty success
+
+The default branch used to return `{"result":{}}` for anything the mock
+did not recognise. No real app-server does that, and it defeated the
+app's own fallback machinery: `codex.IsMethodUnsupported` keys on
+`-32601`, so under an empty-success default it could never fire and
+every optional surface reported success against a server that had done
+nothing.
+
+The default is now the JSON-RPC MethodNotFound error, which means the
+methods the app calls as a matter of course need real answers or the
+DEFAULT harness experience breaks rather than only the optional
+surfaces. `handleReadRequest` covers those — `account/read`,
+`account/usage/read`, `thread/read`, `thread/turns/list`,
+`thread/settings/update`, `skills/list`, `config/read`,
+`mcpServerStatus/list`, `thread/backgroundTerminals/list` — each with
+the minimum the app's own decoder needs and nothing invented beyond it
+(a terminating cursor, a `thread.status.type`, an account with a plan).
+Genuinely optional or newer surfaces (`thread/compact/start`,
+`review/start`, `config/batchWrite`, `config/mcpServer/reload`,
+`mcpServer/oauth/login`, background-terminal `terminate`/`clean`) stay
+-32601 on purpose: that is the honest answer, and it is what exercises
+the fallback. A scenario's own `responses` template still outranks both.
+
+## Scenario knobs the adapters own
+
+`startupDelayMs` holds the FIRST provider frame — Claude's `system/init`,
+Codex's `initialize` response — and is paid once per process, because a
+per-frame sleep would turn a 5s spawn-delay scenario into a
+5s-per-turn one. It is the only way to drive the app's cold-start window
+from a scenario. `providerVersion` overrides what the mock claims to be
+in both places the app parses a version from, which is how a spec pins a
+DOWNGRADE and drives the closed side of a version gate; without it every
+mock is 99.0.0 and every gate is open. `emit.coalesce` writes the step's
+lines in one stdout write, for reproducing a reader that mishandles
+several NDJSON lines arriving in a single read — invisible when each
+line gets its own syscall, so it is mutually exclusive with the pacing
+knobs that mean the opposite.
 
 ## Testing
 

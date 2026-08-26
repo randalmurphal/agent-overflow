@@ -56,6 +56,123 @@ type waiter struct {
 	out     chan Event
 }
 
+// WaitOptions tunes which occurrence a wait is allowed to settle on.
+// The zero value is the historical behaviour: scan everything already
+// received, oldest first, then park.
+type WaitOptions struct {
+	// Newest scans the retained history NEWEST-first. The default picks
+	// the OLDEST unconsumed match, which is right for a long-lived client
+	// stepping through a stream in order and wrong for a one-shot caller
+	// that just pulled a replay ring and wants the latest occurrence.
+	Newest bool
+	// MinSeq ignores events at or below this server sequence. Zero means
+	// no floor — and an event whose own Seq is zero is never filtered,
+	// because that is what a locally-injected frame looks like.
+	MinSeq uint64
+	// SkipHistory parks a waiter without looking at what already arrived,
+	// so only events pushed AFTER the call can satisfy it.
+	SkipHistory bool
+}
+
+// Awaiting is a wait that is already PARKED: Await registers the waiter
+// and returns, so a caller can then do the thing that produces the event
+// without a window in which the answer could arrive unobserved. That is
+// the difference between `send` and `send --wait`: a mock can complete a
+// turn inside the SendMessage round trip.
+type Awaiting struct {
+	c       *Client
+	key     int
+	w       *waiter
+	channel string
+	// err records a client that was already closed when the wait was
+	// parked, so Wait answers instead of blocking on a dead connection.
+	err error
+}
+
+// Await parks a wait for the next matching event and returns the handle
+// to block on. Every Await must be finished with Wait or Close, or its
+// waiter stays in the map for the life of the connection.
+func (c *Client) Await(channel string, match func(Event) bool) *Awaiting {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.awaitLocked(channel, match)
+}
+
+// awaitLocked is Await with c.mu already held, which is what lets
+// WaitForEventOpts scan history and park in ONE critical section. Doing
+// the two under separate locks would drop an event that arrived in
+// between: it would file as unconsumed with nobody waiting, and the
+// waiter parked a moment later would never see it.
+func (c *Client) awaitLocked(channel string, match func(Event) bool) *Awaiting {
+	if c.closed {
+		err := c.closeErr
+		if err == nil {
+			err = errors.New("connection closed")
+		}
+		return &Awaiting{c: c, channel: channel, err: fmt.Errorf("wait for %s: %w", channel, err)}
+	}
+	w := &waiter{channel: channel, match: match, out: make(chan Event, 1)}
+	c.nextHook++
+	key := c.nextHook
+	c.waiters[key] = w
+	return &Awaiting{c: c, key: key, w: w, channel: channel}
+}
+
+// retire removes the waiter AND drains anything dispatch already handed
+// it, in one critical section.
+//
+// Both halves are load-bearing. dispatch marks the log entry consumed
+// and hands the event to the waiter's channel while holding c.mu, so a
+// timeout that only deleted the waiter would destroy the sole copy of an
+// event that DID arrive: consumed in the log, unread in a channel nobody
+// holds any more. Draining under the same lock makes "dispatch got there
+// first" and "the deadline got there first" a decision rather than a
+// race with two losers.
+func (a *Awaiting) retire() (Event, bool) {
+	if a.w == nil {
+		return Event{}, false
+	}
+	a.c.mu.Lock()
+	defer a.c.mu.Unlock()
+	delete(a.c.waiters, a.key)
+	select {
+	case event := <-a.w.out:
+		return event, true
+	default:
+		return Event{}, false
+	}
+}
+
+// Close retires an Await the caller is abandoning without blocking on
+// it. An event dispatch had already handed over is dropped, so this is
+// for an error path that is giving up on the wait, never a substitute
+// for Wait.
+func (a *Awaiting) Close() { a.retire() }
+
+// Wait blocks until the parked wait settles. A deadline that expires
+// AFTER dispatch handed the event over still returns the event: it
+// arrived, and reporting a timeout would both lie and consume it.
+func (a *Awaiting) Wait(ctx context.Context) (Event, error) {
+	if a.err != nil {
+		return Event{}, a.err
+	}
+	select {
+	case event := <-a.w.out:
+		a.retire()
+		return event, nil
+	case <-ctx.Done():
+		if event, ok := a.retire(); ok {
+			return event, nil
+		}
+		return Event{}, fmt.Errorf("wait for %s: %w (recent channels: %s)", a.channel, ctx.Err(), a.c.recentChannels(20))
+	case <-a.c.readDone:
+		if event, ok := a.retire(); ok {
+			return event, nil
+		}
+		return Event{}, fmt.Errorf("wait for %s: connection closed", a.channel)
+	}
+}
+
 // WaitForEvent blocks until an event on channel matches, CONSUMING it:
 // waiting twice for the same shape observes two distinct occurrences
 // rather than the first one twice. Events already received are scanned
@@ -66,48 +183,47 @@ type waiter struct {
 // is an event on the channel that carries no data and must not satisfy a
 // wait for real traffic.
 func (c *Client) WaitForEvent(ctx context.Context, channel string, match func(Event) bool) (Event, error) {
+	return c.WaitForEventOpts(ctx, channel, WaitOptions{}, match)
+}
+
+// WaitForEventOpts is WaitForEvent with the history scan's direction and
+// floor under the caller's control. A one-shot CLI that just pulled a
+// replay ring wants the NEWEST match; a test stepping through a stream
+// wants the oldest, which is the default.
+func (c *Client) WaitForEventOpts(ctx context.Context, channel string, opts WaitOptions, match func(Event) bool) (Event, error) {
+	accept := func(ev Event) bool {
+		if opts.MinSeq > 0 && ev.Seq != 0 && ev.Seq <= opts.MinSeq {
+			return false
+		}
+		return match == nil || match(ev)
+	}
+
 	c.mu.Lock()
-	for i := range c.log {
-		entry := &c.log[i]
-		if entry.consumed || entry.Channel != channel {
-			continue
+	if !opts.SkipHistory {
+		found := -1
+		for i := range c.log {
+			entry := &c.log[i]
+			if entry.consumed || entry.Channel != channel {
+				continue
+			}
+			if !accept(entry.Event) {
+				continue
+			}
+			found = i
+			if !opts.Newest {
+				break
+			}
 		}
-		if match != nil && !match(entry.Event) {
-			continue
+		if found >= 0 {
+			c.log[found].consumed = true
+			event := c.log[found].Event
+			c.mu.Unlock()
+			return event, nil
 		}
-		entry.consumed = true
-		event := entry.Event
-		c.mu.Unlock()
-		return event, nil
 	}
-	if c.closed {
-		err := c.closeErr
-		c.mu.Unlock()
-		if err == nil {
-			err = errors.New("connection closed")
-		}
-		return Event{}, fmt.Errorf("wait for %s: %w", channel, err)
-	}
-	w := &waiter{channel: channel, match: match, out: make(chan Event, 1)}
-	c.nextHook++
-	key := c.nextHook
-	c.waiters[key] = w
+	a := c.awaitLocked(channel, accept)
 	c.mu.Unlock()
-
-	defer func() {
-		c.mu.Lock()
-		delete(c.waiters, key)
-		c.mu.Unlock()
-	}()
-
-	select {
-	case event := <-w.out:
-		return event, nil
-	case <-ctx.Done():
-		return Event{}, fmt.Errorf("wait for %s: %w (recent channels: %s)", channel, ctx.Err(), c.recentChannels(20))
-	case <-c.readDone:
-		return Event{}, fmt.Errorf("wait for %s: connection closed", channel)
-	}
+	return a.Wait(ctx)
 }
 
 // Count reports how many events on a channel matched, consumed or not.

@@ -23,6 +23,13 @@ type HarnessInfo struct {
 	// the render trace (UI_TRACE=1); FrontendErrorsPath is always on.
 	UITracePath        string `json:"uiTracePath"`
 	FrontendErrorsPath string `json:"frontendErrorsPath"`
+	// SoakAutopilot is "armed", "off", or "failed: <reason>". A soak whose
+	// autopilot failed to arm looks exactly like a healthy idle instance
+	// from outside — a live backend, a seeded database, no traffic — which
+	// is the one shape an hours-long run must not silently be. Empty means
+	// a backend too old to answer, which every reader treats as "unknown"
+	// rather than "off".
+	SoakAutopilot string `json:"soakAutopilot,omitempty"`
 }
 
 // Info calls HarnessInfo on the instance.

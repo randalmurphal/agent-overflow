@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"agent-overflow/internal/provider/claude/sessionfork"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,7 +202,7 @@ func TestResumeAtOnActiveBranch(t *testing.T) {
 		{"no-such-uuid", false}, // unknown
 	}
 	for _, tc := range cases {
-		got, err := ResumeAtOnActiveBranch("sess-branch", workspace, tc.resumeAt)
+		got, err := ResumeAtOnActiveBranch(sessionfork.ProjectsDirForHome(home), "sess-branch", workspace, tc.resumeAt)
 		if err != nil {
 			t.Fatalf("ResumeAtOnActiveBranch(%q): %v", tc.resumeAt, err)
 		}
@@ -210,7 +211,7 @@ func TestResumeAtOnActiveBranch(t *testing.T) {
 		}
 	}
 
-	if _, err := ResumeAtOnActiveBranch("sess-branch", workspace, ""); err == nil {
+	if _, err := ResumeAtOnActiveBranch(sessionfork.ProjectsDirForHome(home), "sess-branch", workspace, ""); err == nil {
 		t.Errorf("empty resume-at must error, not silently validate")
 	}
 }

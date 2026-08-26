@@ -73,6 +73,14 @@ func writeInstanceFile(t *testing.T, dataRoot string, pid int, opts ...func(*har
 	}
 }
 
+// exitCodeOf runs an error through the same mapping main() uses, so a
+// test pins the CODE A SCRIPT SEES rather than the error type behind it.
+func exitCodeOf(t *testing.T, err error) int {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	return fail(&env{stdout: &stdout, stderr: &stderr}, err)
+}
+
 func testEnv(registryDir string) (*env, *bytes.Buffer, *bytes.Buffer) {
 	var stdout, stderr bytes.Buffer
 	return &env{stdout: &stdout, stderr: &stderr, format: "text", registryDir: registryDir}, &stdout, &stderr
@@ -340,5 +348,151 @@ func TestUpAllowsABootOverADeadInstanceFile(t *testing.T) {
 	e, _, _ := testEnv(t.TempDir())
 	if err := refuseSecondInstance(e, root); err != nil {
 		t.Fatalf("boot over a dead instance file should be allowed: %v", err)
+	}
+}
+
+// seedRow writes ONLY the registry row, for the resolution cases that care
+// about what the registry says rather than what is on disk under the root.
+func seedRow(t *testing.T, registryDir, dataRoot string, pid int) string {
+	t.Helper()
+	id := instanceinfo.ID(dataRoot)
+	row := instanceinfo.Row{
+		Identity: instanceinfo.Identity{ID: id, Mode: instanceinfo.ModeHarness, StartedAt: "2026-08-26T00:00:00Z"},
+		PID:      pid,
+		DataRoot: dataRoot,
+		DataDir:  filepath.Join(dataRoot, "agent-overflow"),
+	}
+	if err := instanceinfo.WriteIn(registryDir, row); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// The git-style convenience: four hex characters is enough when only one
+// id starts with them.
+func TestResolveTargetAcceptsAUniqueInstanceIDPrefix(t *testing.T) {
+	registry := t.TempDir()
+	wanted := seedInstance(t, registry, t.TempDir(), os.Getpid())
+	other := seedInstance(t, registry, t.TempDir(), os.Getpid())
+	if other[:minIDPrefix] == wanted[:minIDPrefix] {
+		t.Skip("the two temp roots hashed to a shared prefix")
+	}
+
+	e, _, _ := testEnv(registry)
+	e.instance = wanted[:minIDPrefix]
+	got, err := e.resolveTarget()
+	if err != nil {
+		t.Fatalf("resolve by prefix: %v", err)
+	}
+	if got.ID != wanted {
+		t.Fatalf("resolved %s, want %s", got.ID, wanted)
+	}
+}
+
+func TestResolveTargetRefusesAnAmbiguousIDPrefixWithExitTwo(t *testing.T) {
+	registry := t.TempDir()
+	// Hand-written ids sharing a prefix: the temp-root hashes cannot be
+	// steered into a collision on demand.
+	for _, id := range []string{"abcd1234", "abcd5678"} {
+		row := instanceinfo.Row{
+			Identity: instanceinfo.Identity{ID: id, Mode: instanceinfo.ModeHarness, StartedAt: "2026-08-26T00:00:00Z"},
+			PID:      os.Getpid(),
+			DataRoot: filepath.Join(t.TempDir(), id),
+		}
+		if err := instanceinfo.WriteIn(registry, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e, _, _ := testEnv(registry)
+	e.instance = "abcd"
+	_, err := e.resolveTarget()
+	if err == nil {
+		t.Fatal("an ambiguous prefix resolved")
+	}
+	if code := exitCodeOf(t, err); code != exitUsage {
+		t.Fatalf("exit code = %d, want %d (under-specified invocation, not a refusal)", code, exitUsage)
+	}
+	for _, id := range []string{"abcd1234", "abcd5678"} {
+		if !strings.Contains(err.Error(), id) {
+			t.Errorf("error omits candidate %s: %v", id, err)
+		}
+	}
+}
+
+// Two live instances is ambiguity, and ambiguity is a WRONG INVOCATION —
+// exit 2, so a script can tell it from "the harness refused".
+func TestResolveTargetAmbiguityExitsTwo(t *testing.T) {
+	registry := t.TempDir()
+	seedInstance(t, registry, t.TempDir(), os.Getpid())
+	seedInstance(t, registry, t.TempDir(), os.Getpid())
+
+	e, _, _ := testEnv(registry)
+	_, err := e.resolveTarget()
+	if err == nil {
+		t.Fatal("want an ambiguity error")
+	}
+	if code := exitCodeOf(t, err); code != exitUsage {
+		t.Fatalf("exit code = %d, want %d", code, exitUsage)
+	}
+}
+
+// A developer with a soak in one worktree and a harness in this one means
+// THIS one every time. The default root is a derivation, not a guess.
+func TestResolveTargetPrefersThisWorktreesOwnInstance(t *testing.T) {
+	registry := t.TempDir()
+	mine := seedRow(t, registry, instanceinfo.DefaultDataRoot(), os.Getpid())
+	theirs := seedInstance(t, registry, t.TempDir(), os.Getpid())
+
+	e, _, _ := testEnv(registry)
+	got, err := e.resolveTarget()
+	if err != nil {
+		t.Fatalf("two live rows, one of them this worktree's: %v", err)
+	}
+	if got.ID != mine {
+		t.Fatalf("resolved %s, want this worktree's own instance %s (the other is %s)", got.ID, mine, theirs)
+	}
+}
+
+// $AO_HARNESS_INSTANCE is the default for --instance: an agent driving one
+// instance for a session exports it once instead of threading the flag
+// through every invocation.
+func TestInstanceEnvIsTheDefaultForTheFlag(t *testing.T) {
+	registry := t.TempDir()
+	wanted := seedInstance(t, registry, t.TempDir(), os.Getpid())
+	seedInstance(t, registry, t.TempDir(), os.Getpid())
+
+	t.Setenv(instanceEnv, wanted)
+	var stdout, stderr bytes.Buffer
+	e := newEnv(&stdout, &stderr)
+	e.registryDir = registry
+	got, err := e.resolveTarget()
+	if err != nil {
+		t.Fatalf("resolve with $%s set: %v", instanceEnv, err)
+	}
+	if got.ID != wanted {
+		t.Fatalf("resolved %s, want %s", got.ID, wanted)
+	}
+}
+
+func TestLooksLikeIDPrefixIsShapeOnly(t *testing.T) {
+	for _, tc := range []struct {
+		selector string
+		want     bool
+	}{
+		{"abcd", true},
+		{"deadbeef", true},
+		{"abc", false},         // shorter than minIDPrefix: still a path
+		{"abcd12345", false},   // longer than an id
+		{"abcz", false},        // not hex
+		{"CAFEBABE", false},    // ids are lower-case hex
+		{"./abcd", false},      // path punctuation
+		{"abcd.json", false},   // a file
+		{"/tmp/ao-run", false}, // an outright path
+		{"", false},
+	} {
+		if got := looksLikeIDPrefix(tc.selector); got != tc.want {
+			t.Errorf("looksLikeIDPrefix(%q) = %v, want %v", tc.selector, got, tc.want)
+		}
 	}
 }

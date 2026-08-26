@@ -24,7 +24,7 @@ const defaultLogLines = 50
 var logStreams = []string{"backend", "frontend-errors", "ui-trace"}
 
 func runLogs(e *env, args []string) error {
-	flags := e.newFlagSet("logs")
+	flags := e.newFlagSet("logs <" + strings.Join(logStreams, "|") + ">")
 	follow := flags.Bool("f", false, "keep printing lines as they are appended")
 	lines := flags.Int("n", defaultLogLines, "print this many trailing lines first (0 for none)")
 	path := flags.Bool("path", false, "print the file path instead of its contents")
@@ -59,6 +59,8 @@ func runLogs(e *env, args []string) error {
 				// Following a file that does not exist yet is legitimate:
 				// ui-trace only appears once the frontend traces something.
 				e.printf("(%s does not exist yet)\n", file)
+			} else if errors.Is(err, os.ErrNotExist) {
+				return missingLogError(stream, file, err)
 			} else {
 				return err
 			}
@@ -76,6 +78,21 @@ func runLogs(e *env, args []string) error {
 	return harnessclient.FollowFile(ctx, file, func(line string) {
 		e.printf("%s\n", line)
 	})
+}
+
+// missingLogError names the FIX for an absent evidence file, the way
+// `health` does for the same two files. A bare ENOENT sends a reader
+// looking for a path bug; the actual cause is almost always a build flag
+// that was never set, or an instance nobody redirected stderr for.
+func missingLogError(stream, path string, err error) error {
+	switch stream {
+	case "ui-trace":
+		return fmt.Errorf("%w\n  the render trace is a build-time opt-in: rebuild with `make harness-build UI_TRACE=1` and reboot the instance", err)
+	case "backend":
+		return fmt.Errorf("%w\n  `ao-harness up` redirects the backend's stderr here; an instance started by `make harness` writes to its own console instead", err)
+	default:
+		return fmt.Errorf("%w\n  nothing has written %s yet", err, path)
+	}
 }
 
 // logPath resolves a stream to a file. The running instance is asked

@@ -27,10 +27,13 @@ type Session struct {
 	// reason codex's codexThreadID is: the two sides share no lock.
 	sessionID atomic.Pointer[string]
 	workDir   string
-	onEvent   func(provider.ProviderEvent)
-	cancel    context.CancelFunc
-	closing   atomic.Bool
-	readDone  chan struct{}
+	// projectsDir is Config.ProjectsDir; see its doc for why it is
+	// injected and what an empty value means. Written once at construction.
+	projectsDir string
+	onEvent     func(provider.ProviderEvent)
+	cancel      context.CancelFunc
+	closing     atomic.Bool
+	readDone    chan struct{}
 	// systemPromptPath is the temp file cfg.SystemPrompt was written to for
 	// `--system-prompt-file`, or "" when the session carries no override.
 	// Removed by Close; see WriteSystemPromptFile for why the prompt does
@@ -260,6 +263,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		systemPromptPath:         systemPromptPath,
 		threadID:                 threadID,
 		workDir:                  cfg.WorkDir,
+		projectsDir:              cfg.ProjectsDir,
 		onEvent:                  onEvent,
 		cancel:                   cancel,
 		readDone:                 make(chan struct{}),

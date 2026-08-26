@@ -120,18 +120,49 @@ func (e *env) parse(flags *flag.FlagSet, args []string) ([]string, error) {
 	rest, err := parsePermuted(flags, args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintf(e.stdout, "usage: %s [flags]\n\nflags:\n", flags.Name())
+			fmt.Fprintf(e.stdout, "usage: %s\n\nflags:\n", flags.Name())
 			flags.SetOutput(e.stdout)
 			flags.PrintDefaults()
 			return nil, errHelp
 		}
-		return nil, usagef("%v", err)
+		// A rejected flag is answered with THIS command's flag list. The
+		// generic "run `ao-harness help`" sends a caller to the command
+		// table, which is never where the answer is: they already picked
+		// the command and got one flag wrong.
+		return nil, usagef("%v\n\nflags for %s:\n%s", err, flags.Name(), flagDefaults(flags))
 	}
 	return rest, nil
 }
 
+// flagDefaults renders a flag set's own usage into a string, so it can
+// travel inside an error rather than being printed out of band.
+func flagDefaults(flags *flag.FlagSet) string {
+	var buf bytes.Buffer
+	flags.SetOutput(&buf)
+	flags.PrintDefaults()
+	flags.SetOutput(io.Discard)
+	return buf.String()
+}
+
 // errHelp is -h: printed already, nothing failed.
 var errHelp = errors.New("help requested")
+
+// groupHelp answers `<group> -h` / `--help` for a command family. Every
+// family routes on args[0], so without this a caller asking `events -h`
+// what its subcommands are gets `unknown events subcommand "-h"` — the
+// question answered as a mistake.
+func groupHelp(e *env, group string, args []string, subcommands ...string) (bool, error) {
+	if len(args) == 0 {
+		return false, nil
+	}
+	switch args[0] {
+	case "-h", "--help", "-help", "help":
+		fmt.Fprintf(e.stdout, "usage: ao-harness %s <%s> [flags]\n\n", group, strings.Join(subcommands, "|"))
+		fmt.Fprintf(e.stdout, "Run `ao-harness %s <subcommand> -h` for one subcommand's flags.\n", group)
+		return true, nil
+	}
+	return false, nil
+}
 
 // writeJSON prints a value as indented JSON — the -o json shape.
 func (e *env) writeJSON(value any) error {

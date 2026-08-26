@@ -83,7 +83,7 @@ func runHarness(flags cliFlags) {
 		isolateWebviewStorage(paths.DataRoot)
 	}
 
-	appService := newIsolatedProviderApp(paths, "the agent test harness has no OS notification presenter")
+	appService := newIsolatedProviderApp(paths)
 	h := newHarness(appService, paths)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before
@@ -154,9 +154,25 @@ func runHarness(flags cliFlags) {
 // runtime in both modes, and only the spawn-time override makes "this
 // process can never reach a real provider binary" true regardless of
 // what a later UpdateSettings writes.
-func newIsolatedProviderApp(paths harnessPaths, notificationReason string) *App {
+func newIsolatedProviderApp(paths harnessPaths) *App {
 	appService := newApp()
-	appService.configureUnavailableNotifications(notificationReason)
+	// The REAL sender, the same one runHeadless installs — not a refusal
+	// stub. An isolated boot's whole premise is that everything except the
+	// provider processes is production code, and a stub made the
+	// notification pipe the one exception: `HarnessNotify` returned "OS
+	// notifications are unavailable" before emitting anything, so the
+	// e2e spec asserted the stub's error message and the emission path it
+	// was supposed to cover was never executed at all.
+	//
+	// This degrades correctly rather than presenting anything unwanted.
+	// The sender EMITS on `notification:send`; presentation is the
+	// subscriber's job. Under `--soak` on Windows that subscriber is the
+	// real launcher, which is exactly the pipe a soak exists to exercise;
+	// under a headless `--harness` nobody subscribes, and the sender logs
+	// one line and succeeds. The bus does not exist yet at this point —
+	// bootTransport installs it — and that is fine: the sender resolves it
+	// per send.
+	appService.osNotifications = newTransportNotificationSender(appService)
 	// Pin provider spawns to the mock at resolution time, not just via
 	// the seeded settings — UpdateSettings stays callable in these modes,
 	// but it can never repoint a spawn at a real provider binary.
@@ -228,6 +244,14 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 		return harnessPaths{}, fmt.Errorf("create harness data dir: %w", err)
 	}
 	if err := refuseUnsafeHarnessDir(dataDir); err != nil {
+		return harnessPaths{}, err
+	}
+
+	// Before ANY mutation of the root's contents: everything below this
+	// line (the HOME redirect, the .gitconfig seed, the settings seed) is
+	// a write into a tree a live backend may already own. The lock is held
+	// for the process's lifetime and released by the kernel on death.
+	if _, err := acquireHarnessInstanceLock(dataDir, harnessBootMode(flags)); err != nil {
 		return harnessPaths{}, err
 	}
 
@@ -442,6 +466,19 @@ type harnessBootstrap struct {
 	MockProvider string `json:"mockProvider"`
 	PID          int    `json:"pid"`
 	Version      string `json:"version"`
+	// ClientID is this instance's durable UI-state identity
+	// (ensureClientID), already threaded onto URL as `&cid=`. It is
+	// reported separately as well because a caller that builds its own
+	// page URL — the Windows launcher opening a WebView2 window on a
+	// --soak backend, an e2e run pointing Playwright at the instance —
+	// must attach the SAME id, or the frontend's per-client ui_state
+	// bucket changes identity on every launch and every persisted UI
+	// preference reads as unset.
+	//
+	// Isolated boots resolve it under their own --data-dir
+	// (bootSettingsDir honors the override), so it is the harness's own
+	// id and never the developer's.
+	ClientID string `json:"clientId,omitempty"`
 	// StartupError is set when App.Start failed; the transport still
 	// serves (bootstrap returns the terminal failure state) so the
 	// caller can read logs, but the harness is not usable.
@@ -453,8 +490,9 @@ type harnessBootstrap struct {
 // (main_harness_instance.go) — a tool that attaches to a running
 // instance must not be reading a second, drifting description of it.
 func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr error) harnessBootstrap {
+	clientID := ensureClientID()
 	bs := harnessBootstrap{
-		URL:          srv.AppURL(),
+		URL:          appURLWithClientID(srv.AppURL(), clientID),
 		Port:         portFromAddr(srv.Addr()),
 		Token:        srv.Token(),
 		DataRoot:     paths.DataRoot,
@@ -463,6 +501,7 @@ func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr e
 		MockProvider: paths.MockProvider,
 		PID:          os.Getpid(),
 		Version:      version,
+		ClientID:     clientID,
 	}
 	if startupErr != nil {
 		bs.StartupError = startupErr.Error()

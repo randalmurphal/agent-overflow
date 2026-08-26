@@ -58,6 +58,7 @@ func commands() []command {
 		{"perf", "start|stop|status|watch the perf meters", runPerf},
 		{"bench", "run a bench workload and write a perf report", runBench},
 		{"health", "roll up an instance's liveness, errors, memory and mocks", runHealth},
+		{"version", "print this CLI's build stamp", runVersion},
 		{"help", "print this help", runHelp},
 	}
 }
@@ -66,14 +67,27 @@ func main() {
 	os.Exit(Run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// newEnv is one invocation's starting state: text output, and the
+// instance $AO_HARNESS_INSTANCE names, which --instance then overrides.
+// A function rather than a literal so the default is written once —
+// a test that built its own env would not be testing the real default.
+func newEnv(stdout, stderr io.Writer) *env {
+	return &env{stdout: stdout, stderr: stderr, format: "text", instance: os.Getenv(instanceEnv)}
+}
+
 // Run executes one invocation and returns the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
-	e := &env{stdout: stdout, stderr: stderr, format: "text"}
+	e := newEnv(stdout, stderr)
 	// -h before a command name means the whole tool, not the globals the
-	// root flag set happens to hold.
+	// root flag set happens to hold. --version is answered the same way:
+	// it is a question about the binary, not about an instance.
 	for _, arg := range args {
 		if arg == "-h" || arg == "--help" || arg == "-help" {
 			fmt.Fprint(stdout, usage())
+			return exitOK
+		}
+		if arg == "--version" || arg == "-version" || arg == "-v" {
+			fmt.Fprintf(stdout, "%s\n", version)
 			return exitOK
 		}
 		if !strings.HasPrefix(arg, "-") {

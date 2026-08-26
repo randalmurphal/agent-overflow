@@ -62,13 +62,13 @@ func TestRelocateSessionCopiesTranscriptAndSubdir(t *testing.T) {
 		t.Fatalf("chmod subagent: %v", err)
 	}
 
-	_, destFile, err := RelocateSession(id, srcWS, dstWS)
+	_, destFile, err := RelocateSession(ProjectsDirForHome(home), id, srcWS, dstWS)
 	if err != nil {
 		t.Fatalf("RelocateSession: %v", err)
 	}
 
 	// The destination must be where a resume run with cwd == dstWS looks.
-	located, err := LocateSessionFile(id, dstWS)
+	located, err := LocateSessionFile(ProjectsDirForHome(home), id, dstWS)
 	if err != nil {
 		t.Fatalf("LocateSessionFile from dest: %v", err)
 	}
@@ -109,11 +109,11 @@ func TestRelocateSessionIdempotent(t *testing.T) {
 	const id = "sess-idem"
 	placeSession(t, home, srcWS, id, "payload\n")
 
-	_, first, err := RelocateSession(id, srcWS, dstWS)
+	_, first, err := RelocateSession(ProjectsDirForHome(home), id, srcWS, dstWS)
 	if err != nil {
 		t.Fatalf("first relocate: %v", err)
 	}
-	_, second, err := RelocateSession(id, srcWS, dstWS)
+	_, second, err := RelocateSession(ProjectsDirForHome(home), id, srcWS, dstWS)
 	if err != nil {
 		t.Fatalf("second relocate (overwrites, same result): %v", err)
 	}
@@ -133,7 +133,7 @@ func TestRelocateSessionAlreadyAtDestNoOp(t *testing.T) {
 	const body = "the-live-transcript\n"
 	atDest := placeSession(t, home, dstWS, id, body)
 
-	src, got, err := RelocateSession(id, dstWS, dstWS)
+	src, got, err := RelocateSession(ProjectsDirForHome(home), id, dstWS, dstWS)
 	if err != nil {
 		t.Fatalf("RelocateSession: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestRelocateSessionMissingSourceReturnsNotFound(t *testing.T) {
 	if err := os.MkdirAll(dstWS, 0o700); err != nil {
 		t.Fatalf("mkdir dst: %v", err)
 	}
-	if _, _, err := RelocateSession("ghost-session", filepath.Join(home, "src"), dstWS); !errors.Is(err, ErrSessionFileNotFound) {
+	if _, _, err := RelocateSession(ProjectsDirForHome(home), "ghost-session", filepath.Join(home, "src"), dstWS); !errors.Is(err, ErrSessionFileNotFound) {
 		t.Fatalf("err = %v, want ErrSessionFileNotFound (no silent fresh session)", err)
 	}
 }
@@ -190,7 +190,7 @@ func TestRelocateSessionOverLengthDestResolves(t *testing.T) {
 		t.Fatalf("mkdir deep: %v", err)
 	}
 
-	src, dest, err := RelocateSession(id, srcWS, deep)
+	src, dest, err := RelocateSession(ProjectsDirForHome(home), id, srcWS, deep)
 	if err != nil {
 		t.Fatalf("RelocateSession: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestRelocateSessionSubagentCopyFailureReturnsSentinel(t *testing.T) {
 		t.Fatalf("write blocker: %v", err)
 	}
 
-	_, destFile, err := RelocateSession(id, srcWS, dstWS)
+	_, destFile, err := RelocateSession(ProjectsDirForHome(home), id, srcWS, dstWS)
 	if !errors.Is(err, ErrSubagentCopyIncomplete) {
 		t.Fatalf("err = %v, want ErrSubagentCopyIncomplete", err)
 	}
@@ -292,7 +292,7 @@ func TestRelocateSessionOverwritesStaleDestination(t *testing.T) {
 	// ...and the authoritative source carrying more turns.
 	placeSession(t, home, srcWS, id, "turn1\nturn2\nturn3\n")
 
-	_, dest, err := RelocateSession(id, srcWS, dstWS)
+	_, dest, err := RelocateSession(ProjectsDirForHome(home), id, srcWS, dstWS)
 	if err != nil {
 		t.Fatalf("RelocateSession: %v", err)
 	}
