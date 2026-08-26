@@ -55,6 +55,26 @@ describe('idleMemoryTrim', () => {
     expect(trimCalls()).toBe(2);
   });
 
+  it('reports whether input landed since the last accepted trim', async () => {
+    stop = startIdleMemoryTrim();
+    const mock = getBindingMock('RequestWebviewMemoryTrim')!;
+
+    // First ask since page load: the boot render was work.
+    await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + IDLE_TRIM_CHECK_MS);
+    expect(mock.mock.calls[0]).toEqual([true]);
+
+    // Idle straight through the floor: nothing new for a GC to reclaim,
+    // and the backend's no-activity gate keys on this false.
+    await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS);
+    expect(mock.mock.calls.length).toBe(2);
+    expect(mock.mock.calls[1]).toEqual([false]);
+
+    // Fresh input reopens the caller's half of the gate.
+    window.dispatchEvent(new Event('keydown'));
+    await vi.advanceTimersByTimeAsync(IDLE_TRIM_REATTEMPT_MS + IDLE_TRIM_THRESHOLD_MS);
+    expect(mock.mock.calls.at(-1)).toEqual([true]);
+  });
+
   it('a transient RPC failure stays armed and retries after the floor', async () => {
     let calls = 0;
     setBindingMock('RequestWebviewMemoryTrim', () => {

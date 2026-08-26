@@ -52,10 +52,13 @@ type webviewTrimDirective struct {
 
 // RequestWebviewMemoryTrim asks the webview's owning process to run a
 // memory-reducing GC in the renderer. Called by the embedded frontend when
-// user input has been idle past its threshold. Returns what happened —
-// "requested", "skipped-active-turn", or "skipped-recent" — so the caller
-// can log without a second RPC. LocalOnly (internal/transport/internalmethods.go).
-func (a *App) RequestWebviewMemoryTrim() (string, error) {
+// user input has been idle past its threshold; inputSinceLastTrim is the
+// caller's half of the activity gate — whether any user input landed after
+// the last trim this caller saw accepted. Returns what happened —
+// "requested", "skipped-active-turn", "skipped-recent", or
+// "skipped-no-activity" — so the caller can log without a second RPC.
+// LocalOnly (internal/transport/internalmethods.go).
+func (a *App) RequestWebviewMemoryTrim(inputSinceLastTrim bool) (string, error) {
 	if a.hasActiveProviderTurn() {
 		return "skipped-active-turn", nil
 	}
@@ -63,6 +66,17 @@ func (a *App) RequestWebviewMemoryTrim() (string, error) {
 	last := a.webviewTrimLastUnixNano.Load()
 	if last != 0 && now-last < int64(webviewTrimMinInterval) {
 		return "skipped-recent", nil
+	}
+	// The renderer only re-accumulates trimmable garbage when it WORKS:
+	// user input (the caller's fact) or a provider turn (this side's,
+	// stamped at turn lifecycle events — recordActivity). With neither
+	// since the last accepted trim, the renderer is already at floor and a
+	// forced GC is a ~50ms stall that reclaims nothing; an idle overnight
+	// window used to fire one every floor interval, 717 in a sitting
+	// (2026-08-26, the 165Hz frame-drop attribution). First trim since
+	// boot (last == 0) always passes — boot render churn is real work.
+	if last != 0 && !inputSinceLastTrim && a.turnActivityUnixNano.Load() <= last {
+		return "skipped-no-activity", nil
 	}
 	if !a.webviewTrimLastUnixNano.CompareAndSwap(last, now) {
 		// A concurrent request won the slot; treat this one as the duplicate.

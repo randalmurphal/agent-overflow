@@ -197,13 +197,18 @@ func (m sessionManager) recordActivity(threadID, sessionToken string, kind provi
 	switch kind {
 	case provider.EventTurnStart:
 		current.liveness.activeTurns.Add(1)
+		m.app.turnActivityUnixNano.Store(now.UnixNano())
 	case provider.EventTurnComplete:
 		// Clamp to 0 so an unmatched TurnComplete (e.g. from a replayed
 		// envelope) can't drive the counter negative.
 		decrementActiveTurnsClamped(&current.liveness.activeTurns)
+		m.app.turnActivityUnixNano.Store(now.UnixNano())
 	case provider.EventSessionStatus:
 		if content == "disconnected" {
 			current.liveness.activeTurns.Store(0)
+			// A killed turn churned the renderer like a completed one; the
+			// trim gate must see it (app_webview_trim.go).
+			m.app.turnActivityUnixNano.Store(now.UnixNano())
 		}
 	}
 }

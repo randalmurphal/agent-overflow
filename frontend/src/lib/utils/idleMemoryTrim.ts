@@ -64,6 +64,13 @@ export function startIdleMemoryTrim(): () => void {
 
   let lastInputAt = Date.now();
   let lastAttemptAt = 0;
+  // When the backend last ACCEPTED a trim from this page. The input fact
+  // sent with each request — "did input land after that" — is this side's
+  // half of the backend's activity gate: with no input here and no provider
+  // turn there, the renderer is already at floor and the backend answers
+  // "skipped-no-activity" instead of forcing a ~50ms GC stall that
+  // reclaims nothing (717 of those in one overnight window, 2026-08-26).
+  let lastTrimAcceptedAt = 0;
   let disarmed = false;
 
   const onInput = () => {
@@ -79,15 +86,26 @@ export function startIdleMemoryTrim(): () => void {
     if (now - lastInputAt < IDLE_TRIM_THRESHOLD_MS) return;
     if (now - lastAttemptAt < IDLE_TRIM_REATTEMPT_MS) return;
     lastAttemptAt = now;
-    RequestWebviewMemoryTrim().catch((err: unknown) => {
-      if (isMethodUnavailableError(err)) {
-        // Not the desktop webview after all (or an old backend). Final.
-        disarmed = true;
-        return;
-      }
-      // Transient (reconnect window, timeout): stay armed, the next
-      // check past the reattempt floor retries.
-    });
+    // Captured before the round trip so input landing DURING it stays
+    // "since the last trim" for the next request. `>=` because the idle
+    // threshold guarantees the accepted request's own input was seconds
+    // older than the marker — a same-millisecond timestamp can only be
+    // input that landed after the accept.
+    const requestedAt = now;
+    RequestWebviewMemoryTrim(lastInputAt >= lastTrimAcceptedAt).then(
+      (outcome) => {
+        if (outcome === 'requested') lastTrimAcceptedAt = requestedAt;
+      },
+      (err: unknown) => {
+        if (isMethodUnavailableError(err)) {
+          // Not the desktop webview after all (or an old backend). Final.
+          disarmed = true;
+          return;
+        }
+        // Transient (reconnect window, timeout): stay armed, the next
+        // check past the reattempt floor retries.
+      },
+    );
   };
   const timer = setInterval(check, IDLE_TRIM_CHECK_MS);
 

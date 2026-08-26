@@ -246,6 +246,14 @@ type App struct {
 	// the backend-side floor between forced renderer GCs
 	// (app_webview_trim.go). Atomic: read-CAS on the RPC path, no lock.
 	webviewTrimLastUnixNano atomic.Int64
+	// turnActivityUnixNano stamps the last provider turn lifecycle event
+	// (start, complete, disconnect-kill — recordActivity's switch arms).
+	// Read by RequestWebviewMemoryTrim: a trim with no turn and no input
+	// since the last one reclaims nothing and still stalls the renderer
+	// ~50ms, and the overnight metronome fired 717 of those
+	// (app_webview_trim.go). Atomic: written on lifecycle events only,
+	// never per delta.
+	turnActivityUnixNano atomic.Int64
 	// keepAwakeApply is the OS sleep-inhibitor seam (app_power.go). nil
 	// means power.Apply, which is what production always uses; fixtures
 	// install a recorder so no test binary can move the developer's

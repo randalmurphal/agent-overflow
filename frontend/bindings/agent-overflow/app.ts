@@ -2927,12 +2927,15 @@ export function ReportUpdateInstallStatus(stage: string, version: string, messag
 /**
  * RequestWebviewMemoryTrim asks the webview's owning process to run a
  * memory-reducing GC in the renderer. Called by the embedded frontend when
- * user input has been idle past its threshold. Returns what happened —
- * "requested", "skipped-active-turn", or "skipped-recent" — so the caller
- * can log without a second RPC. LocalOnly (internal/transport/internalmethods.go).
+ * user input has been idle past its threshold; inputSinceLastTrim is the
+ * caller's half of the activity gate — whether any user input landed after
+ * the last trim this caller saw accepted. Returns what happened —
+ * "requested", "skipped-active-turn", "skipped-recent", or
+ * "skipped-no-activity" — so the caller can log without a second RPC.
+ * LocalOnly (internal/transport/internalmethods.go).
  */
-export function RequestWebviewMemoryTrim(): $CancellablePromise<string> {
-    return $Call.ByID(2045178958);
+export function RequestWebviewMemoryTrim(inputSinceLastTrim: boolean): $CancellablePromise<string> {
+    return $Call.ByID(2045178958, inputSinceLastTrim);
 }
 
 /**
