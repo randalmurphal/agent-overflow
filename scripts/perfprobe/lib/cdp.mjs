@@ -112,8 +112,16 @@ export async function evaluate(conn, expression) {
 
 // Node on Windows asserts inside libuv when process.exit lands while a WebSocket is still tearing
 // down, so close every connection and give the loop a tick before leaving.
+//
+// NOT process.exit() directly: done() runs in probes' finally blocks, and a
+// hard exit(0) there swallows any error propagating past the finally — the
+// probe dies silently with rc=0 (bit twice on 2026-08-25: driveburn given
+// invented flags reported nothing and "succeeded"). Setting exitCode and
+// draining the loop lets a throw print its stack and exit nonzero; the
+// unref'd timer only fires if a stray handle keeps the loop alive.
 export async function done(conns = [], code = 0) {
   for (const c of conns) { try { c.close(); } catch {} }
   await sleep(50);
-  process.exit(code);
+  process.exitCode = code;
+  setTimeout(() => process.exit(code), 2000).unref();
 }
