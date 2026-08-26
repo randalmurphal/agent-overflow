@@ -342,6 +342,14 @@ export function flushItemEventQueue(): void {
       itemEventQueueStart = 0;
     }
   }
+  // NOTE (2026-08-26, do not rebuild): rotating this flush across
+  // mounted threads (one pane's commit per rAF when several stream at
+  // once) was built and REFUTED by a controlled 3-pane clone-replay
+  // A/B/A/B: busy p95 3.0/3.0ms merged vs 5.0/5.5ms rotated, worst
+  // frame no better. The tall frames are flood-shaped. One pane's own
+  // beat dominates them, and un-merging multiplies the per-flush fixed
+  // costs this single batch amortizes. Numbers in
+  // .claude/skills/perf-investigation/REFERENCE.md.
   const pendingUpserts: PendingItemUpsert[] = [];
   const pendingUpsertItemKeys = new Set<string>();
   const notifiedUpserts: Item[] = [];

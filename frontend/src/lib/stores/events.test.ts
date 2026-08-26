@@ -3189,4 +3189,27 @@ describe('setupEventListeners', () => {
     expect(getThreadStatus('thread-1')).toBe('error');
   });
 
+  // Multi-pane beats land in ONE frame by design. Rotating them (one
+  // mounted thread per rAF) was built and refuted by a 3-pane
+  // clone-replay A/B on 2026-08-26: busy p95 3.0 → 5.0/5.5ms, worst
+  // frame no better. The merged flush amortizes per-flush fixed costs;
+  // see the NOTE in eventsItemStream.ts#flushItemEventQueue.
+  it('applies every mounted pane\'s beat in the same frame', async () => {
+    const paneA = await buildPane(makeThread({ id: 'thread-a' }), [], 'pane-a');
+    const paneB = await buildPane(makeThread({ id: 'thread-b' }), [], 'pane-b');
+    const applyA = vi.spyOn(paneA, 'applyProviderItemUpserts');
+    const applyB = vi.spyOn(paneB, 'applyProviderItemUpserts');
+
+    const a1 = makeItem({ id: 'a-1', threadId: 'thread-a', summary: 'A1' });
+    const b1 = makeItem({ id: 'b-1', threadId: 'thread-b', summary: 'B1' });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: 'thread-a', item: a1 });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: 'thread-b', item: b1 });
+    await nextFrame();
+
+    expect(applyA).toHaveBeenCalledTimes(1);
+    expect(applyB).toHaveBeenCalledTimes(1);
+    expect(paneA.getItemById('a-1')?.summary).toBe('A1');
+    expect(paneB.getItemById('b-1')?.summary).toBe('B1');
+  });
+
 });

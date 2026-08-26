@@ -15,6 +15,7 @@ User-set and standing. They decide what counts as a fix.
 - Never trade performance for memory. Making the app do less visible work (mount fewer panes, slow a ticker, drop an animation) was rejected; make the unit cheaper instead.
 - The user's running app is read-only. Dumps, profiles and snapshots are fine (`churn` forces a GC and `heapsnapshot` pauses the renderer for a moment; mention it when the user is mid-work). Injecting CSS, sending wheel or key events, anything the user can see, needs their OK first or runs on a harness/soak instance.
 - `make dev-wsl` does not hot-reload frontend edits. Every fix report says "needs a restart", and verification happens after the restart by re-running the probe that found the item.
+- Harness first (user ruling 2026-08-26): the user's live activity is never the capture instrument. Reproduce and A/B on a harness/clone/soak instance; the live app supplies only what no rig can — per-stall verdicts on their machine (always-on ui-trace forensics) and final confirmation after a restart. If a symptom cannot be reproduced on a rig, that is a harness feature gap to raise, not a reason to wait on the user.
 
 ## Environment
 
@@ -42,6 +43,23 @@ User-set and standing. They decide what counts as a fix.
     and perf. The meters answer "how bad and where in time"; walking a
     finding back to an allocator or retainer still needs CDP, so
     reproduce on a WebView2 target for steps 3 and 5.
+  - Real-content replay (the clone rig) is first-class in ao-harness,
+    not a bespoke script: `ao-harness clone` builds a harness data root
+    from a COPY of the real app data dir (carries real conversation
+    content verbatim — gitignored, never committable), `up -data-dir
+    <root>` boots on it, `scenario from-thread --thread <t> -set`
+    rebuilds that thread's stored turns as a mock scenario, and `send
+    --thread <t> --wait replay` streams it through the production
+    pipeline. Gotchas: scenario rules are in-memory per boot (recreate
+    after every `up`); rules scope by cwd/session-ref, not thread, so
+    one unfiltered rule serves every pane — fine for collision loads,
+    wrong for per-thread content fidelity; the page URL needs the
+    token query from `ao-harness open`, a bare port never arms the
+    bridge; `up -binary` needs `-mock-provider` when the binary is not
+    beside a built `bin/ao-mockprovider`. For an A/B, build the
+    before-binary from clean HEAD in a temp `git worktree` (pnpm
+    install runs in `frontend/`), and run each leg twice — single runs
+    on a busy desktop carry contention noise.
 - CDP is WebView2 on Windows loopback: 9223 for dev, 9224 for the soak rig (`make soak`, isolated profile, mock providers). WSL cannot reach it, so `scripts/perfprobe/probe <name> [args]` stages the scripts and runs them under Windows node.exe. `probe` alone lists the probes; `AO_CDP_PORT=9224` targets the soak rig. Saved traces, profiles and snapshots land in `%LOCALAPPDATA%\Temp\ao-perfprobe`; the wrapper prints the `/mnt/c/...` path.
 - One tracing session per browser. Memory dumps and frame traces both use it, so a background `sample --every` curve collides with `memdump`, `churn`, `tiles`, `frames` and `ab`. Stop the sampler first.
 - Go backend: `DEBUG=1` sets `AGENT_OVERFLOW_PPROF=1`, pprof on `127.0.0.1:6363`, reachable from WSL: `go tool pprof -top http://127.0.0.1:6363/debug/pprof/heap` and `.../profile?seconds=30`.
