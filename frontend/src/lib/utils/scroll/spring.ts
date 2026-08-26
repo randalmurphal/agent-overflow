@@ -1444,10 +1444,16 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       springStartedFromStructuralAppend = false;
     },
     sentinelTarget: () => {
+      // No sentinel armed (the overwhelmingly common case): answer
+      // without touching the DOM. The clientHeight read below is a
+      // layout-dependent read, and snapshot sampling now runs on the
+      // controller's read-free delta path where layout may be dirty —
+      // an unconditional read here would be the forced pass that path
+      // exists to avoid.
+      if (sentinelEntryTarget < 0) return -1;
       // Rebased at sample time so the resolver's stranded-oscillation
       // comparison stays content-height-based even when the viewport
-      // resized mid-sentinel (see the field's declaration). Layout is
-      // clean here: every sampling delivery just computed the target.
+      // resized mid-sentinel (see the field's declaration).
       const el = deps.getScrollEl();
       if (!el) return sentinelEntryTarget;
       return rebasedSentinelEntryTarget(el.clientHeight);

@@ -300,6 +300,7 @@
   // shifts at constant geometry) deliver nothing.
   let contentGeometryTrigger = $state(0);
   let scrollerContentWidth: number | undefined;
+  let scrollerContentHeight: number | undefined;
   let maxFirstMeasureCorrectionPx = 0;
   let lastGeometrySample: ContentGeometrySample | undefined;
 
@@ -324,6 +325,7 @@
       width: scrollerContentWidth,
       windowMeasured: windowFullyMeasured(),
       maxFirstMeasureCorrectionPx,
+      viewportHeight: scrollerContentHeight,
     };
     const prev = lastGeometrySample;
     // Field-by-field on purpose — but TypeScript will NOT flag a field
@@ -335,7 +337,8 @@
       prev.height === sample.height &&
       prev.width === sample.width &&
       prev.windowMeasured === sample.windowMeasured &&
-      prev.maxFirstMeasureCorrectionPx === sample.maxFirstMeasureCorrectionPx
+      prev.maxFirstMeasureCorrectionPx === sample.maxFirstMeasureCorrectionPx &&
+      prev.viewportHeight === sample.viewportHeight
     ) {
       return;
     }
@@ -705,6 +708,14 @@
       if (!target.offsetParent) continue;
       if (target === observedScroller) {
         viewportHeight = entry.contentRect.height;
+        if (viewportHeight !== scrollerContentHeight) {
+          scrollerContentHeight = viewportHeight;
+          // A clientHeight move invalidates the controller's cached
+          // bottom-target arithmetic; the bumped delivery below carries
+          // the new viewportHeight so the next delta falls back to a
+          // real read (delta-0 deliveries return before consuming it).
+          contentGeometryTrigger++;
+        }
         // Sibling width observer: MessageTimeline's
         // observeScrollSurfaceContentWidth watches this same scroller for
         // the size-priors validity key. It must outlive the `{#key}`

@@ -82,6 +82,18 @@ export interface ContentGeometrySample {
   windowMeasured: boolean;
   /** Max |measured − estimated| px over all first measurements since mount. */
   maxFirstMeasureCorrectionPx: number;
+  /**
+   * Scroller content-box height from the adapter's own ResizeObserver —
+   * async RO data, never a synchronous layout read. The controller's
+   * read-free delta path (scroll/observers.ts) keys on it: while the
+   * viewport holds still, the post-delta bottom target is pure
+   * arithmetic; a change here is the signal that clientHeight moved and
+   * cached geometry must be re-read. Optional because RO-sourced
+   * pipelines (ChannelView's contentEl RO) have no scroller entry —
+   * absent means "unknown", which disables the arithmetic path, never
+   * misclassifies.
+   */
+  viewportHeight?: number;
 }
 
 export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';

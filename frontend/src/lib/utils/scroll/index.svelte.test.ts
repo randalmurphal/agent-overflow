@@ -7165,6 +7165,124 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(controller.warmReason).toBe('failsafe');
     });
   });
+
+  // The read-free delta path: a delivery whose sample carries a stable
+  // viewportHeight decides from the controller's cached bottom geometry
+  // (advanced by the delivery's own delta) instead of forced-layout
+  // reads. The lying-getter tests prove WHICH path ran by making the two
+  // paths produce different targets; the read-counter tests prove the
+  // decision-only deliveries (escaped) touch no geometry at all.
+  describe('cached bottom geometry (read-free delta path)', () => {
+    function deliverWithViewport(height: number, viewportHeight?: number): void {
+      controller.deliverContentGeometry({
+        height,
+        width: 800,
+        windowMeasured: false,
+        maxFirstMeasureCorrectionPx: 0,
+        viewportHeight,
+      });
+    }
+
+    /** Redefine scrollEl's scrollHeight getter to report `lie` while the
+     * stub's scrollTop clamp keeps using the true geom values. */
+    function lieAboutScrollHeight(lie: number): void {
+      Object.defineProperty(scrollEl, 'scrollHeight', {
+        configurable: true,
+        get: () => lie,
+      });
+    }
+
+    function countGeometryReads(): () => number {
+      let reads = 0;
+      for (const prop of ['scrollHeight', 'clientHeight', 'scrollTop'] as const) {
+        const real = () => geom[prop === 'scrollHeight' ? 'scrollHeight' : prop === 'clientHeight' ? 'clientHeight' : 'scrollTop'];
+        Object.defineProperty(scrollEl, prop, {
+          configurable: true,
+          get: () => {
+            reads++;
+            return real();
+          },
+          ...(prop === 'scrollTop'
+            ? {
+                set: (v: number) => {
+                  geom.scrollTop = Math.max(0, Math.min(v, geom.scrollHeight - geom.clientHeight));
+                },
+              }
+            : {}),
+        });
+      }
+      return () => reads;
+    }
+
+    it('stable viewport: the sync-pin target comes from delta arithmetic, not a layout read', () => {
+      // First fire takes the real reads and syncs the cache (target 400).
+      deliverWithViewport(800, 600);
+      expect(geom.scrollTop).toBe(400);
+      // Content grows by 200. The true geometry (used by the scrollTop
+      // clamp) moves to 1200, but the GETTER keeps reporting the stale
+      // 1000: a real-read path would compute target 400 and go nowhere.
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      lieAboutScrollHeight(1000);
+      deliverWithViewport(1000, 600);
+      // Cached path: 400 + 200 = 600. The lie never mattered.
+      expect(geom.scrollTop).toBe(600);
+    });
+
+    it('no viewportHeight on the sample (RO-sourced shape): real reads decide', () => {
+      deliverWithViewport(800, undefined);
+      expect(geom.scrollTop).toBe(400);
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      lieAboutScrollHeight(1000);
+      deliverWithViewport(1000, undefined);
+      // Real-read path believed the (lying) getter: target 1000-600=400.
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('a viewport height change falls back to real reads and resyncs', () => {
+      deliverWithViewport(800, 600);
+      // Viewport shrinks 600 -> 500 (composer grew, window resized...).
+      // Arithmetic from the old clientHeight would say 600; the real
+      // target is 1200 - 500 = 700.
+      geom.clientHeight = 500;
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      deliverWithViewport(1000, 500);
+      expect(geom.scrollTop).toBe(700);
+    });
+
+    it('escaped + stable viewport: a delta delivery reads no geometry at all', () => {
+      deliverWithViewport(800, 600);
+      controller.setEscapedFromLock(true);
+      const reads = countGeometryReads();
+      geom.scrollHeight = 1200;
+      geom.contentHeight = 1000;
+      deliverWithViewport(1000, 600);
+      expect(reads()).toBe(0);
+      expect(geom.scrollTop).toBe(400);
+    });
+
+    it('cache synced while floored (content shorter than viewport) stays on real reads', () => {
+      // Rebuild short geometry: content 300 + 200 padding = 500, floored
+      // to clientHeight 600 by the browser. A cache synced here cannot
+      // know how far below the viewport content really sits.
+      controller.detach();
+      geom = { scrollHeight: 600, clientHeight: 600, scrollTop: 0, contentHeight: 300 };
+      stubGeometry(scrollEl, contentEl, geom);
+      controller.attach(scrollEl, contentEl);
+      deliverWithViewport(300, 600);
+      expect(geom.scrollTop).toBe(0);
+      controller.setEscapedFromLock(true);
+      const reads = countGeometryReads();
+      geom.scrollHeight = 900;
+      geom.contentHeight = 700;
+      deliverWithViewport(700, 600);
+      // The floored guard forced the real-read fallback (contrast with
+      // the escaped read-free case above).
+      expect(reads()).toBeGreaterThan(0);
+    });
+  });
 });
 
 // An activity run attaches a SECOND controller to its own clip while the

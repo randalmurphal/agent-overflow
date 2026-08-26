@@ -200,11 +200,77 @@ export function createUseStickToBottomController(
     if (!scrollEl) return 0;
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
   }
+
+  // ===== Cached bottom geometry (the read-free delta path) =====
+  // scrollHeight/scrollTop/clientHeight are layout-dependent reads: the
+  // first one after a style write forces a synchronous layout pass, and
+  // the content-delivery path used to pay one per delivery — interleaved
+  // with other panes' flush writes, up to four forced passes landed in a
+  // single 3-pane streaming frame (storm capture 2026-08-26). But a
+  // delta delivery already KNOWS the geometry: content height moved by
+  // exactly `delta`, and scrollTop cannot have moved since the last real
+  // read — every path that changes it (user scroll events, the write
+  // chokepoint, spring ticks) runs refreshIsNearBottom and resyncs this
+  // cache. So the hot path advances the cached target by arithmetic and
+  // reads nothing.
+  //
+  // `cachedBottomTarget` is deliberately UNCLAMPED (it may go negative
+  // while content is shorter than the viewport): it is the true linear
+  // function of content height, so delta arithmetic stays exact through
+  // a shrink-below-viewport dip and back out. Clamping happens at use.
+  // The one state arithmetic cannot see through is a resync taken WHILE
+  // floored (scrollHeight clamped to clientHeight hides how far below
+  // the viewport content really is) — `cachedGeometryFloored` disables
+  // the arithmetic path until a real read finds scrollable content
+  // again. Short threads therefore keep real reads; those are the panes
+  // where the read is cheap.
+  //
+  // Drift: real reads return browser-rounded ints while engine deltas
+  // are fractional, so the cache can drift sub-pixel per delivery while
+  // no write lands. Pinned panes resync on every delivery's own write;
+  // escaped panes only feed the 70px near-bottom band with it, and the
+  // re-stick path runs on real scroll events. A viewport height change
+  // arrives as `viewportHeight` on the delivery itself (RO data, free)
+  // and falls back to a real read — see scroll/observers.ts.
+  let cachedBottomTarget = 0;
+  let cachedScrollTop = 0;
+  let cachedGeometryValid = false;
+  let cachedGeometryFloored = false;
+
   function refreshIsNearBottom(): number {
-    const dist = distanceFromBottom();
+    let dist = 0;
+    if (scrollEl) {
+      const scrollTop = scrollEl.scrollTop;
+      const scrollHeight = scrollEl.scrollHeight;
+      const clientHeight = scrollEl.clientHeight;
+      dist = scrollHeight - scrollTop - clientHeight;
+      cachedBottomTarget = scrollHeight - clientHeight;
+      cachedScrollTop = scrollTop;
+      cachedGeometryValid = true;
+      cachedGeometryFloored = scrollHeight <= clientHeight;
+    }
+    // No scrollEl (empty timeline) still refreshes the band from dist 0
+    // — markAtBottom's empty-thread branch relies on it.
     const next = dist <= STICK_TO_BOTTOM_OFFSET_PX;
     if (next !== isNearBottomState) isNearBottomState = next;
     return dist;
+  }
+
+  /**
+   * Advance the cached bottom geometry by a content-height delta and
+   * return the post-delta decision inputs, or null when the cache
+   * cannot answer (never synced, synced while floored, or detached) —
+   * the caller then takes the real-read path, which resyncs. Also
+   * refreshes the near-bottom band from the same arithmetic, mirroring
+   * what refreshIsNearBottom does on the read path.
+   */
+  function advanceContentGeometry(delta: number): { target: number; scrollTop: number } | null {
+    if (!scrollEl || !cachedGeometryValid || cachedGeometryFloored) return null;
+    cachedBottomTarget += delta;
+    const target = Math.max(0, cachedBottomTarget);
+    const next = target - cachedScrollTop <= STICK_TO_BOTTOM_OFFSET_PX;
+    if (next !== isNearBottomState) isNearBottomState = next;
+    return { target, scrollTop: cachedScrollTop };
   }
 
   // ===== Write chokepoint =====
@@ -393,6 +459,7 @@ export function createUseStickToBottomController(
     isNearBottom: () => isNearBottomState,
     targetScrollTop,
     refreshIsNearBottom,
+    advanceContentGeometry,
     writeScrollTop,
     resolverStateSnapshot,
     prefersReducedMotion: motionReduced,
@@ -991,6 +1058,7 @@ export function createUseStickToBottomController(
     chokepoint.resetLedger();
     scrollEl = undefined;
     contentEl = undefined;
+    cachedGeometryValid = false;
   }
 
   return {

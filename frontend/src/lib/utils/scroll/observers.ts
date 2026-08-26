@@ -190,6 +190,15 @@ export interface ContentObserverDeps {
   isNearBottom(): boolean;
   targetScrollTop(): number;
   refreshIsNearBottom(): number;
+  /**
+   * Read-free bottom geometry for a delta delivery: advances the
+   * controller's cached target by the delivery's content-height delta
+   * and returns the decision inputs, refreshing the near-bottom band
+   * from the same arithmetic. Null when the cache cannot answer — the
+   * caller must then take the real-read path (refreshIsNearBottom +
+   * targetScrollTop + scrollTop), which resyncs the cache.
+   */
+  advanceContentGeometry(delta: number): { target: number; scrollTop: number } | null;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   resolverStateSnapshot(): ResolverState;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
@@ -243,6 +252,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   let contentRO: ResizeObserver | undefined;
   let previousHeight: number | undefined;
   let previousWidth: number | undefined;
+  let previousViewportHeight: number | undefined;
   let contentReflowSettleUntil = 0;
   let pinnedRemeasureSettleUntil = 0;
   // 0 = inactive. Armed by beginWarmup (every cold edge arms the warm
@@ -448,7 +458,10 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   function processSample(
     nextHeight: number,
     nextWidth: number,
-    settle?: Pick<ContentGeometrySample, 'windowMeasured' | 'maxFirstMeasureCorrectionPx'>,
+    settle?: Pick<
+      ContentGeometrySample,
+      'windowMeasured' | 'maxFirstMeasureCorrectionPx' | 'viewportHeight'
+    >,
   ): void {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return;
@@ -456,6 +469,15 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     const prevWidth = previousWidth;
     previousHeight = nextHeight;
     previousWidth = nextWidth;
+    // Engine-sourced deliveries carry the scroller's content-box height
+    // from its RO entry. While it holds still, clientHeight held still,
+    // and the delta path below may answer from cached geometry instead
+    // of forced-layout reads; any move (or an RO-sourced pipeline, which
+    // never reports one) disqualifies this delivery from the cache.
+    const nextViewportHeight = settle?.viewportHeight;
+    const viewportStable = nextViewportHeight !== undefined
+      && nextViewportHeight === previousViewportHeight;
+    previousViewportHeight = nextViewportHeight;
     const widthChanged = prevWidth !== undefined
       && Math.abs(nextWidth - prevWidth) > CONTENT_REFLOW_WIDTH_EPSILON_PX;
     if (widthChanged) {
@@ -566,17 +588,44 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // the engine's are routed through the controller and token-tagged.)
     resizeCorrelatedUntaggedScrollBudget = 1;
 
-    // Refresh the geometric near-bottom flag BEFORE resolving so the
-    // decision and its trace see the same post-resize geometry.
-    deps.refreshIsNearBottom();
-    // Cache the bottom target once per RO delivery. `targetScrollTop()`
-    // reads `scrollHeight` + `clientHeight` (forced layout), and neither
-    // changes across this synchronous callback — the only writes here
-    // are to `scrollTop`, which don't affect them — so one read serves
-    // the whole decision. Mirrors the spring tick's per-frame
-    // `const target` discipline.
-    const target = deps.targetScrollTop();
-    const scrollTopAtDelivery = scrollEl.scrollTop;
+    // Geometry for the decision — read-free on the hot path. A delta
+    // delivery already knows everything the resolver needs: content
+    // height moved by exactly `delta` (so the bottom target did too),
+    // and scrollTop cannot have moved since the controller's last real
+    // read (scroll events, chokepoint writes and spring ticks all
+    // resync its cache). The forced-layout read this replaces ran once
+    // per delivery INSIDE the flush/RO window — up to four passes in a
+    // single 3-pane streaming frame, and the first reader of a dirty
+    // frame pays the whole pending style recalc (storm capture
+    // 2026-08-26). The cache answers only while the viewport held
+    // still and the wrap width did not move; everything else — first
+    // fire, width reflow, viewport resize, floored-short content,
+    // RO-sourced pipelines — takes the real reads below, which resync
+    // the cache via refreshIsNearBottom. A shrink the browser clamps
+    // ahead of us is seen here as overshoot and resolved by the same
+    // overshoot-snap the real read produced; the chokepoint's own
+    // fresh-read clamp still guards the actual write.
+    const cachedGeometry = viewportStable && !widthChanged
+      ? deps.advanceContentGeometry(delta)
+      : null;
+    let target: number;
+    let scrollTopAtDelivery: number;
+    if (cachedGeometry) {
+      target = cachedGeometry.target;
+      scrollTopAtDelivery = cachedGeometry.scrollTop;
+    } else {
+      // Refresh the geometric near-bottom flag BEFORE resolving so the
+      // decision and its trace see the same post-resize geometry.
+      deps.refreshIsNearBottom();
+      // Cache the bottom target once per RO delivery. `targetScrollTop()`
+      // reads `scrollHeight` + `clientHeight` (forced layout), and neither
+      // changes across this synchronous callback — the only writes here
+      // are to `scrollTop`, which don't affect them — so one read serves
+      // the whole decision. Mirrors the spring tick's per-frame
+      // `const target` discipline.
+      target = deps.targetScrollTop();
+      scrollTopAtDelivery = scrollEl.scrollTop;
+    }
     // Every decision about this delivery — overshoot snap, stranded-
     // oscillation recovery, sync-pin vs spring, negative re-stick — is
     // made by the pure resolver (scroll/resolver.ts) over a sampled
@@ -618,8 +667,12 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       liveContentActive: deps.liveContentActive(),
       structuralAppendSpringPending: deps.spring.structuralAppendPending(),
       scrollTop: Math.round(scrollTopAtDelivery),
-      scrollHeight: Math.round(scrollEl.scrollHeight),
-      clientHeight: Math.round(scrollEl.clientHeight),
+      // Real DOM reads only on the read path: the cached path must stay
+      // read-free even under UI_TRACE, or tracing re-adds the forced
+      // layout it exists to diagnose. `target` carries the geometry.
+      scrollHeight: cachedGeometry ? null : Math.round(scrollEl.scrollHeight),
+      clientHeight: cachedGeometry ? null : Math.round(scrollEl.clientHeight),
+      geometrySource: cachedGeometry ? 'cached' : 'read',
       target: Math.round(target),
     }));
 
@@ -701,6 +754,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     resizeCorrelatedUntaggedScrollBudget = 0;
     previousHeight = undefined;
     previousWidth = undefined;
+    previousViewportHeight = undefined;
     contentReflowSettleUntil = 0;
     pinnedRemeasureSettleUntil = 0;
     coldLoadSettleUntil = 0;
