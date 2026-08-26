@@ -125,6 +125,31 @@ export interface TimelineLeaf {
   orphan?: boolean;
 }
 
+// Leaf nodes are cached per Item OBJECT. The store's write chokepoint
+// (`writeItemAt`) REPLACES a row's Item on every content write, so an Item
+// reference IS a content version: an unchanged row keeps its leaf node's
+// identity across projection passes, and a written row mints a fresh one
+// through its fresh Item. Reference-stable leaves are what let downstream
+// passes — read grouping, the activity-run build cache, svelte's keyed
+// reconcile — recognize an unchanged row by reference instead of
+// re-deriving it (the per-pass leaf mint was part of a 160MB/30s JS
+// allocation rate during two-pane streaming, 2026-08-25). Leaves are
+// immutable and carry nothing pane-scoped, so sharing one node between
+// consumers of the same Item is sound; entries die with their Item.
+// `orphan` is the one non-item input, hence the second map.
+const leafByItem = new WeakMap<Item, TimelineLeaf>();
+const orphanLeafByItem = new WeakMap<Item, TimelineLeaf>();
+
+function leafNode(item: Item, orphan = false): TimelineLeaf {
+  const cache = orphan ? orphanLeafByItem : leafByItem;
+  let node = cache.get(item);
+  if (node === undefined) {
+    node = orphan ? { kind: 'leaf', item, orphan: true } : { kind: 'leaf', item };
+    cache.set(item, node);
+  }
+  return node;
+}
+
 export interface SubagentGroupNode {
   kind: 'group';
   /**
@@ -1025,7 +1050,7 @@ export function groupItemsBySubagent(
   if (!hasGroupingSignals && alreadySorted) {
     const leaves: TimelineNode[] = new Array(items.length);
     for (let i = 0; i < items.length; i++) {
-      leaves[i] = { kind: 'leaf', item: items[i] };
+      leaves[i] = leafNode(items[i]);
     }
     return leaves;
   }
@@ -1236,11 +1261,11 @@ export function groupItemsBySubagent(
     // sits under it. Its subtree renders under its card once the
     // completion sibling loads; until then the agent's live transcript is
     // the pane's and the tray's, never the launch row's.
-    if (isLaunch && detachedLaunchIDs.has(item.id)) return { kind: 'leaf', item };
+    if (isLaunch && detachedLaunchIDs.has(item.id)) return leafNode(item);
 
     const childItems = childrenByParent.get(item.id);
     if ((!childItems || childItems.length === 0) && !isLaunch) {
-      return { kind: 'leaf', item };
+      return leafNode(item);
     }
     return buildLaunchGroup(item, item, depth);
   }
@@ -1292,7 +1317,7 @@ export function groupItemsBySubagent(
       enqueue(childItems);
       for (let head = 0; head < queue.length; head++) {
         const next = queue[head];
-        flatChildren.push({ kind: 'leaf', item: next });
+        flatChildren.push(leafNode(next));
         if (subagentLaunchIDs.has(next.id)) {
           flattenedFoldCount += aggregates?.(next.id)?.evictedCount ?? 0;
           // A flattened launch renders as a LEAF with no card to build at
@@ -1362,12 +1387,12 @@ export function groupItemsBySubagent(
       continue;
     }
     if (orphanIds.has(item.id)) {
-      roots.push({ kind: 'leaf', item, orphan: true });
+      roots.push(leafNode(item, true));
       continue;
     }
     // A declared parent that exists but sits outside every launch: the row
     // stays a flat top-level leaf, unflagged.
-    roots.push({ kind: 'leaf', item });
+    roots.push(leafNode(item));
   }
 
   return roots;

@@ -164,6 +164,17 @@ embedded one and is validated at boot (`installSoakScenario`,
 `main_soak.go:175`) — a bad edit fails in `launcher-soak.log`, not as
 frames that never arrive.
 
+**Tool ids must be unique across boots.** The soak data dir persists,
+and triage upserts tool rows by provider tool id — so a scenario whose
+`tool_use` ids are deterministic (`tu-burn-edit-${TURN}-${ITER}`
+restarting from 1) lands every "new" tool call on the PREVIOUS boot's
+completed row in an old turn. The symptom is a timeline streaming prose
+with no tool rows at all while `launcher-soak.log` fills with
+`triage: dropping late EventToolComplete … already terminal`
+(2026-08-25). Bake a per-deploy nonce into the ids (or delete
+`~/.agent-overflow-soak` to reseed) before every scenario swap that
+reuses an id scheme.
+
 ### The `repeat` step
 
 `repeat` (`internal/harness/scenario/scenario.go`) is a general scenario

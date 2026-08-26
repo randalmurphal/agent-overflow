@@ -166,4 +166,41 @@ describe('groupConsecutiveReads', () => {
     const nodes: TimelineNode[] = [];
     expect(groupConsecutiveReads(nodes)).toBe(nodes);
   });
+
+  // The per-first-member cache: unchanged member Items reuse the previous
+  // node OBJECT (downstream passes key unchanged-ness on reference), and
+  // any member Item replacement — the store replaces Items per write —
+  // mints a fresh node.
+  describe('node reuse across passes', () => {
+    it('reuses the group node when every member Item is reference-identical', () => {
+      const a = read('r1', 'a.ts');
+      const b = read('r2', 'b.ts');
+      const first = asReadGroup(groupConsecutiveReads([a, b])[0]);
+      const second = asReadGroup(groupConsecutiveReads([a, b])[0]);
+      expect(second).toBe(first);
+    });
+
+    it('mints a fresh node when a member Item was replaced', () => {
+      const a = read('r1', 'a.ts');
+      const b = read('r2', 'b.ts');
+      const first = asReadGroup(groupConsecutiveReads([a, b])[0]);
+      const bReplaced = read('r2', 'b.ts (grew)');
+      const second = asReadGroup(groupConsecutiveReads([a, bReplaced])[0]);
+      expect(second).not.toBe(first);
+      expect(second.members[1]).toBe(bReplaced.item);
+      // The stale cache entry is replaced, not kept beside the new one.
+      const third = asReadGroup(groupConsecutiveReads([a, bReplaced])[0]);
+      expect(third).toBe(second);
+    });
+
+    it('mints a fresh node when the run grew', () => {
+      const a = read('r1', 'a.ts');
+      const b = read('r2', 'b.ts');
+      const first = asReadGroup(groupConsecutiveReads([a, b])[0]);
+      const c = read('r3', 'c.ts');
+      const second = asReadGroup(groupConsecutiveReads([a, b, c])[0]);
+      expect(second).not.toBe(first);
+      expect(second.members).toHaveLength(3);
+    });
+  });
 });

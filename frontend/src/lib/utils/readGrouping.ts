@@ -16,9 +16,41 @@
 // from GenericToolCallRow to ReadGroupRow.
 //
 // The function is pure — fresh array out, no mutation of `nodes`.
+//
+// Group nodes are cached per first-member Item: a run of Reads whose
+// member Items are all reference-identical to the previous pass reuses
+// the previous node wholesale. Sound because `writeItemAt` replaces a
+// row's Item on every content write (an Item reference is a content
+// version) and a read_group's shape derives from nothing but its
+// members. Reference-stable groups keep the activity-run build cache
+// (`activityRunGrouping.ts`) hitting on runs that contain Reads.
 
 import type { Item } from '../types/models';
-import { readGroupKey, type TimelineLeaf, type TimelineNode } from './subagentGrouping';
+import { readGroupKey, type ReadGroupNode, type TimelineLeaf, type TimelineNode } from './subagentGrouping';
+
+const readGroupByFirstMember = new WeakMap<Item, ReadGroupNode>();
+
+function cachedReadGroup(members: Item[]): ReadGroupNode {
+  const cached = readGroupByFirstMember.get(members[0]);
+  if (cached !== undefined && cached.members.length === members.length) {
+    let unchanged = true;
+    for (let k = 0; k < members.length; k += 1) {
+      if (cached.members[k] !== members[k]) {
+        unchanged = false;
+        break;
+      }
+    }
+    if (unchanged) return cached;
+  }
+  const node: ReadGroupNode = {
+    kind: 'read_group',
+    groupKey: readGroupKey(members[0].id),
+    threadId: members[0].threadId,
+    members,
+  };
+  readGroupByFirstMember.set(members[0], node);
+  return node;
+}
 
 function isReadLeaf(node: TimelineNode): node is TimelineLeaf {
   if (node.kind !== 'leaf') return false;
@@ -50,12 +82,7 @@ export function groupConsecutiveReads(nodes: TimelineNode[]): TimelineNode[] {
     for (let k = 0; k < runLength; k += 1) {
       members[k] = (nodes[i + k] as TimelineLeaf).item;
     }
-    out.push({
-      kind: 'read_group',
-      groupKey: readGroupKey(members[0].id),
-      threadId: members[0].threadId,
-      members,
-    });
+    out.push(cachedReadGroup(members));
     i = j;
   }
   return out;

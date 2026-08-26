@@ -275,21 +275,97 @@ function indexCompletions(
 }
 
 /**
- * Header dependencies for one rendered row.
+ * One run's id arrays, cached per FIRST-CHILD NODE so an unchanged run
+ * reuses them instead of rebuilding.
  *
- * A detached launch stays immutable at `running`; its completion is a later
- * row. The launch run therefore summarizes both records once the completion
- * exists, while identity continues to belong only to the launch's position.
+ * This pass runs on every `timelineRevision` bump — ~10Hz across two panes
+ * during an agent workload, because every appended tool row is structural —
+ * and rebuilding every run's arrays and Set from scratch was the single
+ * biggest line of the 160MB/30s projection allocation profile (2026-08-25:
+ * `buildRun` 23.7MB self + ~20MB of Set/Map ops + the summary walk's
+ * 17.2MB). The registry already skips its own rebuild when the id
+ * sequences match (`indexMembers`' zero-alloc fast path); this cache is
+ * the same idea one level up, so a settled run allocates nothing at all.
+ *
+ * Keyed by the run's first child in a WeakMap: leaf and read_group nodes
+ * are themselves cached per Item (`subagentGrouping.ts` / `readGrouping.ts`),
+ * so an unchanged run presents the same node objects pass after pass, and
+ * entries die with their nodes. Validity is child-list identity — same
+ * length, every node reference-equal — plus the completion probe below.
+ * Group and wait_group nodes are minted fresh per pass, so a run containing
+ * one never validates and rebuilds exactly as it always did.
+ *
+ * The RUN NODE is still minted fresh per pass even on a hit: `collapsed`,
+ * `live`, and `atTail` are stamped by the caller after the whole array
+ * exists, and a shared node object would let this pass's stamps alias the
+ * previous pass's array.
  */
-function* activityRunSummaryItems(
-  node: TimelineNode,
+interface CachedRunBuild {
+  children: TimelineNode[];
+  rowMemberIds: string[][];
+  memberItemIds: string[];
+  summaryItemIds: string[];
+  /**
+   * Member ids that had no completion row when this build ran. A completion
+   * arriving for one of them adds a summary dependency WITHOUT touching any
+   * child node (detached: the completion is its own later row, possibly in
+   * a different run), so the hit check re-probes these against the current
+   * completion index. The reverse — a completion pruned from the window —
+   * leaves a stale id in `summaryItemIds`, which degrades identically to a
+   * rebuild: the header resolves ids through `getItemById` and filters
+   * misses.
+   */
+  pendingCompletionIds: string[];
+  threadId: string;
+}
+
+const runBuildByFirstChild = new WeakMap<TimelineNode, CachedRunBuild>();
+
+function runBuildStillValid(
+  build: CachedRunBuild,
+  nodes: TimelineNode[],
+  start: number,
+  end: number,
   completionByLaunchId: ReadonlyMap<string, Item>,
-): Generator<Item> {
-  for (const item of activityRunMemberItems(node)) {
-    yield item;
-    const completion = completionByLaunchId.get(item.id);
-    if (completion) yield completion;
+): boolean {
+  const children = build.children;
+  if (children.length !== end - start) return false;
+  for (let k = 0; k < children.length; k += 1) {
+    if (children[k] !== nodes[start + k]) return false;
   }
+  const pending = build.pendingCompletionIds;
+  for (let k = 0; k < pending.length; k += 1) {
+    if (completionByLaunchId.has(pending[k])) return false;
+  }
+  return true;
+}
+
+function mintRunNode(
+  build: CachedRunBuild,
+  options: GroupActivityRunsOptions,
+): ActivityRunNode {
+  const resolved = options.identity.resolve(
+    build.rowMemberIds,
+    build.threadId,
+    build.summaryItemIds,
+  );
+  return {
+    kind: 'activity_run',
+    runId: resolved.runId,
+    threadId: build.threadId,
+    children: build.children,
+    // All three stamped by the caller once the whole array is known: liveness
+    // and tail-ness are facts about what follows this run, and collapse
+    // depends on tail-ness.
+    collapsed: false,
+    live: false,
+    atTail: false,
+    mountedFrom: resolved.mountedFrom,
+    mountedRows: resolved.mountedRows,
+    membershipEpoch: resolved.membershipEpoch,
+    memberItemIds: build.memberItemIds,
+    summaryItemIds: build.summaryItemIds,
+  };
 }
 
 function buildRun(
@@ -304,6 +380,7 @@ function buildRun(
   const rowMemberIds: string[][] = [];
   const memberItemIds: string[] = [];
   const summaryItemIds: string[] = [];
+  const pendingCompletionIds: string[] = [];
   const seenSummaryIds = new Set<string>();
   let threadId = '';
   for (const node of members) {
@@ -314,30 +391,37 @@ function buildRun(
       memberItemIds.push(item.id);
     }
     rowMemberIds.push(row);
-    for (const item of activityRunSummaryItems(node, completionByLaunchId)) {
-      if (seenSummaryIds.has(item.id)) continue;
-      seenSummaryIds.add(item.id);
-      summaryItemIds.push(item.id);
+    // Summary dependencies: each member, plus a detached launch's later
+    // completion row once it exists. The launch stays immutable at
+    // `running`, so the run summarizes both records while identity keeps
+    // belonging only to the launch's position. Inlined rather than a
+    // generator on purpose — this loop runs per run per pass, and the
+    // IteratorResult objects a generator mints were their own churn line
+    // in the 2026-08-25 profile.
+    for (const item of activityRunMemberItems(node)) {
+      if (!seenSummaryIds.has(item.id)) {
+        seenSummaryIds.add(item.id);
+        summaryItemIds.push(item.id);
+      }
+      const completion = completionByLaunchId.get(item.id);
+      if (completion === undefined) {
+        pendingCompletionIds.push(item.id);
+      } else if (!seenSummaryIds.has(completion.id)) {
+        seenSummaryIds.add(completion.id);
+        summaryItemIds.push(completion.id);
+      }
     }
   }
-  const resolved = options.identity.resolve(rowMemberIds, threadId, summaryItemIds);
-  return {
-    kind: 'activity_run',
-    runId: resolved.runId,
-    threadId,
+  const build: CachedRunBuild = {
     children: members,
-    // All three stamped by the caller once the whole array is known: liveness
-    // and tail-ness are facts about what follows this run, and collapse
-    // depends on tail-ness.
-    collapsed: false,
-    live: false,
-    atTail: false,
-    mountedFrom: resolved.mountedFrom,
-    mountedRows: resolved.mountedRows,
-    membershipEpoch: resolved.membershipEpoch,
+    rowMemberIds,
     memberItemIds,
     summaryItemIds,
+    pendingCompletionIds,
+    threadId,
   };
+  runBuildByFirstChild.set(members[0], build);
+  return mintRunNode(build, options);
 }
 
 export function groupActivityRuns(
@@ -379,7 +463,14 @@ export function groupActivityRuns(
       && (isRunMember(nodes[j], options.getItem)
         || isAbsorbedNotification(nodes[j], options.getItem))
     ) j += 1;
-    out.push(buildRun(nodes.slice(i, j), options, completionByLaunchId));
+    // Checked against the slice bounds BEFORE slicing, so a hit allocates
+    // only the fresh run node.
+    const cached = runBuildByFirstChild.get(nodes[i]);
+    if (cached !== undefined && runBuildStillValid(cached, nodes, i, j, completionByLaunchId)) {
+      out.push(mintRunNode(cached, options));
+    } else {
+      out.push(buildRun(nodes.slice(i, j), options, completionByLaunchId));
+    }
     i = j;
   }
 

@@ -80,4 +80,15 @@ describe('nodeSignature', () => {
     expect(nodeSignature(group(2))).toBe(two); // reproducible
     expect(nodeSignature(group(3))).not.toBe(two); // membership grew → taller card
   });
+  it('memoizes per node object; a content write re-mints the node and the signature follows', () => {
+    // The memo's invalidation IS node identity: the store replaces a row's
+    // Item on every write and the projection's leaf cache mints a fresh
+    // node for the fresh Item, so a node object's inputs never change
+    // after mint. Distinct-but-equal nodes staying equal is pinned above.
+    const node = leaf({ id: 'a', summary: 'hi', status: 'streaming', updatedAt: 1 });
+    const first = nodeSignature(node);
+    expect(nodeSignature(node)).toBe(first);
+    const grown = leaf({ id: 'a', summary: 'hi there', status: 'streaming', updatedAt: 2 });
+    expect(nodeSignature(grown)).not.toBe(first);
+  });
 });

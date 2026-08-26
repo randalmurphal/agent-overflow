@@ -2595,3 +2595,28 @@ describe('subagentGrouping depth-cap flattening survives corrupt parent links', 
     expect(await diagnostics.messages()).toEqual([]);
   });
 });
+
+// Leaf nodes are cached per Item object (see `leafNode` in the module):
+// two passes over the same Items hand back the same node objects, and a
+// replaced Item — the store's per-write behavior — mints a fresh leaf.
+describe('groupItemsBySubagent — leaf reuse across passes', () => {
+  it('reuses leaf nodes for reference-identical Items (fast path)', () => {
+    const a = mkItem({ id: 'a1', kind: 'assistant_text' });
+    const b = mkItem({ id: 'b1', kind: 'tool_call', toolName: 'Bash' });
+    const first = groupItemsBySubagent([a, b]);
+    const second = groupItemsBySubagent([a, b]);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
+  });
+
+  it('mints a fresh leaf for a replaced Item and keeps neighbors', () => {
+    const a = mkItem({ id: 'a1', kind: 'assistant_text' });
+    const b = mkItem({ id: 'b1', kind: 'tool_call', toolName: 'Bash' });
+    const first = groupItemsBySubagent([a, b]);
+    const bReplaced = mkItem({ id: 'b1', kind: 'tool_call', toolName: 'Bash', summary: 'grew' });
+    const second = groupItemsBySubagent([a, bReplaced]);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).not.toBe(first[1]);
+    expect((second[1] as { item: Item }).item).toBe(bReplaced);
+  });
+});

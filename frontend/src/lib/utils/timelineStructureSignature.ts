@@ -48,18 +48,42 @@ import type { TimelineNode } from './subagentGrouping';
 // Group nodes carry their key + member count (a collapsed card's height
 // tracks how many rows it folds; an expanded group differs in
 // `expansionSig` instead, gated at the entry level, not here).
+//
+// Leaf and read_group signatures are memoized per NODE. Both node kinds
+// are cached by the projection (`subagentGrouping.ts` / `readGrouping.ts`)
+// and every input here is immutable for the node's lifetime: a leaf's
+// `item` is fixed at mint and the store replaces the Item — minting a
+// fresh leaf — on any write, and a read_group's members likewise re-mint
+// the node. So the memo needs no invalidation; entries die with their
+// nodes. Group/wait_group nodes are minted fresh per pass (a memo would
+// never hit) and an activity_run's inputs include stamps mutated after
+// mint (`collapsed`, the mount window), so those compute directly.
+// The priors capture calls this for every row in the window on a bounded
+// interim cadence while streaming; the per-call string builds were a
+// visible line of the 2026-08-25 allocation profile.
+const signatureByNode = new WeakMap<TimelineNode, string>();
+
 export function nodeSignature(node: TimelineNode): string {
   switch (node.kind) {
     case 'leaf': {
+      const cached = signatureByNode.get(node);
+      if (cached !== undefined) return cached;
       const item = node.item;
-      return `L:${item.id}:${item.status}:${item.summary.length}:${item.updatedAt}`;
+      const signature = `L:${item.id}:${item.status}:${item.summary.length}:${item.updatedAt}`;
+      signatureByNode.set(node, signature);
+      return signature;
     }
     case 'group':
       return `S:${node.groupKey}:${node.children.length}`;
     case 'wait_group':
       return `W:${node.groupKey}:${node.children.length}`;
-    case 'read_group':
-      return `R:${node.groupKey}:${node.members.length}`;
+    case 'read_group': {
+      const cached = signatureByNode.get(node);
+      if (cached !== undefined) return cached;
+      const signature = `R:${node.groupKey}:${node.members.length}`;
+      signatureByNode.set(node, signature);
+      return signature;
+    }
     // Collapse state changes the row's height dramatically (one header line
     // vs a header over a capped clip), so it belongs here rather than in the
     // entry-level expansionSig — folding it there would drop every row's prior

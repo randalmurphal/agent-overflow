@@ -695,3 +695,66 @@ describe('activityRunSummaryFieldsChanged', () => {
     )).toBe(false);
   });
 });
+
+// The per-first-child build cache: a run whose child NODES are all
+// reference-identical to the previous pass reuses its id arrays wholesale
+// (leaf/read_group nodes are themselves cached per Item, so this is the
+// steady state for every settled run), while the run NODE stays fresh —
+// the caller mutates collapsed/live/atTail stamps on it post-build.
+describe('run build reuse across passes', () => {
+  it('reuses the id arrays but mints a fresh run node', () => {
+    const reg = identity();
+    const nodes = [tool('t1', 'Bash'), tool('t2', 'Bash')];
+    const first = run(project(nodes, { identity: reg }), 0);
+    const second = run(project(nodes, { identity: reg }), 0);
+    expect(second).not.toBe(first);
+    expect(second.children).toBe(first.children);
+    expect(second.memberItemIds).toBe(first.memberItemIds);
+    expect(second.summaryItemIds).toBe(first.summaryItemIds);
+    expect(second.runId).toBe(first.runId);
+  });
+
+  it('rebuilds when a child node was replaced', () => {
+    const reg = identity();
+    const a = tool('t1', 'Bash');
+    const first = run(project([a, tool('t2', 'Bash')], { identity: reg }), 0);
+    // The store replaced t2's Item, so the projection minted a fresh leaf.
+    const second = run(project([a, tool('t2', 'Bash')], { identity: reg }), 0);
+    expect(second.memberItemIds).not.toBe(first.memberItemIds);
+    expect(second.memberItemIds).toEqual(['t1', 't2']);
+    expect(second.runId).toBe(first.runId);
+  });
+
+  it('rebuilds when the run grew', () => {
+    const reg = identity();
+    const a = tool('t1', 'Bash');
+    const b = tool('t2', 'Bash');
+    const first = run(project([a, b], { identity: reg }), 0);
+    const second = run(project([a, b, tool('t3', 'Bash')], { identity: reg }), 0);
+    expect(second.children).not.toBe(first.children);
+    expect(second.memberItemIds).toEqual(['t1', 't2', 't3']);
+    expect(second.runId).toBe(first.runId);
+  });
+
+  it('rebuilds when a pending completion arrives without touching any child', () => {
+    const reg = identity();
+    // A detached launch: immutable at `running`, its completion is a later
+    // row that can land in a different run — or behind the reveal gate —
+    // leaving this run's children untouched.
+    const launch = tool('a1', 'Agent', { status: 'running' });
+    const first = run(project([launch], { identity: reg }), 0);
+    expect(first.summaryItemIds).toEqual(['a1']);
+    const completion = leaf({ id: 'c1', kind: 'tool_completion', completionOf: 'a1' });
+    const second = run(
+      project([launch], { identity: reg, withheld: [completion] }),
+      0,
+    );
+    expect(second.summaryItemIds).toEqual(['a1', 'c1']);
+    // And the rebuilt arrays are what the next unchanged pass reuses.
+    const third = run(
+      project([launch], { identity: reg, withheld: [completion] }),
+      0,
+    );
+    expect(third.summaryItemIds).toBe(second.summaryItemIds);
+  });
+});
