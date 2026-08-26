@@ -1,51 +1,18 @@
 package usagebackoff
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/testutil"
 )
-
-// syncLogBuffer is a mutex-guarded sink for log.SetOutput. The ledger logs from
-// the caller's goroutine, but -race still wants the test's read of the captured
-// text guarded against the logger's writes.
-type syncLogBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncLogBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncLogBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// captureLogOutput routes the standard logger into a race-safe buffer for the
-// duration of the test.
-func captureLogOutput(t *testing.T) *syncLogBuffer {
-	t.Helper()
-	logs := &syncLogBuffer{}
-	previous := log.Writer()
-	log.SetOutput(logs)
-	t.Cleanup(func() { log.SetOutput(previous) })
-	return logs
-}
 
 func newBackoffLedgerForTest(now *time.Time) *Ledger {
 	return &Ledger{now: func() time.Time { return *now }}
@@ -274,7 +241,7 @@ func TestUsageBackoffLedgerAnnouncesAFailedWrite(t *testing.T) {
 	// Load first, and only capture afterwards: an unreadable path announces
 	// itself too, so the assertion below can only be satisfied by the write.
 	ledger.Load(filepath.Join(blocker, "usage-backoff.json"))
-	logs := captureLogOutput(t)
+	logs := testutil.CaptureLogOutput(t)
 
 	ledger.Note(string(provider.Claude), "selected", &claude.RateLimitedError{RetryAfter: time.Hour})
 
@@ -293,7 +260,7 @@ func TestUsageBackoffLedgerToleratesACorruptFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	logs := captureLogOutput(t)
+	logs := testutil.CaptureLogOutput(t)
 
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	ledger := newBackoffLedgerForTest(&now)
