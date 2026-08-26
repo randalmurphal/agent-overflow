@@ -18,6 +18,7 @@ import { springGateIsOpen, withinArrivalBand } from './resolver';
 import { installDocumentResumeTracking, msSinceDocumentResume } from './documentResume';
 import { nowMs } from './time';
 import { trace } from './trace';
+import { createRetargetAccelerationBridge } from './retarget';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import type { ScrollWriteCaller } from './types';
 
@@ -248,7 +249,10 @@ const SPRING_DECEL_ENVELOPE_MIN_PX_PER_FRAME = 1.6;
 // state: the falling envelope undercuts the rising ramp wherever they
 // cross — a few frames in for a line quantum, near the midpoint for a
 // paragraph (a natural ease-in-out), after ~0.6s of spool-up to the
-// hard cap for a multi-viewport backlog.
+// hard cap for a multi-viewport backlog. That describes a FIXED target.
+// If streaming extends the target during its falling side, the retarget
+// jerk bridge below preserves acceleration continuity across the new
+// fixed-target candidate.
 //
 // Geometric rather than additive because speed-change perception is
 // relative (Weber's law): ×1.10/frame reads as the same "push" at
@@ -610,6 +614,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // needs one document-level listener per page, not per controller.
   installDocumentResumeTracking();
   let velocity = 0;
+  const retarget = createRetargetAccelerationBridge();
   let accumulated = 0;
   let lastTickAt: number | null = null;
   // True once the current quantum's glide has exceeded the quantized
@@ -805,6 +810,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     }
     springToken = 0;
     velocity = 0;
+    retarget.reset();
     accumulated = 0;
     quantizedFloorEngaged = false;
     lastTickAt = null;
@@ -869,6 +875,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   function snapOscillationToBottom(caller: ScrollWriteCaller, top: number): void {
     deps.writeScrollTop(caller, top);
     velocity = 0;
+    retarget.reset();
     accumulated = 0;
     sentinelEntryTarget = -1;
     sentinelClampWitnessed = false;
@@ -978,6 +985,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               Math.sign(velocity)
               * Math.max(base, speed / Math.pow(SPRING_ACCEL_SLEW_FACTOR_PER_FRAME, dtFrames));
           }
+          retarget.breakMotion();
           springFrameHandle = requestFrame(tick);
           return;
         }
@@ -1104,6 +1112,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               current = el.scrollTop;
               accumulated = 0;
               velocity = 0;
+              retarget.breakMotion();
               if (chaseTelemetry) chaseTelemetry.distanceJumps += 1;
             }
           }
@@ -1117,6 +1126,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // extra layout reads — so a multi-step catch-up follows the
               // same curve N sequential 60Hz frames would have.
               const stepDiff = target - (current + accumulated);
+              const stepStartVelocity = velocity;
               // Slew base: the speed already pointing at the target when
               // this step began. A reversal contributes zero, so the new
               // direction ramps from the base; the catch-up jump's
@@ -1210,6 +1220,18 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                   velocity = -SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME;
                 }
               }
+              // The three ceilings above produce the fixed-target
+              // candidate. A target extension during braking passes that
+              // candidate through the acceleration-continuity bridge.
+              // Every other step returns it unchanged.
+              velocity = retarget.step(
+                target,
+                stepDiff,
+                stepStartVelocity,
+                velocity,
+                stepFraction,
+                SPRING_MAX_VELOCITY_PX_PER_FRAME,
+              );
               accumulated += velocity * stepFraction;
             }
             const next = current + accumulated;
@@ -1229,6 +1251,9 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             if (chaseTelemetry) chaseTelemetry.writeTicks += 1;
             if (clamped === target) {
               deps.arrival.record(target);
+            }
+            if (crossedTarget) {
+              retarget.breakMotion();
             }
             // Three-way write classification (see the write-refusal
             // guard's constant block): MOVED heals, REFUSED counts,
@@ -1275,6 +1300,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               // glide's cruise. Probe pacing is NOT stamped here — the
               // gate above the geometry reads owns the probe slot.
               accumulated = 0;
+              retarget.breakMotion();
               consecutiveRefusedWrites += 1;
               if (chaseTelemetry) chaseTelemetry.refusedWrites += 1;
               if (
@@ -1348,6 +1374,10 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         } else {
           velocity = 0;
         }
+        // No visible motion occurred in this tick. A later target change
+        // is a carried or cold start, not a mid-motion retarget, so it must
+        // not inherit the bridge.
+        retarget.breakMotion();
       }
 
       // Arrival check uses the cached `target` for the position

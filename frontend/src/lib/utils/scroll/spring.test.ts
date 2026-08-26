@@ -1,7 +1,8 @@
 // Unit tests for the spring chase kinematics (createSpringChase) that
 // need frame-precise control over rAF timing and target geometry:
 // the hard velocity cap, the deceleration envelope, the acceleration
-// slew (onset ramp, parked carry decay, seed exemption, integrator
+// slew (onset ramp, parked carry decay, moving-target retarget bridge,
+// seed exemption, integrator
 // composability), the integer-rounding error carry, the clamp-not-zero
 // momentum carry, the write-refusal
 // guard (latch, probe backoff, three-way write classification, heal /
@@ -455,7 +456,7 @@ describe('momentum carry across catch-up', () => {
   });
 });
 
-describe('acceleration slew (onset ramp + parked decay)', () => {
+describe('acceleration slew (onset ramp + retarget bridge + parked decay)', () => {
   it('ramps a standstill onset geometrically from the motion floor instead of jumping to the envelope peak', () => {
     const h = makeHarness();
     h.setTarget(60);
@@ -499,6 +500,163 @@ describe('acceleration slew (onset ramp + parked decay)', () => {
     }
     for (let i = peakIndex + 1; i < moves.length - 1; i++) {
       expect(moves[i]).toBeLessThanOrEqual(moves[i - 1] + 0.01);
+    }
+  });
+
+  it('rounds a streamed retarget from deceleration back into acceleration', () => {
+    const h = makeHarness();
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    let priorSpeed = 0;
+    let priorAcceleration = 0;
+    let consecutiveDecelFrames = 0;
+    for (let i = 0; i < 60 && consecutiveDecelFrames < 3; i++) {
+      const speed = displacements(h, 1)[0];
+      const acceleration = speed - priorSpeed;
+      consecutiveDecelFrames = acceleration < -0.05 ? consecutiveDecelFrames + 1 : 0;
+      priorSpeed = speed;
+      priorAcceleration = acceleration;
+    }
+    expect(consecutiveDecelFrames).toBe(3);
+    expect(priorSpeed).toBeGreaterThan(1);
+    expect(priorAcceleration).toBeLessThan(-0.05);
+
+    // A streamed burst extends the target while the viewport is still
+    // moving forward but already braking. Position and velocity remain
+    // continuous. Acceleration must round through zero before becoming
+    // positive again, rather than flipping sign in one frame as a pulse.
+    h.setTarget(h.getTarget() + 100);
+    h.spring.markTargetChanged();
+
+    const accelerations: number[] = [];
+    const speeds: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      if (i === 2) {
+        // A second flush lands before the first bridge reaches zero
+        // acceleration. Retargeting an active bridge must update its
+        // destination without restarting its curvature.
+        h.setTarget(h.getTarget() + 100);
+        h.spring.markTargetChanged();
+      }
+      const speed = displacements(h, 1)[0];
+      accelerations.push(speed - priorSpeed);
+      speeds.push(speed);
+      priorSpeed = speed;
+    }
+    expect(accelerations[0]).toBeLessThanOrEqual(0);
+    expect(accelerations.some((value) => value > 0.05)).toBe(true);
+    expect(speeds.every((value) => value > 0)).toBe(true);
+    const handoffAccelerations = [priorAcceleration, ...accelerations];
+    for (let i = 1; i < handoffAccelerations.length; i++) {
+      expect(Math.abs(handoffAccelerations[i] - handoffAccelerations[i - 1]))
+        .toBeLessThanOrEqual(0.125);
+    }
+  });
+
+  it('scales the retarget bridge without nearly stopping a cap-speed glide', () => {
+    const h = makeHarness();
+    h.setTarget(1200);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    let speed = 0;
+    let acceleration = 0;
+    let consecutiveDecelFrames = 0;
+    for (let i = 0; i < 150 && consecutiveDecelFrames < 3; i++) {
+      const nextSpeed = displacements(h, 1)[0];
+      acceleration = nextSpeed - speed;
+      speed = nextSpeed;
+      consecutiveDecelFrames = acceleration < -0.05 ? consecutiveDecelFrames + 1 : 0;
+    }
+    expect(speed).toBeGreaterThan(15);
+    expect(acceleration).toBeLessThan(-1);
+
+    h.setTarget(h.getTarget() + 1200);
+    h.spring.markTargetChanged();
+    const handoffAccelerations = [acceleration];
+    const handoffSpeeds: number[] = [];
+    for (let i = 0; i < 18; i++) {
+      const nextSpeed = displacements(h, 1)[0];
+      handoffAccelerations.push(nextSpeed - speed);
+      handoffSpeeds.push(nextSpeed);
+      speed = nextSpeed;
+    }
+
+    expect(handoffAccelerations[1]).toBeLessThan(0);
+    expect(handoffAccelerations.some((value) => value > 0)).toBe(true);
+    expect(Math.min(...handoffSpeeds)).toBeGreaterThan(10);
+    // Relative jerk scaling keeps a large handoff responsive while still
+    // taking many intermediate acceleration steps. The old one-frame
+    // flip had only the two endpoint values.
+    const increasingSteps = handoffAccelerations
+      .slice(1)
+      .filter((value, index) => value > handoffAccelerations[index]);
+    expect(increasingSteps.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it.each([60, 120, 165])(
+    'bounds every braking-to-driving retarget at %iHz during repeated line growth',
+    (refreshHz) => {
+      const h = makeHarness();
+      const frameMs = 1000 / refreshHz;
+      const stepFraction = 60 / refreshHz;
+      const framesPerGrowth = Math.round(8 / stepFraction);
+      h.setTarget(20);
+      h.spring.markTargetChanged();
+      h.spring.start();
+
+      let priorSpeed = 0;
+      const accelerations: number[] = [];
+      const speeds: number[] = [];
+      const frameCount = framesPerGrowth * 8;
+      for (let i = 0; i < frameCount; i++) {
+        if (i > 0 && i % framesPerGrowth === 0) {
+          h.setTarget(h.getTarget() + 20);
+          h.spring.markTargetChanged();
+        }
+        const before = h.getScrollTop();
+        frame(frameMs);
+        // The first spring tick always integrates one full 60Hz step.
+        // It is outside the warm repeated-retarget window below.
+        const speed = (h.getScrollTop() - before) / stepFraction;
+        accelerations.push((speed - priorSpeed) / stepFraction);
+        speeds.push(speed);
+        priorSpeed = speed;
+      }
+
+      const warmStart = framesPerGrowth * 4;
+      const warmAccelerations = accelerations.slice(warmStart);
+      for (let i = 1; i < warmAccelerations.length; i++) {
+        const upwardJerk =
+          (warmAccelerations[i] - warmAccelerations[i - 1]) / stepFraction;
+        expect(upwardJerk).toBeLessThanOrEqual(0.105);
+      }
+      expect(speeds.slice(warmStart).every((value) => value > 0)).toBe(true);
+    },
+  );
+
+  it('keeps the rounded handoff moving under whole-pixel scrollTop quantization', () => {
+    const h = makeHarness({ quantize: true });
+    h.setTarget(20);
+    h.spring.markTargetChanged();
+    h.spring.start();
+
+    const moves: number[] = [];
+    for (let i = 0; i < 64; i++) {
+      if (i > 0 && i % 8 === 0) {
+        h.setTarget(h.getTarget() + 20);
+        h.spring.markTargetChanged();
+      }
+      moves.push(displacements(h, 1)[0]);
+    }
+
+    // Error diffusion turns the fractional curve into 1/2/3px writes,
+    // but the bridge must not introduce a visible pause or reversal at
+    // the retarget boundaries once the steady stream is established.
+    for (const move of moves.slice(32)) {
+      expect(move).toBeGreaterThan(0);
     }
   });
 

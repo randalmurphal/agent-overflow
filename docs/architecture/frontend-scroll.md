@@ -78,8 +78,8 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred.
-  - `spring.ts` — chase kinematics: HOW a spring advances scrollTop
-    frame to frame once the controller decides one runs. Speed each
+  - `spring.ts` + `retarget.ts` own chase kinematics. They define HOW a spring
+    advances scrollTop frame to frame once the controller decides one runs. Speed each
     step is capped by three ceilings recomputed from live geometry
     (below all three, the spring's own decay governs): the
     **acceleration slew** (a geometric onset ramp, ×1.10 per 60Hz frame
@@ -87,11 +87,18 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     refresh-independent CSS-space 1.0 px/frame floored by the motion floor — a
     standstill quantum eases in instead of jumping to its peak, and
     glides stretch into the next quantum's arrival instead of
-    stop-starting per line), the **deceleration envelope** (0.11 ×
+    stop-starting per line), the **deceleration envelope** (0.09 ×
     remaining, the ease-out), and the **hard velocity cap**
     (27 px/frame); the
     accelerate→decelerate crossover is wherever the falling envelope
-    undercuts the rising ramp, so it needs no mode state. Carried
+    undercuts the rising ramp, so a fixed-target glide needs no mode
+    state. A target that extends while the viewport is already braking
+    uses an acceleration-preserving **retarget bridge**. Velocity stays
+    forward, acceleration advances from braking through zero into driving
+    under a per-frame jerk bound, and large-glide jerk scales from the
+    endpoint accelerations so a cap-speed handoff does not nearly stop.
+    Repeated streamed-line tests pin the bridge at 60, 120, and 165Hz and
+    through whole-pixel `scrollTop` quantization. Carried
     momentum decays by the slew factor per real elapsed frame while
     parked, so a brief inter-quantum catch-up resumes at speed while a
     longer pause re-enters at the base ramp. Also owns the
