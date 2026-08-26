@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/workflow/engine"
@@ -225,7 +226,7 @@ func TestUnitWorktreesOfSeparateFanOutsShareOneItemBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Path != provisioned[again.Branch] {
+	if !gitops.SameFilesystemPath(again.Path, provisioned[again.Branch]) {
 		t.Fatalf("re-entered try moved to %q, want its own checkout %q", again.Path, provisioned[again.Branch])
 	}
 }
