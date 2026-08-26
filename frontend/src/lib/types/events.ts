@@ -534,15 +534,6 @@ export interface WorktreeSetupEvent {
   error?: string;
   startedAt?: number;
   finishedAt?: number;
-  /**
-   * Progress, carried only by the ADOPTION frame — the started-shaped snapshot
-   * the backend emits when a thread takes over a run that began before it
-   * existed. Every other `started` frame describes a run that has done nothing
-   * yet, so their absence is what "start from zero" means.
-   */
-  stepStatuses?: string[];
-  output?: string;
-  outputSeq?: number;
 }
 
 /** One resolved step of a setup run, in execution order. */

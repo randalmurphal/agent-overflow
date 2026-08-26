@@ -26,10 +26,7 @@
   } from '../../stores/worktreeSetup.svelte';
   import { userFacingError } from '../../utils/userFacingError';
 
-  // One key, two spaces: a thread id once a thread owns the run, or the
-  // store's workspace key while it is still the draft placeholder's unbound
-  // worktree. Every store call this panel makes is key-shaped, so the card
-  // itself does not have to know which it is looking at.
+  // Setup state is owned by the persisted thread that owns the worktree.
   let { setupKey }: { setupKey: string } = $props();
 
   /** How long a succeeded run's card stays up before clearing itself. */

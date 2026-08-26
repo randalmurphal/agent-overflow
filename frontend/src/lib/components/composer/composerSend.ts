@@ -6,9 +6,7 @@
 // store for state changes. Keeping this pure functional makes the send
 // path easy to trace from the click handler all the way to SendMessage.
 
-import {
-  SendMessageWithOptions,
-} from '../../stores/bindings';
+import { SendMessageWithOptions } from '../../stores/bindings';
 import type { Attachment } from '../../types/attachment';
 import type { TerminalChip } from '../../types/draft';
 import { addToast } from '../../stores/toast.svelte';
@@ -61,10 +59,9 @@ export interface SendOptions {
  * call so the UI reflects in-flight state — this function intentionally
  * knows nothing about it.
  *
- * The staged branch/worktree intent is NOT applied here. It has to be
- * applied before the pane's draft placeholder materializes (that is what
- * lets `CreateThread` carry the worktree), and by the time this runs the
- * host has already materialized. `Composer.send` owns the ordering.
+ * The staged branch/worktree intent is NOT applied here. The host first
+ * materializes the draft, then binds its workspace through the thread-scoped
+ * operation, and only then calls this function.
  */
 export async function dispatchSend(opts: SendOptions): Promise<boolean> {
   let sendStarted = false;

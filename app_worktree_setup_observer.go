@@ -20,11 +20,8 @@ import (
 // the sequence a chunk carries and its position on the wire be decided in the
 // same critical section.
 //
-// Every frame carries `worktreePath`, not just the started one: an UNBOUND run
-// (started for a draft before any thread row exists) has an empty `threadId`,
-// so the path is the only key its client has. The thread id is read through
-// worktreeSetupThreadID because adoption fills it in mid-run — the first frame
-// after adoption is how a client learns the run now has a thread.
+// Every frame carries both the immutable thread owner and worktree path so
+// reconnect snapshots and live frames identify the same run.
 
 // worktreeSetupObserver is the run's single emitter. It owns the coalescing
 // buffer that turns a byte stream into whole-line frames and the per-run
@@ -52,7 +49,7 @@ func newWorktreeSetupObserver(app *App, run *worktreeSetupRun) *worktreeSetupObs
 func (o *worktreeSetupObserver) RunStarted(_ []worktreesetup.Step) {
 	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStarted,
-		ThreadID:     o.app.worktreeSetupThreadID(o.run),
+		ThreadID:     o.run.threadID,
 		RunID:        o.run.id,
 		WorktreePath: o.run.worktreePath,
 		Steps:        o.run.steps,
@@ -64,7 +61,7 @@ func (o *worktreeSetupObserver) StepStarted(index int) {
 	o.app.setWorktreeSetupStepStatus(o.run, index, worktreeSetupStepRunning)
 	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStepStarted,
-		ThreadID:     o.app.worktreeSetupThreadID(o.run),
+		ThreadID:     o.run.threadID,
 		RunID:        o.run.id,
 		WorktreePath: o.run.worktreePath,
 		StepIndex:    index,
@@ -115,7 +112,7 @@ func (o *worktreeSetupObserver) StepFinished(index int, err error) {
 	o.app.setWorktreeSetupStepStatus(o.run, index, status)
 	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseStepFinished,
-		ThreadID:     o.app.worktreeSetupThreadID(o.run),
+		ThreadID:     o.run.threadID,
 		RunID:        o.run.id,
 		WorktreePath: o.run.worktreePath,
 		StepIndex:    index,
@@ -156,7 +153,7 @@ func (o *worktreeSetupObserver) flushLocked() {
 	o.pending = o.pending[:0]
 	o.app.emitEvent(eventchan.WorktreeSetup, WorktreeSetupEvent{
 		Phase:        worktreeSetupPhaseOutput,
-		ThreadID:     o.app.worktreeSetupThreadID(o.run),
+		ThreadID:     o.run.threadID,
 		RunID:        o.run.id,
 		WorktreePath: o.run.worktreePath,
 		StepIndex:    o.pendingStep,

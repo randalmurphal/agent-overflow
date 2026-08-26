@@ -1,28 +1,10 @@
-// Naming a workspace for a DRAFT is a project-scoped operation: the
-// composer's worktree/branch flow must not touch thread rows at all until
-// the user actually sends something.
-//
-// The regression this pins had a narrow, ugly shape. Cutting a worktree
-// used to run through the THREAD-scoped RPCs (PrepareThreadWorktree /
-// AttachThreadWorktree), every one of which begins by reading a thread row
-// — so the composer materialized an empty one just to have something to
-// name. That row is item-less and content-less, which is exactly what the
-// composer's own empty-draft cleanup deletes, and the two raced: the
-// cleanup's DeleteEmptyDraftThread landed first and the worktree call came
-// back "sql: no rows in result set" in a toast, with a worktree on disk and
-// nothing pointing at it. The project-scoped path (PrepareProjectWorktree /
-// AttachProjectWorktree / CreateProjectBranch) removes the row from the
-// story entirely; the thread adopts the result at CreateThread time.
-//
-// So the load-bearing assertion in three of these four tests is a NEGATIVE
-// one — that no thread row exists — and it cannot be made through any
-// production read: `App.ListThreads` hides a row until it has an item or a
-// content-carrying draft, which is precisely the row this bug created.
-// `HarnessListThreadRows` is the raw row read that makes "nothing was
-// created" observable. The fourth test is the other half of the same
-// contract: the empty-draft cleanup that raced is still expected to work,
-// so a row that materializes for typed text still dematerializes when the
-// text is erased.
+// A committed workspace choice is durable draft state. Selecting New
+// Worktree materializes the placeholder before any git mutation, and the
+// thread-scoped worktree operation creates and binds the checkout atomically.
+// Empty-draft cleanup ignores staged and attached worktree drafts, so it
+// cannot delete the owner while the operation is in flight or after it lands.
+// The final test keeps the inverse transition pinned: an ordinary text-only
+// draft still dematerializes when its text is erased.
 import type { Page } from '@playwright/test';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
@@ -79,9 +61,8 @@ const basename = (p: string) => p.split('/').pop() ?? p;
 
 /**
  * The composer's workspace strip labels. `env` is where the next turn will
- * run, `branch` is what it will run on — both read the EFFECTIVE workspace,
- * so after an apply they describe the worktree even though no thread row
- * has moved (or, here, exists).
+ * run, `branch` is what it will run on. After an apply they describe the
+ * worktree bound to the row.
  */
 function stripLabels(page: Page) {
   return {
@@ -109,7 +90,7 @@ async function stageNewWorktree(page: Page): Promise<void> {
   await expect(stripLabels(page).env).toHaveText('New Worktree');
 }
 
-test('a fresh draft cuts a worktree on an existing branch and creates no thread row', async ({
+test('worktree selection materializes a draft and create binds it to an existing branch', async ({
   harness,
   page,
 }) => {
@@ -117,6 +98,8 @@ test('a fresh draft cuts a worktree on an existing branch and creates no thread 
   await openFreshDraft(harness, page);
 
   await stageNewWorktree(page);
+  await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+  await expect(page.getByTestId('thread-row')).toHaveCount(1);
   await page.getByTestId('branch-picker-trigger').click();
   await page.getByRole('menuitem', { name: EXISTING_BRANCH }).click();
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
@@ -137,14 +120,16 @@ test('a fresh draft cuts a worktree on an existing branch and creates no thread 
   expect(worktree, 'git registered no worktree for the attached branch').toBeDefined();
   await expect(stripLabels(page).env).toHaveText(basename(worktree!.path));
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
+  await expect(page.getByTestId('apply-worktree-intent-button')).toHaveCount(0);
 
-  // The regression, stated directly: a worktree exists, and no thread does.
-  expect(await threadRows(harness)).toHaveLength(0);
-  await expect(page.getByTestId('thread-row')).toHaveCount(0);
-  await expect(page.getByTestId('project-thread-list-empty')).toBeVisible();
+  const rows = await threadRows(harness);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].workspacePath).toBe(worktree!.path);
+  expect(rows[0].worktreePath).toBe(worktree!.path);
+  expect(rows[0].branch).toBe(EXISTING_BRANCH);
 });
 
-test('sending from that draft materializes one thread bound to the worktree', async ({
+test('sending from that draft reuses the thread already bound to the worktree', async ({
   harness,
   page,
 }) => {
@@ -160,6 +145,9 @@ test('sending from that draft materializes one thread bound to the worktree', as
   ).toBeVisible();
   const worktree = await registeredWorktree(harness, projectId, EXISTING_BRANCH);
   expect(worktree).toBeDefined();
+  const rowsBeforeSend = await threadRows(harness);
+  expect(rowsBeforeSend).toHaveLength(1);
+  const rowBeforeSend = rowsBeforeSend[0]!;
 
   await page.getByLabel('Message Input').fill('Where am I running?');
   await page.getByTestId('composer-send').click();
@@ -176,10 +164,10 @@ test('sending from that draft materializes one thread bound to the worktree', as
   await expect(page.getByText('Where am I running?')).toBeVisible();
   await expect(errorToasts(page)).toHaveCount(0);
 
-  // Exactly one row, and it inherited the applied workspace rather than
-  // sitting at the project root.
+  // Exactly one row, still bound to the worktree rather than the project root.
   const rows = await threadRows(harness);
   expect(rows).toHaveLength(1);
+  expect(rows[0].id).toBe(rowBeforeSend.id);
   expect(rows[0].projectId).toBe(projectId);
   expect(rows[0].worktreePath).toBe(worktree!.path);
   expect(rows[0].workspacePath).toBe(worktree!.path);
@@ -191,7 +179,7 @@ test('sending from that draft materializes one thread bound to the worktree', as
   await expect(page.getByTestId('thread-row')).toHaveCount(1);
 });
 
-test('a fresh draft cuts a worktree on a NEW branch and creates no thread row', async ({
+test('a fresh draft binds its materialized row to a new worktree branch', async ({
   harness,
   page,
 }) => {
@@ -200,8 +188,9 @@ test('a fresh draft cuts a worktree on a NEW branch and creates no thread row', 
   await openFreshDraft(harness, page);
 
   await stageNewWorktree(page);
-  // The other half of the picker: the inline name input, which routes to
-  // PrepareProjectWorktree instead of AttachProjectWorktree.
+  await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+  // The other half of the picker: the inline name input routes through
+  // PrepareThreadWorktree on the row stageNewWorktree just created.
   await page.getByTestId('new-branch-toggle').click();
   await page.getByTestId('worktree-branch-name-input').fill(NEW_BRANCH);
   await page.getByTestId('apply-worktree-intent-button').click();
@@ -213,18 +202,17 @@ test('a fresh draft cuts a worktree on a NEW branch and creates no thread row', 
 
   // Looking the worktree up BY BRANCH is the branch assertion here: git
   // reports the new branch checked out at the path the strip now names.
-  // The branch TRIGGER deliberately keeps reading "From <base>" after an
-  // apply — `markWorktreeIntentApplied` leaves the staged quadrant alone,
-  // so the create-branch flow stays on screen with the name the user typed
-  // — which is why this quadrant asserts the label on the env trigger only.
   const worktree = await registeredWorktree(harness, projectId, NEW_BRANCH);
   expect(worktree, 'git registered no worktree for the new branch').toBeDefined();
   await expect(stripLabels(page).env).toHaveText(basename(worktree!.path));
-  await expect(page.getByTestId('worktree-branch-name-input')).toHaveValue(NEW_BRANCH);
+  await expect(stripLabels(page).branch).toHaveText(NEW_BRANCH);
+  await expect(page.getByTestId('apply-worktree-intent-button')).toHaveCount(0);
 
-  expect(await threadRows(harness)).toHaveLength(0);
-  await expect(page.getByTestId('thread-row')).toHaveCount(0);
-  await expect(page.getByTestId('project-thread-list-empty')).toBeVisible();
+  const rows = await threadRows(harness);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].workspacePath).toBe(worktree!.path);
+  expect(rows[0].worktreePath).toBe(worktree!.path);
+  expect(rows[0].branch).toBe(NEW_BRANCH);
 });
 
 test('typing materializes a draft row and erasing it takes the row back out', async ({

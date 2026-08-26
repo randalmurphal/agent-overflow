@@ -104,12 +104,6 @@ export {
   GetThreadWorktreeSetup,
   RetryThreadWorktreeSetup,
 
-  // Same two for a worktree no thread occupies yet — the pre-thread runs a
-  // draft's confirm-button or send-time worktree apply kicks off. Keyed by
-  // (projectId, worktreePath) until a thread moves in and adopts the run.
-  GetWorkspaceWorktreeSetup,
-  RetryWorkspaceWorktreeSetup,
-
   // Usage accounting (append-only ledger aggregates; costs are
   // wire-true for Claude, table-priced at read time for Codex /
   // claude-tui — see internal/usagecost).
@@ -209,13 +203,6 @@ export {
   GitWorktreeStatusForProject,
   PrepareThreadWorktree,
   AttachThreadWorktree,
-  // Project-scoped counterparts of the three above. They need no thread
-  // row, which is what lets a draft placeholder cut its worktree/branch
-  // without materializing one first; all three answer with
-  // ProjectWorkspaceResult ({worktreePath, branch}).
-  PrepareProjectWorktree,
-  AttachProjectWorktree,
-  CreateProjectBranch,
   RemoveOtherWorktree,
   RemoveOtherWorktreeForProject,
 

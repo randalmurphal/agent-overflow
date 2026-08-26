@@ -117,12 +117,6 @@ var LocalOnlyMethods = map[string]bool{
 	"RetryThreadWorktreeSetup": true,
 	"GetThreadWorktreeSetup":   true,
 
-	// The workspace-keyed pair is the same surface for a worktree no thread
-	// occupies yet (a draft's). Same argv execution, same captured local
-	// output, same classification.
-	"RetryWorkspaceWorktreeSetup": true,
-	"GetWorkspaceWorktreeSetup":   true,
-
 	"OpenInEditor":             true,
 	"OpenExternalURL":          true,
 	"BrowseDirectory":          true,
@@ -189,15 +183,6 @@ var LocalOnlyMethods = map[string]bool{
 	// AttachThreadWorktree creates a worktree pointing at an existing
 	// branch; same class as PrepareThreadWorktree.
 	"AttachThreadWorktree": true,
-	// The project-scoped trio does the same git work for a DRAFT thread,
-	// which has no row to key on: cut a worktree, attach a worktree, move
-	// the project root's HEAD. Identical class to the thread-scoped
-	// originals they mirror (PrepareThreadWorktree / AttachThreadWorktree /
-	// GitCreateBranchFrom) — the missing thread id changes who the caller
-	// is, never what the call touches.
-	"PrepareProjectWorktree": true,
-	"AttachProjectWorktree":  true,
-	"CreateProjectBranch":    true,
 	// Diff-returning bindings expose bulk file content in a single wire
 	// call. The threat shape matches the credential / endpoint
 	// enumeration class below: a token-holder gets the user's

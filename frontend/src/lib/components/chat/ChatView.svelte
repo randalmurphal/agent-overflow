@@ -24,12 +24,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
-  import {
-    hasWorktreeSetupSurface,
-    hydrateWorkspaceWorktreeSetup,
-    workspaceSetupKey,
-  } from '../../stores/worktreeSetup.svelte';
-  import { worktreeIntentForThread } from '../../stores/worktreeIntent.svelte';
+  import { hasWorktreeSetupSurface } from '../../stores/worktreeSetup.svelte';
   import type { Item, Thread } from '../../types/models';
   import { userFacingError } from '../../utils/userFacingError';
   import type { UserMessageActions } from './userMessageActions';
@@ -363,26 +358,7 @@
         : null,
     );
   });
-  // A draft placeholder that has already applied its worktree intent owns a
-  // setup run the backend registered against the WORKSPACE — there is no
-  // thread row for it to be keyed by until the send creates one. The pane
-  // shows the same card for it, under the store's workspace key, and the
-  // adoption frame hands the run over to the thread key at that point.
-  const draftSetupWorktreePath = $derived(
-    pane.hasDraftPlaceholder
-      ? (worktreeIntentForThread(pane.thread).applied?.worktreePath ?? '')
-      : '',
-  );
-  const setupKey = $derived(
-    pane.threadId
-      ?? (draftSetupWorktreePath ? workspaceSetupKey(draftSetupWorktreePath) : null),
-  );
-  $effect(() => {
-    const projectId = pane.thread?.projectId;
-    const path = draftSetupWorktreePath;
-    if (!projectId || !path) return;
-    void hydrateWorkspaceWorktreeSetup(projectId, path);
-  });
+  const setupKey = $derived(pane.threadId);
   const showWorktreeSetup = $derived(
     !!setupKey && hasWorktreeSetupSurface(setupKey),
   );

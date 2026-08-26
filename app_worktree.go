@@ -417,13 +417,10 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		}
 	}
 
-	// Cancel by DIRECTORY and block on the join: a recipe still writing into the
-	// path would race git's removal and could recreate entries under it after
-	// the removal succeeded. The question is which runs execute IN this
-	// directory, which is not the same set as "runs of the threads attached to
-	// it": an UNBOUND run has no thread to be found by, and a bound run can
-	// belong to a thread this removal has no reason to have locked (a sibling
-	// that has since moved on, or one whose row read failed above).
+	// Cancel by directory and block on the join. A recipe still writing into the
+	// path would race git's removal and could recreate entries after removal.
+	// A run can belong to a thread that has since moved away, so the attached
+	// thread list is not an authoritative set of processes to stop.
 	a.cancelWorktreeSetupsForPath(worktreePath)
 	// Then clear the durable state of every thread that pointed here — a "Setup
 	// failed" pill for a worktree that no longer exists has nothing to offer.
@@ -925,22 +922,6 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("switch workspace: refresh thread after workspace switch: %w", err)
 	}
-	// The target may carry an UNBOUND run: a project-scoped cut whose thread was
-	// never created (the send binds by switching an existing row instead of
-	// creating one), or a worktree the user cut from a draft and is now entering
-	// through the picker. Adoption is what gives that run an owner, a durable
-	// column and a thread-keyed panel; a no-op when nothing is running there.
-	// Same ordering rationale as CreateThread's: after the row commits.
-	if worktreePath := strings.TrimSpace(refreshed.WorktreePath); worktreePath != "" {
-		if a.adoptWorkspaceWorktreeSetup(worktreePath, refreshed) {
-			// Adoption stamped the durable column, so the row we are about to
-			// return is already stale. Re-read it rather than let the caller's
-			// UI learn "running" from a race with the pushed event.
-			if adopted, err := a.store.GetThread(threadID); err == nil {
-				refreshed = adopted
-			}
-		}
-	}
 	return refreshed, nil
 }
 
@@ -979,15 +960,13 @@ func (a *App) cutWorktreeFromFreshBase(ctx context.Context, projectPath, worktre
 }
 
 // worktreeCutRequest states one "cut a new worktree off a base branch"
-// operation without reference to a thread. Both the thread-scoped
-// (PrepareThreadWorktree) and project-scoped (PrepareProjectWorktree) callers
-// state their request this way, so the carry bracket below cannot drift
-// between them.
+// operation. Thread and workflow callers share it so the carry bracket below
+// cannot drift between them.
 type worktreeCutRequest struct {
 	projectPath string
 	// sourceWorkspace is where a carried dirty tree is stashed FROM: the
-	// thread's own workspace for a thread-scoped cut, the project root for a
-	// draft's. Read only when carryLocalChanges is set.
+	// thread's own workspace for a thread-scoped cut. Read only when
+	// carryLocalChanges is set.
 	sourceWorkspace   string
 	baseBranch        string
 	newBranch         string

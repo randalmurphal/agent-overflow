@@ -5,14 +5,10 @@ import { setBindingMock } from '../../test/mocks/bindings-app';
 import { loadSettings, updateSetting } from './settings.svelte';
 import {
   LOCAL_BASE_SENTINEL,
-  clearWorktreeIntent,
-  effectiveBranchForThread,
-  effectiveWorkspacePathForThread,
   enterCreateBranchMode,
   exitCreateBranchMode,
   hasStagedWorktreeIntent,
   isLocalBase,
-  markWorktreeIntentApplied,
   resetForTest,
   resolveBaseForWire,
   seedDefaultWorktreeIntentForDraft,
@@ -181,72 +177,6 @@ describe('worktreeIntent store', () => {
     expect(
       resolveBaseForWire(worktreeIntentForThread(thread).newBranchBase, 'main').carryLocalChanges,
     ).toBe(false);
-  });
-
-  it('carries `applied` across edits inside the quadrant and drops it on a quadrant change', () => {
-    const thread = makeThread({ id: 'thread-applied' });
-    setThreadEnvMode(thread, 'new-worktree');
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
-    markWorktreeIntentApplied(thread.id, { worktreePath: '/wt/x', branch: 'feat/x' });
-    expect(worktreeIntentForThread(thread).applied).toEqual({
-      worktreePath: '/wt/x',
-      branch: 'feat/x',
-    });
-
-    // Refining the same request keeps what it produced.
-    setNewBranchName(thread, 'feat/x2');
-    setNewBranchBase(thread, 'dev');
-    expect(worktreeIntentForThread(thread).applied?.worktreePath).toBe('/wt/x');
-
-    // Leaving create-branch mode asks for something else.
-    exitCreateBranchMode(thread);
-    expect(worktreeIntentForThread(thread).applied).toBeNull();
-  });
-
-  it('flipping back to local clears an applied worktree', () => {
-    const thread = makeThread({ id: 'thread-applied-local' });
-    setThreadEnvMode(thread, 'new-worktree');
-    markWorktreeIntentApplied(thread.id, { worktreePath: '/wt/y', branch: 'main' });
-    expect(worktreeIntentForThread(thread).applied).not.toBeNull();
-
-    setThreadEnvMode(thread, 'local');
-    expect(worktreeIntentForThread(thread).applied).toBeNull();
-    // Re-selecting the same mode is not a change, so it is not a reset either.
-    setThreadEnvMode(thread, 'new-worktree');
-    markWorktreeIntentApplied(thread.id, { worktreePath: '/wt/z', branch: 'main' });
-    setThreadEnvMode(thread, 'new-worktree');
-    expect(worktreeIntentForThread(thread).applied?.worktreePath).toBe('/wt/z');
-  });
-
-  it('clearWorktreeIntent drops the applied record with the intent', () => {
-    const thread = makeThread({ id: 'thread-applied-clear' });
-    setThreadEnvMode(thread, 'new-worktree');
-    markWorktreeIntentApplied(thread.id, { worktreePath: '/wt/c', branch: 'main' });
-    clearWorktreeIntent(thread.id);
-    expect(worktreeIntentForThread(thread).applied).toBeNull();
-    expect(worktreeIntentForThread(thread).mode).toBe('local');
-  });
-
-  it('effective* helpers prefer the applied workspace over the row\'s own fields', () => {
-    const thread = makeThread({ id: 'thread-effective', workspacePath: '/repo', branch: 'main' });
-    expect(effectiveWorkspacePathForThread(thread)).toBe('/repo');
-    expect(effectiveBranchForThread(thread)).toBe('main');
-
-    setThreadEnvMode(thread, 'new-worktree');
-    markWorktreeIntentApplied(thread.id, { worktreePath: '/wt/e', branch: 'feat/e' });
-    // The row has not moved (a send binds it); the pane has.
-    expect(effectiveWorkspacePathForThread(thread)).toBe('/wt/e');
-    expect(effectiveBranchForThread(thread)).toBe('feat/e');
-
-    // A branch-only apply carries no worktree, so the workspace stays put.
-    const local = makeThread({ id: 'thread-effective-branch', workspacePath: '/repo', branch: 'main' });
-    enterCreateBranchMode(local, { workspaceDirty: false, currentBranch: 'main' });
-    markWorktreeIntentApplied(local.id, { worktreePath: '', branch: 'feat/local' });
-    expect(effectiveWorkspacePathForThread(local)).toBe('/repo');
-    expect(effectiveBranchForThread(local)).toBe('feat/local');
-
-    expect(effectiveWorkspacePathForThread(null)).toBe('');
-    expect(effectiveBranchForThread(undefined)).toBe('');
   });
 
   it('hasStagedWorktreeIntent answers the send path synchronously', () => {

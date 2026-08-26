@@ -156,11 +156,6 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 	// re-running an argv recipe over a checkout someone else is working in is
 	// not something a thread creation should decide to do.
 	cutWorktree := false
-	// adoptWorktree records that this thread is moving INTO a worktree some
-	// earlier project-scoped call cut (app_project_workspace.go). No recipe is
-	// started for it — one may already be running, unbound, and the thread
-	// takes it over.
-	adoptWorktree := ""
 	inheritWorktree := strings.TrimSpace(opts.WorktreePath)
 	switch {
 	case inheritWorktree != "":
@@ -178,7 +173,6 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		}
 		workspace = worktree.Path
 		worktreePath = worktree.Path
-		adoptWorktree = worktree.Path
 		branch = strings.TrimSpace(opts.Branch)
 		if branch == "" {
 			branch = worktree.Branch
@@ -250,15 +244,6 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		// first pushed event. The run itself is async — a slow recipe must not
 		// hold thread creation open.
 		a.startThreadWorktreeSetup(t)
-	}
-	if adoptWorktree != "" {
-		// Same ordering rationale, one step earlier in the story: a
-		// project-scoped call may already be running (or have failed) a recipe
-		// over this worktree with no thread to report against. Adoption re-keys
-		// that run onto the new thread and stamps the durable column from
-		// whatever state it has reached, so the row this call returns is
-		// already truthful. A no-op when nothing is running there.
-		a.adoptWorkspaceWorktreeSetup(adoptWorktree, t)
 	}
 	return a.store.GetThread(t.ID)
 }

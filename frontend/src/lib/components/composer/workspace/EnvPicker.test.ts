@@ -43,13 +43,13 @@ async function buildPane(thread: Thread) {
   return buildRegisteredPane(thread);
 }
 
-function buildPlaceholderPane(paneId?: string) {
+function buildPlaceholderPane(paneId?: string, workspacePath = '/tmp/wt-feature', branch = 'feat') {
   const pane = createThreadPane(paneId ? { paneId } : undefined);
   pane.startDraftPlaceholder(makeProject(), 'chat', {
     provider: 'claude',
     model: 'm',
-    workspacePath: '/tmp/wt-feature',
-    branch: 'feat',
+    workspacePath,
+    branch,
   });
   if (paneId) registerPaneForTest(paneId, pane);
   return pane;
@@ -114,6 +114,60 @@ describe('<EnvPicker>', () => {
 
     expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/New Worktree/);
     expect(getByTestId('env-picker-trigger')).toHaveAttribute('data-trigger-icon', 'folder-git-2');
+    expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
+  });
+
+  it('materializes a placeholder when New Worktree is selected', async () => {
+    const pane = buildPlaceholderPane(undefined, '/repo', 'main');
+    setBindingMock('GitListWorktreesForProject', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+    ]);
+    const create = setBindingMock('CreateThread', async () =>
+      makeThread({ id: 'draft-row', isDraft: true, workspacePath: '/repo', branch: 'main' }),
+    );
+
+    const { getByTestId, findByRole } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    await fireEvent.click(await findByRole('menuitem', { name: /New Worktree/ }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(pane.threadId).toBe('draft-row');
+      expect(getByTestId('env-picker-trigger').textContent ?? '').toMatch(/New Worktree/);
+    });
+  });
+
+  it('materializes a placeholder directly in the selected existing worktree', async () => {
+    const pane = buildPlaceholderPane(undefined, '/repo', 'main');
+    setBindingMock('GitListWorktreesForProject', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
+    ]);
+    const create = setBindingMock('CreateThread', async (options: Record<string, unknown>) =>
+      makeThread({
+        id: 'draft-row',
+        isDraft: true,
+        workspacePath: String(options.workspaceOverride),
+        worktreePath: String(options.worktreePath),
+        branch: String(options.branch),
+      }),
+    );
+
+    const { getByTestId, findByRole } = render(EnvPicker, {
+      props: { pane, workspaceLock: makeWorkspaceLock() },
+    });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+    await fireEvent.click(await findByRole('menuitem', { name: /wt-feature/ }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(pane.threadId).toBe('draft-row');
+      expect(pane.thread?.workspacePath).toBe('/tmp/wt-feature');
+      expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
+      expect(pane.thread?.branch).toBe('feat');
+    });
     expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
   });
 

@@ -2772,39 +2772,6 @@ export class ProjectDeletionResult {
 }
 
 /**
- * ProjectWorkspaceResult is what a project-scoped workspace operation hands
- * back: enough for the composer to show the choice, and exactly what
- * CreateThread's WorktreePath / Branch options take.
- * 
- * WorktreePath is empty for CreateProjectBranch — branching happens in the
- * project root, which is not a worktree.
- */
-export class ProjectWorkspaceResult {
-    "worktreePath": string;
-    "branch": string;
-
-    /** Creates a new ProjectWorkspaceResult instance. */
-    constructor($$source: Partial<ProjectWorkspaceResult> = {}) {
-        if (!("worktreePath" in $$source)) {
-            this["worktreePath"] = "";
-        }
-        if (!("branch" in $$source)) {
-            this["branch"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ProjectWorkspaceResult instance from a string or object.
-     */
-    static createFrom($$source: any = {}): ProjectWorkspaceResult {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ProjectWorkspaceResult($$parsedSource as Partial<ProjectWorkspaceResult>);
-    }
-}
-
-/**
  * ProviderSessionAccountEvent is the account a live provider process is
  * currently using for one thread. It is deliberately separate from the
  * provider-global selected account: an active Codex process can keep using the

@@ -710,8 +710,6 @@ func (p *privilegedApp) RefreshTerminal() string                { return "ok" }
 func (p *privilegedApp) MoveThreadTerminals() string            { return "ok" }
 func (p *privilegedApp) RetryThreadWorktreeSetup() string       { return "ok" }
 func (p *privilegedApp) GetThreadWorktreeSetup() string         { return "ok" }
-func (p *privilegedApp) RetryWorkspaceWorktreeSetup() string    { return "ok" }
-func (p *privilegedApp) GetWorkspaceWorktreeSetup() string      { return "ok" }
 func (p *privilegedApp) ProviderTerminalAttach() string         { return "ok" }
 func (p *privilegedApp) ProviderTerminalDetach() string         { return "ok" }
 func (p *privilegedApp) ProviderTerminalReplay() string         { return "ok" }
@@ -770,9 +768,6 @@ func (p *privilegedApp) UnsubscribePRUpdates() string           { return "ok" }
 func (p *privilegedApp) SetPRUpdatesActive() string             { return "ok" }
 func (p *privilegedApp) PrepareThreadWorktree() string          { return "ok" }
 func (p *privilegedApp) AttachThreadWorktree() string           { return "ok" }
-func (p *privilegedApp) PrepareProjectWorktree() string         { return "ok" }
-func (p *privilegedApp) AttachProjectWorktree() string          { return "ok" }
-func (p *privilegedApp) CreateProjectBranch() string            { return "ok" }
 func (p *privilegedApp) GetBranchBaseDiff() string              { return "ok" }
 func (p *privilegedApp) GetWorkingTreeDiff() string             { return "ok" }
 func (p *privilegedApp) GetWorkspaceCurrentDiff() string        { return "ok" }

@@ -3,10 +3,11 @@
   // staged new-worktree intent, and registered worktrees so the user can
   // choose where the next provider turn runs without leaving the chat.
   //
-  // Existing paths persist via UpdateThreadWorkspace. New worktree intent
-  // is staged locally and materialized by the next send. Worktree cleanup
-  // happens inline: a trash icon on each row morphs that row into a
-  // confirmation strip — no separate modal surface.
+  // Choosing a worktree is durable draft state. A placeholder materializes
+  // as soon as the user selects New Worktree or an existing worktree, so the
+  // checkout has a thread owner and every workspace-keyed surface can follow
+  // it before the first message. Worktree cleanup happens inline: a trash
+  // icon on each row morphs that row into a confirmation strip.
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import type { Thread } from '../../../types/models';
@@ -21,13 +22,13 @@
     GitListWorktreesForProject,
     GitWorktreeStatus,
     GitWorktreeStatusForProject,
-	    RemoveOtherWorktreeForProject,
-	    RemoveOtherWorktree,
-	    UpdateThreadWorkspace,
-	    type GitWorkspaceState,
-	    WorktreeStatus,
-	    type WorktreeListItem,
-	  } from '../../../stores/bindings';
+    RemoveOtherWorktreeForProject,
+    RemoveOtherWorktree,
+    UpdateThreadWorkspace,
+    type GitWorkspaceState,
+    WorktreeStatus,
+    type WorktreeListItem,
+  } from '../../../stores/bindings';
   import { forEachDraftPlaceholderPane, syncThread } from '../../../stores/panes.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { userFacingError } from '../../../utils/userFacingError';
@@ -35,7 +36,6 @@
   import { pathBasename } from '../../../utils/pathDisplay';
   import {
     clearWorktreeIntent,
-    effectiveWorkspacePathForThread,
     setThreadEnvMode,
     worktreeIntentForThread,
   } from '../../../stores/worktreeIntent.svelte';
@@ -73,7 +73,7 @@
     error: string | null;
   }
 
-	  let { pane, workspaceLock }: Props = $props();
+  let { pane, workspaceLock }: Props = $props();
 
   let triggerEl: HTMLButtonElement | undefined = $state(undefined);
   let open = $state(false);
@@ -83,9 +83,7 @@
   let confirm: ConfirmState | null = $state(null);
 
   let projectPath = $derived(pane.thread?.projectPath ?? '');
-  // Effective, not raw — see BranchPicker: an applied-but-unbound worktree
-  // is where the next turn will run, and the trigger has to say so.
-  let currentWorkspace = $derived(effectiveWorkspacePathForThread(pane.thread));
+  let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
   let isAtProjectRoot = $derived(sameNormalizedPath(currentWorkspace, projectPath));
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
@@ -93,9 +91,7 @@
   // sits at the project root; the worktree's basename otherwise. Staged
   // new-worktree intent overrides both so the user sees that the next
   // send will run somewhere new.
-  // Once the intent has been APPLIED the worktree exists, so the trigger
-  // names it rather than still promising one.
-  let stagingNewWorktree = $derived(intent.mode === 'new-worktree' && !intent.applied);
+  let stagingNewWorktree = $derived(intent.mode === 'new-worktree');
   let triggerLabel = $derived.by(() => {
     if (stagingNewWorktree) return 'New Worktree';
     if (isAtProjectRoot) return 'Local';
@@ -191,30 +187,51 @@
     if (!pane.thread || applying) return;
     if (workspaceChangingDisabled) return;
     const threadId = pane.thread.id;
-    if (sameNormalizedPath(path, projectPath)) {
+    const selectingProjectRoot = sameNormalizedPath(path, projectPath);
+    if (selectingProjectRoot || pane.hasDraftPlaceholder) {
       setThreadEnvMode(pane.thread, 'local');
     } else {
       clearWorktreeIntent(threadId);
     }
-    if (sameNormalizedPath(path, currentWorkspace)) {
+    if (
+      sameNormalizedPath(path, currentWorkspace) &&
+      (!pane.hasDraftPlaceholder || selectingProjectRoot)
+    ) {
       closeMenu();
       return;
     }
     if (pane.hasDraftPlaceholder) {
       const worktree = worktrees.find((candidate) => sameNormalizedPath(candidate.path, path));
+      const placeholderId = pane.draftPlaceholder?.id ?? '';
+      const previous = {
+        workspacePath: pane.thread.workspacePath ?? projectPath,
+        worktreePath: pane.thread.worktreePath ?? '',
+        branch: pane.thread.branch ?? '',
+      };
       pane.applyDraftPlaceholderWorkspace({
         workspacePath: path,
         worktreePath: sameNormalizedPath(path, projectPath) ? '' : path,
         branch: worktree?.branch,
       });
-      closeMenu();
+      applying = true;
+      try {
+        const createdId = await pane.ensureMaterializedThread();
+        if (!createdId && pane.draftPlaceholder?.id === placeholderId) {
+          pane.applyDraftPlaceholderWorkspace(previous);
+        } else if (createdId) {
+          clearWorktreeIntent(createdId);
+        }
+      } finally {
+        applying = false;
+        closeMenu();
+      }
       return;
     }
     applying = true;
     try {
       const updated = (await UpdateThreadWorkspace(threadId, path)) as Thread;
       syncThread(updated);
-        addToast('info', `Workspace switched to ${pathBasename(path) || path}`);
+      addToast('info', `Workspace switched to ${pathBasename(path) || path}`);
     } catch (err) {
       console.error('UpdateThreadWorkspace failed:', err);
       addToast('error', userFacingError(err));
@@ -224,11 +241,21 @@
     }
   }
 
-  function selectNewWorktree(): void {
+  async function selectNewWorktree(): Promise<void> {
     if (!pane.thread) return;
     if (workspaceChangingDisabled) return;
     setThreadEnvMode(pane.thread, 'new-worktree');
-    closeMenu();
+    if (!pane.hasDraftPlaceholder) {
+      closeMenu();
+      return;
+    }
+    applying = true;
+    try {
+      await pane.ensureMaterializedThread();
+    } finally {
+      applying = false;
+      closeMenu();
+    }
   }
 
   async function requestRemove(wt: WorktreeListItem): Promise<void> {
@@ -405,7 +432,7 @@
       checked={stagingNewWorktree}
       disabled={workspaceChangingDisabled}
       title={workspaceChangingDisabled ? disabledReason : undefined}
-      onSelect={selectNewWorktree}
+      onSelect={() => selectNewWorktree()}
     />
     {#if loading}
       <div

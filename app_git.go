@@ -478,10 +478,9 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 var errCarryRequiresCurrentBase = errors.New("'Local with changes' only applies when the base matches the current branch")
 
 // resolveBranchCreatePlan is the whole policy of "create branch <name> off
-// <base>", shared by the thread-scoped (GitCreateBranchFrom) and
-// project-scoped (CreateProjectBranch) entry points: name validation, base
-// defaulting, the base-is-current decision that selects between the two git
-// sequences in createBranchInWorkspace, and the carry refusal.
+// <base>" for GitCreateBranchFrom: name validation, base defaulting, the
+// base-is-current decision that selects between the two git sequences in
+// createBranchInWorkspace, and the carry refusal.
 //
 // currentBranch is the branch of the checkout the caller is about to mutate —
 // the one thing only the caller can resolve, and the one thing that must not
@@ -510,11 +509,10 @@ func resolveBranchCreatePlan(currentBranch, name, base string, carryLocalChanges
 }
 
 // createBranchInWorkspace performs the checkout half of "branch off base" in a
-// checkout the caller has already decided it may mutate: the thread's workspace
-// (GitCreateBranchFrom) or a project root a draft is branching
-// (CreateProjectBranch). name must already be sanitized, and baseIsCurrent must
-// already have been computed against that checkout's current branch — this
-// helper owns the two git sequences, not the policy that chooses between them.
+// checkout the caller has already decided it may mutate. name must already be
+// sanitized, and baseIsCurrent must already have been computed against that
+// checkout's current branch. This helper owns the two git sequences, not the
+// policy that chooses between them.
 //
 // The destructive branch (baseIsCurrent == false) stashes everything, checks
 // out the base, branches off it, and drops the stash. The frontend has surfaced

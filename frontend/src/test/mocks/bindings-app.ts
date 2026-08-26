@@ -177,8 +177,6 @@ export const GetProjectWorktreeSetup = dispatch('GetProjectWorktreeSetup');
 export const SetProjectWorktreeSetup = dispatch('SetProjectWorktreeSetup');
 export const GetThreadWorktreeSetup = dispatch('GetThreadWorktreeSetup');
 export const RetryThreadWorktreeSetup = dispatch('RetryThreadWorktreeSetup');
-export const GetWorkspaceWorktreeSetup = dispatch('GetWorkspaceWorktreeSetup');
-export const RetryWorkspaceWorktreeSetup = dispatch('RetryWorkspaceWorktreeSetup');
 export const Version = dispatch('Version');
 
 // Workflow surface.
@@ -360,9 +358,6 @@ export const GitWorktreeStatus = dispatch('GitWorktreeStatus');
 export const GitWorktreeStatusForProject = dispatch('GitWorktreeStatusForProject');
 export const PrepareThreadWorktree = dispatch('PrepareThreadWorktree');
 export const AttachThreadWorktree = dispatch('AttachThreadWorktree');
-export const PrepareProjectWorktree = dispatch('PrepareProjectWorktree');
-export const AttachProjectWorktree = dispatch('AttachProjectWorktree');
-export const CreateProjectBranch = dispatch('CreateProjectBranch');
 export const GitRemoveWorktree = dispatch('GitRemoveWorktree');
 export const RemoveOtherWorktree = dispatch('RemoveOtherWorktree');
 export const RemoveOtherWorktreeForProject = dispatch('RemoveOtherWorktreeForProject');

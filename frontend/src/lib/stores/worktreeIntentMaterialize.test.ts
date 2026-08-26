@@ -12,12 +12,11 @@ import {
   isWorktreeIntentApplying,
   migrateWorktreeIntent,
   resetForTest as resetWorktreeIntent,
+  setNewBranchBase,
   setNewBranchName,
   setThreadEnvMode,
   worktreeIntentForThread,
 } from './worktreeIntent.svelte';
-import { recentBranchSelections } from './branchMru';
-import { resetAppStorageForTest } from './appStorage';
 import {
   getBindingMock,
   resetBindingMocks,
@@ -26,31 +25,10 @@ import {
 import { makeThread } from '../../test/helpers/chat';
 import type { Thread } from '../types/models';
 
-/**
- * The narrow pane surface the apply/bind paths take. A real ThreadPane would
- * drag the whole switch pipeline into a test about which RPC gets called.
- */
-function fakePane(thread: Thread, hasDraftPlaceholder = false) {
-  const stamp = vi.fn(
-    (_workspace: { workspacePath: string; worktreePath?: string; branch?: string }) => true,
-  );
-  // Mutable, because the re-keying tests move the pane onto the materialized
-  // row mid-RPC — which is exactly what ensureMaterializedThread does.
-  const pane: {
-    thread: Thread | null;
-    hasDraftPlaceholder: boolean;
-    applyDraftPlaceholderWorkspace: typeof stamp;
-  } & PaneForIntentApply = {
-    thread,
-    hasDraftPlaceholder,
-    applyDraftPlaceholderWorkspace: stamp,
-  };
-  return pane;
-}
-
-function threadFields(overrides: Partial<Thread> = {}): Thread {
+function thread(overrides: Partial<Thread> = {}): Thread {
   return makeThread({
-    id: 'thread-mat',
+    id: 'thread-1',
+    isDraft: true,
     branch: 'main',
     workspacePath: '/repo',
     projectPath: '/repo',
@@ -59,524 +37,246 @@ function threadFields(overrides: Partial<Thread> = {}): Thread {
   });
 }
 
-/**
- * A materialized DRAFT row — a real row with no items yet. It owns the
- * project-scoped route (the empty-draft cleanup can still delete it, so the
- * thread-scoped RPCs would race that delete) and binds at send time.
- */
-function draftFields(overrides: Partial<Thread> = {}): Thread {
-  return threadFields({ isDraft: true, ...overrides });
+function moved(source: Thread, overrides: Partial<Thread> = {}): Thread {
+  return {
+    ...source,
+    workspacePath: '/wt/feature',
+    worktreePath: '/wt/feature',
+    branch: 'feature',
+    ...overrides,
+  };
 }
 
-/** A DRAFT row with `new-worktree` + attach-existing staged. */
-function stagedAttach(overrides: Partial<Thread> = {}): Thread {
-  const thread = draftFields(overrides);
-  setThreadEnvMode(thread, 'new-worktree');
-  return thread;
+function paneFor(current: Thread): PaneForIntentApply & {
+  thread: Thread | null;
+  hasDraftPlaceholder: boolean;
+  ensureMaterializedThread: ReturnType<typeof vi.fn>;
+} {
+  return {
+    thread: current,
+    hasDraftPlaceholder: false,
+    ensureMaterializedThread: vi.fn(async () => current.id),
+  };
 }
 
-describe('applyWorktreeIntentNow (project-scoped, no thread row)', () => {
+function placeholderPane(placeholder: Thread, created: Thread | null) {
+  const pane = paneFor(placeholder);
+  pane.hasDraftPlaceholder = true;
+  pane.ensureMaterializedThread = vi.fn(async () => {
+    if (!created) return null;
+    migrateWorktreeIntent(placeholder.id, created.id);
+    pane.thread = created;
+    pane.hasDraftPlaceholder = false;
+    return created.id;
+  });
+  return pane;
+}
+
+describe('worktree intent materialization', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetWorktreeIntent();
     resetWorktreeIntentMaterializeForTest();
-    resetAppStorageForTest();
   });
 
-  it('applies a draft placeholder without materializing a thread', async () => {
-    const placeholder = stagedAttach({ id: 'draft:main:project-1:chat:1', isDraft: true });
-    const pane = fakePane(placeholder, true);
-    setBindingMock('AttachProjectWorktree', async () => ({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    }));
+  it('materializes a placeholder before applying its worktree intent', async () => {
+    const placeholder = thread({ id: 'draft:pane:project-1:chat:1' });
+    setThreadEnvMode(placeholder, 'new-worktree');
+    const created = thread();
+    const pane = placeholderPane(placeholder, created);
+    const attach = setBindingMock('AttachThreadWorktree', async () => moved(created));
 
     const applied = await applyWorktreeIntentNow(pane);
 
-    expect(applied).toEqual({ worktreePath: '/wt/main', branch: 'main' });
-    expect(getBindingMock('AttachProjectWorktree')!.mock.calls[0]).toEqual([
-      'project-1',
-      'main',
-    ]);
-    // Nothing thread-shaped may run: the placeholder has no row, and creating
-    // one is exactly the race this rework removed.
-    expect(getBindingMock('CreateThread')).toBeUndefined();
+    expect(pane.ensureMaterializedThread).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledWith('thread-1', 'main');
+    expect(applied).toEqual({ worktreePath: '/wt/feature', branch: 'feature' });
+    expect(worktreeIntentForThread(created).mode).toBe('local');
+  });
+
+  it('does not mutate git when placeholder materialization fails', async () => {
+    const placeholder = thread({ id: 'draft:pane:project-1:chat:2' });
+    setThreadEnvMode(placeholder, 'new-worktree');
+    const pane = placeholderPane(placeholder, null);
+
+    await expect(applyWorktreeIntentNow(pane)).resolves.toBeNull();
+
     expect(getBindingMock('AttachThreadWorktree')).toBeUndefined();
-    expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
-    // The placeholder is synthetic, so stamping it is what moves the whole
-    // pane (workspace strip, git status, terminal cwd) onto the worktree.
-    expect(pane.applyDraftPlaceholderWorkspace.mock.calls[0][0]).toEqual({
-      workspacePath: '/wt/main',
-      worktreePath: '/wt/main',
-      branch: 'main',
+    expect(worktreeIntentForThread(placeholder).mode).toBe('new-worktree');
+  });
+
+  it('does not retarget the intent if the pane switches during materialization', async () => {
+    const placeholder = thread({ id: 'draft:pane:project-1:chat:3' });
+    const created = thread({ id: 'created-row' });
+    const replacement = thread({ id: 'other-row' });
+    setThreadEnvMode(placeholder, 'new-worktree');
+    const pane = placeholderPane(placeholder, created);
+    pane.ensureMaterializedThread = vi.fn(async () => {
+      migrateWorktreeIntent(placeholder.id, created.id);
+      pane.thread = replacement;
+      pane.hasDraftPlaceholder = false;
+      return created.id;
     });
-    // A placeholder must never enter the empty-draft cleanup's active-work
-    // set: there is no row for that cleanup to delete.
-    expect(isWorktreeIntentApplying(placeholder.id)).toBe(false);
+    const attach = setBindingMock('AttachThreadWorktree', async () => moved(replacement));
+
+    await expect(applyWorktreeIntentNow(pane)).resolves.toBeNull();
+
+    expect(attach).not.toHaveBeenCalled();
+    expect(worktreeIntentForThread(created).mode).toBe('new-worktree');
   });
 
-  it('creates a new branch + worktree with the resolved base and carry flag', async () => {
-    const thread = draftFields({ id: 'thread-new-wt' });
-    setThreadEnvMode(thread, 'new-worktree');
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
-    setNewBranchName(thread, 'feat/x');
-    setBindingMock('PrepareProjectWorktree', async () => ({
-      worktreePath: '/wt/feat-x',
-      branch: 'feat/x',
-    }));
+  it('attaches an existing branch and clears the staged intent', async () => {
+    const source = thread();
+    setThreadEnvMode(source, 'new-worktree');
+    const attach = setBindingMock('AttachThreadWorktree', async () => moved(source));
 
-    const applied = await applyWorktreeIntentNow(fakePane(thread));
+    const applied = await applyWorktreeIntentNow(paneFor(source));
 
-    expect(getBindingMock('PrepareProjectWorktree')!.mock.calls[0]).toEqual([
-      'project-1',
-      'main',
-      'feat/x',
-      false,
-      // The carry stash and the base comparison belong in the pane's own
-      // checkout, which is not always the project root.
-      '/repo',
-    ]);
-    expect(applied?.branch).toBe('feat/x');
-    // The materialized branch is the user's working branch now.
-    expect(recentBranchSelections('project-1')).toEqual(['feat/x']);
+    expect(attach).toHaveBeenCalledWith('thread-1', 'main');
+    expect(applied?.worktreePath).toBe('/wt/feature');
+    expect(worktreeIntentForThread(source).mode).toBe('local');
   });
 
-  it('creates a branch in place when the workspace mode stays local', async () => {
-    const thread = draftFields({ id: 'thread-local-branch' });
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
-    setNewBranchName(thread, 'feat/inplace');
-    setBindingMock('CreateProjectBranch', async () => ({ worktreePath: '', branch: 'feat/inplace' }));
+  it('creates a new worktree branch with the selected base and carry flag', async () => {
+    const source = thread({ branch: 'feature/base' });
+    setThreadEnvMode(source, 'new-worktree');
+    enterCreateBranchMode(source, { workspaceDirty: true, currentBranch: 'feature/base' });
+    setNewBranchName(source, 'feature/new');
+    const prepare = setBindingMock('PrepareThreadWorktree', async () =>
+      moved(source, { branch: 'feature/new' }),
+    );
 
-    const applied = await applyWorktreeIntentNow(fakePane(thread));
+    await applyWorktreeIntentNow(paneFor(source));
 
-    expect(getBindingMock('CreateProjectBranch')!.mock.calls[0]).toEqual([
-      'project-1',
-      'feat/inplace',
-      'main',
-      false,
-      '/repo',
-    ]);
-    // No worktree came back: the checkout happened where the pane already was.
-    expect(applied).toEqual({ worktreePath: '', branch: 'feat/inplace' });
-  });
-
-  it('is idempotent — a second confirm returns the applied result without a second cut', async () => {
-    const thread = stagedAttach({ id: 'thread-twice' });
-    const pane = fakePane(thread);
-    setBindingMock('AttachProjectWorktree', async () => ({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    }));
-
-    const first = await applyWorktreeIntentNow(pane);
-    const second = await applyWorktreeIntentNow(pane);
-
-    expect(second).toEqual(first);
-    expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(1);
-    expect(worktreeIntentForThread(thread).applied).toEqual(first);
-  });
-
-  it('coalesces concurrent applies into one backend call', async () => {
-    const thread = stagedAttach({ id: 'draft:main:project-1:chat:3', isDraft: true });
-    const pane = fakePane(thread, true);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    setBindingMock('AttachProjectWorktree', async () => {
-      await gate;
-      return { worktreePath: '/wt/main', branch: 'main' };
-    });
-
-    // The confirm button and a send racing each other.
-    const first = applyWorktreeIntentNow(pane);
-    const second = prepareThreadWorktreeIntent({ pane });
-    release();
-    const [firstResult, secondResult] = await Promise.all([first, second]);
-
-    expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(1);
-    expect(firstResult).toEqual({ worktreePath: '/wt/main', branch: 'main' });
-    expect(secondResult).toEqual(firstResult);
-  });
-
-  it('keeps the staged intent unapplied when the backend refuses', async () => {
-    const thread = stagedAttach({ id: 'thread-refused' });
-    const pane = fakePane(thread);
-    setBindingMock('AttachProjectWorktree', async () => {
-      throw new Error('worktree create failed: branch busy');
-    });
-
-    await expect(applyWorktreeIntentNow(pane)).rejects.toThrow('branch busy');
-    // A failed attempt must not stay cached as the in-flight winner.
-    await expect(applyWorktreeIntentNow(pane)).rejects.toThrow('branch busy');
-    expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(2);
-    expect(worktreeIntentForThread(thread).mode).toBe('new-worktree');
-    expect(worktreeIntentForThread(thread).applied).toBeNull();
-  });
-
-  it('does nothing when there is nothing staged', async () => {
-    const thread = draftFields({ id: 'thread-unstaged' });
-    expect(await applyWorktreeIntentNow(fakePane(thread))).toBeNull();
-  });
-});
-
-describe('prepareThreadWorktreeIntent (the send path)', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetWorktreeIntentMaterializeForTest();
-    resetAppStorageForTest();
-  });
-
-  it('applies a staged-but-unapplied intent and binds it to the row', async () => {
-    const thread = stagedAttach({ id: 'thread-send' });
-    setBindingMock('AttachProjectWorktree', async () => ({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    }));
-    setBindingMock('UpdateThreadWorkspace', async () => makeThread({
-      ...thread,
-      workspacePath: '/wt/main',
-      worktreePath: '/wt/main',
-    }));
-
-    await prepareThreadWorktreeIntent({ pane: fakePane(thread) });
-
-    expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(1);
-    expect(getBindingMock('UpdateThreadWorkspace')!.mock.calls[0]).toEqual([
-      'thread-send',
-      '/wt/main',
-    ]);
-    // Bound: nothing is left staged for the next send to re-apply.
-    expect(worktreeIntentForThread(thread).mode).toBe('local');
-  });
-
-  it('reuses an apply the confirm button already ran', async () => {
-    const thread = stagedAttach({ id: 'thread-preapplied' });
-    const pane = fakePane(thread);
-    setBindingMock('AttachProjectWorktree', async () => ({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    }));
-    setBindingMock('UpdateThreadWorkspace', async () => makeThread({
-      ...thread,
-      workspacePath: '/wt/main',
-    }));
-
-    await applyWorktreeIntentNow(pane);
-    await prepareThreadWorktreeIntent({ pane });
-
-    expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(1);
-    expect(getBindingMock('UpdateThreadWorkspace')!.mock.calls.length).toBe(1);
-  });
-
-  it('flags the row as applying for the whole bind, and clears it either way', async () => {
-    // The empty-draft cleanup reads this flag: deleting the row mid-RPC fails
-    // the bind backend-side ("no rows in result set"). The mark has to be set
-    // before the first await, not after it.
-    const thread = stagedAttach({ id: 'thread-flag' });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    setBindingMock('AttachProjectWorktree', async () => {
-      await gate;
-      return { worktreePath: '/wt/main', branch: 'main' };
-    });
-    setBindingMock('UpdateThreadWorkspace', async () => makeThread({
-      ...thread,
-      workspacePath: '/wt/main',
-    }));
-
-    const run = prepareThreadWorktreeIntent({ pane: fakePane(thread) });
-    expect(isWorktreeIntentApplying(thread.id)).toBe(true);
-    release();
-    await run;
-    expect(isWorktreeIntentApplying(thread.id)).toBe(false);
-
-    const failing = stagedAttach({ id: 'thread-flag-fail' });
-    setBindingMock('AttachProjectWorktree', async () => {
-      throw new Error('boom');
-    });
-    await expect(prepareThreadWorktreeIntent({ pane: fakePane(failing) })).rejects.toThrow('boom');
-    expect(isWorktreeIntentApplying(failing.id)).toBe(false);
-  });
-
-  it('keeps the intent when the bind fails, so a retried send re-binds', async () => {
-    const thread = stagedAttach({ id: 'thread-bind-fail' });
-    setBindingMock('AttachProjectWorktree', async () => ({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    }));
-    setBindingMock('UpdateThreadWorkspace', async () => {
-      throw new Error('no rows in result set');
-    });
-
-    await expect(
-      prepareThreadWorktreeIntent({ pane: fakePane(thread) }),
-    ).rejects.toThrow('no rows in result set');
-    // The applied workspace survives so the retry binds it rather than
-    // cutting a second worktree.
-    expect(worktreeIntentForThread(thread).applied).toEqual({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    });
-  });
-
-  it('binds a branch-only apply with no workspace RPC at all', async () => {
-    const thread = draftFields({ id: 'thread-branch-only' });
-    enterCreateBranchMode(thread, { workspaceDirty: false, currentBranch: 'main' });
-    setNewBranchName(thread, 'feat/only');
-    setBindingMock('CreateProjectBranch', async () => ({ worktreePath: '', branch: 'feat/only' }));
-
-    await prepareThreadWorktreeIntent({ pane: fakePane(thread) });
-
-    // The checkout already moved the shared workspace; the row's branch heals
-    // through the backend's workspace-keyed branch persist.
-    expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
-    expect(worktreeIntentForThread(thread).creatingBranch).toBe(false);
-  });
-
-  it('stops after the apply for a draft placeholder — CreateThread carries it', async () => {
-    const placeholder = stagedAttach({ id: 'draft:main:project-1:chat:2', isDraft: true });
-    const pane = fakePane(placeholder, true);
-    setBindingMock('AttachProjectWorktree', async () => ({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    }));
-
-    await prepareThreadWorktreeIntent({ pane });
-
-    expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
-    // Still staged: ensureMaterializedThread clears it once CreateThread has
-    // carried the stamped workspace through.
-    expect(worktreeIntentForThread(placeholder).applied).toEqual({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    });
-  });
-});
-
-describe('routing: which engine owns the row', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetWorktreeIntentMaterializeForTest();
-    resetAppStorageForTest();
-  });
-
-  it('sends a NON-draft row through the thread-scoped RPC, carry semantics and all', async () => {
-    // A thread with history, parked in a worktree. The thread-scoped engine is
-    // the only one whose carry stashes from the row's own workspace AND moves
-    // the row in the same call.
-    const thread = threadFields({
-      id: 'thread-with-history',
-      isDraft: false,
-      branch: 'feat/live',
-      workspacePath: '/wt/live',
-      worktreePath: '/wt/live',
-    });
-    setThreadEnvMode(thread, 'new-worktree');
-    enterCreateBranchMode(thread, { workspaceDirty: true, currentBranch: 'feat/live' });
-    setNewBranchName(thread, 'feat/next');
-    const moved = makeThread({ ...thread, worktreePath: '/wt/next', workspacePath: '/wt/next' });
-    setBindingMock('PrepareThreadWorktree', async () => moved);
-
-    await prepareThreadWorktreeIntent({ pane: fakePane(thread) });
-
-    // LOCAL sentinel base (dirty workspace default) → carry=true against the
-    // thread's own branch.
-    expect(getBindingMock('PrepareThreadWorktree')!.mock.calls[0]).toEqual([
-      'thread-with-history',
-      'feat/live',
-      'feat/next',
+    expect(prepare).toHaveBeenCalledWith(
+      'thread-1',
+      'feature/base',
+      'feature/new',
       true,
-    ]);
-    expect(getBindingMock('PrepareProjectWorktree')).toBeUndefined();
-    // The row moved as part of the call, so nothing is left pending on it.
-    expect(getBindingMock('UpdateThreadWorkspace')).toBeUndefined();
-    expect(worktreeIntentForThread(thread).applied).toBeNull();
-    expect(worktreeIntentForThread(thread).mode).toBe('local');
+    );
+    expect(worktreeIntentForThread(source).mode).toBe('local');
   });
 
-  it('passes a draft\'s own worktree as the project-scoped sourceWorkspace', async () => {
-    // A draft that already cut one worktree and is staging a second choice.
-    const draft = draftFields({
-      id: 'draft-in-worktree',
-      branch: 'feat/first',
-      workspacePath: '/wt/first',
-      worktreePath: '/wt/first',
+  it('creates a local branch through the thread-scoped checkout', async () => {
+    const source = thread();
+    enterCreateBranchMode(source, { workspaceDirty: false, currentBranch: 'main' });
+    setNewBranchName(source, 'feature/local');
+    setNewBranchBase(source, 'develop');
+    const create = setBindingMock('GitCreateBranchFrom', async () =>
+      moved(source, { workspacePath: '/repo', worktreePath: '', branch: 'feature/local' }),
+    );
+
+    await applyWorktreeIntentNow(paneFor(source));
+
+    expect(create).toHaveBeenCalledWith('thread-1', 'feature/local', 'develop', false);
+    expect(worktreeIntentForThread(source).creatingBranch).toBe(false);
+  });
+
+  it('coalesces confirm and send onto one backend mutation', async () => {
+    const source = thread();
+    const pane = paneFor(source);
+    setThreadEnvMode(source, 'new-worktree');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const attach = setBindingMock('AttachThreadWorktree', async () => {
+      await gate;
+      return moved(source);
     });
-    setThreadEnvMode(draft, 'new-worktree');
-    enterCreateBranchMode(draft, { workspaceDirty: true, currentBranch: 'feat/first' });
-    setNewBranchName(draft, 'feat/second');
-    setBindingMock('PrepareProjectWorktree', async () => ({
-      worktreePath: '/wt/second',
-      branch: 'feat/second',
+
+    const confirm = applyWorktreeIntentNow(pane);
+    const send = prepareThreadWorktreeIntent({ pane });
+    release();
+    await Promise.all([confirm, send]);
+
+    expect(attach).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the row applying synchronously and clears it after failure', async () => {
+    const source = thread();
+    setThreadEnvMode(source, 'new-worktree');
+    let reject!: (error: Error) => void;
+    setBindingMock('AttachThreadWorktree', () => new Promise((_resolve, rejectPromise) => {
+      reject = rejectPromise;
     }));
 
-    await applyWorktreeIntentNow(fakePane(draft));
-
-    expect(getBindingMock('PrepareProjectWorktree')!.mock.calls[0]).toEqual([
-      'project-1',
-      'feat/first',
-      'feat/second',
-      true,
-      // Not the project root: the stash has to come out of the checkout the
-      // pane is actually in.
-      '/wt/first',
-    ]);
-    expect(getBindingMock('PrepareThreadWorktree')).toBeUndefined();
+    const run = prepareThreadWorktreeIntent({ pane: paneFor(source) });
+    expect(isWorktreeIntentApplying(source.id)).toBe(true);
+    reject(new Error('branch busy'));
+    await expect(run).rejects.toThrow('branch busy');
+    expect(isWorktreeIntentApplying(source.id)).toBe(false);
+    expect(worktreeIntentForThread(source).mode).toBe('new-worktree');
   });
 
-  it('brackets the confirm-button path on a real row before its first await', async () => {
-    const draft = stagedAttach({ id: 'draft-confirm-bracket' });
-    const pane = fakePane(draft);
+  it('retries after a failed mutation instead of caching the rejection', async () => {
+    const source = thread();
+    setThreadEnvMode(source, 'new-worktree');
+    let attempts = 0;
+    const attach = setBindingMock('AttachThreadWorktree', async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('branch busy');
+      return moved(source);
+    });
+
+    await expect(applyWorktreeIntentNow(paneFor(source))).rejects.toThrow('branch busy');
+    await expect(applyWorktreeIntentNow(paneFor(source))).resolves.toMatchObject({
+      worktreePath: '/wt/feature',
+    });
+    expect(attach).toHaveBeenCalledTimes(2);
+  });
+
+  it('balances caller callbacks when joining an in-flight mutation', async () => {
+    const source = thread();
+    const pane = paneFor(source);
+    setThreadEnvMode(source, 'new-worktree');
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    setBindingMock('AttachProjectWorktree', async () => {
-      await gate;
-      return { worktreePath: '/wt/main', branch: 'main' };
-    });
-
-    const run = applyWorktreeIntentNow(pane);
-    // The empty-draft cleanup reads this. Deleting the row mid-RPC is what the
-    // bracket exists to prevent, and the confirm button drives the same RPCs
-    // the send path does.
-    expect(isWorktreeIntentApplying(draft.id)).toBe(true);
-    release();
-    await run;
-    expect(isWorktreeIntentApplying(draft.id)).toBe(false);
-  });
-});
-
-describe('re-keying: an apply that outlives its thread id', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetWorktreeIntentMaterializeForTest();
-    resetAppStorageForTest();
-  });
-
-  it('lands `applied` under the id the pane holds when the RPC completes', async () => {
-    // Typing into a placeholder mid-apply materializes the row, which re-keys
-    // the intent. Writing to the id we started with would strand the worktree:
-    // invisible to the pane, and re-cut on the next send.
-    const placeholder = stagedAttach({ id: 'draft:pane:project-1:chat:9', isDraft: true });
-    const pane = fakePane(placeholder, true);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    setBindingMock('AttachProjectWorktree', async () => {
-      await gate;
-      return { worktreePath: '/wt/main', branch: 'main' };
-    });
-
-    const run = prepareThreadWorktreeIntent({ pane });
-    // ensureMaterializedThread's half of the handover.
-    const created = draftFields({ id: 'thread-created', workspacePath: '/repo' });
-    migrateWorktreeIntent(placeholder.id, created.id);
-    pane.thread = created;
-    pane.hasDraftPlaceholder = false;
-    release();
-    await run;
-
-    expect(worktreeIntentForThread(created).applied).toEqual({
-      worktreePath: '/wt/main',
-      branch: 'main',
-    });
-    expect(worktreeIntentForThread(placeholder).applied).toBeNull();
-  });
-
-  it('finds an in-flight apply under the new id, so a second send does not re-cut', async () => {
-    const placeholder = stagedAttach({ id: 'draft:pane:project-1:chat:10', isDraft: true });
-    const pane = fakePane(placeholder, true);
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    setBindingMock('AttachProjectWorktree', async () => {
-      await gate;
-      return { worktreePath: '/wt/main', branch: 'main' };
-    });
-    setBindingMock('UpdateThreadWorkspace', async () => makeThread({
-      id: 'thread-created',
-      workspacePath: '/wt/main',
-    }));
-
-    const first = prepareThreadWorktreeIntent({ pane });
-    const created = draftFields({ id: 'thread-created', workspacePath: '/repo' });
-    migrateWorktreeIntent(placeholder.id, created.id);
-    pane.thread = created;
-    pane.hasDraftPlaceholder = false;
-
-    // A send arriving under the NEW id while the first apply is still in the
-    // air must join it, not start a second cut.
-    const second = prepareThreadWorktreeIntent({ pane });
-    release();
-    await Promise.all([first, second]);
-
-    expect(getBindingMock('AttachProjectWorktree')!.mock.calls.length).toBe(1);
-  });
-});
-
-describe('materializeWorktreeIntentOnThread (thread-scoped, plan-implementation flow)', () => {
-  beforeEach(() => {
-    resetBindingMocks();
-    resetWorktreeIntent();
-    resetWorktreeIntentMaterializeForTest();
-    resetAppStorageForTest();
-  });
-
-  it('records the materialized branch in the project MRU on success', async () => {
-    const thread = threadFields({ id: 'thread-mru' });
-    const updated = makeThread({ ...thread, branch: 'feat/new' });
-    setBindingMock('GitCreateBranchFrom', async () => updated);
-
-    const result = await materializeWorktreeIntentOnThread({
-      targetThread: thread,
-      intent: {
-        mode: 'local',
-        creatingBranch: true,
-        newBranchName: 'feat/new',
-        newBranchBase: 'main',
-        attachBranch: '',
-        applied: null,
-      },
-    });
-
-    expect(result?.branch).toBe('feat/new');
-    expect(recentBranchSelections('project-1')).toEqual(['feat/new']);
-  });
-
-  it('brackets the row with the applying flag from its first statement', async () => {
-    const thread = threadFields({ id: 'thread-scoped-flag' });
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
     setBindingMock('AttachThreadWorktree', async () => {
       await gate;
-      return makeThread({ ...thread, worktreePath: '/wt/main' });
+      return moved(source);
+    });
+    const firstStarted = vi.fn();
+    const firstFinished = vi.fn();
+    const secondStarted = vi.fn();
+    const secondFinished = vi.fn();
+
+    const first = prepareThreadWorktreeIntent({
+      pane,
+      onWorktreePrepareStarted: firstStarted,
+      onWorktreePrepareFinished: firstFinished,
+    });
+    const second = prepareThreadWorktreeIntent({
+      pane,
+      onWorktreePrepareStarted: secondStarted,
+      onWorktreePrepareFinished: secondFinished,
+    });
+    expect(firstStarted).toHaveBeenCalledTimes(1);
+    expect(secondStarted).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([first, second]);
+    expect(firstFinished).toHaveBeenCalledTimes(1);
+    expect(secondFinished).toHaveBeenCalledTimes(1);
+  });
+
+  it('can leave an explicit target intent for its owning caller to clear', async () => {
+    const target = thread({ id: 'child' });
+    setThreadEnvMode(target, 'new-worktree');
+    const intent = worktreeIntentForThread(target);
+    setBindingMock('AttachThreadWorktree', async () => moved(target));
+
+    await materializeWorktreeIntentOnThread({
+      targetThread: target,
+      intent,
+      clearIntentOnSuccess: false,
     });
 
-    const run = materializeWorktreeIntentOnThread({
-      targetThread: thread,
-      intent: {
-        mode: 'new-worktree',
-        creatingBranch: false,
-        newBranchName: '',
-        newBranchBase: '',
-        attachBranch: 'main',
-        applied: null,
-      },
-    });
-    expect(isWorktreeIntentApplying(thread.id)).toBe(true);
-    release();
-    await run;
-    expect(isWorktreeIntentApplying(thread.id)).toBe(false);
+    expect(worktreeIntentForThread(target).mode).toBe('new-worktree');
+  });
+
+  it('does nothing when no workspace intent is staged', async () => {
+    const source = thread();
+    await expect(applyWorktreeIntentNow(paneFor(source))).resolves.toBeNull();
+    expect(getBindingMock('AttachThreadWorktree')).toBeUndefined();
+    expect(getBindingMock('PrepareThreadWorktree')).toBeUndefined();
+    expect(getBindingMock('GitCreateBranchFrom')).toBeUndefined();
   });
 });

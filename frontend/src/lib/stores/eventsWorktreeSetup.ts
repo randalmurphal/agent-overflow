@@ -6,7 +6,6 @@ import type { WorktreeSetupEvent } from '../types/events';
 import {
   applyWorktreeSetupEvent,
   hydrateWorktreeSetup,
-  resyncWorkspaceWorktreeSetups,
 } from './worktreeSetup.svelte';
 
 /** Channel listener. Kept as a named function so events.ts reads uniformly. */
@@ -38,12 +37,7 @@ export function hydrateWorktreeSetupForThread(
  * user currently has a run for is re-snapshotted; threads with nothing to show
  * are skipped by the row-state gate above.
  *
- * The thread list cannot cover a PRE-THREAD run — it has no row, and therefore
- * no durable state to gate on — so the workspace key space re-snapshots itself
- * off the paths this client has claimed. Both halves, or a gap leaves a draft's
- * setup panel frozen.
  */
 export function resyncWorktreeSetups(threads: Iterable<Pick<Thread, 'id' | 'worktreeSetupState'>>): void {
   for (const thread of threads) hydrateWorktreeSetupForThread(thread);
-  resyncWorkspaceWorktreeSetups();
 }

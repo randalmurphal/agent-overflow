@@ -108,17 +108,4 @@ type WorktreeSetupEvent struct {
 	Error        string              `json:"error,omitempty"`
 	StartedAt    int64               `json:"startedAt,omitempty"`
 	FinishedAt   int64               `json:"finishedAt,omitempty"`
-
-	// Progress fields, carried ONLY by an adoption frame
-	// (adoptWorkspaceWorktreeSetup). Every other frame describes a moment, and
-	// a client folds those moments together itself; an adoption frame describes
-	// a run ALREADY IN PROGRESS, so it has to hand over what has happened so
-	// far or the receiving client would reset a half-finished run to zero.
-	//
-	// OutputSeq is the highest chunk sequence folded into Output, same contract
-	// as WorktreeSetupRunState's: a live chunk at or below it is already
-	// included.
-	StepStatuses []string `json:"stepStatuses,omitempty"`
-	Output       string   `json:"output,omitempty"`
-	OutputSeq    uint64   `json:"outputSeq,omitempty"`
 }

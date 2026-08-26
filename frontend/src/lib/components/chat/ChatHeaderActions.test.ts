@@ -7,7 +7,8 @@ import { setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
 import type { GitStatus } from '../../types/git';
-import type { Thread } from '../../types/models';
+import type { Project, Thread } from '../../types/models';
+import { createThreadPane } from '../../stores/thread.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { __setTransportStatusForTest } from '../../stores/transportStatus.svelte';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
@@ -47,6 +48,18 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     branch: 'main',
     ...overrides,
   });
+}
+
+function makeProject(): Project {
+  return {
+    id: 'project-1',
+    path: WORKSPACE,
+    name: 'Example',
+    sortPosition: 0,
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+  };
 }
 
 function status(overrides: Partial<GitStatus> = {}): GitStatus {
@@ -307,6 +320,45 @@ describe('<ChatHeaderActions> subscription effect', () => {
 
     expect(subscribeFn).toHaveBeenCalledTimes(2);
     expect(getBindingMock('GitStatusUnsubscribe')).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads the worktree PR badge when a placeholder gains its durable row', async () => {
+    const pane = createThreadPane();
+    pane.startDraftPlaceholder(makeProject(), 'chat', {
+      provider: 'claude',
+      model: 'm',
+      workspacePath: '/wt/branch-a',
+      branch: 'branch-a',
+    });
+    const created = makeThread({
+      id: 'draft-row',
+      isDraft: true,
+      workspacePath: '/wt/branch-a',
+      worktreePath: '/wt/branch-a',
+      branch: 'branch-a',
+    });
+    setBindingMock('CreateThread', async () => created);
+    const { subscribeFn } = installSubscribeMock(
+      status({
+        branch: 'branch-a',
+        forge: 'gitlab',
+        openPrUrl: 'https://gitlab.com/o/r/-/merge_requests/9',
+        openPrNumber: 9,
+      }),
+      'sub-worktree',
+      '/wt/branch-a',
+    );
+
+    const { getByTestId, queryByTestId } = render(ChatHeaderActions, { props: { pane } });
+    await flush();
+    expect(queryByTestId('chat-header-pr-badge')).toBeNull();
+    expect(subscribeFn).not.toHaveBeenCalled();
+
+    await pane.ensureMaterializedThread();
+    await flush();
+
+    expect(subscribeFn).toHaveBeenCalledWith('draft-row');
+    expect(getByTestId('chat-header-pr-badge').textContent?.replace(/\s+/g, '')).toBe('MR!9');
   });
 
   it('updates the workspace +/- when a live git:status push arrives', async () => {

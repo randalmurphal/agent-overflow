@@ -829,6 +829,50 @@ describe('<Composer>', () => {
     expect(getThreadById(created.id)).toBeUndefined();
   });
 
+  it('retains an empty draft that owns a worktree', async () => {
+    const draftThread = makeTestThread({
+      id: 'workspace-draft',
+      isDraft: true,
+      projectId: 'project-1',
+      projectPath: '/repo',
+      workspacePath: '/wt/feature',
+      worktreePath: '/wt/feature',
+      branch: 'feature',
+    });
+    const pane = await buildPane(draftThread);
+    const draft = await buildDraft(draftThread.id);
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
+
+    render(Composer, { props: { pane, draft } });
+    await tick();
+    await tick();
+
+    expect(deleteEmpty).not.toHaveBeenCalled();
+    expect(pane.threadId).toBe(draftThread.id);
+  });
+
+  it('retains staged worktree state and resumes cleanup when the choice is cancelled', async () => {
+    const draftThread = makeTestThread({
+      id: 'staged-workspace-draft',
+      isDraft: true,
+      projectId: 'project-1',
+      projectPath: '/repo',
+      workspacePath: '/repo',
+      branch: 'main',
+    });
+    const pane = await buildPane(draftThread);
+    const draft = await buildDraft(draftThread.id);
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async () => true);
+    setThreadEnvMode(pane.thread!, 'new-worktree');
+
+    render(Composer, { props: { pane, draft } });
+    await tick();
+    expect(deleteEmpty).not.toHaveBeenCalled();
+
+    setThreadEnvMode(pane.thread!, 'local');
+    await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(draftThread.id));
+  });
+
   it('rematerializes and preserves content when typing resumes during empty cleanup', async () => {
     const pane = createThreadPane({ paneId: 'placeholder-empty-cleanup-race' });
     const project = makeProject({ id: 'project-empty-cleanup-race' });
@@ -1228,7 +1272,6 @@ describe('<Composer>', () => {
     // the worktree AND lands the row on it in one call, so there is no
     // separate bind step here.
     const prepare = setBindingMock('PrepareThreadWorktree', async () => worktreeThread);
-    const bind = setBindingMock('UpdateThreadWorkspace', async () => worktreeThread);
     const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByTestId, findByText } = render(Composer, { props: { pane, draft } });
@@ -1236,7 +1279,6 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(prepare).toHaveBeenCalledWith('thread-1', 'release', 'feature/custom', false);
-    expect(bind).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith('thread-1', 'Implement the plan.', {
         attachmentIds: [],
@@ -1755,9 +1797,8 @@ describe('<Composer>', () => {
   });
 
   it('prepares a pending worktree before sending', async () => {
-    // A materialized DRAFT row: the project-scoped engine cuts the worktree
-    // and the row is bound to it here, at send time — deferred so an emptied
-    // draft with a cut worktree can still dematerialize.
+    // The row already owns the draft workspace choice. The thread-scoped
+    // engine creates and binds the worktree atomically before send.
     const initialThread = makeTestThread({
       branch: 'main',
       projectId: 'project-1',
@@ -1777,13 +1818,7 @@ describe('<Composer>', () => {
     setNewBranchBase(pane.thread, 'release');
     setNewBranchName(pane.thread, 'feature/custom');
 
-    // Two steps now: the worktree is cut against the PROJECT, then the row is
-    // bound to it. Both must land before the message goes out.
-    const prepare = setBindingMock('PrepareProjectWorktree', async () => ({
-      worktreePath: '/tmp/wt-feature',
-      branch: 'feature/custom',
-    }));
-    const bind = setBindingMock('UpdateThreadWorkspace', async () => worktreeThread);
+    const prepare = setBindingMock('PrepareThreadWorktree', async () => worktreeThread);
     const send = setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
@@ -1791,19 +1826,17 @@ describe('<Composer>', () => {
     await fireEvent.click(getByTestId('composer-send'));
 
     expect(prepare).toHaveBeenCalledWith(
-      'project-1',
+      'thread-1',
       'release',
       'feature/custom',
       false,
-      '/tmp/workspace',
     );
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith('thread-1', 'work there', {
         attachmentIds: [],
       });
     });
-    expect(bind).toHaveBeenCalledWith('thread-1', '/tmp/wt-feature');
-    expect(bind.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(pane.thread?.worktreePath).toBe('/tmp/wt-feature');
   });
 
@@ -1828,13 +1861,12 @@ describe('<Composer>', () => {
     setNewBranchName(pane.thread, 'feature/custom');
 
     let finishPrepare!: () => void;
-    setBindingMock('PrepareProjectWorktree', async () => {
+    setBindingMock('PrepareThreadWorktree', async () => {
       await new Promise<void>((resolve) => {
         finishPrepare = resolve;
       });
-      return { worktreePath: '/tmp/wt-feature', branch: 'feature/custom' };
+      return worktreeThread;
     });
-    setBindingMock('UpdateThreadWorkspace', async () => worktreeThread);
     setBindingMock('SendMessageWithOptions', async () => worktreeThread);
 
     const { getByLabelText, getByTestId, queryByTestId } = render(Composer, { props: { pane, draft } });

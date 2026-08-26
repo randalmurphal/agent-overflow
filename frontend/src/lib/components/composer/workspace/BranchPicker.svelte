@@ -46,8 +46,6 @@
   import { userFacingError } from '../../../utils/userFacingError';
   import { sameNormalizedPath } from '../../../utils/path';
   import {
-    effectiveBranchForThread,
-    effectiveWorkspacePathForThread,
     enterCreateBranchMode,
     exitCreateBranchMode,
     isLocalBase,
@@ -96,12 +94,8 @@
     pane.threadId ? !!pane.gitStatus.status?.hasChanges : placeholderWorkspaceDirty,
   );
 
-  // Effective, not raw: a confirm-button apply cuts the branch/worktree
-  // against the project and does not move a materialized thread row until
-  // the send binds it. Reading the row's own fields in that window would
-  // label the trigger with the branch the user just left.
-  let currentBranch = $derived(effectiveBranchForThread(pane.thread));
-  let currentWorkspace = $derived(effectiveWorkspacePathForThread(pane.thread));
+  let currentBranch = $derived(pane.thread?.branch ?? '');
+  let currentWorkspace = $derived(pane.thread?.workspacePath ?? '');
   let intent = $derived(worktreeIntentForThread(pane.thread));
 
   // Trigger label reflects what picking a row will do next:

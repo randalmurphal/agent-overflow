@@ -25,7 +25,6 @@ import {
   clearWorktreeIntent,
   migrateWorktreeIntent,
   seedDefaultWorktreeIntentForDraft,
-  worktreeIntentForThread,
 } from './worktreeIntent.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 
@@ -1745,16 +1744,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
           // the materialized thread id.
           migrateWorktreeIntent(placeholderId, created.id);
           seedDefaultWorktreeIntentForDraft(created);
-          // An APPLIED intent was consumed by the create: the placeholder
-          // was stamped with the branch/worktree it produced, and those
-          // fields went out as CreateThread's worktreePath / branch, which
-          // is also what makes the backend adopt the unbound setup run.
-          // Anything still merely STAGED survives, so a send that fails
-          // after this point re-binds on the retry. Cleared after the seed
-          // so a default-worktree setting cannot re-stage on top.
-          if (worktreeIntentForThread(created).applied) {
-            clearWorktreeIntent(created.id);
-          }
           prependThread(created);
           this.adoptMaterializedDraftThread(created);
           const draftStore = getComposerDraftForPane(paneId);

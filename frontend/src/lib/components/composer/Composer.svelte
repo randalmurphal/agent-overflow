@@ -226,6 +226,11 @@
       pane.sendInFlight ||
       isTurnActive ||
       (surface?.uploading() ?? false) ||
+      // A workspace choice is draft content. New-worktree intent protects the
+      // row before the checkout exists; worktreePath protects it after the
+      // thread-scoped move clears that intent, including across restarts.
+      hasStagedWorktreeIntent(pane.thread) ||
+      Boolean(pane.thread?.worktreePath) ||
       // Applying a staged branch/worktree intent materializes an item-less
       // draft row first; deleting it mid-RPC fails the apply on the backend.
       isWorktreeIntentApplying(pane.threadId)
@@ -415,18 +420,13 @@
       surface?.recreateInput();
       return;
     }
-    // Before materialization, not after: applying the staged intent stamps
-    // the pane's draft placeholder, and it is that stamp CreateThread reads
-    // to put the new row straight into the worktree (and to let the backend
-    // adopt the setup run that is already streaming). A materialized row
-    // takes the same call, which binds it with UpdateThreadWorkspace.
-    // Gated synchronously: an unstaged send must not pick up an extra
-    // microtask on its way to the wire (the mid-turn queue path below races
-    // a draft restore that the backend can push during RegisterQueueItem).
-    if (hasStagedWorktreeIntent(pane.thread) && !(await prepareWorktreeForSend())) return;
     if (!pane.threadId) {
       if (!(await pane.ensureMaterializedThread())) return;
     }
+    // Materialize first. Workspace choices are row-owned, and materializing
+    // also seeds the default-worktree setting. Existing threads stay on the
+    // synchronous path until a staged choice actually needs an RPC.
+    if (hasStagedWorktreeIntent(pane.thread) && !(await prepareWorktreeForSend())) return;
     const planSourceForImplement = latestPlanSource;
     if (planSourceForImplement && !hasDraftContent && !hasDraftPlanComments && !hasDraftDiffReviewComments) {
       sending = true;
