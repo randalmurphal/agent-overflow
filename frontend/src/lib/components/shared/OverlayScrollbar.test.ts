@@ -470,6 +470,9 @@ describe('<OverlayScrollbar>', () => {
     const ro = captureResizeObservers();
     try {
       const { getByTestId, target, content } = await mount();
+      // Burn the initial delivery — that one is the mount sample, and this
+      // test pins the GATED growth path behind it.
+      ro.deliver();
 
       // The capped case: the clip's own box stops growing at its max-height,
       // so only the content element reports a streamed row.
@@ -481,6 +484,34 @@ describe('<OverlayScrollbar>', () => {
       await tick();
 
       expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('25px');
+    } finally {
+      ro.restore();
+    }
+  });
+
+  it('takes its mount sample from the first ResizeObserver delivery, not a layout-forcing read', async () => {
+    // Tripwire for the coldload forced-layout class (2026-08-26): the mount
+    // pass must not read scroll geometry synchronously — dozens of bars
+    // mount during a cold thread switch, and each sync read forced a layout
+    // flush. The first RO delivery runs post-layout and carries the sample.
+    const ro = captureResizeObservers();
+    try {
+      const target = makeScroller(100, 400);
+      const view = render(OverlayScrollbar, {
+        props: { target, ariaLabel: 'Scroll activity run' },
+      });
+      const track = view.getByTestId('overlay-scrollbar');
+      stubTrackHeight(track, 200);
+
+      // No scroll, no interaction: the bar knows nothing yet.
+      expect(track.getAttribute('data-visible')).toBe('false');
+
+      ro.deliver();
+      await tick();
+
+      // The initial delivery sampled even though the bar is hidden and idle.
+      expect(track.getAttribute('data-visible')).toBe('true');
+      expect(view.getByTestId('overlay-scrollbar-thumb').style.height).toBe('50px');
     } finally {
       ro.restore();
     }

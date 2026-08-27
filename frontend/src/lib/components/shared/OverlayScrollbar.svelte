@@ -133,13 +133,27 @@
     // window resize) and the content growing inside it (streaming, a
     // mounted chunk). Neither implies the other. Same hidden gate as
     // onScroll — content growth per streamed chunk fires this too.
+    //
+    // The FIRST delivery is the mount sample. ResizeObserver reports
+    // every element once right after observe, and that delivery runs
+    // post-layout, where these reads are free. The synchronous sample()
+    // this replaces ran while the surrounding mount was still writing
+    // DOM, so every instance forced a layout flush — measured
+    // 2026-08-26 at 176ms of scrollTop reads across 10 cold thread
+    // switches, the dominant thread-switch cost. Interaction paths
+    // never see the gap: pointerdown/wheel sample() before reading.
+    let mountSample = true;
     const sizes = new ResizeObserver(() => {
+      if (mountSample) {
+        mountSample = false;
+        sample();
+        return;
+      }
       if (recentlyActive || dragging) sample();
     });
     sizes.observe(el);
     if (content) sizes.observe(content);
     if (trackEl) sizes.observe(trackEl);
-    sample();
     return () => {
       el.removeEventListener('scroll', onScroll);
       sizes.disconnect();
