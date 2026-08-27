@@ -37,7 +37,9 @@ func scenarioFromThread(e *env, args []string) error {
 	turns := flags.Int("turns", 1, "how many of the thread's most recent turns to rebuild")
 	out := flags.String("out", "", "write the scenario document here (default: stdout)")
 	set := flags.Bool("set", false, "also install the document on the instance as an inline scenario rule")
-	delayMs := flags.Int("delay-ms", defaultFromThreadDelayMs, "milliseconds between emitted wire lines")
+	delayMs := flags.Int("delay-ms", defaultFromThreadDelayMs, "milliseconds between wire lines inside a burst")
+	cadence := flags.String("cadence", "real", "replay pacing: `real` replays the rows' recorded gaps (capped by --gap-cap-ms), `uniform` streams every line --delay-ms apart")
+	gapCapMs := flags.Int("gap-cap-ms", defaultGapCapMs, "real cadence only: cap one recorded gap at this many milliseconds")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
@@ -53,6 +55,12 @@ func scenarioFromThread(e *env, args []string) error {
 	}
 	if *delayMs < 0 {
 		return usagef("--delay-ms must not be negative (got %d)", *delayMs)
+	}
+	if *cadence != "real" && *cadence != "uniform" {
+		return usagef("--cadence must be `real` or `uniform` (got %q)", *cadence)
+	}
+	if *gapCapMs < 1 {
+		return usagef("--gap-cap-ms must be at least 1 (got %d)", *gapCapMs)
 	}
 
 	ctx := context.Background()
@@ -83,12 +91,14 @@ func scenarioFromThread(e *env, args []string) error {
 		}
 
 		doc, stats, err := synthesizeScenario(synthOptions{
-			Name:     scenarioNameForThread(row),
-			Provider: row.Provider,
-			ThreadID: row.ID,
-			Title:    row.Title,
-			Turns:    recorded,
-			DelayMs:  *delayMs,
+			Name:        scenarioNameForThread(row),
+			Provider:    row.Provider,
+			ThreadID:    row.ID,
+			Title:       row.Title,
+			Turns:       recorded,
+			DelayMs:     *delayMs,
+			CadenceReal: *cadence == "real",
+			GapCapMs:    *gapCapMs,
 		})
 		if err != nil {
 			return err
@@ -252,6 +262,7 @@ func readRecordedTurns(db *sql.DB, threadID string, want int) ([]recordedTurn, e
 	// row and close the cursor, then load payloads on the freed connection.
 	rows, err := db.Query(
 		`SELECT id, turn_index, item_index, kind, role, tool_name, completion_of, summary,
+		        COALESCE(status, ''), COALESCE(created_at, 0), COALESCE(updated_at, 0),
 		        COALESCE(payload_id, ''), COALESCE(input_payload_id, '')
 		   FROM timeline_items
 		  WHERE thread_id = ? AND turn_index >= ?
@@ -270,7 +281,8 @@ func readRecordedTurns(db *sql.DB, threadID string, want int) ([]recordedTurn, e
 	for rows.Next() {
 		var row scannedItem
 		if err := rows.Scan(&row.item.ID, &row.item.TurnIndex, &row.item.ItemIndex, &row.item.Kind, &row.item.Role,
-			&row.item.ToolName, &row.item.CompletionOf, &row.item.Summary, &row.payloadID, &row.inputID); err != nil {
+			&row.item.ToolName, &row.item.CompletionOf, &row.item.Summary,
+			&row.item.Status, &row.item.CreatedAtMs, &row.item.UpdatedAtMs, &row.payloadID, &row.inputID); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read items for thread %s: %w", threadID, err)
 		}
@@ -299,7 +311,11 @@ func readRecordedTurns(db *sql.DB, threadID string, want int) ([]recordedTurn, e
 			if err != nil {
 				return nil, err
 			}
-			item.Input = strings.Join(pieces, "")
+			var b strings.Builder
+			for _, p := range pieces {
+				b.WriteString(p.Text)
+			}
+			item.Input = b.String()
 		}
 		turn, seen := byTurn[item.TurnIndex]
 		if !seen {
@@ -308,7 +324,7 @@ func readRecordedTurns(db *sql.DB, threadID string, want int) ([]recordedTurn, e
 			order = append(order, item.TurnIndex)
 		}
 		if item.Kind == kindUserText && turn.UserText == "" {
-			turn.UserText = firstNonEmpty(strings.Join(item.Pieces, ""), item.Summary)
+			turn.UserText = firstNonEmpty(item.Content(), item.Summary)
 		}
 		turn.Items = append(turn.Items, item)
 	}
@@ -348,22 +364,26 @@ func readTurnIndexes(db *sql.DB, threadID string) ([]int, error) {
 // followed by each appended chunk, in order. That is the delta set the
 // stream was written at — appendPayloadDataTx writes one chunk per
 // flushed delta — so replaying one line per piece reproduces the original
-// boundaries rather than a re-chunking of the final text.
+// boundaries rather than a re-chunking of the final text. Each piece
+// carries its row's created_at (the head carries the payload row's), the
+// stamps real-cadence replay is laid out on; an older row with no stamp
+// reads as 0 and the synthesizer falls back to its neighbors.
 //
 // A payload row that is gone is not an error. Payload GC is real, and a
 // missing blob means the item replays with empty content, which the
 // caller counts and reports.
-func readPayloadPieces(db *sql.DB, threadID, payloadID string) ([]string, error) {
+func readPayloadPieces(db *sql.DB, threadID, payloadID string) ([]recordedPiece, error) {
 	var head []byte
+	var headAt int64
 	err := db.QueryRow(
-		`SELECT data FROM timeline_payloads WHERE thread_id = ? AND id = ?`, threadID, payloadID,
-	).Scan(&head)
+		`SELECT data, COALESCE(created_at, 0) FROM timeline_payloads WHERE thread_id = ? AND id = ?`, threadID, payloadID,
+	).Scan(&head, &headAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("read payload %s of thread %s: %w", payloadID, threadID, err)
 	}
 
 	rows, err := db.Query(
-		`SELECT data FROM payload_chunks
+		`SELECT data, COALESCE(created_at, 0) FROM payload_chunks
 		  WHERE thread_id = ? AND payload_id = ?
 		  ORDER BY chunk_index`,
 		threadID, payloadID,
@@ -373,16 +393,17 @@ func readPayloadPieces(db *sql.DB, threadID, payloadID string) ([]string, error)
 	}
 	defer rows.Close()
 
-	var pieces []string
+	var pieces []recordedPiece
 	if len(head) > 0 {
-		pieces = append(pieces, string(head))
+		pieces = append(pieces, recordedPiece{Text: string(head), AtMs: headAt})
 	}
 	for rows.Next() {
 		var chunk []byte
-		if err := rows.Scan(&chunk); err != nil {
+		var at int64
+		if err := rows.Scan(&chunk, &at); err != nil {
 			return nil, fmt.Errorf("read payload chunks %s of thread %s: %w", payloadID, threadID, err)
 		}
-		pieces = append(pieces, string(chunk))
+		pieces = append(pieces, recordedPiece{Text: string(chunk), AtMs: at})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read payload chunks %s of thread %s: %w", payloadID, threadID, err)

@@ -41,17 +41,21 @@ func newTimelineDB(t *testing.T) *sql.DB {
 		    item_index       INTEGER NOT NULL,
 		    kind             TEXT NOT NULL,
 		    role             TEXT NOT NULL,
+		    status           TEXT NOT NULL DEFAULT '',
 		    summary          TEXT NOT NULL DEFAULT '',
 		    payload_id       TEXT,
 		    input_payload_id TEXT,
 		    completion_of    TEXT NOT NULL DEFAULT '',
 		    tool_name        TEXT NOT NULL DEFAULT '',
+		    created_at       INTEGER NOT NULL DEFAULT 0,
+		    updated_at       INTEGER NOT NULL DEFAULT 0,
 		    PRIMARY KEY (thread_id, id)
 		)`,
 		`CREATE TABLE payloads (
-		    thread_id TEXT NOT NULL,
-		    id        TEXT NOT NULL,
-		    data      BLOB NOT NULL,
+		    thread_id  TEXT NOT NULL,
+		    id         TEXT NOT NULL,
+		    data       BLOB NOT NULL,
+		    created_at INTEGER NOT NULL DEFAULT 0,
 		    PRIMARY KEY (thread_id, id)
 		)`,
 		`CREATE TABLE payload_chunks (
@@ -59,6 +63,7 @@ func newTimelineDB(t *testing.T) *sql.DB {
 		    payload_id  TEXT NOT NULL,
 		    chunk_index INTEGER NOT NULL,
 		    data        BLOB NOT NULL,
+		    created_at  INTEGER NOT NULL DEFAULT 0,
 		    PRIMARY KEY (thread_id, payload_id, chunk_index)
 		)`,
 		`CREATE VIEW timeline_items AS SELECT * FROM items`,
@@ -133,8 +138,49 @@ func TestReadPayloadPiecesReturnsTheHeadThenEveryChunkInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !equalStrings(pieces, []string{"head:", "one ", "two ", "three"}) {
+	if !equalStrings(pieceTexts(pieces), []string{"head:", "one ", "two ", "three"}) {
 		t.Fatalf("pieces = %v", pieces)
+	}
+}
+
+func pieceTexts(pieces []recordedPiece) []string {
+	out := make([]string, len(pieces))
+	for i, p := range pieces {
+		out[i] = p.Text
+	}
+	return out
+}
+
+// The chunk stamps are what real-cadence replay is laid out on; the head
+// carries the payload row's own stamp.
+func TestReadPayloadPiecesCarriesTheRecordedStamps(t *testing.T) {
+	db := newTimelineDB(t)
+	if _, err := db.Exec(`INSERT INTO payloads (thread_id, id, data, created_at) VALUES ('th','p1','head:',100)`); err != nil {
+		t.Fatal(err)
+	}
+	for i, row := range []struct {
+		data string
+		at   int64
+	}{{"one", 250}, {"two", 900}} {
+		if _, err := db.Exec(
+			`INSERT INTO payload_chunks (thread_id, payload_id, chunk_index, data, created_at) VALUES ('th','p1',?,?,?)`,
+			i, row.data, row.at,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pieces, err := readPayloadPieces(db, "th", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []recordedPiece{{Text: "head:", AtMs: 100}, {Text: "one", AtMs: 250}, {Text: "two", AtMs: 900}}
+	if len(pieces) != len(want) {
+		t.Fatalf("pieces = %v", pieces)
+	}
+	for i := range want {
+		if pieces[i] != want[i] {
+			t.Errorf("piece %d = %+v, want %+v", i, pieces[i], want[i])
+		}
 	}
 }
 
@@ -149,7 +195,7 @@ func TestReadPayloadPiecesDropsAnEmptyHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !equalStrings(pieces, []string{"a", "b"}) {
+	if !equalStrings(pieceTexts(pieces), []string{"a", "b"}) {
 		t.Fatalf("pieces = %v", pieces)
 	}
 }
@@ -172,10 +218,10 @@ func TestReadPayloadPiecesNeverCrossesThreads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !equalStrings(a, []string{"A-one", "A-two"}) {
+	if !equalStrings(pieceTexts(a), []string{"A-one", "A-two"}) {
 		t.Errorf("thread-a pieces = %v", a)
 	}
-	if !equalStrings(b, []string{"B-one"}) {
+	if !equalStrings(pieceTexts(b), []string{"B-one"}) {
 		t.Errorf("thread-b pieces = %v", b)
 	}
 }

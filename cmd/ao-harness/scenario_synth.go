@@ -33,6 +33,15 @@ const (
 	kindToolCompletion = "tool_completion"
 )
 
+// recordedPiece is one content boundary with the moment the store wrote
+// it (epoch ms). The stamp is a WRITE time, not an arrival time — chunk
+// rows land at flush boundaries — so it is cadence at flush granularity,
+// which is still the thread's real rhythm rather than a uniform tick.
+type recordedPiece struct {
+	Text string
+	AtMs int64
+}
+
 // recordedItem is one timeline row as the synthesizer sees it: identity,
 // position, and the streaming boundaries its payload was written at.
 type recordedItem struct {
@@ -44,14 +53,23 @@ type recordedItem struct {
 	ToolName     string
 	CompletionOf string
 	Summary      string
+	Status       string
+
+	// CreatedAtMs / UpdatedAtMs are the row's own stamps. For a
+	// tool_call they bracket the tool's real lifetime: the call row is
+	// written at tool_use and UPDATED when the folded inline completion
+	// lands, so the pair is what the synthesized tool_result's timing
+	// comes from.
+	CreatedAtMs int64
+	UpdatedAtMs int64
 
 	// Pieces are the content boundaries, in order: the payload head
 	// (payloads.data, when non-empty) followed by one entry per
 	// payload_chunks row in chunk_index order. That IS the delta
 	// boundary set — the app wrote one chunk per streamed delta — so
-	// replaying one emit line per piece reproduces the original cadence
-	// rather than a re-chunking of the final text.
-	Pieces []string
+	// replaying one emit line per piece reproduces the original stream
+	// shape rather than a re-chunking of the final text.
+	Pieces []recordedPiece
 
 	// Input is a tool_call's input payload, raw. Empty when the row had
 	// no input_payload_id or the payload was gone.
@@ -59,7 +77,13 @@ type recordedItem struct {
 }
 
 // Content is the item's whole payload: the head plus every chunk.
-func (r recordedItem) Content() string { return strings.Join(r.Pieces, "") }
+func (r recordedItem) Content() string {
+	var b strings.Builder
+	for _, p := range r.Pieces {
+		b.WriteString(p.Text)
+	}
+	return b.String()
+}
 
 // recordedTurn is one user turn's rows, in recorded order, plus the user
 // text that opened it (which the scenario does NOT replay — a real
@@ -115,8 +139,34 @@ type synthOptions struct {
 	ThreadID string
 	Title    string
 	Turns    []recordedTurn
-	DelayMs  int
+
+	// DelayMs paces lines inside a burst (and is the whole cadence in
+	// uniform mode).
+	DelayMs int
+
+	// CadenceReal replays the recorded inter-frame gaps: frames are laid
+	// on a timeline from the rows' own stamps, gaps of
+	// gapStepThresholdMs or more become explicit delay steps (capped at
+	// GapCapMs), and sub-threshold runs stream at DelayMs. Off = the old
+	// uniform pacing.
+	CadenceReal bool
+	// GapCapMs bounds a single recorded gap in real-cadence mode, so a
+	// tool that ran for ten minutes replays as a visible pause rather
+	// than a stalled rig. <= 0 means defaultGapCapMs.
+	GapCapMs int
 }
+
+// gapStepThresholdMs splits "streaming burst" from "real pause": frame
+// gaps below it are streamed at DelayMs inside one emit step, gaps at or
+// above it become their own delay step. 40ms sits above the store's
+// same-flush jitter and below anything a human perceives as a pause.
+const gapStepThresholdMs = 40
+
+// defaultGapCapMs bounds one replayed gap. Long tool waits are real
+// cadence too, but a soak driver cannot afford ten wall-minutes of
+// silence per Bash call; three seconds reads as "the tool ran" without
+// stalling the run.
+const defaultGapCapMs = 3000
 
 // synthesizeScenario rebuilds recorded turns as a mock scenario.
 //
@@ -130,7 +180,7 @@ func synthesizeScenario(opts synthOptions) (*scenario.Scenario, synthStats, erro
 		return nil, stats, fmt.Errorf("no turns to rebuild")
 	}
 
-	var build func(recordedTurn, int, *synthStats) (scenario.Turn, error)
+	var build func(recordedTurn, synthOptions, *synthStats) (scenario.Turn, error)
 	switch opts.Provider {
 	case scenario.ProviderClaude:
 		build = claudeTurnSteps
@@ -142,7 +192,7 @@ func synthesizeScenario(opts synthOptions) (*scenario.Scenario, synthStats, erro
 
 	turns := make([]scenario.Turn, 0, len(opts.Turns))
 	for _, recorded := range opts.Turns {
-		turn, err := build(recorded, opts.DelayMs, &stats)
+		turn, err := build(recorded, opts, &stats)
 		if err != nil {
 			return nil, stats, err
 		}
@@ -209,31 +259,53 @@ func jsonString(value string) string {
 // and a text or thinking envelope needs a prior message_start registering
 // the same message id or the app renders the block twice.
 
-func claudeTurnSteps(turn recordedTurn, delayMs int, stats *synthStats) (scenario.Turn, error) {
-	steps := make([]scenario.Step, 0, len(turn.Items)+1)
+// wireFrame is one emitted line placed on the turn's recorded timeline.
+type wireFrame struct {
+	line string
+	atMs int64
+}
+
+func claudeTurnSteps(turn recordedTurn, opts synthOptions, stats *synthStats) (scenario.Turn, error) {
+	// An inline tool completion folds into the tool_call row (status +
+	// result payload) — only background tools get a sibling
+	// tool_completion row. A tool_result is synthesized for every folded
+	// call, EXCEPT the ones an explicit sibling row already answers:
+	// those calls would otherwise get two results.
+	answered := map[string]bool{}
 	for _, item := range turn.Items {
-		lines, err := claudeItemLines(item, stats)
+		if item.Kind == kindToolCompletion && item.CompletionOf != "" {
+			answered[item.CompletionOf] = true
+		}
+	}
+
+	var frames []wireFrame
+	for _, item := range turn.Items {
+		itemFrames, err := claudeItemFrames(item, answered, stats)
 		if err != nil {
 			return scenario.Turn{}, err
 		}
-		if len(lines) == 0 {
+		if len(itemFrames) == 0 {
 			continue
 		}
 		stats.Items++
-		steps = append(steps, scenario.Step{Emit: &scenario.EmitStep{Lines: lines, DelayBetweenMs: delayMs}})
+		frames = append(frames, itemFrames...)
 	}
+	if opts.CadenceReal {
+		sortFramesByTime(frames)
+	}
+	steps := framesToSteps(frames, opts)
 	steps = append(steps, scenario.Step{Emit: &scenario.EmitStep{
 		Lines: []string{`{"type":"result","subtype":"success","is_error":false}`},
 	}})
 	return scenario.Turn{Label: fmt.Sprintf("recorded-turn-%d", turn.TurnIndex), Steps: steps}, nil
 }
 
-func claudeItemLines(item recordedItem, stats *synthStats) ([]string, error) {
+func claudeItemFrames(item recordedItem, answered map[string]bool, stats *synthStats) ([]wireFrame, error) {
 	switch item.Kind {
 	case kindAssistantText:
-		return claudeBlockLines(item, "text", "text_delta", "text", stats), nil
+		return claudeBlockFrames(item, "text", "text_delta", "text", stats), nil
 	case kindThinking:
-		return claudeBlockLines(item, "thinking", "thinking_delta", "thinking", stats), nil
+		return claudeBlockFrames(item, "thinking", "thinking_delta", "thinking", stats), nil
 	case kindToolCall:
 		input := strings.TrimSpace(item.Input)
 		if input == "" || !json.Valid([]byte(input)) {
@@ -244,9 +316,25 @@ func claudeItemLines(item recordedItem, stats *synthStats) ([]string, error) {
 			input = "{}"
 			stats.Empty++
 		}
-		return []string{fmt.Sprintf(
-			`{"type":"assistant","message":{"id":%s,"role":"assistant","content":[{"type":"tool_use","id":%s,"name":%s,"input":%s}]}}`,
-			jsonString("msg-"+emitID(item.ID)), jsonString(emitID(item.ID)), jsonString(item.ToolName), input)}, nil
+		frames := []wireFrame{{
+			line: fmt.Sprintf(
+				`{"type":"assistant","message":{"id":%s,"role":"assistant","content":[{"type":"tool_use","id":%s,"name":%s,"input":%s}]}}`,
+				jsonString("msg-"+emitID(item.ID)), jsonString(emitID(item.ID)), jsonString(item.ToolName), input),
+			atMs: item.CreatedAtMs,
+		}}
+		// The folded inline completion: the call row's own payload is the
+		// result and its updated_at is when the tool finished. Without
+		// this frame every inline tool replays unresolved and the app's
+		// turn-end sweep marks it failed. A `running` row recorded no
+		// completion (it was still live when recorded) and an `answered`
+		// call's result is the sibling tool_completion row's business.
+		if !answered[item.ID] && (item.Status == "completed" || item.Status == "errored") {
+			frames = append(frames, wireFrame{
+				line: claudeToolResultLine(item.ID, item.Content(), item.Status == "errored"),
+				atMs: maxInt64(item.UpdatedAtMs, item.CreatedAtMs),
+			})
+		}
+		return frames, nil
 	case kindToolCompletion:
 		if item.CompletionOf == "" {
 			// completion_of is the pairing. Without it the frame would be
@@ -258,9 +346,10 @@ func claudeItemLines(item recordedItem, stats *synthStats) ([]string, error) {
 		if content == "" {
 			stats.Empty++
 		}
-		return []string{fmt.Sprintf(
-			`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":%s,"content":%s}]}}`,
-			jsonString(emitID(item.CompletionOf)), jsonString(content))}, nil
+		return []wireFrame{{
+			line: claudeToolResultLine(item.CompletionOf, content, item.Status == "errored"),
+			atMs: item.CreatedAtMs,
+		}}, nil
 	case kindUserText:
 		// Never replayed: a real `send` drives each Turn, and the mock's
 		// own adapter echoes the user envelope back.
@@ -271,11 +360,24 @@ func claudeItemLines(item recordedItem, stats *synthStats) ([]string, error) {
 	}
 }
 
-// claudeBlockLines frames one streamed content block. blockType is what
+// claudeToolResultLine is the one tool_result frame shape, shared by the
+// folded-inline synthesis and the sibling tool_completion row so the two
+// sources cannot drift.
+func claudeToolResultLine(toolUseID, content string, isError bool) string {
+	errField := ""
+	if isError {
+		errField = `,"is_error":true`
+	}
+	return fmt.Sprintf(
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":%s,"content":%s%s}]}}`,
+		jsonString(emitID(toolUseID)), jsonString(content), errField)
+}
+
+// claudeBlockFrames frames one streamed content block. blockType is what
 // content_block_start declares, deltaType/deltaField are the delta's own
 // pair, and the same field carries the whole text on the coalesced
 // assistant echo the app dedupes against.
-func claudeBlockLines(item recordedItem, blockType, deltaType, deltaField string, stats *synthStats) []string {
+func claudeBlockFrames(item recordedItem, blockType, deltaType, deltaField string, stats *synthStats) []wireFrame {
 	messageID := emitID(item.ID)
 	pieces := item.Pieces
 	content := item.Content()
@@ -283,29 +385,118 @@ func claudeBlockLines(item recordedItem, blockType, deltaType, deltaField string
 		// No payload at all. Emit the block anyway — the item existed and
 		// the timeline shape is what a repro reproduces — with one empty
 		// delta so the block has a body.
-		pieces = []string{""}
+		pieces = []recordedPiece{{AtMs: item.CreatedAtMs}}
 		stats.Empty++
 	}
-	lines := make([]string, 0, len(pieces)+5)
-	lines = append(lines, fmt.Sprintf(
-		`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":%s,"role":"assistant"}}}`,
-		jsonString(messageID)))
-	lines = append(lines, fmt.Sprintf(
-		`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":%s,%s:""}}}`,
-		jsonString(blockType), jsonString(deltaField)))
+	frames := make([]wireFrame, 0, len(pieces)+5)
+	frames = append(frames, wireFrame{
+		line: fmt.Sprintf(
+			`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":%s,"role":"assistant"}}}`,
+			jsonString(messageID)),
+		atMs: item.CreatedAtMs,
+	}, wireFrame{
+		line: fmt.Sprintf(
+			`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":%s,%s:""}}}`,
+			jsonString(blockType), jsonString(deltaField)),
+		atMs: item.CreatedAtMs,
+	})
+	lastAt := item.CreatedAtMs
 	for _, piece := range pieces {
-		lines = append(lines, fmt.Sprintf(
-			`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":%s,%s:%s}}}`,
-			jsonString(deltaType), jsonString(deltaField), jsonString(piece)))
+		at := piece.AtMs
+		if at == 0 {
+			at = lastAt
+		}
+		frames = append(frames, wireFrame{
+			line: fmt.Sprintf(
+				`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":%s,%s:%s}}}`,
+				jsonString(deltaType), jsonString(deltaField), jsonString(piece.Text)),
+			atMs: at,
+		})
+		lastAt = maxInt64(lastAt, at)
 		stats.Deltas++
 	}
-	lines = append(lines,
-		`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
-		`{"type":"stream_event","event":"message_stop","data":{"type":"message_stop"}}`,
-		fmt.Sprintf(
+	frames = append(frames, wireFrame{
+		line: `{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
+		atMs: lastAt,
+	}, wireFrame{
+		line: `{"type":"stream_event","event":"message_stop","data":{"type":"message_stop"}}`,
+		atMs: lastAt,
+	}, wireFrame{
+		line: fmt.Sprintf(
 			`{"type":"assistant","message":{"id":%s,"role":"assistant","content":[{"type":%s,%s:%s}]}}`,
-			jsonString(messageID), jsonString(blockType), jsonString(deltaField), jsonString(content)))
-	return lines
+			jsonString(messageID), jsonString(blockType), jsonString(deltaField), jsonString(content)),
+		atMs: lastAt,
+	})
+	return frames
+}
+
+// sortFramesByTime orders frames by their recorded stamp, stably, so
+// same-millisecond frames keep their recorded item order — which is what
+// preserves every pairing (message_start before its deltas, tool_use
+// before its result at equal stamps).
+func sortFramesByTime(frames []wireFrame) {
+	sort.SliceStable(frames, func(i, j int) bool { return frames[i].atMs < frames[j].atMs })
+}
+
+// framesToSteps lays frames out as scenario steps. Uniform mode is one
+// emit step (the old shape). Real cadence splits at every recorded gap of
+// gapStepThresholdMs or more: the gap becomes a delay step (capped), and
+// the frames between gaps stream as one burst at DelayMs.
+func framesToSteps(frames []wireFrame, opts synthOptions) []scenario.Step {
+	if len(frames) == 0 {
+		return nil
+	}
+	lines := func(fs []wireFrame) []string {
+		out := make([]string, len(fs))
+		for i, f := range fs {
+			out[i] = f.line
+		}
+		return out
+	}
+	if !opts.CadenceReal {
+		return []scenario.Step{{Emit: &scenario.EmitStep{Lines: lines(frames), DelayBetweenMs: opts.DelayMs}}}
+	}
+	cap := opts.GapCapMs
+	if cap <= 0 {
+		cap = defaultGapCapMs
+	}
+	var steps []scenario.Step
+	burstStart := 0
+	prev := frames[0].atMs
+	flush := func(end int) {
+		if end > burstStart {
+			steps = append(steps, scenario.Step{Emit: &scenario.EmitStep{
+				Lines:          lines(frames[burstStart:end]),
+				DelayBetweenMs: opts.DelayMs,
+			}})
+		}
+		burstStart = end
+	}
+	for i := 1; i < len(frames); i++ {
+		gap := frames[i].atMs - prev
+		if gap < 0 {
+			gap = 0
+		}
+		if gap >= gapStepThresholdMs {
+			flush(i)
+			if gap > int64(cap) {
+				gap = int64(cap)
+			}
+			steps = append(steps, scenario.Step{DelayMs: int(gap)})
+		}
+		if frames[i].atMs > prev {
+			prev = frames[i].atMs
+		}
+	}
+	flush(len(frames))
+	return steps
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // -- Codex ----------------------------------------------------------------
@@ -345,10 +536,8 @@ var codexUnsupportedKinds = map[string]string{
 		"which the store's rendered result cannot reconstruct",
 }
 
-func codexTurnSteps(turn recordedTurn, delayMs int, stats *synthStats) (scenario.Turn, error) {
-	steps := []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
-		`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
-	}}}}
+func codexTurnSteps(turn recordedTurn, opts synthOptions, stats *synthStats) (scenario.Turn, error) {
+	var frames []wireFrame
 	for _, item := range turn.Items {
 		if reason, unsupported := codexUnsupportedKinds[item.Kind]; unsupported {
 			return scenario.Turn{}, fmt.Errorf(
@@ -365,38 +554,57 @@ func codexTurnSteps(turn recordedTurn, delayMs int, stats *synthStats) (scenario
 			continue
 		}
 		stats.Items++
-		steps = append(steps, scenario.Step{Emit: &scenario.EmitStep{
-			Lines:          codexAgentMessageLines(item, stats),
-			DelayBetweenMs: delayMs,
-		}})
+		frames = append(frames, codexAgentMessageFrames(item, stats)...)
 	}
+	if opts.CadenceReal {
+		sortFramesByTime(frames)
+	}
+	steps := []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+		`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
+	}}}}
+	steps = append(steps, framesToSteps(frames, opts)...)
 	steps = append(steps, scenario.Step{Emit: &scenario.EmitStep{Lines: []string{
 		`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}","status":"completed"}}}`,
 	}}})
 	return scenario.Turn{Label: fmt.Sprintf("recorded-turn-%d", turn.TurnIndex), Steps: steps}, nil
 }
 
-func codexAgentMessageLines(item recordedItem, stats *synthStats) []string {
+func codexAgentMessageFrames(item recordedItem, stats *synthStats) []wireFrame {
 	itemID := emitID(item.ID)
 	pieces := item.Pieces
 	if len(pieces) == 0 {
-		pieces = []string{""}
+		pieces = []recordedPiece{{AtMs: item.CreatedAtMs}}
 		stats.Empty++
 	}
-	lines := make([]string, 0, len(pieces)+2)
-	lines = append(lines, fmt.Sprintf(
-		`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"type":"agentMessage","id":%s,"status":"inProgress","text":""}}}`,
-		jsonString(itemID)))
+	frames := make([]wireFrame, 0, len(pieces)+2)
+	frames = append(frames, wireFrame{
+		line: fmt.Sprintf(
+			`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"type":"agentMessage","id":%s,"status":"inProgress","text":""}}}`,
+			jsonString(itemID)),
+		atMs: item.CreatedAtMs,
+	})
+	lastAt := item.CreatedAtMs
 	for _, piece := range pieces {
-		lines = append(lines, fmt.Sprintf(
-			`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","itemId":%s,"delta":%s}}`,
-			jsonString(itemID), jsonString(piece)))
+		at := piece.AtMs
+		if at == 0 {
+			at = lastAt
+		}
+		frames = append(frames, wireFrame{
+			line: fmt.Sprintf(
+				`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","itemId":%s,"delta":%s}}`,
+				jsonString(itemID), jsonString(piece.Text)),
+			atMs: at,
+		})
+		lastAt = maxInt64(lastAt, at)
 		stats.Deltas++
 	}
-	lines = append(lines, fmt.Sprintf(
-		`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"type":"agentMessage","id":%s,"status":"completed","text":%s}}}`,
-		jsonString(itemID), jsonString(item.Content())))
-	return lines
+	frames = append(frames, wireFrame{
+		line: fmt.Sprintf(
+			`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"${THREAD_ID}","turnId":"${TURN_ID}","item":{"type":"agentMessage","id":%s,"status":"completed","text":%s}}}`,
+			jsonString(itemID), jsonString(item.Content())),
+		atMs: lastAt,
+	})
+	return frames
 }
 
 // shellQuote renders text for the single-quoted argument of a printed
