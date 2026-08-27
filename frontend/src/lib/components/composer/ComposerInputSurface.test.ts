@@ -412,6 +412,10 @@ describe('<ComposerInputSurface>', () => {
     expect(document.activeElement).not.toBe(textarea);
   });
 
+  // recreateInput schedules its swap into an idle slot (setTimeout fallback
+  // where requestIdleCallback is missing, as in jsdom); this waits for it.
+  const flushIdleSwap = () => new Promise((resolve) => setTimeout(resolve, 1));
+
   it('recreateInput swaps the textarea element and restores focus only if it was held', async () => {
     // The swap is the release mechanism for Blink's per-character edit-command
     // retention (one command per typed character, kept for the ELEMENT's
@@ -424,6 +428,11 @@ describe('<ComposerInputSurface>', () => {
     first.focus();
     expect(document.activeElement).toBe(first);
     handle.recreateInput();
+    // Deferred: the frame the send renders still shows the OLD element,
+    // focused — the swap must not land inside the send task.
+    expect(getByLabelText('Message Input')).toBe(first);
+    expect(document.activeElement).toBe(first);
+    await flushIdleSwap();
     const second = getByLabelText('Message Input') as HTMLTextAreaElement;
     expect(second).not.toBe(first);
     expect(first.isConnected).toBe(false);
@@ -431,20 +440,35 @@ describe('<ComposerInputSurface>', () => {
 
     second.blur();
     handle.recreateInput();
+    await flushIdleSwap();
     const third = getByLabelText('Message Input') as HTMLTextAreaElement;
     expect(third).not.toBe(second);
     expect(document.activeElement).not.toBe(third);
   });
 
-  it('recreateInput is a no-op mid-IME-composition', async () => {
+  it('recreateInput skips the swap mid-IME-composition', async () => {
     const { handle, getByLabelText } = await mountSurface();
     const first = getByLabelText('Message Input') as HTMLTextAreaElement;
     await fireEvent.compositionStart(first);
     handle.recreateInput();
+    await flushIdleSwap();
     expect(getByLabelText('Message Input')).toBe(first);
     await fireEvent.compositionEnd(first);
     handle.recreateInput();
+    await flushIdleSwap();
     expect(getByLabelText('Message Input')).not.toBe(first);
+  });
+
+  it('recreateInput skips the swap when typing resumed before the idle slot', async () => {
+    // A user who starts the next message during the idle window has live
+    // text (and possibly a mention popup) anchored to the current element;
+    // the release waits for the next send instead of yanking it.
+    const { handle, getByLabelText } = await mountSurface();
+    const first = getByLabelText('Message Input') as HTMLTextAreaElement;
+    handle.recreateInput();
+    await fireEvent.input(first, { target: { value: 'resumed typing' } });
+    await flushIdleSwap();
+    expect(getByLabelText('Message Input')).toBe(first);
   });
 
   // ---- local draft store ----

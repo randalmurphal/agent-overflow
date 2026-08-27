@@ -245,13 +245,37 @@
     textarea.style.height = 'auto';
   }
 
+  let recreateScheduled = false;
+
   export function recreateInput(): void {
+    // Deferred to an idle slot rather than run inside the caller's task: a
+    // send's Enter keydown already carries the optimistic message mount, the
+    // sidebar tier-move FLIP, and the dispatch RPC (8-19ms measured
+    // 2026-08-27), and the swap adds ~2-3ms of teardown + refocus plus the
+    // style recalc those force. The old element stays mounted and focused
+    // until the swap task runs, so no frame ever renders without a textarea
+    // or without focus either way.
+    if (recreateScheduled) return;
+    recreateScheduled = true;
+    const fire = () => {
+      recreateScheduled = false;
+      performInputSwap();
+    };
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(fire, { timeout: 250 });
+    } else {
+      setTimeout(fire, 0);
+    }
+  }
+
+  function performInputSwap(): void {
     const node = textarea;
     if (!node) return;
     // Mid-composition the IME holds uncommitted state on the element; a swap
-    // would drop it. A send can't normally land here (Enter is consumed by
-    // the composition), so just skip — the next send catches the release.
-    if (composingText) return;
+    // would drop it. Likewise a user who resumed typing during the idle
+    // window has live text (and possibly a mention/slash popup) anchored to
+    // this element. Skip both — the next send catches the release.
+    if (composingText || node.value !== '') return;
     const hadFocus = document.activeElement === node;
     inputEpoch += 1;
     // Flush the {#key} swap synchronously so the destroy, the mount, and the

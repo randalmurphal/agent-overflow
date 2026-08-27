@@ -132,12 +132,14 @@ export interface ComposerInputSurfaceHandle {
   /** Collapse the textarea back to one row (after a send / a cleared answer). */
   resetInputHeight(): void;
   /**
-   * Swap the <textarea> element for a fresh one, same-flush, refocusing only
-   * if it held focus. Hosts call this after a send clears the draft: Blink
-   * retains one edit command per typed character for the element's lifetime
-   * (each pinning an Oilpan page), and the element swap is the only release.
+   * Schedule a swap of the <textarea> element for a fresh one in an idle
+   * slot (off the send's keydown task), refocusing only if it held focus at
+   * swap time. Hosts call this after a send clears the draft: Blink retains
+   * one edit command per typed character for the element's lifetime (each
+   * pinning an Oilpan page), and the element swap is the only release.
    * Invisible by measurement — see the comment on `inputEpoch` in the
-   * component. No-op mid-IME-composition.
+   * component. Skipped mid-IME-composition and when the user has resumed
+   * typing before the slot fires; the next send retries.
    */
   recreateInput(): void;
   autosizeInput(): void;

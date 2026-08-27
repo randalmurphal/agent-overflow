@@ -77,10 +77,11 @@ describe('App integration — messaging flow', () => {
     expect(sendMock.mock.calls[0][2]).toEqual({
       attachmentIds: [],
     });
-    // The send swapped the <textarea> element to release Blink's
-    // per-keystroke edit-command retention (recreateInput), so the
-    // pre-send node reference is detached — re-query for the live one.
-    expect(textarea.isConnected).toBe(false);
+    // The send schedules an idle-slot swap of the <textarea> element to
+    // release Blink's per-keystroke edit-command retention (recreateInput),
+    // so the pre-send node reference detaches once the slot fires —
+    // re-query for the live one.
+    await waitFor(() => expect(textarea.isConnected).toBe(false));
     expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
   });
 
