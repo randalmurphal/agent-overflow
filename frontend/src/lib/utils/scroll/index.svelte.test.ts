@@ -7166,13 +7166,14 @@ describe('createUseStickToBottomController — external content-geometry source'
     });
   });
 
-  // The read-free delta path: a delivery whose sample carries a stable
-  // viewportHeight decides from the controller's cached bottom geometry
-  // (advanced by the delivery's own delta) instead of forced-layout
-  // reads. The lying-getter tests prove WHICH path ran by making the two
-  // paths produce different targets; the read-counter tests prove the
-  // decision-only deliveries (escaped) touch no geometry at all.
-  describe('cached bottom geometry (read-free delta path)', () => {
+  // The read-free delivery path: a delivery whose sample carries a
+  // stable viewportHeight decides from the controller's cached bottom
+  // geometry (the delivered height plus a learned constant offset)
+  // instead of forced-layout reads. The lying-getter tests prove WHICH
+  // path ran by making the two paths produce different targets; the
+  // read-counter tests prove the decision-only deliveries (escaped)
+  // touch no geometry at all.
+  describe('cached bottom geometry (read-free delivery path)', () => {
     function deliverWithViewport(height: number, viewportHeight?: number): void {
       controller.deliverContentGeometry({
         height,
@@ -7214,8 +7215,9 @@ describe('createUseStickToBottomController — external content-geometry source'
       return () => reads;
     }
 
-    it('stable viewport: the sync-pin target comes from delta arithmetic, not a layout read', () => {
-      // First fire takes the real reads and syncs the cache (target 400).
+    it('stable viewport: the sync-pin target comes from cached-offset arithmetic, not a layout read', () => {
+      // First fire takes the real reads, syncs the cache and learns the
+      // height -> target offset (1000 - 600 - 800 = -400).
       deliverWithViewport(800, 600);
       expect(geom.scrollTop).toBe(400);
       // Content grows by 200. The true geometry (used by the scrollTop
@@ -7225,8 +7227,28 @@ describe('createUseStickToBottomController — external content-geometry source'
       geom.contentHeight = 1000;
       lieAboutScrollHeight(1000);
       deliverWithViewport(1000, 600);
-      // Cached path: 400 + 200 = 600. The lie never mattered.
+      // Cached path: 1000 + (-400) = 600. The lie never mattered.
       expect(geom.scrollTop).toBe(600);
+    });
+
+    it('a real-read resync between deliveries cannot double-count the next delivery', () => {
+      // First fire pins to 400 and learns offset -400.
+      deliverWithViewport(800, 600);
+      expect(geom.scrollTop).toBe(400);
+      // Content shrinks by 92 and the browser clamps scrollTop DOWN,
+      // firing a scroll event BEFORE the RO delivery for the same
+      // shrink arrives. The resync sees post-shrink DOM.
+      geom.scrollHeight = 908;
+      geom.contentHeight = 708;
+      geom.scrollTop = 308;
+      scrollEl.dispatchEvent(new Event('scroll'));
+      deliverWithViewport(708, 600);
+      // Delta arithmetic double-counted this: the resync rebased the
+      // cached target to 308 (post-shrink DOM), then the delivery's
+      // -92 applied AGAIN -> target 216, resting the pane 92px short
+      // (2026-08-26, the subagent digest 8px short of bottom).
+      // Height-plus-offset: 708 + (-400) = 308, exact.
+      expect(geom.scrollTop).toBe(308);
     });
 
     it('no viewportHeight on the sample (RO-sourced shape): real reads decide', () => {

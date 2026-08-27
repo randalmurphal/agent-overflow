@@ -191,14 +191,20 @@ export interface ContentObserverDeps {
   targetScrollTop(): number;
   refreshIsNearBottom(): number;
   /**
-   * Read-free bottom geometry for a delta delivery: advances the
-   * controller's cached target by the delivery's content-height delta
-   * and returns the decision inputs, refreshing the near-bottom band
-   * from the same arithmetic. Null when the cache cannot answer — the
-   * caller must then take the real-read path (refreshIsNearBottom +
-   * targetScrollTop + scrollTop), which resyncs the cache.
+   * Learn the content-height → bottom-target offset from a read-path
+   * delivery. Call AFTER the delivery's real reads (layout already
+   * forced, so the reads inside are free).
    */
-  advanceContentGeometry(delta: number): { target: number; scrollTop: number } | null;
+  learnContentTargetOffset(height: number): void;
+  /**
+   * Read-free bottom geometry for a delivery of `height`: computes the
+   * target from the learned offset and returns the decision inputs,
+   * refreshing the near-bottom band from the same arithmetic. Null when
+   * the cache cannot answer — the caller must then take the real-read
+   * path (refreshIsNearBottom + targetScrollTop + scrollTop +
+   * learnContentTargetOffset), which resyncs it.
+   */
+  contentGeometryForHeight(height: number): { target: number; scrollTop: number } | null;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   resolverStateSnapshot(): ResolverState;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
@@ -537,6 +543,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         deps.writeScrollTop(decision.write.caller, decision.write.value);
       }
       deps.refreshIsNearBottom();
+      deps.learnContentTargetOffset(nextHeight);
       return;
     }
 
@@ -588,25 +595,28 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // the engine's are routed through the controller and token-tagged.)
     resizeCorrelatedUntaggedScrollBudget = 1;
 
-    // Geometry for the decision — read-free on the hot path. A delta
-    // delivery already knows everything the resolver needs: content
-    // height moved by exactly `delta` (so the bottom target did too),
-    // and scrollTop cannot have moved since the controller's last real
-    // read (scroll events, chokepoint writes and spring ticks all
-    // resync its cache). The forced-layout read this replaces ran once
-    // per delivery INSIDE the flush/RO window — up to four passes in a
-    // single 3-pane streaming frame, and the first reader of a dirty
-    // frame pays the whole pending style recalc (storm capture
-    // 2026-08-26). The cache answers only while the viewport held
-    // still and the wrap width did not move; everything else — first
-    // fire, width reflow, viewport resize, floored-short content,
-    // RO-sourced pipelines — takes the real reads below, which resync
-    // the cache via refreshIsNearBottom. A shrink the browser clamps
-    // ahead of us is seen here as overshoot and resolved by the same
-    // overshoot-snap the real read produced; the chokepoint's own
-    // fresh-read clamp still guards the actual write.
+    // Geometry for the decision — read-free on the hot path. A delivery
+    // carries the content height, and the bottom target is that height
+    // plus a constant offset the controller learned on the last
+    // read-path delivery; scrollTop cannot have moved since the
+    // controller's last real read (scroll events, chokepoint writes and
+    // spring ticks all resync its cache). The forced-layout read this
+    // replaces ran once per delivery INSIDE the flush/RO window — up to
+    // four passes in a single 3-pane streaming frame, and the first
+    // reader of a dirty frame pays the whole pending style recalc
+    // (storm capture 2026-08-26). Height-plus-offset, never a running
+    // delta: resyncs between deliveries rebase to DOM that already
+    // contains the next delivery's change, so delta arithmetic
+    // double-counted it (2026-08-26, rest 8px short of bottom). The
+    // cache answers only while the viewport held still and the wrap
+    // width did not move; everything else — first fire, width reflow,
+    // viewport resize, floored-short content, RO-sourced pipelines —
+    // takes the real reads below, which re-learn the offset. A shrink
+    // the browser clamps ahead of us is seen here as overshoot and
+    // resolved by the same overshoot-snap the real read produced; the
+    // chokepoint's own fresh-read clamp still guards the actual write.
     const cachedGeometry = viewportStable && !widthChanged
-      ? deps.advanceContentGeometry(delta)
+      ? deps.contentGeometryForHeight(nextHeight)
       : null;
     let target: number;
     let scrollTopAtDelivery: number;
@@ -625,6 +635,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // `const target` discipline.
       target = deps.targetScrollTop();
       scrollTopAtDelivery = scrollEl.scrollTop;
+      deps.learnContentTargetOffset(nextHeight);
     }
     // Every decision about this delivery — overshoot snap, stranded-
     // oscillation recovery, sync-pin vs spring, negative re-stick — is
