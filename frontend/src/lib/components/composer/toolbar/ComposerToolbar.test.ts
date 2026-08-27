@@ -233,24 +233,46 @@ describe('<ComposerToolbar>', () => {
     expect(queryByText('fresh@example.com')).toBeNull();
   });
 
-  it('remeasures when toolbar text changes without a container resize', async () => {
-    let requiredWidth = 500;
-    restoreDimensions = installToolbarDimensions(() => requiredWidth);
-    const pane = createThreadPane();
-    pane.replaceThread(makeThread());
-    const result = render(ComposerToolbar, {
-      props: toolbarProps(pane, { sendLabel: 'Go' }),
-    });
+  it('remeasures on a child width delivery without a container resize', async () => {
+    // happy-dom's stub ResizeObserver never delivers; capture the
+    // callbacks and deliver by hand. The width trigger is the RO on the
+    // toolbar's direct children — a control whose rendered width moves
+    // (the send label flipping, the context meter growing a digit)
+    // delivers post-layout, and a text beat that moves no width delivers
+    // nothing (the old subtree MutationObserver re-measured per beat).
+    const realRO = globalThis.ResizeObserver;
+    const callbacks: ResizeObserverCallback[] = [];
+    class Capturing {
+      constructor(callback: ResizeObserverCallback) {
+        callbacks.push(callback);
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    globalThis.ResizeObserver = Capturing as unknown as typeof ResizeObserver;
+    try {
+      let requiredWidth = 500;
+      restoreDimensions = installToolbarDimensions(() => requiredWidth);
+      const pane = createThreadPane();
+      pane.replaceThread(makeThread());
+      const result = render(ComposerToolbar, {
+        props: toolbarProps(pane, { sendLabel: 'Go' }),
+      });
 
-    await waitFor(() => {
-      expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'false');
-    });
+      await waitFor(() => {
+        expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'false');
+      });
 
-    requiredWidth = 640;
-    await result.rerender(toolbarProps(pane, { sendLabel: 'Implement' }));
+      requiredWidth = 640;
+      await result.rerender(toolbarProps(pane, { sendLabel: 'Implement' }));
+      for (const callback of callbacks) callback([], {} as ResizeObserver);
 
-    await waitFor(() => {
-      expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'true');
-    });
+      await waitFor(() => {
+        expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'true');
+      });
+    } finally {
+      globalThis.ResizeObserver = realRO;
+    }
   });
 });

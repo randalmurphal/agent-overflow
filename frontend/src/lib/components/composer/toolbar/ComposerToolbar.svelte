@@ -152,18 +152,38 @@
     const el = toolbarEl;
     if (!el) return;
     scheduleToolbarDensityMeasure();
-    const resizeObserver = new ResizeObserver(() => scheduleToolbarDensityMeasure());
-    resizeObserver.observe(el);
+    // Re-measure at ResizeObserver timing, and only when a width can have
+    // moved. RO callbacks run post-layout pre-paint, so the probe's reads
+    // are free and its data-compact toggle relayouts a clean toolbar
+    // subtree instead of forcing a whole-document pass mid-flush. The
+    // toolbar's own box covers pane resizes; one observed entry per
+    // direct child covers every control whose rendered width moves (the
+    // context meter growing a digit, the send label flipping) — a text
+    // beat that moves no width delivers nothing at all. The old subtree
+    // MutationObserver (childList + characterData) scheduled a rAF
+    // measure on EVERY streaming beat — the token text mutates per beat
+    // whether or not any width changed — and rAF runs BEFORE layout, so
+    // each measure forced a full pass against the flush-dirty tree
+    // (19-21 forced passes per 3-pane storm run, 2026-08-26).
+    const sizes = new ResizeObserver(() => measureToolbarDensity());
+    const observeChildren = () => {
+      sizes.observe(el);
+      for (const child of el.children) sizes.observe(child);
+    };
+    observeChildren();
+    // Controls mount and unmount with provider/mode changes, not with
+    // streaming beats. A new child needs observing (its initial RO
+    // delivery then runs the measure); a removal delivers nothing, so
+    // schedule a measure directly.
     const mutationObserver = typeof MutationObserver === 'undefined'
       ? undefined
-      : new MutationObserver(() => scheduleToolbarDensityMeasure());
-    mutationObserver?.observe(el, {
-      childList: true,
-      characterData: true,
-      subtree: true,
-    });
+      : new MutationObserver(() => {
+          observeChildren();
+          scheduleToolbarDensityMeasure();
+        });
+    mutationObserver?.observe(el, { childList: true });
     return () => {
-      resizeObserver.disconnect();
+      sizes.disconnect();
       mutationObserver?.disconnect();
       if (measureFrame) cancelAnimationFrame(measureFrame);
     };
