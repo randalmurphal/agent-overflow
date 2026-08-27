@@ -21,6 +21,11 @@
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import MessageNavRail from './MessageNavRail.svelte';
+  import {
+    NAV_RAIL_ROW_LEFT_PADDING_PX,
+    NAV_RAIL_ROW_MAX_WIDTH_PX,
+    NAV_RAIL_ROW_RIGHT_PADDING_PX,
+  } from './messageNavRail';
   import ReadGroupRow from './ReadGroupRow.svelte';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
@@ -386,12 +391,18 @@
   // flash overlay. Routes through the restore session's scrollToItem, so
   // load-until-item, run reveal, and escape semantics stay in one place.
   // Row column shell, shared by every row-aligned surface (rows, the
-  // load-older/newer chips, the landing flash): 61rem + pl-8/pr-6
-  // versus the composer's 62rem + px-6 — a deliberate 8px-per-side
-  // inset (approved 2026-08-19) so the nav rail's fully grown tick
-  // clears the text at every pane width. One definition so the copies
-  // cannot drift.
-  const ROW_SHELL_CLASSES = 'mx-auto w-full max-w-[61rem] pl-8 pr-6';
+  // load-older/newer chips, and the landing flash). Its left padding is
+  // derived from the nav rail's hit width plus an 8px dead gutter, so an
+  // invisible jump target can never overlap selectable transcript text.
+  // The 62rem outer cap and asymmetric padding preserve the previous 920px
+  // wide-pane content bounds exactly while giving narrow panes 8px more
+  // clearance on each side. One style definition keeps every copy aligned.
+  const ROW_SHELL_CLASSES = 'mx-auto w-full';
+  const ROW_SHELL_STYLE = [
+    `max-width: ${NAV_RAIL_ROW_MAX_WIDTH_PX}px`,
+    `padding-left: ${NAV_RAIL_ROW_LEFT_PADDING_PX}px`,
+    `padding-right: ${NAV_RAIL_ROW_RIGHT_PADDING_PX}px`,
+  ].join('; ');
 
   const jump = createTimelineJump({
     getPane: () => pane,
@@ -807,7 +818,7 @@
     {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
       <!-- Active turn but no items yet. The working/todo UI lives in the
            ChatView bottom overlay, outside the virtualized history. -->
-      <div class={`${ROW_SHELL_CLASSES} pt-8`}></div>
+      <div class={`${ROW_SHELL_CLASSES} pt-8`} style={ROW_SHELL_STYLE}></div>
     {:else}
       {#snippet renderNode(node: TimelineNode, depth: number)}
         {#if node.kind === 'leaf'}
@@ -890,7 +901,7 @@
             <!-- The timeline header has stable identity and exact geometry.
                  Keeping it outside transcript rows prevents a prepend from
                  removing 60px from the retained former-first row. -->
-            <div class={`h-full pt-6 ${ROW_SHELL_CLASSES}`}>
+            <div class={`h-full pt-6 ${ROW_SHELL_CLASSES}`} style={ROW_SHELL_STYLE}>
               {#if pane.hasMoreHistory}
                 <div class="mb-3 flex justify-center">
                   <Button
@@ -950,9 +961,9 @@
                    comment in app.css and
                    docs/architecture/settle-flicker-analysis.md. -->
               <div data-row-geometry-content>
-                <!-- Row column: see ROW_SHELL_CLASSES for the deliberate
-                     inset versus the composer's 62rem + px-6. -->
-                <div class={ROW_SHELL_CLASSES}>
+                <!-- Row column: see ROW_SHELL_STYLE for the rail clearance
+                     contract shared by every row-aligned surface. -->
+                <div class={ROW_SHELL_CLASSES} style={ROW_SHELL_STYLE}>
                   {#if rows.rowDecorations.responseDividerIndexes.has(index)}
                     {@const showResponsePill = rows.rowDecorations.responsePillIndexes.has(index)}
                     {@const responseDuration = rows.responsePillDuration(node)}
@@ -994,7 +1005,10 @@
           {/snippet}
         </TimelineVirtualizer>
         {#if pane.hasMoreNewer}
-          <div class={`${ROW_SHELL_CLASSES} flex justify-center pb-6 pt-2`}>
+          <div
+            class={`${ROW_SHELL_CLASSES} flex justify-center pb-6 pt-2`}
+            style={ROW_SHELL_STYLE}
+          >
             <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sheet">
               <Button
                 variant="secondary"
@@ -1074,7 +1088,7 @@
         style:height={`${jump.flash.height}px`}
         data-testid="timeline-jump-flash"
       >
-        <div class={`${ROW_SHELL_CLASSES} h-full`}>
+        <div class={`${ROW_SHELL_CLASSES} h-full`} style={ROW_SHELL_STYLE}>
           <div
             class="nav-jump-flash h-full w-full rounded-lg bg-accent/10"
             style:animation-duration={`${JUMP_FLASH_DURATION_MS}ms`}
@@ -1086,9 +1100,8 @@
 
   <!-- Message navigation rail: tick pills in the left row padding, one
        per user message. Sibling of the scroller for the same C24 reason
-       as the chip below; the row column's 61rem cap + pl-8 (vs the
-       composer's 62rem + px-6) is what guarantees the fisheye's grown
-       ticks clear the text at every pane width. -->
+       as the chip below; ROW_SHELL_STYLE derives its left edge from the
+       rail's hit width plus a real dead gutter. -->
   <MessageNavRail
     bind:this={navRail}
     {pane}

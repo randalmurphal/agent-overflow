@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { Item } from '../../types/models';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import {
+  NAV_RAIL_HIT_WIDTH_PX,
   NAV_TICK_SPACING_PX,
+  NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX,
+  NAV_RAIL_ROW_LEFT_PADDING_PX,
+  NAV_RAIL_ROW_MAX_WIDTH_PX,
+  NAV_RAIL_ROW_RIGHT_PADDING_PX,
+  NAV_RAIL_TEXT_GAP_PX,
+  NAV_RAIL_TICK_LEFT_PX,
   deriveNavTicks,
   itemWindowBounds,
   mergeNavTicks,
@@ -144,6 +151,19 @@ describe('itemWindowBounds', () => {
 });
 
 describe('rail geometry', () => {
+  it('keeps expanded ticks inside the hit strip and text beyond a dead gutter', () => {
+    expect(NAV_RAIL_TICK_LEFT_PX + TICK_FULL_WIDTH_PX).toBe(NAV_RAIL_HIT_WIDTH_PX);
+    expect(NAV_RAIL_ROW_LEFT_PADDING_PX - NAV_RAIL_HIT_WIDTH_PX)
+      .toBe(NAV_RAIL_TEXT_GAP_PX);
+    expect(NAV_RAIL_TEXT_GAP_PX).toBe(8);
+    expect(
+      NAV_RAIL_ROW_MAX_WIDTH_PX
+      - NAV_RAIL_ROW_LEFT_PADDING_PX
+      - NAV_RAIL_ROW_RIGHT_PADDING_PX,
+    ).toBe(NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX);
+    expect(NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX).toBe(920);
+  });
+
   it('grows by the spacing constant until the column caps the window', () => {
     // Literal, not recomputed from the constant: a spacing change is a
     // deliberate test edit, not an automatic pass. 8px (user-tuned

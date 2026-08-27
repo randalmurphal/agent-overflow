@@ -67,6 +67,27 @@ export const NAV_TICK_SPACING_PX = 8;
 export const NAV_RAIL_MIN_TICKS = 2;
 
 /**
+ * Horizontal interaction geometry. The pointer-only strip must end before
+ * selectable transcript text begins. Keep the expanded tick inside that
+ * strip, then reserve a real dead gutter before the row column.
+ *
+ * The row shell grows from its historical 61rem asymmetric box to the old
+ * 62rem box with 40px/32px padding. That preserves its 920px wide-pane
+ * content width and exact wide-pane content bounds, while narrow panes spend
+ * only 8px more on each side.
+ */
+export const NAV_RAIL_HIT_WIDTH_PX = 32;
+export const NAV_RAIL_TICK_LEFT_PX = 8;
+export const NAV_RAIL_TEXT_GAP_PX = 8;
+export const NAV_RAIL_ROW_LEFT_PADDING_PX = NAV_RAIL_HIT_WIDTH_PX + NAV_RAIL_TEXT_GAP_PX;
+export const NAV_RAIL_ROW_RIGHT_PADDING_PX = 32;
+export const NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX = 920;
+export const NAV_RAIL_ROW_MAX_WIDTH_PX =
+  NAV_RAIL_ROW_LEFT_PADDING_PX
+  + NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX
+  + NAV_RAIL_ROW_RIGHT_PADDING_PX;
+
+/**
  * User messages are always TOP-LEVEL leaves: the projection never wraps
  * them into activity runs (a run cannot straddle a user message) and the
  * group kinds anchor on launch/wait/read rows. What counts as a real
