@@ -375,11 +375,44 @@ func TestMCPStatusFromList(t *testing.T) {
 	}
 }
 
-// TestMCPStartupUpdateTerminalFailure pins which retained states may
-// outrank a settled list answer in the app-layer merge: terminal,
-// unrecovered outcomes only. "starting" defers — a settled probe is by
-// construction newer, and letting a retained starting win would latch
-// "Starting…" whenever the terminal notification was lost.
+func TestMCPStatusFromListPrefersRuntimeStatus(t *testing.T) {
+	stringPtr := func(value string) *string { return &value }
+	for _, tc := range []struct {
+		runtime string
+		want    mcpstatus.Status
+	}{
+		{"notStarted", mcpstatus.StatusNotStarted},
+		{"starting", mcpstatus.StatusStarting},
+		{"connected", mcpstatus.StatusConnected},
+		{"authenticationRequired", mcpstatus.StatusNeedsAuth},
+		{"failed", mcpstatus.StatusFailed},
+		{"cancelled", mcpstatus.StatusFailed},
+		{"disabled", mcpstatus.StatusDisabled},
+	} {
+		t.Run(tc.runtime, func(t *testing.T) {
+			entry := MCPServerStatus{
+				Name:          "srv",
+				RuntimeStatus: stringPtr(tc.runtime),
+				AuthStatus:    "oAuth",
+				ServerInfo:    &MCPServerInfo{Name: "stale-connected"},
+				Tools:         map[string]json.RawMessage{"stale": json.RawMessage(`{}`)},
+			}
+			if got := MCPStatusFromList(entry); got != tc.want {
+				t.Fatalf("runtime %q = %q, want %q", tc.runtime, got, tc.want)
+			}
+		})
+	}
+
+	unknown := "futureState"
+	entry := MCPServerStatus{RuntimeStatus: &unknown, AuthStatus: "unsupported", ServerInfo: &MCPServerInfo{Name: "srv"}}
+	if got := MCPStatusFromList(entry); got != mcpstatus.StatusConnected {
+		t.Fatalf("unknown future runtime should use legacy evidence, got %q", got)
+	}
+}
+
+// TestMCPStartupUpdateTerminalFailure pins which retained states may supply
+// legacy fallback lifecycle or error context in the app-layer merge. An
+// explicit 0.150 runtimeStatus always wins.
 func TestMCPStartupUpdateTerminalFailure(t *testing.T) {
 	cases := []struct {
 		state string

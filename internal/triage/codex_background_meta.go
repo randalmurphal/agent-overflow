@@ -252,6 +252,26 @@ func allCodexSpawnChildrenTerminal(receiverThreadIDs []string, terminalStatuses 
 	return true
 }
 
+// MergeCodexSubagentTerminalMeta applies one child lifecycle update to a
+// stored spawn launch. Both the live router and session importer use this so
+// multi-child completion and live_background_active cannot diverge. The last
+// result is false when childID is not owned by the launch.
+func MergeCodexSubagentTerminalMeta(existing, childID, status string) (string, bool, bool) {
+	childID = strings.TrimSpace(childID)
+	meta := decodeCodexItemMeta(json.RawMessage(existing))
+	if childID == "" || !containsString(meta.ReceiverThreadIDs, childID) {
+		return existing, false, false
+	}
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "completed"
+	}
+	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(existing))
+	terminalStatuses[childID] = status
+	allTerminal := allCodexSpawnChildrenTerminal(meta.ReceiverThreadIDs, terminalStatuses)
+	return mergeItemMetaJSON(existing, codexSubagentTerminalMeta(childID, status, allTerminal)), allTerminal, true
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

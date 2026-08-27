@@ -19,7 +19,23 @@ const (
 	typeInterAgentMet = "inter_agent_communication_metadata"
 	typeWorldState    = "world_state"
 	typeSecurityRisk  = "security_risk_score"
+	typeRealtimeItem  = "realtime_item"
 )
+
+type realtimeItemPayload struct {
+	ID                string `json:"id"`
+	RealtimeSessionID string `json:"realtime_session_id"`
+	Type              string `json:"type"`
+	Role              string `json:"role"`
+	Text              string `json:"text"`
+	TurnID            string `json:"turn_id"`
+	ItemID            string `json:"item_id"`
+	Outcome           string `json:"outcome"`
+	Presentation      *struct {
+		Type  string  `json:"type"`
+		Index *uint32 `json:"index"`
+	} `json:"presentation"`
+}
 
 // worldStatePayload is `RolloutItem::WorldState(WorldStateItem)`
 // (codex-rs/protocol/src/protocol.rs @ rust-v0.149.0):

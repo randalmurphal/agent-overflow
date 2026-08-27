@@ -769,7 +769,7 @@ func TestBuildThreadParamsDangerMode(t *testing.T) {
 }
 
 func TestBuildApprovalMetaCommand(t *testing.T) {
-	params := json.RawMessage(`{"command":"ls -la"}`)
+	params := json.RawMessage(`{"itemId":"cmd-1","command":"ls -la","cwd":"/repo","availableDecisions":["accept","cancel"]}`)
 	meta := buildApprovalMeta("t1", "", "item/commandExecution/requestApproval", 42, params)
 
 	var approval provider.ApprovalRequest
@@ -783,6 +783,59 @@ func TestBuildApprovalMetaCommand(t *testing.T) {
 	}
 	if approval.Title != "Run command" {
 		t.Errorf("title: got %q, want %q", approval.Title, "Run command")
+	}
+	if approval.Kind != "command" || approval.ToolUseID != "cmd-1" {
+		t.Errorf("kind/toolUseID = %q/%q", approval.Kind, approval.ToolUseID)
+	}
+	if approval.AvailableDecisions == nil || len(*approval.AvailableDecisions) != 2 {
+		t.Fatalf("available decisions = %#v", approval.AvailableDecisions)
+	}
+	var input string
+	if json.Unmarshal(approval.Input, &input) != nil || input != "ls -la" {
+		t.Errorf("legacy command input = %s, want string command", approval.Input)
+	}
+}
+
+func TestBuildApprovalMetaWriteStdin(t *testing.T) {
+	params := json.RawMessage(`{"kind":"writeStdin","itemId":"cmd-1","approvalId":"stdin-2","stdin":"yes\n","processId":"42","cwd":"/repo","availableDecisions":["accept","decline"]}`)
+	meta := buildApprovalMeta("t1", "turn-1", "item/commandExecution/requestApproval", 43, params)
+
+	var approval provider.ApprovalRequest
+	if err := json.Unmarshal(meta, &approval); err != nil {
+		t.Fatalf("decode approval: %v", err)
+	}
+	if approval.Kind != "write-stdin" || approval.ToolName != "write_stdin" || approval.Title != "Send input to terminal" {
+		t.Fatalf("write stdin approval = %+v", approval)
+	}
+	if approval.ToolUseID != "cmd-1" || approval.ProviderApprovalID != "stdin-2" {
+		t.Errorf("item/callback ids = %q/%q", approval.ToolUseID, approval.ProviderApprovalID)
+	}
+	if string(approval.Input) != string(params) {
+		t.Errorf("input = %s, want exact structured params %s", approval.Input, params)
+	}
+}
+
+func TestBuildApprovalMetaDistinguishesMissingAndEmptyAvailableDecisions(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		params string
+		nilSet bool
+		count  int
+	}{
+		{name: "missing", params: `{"command":"pwd"}`, nilSet: true},
+		{name: "null", params: `{"command":"pwd","availableDecisions":null}`, nilSet: true},
+		{name: "empty", params: `{"command":"pwd","availableDecisions":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var approval provider.ApprovalRequest
+			_ = json.Unmarshal(buildApprovalMeta("t", "", "item/commandExecution/requestApproval", 1, json.RawMessage(tc.params)), &approval)
+			if (approval.AvailableDecisions == nil) != tc.nilSet {
+				t.Fatalf("available decisions = %#v, want nil=%v", approval.AvailableDecisions, tc.nilSet)
+			}
+			if approval.AvailableDecisions != nil && len(*approval.AvailableDecisions) != tc.count {
+				t.Fatalf("available decision count = %d, want %d", len(*approval.AvailableDecisions), tc.count)
+			}
+		})
 	}
 }
 

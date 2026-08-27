@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
 )
 
 // newMCPTestApp returns an App wired to temp Claude/Codex config
@@ -191,6 +192,59 @@ url = "https://mcp.linear.app/api"
 	}
 	if findServer(got, "linear").Disabled {
 		t.Errorf("linear: want enabled, got disabled")
+	}
+}
+
+func TestCodexSessionMCPRowsPrefersExplicitRuntimeOverRetainedStartupFailure(t *testing.T) {
+	app, _, codexPath := newMCPTestApp(t)
+	writeCodexConfig(t, codexPath, "[mcp_servers.github]\ncommand = \"gh-mcp\"\n")
+
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"thread/start"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"codex-thread-mcp\"}}}"
+        echo '{"jsonrpc":"2.0","method":"mcpServer/startupStatus/updated","params":{"name":"github","status":"failed","error":"stale failure"}}'
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"mcpServerStatus/list"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"data\":[{\"name\":\"github\",\"runtimeStatus\":\"connected\",\"authStatus\":\"oAuth\",\"serverInfo\":{\"name\":\"github\",\"version\":\"1\"},\"tools\":{\"issues_list\":{}}}],\"nextCursor\":null}}"
+    fi
+done
+`
+	binary := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock codex: %v", err)
+	}
+	sess, err := codex.NewSession(context.Background(), "ao-thread", codex.Config{
+		Binary: binary, Model: "test-model", WorkDir: t.TempDir(),
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	deadline := time.Now().Add(time.Second)
+	for sess.MCPStartupStates()["github"].State == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := sess.MCPStartupStates()["github"].State; got != "failed" {
+		t.Fatalf("retained startup state = %q, want failed", got)
+	}
+
+	rows, err := app.codexSessionMCPRows(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("codexSessionMCPRows: %v", err)
+	}
+	github := findServer(rows, "github")
+	if github.Status != string(mcpstatus.StatusConnected) || github.Error != "" {
+		t.Fatalf("github row = %+v, want explicit connected runtime without stale error", github)
 	}
 }
 

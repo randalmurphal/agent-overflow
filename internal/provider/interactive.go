@@ -27,8 +27,17 @@ type ApprovalRequest struct {
 	Input           json.RawMessage `json:"input"`
 	Title           string          `json:"title"`
 	// Structured approval fields.
-	Kind        string             `json:"kind,omitempty"`        // "command"|"file-read"|"file-change"|"permission"|"mcp-elicitation"
+	Kind        string             `json:"kind,omitempty"`        // "command"|"write-stdin"|"file-read"|"file-change"|"permission"|"mcp-elicitation"
 	Permissions *PermissionProfile `json:"permissions,omitempty"` // populated for permission kind
+	// ProviderApprovalID identifies one provider callback when several
+	// approvals share the same tool item. RequestID remains the JSON-RPC id
+	// used to answer the callback.
+	ProviderApprovalID string `json:"providerApprovalId,omitempty"`
+	// AvailableDecisions is nil when an older provider did not advertise a
+	// set. A non-nil empty slice is authoritative and renders no actions.
+	// Entries remain raw because Codex also advertises structured policy
+	// amendment decisions, not only string enum values.
+	AvailableDecisions *[]json.RawMessage `json:"availableDecisions,omitempty"`
 	// Elicitation is populated for the mcp-elicitation kind. Carries the high-
 	// level mode discriminator and the shape the frontend needs to render the
 	// dialog. The schema for form mode is passed through as raw JSON — the
@@ -131,11 +140,15 @@ type ElicitationResolution struct {
 
 // ApprovalResponse is sent back to the provider.
 type ApprovalResponse struct {
-	RequestID   string                 `json:"requestId"`
-	Decision    string                 `json:"decision"`              // Codex-native: "accept", "acceptForSession", "decline", "cancel"
-	Permissions *PermissionProfile     `json:"permissions,omitempty"` // for granted permissions
-	Scope       string                 `json:"scope,omitempty"`       // "turn"|"session" for permissions
-	Elicitation *ElicitationResolution `json:"elicitation,omitempty"` // for MCP elicitation responses
+	RequestID string `json:"requestId"`
+	Decision  string `json:"decision"` // Codex-native: "accept", "acceptForSession", "decline", "cancel"
+	// DecisionValue carries a provider-native structured decision. It is
+	// mutually exclusive with Decision and currently used by Codex policy
+	// amendment choices.
+	DecisionValue json.RawMessage        `json:"decisionValue,omitempty"`
+	Permissions   *PermissionProfile     `json:"permissions,omitempty"` // for granted permissions
+	Scope         string                 `json:"scope,omitempty"`       // "turn"|"session" for permissions
+	Elicitation   *ElicitationResolution `json:"elicitation,omitempty"` // for MCP elicitation responses
 	// UpdatedInput replaces the original tool input when an approval is granted.
 	// Only meaningful for allow decisions; ignored on deny. Opaque JSON — the
 	// shape mirrors the tool's input schema, which is provider-specific.
@@ -177,6 +190,9 @@ func NormalizeUserInputDecision(decision string) (string, error) {
 // values ("allow", "accept", "decline", "deny", etc.) into the persisted item
 // decision enum used by the chat rewrite.
 func NormalizeApprovalDecision(resp ApprovalResponse) string {
+	if len(resp.DecisionValue) > 0 {
+		return "amended"
+	}
 	switch resp.Decision {
 	case "allow", "allow_session", "accept", "acceptForSession":
 		if len(resp.UpdatedInput) > 0 || len(resp.UpdatedPermissions) > 0 {

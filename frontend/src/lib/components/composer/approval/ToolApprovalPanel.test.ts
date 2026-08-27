@@ -37,6 +37,16 @@ describe('<ToolApprovalPanel>', () => {
     expect(getByText('Command')).toBeInTheDocument();
   });
 
+  it('renders legacy raw-string command input without treating it as an object', () => {
+    const { getByText } = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({ toolName: 'command', input: 'git status' }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(getByText('git status')).toBeInTheDocument();
+  });
+
   it('renders a file path preview for a Read approval', () => {
     const { getByText } = render(ToolApprovalPanel, {
       props: {
@@ -177,5 +187,60 @@ describe('<ToolApprovalPanel>', () => {
     await fireEvent.click(getByTestId('approval-allow'));
     await waitFor(() => expect(onError).toHaveBeenCalled());
     expect(onError.mock.calls[0][0]).toMatch(/Failed to respond to approval/i);
+  });
+
+  it('renders only the server-advertised decisions in provider order', () => {
+    const { getByTestId, queryByTestId } = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'command',
+          availableDecisions: ['accept', 'cancel'],
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(getByTestId('approval-allow')).toBeInTheDocument();
+    expect(getByTestId('approval-cancel')).toBeInTheDocument();
+    expect(queryByTestId('approval-deny')).toBeNull();
+    expect(queryByTestId('approval-allow-session')).toBeNull();
+    expect(queryByTestId('approval-edit-toggle')).toBeNull();
+  });
+
+  it('returns an advertised structured decision unchanged', async () => {
+    const decision = {
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: ['git', 'status'],
+      },
+    };
+    const onResolve = makeResolver();
+    const { getByTestId } = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({ kind: 'command', availableDecisions: [decision] }),
+        onResolve,
+      },
+    });
+    await fireEvent.click(getByTestId('approval-allow-policy-0'));
+    await waitFor(() => expect(onResolve).toHaveBeenCalled());
+    const response = onResolve.mock.calls[0][0] as ApprovalResponse & { decisionValue?: unknown };
+    expect(response.decision).toBe('');
+    expect(response.decisionValue).toEqual(decision);
+  });
+
+  it('renders write-stdin details and never offers input editing', () => {
+    const { getByText, queryByTestId } = render(ToolApprovalPanel, {
+      props: {
+        approval: bashApproval({
+          kind: 'write-stdin',
+          toolName: 'write_stdin',
+          input: { stdin: 'yes\n', processId: '42', cwd: '/repo' },
+          availableDecisions: ['accept', 'decline'],
+        }),
+        onResolve: makeResolver(),
+      },
+    });
+    expect(getByText(/yes/)).toBeInTheDocument();
+    expect(getByText(/Process: 42/)).toBeInTheDocument();
+    expect(getByText(/Working directory: \/repo/)).toBeInTheDocument();
+    expect(queryByTestId('approval-edit-toggle')).toBeNull();
   });
 });

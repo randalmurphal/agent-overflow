@@ -245,6 +245,8 @@ func (b *builder) apply(evt importir.Event) error {
 		return b.toolComplete(evt)
 	case provider.EventBackgroundTaskTerminal:
 		return b.backgroundTaskTerminal(evt)
+	case provider.EventSubagentStatus:
+		return b.subagentStatus(evt)
 	case provider.EventDiff:
 		return b.attachPayload(evt, payloadKindDiff)
 	case provider.EventCommandOutput:

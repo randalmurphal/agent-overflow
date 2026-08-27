@@ -117,6 +117,11 @@ export enum Status {
     StatusUnknown = "unknown",
 
     /**
+     * Codex runtime has not attempted this server yet
+     */
+    StatusNotStarted = "not-started",
+
+    /**
      * Codex notification "starting" / Claude "pending"
      */
     StatusStarting = "starting",
@@ -137,7 +142,7 @@ export enum Status {
     StatusFailed = "failed",
 
     /**
-     * Claude "disabled" (toggled off; the CLI keeps the row and reports it)
+     * provider reports the configured server as disabled
      */
     StatusDisabled = "disabled",
 };

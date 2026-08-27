@@ -75,6 +75,44 @@ func TestBuildApprovalResponseResultDecision(t *testing.T) {
 	}
 }
 
+func TestBuildApprovalResponseResultStructuredDecision(t *testing.T) {
+	rpcID, result, err := buildApprovalResponseResult(provider.ApprovalResponse{
+		RequestID:     "19",
+		DecisionValue: json.RawMessage(`{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}}`),
+	})
+	if err != nil {
+		t.Fatalf("build response: %v", err)
+	}
+	if rpcID != 19 {
+		t.Fatalf("rpc id = %d", rpcID)
+	}
+	encoded, _ := json.Marshal(result)
+	want := `{"decision":{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}}}`
+	if string(encoded) != want {
+		t.Fatalf("result = %s, want %s", encoded, want)
+	}
+}
+
+func TestBuildApprovalResponseResultRejectsMixedResponseModes(t *testing.T) {
+	tests := []provider.ApprovalResponse{
+		{
+			RequestID:     "42",
+			Scope:         "session",
+			DecisionValue: json.RawMessage(`{"acceptWithExecpolicyAmendment":{"execpolicyAmendment":["git status"]}}`),
+		},
+		{
+			RequestID:   "42",
+			Permissions: &provider.PermissionProfile{},
+			Elicitation: &provider.ElicitationResolution{Action: "accept"},
+		},
+	}
+	for _, response := range tests {
+		if _, _, err := buildApprovalResponseResult(response); err == nil {
+			t.Fatalf("buildApprovalResponseResult(%+v) accepted mixed approval response modes", response)
+		}
+	}
+}
+
 func TestBuildUserInputResponseResultAnswers(t *testing.T) {
 	rpcID, result, err := buildUserInputResponseResult(provider.UserInputResponse{
 		RequestID: "7",

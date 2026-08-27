@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -13,8 +14,13 @@ import (
 // JSON-RPC id rendered as a string so dedup (Bug B9) and response routing
 // both use the same key — and so writeDrainResponse can parse it back into
 // the id the JSON-RPC reply has to carry.
-func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKind) {
-	s.approvals.Track(strconv.FormatInt(rpcID, 10), resolveKind, nil)
+func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKind, decisions ...*[]json.RawMessage) {
+	requestID := strconv.FormatInt(rpcID, 10)
+	if resolveKind == provider.EventApprovalResolved && len(decisions) > 0 {
+		s.approvals.TrackApproval(requestID, resolveKind, decisions[0])
+		return
+	}
+	s.approvals.Track(requestID, resolveKind, nil)
 }
 
 // clearPendingApprovals is the Close-path drain. Latches the registry shut so

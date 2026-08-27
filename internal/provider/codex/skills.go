@@ -64,6 +64,7 @@ type skillMetadata struct {
 	Path             string          `json:"path"`
 	Scope            string          `json:"scope"`
 	Enabled          bool            `json:"enabled"`
+	PluginID         string          `json:"pluginId"`
 }
 
 type skillInterface struct {
@@ -168,6 +169,7 @@ func projectSkill(wire skillMetadata) (codexskills.Skill, bool) {
 		Path:             path,
 		Scope:            strings.TrimSpace(wire.Scope),
 		Enabled:          wire.Enabled,
+		PluginID:         strings.TrimSpace(wire.PluginID),
 	}
 	if wire.Interface != nil {
 		skill.DisplayName = strings.TrimSpace(wire.Interface.DisplayName)

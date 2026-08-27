@@ -95,6 +95,9 @@ func TestSessionOptOutNeverDropsAConsumedNotification(t *testing.T) {
 // double an opt-out list and hide a copy/paste error during the next
 // upstream sync.
 func TestCodexNotificationCatalogHasNoDuplicates(t *testing.T) {
+	if len(codexNotificationCatalog) != 81 {
+		t.Fatalf("catalog entries = %d, want rust-v0.150.1's 81", len(codexNotificationCatalog))
+	}
 	seen := map[string]struct{}{}
 	for _, method := range codexNotificationCatalog {
 		if strings.TrimSpace(method) == "" {
@@ -104,6 +107,25 @@ func TestCodexNotificationCatalogHasNoDuplicates(t *testing.T) {
 			t.Errorf("catalog lists %q twice", method)
 		}
 		seen[method] = struct{}{}
+	}
+}
+
+func TestCodexNotificationCatalogIncludes0150AdditionsInDeclarationOrder(t *testing.T) {
+	for _, sequence := range [][]string{
+		{"mcpServer/startupStatus/updated", "mcpServer/event/stream/notification", "account/updated"},
+		{"thread/realtime/itemAdded", "thread/realtime/item/started", "thread/realtime/item/transcript/delta", "thread/realtime/item/completed", "thread/realtime/transcript/delta"},
+	} {
+		last := -1
+		for _, method := range sequence {
+			index := slices.Index(codexNotificationCatalog, method)
+			if index != last+1 && last >= 0 {
+				t.Fatalf("catalog sequence %v is not contiguous", sequence)
+			}
+			if index < 0 {
+				t.Fatalf("catalog missing %q", method)
+			}
+			last = index
+		}
 	}
 }
 

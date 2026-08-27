@@ -67,9 +67,10 @@ reason that is not interchangeable with the others:
   `has_user_event = 1`; nothing in codex-rs has written that column since
   migration 0007, so on a real home every row has `0` and the filter returns
   the empty set. `TestListDoesNotFilterOnHasUserEvent` pins that.
-- `thread_source <> 'subagent'` and `source NOT LIKE '{"subagent"%'` — a
-  spawned child thread. Two columns because the representation changed
-  across Codex releases and both forms exist on disk.
+- `thread_source NOT IN ('subagent', 'guardian_review')` and
+  `source NOT LIKE '{"subagent"%'` — spawned and Guardian-review child
+  threads. Two columns because the representation changed across Codex
+  releases and both forms exist on disk.
 - `id NOT IN (SELECT child_thread_id FROM thread_spawn_edges)` — the
   structural backstop for a child whose own row does not admit it.
 
@@ -104,10 +105,12 @@ conversation, and the two barely overlap
 | `response_item/*` | written | written |
 | `turn_context`, `compacted`, `task_started`/`task_complete`/`turn_aborted`, `token_count` | written | written |
 | `world_state`, `security_risk_score` | written | written — **recognised and dropped**, see below |
+| `realtime_item` | not written | voice transcript segments plus decoded-and-dropped session/promotion bookkeeping (0.150) |
 
 ### Recognised and dropped
 
-Two envelope types are decoded, confirmed against their rust-v0.149.0 shape,
+Two bookkeeping envelope types are decoded, confirmed against their
+rust-v0.149.0 shape,
 and then skipped **silently** — they are not counted in `UnknownTypes` and
 raise no warning:
 
@@ -125,9 +128,15 @@ raise no warning:
 The DECODE is what makes this recognition rather than a blanket `case`: a
 payload that no longer matches the shape above falls through to
 `UnknownTypes` under a `<type> (unexpected shape)` key and warns again, so
-real drift in either type is still reported. Adding a third entry means
+real drift in either type is still reported. Adding another bookkeeping entry means
 proving in the Codex source that the record has nothing a transcript should
 show — never that it is merely noisy.
+
+Codex 0.150's `realtime_item` is different: `transcript_segment` records are
+conversation content and import as user or assistant text. Session boundaries
+and `bem_item_promoted` records are shape-checked and dropped because the
+ordinary promoted item already owns that content. Unknown realtime subtypes
+remain warnings.
 
 It decodes for SHAPE, never for content: `world_state`'s `state` map is the
 largest payload in the file and is typed `*struct{}` here, which accepts any
@@ -395,6 +404,7 @@ import writer.
 | `windowId` | compact boundary | Codex's compaction window id. |
 | `kind` | notification | `subagent_activity` \| `agent_message` \| `thread_goal` \| `thread_rolled_back` \| `sleep`. Review boundaries become a `codex_review` agent launch and sourced result, never status notifications. |
 | `activityKind`, `agentPath`, `agentThreadId`, `recipient`, `agentNickname`, `agentRole` | notification / collab completion | Collab-agent identity. |
+| `agent_path`, `canonical_path`, `status`, `activity_call_id` | subagent status | A typed 0.150 completed activity settles the existing launch without creating a notification row. |
 | `status`, `title` | notification | Thread-goal status; review-status title. |
 | `source`, `files`, `mcpServer`, `mcpTool`, `query` | tool complete | End-record detail per tool family. |
 | `codexErrorInfo` | error | Codex's structured error detail alongside the message. |

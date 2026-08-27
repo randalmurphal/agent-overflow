@@ -124,18 +124,11 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 // MCPStatusFromList projects an `mcpServerStatus/list` entry onto the
 // unified mcpstatus.Status.
 //
-// A list response describes SETTLED connection attempts, never
-// in-flight ones. Every call builds a fresh McpConnectionSet — threadId
-// only selects which config applies, it does not read a loaded thread's
-// running manager — and `list_available_server_infos` awaits each
-// pending client's startup before the response is assembled
-// (codex-rs/app-server/src/request_processors/mcp_processor.rs
-// `list_mcp_server_status`; codex-rs/codex-mcp/src/mcp/mod.rs
-// `collect_mcp_server_status_snapshot_with_detail`;
-// connection_manager.rs `list_available_server_infos`). So "no tools and
-// no serverInfo" is a failed attempt, not a booting server, and
-// StatusStarting is deliberately NOT derivable here — only a
-// `mcpServer/startupStatus/updated` notification can report it.
+// Codex 0.150 adds runtimeStatus when the request names a loaded thread.
+// That field is authoritative and can report every runtime phase, including
+// starting and notStarted. It is null when the configuration changed and is
+// absent on older servers and ephemeral reads. Those cases retain the settled
+// serverInfo/tools/authStatus inference used since AO's 0.143 floor.
 //
 // ServerInfo presence is the primary liveness signal: MCP requires a
 // successful `initialize` response to carry serverInfo, and codex
@@ -166,6 +159,22 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 // value except `notLoggedIn`: serverInfo/tools prove a completed
 // `initialize`, and that proof is independent of how the auth probe went.
 func MCPStatusFromList(entry MCPServerStatus) mcpstatus.Status {
+	if entry.RuntimeStatus != nil {
+		switch strings.TrimSpace(*entry.RuntimeStatus) {
+		case "notStarted":
+			return mcpstatus.StatusNotStarted
+		case "starting":
+			return mcpstatus.StatusStarting
+		case "connected":
+			return mcpstatus.StatusConnected
+		case "authenticationRequired":
+			return mcpstatus.StatusNeedsAuth
+		case "failed", "cancelled":
+			return mcpstatus.StatusFailed
+		case "disabled":
+			return mcpstatus.StatusDisabled
+		}
+	}
 	switch strings.TrimSpace(entry.AuthStatus) {
 	case "notLoggedIn":
 		return mcpstatus.StatusNeedsAuth

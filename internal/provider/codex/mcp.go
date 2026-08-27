@@ -123,17 +123,17 @@ func (s *Session) WriteMCPServerToUserConfig(ctx context.Context, name string, s
 // "oAuth"` per the Codex enum (`unknown` added in 0.147 — see
 // MCPStatusFromList for why it does not mean "not connected").
 //
-// ServerInfo is non-nil exactly when the server's `initialize`
-// succeeded — MCP makes the field mandatory in a successful initialize
-// response and codex fills it at every detail level. Since a list
-// response only describes settled connection attempts, its absence is
-// what proves a failure (see MCPStatusFromList). Only presence-safe
-// identity fields are decoded; server config never enters this shape.
+// RuntimeStatus is authoritative when Codex 0.150 can resolve the loaded
+// thread runtime. It is nil for older servers, global one-shot reads, and
+// config replacement. ServerInfo/tools/authStatus provide the compatible
+// fallback in those cases. Only presence-safe identity fields are decoded;
+// server config never enters this shape.
 type MCPServerStatus struct {
-	Name       string                     `json:"name"`
-	AuthStatus string                     `json:"authStatus"`
-	ServerInfo *MCPServerInfo             `json:"serverInfo"`
-	Tools      map[string]json.RawMessage `json:"tools"`
+	Name          string                     `json:"name"`
+	RuntimeStatus *string                    `json:"runtimeStatus"`
+	AuthStatus    string                     `json:"authStatus"`
+	ServerInfo    *MCPServerInfo             `json:"serverInfo"`
+	Tools         map[string]json.RawMessage `json:"tools"`
 }
 
 // MCPServerInfo is the identity block an MCP server returns from a

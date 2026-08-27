@@ -26,8 +26,8 @@ import (
 type ThreadMCPServer struct {
 	Provider string `json:"provider"`
 	Name     string `json:"name"`
-	// Status is a mcpstatus.Status string ("connected", "needs-auth",
-	// "failed", "starting", "disabled", "unknown").
+	// Status is a mcpstatus.Status string ("not-started", "connected",
+	// "needs-auth", "failed", "starting", "disabled", "unknown").
 	Status string   `json:"status"`
 	Error  string   `json:"error,omitempty"`
 	Tools  []string `json:"tools,omitempty"`
@@ -373,21 +373,14 @@ func (a *App) runCodexMCPReload(threadID string) error {
 // including plugin/project layers) with the config file's disabled
 // entries, which the session never loads and therefore never reports.
 //
-// The list answers for a FRESH connection attempt, not for the manager
-// this thread is running, so a TERMINAL retained
-// `mcpServer/startupStatus/updated` state (failed/cancelled — see
-// MCPStartupUpdate.TerminalFailure) is the lifecycle authority where
-// the two disagree: a server this thread watched fail is reported that
-// way, with the cause string the probe cannot carry, even when a fresh
-// attempt would now succeed — the thread still holds the manager that
-// failed. Everything else defers to the list: it describes settled
-// attempts, so a retained "starting" (or an unrecognized state) is an
-// older observation than the probe by construction, and letting it win
-// would latch "Starting…" whenever the terminal notification was lost.
-// The list also stays the membership answer, so a startup state for a
-// server since removed from config simply has no row to land on. The
-// retained state's other exit is ForgetMCPStartupState, taken whenever
-// AO itself asks Codex to re-run a server's startup.
+// Codex 0.150's runtimeStatus is the current thread manager's lifecycle
+// state and wins over retained startup notifications. Older servers and
+// entries whose runtimeStatus is unavailable still use a retained terminal
+// startup state because the list's serverInfo/tools inference describes a
+// fresh probe rather than that thread's manager. When both sources report
+// failure, the retained notification supplies the error text the list omits.
+// The list stays the membership answer, so a startup state for a removed
+// server has no row to land on.
 func (a *App) codexSessionMCPRows(ctx context.Context, sess *codex.Session) ([]ThreadMCPServer, error) {
 	list, err := sess.ListMCPServerStatuses(ctx)
 	if err != nil {
@@ -404,14 +397,16 @@ func (a *App) codexSessionMCPRows(ctx context.Context, sess *codex.Session) ([]T
 			Tools:      entry.ToolNames(),
 			Source:     mcpRowSourceSession,
 		}
+		row.Status = string(codex.MCPStatusFromList(entry))
 		if u, ok := startupStates[entry.Name]; ok && u.TerminalFailure() {
-			row.Status = string(codex.MCPStatusFromNotif(u))
-			row.Error = sanitizeMCPError(u.Error)
-			// The tool list came from the probe's fresh attempt; a row
-			// reporting the thread's failed manager must not claim them.
-			row.Tools = nil
-		} else {
-			row.Status = string(codex.MCPStatusFromList(entry))
+			notificationStatus := string(codex.MCPStatusFromNotif(u))
+			if entry.RuntimeStatus == nil {
+				row.Status = notificationStatus
+			}
+			if row.Status == notificationStatus {
+				row.Error = sanitizeMCPError(u.Error)
+				row.Tools = nil
+			}
 		}
 		rows = append(rows, row)
 		seen[entry.Name] = struct{}{}

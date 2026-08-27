@@ -374,6 +374,27 @@ func TestMultiAgentV2InteractionDoesNotExposeEncryptedRawMessage(t *testing.T) {
 	}
 }
 
+func TestMultiAgentV2CompletedActivitySettlesTheExistingLaunch(t *testing.T) {
+	var events []provider.ProviderEvent
+	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
+		events = append(events, event)
+	})
+	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "spawn-a", "started", "child-a", "/root/reviewer"))
+	events = nil
+
+	s.dispatchLine(v2ActivityLine("root-provider-thread", "root-turn", "subagent-completed-child-a", "completed", "child-a", "/root/reviewer"))
+	if len(events) != 1 {
+		t.Fatalf("completed activity events = %+v", events)
+	}
+	event := events[0]
+	if event.Kind != provider.EventSubagentStatus || event.ItemID != "spawn-a" || event.ParentToolUseID != "spawn-a" {
+		t.Fatalf("completed activity was not scoped to the launch: %+v", event)
+	}
+	if !strings.Contains(string(event.Meta), `"status":"completed"`) || !strings.Contains(string(event.Meta), `"agent_path":"child-a"`) {
+		t.Fatalf("completed activity meta = %s", event.Meta)
+	}
+}
+
 func TestMultiAgentV2SpawnDoesNotExposeEncryptedRawMessage(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {

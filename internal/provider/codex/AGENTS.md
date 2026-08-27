@@ -316,16 +316,13 @@ over stdio.
   shared `Fetcher` interface. Backs both the inactive-thread fallback
   and the `mcpServer/startupStatus/updated` /
   `mcpServer/oauthLogin/completed` notification paths. Three rules:
-  - **A list response describes SETTLED attempts.** Every call builds a
-    fresh connection set (threadId only selects config, it never reads a
-    loaded thread's manager) and awaits each pending client's startup
-    before answering, so `MCPStatusFromList` can never return
-    `StatusStarting` — only a startup notification can. Its liveness
-    signal is `serverInfo` presence, which MCP makes mandatory in a
-    successful `initialize` and codex echoes at every detail level;
-    tool count is the safety net, not the signal. No config-shaped
-    field (command/args/env/headers) is decoded here — only
-    `MCPServerInfo`'s name/version.
+  - **`runtimeStatus` wins when present.** Codex 0.150 returns the loaded
+    thread's exact runtime state (`notStarted`, `starting`, `connected`,
+    `authenticationRequired`, `failed`, `cancelled`, `disabled`). It is null
+    after config replacement and absent on older servers and one-shot reads;
+    those cases keep the settled `serverInfo` / tools / auth inference from
+    AO's 0.143 floor. No config-shaped field (command/args/env/headers) is
+    decoded here — only `MCPServerInfo`'s name/version.
   - **`MCPStatusFromNotif` takes the whole `MCPStartupUpdate`** so a
     failure carrying `failureReason: "reauthenticationRequired"`
     resolves to needs-auth (which surfaces the existing Sign in action)
@@ -1044,7 +1041,7 @@ consumer of thread shape:
 
 ## Upstream surface not consumed
 
-Everything below exists on the wire at rust-v0.149.0 and is deliberately
+Everything below exists on the wire at rust-v0.150.1 and is deliberately
 ignored. Listed so a future sync can tell "we have not looked at this"
 from "we looked and declined". Methods here are NOT in
 `codexNotificationCatalog`'s consumed set; notification methods here are
@@ -1077,6 +1074,14 @@ opted out at initialize.
   Bedrock login path.
 - `McpServerStatus.pluginId` (0.149) — `mcpstatus.go` decodes only the
   fields the status projection needs; plugin provenance has no UI.
+
+**0.150 additions AO declines:**
+
+- `mcpServer/event/stream/notification` — AO does not start the event-stream
+  surface.
+- `thread/realtime/item/started`, `thread/realtime/item/transcript/delta`,
+  and `thread/realtime/item/completed` — AO does not start a live realtime
+  session. Historical `realtime_item` transcript segments are still imported.
 
 **Older, still declined:**
 

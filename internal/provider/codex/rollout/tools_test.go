@@ -222,6 +222,15 @@ func TestConvertParentsSubagentRecordsUnderTheSpawningCall(t *testing.T) {
 
 	res := parseFixture(t, writeRollout(t, testSessionID,
 		metaLine, taskStartedLine, spawn, spawnOut, activity, delivery, taskCompleteLn))
+	starts := eventsOfKind(res.Events, provider.EventToolStart)
+	if len(starts) != 2 || starts[0].ItemType != "collab_agent" ||
+		!strings.Contains(string(starts[1].Meta), `"receiverThreadIds":["child-1"]`) ||
+		!strings.Contains(string(starts[1].Meta), `"is_background":true`) {
+		t.Fatalf("spawn ownership reannotation = %+v", starts)
+	}
+	if turns := eventsOfKind(res.Events, provider.EventTurnStart); len(turns) != 1 {
+		t.Fatalf("late spawn ownership created %d turns, want the original turn only", len(turns))
+	}
 
 	notes := eventsOfKind(res.Events, provider.EventNotification)
 	if len(notes) != 2 {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -130,5 +131,28 @@ func TestResolvedApprovalMetaCarriesAnswersOnlyForUserInput(t *testing.T) {
 	answers, ok := fields["answers"].(map[string]any)
 	if !ok || len(answers) != 0 {
 		t.Fatalf("user-input meta must carry an empty answers map: %+v", fields)
+	}
+}
+
+func TestApprovalRegistryEnforcesAdvertisedDecisions(t *testing.T) {
+	r := &ApprovalRegistry{}
+	decisions := []json.RawMessage{json.RawMessage(`"accept"`), json.RawMessage(`{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}}`)}
+	r.TrackApproval("r1", EventApprovalResolved, &decisions)
+	if err := r.ClaimApproval("r1", json.RawMessage(`"decline"`)); !errors.Is(err, ErrApprovalDecisionUnavailable) {
+		t.Fatalf("excluded decision error = %v", err)
+	}
+	if err := r.ClaimApproval("r1", json.RawMessage(`{ "acceptWithExecpolicyAmendment": { "execpolicy_amendment": ["git", "status"] } }`)); err != nil {
+		t.Fatalf("structured advertised decision rejected: %v", err)
+	}
+	if err := r.ClaimApproval("r1", json.RawMessage(`"accept"`)); !errors.Is(err, ErrStaleInteractiveRequest) {
+		t.Fatalf("second claim error = %v", err)
+	}
+}
+
+func TestApprovalRegistryAbsentDecisionSetKeepsLegacyCompatibility(t *testing.T) {
+	r := &ApprovalRegistry{}
+	r.TrackApproval("r1", EventApprovalResolved, nil)
+	if err := r.ClaimApproval("r1", json.RawMessage(`"acceptForSession"`)); err != nil {
+		t.Fatalf("legacy decision rejected: %v", err)
 	}
 }

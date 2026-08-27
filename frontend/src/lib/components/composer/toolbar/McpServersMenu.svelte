@@ -71,11 +71,11 @@
     return release;
   });
 
-  type StatusKey = 'connected' | 'starting' | 'needs-auth' | 'failed' | 'disabled' | 'unknown';
+  type StatusKey = 'connected' | 'not-started' | 'starting' | 'needs-auth' | 'failed' | 'disabled' | 'unknown';
 
   function statusKey(row: ThreadMCPServer): StatusKey {
     const s = row.status;
-    if (s === 'connected' || s === 'starting' || s === 'needs-auth' || s === 'failed' || s === 'disabled') {
+    if (s === 'connected' || s === 'not-started' || s === 'starting' || s === 'needs-auth' || s === 'failed' || s === 'disabled') {
       return s;
     }
     return 'unknown';
@@ -83,6 +83,7 @@
 
   const STATUS_DOT: Record<StatusKey, string> = {
     connected: 'bg-success',
+    'not-started': 'bg-fg-subtle/40',
     starting: 'bg-accent/60 animate-pulse',
     'needs-auth': 'bg-warning',
     failed: 'bg-error',
@@ -92,6 +93,7 @@
 
   const STATUS_LABEL: Record<StatusKey, string> = {
     connected: 'Connected',
+    'not-started': 'Not started',
     starting: 'Starting…',
     'needs-auth': 'Needs sign-in',
     failed: 'Failed',

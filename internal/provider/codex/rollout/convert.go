@@ -97,10 +97,12 @@ type converter struct {
 	// Tool correlation (tools.go). tools/toolOrder hold calls awaiting an
 	// output; toolItemIDs is the file-lifetime call_id → row id index the
 	// collab records parent themselves by (collab.go).
-	tools        map[string]*openTool
-	toolOrder    []string
-	toolItemIDs  map[string]string
-	agentParents map[string]string
+	tools          map[string]*openTool
+	toolOrder      []string
+	toolItemIDs    map[string]string
+	toolRefs       map[string]toolReference
+	agentParents   map[string]toolReference
+	subagentStarts map[string]subagentOwnership
 }
 
 func newConverter(opts ParseOptions, pre preScanResult) *converter {
@@ -118,7 +120,9 @@ func newConverter(opts ParseOptions, pre preScanResult) *converter {
 		usedTurnIDs:        map[string]struct{}{},
 		tools:              map[string]*openTool{},
 		toolItemIDs:        map[string]string{},
-		agentParents:       map[string]string{},
+		toolRefs:           map[string]toolReference{},
+		agentParents:       map[string]toolReference{},
+		subagentStarts:     map[string]subagentOwnership{},
 	}
 	// Seed the clock from the session header, so an event read off a line
 	// whose own timestamp is unparseable still carries one. Every imported
@@ -215,8 +219,64 @@ func (c *converter) convert(env envelope) {
 			var p securityRiskPayload
 			return json.Unmarshal(env.Payload, &p) == nil && len(p.Scores) > 0
 		})
+	case typeRealtimeItem:
+		c.convertRealtimeItem(env)
 	default:
 		c.countUnknown(env)
+	}
+}
+
+func (c *converter) convertRealtimeItem(env envelope) {
+	var item realtimeItemPayload
+	if json.Unmarshal(env.Payload, &item) != nil {
+		c.corrupt++
+		return
+	}
+	item.ID = strings.TrimSpace(item.ID)
+	item.RealtimeSessionID = strings.TrimSpace(item.RealtimeSessionID)
+	item.Type = strings.TrimSpace(item.Type)
+	if item.ID == "" || item.RealtimeSessionID == "" || item.Type == "" {
+		c.unknown[typeRealtimeItem+" (unexpected shape)"]++
+		return
+	}
+	switch item.Type {
+	case "transcript_segment":
+		switch strings.TrimSpace(item.Role) {
+		case "user":
+			if item.Text != "" {
+				c.emitUserText(item.Text)
+			}
+		case "assistant":
+			if item.Text != "" {
+				c.emitReviewAwareAssistantText(item.Text)
+			}
+		default:
+			c.unknown[typeRealtimeItem+"/"+item.Type+" (unexpected shape)"]++
+		}
+	case "realtime_session_started":
+		// Session boundaries carry no transcript content.
+	case "realtime_session_closed":
+		if item.Outcome != "ended" && item.Outcome != "failed" {
+			c.unknown[typeRealtimeItem+"/"+item.Type+" (unexpected shape)"]++
+		}
+	case "bem_item_promoted":
+		if strings.TrimSpace(item.TurnID) == "" || strings.TrimSpace(item.ItemID) == "" ||
+			item.Presentation == nil || !validRealtimePresentation(item.Presentation.Type, item.Presentation.Index) {
+			c.unknown[typeRealtimeItem+"/"+item.Type+" (unexpected shape)"]++
+		}
+	default:
+		c.unknown[typeRealtimeItem+"/"+item.Type]++
+	}
+}
+
+func validRealtimePresentation(kind string, index *uint32) bool {
+	switch strings.TrimSpace(kind) {
+	case "whole_item", "inline_markdown":
+		return index == nil
+	case "inline_visualization":
+		return index != nil
+	default:
+		return false
 	}
 }
 

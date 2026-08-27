@@ -2,6 +2,8 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -13,11 +15,14 @@ type codexUserInputAnswer struct {
 }
 
 func (s *Session) RespondToApproval(ctx context.Context, resp provider.ApprovalResponse) error {
-	rpcID, result, err := buildApprovalResponseResult(resp)
+	rpcID, result, decision, err := buildApprovalResponseResultAndDecision(resp)
 	if err != nil {
 		return err
 	}
-	if !s.approvals.Claim(resp.RequestID, provider.EventApprovalResolved) {
+	if err := s.approvals.ClaimApproval(resp.RequestID, decision); err != nil {
+		if errors.Is(err, provider.ErrApprovalDecisionUnavailable) {
+			return err
+		}
 		return ErrApprovalAlreadyResolved
 	}
 	return s.writeResponse(rpcID, result)
@@ -35,25 +40,49 @@ func (s *Session) RespondToUserInput(ctx context.Context, resp provider.UserInpu
 }
 
 func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, error) {
+	rpcID, result, _, err := buildApprovalResponseResultAndDecision(resp)
+	return rpcID, result, err
+}
+
+func buildApprovalResponseResultAndDecision(resp provider.ApprovalResponse) (int64, any, json.RawMessage, error) {
 	rpcID, err := parseApprovalRequestID(resp.RequestID)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
+	}
+	permissionsMode := resp.Scope != "" || resp.Permissions != nil
+	elicitationMode := resp.Elicitation != nil
+	structuredDecisionMode := len(resp.DecisionValue) > 0
+	if (permissionsMode && elicitationMode) ||
+		(structuredDecisionMode && (permissionsMode || elicitationMode)) {
+		return 0, nil, nil, fmt.Errorf("codex: approval response modes are mutually exclusive")
 	}
 
-	if resp.Scope != "" || resp.Permissions != nil {
+	if permissionsMode {
+		decision, _ := json.Marshal(resp.Decision)
 		return rpcID, map[string]any{
 			"scope":       resp.Scope,
 			"permissions": resp.Permissions,
-		}, nil
+		}, decision, nil
 	}
 
 	// MCP elicitation responses use { action, content, _meta } format.
-	if resp.Elicitation != nil {
+	if elicitationMode {
+		decision, _ := json.Marshal(resp.Decision)
 		return rpcID, map[string]any{
 			"action":  resp.Elicitation.Action,
 			"content": resp.Elicitation.Content,
 			"_meta":   resp.Elicitation.Meta,
-		}, nil
+		}, decision, nil
+	}
+	if structuredDecisionMode {
+		if resp.Decision != "" {
+			return 0, nil, nil, fmt.Errorf("codex: approval response cannot contain both decision and decisionValue")
+		}
+		if !json.Valid(resp.DecisionValue) {
+			return 0, nil, nil, fmt.Errorf("codex: invalid structured approval decision")
+		}
+		decision := append(json.RawMessage(nil), resp.DecisionValue...)
+		return rpcID, map[string]any{"decision": decision}, decision, nil
 	}
 
 	// Translate frontend decision values to Codex-native vocabulary.
@@ -66,7 +95,8 @@ func buildApprovalResponseResult(resp provider.ApprovalResponse) (int64, any, er
 	case "deny":
 		decision = "decline"
 	}
-	return rpcID, map[string]any{"decision": decision}, nil
+	decisionJSON, _ := json.Marshal(decision)
+	return rpcID, map[string]any{"decision": decision}, decisionJSON, nil
 }
 
 func buildUserInputResponseResult(resp provider.UserInputResponse) (int64, any, error) {

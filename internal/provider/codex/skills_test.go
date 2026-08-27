@@ -28,6 +28,7 @@ const skillsListWireSample = `{"data":[{
                   "iconLarge":null,"brandColor":"#ff0000",
                   "defaultPrompt":"Review my working tree"},
      "dependencies":{"tools":[{"type":"mcp","value":"github"}]},
+     "pluginId":"review-tools",
      "path":"/repo/.codex/skills/code-review/SKILL.md",
      "scope":"repo","enabled":true},
     {"name":"changelog",
@@ -75,6 +76,9 @@ func TestParseSkillsListProjectsEveryConsumedField(t *testing.T) {
 	if first.Scope != "repo" || !first.Enabled {
 		t.Errorf("scope/enabled = %q/%v, want repo/true", first.Scope, first.Enabled)
 	}
+	if first.PluginID != "review-tools" {
+		t.Errorf("PluginID = %q, want review-tools", first.PluginID)
+	}
 
 	second := entry.Skills[1]
 	// No interface block: the legacy short description is absent too, so
@@ -88,6 +92,9 @@ func TestParseSkillsListProjectsEveryConsumedField(t *testing.T) {
 	}
 	if second.Scope != "user" {
 		t.Errorf("second scope = %q, want user", second.Scope)
+	}
+	if second.PluginID != "" {
+		t.Errorf("older omitted pluginId = %q, want empty", second.PluginID)
 	}
 
 	if len(entry.Errors) != 1 || entry.Errors[0].Message != "missing SKILL.md" {

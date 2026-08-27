@@ -407,11 +407,10 @@ func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID strin
 }
 
 func (r *Router) markCodexSpawnChildTerminal(launch store.Item, meta codexItemMeta, childID, status string) (bool, string, error) {
+	var allTerminal bool
+	launch.Meta, allTerminal, _ = MergeCodexSubagentTerminalMeta(launch.Meta, childID, status)
 	terminalStatuses := decodeCodexChildTerminalStatuses(json.RawMessage(launch.Meta))
-	terminalStatuses[childID] = status
-	allTerminal := allCodexSpawnChildrenTerminal(meta.ReceiverThreadIDs, terminalStatuses)
 	aggregateStatus := aggregateCodexSubagentTerminalStatus(meta.ReceiverThreadIDs, terminalStatuses)
-	launch.Meta = mergeItemMetaJSON(launch.Meta, codexSubagentTerminalMeta(childID, status, allTerminal))
 	launch.UpdatedAt = time.Now().UnixMilli()
 	if err := r.persistItem(launch, nil); err != nil {
 		return allTerminal, aggregateStatus, err

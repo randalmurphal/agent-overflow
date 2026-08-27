@@ -70,6 +70,9 @@ type Skill struct {
 	// config. Disabled skills are still returned so a UI can show them as
 	// off rather than silently omitting them.
 	Enabled bool `json:"enabled"`
+	// PluginID preserves Codex's owning plugin when the skill came from one.
+	// Older servers omit it.
+	PluginID string `json:"pluginId,omitempty"`
 }
 
 // LoadError is one directory Codex could not read skills from. Carried

@@ -26,12 +26,13 @@ const (
 type Status string
 
 const (
-	StatusUnknown   Status = "unknown"    // never observed, or ambiguous wire state
-	StatusStarting  Status = "starting"   // Codex notification "starting" / Claude "pending"
-	StatusConnected Status = "connected"  // Codex authStatus∈{unknown,unsupported,bearerToken,oAuth} ∧ initialize proven (serverInfo or tools) OR notif "ready" / Claude "connected"
-	StatusNeedsAuth Status = "needs-auth" // Codex "notLoggedIn" / Claude "needs-auth"
-	StatusFailed    Status = "failed"     // Codex notif "failed"|"cancelled", or a settled list probe with no initialize evidence / Claude "failed"
-	StatusDisabled  Status = "disabled"   // Claude "disabled" (toggled off; the CLI keeps the row and reports it)
+	StatusUnknown    Status = "unknown"     // never observed, or ambiguous wire state
+	StatusNotStarted Status = "not-started" // Codex runtime has not attempted this server yet
+	StatusStarting   Status = "starting"    // Codex notification "starting" / Claude "pending"
+	StatusConnected  Status = "connected"   // Codex authStatus∈{unknown,unsupported,bearerToken,oAuth} ∧ initialize proven (serverInfo or tools) OR notif "ready" / Claude "connected"
+	StatusNeedsAuth  Status = "needs-auth"  // Codex "notLoggedIn" / Claude "needs-auth"
+	StatusFailed     Status = "failed"      // Codex notif "failed"|"cancelled", or a settled list probe with no initialize evidence / Claude "failed"
+	StatusDisabled   Status = "disabled"    // provider reports the configured server as disabled
 )
 
 // Key uniquely identifies a status entry across both providers.

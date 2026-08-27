@@ -3,6 +3,7 @@ import type { ProviderID } from './providers';
 
 export type ApprovalKind =
   | 'command'
+  | 'write-stdin'
   | 'file-read'
   | 'file-change'
   | 'permission'
@@ -84,6 +85,9 @@ export interface ApprovalRequest {
   input: unknown;
   title: string;
   kind?: ApprovalKind;
+  providerApprovalId?: string;
+  /** Provider-native values. Codex can include structured policy amendments. */
+  availableDecisions?: unknown[];
   permissions?: PermissionProfile;
   elicitation?: ElicitationRequest;
 }

@@ -2400,6 +2400,13 @@ func TestUnknownMethod(t *testing.T) {
 	}
 }
 
+func TestHookNotificationAcceptsInterruptEventName(t *testing.T) {
+	events := ClassifyNotification(testThread, "hook/started", json.RawMessage(`{"run":{"eventName":"interrupt","status":"running"}}`))
+	if len(events) != 1 || events[0].Content != "interrupt hook (running)" {
+		t.Fatalf("interrupt hook events = %+v", events)
+	}
+}
+
 func TestThreadIDPassthrough(t *testing.T) {
 	params := json.RawMessage(`{"turn":{"id":"t1"}}`)
 	events := ClassifyNotification("my-thread-123", "turn/started", params)

@@ -192,6 +192,12 @@ func readRouteFields(params json.RawMessage) (string, string) {
 }
 
 func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json.RawMessage) json.RawMessage {
+	approval := buildApprovalRequest(threadID, turnID, method, rpcID, params)
+	data, _ := json.Marshal(approval)
+	return data
+}
+
+func buildApprovalRequest(threadID, turnID, method string, rpcID int64, params json.RawMessage) provider.ApprovalRequest {
 	var parsed map[string]json.RawMessage
 	_ = json.Unmarshal(params, &parsed)
 
@@ -200,8 +206,22 @@ func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json
 	var input json.RawMessage
 	title := method
 	kind := approvalKindForMethod(method)
+	providerApprovalID := readRawString(parsed, "approvalId")
+	itemID := readRawString(parsed, "itemId")
+	availableDecisions := readAvailableApprovalDecisions(parsed)
+	providerKind := readRawString(parsed, "kind")
+	if method == "item/commandExecution/requestApproval" && providerKind == "writeStdin" {
+		kind = "write-stdin"
+		toolName = "write_stdin"
+		title = "Send input to terminal"
+		description = readRawString(parsed, "reason")
+		if description == "" {
+			description = "Send input to the running terminal"
+		}
+		input = append(json.RawMessage(nil), params...)
+	}
 
-	if cmd, ok := parsed["command"]; ok {
+	if cmd, ok := parsed["command"]; ok && kind != "write-stdin" {
 		var cmdStr string
 		if json.Unmarshal(cmd, &cmdStr) == nil {
 			toolName = "command"
@@ -225,19 +245,31 @@ func buildApprovalMeta(threadID, turnID, method string, rpcID int64, params json
 		}
 	}
 
-	approval := provider.ApprovalRequest{
-		RequestID:   fmt.Sprintf("%d", rpcID),
-		ThreadID:    threadID,
-		TurnID:      turnID,
-		ToolName:    toolName,
-		Description: description,
-		Input:       input,
-		Title:       title,
-		Kind:        kind,
+	return provider.ApprovalRequest{
+		RequestID:          fmt.Sprintf("%d", rpcID),
+		ThreadID:           threadID,
+		TurnID:             turnID,
+		ToolUseID:          itemID,
+		ToolName:           toolName,
+		Description:        description,
+		Input:              input,
+		Title:              title,
+		Kind:               kind,
+		ProviderApprovalID: providerApprovalID,
+		AvailableDecisions: availableDecisions,
 	}
+}
 
-	data, _ := json.Marshal(approval)
-	return data
+func readAvailableApprovalDecisions(parsed map[string]json.RawMessage) *[]json.RawMessage {
+	raw, present := parsed["availableDecisions"]
+	if !present || string(raw) == "null" {
+		return nil
+	}
+	var decisions []json.RawMessage
+	if json.Unmarshal(raw, &decisions) != nil {
+		return nil
+	}
+	return &decisions
 }
 
 // approvalKindForMethod derives the approval kind from the JSON-RPC method name.

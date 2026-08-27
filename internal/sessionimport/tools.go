@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/importir"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/triage"
@@ -136,7 +137,7 @@ func (b *builder) toolComplete(evt importir.Event) error {
 	if b.splitsCompletion(r.item.ToolName) {
 		return b.splitToolCompletion(evt, metaObject, r, meta, now)
 	}
-	if found && (r.item.IsBackground || meta.IsBackground) {
+	if found && (r.item.IsBackground || meta.IsBackground) && !b.isCodexSpawnLaunch(r) {
 		// A backgrounded launch's tool_result is a placeholder: the real
 		// terminal arrives later as EventBackgroundTaskTerminal, which
 		// writes the sibling row. Keep the launch running.
@@ -182,6 +183,66 @@ func (b *builder) toolComplete(evt importir.Event) error {
 		// streamed command_output); the generic result blob is redundant.
 	}
 	return b.markUnavailableReason(unavailableReason, r)
+}
+
+func (b *builder) isCodexSpawnLaunch(r *row) bool {
+	if b.thread.Provider != string(provider.Codex) || r == nil || r.item.ToolName != "collab_agent" {
+		return false
+	}
+	var stored struct {
+		Input struct {
+			Tool string `json:"tool"`
+		} `json:"input"`
+	}
+	if json.Unmarshal([]byte(r.item.Meta), &stored) != nil {
+		return false
+	}
+	switch strings.TrimSpace(stored.Input.Tool) {
+	case "spawn_agent", "spawnAgent":
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *builder) subagentStatus(evt importir.Event) error {
+	launchID := stringsx.FirstNonEmptyTrimmed(evt.ItemID, evt.ParentToolUseID)
+	if launchID == "" {
+		return fmt.Errorf("subagent status carries no launch id")
+	}
+	launch, found := b.byID[launchID]
+	if !found {
+		return fmt.Errorf("subagent status targets missing launch %s", launchID)
+	}
+	if launch.item.Kind != kindToolCall {
+		return fmt.Errorf("subagent status %s targets a %s row", launchID, launch.item.Kind)
+	}
+	var signal struct {
+		AgentPath string `json:"agent_path"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(evt.Meta, &signal); err != nil {
+		return fmt.Errorf("decode subagent status %s: %w", launchID, err)
+	}
+	childID := strings.TrimSpace(signal.AgentPath)
+	if childID == "" {
+		return fmt.Errorf("subagent status %s carries no child id", launchID)
+	}
+	now, err := timestamp(evt)
+	if err != nil {
+		return err
+	}
+	if launch.item.ToolName != "collab_agent" {
+		return fmt.Errorf("subagent status %s targets tool %s", launchID, launch.item.ToolName)
+	}
+	updated, _, matched := triage.MergeCodexSubagentTerminalMeta(launch.item.Meta, childID, signal.Status)
+	if !matched {
+		return fmt.Errorf("subagent status %s names child %s outside the launch", launchID, childID)
+	}
+	launch.item.Meta = updated
+	launch.item.IsBackground = true
+	launch.item.UpdatedAt = now
+	return nil
 }
 
 // placeholderToolLaunch builds the launch row an `import_unavailable`

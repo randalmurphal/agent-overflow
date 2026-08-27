@@ -28,6 +28,11 @@ import (
 // imported range — the row is emitted top-level as a notification rather than
 // dropped, and never parented under a guess.
 
+type subagentOwnership struct {
+	agentPath     string
+	agentThreadID string
+}
+
 // applySubAgentActivity emits child lifecycle, records the agent-path → spawn
 // mapping for later final delivery, and promotes messages to timeline tools.
 func (c *converter) applySubAgentActivity(env envelope) {
@@ -37,12 +42,18 @@ func (c *converter) applySubAgentActivity(env envelope) {
 		return
 	}
 	agentPath := strings.TrimSpace(p.AgentPath)
-	parent := c.toolItemIDs[strings.TrimSpace(p.EventID)]
-	if parent != "" && agentPath != "" {
-		c.agentParents[agentPath] = parent
+	eventID := strings.TrimSpace(p.EventID)
+	agentThreadID := strings.TrimSpace(p.AgentThreadID)
+	kind := strings.TrimSpace(p.Kind)
+	parent := c.toolItemIDs[eventID]
+	if kind == "started" {
+		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID)
 	}
-	if strings.TrimSpace(p.Kind) == "interacted" {
-		c.emitCollabInteraction(p.EventID, agentPath, strings.TrimSpace(p.AgentThreadID))
+	if kind == "interacted" {
+		c.emitCollabInteraction(eventID, agentPath, agentThreadID)
+		return
+	}
+	if kind == "completed" && c.emitSubAgentCompleted(parent, agentPath, agentThreadID, eventID) {
 		return
 	}
 	meta := map[string]any{
@@ -56,6 +67,101 @@ func (c *converter) applySubAgentActivity(env envelope) {
 		meta["agentThreadId"] = id
 	}
 	c.emitNotification(subAgentSummary(agentPath, p.Kind), meta, parent)
+}
+
+func (c *converter) recordSubagentStart(eventID, agentPath, agentThreadID string) string {
+	if eventID == "" || agentPath == "" {
+		return c.toolItemIDs[eventID]
+	}
+	ownership := subagentOwnership{agentPath: agentPath, agentThreadID: agentThreadID}
+	if existing, ok := c.subagentStarts[eventID]; ok {
+		if existing != ownership {
+			c.corrupt++
+		}
+		return c.toolItemIDs[eventID]
+	}
+	c.subagentStarts[eventID] = ownership
+	ref, found := c.toolRefs[eventID]
+	if !found {
+		return ""
+	}
+	parent := ref.itemID
+	c.agentParents[agentPath] = ref
+	if tool := c.tools[eventID]; tool != nil {
+		c.applySubagentOwnership(tool, ownership)
+		c.emit(provider.ProviderEvent{
+			Kind: provider.EventToolStart, TurnID: tool.turnID, TurnIndex: tool.turnIndex,
+			ItemID: tool.itemID, ItemType: tool.itemType, Role: "assistant",
+			Meta: c.toolStartMeta(tool), Timestamp: c.lastTimestamp,
+		})
+		return parent
+	}
+	input := map[string]any{"tool": "spawn_agent"}
+	if agentThreadID != "" {
+		input["receiverThreadIds"] = []string{agentThreadID}
+	}
+	c.emit(provider.ProviderEvent{
+		Kind: provider.EventToolStart, TurnID: ref.turnID, TurnIndex: ref.turnIndex,
+		ItemID: parent, ItemType: ref.itemType, Role: "assistant",
+		Meta: metaJSON(map[string]any{
+			"toolName": "collab_agent", "input": input, "meta_update_only": true,
+			"is_background": true, "live_background_active": true,
+		}),
+		Timestamp: c.lastTimestamp,
+	})
+	return parent
+}
+
+func (c *converter) applySubagentOwnership(tool *openTool, ownership subagentOwnership) {
+	input := map[string]any{}
+	if len(tool.input) > 0 && json.Unmarshal(tool.input, &input) != nil {
+		c.corrupt++
+		input = map[string]any{}
+	}
+	input["tool"] = "spawn_agent"
+	if ownership.agentThreadID != "" {
+		input["receiverThreadIds"] = []string{ownership.agentThreadID}
+	}
+	if ownership.agentPath != "" {
+		input["agentPath"] = ownership.agentPath
+	}
+	tool.input = metaJSON(input)
+	tool.isBackground = true
+}
+
+func (c *converter) emitSubAgentCompleted(parent, agentPath, agentThreadID, activityID string) bool {
+	ref, hasRef := c.agentParents[agentPath]
+	if parent == "" {
+		parent = ref.itemID
+	}
+	if parent == "" || agentThreadID == "" {
+		return false
+	}
+	turnID := ""
+	turnIndex := 0
+	if hasRef {
+		turnID = ref.turnID
+		turnIndex = ref.turnIndex
+	} else {
+		c.ensureTurn()
+		turnID = c.turn.id
+		turnIndex = c.turn.index
+	}
+	c.emit(provider.ProviderEvent{
+		Kind:            provider.EventSubagentStatus,
+		TurnID:          turnID,
+		TurnIndex:       turnIndex,
+		ItemID:          parent,
+		ParentToolUseID: parent,
+		Meta: metaJSON(map[string]any{
+			"agent_path":       agentThreadID,
+			"canonical_path":   agentPath,
+			"status":           "completed",
+			"activity_call_id": strings.TrimSpace(activityID),
+		}),
+		Timestamp: c.lastTimestamp,
+	})
+	return true
 }
 
 // emitCollabInteraction projects a parent-to-child message at the point it
@@ -225,7 +331,7 @@ func (c *converter) emitInterAgent(p interAgentPayload, rawAgentMessage bool) {
 	if recipient := strings.TrimSpace(p.Recipient); recipient != "" {
 		meta["recipient"] = recipient
 	}
-	c.emitNotification(text, meta, c.agentParents[author])
+	c.emitNotification(text, meta, c.agentParents[author].itemID)
 }
 
 func parseInterAgentEnvelope(author, recipient, text string) (messageType, message string, ok bool) {

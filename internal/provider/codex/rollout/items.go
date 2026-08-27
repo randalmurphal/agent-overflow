@@ -506,12 +506,18 @@ func (c *converter) applyCollabAgentToolCallItem(p itemCompletedPayload, item tu
 // path for later delivery; interacted lifecycle becomes a standalone tool.
 func (c *converter) applySubAgentActivityItem(item turnItem) {
 	agentPath := strings.TrimSpace(item.AgentPath)
-	parent := c.toolItemIDs[strings.TrimSpace(item.ID)]
-	if parent != "" && agentPath != "" {
-		c.agentParents[agentPath] = parent
+	eventID := strings.TrimSpace(item.ID)
+	agentThreadID := strings.TrimSpace(item.AgentThreadID)
+	kind := strings.TrimSpace(item.Kind)
+	parent := c.toolItemIDs[eventID]
+	if kind == "started" {
+		parent = c.recordSubagentStart(eventID, agentPath, agentThreadID)
 	}
-	if strings.TrimSpace(item.Kind) == "interacted" {
-		c.emitCollabInteraction(item.ID, agentPath, strings.TrimSpace(item.AgentThreadID))
+	if kind == "interacted" {
+		c.emitCollabInteraction(eventID, agentPath, agentThreadID)
+		return
+	}
+	if kind == "completed" && c.emitSubAgentCompleted(parent, agentPath, agentThreadID, eventID) {
 		return
 	}
 	meta := map[string]any{

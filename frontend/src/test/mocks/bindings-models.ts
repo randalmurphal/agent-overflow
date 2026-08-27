@@ -7,6 +7,7 @@
 export class ApprovalResponse {
   requestId: string;
   decision: string;
+  decisionValue?: unknown;
   input: unknown;
   permissions?: { network?: { enabled?: boolean }; fileSystem?: { read?: string[]; write?: string[] } } | null;
   scope?: string;
@@ -16,6 +17,7 @@ export class ApprovalResponse {
   constructor(data: Partial<ApprovalResponse> = {}) {
     this.requestId = data.requestId ?? '';
     this.decision = data.decision ?? '';
+    this.decisionValue = data.decisionValue;
     this.input = data.input ?? undefined;
     this.permissions = data.permissions;
     this.scope = data.scope;

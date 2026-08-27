@@ -1,9 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"sync"
 )
+
+var ErrApprovalDecisionUnavailable = errors.New("provider: approval decision is not available")
 
 // ResolvedApproval is one interactive request a Claim, Cancel or Drain
 // released from the registry — the request id the frontend keyed its prompt
@@ -48,6 +52,10 @@ type pendingApproval struct {
 	// against the questions actually asked. Claude-only: Codex re-reads its
 	// questions off the wire params. Stored as an owned copy.
 	questions []UserInputQuestion
+	// allowedDecisions is nil when the provider did not advertise a set.
+	// Keys are compact JSON, which makes object member whitespace and caller
+	// formatting irrelevant while preserving the provider's exact values.
+	allowedDecisions map[string]struct{}
 }
 
 // ApprovalRegistry is the per-session ledger of outstanding interactive
@@ -83,6 +91,26 @@ type ApprovalRegistry struct {
 // provider that re-sends a request it previously answered is asking again,
 // and refusing the new one as a duplicate would strand it.
 func (r *ApprovalRegistry) Track(requestID string, resolveKind EventKind, questions []UserInputQuestion) {
+	r.track(requestID, resolveKind, questions, nil)
+}
+
+// TrackApproval registers a tool approval and its optional provider-advertised
+// decision set. nil means legacy fallback. A non-nil empty slice allows no
+// response, matching the provider's authoritative empty set.
+func (r *ApprovalRegistry) TrackApproval(requestID string, resolveKind EventKind, decisions *[]json.RawMessage) {
+	var allowed map[string]struct{}
+	if decisions != nil {
+		allowed = make(map[string]struct{}, len(*decisions))
+		for _, decision := range *decisions {
+			if normalized, ok := normalizeApprovalDecisionJSON(decision); ok {
+				allowed[normalized] = struct{}{}
+			}
+		}
+	}
+	r.track(requestID, resolveKind, nil, allowed)
+}
+
+func (r *ApprovalRegistry) track(requestID string, resolveKind EventKind, questions []UserInputQuestion, allowed map[string]struct{}) {
 	if requestID == "" {
 		return
 	}
@@ -95,10 +123,51 @@ func (r *ApprovalRegistry) Track(requestID string, resolveKind EventKind, questi
 		r.pending = make(map[string]*pendingApproval)
 	}
 	r.pending[requestID] = &pendingApproval{
-		resolveKind: resolveKind,
-		questions:   append([]UserInputQuestion(nil), questions...),
+		resolveKind:      resolveKind,
+		questions:        append([]UserInputQuestion(nil), questions...),
+		allowedDecisions: allowed,
 	}
 	r.dedup.Forget(requestID)
+}
+
+// ClaimApproval atomically validates and takes a tool approval. Advertised
+// decisions are enforced in the backend so a stale or hand-crafted frontend
+// response cannot submit a choice the server excluded.
+func (r *ApprovalRegistry) ClaimApproval(requestID string, decision json.RawMessage) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.dedup.IsResolved(requestID) {
+		return ErrStaleInteractiveRequest
+	}
+	pending, ok := r.pending[requestID]
+	if !ok || pending.resolveKind != EventApprovalResolved {
+		return ErrStaleInteractiveRequest
+	}
+	if pending.allowedDecisions != nil {
+		normalized, valid := normalizeApprovalDecisionJSON(decision)
+		if !valid {
+			return ErrApprovalDecisionUnavailable
+		}
+		if _, allowed := pending.allowedDecisions[normalized]; !allowed {
+			return ErrApprovalDecisionUnavailable
+		}
+	}
+	delete(r.pending, requestID)
+	r.dedup.MarkResolved(requestID)
+	return nil
+}
+
+func normalizeApprovalDecisionJSON(decision json.RawMessage) (string, bool) {
+	decision = bytes.TrimSpace(decision)
+	if len(decision) == 0 || !json.Valid(decision) {
+		return "", false
+	}
+	var value any
+	if json.Unmarshal(decision, &value) != nil {
+		return "", false
+	}
+	normalized, err := json.Marshal(value)
+	return string(normalized), err == nil
 }
 
 // Questions returns an owned copy of the structured questions registered with

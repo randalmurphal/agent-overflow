@@ -509,11 +509,12 @@ func classifySubAgentActivityCompleted(threadID string, params json.RawMessage, 
 			Meta:      subAgentActivityCollabMeta(params, activity, "sendInput", "completed", false),
 			Timestamp: now,
 		}}
-	case "interrupted":
+	case "interrupted", "completed":
+		status := activity.Kind
 		meta, err := json.Marshal(map[string]any{
 			"agent_path":       activity.AgentThreadID,
 			"canonical_path":   activity.AgentPath,
-			"status":           "interrupted",
+			"status":           status,
 			"activity_call_id": activity.ItemID,
 		})
 		if err != nil {

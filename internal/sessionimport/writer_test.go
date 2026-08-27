@@ -90,6 +90,56 @@ func TestBuildPreservesSourcedCommandResultAttribution(t *testing.T) {
 	t.Fatal("no command result row")
 }
 
+func TestBuildAppliesCodexSubagentTerminalStatusToSpawnLaunch(t *testing.T) {
+	st := newTestStore(t)
+	thread := seedThread(t, st, testThreadID, "codex", t.TempDir())
+	events := []importir.Event{
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventTurnStart, ThreadID: testThreadID,
+			TurnID: "turn-1", Timestamp: at(0),
+		}, SourceUUID: "line:1"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: testThreadID,
+			TurnID: "turn-1", ItemID: "spawn-1", ItemType: "toolCall",
+			Meta:      json.RawMessage(`{"toolName":"collab_agent","is_background":true,"live_background_active":true,"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`),
+			Timestamp: at(1),
+		}, SourceUUID: "line:2"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: testThreadID,
+			TurnID: "turn-1", ItemID: "spawn-1", ItemType: "collab_agent",
+			Meta:      json.RawMessage(`{"toolName":"collab_agent","is_background":true,"item_status":"completed","input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`),
+			Timestamp: at(2),
+		}, SourceUUID: "line:3"},
+		{ProviderEvent: provider.ProviderEvent{
+			Kind: provider.EventSubagentStatus, ThreadID: testThreadID,
+			TurnID: "turn-1", ItemID: "spawn-1", ParentToolUseID: "spawn-1",
+			Meta:      json.RawMessage(`{"agent_path":"child-1","status":"completed"}`),
+			Timestamp: at(3),
+		}, SourceUUID: "line:4"},
+	}
+
+	batch, warnings, err := NewWriter(st, thread).Build(events)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %+v", warnings)
+	}
+	if len(batch.Rows) != 1 {
+		t.Fatalf("rows = %d, want only the spawn launch", len(batch.Rows))
+	}
+	if batch.Rows[0].Item.Status != statusCompleted || !batch.Rows[0].Item.IsBackground {
+		t.Fatalf("spawn row state = %s background=%v, want completed background launch", batch.Rows[0].Item.Status, batch.Rows[0].Item.IsBackground)
+	}
+	meta := batch.Rows[0].Item.Meta
+	if !strings.Contains(meta, `"codex_child_terminal_statuses":{"child-1":"completed"}`) {
+		t.Fatalf("spawn meta missing child terminal status: %s", meta)
+	}
+	if !strings.Contains(meta, `"live_background_active":false`) {
+		t.Fatalf("spawn meta still active after its only child completed: %s", meta)
+	}
+}
+
 // SourceOffset is a resume position, never a substitute for provenance. A
 // reader that set only the offset is a reader bug, and the whole import is
 // refused rather than stamped with a coordinate nobody agreed on.

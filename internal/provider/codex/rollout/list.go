@@ -64,8 +64,9 @@ type SessionInfo struct {
 //     `preview` is the emptiness signal; the legacy `has_user_event` column is
 //     NOT — nothing has written it since migration 0007, so filtering on it
 //     would return zero rows.
-//   - the three subagent exclusions are ours, and deliberately belt-and-braces:
-//     `thread_source` is the modern marker, the `source` JSON prefix is what
+//   - the child-thread exclusions are ours, and deliberately belt-and-braces:
+//     `thread_source` marks both ordinary subagents and 0.150 Guardian review
+//     sessions, the `source` JSON prefix is what
 //     older rows carry, and `thread_spawn_edges` is the authoritative child
 //     table. A spawned child is a thread AO must not import as a top-level
 //     conversation; it is imported (if at all) as part of its parent.
@@ -87,7 +88,7 @@ SELECT t.id,
   FROM threads t
  WHERE t.archived = 0
    AND t.preview <> ''
-   AND COALESCE(t.thread_source, '') <> 'subagent'
+   AND COALESCE(t.thread_source, '') NOT IN ('subagent', 'guardian_review')
    AND t.source NOT LIKE '{"subagent"%'
    AND t.id NOT IN (SELECT child_thread_id FROM thread_spawn_edges)
  ORDER BY COALESCE(t.recency_at_ms, t.updated_at_ms, t.updated_at * 1000) DESC,

@@ -115,6 +115,7 @@ func TestListExcludesArchivedSubagentAndEmptyThreads(t *testing.T) {
 		{id: "archived", rolloutPath: keep, source: "cli", preview: "hello", archived: 1, recencyMS: 800},
 		{id: "sub-by-source", rolloutPath: keep, source: `{"subagent":{"thread_spawn":{}}}`, preview: "hello", recencyMS: 700},
 		{id: "sub-by-column", rolloutPath: keep, source: "cli", threadSource: "subagent", preview: "hello", recencyMS: 600},
+		{id: "guardian-review", rolloutPath: keep, source: "cli", threadSource: "guardian_review", preview: "hello", recencyMS: 550},
 		{id: "sub-by-edge", rolloutPath: keep, source: "cli", preview: "hello", recencyMS: 500},
 		{id: "no-preview", rolloutPath: keep, source: "cli", preview: "", recencyMS: 400},
 	}

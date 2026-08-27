@@ -11,14 +11,14 @@ import (
 // app-server is known to emit, in upstream declaration order.
 //
 // Last synced against the `server_notification_definitions!` block at
-// codex-rs/app-server-protocol/src/protocol/common.rs @ **rust-v0.149.0**
-// (77 entries, including the `#[serde(rename = "account/login/completed")]`
+// codex-rs/app-server-protocol/src/protocol/common.rs @ **rust-v0.150.1**
+// (81 entries, including the `#[serde(rename = "account/login/completed")]`
 // tail entry). Update BOTH this tag and the list when re-syncing — the
 // tag is the only record of what "complete" meant.
 //
-// The 0.147→0.149 additions: `thread/reverted` and `thread/queue/changed`
-// (0.148), `autoApprovalReview/strictReviewRequired`, `project/changed`
-// and `thread/project/updated` (0.149).
+// The 0.150 additions are the MCP event stream plus the three typed realtime
+// item notifications. AO starts neither surface, so all four remain in the
+// derived opt-out complement.
 //
 // The catalog exists to compute the initialize-time opt-out list (the
 // complement of what we consume). Being out of date is therefore safe in
@@ -73,6 +73,7 @@ var codexNotificationCatalog = []string{
 	"item/mcpToolCall/progress",
 	"mcpServer/oauthLogin/completed",
 	"mcpServer/startupStatus/updated",
+	"mcpServer/event/stream/notification",
 	"account/updated",
 	"account/rateLimits/updated",
 	"app/list/updated",
@@ -96,6 +97,9 @@ var codexNotificationCatalog = []string{
 	"fuzzyFileSearch/sessionCompleted",
 	"thread/realtime/started",
 	"thread/realtime/itemAdded",
+	"thread/realtime/item/started",
+	"thread/realtime/item/transcript/delta",
+	"thread/realtime/item/completed",
 	"thread/realtime/transcript/delta",
 	"thread/realtime/transcript/done",
 	"thread/realtime/outputAudio/delta",

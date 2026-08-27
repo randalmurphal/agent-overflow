@@ -134,6 +134,12 @@ export class Skill {
      */
     "enabled": boolean;
 
+    /**
+     * PluginID preserves Codex's owning plugin when the skill came from one.
+     * Older servers omit it.
+     */
+    "pluginId"?: string;
+
     /** Creates a new Skill instance. */
     constructor($$source: Partial<Skill> = {}) {
         if (!("name" in $$source)) {

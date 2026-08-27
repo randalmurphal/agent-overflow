@@ -36,11 +36,19 @@ type openTool struct {
 	// and treating it like an unfinished tool would mark ~99% of all
 	// searches as unresolved.
 	selfCompleting bool
+	isBackground   bool
 
 	// enrich holds an end event that arrived before the tool's output
 	// line, which is the normal order (a rollout writes
 	// `exec_command_end` between the call and its `function_call_output`).
 	enrich *toolEnrichment
+}
+
+type toolReference struct {
+	itemID    string
+	itemType  string
+	turnID    string
+	turnIndex int
 }
 
 // toolEnrichment is what an end event contributes to the completion.
@@ -117,6 +125,12 @@ func (c *converter) startToolCall(env envelope) {
 	// Kept for the whole file, unlike c.tools: a spawn_agent call settles
 	// long before the child activity that has to be parented under it.
 	c.toolItemIDs[callID] = tool.itemID
+	ref := toolReference{itemID: tool.itemID, itemType: tool.itemType, turnID: tool.turnID, turnIndex: tool.turnIndex}
+	c.toolRefs[callID] = ref
+	if ownership, ok := c.subagentStarts[callID]; ok {
+		c.applySubagentOwnership(tool, ownership)
+		c.agentParents[ownership.agentPath] = ref
+	}
 
 	c.emit(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
@@ -142,6 +156,10 @@ func (c *converter) toolStartMeta(tool *openTool) json.RawMessage {
 	}
 	if tool.parentToolUseID != "" {
 		meta["parent_tool_use_id"] = tool.parentToolUseID
+	}
+	if tool.isBackground {
+		meta["is_background"] = true
+		meta["live_background_active"] = true
 	}
 	return metaJSON(meta)
 }
@@ -170,6 +188,8 @@ func toolIdentity(kind, name string) (toolName, itemType string) {
 		return "Bash", "commandExecution"
 	case "apply_patch":
 		return "file_change", "fileChange"
+	case "spawn_agent", "spawnAgent":
+		return "collab_agent", "collab_agent"
 	case "send_message", "followup_task":
 		return "send_input", "send_input"
 	case "":
@@ -338,6 +358,10 @@ func (c *converter) finishToolAt(tool *openTool, output, itemStatus string, isEr
 	}
 	if itemStatus != "" {
 		meta["item_status"] = itemStatus
+	}
+	if tool.isBackground {
+		meta["is_background"] = true
+		meta["live_background_active"] = true
 	}
 
 	c.emit(provider.ProviderEvent{

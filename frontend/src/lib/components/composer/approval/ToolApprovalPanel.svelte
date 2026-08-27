@@ -23,6 +23,44 @@
   let { approval, onResolve, onError, responding = false }: Props = $props();
   let actionRow: HTMLDivElement | undefined = $state(undefined);
 
+  type DecisionAction = {
+    value: unknown;
+    label: string;
+    testId: string;
+    variant: 'primary' | 'secondary' | 'danger-outline' | 'danger-ghost';
+  };
+
+  const legacyDecisions: unknown[] = ['cancel', 'decline', 'acceptForSession', 'accept'];
+
+  function decisionAction(value: unknown, index: number): DecisionAction | null {
+    if (typeof value === 'string') {
+      switch (value) {
+        case 'accept': return { value, label: 'Approve once', testId: 'approval-allow', variant: 'primary' };
+        case 'acceptForSession': return { value, label: 'Always allow this session', testId: 'approval-allow-session', variant: 'secondary' };
+        case 'decline': return { value, label: 'Decline', testId: 'approval-deny', variant: 'danger-outline' };
+        case 'cancel': return { value, label: 'Cancel turn', testId: 'approval-cancel', variant: 'danger-ghost' };
+        default: return null;
+      }
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if ('acceptWithExecpolicyAmendment' in record) {
+      return { value, label: 'Allow matching commands', testId: `approval-allow-policy-${index}`, variant: 'secondary' };
+    }
+    if ('applyNetworkPolicyAmendment' in record) {
+      const amendment = record.applyNetworkPolicyAmendment as Record<string, unknown> | undefined;
+      const rule = amendment?.network_policy_amendment as Record<string, unknown> | undefined;
+      const verb = rule?.action === 'deny' ? 'Block' : 'Allow';
+      const host = typeof rule?.host === 'string' ? ` ${rule.host}` : ' this host';
+      return { value, label: `${verb}${host}`, testId: `approval-network-policy-${index}`, variant: verb === 'Block' ? 'danger-outline' : 'secondary' };
+    }
+    return null;
+  }
+
+  const actions: DecisionAction[] = $derived((approval.availableDecisions ?? legacyDecisions)
+    .map(decisionAction)
+    .filter((action): action is DecisionAction => action !== null));
+
   // ---- Edit-input-before-approve state (Claude CanUseTool UpdatedInput) ----
   //
   // When the tool's input is editable, a user can toggle a JSON editor,
@@ -35,7 +73,11 @@
   let editError: string | undefined = $state(undefined);
 
   // Something to edit, please.
-  const editable: boolean = $derived(approval.input !== undefined && approval.input !== null);
+  const editable: boolean = $derived(
+    approval.kind === undefined
+      && approval.input !== undefined
+      && approval.input !== null,
+  );
 
   function openEdit() {
     editText = JSON.stringify(approval.input ?? {}, null, 2);
@@ -66,7 +108,25 @@
 
   const preview: { label: string; content: string } | null = $derived.by(() => {
     if (!approval.input) return null;
+    if (typeof approval.input === 'string') {
+      return isCommandTool(approval.toolName) || approval.toolName === 'command'
+        ? { label: 'Command', content: approval.input }
+        : null;
+    }
     const input = approval.input as Record<string, unknown>;
+    if (approval.kind === 'write-stdin') {
+      const stdin = input.stdin ?? input.input ?? input.chars ?? '';
+      const process = input.processId ?? input.process_id ?? '';
+      const commandItem = input.itemId ?? '';
+      const cwd = input.cwd ?? '';
+      const details = [
+        stdin ? String(stdin) : '',
+        process ? `Process: ${String(process)}` : '',
+        commandItem ? `Command item: ${String(commandItem)}` : '',
+        cwd ? `Working directory: ${String(cwd)}` : '',
+      ].filter(Boolean).join('\n');
+      return details ? { label: 'Terminal input', content: details } : null;
+    }
     if (isCommandTool(approval.toolName)) {
       const cmd = input.command ?? input.cmd ?? '';
       return cmd ? { label: 'Command', content: String(cmd) } : null;
@@ -78,12 +138,17 @@
     return null;
   });
 
-  async function respond(decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel') {
+  async function respond(action: DecisionAction) {
     try {
-      await onResolve(new ApprovalResponse({
-        requestId: approval.requestId,
-        decision,
-      }));
+      if (typeof action.value === 'string') {
+        await onResolve(new ApprovalResponse({ requestId: approval.requestId, decision: action.value }));
+      } else {
+        await onResolve(new ApprovalResponse({
+          requestId: approval.requestId,
+          decision: '',
+          decisionValue: action.value,
+        }));
+      }
     } catch (err) {
       onError?.(`Failed to respond to approval: ${errString(err)}`);
     }
@@ -99,15 +164,11 @@
     }
 
     try {
-      // The generated ApprovalResponse binding doesn't declare updatedInput
-      // (Wails elides json.RawMessage fields), so we cast through a wider
-      // shape. The Go struct accepts the field at the wire level — see
-      // internal/provider/types.go:ApprovalResponse.UpdatedInput.
       await onResolve(new ApprovalResponse({
         requestId: approval.requestId,
         decision: 'accept',
         updatedInput: parsed,
-      } as ConstructorParameters<typeof ApprovalResponse>[0] & { updatedInput: unknown }));
+      }));
       // Close the editor on success; the approval row will drop as the
       // provider consumes the response.
       closeEdit();
@@ -172,10 +233,10 @@
     </Button>
   {/if}
   {#if editing}
-    <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="approval-cancel" disabled={responding}>
+    <Button variant="danger-ghost" size="sm" onclick={() => respond(decisionAction('cancel', 0)!)} testId="approval-cancel" disabled={responding}>
       {#snippet children()}Cancel turn{/snippet}
     </Button>
-    <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="approval-deny" disabled={responding}>
+    <Button variant="danger-outline" size="sm" onclick={() => respond(decisionAction('decline', 0)!)} testId="approval-deny" disabled={responding}>
       {#snippet children()}Decline{/snippet}
     </Button>
     <Button
@@ -188,17 +249,17 @@
       {#snippet children()}Allow with edits{/snippet}
     </Button>
   {:else}
-    <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="approval-cancel" disabled={responding}>
-      {#snippet children()}Cancel turn{/snippet}
-    </Button>
-    <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="approval-deny" disabled={responding}>
-      {#snippet children()}Decline{/snippet}
-    </Button>
-    <Button variant="secondary" size="sm" onclick={() => respond('acceptForSession')} testId="approval-allow-session" disabled={responding}>
-      {#snippet children()}Always allow this session{/snippet}
-    </Button>
-    <Button variant="primary" size="sm" onclick={() => respond('accept')} testId="approval-allow" loading={responding}>
-      {#snippet children()}Approve once{/snippet}
-    </Button>
+    {#each actions as action, index (`${action.testId}-${index}`)}
+      <Button
+        variant={action.variant}
+        size="sm"
+        onclick={() => respond(action)}
+        testId={action.testId}
+        disabled={responding && action.variant !== 'primary'}
+        loading={responding && action.variant === 'primary'}
+      >
+        {#snippet children()}{action.label}{/snippet}
+      </Button>
+    {/each}
   {/if}
 </div>

@@ -886,8 +886,11 @@ func (s *Session) maybeRewriteCollabControlItemID(evt *provider.ProviderEvent, p
 		return
 	}
 	if readRawString(item, "type") == "subAgentActivity" &&
-		readRawString(item, "kind") == "interrupted" &&
 		evt.Kind == provider.EventSubagentStatus {
+		kind := readRawString(item, "kind")
+		if kind != "interrupted" && kind != "completed" {
+			return
+		}
 		if parentToolUseID := s.parentToolUseForProviderThread(readRawString(item, "agentThreadId")); parentToolUseID != "" {
 			evt.ItemID = parentToolUseID
 			evt.ParentToolUseID = parentToolUseID

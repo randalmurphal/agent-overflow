@@ -79,8 +79,9 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 		"applyPatchApproval",
 		"execCommandApproval":
 
-		meta := buildApprovalMeta(s.threadID, turnID, method, rpcID, params)
-		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
+		approval := buildApprovalRequest(s.threadID, turnID, method, rpcID, params)
+		meta, _ := json.Marshal(approval)
+		s.trackPendingApproval(rpcID, provider.EventApprovalResolved, approval.AvailableDecisions)
 		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "mcpServer/elicitation/request":
