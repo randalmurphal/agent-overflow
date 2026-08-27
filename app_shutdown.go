@@ -356,6 +356,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.design.screenshots != nil {
 		record("close headless screenshot manager", a.design.screenshots.Close())
 	}
+	a.browser.applyWG.Wait()
+	if a.browser.manager != nil {
+		record("close built-in browser manager", a.browser.manager.Close())
+	}
+	if a.browser.mcp != nil {
+		record("close built-in browser MCP server", a.browser.mcp.Close())
+	}
 
 	// Step 7b: close the design MCP server. Safe to close once no
 	// provider session holds a reference (step 4 guarantees that)

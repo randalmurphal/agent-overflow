@@ -13,6 +13,10 @@ export function makeSettings(overrides: Partial<Settings> = {}): Settings {
     collapseDiffPreviews: false,
     streamingEnabled: true,
     lowPowerMode: false,
+    browserEnabled: true,
+    browserShowWindow: true,
+    browserPersistSiteData: true,
+    browserAllowOutsideWorkspace: false,
     keepAwakeEnabled: false,
     keepAwakeScreen: true,
     // Shipped spinner defaults: verbs on, animations off (see

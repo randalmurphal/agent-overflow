@@ -278,6 +278,25 @@ type claudeMCPLiveSession struct {
 	session  *claude.Session
 }
 
+type browserMCPLiveSession struct {
+	threadID string
+	claude   *claude.Session
+	codex    *codex.Session
+}
+
+func (m sessionManager) browserMCPSessions() []browserMCPLiveSession {
+	m.app.mu.Lock()
+	defer m.app.mu.Unlock()
+	out := make([]browserMCPLiveSession, 0, len(m.app.sessions))
+	for threadID, sess := range m.app.sessions {
+		if sess.claude == nil && sess.codex == nil {
+			continue
+		}
+		out = append(out, browserMCPLiveSession{threadID: threadID, claude: sess.claude, codex: sess.codex})
+	}
+	return out
+}
+
 // claudeMCPSessions snapshots live Claude sessions whose cwd resolves the same
 // workspace MCP configuration. Other workspaces may use the same server name
 // for a different endpoint and must not be reconnected by this flow.

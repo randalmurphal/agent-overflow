@@ -18,6 +18,10 @@ import (
 )
 
 func (a *App) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
+	name = strings.TrimSpace(name)
+	if isAppManagedMCPServer(name) {
+		return MCPAuthInitResult{}, errors.New("trigger mcp auth: built-in browser does not use provider OAuth")
+	}
 	if a.store == nil {
 		return MCPAuthInitResult{}, errors.New("trigger mcp auth: store unavailable")
 	}

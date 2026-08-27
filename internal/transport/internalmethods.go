@@ -121,6 +121,7 @@ var LocalOnlyMethods = map[string]bool{
 	"OpenExternalURL":          true,
 	"BrowseDirectory":          true,
 	"SavePayloadToFile":        true,
+	"ClearBrowserSiteData":     true,
 	"WriteThreadWorkspaceFile": true,
 	"GitPush":                  true,
 	"GitStatusSubscribe":       true,

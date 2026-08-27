@@ -543,6 +543,7 @@ export interface MockSessionConfig {
   disallowedTools?: string[];
   sandbox?: string;
   approvalPolicy?: string;
+  mcpServers?: string[];
 }
 
 export interface MockInfo {

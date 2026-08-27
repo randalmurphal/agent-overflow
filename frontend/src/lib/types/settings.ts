@@ -222,6 +222,14 @@ export interface Settings {
    * animated streaming, activity shimmer suppressed. Display-only.
    */
   lowPowerMode: boolean;
+  /** Expose Agent Overflow's built-in browser tools to Claude and Codex. */
+  browserEnabled: boolean;
+  /** Launch the managed Chrome process with a visible window. */
+  browserShowWindow: boolean;
+  /** Persist encrypted cookies and local storage per workspace. */
+  browserPersistSiteData: boolean;
+  /** Permit browser_open_file outside the current workspace/project roots. */
+  browserAllowOutsideWorkspace: boolean;
   /**
    * Keep-awake master switch (the sidebar moon/sun toggle): while on,
    * the app holds an OS sleep inhibitor so the machine never

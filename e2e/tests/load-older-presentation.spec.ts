@@ -188,6 +188,21 @@ async function scrollToHistoryHead(page: Page): Promise<void> {
   throw new Error('timeline never reached its history head');
 }
 
+async function waitForScrollSettle(page: Page): Promise<void> {
+  await page.getByTestId('message-timeline-scroll').evaluate(async (scroller) => {
+    let previous = scroller.scrollTop;
+    let stableFrames = 0;
+    for (let frame = 0; frame < 120; frame += 1) {
+      await new Promise(requestAnimationFrame);
+      const current = scroller.scrollTop;
+      stableFrames = Math.abs(current - previous) <= 0.01 ? stableFrames + 1 : 0;
+      previous = current;
+      if (stableFrames >= 30) return;
+    }
+    throw new Error('timeline scroll gesture did not settle');
+  });
+}
+
 async function visibleAnchor(page: Page): Promise<{ id: string; bounds: ElementBounds }> {
   const candidate = await page.getByTestId('message-timeline-scroll').evaluate((scroller) => {
     const viewport = scroller.getBoundingClientRect();
@@ -256,6 +271,11 @@ async function runCollision(
     // Reaching the history head gesture-arms the production auto-load gate.
     // The request is already in flight here, held by the WebSocket proxy.
     await held.waitForResponse();
+    // Chromium's wheel scrolling is compositor-driven on macOS and can keep
+    // settling after scrollTop first reaches zero. The collision starts only
+    // after that reader gesture is genuinely over; otherwise its residual
+    // motion is (correctly) indistinguishable from anchor drift.
+    await waitForScrollSettle(page);
     const spinner = button.locator('.animate-spin');
     await expect(spinner).toBeVisible();
     const animationName = await spinner.evaluate((element) => getComputedStyle(element).animationName);
@@ -295,7 +315,10 @@ async function runCollision(
     const afterBounds = await anchorAfter.boundingBox();
     if (!afterBounds) throw new Error('presentation anchor disappeared after prepend');
     const anchorDrift = Math.abs(afterBounds.y - anchor.bounds.y);
-    expect(anchorDrift).toBeLessThanOrEqual(1);
+    expect(
+      anchorDrift,
+      `anchor moved from y=${anchor.bounds.y} to y=${afterBounds.y} while loading older`,
+    ).toBeLessThanOrEqual(1);
 
     const contrast = await analyzeContrast(page, capture.frames, anchor.bounds);
     expect(contrast.baseline, 'anchor crop must contain visible ink').toBeGreaterThan(4);

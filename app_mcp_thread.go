@@ -149,6 +149,9 @@ func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) err
 	if name == "" {
 		return errors.New("set thread mcp server enabled: server name is required")
 	}
+	if isAppManagedMCPServer(name) {
+		return errors.New("set thread mcp server enabled: built-in browser is controlled in Settings")
+	}
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("set thread mcp server enabled: load thread: %w", err)
@@ -171,6 +174,9 @@ func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name str
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errors.New("set workspace mcp server enabled: server name is required")
+	}
+	if isAppManagedMCPServer(name) {
+		return errors.New("set workspace mcp server enabled: built-in browser is controlled in Settings")
 	}
 	switch providerName {
 	case mcpProviderClaude:
@@ -230,7 +236,7 @@ func claudeSessionMCPRows(ctx context.Context, sess *claude.Session) ([]ThreadMC
 	}
 	rows := make([]ThreadMCPServer, 0, len(statuses))
 	for _, st := range statuses {
-		if st.Scope == mcpScopeClaudeAI {
+		if st.Scope == mcpScopeClaudeAI || isAppManagedMCPServer(st.Name) {
 			continue
 		}
 		mapped := claude.MCPStatusFromRaw(st.Status)
@@ -390,6 +396,9 @@ func (a *App) codexSessionMCPRows(ctx context.Context, sess *codex.Session) ([]T
 	rows := make([]ThreadMCPServer, 0, len(list.Data))
 	seen := make(map[string]struct{}, len(list.Data))
 	for _, entry := range list.Data {
+		if isAppManagedMCPServer(entry.Name) {
+			continue
+		}
 		row := ThreadMCPServer{
 			Provider:   mcpProviderCodex,
 			Name:       entry.Name,

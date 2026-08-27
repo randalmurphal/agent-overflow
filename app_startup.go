@@ -11,9 +11,12 @@ import (
 
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/attachment"
+	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/chromium"
 	"agent-overflow/internal/design"
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/logging"
@@ -577,6 +580,19 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	)
 	a.design.reactor = design.NewReactor(a.design.diagnostics, a.newDesignCapturer())
 	a.design.mcp = design.NewMCPServer(a.design.reactor)
+	browserSettings := a.currentSettings()
+	a.browser.manager = appbrowser.NewManager(
+		chromium.NewInstaller(dbDir, chromium.ArtifactChrome, eventchan.BrowserInstallProgress, a.emit),
+		dbDir,
+		appbrowser.Config{
+			Enabled:               browserSettings.BrowserEnabled,
+			ShowWindow:            browserSettings.BrowserShowWindow,
+			PersistSiteData:       browserSettings.BrowserPersistSiteData,
+			AllowOutsideWorkspace: browserSettings.BrowserAllowOutsideWorkspace,
+		},
+	)
+	a.browser.mcp = appbrowser.NewMCPServer(a.browser.manager, browserSettings.BrowserEnabled)
+	a.browser.liveEnabled.Store(browserSettings.BrowserEnabled)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)
 	attachmentStore, err := attachment.NewStore(attachment.Config{
 		RootDir: filepath.Join(dbDir, "attachments"),

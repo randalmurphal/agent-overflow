@@ -19,6 +19,7 @@ export const SETTINGS_SECTIONS = [
   { id: 'updates', label: 'Updates', group: 'App' },
   { id: 'providers', label: 'Providers', group: 'Agents' },
   { id: 'prompts', label: 'Prompts & Tools', group: 'Agents' },
+  { id: 'browser', label: 'Browser', group: 'Agents' },
   { id: 'discussions', label: 'Discussions', group: 'Agents' },
   { id: 'projects', label: 'Projects', group: 'Workspace' },
   { id: 'git', label: 'Git', group: 'Workspace' },

@@ -107,8 +107,9 @@ const (
 	ProviderUserInput              Channel = "provider:user_input"
 )
 
-// screenshot:* — headless-browser install progress.
+// browser:* / screenshot:* — managed browser artifact install progress.
 const (
+	BrowserInstallProgress    Channel = "browser:install-progress"
 	ScreenshotInstallProgress Channel = "screenshot:install-progress"
 )
 

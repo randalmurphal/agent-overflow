@@ -80,6 +80,9 @@ func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 // Requires a live session: with none, the next session start connects
 // fresh anyway, so there is nothing to fix.
 func (a *App) ReconnectMcpServer(threadID, name string) error {
+	if isAppManagedMCPServer(name) {
+		return errors.New("reconnect mcp server: built-in browser is controlled in Settings")
+	}
 	if a.store == nil {
 		return errors.New("reconnect mcp server: store unavailable")
 	}

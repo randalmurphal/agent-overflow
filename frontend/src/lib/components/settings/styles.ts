@@ -30,6 +30,12 @@ export const SECONDARY_BUTTON_CLASS =
   'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors ' +
   'focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40';
 
+export const DANGER_BUTTON_CLASS =
+  'rounded-[var(--radius-field)] border border-error/40 bg-error/10 ' +
+  'px-3 py-1.5 text-[0.75rem] font-medium text-error hover:bg-error/15 ' +
+  'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors ' +
+  'focus:outline-none focus-visible:ring-2 focus-visible:ring-error/40';
+
 // Explanatory prose under a section title. SettingsHeader renders its
 // `description` with it; sections whose explanation needs inline markup
 // (a <code> span) render the same voice through the header's `details`

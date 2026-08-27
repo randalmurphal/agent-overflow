@@ -119,19 +119,37 @@ type Instance struct {
 // Clean, and the two answers agree as long as no component is a link —
 // which prepareHarness refuses for the roots it owns anyway.
 func ID(dataRoot string) string {
-	sum := sha256.Sum256([]byte(canonical(dataRoot)))
+	sum := sha256.Sum256([]byte(CanonicalPath(dataRoot)))
 	return hex.EncodeToString(sum[:])[:idHexLen]
 }
 
-func canonical(path string) string {
+// CanonicalPath resolves symlinks through the deepest existing ancestor and
+// rejoins any missing suffix. That makes a fresh path stable before and after
+// creation, including on macOS where temp paths are commonly spelled through
+// /var while the filesystem resolves them through /private/var.
+func CanonicalPath(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = filepath.Clean(path)
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
+	abs = filepath.Clean(abs)
+	dir := abs
+	var remainder []string
+	for {
+		if resolved, resolveErr := filepath.EvalSymlinks(dir); resolveErr == nil {
+			resolved = filepath.Clean(resolved)
+			for i := len(remainder) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, remainder[i])
+			}
+			return filepath.Clean(resolved)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs
+		}
+		remainder = append(remainder, filepath.Base(dir))
+		dir = parent
 	}
-	return abs
 }
 
 // RegistryDir is where rows live: <user cache dir>/agent-overflow/

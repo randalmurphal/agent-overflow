@@ -566,6 +566,13 @@ var channelPolicies = []ChannelPolicy{
 			"answer RPCs are LocalOnly. Same class as provider:approval.",
 	},
 	{
+		Channel:   eventchan.BrowserInstallProgress,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionDefault,
+		Why: "Managed full-Chrome install progress; error strings can quote " +
+			"manifest URLs. Local UI feedback for a host-side artifact.",
+	},
+	{
 		Channel:   eventchan.ScreenshotInstallProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

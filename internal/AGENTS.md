@@ -28,6 +28,8 @@ one closest to what you're touching.
 | `terminal/` | PTY session manager with ring-buffer replay. |
 | `discussion/` | Multi-agent deliberation coordination. |
 | `design/` | Design-mode workdir, file watcher, diagnostics, MCP tool surface, and HTTP file handler. |
+| `browser/` | Built-in, capability-scoped browser MCP server and lazy managed-Chrome lifecycle. One isolated Chrome BrowserContext per canonical workspace; pages are owned by provider thread. Local files are opened directly with policy checks. Site state is encrypted at rest. Has its own subarea guide. |
+| `chromium/` | Shared Chrome-for-Testing artifact installer used by both `browser` (full Chrome) and `screenshot` (headless shell). Owns bounded HTTPS download, safe extraction, caching, and stale-version pruning. Has its own subarea guide. |
 | `screenshot/` | Headless-Chromium-driven full-page capture (chrome-headless-shell + chromedp) backing the design `read_screenshot` MCP tool. |
 | `attachment/` | Message attachment storage (metadata in store, bytes on disk). |
 | `settings/` | Persistent settings JSON with validation. |

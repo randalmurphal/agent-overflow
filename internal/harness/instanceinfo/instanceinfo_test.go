@@ -71,6 +71,26 @@ func TestIDOfMissingPathFallsBackToLexical(t *testing.T) {
 	}
 }
 
+func TestIDOfMissingPathResolvesExistingSymlinkedAncestor(t *testing.T) {
+	realParent := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realParent, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	throughLink := filepath.Join(link, "not-created-yet")
+	realPath := filepath.Join(realParent, "not-created-yet")
+	want := ID(realPath)
+	if got := ID(throughLink); got != want {
+		t.Fatalf("ID through existing symlinked ancestor = %q, want %q", got, want)
+	}
+	if err := os.MkdirAll(realPath, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if got := ID(throughLink); got != want {
+		t.Fatalf("ID changed after target creation: %q, want %q", got, want)
+	}
+}
+
 func newRow(id string, pid int) Row {
 	return Row{
 		Identity: Identity{

@@ -12,6 +12,10 @@ const DEFAULT_SETTINGS: Settings = {
   collapseDiffPreviews: false,
   streamingEnabled: true,
   lowPowerMode: false,
+  browserEnabled: true,
+  browserShowWindow: true,
+  browserPersistSiteData: true,
+  browserAllowOutsideWorkspace: false,
   // Keep-awake mirrors internal/settings: enabled follows the
   // zero-value-off pattern, screen scope defaults on.
   keepAwakeEnabled: false,

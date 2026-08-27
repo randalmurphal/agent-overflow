@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
@@ -240,17 +241,25 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+	browserServers, err := a.browserMCPConfigForThread(t)
+	if err != nil {
+		a.teardownDesignThread(threadID)
+		return fmt.Errorf("start session: register browser tools: %w", err)
+	}
 
 	// The one side effect a rendered system-prompt override carries. Gated
 	// on the resolution above (which already knows whether the override won
 	// the prompt) and never fatal to the spawn.
 	a.ensureClaudeMemoryDir(t, opts.WorkDir, promptOverride)
-	// designServers is non-nil only for design threads. Chat/plan
-	// sessions on both providers use native MCP discovery from the
-	// provider's own config (Claude's per-workspace disabledMcpServers,
-	// Codex's global enabled flags) — AO injects nothing, so a config
-	// toggle made anywhere is simply what the next session start gets.
-	designCfg.MCPServers = designServers
+	// designServers is non-nil only for design threads. Chat/plan sessions
+	// retain provider-native MCP discovery and add AO's browser capability;
+	// design sessions stay strict and receive only AO's design + browser
+	// servers.
+	designCfg.MCPServers = mergeMCPServers(designServers, browserServers)
+	// Non-design Claude sessions must keep native user/workspace MCP discovery
+	// alongside the injected browser server. Design stays strict by contract,
+	// but now receives both AO-owned design and browser servers.
+	designCfg.MergeMCPServers = t.Mode != threadmode.ModeDesign
 	// The `ao` credential is minted here, before the spawn, because the
 	// process env is what carries it. It only becomes usable when the session
 	// is registered (sessionManager.put), so a failed spawn leaves nothing

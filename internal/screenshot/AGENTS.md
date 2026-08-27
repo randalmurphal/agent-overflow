@@ -4,8 +4,8 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
 
 ## What this package owns
 
-- Resolving and downloading `chrome-headless-shell` from
-  Chrome-for-Testing on first use, caching it under
+- Selecting `chrome-headless-shell` from the shared `internal/chromium`
+  Chrome-for-Testing installer on first use, caching it under
   `<configDir>/headless-shell/<version>/`. Defenses on the download
   path: bounded manifest body, bounded zip-entry / aggregate sizes
   (zip-bomb resistance), HTTPS-only URLs, sanitized version segment
@@ -50,14 +50,11 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
 ## Layout
 
 - `doc.go` — package purpose.
-- `installer.go` — `Install(ctx)` resolves the Stable channel from
-  the Chrome-for-Testing manifest, downloads the platform zip with
-  progress events, extracts (with zip-slip + zip-bomb defenses),
-  returns the executable path. Cached idempotently on subsequent
-  calls. The `InstallProgress` events fire over `InstallEventName`;
-  no frontend listener is wired today, so first-capture downloads
-  are silent — adding a "Downloading rendering engine…" toast is a
-  natural follow-up.
+- `installer.go` — compatibility wrapper selecting
+  `chromium.ArtifactHeadlessShell`; the shared installer owns manifest
+  resolution, bounded extraction, caching, and stale-version pruning. The
+  `InstallProgress` events fire over `InstallEventName`; no frontend listener
+  is wired for screenshot-only downloads today.
 - `browser.go` — `Manager` lifecycle: lazy install + boot on first
   `Capture`, persistent `chromedp.Browser`, `Close()` for graceful
   teardown. Transient install failures don't permanently brick the

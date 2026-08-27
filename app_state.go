@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 
+	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/design"
@@ -304,6 +306,18 @@ type appDesignState struct {
 	watchers   map[string]*design.Watcher
 	reactor    *design.Reactor
 	mcp        *design.MCPServer
+}
+
+// appBrowserState is the provider-neutral arbitrary-web browser concern. The
+// MCP listener is cheap and per-session-tokened; Manager owns the lazily
+// launched Chrome process and workspace BrowserContexts.
+type appBrowserState struct {
+	manager            *appbrowser.Manager
+	mcp                *appbrowser.MCPServer
+	applyMu            sync.Mutex
+	applyWG            sync.WaitGroup
+	settingsGeneration atomic.Uint64
+	liveEnabled        atomic.Bool
 }
 
 // appBackgroundFetchState is the background `git fetch` cadence

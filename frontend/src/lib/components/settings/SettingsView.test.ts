@@ -3,7 +3,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import SettingsView from './SettingsView.svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetKeybindingsStore } from '../../stores/keybindings.svelte';
-import { setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
 import {
@@ -38,7 +38,7 @@ describe('settings section map', () => {
     ]);
     expect(SETTINGS_SECTION_GROUPS.map((g) => g.sections.map((s) => s.id))).toEqual([
       ['general', 'keybindings', 'updates'],
-      ['providers', 'prompts', 'discussions'],
+      ['providers', 'prompts', 'browser', 'discussions'],
       ['projects', 'git', 'editor', 'network'],
       ['observability', 'storage'],
     ]);
@@ -99,6 +99,23 @@ describe('<SettingsView> tabs', () => {
     expect(retention.compareDocumentPosition(archived)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  it('renders built-in browser controls', async () => {
+    const { getByRole, findByTestId } = render(SettingsView, { onClose: vi.fn() });
+    await fireEvent.click(getByRole('tab', { name: 'Browser' }));
+    expect(await findByTestId('settings-browser')).toBeInTheDocument();
+    expect(getByRole('switch', { name: 'Toggle Built-in Browser Tools' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('requires confirmation before clearing browser site data', async () => {
+    setBindingMock('ClearBrowserSiteData', async () => undefined);
+    const { getByRole } = render(SettingsView, { onClose: vi.fn() });
+    await fireEvent.click(getByRole('tab', { name: 'Browser' }));
+    await fireEvent.click(getByRole('button', { name: 'Clear site data' }));
+    expect(getBindingMock('ClearBrowserSiteData')).not.toHaveBeenCalled();
+    await fireEvent.click(getByRole('button', { name: 'Clear now' }));
+    expect(getBindingMock('ClearBrowserSiteData')).toHaveBeenCalledOnce();
   });
 
   it('renders the Keybindings panel when multiple chords target the same command context', async () => {

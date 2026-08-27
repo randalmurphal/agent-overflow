@@ -973,6 +973,7 @@ func (p *privilegedApp) ListMcpServerStatuses() string   { return "ok" }
 func (p *privilegedApp) RefreshMcpServerStatus() string  { return "ok" }
 func (p *privilegedApp) TriggerMcpAuth() string          { return "ok" }
 func (p *privilegedApp) TriggerWorkspaceMcpAuth() string { return "ok" }
+func (p *privilegedApp) ClearBrowserSiteData() string    { return "ok" }
 
 // 8b. Provider-reported account usage (spawns the provider CLI under the
 // user's credentials and returns account-scoped data).

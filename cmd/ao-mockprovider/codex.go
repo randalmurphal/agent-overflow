@@ -154,6 +154,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			SessionConfig: &control.SessionConfig{
 				Sandbox:        readParamString(params, "sandbox"),
 				ApprovalPolicy: readParamString(params, "approvalPolicy"),
+				MCPServers:     codexMCPServerNames(params),
 			},
 		})
 		// The history contract is settled here and nowhere else — a resume
@@ -581,4 +582,16 @@ func readParamRaw(params json.RawMessage, key string) json.RawMessage {
 		return nil
 	}
 	return m[key]
+}
+
+func codexMCPServerNames(params json.RawMessage) []string {
+	var config map[string]json.RawMessage
+	if json.Unmarshal(readParamRaw(params, "config"), &config) != nil {
+		return nil
+	}
+	var servers map[string]json.RawMessage
+	if json.Unmarshal(config["mcp_servers"], &servers) != nil {
+		return nil
+	}
+	return sortedMCPServerNames(servers)
 }

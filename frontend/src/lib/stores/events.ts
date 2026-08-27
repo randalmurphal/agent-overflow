@@ -162,6 +162,32 @@ import { addToast } from './toast.svelte';
 export function setupEventListeners(): () => void {
   resetItemEventQueue();
 
+  let browserInstallAnnounced = false;
+  const cancelBrowserInstall = wailsEventOn<{
+    phase?: string;
+    version?: string;
+    error?: string;
+  }>('browser:install-progress', (progress) => {
+    switch (progress?.phase) {
+      case 'downloading':
+        if (!browserInstallAnnounced) {
+          browserInstallAnnounced = true;
+          addToast('info', 'Downloading managed Chrome for browser tools — first use only.', 8000);
+        }
+        break;
+      case 'ready':
+        if (browserInstallAnnounced) {
+          addToast('success', 'Managed Chrome is ready.');
+        }
+        browserInstallAnnounced = false;
+        break;
+      case 'error':
+        addToast('error', progress.error || 'Managed Chrome could not be installed.');
+        browserInstallAnnounced = false;
+        break;
+    }
+  });
+
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
   const cancelNotificationActivated = wailsEventOn<unknown>(
     'notification:activated',
@@ -481,6 +507,7 @@ export function setupEventListeners(): () => void {
   );
 
   return () => {
+    cancelBrowserInstall();
     cancelItemEvent();
     flushItemEventQueue();
     cancelApproval();

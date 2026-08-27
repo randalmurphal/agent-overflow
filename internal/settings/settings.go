@@ -101,13 +101,22 @@ type Settings struct {
 	// streamed text reveals per wire chunk instead of animating, and the
 	// activity shimmer is suppressed. Display-only — content and timing
 	// are unaffected.
-	LowPowerMode     bool   `json:"lowPowerMode"`
-	ConfirmArchive   bool   `json:"confirmArchive"`
-	ConfirmDelete    bool   `json:"confirmDelete"`
-	ClaudeBinaryPath string `json:"claudeBinaryPath"`
-	CodexBinaryPath  string `json:"codexBinaryPath"`
-	ClaudeEnabled    bool   `json:"claudeEnabled"`
-	CodexEnabled     bool   `json:"codexEnabled"`
+	LowPowerMode bool `json:"lowPowerMode"`
+	// BrowserEnabled exposes Agent Overflow's built-in browser MCP tools to
+	// headless Claude and Codex sessions. BrowserShowWindow selects a visible
+	// full Chrome window; BrowserPersistSiteData checkpoints encrypted cookies
+	// and local storage per workspace. All three default on. Outside-workspace
+	// file access is the separate, deliberately off-by-default authority grant.
+	BrowserEnabled               bool   `json:"browserEnabled"`
+	BrowserShowWindow            bool   `json:"browserShowWindow"`
+	BrowserPersistSiteData       bool   `json:"browserPersistSiteData"`
+	BrowserAllowOutsideWorkspace bool   `json:"browserAllowOutsideWorkspace,omitempty"`
+	ConfirmArchive               bool   `json:"confirmArchive"`
+	ConfirmDelete                bool   `json:"confirmDelete"`
+	ClaudeBinaryPath             string `json:"claudeBinaryPath"`
+	CodexBinaryPath              string `json:"codexBinaryPath"`
+	ClaudeEnabled                bool   `json:"claudeEnabled"`
+	CodexEnabled                 bool   `json:"codexEnabled"`
 
 	// ClaudeTUIEnabled surfaces the claude-tui provider — the real
 	// interactive Claude TUI driven inside a PTY — in the model/provider
@@ -512,23 +521,26 @@ type Settings struct {
 
 // DefaultSettings provides sane defaults for all settings fields.
 var DefaultSettings = Settings{
-	TimestampFormat:      "locale",
-	SansFont:             "geist",
-	MonoFont:             "geist",
-	FontSize:             13,
-	DiffWordWrap:         false,
-	CollapseDiffPreviews: false,
-	StreamingEnabled:     true,
-	LowPowerMode:         false,
-	ConfirmArchive:       true,
-	ConfirmDelete:        true,
-	ClaudeBinaryPath:     "claude",
-	CodexBinaryPath:      "codex",
-	ClaudeEnabled:        true,
-	CodexEnabled:         true,
-	DefaultThreadEnvMode: "local",
-	WorktreeBranchPrefix: "ao-",
-	PaneDensity:          "compact",
+	TimestampFormat:        "locale",
+	SansFont:               "geist",
+	MonoFont:               "geist",
+	FontSize:               13,
+	DiffWordWrap:           false,
+	CollapseDiffPreviews:   false,
+	StreamingEnabled:       true,
+	LowPowerMode:           false,
+	BrowserEnabled:         true,
+	BrowserShowWindow:      true,
+	BrowserPersistSiteData: true,
+	ConfirmArchive:         true,
+	ConfirmDelete:          true,
+	ClaudeBinaryPath:       "claude",
+	CodexBinaryPath:        "codex",
+	ClaudeEnabled:          true,
+	CodexEnabled:           true,
+	DefaultThreadEnvMode:   "local",
+	WorktreeBranchPrefix:   "ao-",
+	PaneDensity:            "compact",
 	// Expanded preserves today's visibility semantics: nothing a user can
 	// currently see becomes hidden by upgrading.
 	ActivityRunDefault:    "expanded",

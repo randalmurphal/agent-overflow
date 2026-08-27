@@ -136,6 +136,7 @@ type App struct {
 	// design is the design-mode concern (app_design*.go): workdirs, the
 	// file server over them, the preview screenshotter, and the watchers.
 	design         appDesignState
+	browser        appBrowserState
 	terminals      *terminal.Manager
 	attachments    *attachment.Store
 	workspaceFiles *workspacefiles.Searcher

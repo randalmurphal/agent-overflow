@@ -143,6 +143,10 @@ func (a *App) designMCPConfigForThread(thread store.Thread) (map[string]any, err
 }
 
 func (a *App) teardownDesignThread(threadID string) {
+	// This is the shared per-provider-session feature teardown despite its
+	// historical name: every stop path already funnels through it, including
+	// non-design threads, so browser capabilities cannot outlive a provider.
+	a.teardownBrowserThread(threadID)
 	a.stopDesignWatcher(threadID)
 	if a.design.reactor != nil {
 		a.design.reactor.TeardownThread(threadID)

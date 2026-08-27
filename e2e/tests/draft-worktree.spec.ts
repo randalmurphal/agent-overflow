@@ -6,6 +6,7 @@
 // The final test keeps the inverse transition pinned: an ordinary text-only
 // draft still dematerializes when its text is erased.
 import type { Page } from '@playwright/test';
+import { realpath } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 
@@ -58,6 +59,11 @@ async function registeredWorktree(
 }
 
 const basename = (p: string) => p.split('/').pop() ?? p;
+
+async function expectSameFilesystemPath(actual: string | undefined, expected: string): Promise<void> {
+  expect(actual).toBeDefined();
+  expect(await realpath(actual!)).toBe(await realpath(expected));
+}
 
 /**
  * The composer's workspace strip labels. `env` is where the next turn will
@@ -124,8 +130,8 @@ test('worktree selection materializes a draft and create binds it to an existing
 
   const rows = await threadRows(harness);
   expect(rows).toHaveLength(1);
-  expect(rows[0].workspacePath).toBe(worktree!.path);
-  expect(rows[0].worktreePath).toBe(worktree!.path);
+  await expectSameFilesystemPath(rows[0].workspacePath, worktree!.path);
+  await expectSameFilesystemPath(rows[0].worktreePath, worktree!.path);
   expect(rows[0].branch).toBe(EXISTING_BRANCH);
 });
 
@@ -159,7 +165,7 @@ test('sending from that draft reuses the thread already bound to the worktree', 
     'harness:mock',
     (ev) => ev.report.kind === 'registered',
   );
-  expect(mock.cwd).toBe(worktree!.path);
+  await expectSameFilesystemPath(mock.cwd, worktree!.path);
 
   await expect(page.getByText('Where am I running?')).toBeVisible();
   await expect(errorToasts(page)).toHaveCount(0);
@@ -169,8 +175,8 @@ test('sending from that draft reuses the thread already bound to the worktree', 
   expect(rows).toHaveLength(1);
   expect(rows[0].id).toBe(rowBeforeSend.id);
   expect(rows[0].projectId).toBe(projectId);
-  expect(rows[0].worktreePath).toBe(worktree!.path);
-  expect(rows[0].workspacePath).toBe(worktree!.path);
+  await expectSameFilesystemPath(rows[0].worktreePath, worktree!.path);
+  await expectSameFilesystemPath(rows[0].workspacePath, worktree!.path);
   expect(rows[0].branch).toBe(EXISTING_BRANCH);
 
   // And the send did not move the user's strip back to Local.
@@ -210,8 +216,8 @@ test('a fresh draft binds its materialized row to a new worktree branch', async 
 
   const rows = await threadRows(harness);
   expect(rows).toHaveLength(1);
-  expect(rows[0].workspacePath).toBe(worktree!.path);
-  expect(rows[0].worktreePath).toBe(worktree!.path);
+  await expectSameFilesystemPath(rows[0].workspacePath, worktree!.path);
+  await expectSameFilesystemPath(rows[0].worktreePath, worktree!.path);
   expect(rows[0].branch).toBe(NEW_BRANCH);
 });
 

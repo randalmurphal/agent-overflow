@@ -163,6 +163,7 @@ export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage
 
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
+export const ClearBrowserSiteData = dispatch('ClearBrowserSiteData');
 
 // Appearance / themes (stores/appearance.svelte.ts). Both writes are
 // local-only on the wire, so a test that wants the DEGRADED path throws a

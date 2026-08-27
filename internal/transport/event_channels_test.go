@@ -48,6 +48,7 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 // this list move together.
 var (
 	frozenLoopbackOnlyChannels = []string{
+		"browser:install-progress", // 2026-08-26 pass
 		"git:status",
 		"harness:mock",     // 2026-08-25 pass
 		"harness:perf",     // W3 bridge: per-process RSS + host detail

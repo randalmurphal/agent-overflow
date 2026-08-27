@@ -199,16 +199,11 @@ func refuseSymlinkedPath(path string) error {
 	return nil
 }
 
-// sameResolvedPath compares two paths after symlink resolution, falling
-// back to a lexical comparison for a path that does not exist yet —
-// which is what a fresh data root is.
+// sameResolvedPath compares two paths through the same existing-ancestor
+// canonicalizer used for instance ids. A plain lexical fallback is not enough
+// on macOS: a missing /var/... path becomes /private/var/... when created.
 func sameResolvedPath(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	if errA != nil || errB != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	return ra == rb
+	return instanceinfo.CanonicalPath(a) == instanceinfo.CanonicalPath(b)
 }
 
 // refuseSecondInstance stops a boot onto a data root something is

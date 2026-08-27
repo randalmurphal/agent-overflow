@@ -146,6 +146,12 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 		// app_power.go for why one mode string rather than the two keys.
 		a.applyKeepAwake(next)
 	}
+	if patchTouchesBrowserSettings(patch) {
+		// Tool exposure flips synchronously in the AO MCP server; process
+		// teardown and provider refresh happen after the settings write and do
+		// not require either provider process to restart.
+		a.scheduleBrowserSettings(next)
+	}
 	a.ReconfigureObservability(prev, next)
 	if _, ok := patch["editor"]; ok {
 		// Editor preference touched — drop the cached catalog so the

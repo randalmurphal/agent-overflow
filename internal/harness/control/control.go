@@ -201,10 +201,10 @@ const (
 // must not join MockInfo.PendingAdvances.
 const AdvanceDroppedDetail = "dropped: advance buffer full"
 
-// SessionConfig is the permission/sandbox configuration a mock observed the
-// app request. It exists so a test can assert what the app ASKED the provider
-// for, which is the only part of runtime-mode enforcement AO owns — whether
-// the real CLI then honours it is a provider-behaviour question answered by
+// SessionConfig is the provider launch configuration a mock observed the app
+// request. It exists so a test can assert what the app ASKED the provider for,
+// which is the only part of runtime-mode and MCP wiring AO owns — whether the
+// real CLI then honours it is a provider-behaviour question answered by
 // spikes, not by the harness.
 //
 // The fields are deliberately per-provider rather than a normalized mode: the
@@ -220,4 +220,8 @@ type SessionConfig struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// ApprovalPolicy is Codex's thread/start `approvalPolicy`.
 	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
+	// MCPServers lists only server names observed in Claude's --mcp-config or
+	// Codex's thread/start config.mcp_servers. URLs, headers and credentials
+	// stay out of harness reports and evidence logs.
+	MCPServers []string `json:"mcpServers,omitempty"`
 }

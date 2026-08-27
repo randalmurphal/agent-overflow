@@ -44,6 +44,15 @@ not the two-provider union: `internal/commitmsg` and `internal/threadtitle`
 each keep a Claude-only schema that the union legitimately rejects. See
 `internal/providerschema/AGENTS.md`.
 
+## Session launch receipts
+
+The `session_config` report retains the sorted MCP server NAMES observed in
+Claude's `--mcp-config` or Codex's `thread/start config.mcp_servers`, alongside
+the existing permission/sandbox fields. It never retains URLs, headers, or
+credentials. This lets harness tests prove app-owned MCP wiring reached the
+provider boundary without leaking capability tokens into events or evidence
+logs.
+
 ## The account probe reports models, and they disagree on purpose
 
 The `initialize` control_response carries `account`, `commands` and

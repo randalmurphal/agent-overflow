@@ -1,4 +1,4 @@
-package screenshot
+package chromium
 
 import (
 	"archive/zip"
@@ -58,6 +58,70 @@ func fakeArchive(t *testing.T, platform string) []byte {
 	return buf.Bytes()
 }
 
+func fakeChromeArchive(t *testing.T, platform string) []byte {
+	t.Helper()
+	path := filepath.ToSlash(strings.TrimPrefix(binaryPathFor("root", platform, ArtifactChrome), "root"+string(filepath.Separator)))
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	hdr := &zip.FileHeader{Name: path, Method: zip.Deflate}
+	hdr.SetMode(0o755)
+	w, err := zw.CreateHeader(hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("#!/bin/sh\nexit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestChromeBinaryPathsMatchPublishedArchiveLayouts(t *testing.T) {
+	root := "/cache/version"
+	cases := map[string]string{
+		"linux64":   filepath.Join(root, "chrome-linux64", "chrome"),
+		"win64":     filepath.Join(root, "chrome-win64", "chrome.exe"),
+		"mac-x64":   filepath.Join(root, "chrome-mac-x64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+		"mac-arm64": filepath.Join(root, "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+	}
+	for platform, want := range cases {
+		if got := binaryPathFor(root, platform, ArtifactChrome); got != want {
+			t.Errorf("%s path = %q, want %q", platform, got, want)
+		}
+	}
+}
+
+func TestInstallerInstallsFullChromeArtifact(t *testing.T) {
+	platform, err := currentPlatform()
+	if err != nil {
+		t.Skipf("unsupported platform: %v", err)
+	}
+	archive := fakeChromeArchive(t, platform)
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	mux.HandleFunc("/chrome.zip", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(archive) })
+	mux.HandleFunc("/manifest", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(chromeForTestingManifest{Channels: map[string]chromeForTestingChannel{
+			"Stable": {Version: "999.1.2.3", Downloads: map[string][]chromeForTestingDownload{
+				"chrome": {{Platform: platform, URL: server.URL + "/chrome.zip"}},
+			}},
+		}})
+	})
+	installer := NewInstaller(t.TempDir(), ArtifactChrome, "", nil)
+	installer.ManifestURL = server.URL + "/manifest"
+	installer.AllowInsecureScheme = true
+	result, err := installer.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isExecutable(result.BinaryPath) || !strings.Contains(result.BinaryPath, string(filepath.Separator)+"chrome"+string(filepath.Separator)) {
+		t.Fatalf("full Chrome binary = %q", result.BinaryPath)
+	}
+}
+
 // fakeManifestServer serves the manifest + zip from a single
 // httptest server. Both URLs are absolute against the server's
 // own address so the installer can navigate manifest → zip without
@@ -113,7 +177,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 
 	var events []InstallProgress
 	emit := func(name eventchan.Channel, data any) {
-		if name != InstallEventName {
+		if name != eventchan.ScreenshotInstallProgress {
 			return
 		}
 		if p, ok := data.(InstallProgress); ok {
@@ -121,7 +185,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 		}
 	}
 
-	inst := NewInstaller(cacheDir, emit)
+	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, emit)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true // httptest.NewServer is plain HTTP
 
@@ -165,7 +229,7 @@ func TestInstaller_Install_Cached(t *testing.T) {
 	cacheDir := t.TempDir()
 	srv, downloads := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(cacheDir, nil)
+	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -194,13 +258,69 @@ func TestInstaller_Install_BadStatus(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	inst := NewInstaller(cacheDir, nil)
+	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.HTTPClient = &http.Client{Timeout: 5 * time.Second}
 	inst.AllowInsecureScheme = true
 
 	if _, err := inst.Install(context.Background()); err == nil {
 		t.Fatal("Install() = nil err, want error on 500 manifest")
+	}
+}
+
+func TestInstallerDownloadRefusesOversizedArchiveFromHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", zipMaxDownloadBytes+1))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	installer := NewInstaller(t.TempDir(), ArtifactChrome, "", nil)
+	err := installer.download(context.Background(), server.URL, filepath.Join(t.TempDir(), "chrome.zip.partial"), "test")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized download error = %v", err)
+	}
+}
+
+func TestInstallerRejectsInsecureManifestBeforeNetworkRequest(t *testing.T) {
+	var requested bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requested = true
+	}))
+	t.Cleanup(server.Close)
+	installer := NewInstaller(t.TempDir(), ArtifactChrome, "", nil)
+	installer.ManifestURL = server.URL + "/manifest"
+	if _, err := installer.Install(context.Background()); err == nil || !strings.Contains(err.Error(), "non-https") {
+		t.Fatalf("insecure manifest error = %v", err)
+	}
+	if requested {
+		t.Fatal("insecure manifest was requested before validation")
+	}
+}
+
+func TestInstallerUsesCachedArtifactWhenManifestIsOffline(t *testing.T) {
+	platform, err := currentPlatform()
+	if err != nil {
+		t.Skipf("unsupported platform: %v", err)
+	}
+	configDir := t.TempDir()
+	version := "999.0.1.0"
+	binaryPath := binaryPathFor(filepath.Join(configDir, "headless-shell", version), platform, ArtifactHeadlessShell)
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("cached"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installer := NewInstaller(configDir, ArtifactHeadlessShell, "", nil)
+	installer.ManifestURL = "http://127.0.0.1:1/offline"
+	installer.AllowInsecureScheme = true
+	installer.HTTPClient = &http.Client{Timeout: 100 * time.Millisecond}
+	result, err := installer.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BinaryPath != binaryPath || result.Version != version {
+		t.Fatalf("cached result = %#v", result)
 	}
 }
 
@@ -222,7 +342,7 @@ func TestInstaller_Install_BadPlatform(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	inst := NewInstaller(cacheDir, nil)
+	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
 	inst.ManifestURL = srv.URL
 	inst.AllowInsecureScheme = true
 
@@ -283,7 +403,7 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(body)
 	})
 
-	inst := NewInstaller(cacheDir, nil)
+	inst := NewInstaller(cacheDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -317,7 +437,7 @@ func TestInstaller_PrunesOldVersionsOnFreshInstall(t *testing.T) {
 	}
 	srv, _ := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(configDir, nil)
+	inst := NewInstaller(configDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -348,7 +468,7 @@ func TestInstaller_PrunesOldVersionsOnWarmCache(t *testing.T) {
 	cacheDir := filepath.Join(configDir, "headless-shell")
 	srv, _ := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(configDir, nil)
+	inst := NewInstaller(configDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 
@@ -398,7 +518,7 @@ func TestInstaller_PruneIgnoresInvalidSegments(t *testing.T) {
 	}
 	srv, _ := fakeManifestServer(t, "999.0.1.0")
 
-	inst := NewInstaller(configDir, nil)
+	inst := NewInstaller(configDir, ArtifactHeadlessShell, eventchan.ScreenshotInstallProgress, nil)
 	inst.ManifestURL = srv.URL + "/manifest"
 	inst.AllowInsecureScheme = true
 

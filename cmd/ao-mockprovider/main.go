@@ -12,11 +12,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"slices"
+	"sort"
 	"syscall"
 
 	"agent-overflow/internal/harness/control"
@@ -174,7 +176,30 @@ func claudeSessionConfig(args []string) *control.SessionConfig {
 	return &control.SessionConfig{
 		PermissionMode:  flagValue(args, "--permission-mode"),
 		DisallowedTools: flagValues(args, "--disallowedTools"),
+		MCPServers:      claudeMCPServerNames(flagValue(args, "--mcp-config")),
 	}
+}
+
+func claudeMCPServerNames(raw string) []string {
+	var payload struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return nil
+	}
+	return sortedMCPServerNames(payload.MCPServers)
+}
+
+func sortedMCPServerNames(servers map[string]json.RawMessage) []string {
+	if len(servers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func randomHex(n int) string {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/appdirs"
 )
 
 // configRootFixture points the OS config lookup at a temp tree and
@@ -15,7 +17,11 @@ func configRootFixture(t *testing.T) (string, string) {
 	base := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", base)
 	t.Setenv("HOME", base)
-	return base, filepath.Join(base, "agent-overflow")
+	realAppData, err := appdirs.Root()
+	if err != nil {
+		t.Fatalf("resolve fixture app data: %v", err)
+	}
+	return filepath.Dir(realAppData), realAppData
 }
 
 func TestUpRefusesTheRealAppDataDirAndItsParent(t *testing.T) {

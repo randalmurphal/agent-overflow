@@ -35,6 +35,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate
 	{Name: "CheckThreadImportUpdates", ID: 2932719708},             // main.App.CheckThreadImportUpdates
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282},          // main.App.CleanCodexBackgroundTerminals
+	{Name: "ClearBrowserSiteData", ID: 544013229},                  // main.App.ClearBrowserSiteData
 	{Name: "ClearDraft", ID: 296814681},                            // main.App.ClearDraft
 	{Name: "CloseTerminal", ID: 2702963191},                        // main.App.CloseTerminal
 	{Name: "CloseThreadTerminals", ID: 1705768020},                 // main.App.CloseThreadTerminals

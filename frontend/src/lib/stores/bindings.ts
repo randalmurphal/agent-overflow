@@ -79,6 +79,7 @@ export {
   // Settings
   GetSettings,
   UpdateSettings,
+  ClearBrowserSiteData,
   GetContextSettings,
 
   // Custom provider environment. Dedicated mutators rather than

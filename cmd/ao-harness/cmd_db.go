@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
 
 	_ "modernc.org/sqlite"
@@ -148,13 +149,9 @@ func refuseRealAppDatabase(path string) error {
 // non-existent --file falls back to the lexical form, which is the right
 // answer for a path that names nothing yet.
 func underDir(path, dir string) bool {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		dir = resolved
-	}
-	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	path = instanceinfo.CanonicalPath(path)
+	dir = instanceinfo.CanonicalPath(dir)
+	rel, err := filepath.Rel(dir, path)
 	if err != nil {
 		return false
 	}
