@@ -3747,8 +3747,8 @@ export class ThreadMCPServer {
     "name": string;
 
     /**
-     * Status is a mcpstatus.Status string ("connected", "needs-auth",
-     * "failed", "starting", "disabled", "unknown").
+     * Status is a mcpstatus.Status string ("not-started", "connected",
+     * "needs-auth", "failed", "starting", "disabled", "unknown").
      */
     "status": string;
     "error"?: string;
