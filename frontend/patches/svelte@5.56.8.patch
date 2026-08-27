@@ -209,7 +209,7 @@ index 141b914537e3e9a463061a34eab08cba85bff86e..dd3e4a22147ceacaa1b3708052c4f811
  	};
  
 diff --git a/src/internal/client/dom/blocks/each.js b/src/internal/client/dom/blocks/each.js
-index 2df1d6ffa144e138c868bceec406d0899d74a864..08e9c444c32d4141697f0d14955bb60bfa18bbfb 100644
+index 2df1d6ffa144e138c868bceec406d0899d74a864..ec6add0bb39554bb19975b0b190e4f9cbedca9b6 100644
 --- a/src/internal/client/dom/blocks/each.js
 +++ b/src/internal/client/dom/blocks/each.js
 @@ -29,6 +29,7 @@ import {
@@ -259,6 +259,22 @@ index 2df1d6ffa144e138c868bceec406d0899d74a864..08e9c444c32d4141697f0d14955bb60b
  	}
  }
  
+@@ -646,6 +660,15 @@ function reconcile(state, array, anchor, flags, get_key) {
+ 	if (is_animated) {
+ 		queue_micro_task(() => {
+ 			if (to_animate === undefined) return;
++			// ao patch (flip-phases): phased loops — all style writes (aborts),
++			// then all forced reads, then all animation creations — so the whole
++			// set pays one forced style/layout pass instead of one per item.
++			for (effect of to_animate) {
++				effect.nodes?.a?.abort();
++			}
++			for (effect of to_animate) {
++				effect.nodes?.a?.measure_to();
++			}
+ 			for (effect of to_animate) {
+ 				effect.nodes?.a?.apply();
+ 			}
 diff --git a/src/internal/client/dom/elements/attributes.js b/src/internal/client/dom/elements/attributes.js
 index 589685b5f2e4468a4ecd7e94dedcd49398898a81..fd4c44d15db3fd6aaf90169ee0e03ebbe0111907 100644
 --- a/src/internal/client/dom/elements/attributes.js
@@ -370,6 +386,36 @@ index 45e042a8c6ddb6837fad161f0f3ecba2f11fdf97..4047e16c477b54f260a795b5713c383d
  	// composedPath contains list of nodes the event has propagated through.
  	// We check `event_symbol` to skip all nodes below it in case this is a
  	// parent of the `event_symbol` node, which indicates that there's nested
+diff --git a/src/internal/client/dom/elements/transitions.js b/src/internal/client/dom/elements/transitions.js
+index 7c4d3858073c7dfd68182bc7a4c0b7a928a75510..ffc09ebfe28e2d7efac695495b4f58270f3d359b 100644
+--- a/src/internal/client/dom/elements/transitions.js
++++ b/src/internal/client/dom/elements/transitions.js
+@@ -102,11 +102,22 @@ export function animation(element, get_fn, get_params) {
+ 		measure() {
+ 			from = this.element.getBoundingClientRect();
+ 		},
+-		apply() {
++		// ao patch (flip-phases): `apply()` used to run abort (style write),
++		// getBoundingClientRect (forced read) and animation creation (style
++		// write) per element, so a loop over N animated items forced up to N
++		// style/layout recalcs — each read saw the previous item's writes.
++		// It is now split into three methods the each-block calls in phased
++		// loops (all aborts, then all reads, then all creates); per-element
++		// ordering (abort_i before read_i before create_i) is preserved, and
++		// sibling transforms never affect each other's rects, so the observed
++		// geometry is identical.
++		abort() {
+ 			animation?.abort();
+-
++		},
++		measure_to() {
+ 			to = this.element.getBoundingClientRect();
+-
++		},
++		apply() {
+ 			if (
+ 				from.left !== to.left ||
+ 				from.right !== to.right ||
 diff --git a/src/internal/client/dom/task.js b/src/internal/client/dom/task.js
 index 8c513614672b07a41e4626dc041f8d216345e014..8c593df62edc70e76c065a3e30a2e2d6e31633e1 100644
 --- a/src/internal/client/dom/task.js

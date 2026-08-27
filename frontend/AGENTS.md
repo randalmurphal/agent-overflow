@@ -661,7 +661,7 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
 `file:` directory through the same store and hardlinks the tree in, so the
 `vendor/` files and the ones the build reads would share inodes.
 
-- `svelte@5.56.8.patch` — five hunks with different drop rules:
+- `svelte@5.56.8.patch` — six hunks with different drop rules:
   1. **ownerless-roots** — `$effect.root` no longer inherits the
      creating component's context/parent, so store-level roots
      (threadRowUiState's expansion registry) don't pin dead row
@@ -752,6 +752,24 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
      candidate. Drop when `svelte-patch-reconnect-dedupe.test.ts` passes
      on an unpatched release; `chatview-dom-retention.test.ts` carries the
      component-level tripwire (the ring re-hover case).
+  6. **flip-phases** — an animated keyed-each reorder applies FLIP per
+     item: abort the in-flight animation (style write), read
+     `getBoundingClientRect` (forced read), create the replacement
+     animation (style write) — so a loop over N rows forces up to N
+     style/layout recalc passes in one microtask, because each row's read
+     sees the previous row's writes. On a 165Hz frame budget that was the
+     dominant slice of sidebar-reorder burst frames (storm capture G,
+     2026-08-26: 34.6ms of gBCR self-time under `apply` vs ~5ms under the
+     already-batched `measure`). The hunk splits the animation manager's
+     `apply()` into `abort()` / `measure_to()` / `apply()` and the
+     each-block's microtask into three phased loops — all aborts, then
+     all reads, then all creates — preserving per-item ordering (abort_i
+     before read_i before create_i; sibling transforms never affect each
+     other's rects), so the geometry and resulting animations are
+     identical and the whole set pays one forced pass. Touches
+     `dom/elements/transitions.js` and `dom/blocks/each.js`. No upstream
+     issue filed — PR candidate. Drop when
+     `svelte-patch-flip-phases.test.ts` passes on an unpatched release.
 
   Dropped on the 5.56.3 → 5.56.8 re-roll: the **zombie-mint fix** and its
   **probe** (`src/lib/utils/zombieMintProbe.ts`, deleted). Upstream fixed

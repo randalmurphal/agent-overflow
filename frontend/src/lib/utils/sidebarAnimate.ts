@@ -14,7 +14,7 @@
 //
 // The parameters mirror what auto-animate rendered with our options
 // (duration 180, easing ease-out — utils/autoAnimate.ts, now deleted):
-// - move (FLIP): 180ms ease-out translate — `SIDEBAR_FLIP` below.
+// - move (FLIP): 180ms ease-out translate — `sidebarFlip` below.
 // - enter: space appears instantly (siblings FLIP around it), the new row
 //   holds invisible at scale .98 through the eased first half of 1.5× the
 //   base duration, then fades/scales in — auto-animate's default "add"
@@ -26,11 +26,37 @@
 //   detach. The exit therefore also collapses the row's height, so the
 //   space closes smoothly in the same 180ms instead.
 import { cubicIn, cubicOut } from 'svelte/easing';
+import type { AnimationConfig } from 'svelte/animate';
 import type { TransitionConfig } from 'svelte/transition';
 
 export const SIDEBAR_ANIM_MS = 180;
 
-export const SIDEBAR_FLIP = { duration: SIDEBAR_ANIM_MS, easing: cubicOut };
+// Drop-in for svelte's stock `flip` at fixed duration/easing, minus its
+// per-element reads. Stock flip calls getComputedStyle (transform,
+// transform-origin) and clientWidth/clientHeight ×2 on every moved row —
+// forced style/layout reads interleaved with the animation writes of the
+// rows before it, so a reorder of M rows pays up to M extra recalc passes
+// (measured: the dominant slice of sidebar-reorder burst frames). For
+// sidebar rows all of that input is dead weight: a row never resizes
+// during a slide (from/to are the same box, so stock flip's scale term is
+// scale(1,1)), no ancestor uses CSS zoom or scale transforms, and the
+// computed-transform prefix only matters when a mid-intro row (scale
+// .98–1, first 270ms after entering) is immediately reordered — there the
+// stock version would preserve ≤2% scale during the slide and this one
+// lets it settle to 1. Pure rect math otherwise, byte-identical keyframes.
+export function sidebarFlip(
+  node: Element,
+  { from, to }: { from: DOMRect; to: DOMRect },
+): AnimationConfig {
+  void node;
+  const dx = from.left - to.left;
+  const dy = from.top - to.top;
+  return {
+    duration: SIDEBAR_ANIM_MS,
+    easing: cubicOut,
+    css: (_t, u) => `transform: translate(${u * dx}px, ${u * dy}px);`,
+  };
+}
 
 export function sidebarEnter(node: Element): TransitionConfig {
   void node;

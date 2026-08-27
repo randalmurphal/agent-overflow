@@ -32,8 +32,7 @@
     getEffectiveThreadStatus,
   } from '../../stores/threadStatuses.svelte';
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
-  import { flip } from 'svelte/animate';
-  import { SIDEBAR_FLIP, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
+  import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import Plus from '@lucide/svelte/icons/plus';
   import Icon from '../primitives/Icon.svelte';
   import ThreadRow from './ThreadRow.svelte';
@@ -207,7 +206,7 @@
     data-testid="project-thread-list"
   >
     {#each visibleNodes as node (node.thread.id)}
-      <div role="listitem" animate:flip={SIDEBAR_FLIP} in:sidebarEnter out:sidebarExit>
+      <div role="listitem" animate:sidebarFlip in:sidebarEnter out:sidebarExit>
         <ThreadRow
           thread={node.thread}
           {pane}

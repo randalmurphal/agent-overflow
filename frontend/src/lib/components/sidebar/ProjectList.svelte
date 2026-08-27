@@ -5,8 +5,7 @@
 
   import type { ProjectWithCounts, Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import { flip } from 'svelte/animate';
-  import { SIDEBAR_FLIP, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
+  import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
   import ProjectItem from './ProjectItem.svelte';
   import type { ProjectNewThreadHandler, ProjectNewTerminalHandler } from './projectNewThread';
 
@@ -44,7 +43,7 @@
       <!-- animate:/transition: need an element as the each's immediate
            child; ProjectItem is a component, so a layout-neutral block
            wrapper carries them. -->
-      <div animate:flip={SIDEBAR_FLIP} in:sidebarEnter out:sidebarExit>
+      <div animate:sidebarFlip in:sidebarEnter out:sidebarExit>
       <ProjectItem
         {project}
         threads={threadsByProject.get(project.project.id) ?? []}
