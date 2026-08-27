@@ -710,10 +710,10 @@
         viewportHeight = entry.contentRect.height;
         if (viewportHeight !== scrollerContentHeight) {
           scrollerContentHeight = viewportHeight;
-          // A clientHeight move invalidates the controller's cached
-          // bottom-target arithmetic; the bumped delivery below carries
-          // the new viewportHeight so the next delta falls back to a
-          // real read (delta-0 deliveries return before consuming it).
+          // A content-box viewport move can race a browser scroll clamp.
+          // The bumped delivery below carries the new viewportHeight so
+          // the controller refreshes cached scrollTop even when virtual
+          // content height did not change.
           contentGeometryTrigger++;
         }
         // Sibling width observer: MessageTimeline's

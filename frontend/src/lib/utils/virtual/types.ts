@@ -62,10 +62,11 @@ export interface RowEstimate {
 /**
  * One engine-sourced content-geometry sample, delivered by
  * TimelineVirtualizer after the template flush (DOM consistent, still
- * pre-paint) — the replacement for the scroll controller's contentEl
- * ResizeObserver in chat. `height` is the engine's totalSize, which the
- * spacer's explicit height makes identical to the content element's
- * height; `width` is the scroller's content-box width from the adapter's
+ * pre-paint). This replaces the scroll controller's contentEl
+ * ResizeObserver in chat. `height` is the engine's total size plus its
+ * optional leading header, which the outer wrapper's explicit height
+ * makes identical to the virtualizer's scroll-content height. `width` is
+ * the scroller's content-box width from the adapter's
  * own ResizeObserver (the single async width source — never a
  * synchronous layout read). The two settle fields are per-row settle
  * evidence for the controller's warm-up gate: everything mounted has
@@ -74,7 +75,7 @@ export interface RowEstimate {
  * estimate cascade measures large ones).
  */
 export interface ContentGeometrySample {
-  /** Content height = the engine's totalSize (the spacer height just written). */
+  /** Total scroll-content height, including the virtualizer's leading header. */
   height: number;
   /** Scroller content-box width (the wrap point; width-reflow classification). */
   width: number;
@@ -85,10 +86,10 @@ export interface ContentGeometrySample {
   /**
    * Scroller content-box height from the adapter's own ResizeObserver —
    * async RO data, never a synchronous layout read. The controller's
-   * read-free delta path (scroll/observers.ts) keys on it: while the
+   * read-free delta path (scroll/observers.ts) keys on it. While the
    * viewport holds still, the post-delta bottom target is pure
-   * arithmetic; a change here is the signal that clientHeight moved and
-   * cached geometry must be re-read. Optional because RO-sourced
+   * arithmetic. A change here signals that the content-box viewport
+   * moved and cached scrollTop must be refreshed. Optional because RO-sourced
    * pipelines (ChannelView's contentEl RO) have no scroller entry —
    * absent means "unknown", which disables the arithmetic path, never
    * misclassifies.

@@ -409,6 +409,59 @@ describe('exact leading header', () => {
   });
 });
 
+describe('content geometry target contract', () => {
+  it('matches the DOM bottom through composer padding, header, and short-content transitions', async () => {
+    const samples: ContentGeometrySample[] = [];
+    const ctx = mountHarness({
+      headerSize: 60,
+      onContentGeometry: (sample) => samples.push(sample),
+    });
+    const { harness, scrollEl } = ctx;
+    await waitForStableGeometry(scrollEl, 'target-contract mount');
+
+    function assertLatestTarget(label: string): void {
+      const sample = samples.at(-1);
+      expect(sample, `${label}: geometry sample`).toBeDefined();
+      expect(sample?.viewportHeight, `${label}: content-box viewport`).toBeTypeOf('number');
+      if (!sample || sample.viewportHeight === undefined) return;
+      const sampleTarget = Math.max(0, sample.height - sample.viewportHeight);
+      const domTarget = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+      expect(sampleTarget, `${label}: sample target`).toBeCloseTo(domTarget, 0);
+    }
+
+    assertLatestTarget('header baseline');
+
+    // Production composer clearance is padding on the scroller. Its
+    // padding box (clientHeight) stays fixed while the RO content-box
+    // viewport shrinks by the padding delta.
+    const baselineClientHeight = scrollEl.clientHeight;
+    const baselineSampleCount = samples.length;
+    scrollEl.style.paddingBottom = '160px';
+    await waitFor(() => samples.length > baselineSampleCount, 'composer grow sample');
+    expect(scrollEl.clientHeight).toBe(baselineClientHeight);
+    assertLatestTarget('composer grow');
+
+    const grownSampleCount = samples.length;
+    scrollEl.style.paddingBottom = '40px';
+    await waitFor(() => samples.length > grownSampleCount, 'composer shrink sample');
+    expect(scrollEl.clientHeight).toBe(baselineClientHeight);
+    assertLatestTarget('composer shrink');
+
+    const headerSampleCount = samples.length;
+    harness.setHeaderSize(24);
+    await waitFor(() => samples.length > headerSampleCount, 'header resize sample');
+    await waitForStableGeometry(scrollEl, 'header resize target settle');
+    assertLatestTarget('header resize');
+
+    const shortSampleCount = samples.length;
+    harness.setRows(makeRows(2));
+    await waitFor(() => samples.length > shortSampleCount, 'short-content sample');
+    await waitForStableGeometry(scrollEl, 'short-content settle');
+    assertLatestTarget('short content');
+    expect(Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight)).toBe(0);
+  });
+});
+
 describe('straddling-row attribution (reading anchor)', () => {
   // A tall row spanning the viewport top is the one row whole-row
   // [index, height] can't classify: growth in its off-screen-above part
@@ -971,13 +1024,13 @@ describe('revalidate', () => {
     const handle = harness.handle()!;
     expect(handle.getViewportSize()).toBe(VIEWPORT_PX);
 
-    // Composer-clearance shape: padding-bottom on the scroller. The
-    // content box is unchanged so the scroller RO stays silent —
-    // revalidate()'s cold-path read is the only sampler, and it must
-    // report the RO's unit (content-box), not clientHeight's padding box.
+    // Composer clearance uses padding-bottom on the production border-box
+    // scroller. Its padding box stays fixed while the content
+    // box shrinks, and revalidate() must report the same content-box unit
+    // as ResizeObserver rather than clientHeight's padding box.
     scrollEl.style.paddingBottom = '160px';
     harness.handle()!.revalidate();
-    expect(handle.getViewportSize()).toBe(VIEWPORT_PX);
+    expect(handle.getViewportSize()).toBe(VIEWPORT_PX - 160);
 
     // Outcome: an align-end scroll after revalidate lands on the true
     // bottom (an inflated viewport lands short by the padding).

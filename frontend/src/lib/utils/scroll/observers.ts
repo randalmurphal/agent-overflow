@@ -191,20 +191,15 @@ export interface ContentObserverDeps {
   targetScrollTop(): number;
   refreshIsNearBottom(): number;
   /**
-   * Learn the content-height → bottom-target offset from a read-path
-   * delivery. Call AFTER the delivery's real reads (layout already
-   * forced, so the reads inside are free).
+   * Read-free bottom geometry for an authoritative virtualizer sample.
+   * Computes target = content height - content-box viewport height and
+   * pairs it with cached scrollTop. Null when that cached position cannot
+   * be trusted. The caller then takes the real-read path.
    */
-  learnContentTargetOffset(height: number): void;
-  /**
-   * Read-free bottom geometry for a delivery of `height`: computes the
-   * target from the learned offset and returns the decision inputs,
-   * refreshing the near-bottom band from the same arithmetic. Null when
-   * the cache cannot answer — the caller must then take the real-read
-   * path (refreshIsNearBottom + targetScrollTop + scrollTop +
-   * learnContentTargetOffset), which resyncs it.
-   */
-  contentGeometryForHeight(height: number): { target: number; scrollTop: number } | null;
+  contentGeometryForSample(
+    height: number,
+    viewportHeight: number,
+  ): { target: number; scrollTop: number } | null;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   resolverStateSnapshot(): ResolverState;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
@@ -476,13 +471,17 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     previousHeight = nextHeight;
     previousWidth = nextWidth;
     // Engine-sourced deliveries carry the scroller's content-box height
-    // from its RO entry. While it holds still, clientHeight held still,
+    // from its RO entry. While it holds still, the viewport held still,
     // and the delta path below may answer from cached geometry instead
     // of forced-layout reads; any move (or an RO-sourced pipeline, which
     // never reports one) disqualifies this delivery from the cache.
     const nextViewportHeight = settle?.viewportHeight;
+    const prevViewportHeight = previousViewportHeight;
     const viewportStable = nextViewportHeight !== undefined
-      && nextViewportHeight === previousViewportHeight;
+      && nextViewportHeight === prevViewportHeight;
+    const viewportChanged = nextViewportHeight !== undefined
+      && prevViewportHeight !== undefined
+      && nextViewportHeight !== prevViewportHeight;
     previousViewportHeight = nextViewportHeight;
     const widthChanged = prevWidth !== undefined
       && Math.abs(nextWidth - prevWidth) > CONTENT_REFLOW_WIDTH_EPSILON_PX;
@@ -543,7 +542,6 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         deps.writeScrollTop(decision.write.caller, decision.write.value);
       }
       deps.refreshIsNearBottom();
-      deps.learnContentTargetOffset(nextHeight);
       return;
     }
 
@@ -567,10 +565,17 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // window. The raw signals are traced separately below.
     const pinnedRemeasureActive =
       pinnedRemeasureSettleUntil > nowMs() || coldLoadSettleActive;
-    // Common case: the virtualizer re-measures a same-height row, padding-bottom
-    // CSS variable updates with identical computed value, etc. No
-    // geometry change → nothing to chase, no scroll-event tagging needed.
+    // Common cases include a virtualizer remeasuring a same-height row,
+    // padding-bottom changes, or a CSS variable resolves to the same value.
+    // No virtual content change means there is nothing to chase and no
+    // scroll-event tagging is needed.
     if (delta === 0) {
+      // A padding-only composer resize changes the content-box viewport
+      // without changing virtual content height. Refresh cached scrollTop
+      // now so the next stable read-free delivery cannot inherit a browser
+      // clamp from the old viewport. The target itself is carried by the
+      // next sample and needs no mutable offset to rebase.
+      if (viewportChanged) deps.refreshIsNearBottom();
       if (widthChanged && isUiRenderTraceEnabled()) trace('scroll.contentRO.widthReflow', () => ({
         prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
         nextWidth: roundCssPx(nextWidth),
@@ -595,28 +600,25 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // the engine's are routed through the controller and token-tagged.)
     resizeCorrelatedUntaggedScrollBudget = 1;
 
-    // Geometry for the decision — read-free on the hot path. A delivery
-    // carries the content height, and the bottom target is that height
-    // plus a constant offset the controller learned on the last
-    // read-path delivery; scrollTop cannot have moved since the
-    // controller's last real read (scroll events, chokepoint writes and
-    // spring ticks all resync its cache). The forced-layout read this
-    // replaces ran once per delivery INSIDE the flush/RO window — up to
+    // Geometry for the decision is read-free on the hot path. A
+    // virtualizer delivery carries both content height and content-box
+    // viewport height, whose difference is the DOM bottom target because
+    // scroller padding is present on both sides of scrollHeight -
+    // clientHeight. Cached scrollTop cannot have moved since the
+    // controller's last real read. Scroll events, chokepoint writes, and
+    // spring ticks all resync it. The forced-layout read this replaces
+    // ran once per delivery inside the flush/RO window. Up to
     // four passes in a single 3-pane streaming frame, and the first
     // reader of a dirty frame pays the whole pending style recalc
-    // (storm capture 2026-08-26). Height-plus-offset, never a running
-    // delta: resyncs between deliveries rebase to DOM that already
-    // contains the next delivery's change, so delta arithmetic
-    // double-counted it (2026-08-26, rest 8px short of bottom). The
-    // cache answers only while the viewport held still and the wrap
-    // width did not move; everything else — first fire, width reflow,
-    // viewport resize, floored-short content, RO-sourced pipelines —
-    // takes the real reads below, which re-learn the offset. A shrink
+    // (storm capture 2026-08-26). The cache answers only while the
+    // viewport and wrap width held still. First fire, width reflow,
+    // viewport resize, floored-short content, and RO-sourced pipelines
+    // take the real reads below, which resync cached scrollTop. A shrink
     // the browser clamps ahead of us is seen here as overshoot and
     // resolved by the same overshoot-snap the real read produced; the
     // chokepoint's own fresh-read clamp still guards the actual write.
     const cachedGeometry = viewportStable && !widthChanged
-      ? deps.contentGeometryForHeight(nextHeight)
+      ? deps.contentGeometryForSample(nextHeight, nextViewportHeight)
       : null;
     let target: number;
     let scrollTopAtDelivery: number;
@@ -635,7 +637,6 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // `const target` discipline.
       target = deps.targetScrollTop();
       scrollTopAtDelivery = scrollEl.scrollTop;
-      deps.learnContentTargetOffset(nextHeight);
     }
     // Every decision about this delivery — overshoot snap, stranded-
     // oscillation recovery, sync-pin vs spring, negative re-stick — is

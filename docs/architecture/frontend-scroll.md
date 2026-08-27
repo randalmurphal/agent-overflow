@@ -33,7 +33,12 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     `stick.deliverContentGeometry`) post-flush instead of the controller
     re-observing the same element with a second ResizeObserver — same
     observation shape, one frame earlier, no duplicate layout read on
-    the streaming hot path.
+    the streaming hot path. Each sample also carries the scroller's
+    content-box viewport height. While that viewport is stable, the
+    controller computes the bottom target directly as `height -
+    viewportHeight` and caches only `scrollTop`. Composer clearance is
+    scroller padding, so it cancels from `scrollHeight - clientHeight`
+    and cannot become hidden target-offset state.
   - **The engine never writes `scrollTop`.** Geometry changes that would
     move content above the viewport surface as `EngineCompensation`
     observations; imperative scrolls (`scrollToIndex`) compute their
