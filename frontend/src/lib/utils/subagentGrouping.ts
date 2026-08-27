@@ -150,6 +150,41 @@ function leafNode(item: Item, orphan = false): TimelineLeaf {
   return node;
 }
 
+/**
+ * Group and wait-group nodes cached across passes, keyed by the Item they
+ * are built ON (the launch for a card, the carrier for a wait group), for
+ * the same reason leaves are cached per Item: an unchanged subtree should
+ * present the same node object pass after pass. Reference-stable cards are
+ * what keep the activity-run build cache valid for runs that contain one —
+ * per-pass minting invalidated it on every projection pass of every window
+ * holding a subagent card, which put the whole run rebuild back on the
+ * streaming path (part of the 64MB/min allocation rate, 2026-08-27).
+ *
+ * Unlike a leaf, a card's output depends on more than its own Item, so a
+ * hit requires validation against the CURRENT pass's inputs (buckets,
+ * carrier links, completion folds, fold aggregates — see
+ * `groupItemsBySubagent`'s `cardStillValid`). The entry records the depth
+ * it was built at because nested builds are depth-capped; entries die with
+ * their Item, and any write to the launch/carrier row replaces the Item.
+ *
+ * Two projections can walk the SAME Item objects with different windows
+ * (the agent-scope facade projects a sub-window of its source pane). That
+ * is safe — validation always runs against the calling pass's maps, so the
+ * worst case is the two projections alternately rebuilding, never a stale
+ * node.
+ */
+interface CachedCardBuild<Node> {
+  node: Node;
+  depth: number;
+  /** `aggregates?.(parent.id)` at build time; ref-stable per fold state. */
+  fold: SubagentFoldAggregate | undefined;
+}
+
+const launchGroupBuildByParent = new WeakMap<Item, CachedCardBuild<SubagentGroupNode>>();
+const waitGroupBuildByCarrier = new WeakMap<Item, CachedCardBuild<WaitGroupNode>>();
+
+const EMPTY_ITEMS: readonly Item[] = [];
+
 export interface SubagentGroupNode {
   kind: 'group';
   /**
@@ -1048,12 +1083,21 @@ export function groupItemsBySubagent(
   // Measured (N=500 items, common no-subagent case): 25us -> 3us per call,
   // a ~9x win. Threads with subagents are the minority; the grouping logic
   // below is still exercised for them.
+  // `completionOf` alone is deliberately NOT a signal: every ordinary tool
+  // completion carries it, and it only affects grouping when its
+  // counterpart is loaded — a launch (its own signal via the prefilter) or
+  // a wait carrier (terminal_interaction / wait_agent). With no counterpart
+  // in the window the slow path renders the completion as a plain leaf,
+  // which is exactly what the fast path produces. Disqualifying on it sent
+  // every plain tool-call thread through the full grouping walk per
+  // structural beat (part of the 64MB/min streaming allocation rate,
+  // 2026-08-27).
   let hasGroupingSignals = false;
   let alreadySorted = true;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const pid = item.parentId;
-    if ((pid && pid.length > 0) || item.completionOf || item.kind === 'terminal_interaction' || item.toolName === 'wait_agent' || isPotentialSubagentLaunch(item)) {
+    if ((pid && pid.length > 0) || item.kind === 'terminal_interaction' || item.toolName === 'wait_agent' || isPotentialSubagentLaunch(item)) {
       hasGroupingSignals = true;
     }
     if (i > 0) {
@@ -1251,12 +1295,16 @@ export function groupItemsBySubagent(
 
   function buildNode(item: Item, depth: number): TimelineNode {
     if (isWaitCarrier(item)) {
+      const cachedWait = waitGroupBuildByCarrier.get(item);
+      if (cachedWait !== undefined && waitGroupEntryValid(cachedWait, item, depth)) {
+        return cachedWait.node;
+      }
       // An observed completion is a leaf — unless it is a detached
       // spawn's completion sibling, in which case it is where that
       // spawn's card renders (`cardLaunchByCompletionID`, via buildNode).
       const children = (waitChildrenByCarrierID.get(item.id) ?? [])
         .map((child) => buildNode(child, depth + 1));
-      return {
+      const node: WaitGroupNode = {
         kind: 'wait_group',
         parent: item,
         groupKey: waitGroupKey(item.id),
@@ -1264,6 +1312,8 @@ export function groupItemsBySubagent(
         children,
         descendantCount: children.length,
       };
+      waitGroupBuildByCarrier.set(item, { node, depth, fold: undefined });
+      return node;
     }
 
     // A detached launch's completion sibling is where that launch's card
@@ -1370,11 +1420,22 @@ export function groupItemsBySubagent(
       );
     }
 
+    // Below the depth cap the build is cacheable: a hit returns the same
+    // node object as the previous pass (validated against this pass's
+    // inputs), so downstream reference-equality caches hold. Capped builds
+    // (above) are never cached — their flatten walks arbitrarily many
+    // nested buckets and validating that dependency set is not worth the
+    // rarity of depth-3 nests.
+    const cached = launchGroupBuildByParent.get(item);
+    if (cached !== undefined && launchGroupEntryValid(cached, anchor, depth)) {
+      return cached.node;
+    }
+
     // `childItems` is this launch's whole subtree in timeline order, so a
     // child that is itself a launch recurses into its own nested card and
     // everything else stays a sibling leaf right here.
     const children = (childItems ?? []).map((child) => buildNode(child, depth + 1));
-    return subagentGroupNode(
+    const node = subagentGroupNode(
       item,
       anchor,
       children,
@@ -1382,6 +1443,8 @@ export function groupItemsBySubagent(
       aggregates,
       cardCompletion(item, anchor),
     );
+    launchGroupBuildByParent.set(item, { node, depth, fold: aggregates?.(item.id) });
+    return node;
   }
 
   /**
@@ -1391,6 +1454,91 @@ export function groupItemsBySubagent(
    */
   function cardCompletion(item: Item, anchor: Item): Item | undefined {
     return anchor.id !== item.id ? anchor : launchCompletionByLaunchID.get(item.id);
+  }
+
+  /**
+   * Whether a cached card/wait node is still exactly what `buildNode(item,
+   * depth)` would produce this pass. Item-local verdicts (wait-carrier
+   * meta, a launch's own detachment flags) need no re-check — an Item
+   * reference IS a content version, so the same reference means the same
+   * meta and the same verdict. What must be validated is everything
+   * CROSS-item: this pass's link maps, the bucket contents, and the whole
+   * subtree by recursion (a grandchild lives in its own launch's bucket,
+   * so comparing the direct bucket alone would miss it).
+   */
+  function childNodeStillValid(node: TimelineNode, item: Item, depth: number): boolean {
+    switch (node.kind) {
+      case 'leaf': {
+        if (node.item !== item) return false;
+        // Still a leaf: not the render point of a detached launch's card,
+        // and either a detached launch's pre-card row or a bucketless
+        // non-launch. (Forked-Skill detection is cross-item, so a row can
+        // become — or stop being — a launch with its own Item unchanged.)
+        if (cardLaunchByCompletionID.has(item.id)) return false;
+        if (detachedLaunchIDs.has(item.id)) return true;
+        const bucket = childrenByParent.get(item.id);
+        return (bucket === undefined || bucket.length === 0)
+          && !subagentLaunchIDs.has(item.id);
+      }
+      case 'group': {
+        const cached = launchGroupBuildByParent.get(node.parent);
+        if (cached === undefined || cached.node !== node) return false;
+        if (node.parent === item) {
+          // Awaited card at its launch. A launch backgrounded mid-flight
+          // becomes detached and renders its pre-card leaf instead.
+          if (detachedLaunchIDs.has(item.id)) return false;
+        } else {
+          // Detached card at its completion sibling.
+          if (node.anchor !== item) return false;
+          if (cardLaunchByCompletionID.get(item.id) !== node.parent) return false;
+        }
+        return launchGroupEntryValid(cached, node.anchor, depth);
+      }
+      case 'wait_group': {
+        if (node.parent !== item) return false;
+        const cached = waitGroupBuildByCarrier.get(item);
+        if (cached === undefined || cached.node !== node) return false;
+        return waitGroupEntryValid(cached, item, depth);
+      }
+      default:
+        return false;
+    }
+  }
+
+  function launchGroupEntryValid(
+    entry: CachedCardBuild<SubagentGroupNode>,
+    anchor: Item,
+    depth: number,
+  ): boolean {
+    const node = entry.node;
+    if (entry.depth !== depth || node.anchor !== anchor) return false;
+    if (aggregates?.(node.parent.id) !== entry.fold) return false;
+    if (cardCompletion(node.parent, anchor) !== node.completion) return false;
+    const bucket = childrenByParent.get(node.parent.id) ?? EMPTY_ITEMS;
+    if (bucket.length !== node.children.length) return false;
+    // A bucketless launch only renders a card while it still IS a launch —
+    // forked-Skill status can revert when the window moves.
+    if (bucket.length === 0 && !subagentLaunchIDs.has(node.parent.id)) return false;
+    for (let i = 0; i < bucket.length; i += 1) {
+      if (!childNodeStillValid(node.children[i], bucket[i], depth + 1)) return false;
+    }
+    return true;
+  }
+
+  function waitGroupEntryValid(
+    entry: CachedCardBuild<WaitGroupNode>,
+    carrier: Item,
+    depth: number,
+  ): boolean {
+    const node = entry.node;
+    if (entry.depth !== depth) return false;
+    if (waitCompletionByCarrierID.get(carrier.id) !== node.completion) return false;
+    const children = waitChildrenByCarrierID.get(carrier.id) ?? EMPTY_ITEMS;
+    if (children.length !== node.children.length) return false;
+    for (let i = 0; i < children.length; i += 1) {
+      if (!childNodeStillValid(node.children[i], children[i], depth + 1)) return false;
+    }
+    return true;
   }
 
   const roots: TimelineNode[] = [];

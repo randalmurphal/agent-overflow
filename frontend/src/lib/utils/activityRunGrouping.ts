@@ -27,7 +27,12 @@
 
 import type { Item } from '../types/models';
 import { fileChangeDisplayRowCount } from './fileChangeRows';
-import { type ActivityRunNode, type TimelineNode } from './subagentGrouping';
+import {
+  timelineNodeRepresentativeItem,
+  type ActivityRunNode,
+  type TimelineNode,
+} from './subagentGrouping';
+import { isPotentialSubagentLaunch } from './subagentLaunch';
 import { timelineNodeHasRail } from './timelineRail';
 
 /** What the registry resolves for one run, per projection pass. */
@@ -302,8 +307,14 @@ function indexCompletions(
  */
 interface CachedRunBuild {
   children: TimelineNode[];
-  rowMemberIds: string[][];
+  rowMemberIds: (readonly string[])[];
   memberItemIds: string[];
+  /**
+   * Aliases `memberItemIds` (same array) when no member can have an
+   * out-of-band completion — the summary sequence is then the member
+   * sequence by construction, so a second array and the dedupe set that
+   * built it would be pure churn.
+   */
   summaryItemIds: string[];
   /**
    * Member ids that had no completion row when this build ran. A completion
@@ -315,18 +326,68 @@ interface CachedRunBuild {
    * rebuild: the header resolves ids through `getItemById` and filters
    * misses.
    */
-  pendingCompletionIds: string[];
+  pendingCompletionIds: readonly string[];
   threadId: string;
 }
 
 const runBuildByFirstChild = new WeakMap<TimelineNode, CachedRunBuild>();
+
+/**
+ * One run row's positional identity ids, cached per NODE object. Leaf and
+ * read_group nodes are reference-stable across passes (cached per Item),
+ * and the card caches in `subagentGrouping.ts` make group/wait nodes
+ * reference-stable too, so an unchanged row never re-walks the member
+ * generator — which minted IteratorResult objects per item per pass, twice
+ * per rebuild, on the streaming path.
+ */
+const rowIdsByNode = new WeakMap<TimelineNode, readonly string[]>();
+
+function rowIdsOf(node: TimelineNode): readonly string[] {
+  let ids = rowIdsByNode.get(node);
+  if (ids === undefined) {
+    const row: string[] = [];
+    for (const item of activityRunMemberItems(node)) row.push(item.id);
+    rowIdsByNode.set(node, row);
+    ids = row;
+  }
+  return ids;
+}
+
+/**
+ * Whether a row's header summary can depend on a completion row OUTSIDE
+ * the run: a detached launch's later `complete:<id>` sibling, or a wait
+ * carrier's standalone completion. Ordinary tool rows carry their status
+ * on their own Item (the completion row is just another member when it
+ * arrives), so a run with none of these skips the completion index, the
+ * dedupe set, and the pending list entirely — the common case for every
+ * plain tool-call thread.
+ */
+function nodeMayHaveOutOfBandCompletion(node: TimelineNode): boolean {
+  switch (node.kind) {
+    case 'group':
+    case 'wait_group':
+      return true;
+    case 'read_group':
+      return false;
+    case 'leaf': {
+      const item = node.item;
+      if (item.kind === 'terminal_interaction') return true;
+      return item.kind === 'tool_call'
+        && (isPotentialSubagentLaunch(item) || item.toolName === 'wait_agent');
+    }
+    case 'activity_run':
+      throw new Error('nodeMayHaveOutOfBandCompletion: activity runs cannot nest');
+  }
+}
+
+const EMPTY_IDS: readonly string[] = [];
 
 function runBuildStillValid(
   build: CachedRunBuild,
   nodes: TimelineNode[],
   start: number,
   end: number,
-  completionByLaunchId: ReadonlyMap<string, Item>,
+  getCompletionIndex: () => ReadonlyMap<string, Item>,
 ): boolean {
   const children = build.children;
   if (children.length !== end - start) return false;
@@ -334,8 +395,11 @@ function runBuildStillValid(
     if (children[k] !== nodes[start + k]) return false;
   }
   const pending = build.pendingCompletionIds;
-  for (let k = 0; k < pending.length; k += 1) {
-    if (completionByLaunchId.has(pending[k])) return false;
+  if (pending.length > 0) {
+    const completionByLaunchId = getCompletionIndex();
+    for (let k = 0; k < pending.length; k += 1) {
+      if (completionByLaunchId.has(pending[k])) return false;
+    }
   }
   return true;
 }
@@ -371,46 +435,69 @@ function mintRunNode(
 function buildRun(
   members: TimelineNode[],
   options: GroupActivityRunsOptions,
-  completionByLaunchId: ReadonlyMap<string, Item>,
+  getCompletionIndex: () => ReadonlyMap<string, Item>,
 ): ActivityRunNode {
   // The projected member ids are enough for identity, the mount window, and
   // threadId — all immutable per item — so this pass never resolves current
   // items. That is what keeps it off the streaming path: everything the run
   // displays that CAN change is derived from these ids at render time.
-  const rowMemberIds: string[][] = [];
-  const memberItemIds: string[] = [];
-  const summaryItemIds: string[] = [];
-  const pendingCompletionIds: string[] = [];
-  const seenSummaryIds = new Set<string>();
-  let threadId = '';
+  let outOfBand = false;
   for (const node of members) {
-    const row: string[] = [];
-    for (const item of activityRunMemberItems(node)) {
-      if (threadId === '') threadId = item.threadId;
-      row.push(item.id);
-      memberItemIds.push(item.id);
+    if (nodeMayHaveOutOfBandCompletion(node)) {
+      outOfBand = true;
+      break;
     }
-    rowMemberIds.push(row);
+  }
+  const rowMemberIds: (readonly string[])[] = [];
+  const memberItemIds: string[] = [];
+  const threadId = timelineNodeRepresentativeItem(members[0]).threadId;
+  let summaryItemIds: string[];
+  let pendingCompletionIds: readonly string[];
+  if (!outOfBand) {
+    // Lean path — no member can depend on a completion outside the run,
+    // so the summary sequence IS the member sequence and nothing can be
+    // pending. This is every plain tool/thinking/read run, i.e. the run
+    // that rebuilds per streaming beat while a turn works.
+    for (const node of members) {
+      const row = rowIdsOf(node);
+      rowMemberIds.push(row);
+      for (let k = 0; k < row.length; k += 1) memberItemIds.push(row[k]);
+    }
+    summaryItemIds = memberItemIds;
+    pendingCompletionIds = EMPTY_IDS;
+  } else {
     // Summary dependencies: each member, plus a detached launch's later
     // completion row once it exists. The launch stays immutable at
     // `running`, so the run summarizes both records while identity keeps
-    // belonging only to the launch's position. Inlined rather than a
-    // generator on purpose — this loop runs per run per pass, and the
-    // IteratorResult objects a generator mints were their own churn line
-    // in the 2026-08-25 profile.
-    for (const item of activityRunMemberItems(node)) {
-      if (!seenSummaryIds.has(item.id)) {
-        seenSummaryIds.add(item.id);
-        summaryItemIds.push(item.id);
-      }
-      const completion = completionByLaunchId.get(item.id);
-      if (completion === undefined) {
-        pendingCompletionIds.push(item.id);
-      } else if (!seenSummaryIds.has(completion.id)) {
-        seenSummaryIds.add(completion.id);
-        summaryItemIds.push(completion.id);
+    // belonging only to the launch's position. Iterates the cached row
+    // ids rather than a generator — the IteratorResult objects a
+    // generator mints were their own churn line in the 2026-08-25
+    // profile.
+    const completionByLaunchId = getCompletionIndex();
+    const summary: string[] = [];
+    const pending: string[] = [];
+    const seenSummaryIds = new Set<string>();
+    for (const node of members) {
+      const row = rowIdsOf(node);
+      rowMemberIds.push(row);
+      for (let k = 0; k < row.length; k += 1) {
+        const id = row[k];
+        memberItemIds.push(id);
+        if (!seenSummaryIds.has(id)) {
+          seenSummaryIds.add(id);
+          summary.push(id);
+        }
+        const completion = completionByLaunchId.get(id);
+        if (completion === undefined) {
+          pending.push(id);
+        } else if (!seenSummaryIds.has(completion.id)) {
+          seenSummaryIds.add(completion.id);
+          summary.push(completion.id);
+        }
       }
     }
+    summaryItemIds = summary;
+    pendingCompletionIds = pending;
   }
   const build: CachedRunBuild = {
     children: members,
@@ -445,11 +532,20 @@ export function groupActivityRuns(
   }
 
   const out: TimelineNode[] = [];
-  // Include withheld nodes so a completion already received from the wire
-  // settles its launch header without waiting for the reveal gate to expose
-  // the completion card.
-  const completionByLaunchId = indexCompletions(nodes, options.getItem);
-  indexCompletions(options.withheld, options.getItem, completionByLaunchId);
+  // The completion index (launch id → its completion row, withheld nodes
+  // included so a completion already received from the wire settles its
+  // launch header without waiting for the reveal gate) is built LAZILY, on
+  // the first run that can actually consume it. A window of plain tool
+  // runs — the common case — never pays the O(completions) map build that
+  // used to run per projection pass.
+  let completionIndex: Map<string, Item> | null = null;
+  const getCompletionIndex = (): ReadonlyMap<string, Item> => {
+    if (completionIndex === null) {
+      completionIndex = indexCompletions(nodes, options.getItem);
+      indexCompletions(options.withheld, options.getItem, completionIndex);
+    }
+    return completionIndex;
+  };
   let i = 0;
   while (i < nodes.length) {
     if (!isRunMember(nodes[i], options.getItem)) {
@@ -466,10 +562,10 @@ export function groupActivityRuns(
     // Checked against the slice bounds BEFORE slicing, so a hit allocates
     // only the fresh run node.
     const cached = runBuildByFirstChild.get(nodes[i]);
-    if (cached !== undefined && runBuildStillValid(cached, nodes, i, j, completionByLaunchId)) {
+    if (cached !== undefined && runBuildStillValid(cached, nodes, i, j, getCompletionIndex)) {
       out.push(mintRunNode(cached, options));
     } else {
-      out.push(buildRun(nodes.slice(i, j), options, completionByLaunchId));
+      out.push(buildRun(nodes.slice(i, j), options, getCompletionIndex));
     }
     i = j;
   }

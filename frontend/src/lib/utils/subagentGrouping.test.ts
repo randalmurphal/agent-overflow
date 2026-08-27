@@ -2619,4 +2619,210 @@ describe('groupItemsBySubagent — leaf reuse across passes', () => {
     expect(second[1]).not.toBe(first[1]);
     expect((second[1] as { item: Item }).item).toBe(bReplaced);
   });
+
+  it('takes the leaf fast path for ordinary completions — completionOf alone is no grouping signal', () => {
+    // Every plain tool call's completion carries `completionOf`; with no
+    // launch or wait carrier loaded it cannot affect grouping, so the
+    // window must hit the leaf fast path (reference-stable leaves prove
+    // it allocated nothing structural).
+    const call = mkItem({ id: 'b1', kind: 'tool_call', toolName: 'Bash' });
+    const done = mkItem({
+      id: 'complete:b1',
+      itemIndex: 1,
+      kind: 'tool_completion',
+      toolName: 'Bash',
+      completionOf: 'b1',
+    });
+    const first = groupItemsBySubagent([call, done]);
+    expect(first.map((node) => expectLeaf(node).item.id)).toEqual(['b1', 'complete:b1']);
+    const second = groupItemsBySubagent([call, done]);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
+  });
+});
+
+// Group and wait-group nodes are cached per launch/carrier Item and
+// validated against the current pass's inputs — an unchanged subtree hands
+// back the SAME node object, which is what keeps the activity-run build
+// cache valid for runs holding a card (per-pass minting invalidated it on
+// every streaming beat of every window with a subagent in it).
+describe('groupItemsBySubagent — card reuse across passes', () => {
+  function awaitedCardItems(): Item[] {
+    return [
+      agentLaunch('agent-1', 0),
+      mkItem({ id: 'c1', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'agent-1' }),
+      mkItem({ id: 'c2', itemIndex: 2, kind: 'assistant_text', parentId: 'agent-1', summary: 'done' }),
+    ];
+  }
+
+  it('reuses an awaited card when nothing under it changed', () => {
+    const items = awaitedCardItems();
+    const first = expectGroup(groupItemsBySubagent(items)[0]);
+    const second = expectGroup(groupItemsBySubagent(items)[0]);
+    expect(second).toBe(first);
+  });
+
+  it('rebuilds when a child Item was replaced, and reuses again after', () => {
+    const items = awaitedCardItems();
+    const first = expectGroup(groupItemsBySubagent(items)[0]);
+    const replaced = [...items];
+    replaced[1] = mkItem({
+      id: 'c1',
+      itemIndex: 1,
+      kind: 'tool_call',
+      toolName: 'Bash',
+      parentId: 'agent-1',
+      summary: 'grew',
+    });
+    const second = expectGroup(groupItemsBySubagent(replaced)[0]);
+    expect(second).not.toBe(first);
+    expect(expectLeaf(second.children[0]).item.summary).toBe('grew');
+    const third = expectGroup(groupItemsBySubagent(replaced)[0]);
+    expect(third).toBe(second);
+  });
+
+  it('rebuilds when a child joined the bucket', () => {
+    const items = awaitedCardItems();
+    const first = expectGroup(groupItemsBySubagent(items)[0]);
+    const grown = [
+      ...items,
+      mkItem({ id: 'c3', itemIndex: 3, kind: 'tool_call', toolName: 'Read', parentId: 'agent-1' }),
+    ];
+    const second = expectGroup(groupItemsBySubagent(grown)[0]);
+    expect(second).not.toBe(first);
+    expect(second.children).toHaveLength(3);
+  });
+
+  it('rebuilds when a GRANDCHILD Item was replaced — validation recurses past the direct bucket', () => {
+    const items = [
+      agentLaunch('outer', 0),
+      agentLaunch('inner', 1),
+      mkItem({ id: 'deep', itemIndex: 2, kind: 'tool_call', toolName: 'Bash', parentId: 'inner' }),
+    ];
+    // `inner` nests under `outer` via parentId.
+    items[1] = { ...items[1], parentId: 'outer' };
+    const first = expectGroup(groupItemsBySubagent(items)[0]);
+    expect(expectGroup(first.children[0]).parent.id).toBe('inner');
+
+    const replaced = [...items];
+    replaced[2] = mkItem({
+      id: 'deep',
+      itemIndex: 2,
+      kind: 'tool_call',
+      toolName: 'Bash',
+      parentId: 'inner',
+      summary: 'grew',
+    });
+    const second = expectGroup(groupItemsBySubagent(replaced)[0]);
+    expect(second).not.toBe(first);
+    expect(
+      expectLeaf(expectGroup(second.children[0]).children[0]).item.summary,
+    ).toBe('grew');
+  });
+
+  it('reuses per fold reference and rebuilds when the aggregate changes', () => {
+    const items = awaitedCardItems();
+    const fold: SubagentFoldAggregate = {
+      evictedCount: 2,
+      terminalPreview: 'folded work',
+      terminalTurnIndex: 0,
+      terminalItemIndex: 9,
+    };
+    let current: SubagentFoldAggregate | undefined = fold;
+    const aggregates: SubagentLiveAggregates = () => current;
+    const first = expectGroup(groupItemsBySubagent(items, aggregates)[0]);
+    expect(first.descendantCount).toBe(4);
+    // Same aggregate object (the registry memoizes until the fold
+    // mutates) → same card.
+    const second = expectGroup(groupItemsBySubagent(items, aggregates)[0]);
+    expect(second).toBe(first);
+    // A mutated fold hands out a fresh aggregate → rebuild.
+    current = { ...fold, evictedCount: 3 };
+    const third = expectGroup(groupItemsBySubagent(items, aggregates)[0]);
+    expect(third).not.toBe(first);
+    expect(third.descendantCount).toBe(5);
+  });
+
+  it('reuses a detached card and rebuilds when its completion sibling is replaced', () => {
+    const launch = mkItem({
+      id: 'bg',
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Agent',
+      isBackground: true,
+      meta: toolMeta({ toolName: 'Agent' }),
+    });
+    const child = mkItem({ id: 'k1', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'bg' });
+    const completion = mkItem({
+      id: 'complete:bg',
+      itemIndex: 2,
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      completionOf: 'bg',
+      status: 'running',
+    });
+    const first = groupItemsBySubagent([launch, child, completion]);
+    const firstCard = expectGroup(first[1]);
+    expect(firstCard.anchor.id).toBe('complete:bg');
+    const second = groupItemsBySubagent([launch, child, completion]);
+    expect(expectLeaf(second[0])).toBe(expectLeaf(first[0]));
+    expect(expectGroup(second[1])).toBe(firstCard);
+
+    // The completion row settles (Item replaced) → the card is anchored on
+    // a different Item and must rebuild.
+    const settled = mkItem({
+      id: 'complete:bg',
+      itemIndex: 2,
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      completionOf: 'bg',
+      status: 'completed',
+    });
+    const third = groupItemsBySubagent([launch, child, settled]);
+    const thirdCard = expectGroup(third[1]);
+    expect(thirdCard).not.toBe(firstCard);
+    expect(thirdCard.anchor).toBe(settled);
+  });
+
+  it("rebuilds an awaited card when its launch's completion sibling arrives", () => {
+    const items = awaitedCardItems();
+    const first = expectGroup(groupItemsBySubagent(items)[0]);
+    const withSibling = [
+      ...items,
+      mkItem({
+        id: 'complete:agent-1',
+        itemIndex: 3,
+        kind: 'tool_completion',
+        toolName: 'Agent',
+        completionOf: 'agent-1',
+      }),
+    ];
+    const second = expectGroup(groupItemsBySubagent(withSibling)[0]);
+    expect(second).not.toBe(first);
+    expect(second.completion?.id).toBe('complete:agent-1');
+  });
+
+  it('reuses a wait group and rebuilds when its standalone completion folds in', () => {
+    const carrier = mkItem({
+      id: 'wait-1',
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'wait_agent',
+      meta: codexWaitAgentMeta(),
+    });
+    const first = expectWaitGroup(groupItemsBySubagent([carrier])[0]);
+    const second = expectWaitGroup(groupItemsBySubagent([carrier])[0]);
+    expect(second).toBe(first);
+
+    const finished = mkItem({
+      id: 'complete:wait-1',
+      itemIndex: 1,
+      kind: 'tool_completion',
+      toolName: 'wait_agent',
+      completionOf: 'wait-1',
+    });
+    const third = expectWaitGroup(groupItemsBySubagent([carrier, finished])[0]);
+    expect(third).not.toBe(first);
+    expect(third.completion?.id).toBe('complete:wait-1');
+  });
 });
