@@ -22,10 +22,17 @@
    * `scrollHeight`/`clientHeight` decides whether the control appears, re-read
    * whenever the clip's width changes (a divider drag re-wraps the text, and a
    * message that fit at one width does not at another). The width comes from
-   * Svelte's `bind:clientWidth` on the clip — a row-local observer that exists
-   * only on the clamped branch, never a global one — and the read is bounded:
-   * while collapsed the clip's height is pinned by the clamp, so the state
-   * this effect writes cannot feed back into the width it depends on.
+   * a row-local ResizeObserver on the clip — one that exists only on the
+   * clamped branch, never a global one. Deliberately NOT Svelte's
+   * `bind:clientWidth`: the dimension binding takes a synchronous
+   * `clientWidth` read at mount, inside the effect flush with the mounting
+   * tree still dirty, forcing a whole-document layout per clampable message
+   * — on cold thread switches AND on every windowing remount mid-scroll
+   * (108ms across 10 cold switches, coldload profile 2026-08-26). An RO's
+   * initial delivery is the same sample post-layout, where the read is
+   * free. The read is bounded: while collapsed the clip's height is pinned
+   * by the clamp, so the state the measure effect writes cannot feed back
+   * into the width it depends on.
    */
   import type {
     PaneSession,
@@ -75,6 +82,16 @@
   );
 
   $effect(() => {
+    const el = clipEl;
+    if (!el) return;
+    const widths = new ResizeObserver((entries) => {
+      clipWidth = entries[entries.length - 1].contentRect.width;
+    });
+    widths.observe(el);
+    return () => widths.disconnect();
+  });
+
+  $effect(() => {
     if (!collapsed) return;
     const el = clipEl;
     // Depend on the measured width: re-wrapping is the only thing that can
@@ -110,7 +127,6 @@
 {#if clampable}
   <p
     bind:this={clipEl}
-    bind:clientWidth={clipWidth}
     id={textDomId}
     data-testid="user-message-summary"
     data-clamped={collapsed && overflows ? 'true' : undefined}
