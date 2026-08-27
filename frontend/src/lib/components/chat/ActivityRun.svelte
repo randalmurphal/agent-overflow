@@ -518,13 +518,6 @@
     if (controller && content) controller.attach(clip, content);
 
     const snapshot = pane.activityRuns.scrollSnapshot(runId);
-    if (snapshot) {
-      clip.scrollTop = snapshot.scrollTop;
-    } else {
-      // A run that has never been scrolled rests at its newest row — the
-      // latest activity is the reason it is on screen.
-      clip.scrollTop = clip.scrollHeight;
-    }
     // One escaped-at-mount fact, stated to BOTH halves of the run's follow.
     // A pinned window is the same "reader has left the bottom" fact recorded
     // where a run without a controller could keep it: a historical run a
@@ -536,19 +529,22 @@
     // reader off their pin on the next content resize.
     const pinned = pane.activityRuns.windowAnchor(runId) !== null;
     const escapedAtMount = (snapshot?.escaped ?? false) || pinned;
-    // The write above dispatches its `scroll` event asynchronously, so the
-    // position is read back here rather than waiting for it: a run that mounts
-    // already scrolled would otherwise paint one frame without its fade, and
-    // the settle observer would spend that frame not knowing where it is.
-    positionWritten(clip, !escapedAtMount);
-    // AFTER positionWritten (which clears it): if the restore write clamped —
-    // the rows are not measured yet, so scrollHeight undershoots — arm the
-    // real target for the restore observer. Escaped mounts only: a following
-    // mount is bottomed by the settle observer / controller as content grows,
-    // which is already the position the snapshot described.
-    if (snapshot && escapedAtMount && Math.abs(clip.scrollTop - snapshot.scrollTop) > 1) {
-      pendingRestoreTop = snapshot.scrollTop;
-    }
+    // No DOM write here, deliberately. The rows inside are unmeasured at
+    // this instant, so a write aimed at `scrollHeight` (or a snapshot's
+    // position) clamps near the top — and the read it takes forces a
+    // whole-document layout flush per mounting run, mid-mount, with the
+    // tree dirty (2026-08-26: 159ms across 10 cold thread switches, the
+    // dominant switch cost). The observers below own the real position
+    // and fire post-layout IN THE SAME FRAME, before paint, where the
+    // reads are free and the geometry is finally true: the settle
+    // observer bottoms a following mount on its initial delivery, and
+    // the restore observer re-applies an escaped mount's armed target
+    // until the content can take it. Only the flags are stated
+    // synchronously — the settle observer's gate reads `followingBottom`
+    // on that first delivery.
+    readerScrolling = false;
+    followingBottom = !escapedAtMount;
+    pendingRestoreTop = snapshot && escapedAtMount ? snapshot.scrollTop : null;
 
     // Escape is event-sourced, so it is carried into a new controller rather
     // than re-derived from the geometry just written.
@@ -618,13 +614,15 @@
 
   // Holds a resting clip on its last row while its content settles.
   //
-  // The position write above happens once, at the instant the clip mounts —
-  // but the rows inside are not done at that instant. Payload bodies resolve,
-  // highlight spans land, a row remounts already expanded from its lease and
-  // lifts the cap. Every one of those grows the run AFTER the write, and
-  // `scrollTop` does not follow on its own, so the reader is left partway up a
-  // run they just opened. Visible immediately when several runs expand at
-  // once (the header's collapse-all), because none of them is measured.
+  // The mount states only flags, so the first delivery here IS the mount
+  // positioning for a following run — post-layout, pre-paint, where the
+  // reads are free. And the rows inside are not done at that instant
+  // either: payload bodies resolve, highlight spans land, a row remounts
+  // already expanded from its lease and lifts the cap. Every one of those
+  // grows the run, and `scrollTop` does not follow on its own, so the
+  // reader would be left partway up a run they just opened. Visible
+  // immediately when several runs expand at once (the header's
+  // collapse-all), because none of them is measured.
   //
   // Both boxes, because the two ways the gap opens are unrelated: the CONTENT
   // growing under a fixed clip, and the CLIP growing when cap inflation gives
@@ -669,13 +667,14 @@
   //
   // Counterpart to the settle observer above, for the mounts that observer
   // deliberately ignores: a run whose reader had stepped inside
-  // (`escapedAtMount`) restores to a position, not to the bottom, and the
-  // mount write happens before the rows resolve — so the browser clamps it
-  // toward 0 and, with `followingBottom` false, nothing re-asks. The armed
-  // target is re-applied on every growth until the content can take it;
-  // partial applications are kept (each one is closer than the clamp), and
-  // the target dies the moment anything newer owns the position — a reader
-  // gesture (`armReaderScroll`) or an authored write (`positionWritten`).
+  // (`escapedAtMount`) restores to a position, not to the bottom. The
+  // mount arms the target without writing — nothing inside is measured at
+  // that instant, so a write would clamp toward 0 (and force a layout
+  // flush mid-mount) — and this observer applies it on every growth until
+  // the content can take it; partial applications are kept (each one is
+  // closer than the clamp), and the target dies the moment anything newer
+  // owns the position — a reader gesture (`armReaderScroll`) or an
+  // authored write (`positionWritten`).
   //
   // Unlike the settle observer this also runs under a live controller: an
   // escaped tail run restores the same way, and the untagged write cannot

@@ -444,10 +444,12 @@ Operational rules for this directory:
   it the only way past the window. The trigger refuses a clip that is not
   scrollable past its runway, which is what stops it overriding
   `activityRunWindowRows`; keep that guard if you touch the threshold. It also
-  refuses a scroll event no gesture preceded — the run writes its own position
-  on mount, after a prepend, and on a jump, and the mount write lands inside
-  the runway because nothing inside is measured yet. Route any new position
-  write through `positionWritten`, never `syncPosition` alone, or the run pages
+  refuses a scroll event no gesture preceded — the run's observers write its
+  position at mount settle, after a prepend, and on a jump, and those writes
+  can land inside the runway while the rows are still measuring. (The mount
+  itself states flags only; a synchronous mount write read unmeasured geometry
+  AND forced a layout flush per mounting run.) Route any new position write
+  through `positionWritten`, never `syncPosition` alone, or the run pages
   backwards through its own history.
 - **A jump into a run goes through `revealActivityRunItem`**
   (`utils/activityRunWindow.ts`), which expands, relocates the window, and
