@@ -130,18 +130,42 @@
     const inner = innerEl;
     const outer = el;
     if (!inner || !outer || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
-      // Layout is clean inside an RO callback, so these rect reads force
-      // nothing. Fractional rects on purpose: the 19.5px line height and
-      // sub-pixel width oscillations both round away in offset* ints.
-      const rect = inner.getBoundingClientRect();
+    // Geometry comes from the RO entries themselves: border-box,
+    // fractional, transform-independent — exactly SlideObservation's
+    // contract (the 19.5px line height and sub-pixel width oscillations
+    // both round away in offset* ints). A delivery only carries the
+    // element that changed, so last-known sizes are held per element.
+    // The old shape took two getBoundingClientRect reads per delivery
+    // for numbers the observer had already measured — 68ms of gBCR at
+    // this site over a 40s 3-pane storm (2026-08-26).
+    const sizes = new Map<Element, { h: number; w: number }>();
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const box = entry.borderBoxSize?.[0];
+        sizes.set(
+          entry.target,
+          box
+            ? { h: box.blockSize, w: box.inlineSize }
+            : { h: entry.contentRect.height, w: entry.contentRect.width },
+        );
+      }
+      const innerSize = sizes.get(inner);
+      const outerSize = sizes.get(outer);
+      if (!innerSize || !outerSize) return;
+      // The live interpolated translateY — a slide landing mid-slide
+      // compounds from where the text IS, so the start position cannot
+      // come from a remembered target. Resolved from computed style ONLY
+      // while a slide is actually running; at rest the transform is
+      // identically none (fill-none animation) and the style resolve is
+      // skipped on the common line-boundary path.
+      const liveTy =
+        slideAnim && slideAnim.playState === 'running'
+          ? transformTranslateY(getComputedStyle(inner).transform)
+          : 0;
       const decision = slideDecision(
         slideMemory,
-        { innerH: rect.height, innerW: rect.width, outerH: outer.getBoundingClientRect().height },
-        // The live interpolated translateY — a slide landing mid-slide
-        // compounds from where the text IS, so the start position cannot
-        // come from a remembered target.
-        transformTranslateY(getComputedStyle(inner).transform),
+        { innerH: innerSize.h, innerW: innerSize.w, outerH: outerSize.h },
+        liveTy,
       );
       slideMemory = decision.memory;
       if (decision.kind === 'clear') {
