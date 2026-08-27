@@ -6,6 +6,11 @@ headless, isolated data dir, mocked providers. Full harness guide:
 
 ## Layout
 
+- `rigs/` — self-driving perf measurement rigs (storm, churn, heapsoak,
+  coldload), operator tools outside every gate. See
+  [rigs/README.md](rigs/README.md) before standing one up — clone-root
+  venue, scenario reinstall rules, and the storm-density caveat live
+  there.
 - `src/harness.ts` — the TS client: `launchHarness()` spawns
   `bin/agent-overflow --harness` on a temp data dir, parses the
   `__AO_HARNESS__` bootstrap line, and returns a `HarnessApp` speaking
