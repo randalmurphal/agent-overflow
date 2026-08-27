@@ -153,8 +153,19 @@ export function createTimelineQuietWork(
   // T", so they compose as a single deadline. Two timers would need a
   // rule for which wins, and the answer would always be "the later one".
   let runTimer: ReturnType<typeof setTimeout> | null = null;
+  // Absolute time the standing timer fires. The timer is a deadline
+  // CHECKER, not the deadline itself: `schedule()` fires per streamed
+  // row, and re-arming per call was a clearTimeout+setTimeout pair per
+  // row (the top remaining timer churner in the 2026-08-26 storm trace).
+  // Consecutive calls inside the rate bound all target the same absolute
+  // deadline, so the standing timer is kept whenever it fires at or
+  // before the current deadline — the fire re-checks `armedRunAt` and
+  // re-arms for any remainder — and only a deadline pulled EARLIER than
+  // the standing fire forces a re-arm.
+  let runTimerAt = 0;
   // Absolute time the currently armed run may fire, or null when none is
-  // armed. Only the stand-down path reads it — see `requestRun`.
+  // armed. The stand-down path reads it (see `requestRun`), and the
+  // timer fire path treats null as "superseded — do not run".
   let armedRunAt: number | null = null;
   // Never run; the first schedule is not owed a wait.
   let lastRunEndedAt: number | null = null;
@@ -214,24 +225,53 @@ export function createTimelineQuietWork(
    * to the rate bound and the promised "third of the rate" would be the
    * full rate, warning line and all.
    */
+  function armTimer(delayMs: number): void {
+    runTimerAt = Date.now() + delayMs;
+    runTimer = setTimeout(onRunTimer, delayMs);
+  }
+
+  function onRunTimer(): void {
+    runTimer = null;
+    // Superseded by an immediate run (or invalidate) since arming.
+    if (armedRunAt === null) return;
+    const remaining = armedRunAt - Date.now();
+    if (remaining > 0) {
+      armTimer(remaining);
+      return;
+    }
+    // Token read at fire time, not captured at arm time: the standing
+    // timer outlives many requestRun supersedes, and each of those is
+    // fully served by running against current state. invalidate() is
+    // covered above — it nulls armedRunAt and clears the timer.
+    const current = token;
+    void tick().then(() => runScheduled(current));
+  }
+
   function requestRun(minDelayMs: number): void {
     let wait = Math.max(minDelayMs, rateBoundRemainingMs());
     if (mutatingLaps >= MAX_CONSECUTIVE_MUTATING_LAPS && armedRunAt !== null) {
       wait = Math.max(wait, armedRunAt - Date.now());
     }
     const current = ++token;
-    clearRunTimer();
     armedRunAt = Date.now() + Math.max(wait, 0);
     // Tick-aligned either way: the passes must see the flush their
-    // trigger produced, not the state that queued it.
+    // trigger produced, not the state that queued it. A standing timer
+    // is left alone — when it fires it finds armedRunAt already nulled
+    // by this run and does nothing.
     if (wait <= 0) {
       void tick().then(() => runScheduled(current));
       return;
     }
-    runTimer = setTimeout(() => {
-      runTimer = null;
-      void tick().then(() => runScheduled(current));
-    }, wait);
+    if (runTimer === null) {
+      armTimer(wait);
+      return;
+    }
+    // Deadline pulled earlier than the standing fire: re-arm. Otherwise
+    // the standing timer already fires soon enough and re-checks.
+    if (runTimerAt > armedRunAt) {
+      clearRunTimer();
+      armTimer(wait);
+    }
   }
 
   function runScheduled(current: number): void {

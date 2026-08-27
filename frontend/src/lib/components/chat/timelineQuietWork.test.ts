@@ -134,6 +134,35 @@ describe('createTimelineQuietWork', () => {
     expect(a.runs).toBe(2);
   });
 
+  it('a burst inside the rate bound keeps one standing timer instead of re-arming per call', async () => {
+    // schedule() fires per streamed row; a clearTimeout+setTimeout pair
+    // per call was the top remaining timer churner in the 2026-08-26
+    // storm trace. Calls inside the bound all target the same absolute
+    // deadline, so the standing timer must be reused — re-arming is only
+    // for a deadline pulled EARLIER than the standing fire.
+    const installs = vi.spyOn(globalThis, 'setTimeout');
+    const a = pass('a', 'always');
+    const work = scheduler([a]);
+
+    work.schedule();
+    await drainTick();
+    expect(a.runs).toBe(1);
+
+    installs.mockClear();
+    for (let i = 0; i < 19; i += 1) {
+      await vi.advanceTimersByTimeAsync(QUIET_WORK_MIN_INTERVAL_MS / 20);
+      work.schedule();
+      await drainTick();
+    }
+    // One trailing-run timer for the whole burst (the fire itself may
+    // re-arm once for a residual remainder).
+    expect(installs.mock.calls.length).toBeLessThanOrEqual(2);
+    installs.mockRestore();
+
+    await drainRateBound();
+    expect(a.runs).toBe(2);
+  });
+
   it('never starts a run inside the rate bound, however often it is asked', async () => {
     const startedAt: number[] = [];
     const stamped = pass('stamp', 'always', () => {
