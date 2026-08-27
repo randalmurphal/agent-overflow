@@ -795,16 +795,31 @@
   let touching = false;
   let lastScrollTime = 0;
 
+  // Deadline pattern, not clear+set per event: scroll events arrive once
+  // per frame per pane while the spring glides (165/s on a 165Hz panel),
+  // and re-arming the timeout on each one churned Blink's timer heap with
+  // a clearTimeout+setTimeout pair per event (135 installs + 107 removes
+  // per second in a 3-pane storm trace, 2026-08-26). One standing timer
+  // checks how long ago the last scroll event landed and re-arms only for
+  // the remainder, so a glide costs one timer per debounce window while
+  // onscrollend still fires the same ~150ms after the last event.
   function armScrollEnd(): void {
-    clearTimeout(scrollEndTimer);
-    scrollEndTimer = setTimeout(() => {
-      if (wheeling || touching) {
-        wheeling = false;
-        armScrollEnd();
-        return;
-      }
-      onscrollend?.();
-    }, SCROLL_END_DEBOUNCE_MS);
+    scrollEndTimer ??= setTimeout(fireScrollEnd, SCROLL_END_DEBOUNCE_MS);
+  }
+
+  function fireScrollEnd(): void {
+    const remaining = SCROLL_END_DEBOUNCE_MS - (performance.now() - lastScrollTime);
+    if (remaining > 0) {
+      scrollEndTimer = setTimeout(fireScrollEnd, remaining);
+      return;
+    }
+    if (wheeling || touching) {
+      wheeling = false;
+      scrollEndTimer = setTimeout(fireScrollEnd, SCROLL_END_DEBOUNCE_MS);
+      return;
+    }
+    scrollEndTimer = undefined;
+    onscrollend?.();
   }
 
   function handleScroll(): void {
@@ -868,12 +883,14 @@
       resizeObserver?.unobserve(scroller);
       observedScroller = undefined;
       clearTimeout(scrollEndTimer);
+      scrollEndTimer = undefined;
     };
   });
 
   onDestroy(() => {
     clearIndexScroll();
     clearTimeout(scrollEndTimer);
+    scrollEndTimer = undefined;
     resizeObserver?.disconnect();
     resizeObserver = undefined;
   });
