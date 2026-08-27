@@ -65,6 +65,17 @@ export const ADAPTIVE_CATCHUP_MS = 500;
 // time, so reveal RATES are unchanged — only the mutation cadence is
 // bounded. 15ms lets 60Hz process every frame; 165Hz every third
 // (~55Hz effective), 144Hz every third (~48Hz effective).
+//
+// The gate is a SHARED wall-clock grid (`floor(now / interval)`), not a
+// per-instance elapsed check. Independent phases meant three streaming
+// panes processed on three different frames, so at 165Hz every frame
+// carried some pane's markdown re-parse + DOM patch and the full native
+// pipeline behind it (style, layout, paint, Layerize, and Blink's
+// post-layout hover hit-test — HitTest alone averaged 0.84ms/frame in a
+// 3-pane storm trace, 2026-08-26). On the grid every active smoother
+// processes in the SAME frame — one pipeline run per interval — and the
+// frames between are quiet. Per-pane cadence is unchanged: budgets
+// accrue by real dt, so a short slot advances proportionally less.
 export const MIN_REVEAL_TICK_INTERVAL_MS = 15;
 // Ceiling on the adaptive catch-up RATE. When a fat wire burst (an
 // Anthropic-API paragraph landing in one chunk) opens a large lag, the
@@ -281,10 +292,16 @@ export class PerItemSmoother {
     }
     const now = this.clock.now();
     // Refresh-rate decoupling: high-Hz panels re-schedule without
-    // processing until the minimum interval has elapsed. lastTickAt is
-    // NOT advanced on skipped frames, so the processed tick's dt (and
-    // budget) covers the full elapsed time.
-    if (now - this.lastTickAt < MIN_REVEAL_TICK_INTERVAL_MS) {
+    // processing until the next wall-clock grid slot. The grid is shared
+    // across ALL smoothers (see MIN_REVEAL_TICK_INTERVAL_MS) so
+    // concurrent panes process in the same frame instead of spreading
+    // one render pipeline over every frame. lastTickAt is NOT advanced
+    // on skipped frames, so the processed tick's dt (and budget) covers
+    // the full elapsed time.
+    if (
+      Math.floor(now / MIN_REVEAL_TICK_INTERVAL_MS) ===
+      Math.floor(this.lastTickAt / MIN_REVEAL_TICK_INTERVAL_MS)
+    ) {
       this.scheduleTick();
       return;
     }

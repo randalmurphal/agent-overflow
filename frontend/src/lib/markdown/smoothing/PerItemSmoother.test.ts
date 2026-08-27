@@ -404,6 +404,41 @@ describe('PerItemSmoother — rate ceiling and per-tick work cap', () => {
     expect(reveals.length).toBeLessThanOrEqual(67); // 1000ms / 15ms
   });
 
+  it('phase-offset smoothers coalesce onto the shared wall-clock grid', () => {
+    // The throttle gate is floor(now / interval) against a SHARED grid,
+    // not per-instance elapsed time. Two panes whose streams started at
+    // different moments must process in the SAME frame, so concurrent
+    // streaming costs one render pipeline per interval instead of one
+    // per frame (the storm-trace finding behind the grid, 2026-08-26).
+    const clock = new FakeClock();
+    const timesA: number[] = [];
+    const timesB: number[] = [];
+    const a = new PerItemSmoother({
+      onReveal: () => timesA.push(clock.now()),
+      clock,
+    });
+    a.appendDelta('word '.repeat(400));
+    // B starts mid-slot, 7ms into A's stream — a per-instance elapsed
+    // gate would put its processed ticks on different frames forever
+    // (A on t=19,37,55…, B on t=25,43,61… at 6ms frames).
+    clock.tickFrame(7);
+    const b = new PerItemSmoother({
+      onReveal: () => timesB.push(clock.now()),
+      clock,
+    });
+    b.appendDelta('word '.repeat(400));
+    for (let i = 0; i < 300; i++) clock.tickFrame(6);
+    expect(timesA.length).toBeGreaterThan(30);
+    expect(timesB.length).toBeGreaterThan(30);
+    // On the shared grid both smoothers process (and so reveal) in the
+    // same frames; per-instance phases would make the two sets disjoint.
+    const setA = new Set(timesA);
+    const shared = timesB.filter((t) => setA.has(t)).length;
+    expect(shared).toBeGreaterThan(0.8 * Math.min(timesA.length, timesB.length));
+    a.dispose();
+    b.dispose();
+  });
+
   it('advances through a word unit larger than the per-tick cap', () => {
     // A single unbroken token bigger than the cap (long URL / identifier).
     // The cap expands to that one unit's size — budget accumulates until it
