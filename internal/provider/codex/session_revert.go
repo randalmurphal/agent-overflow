@@ -708,8 +708,8 @@ func matchesThreadRevertAnchorRefusal(message string) bool {
 // `turnsBackwardsCursor` / `itemsBackwardsCursor` are deliberately NOT
 // decoded. They are upstream's opaque descending-pagination cursors for
 // re-hydrating the retained history (`thread/turns/list` /
-// `thread/items/list` with `sortDirection: "desc"`), and AO keeps its own
-// history cache and never pages provider history — so carrying them
+// `thread/items/list` with `sortDirection: "desc"`). The revert path keeps
+// its own history cache and never uses these cursors, so carrying them
 // produced two exported fields whose only readers were the tests that
 // asserted they had been carried. The thread-identity echo below is the
 // whole validation this response supports (`turns` is always empty; see
@@ -734,7 +734,7 @@ func parseThreadRevertResponse(data json.RawMessage) (RevertedThread, error) {
 // for a paginated thread on `thread/start`.
 //
 // `thread/start.historyMode` itself is older than this — the field shipped
-// with paginated history in 0.147, and the codex TUI has requested
+// with paginated history in 0.143, and the codex TUI has requested
 // `paginated` for every non-ephemeral thread since (rust-v0.149.0,
 // codex-rs/tui/src/app_server_session.rs:1689; `codex exec` does the same
 // at codex-rs/exec/src/lib.rs:1187). AO nonetheless gates the opt-in at

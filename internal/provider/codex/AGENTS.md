@@ -14,8 +14,9 @@ over stdio.
   State is **grouped by concern into sub-structs** — `turn` (per-turn state),
   `origins` (who started each turn), `turnConfig` (what the next turn asks
   for) versus `settings` (what Codex reports it is running), `collab` (child
-  identity), `childRouting` (the ownership quarantine), `collabHistory` (the
-  resume traversal) and `rawCalls`. The locks, the atomics that exist to stay
+  identity), `childRouting` (the ownership quarantine), `collabHistory`
+  (sequential unresolved-child recovery) and `rawCalls`. The locks, the
+  atomics that exist to stay
   out of the lock order, the process, and the registered observers stay at the
   top level, as do the two fields guarded by a lock other than `mu`
   (`childLifecycleRevision`, `collabAsyncClosing`) — a group is assigned WHOLE
@@ -32,7 +33,10 @@ over stdio.
   everything that has to be true about its response before the session is
   handed out — the paginated-history downgrade retry, the thread-identity and
   `approvalsReviewer` echoes, the history-mode record, and a resume's collab
-  rehydration. Every failure here means "there is no usable thread".
+  rehydration from compact unresolved spawn metadata supplied by the app
+  layer. Resume always sends `excludeTurns: true`; AO's SQLite projection is
+  already the transcript authority and no provider transcript is decoded at
+  this boundary. Every failure here means "there is no usable thread".
 - `session_turn.go` — the turn verbs (`Send` / `Steer` / `Interrupt`), the
   per-turn output-schema binding that carries `SendOptions.OutputSchema` onto
   the turn id the wire hands back, the `turn/started` dedupe ledger, and
@@ -71,8 +75,12 @@ over stdio.
   and `classifyAndEmitNotification`.
 - `child_routing.go` — bounded/deadlined fail-closed quarantine for
   notifications and server requests from not-yet-owned child threads.
-- `collab_rehydrate.go` — bounded read-only descendant-history traversal and
-  active-child subscription recovery on root resume.
+- `collab_rehydrate.go` — sequential unresolved-child recovery on root resume.
+  Ownership comes from compact persisted spawn metadata, not provider history;
+  each child gets `thread/read { includeTurns: false }` and, only when idle or
+  unloaded, one `thread/turns/list` row with items omitted. Active children are
+  resumed to restore their notification subscription. There is no arbitrary
+  total-child cutoff; the single worker bounds request concurrency.
 - `session_rollout_notifications.go` — narrow tailing of the active
   Codex rollout file for detached-child mailbox notifications that
   resumed app-server sessions do not expose as raw events. The tail is
@@ -989,7 +997,7 @@ can change it. AO therefore asks for it at birth:
 (`codex-rs/tui/src/app_server_session.rs:1689`) and `codex exec`
 (`codex-rs/exec/src/lib.rs:1187`) already do for every non-ephemeral
 thread. The floor is the REVERT floor, not the field's own (paginated
-history shipped in 0.147): a paginated thread on a server with no
+history shipped in 0.143): a paginated thread on a server with no
 `thread/revert` would carry the differences with none of the benefit.
 
 Threads that predate the opt-in, and every thread created by a pre-0.148
@@ -1004,12 +1012,14 @@ than failing the session.
 What paginated changes, checked against rust-v0.149.0 for every AO
 consumer of thread shape:
 
-- `thread/resume` and `thread/read { includeTurns: true }` still return a
-  fully populated `thread.turns`; the app-server materializes it through
-  `paginated_thread_full_turns` instead of the rollout, so
-  `collabHistoryOwnerships` and the fork's tail check are unaffected.
-  Items are stored verbatim (`thread_items.item_json`), so
-  `subAgentActivity` and `collabAgentToolCall` survive the projection.
+- AO sends `thread/resume { excludeTurns: true }` in BOTH modes and omits
+  `initialTurnsPage`, so the live subscription is restored without serializing
+  `thread.turns` into one unbounded JSON-RPC line. This excludes the turns
+  array wholesale even when the whole transcript is one enormous turn.
+  Collaboration ownership instead comes from AO's compact unresolved spawn
+  rows. A child status repair uses metadata-only `thread/read` plus at most one
+  descending `thread/turns/list` row with `itemsView: "notLoaded"`; no item or
+  transcript payload crosses that path.
 - `thread/fork` works on a paginated source (`prepare_fork` with
   `ForkBoundary::ThroughTurn`) and still returns turns, so the fallback
   cut stays valid. Its only paginated-specific refusal needs
@@ -1034,10 +1044,8 @@ consumer of thread shape:
   `ReviewDeliveryInline` — but `ReviewDeliveryDetached` exists in
   `session_review.go` and must stay unused.
 - Downgrade hazard: paginated rollouts are unreadable by a codex older
-  than 0.147 (`reject_unknown_thread_history_mode`). AO's provider floor
-  is 0.143, so a user who downgrades below 0.147 cannot open threads
-  created after the opt-in. The same is already true of every thread their
-  codex TUI has written.
+  than 0.143 (`reject_unknown_thread_history_mode`). That is also AO's
+  provider floor, so every supported app-server understands the mode.
 
 ## Upstream surface not consumed
 

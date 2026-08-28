@@ -13,7 +13,7 @@ import (
 
 // sessionScopedStateGroups are the Session field groups whose contents describe
 // THIS process's run — turns, child threads, quarantined child frames, the
-// resume traversal, raw tool calls — and which Close therefore zeroes whole.
+// resume recovery queue, raw tool calls — and which Close therefore zeroes whole.
 //
 // The test below populates every field of every group reflectively, so a field
 // added to one of them later cannot be forgotten by Close: it is filled here
