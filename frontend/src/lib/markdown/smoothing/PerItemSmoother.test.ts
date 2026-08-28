@@ -51,7 +51,11 @@ function makeSmoother(initial = '') {
   const reveals: RevealEntry[] = [];
   const smoother = new PerItemSmoother({
     initialReceived: initial,
-    onReveal: (revealed, delta) => reveals.push({ revealed, delta }),
+    onReveal: (delta) =>
+      reveals.push({
+        revealed: (reveals.at(-1)?.revealed ?? initial) + delta,
+        delta,
+      }),
     clock,
   });
   return { clock, reveals, smoother };
@@ -647,6 +651,56 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
       expect(r.revealed).toBe(running);
     }
   });
+
+  it('extends an unrevealed word unit across provider chunk boundaries', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.appendDelta('hel');
+    smoother.appendDelta('lo ');
+
+    clock.tickFrame(100);
+
+    expect(reveals.map((entry) => entry.delta)).toEqual(['hello ']);
+    expect(smoother.getRevealed()).toBe('hello ');
+  });
+
+  it('starts a new unit when a provider continues a word after its prefix was revealed', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.appendDelta('hel');
+    clock.tickFrame(100);
+    expect(smoother.getRevealed()).toBe('hel');
+
+    smoother.appendDelta('lo ');
+    clock.tickFrame(100);
+
+    expect(reveals.map((entry) => entry.delta)).toEqual(['hel', 'lo ']);
+    expect(smoother.getRevealed()).toBe('hello ');
+  });
+
+  it('keeps a leading-whitespace unit intact across provider chunks', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.appendDelta('  ');
+    smoother.appendDelta('hello');
+    smoother.appendDelta(' ');
+
+    clock.tickFrame(100);
+
+    expect(reveals.map((entry) => entry.delta)).toEqual(['  hello ']);
+  });
+
+  it('preserves source and reveal order across source-part compaction', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.pause();
+    const chunks = Array.from({ length: 600 }, (_, index) => `${index} `);
+    for (const chunk of chunks) smoother.appendDelta(chunk);
+    const source = chunks.join('');
+
+    expect(smoother.getReceived()).toBe(source);
+    smoother.resume();
+    drain(clock, smoother, 20_000);
+
+    expect(smoother.getRevealed()).toBe(source);
+    expect(concatDeltas(reveals)).toBe(source);
+  });
 });
 
 describe('PerItemSmoother — revealImmediately (low power)', () => {
@@ -654,7 +708,11 @@ describe('PerItemSmoother — revealImmediately (low power)', () => {
     const clock = new FakeClock();
     const reveals: RevealEntry[] = [];
     const smoother = new PerItemSmoother({
-      onReveal: (revealed, delta) => reveals.push({ revealed, delta }),
+      onReveal: (delta) =>
+        reveals.push({
+          revealed: (reveals.at(-1)?.revealed ?? '') + delta,
+          delta,
+        }),
       revealImmediately: () => active.value,
       clock,
     });

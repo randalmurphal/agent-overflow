@@ -1,8 +1,10 @@
 // PerItemSmoother — per-item word-aligned reveal controller.
 //
-// Owns two strings: `received` (full accumulator that grows as the
-// model emits) and `revealed` (animated cursor into received). A
-// subscriber callback fires whenever `revealed` advances. The reveal
+// Owns a chunked canonical source plus an animated cursor into it. New
+// wire chunks are scanned once to maintain pending word-unit boundaries;
+// reveal ticks never index the cumulative string. This matters because
+// indexing a V8 cons string flattens the whole prefix after each append.
+// A subscriber callback fires whenever the cursor advances. The reveal
 // cadence is word-aligned at a base rate of ~160 chars/sec; a gap above
 // 80 chars engages adaptive catch-up, rate-clamped at
 // MAX_ADAPTIVE_CHARS_PER_SEC. The 500ms in that math is a lower bound
@@ -140,8 +142,17 @@ export interface PerItemSmootherOptions {
    * deltas reconstruct everything AFTER the seed exactly.
    */
   initialReceived?: string;
-  /** Fires every time `revealed` advances (including on `snap`). */
-  onReveal: (revealed: string, delta: string) => void;
+  /**
+   * Fires every time the reveal cursor advances (including on `snap`).
+   * The callback receives only the new visible delta and the exclusive
+   * cursor. Consumers materialize the growing prefix through `getRevealed`
+   * only when they need an authoritative full-string update.
+   */
+  onReveal: (
+    delta: string,
+    revealedEnd: number,
+    previousCodeUnit: number,
+  ) => void;
   /**
    * Low-power seam: when this returns true, the next processed tick
    * snaps everything pending instead of animating, so revealed text
@@ -154,12 +165,39 @@ export interface PerItemSmootherOptions {
   clock?: SmoothingClock;
 }
 
+const MAX_RECEIVED_PARTS = 256;
+const UNIT_NONE = 0;
+const UNIT_LEADING_WHITESPACE = 1;
+const UNIT_WORD = 2;
+const UNIT_TRAILING_WHITESPACE = 3;
+type PendingUnitPhase =
+  | typeof UNIT_NONE
+  | typeof UNIT_LEADING_WHITESPACE
+  | typeof UNIT_WORD
+  | typeof UNIT_TRAILING_WHITESPACE;
+
 export class PerItemSmoother {
-  private received: string;
-  private revealed: string;
-  private readonly onReveal: (revealed: string, delta: string) => void;
+  private receivedParts: string[];
+  private receivedLength: number;
+  private receivedCache: string | null;
+  private revealedEnd: number;
+  private revealedCache: string;
+  private revealedCacheEnd: number;
+  private revealedLastCodeUnit: number;
+  private readonly onReveal: (
+    delta: string,
+    revealedEnd: number,
+    previousCodeUnit: number,
+  ) => void;
   private readonly revealImmediately: (() => boolean) | undefined;
   private readonly clock: SmoothingClock;
+
+  // Absolute end offsets for each pending (word + trailing whitespace)
+  // unit. Only the last entry is mutable as more wire bytes extend it.
+  // Consumed entries are released in batches so the queue stays bounded.
+  private pendingUnitEnds: number[] = [];
+  private pendingUnitHead = 0;
+  private pendingUnitPhase: PendingUnitPhase = UNIT_NONE;
 
   private lastTickAt: number;
   private rafHandle: number | null = null;
@@ -177,8 +215,16 @@ export class PerItemSmoother {
   private paused = false;
 
   constructor(opts: PerItemSmootherOptions) {
-    this.received = opts.initialReceived ?? '';
-    this.revealed = this.received;
+    const initial = opts.initialReceived ?? '';
+    this.receivedParts = initial.length > 0 ? [initial] : [];
+    this.receivedLength = initial.length;
+    this.receivedCache = initial;
+    this.revealedEnd = initial.length;
+    this.revealedCache = initial;
+    this.revealedCacheEnd = initial.length;
+    this.revealedLastCodeUnit = initial.length > 0
+      ? initial.charCodeAt(initial.length - 1)
+      : -1;
     this.onReveal = opts.onReveal;
     this.revealImmediately = opts.revealImmediately;
     this.clock = opts.clock ?? defaultClock;
@@ -189,7 +235,14 @@ export class PerItemSmoother {
   appendDelta(delta: string): void {
     if (this.disposed) return;
     if (delta.length === 0) return;
-    this.received += delta;
+    const start = this.receivedLength;
+    this.receivedParts.push(delta);
+    this.receivedLength += delta.length;
+    this.receivedCache = null;
+    this.appendPendingUnitEnds(delta, start);
+    if (this.receivedParts.length > MAX_RECEIVED_PARTS) {
+      this.compactReceivedParts();
+    }
     this.scheduleTick();
   }
 
@@ -200,11 +253,12 @@ export class PerItemSmoother {
       this.clock.cancel(this.rafHandle);
       this.rafHandle = null;
     }
-    if (this.revealed.length >= this.received.length) return;
-    const delta = this.received.slice(this.revealed.length);
-    this.revealed = this.received;
+    if (this.revealedEnd >= this.receivedLength) return;
+    const delta = this.sliceReceived(this.revealedEnd, this.receivedLength);
+    this.revealedEnd = this.receivedLength;
+    this.clearPendingUnits();
     this.revealBudget = 0;
-    this.onReveal(this.revealed, delta);
+    this.emitReveal(delta);
   }
 
   /**
@@ -233,15 +287,29 @@ export class PerItemSmoother {
   }
 
   isCaughtUp(): boolean {
-    return this.revealed.length >= this.received.length;
+    return this.revealedEnd >= this.receivedLength;
   }
 
   getRevealed(): string {
-    return this.revealed;
+    if (this.revealedEnd === this.receivedLength) {
+      const received = this.getReceived();
+      this.revealedCache = received;
+      this.revealedCacheEnd = this.revealedEnd;
+      return received;
+    }
+    if (this.revealedCacheEnd < this.revealedEnd) {
+      this.revealedCache += this.sliceReceived(
+        this.revealedCacheEnd,
+        this.revealedEnd,
+      );
+      this.revealedCacheEnd = this.revealedEnd;
+    }
+    return this.revealedCache;
   }
 
   getReceived(): string {
-    return this.received;
+    if (this.receivedCache !== null) return this.receivedCache;
+    return this.compactReceivedParts();
   }
 
   /**
@@ -250,7 +318,7 @@ export class PerItemSmoother {
    * on this; exposed as an accessor for tests and lag-based decisions.
    */
   getLag(): number {
-    return this.received.length - this.revealed.length;
+    return this.receivedLength - this.revealedEnd;
   }
 
   /** Cancel pending rAF. Idempotent. */
@@ -261,6 +329,149 @@ export class PerItemSmoother {
       this.clock.cancel(this.rafHandle);
       this.rafHandle = null;
     }
+  }
+
+  private appendPendingUnitEnds(delta: string, absoluteStart: number): void {
+    if (this.pendingUnitHead >= this.pendingUnitEnds.length) {
+      this.clearPendingUnits();
+    }
+    for (let index = 0; index < delta.length; index++) {
+      const absoluteEnd = absoluteStart + index + 1;
+      const whitespace = isWhitespaceCode(delta.charCodeAt(index));
+
+      if (this.pendingUnitPhase === UNIT_NONE) {
+        this.pendingUnitEnds.push(absoluteEnd);
+        this.pendingUnitPhase = whitespace
+          ? UNIT_LEADING_WHITESPACE
+          : UNIT_WORD;
+        continue;
+      }
+
+      if (
+        this.pendingUnitPhase === UNIT_TRAILING_WHITESPACE &&
+        !whitespace
+      ) {
+        this.pendingUnitEnds.push(absoluteEnd);
+        this.pendingUnitPhase = UNIT_WORD;
+        continue;
+      }
+
+      this.pendingUnitEnds[this.pendingUnitEnds.length - 1] = absoluteEnd;
+      if (this.pendingUnitPhase === UNIT_LEADING_WHITESPACE && !whitespace) {
+        this.pendingUnitPhase = UNIT_WORD;
+      } else if (this.pendingUnitPhase === UNIT_WORD && whitespace) {
+        this.pendingUnitPhase = UNIT_TRAILING_WHITESPACE;
+      }
+    }
+  }
+
+  private emitReveal(delta: string): void {
+    const previousCodeUnit = this.revealedLastCodeUnit;
+    this.revealedLastCodeUnit = delta.charCodeAt(delta.length - 1);
+    this.onReveal(delta, this.revealedEnd, previousCodeUnit);
+  }
+
+  private clearPendingUnits(): void {
+    this.pendingUnitEnds = [];
+    this.pendingUnitHead = 0;
+    this.pendingUnitPhase = UNIT_NONE;
+  }
+
+  private consumePendingUnitsThrough(end: number): void {
+    while (
+      this.pendingUnitHead < this.pendingUnitEnds.length &&
+      this.pendingUnitEnds[this.pendingUnitHead] <= end
+    ) {
+      this.pendingUnitHead++;
+    }
+    if (this.pendingUnitHead >= this.pendingUnitEnds.length) {
+      this.clearPendingUnits();
+      return;
+    }
+    if (this.pendingUnitHead >= 128) {
+      this.pendingUnitEnds = this.pendingUnitEnds.slice(this.pendingUnitHead);
+      this.pendingUnitHead = 0;
+    }
+  }
+
+  private nextPendingUnitLength(): number {
+    const end = this.pendingUnitEnds[this.pendingUnitHead];
+    if (end === undefined) {
+      throw new Error('streaming smoother is behind with no pending word unit');
+    }
+    return end - this.revealedEnd;
+  }
+
+  private advanceEndWithinBudget(chars: number): number {
+    let end = this.revealedEnd;
+    let budget = chars;
+    for (
+      let index = this.pendingUnitHead;
+      index < this.pendingUnitEnds.length;
+      index++
+    ) {
+      const unitEnd = this.pendingUnitEnds[index];
+      const unitLength = unitEnd - end;
+      if (unitLength > budget) break;
+      end = unitEnd;
+      budget -= unitLength;
+    }
+    return end;
+  }
+
+  private compactReceivedParts(): string {
+    const received = this.receivedParts.join('');
+    if (received.length !== this.receivedLength) {
+      throw new Error(
+        `streaming smoother source length mismatch: ${received.length} != ${this.receivedLength}`,
+      );
+    }
+    this.receivedParts = received.length > 0 ? [received] : [];
+    this.receivedCache = received;
+    return received;
+  }
+
+  private sliceReceived(from: number, to: number): string {
+    if (from < 0 || to < from || to > this.receivedLength) {
+      throw new RangeError(
+        `streaming smoother source slice outside 0..${this.receivedLength}: ${from}..${to}`,
+      );
+    }
+    if (from === to) return '';
+
+    let absolute = 0;
+    let first = '';
+    let pieces: string[] | null = null;
+    for (const part of this.receivedParts) {
+      const partEnd = absolute + part.length;
+      if (partEnd <= from) {
+        absolute = partEnd;
+        continue;
+      }
+      if (absolute >= to) break;
+
+      const piece = part.slice(
+        Math.max(0, from - absolute),
+        Math.min(part.length, to - absolute),
+      );
+      if (piece.length > 0) {
+        if (first.length === 0) {
+          first = piece;
+        } else if (pieces === null) {
+          pieces = [first, piece];
+        } else {
+          pieces.push(piece);
+        }
+      }
+      absolute = partEnd;
+    }
+    const result = pieces === null ? first : pieces.join('');
+    if (result.length !== to - from) {
+      throw new Error(
+        `streaming smoother source slice length mismatch: ${result.length} != ${to - from}`,
+      );
+    }
+    return result;
   }
 
   private scheduleTick(): void {
@@ -312,8 +523,8 @@ export class PerItemSmoother {
     // Always exactly where the last reveal left off — there is no floor,
     // no skip-ahead, and no way for `revealed` to disagree with the sum
     // of the emitted deltas.
-    const start = this.revealed.length;
-    const lag = this.received.length - start;
+    const start = this.revealedEnd;
+    const lag = this.receivedLength - start;
     // Two regimes only: steady word cadence, and adaptive catch-up
     // clamped at MAX_ADAPTIVE_CHARS_PER_SEC. There is no rush mode.
     let charsPerSec = BASE_CHARS_PER_SEC;
@@ -332,7 +543,7 @@ export class PerItemSmoother {
     // Per-tick advance cap: even when adaptive math wants to drain a
     // large lag in one frame, never ANIMATE more than the cap, so a fat
     // backlog never lands as one giant re-parse in a single frame.
-    const nextUnitLen = nextWordUnitEnd(this.received, start) - start;
+    const nextUnitLen = this.nextPendingUnitLength();
     // The cap expands for one oversized word unit (URL, long identifier)
     // so the reveal never stalls on a token no tick can fit; word
     // alignment wins over the work bound in that single case.
@@ -344,13 +555,14 @@ export class PerItemSmoother {
     const advanceCap = rawCap > perTickCap ? perTickCap : rawCap;
     let nextEnd = start;
     if (advanceCap > 0) {
-      nextEnd = computeAdvanceEnd(this.received, start, advanceCap);
+      nextEnd = this.advanceEndWithinBudget(advanceCap);
     }
     this.revealBudget -= nextEnd - start;
     if (nextEnd > start) {
-      const delta = this.received.slice(start, nextEnd);
-      this.revealed = this.received.slice(0, nextEnd);
-      this.onReveal(this.revealed, delta);
+      const delta = this.sliceReceived(start, nextEnd);
+      this.revealedEnd = nextEnd;
+      this.consumePendingUnitsThrough(nextEnd);
+      this.emitReveal(delta);
     }
     // Clamp residual budget so accumulated catch-up budget can't burst
     // into a multi-tick chunk on the next frame. Budget first: on nearly
@@ -360,10 +572,11 @@ export class PerItemSmoother {
     // there would stall that token forever.
     if (this.revealBudget > MAX_ADVANCE_PER_TICK_CHARS) {
       const unitAhead =
-        this.revealed.length === start
+        this.revealedEnd === start
           ? nextUnitLen
-          : nextWordUnitEnd(this.received, this.revealed.length)
-            - this.revealed.length;
+          : this.isCaughtUp()
+            ? 0
+            : this.nextPendingUnitLength();
       if (unitAhead <= MAX_ADVANCE_PER_TICK_CHARS) {
         this.revealBudget = MAX_ADVANCE_PER_TICK_CHARS;
       }
@@ -400,12 +613,12 @@ export function computeAdvanceEnd(
 // previous unit already pulled trailing whitespace with its word.
 function nextWordUnitEnd(text: string, from: number): number {
   let i = from;
-  while (i < text.length && isWhitespace(text[i])) i++;
-  while (i < text.length && !isWhitespace(text[i])) i++;
-  while (i < text.length && isWhitespace(text[i])) i++;
+  while (i < text.length && isWhitespaceCode(text.charCodeAt(i))) i++;
+  while (i < text.length && !isWhitespaceCode(text.charCodeAt(i))) i++;
+  while (i < text.length && isWhitespaceCode(text.charCodeAt(i))) i++;
   return i;
 }
 
-function isWhitespace(ch: string): boolean {
-  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+function isWhitespaceCode(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 13;
 }
