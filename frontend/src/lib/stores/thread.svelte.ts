@@ -247,14 +247,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     }
   }
   /**
-   * The ONE in-place row write. Every path that replaces a single loaded
-   * row (smoother reveal, delta, meta, field patch) goes through here so
-   * the revisions derived from a row's fields cannot be missed by a new
-   * caller: the bump is a property of writing, not something each writer
-   * remembers. Both exist to keep an O(window) walk off a ~50Hz path —
-   * the offscreen row-UI prune's no-op bail, and the activity-run
-   * header's summary signature — so both are decided from the single
-   * comparison this function is already holding.
+   * The one reactive in-place row write. Every path that replaces a
+   * single loaded row (smoother reveal, delta, meta, field patch) goes
+   * through here. A new caller cannot miss revisions derived from row
+   * fields because the bump belongs to the write, not to each writer.
+   * Both revisions keep an O(window) walk off a ~50Hz path. They cover
+   * the offscreen row-UI prune's no-op bail and the activity-run header's
+   * summary signature. This function decides both from the comparison it
+   * already holds.
    *
    * Wholesale replacements go through `commitTimelineItems` instead,
    * which bumps retention unconditionally; a run's membership change
@@ -273,6 +273,39 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     items[index] = next;
     switchLoad.noteItemMutation(next.id);
     itemBoxes.set(next.id, next);
+  }
+
+  /**
+   * Direct literal reveal keeps the canonical raw row current while its
+   * preflighted DOM sinks paint the same suffix. The signature admits no
+   * replacement item or arbitrary fields. The guards keep this quiet write
+   * exclusive to append-only assistant text.
+   */
+  function appendDirectAssistantLiteral(
+    index: number,
+    itemId: string,
+    previousSummary: string,
+    nextSummary: string,
+    updatedAt: number,
+  ): void {
+    const current = items[index];
+    if (!current || current.id !== itemId) {
+      throw new Error(`direct assistant reveal lost item ${itemId} at index ${index}`);
+    }
+    if (
+      current.kind !== 'assistant_text' ||
+      current.summary !== previousSummary ||
+      nextSummary.length <= previousSummary.length ||
+      !nextSummary.startsWith(previousSummary)
+    ) {
+      throw new Error(`invalid direct assistant reveal for ${itemId}`);
+    }
+    current.summary = nextSummary;
+    current.updatedAt = Math.max(updatedAt, current.updatedAt);
+    // A load that started before this append must not paint its stale copy
+    // over the canonical row. This is the same conflict stamp writeItemAt
+    // owns for ordinary row replacements.
+    switchLoad.noteItemMutation(itemId);
   }
   const rowUiState = createThreadRowUiState({
     getItemById,
@@ -302,6 +335,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getItemIndex: (itemId) => itemIndexById.get(itemId),
     getItems: () => items,
     setItemAt: writeItemAt,
+    appendDirectAssistantLiteral,
     stampLiveContent,
     armStructuralSpring: armLiveContentAppendSpring,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
@@ -2070,6 +2104,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     isItemSmoothing(itemId: string): boolean {
       return streamingReveal.isSmoothing(itemId);
     },
+
+    registerAssistantRevealSink: streamingReveal.registerAssistantRevealSink,
 
     // Snap every behind smoother straight to its full received text on
     // visibilitychange → visible. See threadStreamingReveal.svelte.ts

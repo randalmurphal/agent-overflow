@@ -251,7 +251,11 @@
   message renders as a single `md-committed` container and never matches
   the seam rule.
 -->
-{#snippet streamdownInstance(content: string, parseIncompleteMarkdown: boolean, wrapperClass: string)}
+{#snippet streamdownInstance(
+  content: string,
+  parseIncompleteMarkdown: boolean,
+  wrapperClass: string,
+)}
   <Streamdown
     class={wrapperClass}
     {content}

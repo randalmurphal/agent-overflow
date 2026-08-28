@@ -230,7 +230,13 @@
 		<Block static={isStatic} block={content} />
 	{:else}
 		{#each blocks as block, index (`${id}-block-${index}`)}
-			<Block static={isStatic} {block} />
+			<Block
+				static={isStatic}
+				{block}
+				directAppendTail={
+					parseIncompleteMarkdown === true && index === blocks.length - 1
+				}
+			/>
 		{/each}
 	{/if}
 </div>

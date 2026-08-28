@@ -357,3 +357,18 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     the getters read. Upstream perf bug, upstream-PR candidate.
     Regression: `markdown/streamdownThemeMemo.test.ts` (identity stable
     across reads, re-mints on theme prop change).
+21. **the active trailing literal leaf has an append marker**
+    (`Streamdown.svelte`, `Block.svelte`). A streaming prose update used
+    to replace the whole assistant row and run Svelte, block splitting,
+    marked, style, and layout for every revealed word. The active volatile
+    block now marks only its final text leaf when every token on that path is
+    a literal text container. Agent Overflow can append safe word deltas in
+    bounded sibling Text nodes and reserve an authoritative render for
+    punctuation or structural markdown. Links and unknown extension tokens
+    are excluded. The marker does not alter settled output and `display:
+    contents` adds no layout box. App code owns all appended nodes and removes
+    them before fallback, so the vendored renderer never has to reconcile DOM
+    it did not create. Host-specific performance extension, not an upstream
+    bug. Drop it if upstream exposes an equivalent incremental trailing-leaf
+    hook. Regression: `ChatMarkdown.directRevealDifferential.test.ts` and
+    `ChatMarkdown.directRevealSelection.browser.test.ts`.

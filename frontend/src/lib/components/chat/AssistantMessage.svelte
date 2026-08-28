@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import type {
@@ -17,7 +18,11 @@
   import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
   import { splitAtBoundary } from '../../markdown/boundary/split';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { RawJsonFenceFormatter } from './markdown/rawJsonFence';
+  import { isRawJsonSource, RawJsonFenceFormatter } from './markdown/rawJsonFence';
+  import {
+    createStreamingAssistantDomSink,
+    sourceCompletesAllowlistedPath,
+  } from './markdown/streamingAssistantDomSink';
 
   let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
 
@@ -108,6 +113,7 @@
   // replacements of a streaming row — a fresh identity per frame would
   // rebuild ChatMarkdown's marked extension and re-lex every block.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
+  const workspacePath = $derived(paneWorkspacePath(pane));
 
   // Codex marks an assistant message the model emitted mid-turn — a progress
   // note alongside its work, not the turn's answer — with `delivery: "async"`
@@ -119,10 +125,40 @@
   );
 
   const markdownSource = $derived(jsonFence.render(item.summary, streaming));
+  let bodyRoot: HTMLElement;
+  const directRevealSink = createStreamingAssistantDomSink({
+    getRoot: () => bodyRoot,
+    canAppendSource: (source, nextSource) =>
+      !isRawJsonSource(source) &&
+      !sourceCompletesAllowlistedPath(pathRefs, source, nextSource),
+  });
+
+  // The timeline replaces the item object on every authoritative reveal.
+  // The effect therefore runs again, but a same-(pane,id) row must keep its
+  // existing registration or the router disarms the direct path every frame.
+  // Cleanup lives in onDestroy rather than the effect return so a harmless
+  // same-row invalidation cannot unregister before this guard sees it.
+  let registeredRevealPane: RevealRead | undefined;
+  let registeredRevealItemId = '';
+  let unregisterRevealSink: (() => void) | undefined;
+  $effect(() => {
+    const nextPane = pane;
+    const nextItemId = item.id;
+    if (nextPane === registeredRevealPane && nextItemId === registeredRevealItemId) return;
+    unregisterRevealSink?.();
+    registeredRevealPane = nextPane;
+    registeredRevealItemId = nextItemId;
+    unregisterRevealSink = nextPane?.registerAssistantRevealSink?.(
+      nextItemId,
+      directRevealSink,
+    );
+  });
+  onDestroy(() => unregisterRevealSink?.());
 </script>
 
 <div class="group" data-item-kind={item.kind}>
   <div
+    bind:this={bodyRoot}
     class="text-fg-muted"
     data-testid="assistant-message-body"
     data-render-mode="client-markdown"
@@ -130,7 +166,7 @@
     <ChatMarkdown
       source={markdownSource}
       {streaming}
-      workspacePath={paneWorkspacePath(pane)}
+      {workspacePath}
       {pathRefs}
     />
   </div>

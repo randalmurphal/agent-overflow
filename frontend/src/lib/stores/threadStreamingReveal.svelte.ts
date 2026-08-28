@@ -18,6 +18,10 @@ import {
   THINKING_PAYLOAD_EXPANSION_STATE_KEY,
   thinkingPayloadVersionForItem,
 } from '../utils/payloadVersion';
+import {
+  StreamingAssistantRevealRouter,
+  type StreamingAssistantRevealSink,
+} from './streamingAssistantReveal';
 
 export interface ThreadStreamingRevealOptions {
   /** Current item for an id, or undefined when not loaded. */
@@ -28,6 +32,19 @@ export interface ThreadStreamingRevealOptions {
   getItems(): Item[];
   /** Reactive write-through of one row (pane does `items[index] = item`). */
   setItemAt(index: number, item: Item): void;
+  /**
+   * Append a literal assistant suffix to the canonical raw item without
+   * invalidating the row box. The reveal router publishes the only reactive
+   * presentation change needed for that suffix. The pane owns this mutation
+   * so switch-load conflict tracking cannot be bypassed.
+   */
+  appendDirectAssistantLiteral(
+    index: number,
+    itemId: string,
+    previousSummary: string,
+    nextSummary: string,
+    updatedAt: number,
+  ): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
   stampLiveContent(): void;
   /** Arm the structural-append spring and stamp the live-content latch
@@ -66,6 +83,10 @@ export interface ThreadStreamingReveal {
   applyPatch(itemId: string, patch: ItemPatchEvent['patch']): void;
   /** True while a smoother owns the row's summary writes (pane's `stillSmoothing` check). */
   isSmoothing(itemId: string): boolean;
+  registerAssistantRevealSink(
+    itemId: string,
+    sink: StreamingAssistantRevealSink,
+  ): () => void;
   /** upsertItemsBatch's reconcile block. Does NOT recompute — the batch caller
    *  recomputes once at the end, preserving current per-batch semantics. */
   reconcileUpsertedItems(changedItems: readonly Item[]): void;
@@ -124,6 +145,7 @@ interface ItemSmoothing {
 export function createThreadStreamingReveal(
   options: ThreadStreamingRevealOptions,
 ): ThreadStreamingReveal {
+  const assistantReveal = new StreamingAssistantRevealRouter();
   // Per-item streaming smoothers keyed by item id. Created lazily on
   // the first streaming delta for a smoothable row (assistant_text /
   // thinking); disposed on row removal, status snap, or pane clear.
@@ -214,6 +236,7 @@ export function createThreadStreamingReveal(
   // tail (settleSmootherRetainingTail below) has no smoother left, and a
   // removal arriving after that settle must still clear it.
   function disposeSmootherFor(itemId: string): void {
+    assistantReveal.clearItem(itemId);
     itemLiveThinkingTail.delete(itemId);
     settledTailSummaries.delete(itemId);
     const entry = itemSmoothers.get(itemId);
@@ -262,6 +285,7 @@ export function createThreadStreamingReveal(
   function settleSmootherRetainingTail(itemId: string): void {
     const entry = itemSmoothers.get(itemId);
     if (!entry) return;
+    assistantReveal.clearItem(itemId);
     entry.smoother.dispose();
     itemSmoothers.delete(itemId);
     const tail = itemLiveThinkingTail.get(itemId);
@@ -272,10 +296,14 @@ export function createThreadStreamingReveal(
   }
 
   function disposeAll(): void {
-    for (const entry of itemSmoothers.values()) entry.smoother.dispose();
+    for (const [itemId, entry] of itemSmoothers) {
+      assistantReveal.clearItem(itemId);
+      entry.smoother.dispose();
+    }
     itemSmoothers.clear();
     itemLiveThinkingTail.clear();
     settledTailSummaries.clear();
+    assistantReveal.dispose();
     revealBoundary = null;
     // Dropping the boundary answers a pending items commit as completely
     // as a recompute would — nothing is withheld any more. Diagnostic only.
@@ -509,7 +537,7 @@ export function createThreadStreamingReveal(
       revealImmediately: () =>
         getSettings().lowPowerMode || !getSettings().streamingEnabled,
       clock: getSmoothingClockForTest(),
-      onReveal: (revealed, delta) => {
+      onReveal: (delta, _revealedEnd, previousCodeUnit) => {
         const idx = options.getItemIndex(itemId);
         if (idx === undefined) {
           disposeSmootherFor(itemId);
@@ -522,35 +550,53 @@ export function createThreadStreamingReveal(
         // makes the end-of-turn tail spring instead of jump.
         options.stampLiveContent();
         const current = options.getItems()[idx];
-        const prevRevealed = previousRevealed;
-        previousRevealed = revealed;
         // Reasoning-tail rows (thinking + compaction_reasoning) keep the
         // summary tail-trimmed for memory; assistant_text keeps the full
         // revealed text.
         const isReasoningTail = isReasoningTailKind(current.kind);
-        const nextSummary = isReasoningTail
-          ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
-          : revealed;
-        // Keep the row's `updatedAt` monotonic. A status-only patch
-        // (e.g. bare `{status: 'completed', updatedAt: T}`) can land
-        // between deltas and bump `current.updatedAt` past the
-        // smoother's last-known wire delta; the older value must not
-        // overwrite it when the next rAF reveal lands.
-        const nextItem = {
-          ...current,
-          summary: nextSummary,
-          updatedAt: Math.max(latestUpdatedAt, current.updatedAt),
-        };
-        options.setItemAt(idx, nextItem);
-        if (isReasoningTail) {
-          itemLiveThinkingTail.set(itemId, revealed);
-          options.appendLivePayloadDeltaForItem(
-            nextItem.id,
-            reasoningExpansionStateKey(nextItem.kind),
-            delta,
-            thinkingPayloadVersionForItem(nextItem),
-            prevRevealed,
-          );
+        const settling = current.status !== 'streaming' && smoother.isCaughtUp();
+        const appendedDirectly = !isReasoningTail && !settling && assistantReveal.publish(
+          itemId,
+          previousCodeUnit,
+          current.summary,
+          delta,
+          (nextSummary) => options.appendDirectAssistantLiteral(
+            idx,
+            itemId,
+            current.summary,
+            nextSummary,
+            Math.max(latestUpdatedAt, current.updatedAt),
+          ),
+        );
+        if (!appendedDirectly) {
+          if (settling) assistantReveal.clearItem(itemId);
+          const revealed = smoother.getRevealed();
+          const prevRevealed = previousRevealed;
+          previousRevealed = revealed;
+          const nextSummary = isReasoningTail
+            ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
+            : revealed;
+          // Keep the row's `updatedAt` monotonic. A status-only patch
+          // (e.g. bare `{status: 'completed', updatedAt: T}`) can land
+          // between deltas and bump `current.updatedAt` past the
+          // smoother's last-known wire delta; the older value must not
+          // overwrite it when the next rAF reveal lands.
+          const nextItem = {
+            ...current,
+            summary: nextSummary,
+            updatedAt: Math.max(latestUpdatedAt, current.updatedAt),
+          };
+          options.setItemAt(idx, nextItem);
+          if (isReasoningTail) {
+            itemLiveThinkingTail.set(itemId, revealed);
+            options.appendLivePayloadDeltaForItem(
+              nextItem.id,
+              reasoningExpansionStateKey(nextItem.kind),
+              delta,
+              thinkingPayloadVersionForItem(nextItem),
+              prevRevealed,
+            );
+          }
         }
         // Auto-cleanup once the stream has settled AND the smoother has
         // caught up. After that point no more deltas will arrive and
@@ -703,6 +749,13 @@ export function createThreadStreamingReveal(
 
   function isSmoothing(itemId: string): boolean {
     return itemSmoothers.has(itemId);
+  }
+
+  function registerAssistantRevealSink(
+    itemId: string,
+    sink: StreamingAssistantRevealSink,
+  ): () => void {
+    return assistantReveal.register(itemId, sink);
   }
 
   /** upsertItemsBatch's reconcile block. Does NOT recompute — the batch caller
@@ -872,6 +925,7 @@ export function createThreadStreamingReveal(
     appendStreamingDelta,
     applyPatch,
     isSmoothing,
+    registerAssistantRevealSink,
     reconcileUpsertedItems,
     recomputeReveal,
     disposeSmootherFor,

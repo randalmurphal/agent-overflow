@@ -144,6 +144,36 @@ describe('<AssistantMessage>', () => {
     expect(body.querySelector('.md-committed')).not.toBeNull();
   });
 
+  it('keeps one reveal sink registration across same-item object replacements', async () => {
+    const unregister = vi.fn();
+    const register = vi.fn(() => unregister);
+    const pane = {
+      isItemSmoothing: () => true,
+      registerAssistantRevealSink: register,
+    } as unknown as ThreadPane;
+    const first = makeItem({
+      id: 'stable-stream-row',
+      status: 'streaming',
+      summary: 'first words ',
+    });
+    const view = render(AssistantMessage, { props: { pane, item: first } });
+    await waitFor(() => expect(register).toHaveBeenCalledOnce());
+
+    await view.rerender({
+      pane,
+      item: { ...first, summary: 'first words continue streaming ' },
+    });
+    expect(register).toHaveBeenCalledOnce();
+    expect(unregister).not.toHaveBeenCalled();
+
+    await view.rerender({
+      pane,
+      item: { ...first, id: 'replacement-row', summary: 'different row' },
+    });
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
+    expect(unregister).toHaveBeenCalledOnce();
+  });
+
   it('hides the timestamp/meta row until the first block commits (streaming disabled)', async () => {
     // Bug follow-up: with streaming disabled the body is withheld until a
     // block commits, but the meta row (timestamp + copy slot) used to

@@ -8511,6 +8511,75 @@ describe('createThreadPane', () => {
       }
     });
 
+    it('keeps literal reveals on the canonical row without invalidating its box', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        pane.upsertItem(
+          makeItem({
+            id: 'text:0:0',
+            threadId: 't',
+            kind: 'assistant_text',
+            role: 'assistant',
+            status: 'streaming',
+            turnIndex: 0,
+            itemIndex: 0,
+            summary: '',
+            updatedAt: 2,
+          }),
+        );
+        const appended: string[] = [];
+        const unregister = pane.registerAssistantRevealSink('text:0:0', {
+          canAppendLiteral: () => true,
+          appendLiteral: (_nextSource, delta) => appended.push(delta),
+          reset: () => {},
+        });
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: 'first ',
+          updatedAt: 3,
+        });
+        for (let frames = 0; clock.pendingCount() > 0 && frames < 100; frames++) {
+          clock.tickFrame(16);
+        }
+        const checkpoint = pane.items[0];
+
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: 'second third ',
+          updatedAt: 4,
+        });
+        for (let frames = 0; clock.pendingCount() > 0 && frames < 100; frames++) {
+          clock.tickFrame(16);
+        }
+
+        expect(pane.items[0]).toBe(checkpoint);
+        expect(pane.items[0].summary).toBe('first second third ');
+        expect(appended.join('')).toBe('second third ');
+
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          delta: '**',
+          updatedAt: 5,
+        });
+        for (let frames = 0; clock.pendingCount() > 0 && frames < 100; frames++) {
+          clock.tickFrame(16);
+        }
+        expect(pane.items[0]).not.toBe(checkpoint);
+        expect(pane.items[0].summary).toBe('first second third **');
+        unregister();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
     it('never skips any frontier — it animates every char at the adaptive cap', async () => {
       // The prose counterpart of the test above; the guarantee is
       // kind-independent, so both are asserted. A queued successor waits

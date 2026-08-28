@@ -44,6 +44,7 @@
 // the error names the role.
 
 import type { Item, Thread } from '../types/models';
+import type { StreamingAssistantRevealSink } from './streamingAssistantReveal';
 import type {
   ApprovalRequest,
   ContextWindow,
@@ -263,6 +264,10 @@ export interface RevealRead {
   readonly revealBoundary: RevealBoundary | null;
   readonly liveThinkingTailForItem: (itemId: string) => string | null;
   readonly isItemSmoothing: (itemId: string) => boolean;
+  readonly registerAssistantRevealSink: (
+    itemId: string,
+    sink: StreamingAssistantRevealSink,
+  ) => () => void;
   readonly snapSmoothersToReceived: () => void;
   readonly lastLiveContentAt: number;
 }

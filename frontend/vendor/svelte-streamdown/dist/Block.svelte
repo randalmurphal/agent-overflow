@@ -12,10 +12,12 @@
 
 	let {
 		block,
-		static: isStatic = false
+		static: isStatic = false,
+		directAppendTail = false
 	}: {
 		block: string;
 		static?: boolean;
+		directAppendTail?: boolean;
 	} = $props();
 
 	const streamdown = useStreamdown();
@@ -36,26 +38,56 @@
 		)
 	);
 	const insidePopover = getContext('POPOVER');
+
+	// A direct reveal may extend only the parser's active trailing text leaf.
+	// Unknown/custom token types default to unsafe because they may derive
+	// attributes or non-text output from token.raw (links are the common case).
+	const DIRECT_TEXT_CONTAINERS = new Set([
+		'paragraph',
+		'heading',
+		'blockquote',
+		'text',
+		'escape',
+		'strong',
+		'em',
+		'del',
+		'codespan',
+		'list',
+		'list_item',
+		'sub',
+		'sup',
+		'alert',
+		'descriptionList',
+		'description',
+		'descriptionTerm',
+		'descriptionDetail'
+	]);
 </script>
 
-{#snippet renderChildren(tokens: StreamdownToken[])}
-	{#each tokens as token}
+{#snippet renderChildren(tokens: StreamdownToken[], trailingPath: boolean, safePath: boolean)}
+	{#each tokens as token, index}
 		{#if token}
 			{@const children = (token as any)?.tokens || []}
 			{@const isTextOnlyNode = children.length === 0}
-			<Element {token}>
-				{#if isTextOnlyNode}
-					{#if streamdown.animation.enabled && !insidePopover && !isStatic}
-						<AnimatedText text={'text' in token ? token.text || '' : ''} />
-					{:else}
+			{@const isTrailingToken = trailingPath && index === tokens.length - 1}
+			{@const isSafeTokenPath = safePath && DIRECT_TEXT_CONTAINERS.has(token.type)}
+				<Element {token}>
+					{#if isTextOnlyNode}
+						{#if streamdown.animation.enabled && !insidePopover && !isStatic}
+							<AnimatedText text={'text' in token ? token.text || '' : ''} />
+						{:else if isTrailingToken && isSafeTokenPath}
+							<span data-streamdown-direct-append-safe style="display: contents">
+								{'text' in token ? token.text : ''}
+							</span>
+						{:else}
 						{'text' in token ? token.text : ''}
 					{/if}
 				{:else}
-					{@render renderChildren(children)}
+					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				{/if}
 			</Element>
 		{/if}
 	{/each}
 {/snippet}
 
-{@render renderChildren(tokens)}
+{@render renderChildren(tokens, directAppendTail, true)}
