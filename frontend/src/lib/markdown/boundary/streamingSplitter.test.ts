@@ -244,4 +244,24 @@ describe('StreamingBoundarySplitter — incremental line cache', () => {
       splitAtBoundary(grown, got.prefix.length),
     );
   });
+
+  it('resets when a same-length rewrite has fewer lines than the committed source', () => {
+    const splitter = new StreamingBoundarySplitter();
+    const first = [
+      'Paragraph one.',
+      '',
+      'Paragraph two.',
+      '',
+      'Paragraph three.',
+      '',
+      'Trailing paragraph.',
+    ].join('\n');
+    const committed = splitter.split(first);
+    expect(committed.prefix.length).toBeGreaterThan(0);
+
+    const rewritten = 'x'.repeat(first.length);
+    const got = splitter.split(rewritten);
+    expect(got.prefix + got.tail).toBe(rewritten);
+    expect(got).toEqual(splitAtBoundary(rewritten, 0));
+  });
 });

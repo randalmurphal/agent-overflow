@@ -27,8 +27,9 @@
 // no-allocation memcmp that costs microseconds where the full split
 // cost milliseconds plus thousands of line-substring allocations — so
 // a non-append rewrite can never smuggle stale cached lines into
-// detection: it falls back to a full re-split (identical to the
-// pre-cache behaviour in every scenario, in and out of contract).
+// detection. A rewrite that preserves the committed prefix keeps the
+// valid detector checkpoint and fully re-splits the source. Any rewrite
+// that changes committed bytes resets the checkpoint before re-splitting.
 //
 // PRECONDITION — append-only source. Correctness depends on committed
 // lines never changing: the cached block context for a committed line
@@ -38,11 +39,9 @@
 // source (e.g. the trimmed thinking tail) would violate it — those do
 // NOT route through ChatMarkdown's streaming path (ThinkingBlock renders
 // a plain <span>). A wholesale SHRINK (source shorter than the committed
-// prefix) resets the splitter. A same-length-or-longer replacement takes
-// the full re-split fallback, which refreshes the LINES but — exactly as
-// before the line cache existed — resumes detection with the detector's
-// cached contexts for the old content; that remains out of contract (the
-// invariant that survives is `prefix + tail === text`, never data loss).
+// prefix) resets the splitter. Other replacements keep the checkpoint only
+// when every committed byte is unchanged. This makes the class safe for all
+// source transitions while append-only growth remains its fast path.
 
 import { BoundaryDetector } from './BoundaryDetector';
 import { createInitialContext } from './detector';
@@ -109,11 +108,18 @@ export class StreamingBoundarySplitter {
         }
       }
     } else {
-      // Non-append rewrite above the committed offset — out of the
-      // streaming contract. Fall back to a full re-split so detection
-      // sees the real current lines (the pre-cache behaviour); the
-      // committed offsets and detector cache are kept, exactly as
-      // before.
+      // A detector checkpoint describes the committed bytes, not merely
+      // their old numeric offset. Preserve it only when that entire prefix
+      // is still byte-identical. A rewrite inside the prefix can also have
+      // fewer lines at the same total length, so reusing committedLine would
+      // index past the new line array before detection even begins.
+      const committedPrefixUnchanged =
+        this.committedOffset > 0 &&
+        text.startsWith(prev.slice(0, this.committedOffset));
+      if (!committedPrefixUnchanged) this.reset();
+
+      // Non-append rewrites are rare. Materialize the real current lines so
+      // neither the line cache nor the detector can observe mixed sources.
       lines = text.split('\n');
       this.cachedLines = lines;
       this.committedLineStart = this.committedLine >= 0
@@ -173,9 +179,9 @@ export class StreamingBoundarySplitter {
   }
 }
 
-// Offset where line `lineIndex` starts. Only used on the rare
-// non-append fallback, where the cached committedLineStart may no
-// longer describe the rewritten lines.
+// Offset where line `lineIndex` starts. Only used when a rare non-append
+// rewrite preserves the committed prefix, which guarantees that this line
+// still exists at the same index.
 function startOfLine(lines: string[], lineIndex: number): number {
   let offset = 0;
   for (let i = 0; i < lineIndex; i++) {
