@@ -701,6 +701,11 @@ type session struct {
 // EventTurnComplete so the reaper can skip sessions mid-turn. Both
 // counters are atomic so the reaper's sweep can read them without
 // taking a.mu beyond the map walk itself.
+//
+// activeTurns is provider-ASYMMETRIC: Claude never emits EventTurnStart,
+// so the counter is permanently zero for Claude sessions. Never read it
+// alone as "a turn is open" — see the recordSessionActivity comment
+// (app_provider_events.go) for the pairing rule.
 type sessionLiveness struct {
 	lastActivityUnixNano atomic.Int64
 	activeTurns          atomic.Int32

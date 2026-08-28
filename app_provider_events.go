@@ -282,6 +282,13 @@ func (a *App) clearAutoReconnectAttempted(threadID string) {
 // safe because Claude's deltas stream through here at high cadence
 // during a turn — lastActivity is constantly being refreshed.
 //
+// Any NEW consumer of activeTurns must not read it as "a turn is
+// open" — for Claude it never is. Pair it with triage's
+// AnyInFlightTurnOrRound and/or the lastActivity stamp, the way
+// hasActiveProviderTurn (app_webview_trim.go) does; reading the
+// counter alone is the bug that let every idle trim land mid-Claude-
+// turn as a 60-130ms GC stall (2026-08-27).
+//
 // On EventSessionStatus("disconnected") we drain activeTurns to 0
 // because the subprocess is going away and any in-flight counter is
 // no longer meaningful. Without the drain, a turn that errored before
