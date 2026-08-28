@@ -13,14 +13,11 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-const maxCollabHistoryThreads = 256
-
 type collabHistoryOwnership struct {
-	SourceThreadID string
-	ParentItemID   string
-	ChildThreadID  string
-	AgentPath      string
-	LaunchMeta     collabLaunchMeta
+	ParentItemID  string
+	ChildThreadID string
+	AgentPath     string
+	LaunchMeta    collabLaunchMeta
 }
 
 type collabHistoryJob struct {
@@ -28,31 +25,26 @@ type collabHistoryJob struct {
 	Generation uint64
 }
 
-// rehydrateCollabOwnershipFromThreadResponse rebuilds provider-side routing
-// indexes from the root thread/resume history without replaying the transcript.
-// Historical spawn rows were already projected into SQLite when they first
-// arrived. Descendant histories are inspected with read-only thread/read calls:
-// active children are resumed to restore live notification subscriptions, and
-// terminal children repair spawn state that AO may have missed while offline.
-func (s *Session) rehydrateCollabOwnershipFromThreadResponse(resp json.RawMessage) {
-	ownerships, err := collabHistoryOwnerships(resp)
+// rehydrateCollabOwnership rebuilds provider-side routing indexes from AO's
+// compact persisted spawn rows. The transcript itself never crosses the resume
+// boundary: AO already projected it into SQLite when it arrived, and Codex can
+// represent an arbitrarily long session as one turn and one JSON-RPC frame.
+// Child metadata is inspected separately below so active subscriptions and a
+// terminal status missed while AO was offline are still recovered.
+func (s *Session) rehydrateCollabOwnership(launches []ResumeCollabLaunch) {
+	ownerships, err := collabResumeOwnerships(launches)
 	if err != nil {
-		s.warnCollabHistory("Codex collaboration history could not be decoded completely", err)
+		s.warnCollabHistory("Persisted Codex collaboration ownership could not be decoded completely", err)
 	}
 	if len(ownerships) == 0 {
 		return
 	}
-	if len(ownerships) > maxCollabHistoryThreads {
-		s.warnCollabHistory("Codex collaboration history exceeded the safe traversal limit", nil)
-		ownerships = ownerships[:maxCollabHistoryThreads]
-	}
-
 	s.mu.Lock()
 	generation := s.collabHistory.generation
 	s.mu.Unlock()
 	mapped := make([]string, 0, len(ownerships))
 	for _, ownership := range ownerships {
-		if !s.registerHistoricalChildOwnership(ownership.SourceThreadID, ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
+		if !s.registerHistoricalChildOwnership("", ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
 			continue
 		}
 		s.scheduleCollabMetadataRead(ownership.ChildThreadID, ownership.ParentItemID, ownership.LaunchMeta)
@@ -60,100 +52,60 @@ func (s *Session) rehydrateCollabOwnershipFromThreadResponse(resp json.RawMessag
 		s.enqueueCollabHistoryJob(collabHistoryJob{Ownership: ownership, Generation: generation})
 	}
 	// Persisted spawn rows already exist on a reopen. Drain only after every
-	// ownership edge in this response has been registered.
+	// ownership edge in this resume set has been registered.
 	s.drainDeferredChildWireEvents(mapped...)
 }
 
-func collabHistoryOwnerships(resp json.RawMessage) ([]collabHistoryOwnership, error) {
-	var response struct {
-		Thread struct {
-			ID    string `json:"id"`
-			Turns []struct {
-				ID    string            `json:"id"`
-				Items []json.RawMessage `json:"items"`
-			} `json:"turns"`
-		} `json:"thread"`
-	}
-	if len(resp) == 0 {
-		return nil, errors.New("empty thread history response")
-	}
-	if err := json.Unmarshal(resp, &response); err != nil {
-		return nil, fmt.Errorf("decode thread history response: %w", err)
-	}
-	sourceThreadID := strings.TrimSpace(response.Thread.ID)
-	if sourceThreadID == "" {
-		return nil, errors.New("thread history response is missing thread.id")
-	}
-
+func collabResumeOwnerships(launches []ResumeCollabLaunch) ([]collabHistoryOwnership, error) {
 	var ownerships []collabHistoryOwnership
 	var parseErrors []error
-	for _, turn := range response.Thread.Turns {
-		for itemIndex, rawItem := range turn.Items {
-			var item map[string]json.RawMessage
-			if err := json.Unmarshal(rawItem, &item); err != nil {
-				parseErrors = append(parseErrors, fmt.Errorf("turn %s item %d: %w", turn.ID, itemIndex, err))
-				continue
+	for launchIndex, launch := range launches {
+		parentItemID := strings.TrimSpace(launch.ItemID)
+		var stored struct {
+			Input struct {
+				Tool              string   `json:"tool"`
+				Prompt            string   `json:"prompt"`
+				Model             string   `json:"model"`
+				ReasoningEffort   string   `json:"reasoningEffort"`
+				AgentPath         string   `json:"agentPath"`
+				ReceiverThreadIDs []string `json:"receiverThreadIds"`
+			} `json:"input"`
+		}
+		if err := json.Unmarshal(launch.Meta, &stored); err != nil {
+			parseErrors = append(parseErrors, fmt.Errorf("launch %d (%s): decode meta: %w", launchIndex, parentItemID, err))
+			continue
+		}
+		if parentItemID == "" || normalizeCollabToolName(stored.Input.Tool) != "spawn_agent" {
+			parseErrors = append(parseErrors, fmt.Errorf("launch %d (%s): missing spawn ownership identity", launchIndex, parentItemID))
+			continue
+		}
+		receivers := nonEmptyStrings(stored.Input.ReceiverThreadIDs)
+		if len(receivers) == 0 {
+			parseErrors = append(parseErrors, fmt.Errorf("launch %d (%s): missing receiver thread ids", launchIndex, parentItemID))
+			continue
+		}
+		agentPath := strings.TrimSpace(stored.Input.AgentPath)
+		launchMeta := collabLaunchMeta{
+			Prompt:            stored.Input.Prompt,
+			Model:             stored.Input.Model,
+			ReasoningEffort:   stored.Input.ReasoningEffort,
+			AgentPath:         agentPath,
+			ReceiverThreadIDs: append([]string(nil), receivers...),
+		}
+		for _, childThreadID := range receivers {
+			childAgentPath := ""
+			if len(receivers) == 1 {
+				childAgentPath = agentPath
 			}
-			itemType := readRawString(item, "type")
-			if itemType == "subAgentActivity" {
-				activity, ok := decodeSubAgentActivityItem(item)
-				if !ok {
-					if readRawString(item, "kind") == "started" {
-						parseErrors = append(parseErrors, fmt.Errorf("turn %s item %d: malformed started subAgentActivity", turn.ID, itemIndex))
-					}
-					continue
-				}
-				if activity.Kind != "started" {
-					continue
-				}
-				ownerships = append(ownerships, collabHistoryOwnership{
-					SourceThreadID: sourceThreadID,
-					ParentItemID:   activity.ItemID,
-					ChildThreadID:  activity.AgentThreadID,
-					AgentPath:      activity.AgentPath,
-					LaunchMeta: collabLaunchMeta{
-						AgentPath:         activity.AgentPath,
-						ReceiverThreadIDs: []string{activity.AgentThreadID},
-					},
-				})
-				continue
-			}
-			if itemType != "collabAgentToolCall" ||
-				normalizeCollabToolName(readRawString(item, "tool")) != "spawn_agent" {
-				continue
-			}
-			parentItemID := strings.TrimSpace(readRawString(item, "id"))
-			receivers := readRawStringArray(item, "receiverThreadIds")
-			if parentItemID == "" || len(receivers) == 0 {
-				parseErrors = append(parseErrors, fmt.Errorf("turn %s item %d: malformed spawn_agent history item", turn.ID, itemIndex))
-				continue
-			}
-			launchMeta := collabLaunchMeta{
-				Prompt:            readRawString(item, "prompt"),
-				Model:             readRawString(item, "model"),
-				ReasoningEffort:   readRawString(item, "reasoningEffort"),
-				ReceiverThreadIDs: append([]string(nil), receivers...),
-			}
-			for _, childThreadID := range receivers {
-				ownerships = append(ownerships, collabHistoryOwnership{
-					SourceThreadID: sourceThreadID,
-					ParentItemID:   parentItemID,
-					ChildThreadID:  strings.TrimSpace(childThreadID),
-					LaunchMeta:     launchMeta,
-				})
-			}
+			ownerships = append(ownerships, collabHistoryOwnership{
+				ParentItemID:  parentItemID,
+				ChildThreadID: childThreadID,
+				AgentPath:     childAgentPath,
+				LaunchMeta:    launchMeta,
+			})
 		}
 	}
 	return ownerships, errors.Join(parseErrors...)
-}
-
-func (s *Session) beginCollabHistoryGeneration() {
-	s.mu.Lock()
-	s.collabHistory.generation++
-	s.collabHistory.queue = nil
-	s.collabHistory.visited = make(map[string]uint64)
-	s.collabHistory.attempts = 0
-	s.mu.Unlock()
 }
 
 func (s *Session) enqueueCollabHistoryJob(job collabHistoryJob) {
@@ -163,11 +115,6 @@ func (s *Session) enqueueCollabHistoryJob(job collabHistoryJob) {
 	s.mu.Lock()
 	if job.Generation != s.collabHistory.generation {
 		s.mu.Unlock()
-		return
-	}
-	if len(s.collabHistory.queue) >= maxCollabHistoryThreads {
-		s.mu.Unlock()
-		s.warnCollabHistory("Codex collaboration history exceeded the safe traversal limit", nil)
 		return
 	}
 	s.collabHistory.queue = append(s.collabHistory.queue, job)
@@ -201,12 +148,6 @@ func (s *Session) runCollabHistoryQueue() {
 			s.mu.Unlock()
 			continue
 		}
-		if s.collabHistory.attempts >= maxCollabHistoryThreads {
-			s.mu.Unlock()
-			s.warnCollabHistory("Codex collaboration history exceeded the safe traversal limit", nil)
-			continue
-		}
-		s.collabHistory.attempts++
 		s.collabHistory.visited[childThreadID] = job.Generation
 		s.mu.Unlock()
 
@@ -216,21 +157,21 @@ func (s *Session) runCollabHistoryQueue() {
 				delete(s.collabHistory.visited, childThreadID)
 			}
 			s.mu.Unlock()
-			s.warnCollabHistory(fmt.Sprintf("Codex child history %s could not be inspected", childThreadID), err)
+			s.warnCollabHistory(fmt.Sprintf("Codex child recovery metadata %s could not be inspected", childThreadID), err)
 		}
 	}
 }
 
 func (s *Session) inspectCollabHistoryChild(job collabHistoryJob) error {
 	lifecycleRevision := s.childLifecycleRevisionForThread(job.Ownership.ChildThreadID)
-	resp, err := s.readCollabHistoryWithRetry(job.Ownership.ChildThreadID)
+	snapshot, err := s.readCollabHistoryWithRetry(job.Ownership.ChildThreadID)
 	if err != nil {
 		return err
 	}
 	if !s.collabHistoryGenerationCurrent(job.Generation) {
 		return nil
 	}
-	status, err := s.reconcileCollabHistoryTerminal(job, resp, lifecycleRevision)
+	status, err := s.reconcileCollabHistoryTerminal(job, snapshot, lifecycleRevision)
 	if err != nil {
 		return err
 	}
@@ -239,71 +180,45 @@ func (s *Session) inspectCollabHistoryChild(job collabHistoryJob) error {
 			return err
 		}
 	}
-	ownerships, parseErr := collabHistoryOwnerships(resp)
-	mapped := make([]string, 0, len(ownerships))
-	for _, ownership := range ownerships {
-		if !s.collabHistoryGenerationCurrent(job.Generation) {
-			return nil
-		}
-		if !s.registerHistoricalChildOwnership(ownership.SourceThreadID, ownership.ChildThreadID, ownership.AgentPath, ownership.ParentItemID) {
-			continue
-		}
-		s.scheduleCollabMetadataRead(ownership.ChildThreadID, ownership.ParentItemID, ownership.LaunchMeta)
-		mapped = append(mapped, ownership.ChildThreadID)
-		s.enqueueCollabHistoryJob(collabHistoryJob{Ownership: ownership, Generation: job.Generation})
-	}
-	s.drainDeferredChildWireEvents(mapped...)
-	if parseErr != nil {
-		s.warnCollabHistory(fmt.Sprintf("Codex child history %s could not be decoded completely", job.Ownership.ChildThreadID), parseErr)
-	}
 	return nil
+}
+
+type collabThreadSnapshot struct {
+	ThreadID         string
+	Status           string
+	LatestTurnStatus string
 }
 
 // reconcileCollabHistoryTerminal repairs a persisted spawn that missed its
 // child-scoped turn/completed notification while AO was disconnected. Active
 // children are deliberately excluded: their latest stored turn may be an older
 // completed turn while a newer turn is still running.
-func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, resp json.RawMessage, expectedLifecycleRevision uint64) (string, error) {
+func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, snapshot collabThreadSnapshot, expectedLifecycleRevision uint64) (string, error) {
 	providerThreadID := strings.TrimSpace(job.Ownership.ChildThreadID)
 	parentToolUseID := strings.TrimSpace(job.Ownership.ParentItemID)
 	if providerThreadID == "" || parentToolUseID == "" {
-		return "", errors.New("child terminal history job is missing ownership identifiers")
+		return "", errors.New("child recovery job is missing ownership identifiers")
 	}
-	var response struct {
-		Thread struct {
-			ID     string `json:"id"`
-			Status struct {
-				Type string `json:"type"`
-			} `json:"status"`
-			Turns []struct {
-				Status string `json:"status"`
-			} `json:"turns"`
-		} `json:"thread"`
-	}
-	if err := json.Unmarshal(resp, &response); err != nil {
-		return "", fmt.Errorf("decode child terminal history: %w", err)
-	}
-	responseThreadID := strings.TrimSpace(response.Thread.ID)
+	responseThreadID := strings.TrimSpace(snapshot.ThreadID)
 	if responseThreadID == "" || responseThreadID != providerThreadID {
-		return "", fmt.Errorf("child terminal history thread mismatch: got %q, want %q", responseThreadID, providerThreadID)
+		return "", fmt.Errorf("child recovery snapshot thread mismatch: got %q, want %q", responseThreadID, providerThreadID)
 	}
 	var status string
-	switch response.Thread.Status.Type {
+	switch snapshot.Status {
 	case "active":
-		return response.Thread.Status.Type, nil
+		return snapshot.Status, nil
 	case "systemError":
 		status = "errored"
 	case "idle", "notLoaded":
-		if len(response.Thread.Turns) == 0 {
-			return response.Thread.Status.Type, nil
+		if snapshot.LatestTurnStatus == "" {
+			return snapshot.Status, nil
 		}
-		latestTurn := response.Thread.Turns[len(response.Thread.Turns)-1]
-		status = codexSubagentStatusFromTurnStatus(latestTurn.Status)
+		status = codexSubagentStatusFromTurnStatus(snapshot.LatestTurnStatus)
 		if status == "" {
-			return response.Thread.Status.Type, nil
+			return snapshot.Status, nil
 		}
 	default:
-		return "", fmt.Errorf("child terminal history has unknown thread status %q", response.Thread.Status.Type)
+		return "", fmt.Errorf("child recovery snapshot has unknown thread status %q", snapshot.Status)
 	}
 	event := s.childStatusEvent(providerThreadID, parentToolUseID, status)
 	if event == nil {
@@ -311,27 +226,77 @@ func (s *Session) reconcileCollabHistoryTerminal(job collabHistoryJob, resp json
 	}
 
 	s.emitRecoveredChildStatus(providerThreadID, expectedLifecycleRevision, *event)
-	return response.Thread.Status.Type, nil
+	return snapshot.Status, nil
 }
 
-func (s *Session) readCollabHistoryWithRetry(providerThreadID string) (json.RawMessage, error) {
+func (s *Session) readCollabHistoryWithRetry(providerThreadID string) (collabThreadSnapshot, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 && !ctxutil.Sleep(s.ctx, time.Duration(attempt)*150*time.Millisecond) {
-			return nil, s.ctx.Err()
+			return collabThreadSnapshot{}, s.ctx.Err()
 		}
 		ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
-		resp, err := s.sendRequest(ctx, "thread/read", map[string]any{
-			"threadId":     providerThreadID,
-			"includeTurns": true,
-		})
+		snapshot, err := s.readCollabThreadSnapshot(ctx, providerThreadID)
 		cancel()
 		if err == nil {
-			return resp, nil
+			return snapshot, nil
 		}
 		lastErr = err
 	}
-	return nil, lastErr
+	return collabThreadSnapshot{}, lastErr
+}
+
+func (s *Session) readCollabThreadSnapshot(ctx context.Context, providerThreadID string) (collabThreadSnapshot, error) {
+	resp, err := s.sendRequest(ctx, "thread/read", map[string]any{
+		"threadId":     providerThreadID,
+		"includeTurns": false,
+	})
+	if err != nil {
+		return collabThreadSnapshot{}, err
+	}
+	var read struct {
+		Thread struct {
+			ID     string `json:"id"`
+			Status struct {
+				Type string `json:"type"`
+			} `json:"status"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(resp, &read); err != nil {
+		return collabThreadSnapshot{}, fmt.Errorf("decode child thread metadata: %w", err)
+	}
+	snapshot := collabThreadSnapshot{
+		ThreadID: strings.TrimSpace(read.Thread.ID),
+		Status:   strings.TrimSpace(read.Thread.Status.Type),
+	}
+	if snapshot.ThreadID == "" || snapshot.Status == "" {
+		return collabThreadSnapshot{}, errors.New("child thread metadata is missing id or status")
+	}
+	if snapshot.Status != "idle" && snapshot.Status != "notLoaded" {
+		return snapshot, nil
+	}
+
+	turnsResp, err := s.sendRequest(ctx, threadTurnsListMethod, map[string]any{
+		"threadId":      providerThreadID,
+		"limit":         1,
+		"sortDirection": "desc",
+		"itemsView":     "notLoaded",
+	})
+	if err != nil {
+		return collabThreadSnapshot{}, err
+	}
+	var turns struct {
+		Data []struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(turnsResp, &turns); err != nil {
+		return collabThreadSnapshot{}, fmt.Errorf("decode child latest turn: %w", err)
+	}
+	if len(turns.Data) > 0 {
+		snapshot.LatestTurnStatus = strings.TrimSpace(turns.Data[0].Status)
+	}
+	return snapshot, nil
 }
 
 func (s *Session) attachActiveChildWithRetry(providerThreadID string) error {
@@ -397,10 +362,10 @@ func (s *Session) warnCollabHistory(message string, err error) {
 	}
 	meta, marshalErr := json.Marshal(map[string]string{
 		"kind":  "warning",
-		"title": "Subagent history warning",
+		"title": "Subagent recovery warning",
 	})
 	if marshalErr != nil {
-		meta = json.RawMessage(`{"kind":"warning","title":"Subagent history warning"}`)
+		meta = json.RawMessage(`{"kind":"warning","title":"Subagent recovery warning"}`)
 	}
 	s.emitEvent(provider.ProviderEvent{
 		Kind:      provider.EventNotification,

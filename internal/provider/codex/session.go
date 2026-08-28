@@ -238,16 +238,16 @@ type sessionChildRoutingState struct {
 	warned bool
 }
 
-// sessionCollabHistoryState is the bounded, sequential descendant-history
-// traversal a resume runs to recover active children (collab_rehydrate.go).
-// Guarded by mu and zeroed by Close, which has already waited for the
-// traversal goroutines (collabAsyncWG) by the time it runs.
+// sessionCollabHistoryState is the sequential metadata recovery a resume runs
+// for unresolved children (collab_rehydrate.go). It has no arbitrary total
+// child limit: persisted ownership is non-recursive, while the single worker
+// bounds concurrent provider requests. Guarded by mu and zeroed by Close,
+// which has already waited for the recovery goroutines (collabAsyncWG).
 type sessionCollabHistoryState struct {
 	queue            []collabHistoryJob
 	running          bool
 	generation       uint64
 	visited          map[string]uint64
-	attempts         int
 	warnedGeneration uint64
 }
 
@@ -374,8 +374,8 @@ type Session struct {
 	// production Session leaves it at zero to use the default.
 	requestTimeoutOverride time.Duration
 	// collab is the child-thread identity map, childRouting the quarantine for
-	// child frames whose ownership has not arrived, collabHistory the resume
-	// traversal that recovers active children, and rawCalls the raw
+	// child frames whose ownership has not arrived, collabHistory the sequential
+	// resume recovery queue for unresolved children, and rawCalls the raw
 	// function-call tracking their enrichment reads.
 	collab        sessionCollabState
 	childRouting  sessionChildRoutingState
@@ -398,7 +398,7 @@ type Session struct {
 	collabMetadataReads    chan struct{}
 	// Collaboration metadata enrichment and reopen-history traversal run in
 	// session-scoped background work. collabAsyncMu closes the Add/Wait race;
-	// collabHistory above is guarded by mu and feeds one sequential traversal.
+	// collabHistory above is guarded by mu and feeds one sequential recovery.
 	// collabAsyncMu is a LEAF in the lock order above — the work it guards is
 	// handed to a goroutine, which enters the order on its own stack.
 	// collabAsyncClosing stays beside it for the same reason
@@ -584,6 +584,12 @@ type Config struct {
 	// of how the Config was built.
 	ApprovalsReviewer string
 	ResumeThreadID    string // thread ID to resume, empty for new
+	// ResumeCollabLaunches is the persisted AO projection of every unresolved
+	// Codex spawn-agent launch on the thread being resumed. A cold resume
+	// excludes thread.turns entirely, so provider-side child routing is rebuilt
+	// from these compact ownership records instead of asking Codex to serialize
+	// the transcript AO already has in SQLite. Ignored for a fresh thread/start.
+	ResumeCollabLaunches []ResumeCollabLaunch
 	// ResumeHasUnresolvedSubagents reports whether the thread being RESUMED
 	// still has Codex spawn-agent children whose answer has not reached the
 	// parent transcript. It arms the rollout tail
@@ -659,6 +665,14 @@ type Config struct {
 	// loop's reconcile goroutine, so it must be safe for concurrent use and
 	// must not block.
 	OwnsQueuedClientID func(clientUserMessageID string) bool
+}
+
+// ResumeCollabLaunch is the store-independent handoff for one persisted Codex
+// spawn card. Meta is the normalized item metadata AO persisted when the launch
+// arrived; the Codex adapter owns that schema and validates it during resume.
+type ResumeCollabLaunch struct {
+	ItemID string
+	Meta   json.RawMessage
 }
 
 // emitEvent preserves the provider callback's serialized-delivery contract

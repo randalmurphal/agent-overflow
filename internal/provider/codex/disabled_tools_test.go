@@ -176,6 +176,13 @@ func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
 			if got := config["web_search"]; got != "disabled" {
 				t.Errorf("%s config[web_search] = %v, want disabled", tc.method, got)
 			}
+			if tc.method == "thread/resume" {
+				if got := params["excludeTurns"]; got != true {
+					t.Errorf("thread/resume excludeTurns = %v, want true", got)
+				}
+			} else if _, present := params["excludeTurns"]; present {
+				t.Error("thread/start must not carry the resume-only excludeTurns field")
+			}
 		})
 	}
 }

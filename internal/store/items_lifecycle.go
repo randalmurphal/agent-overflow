@@ -442,6 +442,46 @@ func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, er
 	return items, rows.Err()
 }
 
+type CodexSubagentOwnership struct {
+	ItemID string
+	Meta   string
+}
+
+// ListIncompleteCodexSubagentOwnerships returns the compact persisted records
+// needed to recover every spawn whose answer has not reached the parent. Those
+// are exactly the children that can still emit useful work or whose terminal
+// state AO may have missed while offline. Receiver thread ids, canonical agent
+// paths, and launch profile metadata all live in meta, so this query never
+// joins or loads payload content.
+func (s *Store) ListIncompleteCodexSubagentOwnerships(threadID string) ([]CodexSubagentOwnership, error) {
+	rows, err := s.reader().Query(
+		`SELECT items.id, items.meta
+		   FROM items
+		  WHERE items.thread_id = ?
+		    AND items.kind = 'tool_call'
+		    AND items.tool_name = 'collab_agent'
+		    AND items.is_background = 1
+		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
+		    AND `+noCompletionSiblingSQL+`
+		  ORDER BY items.turn_index, items.item_index`,
+		threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list incomplete Codex subagent ownerships for thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	var items []CodexSubagentOwnership
+	for rows.Next() {
+		var item CodexSubagentOwnership
+		if err := rows.Scan(&item.ItemID, &item.Meta); err != nil {
+			return nil, fmt.Errorf("store: scan incomplete Codex subagent ownership row: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 // ListLiveCodexSubagentLaunches returns Codex spawn_agent cards whose child
 // threads are still active. The persisted spawn card is completed on the
 // upstream wire; callers that render a "live work" surface should project the

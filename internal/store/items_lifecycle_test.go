@@ -2397,6 +2397,66 @@ func TestUpsertItemWithPayloadAppendRollsBackOnMissingPayload(t *testing.T) {
 	}
 }
 
+func TestListIncompleteCodexSubagentOwnershipsIsCompactOrderedAndUnresolved(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if err := s.CreateThread(makeThread("other", "codex")); err != nil {
+		t.Fatalf("create other thread: %v", err)
+	}
+	seed := func(item Item) {
+		t.Helper()
+		item.Kind = "tool_call"
+		item.Role = "assistant"
+		item.Status = "completed"
+		item.ToolName = "collab_agent"
+		item.CreatedAt = 1000
+		item.UpdatedAt = 1000
+		if err := s.InsertItem(item); err != nil {
+			t.Fatalf("seed %s: %v", item.ID, err)
+		}
+	}
+
+	seed(Item{ID: "spawn-later", ThreadID: "t", TurnIndex: 1, ItemIndex: 0, IsBackground: true,
+		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-later"]}}`})
+	seed(Item{ID: "spawn-first", ThreadID: "t", TurnIndex: 0, ItemIndex: 3, IsBackground: true,
+		Meta: `{"input":{"tool":"spawnAgent","receiverThreadIds":["child-first"]}}`})
+	seed(Item{ID: "settled", ThreadID: "t", TurnIndex: 0, ItemIndex: 4, IsBackground: true,
+		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-settled"]}}`})
+	seed(Item{ID: "send-input", ThreadID: "t", TurnIndex: 0, ItemIndex: 5, IsBackground: true,
+		Meta: `{"input":{"tool":"send_input","receiverThreadIds":["child-first"]}}`})
+	seed(Item{ID: "foreground", ThreadID: "t", TurnIndex: 0, ItemIndex: 6,
+		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-foreground"]}}`})
+	seed(Item{ID: "other-thread", ThreadID: "other", TurnIndex: 0, ItemIndex: 0, IsBackground: true,
+		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-other"]}}`})
+	if err := s.InsertItem(Item{
+		ID:           "settled-answer",
+		ThreadID:     "t",
+		TurnIndex:    0,
+		ItemIndex:    7,
+		Kind:         "tool_completion",
+		Role:         "assistant",
+		Status:       "completed",
+		CompletionOf: "settled",
+		CreatedAt:    1001,
+		UpdatedAt:    1001,
+	}); err != nil {
+		t.Fatalf("seed settled answer: %v", err)
+	}
+
+	got, err := s.ListIncompleteCodexSubagentOwnerships("t")
+	if err != nil {
+		t.Fatalf("list ownerships: %v", err)
+	}
+	if len(got) != 2 || got[0].ItemID != "spawn-first" || got[1].ItemID != "spawn-later" {
+		t.Fatalf("ownerships = %+v, want unresolved launches in transcript order", got)
+	}
+	if got[0].Meta != `{"input":{"tool":"spawnAgent","receiverThreadIds":["child-first"]}}` {
+		t.Fatalf("first metadata = %s", got[0].Meta)
+	}
+}
+
 // TestCompletionSiblingProbesUseIndex is the guard behind the named SQL
 // fragments in items_lifecycle.go. The completion-sibling probe carries a
 // semantically redundant `c.completion_of <> ”` term for one reason: SQLite
@@ -2471,6 +2531,20 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			    AND items.kind = 'tool_call'
 			    AND items.status = 'running'
 			    AND items.is_background = 1
+			    AND ` + noCompletionSiblingSQL + `
+			  ORDER BY items.turn_index, items.item_index`,
+			args: []any{"thread-plan"},
+		},
+		{
+			// ListIncompleteCodexSubagentOwnerships.
+			name: "compact ownership list",
+			query: `SELECT items.id, items.meta
+			   FROM items
+			  WHERE items.thread_id = ?
+			    AND items.kind = 'tool_call'
+			    AND items.tool_name = 'collab_agent'
+			    AND items.is_background = 1
+			    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
 			    AND ` + noCompletionSiblingSQL + `
 			  ORDER BY items.turn_index, items.item_index`,
 			args: []any{"thread-plan"},

@@ -3,8 +3,12 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/provider"
 )
 
 // TestDecodeProbeResponseKnownStatuses covers the four known
@@ -92,6 +96,63 @@ func TestResumeRejectsEmptyThreadID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no thread id") {
 		t.Fatalf("Resume error = %v, want 'no thread id'", err)
+	}
+}
+
+func TestEveryResumeExcludesTranscriptTurns(t *testing.T) {
+	dir := t.TempDir()
+	requestLog := filepath.Join(dir, "requests.jsonl")
+	binary := codexReviewerEchoScript(
+		t,
+		requestLog,
+		`{\"thread\":{\"id\":\"root-thread\",\"turns\":[]},\"approvalsReviewer\":\"user\"}`,
+	)
+	sess, err := NewSession(context.Background(), "ao-thread", Config{
+		Binary:         binary,
+		ResumeThreadID: "root-thread",
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	sess.mu.Lock()
+	recoveryGeneration := sess.collabHistory.generation
+	sess.mu.Unlock()
+	if err := sess.Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	sess.mu.Lock()
+	if sess.collabHistory.generation != recoveryGeneration {
+		t.Errorf("mid-life resume replaced in-flight collaboration recovery generation %d with %d",
+			recoveryGeneration, sess.collabHistory.generation)
+	}
+	sess.mu.Unlock()
+
+	captured, err := os.ReadFile(requestLog)
+	if err != nil {
+		t.Fatalf("read request log: %v", err)
+	}
+	resumeCount := 0
+	for _, line := range strings.Split(string(captured), "\n") {
+		if !strings.Contains(line, `"method":"thread/resume"`) {
+			continue
+		}
+		resumeCount++
+		var request struct {
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(line), &request); err != nil {
+			t.Fatalf("decode resume request: %v", err)
+		}
+		if got := request.Params["excludeTurns"]; got != true {
+			t.Errorf("resume %d excludeTurns = %v, want true", resumeCount, got)
+		}
+		if _, present := request.Params["initialTurnsPage"]; present {
+			t.Errorf("resume %d unexpectedly requested an initial turns page", resumeCount)
+		}
+	}
+	if resumeCount != 2 {
+		t.Fatalf("resume requests = %d, want cold and mid-life requests", resumeCount)
 	}
 }
 

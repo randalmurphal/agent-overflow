@@ -172,6 +172,13 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 	if cfg.ResumeThreadID != "" {
 		method = "thread/resume"
 		threadParams["threadId"] = cfg.ResumeThreadID
+		// AO owns its rendered history in SQLite. Returning thread.turns here
+		// makes a cold resume one unbounded NDJSON frame and duplicates content
+		// the app already has; one long-running turn can therefore exceed the
+		// provider line safety limit by itself. Codex has supported this field
+		// throughout AO's supported range (0.143+), for legacy and paginated
+		// histories alike.
+		threadParams["excludeTurns"] = true
 	} else {
 		method = "thread/start"
 		threadParams["experimentalRawEvents"] = true
@@ -235,7 +242,7 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 		// spawn can arm the tail from this moment on and needs the path in
 		// place. Recording is not arming — see sessionRolloutTailState.
 		s.prepareRolloutSubagentNotificationTail(readNestedString(resp, "thread", "path"))
-		s.rehydrateCollabOwnershipFromThreadResponse(resp)
+		s.rehydrateCollabOwnership(cfg.ResumeCollabLaunches)
 		if cfg.ResumeHasUnresolvedSubagents {
 			// The app layer found spawn launches on this thread that are still
 			// waiting for their answer, so the mailbox delivery this session
