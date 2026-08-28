@@ -105,9 +105,10 @@ cp -f "$DIR"/*.mjs "$OUT_WSL/" || exit 1
 cp -f "$DIR"/lib/*.mjs "$OUT_WSL/lib/" || exit 1
 
 cd "$OUT_WSL" || exit 1
-WSLENV="${WSLENV:+$WSLENV:}AO_CDP_PORT:AO_PERFPROBE_OUT" \
+WSLENV="${WSLENV:+$WSLENV:}AO_CDP_PORT:AO_PERFPROBE_OUT:AO_ALLOC_INTERVAL" \
 AO_CDP_PORT="$PORT" \
 AO_PERFPROBE_OUT="$OUT_WIN" \
+AO_ALLOC_INTERVAL="${AO_ALLOC_INTERVAL:-}" \
   "$NODE_EXE" "$name.mjs" "$@"
 rc=$?
 echo "probe: out dir $OUT_WIN  ->  $OUT_WSL"

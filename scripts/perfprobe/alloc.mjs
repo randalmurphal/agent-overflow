@@ -13,9 +13,13 @@ import { createFrameResolver } from './lib/sourcemap.mjs';
 import { writeFileSync } from 'node:fs';
 
 const SECS = +(process.argv[2] || 60);
+// Under heavy churn (tens of MB/min) the default 16KB interval makes the
+// stopSampling response frame big enough that WebView2's CDP socket drops
+// the connection mid-reply. Raise via AO_ALLOC_INTERVAL for those runs.
+const INTERVAL = +(process.env.AO_ALLOC_INTERVAL || 16384);
 const c = await connectPage();
 await c.send('HeapProfiler.enable');
-await c.send('HeapProfiler.startSampling', { samplingInterval: 16384, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+await c.send('HeapProfiler.startSampling', { samplingInterval: INTERVAL, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
 await sleep(SECS * 1000);
 const { profile } = await c.send('HeapProfiler.stopSampling');
 c.close();
