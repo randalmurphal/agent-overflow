@@ -312,9 +312,12 @@ headless, isolated data dir, mocked providers. Full harness guide:
 ## Running
 
 `make e2e` builds `bin/agent-overflow`, `bin/ao-mockprovider`, and the fixed
-purpose `bin/ao-harness-e2e` launcher. The launcher runs `pnpm exec
-playwright test` with one process-tree memory boundary and host-floor
-watchdog. The complete two-worker gate reserves 6 GiB. Running `pnpm test`
+purpose `bin/ao-harness-e2e` launcher. The launcher typechecks the suite
+first (`tsc --noEmit` over src/, tests/, scripts/, and both configs —
+Playwright and the flow runner only STRIP types, so a typo'd property in a
+helper's predicate would otherwise pass an emptiness assertion vacuously),
+then runs `pnpm exec playwright test` with one process-tree memory boundary
+and host-floor watchdog. The complete two-worker gate reserves 6 GiB. Running `pnpm test`
 here uses the same launcher through `go run`.
 Override the backend binary with `AO_HARNESS_BIN`. Chromium comes from the
 Playwright cache (`pnpm exec playwright install chromium` on a fresh machine).

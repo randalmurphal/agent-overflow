@@ -68,6 +68,28 @@ func run(args []string, stdout, stderr *os.File) int {
 		return 1
 	}
 
+	// Playwright (and the flow runner's node --experimental-transform-types)
+	// STRIP types per file, never check them: a typo'd property inside a spec
+	// helper's filter or predicate does not throw at runtime — it yields
+	// undefined and lets an emptiness assertion pass vacuously. Typecheck the
+	// whole suite first, before the memory reservation, so a type error fails
+	// in seconds without holding the gate's reservation. Fixed argv, same
+	// doctrine as the contained command; tsc's footprint does not need the
+	// suite's containment any more than the `go run` hosting this launcher.
+	typecheck := exec.Command("pnpm", "exec", "tsc", "--noEmit", "-p", ".")
+	typecheck.Dir = testDir
+	typecheck.Stdout = stdout
+	typecheck.Stderr = stderr
+	if err := typecheck.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			fmt.Fprintln(stderr, "ao-harness-e2e: E2E TypeScript check failed; fix the errors above")
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintln(stderr, "ao-harness-e2e: run E2E TypeScript check:", err)
+		return 1
+	}
+
 	group, enforcement, err := containment.PrepareWithFallback(limit)
 	if err != nil {
 		fmt.Fprintln(stderr, "ao-harness-e2e: install memory containment:", err)
