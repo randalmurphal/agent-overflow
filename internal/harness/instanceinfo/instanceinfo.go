@@ -25,7 +25,7 @@ import (
 	"agent-overflow/internal/atomicfile"
 )
 
-// Mode names what a row describes. All three shapes boot through
+// Mode names what a row describes. All shapes boot through
 // prepareHarness and differ only in shell and preset:
 //
 //   - ModeHarness is an isolated mocked instance nobody is driving yet —
@@ -35,6 +35,9 @@ import (
 //   - ModeSoak is that instance with the soak autopilot armed
 //     (docs/architecture/soak-rig.md): seeded threads and a live turn
 //     streaming forever.
+//   - ModePerf is the launcher-hosted harness reserved for destructive
+//     renderer benchmarks. It drives nothing by itself and owns a data root
+//     and browser profile no other harness uses.
 //
 // So "soak" on a row means the autopilot is running, never merely that
 // the backend was spawned by the launcher.
@@ -43,6 +46,7 @@ type Mode string
 const (
 	ModeHarness Mode = "harness"
 	ModeSoak    Mode = "soak"
+	ModePerf    Mode = "perf"
 )
 
 // InstanceFileName is the per-instance file inside the data DIR (not

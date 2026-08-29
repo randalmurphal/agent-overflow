@@ -488,9 +488,28 @@ comment drafts. Inline diff affordances should route there through
 ## Markdown Rendering
 
 `ChatMarkdown.svelte` mounts `svelte-streamdown`, with host wrappers under
-`components/chat/markdown/` for Code, Mermaid, and Math. Those wrappers
-stamp original source on `data-code-source`, `data-mermaid-source`, and
-`data-math-source` so markdown copy and diagram actions keep working.
+`components/chat/markdown/` for Code, Mermaid, and Math. Mermaid and Math
+stamp original source on `data-mermaid-source` and `data-math-source` so
+markdown copy and diagram actions keep working. Code uses a source-free
+`data-code-source=""` marker. Its `<code>.textContent` and Copy button own the
+source, so the host does not retain a second full copy in a DOM attribute.
+Streaming code lines and the content-addressed highlight identity extend only
+from an opaque append proof. Never recover the source from the marker.
+Completed code first asks the span cache for an exact synchronous result. A hit
+lets Streamdown's compact block owner emit the final code DOM without mounting
+the code component. A miss mounts `StreamdownCodeHost`, keeps its async settle
+gate, then lets the owner retry and unmount it after the result becomes
+cacheable. The static Copy button is handled by one document delegate and reads
+`<code>.textContent`; do not put the source back into an attribute or per-block
+listener.
+
+The direct assistant prose sink keeps parser-owned text separate from bounded
+sink-owned Text nodes. It may cut only at `Intl.Segmenter` word boundaries.
+Code-point boundaries are insufficient because Blink can shape adjacent Text
+nodes as separate runs, exposing a detached combining mark, broken emoji join,
+or cursive-script seam while `textContent` remains correct. Ordinary appends
+that fit the active node bypass segmentation; a single long shaping run may
+exceed the nominal node size rather than render incorrectly.
 
 Diagram palettes come from `markdown/mermaidTokens.ts` — mermaid runs as
 `theme: 'base'` with `themeVariables` resolved from the app's own tokens

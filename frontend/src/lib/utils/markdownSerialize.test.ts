@@ -332,6 +332,24 @@ describe('serializeRangeToMarkdown — code blocks', () => {
     );
   });
 
+  it('reads the info string from the production source-free code host', () => {
+    const host = asMarkdownBody(
+      '<div data-code-source="" data-code-lang="typescript title=demo">' +
+        '<div><pre><code>const x = 1;</code></pre></div>' +
+      '</div>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe(
+      '```typescript title=demo\nconst x = 1;\n```',
+    );
+  });
+
+  it('does not trust structural bytes in a foreign code-host info string', () => {
+    const host = asMarkdownBody(
+      '<div data-code-lang="bad&#10;```"><pre><code class="language-ts">x</code></pre></div>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe('```ts\nx\n```');
+  });
+
   it('omits language when the class is missing', () => {
     const host = asMarkdownBody('<pre><code>raw\ntext</code></pre>');
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('```\nraw\ntext\n```');

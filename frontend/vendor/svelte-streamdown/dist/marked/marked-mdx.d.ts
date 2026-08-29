@@ -10,3 +10,11 @@ export type MdxToken = {
     text?: string;
 };
 export declare const markedMdx: Extension;
+export declare const markedMdxBlock: Extension;
+export declare const parseMdxSource: (src: string) => {
+    raw: string;
+    tagName: string;
+    attributeString: string;
+    selfClosing: boolean;
+    content: string;
+} | undefined;

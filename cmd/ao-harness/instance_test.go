@@ -2,11 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/coder/websocket"
 
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
@@ -84,6 +90,30 @@ func exitCodeOf(t *testing.T, err error) int {
 func testEnv(registryDir string) (*env, *bytes.Buffer, *bytes.Buffer) {
 	var stdout, stderr bytes.Buffer
 	return &env{stdout: &stdout, stderr: &stderr, format: "text", registryDir: registryDir}, &stdout, &stderr
+}
+
+func startAttachableBackend(t *testing.T, token string) int {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != token {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server.Listener.Addr().(*net.TCPAddr).Port
 }
 
 func TestResolveTargetPrefersTheNamedInstanceID(t *testing.T) {
@@ -173,6 +203,30 @@ func TestResolveTargetFallsBackToThisWorktreesDefault(t *testing.T) {
 	}
 	if got.DataRoot != instanceinfo.DefaultDataRoot() {
 		t.Fatalf("dataRoot = %s, want the worktree default %s", got.DataRoot, instanceinfo.DefaultDataRoot())
+	}
+}
+
+func TestAttachAcceptsAuthenticatedBackendAcrossPIDNamespace(t *testing.T) {
+	const token = "t"
+	root := t.TempDir()
+	port := startAttachableBackend(t, token)
+	writeInstanceFile(t, root, deadPID(t), func(bs *harnessclient.Bootstrap) {
+		bs.Port = port
+		bs.Token = token
+	})
+
+	e, _, _ := testEnv(t.TempDir())
+	e.instance = root
+	client, target, bs, err := e.attach(context.Background())
+	if err != nil {
+		t.Fatalf("attach across PID namespace: %v", err)
+	}
+	defer client.Close()
+	if target.ID != instanceinfo.ID(root) {
+		t.Fatalf("target id = %s, want %s", target.ID, instanceinfo.ID(root))
+	}
+	if bs.PID == os.Getpid() || instanceinfo.ProcessAlive(bs.PID) {
+		t.Fatalf("test bootstrap pid %d unexpectedly resolves in this namespace", bs.PID)
 	}
 }
 

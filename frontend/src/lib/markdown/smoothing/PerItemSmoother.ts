@@ -33,21 +33,25 @@
 // Pure TypeScript — no Svelte coupling. Consumers wire `onReveal` to
 // whatever store update they need.
 
+import { createAnimationFrameBatcher } from '../../utils/animationFrameBatcher';
+
 export interface SmoothingClock {
   now(): number;
   schedule(cb: () => void): number;
   cancel(handle: number): void;
 }
 
+const revealFrameBatcher = createAnimationFrameBatcher('streaming-reveal');
+
 const defaultClock: SmoothingClock = {
   now() {
     return performance.now();
   },
   schedule(cb) {
-    return requestAnimationFrame(cb);
+    return revealFrameBatcher.request(cb);
   },
   cancel(handle) {
-    cancelAnimationFrame(handle);
+    revealFrameBatcher.cancel(handle);
   },
 };
 
@@ -201,6 +205,10 @@ export class PerItemSmoother {
 
   private lastTickAt: number;
   private rafHandle: number | null = null;
+  private readonly runScheduledTick = (): void => {
+    this.rafHandle = null;
+    this.tick();
+  };
   private disposed = false;
   // Fractional character budget accumulates across ticks so a slow
   // tick (low rAF rate) still averages out to ~rate chars per second.
@@ -479,10 +487,7 @@ export class PerItemSmoother {
     if (this.paused) return;
     if (this.rafHandle != null) return;
     if (this.isCaughtUp()) return;
-    this.rafHandle = this.clock.schedule(() => {
-      this.rafHandle = null;
-      this.tick();
-    });
+    this.rafHandle = this.clock.schedule(this.runScheduledTick);
   }
 
   private tick(): void {

@@ -462,6 +462,14 @@ export interface UseStickToBottomOptions {
    */
   externalContentGeometry?: boolean;
   /**
+   * Runs after each content-geometry delivery has updated scroll ownership
+   * and applied any resulting position write. Use this to feed secondary
+   * geometry consumers without attaching another ResizeObserver to the same
+   * content subtree. The callback is imperative and does not imply a Svelte
+   * subscription.
+   */
+  onContentGeometryProcessed?: (scrollable: boolean) => void;
+  /**
    * Every chokepoint write, reported with the browser-rounded readback
    * the scroll event will carry. Chat's MessageTimeline forwards it to
    * the virtualizer (`TimelineVirtualizerHandle.noteScrollTopWritten`)

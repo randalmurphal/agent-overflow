@@ -73,9 +73,9 @@ class FireableResizeObserver {
 }
 
 // The controller's contentRO is the one observing the scroller's content
-// host (its first child). Identity, not elimination: the surface also
-// mounts an OverlayScrollbar whose RO observes the scroller itself, so
-// "any RO that isn't the composer's" no longer names one observer.
+// host (its first child). Identity, not elimination: ChannelView also owns
+// the composer-section observer, and both feed the observer-free shared
+// OverlayScrollbar through the content-geometry notifier.
 function findContentRO(scroll: HTMLElement): FireableResizeObserver {
   const contentHost = scroll.firstElementChild;
   const ro = FireableResizeObserver.instances.find(
@@ -768,7 +768,8 @@ describe('<ChannelView>', () => {
     await settleInitialLoad();
 
     // Two ROs are installed: the controller's contentEl RO and
-    // ChannelView's composer-section RO. Identify the composer RO by
+    // ChannelView's composer-section RO. The shared scrollbar observes
+    // neither ancestor. Identify the composer RO by
     // its testid'd target so a future style refactor (border-t →
     // something else) doesn't silently misroute the lookup.
     const composerSection = getByTestId('channel-composer-section');
@@ -776,6 +777,7 @@ describe('<ChannelView>', () => {
       (r) => r.observed[0] === composerSection,
     );
     if (!composerRO) throw new Error('expected ChannelView to install a composer RO');
+    expect(composerRO.observed).toContain(scroll);
     const composerEl = composerRO.observed[0] as HTMLElement;
 
     // Seed: user is sticky + at-bottom. Fire the content RO once so
@@ -786,6 +788,17 @@ describe('<ChannelView>', () => {
     await fireEvent.scroll(scroll);
     await vi.advanceTimersByTimeAsync(16);
     for (let i = 0; i < 3; i++) await Promise.resolve();
+
+    // Make the scrollbar active so owner geometry deliveries sample it.
+    // Hidden bars intentionally skip later samples until interaction.
+    const scrollbar = getByTestId('overlay-scrollbar');
+    Object.defineProperty(scrollbar, 'clientHeight', {
+      configurable: true,
+      get: () => 100,
+    });
+    await fireEvent.pointerEnter(scrollbar);
+    await tick();
+    expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('60px');
 
     // Now simulate the concluded toggle shrinking the composer (the
     // <p> "Discussion has concluded" line is shorter than the
@@ -803,7 +816,20 @@ describe('<ChannelView>', () => {
     for (let i = 0; i < 3; i++) await Promise.resolve();
 
     // New target = 1000 - 640 = 360. Controller wrote scrollTop to
-    // this value via the notify path.
+    // this value via the notify path. The same owner delivery refreshes
+    // the active overlay thumb from 60% to 64% without another RO.
     expect(scroll.scrollTop).toBe(360);
+    await tick();
+    expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('64px');
+
+    // A pane-height change has no composer or content delivery. The same
+    // owner observer watches the viewport directly, so both the pin and the
+    // thumb still update without restoring an observer inside the scrollbar.
+    clientHeightValue = 680;
+    composerRO.fire(scroll, 680);
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+    expect(scroll.scrollTop).toBe(320);
+    await tick();
+    expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('68px');
   });
 });

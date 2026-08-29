@@ -1206,6 +1206,88 @@ describe('createThreadPane', () => {
     expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeCacheRestore);
   });
 
+  it('keeps the incoming thread, cached window, and cursors paired when post-commit bookkeeping fails', async () => {
+    const pane = createThreadPane();
+    setBindingMock('ListThreadSliceAround', async (threadId: unknown) => {
+      const id = String(threadId);
+      return {
+        items: [
+          makeItem({
+            id: `${id}-row`,
+            threadId: id,
+            turnIndex: id === 'cached' ? 7 : 2,
+            itemIndex: 0,
+          }),
+        ],
+        oldestTurnIndex: id === 'cached' ? 7 : 2,
+        newestTurnIndex: id === 'cached' ? 7 : 2,
+        hasMore: id === 'cached',
+        hasMoreOlder: id === 'cached',
+        hasMoreNewer: false,
+      };
+    });
+    await pane.switchThread(makeThread({ id: 'cached' }));
+    await pane.switchThread(makeThread({ id: 'other' }));
+    vi.spyOn(pane.activityRuns, 'noteWholesaleReplace')
+      .mockImplementationOnce(() => {
+        throw new Error('activity replacement bookkeeping failed');
+      });
+
+    await expect(
+      pane.switchThread(makeThread({ id: 'cached' })),
+    ).rejects.toThrow('timeline window replacement finalization failed');
+
+    expect(pane.threadId).toBe('cached');
+    expect(pane.items.map((item) => item.id)).toEqual(['cached-row']);
+    expect(pane.oldestLoadedTurnIndex).toBe(7);
+    expect(pane.newestLoadedTurnIndex).toBe(7);
+    expect(pane.hasMoreHistory).toBe(true);
+    expect(pane.hasMoreNewer).toBe(false);
+    expect(pane.loading).toBe(false);
+  });
+
+  it('resets the window and cursor metadata together when a synced page reports a post-commit failure', async () => {
+    const pane = createThreadPane();
+    setBindingMock('ListThreadSliceAround', async () => ({
+      items: [
+        makeItem({
+          id: 'loaded-row',
+          threadId: 't',
+          turnIndex: 4,
+          itemIndex: 0,
+        }),
+      ],
+      oldestTurnIndex: 4,
+      newestTurnIndex: 4,
+      hasMore: true,
+      hasMoreOlder: true,
+      hasMoreNewer: false,
+    }));
+    let replacements = 0;
+    vi.spyOn(pane.activityRuns, 'noteWholesaleReplace').mockImplementation(
+      () => {
+        replacements += 1;
+        if (replacements === 2) {
+          throw new Error('synced page bookkeeping failed');
+        }
+      },
+    );
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await pane.switchThread(makeThread({ id: 't' }));
+
+    expect(replacements).toBe(3);
+    expect(pane.items).toEqual([]);
+    expect(pane.oldestLoadedTurnIndex).toBeNull();
+    expect(pane.newestLoadedTurnIndex).toBeNull();
+    expect(pane.hasMoreHistory).toBe(false);
+    expect(pane.hasMoreNewer).toBe(false);
+    expect(pane.paneErrorList.map((error) => error.kind)).toContain(
+      'history-load',
+    );
+    consoleError.mockRestore();
+  });
+
   it('collapses same-batch wait-row enrichment into one final row', () => {
     const pane = createThreadPane();
 
@@ -1552,39 +1634,55 @@ describe('createThreadPane', () => {
     );
   });
 
-  it('replaces the streaming row on completion upsert', async () => {
-    const pane = createThreadPane();
-    pane.upsertItem(
-      makeItem({
-        id: 'text:0:0',
+  it('drains a completion upsert through the existing streaming cursor', async () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    try {
+      const pane = createThreadPane();
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          kind: 'assistant_text',
+          status: 'streaming',
+          summary: 'hello',
+        }),
+      );
+      pane.applyItemDelta({
+        threadId: 'thread-1',
+        itemId: 'text:0:0',
         kind: 'assistant_text',
-        status: 'streaming',
-        summary: 'hello',
-      }),
-    );
-    pane.applyItemDelta({
-      threadId: 'thread-1',
-      itemId: 'text:0:0',
-      kind: 'assistant_text',
-      delta: ' world',
-      updatedAt: 123,
-    });
-    // The streaming-delta path goes through the smoother and the row's
-    // summary catches up on rAF. The completion upsert below carries
-    // the authoritative final summary, so the visible result snaps
-    // through it regardless of how much the smoother had revealed.
-    pane.upsertItem(
-      makeItem({
-        id: 'text:0:0',
-        kind: 'assistant_text',
-        status: 'completed',
-        summary: 'hello world',
-      }),
-    );
+        delta: ' world',
+        updatedAt: 123,
+      });
+      pane.upsertItem(
+        makeItem({
+          id: 'text:0:0',
+          kind: 'assistant_text',
+          status: 'completed',
+          summary: 'hello world',
+        }),
+      );
 
-    expect(pane.items.find((item) => item.id === 'text:0:0')?.summary).toBe(
-      'hello world',
-    );
+      const current = () =>
+        pane.items.find((item) => item.id === 'text:0:0');
+      expect(current()?.status).toBe('completed');
+      expect(current()?.summary).toBe('hello');
+      expect(pane.isItemSmoothing('text:0:0')).toBe(true);
+
+      let framesRemaining = 20;
+      while (
+        pane.isItemSmoothing('text:0:0') &&
+        framesRemaining-- > 0
+      ) {
+        clock.tickFrame(16);
+      }
+
+      expect(framesRemaining).toBeGreaterThan(0);
+      expect(current()?.summary).toBe('hello world');
+      expect(pane.isItemSmoothing('text:0:0')).toBe(false);
+    } finally {
+      __setSmoothingClockForTest(undefined);
+    }
   });
 
   it('ignores stale deltas for an item that already settled', async () => {
@@ -2464,6 +2562,39 @@ describe('createThreadPane', () => {
         insertedBeforeWindow: true,
         insertedRows: true,
       });
+    });
+
+    it('keeps paging cursors paired with a window committed before bookkeeping fails', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 't5', threadId: 't', turnIndex: 5, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      setBindingMock('ListItemsBeforeCursor', async () => ({
+        items: [
+          makeItem({ id: 't3', threadId: 't', turnIndex: 3, itemIndex: 0 }),
+          makeItem({ id: 't4', threadId: 't', turnIndex: 4, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 3,
+        hasMore: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      vi.spyOn(pane.activityRuns, 'noteWholesaleReplace').mockImplementation(() => {
+        throw new Error('activity replacement bookkeeping failed');
+      });
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = await pane.loadOlder();
+
+      expect(result.status).toBe('error');
+      expect(pane.items.map((item) => item.id)).toEqual(['t3', 't4', 't5']);
+      expect(pane.oldestLoadedTurnIndex).toBe(3);
+      expect(pane.newestLoadedTurnIndex).toBe(5);
+      expect(pane.hasMoreHistory).toBe(false);
+      consoleError.mockRestore();
     });
 
     it('loadOlder is a no-op when hasMoreHistory is false', async () => {
@@ -6796,7 +6927,10 @@ describe('createThreadPane', () => {
           clock.tickFrame(16);
         }
         // Drain remaining lag.
-        while (clock.pendingCount() > 0) clock.tickFrame(16);
+        for (let frame = 0; clock.pendingCount() > 0 && frame < 100; frame++) {
+          clock.tickFrame(16);
+        }
+        expect(clock.pendingCount()).toBe(0);
 
         const finalTail = pane.liveThinkingTailForItem('think:0:0');
         // Smoother is still live (status === 'streaming') so the live
@@ -7514,6 +7648,60 @@ describe('createThreadPane', () => {
       }
     });
 
+    it('drains a same-stream reasoning tail through a terminal upsert', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'thread-upsert-drain' }));
+        const item = makeItem({
+          id: 'think:0:0',
+          threadId: 'thread-upsert-drain',
+          kind: 'thinking',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          payloadId: 'thinking:think:0:0',
+          updatedAt: 1,
+        });
+        pane.upsertItem(item);
+        const fullText = Array.from(
+          { length: 120 },
+          (_, index) => `reason${String(index).padStart(3, '0')} `,
+        ).join('');
+        pane.applyItemDelta({
+          threadId: item.threadId,
+          itemId: item.id,
+          kind: item.kind,
+          delta: fullText,
+          updatedAt: 2,
+        });
+        for (let frame = 0; frame < 4; frame++) clock.tickFrame(16);
+        const visibleAtCompletion = pane.items[0].summary;
+        expect(visibleAtCompletion.length).toBeGreaterThan(0);
+        expect(visibleAtCompletion.length).toBeLessThan(fullText.length);
+
+        pane.upsertItem({
+          ...pane.items[0],
+          status: 'completed',
+          summary: fullText.slice(-400),
+          updatedAt: 3,
+        });
+
+        expect(pane.items[0].status).toBe('completed');
+        expect(pane.items[0].summary).toBe(visibleAtCompletion);
+        expect(pane.isItemSmoothing(item.id)).toBe(true);
+        let safety = 1_000;
+        while (pane.isItemSmoothing(item.id) && safety-- > 0) {
+          clock.tickFrame(16);
+        }
+        expect(safety).toBeGreaterThan(0);
+        expect(pane.items[0].summary).toBe(fullText.slice(-400));
+        expect(pane.liveThinkingTailForItem(item.id)).toBe(fullText);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
     it('drops the tail when a mid-drain smoother is replaced by a terminal upsert', async () => {
       // A mid-drain smoother's tail is partial — it can never match a
       // terminal summary, so the reconcile disposes rather than retains.
@@ -7782,7 +7970,10 @@ describe('createThreadPane', () => {
           updatedAt: 3,
         });
         expect(pane.items[0].summary).toBe(big); // not revealed until a tick
-        while (clock.pendingCount() > 0) clock.tickFrame(16);
+        for (let frame = 0; clock.pendingCount() > 0 && frame < 100; frame++) {
+          clock.tickFrame(16);
+        }
+        expect(clock.pendingCount()).toBe(0);
         expect(pane.items[0].summary).toBe(`${big} more`);
       } finally {
         __setSmoothingClockForTest(undefined);
@@ -7911,6 +8102,150 @@ describe('createThreadPane', () => {
     it('starts with no gate', async () => {
       const pane = await buildPane(makeThread({ id: 't' }));
       expect(pane.revealBoundary).toBeNull();
+    });
+
+    it('synchronizes the gate after an upsert bookkeeping failure', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        const streaming = streamingThinking('think:0:0', 0, 't');
+        pane.upsertItem(streaming);
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: streaming.id,
+          kind: 'thinking',
+          delta: 'word '.repeat(40),
+          updatedAt: 2,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+        const bookkeepingFailure = new Error('activity summary bookkeeping failed');
+        vi.spyOn(pane.activityRuns, 'noteMemberContentChanged').mockImplementation(() => {
+          throw bookkeepingFailure;
+        });
+
+        expect(() =>
+          pane.upsertItem({
+            ...streaming,
+            status: 'killed',
+            updatedAt: 3,
+          }),
+        ).toThrowError(
+          expect.objectContaining({
+            message: 'timeline item upsert finalization failed',
+            errors: expect.arrayContaining([bookkeepingFailure]),
+          }),
+        );
+
+        // The row commit cannot be rolled back, so every post-commit domain
+        // leg still runs before the error escapes. In particular, terminal
+        // reconciliation disposes the smoother and derives the boundary from
+        // the installed window rather than leaving a stale gate behind.
+        expect(pane.items[0].status).toBe('killed');
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.revealBoundary).toBeNull();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('repairs the old-window gate when replacement preparation fails', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        const streaming = makeItem({
+          id: 'text:0:0',
+          threadId: 't',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          turnIndex: 0,
+          itemIndex: 0,
+          summary: '',
+          updatedAt: 1,
+        });
+        pane.upsertItem(streaming);
+        const reset = vi.fn();
+        const unregister = pane.registerAssistantRevealSink(streaming.id, {
+          canAppendLiteral: () => true,
+          appendLiteral: () => {},
+          restoreLiteral: () => true,
+          reset,
+        });
+        try {
+          pane.applyItemDelta({
+            threadId: 't',
+            itemId: streaming.id,
+            kind: streaming.kind,
+            delta: 'word '.repeat(40),
+            updatedAt: 2,
+          });
+          expect(pane.revealBoundary).toEqual({ turnIndex: 0, itemIndex: 0 });
+          expect(pane.__itemSmootherCountForTest()).toBe(1);
+
+          reset.mockImplementationOnce(() => {
+            throw new Error('replacement sink reset failed');
+          });
+
+          expect(() =>
+            pane.upsertItem({
+              ...streaming,
+              status: 'killed',
+              updatedAt: 3,
+            }),
+          ).toThrow('streaming reveal smoother disposal failed');
+
+          // Preparation runs before the row commit, so the terminal echo is
+          // rejected. Its failed reset still disposed the smoother. The gate
+          // must describe that old streaming window rather than the rejected
+          // incoming row and therefore clears with its removed owner.
+          expect(pane.items[0].status).toBe('streaming');
+          expect(pane.__itemSmootherCountForTest()).toBe(0);
+          expect(pane.revealBoundary).toBeNull();
+          expect(reset).toHaveBeenCalledTimes(1);
+        } finally {
+          unregister();
+        }
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps the row and row signal paired after in-place bookkeeping fails', async () => {
+      const pane = await buildPane(makeThread({ id: 't' }));
+      const item = makeItem({
+        id: 'text:0:0',
+        threadId: 't',
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'before',
+      });
+      pane.upsertItem(item);
+      const bookkeepingFailure = new Error('activity summary bookkeeping failed');
+      vi.spyOn(pane.activityRuns, 'noteMemberContentChanged').mockImplementation(() => {
+        throw bookkeepingFailure;
+      });
+
+      expect(() => pane.applyItemPatch({
+        threadId: 't',
+        itemId: item.id,
+        kind: item.kind,
+        patch: {
+          status: 'completed',
+          summary: 'after',
+          updatedAt: item.updatedAt + 1,
+        },
+      })).toThrowError(expect.objectContaining({
+        message: `timeline item write finalization failed for ${item.id}`,
+        errors: expect.arrayContaining([bookkeepingFailure]),
+      }));
+
+      expect(pane.items[0].summary).toBe('after');
+      expect(pane.getItemById(item.id)?.summary).toBe('after');
     });
 
     it('a solo streaming row gates at itself but withholds nothing at the tail', async () => {
@@ -8511,11 +8846,17 @@ describe('createThreadPane', () => {
       }
     });
 
-    it('keeps literal reveals on the canonical row without invalidating its box', async () => {
+    it('keeps direct rows quiet while imperative readers and parser checkpoints stay current', async () => {
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);
       try {
         const pane = await buildPane(makeThread({ id: 't' }));
+        const renderContext = {
+          streaming: true,
+          volatileTailVisible: true,
+          viewOnly: false,
+          workspacePath: '/workspace',
+        } as const;
         pane.upsertItem(
           makeItem({
             id: 'text:0:0',
@@ -8533,6 +8874,7 @@ describe('createThreadPane', () => {
         const unregister = pane.registerAssistantRevealSink('text:0:0', {
           canAppendLiteral: () => true,
           appendLiteral: (_nextSource, delta) => appended.push(delta),
+          restoreLiteral: () => true,
           reset: () => {},
         });
         pane.applyItemDelta({
@@ -8559,8 +8901,38 @@ describe('createThreadPane', () => {
         }
 
         expect(pane.items[0]).toBe(checkpoint);
+        expect(pane.getItemById('text:0:0')).toBe(checkpoint);
         expect(pane.items[0].summary).toBe('first second third ');
+        expect(pane.assistantMarkdownParserSource(
+          'text:0:0',
+          pane.items[0].summary,
+          renderContext,
+        )).toBe('first ');
         expect(appended.join('')).toBe('second third ');
+        expect(pane.assistantMarkdownSourceAppend(
+          'text:0:0',
+          pane.items[0].summary,
+        )).toBeUndefined();
+
+        pane.applyItemMeta({
+          threadId: 't',
+          itemId: 'text:0:0',
+          kind: 'assistant_text',
+          meta: '{"pathRefs":[]}',
+          updatedAt: 4,
+        });
+        const metadataRewrite = pane.items[0];
+        expect(metadataRewrite).not.toBe(checkpoint);
+        expect(pane.assistantMarkdownParserSource(
+          'text:0:0',
+          pane.items[0].summary,
+          renderContext,
+        )).toBe('first second third ');
+        const publishedDirectAppend = pane.assistantMarkdownSourceAppend(
+          'text:0:0',
+          pane.items[0].summary,
+        );
+        expect(publishedDirectAppend?.delta).toBe('second third ');
 
         pane.applyItemDelta({
           threadId: 't',
@@ -8572,9 +8944,231 @@ describe('createThreadPane', () => {
         for (let frames = 0; clock.pendingCount() > 0 && frames < 100; frames++) {
           clock.tickFrame(16);
         }
-        expect(pane.items[0]).not.toBe(checkpoint);
+        expect(pane.items[0]).not.toBe(metadataRewrite);
         expect(pane.items[0].summary).toBe('first second third **');
+        expect(pane.assistantMarkdownParserSource(
+          'text:0:0',
+          pane.items[0].summary,
+          renderContext,
+        )).toBe('first second third **');
+        expect(pane.assistantMarkdownSourceAppend(
+          'text:0:0',
+          pane.items[0].summary,
+        )?.delta).toBe('**');
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(pane.assistantMarkdownSourceAppend(
+          'text:0:0',
+          pane.items[0].summary,
+        )).toBeUndefined();
         unregister();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps the thread and window paired when reveal disposal aborts clear', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        const item = makeItem({
+          id: 'text:0:0',
+          threadId: 't',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+        });
+        pane.upsertItem(item);
+        const reset = vi.fn();
+        pane.registerAssistantRevealSink(item.id, {
+          canAppendLiteral: () => true,
+          appendLiteral: () => {},
+          restoreLiteral: () => true,
+          reset,
+        });
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: item.id,
+          kind: item.kind,
+          delta: 'first second ',
+          updatedAt: 2,
+        });
+        while (clock.pendingCount() > 0) clock.tickFrame(16);
+        reset.mockImplementationOnce(() => {
+          throw new Error('sink disposal failed');
+        });
+
+        expect(() => pane.clear()).toThrow('streaming reveal disposal failed');
+        expect(pane.thread?.id).toBe('t');
+        expect(pane.items.map((row) => row.id)).toEqual([item.id]);
+        expect(pane.__itemSmootherCountForTest()).toBe(0);
+        expect(pane.revealBoundary).toBeNull();
+
+        expect(() => pane.clear()).not.toThrow();
+        expect(pane.thread).toBeNull();
+        expect(pane.items).toEqual([]);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('aborts a switch before incoming state mutates when reveal disposal fails', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 'outgoing' }));
+        const item = makeItem({
+          id: 'text:0:0',
+          threadId: 'outgoing',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+        });
+        pane.upsertItem(item);
+        const reset = vi.fn();
+        pane.registerAssistantRevealSink(item.id, {
+          canAppendLiteral: () => true,
+          appendLiteral: () => {},
+          restoreLiteral: () => true,
+          reset,
+        });
+        pane.applyItemDelta({
+          threadId: 'outgoing',
+          itemId: item.id,
+          kind: item.kind,
+          delta: 'first second ',
+          updatedAt: 2,
+        });
+        while (clock.pendingCount() > 0) clock.tickFrame(16);
+        reset.mockImplementationOnce(() => {
+          throw new Error('switch disposal failed');
+        });
+
+        await expect(pane.switchThread(makeThread({ id: 'incoming' }))).rejects.toThrow(
+          'streaming reveal disposal failed',
+        );
+        expect(pane.thread?.id).toBe('outgoing');
+        expect(pane.items.map((row) => row.id)).toEqual([item.id]);
+        expect(pane.loading).toBe(false);
+
+        await expect(pane.switchThread(makeThread({ id: 'incoming' }))).resolves.toBeUndefined();
+        expect(pane.thread?.id).toBe('incoming');
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('reconciles a streaming upsert that jumps ahead of the revealed cursor', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        const initial = makeItem({
+          id: 'text:0:0',
+          threadId: 't',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          updatedAt: 1,
+        });
+        pane.upsertItem(initial);
+        const unregister = pane.registerAssistantRevealSink(initial.id, {
+          canAppendLiteral: () => true,
+          appendLiteral: () => {},
+          restoreLiteral: () => true,
+          reset: () => {},
+        });
+
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: initial.id,
+          kind: 'assistant_text',
+          delta: 'first ',
+          updatedAt: 2,
+        });
+        while (clock.pendingCount() > 0) clock.tickFrame(100);
+
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: initial.id,
+          kind: 'assistant_text',
+          delta: 'second third fourth fifth sixth seventh ',
+          updatedAt: 3,
+        });
+        pane.upsertItem({
+          ...pane.items[0],
+          summary: 'first second third fourth fifth sixth seventh ',
+          updatedAt: 4,
+        });
+        expect(pane.items[0].summary).toBe('first ');
+        expect(pane.items[0].updatedAt).toBe(4);
+        let previousLength = pane.items[0].summary.length;
+        while (clock.pendingCount() > 0) {
+          clock.tickFrame(100);
+          expect(pane.items[0].summary.length).toBeGreaterThanOrEqual(previousLength);
+          previousLength = pane.items[0].summary.length;
+        }
+
+        expect(pane.items[0].summary).toBe('first second third fourth fifth sixth seventh ');
+        expect(pane.items[0].updatedAt).toBe(4);
+        unregister();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('does not let a lagging backend snapshot rewind an active reveal', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const thread = makeThread({ id: 'snapshot-during-reveal' });
+        const initial = makeItem({
+          id: 'text:0:0',
+          threadId: thread.id,
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          summary: '',
+          updatedAt: 1,
+        });
+        const pane = await buildPane(thread, [initial]);
+        const full = 'first second third fourth fifth sixth seventh ';
+        pane.applyItemDelta({
+          threadId: thread.id,
+          itemId: initial.id,
+          kind: initial.kind,
+          delta: full,
+          updatedAt: 5,
+        });
+        clock.tickFrame(100);
+        const beforeSnapshot = pane.items[0].summary;
+        expect(beforeSnapshot.length).toBeGreaterThan(0);
+        expect(beforeSnapshot.length).toBeLessThan(full.length);
+
+        setBindingMock('ListThreadSliceAround', async () => ({
+          items: [{ ...initial, summary: '', updatedAt: 2 }],
+          oldestTurnIndex: 0,
+          newestTurnIndex: 0,
+          hasMore: false,
+          hasMoreOlder: false,
+          hasMoreNewer: false,
+        }));
+        await pane.refreshFromBackend();
+
+        expect(pane.items[0].summary).toBe(beforeSnapshot);
+        expect(pane.items[0].updatedAt).toBe(5);
+        expect(pane.__itemSmootherCountForTest()).toBe(1);
+        let previousLength = pane.items[0].summary.length;
+        while (clock.pendingCount() > 0) {
+          clock.tickFrame(100);
+          expect(pane.items[0].summary.length).toBeGreaterThanOrEqual(previousLength);
+          previousLength = pane.items[0].summary.length;
+        }
+        expect(pane.items[0].summary).toBe(full);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -8707,6 +9301,67 @@ describe('createThreadPane', () => {
         expect(frames).toBeGreaterThan(1);
         expect(item()?.summary).toBe(text);
         expect(pane.isItemSmoothing('text:0:0')).toBe(false);
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('keeps a terminal full-row upsert on the post-completion drain', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const pane = await buildPane(makeThread({ id: 't' }));
+        const initial = makeItem({
+          id: 'text:0:0',
+          threadId: 't',
+          kind: 'assistant_text',
+          role: 'assistant',
+          status: 'streaming',
+          turnIndex: 0,
+          itemIndex: 0,
+          summary: '',
+          updatedAt: 1,
+        });
+        pane.upsertItem(initial);
+        const streamed = 'word '.repeat(120);
+        const finalSuffix = 'terminal suffix remains readable ';
+        pane.applyItemDelta({
+          threadId: 't',
+          itemId: initial.id,
+          kind: initial.kind,
+          delta: streamed,
+          updatedAt: 2,
+        });
+        for (let frame = 0; frame < 4; frame++) clock.tickFrame(16);
+        const visibleAtCompletion = pane.items[0].summary;
+        expect(visibleAtCompletion.length).toBeGreaterThan(0);
+        expect(visibleAtCompletion.length).toBeLessThan(streamed.length);
+
+        pane.upsertItem({
+          ...pane.items[0],
+          status: 'completed',
+          summary: streamed + finalSuffix,
+          updatedAt: 3,
+        });
+
+        expect(pane.items[0].status).toBe('completed');
+        expect(pane.items[0].summary).toBe(visibleAtCompletion);
+        expect(pane.isItemSmoothing(initial.id)).toBe(true);
+
+        let previousLength = visibleAtCompletion.length;
+        let frames = 0;
+        while (pane.isItemSmoothing(initial.id) && frames++ < 1_000) {
+          clock.tickFrame(16);
+          const length = pane.items[0].summary.length;
+          expect(length).toBeGreaterThanOrEqual(previousLength);
+          expect(length - previousLength).toBeLessThanOrEqual(
+            MAX_ADVANCE_PER_TICK_CHARS,
+          );
+          previousLength = length;
+        }
+        expect(frames).toBeLessThan(1_000);
+        expect(pane.items[0].summary).toBe(streamed + finalSuffix);
+        expect(pane.isItemSmoothing(initial.id)).toBe(false);
       } finally {
         __setSmoothingClockForTest(undefined);
       }
@@ -9267,6 +9922,50 @@ describe('createThreadPane', () => {
         pane.removeItemsFromTurn(1);
         expect(pane.revealBoundary).toBeNull();
         expect(markStructuralContentPending).not.toHaveBeenCalled();
+      } finally {
+        __setSmoothingClockForTest(undefined);
+      }
+    });
+
+    it('drops the reveal gate when a backend refresh removes its frontier', async () => {
+      const clock = new FakeSmoothingClock();
+      __setSmoothingClockForTest(clock);
+      try {
+        const thread = makeThread({ id: 'thread-reveal-refresh' });
+        const frontier = makeItem({
+          id: 'frontier',
+          threadId: thread.id,
+          turnIndex: 1,
+          itemIndex: 0,
+          kind: 'assistant_text',
+          status: 'streaming',
+          summary: '',
+        });
+        const pane = await buildPane(thread, [frontier]);
+
+        pane.applyItemDelta({
+          threadId: thread.id,
+          itemId: frontier.id,
+          kind: 'assistant_text',
+          delta: 'streamed words arriving',
+          updatedAt: 2,
+        });
+        expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 0 });
+
+        // This is an attested refresh, not a live mutation. The backend page
+        // is authoritative and removes the row whose smoother owns the gate.
+        setBindingMock('ListThreadSliceAround', async () => ({
+          items: [],
+          oldestTurnIndex: -1,
+          newestTurnIndex: -1,
+          hasMore: false,
+          hasMoreOlder: false,
+          hasMoreNewer: false,
+        }));
+        await pane.refreshFromBackend();
+
+        expect(pane.items).toEqual([]);
+        expect(pane.revealBoundary).toBeNull();
       } finally {
         __setSmoothingClockForTest(undefined);
       }

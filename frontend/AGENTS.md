@@ -439,6 +439,9 @@ Read that before touching:
   (the one nested scroller running the pane's physics; see
   [`docs/architecture/activity-runs.md`](../docs/architecture/activity-runs.md))
 - `src/lib/utils/scroll/` (`index.svelte.ts` controller + resolver/intent/spring/observers)
+- `src/lib/utils/animationFrameBatcher.ts` (the shared native-rAF owner for
+  pane springs, streaming reveal, and nav-rail sync; geometry runs before DOM
+  updates and all callbacks still land before paint)
 - `src/lib/utils/virtual/` (windowing engine + per-thread size priors)
 
 Short version: `MessageTimeline` owns the scroll container, the bespoke
@@ -450,8 +453,11 @@ decides, the controller's `writeScrollTop` chokepoint writes. The
 virtualizer's `scrollToIndex`, compensation observations, and
 content-geometry samples all route through the controller
 (`applyScrollTarget` / `applyEngineCompensation` /
-`deliverContentGeometry` — chat runs no contentEl ResizeObserver);
-`scrollToIndex` is instant-only by design.
+`deliverContentGeometry` — chat runs no contentEl ResizeObserver).
+`scrollToIndex` is instant-only by design. The controller reads each native
+scroll event's current offset once in target capture and the virtualizer reuses
+that exact observation. A write-site readback cannot replace it because native
+and authored scrolls may coalesce before dispatch.
 
 ## Rendering
 
@@ -780,6 +786,20 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
   `svelte-patch-zombie-leak.test.ts` passes unpatched on 5.56.8 and stays
   as the tripwire if that regresses.
 
+- `marked@16.4.2.patch` — **allocation-free extension dispatch**. Marked's
+  block and inline loops created a callback closure and a fresh
+  `{ lexer }` receiver for every extension candidate at every token
+  position. The patch keeps one typed receiver per Lexer and uses indexed
+  loops for tokenizers and start hooks. The receiver's public shape is
+  unchanged. Our extensions use only its declared `lexer` field. An
+  extension-heavy 20,000-parse allocation profile dropped from 1.23GB to
+  0.91GB for this patch alone. It dropped to 0.58GB with the vendored
+  tokenizer gates recorded in the svelte-streamdown divergence ledger.
+  Marked's 158 unit tests and 1,715 spec cases pass against the patched
+  source. Re-roll on every Marked update and drop it when upstream no longer
+  allocates callbacks and receivers inside the token loops. The app-side
+  differential and sustained-stream suites are the integration tripwires.
+
 - `@lucide__svelte@1.28.0.patch` — **mask-icons**, one hunk: `dist/Icon.svelte`
   renders a CSS-mask `<span>` (`--mask-icon: url(#ao-lucide-N)` into the
   patch's own hidden sprite `<svg>` of `<mask>` elements, inline px box)
@@ -814,7 +834,7 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
 
 ### Vendored svelte-streamdown
 
-`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 18 permanent
+`vendor/svelte-streamdown/` is `svelte-streamdown@3.1.2` with 26 permanent
 in-tree fixes. The per-entry rationale, drop rules and regression-test names
 live in
 [`vendor/svelte-streamdown/DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md);

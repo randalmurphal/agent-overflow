@@ -1,40 +1,35 @@
+const CENTER_BLOCK = /^\[center\]\n(?:([\s\S]*?)\n)?(?:\[\/center\]|(?=\[(?:center|right)\]\n))/;
+const RIGHT_BLOCK = /^\[right\]\n(?:([\s\S]*?)\n)?(?:\[\/right\]|(?=\[(?:center|right)\]\n))/;
+export const parseAlignSource = (src) => {
+    if (src.charCodeAt(0) !== 91)
+        return undefined;
+    const match = CENTER_BLOCK.exec(src);
+    if (match)
+        return { raw: match[0], text: match[1] ?? '', align: 'center' };
+    const right = RIGHT_BLOCK.exec(src);
+    return right
+        ? { raw: right[0], text: right[1] ?? '', align: 'right' }
+        : undefined;
+};
+export const markedAlignBlock = {
+    name: 'align',
+    level: 'block',
+    tokenizer(src) {
+        const source = parseAlignSource(src);
+        return source ? { type: 'align', raw: source.raw } : undefined;
+    }
+};
 export const markedAlign = {
     name: 'align',
     level: 'block',
     tokenizer(src) {
-        // Check if the source starts with [center] or [right] blocks.
-        // A block ends at its explicit closing tag, or right before the opening
-        // tag of the next alignment block (blocks don't nest — they become
-        // siblings). The content group is optional so empty blocks
-        // ([center]\n[/center]) tokenize too.
-        const centerMatch = src.match(/^\[center\]\n(?:([\s\S]*?)\n)?(?:\[\/center\]|(?=\[(?:center|right)\]\n))/);
-        const rightMatch = src.match(/^\[right\]\n(?:([\s\S]*?)\n)?(?:\[\/right\]|(?=\[(?:center|right)\]\n))/);
-        if (centerMatch) {
-            const text = centerMatch[1] ?? '';
-            const raw = centerMatch[0];
-            // Tokenize the content inside the alignment block
-            const tokens = this.lexer.blockTokens(text, []);
-            return {
-                type: 'align',
-                align: 'center',
-                raw,
-                text,
-                tokens
-            };
-        }
-        if (rightMatch) {
-            const text = rightMatch[1] ?? '';
-            const raw = rightMatch[0];
-            // Tokenize the content inside the alignment block
-            const tokens = this.lexer.blockTokens(text, []);
-            return {
-                type: 'align',
-                align: 'right',
-                raw,
-                text,
-                tokens
-            };
-        }
-        return undefined;
+        const source = parseAlignSource(src);
+        if (!source)
+            return undefined;
+        return {
+            type: 'align',
+            ...source,
+            tokens: this.lexer.blockTokens(source.text, [])
+        };
     }
 };

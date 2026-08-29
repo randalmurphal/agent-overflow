@@ -352,9 +352,65 @@ func TestEventBus_ChannelFilteredSubscriber(t *testing.T) {
 func TestEventBus_Subscribe_AfterClose(t *testing.T) {
 	bus := NewEventBus(10)
 	bus.Close()
+
+	sub := bus.Subscribe()
+	select {
+	case <-sub.Done():
+		// A late subscriber belongs to a closed bus and must already be done.
+	default:
+		t.Fatal("subscriber created after Close remained open")
+	}
+	if got := bus.SubscriberCount(); got != 0 {
+		t.Fatalf("closed bus retained %d late subscribers", got)
+	}
+
 	// Emit after Close is silent no-op.
-	if _, err := bus.Emit("ch1", "x"); err != nil {
+	if event, err := bus.Emit("ch1", "x"); err != nil {
 		t.Fatalf("post-close Emit returned error: %v", err)
+	} else if event.Seq != 0 {
+		t.Fatalf("post-close Emit returned sequence %d, want zero event", event.Seq)
+	}
+}
+
+type blockingJSONPayload struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (payload blockingJSONPayload) MarshalJSON() ([]byte, error) {
+	close(payload.started)
+	<-payload.release
+	return []byte(`{"value":true}`), nil
+}
+
+func TestEventBus_CloseWhileEmitMarshals_DoesNotReopenBus(t *testing.T) {
+	bus := NewEventBus(10)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan Event, 1)
+	errors := make(chan error, 1)
+
+	go func() {
+		event, err := bus.Emit("ch1", blockingJSONPayload{
+			started: started,
+			release: release,
+		})
+		result <- event
+		errors <- err
+	}()
+
+	<-started
+	bus.Close()
+	close(release)
+
+	if err := <-errors; err != nil {
+		t.Fatalf("racing Emit returned error: %v", err)
+	}
+	if event := <-result; event.Seq != 0 {
+		t.Fatalf("racing Emit returned sequence %d, want zero event", event.Seq)
+	}
+	if replay := bus.Replay(map[string]uint64{"ch1": 0}); len(replay) != 0 {
+		t.Fatalf("racing Emit recreated %d replay events after Close", len(replay))
 	}
 }
 
@@ -852,6 +908,55 @@ func TestEventBus_ConcurrentEmit_SubscriberSeqOrderedPerChannel(t *testing.T) {
 				i, e.Channel, e.Seq, next[e.Channel])
 		}
 		next[e.Channel] = e.Seq
+	}
+}
+
+// A provider:item_event channel has one emitter goroutine per live provider
+// session. Sequence assignment and live fanout are one ordered operation: a
+// subscriber must never observe a later session's event before an earlier
+// sequence from another session on the same channel.
+func TestEventBus_ConcurrentSameChannelEmit_PreservesLiveSequence(t *testing.T) {
+	const emitters = 16
+	const each = 2_000
+	const total = emitters * each
+
+	bus := NewEventBus(0)
+	// Keep this test about ordering rather than the subscriber's deliberate
+	// bounded-overflow behavior. Production drains concurrently; a test that
+	// waits until every emitter returns needs room for the whole burst.
+	bus.subBuf = total
+	defer bus.Close()
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for emitter := range emitters {
+		wg.Go(func() {
+			<-start
+			for index := range each {
+				if _, err := bus.Emit(eventchan.ProviderItemEvent, struct {
+					Emitter int `json:"emitter"`
+					Index   int `json:"index"`
+				}{Emitter: emitter, Index: index}); err != nil {
+					t.Errorf("emit %d/%d: %v", emitter, index, err)
+					return
+				}
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	got := drainEvents(t, sub, total, 5*time.Second)
+	if len(got) != total {
+		t.Fatalf("drained %d events, want %d", len(got), total)
+	}
+	for index, event := range got {
+		if want := uint64(index + 1); event.Seq != want {
+			t.Fatalf("event %d has seq %d, want %d", index, event.Seq, want)
+		}
 	}
 }
 

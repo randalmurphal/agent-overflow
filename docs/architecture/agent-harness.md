@@ -20,7 +20,10 @@ same isolated backend — the backend rides the `--soak` wire flag, the
 launcher-owned historical name for "isolated launcher-shell instance".
 **`make soak`** is that shell plus the soak preset (`--autopilot`:
 seeded threads and a never-ending streaming turn, left running for
-hours). See [soak-rig.md](soak-rig.md).
+hours). **`make perf-wsl`** is a third shell for destructive renderer A/B
+runs. It owns `~/.agent-overflow-perf`, its own WebView2 profile, and CDP
+9226, so reset/reload/interrupt cannot land on the harness or soak by
+profile collision. See [soak-rig.md](soak-rig.md).
 
 ## Boot
 
@@ -378,7 +381,7 @@ General-purpose scripts: `streaming-text` (Claude default),
 forever; see [soak-rig.md](soak-rig.md)), `codex-basic` (Codex
 default), `codex-approval`.
 
-Bench scripts (`bench-burst-stream`, `bench-giant-turn`,
+Bench scripts (`bench-burst-stream`, `bench-active-stream`, `bench-giant-turn`,
 `bench-subagent-fanout`) are the load workloads, and their one shared
 difference from the soak scripts is that they TERMINATE: each ends with a
 `result` envelope so a bench can wait on turn completion instead of a
@@ -786,13 +789,15 @@ actually happened.
 
 `ao-harness bench <workload>` is a soak that ENDS: it seeds its own
 fixture, arms the perf meters, drives a scripted load, and writes
-`<dataDir>/bench/<workload>-<timestamp>.json`. Five workloads:
+`<dataDir>/bench/<workload>-<timestamp>.json`. Six workloads:
 `burst-stream` (chunked text-delta flood), `giant-turn` (225 items in one
 turn), `subagent-fanout` (three bounded async subagents),
-`multi-pane-stream` (three panes each flooding at once), and
-`many-threads` (30 seeded threads, then a switch storm). All but the last
-are `bench-*` entries in the scenario library and wait on
-`provider:turn_completed` for their thread — the mock's own
+`multi-pane-stream` (three panes each flooding at once),
+`active-multi-pane` (six panes mounted, four streaming paced rich Markdown),
+and `many-threads` (30 seeded threads, then a switch storm). The finite
+provider workloads wait on `provider:turn_completed` for their thread. The
+active workload instead runs until its requested duration and then interrupts
+its four turns cleanly. The mock's own
 `scenario_done` fires when the mock stopped WRITING, upstream of parse,
 triage, persist and render, so it would time a shorter pipeline than the
 one under test.
@@ -851,6 +856,33 @@ bridge rather than over the wire; minting a pane harness-side would put a
 pane nobody ships on the screen. The pane opens happen in the workload's
 PREPARE step, before the meters and the trace are armed: mounting three
 timelines is setup, not the thing being measured.
+
+#### active-multi-pane
+
+Six panes stay mounted while four seeded threads stream
+`bench-active-stream` concurrently. The wire cadence stays near the smoother's
+reader-facing reveal rate instead of the 1ms flood cadence. Each turn starts
+with ordinary rich Markdown and a tool pair, then repeats headings, emphasis,
+inline code, a link, Unicode, a table, a fenced code block, and a quote until
+the runner interrupts it. This is the normal six-open/four-active workload.
+
+The default duration is 30 seconds. `--duration` can lengthen it and refuses
+values below 30 seconds. The runner samples each active assistant's rendered
+text length and timeline scroll height every 30 seconds at most. Every text
+sample must grow, and the final timeline must be taller than the first. A
+provider timer over a static or glitched DOM therefore fails instead of
+passing as a sustained load. The report stores those readings under
+`runs[].visibleProgress`.
+
+All four completion waits are parked before the sends. A completion before the
+deadline fails the run. At the deadline the runner calls the production
+`InterruptTurn` RPC for all four concurrently, waits for all four completion
+events, drains the reveal queue, and settles. Every error path also interrupts
+every turn whose send was attempted.
+
+It uses the same production pane-open path and the same pre-measurement
+mount boundary as `multi-pane-stream`. The separate workload preserves the
+old three-pane flood baseline while covering the four-pane target.
 
 `many-threads` has no scenario. It drives each switch by emitting
 `notification:activated`, which the SPA routes through
@@ -913,14 +945,20 @@ or by `$AO_CDP_URL` / `$AO_CDP_PORT`.
 instance answers every other command in this CLI and can serve neither of
 these two; the refusal says so rather than timing out. What DOES serve one:
 the Windows WebView2 shells, on the loopback ports `appidentity.DevToolsPort`
-assigns per mode (dev 9223, soak 9224, harness 9225 — three ports because
-all three can be up at once), an external Chrome or Edge started with
+assigns per mode (dev 9223, soak 9224, harness 9225, perf 9226), an external Chrome or Edge started with
 `--remote-debugging-port`, and a Playwright-driven headless Chromium.
 An absent endpoint exits 2; an unreachable one exits 1. Page selection
 prefers the target on the instance's own origin, falls back to the only
 page, and refuses ambiguity with a candidate list — profiling whichever
 tab a listing happened to put first yields plausible numbers about the
 wrong document.
+
+For a launcher-hosted WSL backend, run a Windows build of `ao-harness` and
+name the data root through `\\wsl.localhost\\<distro>\\...`; Windows can then
+reach both the backend and WebView2 loopback ports. Attach accepts the
+authenticated WebSocket even though the Linux PID does not exist in Windows'
+process namespace. Destructive lifecycle commands retain PID validation and
+must run in the backend's namespace.
 
 The busy meter is gateable the same way, through metric names the
 aggregate carries alongside the frame ones: `busy.p50Ms`, `busy.p95Ms`

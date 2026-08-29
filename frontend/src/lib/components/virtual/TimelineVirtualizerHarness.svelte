@@ -30,6 +30,7 @@
     estimate?: RowEstimate;
     renderAll?: boolean;
     viewportPx?: number;
+    intrinsicViewportMaxHeight?: string;
     headerSize?: number;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
@@ -49,6 +50,7 @@
     estimate,
     renderAll = false,
     viewportPx = 600,
+    intrinsicViewportMaxHeight,
     headerSize = 0,
     onscroll,
     onscrollend,
@@ -65,6 +67,8 @@
   let listRef: TimelineVirtualizerHandle | undefined = $state();
   // svelte-ignore state_referenced_locally -- fixture-owned after mount.
   let currentHeaderSize = $state(headerSize);
+  // svelte-ignore state_referenced_locally -- fixture-owned after mount.
+  let currentIntrinsicViewportMaxHeight = $state(intrinsicViewportMaxHeight);
 
   /** Replace the keyed data array; the virtualizer derives the mutation. */
   export function setRows(next: HarnessRow[]): void {
@@ -103,6 +107,10 @@
     currentHeaderSize = next;
   }
 
+  export function setIntrinsicViewportMaxHeight(next: string | undefined): void {
+    currentIntrinsicViewportMaxHeight = next;
+  }
+
   // The suites exercise the adapter without a scroll controller, so the
   // harness is the "chokepoint" for the required applyScrollTarget prop
   // and writes directly.
@@ -128,13 +136,15 @@
 <div
   bind:this={scrollEl}
   data-testid="virt-scroll"
-  style="box-sizing: border-box; height: 100%; overflow-y: auto; overflow-anchor: none;"
+  style:height={currentIntrinsicViewportMaxHeight === undefined ? '100%' : 'auto'}
+  style="box-sizing: border-box; overflow-y: auto; overflow-anchor: none;"
 >
   <TimelineVirtualizer
     bind:this={listRef}
     data={rows}
     getKey={(row) => row.id}
     scrollRef={scrollEl}
+    intrinsicViewportMaxHeight={currentIntrinsicViewportMaxHeight}
     {bufferSize}
     {estimate}
     {renderAll}

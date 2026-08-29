@@ -23,12 +23,7 @@ await b.send('Tracing.start', {
 });
 await b.send('Tracing.requestMemoryDump', { levelOfDetail: 'detailed' });
 await sleep(2500);
-const complete = new Promise((res) => {
-  const t = setInterval(() => {
-    const e = b.events.find((x) => x.method === 'Tracing.tracingComplete');
-    if (e) { clearInterval(t); res(e.params); }
-  }, 100);
-});
+const complete = b.waitFor('Tracing.tracingComplete');
 await b.send('Tracing.end');
 const { stream } = await complete;
 const text = await readStream(b, stream);

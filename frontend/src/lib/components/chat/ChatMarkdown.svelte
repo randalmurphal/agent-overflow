@@ -33,7 +33,7 @@
   // target keeps the structure this component renders.
 
   import { getContext } from 'svelte';
-  import { Streamdown } from 'svelte-streamdown';
+  import { Streamdown, type ProvenAppend } from 'svelte-streamdown';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,
@@ -43,9 +43,11 @@
   import { getResolvedTheme } from '../../stores/themeMode.svelte';
   import {
     STREAMDOWN_CONTROLS,
+    STREAMDOWN_STATIC_RENDERERS,
+    STREAMDOWN_STATIC_WORK_SCHEDULER,
     streamdownComponentsFor,
   } from './markdown/streamdownConfig';
-  import { unwrapMarkdownFence } from './markdown/unwrapMarkdownFence';
+  import { MarkdownFenceUnwrapper } from './markdown/unwrapMarkdownFence';
   import {
     ensureMarkdownCopyDelegate,
     ensurePathLinkClickDelegate,
@@ -57,19 +59,29 @@
   } from '../../utils/pathLinkExtension';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import StreamdownImageHost from './markdown/StreamdownImageHost.svelte';
+  import {
+    captureStreamingAssistantSelection,
+    restoreStreamingAssistantSelection,
+    type StreamingAssistantSelectionSnapshot,
+  } from './markdown/streamingAssistantSelection';
+  import { ensureStaticCodeCopyDelegate } from './markdown/staticCodeBlock';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
   import { getSettings } from '../../stores/settings.svelte';
   import { isViewOnlySession } from '../../transport/runMode';
+  import { isHarnessSession } from '../../transport/harnessMode';
 
   let {
     source,
+    sourceAppend,
     streaming = false,
     workspacePath = '',
     pathRefs,
     class: className = '',
   }: {
     source: string;
+    /** Opaque proof that source extends the previous source. */
+    sourceAppend?: ProvenAppend;
     streaming?: boolean;
     /** Absolute base directory the path-link pipeline resolves against.
      *  Pass `pane.thread.workspacePath` from per-thread surfaces. It
@@ -92,6 +104,7 @@
   } = $props();
 
   let viewOnly = $derived(isViewOnlySession());
+  const diagnostics = isHarnessSession();
 
   // Aggregation hook for the chat warm-gate "is the visible
   // async-typesetting context settled?" signal. MessageTimeline
@@ -123,6 +136,7 @@
   $effect(() => {
     ensureMarkdownCopyDelegate();
     ensurePathLinkClickDelegate();
+    ensureStaticCodeCopyDelegate();
   });
 
   // Marked inline extension derived from the validated allowlist. The
@@ -181,7 +195,18 @@
   // re-rendering every visible diagram on an unrelated save.
   const mermaidConfig = $derived(resolveMermaidThemeConfig(getResolvedTheme()));
 
-  const processedSource = $derived(unwrapMarkdownFence(source));
+  const markdownFenceUnwrapper = new MarkdownFenceUnwrapper();
+  const processedSource = $derived(
+    markdownFenceUnwrapper.render(
+      source,
+      streaming,
+      sourceAppend,
+    ),
+  );
+  const processedSourceAppend = $derived.by(() => {
+    processedSource;
+    return markdownFenceUnwrapper.outputAppend;
+  });
 
   // Streaming-only block-boundary memoization. When `streaming === true`,
   // the source is split at the last stable markdown block boundary
@@ -203,9 +228,45 @@
 
   const splitDerived = $derived.by(() => {
     if (!streaming) {
-      return { prefix: processedSource, tail: '' };
+      return { prefix: processedSource, tail: '', tailAppend: undefined };
     }
-    return boundarySplitter.split(processedSource);
+    const split = boundarySplitter.split(
+      processedSource,
+      processedSourceAppend,
+    );
+    return {
+      ...split,
+      tailAppend: boundarySplitter.tailAppend,
+    };
+  });
+
+  // A stable block migrates from the volatile Streamdown to the committed
+  // owner. Both render identical DOM, but they cannot share node identity.
+  // Capture against the stable message root before Svelte replaces that
+  // subtree and restore after the flush, so a reader selecting the completed
+  // block does not lose the range when the next block starts.
+  let markdownRoot: HTMLElement;
+  let renderedPrefix = '';
+  let boundarySelectionGeneration = 0;
+  $effect.pre(() => {
+    const { prefix } = splitDerived;
+    if (prefix === renderedPrefix) return;
+    const generation = ++boundarySelectionGeneration;
+    const selection: StreamingAssistantSelectionSnapshot | null = markdownRoot
+      ? captureStreamingAssistantSelection(markdownRoot)
+      : null;
+    renderedPrefix = prefix;
+    if (!selection) return;
+    // The first microtask follows Svelte's scheduled flush. The second follows
+    // every descendant render effect in that flush, matching the direct-tail
+    // reset path that uses the same selection primitive.
+    queueMicrotask(() => queueMicrotask(() => {
+      if (
+        generation === boundarySelectionGeneration &&
+        selection.root.isConnected &&
+        selection.root === markdownRoot
+      ) restoreStreamingAssistantSelection(selection);
+    }));
   });
 
   // "Streaming enabled" (Settings → Live Updates) governs whether the
@@ -221,6 +282,9 @@
   // `streaming` flips false and the whole message renders as committed.
   const hideVolatileTail = $derived(
     streaming && !getSettings().streamingEnabled,
+  );
+  const showVolatileTail = $derived(
+    !hideVolatileTail && (splitDerived.tail.length > 0 || splitDerived.prefix.length === 0),
   );
 </script>
 
@@ -241,8 +305,11 @@
   path, prose keeps incremental markdown).
 
   `wrapperClass` (`md-committed` / `md-volatile`) marks each Streamdown's
-  root div so the `:has()`-gated seam rule in app.css can re-establish the
-  gap at a paragraph→paragraph seam: the two instances are separate
+  root div. The committed instance also stamps its already-rendered last outer
+  block type there, so app.css can pair it with the volatile root's direct
+  first `<p>` and re-establish a paragraph→paragraph gap without a
+  descendant-sensitive `:has()` selector.
+  The two instances are separate
   containers, so the adjacent-sibling `p + p` spacing rule can't match
   across them and a p→p gap (paragraphs are `margin: 0`) would otherwise
   collapse until the next block commits. Non-paragraph seams need no rule —
@@ -255,11 +322,17 @@
   content: string,
   parseIncompleteMarkdown: boolean,
   wrapperClass: string,
+  contentAppend?: ProvenAppend,
+  trimFirstBlockMargin = false,
+  trimLastBlockMargin = false,
 )}
   <Streamdown
     class={wrapperClass}
     {content}
+    {contentAppend}
     {parseIncompleteMarkdown}
+    isolatedVolatileTail={parseIncompleteMarkdown}
+    {diagnostics}
     baseTheme="tailwind"
     theme={chatMarkdownTheme}
     {mermaidConfig}
@@ -267,6 +340,11 @@
     {allowedImagePrefixes}
     renderHtml={false}
     controls={STREAMDOWN_CONTROLS}
+    compactStaticHtml={true}
+    {trimFirstBlockMargin}
+    {trimLastBlockMargin}
+    staticRenderers={STREAMDOWN_STATIC_RENDERERS}
+    staticWorkScheduler={STREAMDOWN_STATIC_WORK_SCHEDULER}
     {extensions}
     onsettled={handleSettled}
     components={streamdownComponentsFor(parseIncompleteMarkdown)}
@@ -281,12 +359,27 @@
 {/snippet}
 
 <div
+  bind:this={markdownRoot}
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >
   {#if splitDerived.prefix}
-    {@render streamdownInstance(splitDerived.prefix, false, 'md-committed')}
+    {@render streamdownInstance(
+      splitDerived.prefix,
+      false,
+      'md-committed',
+      undefined,
+      true,
+      !showVolatileTail,
+    )}
   {/if}
-  {#if !hideVolatileTail && (splitDerived.tail || !splitDerived.prefix)}
-    {@render streamdownInstance(splitDerived.tail, streaming, 'md-volatile')}
+  {#if showVolatileTail}
+    {@render streamdownInstance(
+      splitDerived.tail,
+      streaming,
+      'md-volatile',
+      splitDerived.tailAppend,
+      !splitDerived.prefix,
+      true,
+    )}
   {/if}
 </div>

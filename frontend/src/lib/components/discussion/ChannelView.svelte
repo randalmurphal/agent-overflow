@@ -8,6 +8,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
@@ -52,8 +53,10 @@
     );
   }
 
+  const scrollbarGeometry = createContentGeometryNotifier();
   const stick = createUseStickToBottomController({
     liveContentActive: channelLiveContentActive,
+    onContentGeometryProcessed: scrollbarGeometry.notify,
   });
 
   let messages = $derived(pane.channelMessages);
@@ -169,22 +172,36 @@
     stick.attach(scrollEl, contentEl);
   });
 
-  // Composer-section RO. Discussion's textarea + button live in a
-  // sibling flex section that's NOT inside the controller's contentEl,
-  // so a height change there (e.g. the concluded-toggle swapping the
-  // textarea+button for a "Discussion has concluded" paragraph)
-  // shrinks/grows the scrollEl's clientHeight without firing the
-  // content RO. The composer-geometry observation re-pins scrollTop to
-  // the new target so a sticky user doesn't drift away from the last
-  // message. The textarea itself is `rows={1}` with no autosize, so the
-  // more dramatic Shift+Enter case doesn't actually change height — but
-  // the RO costs nothing per-event and future-proofs against a textarea
-  // that grows.
+  // One owner RO covers both inputs that the content observer cannot see:
+  // composer-section changes and direct viewport changes from pane/window
+  // layout. Either can change scrollEl.clientHeight without changing
+  // contentEl. The controller re-pins a sticky reader first, then the shared
+  // geometry notifier lets the overlay sample the settled position and thumb
+  // size. Observing both with one callback also avoids restoring a duplicate
+  // target observer inside OverlayScrollbar.
   $effect(() => {
-    if (!composerEl) return;
-    const observed = composerEl;
-    const ro = new ResizeObserver(() => stick.observe('composer-geometry'));
-    ro.observe(observed);
+    const composer = composerEl;
+    const scroll = scrollEl;
+    if (!composer || !scroll) return;
+    let previousViewportHeight: number | undefined;
+    const ro = new ResizeObserver((entries) => {
+      let viewportHeightChanged = false;
+      let composerChanged = false;
+      for (const entry of entries) {
+        if (entry.target === composer) composerChanged = true;
+        if (entry.target !== scroll) continue;
+        const nextHeight = entry.contentRect.height;
+        viewportHeightChanged = previousViewportHeight === undefined ||
+          nextHeight !== previousViewportHeight;
+        previousViewportHeight = nextHeight;
+      }
+      if (composerChanged || viewportHeightChanged) {
+        stick.observe('composer-geometry');
+      }
+      scrollbarGeometry.notify(scroll.scrollHeight - scroll.clientHeight > 1);
+    });
+    ro.observe(composer);
+    ro.observe(scroll);
     return () => ro.disconnect();
   });
 
@@ -350,7 +367,7 @@
          shared pane-scroll-surface class applies). -->
     <OverlayScrollbar
       target={scrollEl}
-      content={contentEl}
+      contentGeometry={scrollbarGeometry}
       ariaLabel="Scroll discussion messages"
       placement="inset-y-0 right-0.5 w-1.5"
       ownerDrivenPosition={() => stick.isSticky}

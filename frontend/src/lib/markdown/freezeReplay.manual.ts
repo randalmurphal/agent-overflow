@@ -335,7 +335,7 @@ describe('freeze replay — structural termination fuzz over the vendored marked
         const p = new ChatMarkdownPipeline();
         for (let k = 1; k <= src.length; k++) {
           const t0 = performance.now();
-          p.step(src.slice(0, k));
+          p.step(src.slice(0, k), src.slice(k - 1, k));
           const dt = performance.now() - t0;
           if (dt > DEFAULT_STEP_BUDGET_MS) {
             throw new Error(`slow step ${dt.toFixed(0)}ms at ${k} for ${JSON.stringify(src)}`);
@@ -558,9 +558,10 @@ describe('freeze replay — super-linear shape probes', () => {
       const p = new ChatMarkdownPipeline();
       let worst = 0;
       for (let i = 0; i < 600; i++) {
-        src += `- item ${i} with a bit of prose to make the line realistic\n`;
+        const delta = `- item ${i} with a bit of prose to make the line realistic\n`;
+        src += delta;
         const t0 = performance.now();
-        p.step(src);
+        p.step(src, delta);
         worst = Math.max(worst, performance.now() - t0);
       }
       recorder.stats.push({
@@ -583,9 +584,10 @@ describe('freeze replay — super-linear shape probes', () => {
       const p = new ChatMarkdownPipeline();
       let worst = 0;
       for (let i = 0; i < 600; i++) {
-        src += `| r${i} | v${i} | w${i} |\n`;
+        const delta = `| r${i} | v${i} | w${i} |\n`;
+        src += delta;
         const t0 = performance.now();
-        p.step(src);
+        p.step(src, delta);
         worst = Math.max(worst, performance.now() - t0);
       }
       expect(worst).toBeLessThan(DEFAULT_STEP_BUDGET_MS);
@@ -594,15 +596,16 @@ describe('freeze replay — super-linear shape probes', () => {
   );
 
   it(
-    'growing unterminated fence — detector re-scans every line each tick',
+    'growing unterminated fence — incremental detector and lexer paths',
     () => {
       let src = '```python\n';
       const p = new ChatMarkdownPipeline();
       let worst = 0;
       for (let i = 0; i < 1200; i++) {
-        src += `    line_${i} = compute(${i})  # a realistic source line\n`;
+        const delta = `    line_${i} = compute(${i})  # a realistic source line\n`;
+        src += delta;
         const t0 = performance.now();
-        p.step(src);
+        p.step(src, delta);
         worst = Math.max(worst, performance.now() - t0);
       }
       recorder.stats.push({

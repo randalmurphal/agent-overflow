@@ -226,6 +226,22 @@ describe('<ChatMarkdown> path-link rendering', () => {
     expect(webLink?.textContent).toBe('https://example.com');
   });
 
+  it('renders backslash-escaped Markdown punctuation as literal text', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: String.raw`\*literal asterisks\*, \_underscores\_, and \# not a heading`,
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain(
+        '*literal asterisks*, _underscores_, and # not a heading',
+      );
+    });
+    expect(container.querySelector('em')).toBeNull();
+    expect(container.querySelector('h1')).toBeNull();
+  });
+
   it('keeps explicit Markdown titles on allowed links', async () => {
     const { container } = render(ChatMarkdown, {
       props: {
@@ -439,7 +455,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
 
     const codeBlocks = container.querySelectorAll('[data-code-source]');
     expect(codeBlocks.length).toBe(1);
-    expect(codeBlocks[0].getAttribute('data-code-source')).toContain('func main()');
+    expect(codeBlocks[0].querySelector('code')?.textContent).toContain('func main()');
     expect(container.textContent).toContain('More text.');
   });
 
@@ -468,7 +484,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
     await waitFor(() => {
       const codeBlock = container.querySelector('[data-code-source]');
       expect(codeBlock).not.toBeNull();
-      expect(codeBlock?.getAttribute('data-code-source')).toContain('deep indent');
+      expect(codeBlock?.querySelector('code')?.textContent).toContain('deep indent');
     });
   });
 

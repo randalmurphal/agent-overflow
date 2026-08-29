@@ -42,8 +42,6 @@ export interface ThreadSubagentMemoryOptions {
   getThread(): Thread | null;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
-  /** streamingReveal.recomputeReveal — commitSubagentEvictions recomputes after the drop. */
-  recomputeReveal(): void;
   /** rowUiState.isSubagentGroupExpanded — the retention check for every launch kind. */
   isSubagentGroupExpanded(groupKey: string): boolean;
   /**
@@ -322,7 +320,6 @@ export function createThreadSubagentMemory(
     options.dropTimelineItems((it) => evictedIds.has(it.id), {
       exhaustedScope: anchorIds,
     });
-    options.recomputeReveal();
   }
 
   /**

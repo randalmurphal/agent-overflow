@@ -44,6 +44,7 @@ function connect(url) {
     const pending = new Map();
     const events = [];
     const listeners = [];
+    const eventWaiters = new Set();
     // The browser going away (app restart, window closed) must fail every caller loudly. Without
     // this, in-flight sends sit in `pending` forever and a poll loop hangs alive and silent,
     // still "running" to a supervisor while producing nothing.
@@ -52,6 +53,11 @@ function connect(url) {
       dead = new Error(`cdp: connection to ${url} closed by the browser (app restarted or window closed)`);
       for (const { rej } of pending.values()) rej(dead);
       pending.clear();
+      for (const waiter of eventWaiters) {
+        clearTimeout(waiter.timer);
+        waiter.reject(dead);
+      }
+      eventWaiters.clear();
     };
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data);
@@ -62,6 +68,22 @@ function connect(url) {
       } else if (m.method) {
         events.push(m);
         for (const l of listeners) l(m);
+        for (const waiter of eventWaiters) {
+          if (waiter.method !== m.method) continue;
+          let matches;
+          try {
+            matches = waiter.predicate(m);
+          } catch (error) {
+            clearTimeout(waiter.timer);
+            eventWaiters.delete(waiter);
+            waiter.reject(error);
+            continue;
+          }
+          if (!matches) continue;
+          clearTimeout(waiter.timer);
+          eventWaiters.delete(waiter);
+          waiter.resolve(m.params);
+        }
       }
     };
     ws.onopen = () => resolve({
@@ -85,6 +107,21 @@ function connect(url) {
       }),
       events,
       on: (fn) => listeners.push(fn),
+      waitFor: (method, predicate = () => true) => new Promise((res, rej) => {
+        if (dead) { rej(dead); return; }
+        const waiter = {
+          method,
+          predicate,
+          resolve: res,
+          reject: rej,
+          timer: undefined,
+        };
+        waiter.timer = setTimeout(() => {
+          if (!eventWaiters.delete(waiter)) return;
+          rej(new Error(`cdp: ${method} event did not arrive within ${Math.round(CALL_TIMEOUT_MS / 1000)}s`));
+        }, CALL_TIMEOUT_MS);
+        eventWaiters.add(waiter);
+      }),
       close: () => ws.close(),
     });
     ws.onerror = () => reject(new Error('ws connect failed'));
@@ -120,7 +157,13 @@ export async function evaluate(conn, expression) {
 // draining the loop lets a throw print its stack and exit nonzero; the
 // unref'd timer only fires if a stray handle keeps the loop alive.
 export async function done(conns = [], code = 0) {
-  for (const c of conns) { try { c.close(); } catch {} }
+  for (const c of conns) {
+    try {
+      c.close();
+    } catch (error) {
+      console.warn('probe: CDP connection cleanup failed:', error);
+    }
+  }
   await sleep(50);
   process.exitCode = code;
   setTimeout(() => process.exit(code), 2000).unref();

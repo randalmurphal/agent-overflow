@@ -26,10 +26,12 @@
     type DragOrigin,
     type ScrollMetrics,
   } from '../../utils/scroll/overlayScrollbar';
+  import type { ContentGeometrySource } from '../../utils/scroll/contentGeometryNotifier';
+  import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
   let {
     target,
-    content,
+    contentGeometry,
     ariaLabel,
     placement = 'inset-y-0 -right-3 w-1.5',
     ownerDrivenPosition,
@@ -39,11 +41,14 @@
     /** The scrolling element this bar drives. */
     target: HTMLElement | undefined;
     /**
-     * The element inside `target` whose growth changes `scrollHeight`.
-     * Observed separately because a scroller can keep its own size while
-     * its content grows — which is exactly the streaming case.
+     * The surface owner's content-geometry deliveries. The owner already
+     * measures streaming growth for scroll control or virtualization, so the
+     * bar subscribes to that source instead of observing an ancestor of the
+     * measured rows. A second ancestor ResizeObserver can be deferred by the
+     * browser when a row observer changes the virtual plane's height in the
+     * same delivery, producing a loop error and one-frame-stale geometry.
      */
-    content?: HTMLElement | undefined;
+    contentGeometry: ContentGeometrySource;
     ariaLabel: string;
     /**
      * Positioning utilities for the track within its `relative` host. The
@@ -74,8 +79,19 @@
   const IDLE_HIDE_MS = 900;
   const EMPTY_METRICS: ScrollMetrics = { scrollTop: 0, scrollHeight: 0, clientHeight: 0 };
 
+  interface ActiveDrag {
+    pointerId: number;
+    origin: DragOrigin;
+    target: HTMLElement;
+    captureOwner: HTMLElement;
+    onEnd: ((atBottom: boolean) => void) | undefined;
+    notifyEnd: boolean;
+  }
+
   let trackEl = $state<HTMLElement | undefined>();
-  let metrics = $state<ScrollMetrics>(EMPTY_METRICS);
+  // Replaced as one sample and never mutated by field. A deep proxy here
+  // allocates wrapper state on every visible scroll frame for no benefit.
+  let metrics = $state.raw<ScrollMetrics>(EMPTY_METRICS);
   let trackPx = $state(0);
   let recentlyActive = $state(false);
 
@@ -85,7 +101,7 @@
   // and announce a second start, after which the first pointer's moves drive —
   // and its release ends — a gesture that belongs to the second, leaving it
   // captured with no end callback and the owner free to re-stick mid-gesture.
-  let drag = $state<{ pointerId: number; origin: DragOrigin } | null>(null);
+  let drag = $state.raw<ActiveDrag | null>(null);
 
   let dragging = $derived(drag !== null);
   let thumb = $derived(thumbMetrics(metrics, trackPx));
@@ -105,9 +121,101 @@
     }, IDLE_HIDE_MS);
   }
 
-  function sample(): void {
-    if (target) metrics = readScrollMetrics(target);
+  function sample(sampleTarget = target): void {
+    if (sampleTarget) metrics = readScrollMetrics(sampleTarget);
     if (trackEl) trackPx = trackEl.clientHeight;
+  }
+
+  function isAtBottom(value: ScrollMetrics): boolean {
+    return value.scrollHeight - value.scrollTop - value.clientHeight <= 1;
+  }
+
+  function throwGestureErrors(errors: unknown[], message: string): void {
+    if (errors.length === 0) return;
+    if (errors.length === 1) throw errors[0];
+    throw new AggregateError(errors, message);
+  }
+
+  function reportTargetCleanupFailure(error: unknown): void {
+    let detail = 'unprintable cleanup failure';
+    try {
+      detail = error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+    } catch (conversionError) {
+      // The diagnostic itself must not strand the replacement effect when a
+      // hostile thrown value has a throwing string conversion.
+      console.error(
+        '[overlay-scrollbar] cleanup failure could not be converted to text',
+        conversionError,
+      );
+    }
+    const message = 'overlay scrollbar target cleanup failed';
+    console.warn(`[overlay-scrollbar] ${message}`, detail);
+    reportFrontendDiagnostic(message, detail);
+  }
+
+  /** Run a complete non-drag gesture without leaving its owner half-notified. */
+  function runDiscreteGesture(scrollTarget: HTMLElement, move: () => void): void {
+    const start = onUserScrollStart;
+    const end = onUserScrollEnd;
+    const errors: unknown[] = [];
+    try {
+      start?.();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 0) {
+      try {
+        move();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    let finalMetrics: ScrollMetrics | undefined;
+    try {
+      finalMetrics = readScrollMetrics(scrollTarget);
+      if (target === scrollTarget) metrics = finalMetrics;
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      end?.(finalMetrics ? isAtBottom(finalMetrics) : false);
+    } catch (error) {
+      errors.push(error);
+    }
+    throwGestureErrors(errors, 'overlay scrollbar gesture failed');
+  }
+
+  /** Finish the gesture against the surface and callback that started it. */
+  function finishDrag(active: ActiveDrag): void {
+    if (drag !== active) return;
+    drag = null;
+    const errors: unknown[] = [];
+    try {
+      if (active.captureOwner.hasPointerCapture(active.pointerId)) {
+        active.captureOwner.releasePointerCapture(active.pointerId);
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    let finalMetrics: ScrollMetrics | undefined;
+    try {
+      finalMetrics = readScrollMetrics(active.target);
+      // A target transition must not publish the old target's geometry as the
+      // replacement's. The new owner supplies its own first geometry sample.
+      if (target === active.target) metrics = finalMetrics;
+    } catch (error) {
+      errors.push(error);
+    }
+    if (active.notifyEnd) {
+      try {
+        active.onEnd?.(finalMetrics ? isAtBottom(finalMetrics) : false);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    throwGestureErrors(errors, 'overlay scrollbar drag finalization failed');
   }
 
   $effect(() => {
@@ -116,6 +224,10 @@
       metrics = EMPTY_METRICS;
       return;
     }
+    // Metrics belong to one controlled target. Hide the thumb until the
+    // replacement's owner delivers geometry instead of painting the prior
+    // target's range as a clickable control for a different surface.
+    metrics = EMPTY_METRICS;
     function onScroll(): void {
       // A streaming surface pins itself to new content on every chunk, and
       // each pin is a scroll event. Fading on those would mean never fading.
@@ -129,44 +241,71 @@
       if (recentlyActive || dragging) sample();
     }
     el.addEventListener('scroll', onScroll, { passive: true });
-    // Both edges move the thumb: the scroller resizing (cap inflation,
-    // window resize) and the content growing inside it (streaming, a
-    // mounted chunk). Neither implies the other. Same hidden gate as
-    // onScroll — content growth per streamed chunk fires this too.
-    //
-    // The FIRST delivery is the mount sample. ResizeObserver reports
-    // every element once right after observe, and that delivery runs
-    // post-layout, where these reads are free. The synchronous sample()
-    // this replaces ran while the surrounding mount was still writing
-    // DOM, so every instance forced a layout flush — measured
-    // 2026-08-26 at 176ms of scrollTop reads across 10 cold thread
-    // switches, the dominant thread-switch cost. Interaction paths
-    // never see the gap: pointerdown/wheel sample() before reading.
-    let mountSample = true;
-    const sizes = new ResizeObserver(() => {
-      if (mountSample) {
-        mountSample = false;
+    // The surface owner reports both content and viewport geometry after it
+    // has processed the delivery. That one source replaces observers on the
+    // scroller and track as well as the old content observer: an auto-height
+    // nested scroller is an ancestor of its measured rows, so observing it
+    // from here recreates the same deferred-ancestor ResizeObserver loop.
+    // The first owner delivery is normally the post-layout mount sample. A
+    // one-shot observer armed at the next frame covers a stable owner that
+    // delivered before this child subscribed. Its initial delivery runs after
+    // layout, unlike a requestAnimationFrame geometry read, which would force
+    // layout before paint. Hidden bars skip every later sample; interaction
+    // paths sample before they read.
+    let sampledGeometry = false;
+    let mountFallback: ResizeObserver | undefined;
+    const unsubscribeContentGeometry = contentGeometry.subscribe((scrollable) => {
+      if (!sampledGeometry || recentlyActive || dragging) {
+        sampledGeometry = true;
+        mountFallback?.disconnect();
+        mountFallback = undefined;
         sample();
-        return;
+      } else if (scrollable !== thumb.visible) {
+        // Hidden bars keep full position/size geometry quiet, but their hit
+        // target still has to appear and disappear when overflow crosses
+        // zero. The owner derives this boolean from geometry it already has;
+        // only the edge pays a sample and a reactive update.
+        sample();
       }
-      if (recentlyActive || dragging) sample();
     });
-    sizes.observe(el);
-    if (content) sizes.observe(content);
-    if (trackEl) sizes.observe(trackEl);
+    const initialSampleFrame = requestAnimationFrame(() => {
+      if (sampledGeometry) return;
+      const fallbackTarget = trackEl;
+      if (!fallbackTarget) {
+        throw new Error('OverlayScrollbar mount fallback requires its track element');
+      }
+      mountFallback = new ResizeObserver(() => {
+        mountFallback?.disconnect();
+        mountFallback = undefined;
+        if (sampledGeometry) return;
+        sampledGeometry = true;
+        sample();
+      });
+      mountFallback.observe(fallbackTarget);
+    });
     return () => {
       el.removeEventListener('scroll', onScroll);
-      sizes.disconnect();
+      unsubscribeContentGeometry();
+      cancelAnimationFrame(initialSampleFrame);
+      mountFallback?.disconnect();
+      const active = drag;
+      if (active?.target === el) {
+        try {
+          finishDrag(active);
+        } catch (error) {
+          // Throwing from an effect teardown prevents Svelte from running the
+          // replacement effect, stranding the control on the old target. The
+          // finalizer has already cleared capture and drag state. Record the
+          // callback/geometry failure, then let the new owner attach.
+          reportTargetCleanupFailure(error);
+        }
+      }
     };
   });
 
   $effect(() => () => {
     if (idleHandle !== undefined) clearTimeout(idleHandle);
   });
-
-  function atBottom(): boolean {
-    return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= 1;
-  }
 
   let scrolledPercent = $derived.by(() => {
     const scrollable = metrics.scrollHeight - metrics.clientHeight;
@@ -185,8 +324,10 @@
   function onPointerDown(event: PointerEvent): void {
     // A drag owns the control until it ends: a second pointer must neither
     // take it over nor page the surface out from under it.
-    if (!target || !trackEl || event.button !== 0 || drag) return;
-    sample();
+    const scrollTarget = target;
+    const captureOwner = trackEl;
+    if (!scrollTarget || !captureOwner || event.button !== 0 || drag) return;
+    sample(scrollTarget);
     if (!thumb.visible) return;
     const offsetY = offsetWithinTrack(event.clientY);
     const onThumb = offsetY >= thumb.topPx && offsetY <= thumb.topPx + thumb.heightPx;
@@ -197,28 +338,54 @@
       // intent a drag does — as a complete gesture, since a click has no
       // release to wait for. Without it a bottom-following surface never
       // learns the reader left, and its next growth pulls them back down.
-      onUserScrollStart?.();
-      target.scrollTop = scrollTopForTrackClick(offsetY, metrics, trackPx);
-      sample();
-      onUserScrollEnd?.(atBottom());
+      runDiscreteGesture(scrollTarget, () => {
+        scrollTarget.scrollTop = scrollTopForTrackClick(offsetY, metrics, trackPx);
+      });
       return;
     }
 
     event.preventDefault();
-    drag = {
+    const active: ActiveDrag = {
       pointerId: event.pointerId,
       origin: { scrollTop: metrics.scrollTop, pointerY: event.clientY },
+      target: scrollTarget,
+      captureOwner,
+      onEnd: onUserScrollEnd,
+      notifyEnd: false,
     };
+    drag = active;
     // Capture keeps the drag alive once the pointer leaves the 6px strip,
     // which it will immediately — nobody tracks a thin bar precisely.
-    trackEl.setPointerCapture(event.pointerId);
-    onUserScrollStart?.();
+    try {
+      captureOwner.setPointerCapture(event.pointerId);
+      // Set this before invoking user code. A callback can update its owner
+      // and then throw, so the rollback still has to balance that transition.
+      active.notifyEnd = true;
+      onUserScrollStart?.();
+    } catch (startError) {
+      try {
+        finishDrag(active);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [startError, cleanupError],
+          'overlay scrollbar drag start failed and rollback failed',
+        );
+      }
+      throw startError;
+    }
   }
 
   function onPointerMove(event: PointerEvent): void {
-    if (!drag || !target || event.pointerId !== drag.pointerId) return;
-    target.scrollTop = scrollTopForDrag(drag.origin, event.clientY, metrics, trackPx);
-    sample();
+    const active = drag;
+    if (!active || event.pointerId !== active.pointerId) return;
+    // The target effect normally finalizes first. This guard also covers a
+    // prop change made synchronously during the same input turn.
+    if (target !== active.target) {
+      finishDrag(active);
+      return;
+    }
+    active.target.scrollTop = scrollTopForDrag(active.origin, event.clientY, metrics, trackPx);
+    sample(active.target);
     markActive();
   }
 
@@ -231,14 +398,11 @@
   // re-stick. Idempotent: the first call clears the state the rest test, and
   // only the pointer that started the drag can end it.
   function endDrag(event: PointerEvent): void {
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    drag = null;
-    // Already released when this ran FROM `lostpointercapture`.
-    if (trackEl?.hasPointerCapture(event.pointerId)) {
-      trackEl.releasePointerCapture(event.pointerId);
-    }
-    sample();
-    onUserScrollEnd?.(atBottom());
+    const active = drag;
+    if (!active || event.pointerId !== active.pointerId) return;
+    // `hasPointerCapture` is already false when this runs from
+    // `lostpointercapture`, so the shared finalizer is safe for every exit.
+    finishDrag(active);
   }
 
   // The bar sits BESIDE the surface it drives, so a wheel over the strip never
@@ -252,13 +416,14 @@
   // outer machine reacts normally. That is the same rule attribution applies to
   // a nested box, which is why the edge test is the same function.
   function onWheel(event: WheelEvent): void {
-    if (!target || event.deltaY === 0) return;
+    const scrollTarget = target;
+    if (!scrollTarget || event.deltaY === 0) return;
     // Browser zoom, not a scroll.
     if (event.ctrlKey) return;
     // Metrics can be stale while the bar is hidden (hidden bars skip
     // every sample); both the visibility test and the wheel target read
     // from them.
-    sample();
+    sample(scrollTarget);
     if (!thumb.visible) return;
     if (drag) {
       // The drag owns the position until it ends. A wheel would move the
@@ -267,14 +432,13 @@
       event.stopPropagation();
       return;
     }
-    if (!canConsumeDelta(target, event.deltaY)) return;
+    if (!canConsumeDelta(scrollTarget, event.deltaY)) return;
     event.preventDefault();
     event.stopPropagation();
-    onUserScrollStart?.();
-    target.scrollTop = scrollTopForWheel(metrics, event.deltaY, event.deltaMode);
-    sample();
-    markActive();
-    onUserScrollEnd?.(atBottom());
+    runDiscreteGesture(scrollTarget, () => {
+      scrollTarget.scrollTop = scrollTopForWheel(metrics, event.deltaY, event.deltaMode);
+      markActive();
+    });
   }
 </script>
 

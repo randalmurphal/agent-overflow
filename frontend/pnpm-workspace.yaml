@@ -24,4 +24,5 @@ overrides:
 
 patchedDependencies:
   '@lucide/svelte@1.28.0': patches/@lucide__svelte@1.28.0.patch
+  marked@16.4.2: patches/marked@16.4.2.patch
   svelte@5.56.8: patches/svelte@5.56.8.patch

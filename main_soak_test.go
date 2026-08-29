@@ -59,11 +59,30 @@ func TestParseFlagsSoakConflicts(t *testing.T) {
 		{"--harness", "--data-dir", "/tmp/x", "--autopilot"},
 		{"--launcher-pid", "4242"},
 		{"--soak", "--launcher-pid", "-4242"},
+		{"--isolated-profile", "perf"},
+		{"--soak", "--isolated-profile", "unknown"},
+		{"--soak", "--isolated-profile", "perf", "--autopilot"},
 	}
 	for _, args := range cases {
 		if _, err := parseFlags(args); err == nil {
 			t.Errorf("parseFlags(%v) accepted conflicting flags, want error", args)
 		}
+	}
+}
+
+func TestParseFlagsPerfUsesItsOwnRootAndIdentity(t *testing.T) {
+	flags, err := parseFlags([]string{"--soak", "--isolated-profile", "PERF", "--print-url-fd", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags.dataDir != perfDefaultDataRoot() {
+		t.Fatalf("perf data dir = %q, want %q", flags.dataDir, perfDefaultDataRoot())
+	}
+	if flags.dataDir == harnessDefaultDataRoot() || flags.dataDir == soakDefaultDataRoot() {
+		t.Fatalf("perf data dir collides with another launcher profile: %q", flags.dataDir)
+	}
+	if got := isolatedBootMode(flags); got != instanceinfo.ModePerf {
+		t.Fatalf("perf mode = %q, want %q", got, instanceinfo.ModePerf)
 	}
 }
 

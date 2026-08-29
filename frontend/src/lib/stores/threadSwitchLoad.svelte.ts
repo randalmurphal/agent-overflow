@@ -116,6 +116,7 @@ export interface ThreadSwitchLoadOptions {
     options?: {
       disposeDropped?: boolean;
       exhaustedScope?: ReadonlySet<string>;
+      afterCommit?: () => void;
     },
   ): boolean;
   /** Pane switch generation — captured at switch start, compared after every await. */
@@ -264,6 +265,24 @@ export function createThreadSwitchLoad(
   options: ThreadSwitchLoadOptions,
 ): ThreadSwitchLoad {
   const { paneId } = options;
+
+  function runWindowCommitEffects(
+    context: string,
+    effects: readonly (() => void)[],
+  ): void {
+    const errors: unknown[] = [];
+    for (const effect of effects) {
+      try {
+        effect();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, `${context} failed`);
+    }
+  }
+
   /**
    * Spinner-flash gate. `loading` flips true the instant `switchThread`
    * starts so the rest of the pane sees "load in progress", but the
@@ -653,30 +672,27 @@ export function createThreadSwitchLoad(
   function resetIncomingPaneState(newThread: Thread): void {
     failedHistoryLoad = null;
     historyRetryPromise = null;
-    options.pendingInteractiveState.clear();
-    options.setContextWindow(seedContextWindow(newThread));
-    options.setProviderBanner(undefined);
-    options.setProviderSessionAccount(null);
-    options.clearPaneError();
-    options.setSendInFlight(false);
-    options.optimisticItemIds.clear();
-    options.channelState.clear();
-    options.designState.reset();
-    // Bottom-drawer state is pane-scoped: opening the terminal on thread
-    // A should not spill into thread B.
-    options.setShowTerminal(false);
-
-    // Turn-lifecycle reset. The active-turn registry lives in
-    // threadStatuses.svelte.ts and is keyed by threadId, so a thread
-    // switch does NOT clear it — a turn that's still in flight on
-    // another thread keeps lighting the working indicator when the user
-    // comes back. latestSettledTurn is per-pane; rehydrate it from
-    // ListRecentTurns OR from the cache when available. Clear first so
-    // a rehydration failure leaves the pane in a consistent state.
-    options.setLatestSettledTurn(null);
-    options.setEffectiveModel('');
-
-    options.liveTodoState.resetForThread(newThread.id);
+    runWindowCommitEffects('incoming pane reset', [
+      () => options.pendingInteractiveState.clear(),
+      () => options.setContextWindow(seedContextWindow(newThread)),
+      () => options.setProviderBanner(undefined),
+      () => options.setProviderSessionAccount(null),
+      () => options.clearPaneError(),
+      () => options.setSendInFlight(false),
+      () => options.optimisticItemIds.clear(),
+      () => options.channelState.clear(),
+      () => options.designState.reset(),
+      // Bottom-drawer state is pane-scoped: opening the terminal on thread
+      // A should not spill into thread B.
+      () => options.setShowTerminal(false),
+      // Turn-lifecycle reset. The active-turn registry lives in
+      // threadStatuses.svelte.ts and is keyed by threadId, so a thread
+      // switch does NOT clear it. latestSettledTurn is pane-scoped and is
+      // hydrated from ListRecentTurns or the cache below.
+      () => options.setLatestSettledTurn(null),
+      () => options.setEffectiveModel(''),
+      () => options.liveTodoState.resetForThread(newThread.id),
+    ]);
   }
 
   function placeholderHasTerminalState(placeholderId: string): boolean {
@@ -738,44 +754,51 @@ export function createThreadSwitchLoad(
       scrollSnapshot?.kind === 'anchor' ? scrollSnapshot.itemId : '';
 
     options.setLoading(true);
-    // The incoming window is nothing this pane has had attested yet. An
-    // L1 snapshot carries its own pairing, so it can re-establish the
-    // attestation immediately — but only when the stamp it was cached
-    // with was itself sync-attested.
-    windowAttestation = null;
-    if (cached) {
-      options.installTimelineItems(cached.items);
-      options.subagentMemory.restoreFolds(cached.subagentFolds);
-      options.subagentMemory.clearWindowDerivedState();
-      options.timelineWindow.installFromSnapshot(cached);
-      options.setLatestSettledTurn(cached.latestSettledTurn);
-      if (cached.historyStamp?.attested) {
-        attestCurrentWindow(cached.historyStamp.epoch, cached.historyStamp.rev);
-      }
-    } else {
-      options.installTimelineItems([]);
-      options.subagentMemory.resetForFreshThread();
-      options.timelineWindow.resetForFreshThread();
-    }
-    options.rowUiState.clear();
-    options.activityRuns.clear();
-    options.streamingReveal.disposeAll();
-    // Reset the live-content stamp so a recent stamp from the OUTGOING
-    // thread can't bleed into the incoming one. Without this, switching
-    // away from an actively-streaming thread leaves `lastLiveContentAt`
-    // recent; the warm gate re-flips within the 500ms hold window, and
-    // the incoming (settled) thread's late async-typesetting reflow would
-    // read 'spring' off the stale stamp and chase its settled content.
-    // A streaming incoming thread re-stamps on its first reveal/delta.
-    options.resetLiveContentStamp();
-    // Arm the live-arrival ledger HERE, not in the load leg: the pane is
-    // already committed to the incoming thread, so a wire upsert can
-    // land before the leg's first await resolves. Rows recorded from
-    // this point survive the attested page that replaces the paint (see
-    // reconcileSnapshotPage) — without the early arm, a thread opened while it
-    // was streaming would lose the row it was streaming into.
-    liveTouchedDuringSync = new Set();
-    liveRemovedDuringSync = new Set();
+    const finishInstall = (): void => {
+      runWindowCommitEffects('incoming thread window installation', [
+        // The incoming window is nothing this pane has had attested yet. An
+        // L1 snapshot can re-establish the attestation below, but only when
+        // its stamp was itself sync-attested.
+        () => {
+          windowAttestation = null;
+        },
+        () => resetIncomingPaneState(newThread),
+        () => commitIncomingThread(newThread),
+        ...(cached
+          ? [
+              () => options.subagentMemory.restoreFolds(cached.subagentFolds),
+              () => options.subagentMemory.clearWindowDerivedState(),
+              () => options.timelineWindow.installFromSnapshot(cached),
+              () => options.setLatestSettledTurn(cached.latestSettledTurn),
+              () => {
+                if (cached.historyStamp?.attested) {
+                  attestCurrentWindow(
+                    cached.historyStamp.epoch,
+                    cached.historyStamp.rev,
+                  );
+                }
+              },
+            ]
+          : [
+              () => options.subagentMemory.resetForFreshThread(),
+              () => options.timelineWindow.resetForFreshThread(),
+            ]),
+        () => options.rowUiState.clear(),
+        () => options.activityRuns.clear(),
+        // A recent outgoing live-content stamp must not make settled incoming
+        // content spring. An active incoming turn stamps its first delta.
+        () => options.resetLiveContentStamp(),
+        // Arm before the first await. A wire upsert that lands during sync
+        // must survive the page reconciliation that follows.
+        () => {
+          liveTouchedDuringSync = new Set();
+          liveRemovedDuringSync = new Set();
+        },
+      ]);
+    };
+    options.installTimelineItems(cached?.items ?? [], {
+      afterCommit: finishInstall,
+    });
     return { cached, sliceAnchorId };
   }
 
@@ -811,15 +834,20 @@ export function createThreadSwitchLoad(
     // thread, so a mounted companion body never re-renders against a
     // thread it wasn't opened for.
     const outgoing = options.getThread();
-    if (outgoing && outgoing.id !== newThread.id) {
-      closeCompanionsForSource(paneId);
-    }
-    options.clearDraftPlaceholder();
-    options.setThread(newThread);
-    if (newThread.mode !== 'design') {
-      const preview = companionForSource(paneId, 'design-preview');
-      if (preview) closeCompanion(preview.paneId);
-    }
+    runWindowCommitEffects('incoming thread commit', [
+      () => {
+        if (outgoing && outgoing.id !== newThread.id) {
+          closeCompanionsForSource(paneId);
+        }
+      },
+      () => options.clearDraftPlaceholder(),
+      () => options.setThread(newThread),
+      () => {
+        if (newThread.mode === 'design') return;
+        const preview = companionForSource(paneId, 'design-preview');
+        if (preview) closeCompanion(preview.paneId);
+      },
+    ]);
   }
 
   /**
@@ -843,10 +871,20 @@ export function createThreadSwitchLoad(
     coldLoadSyncStatus(paneId, response.status);
     if (response.status === 'gone') {
       dropCachedWindow(threadId);
-      options.installTimelineItems([], { disposeDropped: true });
-      options.timelineWindow.resetAfterLoadError();
-      options.setLatestSettledTurn(null);
-      options.setPaneError('This thread no longer exists.', 'general');
+      options.installTimelineItems([], {
+        disposeDropped: true,
+        afterCommit: () => {
+          runWindowCommitEffects('gone thread window reset', [
+            () => options.timelineWindow.resetAfterLoadError(),
+            () => options.setLatestSettledTurn(null),
+            () =>
+              options.setPaneError(
+                'This thread no longer exists.',
+                'general',
+              ),
+          ]);
+        },
+      });
       return;
     }
     const page = response.page;
@@ -862,23 +900,26 @@ export function createThreadSwitchLoad(
       // installed — their later deltas stay silent, and hydration
       // renders them when the anchor pages back in.
       options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-      options.installTimelineItems(next.items, { disposeDropped: true });
-      options.timelineWindow.applyWindowMetadataFromPaged(page);
-      // The warm-gate re-arm belongs to a FIRST content mount only. A
-      // page landing over an already-painted window (L1 or replica) is a
-      // reconcile the reader may already be looking at; re-closing the
-      // gate there would blank content that is on screen.
-      //
-      // A lineage change is the exception that proves it: the painted
-      // rows belong to a history the backend no longer has, so this page
-      // does not reconcile them, it replaces all of them. That is a
-      // first content mount in everything but name, and it re-arms —
-      // synchronously with the mutation, before the flush that mounts
-      // the rows (see armInitialSliceWarmup / frontend-scroll.md).
-      if (paintSource === 'none' || lineageChanged) {
-        const rearmed = options.armInitialSliceWarmup();
-        coldLoadItemsApplied(paneId, options.getItems().length, rearmed);
-      }
+      options.installTimelineItems(next.items, {
+        disposeDropped: true,
+        afterCommit: () => {
+          runWindowCommitEffects('synced thread window metadata', [
+            () => options.timelineWindow.applyWindowMetadataFromPaged(page),
+            () => {
+              // A page over an existing attested paint is a reconcile, not a
+              // first mount. An empty paint or a new lineage re-arms before
+              // the flush that mounts the replacement rows.
+              if (paintSource !== 'none' && !lineageChanged) return;
+              const rearmed = options.armInitialSliceWarmup();
+              coldLoadItemsApplied(
+                paneId,
+                options.getItems().length,
+                rearmed,
+              );
+            },
+          ]);
+        },
+      });
     }
     // Attested last: the stamp describes the rows now installed, so it
     // must not be recorded before they are. A page is a full attestation
@@ -1030,19 +1071,31 @@ export function createThreadSwitchLoad(
         // strictly better than blanking it; the next open re-converges.
         return;
       }
-      options.installTimelineItems([]);
-      options.timelineWindow.resetAfterLoadError();
-      failedHistoryLoad = {
-        threadId,
-        generation: gen,
-        anchorItemId: sliceAnchorId,
-      };
-      options.setPaneError(
-        isTemporarilyUnavailableError(err)
-          ? 'Thread history took too long to load.'
-          : `Failed to load thread items: ${errString(err)}`,
-        'history-load',
-      );
+      try {
+        options.installTimelineItems([], {
+          afterCommit: () => {
+            runWindowCommitEffects('failed thread window reset', [
+              () => options.timelineWindow.resetAfterLoadError(),
+              () => {
+                failedHistoryLoad = {
+                  threadId,
+                  generation: gen,
+                  anchorItemId: sliceAnchorId,
+                };
+              },
+              () =>
+                options.setPaneError(
+                  isTemporarilyUnavailableError(err)
+                    ? 'Thread history took too long to load.'
+                    : `Failed to load thread items: ${errString(err)}`,
+                  'history-load',
+                ),
+            ]);
+          },
+        });
+      } catch (resetError) {
+        console.error('Failed to reset the thread window after sync failure:', resetError);
+      }
     } finally {
       // Only when this leg is still the current one: a newer switch has
       // already armed its own set, and clearing it here would blind that
@@ -1187,7 +1240,12 @@ export function createThreadSwitchLoad(
     let liveStateHydrationToken = 0;
     try {
       snapshotOutgoingPane(newThread.id);
-      resetIncomingPaneState(newThread);
+      // Dispose before any incoming-state mutation. The operation clears all
+      // reveal state even when a sink reset reports an error, so a failure can
+      // safely abort here with the outgoing thread and window still paired.
+      // It must also precede the incoming install. Otherwise that install's
+      // gate finalizer derives an outgoing frontier against incoming rows.
+      options.streamingReveal.disposeAll();
       const { cached, sliceAnchorId } = installCacheOrFreshState(newThread);
       // Cold-load instrumentation (dev-trace only; see coldLoadTrace.ts).
       // Draft-placeholder flows (startDraftPlaceholder /
@@ -1200,7 +1258,6 @@ export function createThreadSwitchLoad(
       coldLoadSwitchStart(paneId, newThread.id, cached ? 'cache-restore' : 'fetch');
       armSpinnerThreshold();
       liveStateHydrationToken = beginThreadLiveStateHydration(newThread.id);
-      commitIncomingThread(newThread);
       const result = await runParallelLoad(
         newThread,
         gen,
@@ -1287,11 +1344,19 @@ export function createThreadSwitchLoad(
           refreshMutations.removedIds,
         );
         options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-        options.installTimelineItems(next.items, { disposeDropped: true });
-        options.timelineWindow.applyWindowMetadataFromPaged(paged);
-        if (changedDuringFetch) {
-          options.timelineWindow.refreshCursorsAfterTailAppend();
-        }
+        options.installTimelineItems(next.items, {
+          disposeDropped: true,
+          afterCommit: () => {
+            runWindowCommitEffects('refreshed thread window metadata', [
+              () => options.timelineWindow.applyWindowMetadataFromPaged(paged),
+              () => {
+                if (changedDuringFetch) {
+                  options.timelineWindow.refreshCursorsAfterTailAppend();
+                }
+              },
+            ]);
+          },
+        });
       } catch (err) {
         if (!refreshIsCurrent()) return;
         console.error('Failed to refresh thread items after gap:', err);

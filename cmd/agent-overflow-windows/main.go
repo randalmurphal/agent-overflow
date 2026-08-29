@@ -103,8 +103,9 @@ var launcherMode = "prod"
 // AGENT_OVERFLOW_PROFILE env var), set once in main() right after flag
 // parsing and read-only afterwards. Empty is the normal instance;
 // appidentity.ProfileHarness is the isolated instance an agent or a
-// developer drives, and appidentity.ProfileSoak is that same instance
-// with the soak autopilot armed.
+// developer drives, appidentity.ProfileSoak is that same instance with the
+// soak autopilot armed, and appidentity.ProfilePerf is the isolated target
+// reserved for destructive renderer benchmarks.
 //
 // It is a package variable for the same reason launcherMode is: every
 // per-instance name (single-instance id, title, WebView2 profile, CDP
@@ -758,6 +759,8 @@ func profileBackendArgs() []string {
 		return []string{"--soak", "--launcher-pid", strconv.Itoa(os.Getpid())}
 	case appidentity.ProfileSoak:
 		return []string{"--soak", "--autopilot", "--launcher-pid", strconv.Itoa(os.Getpid())}
+	case appidentity.ProfilePerf:
+		return []string{"--soak", "--isolated-profile", "perf", "--launcher-pid", strconv.Itoa(os.Getpid())}
 	default:
 		return nil
 	}
@@ -1394,8 +1397,8 @@ func wslSingleInstanceMode() string {
 //
 // mode adds the loopback CDP attach point so a developer can talk
 // Chrome DevTools / wsjson to the WebView2 from inside WSL, on a
-// per-mode port (appidentity.DevToolsPort — dev and soak differ so both
-// can be attached at once). The protocol is unauthenticated, so
+// per-mode port (appidentity.DevToolsPort, distinct for every diagnostic
+// profile so all can be attached at once). The protocol is unauthenticated, so
 // production gets no port at all.
 //
 // Memory experiments tried and pulled back: --single-process (~290 MB
@@ -1556,7 +1559,7 @@ func rotateChromeDebugLog(dataDir string) {
 // launcher-<profile>.log, never on the developer's.
 func wailsLogLevel(mode string) slog.Level {
 	switch mode {
-	case appidentity.ModeSoak, appidentity.ModeHarness:
+	case appidentity.ModeSoak, appidentity.ModeHarness, appidentity.ModePerf:
 		return slog.LevelDebug
 	case appidentity.ModeDev:
 		return slog.LevelInfo

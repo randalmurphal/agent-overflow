@@ -6,6 +6,8 @@ export const markedCitations = {
         return i === -1 ? -1 : i;
     },
     tokenizer(src) {
+        if (src.charCodeAt(0) !== 91)
+            return undefined;
         // Match inline citations like [1], [ref], [1] [2], [ref] [ref2], etc.
         // Requires non-empty bracket contents and spaces between adjacent citation brackets
         const match = src.match(/^\[[^\][]+\](?:\s+\[[^\][]+\])*/);

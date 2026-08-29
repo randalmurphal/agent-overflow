@@ -217,8 +217,8 @@ func profileOneTurn(
 	// is the WIRE finishing; the reveal queue then hands the result to the
 	// reader over several more seconds, and that tail is main-thread work
 	// like any other — a profile that stopped at turn completion attributed
-	// none of it. Degradations (an older page, a drain past the bound) are
-	// a note, never a failed profile: the samples already taken are good.
+	// none of it. A missing drain signal or a drain past the bound fails the
+	// profile because the captured window would not cover what it claims.
 	if err := waitForRevealDrain(ctx, e, client, benchDrainTimeout); err != nil {
 		_, _ = stop()
 		return nil, err

@@ -12,6 +12,9 @@ func TestAppTitle(t *testing.T) {
 	if got := AppTitle(""); got != "Agent Overflow" {
 		t.Fatalf("empty mode title = %q", got)
 	}
+	if got := AppTitle(ModePerf); got != "Agent Overflow (perf)" {
+		t.Fatalf("perf title = %q", got)
+	}
 }
 
 func TestSingleInstanceID(t *testing.T) {
@@ -25,5 +28,8 @@ func TestSingleInstanceID(t *testing.T) {
 	}
 	if prod != "com.agentoverflow.desktop" {
 		t.Fatalf("prod ID = %q", prod)
+	}
+	if got := SingleInstanceID("desktop", ModePerf); got != "com.agentoverflow.desktop.perf" {
+		t.Fatalf("perf ID = %q", got)
 	}
 }

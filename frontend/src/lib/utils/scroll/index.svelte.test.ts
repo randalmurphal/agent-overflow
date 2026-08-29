@@ -817,6 +817,29 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
+    it('reads scroll geometry once in its scroll event for downstream sharing', () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      let reads = 0;
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        configurable: true,
+        get: () => {
+          reads++;
+          return geom.scrollTop;
+        },
+        set: (value: number) => {
+          geom.scrollTop = Math.max(
+            0,
+            Math.min(value, geom.scrollHeight - geom.clientHeight),
+          );
+        },
+      });
+
+      fireScroll(scrollEl);
+
+      expect(reads).toBe(1);
+    });
+
     it('user scroll at a previously written value after token TTL expiry is processed, not swallowed', async () => {
       // Regression guard for the deleted `ignoreScrollToTop` exact tag:
       // it had no TTL, so a write whose scroll event never fired left a
@@ -6862,6 +6885,8 @@ describe('createUseStickToBottomController — external content-geometry source'
 
   beforeEach(() => {
     resetScrollIntentModuleStateForTest();
+    setUiRenderTraceEnabled(false);
+    clearUiRenderTrace();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
@@ -6893,6 +6918,8 @@ describe('createUseStickToBottomController — external content-geometry source'
 
   afterEach(() => {
     controller.detach();
+    setUiRenderTraceEnabled(false);
+    clearUiRenderTrace();
     scrollEl.remove();
     if (originalRO) {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
@@ -7215,6 +7242,37 @@ describe('createUseStickToBottomController — external content-geometry source'
       return () => reads;
     }
 
+    function countLayoutRangeReads(): () => number {
+      let reads = 0;
+      for (const prop of ['scrollHeight', 'clientHeight'] as const) {
+        Object.defineProperty(scrollEl, prop, {
+          configurable: true,
+          get: () => {
+            reads++;
+            return geom[prop];
+          },
+        });
+      }
+      return () => reads;
+    }
+
+    function countScrollTopAccesses(): { reads: () => number; writes: () => number } {
+      let reads = 0;
+      let writes = 0;
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        configurable: true,
+        get: () => {
+          reads++;
+          return geom.scrollTop;
+        },
+        set: (value: number) => {
+          writes++;
+          geom.scrollTop = Math.max(0, Math.min(value, geom.scrollHeight - geom.clientHeight));
+        },
+      });
+      return { reads: () => reads, writes: () => writes };
+    }
+
     it('stable viewport: the sync-pin target comes from sample geometry, not a layout read', () => {
       // The DOM has 200px of padding. clientHeight is the 600px padding
       // box while the virtualizer reports the 400px content box.
@@ -7332,6 +7390,26 @@ describe('createUseStickToBottomController — external content-geometry source'
       deliverWithViewport(1000, 400);
       expect(reads()).toBe(0);
       expect(geom.scrollTop).toBe(400);
+    });
+
+    it('does not reread layout range on each external-geometry spring frame', async () => {
+      liveContent = true;
+      deliverWithViewport(800, 400);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      const layoutReads = countLayoutRangeReads();
+      const scrollTopAccesses = countScrollTopAccesses();
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      deliverWithViewport(1200, 400);
+      expect(layoutReads()).toBe(0);
+
+      for (let frame = 0; frame < 6; frame++) await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(800);
+      expect(layoutReads()).toBe(0);
+      expect(scrollTopAccesses.reads()).toBe(scrollTopAccesses.writes());
     });
 
     it('cache synced while floored (content shorter than viewport) stays on real reads', () => {

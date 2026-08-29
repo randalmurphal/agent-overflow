@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,18 +19,21 @@ import (
 
 // A bench run is a scripted workload driven against a REAL attached page,
 // with the perf meters armed around it. Three things make it a bench
-// rather than a soak: it seeds its own fixture, it runs to a completion
-// signal instead of forever, and it writes a report a later run can be
-// compared against.
+// rather than a soak: it seeds its own fixture, has an explicit end condition,
+// and writes a report a later run can be compared against.
 //
-// WHICH COMPLETION SIGNAL. Two candidates exist, and they answer different
+// WHICH END CONDITION. Ordinary workloads wait for a completion signal. Two
+// candidates exist, and they answer different
 // questions. `harness:mock`'s `scenario_done` says the MOCK finished
 // writing its script, which is upstream of everything a bench measures:
 // the app has not yet parsed the tail, triaged it, persisted it, or
 // rendered it. `provider:turn_completed` is emitted by triage after the
 // terminal `result` envelope has been classified and the round closed, so
 // it is the first moment the whole pipeline under test is done. That is
-// the one this waits on, per thread id. A short settle follows, so the
+// the one those workloads wait on, per thread id. A runner-timed workload
+// instead proves every pane is still rendering throughout its requested
+// duration, then interrupts the infinite mock turn through the production
+// API. A short settle follows either path, so the
 // frames the tail produced land in a sample before the meters stop.
 //
 // WHY IT DOES NOT BOOT AN INSTANCE. Perf needs a page: the frame meters
@@ -50,7 +54,13 @@ const (
 	// benchBridgeTimeout bounds the "is a page attached" probe and every
 	// poll that waits for the page to catch up.
 	benchBridgeTimeout = 30 * time.Second
-	benchDirName       = "bench"
+	// The default is the first bounded stage, not the final endurance claim.
+	// Longer runs are explicit through --duration and pair with the external
+	// WebView process ceiling. An accidental bare command must not spend ten
+	// minutes growing an unbounded synthetic response.
+	benchActiveDefaultDuration = 30 * time.Second
+	benchActiveMinimumDuration = 30 * time.Second
+	benchDirName               = "bench"
 )
 
 // benchWorkload is one named workload: the fixture it needs and the thing
@@ -61,7 +71,14 @@ type benchWorkload struct {
 	// that drives no provider turn.
 	Scenario string
 	Summary  string
-	seed     func(run *benchRun) (json.RawMessage, error)
+	// DefaultDuration marks a runner-timed workload. Zero means its own
+	// completion event ends it. A positive value means the driver keeps the
+	// turn active for this long, then interrupts it cleanly.
+	DefaultDuration time.Duration
+	// MinimumDuration rejects a runner-timed sample too short to exercise the
+	// behavior it claims. It must be positive whenever DefaultDuration is.
+	MinimumDuration time.Duration
+	seed            func(run *benchRun) (json.RawMessage, error)
 	// prepare runs after the page has been reloaded and pointed at the
 	// first thread, and BEFORE the meters (and the trace) are armed. It is
 	// where a workload puts the app into the shape it wants to measure —
@@ -69,6 +86,13 @@ type benchWorkload struct {
 	// of the window. Nil for a workload whose fixture is enough.
 	prepare func(ctx context.Context, run *benchRun) error
 	drive   func(ctx context.Context, run *benchRun) error
+}
+
+func (w benchWorkload) description(duration time.Duration) string {
+	if w.DefaultDuration == 0 {
+		return w.Summary
+	}
+	return fmt.Sprintf("%s for %s", w.Summary, duration)
 }
 
 func benchWorkloads() []benchWorkload {
@@ -103,6 +127,17 @@ func benchWorkloads() []benchWorkload {
 			drive:    driveMultiPaneStream,
 		},
 		{
+			Name:     "active-multi-pane",
+			Scenario: "bench-active-stream",
+			Summary: fmt.Sprintf("%d open panes, %d streaming one long paced rich-Markdown turn",
+				benchActivePaneCount, benchActiveStreamCount),
+			DefaultDuration: benchActiveDefaultDuration,
+			MinimumDuration: benchActiveMinimumDuration,
+			seed:            seedActiveMultiPaneThreads,
+			prepare:         openPanesForMultiPaneStream,
+			drive:           driveActiveMultiPaneStream,
+		},
+		{
 			Name:    "many-threads",
 			Summary: "30 threads with history, then a thread-switch storm",
 			seed:    seedManyThreads,
@@ -127,6 +162,7 @@ func benchWorkloadByName(name string) (benchWorkload, error) {
 type benchPerfSpec struct {
 	SampleMs  int
 	BudgetsMs []float64
+	Meters    []string
 }
 
 func (s benchPerfSpec) armSpec() map[string]any {
@@ -136,6 +172,9 @@ func (s benchPerfSpec) armSpec() map[string]any {
 	}
 	if len(s.BudgetsMs) > 0 {
 		spec["budgetsMs"] = s.BudgetsMs
+	}
+	if len(s.Meters) > 0 {
+		spec["meters"] = s.Meters
 	}
 	return spec
 }
@@ -147,6 +186,7 @@ type benchRun struct {
 	target   target
 	workload benchWorkload
 	index    int
+	duration time.Duration
 	// cdp is the attached debugger when --trace is on, nil otherwise. It
 	// is the ONE thing in a bench that is not engine-agnostic, which is
 	// why it is opt-in rather than part of the run.
@@ -158,6 +198,16 @@ type benchRun struct {
 	switches int
 	// trace is this repeat's forced-layout answer, nil without --trace.
 	trace *traceSummary
+	// progress is the low-frequency proof that every pane kept rendering
+	// new text during a runner-timed workload, not merely holding an active
+	// provider timer over a static DOM.
+	progress []benchVisibleProgress
+}
+
+type benchVisibleProgress struct {
+	AtMs        int64          `json:"atMs"`
+	TextLengths map[string]int `json:"textLengths"`
+	ScrollPx    map[string]int `json:"scrollHeightsPx"`
 }
 
 // benchRunTrace is the per-repeat trace headline. The call-site table is
@@ -171,28 +221,30 @@ type benchRunTrace struct {
 
 // benchRunReport is one repeat's row in the report file.
 type benchRunReport struct {
-	Run        int            `json:"run"`
-	StartedAt  string         `json:"startedAt"`
-	DurationMs int64          `json:"durationMs"`
-	Threads    int            `json:"threads,omitempty"`
-	Switches   int            `json:"switches,omitempty"`
-	Trace      *benchRunTrace `json:"trace,omitempty"`
-	Perf       perfReport     `json:"perf"`
+	Run        int                    `json:"run"`
+	StartedAt  string                 `json:"startedAt"`
+	DurationMs int64                  `json:"durationMs"`
+	Threads    int                    `json:"threads,omitempty"`
+	Switches   int                    `json:"switches,omitempty"`
+	Progress   []benchVisibleProgress `json:"visibleProgress,omitempty"`
+	Trace      *benchRunTrace         `json:"trace,omitempty"`
+	Perf       perfReport             `json:"perf"`
 }
 
 // benchDocument is what lands on disk. It doubles as a baseline: the
 // `aggregate` map is exactly what --baseline reads back.
 type benchDocument struct {
-	Workload    string                    `json:"workload"`
-	Description string                    `json:"description"`
-	Scenario    string                    `json:"scenario,omitempty"`
-	Repeat      int                       `json:"repeat"`
-	StartedAt   string                    `json:"startedAt"`
-	Instance    string                    `json:"instance"`
-	Version     string                    `json:"version"`
-	SampleMs    int                       `json:"sampleMs"`
-	Runs        []benchRunReport          `json:"runs"`
-	Aggregate   map[string]benchAggregate `json:"aggregate"`
+	Workload            string                    `json:"workload"`
+	Description         string                    `json:"description"`
+	Scenario            string                    `json:"scenario,omitempty"`
+	Repeat              int                       `json:"repeat"`
+	StartedAt           string                    `json:"startedAt"`
+	Instance            string                    `json:"instance"`
+	Version             string                    `json:"version"`
+	SampleMs            int                       `json:"sampleMs"`
+	RequestedDurationMs int64                     `json:"requestedDurationMs,omitempty"`
+	Runs                []benchRunReport          `json:"runs"`
+	Aggregate           map[string]benchAggregate `json:"aggregate"`
 	// Trace is the forced-layout answer merged over every repeat, present
 	// only for a `--trace` run. It is deliberately NOT part of `aggregate`:
 	// a baseline compares numbers a headless run can also produce, and a
@@ -203,9 +255,13 @@ type benchDocument struct {
 func runBench(e *env, args []string) error {
 	flags := e.newFlagSet("bench <workload>")
 	repeat := flags.Int("repeat", 1, "run the workload this many times and aggregate")
+	duration := flags.Duration("duration", 0, "runner-timed workload duration (active-multi-pane defaults to 30s)")
 	sampleMs := flags.Int("sample-ms", 0, "perf sampling interval (default 1000, floor 250)")
 	budgets := flags.String("budgets", "",
 		"comma-separated main-thread budgets in ms for the busy-time fit report (bridge default 6,8,16)")
+	var meters stringList
+	flags.Var(&meters, "meter",
+		"arm only this meter (repeatable: frames, busy, longtask, loaf, layout-shift, event, memory, dom)")
 	baselineFile := flags.String("baseline", "", "compare the aggregate against this baseline (a budget file or a previous bench report)")
 	outDir := flags.String("out", "", "write the report here instead of <dataDir>/bench")
 	asJSON := flags.Bool("json", false, "print the whole report document instead of a summary table")
@@ -225,11 +281,19 @@ func runBench(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
+	resolvedDuration, err := resolveBenchDuration(workload, *duration)
+	if err != nil {
+		return err
+	}
 	budgetsMs, err := parseBudgetsMs(*budgets)
 	if err != nil {
 		return err
 	}
-	perfSpec := benchPerfSpec{SampleMs: *sampleMs, BudgetsMs: budgetsMs}
+	perfSpec := benchPerfSpec{
+		SampleMs:  *sampleMs,
+		BudgetsMs: budgetsMs,
+		Meters:    []string(meters),
+	}
 	// --trace is resolved BEFORE anything attaches, for the same reason the
 	// bridge is probed before the first reset: a caller who asked for a
 	// trace and named no endpoint should get their instance back untouched
@@ -255,10 +319,14 @@ func runBench(e *env, args []string) error {
 		baseline = &loaded
 	}
 
-	ctx := context.Background()
+	// A sustained workload owns live provider turns. Ctrl-C must cancel the
+	// driver context so its deferred interrupt runs; the process default would
+	// exit immediately and leave every mock turn streaming in the backend.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 	var document benchDocument
 	err = e.withClient(ctx, func(client *harnessclient.Client, t target, bs harnessclient.Bootstrap) error {
-		document, err = executeBench(ctx, e, client, t, bs, workload, *repeat, perfSpec, traceEndpoint)
+		document, err = executeBench(ctx, e, client, t, bs, workload, *repeat, resolvedDuration, perfSpec, traceEndpoint)
 		return err
 	})
 	if err != nil {
@@ -282,6 +350,29 @@ func runBench(e *env, args []string) error {
 	comparisons, unmeasured, unbudgeted := compareToBaselineDetailed(document.Aggregate, *baseline)
 	e.printf("\n%s", renderBenchComparison(comparisons, unmeasured, unbudgeted, *baselineFile))
 	return benchGateVerdict(comparisons, unbudgeted, *baselineFile)
+}
+
+func resolveBenchDuration(workload benchWorkload, requested time.Duration) (time.Duration, error) {
+	if requested < 0 {
+		return 0, usagef("--duration must not be negative")
+	}
+	if workload.DefaultDuration == 0 {
+		if requested != 0 {
+			return 0, usagef("--duration applies only to runner-timed workloads (active-multi-pane)")
+		}
+		return 0, nil
+	}
+	resolved := requested
+	if resolved == 0 {
+		resolved = workload.DefaultDuration
+	}
+	if workload.MinimumDuration <= 0 {
+		return 0, fmt.Errorf("runner-timed workload %s has no positive minimum duration", workload.Name)
+	}
+	if resolved < workload.MinimumDuration {
+		return 0, usagef("--duration for %s must be at least %s", workload.Name, workload.MinimumDuration)
+	}
+	return resolved, nil
 }
 
 // benchGateVerdict is what `--baseline` actually gates on, split out so
@@ -332,17 +423,19 @@ func executeBench(
 	bs harnessclient.Bootstrap,
 	workload benchWorkload,
 	repeat int,
+	duration time.Duration,
 	perf benchPerfSpec,
 	traceEndpoint *cdpclient.Endpoint,
 ) (benchDocument, error) {
 	document := benchDocument{
-		Workload:    workload.Name,
-		Description: workload.Summary,
-		Scenario:    workload.Scenario,
-		Repeat:      repeat,
-		StartedAt:   time.Now().Format(time.RFC3339),
-		Instance:    t.ID,
-		Version:     bs.Version,
+		Workload:            workload.Name,
+		Description:         workload.description(duration),
+		Scenario:            workload.Scenario,
+		Repeat:              repeat,
+		StartedAt:           time.Now().Format(time.RFC3339),
+		Instance:            t.ID,
+		Version:             bs.Version,
+		RequestedDurationMs: duration.Milliseconds(),
 	}
 	// Fail on the bridge BEFORE resetting anything: a caller who forgot to
 	// open a window should get their instance back untouched.
@@ -375,7 +468,7 @@ func executeBench(
 	traces := make([]traceSummary, 0, repeat)
 	reports := make([]perfReport, 0, repeat)
 	for i := 1; i <= repeat; i++ {
-		run := &benchRun{env: e, client: client, target: t, workload: workload, index: i, cdp: conn}
+		run := &benchRun{env: e, client: client, target: t, workload: workload, index: i, duration: duration, cdp: conn}
 		startedAt := time.Now()
 		e.printf("bench %s: run %d/%d\n", workload.Name, i, repeat)
 		report, err := executeBenchRun(ctx, run, perf)
@@ -394,6 +487,7 @@ func executeBench(
 			DurationMs: time.Since(startedAt).Milliseconds(),
 			Threads:    len(run.threadIDs),
 			Switches:   run.switches,
+			Progress:   run.progress,
 			Perf:       report,
 		}
 		if run.trace != nil {
@@ -573,6 +667,8 @@ func renderBenchDocument(document benchDocument, path string) string {
 		extra := ""
 		if run.Switches > 0 {
 			extra = fmt.Sprintf("  %d switches over %d threads", run.Switches, run.Threads)
+		} else if len(run.Progress) > 0 {
+			extra = fmt.Sprintf("  %d visible-progress samples", len(run.Progress))
 		}
 		fmt.Fprintf(&b, "  run %d: %dms%s\n", run.Run, run.DurationMs, extra)
 	}

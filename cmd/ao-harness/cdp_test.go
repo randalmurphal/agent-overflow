@@ -62,6 +62,14 @@ func TestResolveCDPEndpointNamesThisInstancesPort(t *testing.T) {
 	}
 }
 
+func TestResolveCDPEndpointNamesPerfPort(t *testing.T) {
+	row := instanceinfo.Instance{Row: instanceinfo.Row{Identity: instanceinfo.Identity{ID: "abcd1234", Mode: instanceinfo.ModePerf}}}
+	_, err := resolveCDPEndpoint("", target{ID: row.ID, Row: &row})
+	if err == nil || !strings.Contains(err.Error(), "--cdp 9226") {
+		t.Fatalf("refusal should point at the perf instance's own port: %v", err)
+	}
+}
+
 func TestResolveCDPEndpointParsesAPort(t *testing.T) {
 	endpoint, err := resolveCDPEndpoint("9225", target{})
 	if err != nil {

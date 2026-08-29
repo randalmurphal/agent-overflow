@@ -24,6 +24,9 @@ everything else is contract for the implementation waves at the bottom.
 - **Soak rig** (--soak + Windows launcher `--profile soak`): the
   Windows windowed shell. Stays; this spec adds the native windowed
   shell beside it and folds the docs together.
+- **Perf shell** (`make perf-wsl`, launcher `--profile perf`): a third
+  Windows harness with its own data root and CDP 9226. Destructive benches
+  name it explicitly rather than reusing the harness or soak.
 
 Every addition below wraps these; nothing forks them.
 
@@ -106,7 +109,7 @@ value in Go so both agree.
 `<registryDir>/<instance-id>.json` after `MarkReady`:
 
 ```json
-{"id":"…","pid":123,"mode":"harness|soak","window":true,
+{"id":"…","pid":123,"mode":"harness|soak|perf","window":true,
  "port":1234,"dataRoot":"…","dataDir":"…","worktree":"<cwd at boot>",
  "version":"…","startedAt":"RFC3339"}
 ```
@@ -154,7 +157,7 @@ shipped surface of record is `ao-harness --help` and
 | `db <SELECT…>` | Read-only SQL against the instance DB (`mode=ro` open of the DB file; statement must be a single SELECT/PRAGMA — anything else refused). The ad-hoc assertion escape hatch. |
 | `ui snapshot [--pane P]` / `ui diff` / `ui query <selector>` / `ui state <name>` | Frontend bridge (§4). `diff` compares against the previous snapshot taken by this CLI for the instance. |
 | `perf start\|stop\|status [--json]` / `perf watch` | Perf meters (§5). |
-| `bench <workload> [--repeat N] [--baseline file]` | Seed + run a bench workload, collect a perf report, print/compare (§5). |
+| `bench <workload> [--repeat N] [--duration D] [--baseline file]` | Seed + run a bench workload, collect a perf report, print/compare (§5). `--duration` applies to sustained workloads. |
 | `profile --thread T --scenario N [--cdp E]` | One scripted turn under the V8 sampling profiler; writes a `.cpuprofile` and splits sampled time into Svelte flush execution / write-side marking / other. Chromium-only (see below). |
 | `health [--watch]` | One-shot or continuous rollup (§6). |
 | `open` | Print the URL (and `xdg-open` it with `--browser`). |
@@ -165,6 +168,11 @@ instruments, spoken over the DevTools protocol (`internal/cdpclient`)
 against an endpoint named by `--cdp` / `$AO_CDP_URL` / `$AO_CDP_PORT`. A
 WebKitGTK window serves none, and both refuse with that stated rather
 than timing out.
+
+The authenticated WebSocket is authoritative for an attach. This lets a native
+Windows CLI drive a launcher-hosted WSL backend through a `\\wsl.localhost`
+data-root path even though Windows cannot validate the Linux PID. Lifecycle
+commands that signal a process keep same-namespace PID validation.
 
 The CLI's WS client implements the full frame contract
 (rpc/event/batch/replay/subscribe/ping) per internal/transport/AGENTS.md
@@ -238,6 +246,7 @@ is the number Task-Manager-style questions are actually about.
 **Bench workloads** are ordinary scenario-library entries plus seed
 specs, named `bench-*`: `bench-burst-stream` (delta flood at
 chunk-stress pacing), `bench-giant-turn` (one turn, thousands of items),
+`bench-active-stream` (paced rich Markdown plus a normal tool pause),
 `bench-many-threads` (wide sidebar + switch storm driven via RPC),
 `bench-subagent-fanout` (the soak shape, bounded). `ao-harness bench`
 boots-or-attaches, seeds, arms meters, runs the workload to its

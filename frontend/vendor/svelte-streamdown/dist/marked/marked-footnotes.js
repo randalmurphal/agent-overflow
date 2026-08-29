@@ -12,6 +12,16 @@ const safeGetContext = () => {
         return null;
     }
 };
+export const markedFootnoteBlock = {
+    name: 'footnote',
+    level: 'block',
+    tokenizer(src) {
+        if (src.charCodeAt(0) !== 91 || src.charCodeAt(1) !== 94)
+            return undefined;
+        const match = footnoteRegex.exec(src);
+        return match ? { type: 'footnote', raw: match[0] } : undefined;
+    }
+};
 export function markedFootnote() {
     const ensureMaps = (tokenizer) => {
         const streamdown = safeGetContext();
@@ -34,6 +44,8 @@ export function markedFootnote() {
             name: 'footnote',
             level: 'block',
             tokenizer(src) {
+                if (src.charCodeAt(0) !== 91 || src.charCodeAt(1) !== 94)
+                    return undefined;
                 const maps = ensureMaps(this);
                 const match = footnoteRegex.exec(src);
                 if (match) {
@@ -66,6 +78,8 @@ export function markedFootnote() {
             name: 'footnoteRef',
             level: 'inline',
             tokenizer(src) {
+                if (src.charCodeAt(0) !== 91 || src.charCodeAt(1) !== 94)
+                    return undefined;
                 const maps = ensureMaps(this);
                 const match = footnoteRefRegex.exec(src);
                 if (match) {

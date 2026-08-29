@@ -240,6 +240,27 @@ describe('<ComposerToolbar>', () => {
     // (the send label flipping, the context meter growing a digit)
     // delivers post-layout, and a text beat that moves no width delivers
     // nothing (the old subtree MutationObserver re-measured per beat).
+    restoreAnimationFrame?.();
+    restoreAnimationFrame = undefined;
+    const queuedFrames: FrameRequestCallback[] = [];
+    let nextFrame = 1;
+    const frame = vi.spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((callback: FrameRequestCallback) => {
+        queuedFrames.push(callback);
+        return nextFrame++;
+      });
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+    restoreAnimationFrame = () => {
+      frame.mockRestore();
+      cancel.mockRestore();
+    };
+
+    const runNextFrame = () => {
+      const callback = queuedFrames.shift();
+      if (!callback) throw new Error('expected a queued toolbar measurement frame');
+      callback(performance.now());
+    };
+
     const realRO = globalThis.ResizeObserver;
     const callbacks: ResizeObserverCallback[] = [];
     class Capturing {
@@ -260,6 +281,7 @@ describe('<ComposerToolbar>', () => {
         props: toolbarProps(pane, { sendLabel: 'Go' }),
       });
 
+      runNextFrame();
       await waitFor(() => {
         expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'false');
       });
@@ -268,6 +290,8 @@ describe('<ComposerToolbar>', () => {
       await result.rerender(toolbarProps(pane, { sendLabel: 'Implement' }));
       for (const callback of callbacks) callback([], {} as ResizeObserver);
 
+      expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'false');
+      runNextFrame();
       await waitFor(() => {
         expect(result.getByTestId('composer-toolbar')).toHaveAttribute('data-compact', 'true');
       });

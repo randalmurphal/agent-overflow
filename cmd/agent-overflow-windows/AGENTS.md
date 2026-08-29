@@ -49,11 +49,11 @@ The user-facing flags are for the dev path:
   warning to `launcher.log` and falls through to the picker; we
   deliberately do not fall back to saved config so the dev mismatch is
   surfaced rather than silently masked.
-- `--profile harness|soak` (or `AGENT_OVERFLOW_PROFILE=...`) — run as an
+- `--profile harness|soak|perf` (or `AGENT_OVERFLOW_PROFILE=...`) — run as an
   isolated instance beside the developer's own. This one flag is THE
   axis behind every piece of per-instance state — single-instance id,
   window title, WebView2 user-data dir, CDP port (harness 9225, soak
-  9224), `launcher-<profile>.log`, `window-<profile>.json`, debug-level
+  9224, perf 9226), `launcher-<profile>.log`, `window-<profile>.json`, debug-level
   Wails logging, a refusal to persist `wsl.json`, and the WSL backend's
   argv (`profileBackendArgs`). Everything folds through
   `launcherRuntimeMode()` → `internal/appidentity`, so an isolated
@@ -69,7 +69,10 @@ The user-facing flags are for the dev path:
     never-ending streaming turn) and a small 800x600 window, built to
     sit on a monitor for hours. See
     [soak-rig.md](../../docs/architecture/soak-rig.md).
-  - Both pass `--launcher-pid <own pid>` so `ao-harness down` can close
+  - **perf** (`make perf-wsl`) is a third driveable harness for renderer
+    A/B runs. It owns `~/.agent-overflow-perf` and CDP 9226. Destructive
+    reset, reload, and interrupt commands must name that root explicitly.
+  - All pass `--launcher-pid <own pid>` so `ao-harness down` can close
     the launcher window; the launcher still outlives a crashed child on
     purpose (evidence preservation).
 

@@ -142,7 +142,7 @@
   {#if !composition.collapsed}
     <ul class="run-map-spine run-map-spine-wide mt-1.5">
       {#each composition.waves as wave (wave.key)}
-        <li data-testid="workflow-map-composition-wave" data-wave-item-id={wave.itemId}>
+        <li class="run-map-node" data-testid="workflow-map-composition-wave" data-wave-item-id={wave.itemId}>
           <!--
             A lap is a lap: the same row a top-level wave folds to, off the same
             expansion set. A composition that opened its whole history would put

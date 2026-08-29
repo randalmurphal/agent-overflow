@@ -11,10 +11,10 @@
 // the line after the last committed boundary, using the detector's
 // per-line `contextCache` — the incremental mode incremark designed the
 // detector for. Only newly-revealed lines are scanned, so total detector
-// work is O(n) for a message that commits boundaries regularly. (A single
-// unbroken block that never commits — e.g. a giant fenced code dump — is
-// still re-scanned each tick, but per-line work inside a fence is minimal
-// because the detector skips its checker chain there; see split.bench.)
+// work is O(n), including for one open block that has not committed yet.
+// Append-only growth resumes at the prior trailing line. That is the only
+// old line whose bytes can change, and scanning the first new line still
+// catches every boundary that can make its predecessor stable.
 //
 // The line MATERIALIZATION is incremental too: re-running
 // `text.split('\n')` over the full accumulated text allocated a fresh
@@ -23,11 +23,9 @@
 // detector work above was made O(n) for. Instead the previous call's
 // line array is cached and only the appended delta is split, merging
 // the partial trailing line across the join. Append-only growth is
-// verified with a `startsWith` scan over the previous source — a
-// no-allocation memcmp that costs microseconds where the full split
-// cost milliseconds plus thousands of line-substring allocations — so
-// a non-append rewrite can never smuggle stale cached lines into
-// detection. A rewrite that preserves the committed prefix keeps the
+// supplied by the assistant reveal chokepoint. Callers without that suffix
+// retain the `startsWith` fallback, so a non-append rewrite can never smuggle
+// stale cached lines into detection. A rewrite that preserves the committed prefix keeps the
 // valid detector checkpoint and fully re-splits the source. Any rewrite
 // that changes committed bytes resets the checkpoint before re-splitting.
 //
@@ -46,8 +44,15 @@
 import { BoundaryDetector } from './BoundaryDetector';
 import { createInitialContext } from './detector';
 import type { BoundarySplit } from './split';
+import {
+  createProvenAppend,
+  matchesProvenAppend,
+  type ProvenAppend,
+} from 'svelte-streamdown';
 
 export class StreamingBoundarySplitter {
+  /** Proven append applied to the volatile tail by the latest split. */
+  tailAppend: ProvenAppend | undefined = undefined;
   private detector = new BoundaryDetector();
   // Line index of the last committed (stable) boundary; -1 before any
   // boundary commits. Lines 0..committedLine form the committed prefix.
@@ -66,6 +71,11 @@ export class StreamingBoundarySplitter {
   // appended delta per call.
   private cachedText = '';
   private cachedLines: string[] = [];
+  // Exact split strings from the previous call. On append, only the bounded
+  // volatile tail is sliced when a boundary advances. Slicing `text` itself
+  // would flatten the full growing V8 cons string on every reveal.
+  private cachedPrefix = '';
+  private cachedTail = '';
 
   /**
    * Split `text` at the last stable block boundary, resuming detection
@@ -75,7 +85,8 @@ export class StreamingBoundarySplitter {
    * (growing) source — see `streamingSplitter.test.ts` for the
    * exhaustive equivalence corpus that guards this.
    */
-  split(text: string): BoundarySplit {
+  split(text: string, append?: ProvenAppend): BoundarySplit {
+    this.tailAppend = undefined;
     if (text.length === 0) {
       this.reset();
       return { prefix: '', tail: '' };
@@ -90,8 +101,21 @@ export class StreamingBoundarySplitter {
     }
 
     let lines: string[];
+    let appendOnly = false;
+    let appendedText = '';
+    let tailAppend: ProvenAppend | undefined;
+    let scanStartLine = this.committedLine + 1;
     const prev = this.cachedText;
-    if (text.length >= prev.length && text.startsWith(prev)) {
+    const exactAppend = matchesProvenAppend(append, prev, text);
+    if (exactAppend || (text.length >= prev.length && text.startsWith(prev))) {
+      appendOnly = true;
+      // Every line before the old trailing line is closed and immutable. The
+      // trailing line can grow, close a fence/container, or become stable when
+      // the append adds its successor. Its preceding context remains cached.
+      scanStartLine = Math.max(
+        this.committedLine + 1,
+        Math.max(0, this.cachedLines.length - 1),
+      );
       // Append-only growth (the streaming contract): split only the
       // delta and merge the partial trailing line across the join.
       // `prev.split('\n')` concat-merged this way is byte-equivalent to
@@ -100,12 +124,19 @@ export class StreamingBoundarySplitter {
       if (lines.length === 0) {
         lines = text.split('\n');
         this.cachedLines = lines;
+        this.cachedPrefix = '';
+        this.cachedTail = text;
       } else if (text.length > prev.length) {
-        const deltaLines = text.slice(prev.length).split('\n');
+        appendedText = exactAppend
+          ? append.delta
+          : text.slice(prev.length);
+        const deltaLines = appendedText.split('\n');
         lines[lines.length - 1] += deltaLines[0];
         for (let i = 1; i < deltaLines.length; i++) {
           lines.push(deltaLines[i]);
         }
+        tailAppend = createProvenAppend(this.cachedTail, appendedText);
+        this.cachedTail = tailAppend.next;
       }
     } else {
       // A detector checkpoint describes the committed bytes, not merely
@@ -125,20 +156,19 @@ export class StreamingBoundarySplitter {
       this.committedLineStart = this.committedLine >= 0
         ? startOfLine(lines, this.committedLine)
         : 0;
+      scanStartLine = this.committedLine + 1;
     }
     this.cachedText = text;
+    const previousCommittedOffset = this.committedOffset;
 
-    // Resume from the line after the last committed boundary. The detector
-    // reads its own contextCache[committedLine] for the resume context
-    // (written on the scan that committed that line; clearContextCache
-    // keeps exactly that entry). createInitialContext() is only the
-    // fallback for committedLine === -1 (startLine 0), where it is the
-    // correct context anyway. `result.context` is intentionally NOT used —
-    // it is the context AFTER the scan's current line, which is wrong when
-    // the boundary lands on line i-1 (the checker path).
+    // On a rewrite, resume after the last committed boundary. On an append,
+    // resume at the old trailing line as described above. The detector reads
+    // contextCache[startLine - 1], which both paths preserve. The initial
+    // context is only the fallback for startLine 0. `result.context` is not
+    // used because a checker can commit line i - 1 after processing line i.
     const result = this.detector.findStableBoundary(
       lines,
-      this.committedLine + 1,
+      scanStartLine,
       createInitialContext(),
     );
     if (result.line > this.committedLine) {
@@ -159,11 +189,33 @@ export class StreamingBoundarySplitter {
       // keep committedLine itself for the next resume's context read.
       this.detector.clearContextCache(this.committedLine);
     }
+    // An append can resume at the current trailing line and needs only the
+    // context immediately before it. A rewrite resumes at the committed
+    // boundary. Retaining those two checkpoints prevents an open 100K-line
+    // fence from leaving 100K context objects in the detector cache.
+    this.detector.retainContextCheckpoints(
+      this.committedLine,
+      lines.length - 2,
+    );
 
-    return {
-      prefix: text.slice(0, this.committedOffset),
-      tail: text.slice(this.committedOffset),
-    };
+    if (appendOnly) {
+      const committedAdvance = this.committedOffset - previousCommittedOffset;
+      if (committedAdvance > 0) {
+        if (committedAdvance > this.cachedTail.length) {
+          throw new Error('streaming boundary cache advanced past its tail');
+        }
+        this.cachedPrefix += this.cachedTail.slice(0, committedAdvance);
+        this.cachedTail = this.cachedTail.slice(committedAdvance);
+      }
+      if (committedAdvance === 0 && appendedText.length > 0) {
+        this.tailAppend = tailAppend;
+      }
+    } else {
+      this.cachedPrefix = text.slice(0, this.committedOffset);
+      this.cachedTail = text.slice(this.committedOffset);
+    }
+
+    return { prefix: this.cachedPrefix, tail: this.cachedTail };
   }
 
   private reset(): void {
@@ -176,6 +228,9 @@ export class StreamingBoundarySplitter {
     this.committedLineStart = 0;
     this.cachedText = '';
     this.cachedLines = [];
+    this.cachedPrefix = '';
+    this.cachedTail = '';
+    this.tailAppend = undefined;
   }
 }
 

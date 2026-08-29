@@ -36,9 +36,13 @@ const DefaultSubscriberBuffer = 1024
 //
 // Concurrency model:
 //   - rings + subs maps are guarded by mu (RWMutex).
-//   - Emit takes mu (writer) briefly to bump the seq, append into the
-//     ring, and read the maintained subscriber slice; fanout happens
-//     after the lock is released.
+//   - Emit takes mu (writer) to bump the seq, append into the ring, and
+//     fan out through each subscriber's non-blocking deliver. Fanout stays
+//     inside the same critical section as sequence assignment. Provider
+//     sessions emit concurrently onto one channel, so unlocking between
+//     those operations lets seq N+1 reach a subscriber before seq N. The
+//     client must treat that as a dropped event and the late seq N as a
+//     duplicate, corrupting the stream even though the server lost nothing.
 //   - Replay holds an RLock for the duration of the per-channel walk.
 //   - subList is a maintained slice mirroring subs map membership so
 //     Emit doesn't allocate-and-copy a snapshot per call. Updated
@@ -253,7 +257,8 @@ func NewEventBus(capacity int) *EventBus {
 // (appendEventWire), and the ring append run under the bus-wide mutex,
 // so concurrent emitters and Replay/Subscribe don't serialize behind a
 // reflection walk. Seq assignment and ring append stay atomic per
-// channel — ring order is exact; fanout runs after unlock, as before.
+// channel. Live fanout runs before unlock so subscribers observe that same
+// order even when several goroutines emit onto one channel concurrently.
 func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, error) {
 	if b.closed.Load() {
 		return Event{}, nil
@@ -271,6 +276,13 @@ func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, err
 	channel := string(typedChannel)
 
 	b.mu.Lock()
+	// Close marks the bus before taking mu so an Emit already spending time in
+	// payload marshaling can observe shutdown here. Without this second check,
+	// that in-flight call could recreate a ring after Close cleared the bus.
+	if b.closed.Load() {
+		b.mu.Unlock()
+		return Event{}, nil
+	}
 	r, ok := b.rings[channel]
 	if !ok {
 		if _, registered := policyForChannel(channel); !registered {
@@ -319,15 +331,15 @@ func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, err
 	ringEvt.Data = nil
 	r.append(ringEvt)
 
-	// Snapshot the maintained slice under the same lock. Subs join /
-	// leave through Subscribe / Close, so this is a single bounded
-	// copy rather than a map-walk-and-allocate per Emit.
-	subs := b.subList
-	b.mu.Unlock()
-
-	for _, s := range subs {
+	// deliver is non-blocking. Keeping fanout under mu makes sequence
+	// assignment, ring append, and live delivery one ordered operation. A
+	// subscriber that cannot accept immediately still uses the existing
+	// seq-gap recovery contract; a healthy subscriber can no longer see a
+	// false gap caused by two Emit goroutines racing after the lock.
+	for _, s := range b.subList {
 		s.deliver(evt)
 	}
+	b.mu.Unlock()
 	return evt, nil
 }
 
@@ -363,6 +375,11 @@ func (b *EventBus) Subscribe() *Subscriber {
 		done: make(chan struct{}),
 	}
 	b.mu.Lock()
+	if b.closed.Load() {
+		b.mu.Unlock()
+		s.close()
+		return s
+	}
 	b.subs[s] = struct{}{}
 	b.subList = append(b.subList, s)
 	s.bus = b

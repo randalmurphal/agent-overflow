@@ -56,13 +56,30 @@ func seedSingleThread(run *benchRun) (json.RawMessage, error) {
 // pass, one frame budget shared between them.
 const benchMultiPaneCount = 3
 
+// The sustained workload matches the reported normal-use shape exactly: six
+// open panes, four of them receiving ordinary paced Markdown at once. These
+// stay separate from the three-pane flood benchmark. Changing that older
+// workload would invalidate every existing multi-pane-stream baseline.
+const (
+	benchActivePaneCount   = 6
+	benchActiveStreamCount = 4
+)
+
 // seedMultiPaneThreads is seedSingleThread widened. Same deliberately thin
 // history for the same reason — the load under test arrives on the wire —
 // but one thread per pane, each with the one completed turn App.ListThreads
 // needs to show a row at all.
 func seedMultiPaneThreads(run *benchRun) (json.RawMessage, error) {
-	threads := make([]map[string]any, 0, benchMultiPaneCount)
-	for i := 1; i <= benchMultiPaneCount; i++ {
+	return seedPaneThreads(run, benchMultiPaneCount)
+}
+
+func seedActiveMultiPaneThreads(run *benchRun) (json.RawMessage, error) {
+	return seedPaneThreads(run, benchActivePaneCount)
+}
+
+func seedPaneThreads(run *benchRun, count int) (json.RawMessage, error) {
+	threads := make([]map[string]any, 0, count)
+	for i := 1; i <= count; i++ {
 		threads = append(threads, map[string]any{
 			"title":    fmt.Sprintf("bench pane %02d", i),
 			"provider": "claude",

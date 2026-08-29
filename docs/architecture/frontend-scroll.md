@@ -36,9 +36,17 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     the streaming hot path. Each sample also carries the scroller's
     content-box viewport height. While that viewport is stable, the
     controller computes the bottom target directly as `height -
-    viewportHeight` and caches only `scrollTop`. Composer clearance is
-    scroller padding, so it cancels from `scrollHeight - clientHeight`
-    and cannot become hidden target-offset state.
+    viewportHeight` and caches that absolute target alongside the last
+    observed `scrollTop`. Content deliveries and ordinary spring frames use
+    those two facts without re-reading `scrollHeight` / `clientHeight` at
+    display rate. Sentinel clamp detection and write-refusal probes force a
+    real target read; viewport/width changes take one real resync. Composer
+    clearance is scroller padding, so it cancels from `scrollHeight -
+    clientHeight` and cannot become hidden target-offset state.
+    Row ResizeObserver deliveries use their supplied `contentRect` directly.
+    A 0×0 box is the hidden-`display:none` signal and is ignored. Do not add a
+    synchronous visibility query such as `offsetParent`: it forces layout for
+    every visible row while providing no information the delivery lacks.
   - **The engine never writes `scrollTop`.** Geometry changes that would
     move content above the viewport surface as `EngineCompensation`
     observations; imperative scrolls (`scrollToIndex`) compute their
@@ -82,7 +90,14 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     compositor ownership in WebView2.
   - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
-    programmatic-write tagging. Intent is never geometry-inferred.
+    programmatic-write tagging. Intent is never geometry-inferred. Its
+    target-capture scroll listener reads the event-time `scrollTop` once and
+    records that observation on the native event. The virtualizer's ordinary
+    listener reuses it instead of taking a second getter. Do not substitute a
+    chokepoint write readback for the event-time value. Native find, focus
+    scrolling, browser clamps, and authored writes can coalesce into one event,
+    so the write readback may no longer describe the surface when the event is
+    dispatched.
   - `spring.ts` + `retarget.ts` own chase kinematics. They define HOW a spring
     advances scrollTop frame to frame once the controller decides one runs. Speed each
     step is capped by three ceilings recomputed from live geometry
@@ -115,6 +130,15 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     old clamp left is exactly the workspace-return animation the user
     ruled out (2026-08-22). Distance alone never snaps; growth arriving
     after the snap ramps up as a cold onset.
+    Every pane spring schedules through `utils/animationFrameBatcher.ts`, the
+    app-wide native-rAF coordinator also used by streaming reveal and nav-rail
+    sync. Spring callbacks use `before-dom-update`; reveal and rail callbacks
+    use `dom-update`. This order lets the spring write against the
+    virtualizer's previous clean geometry sample, then lands DOM work before
+    paint. A callback requested while a phase is dispatching belongs to the
+    next frame, and cancellation remains per callback. Do not replace this
+    with one native rAF loop per pane or reorder the phases without a traced
+    active multi-pane A/B and the Chromium phase-order test.
   - `observers.ts` — the content-geometry delivery pipeline, the warm-up
     (quiescence) gate, and resize classification. Two sources feed the
     one pipeline: engine-sourced samples in chat

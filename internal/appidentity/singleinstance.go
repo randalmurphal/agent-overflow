@@ -19,6 +19,8 @@ func AppTitle(mode string) string {
 		return Name + " (harness)"
 	case ModeSoak:
 		return Name + " (soak)"
+	case ModePerf:
+		return Name + " (perf)"
 	default:
 		return Name
 	}
@@ -28,7 +30,7 @@ func AppTitle(mode string) string {
 // app entry point. Mode is "dev" for developer launches,
 // "harness"/"soak" for the isolated profile instances, and anything else
 // for production. Distinct IDs are what let an isolated instance run
-// alongside the developer's instance — and alongside the other profile —
+// alongside the developer's instance and every other profile
 // instead of being bounced into (or bouncing) it.
 func SingleInstanceID(kind, mode string) string {
 	switch mode {
@@ -38,6 +40,8 @@ func SingleInstanceID(kind, mode string) string {
 		return "com.agentoverflow." + kind + ".harness"
 	case ModeSoak:
 		return "com.agentoverflow." + kind + ".soak"
+	case ModePerf:
+		return "com.agentoverflow." + kind + ".perf"
 	default:
 		return "com.agentoverflow." + kind
 	}

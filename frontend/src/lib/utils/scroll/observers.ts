@@ -200,10 +200,14 @@ export interface ContentObserverDeps {
     height: number,
     viewportHeight: number,
   ): { target: number; scrollTop: number } | null;
+  /** Publish the exact bottom target carried by an external geometry sample. */
+  cacheExternalBottomTarget(height: number, viewportHeight: number): void;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   resolverStateSnapshot(): ResolverState;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
   prefersReducedMotion(): boolean;
+  /** Secondary consumers run after the controller has applied this sample. */
+  contentGeometryProcessed(scrollable: boolean): void;
   /** Narrowed to what a delivery decision may drive on the spring. */
   spring: Pick<SpringChase, 'structuralAppendPending' | 'snapOscillationToBottom' | 'markTargetChanged' | 'start'>;
 }
@@ -466,6 +470,22 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   ): void {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return;
+    if (settle?.viewportHeight !== undefined) {
+      deps.cacheExternalBottomTarget(nextHeight, settle.viewportHeight);
+    }
+    // External virtualizer samples already carry the exact content-box
+    // viewport, so their scrollability hint stays read-free. Native RO
+    // deliveries run after layout and can read the real scroll range without
+    // forcing another layout pass. Secondary consumers use this edge without
+    // sampling hidden geometry on every streaming beat.
+    const reportProcessedGeometry = (): void => {
+      const viewportHeight = settle?.viewportHeight;
+      deps.contentGeometryProcessed(
+        viewportHeight !== undefined
+          ? nextHeight - viewportHeight > 1
+          : scrollEl.scrollHeight - scrollEl.clientHeight > 1,
+      );
+    };
     const prev = previousHeight;
     const prevWidth = previousWidth;
     previousHeight = nextHeight;
@@ -542,6 +562,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         deps.writeScrollTop(decision.write.caller, decision.write.value);
       }
       deps.refreshIsNearBottom();
+      reportProcessedGeometry();
       return;
     }
 
@@ -586,6 +607,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         scrollHeight: Math.round(scrollEl.scrollHeight),
         clientHeight: Math.round(scrollEl.clientHeight),
       }));
+      reportProcessedGeometry();
       return;
     }
     resizeDifference = delta;
@@ -718,6 +740,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     }
 
     scheduleResizeDifferenceClear(delta);
+    reportProcessedGeometry();
   }
 
   function attach(): void {

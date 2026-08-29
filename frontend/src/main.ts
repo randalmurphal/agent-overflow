@@ -4,7 +4,10 @@ import { appTitleForEnv } from './appTitle';
 import { installBrowserHistoryGuard } from './lib/utils/browserHistoryGuard';
 import { installFrontendErrorCapture } from './lib/utils/frontendErrorCapture';
 import type { MemoryReport } from './lib/utils/memoryReport';
-import type { RevealDrainSummary } from './lib/utils/revealDrainProbe';
+import {
+  revealDrainStats,
+  type RevealDrainSummary,
+} from './lib/utils/revealDrainProbe';
 
 // Self-hosted fonts. Four weights of each family covers every surface
 // the app uses today (body/medium/semibold/bold). Loaded before the
@@ -32,11 +35,12 @@ installBrowserHistoryGuard();
   import('./lib/utils/memoryReport').then((m) => m.collectMemoryReport());
 // How much of the reveal queue is still draining, for a bench or a profile
 // whose measurement window has to outlast `provider:turn_completed`. Same
-// stub shape as the memory report above, and for the same reason. Unlike
-// the UI_TRACE-gated diagnostics globals this one is installed in EVERY
-// build: a harness binary ships with UI_TRACE unset, and it is exactly the
-// build a bench runs against.
+// Unlike the memory report, the idle-memory-trim gate already needs this
+// module in every desktop build. Call it directly instead of issuing an
+// ineffective dynamic import that cannot create a lazy chunk. The global is
+// still installed in every build because a harness bench ships with UI_TRACE
+// unset.
 (window as Window & { __aoRevealDrain?: () => Promise<RevealDrainSummary> }).__aoRevealDrain = () =>
-  import('./lib/utils/revealDrainProbe').then((m) => m.revealDrainStats());
+  revealDrainStats();
 
 mount(App, { target: document.getElementById('app')! });

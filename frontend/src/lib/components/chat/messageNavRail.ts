@@ -318,13 +318,12 @@ export function tickRangeInView(
 ): [number, number] | null {
   const { ticks, loadedStart, loadedEnd } = merged;
   if (loadedStart < 0 || lastNodeInView < firstNodeInView) return null;
-  const nodeAt = (i: number): number => ticks[i].nodeIndex ?? 0;
   // First loaded tick with nodeIndex >= firstNodeInView.
   let lo = loadedStart;
   let hi = loadedEnd + 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (nodeAt(mid) < firstNodeInView) lo = mid + 1;
+    if ((ticks[mid].nodeIndex ?? 0) < firstNodeInView) lo = mid + 1;
     else hi = mid;
   }
   const first = lo;
@@ -333,7 +332,7 @@ export function tickRangeInView(
   hi = loadedEnd;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (nodeAt(mid) > lastNodeInView) hi = mid - 1;
+    if ((ticks[mid].nodeIndex ?? 0) > lastNodeInView) hi = mid - 1;
     else lo = mid;
   }
   const last = lo;
@@ -353,15 +352,14 @@ export function tickNearestCenter(
   merged: MergedNavTicks,
   range: [number, number],
   centerOffset: number,
-  offsetForNode: (nodeIndex: number) => number,
-  sizeForNode: (nodeIndex: number) => number,
+  geometry: Pick<TimelineNavGeometry, 'getItemOffset' | 'sizeAt'>,
 ): number {
   const { ticks } = merged;
   let best = range[0];
   let bestDist = Infinity;
   for (let i = range[0]; i <= range[1]; i++) {
     const node = ticks[i].nodeIndex ?? 0;
-    const rowCenter = offsetForNode(node) + sizeForNode(node) / 2;
+    const rowCenter = geometry.getItemOffset(node) + geometry.sizeAt(node) / 2;
     const dist = Math.abs(rowCenter - centerOffset);
     if (dist < bestDist) {
       bestDist = dist;
@@ -369,6 +367,11 @@ export function tickNearestCenter(
     }
   }
   return best;
+}
+
+export interface TimelineNavGeometry {
+  getItemOffset(nodeIndex: number): number;
+  sizeAt(nodeIndex: number): number;
 }
 
 /**
@@ -391,18 +394,17 @@ export function tickNearestCenter(
 export function railGapLow(
   merged: MergedNavTicks,
   viewportCenterOffset: number,
-  offsetForNode: (nodeIndex: number) => number,
+  geometry: Pick<TimelineNavGeometry, 'getItemOffset'>,
 ): number | null {
   const { ticks, loadedStart, loadedEnd } = merged;
   if (ticks.length < 2 || loadedStart < 0) return null;
-  const nodeAt = (i: number): number => ticks[i].nodeIndex ?? 0;
   // Largest loaded k with offset(ticks[k]) <= center. Binary search
   // keeps the per-frame engine lookups at O(log n).
   let lo = loadedStart - 1;
   let hi = loadedEnd;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (offsetForNode(nodeAt(mid)) <= viewportCenterOffset) lo = mid;
+    if (geometry.getItemOffset(ticks[mid].nodeIndex ?? 0) <= viewportCenterOffset) lo = mid;
     else hi = mid - 1;
   }
   // Above the first loaded tick: between unloaded history and it.

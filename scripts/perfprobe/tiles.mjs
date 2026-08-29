@@ -18,12 +18,7 @@ const surfaces = await evaluate(p, `[...document.querySelectorAll(${JSON.stringi
 b.events.length = 0;
 await b.send('Tracing.start', { traceConfig: { includedCategories: ['disabled-by-default-cc.debug'] }, transferMode: 'ReturnAsStream' });
 await sleep(1200);
-const complete = new Promise((res) => {
-  const t = setInterval(() => {
-    const e = b.events.find((x) => x.method === 'Tracing.tracingComplete');
-    if (e) { clearInterval(t); res(e.params); }
-  }, 100);
-});
+const complete = b.waitFor('Tracing.tracingComplete');
 await b.send('Tracing.end');
 const { stream } = await complete;
 const trace = JSON.parse(await readStream(b, stream));

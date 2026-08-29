@@ -349,7 +349,9 @@ describe('previewTranslateYPercent', () => {
 });
 
 describe('railGapLow', () => {
-  const offsetFor = (nodeIndex: number): number => nodeIndex * 500;
+  const geometry = {
+    getItemOffset: (nodeIndex: number): number => nodeIndex * 500,
+  };
   const allLoaded: MergedNavTicks = {
     ticks: [tick('a', 0, 0), tick('b', 1, 2), tick('c', 2, 4)],
     loadedStart: 0,
@@ -357,19 +359,19 @@ describe('railGapLow', () => {
   };
 
   it('names the gap, including the ends the dot hides at', () => {
-    expect(railGapLow(allLoaded, -50, offsetFor)).toBe(-1); // above first
-    expect(railGapLow(allLoaded, 500, offsetFor)).toBe(0); // between a and b
-    expect(railGapLow(allLoaded, 2500, offsetFor)).toBe(2); // at/past last
-    expect(railGapLow({ ticks: [], loadedStart: -1, loadedEnd: -1 }, 0, offsetFor)).toBeNull();
+    expect(railGapLow(allLoaded, -50, geometry)).toBe(-1); // above first
+    expect(railGapLow(allLoaded, 500, geometry)).toBe(0); // between a and b
+    expect(railGapLow(allLoaded, 2500, geometry)).toBe(2); // at/past last
+    expect(railGapLow({ ticks: [], loadedStart: -1, loadedEnd: -1 }, 0, geometry)).toBeNull();
   });
 
   it('reaching a tick hops the gap in one step, never a fraction', () => {
     // Center inside message a (offset 0..999): still gap 0. Reaching
     // b's own offset moves straight to gap 1.
-    expect(railGapLow(allLoaded, 0, offsetFor)).toBe(0);
-    expect(railGapLow(allLoaded, 999, offsetFor)).toBe(0);
-    expect(railGapLow(allLoaded, 1000, offsetFor)).toBe(1);
-    expect(railGapLow(allLoaded, 1999, offsetFor)).toBe(1);
+    expect(railGapLow(allLoaded, 0, geometry)).toBe(0);
+    expect(railGapLow(allLoaded, 999, geometry)).toBe(0);
+    expect(railGapLow(allLoaded, 1000, geometry)).toBe(1);
+    expect(railGapLow(allLoaded, 1999, geometry)).toBe(1);
   });
 
   it('points into the unloaded gaps at the window edges', () => {
@@ -380,10 +382,10 @@ describe('railGapLow', () => {
     };
     // Above the first loaded tick (offset 500): between unloaded
     // history p and it — loadedStart − 1.
-    expect(railGapLow(withUnloaded, 200, offsetFor)).toBe(0);
+    expect(railGapLow(withUnloaded, 200, geometry)).toBe(0);
     // At/after the last loaded tick: between it and the unloaded tail,
     // NOT the past-the-end sentinel — s is still ahead.
-    expect(railGapLow(withUnloaded, 1200, offsetFor)).toBe(2);
+    expect(railGapLow(withUnloaded, 1200, geometry)).toBe(2);
   });
 
   it('answers null with nothing loaded (no geometry to place against)', () => {
@@ -392,9 +394,9 @@ describe('railGapLow', () => {
       loadedStart: -1,
       loadedEnd: -1,
     };
-    expect(railGapLow(noneLoaded, 500, offsetFor)).toBeNull();
+    expect(railGapLow(noneLoaded, 500, geometry)).toBeNull();
     // A single tick has no gap to be in.
-    expect(railGapLow({ ticks: [tick('a', 0, 0)], loadedStart: 0, loadedEnd: 0 }, 0, offsetFor)).toBeNull();
+    expect(railGapLow({ ticks: [tick('a', 0, 0)], loadedStart: 0, loadedEnd: 0 }, 0, geometry)).toBeNull();
   });
 });
 
@@ -406,26 +408,28 @@ describe('tickNearestCenter', () => {
     loadedStart: 0,
     loadedEnd: 2,
   };
-  const offsetForNode = (n: number) => n * 100;
-  const sizeForNode = () => 100;
+  const geometry = {
+    getItemOffset: (nodeIndex: number) => nodeIndex * 100,
+    sizeAt: () => 100,
+  };
 
   it('picks the on-screen tick whose row center is nearest the given center', () => {
-    expect(tickNearestCenter(merged, [0, 2], 400, offsetForNode, sizeForNode)).toBe(1);
-    expect(tickNearestCenter(merged, [0, 2], 120, offsetForNode, sizeForNode)).toBe(0);
-    expect(tickNearestCenter(merged, [0, 2], 900, offsetForNode, sizeForNode)).toBe(2);
+    expect(tickNearestCenter(merged, [0, 2], 400, geometry)).toBe(1);
+    expect(tickNearestCenter(merged, [0, 2], 120, geometry)).toBe(0);
+    expect(tickNearestCenter(merged, [0, 2], 900, geometry)).toBe(2);
   });
 
   it('only considers ticks inside the range', () => {
     // Center hugs u1, but the range says only u2/u3 are on screen.
-    expect(tickNearestCenter(merged, [1, 2], 60, offsetForNode, sizeForNode)).toBe(1);
+    expect(tickNearestCenter(merged, [1, 2], 60, geometry)).toBe(1);
   });
 
   it('a single-tick range answers that tick wherever the center is', () => {
-    expect(tickNearestCenter(merged, [2, 2], 0, offsetForNode, sizeForNode)).toBe(2);
+    expect(tickNearestCenter(merged, [2, 2], 0, geometry)).toBe(2);
   });
 
   it('a tie goes to the earlier tick', () => {
     // Center 300 is 250 from both row centers 50 and 550.
-    expect(tickNearestCenter(merged, [0, 1], 300, offsetForNode, sizeForNode)).toBe(0);
+    expect(tickNearestCenter(merged, [0, 1], 300, geometry)).toBe(0);
   });
 });

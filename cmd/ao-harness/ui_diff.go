@@ -37,6 +37,7 @@ type uiRow struct {
 	RowIndex   int    `json:"rowIndex"`
 	InViewport bool   `json:"inViewport"`
 	Rect       uiRect `json:"rect"`
+	TextLength int    `json:"textLength"`
 	TextHead   string `json:"textHead"`
 }
 

@@ -715,7 +715,9 @@ describe('activity run — the top fade covers the clip\'s sub-pixel top edge', 
     // The harness insists on real windowing, so the one-row run sits at the
     // head of enough tall prose that the mount lands below it.
     const built = runOf(1);
-    for (let i = 0; i < 20; i += 1) {
+    // Clear the 1200px overscan above a 600px viewport even when the runner's
+    // font metrics make each paragraph row shorter than its estimate.
+    for (let i = 0; i < 64; i += 1) {
       built.push(makeItem({
         id: `r${i}`,
         threadId: THREAD_ID,

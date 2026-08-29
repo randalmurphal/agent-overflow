@@ -39,7 +39,10 @@ export interface ThreadItemStreamApplyOptions {
    * the wholesale chokepoints in the pane so no items assignment or
    * revision bump escapes it.
    */
-  commitUpsertResult(next: ApplyItemUpsertsToWindowResult): void;
+  commitUpsertResult(
+    next: ApplyItemUpsertsToWindowResult,
+    afterCommit: (committed: ApplyItemUpsertsToWindowResult) => void,
+  ): void;
   /** Stamp the pane's non-reactive live-content latch. */
   stampLiveContent(): void;
   /** Wire append to the loaded tail: arm the structural spring AND stamp. */
@@ -106,6 +109,53 @@ export function createThreadItemStreamApply(
    */
   const warnedMissingDeltaIds = new Set<string>();
 
+  /**
+   * Domain work that must observe an installed upsert window and finish before
+   * the pane derives its reveal boundary. Each independent leg still runs when
+   * another fails, then the pane's commit finalizer reports the aggregate after
+   * it has synchronized the gate.
+   */
+  function finishCommittedUpsert(
+    next: ApplyItemUpsertsToWindowResult,
+  ): void {
+    let errors: unknown[] | null = null;
+    if (next.appendedItems.length > 0) {
+      try {
+        timelineWindow.refreshCursorsAfterTailAppend();
+      } catch (error) {
+        (errors ??= []).push(error);
+      }
+    }
+    // Live eviction runs before the window-cap check so settled subagent
+    // children never count toward the prune trigger. The cap therefore bounds
+    // renderable rows, matching the backend pagers' top-level-only budget.
+    try {
+      subagentMemory.evictSettledChildren(next.changedItems);
+    } catch (error) {
+      (errors ??= []).push(error);
+    }
+    if (next.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
+      try {
+        timelineWindow.pruneToRecentWindowIfNeeded();
+      } catch (error) {
+        (errors ??= []).push(error);
+      }
+    }
+    const thread = options.getThread();
+    if (thread?.mode === 'design') {
+      for (const item of next.changedItems) {
+        try {
+          options.designState.applyAssistantPayloadsForItem(item, thread);
+        } catch (error) {
+          (errors ??= []).push(error);
+        }
+      }
+    }
+    if (errors) {
+      throw new AggregateError(errors, 'timeline item upsert post-commit work failed');
+    }
+  }
+
   function upsertItemsBatch(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null {
@@ -123,6 +173,7 @@ export function createThreadItemStreamApply(
     }
 
     const thread = options.getThread();
+    incoming = streamingReveal.prepareItemReplacements(incoming);
     const next = applyItemUpsertsToWindow({
       current: options.getItems(),
       incoming,
@@ -159,35 +210,7 @@ export function createThreadItemStreamApply(
       // recorded above and are not theirs to see.
       return next.droppedNewerItems ? next : null;
     }
-    options.commitUpsertResult(next);
-    if (next.appendedItems.length > 0) {
-      timelineWindow.refreshCursorsAfterTailAppend();
-    }
-    // Live eviction runs before the window-cap check so settled subagent
-    // children never count toward the prune trigger — the cap effectively
-    // bounds renderable rows, matching the backend pagers' top-level-only
-    // budget since 6187d039.
-    subagentMemory.evictSettledChildren(next.changedItems);
-    if (next.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
-      timelineWindow.pruneToRecentWindowIfNeeded();
-    }
-
-    streamingReveal.reconcileUpsertedItems(next.changedItems);
-
-    // Design-mode side-channel: scan assistant text for structured
-    // `aoflow-design` payloads and project them onto pane state. Cheap
-    // when no payload is present (the parser short-circuits on the
-    // missing fence prefix); designState owns dedupe across streaming
-    // deltas and resets it on thread switch.
-    if (thread?.mode === 'design') {
-      for (const item of next.changedItems) {
-        options.designState.applyAssistantPayloadsForItem(item, thread);
-      }
-    }
-    // A newly-appended successor row should withhold behind the streaming
-    // frontier; a terminal upsert that disposed the frontier should drop
-    // the gate. Recompute once per batch.
-    streamingReveal.recomputeReveal();
+    options.commitUpsertResult(next, finishCommittedUpsert);
     return next;
   }
 

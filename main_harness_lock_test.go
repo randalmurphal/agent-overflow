@@ -101,6 +101,9 @@ func TestHarnessBootModeNamesTheFlag(t *testing.T) {
 	if got := harnessBootMode(cliFlags{soak: true}); got != "soak" {
 		t.Errorf("harnessBootMode(--soak) = %q", got)
 	}
+	if got := harnessBootMode(cliFlags{soak: true, isolatedProfile: "perf"}); got != "perf" {
+		t.Errorf("harnessBootMode(--soak --isolated-profile perf) = %q", got)
+	}
 }
 
 // TestPrepareHarnessTakesTheInstanceLock proves the guard is on the BOOT

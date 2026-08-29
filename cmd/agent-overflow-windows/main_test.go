@@ -181,7 +181,7 @@ func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
 
 // TestBrowserArgs covers three invariants for the WebView2 flag set:
 //
-//  1. Dev and soak are strict supersets of prod: diagnostic modes only layer
+//  1. Every diagnostic mode is a strict superset of prod: it only layers
 //     their isolated CDP endpoint on top of the always-applied flags.
 //  2. Prod must never include --remote-debugging-*. That port is
 //     unauthenticated CDP and only belongs in developer builds.
@@ -193,7 +193,7 @@ func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
 //     which Wails merges into its single switch.
 func TestBrowserArgs(t *testing.T) {
 	prod := browserArgs("prod")
-	for _, mode := range []string{appidentity.ModeDev, appidentity.ModeSoak} {
+	for _, mode := range []string{appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
 		modeArgs := browserArgs(mode)
 		modeSet := make(map[string]struct{}, len(modeArgs))
 		for _, arg := range modeArgs {
@@ -212,7 +212,7 @@ func TestBrowserArgs(t *testing.T) {
 		}
 	}
 
-	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeSoak} {
+	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
 		for _, arg := range browserArgs(mode) {
 			if strings.HasPrefix(arg, "--disable-features") || strings.HasPrefix(arg, "--enable-features") {
 				t.Errorf("%s raw feature switch %q would clobber Wails' merged feature configuration", mode, arg)
@@ -262,7 +262,7 @@ func TestBrowserFeatures(t *testing.T) {
 }
 
 func TestWebviewBrowserOptionsLeaveTextAndScrollerCompositingAtChromiumDefaults(t *testing.T) {
-	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeSoak} {
+	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
 		opts := webviewBrowserOptions(mode, "profile", "forensics")
 		if len(opts.EnabledFeatures) != 0 {
 			t.Errorf("%s EnabledFeatures = %v, want none", mode, opts.EnabledFeatures)
@@ -610,15 +610,18 @@ func TestWebviewDataDir(t *testing.T) {
 	if got, want := webviewDataDir(appidentity.ModeHarness), filepath.Join(base, "webview2-harness"); got != want {
 		t.Errorf("harness dir = %q, want %q", got, want)
 	}
+	if got, want := webviewDataDir(appidentity.ModePerf), filepath.Join(base, "webview2-perf"); got != want {
+		t.Errorf("perf dir = %q, want %q", got, want)
+	}
 }
 
 // TestIsolatedProfilesFoldEveryPerInstanceName is the launcher half of
 // the isolation guard: with --profile set, every name the launcher
 // derives must differ from what the same build would use without it, AND
-// from what the other profile uses. One of them sharing would put an
+// from what another profile uses. One of them sharing would put an
 // isolated instance inside the developer's live app (same single-instance
 // id → its URL opens in their window; same WebView2 dir → same
-// localStorage/IndexedDB) or inside the other profile's.
+// localStorage/IndexedDB) or inside another profile's.
 func TestIsolatedProfilesFoldEveryPerInstanceName(t *testing.T) {
 	appData := t.TempDir()
 	t.Setenv("APPDATA", appData)
@@ -628,13 +631,14 @@ func TestIsolatedProfilesFoldEveryPerInstanceName(t *testing.T) {
 
 	// axis name -> profile -> value.
 	seen := map[string]map[string]string{}
-	for _, profile := range []string{"", appidentity.ProfileHarness, appidentity.ProfileSoak} {
+	for _, profile := range []string{"", appidentity.ProfileHarness, appidentity.ProfileSoak, appidentity.ProfilePerf} {
 		activeProfile = profile
 		mode := launcherRuntimeMode()
 		if want := map[string]string{
 			"":                         appidentity.ModeDev,
 			appidentity.ProfileHarness: appidentity.ModeHarness,
 			appidentity.ProfileSoak:    appidentity.ModeSoak,
+			appidentity.ProfilePerf:    appidentity.ModePerf,
 		}[profile]; mode != want {
 			t.Fatalf("profile %q folded to mode %q, want %q (a profile launched from the dev build keeps its own identity)", profile, mode, want)
 		}
@@ -658,11 +662,11 @@ func TestIsolatedProfilesFoldEveryPerInstanceName(t *testing.T) {
 	}
 }
 
-// TestProfileBackendArgs pins the launcher↔backend wire contract. Both
-// isolated profiles spell --soak — the internal name for "isolated mocked
-// instance speaking the launcher bootstrap" — and ONLY the soak profile
-// adds --autopilot, which is what makes it a soak rather than the Windows
-// harness. Without --soak the launcher would point at a backend running
+// TestProfileBackendArgs pins the launcher↔backend wire contract. Every
+// isolated profile spells --soak, the internal name for "isolated mocked
+// instance speaking the launcher bootstrap". Only soak adds --autopilot,
+// and perf adds the identity that selects its third data root. Without
+// --soak the launcher would point at a backend running
 // on the developer's real data dir and real provider binaries, the exact
 // failure the profile axis exists to make impossible; with a stray
 // --autopilot the harness instance would seed threads and start a turn
@@ -683,6 +687,7 @@ func TestProfileBackendArgs(t *testing.T) {
 	}{
 		{appidentity.ProfileHarness, []string{"--soak", "--launcher-pid", self}},
 		{appidentity.ProfileSoak, []string{"--soak", "--autopilot", "--launcher-pid", self}},
+		{appidentity.ProfilePerf, []string{"--soak", "--isolated-profile", "perf", "--launcher-pid", self}},
 	} {
 		activeProfile = tc.profile
 		got := profileBackendArgs()
@@ -706,7 +711,7 @@ func TestSoakWindowIsSmallEnoughToParkBesideRealWork(t *testing.T) {
 // at debug. An isolated instance that drops those has episode starts with
 // no story, and the noise lands only in its own launcher-<profile>.log.
 func TestWailsLogLevelIsolatedProfilesAreDebug(t *testing.T) {
-	for _, mode := range []string{appidentity.ModeSoak, appidentity.ModeHarness} {
+	for _, mode := range []string{appidentity.ModeSoak, appidentity.ModeHarness, appidentity.ModePerf} {
 		if got := wailsLogLevel(mode); got != slog.LevelDebug {
 			t.Errorf("%s wails log level = %v, want debug", mode, got)
 		}

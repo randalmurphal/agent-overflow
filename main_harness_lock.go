@@ -129,6 +129,9 @@ func describeHarnessLockHolder(file *os.File) string {
 // the two share one lock — what must not double up is a BACKEND on a data
 // root, regardless of which flag started it.
 func harnessBootMode(flags cliFlags) string {
+	if flags.isolatedProfile != "" {
+		return flags.isolatedProfile
+	}
 	if flags.soak {
 		return "soak"
 	}

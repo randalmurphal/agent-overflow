@@ -42,7 +42,23 @@ if [ ! -f "$script" ]; then
   exit 1
 fi
 
-# ab is the only probe that changes what the user sees, so the user's own app needs consent.
+# The user's app is measurement-only. Keep this denylist at the dispatch
+# boundary so a page-instrumenting or input-driving probe cannot reach it by
+# accident even when the script itself predates per-probe guards. New probes
+# that install page state, alter rendering, reload, click, type, or scroll must
+# join this list. Read-only CDP traces, profiles, censuses, and screenshots do
+# not.
+if [ "$PORT" = "9223" ]; then
+  case "$name" in
+    activetrim|attrflap|csshold|emulate|evalq|followcheck|framedrops|gpupressure|jumpbottom|jumpwatch|loadolderdrive|mainstalls|markdownwatch|mutations|resizewatch|scroll-contract|scrollgesture|spritecheck|spritecheck2|spritecheck3|spritecheck4|stopsnap)
+      echo "probe: $name instruments or drives the page, so it cannot run on the read-only user app." >&2
+      echo "       Run it against an isolated rig instead: AO_CDP_PORT=9226 scripts/perfprobe/probe $name ..." >&2
+      exit 2
+      ;;
+  esac
+fi
+
+# ab changes what the user sees, so the user's own app needs consent.
 if [ "$name" = "ab" ] && [ "$PORT" = "9223" ]; then
   allow=0
   for a in "$@"; do [ "$a" = "--allow-user-app" ] && allow=1; done
@@ -102,6 +118,7 @@ fi
 
 mkdir -p "$OUT_WSL/lib" || exit 1
 cp -f "$DIR"/*.mjs "$OUT_WSL/" || exit 1
+cp -f "$DIR"/*.ps1 "$OUT_WSL/" || exit 1
 cp -f "$DIR"/lib/*.mjs "$OUT_WSL/lib/" || exit 1
 
 cd "$OUT_WSL" || exit 1

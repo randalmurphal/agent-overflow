@@ -136,6 +136,7 @@ describe('readViewport', () => {
       role: 'assistant',
       status: 'streaming',
       streaming: true,
+      textLength: doc.querySelector('[data-item-id="i2"]')!.textContent!.length,
       textHead: 'Use Array.prototype.sort',
     });
     expect(pane.rows[2]!.badge).toBe('running');
@@ -222,7 +223,7 @@ describe('readElement', () => {
     const doc = html(`
       <button data-testid="send" aria-label="Send message" role="button">Send</button>
       <button data-testid="send">Send again</button>`);
-    const result = readElement(doc, '[data-testid="send"]');
+    const result = readElement(doc, '[data-testid="send"]', { includeScroll: true });
     expect(result).toMatchObject({
       v: 1,
       selector: '[data-testid="send"]',
@@ -231,6 +232,8 @@ describe('readElement', () => {
     expect(result.first).toMatchObject({
       tag: 'button',
       text: 'Send',
+      textLength: 4,
+      scroll: { top: 0, height: 0, client: 0, distanceFromBottom: 0, atBottom: true },
       role: 'button',
       ariaLabel: 'Send message',
       testId: 'send',
@@ -245,6 +248,25 @@ describe('readElement', () => {
 
   it('caps the text it returns', () => {
     const doc = html(`<p id="long">${'x'.repeat(900)}</p>`);
-    expect(readElement(doc, '#long', 20).first?.text).toHaveLength(21);
+    expect(readElement(doc, '#long', { textCap: 20 }).first?.text).toHaveLength(21);
+  });
+
+  it('does not read or return scroll geometry unless requested', () => {
+    const doc = html('<div id="target">content</div>');
+    expect(readElement(doc, '#target').first).not.toHaveProperty('scroll');
+    expect(readElement(doc, '#target', { includeScroll: true }).first?.scroll).toEqual({
+      top: 0,
+      height: 0,
+      client: 0,
+      distanceFromBottom: 0,
+      atBottom: true,
+    });
+  });
+
+  it('summarizes nested text without joining the full subtree', () => {
+    const doc = html('<div id="nested">  Alpha <span>\ud83d\ude80\n beta</span><i>   gamma</i> </div>');
+    const result = readElement(doc, '#nested', { textCap: 12 }).first;
+    expect(result?.textLength).toBe(doc.querySelector('#nested')!.textContent!.length);
+    expect(result?.text).toBe(textHead(doc.querySelector('#nested')!.textContent!, 12));
   });
 });

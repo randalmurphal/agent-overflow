@@ -1,4 +1,4 @@
-.PHONY: install dev dev-wsl launch-wsl harness-wsl soak soak-check soak-contract build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+.PHONY: install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider
@@ -234,11 +234,13 @@ DEV_WSL_FWD_VARS := AGENT_OVERFLOW_DEBUG AGENT_OVERFLOW_WEBVIEW_LOG AGENT_OVERFL
 # empty is the developer's normal dev instance, `harness` is the isolated
 # mocked instance you drive (make harness-wsl), `soak` is that same
 # instance with the soak autopilot armed (make soak,
-# docs/architecture/soak-rig.md). It is forwarded verbatim to the
+# docs/architecture/soak-rig.md), and `perf` is a third isolated harness
+# reserved for destructive renderer benchmarks. It is forwarded verbatim to the
 # launcher's --profile flag, which is THE axis behind every piece of
 # per-instance state (single-instance id, window title, WebView2 profile,
 # CDP port, launcher log, window placement, backend data dir).
 LAUNCH_PROFILE ?=
+LAUNCH_WSL_BUILD_MODE ?= build:dev
 
 dev-wsl:
 	@$(MAKE) launch-wsl LAUNCH_PROFILE= UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
@@ -252,6 +254,14 @@ dev-wsl:
 # ao-mockprovider and its own ~/.agent-overflow-harness data dir.
 harness-wsl:
 	@$(MAKE) launch-wsl LAUNCH_PROFILE=harness UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
+
+# perf-wsl: a THIRD isolated Windows harness for destructive renderer A/B
+# runs. Its data root, WebView2 profile, launcher identity, window state, log,
+# forensics, and CDP endpoint differ from dev, harness, and soak. Benchmark
+# reset/interrupt/reload commands can therefore target it without touching a
+# long-running rig or the developer's real app.
+perf-wsl:
+	@$(MAKE) launch-wsl LAUNCH_PROFILE=perf LAUNCH_WSL_BUILD_MODE=build UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
 
 # soak: the same isolated Windows instance with ONE preset armed — the
 # soak autopilot, which seeds two threads and streams background-subagent
@@ -267,16 +277,16 @@ launch-wsl:
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
 		exit 1; \
 	fi
-	@case "$(LAUNCH_PROFILE)" in ""|harness|soak) ;; *) echo "ERROR: LAUNCH_PROFILE must be empty, 'harness' or 'soak', got '$(LAUNCH_PROFILE)'" >&2; exit 1;; esac
+	@case "$(LAUNCH_PROFILE)" in ""|harness|soak|perf) ;; *) echo "ERROR: LAUNCH_PROFILE must be empty, 'harness', 'soak', or 'perf', got '$(LAUNCH_PROFILE)'" >&2; exit 1;; esac
 	@set -e; \
 	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
-	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=build:dev; \
+	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=$(LAUNCH_WSL_BUILD_MODE); \
 	if [ -n "$(LAUNCH_PROFILE)" ]; then \
 		$(MAKE) mockprovider; \
 		mkdir -p "$$HOME/.local/bin"; \
 		cp bin/ao-mockprovider "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$"; \
 		mv -f "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$" "$$HOME/.local/bin/ao-mockprovider"; \
-		echo "Installed mock provider at $$HOME/.local/bin/ao-mockprovider (both isolated profiles resolve it beside the backend binary)"; \
+		echo "Installed mock provider at $$HOME/.local/bin/ao-mockprovider (all isolated profiles resolve it beside the backend binary)"; \
 	fi; \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
@@ -304,6 +314,12 @@ launch-wsl:
 		echo "Windows harness data root: $$HOME/.agent-overflow-harness"; \
 		echo "Drive it:                  bin/ao-harness list | info | health   (build: make harness-build)"; \
 		echo "Stop it:                   bin/ao-harness down   (closes the launcher window too)"; \
+		echo ""; \
+	elif [ "$(LAUNCH_PROFILE)" = "perf" ]; then \
+		echo ""; \
+		echo "Windows perf data root: $$HOME/.agent-overflow-perf"; \
+		echo "CDP:                   127.0.0.1:9226"; \
+		echo "Drive it explicitly:   bin/ao-harness --instance $$HOME/.agent-overflow-perf ..."; \
 		echo ""; \
 	fi; \
 	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME $$PROFILE_ARGS"; \

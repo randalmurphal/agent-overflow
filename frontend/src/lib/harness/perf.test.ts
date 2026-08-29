@@ -330,6 +330,28 @@ describe('meter selection', () => {
     expect(withoutDom.panes).toEqual([]);
     expect(withoutDom.domNodes).toBe(0);
   });
+
+  it('decouples the document census from the backend sample cadence', () => {
+    document.body.innerHTML =
+      '<section data-pane-id="pane-a"><div data-row-index="0"></div></section>';
+    const census = vi.spyOn(document, 'getElementsByTagName');
+
+    startPerfRun({ meters: ['dom'] });
+    expect(census).toHaveBeenCalledTimes(1);
+
+    for (clock = 100; clock < 10_000; clock += 100) collectPerfSample();
+    expect(census).toHaveBeenCalledTimes(1);
+
+    clock = 10_000;
+    collectPerfSample();
+    expect(census).toHaveBeenCalledTimes(2);
+
+    // Stop always captures the final level even when the next periodic
+    // census is not due.
+    clock = 10_001;
+    stopPerfRun();
+    expect(census).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('run addressing', () => {

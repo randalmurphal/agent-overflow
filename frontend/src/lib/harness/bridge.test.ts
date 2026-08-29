@@ -66,6 +66,24 @@ describe('answerHarnessQuery', () => {
     const missing = (await answerHarnessQuery({ v: 1, kind: 'element' })) as ErrorEnvelope;
     expect(missing.error).toContain('requires a selector');
   });
+
+  it('only includes element scroll geometry when the query requests it', async () => {
+    document.body.innerHTML = '<main id="target">content</main>';
+    const plain = (await answerHarnessQuery({
+      v: 1,
+      kind: 'element',
+      selector: '#target',
+    })) as { first: { scroll?: unknown } };
+    expect(plain.first.scroll).toBeUndefined();
+
+    const withScroll = (await answerHarnessQuery({
+      v: 1,
+      kind: 'element',
+      selector: '#target',
+      includeScroll: true,
+    })) as { first: { scroll?: unknown } };
+    expect(withScroll.first.scroll).toBeDefined();
+  });
 });
 
 describe('globals query', () => {

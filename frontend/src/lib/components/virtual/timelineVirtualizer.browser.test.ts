@@ -4,11 +4,13 @@
 // MessageTimeline integration is covered by the engine-agnostic outcome
 // suites at cutover (plan §4 V1/V2).
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import TimelineVirtualizerHarness, { type HarnessRow } from './TimelineVirtualizerHarness.svelte';
 import type { ContentGeometrySample, EngineCompensation, RowEstimate } from '../../utils/virtual/types';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
+import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
+import { recordScrollEventObservation } from '../../utils/scroll/eventObservation';
 
 const VIEWPORT_PX = 600;
 const BUFFER_PX = 400;
@@ -43,6 +45,7 @@ function mountHarness(
     bufferSize: number;
     renderAll: boolean;
     headerSize: number;
+    intrinsicViewportMaxHeight: string;
     estimate: RowEstimate;
     onscroll: (offset: number) => void;
     onscrollend: () => void;
@@ -75,6 +78,49 @@ function mountedRowIndexes(scrollEl: HTMLElement): number[] {
 
 function rowEl(scrollEl: HTMLElement, id: string): HTMLElement | null {
   return scrollEl.querySelector(`[data-row-id="${id}"]`);
+}
+
+function trackResizeObserverTargets(): {
+  observed(target: Element): boolean;
+  restore(): void;
+} {
+  const NativeResizeObserver = window.ResizeObserver;
+  const targetsByObserver = new Map<ResizeObserver, Set<Element>>();
+
+  class TrackingResizeObserver extends NativeResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      super(callback);
+      targetsByObserver.set(this, new Set());
+    }
+
+    override observe(target: Element, options?: ResizeObserverOptions): void {
+      targetsByObserver.get(this)?.add(target);
+      super.observe(target, options);
+    }
+
+    override unobserve(target: Element): void {
+      targetsByObserver.get(this)?.delete(target);
+      super.unobserve(target);
+    }
+
+    override disconnect(): void {
+      targetsByObserver.get(this)?.clear();
+      super.disconnect();
+    }
+  }
+
+  window.ResizeObserver = TrackingResizeObserver;
+  return {
+    observed(target) {
+      for (const targets of targetsByObserver.values()) {
+        if (targets.has(target)) return true;
+      }
+      return false;
+    },
+    restore() {
+      window.ResizeObserver = NativeResizeObserver;
+    },
+  };
 }
 
 // Settle: geometry stable for `stableFrames` consecutive frames.
@@ -113,6 +159,42 @@ async function pinToBottomAndSettle(scrollEl: HTMLElement, label: string): Promi
 }
 
 describe('mount + tail seeding', () => {
+  it('reuses the intent owner scrollTop observation', async () => {
+    const { scrollEl } = mountHarness();
+    await waitFor(() => mountedRowIndexes(scrollEl).length > 0, 'rows to mount');
+    let prototype: object | null = scrollEl;
+    let descriptor: PropertyDescriptor | undefined;
+    while (prototype && !descriptor) {
+      prototype = Object.getPrototypeOf(prototype) as object | null;
+      if (prototype) descriptor = Object.getOwnPropertyDescriptor(prototype, 'scrollTop');
+    }
+    if (!descriptor?.get || !descriptor.set) {
+      throw new Error('browser scrollTop accessor was unavailable');
+    }
+    let reads = 0;
+    Object.defineProperty(scrollEl, 'scrollTop', {
+      configurable: true,
+      get() {
+        reads++;
+        return descriptor.get?.call(this);
+      },
+      set(value: number) {
+        descriptor.set?.call(this, value);
+      },
+    });
+    onTestFinished(() => {
+      if (!Reflect.deleteProperty(scrollEl, 'scrollTop')) {
+        throw new Error('browser scrollTop test accessor could not be removed');
+      }
+    });
+    const event = new Event('scroll');
+    recordScrollEventObservation(event, 0);
+
+    scrollEl.dispatchEvent(event);
+
+    expect(reads).toBe(0);
+  });
+
   it('mounts a tail-anchored subset and keeps totalSize === scrollHeight', async () => {
     const { harness, scrollEl } = mountHarness();
     await waitFor(() => mountedRowIndexes(scrollEl).length > 0, 'rows to mount');
@@ -141,9 +223,116 @@ describe('mount + tail seeding', () => {
       'renderAll to mount everything',
     );
   });
+
+  it('sizes to short content, caps growth, and handles intrinsic-mode transitions', async () => {
+    const resizeObserverErrors = captureResizeObserverLoopErrors();
+    onTestFinished(resizeObserverErrors.stop);
+    const resizeTargets = trackResizeObserverTargets();
+    onTestFinished(resizeTargets.restore);
+    const { harness, scrollEl } = mountHarness({
+      initialRows: makeRows(2),
+      intrinsicViewportMaxHeight: '320px',
+    });
+
+    await waitFor(
+      () => scrollEl.clientHeight === 200 && harness.handle()?.getViewportSize() === 200,
+      'short intrinsic viewport',
+      240,
+    );
+    expect(scrollEl.scrollHeight).toBe(200);
+    expect(scrollEl.style.maxHeight).toBe('320px');
+    const firstLimit = scrollEl.querySelector('[data-virtual-intrinsic-viewport-limit]')!;
+    expect(resizeTargets.observed(scrollEl)).toBe(false);
+    expect(resizeTargets.observed(firstLimit)).toBe(true);
+
+    harness.setRows(makeRows(10));
+    await waitFor(
+      () => scrollEl.clientHeight === 320 && harness.handle()?.getViewportSize() === 320,
+      'capped intrinsic viewport',
+      240,
+    );
+    expect(scrollEl.scrollHeight).toBe(1000);
+
+    harness.setIntrinsicViewportMaxHeight(undefined);
+    await waitFor(
+      () => scrollEl.clientHeight === VIEWPORT_PX &&
+        harness.handle()?.getViewportSize() === VIEWPORT_PX,
+      'fixed viewport after intrinsic opt-out',
+      240,
+    );
+    expect(scrollEl.style.maxHeight).toBe('');
+    expect(resizeTargets.observed(firstLimit)).toBe(false);
+    expect(resizeTargets.observed(scrollEl)).toBe(true);
+
+    harness.setIntrinsicViewportMaxHeight('240px');
+    await waitFor(
+      () => scrollEl.clientHeight === 240 && harness.handle()?.getViewportSize() === 240,
+      'intrinsic viewport after re-entry',
+      240,
+    );
+    expect(scrollEl.style.maxHeight).toBe('240px');
+    const secondLimit = scrollEl.querySelector('[data-virtual-intrinsic-viewport-limit]')!;
+    expect(secondLimit).not.toBe(firstLimit);
+    expect(resizeTargets.observed(scrollEl)).toBe(false);
+    expect(resizeTargets.observed(firstLimit)).toBe(false);
+    expect(resizeTargets.observed(secondLimit)).toBe(true);
+    for (let frame = 0; frame < 3; frame += 1) await raf();
+    expect(resizeObserverErrors.messages).toEqual([]);
+  });
 });
 
 describe('windowing', () => {
+  it('never leaves a newly mounted viewport row hidden for a paint', async () => {
+    const resizeObserverErrors = captureResizeObserverLoopErrors();
+    onTestFinished(resizeObserverErrors.stop);
+    const { scrollEl } = mountHarness({
+      initialRows: makeRows(200, 10),
+      bufferSize: 0,
+      estimate: { at: () => 100 },
+    });
+    await pinToBottomAndSettle(scrollEl, 'short tail rows to settle');
+
+    const paintedHiddenRows = new Set<string>();
+    let previousHiddenRows = new Set<string>();
+    let monitoring = true;
+    let monitorFrame = 0;
+    const sampleBeforePaint = () => {
+      const viewport = scrollEl.getBoundingClientRect();
+      const hiddenRows = new Set<string>();
+      for (const candidate of scrollEl.querySelectorAll<HTMLElement>('[data-virtual-row]')) {
+        const rect = candidate.getBoundingClientRect();
+        if (
+          getComputedStyle(candidate).visibility === 'hidden' &&
+          rect.bottom > viewport.top &&
+          rect.top < viewport.bottom
+        ) {
+          hiddenRows.add(
+            candidate.querySelector('[data-row-id]')?.getAttribute('data-row-id') ?? 'unknown',
+          );
+        }
+      }
+      // A row hidden at two consecutive rAF boundaries was hidden through
+      // the intervening paint. A first-notification row may be hidden at the
+      // first boundary and still be revealed by ResizeObserver before that
+      // paint, so a one-boundary sample would report a false blank.
+      for (const id of hiddenRows) {
+        if (previousHiddenRows.has(id)) paintedHiddenRows.add(id);
+      }
+      previousHiddenRows = hiddenRows;
+      if (monitoring) monitorFrame = requestAnimationFrame(sampleBeforePaint);
+    };
+    monitorFrame = requestAnimationFrame(sampleBeforePaint);
+
+    scrollEl.scrollTop = 0;
+    await waitFor(() => rowEl(scrollEl, 'row-0') !== null, 'top rows to mount');
+    for (let frame = 0; frame < 3; frame += 1) await raf();
+    monitoring = false;
+    cancelAnimationFrame(monitorFrame);
+
+    expect([...paintedHiddenRows]).toEqual([]);
+    expect(resizeObserverErrors.messages).toEqual([]);
+  });
+
   it('evicts on scroll away and remounts on return', async () => {
     const { scrollEl } = mountHarness();
     await waitForStableGeometry(scrollEl, 'mount');
@@ -1043,6 +1232,29 @@ describe('revalidate', () => {
 });
 
 describe('hidden pane guard (display:none RO deliveries)', () => {
+  it('classifies visibility from the delivered box without reading offsetParent', async () => {
+    const { harness, host, scrollEl } = mountHarness();
+    await waitForStableGeometry(scrollEl, 'mount');
+    const handle = harness.handle()!;
+    const index = ROW_COUNT - 1;
+    const row = rowEl(scrollEl, `row-${index}`);
+    const measured = row?.parentElement;
+    if (!measured) throw new Error('tail row measurement wrapper did not mount');
+
+    let offsetParentReads = 0;
+    Object.defineProperty(measured, 'offsetParent', {
+      configurable: true,
+      get: () => {
+        offsetParentReads++;
+        return host;
+      },
+    });
+
+    harness.resizeRow(`row-${index}`, 150);
+    await waitFor(() => handle.sizeAt(index) === 150, 'resized tail row');
+    expect(offsetParentReads).toBe(0);
+  });
+
   it('zero-size deliveries from a hidden subtree never record', async () => {
     const { harness, host, scrollEl } = mountHarness();
     await waitForStableGeometry(scrollEl, 'mount');
@@ -1066,6 +1278,33 @@ describe('hidden pane guard (display:none RO deliveries)', () => {
     await raf();
     await raf();
     expect(handle.getTotalSize()).toBe(totalBefore);
+  });
+
+  it('ignores a zero intrinsic-height probe while its pane is hidden', async () => {
+    const resizeObserverErrors = captureResizeObserverLoopErrors();
+    onTestFinished(resizeObserverErrors.stop);
+    const { harness, host, scrollEl } = mountHarness({
+      initialRows: makeRows(10),
+      intrinsicViewportMaxHeight: '320px',
+    });
+    await waitFor(
+      () => scrollEl.clientHeight === 320 && harness.handle()?.getViewportSize() === 320,
+      'intrinsic viewport mount',
+      240,
+    );
+
+    host.style.display = 'none';
+    for (let frame = 0; frame < 3; frame += 1) await raf();
+    expect(harness.handle()?.getViewportSize()).toBe(320);
+    expect(resizeObserverErrors.messages).toEqual([]);
+
+    host.style.display = '';
+    await waitFor(
+      () => scrollEl.clientHeight === 320 && harness.handle()?.getViewportSize() === 320,
+      'intrinsic viewport after pane reveal',
+      240,
+    );
+    expect(resizeObserverErrors.messages).toEqual([]);
   });
 });
 

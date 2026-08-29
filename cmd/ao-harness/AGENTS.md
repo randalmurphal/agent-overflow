@@ -311,7 +311,7 @@ ao-harness send --thread <id> --wait '<the recorded prompt>'
 
 ### Bench
 
-`bench <workload> [--repeat N] [--sample-ms] [--budgets 6,8,16]
+`bench <workload> [--repeat N] [--duration D] [--sample-ms] [--budgets 6,8,16]
 [--baseline file] [--out dir] [--json] [--trace --cdp <endpoint>]`. Each repeat resets the instance,
 reloads the page, seeds its own fixture, arms the meters, drives the
 workload and stops them.
@@ -322,13 +322,15 @@ workload and stops them.
 | `giant-turn` | one turn producing 225 items (tool pairs plus text) |
 | `subagent-fanout` | three bounded async subagents streaming at once |
 | `multi-pane-stream` | three panes side by side, all flooding at once |
+| `active-multi-pane` | six mounted panes, four streaming paced rich Markdown for 30s by default |
 | `many-threads` | 30 seeded threads, then a thread-switch storm |
 
-The first four run the `bench-*` scenarios in the library and wait on
-`provider:turn_completed` for their thread (one wait per thread for
-`multi-pane-stream`), which is the first moment the WIRE half of the
-pipeline under test is done: `harness:mock`'s `scenario_done` fires when
-the MOCK stopped writing, upstream of parse, triage, persist and render.
+The finite provider workloads run the `bench-*` scenarios in the library and
+wait on `provider:turn_completed` for their thread. `active-multi-pane` is
+runner-timed instead. Its unbounded mock turns stay open until the requested
+duration and then close through `InterruptTurn`. `harness:mock`'s
+`scenario_done` fires when the mock stopped writing, upstream of parse, triage,
+persist and render, so no workload uses it as its end condition.
 `many-threads` drives switches by emitting `notification:activated`, the
 channel an OS-notification click rides, so each switch runs the production
 `openThreadInPane` path. It does not exercise the sidebar row itself
@@ -362,14 +364,29 @@ still going after 60s (`benchDrainTimeout`) ends the window anyway naming
 what was outstanding. A slow drain is a finding to read in the report, not
 a reason to throw away the run that produced it.
 
-`multi-pane-stream` is the one workload with a PREPARE step. Its first
-pane opens like everyone else's; the other two go through the bridge's
+Both multi-pane workloads have a PREPARE step. Their first pane opens like
+everyone else's. The other panes go through the bridge's
 `open` kind with `newPane` (see `ui open --new-pane` above) BEFORE the
-meters and the trace are armed, because mounting three timelines is setup
-rather than the thing being measured. Then all three turns are sent back
-to back — three panes revealing at once share one main thread, one
-style/layout pass and one frame budget, which is the whole point; sending
-serially would measure three sequential turns.
+meters and the trace are armed, because mounting timelines is setup rather
+than the thing being measured. Then every turn is sent back to back. The
+panes share one main thread, one style/layout pass and one frame budget.
+Sending serially would measure sequential turns.
+
+`multi-pane-stream` keeps the existing three-pane 1ms flood shape so its
+baselines remain comparable. `active-multi-pane` mounts six panes, sends
+`bench-active-stream` to four, and leaves two inactive. That scenario emits
+rich Markdown at about the reader-facing reveal rate, with an ordinary finite
+lead and an unbounded rich tail. The default is 30 seconds. `--duration`
+accepts longer runs and refuses values below 30 seconds.
+
+The active runner samples rendered assistant text and scroller height at most
+every 30 seconds. Every active text length must grow between samples and every
+timeline must be taller at the end. The report stores the readings in
+`runs[].visibleProgress`. A turn that ends before the deadline, a static DOM,
+or a missing streaming row fails. Completion waits are parked before sends.
+At the deadline the runner interrupts all four turns concurrently and waits
+for their completion events. Every error path interrupts every send it
+attempted, so a failed benchmark cannot leave an infinite mock turn behind.
 
 Reports land in `<dataDir>/bench/<workload>-<timestamp>.json` and double
 as baselines: `--baseline` reads either that file's `aggregate` map (its
@@ -480,7 +497,7 @@ DevTools endpoint, named by `--cdp` (a port, `host:port`,
 harness-window` on Linux produces an instance every other command here
 drives perfectly and these two cannot touch — the refusal says so, and
 names this instance's own port when the registry row knows its mode (the
-Windows WebView2 shells publish soak on 9224 and harness on 9225; an
+Windows WebView2 shells publish soak on 9224, harness on 9225, and perf on 9226; an
 external Chrome or Edge does with `--remote-debugging-port`). An absent
 endpoint is exit 2 (under-specified invocation), an unreachable one is
 exit 1, and both carry that note.
@@ -568,7 +585,12 @@ silently is worse than making the caller type four hex characters.
 
 Attaching then reads `<dataRoot>/agent-overflow/harness-instance.json`
 for the token. A registry row deliberately carries no token, so the CLI
-must be able to open the data root either way.
+must be able to open the data root either way. An authenticated transport
+connection is the attach-path liveness authority. A native Windows CLI driving
+a launcher-hosted WSL backend cannot resolve the Linux PID, but it can open the
+data root over `\\wsl.localhost` and authenticate to the backend. `down`, stale
+row pruning, and every other lifecycle path still require same-namespace PID
+evidence before signaling or deleting anything.
 
 ## The registry contract
 
@@ -749,9 +771,9 @@ metric was never measured.
 `bench_workload_test.go` covers the workload TABLE and the fixtures behind
 it, which is where a mistake is otherwise only visible by running a bench
 for real: every workload has a summary, a seed and a drive; only
-`multi-pane-stream` prepares (a workload that grew a prepare by accident
-would move mount cost back inside the measured window) and it names a
-scenario; its seed gives every pane its own thread with the completed turn
+only the two multi-pane workloads prepare (a workload that grew a prepare
+by accident would move mount cost back inside the measured window) and
+both name a scenario; their seeds give every pane its own thread with the completed turn
 `ListThreads` needs to show a row at all; and `revealDrain.empty()` needs
 BOTH counters clear, because a pane whose last smoother is gone can still
 be holding the gate for the row about to start. The worst-tick strip is

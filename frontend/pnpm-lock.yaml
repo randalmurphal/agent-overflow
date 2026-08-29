@@ -12,6 +12,9 @@ patchedDependencies:
   '@lucide/svelte@1.28.0':
     hash: 97f1c648f901b14e16ed4740719d4f1167695e75ddbc6c8da0f2f09fefe468af
     path: patches/@lucide__svelte@1.28.0.patch
+  marked@16.4.2:
+    hash: af17897d1897ae056bb246a4cedfb41eaf25095f07b76c2d9b5589fd8f9cc119
+    path: patches/marked@16.4.2.patch
   svelte@5.56.8:
     hash: 2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b
     path: patches/svelte@5.56.8.patch
@@ -52,7 +55,7 @@ importers:
         version: 0.16.45
       marked:
         specifier: 16.4.2
-        version: 16.4.2
+        version: 16.4.2(patch_hash=af17897d1897ae056bb246a4cedfb41eaf25095f07b76c2d9b5589fd8f9cc119)
       mermaid:
         specifier: 11.16.1
         version: 11.16.1
@@ -140,7 +143,7 @@ importers:
         version: 0.16.45
       marked:
         specifier: ^16.2.1
-        version: 16.4.2
+        version: 16.4.2(patch_hash=af17897d1897ae056bb246a4cedfb41eaf25095f07b76c2d9b5589fd8f9cc119)
       mermaid:
         specifier: ^11.15.0
         version: 11.16.1
@@ -2652,7 +2655,7 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  marked@16.4.2: {}
+  marked@16.4.2(patch_hash=af17897d1897ae056bb246a4cedfb41eaf25095f07b76c2d9b5589fd8f9cc119): {}
 
   mdast-util-to-hast@13.2.1:
     dependencies:
@@ -2684,7 +2687,7 @@ snapshots:
       es-toolkit: 1.49.0
       katex: 0.16.45
       khroma: 2.1.0
-      marked: 16.4.2
+      marked: 16.4.2(patch_hash=af17897d1897ae056bb246a4cedfb41eaf25095f07b76c2d9b5589fd8f9cc119)
       roughjs: 4.6.6
       stylis: 4.4.0
       ts-dedent: 2.2.0

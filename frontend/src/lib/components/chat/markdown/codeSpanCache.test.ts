@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { getToasts } from '../../../stores/toast.svelte';
 import { contentKey } from '../../../utils/fnv1a';
+import { createProvenAppend } from 'svelte-streamdown';
 import {
+  appendCodeSourceIdentity,
   CODE_SPAN_CACHE_MAX_ENTRIES,
+  createCodeSourceIdentity,
   getCachedBlockSpans,
+  getCachedBlockSpansByIdentity,
   requestBlockSpans,
+  requestBlockSpansByIdentity,
   resetCodeSpanCacheForTest,
   seedFinalBlockSpans,
   __codeSpanCacheStatsForTest,
@@ -21,6 +26,31 @@ beforeEach(() => {
 });
 
 describe('codeSpanCache', () => {
+  it('extends a source identity from only an opaque proven suffix', async () => {
+    const rpc = setBindingMock('HighlightCode', async () => result([3, 1]));
+    const initial = 'const greeting = "caf';
+    const append = createProvenAppend(initial, 'é 🎉";');
+    const identity = appendCodeSourceIdentity(createCodeSourceIdentity(initial), append);
+
+    expect(identity.source).toBe(append.next);
+    expect(identity.contentKey).toBe(contentKey(append.next));
+    expect(getCachedBlockSpansByIdentity('typescript', identity)).toBeNull();
+    await requestBlockSpansByIdentity('typescript', identity);
+    expect(getCachedBlockSpansByIdentity('typescript', identity)).not.toBeNull();
+    expect(rpc).toHaveBeenCalledWith({ lang: 'typescript', source: append.next });
+  });
+
+  it('rejects stale and fabricated source identities', () => {
+    const identity = createCodeSourceIdentity('old');
+    expect(() => appendCodeSourceIdentity(identity, createProvenAppend('other', ' value')))
+      .toThrow('does not match');
+    expect(() => getCachedBlockSpansByIdentity('typescript', {
+      source: 'old',
+      contentKey: contentKey('old'),
+      hash: 0,
+    })).toThrow('requires an identity minted');
+  });
+
   it('caches success and serves it synchronously afterwards', async () => {
     const rpc = setBindingMock('HighlightCode', async () => result([3, 1]));
 

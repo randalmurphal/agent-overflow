@@ -140,6 +140,12 @@ const ALL_METERS = [
 ] as const;
 type MeterName = (typeof ALL_METERS)[number];
 
+// A full DOM census walks every element. Its cost scales with the thing it is
+// measuring, so tying it to a 250ms or 1s backend sample cadence makes a long
+// run measure the probe. Ten seconds keeps peak visibility while the frame and
+// busy meters remain continuous. Stop takes one final census.
+const DOM_CENSUS_INTERVAL_MS = 10_000;
+
 function isMeterName(name: string): name is MeterName {
   return (ALL_METERS as readonly string[]).includes(name);
 }
@@ -254,6 +260,9 @@ interface PerfRun {
   domNodes: Series;
   heapBytes: Series;
   panes: Map<string, Series>;
+  lastDomCensusAt: number | null;
+  lastDomNodes: number;
+  lastPaneRows: Array<{ paneId: string; rows: number }>;
   samples: number;
 }
 
@@ -517,6 +526,9 @@ export function startPerfRun(opts: PerfStartOptions = {}): PerfSummary | null {
     domNodes: newSeries(),
     heapBytes: newSeries(),
     panes: new Map(),
+    lastDomCensusAt: null,
+    lastDomNodes: 0,
+    lastPaneRows: [],
     samples: 0,
   };
   run = state;
@@ -615,6 +627,37 @@ function countPaneRows(): Array<{ paneId: string; rows: number }> {
   return out;
 }
 
+function sampleDom(
+  state: PerfRun,
+  now: number,
+  force = false,
+): { nodes: number; panes: Array<{ paneId: string; rows: number }> } {
+  if (!state.meters.has('dom') || typeof document === 'undefined') {
+    return { nodes: 0, panes: [] };
+  }
+  const due = state.lastDomCensusAt === null ||
+    now - state.lastDomCensusAt >= DOM_CENSUS_INTERVAL_MS;
+  if (!due && !(force && now !== state.lastDomCensusAt)) {
+    return { nodes: state.lastDomNodes, panes: state.lastPaneRows };
+  }
+
+  const nodes = document.getElementsByTagName('*').length;
+  const panes = countPaneRows();
+  state.lastDomCensusAt = now;
+  state.lastDomNodes = nodes;
+  state.lastPaneRows = panes;
+  recordSeries(state.domNodes, nodes);
+  for (const pane of panes) {
+    let series = state.panes.get(pane.paneId);
+    if (!series) {
+      series = newSeries();
+      state.panes.set(pane.paneId, series);
+    }
+    recordSeries(series, pane.rows);
+  }
+  return { nodes, panes };
+}
+
 /** One tick's worth of numbers. Called by the backend, once per sampleMs. */
 export function collectPerfSample(): PerfSample {
   const state = run;
@@ -659,25 +702,12 @@ export function collectPerfSample(): PerfSample {
   // measured anything.
   const heapMeasured = state.meters.has('memory') && !state.unavailable.has('memory');
   const heap = heapMeasured ? heapBytes() : 0;
-  const nodes =
-    state.meters.has('dom') && typeof document !== 'undefined'
-      ? document.getElementsByTagName('*').length
-      : 0;
-  // Gated on the same meter `nodes` is: countPaneRows walks the document
-  // twice per pane, and a run that excluded `dom` asked for that walk not
-  // to happen — a probe must not cost what it was told to skip.
-  const panes = state.meters.has('dom') ? countPaneRows() : [];
+  // The census is rate-limited independently of this sample cadence. Both
+  // fields return the last exact level between censuses so live watchers keep
+  // a stable value rather than mistaking "not sampled" for zero.
+  const { nodes, panes } = sampleDom(state, now);
 
   if (heapMeasured) recordSeries(state.heapBytes, heap);
-  recordSeries(state.domNodes, nodes);
-  for (const pane of panes) {
-    let series = state.panes.get(pane.paneId);
-    if (!series) {
-      series = newSeries();
-      state.panes.set(pane.paneId, series);
-    }
-    recordSeries(series, pane.rows);
-  }
   state.samples += 1;
 
   const sample: PerfSample = {
@@ -720,6 +750,7 @@ export function collectPerfSample(): PerfSample {
 export function stopPerfRun(): PerfSummary | null {
   const state = run;
   if (!state) return null;
+  sampleDom(state, typeof performance !== 'undefined' ? performance.now() : 0, true);
   run = null;
   disarmMeters(state);
   const duration = Math.max(0, performance.now() - state.startedAt);

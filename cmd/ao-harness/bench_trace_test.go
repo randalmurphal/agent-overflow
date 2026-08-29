@@ -13,11 +13,11 @@ import (
 const traceFixtureEvents = `[
   {"name":"UpdateLayoutTree","cat":"disabled-by-default-devtools.timeline","ph":"X","dur":1500,
    "args":{"beginData":{"stackTrace":[
-     {"functionName":"measureRow","url":"http://x/Timeline.svelte","lineNumber":42},
+     {"functionName":"measureRow","url":"http://x/Timeline.svelte","lineNumber":42,"columnNumber":17},
      {"functionName":"caller","url":"http://x/a.js","lineNumber":1}]}}},
   {"name":"Layout","cat":"disabled-by-default-devtools.timeline","ph":"X","dur":2500,
    "args":{"beginData":{"stackTrace":[
-     {"functionName":"measureRow","url":"http://x/Timeline.svelte","lineNumber":42}]}}},
+     {"functionName":"measureRow","url":"http://x/Timeline.svelte","lineNumber":42,"columnNumber":17}]}}},
   {"name":"Layout","cat":"disabled-by-default-devtools.timeline","ph":"X","dur":500,
    "args":{"beginData":{"stackTrace":[{"functionName":"","url":"http://x/b.js","lineNumber":7}]}}},
   {"name":"Layout","cat":"disabled-by-default-devtools.timeline","ph":"X","dur":9000,
@@ -60,7 +60,7 @@ func TestSummarizeForcedLayoutGroupsByTopFrame(t *testing.T) {
 	}
 
 	top := summary.Groups[0]
-	if top.Frame != "measureRow@http://x/Timeline.svelte:42" {
+	if top.Frame != "measureRow@http://x/Timeline.svelte:42:17" {
 		t.Errorf("top frame = %q", top.Frame)
 	}
 	if top.Count != 2 || top.Style != 1 || top.Layout != 1 {
@@ -69,7 +69,7 @@ func TestSummarizeForcedLayoutGroupsByTopFrame(t *testing.T) {
 	if top.Ms != 4 {
 		t.Errorf("top ms = %.3f, want 4", top.Ms)
 	}
-	if summary.Groups[1].Frame != "(anonymous)@http://x/b.js:7" {
+	if summary.Groups[1].Frame != "(anonymous)@http://x/b.js:7:0" {
 		t.Errorf("second frame = %q", summary.Groups[1].Frame)
 	}
 }
@@ -158,7 +158,7 @@ func TestMergeTraceSummariesTruncatesTheTail(t *testing.T) {
 	if !strings.Contains(rendered, "5 further call site(s) not shown") {
 		t.Errorf("the rendering hides the truncation:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "fna@http://x/a.js:1") {
+	if !strings.Contains(rendered, "fna@http://x/a.js:1:0") {
 		t.Errorf("the rendering drops the top call site:\n%s", rendered)
 	}
 }

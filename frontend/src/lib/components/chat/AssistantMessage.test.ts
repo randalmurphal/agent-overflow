@@ -5,6 +5,9 @@ import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte'
 import type { ThreadPane } from '../../stores/thread.svelte';
 import AssistantMessage from './AssistantMessage.svelte';
 
+const codeSource = (host: Element | null | undefined): string =>
+  host?.querySelector('code')?.textContent ?? '';
+
 describe('<AssistantMessage>', () => {
   // Codex marks a mid-turn progress note with `delivery: "async"` on the
   // block's stop event (wire >= 0.149). Read POSITIVELY only: absence is not
@@ -172,6 +175,34 @@ describe('<AssistantMessage>', () => {
     });
     await waitFor(() => expect(register).toHaveBeenCalledTimes(2));
     expect(unregister).toHaveBeenCalledOnce();
+  });
+
+  it('registers the replacement pane before surfacing a failed prior release', async () => {
+    const releaseFailure = new Error('prior reveal release failed');
+    const releaseFirst = vi.fn(() => { throw releaseFailure; });
+    const registerFirst = vi.fn(() => releaseFirst);
+    const registerSecond = vi.fn(() => vi.fn());
+    const firstPane = {
+      isItemSmoothing: () => true,
+      registerAssistantRevealSink: registerFirst,
+    } as unknown as ThreadPane;
+    const secondPane = {
+      isItemSmoothing: () => true,
+      registerAssistantRevealSink: registerSecond,
+    } as unknown as ThreadPane;
+    const item = makeItem({
+      id: 'pane-transition-row',
+      status: 'streaming',
+      summary: 'still streaming ',
+    });
+    const view = render(AssistantMessage, { props: { pane: firstPane, item } });
+    await waitFor(() => expect(registerFirst).toHaveBeenCalledOnce());
+
+    await expect(view.rerender({ pane: secondPane, item })).rejects.toThrow(
+      releaseFailure,
+    );
+    expect(releaseFirst).toHaveBeenCalledOnce();
+    expect(registerSecond).toHaveBeenCalledOnce();
   });
 
   it('hides the timestamp/meta row until the first block commits (streaming disabled)', async () => {
@@ -912,7 +943,7 @@ describe('<AssistantMessage>', () => {
     await waitFor(() => {
       const code = body.querySelector('[data-code-source]');
       expect(code).not.toBeNull();
-      const src = code?.getAttribute('data-code-source') ?? '';
+      const src = codeSource(code);
       expect(src).toContain('const x = 1');
       expect(src).toContain('-');
       expect(body.querySelector('h1, h2')).toBeNull();
@@ -970,7 +1001,7 @@ describe('<AssistantMessage>', () => {
       // Without the prefix-replicating seal this is 2: the real block plus
       // an empty phantom opened by the flush-left ``` closer.
       expect(hosts.length).toBe(1);
-      expect(hosts[0].getAttribute('data-code-source')).toContain('npm install foo');
+      expect(codeSource(hosts[0])).toContain('npm install foo');
     });
   });
 
@@ -983,7 +1014,7 @@ describe('<AssistantMessage>', () => {
     await waitFor(() => {
       const hosts = body.querySelectorAll('[data-code-source]');
       expect(hosts.length).toBe(1);
-      expect(hosts[0].getAttribute('data-code-source')).toContain('const x = 1');
+      expect(codeSource(hosts[0])).toContain('const x = 1');
       // The block must live INSIDE the blockquote — a flush-left closer
       // would strand a phantom fence outside it.
       expect(hosts[0].closest('blockquote')).not.toBeNull();
@@ -1003,7 +1034,7 @@ describe('<AssistantMessage>', () => {
     await waitFor(() => {
       const host = body.querySelector('[data-code-source]');
       expect(host).not.toBeNull();
-      const src = host?.getAttribute('data-code-source') ?? '';
+      const src = codeSource(host);
       expect(src).toContain('print(1)');
       expect(src).not.toContain('```');
     });
@@ -1021,7 +1052,7 @@ describe('<AssistantMessage>', () => {
     await waitFor(() => {
       const hosts = body.querySelectorAll('[data-code-source]');
       expect(hosts.length).toBe(1);
-      expect(hosts[0].getAttribute('data-code-source')).toContain('```js');
+      expect(codeSource(hosts[0])).toContain('```js');
     });
   });
 
@@ -1038,9 +1069,24 @@ describe('<AssistantMessage>', () => {
     await waitFor(() => {
       const host = body.querySelector('[data-code-source]');
       expect(host).not.toBeNull();
-      const src = host?.getAttribute('data-code-source') ?? '';
+      const src = codeSource(host);
       expect(src).toContain('const x = 1');
       expect(src).not.toContain('``');
+    });
+  });
+
+  it('drops every incomplete closer length for a longer streamed fence', async () => {
+    const summary = '`````js\nconst x = 1\n````';
+    const { getByTestId } = render(AssistantMessage, {
+      props: { item: makeItem({ status: 'streaming', summary }) },
+    });
+    const body = getByTestId('assistant-message-body');
+    await waitFor(() => {
+      const host = body.querySelector('[data-code-source]');
+      expect(host).not.toBeNull();
+      const src = codeSource(host);
+      expect(src).toContain('const x = 1');
+      expect(src).not.toContain('````');
     });
   });
 
@@ -1053,8 +1099,7 @@ describe('<AssistantMessage>', () => {
     });
     const body = getByTestId('assistant-message-body');
     await waitFor(() => {
-      const src =
-        body.querySelector('[data-code-source]')?.getAttribute('data-code-source') ?? '';
+      const src = codeSource(body.querySelector('[data-code-source]'));
       expect(src).toContain('const a = 1');
       expect(src).toContain('``');
       expect(src).toContain('const b = 2');
@@ -1081,7 +1126,7 @@ describe('<AssistantMessage>', () => {
     await waitFor(() => {
       const hosts = body.querySelectorAll('[data-code-source]');
       expect(hosts.length).toBe(1);
-      expect(hosts[0].getAttribute('data-code-source')).toContain('npm install foo');
+      expect(codeSource(hosts[0])).toContain('npm install foo');
       expect(hosts[0].closest('li')).not.toBeNull();
     });
   });
@@ -1288,7 +1333,7 @@ describe('<AssistantMessage> raw JSON', () => {
       const host = body.querySelector('[data-code-source]');
       expect(host).not.toBeNull();
       expect(host?.getAttribute('data-code-lang')).toBe('json');
-      expect(host?.getAttribute('data-code-source')).toBe(PRETTY);
+      expect(codeSource(host)).toBe(PRETTY);
     });
     expect(body.querySelector('p')).toBeNull();
     expect(body.querySelector('em')).toBeNull();
@@ -1304,7 +1349,7 @@ describe('<AssistantMessage> raw JSON', () => {
     for (const summary of ticks) {
       await rerender({ item: makeItem({ status: 'streaming', summary }) });
       await waitFor(() => {
-        const source = body.querySelector('[data-code-source]')?.getAttribute('data-code-source') ?? '';
+        const source = codeSource(body.querySelector('[data-code-source]'));
         expect(source.length).toBeGreaterThan(0);
         expect(source.startsWith(previous)).toBe(true);
         previous = source;
@@ -1312,7 +1357,7 @@ describe('<AssistantMessage> raw JSON', () => {
     }
     await rerender({ item: makeItem({ status: 'completed', summary: RAW }) });
     await waitFor(() => {
-      expect(body.querySelector('[data-code-source]')?.getAttribute('data-code-source')).toBe(PRETTY);
+      expect(codeSource(body.querySelector('[data-code-source]'))).toBe(PRETTY);
     });
     expect(body.querySelector('em')).toBeNull();
   });

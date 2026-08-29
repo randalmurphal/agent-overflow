@@ -84,6 +84,8 @@ func soakDefaultDataRoot() string { return launcherDefaultDataRoot("agent-overfl
 
 func harnessDefaultDataRoot() string { return launcherDefaultDataRoot("agent-overflow-harness") }
 
+func perfDefaultDataRoot() string { return launcherDefaultDataRoot("agent-overflow-perf") }
+
 func launcherDefaultDataRoot(name string) string {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
@@ -106,6 +108,9 @@ func launcherDefaultDataRoot(name string) string {
 func isolatedBootMode(flags cliFlags) instanceinfo.Mode {
 	if flags.autopilot {
 		return instanceinfo.ModeSoak
+	}
+	if flags.isolatedProfile == string(instanceinfo.ModePerf) {
+		return instanceinfo.ModePerf
 	}
 	return instanceinfo.ModeHarness
 }

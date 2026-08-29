@@ -189,7 +189,12 @@ export function createUseStickToBottomController(
     // Subtracting -1 here just left the user 1 px above the actual
     // bottom; the scrollbar showed a one-tick gap and the snap felt
     // incomplete.
-    return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const target = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    if (options.externalContentGeometry === true) {
+      cachedBottomTarget = target;
+      cachedBottomTargetValid = true;
+    }
+    return target;
   }
 
   function scrollTopIsAtTarget(target: number): boolean {
@@ -214,12 +219,16 @@ export function createUseStickToBottomController(
   // their difference. The hot path therefore needs no learned target and
   // reads no layout.
   //
-  // Only scrollTop is cached. Every path that moves it (user scroll
-  // events, the write chokepoint, spring ticks) resyncs that value. A
-  // viewport change or width reflow still takes the read path once so a
-  // browser clamp that raced the delivery cannot leave cachedScrollTop
-  // stale. RO-sourced pipelines such as ChannelView have no viewport
-  // sample and always take the real-read path.
+  // Cached scrollTop and the external source's absolute bottom target are
+  // separate facts. Every path that moves scrollTop resyncs the first. Every
+  // virtualizer sample publishes `height - viewportHeight` as the second.
+  // Ordinary spring frames can then advance using scrollTop readback plus the
+  // published target without re-reading scrollHeight/clientHeight at display
+  // rate. Sentinel clamp detection and write-refusal probes force the real
+  // target read. A viewport change or width reflow still takes the read path
+  // once so a browser clamp that raced the delivery cannot leave cached
+  // scrollTop stale. RO-sourced pipelines such as ChannelView have no
+  // viewport sample and always take the real-read path.
   //
   // A resync taken while FLOORED (scrollHeight clamped to clientHeight)
   // cannot prove whether a browser clamp raced it, so short threads keep
@@ -228,6 +237,49 @@ export function createUseStickToBottomController(
   let cachedScrollTop = 0;
   let cachedGeometryValid = false;
   let cachedGeometryFloored = false;
+  let cachedBottomTarget = 0;
+  let cachedBottomTargetValid = false;
+
+  function setIsNearBottomFromDistance(dist: number): void {
+    const next = dist <= STICK_TO_BOTTOM_OFFSET_PX;
+    if (next !== isNearBottomState) isNearBottomState = next;
+  }
+
+  function cacheExternalBottomTarget(height: number, viewportHeight: number): void {
+    const target = height - viewportHeight;
+    if (!Number.isFinite(target)) {
+      cachedBottomTargetValid = false;
+      return;
+    }
+    cachedBottomTarget = Math.max(0, target);
+    cachedBottomTargetValid = true;
+  }
+
+  function springTargetScrollTop(forceLayoutRead = false): number {
+    if (
+      !forceLayoutRead
+      && options.externalContentGeometry === true
+      && cachedBottomTargetValid
+    ) {
+      return cachedBottomTarget;
+    }
+    return targetScrollTop();
+  }
+
+  function springCurrentScrollTop(forceLayoutRead = false): number {
+    if (!scrollEl) return 0;
+    if (
+      !forceLayoutRead
+      && options.externalContentGeometry === true
+      && cachedGeometryValid
+    ) {
+      return cachedScrollTop;
+    }
+    const scrollTop = scrollEl.scrollTop;
+    cachedScrollTop = scrollTop;
+    cachedGeometryValid = true;
+    return scrollTop;
+  }
 
   function refreshIsNearBottom(): number {
     let dist = 0;
@@ -242,9 +294,26 @@ export function createUseStickToBottomController(
     }
     // No scrollEl (empty timeline) still refreshes the band from dist 0
     // — markAtBottom's empty-thread branch relies on it.
-    const next = dist <= STICK_TO_BOTTOM_OFFSET_PX;
-    if (next !== isNearBottomState) isNearBottomState = next;
+    setIsNearBottomFromDistance(dist);
     return dist;
+  }
+
+  function refreshIsNearBottomAfterWrite(
+    caller: ScrollWriteCaller,
+    scrollTop: number,
+  ): number {
+    if (
+      options.externalContentGeometry === true
+      && cachedBottomTargetValid
+      && caller.startsWith('spring.')
+    ) {
+      cachedScrollTop = scrollTop;
+      cachedGeometryValid = true;
+      const dist = cachedBottomTarget - scrollTop;
+      setIsNearBottomFromDistance(dist);
+      return dist;
+    }
+    return refreshIsNearBottom();
   }
 
   /**
@@ -275,7 +344,7 @@ export function createUseStickToBottomController(
   const chokepoint = createWriteChokepoint({
     getScrollEl: () => scrollEl,
     scrollTopIsAtTarget,
-    refreshIsNearBottom,
+    refreshIsNearBottom: refreshIsNearBottomAfterWrite,
     noteProgrammaticWrite: (top) => {
       intent.noteProgrammaticWrite(top);
       options.onScrollTopWritten?.(top);
@@ -412,7 +481,8 @@ export function createUseStickToBottomController(
     isAtBottom: () => isAtBottomState,
     isEscaped: () => escapedFromLockState,
     selectionActive: () => (scrollEl ? isSelectingInside(scrollEl) : false),
-    targetScrollTop,
+    targetScrollTop: springTargetScrollTop,
+    currentScrollTop: springCurrentScrollTop,
     scrollTopIsAtTarget,
     arrival: arrivalReadback,
     writeScrollTop,
@@ -452,10 +522,13 @@ export function createUseStickToBottomController(
     isNearBottom: () => isNearBottomState,
     targetScrollTop,
     refreshIsNearBottom,
+    cacheExternalBottomTarget,
     contentGeometryForSample,
     writeScrollTop,
     resolverStateSnapshot,
     prefersReducedMotion: motionReduced,
+    contentGeometryProcessed: (scrollable) =>
+      options.onContentGeometryProcessed?.(scrollable),
     spring,
   });
 
@@ -1053,6 +1126,7 @@ export function createUseStickToBottomController(
     scrollEl = undefined;
     contentEl = undefined;
     cachedGeometryValid = false;
+    cachedBottomTargetValid = false;
   }
 
   return {

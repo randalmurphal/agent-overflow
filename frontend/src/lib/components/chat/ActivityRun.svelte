@@ -57,6 +57,7 @@
     observeActivityRunExpansion,
   } from '../../utils/activityRunClip';
   import { readScrollMetrics, type ScrollMetrics } from '../../utils/scroll/overlayScrollbar';
+  import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import {
@@ -89,7 +90,7 @@
      * which ends the moment closing prose exists behind the reveal gate —
      * mid-stream from where the reader sits. The controller's lifetime keys
      * on THIS: keying it on `live` tore the spring down under a still-
-     * streaming thinking tail and the settle observer snapped the canceled
+     * streaming thinking tail and the geometry owner snapped the canceled
      * glide's whole remainder in one frame (the 2026-08-19 in-run jump).
      */
     atTail: boolean;
@@ -99,6 +100,7 @@
   let clipEl = $state<HTMLElement | undefined>();
   let contentEl = $state<HTMLElement | undefined>();
   let expandedPx = $state(0);
+  const scrollbarGeometry = createContentGeometryNotifier();
 
   // The run's identity as a PRIMITIVE. Every projection pass hands this
   // component a fresh node object, so an effect that reads `run.runId`
@@ -134,7 +136,7 @@
   // arrives on the wire behind the reveal gate, which is mid-stream from
   // where the reader sits: the thinking tail is still growing, the spring is
   // still chasing it, and tearing the controller down there cancels the
-  // glide where it stands. The settle observer below then snaps the whole
+  // glide where it stands. The geometry owner below then snaps the whole
   // remaining distance in one frame on the next delta — the in-run jump the
   // scrollbar witnessed (2026-08-19; its thumb shows on exactly the writes
   // the departed controller can no longer claim). Tail-ness ends when the
@@ -169,6 +171,7 @@
           pane.lastLiveContentAt,
           LIVE_CONTENT_ACTIVE_HOLD_MS,
         ),
+      onContentGeometryProcessed: () => processClipGeometry(false),
       // Every controller write states the fade from the written value, so
       // the scroll event it fires needs no geometry read (`onClipScroll`
       // skips non-reader frames entirely).
@@ -245,7 +248,7 @@
       // the DOM has the new rows and before the user can see the frame.
       const grew = clip.scrollHeight - beforeHeight;
       if (grew > 0) clip.scrollTop = beforeTop + grew;
-      // Stated before the settle observer sees the same growth: rows
+      // Stated before the geometry owner sees the same growth: rows
       // arriving ABOVE the reader must not be mistaken for the run growing
       // under one who is resting on its last row. The follow state carries
       // through unchanged — compensation keeps the distance to the run's last
@@ -392,7 +395,7 @@
   // that instant, so the browser clamps the write — and for a run that is not
   // bottom-following nothing ever re-asks: a settled scrollable run remounted
   // mid-thread parked at its top, scrollable but faded-top off, until a
-  // gesture. The clamped target stays armed here and the restore observer
+  // gesture. The clamped target stays armed here and the geometry processor
   // below re-applies it as the content measures; any newer authored write
   // (`positionWritten`) or reader gesture supersedes it.
   let pendingRestoreTop: number | null = null;
@@ -523,8 +526,8 @@
     // where a run without a controller could keep it: a historical run a
     // jump pinned has no `escapedFromLock` to save, so becoming the tail
     // would hand a fresh controller a clean flag — and the anchor effect
-    // below would release the pin the reader is standing on. The settle
-    // observer reads the same fact through `followingBottom`, so a pinned
+    // below would release the pin the reader is standing on. The geometry
+    // processor reads the same fact through `followingBottom`, so a pinned
     // run must not mount claiming to follow: the observer would pull the
     // reader off their pin on the next content resize.
     const pinned = pane.activityRuns.windowAnchor(runId) !== null;
@@ -534,13 +537,12 @@
     // position) clamps near the top — and the read it takes forces a
     // whole-document layout flush per mounting run, mid-mount, with the
     // tree dirty (2026-08-26: 159ms across 10 cold thread switches, the
-    // dominant switch cost). The observers below own the real position
-    // and fire post-layout IN THE SAME FRAME, before paint, where the
-    // reads are free and the geometry is finally true: the settle
-    // observer bottoms a following mount on its initial delivery, and
-    // the restore observer re-applies an escaped mount's armed target
-    // until the content can take it. Only the flags are stated
-    // synchronously — the settle observer's gate reads `followingBottom`
+    // dominant switch cost). The geometry observer below owns the real
+    // position and fires post-layout IN THE SAME FRAME, before paint, where
+    // the reads are free and the geometry is finally true: it bottoms a
+    // following mount on its initial delivery and re-applies an escaped
+    // mount's armed target until the content can take it. Only the flags are
+    // stated synchronously. The processor's gate reads `followingBottom`
     // on that first delivery.
     readerScrolling = false;
     followingBottom = !escapedAtMount;
@@ -578,8 +580,8 @@
       //
       // BOTH branches state the follow through `positionWritten`: an
       // escape only the controller knew about must land in
-      // `followingBottom` before the settle observer takes over, or the
-      // observer pins a reader who had left the bottom — and the
+      // `followingBottom` before the geometry processor takes over, or the
+      // processor pins a reader who had left the bottom. The
       // owner-driven scrollbar classification would hide the thumb while
       // it happened.
       if (controller && !collapsed && clip.isConnected) {
@@ -612,100 +614,55 @@
     };
   });
 
-  // Holds a resting clip on its last row while its content settles.
-  //
-  // The mount states only flags, so the first delivery here IS the mount
-  // positioning for a following run — post-layout, pre-paint, where the
-  // reads are free. And the rows inside are not done at that instant
-  // either: payload bodies resolve, highlight spans land, a row remounts
-  // already expanded from its lease and lifts the cap. Every one of those
-  // grows the run, and `scrollTop` does not follow on its own, so the
-  // reader would be left partway up a run they just opened. Visible
-  // immediately when several runs expand at once (the header's
-  // collapse-all), because none of them is measured.
-  //
-  // Both boxes, because the two ways the gap opens are unrelated: the CONTENT
-  // growing under a fixed clip, and the CLIP growing when cap inflation gives
-  // it more room than its content needs.
-  //
-  // Only for a run with no controller. The tail run's spring owns
-  // bottom-following, with intent handling this cannot see; a second pinner
-  // would fight it for the same pixels.
-  //
-  // This narrows the "a historical run does not chase when it grows"
-  // tradeoff rather than reversing it: growth is followed only while the
-  // reader is resting on the newest row, which is the one position where
-  // following is what they are looking at. A run they scrolled inside still
-  // never moves under them.
-  $effect(() => {
+  /**
+   * Process laid-out clip geometry once. Historical runs follow only while
+   * resting on their newest row. Every run also refreshes its read cache and
+   * advances a clamped mount restore until the content can hold the saved
+   * offset. The overlay notification runs last, after any position write.
+   */
+  function processClipGeometry(followHistorical: boolean): void {
     const clip = clipEl;
-    const content = contentEl;
-    if (!clip || !content || stick) return;
-    const settle = new ResizeObserver(() => {
-      if (!followingBottom) return;
-      // ResizeObserver callbacks run after layout, so these reads are free —
-      // this is also the cache refresh that keeps the write paths honest.
-      syncPosition(clip);
-      clip.scrollTop = clip.scrollHeight;
-      if (knownMetrics) {
-        knownMetrics.scrollTop = Math.max(
-          0,
-          knownMetrics.scrollHeight - knownMetrics.clientHeight,
-        );
-        fadedTop = knownMetrics.scrollTop > FADE_EPSILON_PX;
-      }
-      // Our write, so it must not be mistaken for the reader arriving at the
-      // top of a run whose content has not grown past the runway yet.
-      readerScrolling = false;
-    });
-    settle.observe(clip);
-    settle.observe(content);
-    return () => settle.disconnect();
-  });
+    if (!clip) return;
+    syncPosition(clip);
 
-  // Re-applies a clamped mount restore as the content measures.
-  //
-  // Counterpart to the settle observer above, for the mounts that observer
-  // deliberately ignores: a run whose reader had stepped inside
-  // (`escapedAtMount`) restores to a position, not to the bottom. The
-  // mount arms the target without writing — nothing inside is measured at
-  // that instant, so a write would clamp toward 0 (and force a layout
-  // flush mid-mount) — and this observer applies it on every growth until
-  // the content can take it; partial applications are kept (each one is
-  // closer than the clamp), and the target dies the moment anything newer
-  // owns the position — a reader gesture (`armReaderScroll`) or an
-  // authored write (`positionWritten`).
-  //
-  // Unlike the settle observer this also runs under a live controller: an
-  // escaped tail run restores the same way, and the untagged write cannot
-  // un-escape it — gesture classification only ever sets escape.
+    if (followHistorical && followingBottom) {
+      const bottom = clip.scrollHeight;
+      clip.scrollTop = bottom;
+      readerScrolling = false;
+      syncPositionFromWrittenTop(bottom);
+    }
+
+    const target = pendingRestoreTop;
+    if (target !== null) {
+      const max = clip.scrollHeight - clip.clientHeight;
+      if (max > 0) {
+        clip.scrollTop = Math.min(target, max);
+        readerScrolling = false;
+        if (max >= target) pendingRestoreTop = null;
+        syncPositionFromWrittenTop(target);
+      }
+    }
+    const finalMetrics = knownMetrics;
+    scrollbarGeometry.notify(
+      finalMetrics !== null &&
+        finalMetrics.scrollHeight - finalMetrics.clientHeight > 1,
+    );
+  }
+
+  // Historical runs need one observer for content growth and clip-size
+  // changes. The tail controller already observes content, so its companion
+  // watches only the clip. This replaces the two overlapping observers every
+  // historical run previously mounted and avoids double deliveries without
+  // changing who owns bottom-follow.
   $effect(() => {
     const clip = clipEl;
     const content = contentEl;
+    const controller = stick;
     if (!clip || !content) return;
-    const restore = new ResizeObserver(() => {
-      // The cache refresh runs on EVERY size change, restore pending or not:
-      // this observer watches every mounted clip (unlike the settle observer,
-      // which only controller-less runs get), it fires after layout where
-      // reads are free, and the cached heights are what let the authored
-      // write paths state the fade without forcing a recalc. It also covers
-      // the browser's own scrollTop clamp when content shrinks under a
-      // resting clip — the clamp implies a resize, so the fade heals here.
-      syncPosition(clip);
-      const target = pendingRestoreTop;
-      if (target === null) return;
-      const max = clip.scrollHeight - clip.clientHeight;
-      if (max <= 0) return;
-      clip.scrollTop = Math.min(target, max);
-      // Ours — must not read as the reader arriving at the window's top and
-      // page in a chunk nobody asked for.
-      readerScrolling = false;
-      if (max >= target) pendingRestoreTop = null;
-      syncPosition(clip);
-    });
-    restore.observe(clip);
-    restore.observe(content);
-    return () => restore.disconnect();
+    const geometry = new ResizeObserver(() => processClipGeometry(controller === null));
+    geometry.observe(clip);
+    if (controller === null) geometry.observe(content);
+    return () => geometry.disconnect();
   });
 
   // Holds the reading position when the mount window's head ADVANCES, and
@@ -826,7 +783,7 @@
     if (request.relocated || !activityRunRowFullyVisible(clip, el)) {
       clip.scrollTop = activityRunCenteredScrollTop(clip, el);
     }
-    // The jump owns the position now, so the settle observer must not read the
+    // The jump owns the position now, so the geometry processor must not read the
     // run's next growth as licence to pull the reader off the target.
     positionWritten(clip, false);
   });
@@ -1034,18 +991,18 @@
 
              `ownerDrivenPosition` answers for BOTH halves of the run's
              follow, because both write positions the reader did not ask
-             for: the controller's spring while it exists, and the settle
-             observer's bottom-hold once it does not (`followingBottom` is
+             for: the controller's spring while it exists, and the geometry
+             processor's bottom-hold once it does not (`followingBottom` is
              exactly "the next write is ours", and `readerScrolling` fences
              the frame where a reader gesture's own scroll event arrives
              before `followingBottom` has been re-read — the answer is
              event-sourced, not listener-order-dependent). Answering only
-             for the controller made every settle-observer write — and the
+             for the controller made every historical bottom-hold write, and the
              browser's own clamp when content shrinks under a resting clip —
              flash the thumb as if the reader had scrolled (2026-08-19). -->
         <OverlayScrollbar
           target={clipEl}
-          content={contentEl}
+          contentGeometry={scrollbarGeometry}
           ariaLabel="Scroll activity run"
           ownerDrivenPosition={() =>
             stick ? !stick.escapedFromLock : followingBottom && !readerScrolling}

@@ -30,10 +30,13 @@
 // per store, which is the drift the entity primitive exists to end.
 //
 // Boxes live for the session (bounded by distinct keys observed);
-// `drop` releases a key when its owner is discarded. Values are held
-// in `$state.raw` — replaced wholesale, never mutated in place — so
-// writing the value a box already holds (`===`) does not invalidate
-// its readers, mirroring a no-op Map/Set mutation.
+// `drop` releases a key when its owner is discarded. Registry writes replace
+// values held in `$state.raw`, so writing the value a box already holds
+// (`===`) does not invalidate its readers. A domain owner that deliberately
+// mutates a boxed object without waking readers must validate that its other
+// canonical reference is this exact object first. ThreadPane's direct
+// assistant reveal is the only such path; its router updates every mounted
+// representation before allowing the mutation.
 
 interface ValueBox<V> {
   get current(): V;

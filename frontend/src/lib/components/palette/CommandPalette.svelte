@@ -1,3 +1,16 @@
+<script module lang="ts">
+  import type { Command as PaletteCommand } from '../../stores/commandRegistry.svelte';
+
+  const CLOSED_COMMANDS: PaletteCommand[] = [];
+  const CLOSED_RESULTS: PaletteRow[] = [];
+
+  interface PaletteRow {
+    command: PaletteCommand;
+    shortcut: string | null;
+    indices: number[];
+  }
+</script>
+
 <script lang="ts">
   // Command palette. Routes backdrop + focus-trap + Escape + role=dialog
   // through the Modal primitive (top-aligned, no body padding, no
@@ -7,7 +20,7 @@
 
   import { tick } from 'svelte';
   import { closePalette, isPaletteOpen } from '../../stores/palette.svelte';
-  import { enabledCommands, type Command, type CommandContext } from '../../stores/commandRegistry.svelte';
+  import { enabledCommands, type CommandContext } from '../../stores/commandRegistry.svelte';
   import { fuzzyFilter } from '../../utils/fuzzy';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
@@ -19,7 +32,7 @@
     context,
     contextForPane,
   }: {
-    context: CommandContext;
+    context: CommandContext | null;
     contextForPane?: (paneId: string) => CommandContext | null;
   } = $props();
 
@@ -37,7 +50,7 @@
   // the input for filtering.
   $effect(() => {
     if (open && !wasOpen) {
-      targetPaneId = context.paneId;
+      targetPaneId = context?.paneId ?? null;
       query = '';
       activeIndex = 0;
       tick().then(() => listEl?.focus());
@@ -61,18 +74,19 @@
     return () => window.removeEventListener(PICKER_TOGGLE_INPUT_EVENT, handler);
   });
 
-  interface PaletteRow {
-    command: Command;
-    shortcut: string | null;
-    indices: number[];
-  }
-
   let activeContext = $derived(
-    targetPaneId && contextForPane ? contextForPane(targetPaneId) : context,
+    open
+      ? targetPaneId && contextForPane
+        ? contextForPane(targetPaneId)
+        : context
+      : null,
   );
-  let allCommands = $derived(activeContext ? enabledCommands(activeContext) : []);
+  let allCommands = $derived(
+    activeContext ? enabledCommands(activeContext) : CLOSED_COMMANDS,
+  );
 
   let results: PaletteRow[] = $derived.by(() => {
+    if (!open) return CLOSED_RESULTS;
     const candidates = allCommands.map((cmd) => ({ item: cmd, text: cmd.label }));
     const matches = fuzzyFilter(query.trim(), candidates);
     return matches.map((m) => ({

@@ -18,11 +18,26 @@
   import { ingestPersistedCodeSpans } from '../../utils/persistedSpans';
   import { splitAtBoundary } from '../../markdown/boundary/split';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { isRawJsonSource, RawJsonFenceFormatter } from './markdown/rawJsonFence';
+  import { RawJsonFenceFormatter } from './markdown/rawJsonFence';
   import {
+    AllowlistedPathCompletionGuard,
     createStreamingAssistantDomSink,
-    sourceCompletesAllowlistedPath,
   } from './markdown/streamingAssistantDomSink';
+  import type { StreamingAssistantRenderContext } from '../../stores/streamingAssistantReveal';
+  import { isViewOnlySession } from '../../transport/runMode';
+  import { isHarnessSession } from '../../transport/harnessMode';
+
+  type AssistantMarkdownForensics = {
+    readonly itemId: string;
+    readonly canonicalSource: string;
+    readonly parserSource: string;
+    readonly renderedSource: string;
+    readonly streaming: boolean;
+  };
+
+  type ForensicAssistantBody = HTMLElement & {
+    __aoMarkdownForensics?: AssistantMarkdownForensics;
+  };
 
   let { pane, item }: { pane?: PaneSession & RevealRead & RowUiRegistry & ScrollHost; item: Item } = $props();
 
@@ -114,6 +129,31 @@
   // rebuild ChatMarkdown's marked extension and re-lex every block.
   const pathRefs = $derived(getPathRefsFromMeta(item.meta) ?? EMPTY_PATH_REFS);
   const workspacePath = $derived(paneWorkspacePath(pane));
+  // Stable across per-reveal row replacements. A context transition can
+  // remount or reinterpret the volatile parser tree even when its source is
+  // unchanged, so the router must drop direct DOM before that transition.
+  let cachedParserRenderContext: StreamingAssistantRenderContext | undefined;
+  const parserRenderContext = $derived.by(() => {
+    const nextStreaming = streaming;
+    const nextVolatileTailVisible = !nextStreaming || getSettings().streamingEnabled;
+    const nextViewOnly = isViewOnlySession();
+    const nextWorkspacePath = workspacePath;
+    if (
+      cachedParserRenderContext?.streaming === nextStreaming &&
+      cachedParserRenderContext.volatileTailVisible === nextVolatileTailVisible &&
+      cachedParserRenderContext.viewOnly === nextViewOnly &&
+      cachedParserRenderContext.workspacePath === nextWorkspacePath
+    ) {
+      return cachedParserRenderContext;
+    }
+    cachedParserRenderContext = {
+      streaming: nextStreaming,
+      volatileTailVisible: nextVolatileTailVisible,
+      viewOnly: nextViewOnly,
+      workspacePath: nextWorkspacePath,
+    };
+    return cachedParserRenderContext;
+  });
 
   // Codex marks an assistant message the model emitted mid-turn — a progress
   // note alongside its work, not the turn's answer — with `delivery: "async"`
@@ -124,36 +164,128 @@
     (parseJsonObject(item.meta)?.delivery ?? '') === 'async',
   );
 
-  const markdownSource = $derived(jsonFence.render(item.summary, streaming));
+  // Streamdown reads the router's stable parser checkpoint while sink-owned
+  // literal text extends its trailing leaf. Punctuation and authoritative
+  // rewrites clear the checkpoint and hand the canonical source back to it.
+  const parserSource = $derived(
+    pane?.assistantMarkdownParserSource?.(
+      item.id,
+      item.summary,
+      parserRenderContext,
+    ) ?? item.summary,
+  );
+  // The pane proves append lineage at the smoother write chokepoint. Feeding
+  // the emitted delta to the JSON formatter avoids startsWith/charCodeAt on
+  // the growing cons string, which would flatten and copy the full answer.
+  const parserSourceAppend = $derived(
+    pane?.assistantMarkdownSourceAppend?.(item.id, parserSource),
+  );
+  const markdownSource = $derived(
+    jsonFence.render(parserSource, streaming, parserSourceAppend),
+  );
+  const markdownSourceAppend = $derived.by(() => {
+    markdownSource;
+    return jsonFence.outputAppend;
+  });
+  const directSourceIsRawJson = $derived.by(() => {
+    markdownSource;
+    return jsonFence.sourceIsRawJson;
+  });
+  const pathCompletionGuard = new AllowlistedPathCompletionGuard();
   let bodyRoot: HTMLElement;
   const directRevealSink = createStreamingAssistantDomSink({
     getRoot: () => bodyRoot,
-    canAppendSource: (source, nextSource) =>
-      !isRawJsonSource(source) &&
-      !sourceCompletesAllowlistedPath(pathRefs, source, nextSource),
+    canAppendSource: (source, nextSource, delta) =>
+      !directSourceIsRawJson &&
+      !pathCompletionGuard.completes(pathRefs, source, nextSource, delta),
+  });
+
+  // Harness-only, source-preserving visibility for transient Markdown
+  // failures. The object stores no source strings: its getters read the row
+  // and parser state that already own them. A CDP probe can therefore compare
+  // one painted DOM frame with the exact canonical/parser sources without a
+  // full-source data attribute or a second retained answer. Ordinary sessions
+  // install no property and allocate no object.
+  $effect(() => {
+    if (!isHarnessSession()) return;
+    const root = bodyRoot as ForensicAssistantBody;
+    const forensics: AssistantMarkdownForensics = {
+      get itemId() { return item.id; },
+      get canonicalSource() { return item.summary; },
+      get parserSource() { return parserSource; },
+      get renderedSource() { return markdownSource; },
+      get streaming() { return streaming; },
+    };
+    Object.defineProperty(root, '__aoMarkdownForensics', {
+      configurable: true,
+      value: forensics,
+    });
+    return () => {
+      if (root.__aoMarkdownForensics === forensics) {
+        delete root.__aoMarkdownForensics;
+      }
+    };
   });
 
   // The timeline replaces the item object on every authoritative reveal.
-  // The effect therefore runs again, but a same-(pane,id) row must keep its
-  // existing registration or the router disarms the direct path every frame.
-  // Cleanup lives in onDestroy rather than the effect return so a harmless
-  // same-row invalidation cannot unregister before this guard sees it.
+  // Cut that churn off at the primitive id so registration changes only when
+  // the row or pane changes. Cleanup lives in onDestroy rather than the effect
+  // return because the registration itself owns the transition.
+  const revealItemId = $derived(item.id);
   let registeredRevealPane: RevealRead | undefined;
   let registeredRevealItemId = '';
+  let registeredRevealGeneration = -1;
   let unregisterRevealSink: (() => void) | undefined;
   $effect(() => {
     const nextPane = pane;
-    const nextItemId = item.id;
-    if (nextPane === registeredRevealPane && nextItemId === registeredRevealItemId) return;
-    unregisterRevealSink?.();
-    registeredRevealPane = nextPane;
-    registeredRevealItemId = nextItemId;
-    unregisterRevealSink = nextPane?.registerAssistantRevealSink?.(
-      nextItemId,
-      directRevealSink,
-    );
+    const nextItemId = revealItemId;
+    const nextGeneration = nextPane?.assistantRevealRegistrationGeneration ?? 0;
+    if (
+      nextPane === registeredRevealPane &&
+      nextItemId === registeredRevealItemId &&
+      nextGeneration === registeredRevealGeneration
+    ) return;
+
+    const releasePrevious = unregisterRevealSink;
+    unregisterRevealSink = undefined;
+    registeredRevealPane = undefined;
+    registeredRevealItemId = '';
+    registeredRevealGeneration = -1;
+    const transitionErrors: unknown[] = [];
+    try {
+      releasePrevious?.();
+    } catch (error) {
+      transitionErrors.push(error);
+    }
+
+    try {
+      const releaseNext = nextPane?.registerAssistantRevealSink?.(
+        nextItemId,
+        directRevealSink,
+      );
+      registeredRevealPane = nextPane;
+      registeredRevealItemId = nextItemId;
+      registeredRevealGeneration = nextGeneration;
+      unregisterRevealSink = releaseNext;
+    } catch (error) {
+      transitionErrors.push(error);
+    }
+    if (transitionErrors.length === 1) throw transitionErrors[0];
+    if (transitionErrors.length > 1) {
+      throw new AggregateError(
+        transitionErrors,
+        `assistant reveal sink transition failed for ${nextItemId}`,
+      );
+    }
   });
-  onDestroy(() => unregisterRevealSink?.());
+  onDestroy(() => {
+    const release = unregisterRevealSink;
+    unregisterRevealSink = undefined;
+    registeredRevealPane = undefined;
+    registeredRevealItemId = '';
+    registeredRevealGeneration = -1;
+    release?.();
+  });
 </script>
 
 <div class="group" data-item-kind={item.kind}>
@@ -165,6 +297,7 @@
   >
     <ChatMarkdown
       source={markdownSource}
+      sourceAppend={markdownSourceAppend}
       {streaming}
       {workspacePath}
       {pathRefs}

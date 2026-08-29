@@ -45,7 +45,7 @@ export interface WriteChokepointDeps {
   /** ≤1px arrival tolerance over the live scrollTop (controller geometry helper). */
   scrollTopIsAtTarget(target: number): boolean;
   /** Post-write near-bottom refresh — touches the controller's $state flag. */
-  refreshIsNearBottom(): number;
+  refreshIsNearBottom(caller: ScrollWriteCaller, scrollTop: number): number;
   /**
    * The intent machine's programmatic-write tag (late-bound: the
    * machine is constructed after the chokepoint; the thunk is only
@@ -62,7 +62,8 @@ export interface WriteChokepointDeps {
 }
 
 export interface WriteChokepoint {
-  writeScrollTop(caller: ScrollWriteCaller, value: number): void;
+  /** Write through the chokepoint and return the browser-rounded readback. */
+  writeScrollTop(caller: ScrollWriteCaller, value: number): number | undefined;
   /** Ledger check: live scrollTop differs from the last explained position. */
   scrollTopUnexplained(): boolean;
   /** Intent-machine hook: a user-classified scroll event explains its position. */
@@ -141,9 +142,9 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
   }
 
   // ===== The write =====
-  function writeScrollTop(caller: ScrollWriteCaller, value: number): void {
+  function writeScrollTop(caller: ScrollWriteCaller, value: number): number | undefined {
     const scrollEl = deps.getScrollEl();
-    if (!scrollEl) return;
+    if (!scrollEl) return undefined;
     // Hot path: spring follow can call this every frame. The app contract is
     // that controller-owned scrollers do not get CSS-authored smooth scroll;
     // only inline values need temporary suppression around the write.
@@ -180,7 +181,7 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
     const taggedTop = scrollEl.scrollTop;
     lastExplainedScrollTop = taggedTop;
     deps.noteProgrammaticWrite(taggedTop);
-    deps.refreshIsNearBottom();
+    deps.refreshIsNearBottom(caller, taggedTop);
     if (shouldTrace) {
       trace('scroll.write', () => ({
         caller,
@@ -199,6 +200,7 @@ export function createWriteChokepoint(deps: WriteChokepointDeps): WriteChokepoin
       }));
     }
     if (suppressScrollBehavior) scrollEl.style.scrollBehavior = originalScrollBehavior;
+    return taggedTop;
   }
 
   return {

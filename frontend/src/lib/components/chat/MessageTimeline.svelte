@@ -5,6 +5,12 @@
     ThreadPane,
   } from '../../stores/thread.svelte';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
+  import { getSettings } from '../../stores/settings.svelte';
+  import {
+    createUserMessageOverflowCoordinator,
+    USER_MESSAGE_OVERFLOW_COORDINATOR_CONTEXT,
+  } from './userMessageOverflowMeasurement';
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
@@ -164,6 +170,36 @@
   // `onContentGeometry` samples, post-flush and before the paint that
   // displays the change.
   let contentEl: HTMLDivElement | undefined = $state(undefined);
+  const scrollbarGeometry = createContentGeometryNotifier();
+  const userMessageOverflow = createUserMessageOverflowCoordinator();
+  setContext(USER_MESSAGE_OVERFLOW_COORDINATOR_CONTEXT, userMessageOverflow);
+
+  // Width is not the only input to line wrapping. Root font scale and the UI
+  // typeface are live settings, and a newly loaded webfont can change metrics
+  // again after the setting write. Queue one pre-paint batch for either edge;
+  // row-local observers are intentionally absent because inserting a toggle
+  // from a descendant RO callback changes its already-delivered row ancestor.
+  $effect(() => {
+    const settings = getSettings();
+    void settings.fontSize;
+    void settings.sansFont;
+    userMessageOverflow.requestAll();
+  });
+
+  $effect(() => {
+    // FontFaceSet is available in WebView2, but not in every supported test
+    // or remote-browser DOM. Settings changes still remeasure above; only the
+    // later font-load correction depends on this optional platform API.
+    const fonts = document.fonts;
+    if (!fonts) return;
+    const remeasure = (): void => userMessageOverflow.requestAll();
+    fonts.addEventListener('loadingdone', remeasure);
+    fonts.addEventListener('loadingerror', remeasure);
+    return () => {
+      fonts.removeEventListener('loadingdone', remeasure);
+      fonts.removeEventListener('loadingerror', remeasure);
+    };
+  });
   // Imperative handle into the virtualizer. Set once it mounts.
   let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
   let scrollSurfaceContentWidth = $state(0);
@@ -250,6 +286,7 @@
     // IS the content height) — the controller creates no contentEl RO;
     // samples arrive through `onContentGeometry` below.
     externalContentGeometry: true,
+    onContentGeometryProcessed: scrollbarGeometry.notify,
     // ... and learns every controller write the moment it lands, so the
     // offset its compensations are computed from never trails a glide
     // by a frame (see VirtualEngine.noteScrollOffset).
@@ -570,6 +607,12 @@
       return;
     }
     return observeScrollSurfaceContentWidth(surface, (width) => {
+      // This observer targets the scroll surface, above every virtual row.
+      // Resolve descendant user-message overflow here before row observers
+      // process the same width reflow. A child observer that inserted its
+      // toggle after the row delivery changed an already-delivered ancestor,
+      // which Chromium reported as an undelivered ResizeObserver loop.
+      userMessageOverflow.measureAll();
       scrollSurfaceContentWidth = width;
     });
   });
@@ -1061,7 +1104,7 @@
        faded via ownerDrivenPosition. -->
   <OverlayScrollbar
     target={scrollEl}
-    content={contentEl}
+    contentGeometry={scrollbarGeometry}
     ariaLabel="Scroll message history"
     placement="inset-y-0 right-0.5 w-1.5"
     ownerDrivenPosition={() => stick.isSticky}

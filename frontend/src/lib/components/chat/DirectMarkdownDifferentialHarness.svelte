@@ -4,8 +4,8 @@
   import { StreamingAssistantRevealRouter } from '../../stores/streamingAssistantReveal';
   import ChatMarkdown from './ChatMarkdown.svelte';
   import {
+    AllowlistedPathCompletionGuard,
     createStreamingAssistantDomSink,
-    sourceCompletesAllowlistedPath,
   } from './markdown/streamingAssistantDomSink';
 
   let {
@@ -17,22 +17,37 @@
   } = $props();
 
   const ITEM_ID = 'direct-markdown-differential';
+  const RENDER_CONTEXT = {
+    streaming: true,
+    volatileTailVisible: true,
+    viewOnly: false,
+    workspacePath: '',
+  } as const;
   const revealRouter = new StreamingAssistantRevealRouter();
 
-  let canonical = '';
+  let canonical = $state('');
   let baselineSource = $state('');
-  let directSource = $state('');
+  let presentationRevision = $state(0);
   let directRoot: HTMLElement;
   let directMounted = $state(true);
+  const directSource = $derived.by(() => {
+    void presentationRevision;
+    return revealRouter.parserSourceFor(ITEM_ID, canonical, RENDER_CONTEXT);
+  });
+  const pathCompletionGuard = new AllowlistedPathCompletionGuard();
   const sink = createStreamingAssistantDomSink({
     getRoot: () => directRoot,
-    canAppendSource: (source, nextSource) =>
-      !sourceCompletesAllowlistedPath(pathRefs, source, nextSource),
+    canAppendSource: (source, nextSource, delta) =>
+      !pathCompletionGuard.completes(pathRefs, source, nextSource, delta),
   });
 
   $effect(() => {
     if (!directMounted) return;
-    return revealRouter.register(ITEM_ID, sink);
+    return revealRouter.register(
+      ITEM_ID,
+      sink,
+      () => { presentationRevision += 1; },
+    );
   });
 
   export async function append(delta: string): Promise<boolean> {
@@ -51,25 +66,20 @@
       delta,
       (next) => { canonical = next; },
     );
-    if (!appended) {
-      canonical = nextSource;
-      directSource = nextSource;
-      await tick();
-    }
+    await tick();
     return appended;
   }
 
   export async function synchronize(): Promise<void> {
     revealRouter.clearItem(ITEM_ID);
-    directSource = canonical;
+    presentationRevision += 1;
     await tick();
   }
 
   export async function remountDirect(): Promise<void> {
-    revealRouter.clearItem(ITEM_ID);
     directMounted = false;
     await tick();
-    directSource = canonical;
+    presentationRevision += 1;
     directMounted = true;
     await tick();
   }

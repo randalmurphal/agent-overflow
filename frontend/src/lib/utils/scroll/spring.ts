@@ -20,6 +20,10 @@ import { nowMs } from './time';
 import { trace } from './trace';
 import { createRetargetAccelerationBridge } from './retarget';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
+import {
+  __resetAnimationFrameCoordinatorForTest,
+  createAnimationFrameBatcher,
+} from '../animationFrameBatcher';
 import type { ScrollWriteCaller } from './types';
 
 // ===== Spring chase tuning =====
@@ -410,6 +414,7 @@ interface ChaseTelemetry {
   startedAt: number;
   ticks: number;
   writeTicks: number;
+  quantizedNoopTicks: number;
   sentinelTicks: number;
   maxGapMs: number;
   gapBuckets: number[];
@@ -458,15 +463,29 @@ export interface SpringWriteRefusalEvent {
   wedgeMs: number;
 }
 
+let springFrameBatcher = createAnimationFrameBatcher(
+  'scroll-spring',
+  'before-dom-update',
+);
+
+/** Test seam: spring tests replace the global rAF queue between cases. */
+export function __resetSpringFrameBatcherForTest(): void {
+  __resetAnimationFrameCoordinatorForTest();
+  springFrameBatcher = createAnimationFrameBatcher(
+    'scroll-spring',
+    'before-dom-update',
+  );
+}
+
 function requestFrame(callback: FrameRequestCallback): number {
-  return typeof requestAnimationFrame === 'function'
-    ? requestAnimationFrame(callback)
+  return typeof requestAnimationFrame === 'function' && typeof cancelAnimationFrame === 'function'
+    ? springFrameBatcher.request(callback)
     : window.setTimeout(() => callback(nowMs()), 0);
 }
 
 function cancelFrame(handle: number): void {
-  if (typeof cancelAnimationFrame === 'function') {
-    cancelAnimationFrame(handle);
+  if (typeof requestAnimationFrame === 'function' && typeof cancelAnimationFrame === 'function') {
+    springFrameBatcher.cancel(handle);
   } else {
     window.clearTimeout(handle);
   }
@@ -506,11 +525,14 @@ export interface SpringChaseDeps {
    * pauses (re-rAFs without writing) instead of fighting the user.
    */
   selectionActive(): boolean;
-  targetScrollTop(): number;
+  /** Current bottom target. `forceLayoutRead` flushes layout for clamp evidence. */
+  targetScrollTop(forceLayoutRead?: boolean): number;
+  /** Current position. External-geometry surfaces may serve their synchronized readback. */
+  currentScrollTop(forceLayoutRead?: boolean): number;
   /** scrollTop is within the arrival band of `target` (geometry read). */
   scrollTopIsAtTarget(target: number): boolean;
   arrival: ArrivalReadback;
-  writeScrollTop(caller: ScrollWriteCaller, value: number): void;
+  writeScrollTop(caller: ScrollWriteCaller, value: number): number | undefined;
   /**
    * Is live timeline content still arriving? LIVENESS ONLY — it decides
    * whether an arrived chase stays sentinel-alive across inter-chunk
@@ -621,6 +643,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
   // motion floor. Reset at every catch-up and on
   // cancel, so each growth's entry ramp stays natural.
   let quantizedFloorEngaged = false;
+  // Chromium stores programmatic scrollTop writes as whole CSS pixels. Learn
+  // that contract from this chase instead of assuming every system webview
+  // shares it. Once two interior fractional writes read back exactly rounded,
+  // a request that rounds to the current pixel cannot change the paint. Keep
+  // integrating the spring but omit that setter, its scroll event, and the
+  // event's mandatory readback. Engines that retain fractional positions never
+  // confirm the contract and keep every write.
+  let wholePixelQuantizationWitnesses = 0;
+  let wholePixelQuantizationConfirmed = false;
   // Measured rAF cadence for the motion-floor derivation. Deliberately
   // NOT reset in cancel() — see the constant block.
   let frameIntervalEmaMs: number | null = null;
@@ -712,6 +743,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       startedAt: nowMs(),
       ticks: 0,
       writeTicks: 0,
+      quantizedNoopTicks: 0,
       sentinelTicks: 0,
       maxGapMs: 0,
       gapBuckets: new Array<number>(CHASE_GAP_BUCKET_BOUNDS_MS.length + 1).fill(0),
@@ -779,6 +811,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       durationMs: Math.round(nowMs() - stats.startedAt),
       ticks: stats.ticks,
       writeTicks: stats.writeTicks,
+      quantizedNoopTicks: stats.quantizedNoopTicks,
       sentinelTicks: stats.sentinelTicks,
       maxGapMs: Math.round(stats.maxGapMs * 10) / 10,
       // Bucket bounds documented at CHASE_GAP_BUCKET_BOUNDS_MS:
@@ -813,6 +846,8 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
     retarget.reset();
     accumulated = 0;
     quantizedFloorEngaged = false;
+    wholePixelQuantizationWitnesses = 0;
+    wholePixelQuantizationConfirmed = false;
     lastTickAt = null;
     deps.arrival.clear();
     springStartedFromStructuralAppend = false;
@@ -992,11 +1027,15 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
         lastRefusalProbeAt = now;
       }
 
-      // Cache per-tick. `targetScrollTop()` reads `scrollHeight` /
-      // `clientHeight` — both force layout. Compute once per frame.
-      // (`current` is re-read after a catch-up jump write below.)
-      const target = deps.targetScrollTop();
-      let current = el.scrollTop;
+      // External-geometry surfaces publish their exact bottom target with
+      // every virtualizer sample, so ordinary chase frames read that cache.
+      // A sentinel needs a real layout flush before comparing the provenance
+      // ledger for browser-clamp evidence. A write-refusal probe also takes
+      // the real path because it is diagnosing an element outside its normal
+      // scrolling state. (`current` is re-read after a catch-up jump below.)
+      const forceGeometryRead = sentinelEntryTarget >= 0 || writeRefusalLatched;
+      const target = deps.targetScrollTop(forceGeometryRead);
+      let current = deps.currentScrollTop(forceGeometryRead);
       deps.arrival.invalidateStale(target);
       // Eager clamp-evidence check while the sentinel baseline is armed
       // — every sentinel tick, both branches, so a clamp during a dip
@@ -1093,27 +1132,25 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
           // so clientHeight doesn't reflow. Skip when unmeasured
           // (clientHeight 0): a zero threshold would degrade every chase
           // into a snap.
-          const chaseLimitPx = el.clientHeight * SPRING_MAX_CHASE_DISTANCE_VIEWPORTS;
           const tickGapMs = previousTickAt === null ? 0 : now - previousTickAt;
           const resumedFromDiscontinuity =
             tickGapMs >= STALL_RESUME_GAP_MS
             || msSinceDocumentResume() <= RESUME_CLAMP_WINDOW_MS;
-          if (
-            resumedFromDiscontinuity
-            && chaseLimitPx > 0
-            && Math.abs(target - current) > chaseLimitPx
-          ) {
-            deps.writeScrollTop('spring.catchupSnap', target);
-            // Re-read: the engine may round or refuse the written value.
-            // Reset kinematics only if the element actually MOVED — a
-            // refused snap (write-refusal wedge) falls through to the
-            // main write, whose classification counts it.
-            if (el.scrollTop !== current) {
-              current = el.scrollTop;
-              accumulated = 0;
-              velocity = 0;
-              retarget.breakMotion();
-              if (chaseTelemetry) chaseTelemetry.distanceJumps += 1;
+          if (resumedFromDiscontinuity) {
+            const chaseLimitPx = el.clientHeight * SPRING_MAX_CHASE_DISTANCE_VIEWPORTS;
+            if (chaseLimitPx > 0 && Math.abs(target - current) > chaseLimitPx) {
+              const catchupReadback = deps.writeScrollTop('spring.catchupSnap', target);
+              // Re-read: the engine may round or refuse the written value.
+              // Reset kinematics only if the element actually MOVED — a
+              // refused snap (write-refusal wedge) falls through to the
+              // main write, whose classification counts it.
+              if (catchupReadback !== undefined && catchupReadback !== current) {
+                current = catchupReadback;
+                accumulated = 0;
+                velocity = 0;
+                retarget.breakMotion();
+                if (chaseTelemetry) chaseTelemetry.distanceJumps += 1;
+              }
             }
           }
           if (integrationFrames > 0) {
@@ -1247,8 +1284,40 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
               (current < target && next > target)
               || (current > target && next < target);
             const clamped = crossedTarget ? target : next;
-            deps.writeScrollTop(crossedTarget ? 'spring.overshoot' : 'spring.tick', clamped);
-            if (chaseTelemetry) chaseTelemetry.writeTicks += 1;
+            const quantizedNoop =
+              wholePixelQuantizationConfirmed
+              && Number.isInteger(current)
+              && Math.round(clamped) === current;
+            const postWriteTop = quantizedNoop
+              ? current
+              : deps.writeScrollTop(
+                  crossedTarget ? 'spring.overshoot' : 'spring.tick',
+                  clamped,
+                ) ?? current;
+            if (chaseTelemetry) {
+              if (quantizedNoop) chaseTelemetry.quantizedNoopTicks += 1;
+              else chaseTelemetry.writeTicks += 1;
+            }
+            if (!quantizedNoop && !Number.isInteger(clamped)) {
+              // Interior writes cannot be max-scroll clamping. They give a
+              // clean observation of the engine's storage precision.
+              if (!crossedTarget && Math.abs(target - clamped) > 1) {
+                if (postWriteTop === Math.round(clamped)) {
+                  wholePixelQuantizationWitnesses += 1;
+                  if (wholePixelQuantizationWitnesses >= 2) {
+                    wholePixelQuantizationConfirmed = true;
+                  }
+                } else {
+                  wholePixelQuantizationWitnesses = 0;
+                  wholePixelQuantizationConfirmed = false;
+                }
+              } else if (postWriteTop === clamped) {
+                // A fractional readback disproves whole-pixel storage even at
+                // a chase boundary. Do not carry a stale inference forward.
+                wholePixelQuantizationWitnesses = 0;
+                wholePixelQuantizationConfirmed = false;
+              }
+            }
             if (clamped === target) {
               deps.arrival.record(target);
             }
@@ -1259,7 +1328,6 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
             // guard's constant block): MOVED heals, REFUSED counts,
             // INCONCLUSIVE (no motion, sub-threshold request) is
             // evidence of nothing and touches nothing.
-            const postWriteTop = el.scrollTop;
             if (postWriteTop !== current) {
               // MOVED: the element accepted the write. Healing requires
               // observed MOTION — not merely "not refused" — because a
@@ -1320,6 +1388,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
                 });
               }
             }
+            current = postWriteTop;
           }
         }
       } else {
@@ -1392,7 +1461,7 @@ export function createSpringChase(deps: SpringChaseDeps): SpringChase {
       // Bidirectional — applies to downward chases (shrinks) as well as
       // upward (growth).
       const arrived =
-        deps.scrollTopIsAtTarget(target)
+        withinArrivalBand(current, target)
         && Math.abs(velocity) < ARRIVAL_VELOCITY_THRESHOLD;
       if (arrived && !withinTargetChangeRetainWindow) {
         if (wantsStreamingSpringNow) {

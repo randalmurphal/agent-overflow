@@ -51,6 +51,8 @@ export interface HarnessRow {
   rowIndex: number;
   inViewport: boolean;
   rect: HarnessRect;
+  /** Full rendered text length in UTF-16 units. The capped head stays terminal-safe. */
+  textLength: number;
   textHead: string;
 }
 
@@ -190,12 +192,67 @@ function rectOf(el: Element): HarnessRect {
   return roundRect(el.getBoundingClientRect());
 }
 
+interface HarnessTextSummary {
+  text: string;
+  textLength: number;
+}
+
+/**
+ * Reads the same text and UTF-16 length as `Element.textContent` without
+ * materializing the element's entire rendered transcript. A sustained bench
+ * asks for this repeatedly while assistant rows grow into megabytes. Building
+ * one throwaway string per sample would make the probe part of the allocation
+ * workload it is measuring.
+ */
+function readTextSummary(el: Element, cap: number): HarnessTextSummary {
+  const points: string[] = [];
+  let textLength = 0;
+  let sawContent = false;
+  let pendingSpace = false;
+  let truncated = false;
+  const showText = el.ownerDocument.defaultView?.NodeFilter.SHOW_TEXT ?? 4;
+  const walker = el.ownerDocument.createTreeWalker(el, showText);
+
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const raw = node.nodeValue ?? '';
+    textLength += raw.length;
+    if (truncated || cap <= 0) continue;
+
+    for (const point of raw) {
+      if (/\s/u.test(point)) {
+        if (sawContent) pendingSpace = true;
+        continue;
+      }
+      if (pendingSpace && sawContent) {
+        if (points.length >= cap) {
+          truncated = true;
+          break;
+        }
+        points.push(' ');
+      }
+      pendingSpace = false;
+      sawContent = true;
+      if (points.length >= cap) {
+        truncated = true;
+        break;
+      }
+      points.push(point);
+    }
+  }
+
+  return {
+    text: points.join('') + (truncated ? '…' : ''),
+    textLength,
+  };
+}
+
 function readRow(rowEl: Element, viewport: HarnessRect | null, textCap: number): HarnessRow | null {
   const leaf = rowEl.querySelector('[data-item-id]');
   if (!leaf) return null;
   const rect = rectOf(leaf);
   const badge = leaf.querySelector('[data-testid="indicator"]');
   const status = attr(leaf, 'data-item-status');
+  const text = readTextSummary(leaf, textCap);
   return {
     itemId: attr(leaf, 'data-item-id'),
     kind: attr(leaf, 'data-item-kind'),
@@ -206,7 +263,8 @@ function readRow(rowEl: Element, viewport: HarnessRect | null, textCap: number):
     rowIndex: Number.parseInt(attr(rowEl, 'data-row-index'), 10) || 0,
     inViewport: viewport === null ? false : rectsOverlapVertically(rect, viewport),
     rect,
-    textHead: textHead(leaf.textContent ?? '', textCap),
+    textLength: text.textLength,
+    textHead: text.text,
   };
 }
 
@@ -302,6 +360,8 @@ export interface HarnessElementMatch {
   visible: boolean;
   clipped: boolean;
   text: string;
+  textLength: number;
+  scroll?: HarnessScroll;
   role: string;
   ariaLabel: string;
   testId: string;
@@ -312,6 +372,12 @@ export interface HarnessElement {
   selector: string;
   count: number;
   first: HarnessElementMatch | null;
+}
+
+export interface HarnessElementOptions {
+  textCap?: number;
+  /** Include scroll geometry only when the caller needs a synchronous layout read. */
+  includeScroll?: boolean;
 }
 
 /**
@@ -341,7 +407,7 @@ function isVisible(el: Element, rect: HarnessRect): boolean {
 export function readElement(
   doc: Document,
   selector: string,
-  textCap = DEFAULT_ELEMENT_TEXT_CAP,
+  options: HarnessElementOptions = {},
 ): HarnessElement {
   // An invalid selector is the caller's typo, and it must read as one
   // rather than as "no such element" — those get debugged very
@@ -351,6 +417,7 @@ export function readElement(
   if (!el) return { v: 1, selector, count: matches.length, first: null };
   const rect = rectOf(el);
   const clipper = clippingAncestor(el);
+  const text = readTextSummary(el, options.textCap ?? DEFAULT_ELEMENT_TEXT_CAP);
   return {
     v: 1,
     selector,
@@ -360,7 +427,9 @@ export function readElement(
       rect,
       visible: isVisible(el, rect),
       clipped: clipper ? !rectsOverlapVertically(rect, rectOf(clipper)) : false,
-      text: textHead(el.textContent ?? '', textCap),
+      text: text.text,
+      textLength: text.textLength,
+      ...(options.includeScroll ? { scroll: readScroll(el) } : {}),
       role: attr(el, 'role'),
       ariaLabel: attr(el, 'aria-label'),
       testId: attr(el, 'data-testid'),

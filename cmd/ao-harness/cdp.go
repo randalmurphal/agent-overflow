@@ -95,7 +95,7 @@ func cdpRequirementNote(t target) string {
 				t.Row.Mode, port, port)
 		}
 	}
-	b.WriteString("    the Windows WebView2 shells publish one on loopback (soak 9224, harness 9225)\n")
+	b.WriteString("    the Windows WebView2 shells publish one on loopback (soak 9224, harness 9225, perf 9226)\n")
 	b.WriteString("    an external Chrome/Edge does with --remote-debugging-port=<port>\n")
 	b.WriteString("  a WebKitGTK window (`make harness-window` on Linux) serves NO devtools protocol,\n")
 	b.WriteString("  so neither `ao-harness profile` nor `ao-harness bench --trace` can run against one.")

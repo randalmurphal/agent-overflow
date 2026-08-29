@@ -107,6 +107,7 @@ type bootFlags struct {
 	harness            *bool
 	soak               *bool
 	autopilot          *bool
+	isolatedProfile    *string
 	launcherPID        *int
 	window             *bool
 	mockProvider       *string
@@ -121,16 +122,17 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 	flagSet := flag.NewFlagSet("agent-overflow", flag.ContinueOnError)
 	flagSet.SetOutput(os.Stderr)
 	return flagSet, bootFlags{
-		listen:       flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty means use the default loopback + ephemeral port."),
-		printURLFD:   flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open."),
-		connect:      flagSet.String("connect", "", "Phase F remote client mode: attach the desktop window to a remote backend at ws://host:port/?token=<value>. Skips local transport boot."),
-		dataDir:      flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness."),
-		harness:      flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md."),
-		soak:         flagSet.Bool("soak", false, "launcher-shell isolated backend: harness-grade isolation (mock providers, isolated data dir + HOME) behind the ORDINARY headless bootstrap, so the Windows launcher can host it in a real WebView2 window. Launcher-owned wire flag; the historical name is why it says soak. Defaults --data-dir to ~/.agent-overflow-harness, or ~/.agent-overflow-soak with --autopilot."),
-		autopilot:    flagSet.Bool("autopilot", false, "--soak only: arm the soak autopilot — seed two threads and start a never-ending streaming background-agent turn. This is what makes an isolated instance a SOAK rather than a harness. See docs/architecture/soak-rig.md."),
-		launcherPID:  flagSet.Int("launcher-pid", 0, "--soak only: the Windows launcher process that spawned this backend, so a deliberate teardown can close its window too. Set by the launcher; 0 means nobody hosts a window for us."),
-		window:       flagSet.Bool("window", false, "harness/soak mode only: open the real Wails webview window on the isolated backend instead of running headless. GUI builds only. See docs/specs/testing-harness.md."),
-		mockProvider: flagSet.String("mock-provider", "", "harness/soak mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
+		listen:          flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty means use the default loopback + ephemeral port."),
+		printURLFD:      flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open."),
+		connect:         flagSet.String("connect", "", "Phase F remote client mode: attach the desktop window to a remote backend at ws://host:port/?token=<value>. Skips local transport boot."),
+		dataDir:         flagSet.String("data-dir", "", "data directory root override; app data lives in <data-dir>/agent-overflow. Required by --harness."),
+		harness:         flagSet.Bool("harness", false, "agent test harness mode: headless boot on an isolated --data-dir with mock providers and the Harness RPC surface. See docs/architecture/agent-harness.md."),
+		soak:            flagSet.Bool("soak", false, "launcher-shell isolated backend: harness-grade isolation (mock providers, isolated data dir + HOME) behind the ORDINARY headless bootstrap, so the Windows launcher can host it in a real WebView2 window. Launcher-owned wire flag; the historical name is why it says soak. Defaults --data-dir to ~/.agent-overflow-harness, or ~/.agent-overflow-soak with --autopilot."),
+		autopilot:       flagSet.Bool("autopilot", false, "--soak only: arm the soak autopilot — seed two threads and start a never-ending streaming background-agent turn. This is what makes an isolated instance a SOAK rather than a harness. See docs/architecture/soak-rig.md."),
+		isolatedProfile: flagSet.String("isolated-profile", "", "internal --soak identity: `perf` selects the dedicated renderer-benchmark data root and discovery mode. Launcher-owned; empty is the Windows harness."),
+		launcherPID:     flagSet.Int("launcher-pid", 0, "--soak only: the Windows launcher process that spawned this backend, so a deliberate teardown can close its window too. Set by the launcher; 0 means nobody hosts a window for us."),
+		window:          flagSet.Bool("window", false, "harness/soak mode only: open the real Wails webview window on the isolated backend instead of running headless. GUI builds only. See docs/specs/testing-harness.md."),
+		mockProvider:    flagSet.String("mock-provider", "", "harness/soak mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
 		resetTransportPort: flagSet.Bool(resetTransportPortFlag, false,
 			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
 	}
@@ -175,6 +177,10 @@ type cliFlags struct {
 	// (docs/architecture/soak-rig.md). Without it the instance boots and
 	// waits for whoever is driving it.
 	autopilot bool
+	// isolatedProfile distinguishes launcher-hosted harnesses that must not
+	// share discovery identity or data. Empty is the ordinary Windows
+	// harness. "perf" is the destructive renderer-benchmark instance.
+	isolatedProfile string
 	// launcherPID is the Windows launcher process hosting this backend's
 	// window, or 0 when nobody does. Published in the instance discovery
 	// files so `ao-harness down` can close the window the launcher
@@ -213,10 +219,20 @@ func parseFlags(args []string) (cliFlags, error) {
 		harness:            *values.harness,
 		soak:               *values.soak,
 		autopilot:          *values.autopilot,
+		isolatedProfile:    strings.ToLower(strings.TrimSpace(*values.isolatedProfile)),
 		launcherPID:        *values.launcherPID,
 		window:             *values.window,
 		mockProvider:       *values.mockProvider,
 		resetTransportPort: *values.resetTransportPort,
+	}
+	if out.isolatedProfile != "" && out.isolatedProfile != string(instanceinfo.ModePerf) {
+		return cliFlags{}, fmt.Errorf("unknown --isolated-profile %q (valid: %q)", out.isolatedProfile, instanceinfo.ModePerf)
+	}
+	if out.isolatedProfile != "" && !out.soak {
+		return cliFlags{}, errors.New("--isolated-profile requires --soak (only the Windows launcher assigns this identity)")
+	}
+	if out.isolatedProfile == string(instanceinfo.ModePerf) && out.autopilot {
+		return cliFlags{}, errors.New("--isolated-profile perf cannot arm --autopilot")
 	}
 
 	if out.connect != "" && *values.printURLFD != "" {
@@ -260,8 +276,11 @@ func parseFlags(args []string) (cliFlags, error) {
 			// hand, so it takes the per-worktree root — two worktrees
 			// running at once must not share a database. WHICH INSTANCE: the
 			// autopilot refuses a data dir holding threads it did not seed,
-			// so a soak can never share a root with a harness.
+			// so a soak can never share a root with a harness. The perf
+			// identity is destructive by design and gets a third root.
 			switch {
+			case out.isolatedProfile == string(instanceinfo.ModePerf):
+				out.dataDir = perfDefaultDataRoot()
 			case out.window && out.autopilot:
 				out.dataDir = instanceinfo.DefaultSoakDataRoot()
 			case out.window:

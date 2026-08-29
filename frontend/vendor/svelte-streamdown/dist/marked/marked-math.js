@@ -62,6 +62,8 @@ export const markedMath = [
         name: 'math',
         level: 'block',
         tokenizer(src) {
+            if (src.charCodeAt(0) !== 36 || src.charCodeAt(1) !== 36)
+                return undefined;
             const match = src.match(blockRule);
             if (match) {
                 // match[2] = newline-delimited, match[3] = single-line no-newline,
@@ -117,6 +119,8 @@ export const markedMath = [
             }
         },
         tokenizer(src) {
+            if (src.charCodeAt(0) !== 36)
+                return undefined;
             const match = src.match(inlineRule);
             if (match) {
                 const content = match[2];

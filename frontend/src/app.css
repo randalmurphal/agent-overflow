@@ -578,18 +578,16 @@ input[type="search"]::-webkit-search-cancel-button {
       every assistant message.
 
    Selector shape is load-bearing for style-invalidation cost, not just for
-   matching: written as bare `> :first-child > :first-child`, the structural
-   pseudo sits in a featureless compound, so Blink files the rule in its
-   UNIVERSAL invalidation sets and every sibling-list change anywhere in the
-   document pays a whole-subtree style recalc (measured 2026-08-25: 1,091-
-   element document-wide passes per streaming beat, firing on sidebar nodes).
-   Every compound therefore carries a feature: the wrapper classes are the
-   known middle layer, and `.md-blk` is stamped on every block-level element
-   by chat/markdown/streamdownTheme.ts (its doc + test own the roster). A
-   block type missing the marker keeps its edge margin — a visual nit, never
-   a matching error. styleInvalidation.test.ts enforces the shape. */
-.markdown-body > :is(.md-committed, .md-volatile):first-child > .md-blk:first-child { margin-top: 0; }
-.markdown-body > :is(.md-committed, .md-volatile):last-child > .md-blk:last-child { margin-bottom: 0; }
+   matching. Structural `:first-child` / `:last-child` selectors were first
+   narrowed with `.md-blk`, which avoided universal invalidation but still
+   made every last-child change inside a streaming code block invalidate all
+   prior `.md-blk` elements. At a 65K-character tail that produced 4,600-
+   element style passes taking ~32ms. Streamdown now marks the actual message
+   edges with `sd-trim-*` classes. Only an edge migration changes either
+   class, while syntax spans and direct text appends schedule nothing. A block
+   type missing `.md-blk` keeps its edge margin, matching the old fallback. */
+.markdown-body > :is(.md-committed, .md-volatile) > .sd-trim-first-block { margin-top: 0; }
+.markdown-body > :is(.md-committed, .md-volatile) > .sd-trim-last-block { margin-bottom: 0; }
 
 /* Settle-moment scroll-flicker fix (COUPLED to the two edge resets above).
    Each timeline row renders inside [data-row-geometry-content]; the wrapper
@@ -661,7 +659,8 @@ input[type="search"]::-webkit-search-cancel-button {
   margin: 0;
   white-space: pre-wrap;
 }
-.markdown-body p + p {
+.markdown-body .sd-paragraph-gap,
+.markdown-body .sd-volatile-paragraph + .sd-volatile-paragraph {
   margin-top: calc(var(--markdown-body-line-height) * 1em);
 }
 /* Streaming committed-prefix / volatile-tail split: ChatMarkdown renders the
@@ -671,7 +670,7 @@ input[type="search"]::-webkit-search-cancel-button {
    so block margins COLLAPSE across the seam exactly as they would inside a
    single container — for every block transition EXCEPT paragraph→paragraph.
    A paragraph has `margin: 0`; its whole inter-paragraph gap comes from the
-   `.markdown-body p + p` rule above, which can't match across the container
+   paragraph-gap rule above, which can't infer across the container
    boundary and so collapses to 0 at the seam. Every other block (heading,
    list, code, table, blockquote, math, hr) carries its own intrinsic
    top/bottom margin, which survives the split and collapses to the correct
@@ -680,17 +679,21 @@ input[type="search"]::-webkit-search-cancel-button {
    So re-establish the gap ONLY for the true p→p seam, and let collapsing
    reproduce the rest. The prior blanket `margin-top` here over-spaced every
    non-p→p seam by +9–17px while split, snapping to the smaller real gap when
-   the block committed — a visible upward shift mid-stream. Settled messages
-   render as a single .md-committed container, so neither `:has()` condition
-   can match once streaming ends.
+   the block committed — a visible upward shift mid-stream. Streamdown already
+   knows the committed root's final rendered token type and publishes it as a
+   stable attribute. Pair that with the volatile root's actual first child
+   instead of `:has()`: descendant insertions in the volatile block then cannot
+   invalidate its wrapper on every streamed word. Settled messages render as a
+   single .md-committed container, so the adjacent selector cannot match.
 
    DEPENDS on .md-committed/.md-volatile staying plain: any padding, border,
    overflow≠visible, or display that forms a block formatting context on
    either wrapper would block the cross-seam margin collapse and reintroduce
    the gaps. */
 .markdown-body
-  > .md-committed:has(> p:last-child)
-  + .md-volatile:has(> p:first-child) {
+  > .md-committed[data-streamdown-last-block='paragraph']
+  + .md-volatile
+  > p.sd-first-block {
   margin-top: calc(var(--markdown-body-line-height) * 1em);
 }
 .markdown-body ul,
@@ -818,7 +821,7 @@ input[type="search"]::-webkit-search-cancel-button {
 
 /* GFM task lists. Negative margin mirrors the list padding-left above
    so checkbox items sit flush where the marker column would start. */
-.markdown-body li:has(> input[type="checkbox"]) {
+.markdown-body li.md-task-list-item {
   list-style: none;
   margin-left: -2em;
 }
@@ -1205,16 +1208,15 @@ html.light .working-sprite {
 .run-map-spine-wide > * {
   width: 100%;
 }
-/* The connector selector needs a FEATURE in both sibling compounds: as
+/* The connector selector needs a CLASS in both sibling compounds: as
    `> * + *::before` it lived in Blink's universal sibling invalidation
    sets, taxing every element insertion in the whole app (44 subtree
    invalidations/15s measured 2026-08-25 with the overlay CLOSED). The
-   list spines' children are `li`; every non-li spine child (attempt
-   rows, fan roots, chained composition roots, node notes, the loop foot
-   and its children) carries `.run-map-node`. A spine child missing both
-   renders without its connector line — stamp new child shapes
-   accordingly. styleInvalidation.test.ts enforces the shape. */
-.run-map-spine > li + li::before,
+   `.run-map-spine > li + li` still indexed the right-hand tag globally: a
+   code-island replacement matched every Markdown list item even with the
+   workflow overlay closed. Every direct spine child therefore carries
+   `.run-map-node`; stamp new child shapes accordingly.
+   styleInvalidation.test.ts enforces the shape. */
 .run-map-spine > .run-map-node + .run-map-node::before {
   content: '';
   position: absolute;

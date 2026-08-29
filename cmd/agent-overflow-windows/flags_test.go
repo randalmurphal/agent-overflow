@@ -85,6 +85,8 @@ func TestParseLauncherFlags_Profile(t *testing.T) {
 		{"flag beats env", []string{"--profile", ""}, "soak", ""},
 		{"harness flag", []string{"--profile", "harness"}, "", appidentity.ProfileHarness},
 		{"harness env fallback", nil, "HARNESS", appidentity.ProfileHarness},
+		{"perf flag", []string{"--profile", "perf"}, "", appidentity.ProfilePerf},
+		{"perf env fallback", nil, "PERF", appidentity.ProfilePerf},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

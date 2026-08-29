@@ -5,6 +5,7 @@
   import { createRowEstimate } from '../../utils/virtual/priors';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
@@ -24,9 +25,11 @@
   const IS_HAPPY_DOM =
     import.meta.env.MODE === 'test' && typeof window !== 'undefined' && 'happyDOM' in window;
   const estimate = createRowEstimate({ defaultSize: 36 });
+  const scrollbarGeometry = createContentGeometryNotifier();
   const stick = createUseStickToBottomController({
     liveContentActive: () => live,
     externalContentGeometry: true,
+    onContentGeometryProcessed: scrollbarGeometry.notify,
     onScrollTopWritten: (top) => listRef?.noteScrollTopWritten(top),
   });
 
@@ -60,7 +63,7 @@
 <div class="relative" data-testid="subagent-group-scroll-host">
   <div
     bind:this={scrollEl}
-    class="activity-run-clip pane-scroll-surface max-h-[min(50vh,20rem)] overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+    class="activity-run-clip pane-scroll-surface overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
     use:nestedScroll
     data-testid="subagent-group-scroll"
     data-scroll-owner="controller"
@@ -69,6 +72,7 @@
       bind:this={listRef}
       bind:renderPlane={contentEl}
       scrollRef={scrollEl}
+      intrinsicViewportMaxHeight="min(50vh, 20rem)"
       data={nodes}
       getKey={(node) => timelineNodeKey(node)}
       {estimate}
@@ -94,7 +98,7 @@
   ></div>
   <OverlayScrollbar
     target={scrollEl}
-    content={contentEl}
+    contentGeometry={scrollbarGeometry}
     ariaLabel="Scroll agent activity"
     ownerDrivenPosition={() => !stick.escapedFromLock}
     onUserScrollStart={() => stick.setEscapedFromLock(true)}

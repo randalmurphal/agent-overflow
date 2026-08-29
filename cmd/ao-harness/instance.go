@@ -222,15 +222,21 @@ func (e *env) attach(ctx context.Context) (*harnessclient.Client, target, harnes
 		}
 		return nil, t, harnessclient.Bootstrap{}, err
 	}
-	if !instanceinfo.ProcessAlive(bs.PID) {
-		return nil, t, bs, fmt.Errorf(
-			"instance %s names pid %d, which is not running; its data dir is %s (`ao-harness list` prunes the row)",
-			t.ID, bs.PID, t.DataDir)
-	}
+	pidAlive := instanceinfo.ProcessAlive(bs.PID)
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 	client, err := harnessclient.Dial(dialCtx, bs, harnessclient.Options{})
 	if err != nil {
+		// A launcher-hosted WSL backend and a native Windows CLI see
+		// different PID namespaces. The authenticated transport is stronger
+		// liveness evidence than a local PID lookup, so only report the stale
+		// file after both checks fail. Lifecycle commands keep their stricter
+		// same-namespace PID validation because they send process signals.
+		if !pidAlive {
+			return nil, t, bs, fmt.Errorf(
+				"instance %s names pid %d, which is not running and its backend did not answer: %w; data dir %s (`ao-harness list` prunes the row)",
+				t.ID, bs.PID, err, t.DataDir)
+		}
 		return nil, t, bs, err
 	}
 	e.warnVersionSkew(bs)

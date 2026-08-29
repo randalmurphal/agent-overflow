@@ -234,7 +234,10 @@ async function dispatch(spec: Record<string, unknown>): Promise<unknown> {
         return readElement(
           document,
           selector,
-          num(spec, 'textCap', DEFAULT_ELEMENT_TEXT_CAP),
+          {
+            textCap: num(spec, 'textCap', DEFAULT_ELEMENT_TEXT_CAP),
+            includeScroll: spec.includeScroll === true,
+          },
         );
       } catch (err) {
         // querySelectorAll throws SyntaxError on a malformed selector.
