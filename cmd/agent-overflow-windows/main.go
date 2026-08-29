@@ -249,6 +249,9 @@ func main() {
 	if err := installHarnessBoundary(governor.DefaultCeilingBytes); err != nil {
 		log.Fatalf("harness containment: %v", err)
 	}
+	if err := prepareWebviewStorage(launcherRuntimeMode()); err != nil {
+		log.Fatalf("webview2 storage: %v", err)
+	}
 	if activeProfile != "" {
 		log.Printf("launcher: profile=%s (isolated instance: id/title/webview/log/window-state/data-dir)", activeProfile)
 	}
