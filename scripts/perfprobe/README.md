@@ -26,6 +26,7 @@ scripts/perfprobe/probe heapsnapshot before
 scripts/perfprobe/probe snapshot-detached /mnt/c/Users/<you>/AppData/Local/Temp/ao-perfprobe/heap-before.heapsnapshot
 AO_CDP_PORT=9224 scripts/perfprobe/probe sample --every 60 --for 3600
 AO_CDP_PORT=9226 scripts/perfprobe/probe webviewmem --for 600 --every-ms 1000
+scripts/perfprobe/probe realuse --for 86400 --every-ms 10000 --allow-user-app
 ```
 
 Env:
@@ -34,6 +35,8 @@ Env:
 - `AO_PERFPROBE_OUT`: Windows directory for staged scripts and saved traces and
   snapshots, default `%LOCALAPPDATA%\Temp\ao-perfprobe`. The wrapper prints its WSL
   path after every online run so you can feed saved files back to the offline probes.
+- `AO_WINDOWS_NODE_EXE`: exact WSL path to Windows `node.exe`. Set this for a
+  systemd user service whose restricted `PATH` cannot discover Windows programs.
 
 No probe changes persisted app state. `scroll-contract` mounts an invisible
 offscreen scroller for one synchronous readback check and removes it before
@@ -46,6 +49,27 @@ Port 9223 also hard-refuses probes that install page observers/state, alter
 rendering, reload, click, type, or scroll. Run those against perf on 9226. The
 guard is central in `probe`, including for older scripts with no local refusal;
 read-only traces, profiles, process/DOM censuses, and screenshots remain allowed.
+
+`realuse` is the deliberate consent-gated exception. It records focused and
+unfocused rAF gaps in fixed-size histograms, samples main-thread busy time once
+per 16 focused frames, observes long tasks/animation frames/input events, and
+polls cumulative Chromium task, heap, DOM, and per-process CPU counters. It does
+not record page text, URLs beyond the loopback origin, screenshots, input, or
+stack traces. Hidden intervals reset the frame clock, and gaps above two seconds
+are labeled as suspend/resume instead of dropped frames. The page state has a
+two-minute watchdog and is removed on a clean collector exit. Port 9223 requires
+the explicit `--allow-user-app` flag even though the monitor does not change
+rendering. `realuse-state` reports whether that page-side monitor remains armed.
+
+The JSONL appends one labeled session per collector restart. Summarize it,
+optionally joined with the exact-profile memory CSV, without attaching to the
+app:
+
+```
+scripts/perfprobe/probe realuse-report \
+  --telemetry /path/to/realuse.jsonl \
+  --memory /path/to/webview-memory.csv
+```
 
 `resizewatch [seconds]` attributes ResizeObserver loop errors to observer
 registration stacks and recent targets. It reloads once to install the wrapper
@@ -81,6 +105,9 @@ utility, and crashpad processes without tracing or forcing GC. It can run beside
 peak that the in-page perf meter cannot see. Do not treat a run carrying `frames`,
 `cpu`, `alloc`, a heap snapshot, or a memory dump as an app-footprint run. Those
 probes allocate profiler buffers inside Chromium.
+`--append` keeps one CSV across collector restarts without repeating its header;
+it refuses to append after an incomplete final row rather than corrupting the
+next sample.
 For an intentionally destructive perf-profile run, add
 `--kill-at-private-working-set-mb <MB>`. It is hard-disabled outside CDP 9226,
 verifies the exact perf-profile WebView data directory and launcher parent, then

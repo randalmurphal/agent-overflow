@@ -6,7 +6,8 @@ param(
   [int] $Seconds = 600,
   [int] $EveryMs = 1000,
   [int] $KillAtPrivateWorkingSetMB = 0,
-  [string] $RequiredBrowserArg = ''
+  [string] $RequiredBrowserArg = '',
+  [switch] $Append
 )
 
 $ErrorActionPreference = 'Stop'
@@ -180,8 +181,20 @@ if (-not [string]::IsNullOrEmpty($parent)) {
   [System.IO.Directory]::CreateDirectory($parent) | Out-Null
 }
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$writer = New-Object System.IO.StreamWriter($Out, $false, $utf8NoBom)
-$writer.WriteLine(($columns -join ','))
+$appendExisting = $Append -and [System.IO.File]::Exists($Out) -and (Get-Item $Out).Length -gt 0
+if ($appendExisting) {
+  $reader = [System.IO.File]::Open($Out, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read)
+  try {
+    [void] $reader.Seek(-1, [System.IO.SeekOrigin]::End)
+    if ($reader.ReadByte() -ne 10) {
+      throw "Cannot append to $Out because its final row is incomplete"
+    }
+  } finally {
+    $reader.Dispose()
+  }
+}
+$writer = New-Object System.IO.StreamWriter($Out, $appendExisting, $utf8NoBom)
+if (-not $appendExisting) { $writer.WriteLine(($columns -join ',')) }
 $writer.Flush()
 
 $clock = [System.Diagnostics.Stopwatch]::StartNew()

@@ -27,6 +27,8 @@ env:
   AO_CDP_PORT        CDP port (default 9223; the soak rig uses 9224)
   AO_PERFPROBE_OUT   Windows directory for staged scripts and saved output
                      (default %LOCALAPPDATA%\Temp\ao-perfprobe)
+  AO_WINDOWS_NODE_EXE
+                     exact WSL path to Windows node.exe for restricted service environments
 
 probes:
 USAGE
@@ -56,6 +58,20 @@ if [ "$PORT" = "9223" ]; then
       exit 2
       ;;
   esac
+fi
+
+# The real-use sampler is the one intentional exception to the blanket rule
+# above: it installs a bounded, watchdog-owned rAF observer because frame gaps
+# cannot be measured from outside the page. Requiring the explicit flag keeps a
+# typo or copied command from instrumenting the developer's app without consent.
+if [ "$name" = "realuse" ] && [ "$PORT" = "9223" ]; then
+  allow=0
+  for a in "$@"; do [ "$a" = "--allow-user-app" ] && allow=1; done
+  if [ "$allow" -eq 0 ]; then
+    echo "probe: realuse installs a bounded frame observer on the user app." >&2
+    echo "       Pass --allow-user-app only when the user requested live monitoring." >&2
+    exit 2
+  fi
 fi
 
 # ab changes what the user sees, so the user's own app needs consent.
@@ -89,7 +105,7 @@ if [ "$offline" -eq 1 ]; then
   exec node --max-old-space-size=8192 "$script" "$@"
 fi
 
-NODE_EXE="$(command -v node.exe 2>/dev/null || true)"
+NODE_EXE="${AO_WINDOWS_NODE_EXE:-$(command -v node.exe 2>/dev/null || true)}"
 if [ -z "$NODE_EXE" ]; then
   win_node="$(powershell.exe -NoProfile -Command "(Get-Command node).Source" 2>/dev/null | tr -d '\r')"
   [ -n "$win_node" ] && NODE_EXE="$(wslpath -u "$win_node" 2>/dev/null || true)"
@@ -122,10 +138,11 @@ cp -f "$DIR"/*.ps1 "$OUT_WSL/" || exit 1
 cp -f "$DIR"/lib/*.mjs "$OUT_WSL/lib/" || exit 1
 
 cd "$OUT_WSL" || exit 1
-WSLENV="${WSLENV:+$WSLENV:}AO_CDP_PORT:AO_PERFPROBE_OUT:AO_ALLOC_INTERVAL" \
+WSLENV="${WSLENV:+$WSLENV:}AO_CDP_PORT:AO_PERFPROBE_OUT:AO_ALLOC_INTERVAL:AO_PROBE_CALL_TIMEOUT_MS" \
 AO_CDP_PORT="$PORT" \
 AO_PERFPROBE_OUT="$OUT_WIN" \
 AO_ALLOC_INTERVAL="${AO_ALLOC_INTERVAL:-}" \
+AO_PROBE_CALL_TIMEOUT_MS="${AO_PROBE_CALL_TIMEOUT_MS:-}" \
   "$NODE_EXE" "$name.mjs" "$@"
 rc=$?
 echo "probe: out dir $OUT_WIN  ->  $OUT_WSL"

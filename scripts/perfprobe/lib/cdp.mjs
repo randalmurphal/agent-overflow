@@ -37,6 +37,11 @@ export async function connectBrowser() {
   return connect(ver.webSocketDebuggerUrl);
 }
 
+/** Connect an already selected target. Callers must validate its identity first. */
+export function connectTarget(webSocketDebuggerUrl) {
+  return connect(webSocketDebuggerUrl);
+}
+
 function connect(url) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
