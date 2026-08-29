@@ -4,6 +4,11 @@ set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${AO_CDP_PORT:-9223}"
+if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
+  echo "probe: AO_CDP_PORT must be an integer between 1 and 65535, got: $PORT" >&2
+  exit 2
+fi
+PORT=$((10#$PORT))
 
 list_probes() {
   local f name
@@ -27,6 +32,10 @@ env:
   AO_CDP_PORT        CDP port (default 9223; the soak rig uses 9224)
   AO_PERFPROBE_OUT   Windows directory for staged scripts and saved output
                      (default %LOCALAPPDATA%\Temp\ao-perfprobe)
+  AO_PROBE_MAX_EVENT_BYTES
+                     maximum retained CDP event history (default 16 MiB)
+  AO_PROBE_MAX_STREAM_BYTES
+                     maximum one streamed CDP result (default 512 MiB)
   AO_WINDOWS_NODE_EXE
                      exact WSL path to Windows node.exe for restricted service environments
 
@@ -42,48 +51,6 @@ if [ ! -f "$script" ]; then
   echo "probe: no such probe: $name" >&2
   echo "       run 'scripts/perfprobe/probe' with no arguments for the list" >&2
   exit 1
-fi
-
-# The user's app is measurement-only. Keep this denylist at the dispatch
-# boundary so a page-instrumenting or input-driving probe cannot reach it by
-# accident even when the script itself predates per-probe guards. New probes
-# that install page state, alter rendering, reload, click, type, or scroll must
-# join this list. Read-only CDP traces, profiles, censuses, and screenshots do
-# not.
-if [ "$PORT" = "9223" ]; then
-  case "$name" in
-    activetrim|attrflap|csshold|emulate|evalq|followcheck|framedrops|gpupressure|jumpbottom|jumpwatch|loadolderdrive|mainstalls|markdownwatch|mutations|resizewatch|scroll-contract|scrollgesture|spritecheck|spritecheck2|spritecheck3|spritecheck4|stopsnap)
-      echo "probe: $name instruments or drives the page, so it cannot run on the read-only user app." >&2
-      echo "       Run it against an isolated rig instead: AO_CDP_PORT=9226 scripts/perfprobe/probe $name ..." >&2
-      exit 2
-      ;;
-  esac
-fi
-
-# The real-use sampler is the one intentional exception to the blanket rule
-# above: it installs a bounded, watchdog-owned rAF observer because frame gaps
-# cannot be measured from outside the page. Requiring the explicit flag keeps a
-# typo or copied command from instrumenting the developer's app without consent.
-if [ "$name" = "realuse" ] && [ "$PORT" = "9223" ]; then
-  allow=0
-  for a in "$@"; do [ "$a" = "--allow-user-app" ] && allow=1; done
-  if [ "$allow" -eq 0 ]; then
-    echo "probe: realuse installs a bounded frame observer on the user app." >&2
-    echo "       Pass --allow-user-app only when the user requested live monitoring." >&2
-    exit 2
-  fi
-fi
-
-# ab changes what the user sees, so the user's own app needs consent.
-if [ "$name" = "ab" ] && [ "$PORT" = "9223" ]; then
-  allow=0
-  for a in "$@"; do [ "$a" = "--allow-user-app" ] && allow=1; done
-  if [ "$allow" -eq 0 ]; then
-    echo "probe: ab injects a CSS override and can drive synthetic wheel scrolling, so it changes what you" >&2
-    echo "       see in the app on port 9223. Run it against the soak rig instead (make soak, then" >&2
-    echo "       AO_CDP_PORT=9224 probe ab ...), or pass --allow-user-app to accept the interference." >&2
-    exit 2
-  fi
 fi
 
 # Line 3 marks a probe that reads a file instead of talking to CDP, always or behind a flag.
@@ -103,6 +70,12 @@ if [ "$offline" -eq 1 ]; then
     exit 1
   fi
   exec node --max-old-space-size=8192 "$script" "$@"
+fi
+
+if [ -z "${AO_PERFPROBE_MANIFEST:-}" ] && [ -z "${AO_PERFPROBE_INSTANCE_MANIFEST:-}" ]; then
+  echo "probe: online probes require AO_PERFPROBE_MANIFEST from the run supervisor" >&2
+  echo "       refusing an unowned CDP endpoint" >&2
+  exit 2
 fi
 
 NODE_EXE="${AO_WINDOWS_NODE_EXE:-$(command -v node.exe 2>/dev/null || true)}"
@@ -138,11 +111,16 @@ cp -f "$DIR"/*.ps1 "$OUT_WSL/" || exit 1
 cp -f "$DIR"/lib/*.mjs "$OUT_WSL/lib/" || exit 1
 
 cd "$OUT_WSL" || exit 1
-WSLENV="${WSLENV:+$WSLENV:}AO_CDP_PORT:AO_PERFPROBE_OUT:AO_ALLOC_INTERVAL:AO_PROBE_CALL_TIMEOUT_MS" \
+WSLENV="${WSLENV:+$WSLENV:}AO_CDP_PORT:AO_PERFPROBE_OUT:AO_PERFPROBE_MANIFEST:AO_PERFPROBE_INSTANCE_MANIFEST:AO_PERFPROBE_LEASE:AO_ALLOC_INTERVAL:AO_PROBE_CALL_TIMEOUT_MS:AO_PROBE_MAX_EVENT_BYTES:AO_PROBE_MAX_STREAM_BYTES" \
 AO_CDP_PORT="$PORT" \
 AO_PERFPROBE_OUT="$OUT_WIN" \
+AO_PERFPROBE_MANIFEST="${AO_PERFPROBE_MANIFEST:-}" \
+AO_PERFPROBE_INSTANCE_MANIFEST="${AO_PERFPROBE_INSTANCE_MANIFEST:-}" \
+AO_PERFPROBE_LEASE="${AO_PERFPROBE_LEASE:-}" \
 AO_ALLOC_INTERVAL="${AO_ALLOC_INTERVAL:-}" \
 AO_PROBE_CALL_TIMEOUT_MS="${AO_PROBE_CALL_TIMEOUT_MS:-}" \
+AO_PROBE_MAX_EVENT_BYTES="${AO_PROBE_MAX_EVENT_BYTES:-}" \
+AO_PROBE_MAX_STREAM_BYTES="${AO_PROBE_MAX_STREAM_BYTES:-}" \
   "$NODE_EXE" "$name.mjs" "$@"
 rc=$?
 echo "probe: out dir $OUT_WIN  ->  $OUT_WSL"

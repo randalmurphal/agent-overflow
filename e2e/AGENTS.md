@@ -286,7 +286,8 @@ headless, isolated data dir, mocked providers. Full harness guide:
   (`pnpm exec playwright install webkit`) and a `UI_TRACE=1` harness
   build. All three share their wire shapes, seed/collect driver, and
   trace folds in `tests/probe-wire.ts`. Run one with
-  `BOUNDARY_PROBE=1 pnpm exec playwright test <name>`.
+  `BOUNDARY_PROBE=1 pnpm test -- <name>` so the fixed-purpose containment
+  launcher remains in the process tree.
 - `tests/freeze-repro.manual.spec.ts` + `tests/freeze-repro-probe.ts` — the
   renderer main-thread freeze driver. It is a `*.manual.spec.ts`, which the
   base config `testIgnore`s: it needs a locally generated fixture that is
@@ -310,10 +311,13 @@ headless, isolated data dir, mocked providers. Full harness guide:
 
 ## Running
 
-`make e2e` (builds `bin/agent-overflow` + `bin/ao-mockprovider`, then
-`pnpm test` here). Override the binary with `AO_HARNESS_BIN`. Chromium
-comes from the Playwright cache (`pnpm exec playwright install
-chromium` on a fresh machine).
+`make e2e` builds `bin/agent-overflow`, `bin/ao-mockprovider`, and the fixed
+purpose `bin/ao-harness-e2e` launcher. The launcher runs `pnpm exec
+playwright test` with one process-tree memory boundary and host-floor
+watchdog. The complete two-worker gate reserves 6 GiB. Running `pnpm test`
+here uses the same launcher through `go run`.
+Override the backend binary with `AO_HARNESS_BIN`. Chromium comes from the
+Playwright cache (`pnpm exec playwright install chromium` on a fresh machine).
 
 ## Writing specs
 

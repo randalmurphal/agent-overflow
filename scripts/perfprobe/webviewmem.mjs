@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connectBrowser, PORT, sleep } from './lib/cdp.mjs';
+import { connectBrowser, loadInstanceManifest, PORT, sleep } from './lib/cdp.mjs';
+import { acquireProbeLease } from './lib/lease.mjs';
 
 const args = process.argv.slice(2);
 const valueOptions = new Set([
@@ -92,6 +93,7 @@ const childArgs = [
   '-ExecutionPolicy', 'Bypass',
   '-File', script,
   '-PidTypesJson', JSON.stringify(tracked),
+  '-ExpectedBrowserPid', String(tracked.find(({ type }) => type.toLowerCase() === 'browser').id),
   '-Out', out,
   '-Seconds', String(Math.ceil(seconds)),
   '-EveryMs', String(Math.round(everyMs)),
@@ -102,14 +104,22 @@ if (requiredBrowserArg) {
 }
 if (append) childArgs.push('-Append');
 
-const exitCode = await new Promise((resolve, reject) => {
-  const child = spawn(powershell, childArgs, { stdio: 'inherit', windowsHide: true });
-  child.once('error', reject);
-  child.once('exit', (code, signal) => {
-    if (signal) reject(new Error(`PowerShell sampler ended from signal ${signal}`));
-    else resolve(code ?? 1);
+const releaseLease = acquireProbeLease(loadInstanceManifest(), 'webviewmem', 'counter');
+const manifest = loadInstanceManifest();
+childArgs.push('-ManifestPath', manifest.manifestPath);
+let exitCode;
+try {
+  exitCode = await new Promise((resolve, reject) => {
+    const child = spawn(powershell, childArgs, { stdio: 'inherit', windowsHide: true });
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (signal) reject(new Error(`PowerShell sampler ended from signal ${signal}`));
+      else resolve(code ?? 1);
+    });
   });
-});
+} finally {
+  releaseLease();
+}
 if (exitCode !== 0) throw new Error(`PowerShell sampler exited with code ${exitCode}`);
 
 const lines = (await readFile(out, 'utf8')).trim().split(/\r?\n/);

@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/appidentity"
@@ -11,6 +14,55 @@ import (
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/transport"
 )
+
+var instanceIdentityCache sync.Map // canonical data root -> instanceinfo.Identity
+
+// instanceIdentityFor returns one immutable identity for a backend lifetime.
+// The bootstrap line and discovery files are written in separate boot phases,
+// so they must obtain the same nonce from this cache.
+func instanceIdentityFor(paths harnessPaths, mode instanceinfo.Mode, windowed bool, launcherPID int, launcherStartTime, launcherExecutable, launcherProfile, launcherWebviewProfile string) instanceinfo.Identity {
+	key, err := instanceinfo.CanonicalPath(paths.DataRoot)
+	if err != nil {
+		key = filepath.Clean(paths.DataRoot)
+	}
+	if existing, ok := instanceIdentityCache.Load(key); ok {
+		return existing.(instanceinfo.Identity)
+	}
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		panic("harness: generate boot nonce: " + err.Error())
+	}
+	identity := instanceinfo.Identity{
+		IdentityVersion: instanceinfo.IdentityVersion,
+		ID:              instanceinfo.ID(paths.DataRoot),
+		Mode:            mode,
+		Window:          windowed,
+		BootNonce:       hex.EncodeToString(nonceBytes),
+		Worktree:        bootWorkingDir(),
+		StartedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		LauncherPid:     launcherPID,
+		PIDNamespace:    instanceinfo.CurrentPIDNamespace(),
+	}
+	if launcherPID > 0 {
+		identity.LauncherProcessStartTime = launcherStartTime
+		identity.LauncherExecutablePath = launcherExecutable
+		identity.LauncherProfile = launcherProfile
+		identity.LauncherDataRoot = paths.DataRoot
+		identity.LauncherWebviewProfile = launcherWebviewProfile
+		identity.LauncherPIDNamespace = "windows"
+	}
+	if process, err := instanceinfo.CaptureProcessIdentity(os.Getpid()); err == nil {
+		identity.ProcessStartTime = process.StartTime
+		identity.ExecutablePath = process.Executable
+	} else {
+		log.Printf("harness: capture process identity: %v", err)
+	}
+	actual, loaded := instanceIdentityCache.LoadOrStore(key, identity)
+	if loaded {
+		return actual.(instanceinfo.Identity)
+	}
+	return identity
+}
 
 // Instance discovery for isolated boots (--harness / --soak, windowed or
 // not). Two files, written at the same moment — right after MarkReady,
@@ -71,27 +123,18 @@ type publishedInstance struct {
 // launcherPID is the Windows launcher hosting this backend's window, or
 // 0 when nobody does — the caller knows, because it is the boot flag the
 // launcher spelled.
-func publishInstance(srv *transport.Server, paths harnessPaths, mode instanceinfo.Mode, windowed bool, launcherPID int) publishedInstance {
-	identity := instanceinfo.Identity{
-		ID:     instanceinfo.ID(paths.DataRoot),
-		Mode:   mode,
-		Window: windowed,
-		// The checkout this instance belongs to. Read at boot because the
-		// process may chdir later (relocateOffWindowsDriveMount already
-		// does on the launcher path) and "which worktree started this" is
-		// a fact about the launch, not about the current directory.
-		Worktree:    bootWorkingDir(),
-		StartedAt:   time.Now().UTC().Format(time.RFC3339),
-		LauncherPid: launcherPID,
-	}
+func publishInstance(srv *transport.Server, paths harnessPaths, mode instanceinfo.Mode, windowed bool, launcherPID int, launcherStartTime, launcherExecutable, launcherProfile, launcherWebviewProfile string) publishedInstance {
+	identity := instanceIdentityFor(paths, mode, windowed, launcherPID, launcherStartTime, launcherExecutable, launcherProfile, launcherWebviewProfile)
 	published := publishedInstance{
 		id:          identity.ID,
 		filePath:    filepath.Join(paths.DataDir, instanceinfo.InstanceFileName),
 		registryDir: harnessRegistryDir,
 	}
 
+	bootstrap := newHarnessBootstrap(srv, paths, nil)
+	bootstrap.Identity = identity
 	file := harnessInstanceFile{
-		harnessBootstrap: newHarnessBootstrap(srv, paths, nil),
+		harnessBootstrap: bootstrap,
 		Identity:         identity,
 	}
 	// atomicfile writes 0600: this file carries the transport token.

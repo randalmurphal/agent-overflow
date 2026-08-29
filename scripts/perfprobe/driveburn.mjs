@@ -4,15 +4,9 @@
 // armed one and prompting it makes BOTH panes stream the installed scenario at once.
 import { connectPage, evaluate, sleep, done } from './lib/cdp.mjs';
 
-if ((process.env.AO_CDP_PORT || '9223') === '9223' && !process.argv.includes('--allow-user-app')) {
-  console.error('driveburn: this probe clicks and types in the app. Run it against the soak rig');
-  console.error('           (AO_CDP_PORT=9224), or pass --allow-user-app to drive your own window.');
-  process.exit(2);
-}
-
 const args = process.argv.slice(2);
 const mountOnly = args.includes('--mount-only');
-const positional = args.filter((arg) => arg !== '--mount-only' && arg !== '--allow-user-app');
+const positional = args.filter((arg) => arg !== '--mount-only');
 const title = positional[0] || 'Soak: idle thread';
 const prompt = positional[1] || 'Run the burn here too.';
 

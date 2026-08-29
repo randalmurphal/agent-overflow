@@ -39,6 +39,8 @@ Deep-dive design docs under [`architecture/`](architecture/).
 | [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and Stop/Esc conversation rollback. |
 | [`discussion-deliberation.md`](architecture/discussion-deliberation.md) | Multi-agent discussion coordination FSM. |
 | [`observability.md`](architecture/observability.md) | OpenTelemetry + per-thread NDJSON event log. |
+| [`agent-harness.md`](architecture/agent-harness.md) | Isolated real-app harness, CLI driver, evidence, and platform shells. |
+| [`functional-flows.md`](architecture/functional-flows.md) | JSON functional-flow format and standalone Playwright runner. |
 | [`workflow-campaigns.md`](architecture/workflow-campaigns.md) | Authoring guide for long multi-wave campaigns on the workflows system: the wave shape, the review/verification patterns and why, automation wiring, and the operating knobs. |
 | [`root-decomposition.md`](architecture/root-decomposition.md) | Measured field-ownership and seam map of the `*App` root receiver, the staged plan for cutting it, and the wire-compat facts that make a split byte-identical on the wire. |
 
@@ -54,6 +56,7 @@ External repos we track and how to use them. Under
 | [`forge.md`](references/forge.md) | Pointers into the forge codebase we're rewriting. UX and provider-handling reference. |
 | [`codex.md`](references/codex.md) | Codex source + CodexMonitor — how to use them when touching Codex code. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
+| [`ao-harness.md`](reference/ao-harness.md) | Generated command and output reference for the `ao-harness` shell driver. |
 
 ## Archive
 

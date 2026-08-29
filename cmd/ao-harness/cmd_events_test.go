@@ -98,6 +98,20 @@ func TestPrintEventMarksAReplayGap(t *testing.T) {
 	}
 }
 
+func TestEventOutputWriterRefusesBytesOverTheFileBudget(t *testing.T) {
+	var out bytes.Buffer
+	w := &eventOutputWriter{w: &out, limit: 3}
+	if n, err := w.Write([]byte("abc")); err != nil || n != 3 {
+		t.Fatalf("first write = (%d, %v), want 3 bytes and no error", n, err)
+	}
+	if n, err := w.Write([]byte("d")); err == nil || n != 0 {
+		t.Fatalf("over-budget write = (%d, %v), want refusal without a partial write", n, err)
+	}
+	if out.String() != "abc" || w.written != 3 {
+		t.Fatalf("writer state = (%q, %d), want abc and 3", out.String(), w.written)
+	}
+}
+
 // An unregistered channel is a WARNING, never a refusal: the harness
 // publishes onto caller-named channels through an explicit escape hatch,
 // so "not in the registry" means "the backend does not emit this itself".

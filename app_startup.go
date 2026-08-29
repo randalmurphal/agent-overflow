@@ -85,7 +85,9 @@ func (a *App) Start(ctx context.Context) error {
 	// Runs after subsystems so the data dir is ready; before the probe
 	// goroutines and any session RPC so the startup sweep can't race a
 	// fresh registry Add. See app_orphan_reaper.go.
-	a.startOrphanReaper(dbDir)
+	if err := a.startOrphanReaper(dbDir); err != nil {
+		return fmt.Errorf("start orphan reaper: %w", err)
+	}
 
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens

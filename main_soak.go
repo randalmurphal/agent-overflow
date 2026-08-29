@@ -131,10 +131,13 @@ func runSoak(flags cliFlags) {
 		fatalf("%s: %v", label, err)
 	}
 	paths.AssetsFreshness = warnIfEmbeddedDistStale()
+	paths.AssetsDigest = embeddedAssetDigest()
 	if flags.window {
 		// After prepareHarness, before the first GLib call — see
 		// isolateWebviewStorage for why both ends of that window matter.
-		isolateWebviewStorage(paths.DataRoot)
+		if err := isolateWebviewStorage(paths.DataRoot); err != nil {
+			fatalf("%s: %v", label, err)
+		}
 	}
 
 	appService := newIsolatedProviderApp(paths)
@@ -189,7 +192,8 @@ func runSoak(flags cliFlags) {
 	// a graceful exit. This is exactly the instance a tool wants to attach
 	// to hours later, when nobody still has its stdout — and the one whose
 	// launcher pid a teardown needs.
-	instance := publishInstance(srv, paths, mode, flags.window, flags.launcherPID)
+	instance := publishInstance(srv, paths, mode, flags.window, flags.launcherPID, flags.launcherStartTime, flags.launcherExecutable, flags.launcherProfile, flags.launcherWebviewProfile)
+	h.setInstanceRemoval(instance.remove)
 	defer instance.remove()
 
 	if flags.autopilot {

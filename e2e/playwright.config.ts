@@ -20,7 +20,9 @@ export default defineConfig({
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     ...devices['Desktop Chrome'],
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    trace: { mode: 'retain-on-failure', screenshots: false },
+    // Functional-flow evidence is semantic state and bounded observations.
+    // Trace snapshots contain DOM state only. Pixel capture is disabled.
+    screenshot: 'off',
   },
 });

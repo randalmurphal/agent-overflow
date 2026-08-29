@@ -32,7 +32,7 @@ func (h *Harness) runPerfSampler(run *harnessPerfRun) {
 	// DIFFERENT run (two pages on one instance) can decline to answer
 	// rather than win the reply race with an error. A bridge that ignores
 	// the field behaves exactly as before.
-	collect, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "collect", "runId": run.id})
+	collect, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "collect", "runId": run.id, "pageId": run.pageID})
 	if err != nil {
 		log.Printf("harness: perf: encode collect query: %v", err)
 		return
@@ -59,7 +59,18 @@ func (h *Harness) runPerfSampler(run *harnessPerfRun) {
 
 func (h *Harness) emitPerfSample(run *harnessPerfRun, collect json.RawMessage, timeout time.Duration) {
 	backend := sampleHarnessPerfBackend(run.prefixes)
-	frontend, frontendErr := h.queryUI(collect, timeout)
+	var frontend json.RawMessage
+	var frontendErr error
+	if run.frontendEnabled {
+		frontend, frontendErr = h.queryUI(collect, timeout)
+	}
+	if len(run.monitorHeartbeat) > 0 {
+		if _, err := h.queryUI(run.monitorHeartbeat, timeout); err != nil {
+			h.perf.mu.Lock()
+			run.monitorLastError = err.Error()
+			h.perf.mu.Unlock()
+		}
+	}
 
 	event := harnessPerfEvent{
 		RunID:   run.id,
@@ -77,7 +88,7 @@ func (h *Harness) emitPerfSample(run *harnessPerfRun, collect json.RawMessage, t
 	event.Seq = run.seq
 	if frontendErr != nil {
 		run.lastErr = frontendErr.Error()
-	} else {
+	} else if run.frontendEnabled {
 		run.frontendSamples++
 		run.lastErr = ""
 	}
@@ -149,5 +160,7 @@ func sampleHarnessPerfBackend(prefixes []string) harnessPerfBackendSample {
 	sample.RSSBytes = tree.Self.RSSBytes
 	sample.ChildrenRSSBytes = tree.ChildrenRSSBytes
 	sample.Processes = tree.Children
+	sample.RSSAvailable = true
+	sample.WebviewRSSMeasurable = len(tree.Children) > 0
 	return sample
 }

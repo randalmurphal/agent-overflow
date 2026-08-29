@@ -82,6 +82,45 @@ func TestSubcommandDashHPrintsItsFlagsAndExitsZero(t *testing.T) {
 	}
 }
 
+func TestBenchDashHDoesNotResolveAnInstance(t *testing.T) {
+	code, stdout, stderr := run(t, "bench", "-h", "--registry-dir", t.TempDir())
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "-repeat") || strings.Contains(stderr, "instances are running") {
+		t.Fatalf("bench help was not answered locally\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+}
+
+func TestMonitorListDashHDoesNotResolveAnInstance(t *testing.T) {
+	code, stdout, stderr := run(t, "monitor", "list", "-h", "--registry-dir", t.TempDir())
+	if code != exitOK {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "-page-id") || strings.Contains(stderr, "no live instance") {
+		t.Fatalf("monitor list help was not answered locally\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+}
+
+func TestMonitorListParsesJSONAfterSubcommand(t *testing.T) {
+	code, _, stderr := run(t, "monitor", "list", "-o", "json", "--registry-dir", t.TempDir())
+	if code == exitUsage || !strings.Contains(stderr, "no live instance") {
+		t.Fatalf("monitor list rejected its output/global flags before attach: exit=%d stderr=%s", code, stderr)
+	}
+}
+
+func TestMonitorSubcommandHelpListsTypedOperationsWithoutAttaching(t *testing.T) {
+	code, stdout, stderr := run(t, "monitor", "-h", "--registry-dir", t.TempDir())
+	if code != exitOK {
+		t.Fatalf("monitor help exit = %d\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	for _, name := range []string{"start", "heartbeat", "status", "collect", "stop", "cleanup", "last"} {
+		if !strings.Contains(stdout, name) {
+			t.Errorf("monitor help omits %q:\n%s", name, stdout)
+		}
+	}
+}
+
 func TestGlobalFlagsWorkBeforeAndAfterTheCommand(t *testing.T) {
 	dir := t.TempDir()
 	for _, args := range [][]string{
@@ -166,6 +205,7 @@ func TestGroupDashHPrintsItsSubcommandsAndExitsZero(t *testing.T) {
 		"perf":     "watch",
 		"record":   "start",
 		"replay":   "bundle",
+		"monitor":  "list",
 	} {
 		for _, flag := range []string{"-h", "--help"} {
 			code, stdout, stderr := run(t, group, flag)

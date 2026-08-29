@@ -61,7 +61,7 @@ var heldHarnessLock *harnessInstanceLock
 // crashed boot leaves the next one free with no reaping at all.
 func acquireHarnessInstanceLock(dataDir, mode string) (*harnessInstanceLock, error) {
 	path := filepath.Join(dataDir, harnessLockFileName)
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, appdirs.SensitiveFilePerm)
+	file, err := openHarnessLock(path, appdirs.SensitiveFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf("open harness instance lock %s: %w", path, err)
 	}

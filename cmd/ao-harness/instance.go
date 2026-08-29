@@ -187,6 +187,29 @@ func targetFromDataRoot(path string, rows []instanceinfo.Instance) (target, erro
 	return t, nil
 }
 
+// validateTargetPaths checks the paths selected by a registry row before any
+// bootstrap file is opened. Registry rows are discovery input, not authority.
+// A planted row must not redirect reads or lifecycle control into the real app
+// tree or an arbitrary directory that merely contains a plausible token file.
+func validateTargetPaths(dataRoot, dataDir string) error {
+	if err := refuseUnsafeDataRoot(dataRoot); err != nil {
+		return err
+	}
+	root, err := filepath.Abs(dataRoot)
+	if err != nil {
+		return fmt.Errorf("resolve target data root: %w", err)
+	}
+	dir, err := filepath.Abs(dataDir)
+	if err != nil {
+		return fmt.Errorf("resolve target data dir: %w", err)
+	}
+	want := filepath.Join(filepath.Clean(root), appDataDirName)
+	if filepath.Clean(dir) != want {
+		return fmt.Errorf("target data dir %q is not %s", dataDir, want)
+	}
+	return nil
+}
+
 func candidateList(rows []instanceinfo.Instance) string {
 	if len(rows) == 0 {
 		return ""
@@ -214,6 +237,9 @@ func (e *env) attach(ctx context.Context) (*harnessclient.Client, target, harnes
 	if err != nil {
 		return nil, target{}, harnessclient.Bootstrap{}, err
 	}
+	if err := validateTargetPaths(t.DataRoot, t.DataDir); err != nil {
+		return nil, t, harnessclient.Bootstrap{}, fmt.Errorf("instance %s target paths are unsafe: %w", t.ID, err)
+	}
 	bs, err := harnessclient.ReadInstanceFile(t.DataDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -222,7 +248,28 @@ func (e *env) attach(ctx context.Context) (*harnessclient.Client, target, harnes
 		}
 		return nil, t, harnessclient.Bootstrap{}, err
 	}
-	pidAlive := instanceinfo.ProcessAlive(bs.PID)
+	if err := bs.ValidateFor(t.DataRoot, t.DataDir); err != nil {
+		return nil, t, bs, fmt.Errorf("instance %s identity mismatch: %w", t.ID, err)
+	}
+	if t.Row != nil {
+		if err := t.Row.Validate(); err != nil {
+			return nil, t, bs, fmt.Errorf("instance %s registry row is invalid: %w", t.ID, err)
+		}
+		rowRoot, rootErr := instanceinfo.CanonicalPath(t.Row.DataRoot)
+		bsRoot, bsRootErr := instanceinfo.CanonicalPath(bs.DataRoot)
+		if rootErr != nil || bsRootErr != nil || rowRoot != bsRoot {
+			return nil, t, bs, fmt.Errorf("instance %s registry/bootstrap data-root mismatch", t.ID)
+		}
+		if t.Row.Version != "" && bs.Version != "" && t.Row.Version != bs.Version {
+			return nil, t, bs, fmt.Errorf("instance %s registry/bootstrap build version mismatch (%q vs %q)", t.ID, t.Row.Version, bs.Version)
+		}
+		if t.Row.PID != bs.PID || !t.Row.Identity.SameLifecycle(bs.Identity) {
+			return nil, t, bs, fmt.Errorf("instance %s registry/bootstrap identity mismatch (registry pid %d, bootstrap pid %d)", t.ID, t.Row.PID, bs.PID)
+		}
+	}
+	// The local PID is not evidence about a WSL backend. Preserve the
+	// authenticated dial error as the only meaningful liveness result.
+	pidAlive := instanceinfo.ProcessAliveInNamespace(bs.PID, bs.PIDNamespace)
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 	client, err := harnessclient.Dial(dialCtx, bs, harnessclient.Options{})
@@ -239,7 +286,12 @@ func (e *env) attach(ctx context.Context) (*harnessclient.Client, target, harnes
 		}
 		return nil, t, bs, err
 	}
+	// Bootstrap version is a diagnostic only. The capabilities handshake is
+	// the compatibility gate because a same-version binary can still carry a
+	// stale or partial frontend/control surface.
 	e.warnVersionSkew(bs)
+	caps, capErr := client.CheckCapabilities(dialCtx)
+	warnCapabilities(e, caps, capErr)
 	return client, t, bs, nil
 }
 

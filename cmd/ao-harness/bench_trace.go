@@ -103,6 +103,9 @@ func (s *traceSession) stop(ctx context.Context) ([]byte, error) {
 	if err := json.Unmarshal(event.Params, &complete); err != nil {
 		return nil, fmt.Errorf("decode tracingComplete: %w", err)
 	}
+	if complete.DataLossOccurr {
+		return nil, fmt.Errorf("the browser reported trace data loss")
+	}
 	if complete.Stream == "" {
 		return nil, fmt.Errorf("the browser completed the trace without a stream handle")
 	}

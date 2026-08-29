@@ -72,10 +72,10 @@ func resolveCDPEndpoint(spec string, t target) (cdpclient.Endpoint, error) {
 // URL is what disambiguates a browser holding several tabs; a failure
 // here repeats the engine note, because "connection refused" on a port an
 // operator typed from memory is most often a WebKitGTK window.
-func attachCDP(ctx context.Context, endpoint cdpclient.Endpoint, t target, bs harnessclient.Bootstrap) (*cdpclient.Conn, cdpclient.Target, error) {
+func attachCDP(ctx context.Context, endpoint cdpclient.Endpoint, t target, bs harnessclient.Bootstrap, pageID string) (*cdpclient.Conn, cdpclient.Target, error) {
 	attachCtx, cancel := context.WithTimeout(ctx, cdpAttachTimeout)
 	defer cancel()
-	conn, page, err := cdpclient.Attach(attachCtx, endpoint, bs.URL)
+	conn, page, err := cdpclient.AttachForPage(attachCtx, endpoint, bs.URL, pageID)
 	if err != nil {
 		return nil, cdpclient.Target{}, fmt.Errorf("%w\n%s", err, cdpRequirementNote(t))
 	}

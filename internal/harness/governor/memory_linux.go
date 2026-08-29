@@ -26,6 +26,9 @@ func (linuxMemory) AvailableMemory() (uint64, error) {
 			if err != nil {
 				return 0, fmt.Errorf("harness governor: parse MemAvailable: %w", err)
 			}
+			if kb > ^uint64(0)/1024 {
+				return 0, fmt.Errorf("harness governor: MemAvailable overflows bytes")
+			}
 			return kb * 1024, nil
 		}
 	}

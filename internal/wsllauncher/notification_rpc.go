@@ -21,6 +21,7 @@ const notificationBridgeRPCTimeout = 5 * time.Second
 const (
 	rpcIDPrefixActivation = "notification"
 	rpcIDPrefixUpdate     = "update"
+	rpcIDPrefixShutdown   = "shutdown"
 )
 
 type notificationRPCResult struct {
@@ -48,6 +49,14 @@ type RPCRefusedError struct {
 	Method  string
 	Code    string
 	Message string
+}
+
+// Shutdown asks an isolated WSL backend to begin its authenticated graceful
+// shutdown. The response is only the backend control acknowledgement. Callers
+// must still wait for the transport to disappear before closing their process
+// containment or reusing the data root.
+func (c *NotificationClient) Shutdown(ctx context.Context) error {
+	return c.callRPC(ctx, rpcIDPrefixShutdown, "HarnessShutdown", nil)
 }
 
 func (e *RPCRefusedError) Error() string {

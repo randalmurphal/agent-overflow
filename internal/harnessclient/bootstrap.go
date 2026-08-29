@@ -47,6 +47,7 @@ type Bootstrap struct {
 	MockProvider string `json:"mockProvider"`
 	PID          int    `json:"pid"`
 	Version      string `json:"version"`
+	PageMarker   string `json:"pageMarker,omitempty"`
 	// StartupError is set when App.Start failed. The transport still
 	// serves so logs are readable, but the instance is not usable.
 	StartupError string `json:"startupError,omitempty"`
@@ -55,6 +56,42 @@ type Bootstrap struct {
 	// package that writes it, so a field added there reaches this reader
 	// without a second declaration.
 	instanceinfo.Identity
+}
+
+// ValidateFor checks a bootstrap payload against the data root the caller
+// selected. A payload from another root must never be attached just because
+// its port happens to answer.
+func (b Bootstrap) ValidateFor(dataRoot, dataDir string) error {
+	if err := b.Identity.Validate(dataRoot, dataDir); err != nil {
+		return err
+	}
+	if b.DataRoot != "" {
+		want, err := instanceinfo.CanonicalPath(dataRoot)
+		if err != nil {
+			return err
+		}
+		got, err := instanceinfo.CanonicalPath(b.DataRoot)
+		if err != nil {
+			return err
+		}
+		if got != want {
+			return fmt.Errorf("harnessclient: bootstrap data root %q does not match selected root %q", b.DataRoot, dataRoot)
+		}
+	}
+	if b.DataDir != "" && dataDir != "" {
+		want, err := instanceinfo.CanonicalPath(dataDir)
+		if err != nil {
+			return err
+		}
+		got, err := instanceinfo.CanonicalPath(b.DataDir)
+		if err != nil {
+			return err
+		}
+		if got != want {
+			return fmt.Errorf("harnessclient: bootstrap data dir %q does not match selected dir %q", b.DataDir, dataDir)
+		}
+	}
+	return nil
 }
 
 // WSURL is the authenticated WebSocket endpoint for this instance.
@@ -74,6 +111,16 @@ func InstanceFilePath(dataDir string) string {
 // data root, so anyone who can open the data root can attach.
 func ReadInstanceFile(dataDir string) (Bootstrap, error) {
 	path := InstanceFilePath(dataDir)
+	if info, err := os.Lstat(dataDir); err != nil {
+		return Bootstrap{}, fmt.Errorf("inspect data dir %s: %w", dataDir, err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return Bootstrap{}, fmt.Errorf("refusing non-directory or symlinked data dir %s", dataDir)
+	}
+	if info, err := os.Lstat(path); err != nil {
+		return Bootstrap{}, fmt.Errorf("inspect %s: %w", path, err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return Bootstrap{}, fmt.Errorf("refusing non-regular or symlinked instance file %s", path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Bootstrap{}, fmt.Errorf("read %s: %w", path, err)
@@ -84,6 +131,11 @@ func ReadInstanceFile(dataDir string) (Bootstrap, error) {
 	}
 	if bs.Port == 0 || bs.Token == "" {
 		return Bootstrap{}, fmt.Errorf("%s names no port or token; the instance is not attachable", path)
+	}
+	if bs.IdentityVersion != 0 {
+		if err := bs.ValidateFor(bs.DataRoot, bs.DataDir); err != nil {
+			return Bootstrap{}, fmt.Errorf("validate %s: %w", path, err)
+		}
 	}
 	return bs, nil
 }

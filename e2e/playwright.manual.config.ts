@@ -19,8 +19,8 @@ export default defineConfig({
   reporter: 'list',
   use: {
     ...devices['Desktop Chrome'],
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    trace: { mode: 'retain-on-failure', screenshots: false },
+    screenshot: 'off',
     // A wedged renderer answers nothing; a short action timeout would just
     // convert the interesting hang into an uninformative locator failure.
     actionTimeout: 60_000,

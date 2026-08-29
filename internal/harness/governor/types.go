@@ -13,7 +13,15 @@ var (
 	ErrLeaseOwnerMismatch = errors.New("harness governor: lease owner identity does not match")
 )
 
-const ReasonSafetyCeiling = "safety-ceiling"
+const (
+	ReasonSafetyCeiling = "safety-ceiling"
+	// ReasonAvailableFloor is emitted when host-available memory falls below
+	// the floor protected by every reservation. It is stable for reports.
+	ReasonAvailableFloor = "available-floor"
+	// ReasonHostAvailableFloor is the descriptive source-level alias.
+	ReasonHostAvailableFloor = ReasonAvailableFloor
+	ReasonMonitorError       = "monitor-error"
+)
 
 // MemoryReader returns the host memory that can safely be allocated. It must
 // be the OS's available-memory value, not total minus process RSS.
@@ -75,15 +83,19 @@ type Snapshot struct {
 	AvailableFloorBytes uint64  `json:"availableFloorBytes"`
 }
 
-// Event is emitted by Monitor when the observed owner exceeds its lease.
+// Event is emitted by Monitor when the owner exceeds its lease or host
+// available memory falls below the protected floor.
 type Event struct {
-	RunID        string    `json:"runId"`
-	Worktree     string    `json:"worktree"`
-	DataRoot     string    `json:"dataRoot"`
-	Reason       string    `json:"reason"`
-	RSSBytes     uint64    `json:"rssBytes"`
-	CeilingBytes uint64    `json:"ceilingBytes"`
-	At           time.Time `json:"at"`
+	RunID               string    `json:"runId"`
+	Worktree            string    `json:"worktree"`
+	DataRoot            string    `json:"dataRoot"`
+	Reason              string    `json:"reason"`
+	Error               string    `json:"error,omitempty"`
+	RSSBytes            uint64    `json:"rssBytes"`
+	CeilingBytes        uint64    `json:"ceilingBytes"`
+	AvailableBytes      uint64    `json:"availableBytes,omitempty"`
+	AvailableFloorBytes uint64    `json:"availableFloorBytes,omitempty"`
+	At                  time.Time `json:"at"`
 }
 
 type ProcessMemoryReader interface{ RSS(pid int) (uint64, error) }

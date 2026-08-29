@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/harnessclient"
 )
 
 // The workload table and the fixtures behind it. Nothing here boots
@@ -35,6 +37,23 @@ func TestBenchWorkloadTableIsComplete(t *testing.T) {
 	}
 }
 
+func TestFreshPageIDRequiresReloadIdentityTransition(t *testing.T) {
+	pages := []harnessclient.HarnessPageIdentity{
+		{PageID: "old", Marker: "owned"},
+		{PageID: "new", Marker: "owned"},
+		{PageID: "foreign", Marker: "other"},
+	}
+	if got := freshPageID(pages, "owned", "old"); got != "new" {
+		t.Fatalf("fresh page = %q, want new", got)
+	}
+	if got := freshPageID(pages[:1], "owned", "old"); got != "" {
+		t.Fatalf("reused old page = %q", got)
+	}
+	if got := freshPageID(pages, "owned", ""); got != "old" {
+		t.Fatalf("initial page = %q, want old", got)
+	}
+}
+
 // The multi-pane workloads are the only ones with a PREPARE step, and the
 // split is the whole point: mounting the timelines is setup, and folding
 // it into the measured window would dominate the first second of every
@@ -47,6 +66,22 @@ func TestOnlyMultiPaneWorkloadsPrepare(t *testing.T) {
 		if prepares != want {
 			t.Errorf("workload %q prepare = %t, want %t", workload.Name, prepares, want)
 		}
+	}
+}
+
+func TestActiveStreamReleasesOnlyFromMeasuredDrive(t *testing.T) {
+	workload, err := benchWorkloadByName("active-multi-pane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workload.prepare == nil {
+		t.Fatal("active workload has no pre-measurement readiness phase")
+	}
+	if workload.beforeStart != nil {
+		t.Fatal("active streaming was left in the pre-arm phase")
+	}
+	if workload.drive == nil {
+		t.Fatal("active workload has no measured release phase")
 	}
 }
 
@@ -116,12 +151,16 @@ func TestBenchPerfSpecArmsOnlyRequestedMeters(t *testing.T) {
 		SampleMs:  2000,
 		BudgetsMs: []float64{6, 8},
 		Meters:    []string{"memory", "dom"},
+		PageID:    "page-1",
 	}.armSpec()
 	if got := spec["sampleMs"]; got != 2000 {
 		t.Fatalf("sampleMs = %v, want 2000", got)
 	}
 	if got, ok := spec["meters"].([]string); !ok || len(got) != 2 || got[0] != "memory" || got[1] != "dom" {
 		t.Fatalf("meters = %#v, want [memory dom]", spec["meters"])
+	}
+	if got := spec["pageId"]; got != "page-1" {
+		t.Fatalf("pageId = %v, want page-1", got)
 	}
 
 	empty := (benchPerfSpec{}).armSpec()

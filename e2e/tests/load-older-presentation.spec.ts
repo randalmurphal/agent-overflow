@@ -2,11 +2,11 @@ import {
   test,
   expect,
   type Browser,
-  type BrowserContext,
   type Page,
   type WebSocketRoute,
 } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
 
 const THREAD_TITLE = 'Delayed history presentation';
 const SEEDED_TURNS = 260;
@@ -17,20 +17,12 @@ interface HeldRpc {
   release(): void;
 }
 
-interface FrameCapture {
-  readonly frames: string[];
-  stop(): Promise<void>;
-}
-
-interface ContrastSummary {
-  readonly baseline: number;
-  readonly minimum: number;
-  readonly frameCount: number;
-}
-
-interface CollisionResult extends ContrastSummary {
+interface CollisionResult {
   readonly animationName: string;
   readonly anchorDrift: number;
+  readonly frameCount: number;
+  readonly invalidFrames: number;
+  readonly compositor: ReturnType<typeof summarizeCompositorWindow>;
 }
 
 interface ElementBounds {
@@ -38,6 +30,14 @@ interface ElementBounds {
   readonly y: number;
   readonly width: number;
   readonly height: number;
+}
+
+interface PresentationSample {
+  readonly frame: number;
+  readonly hasLayout: boolean;
+  readonly hasText: boolean;
+  readonly intersectsViewport: boolean;
+  readonly clipped: boolean;
 }
 
 function fnv1a32(value: string): number {
@@ -100,82 +100,43 @@ async function delayPagingResponse(page: Page): Promise<HeldRpc> {
   };
 }
 
-async function startFrameCapture(context: BrowserContext, page: Page): Promise<FrameCapture> {
-  const cdp = await context.newCDPSession(page);
-  const frames: string[] = [];
-  const acknowledgementErrors: Error[] = [];
-  cdp.on('Page.screencastFrame', (event) => {
-    if (frames.length < 120) frames.push(event.data);
-    void cdp.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch((error) => {
-      acknowledgementErrors.push(error instanceof Error ? error : new Error(String(error)));
-    });
+async function startPresentationMonitor(page: Page, anchorId: string): Promise<() => Promise<readonly PresentationSample[]>> {
+  await page.evaluate((id) => {
+    const state = { frame: 0, samples: [] as PresentationSample[], raf: 0 };
+    const tick = () => {
+      state.frame += 1;
+      const scroller = document.querySelector<HTMLElement>('[data-testid="message-timeline-scroll"]');
+      const anchor = document.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(id)}"]`);
+      const viewport = scroller?.getBoundingClientRect();
+      const rect = anchor?.getBoundingClientRect();
+      const hasLayout = !!rect && rect.width > 0 && rect.height > 0;
+      const intersectsViewport = !!rect && !!viewport
+        && rect.bottom > viewport.top && rect.top < viewport.bottom;
+      const clipped = !!rect && !!viewport
+        && (rect.top < viewport.top || rect.bottom > viewport.bottom);
+      state.samples.push({
+        frame: state.frame,
+        hasLayout,
+        hasText: !!anchor?.textContent?.trim(),
+        intersectsViewport,
+        clipped,
+      });
+      if (state.samples.length > 120) state.samples.shift();
+      state.raf = requestAnimationFrame(tick);
+    };
+    state.raf = requestAnimationFrame(tick);
+    (window as typeof window & { __aoPresentationMonitor?: typeof state }).__aoPresentationMonitor = state;
+  }, anchorId);
+  return async () => page.evaluate(() => {
+    const win = window as typeof window & {
+      __aoPresentationMonitor?: { raf: number; samples: PresentationSample[] };
+    };
+    const monitor = win.__aoPresentationMonitor;
+    if (!monitor) throw new Error('presentation monitor was not installed');
+    cancelAnimationFrame(monitor.raf);
+    delete win.__aoPresentationMonitor;
+    return monitor.samples;
   });
-  await cdp.send('Page.startScreencast', {
-    format: 'jpeg',
-    quality: 90,
-    everyNthFrame: 1,
-  });
-  return {
-    frames,
-    async stop() {
-      await cdp.send('Page.stopScreencast');
-      await cdp.detach();
-      if (acknowledgementErrors.length > 0) throw acknowledgementErrors[0];
-    },
-  };
-}
-
-async function analyzeContrast(
-  page: Page,
-  frames: readonly string[],
-  bounds: { x: number; y: number; width: number; height: number },
-): Promise<ContrastSummary> {
-  const contrasts = await page.evaluate(async ({ encodedFrames, bounds, viewport }) => {
-    const values: number[] = [];
-    for (const encoded of encodedFrames) {
-      const image = new Image();
-      image.src = `data:image/jpeg;base64,${encoded}`;
-      await image.decode();
-      const canvas = document.createElement('canvas');
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
-      const context = canvas.getContext('2d', { willReadFrequently: true });
-      if (!context) throw new Error('2D canvas unavailable while reading compositor frames');
-      context.drawImage(image, 0, 0);
-      const scaleX = canvas.width / viewport.width;
-      const scaleY = canvas.height / viewport.height;
-      const x = Math.max(0, Math.floor(bounds.x * scaleX));
-      const y = Math.max(0, Math.floor(bounds.y * scaleY));
-      const width = Math.min(canvas.width - x, Math.max(1, Math.ceil(bounds.width * scaleX)));
-      const height = Math.min(canvas.height - y, Math.max(1, Math.ceil(bounds.height * scaleY)));
-      const pixels = context.getImageData(x, y, width, height).data;
-      let sum = 0;
-      let squareSum = 0;
-      const count = pixels.length / 4;
-      for (let offset = 0; offset < pixels.length; offset += 4) {
-        const luminance = 0.2126 * pixels[offset]
-          + 0.7152 * pixels[offset + 1]
-          + 0.0722 * pixels[offset + 2];
-        sum += luminance;
-        squareSum += luminance * luminance;
-      }
-      const mean = sum / count;
-      values.push(Math.sqrt(Math.max(0, squareSum / count - mean * mean)));
-    }
-    return values;
-  }, {
-    encodedFrames: frames,
-    bounds,
-    viewport: page.viewportSize()!,
-  });
-  if (contrasts.length === 0) throw new Error('screencast produced no compositor frames');
-  const baselineFrames = contrasts.slice(0, Math.min(5, contrasts.length)).sort((a, b) => a - b);
-  const baseline = baselineFrames[Math.floor(baselineFrames.length / 2)];
-  return {
-    baseline,
-    minimum: Math.min(...contrasts),
-    frameCount: contrasts.length,
-  };
 }
 
 async function scrollToHistoryHead(page: Page): Promise<void> {
@@ -263,8 +224,10 @@ async function runCollision(
 
     const anchor = await visibleAnchor(page);
     const anchorHandle = await page.locator(`[data-item-id="${anchor.id}"]`).elementHandle();
-    if (!anchorHandle) throw new Error('presentation anchor disappeared before capture');
-    const capture = await startFrameCapture(context, page);
+    if (!anchorHandle) throw new Error('presentation anchor disappeared before monitoring');
+    const stopMonitor = await startPresentationMonitor(page, anchor.id);
+    const compositorTrace = await startCompositorTrace(page);
+    await page.evaluate(() => performance.mark('ao-load-older-start'));
 
     const pressure = emitStreamingPressure(harness, threadId, disableSpinner ? 'control' : 'animated');
     if (disableSpinner) {
@@ -275,7 +238,12 @@ async function runCollision(
         await page.evaluate(() => new Promise(requestAnimationFrame));
       }
     } else {
-      await expect.poll(() => capture.frames.length).toBeGreaterThanOrEqual(5);
+      await expect.poll(() => page.evaluate(() => {
+        const monitor = (window as typeof window & {
+          __aoPresentationMonitor?: { samples: unknown[] };
+        }).__aoPresentationMonitor;
+        return monitor?.samples.length ?? 0;
+      })).toBeGreaterThanOrEqual(5);
     }
 
     held.release();
@@ -284,8 +252,25 @@ async function runCollision(
     await page.evaluate(async () => {
       for (let frame = 0; frame < 12; frame += 1) await new Promise(requestAnimationFrame);
     });
-    await expect.poll(() => capture.frames.length).toBeGreaterThanOrEqual(disableSpinner ? 3 : 10);
-    await capture.stop();
+    await page.evaluate(() => performance.mark('ao-load-older-end'));
+    const compositor = summarizeCompositorWindow(
+      await compositorTrace.stop(),
+      'ao-load-older-start',
+      'ao-load-older-end',
+    );
+    expect(compositor.eventCount, 'trace must contain events during the prepend').toBeGreaterThan(0);
+    expect(compositor.renderPasses, 'prepend must reach the compositor').toBeGreaterThan(0);
+    expect(compositor.prepareDraws, 'prepend must produce compositor draws').toBeGreaterThan(0);
+    expect(compositor.rasterTasks, 'prepend must produce raster work').toBeGreaterThan(0);
+    expect(compositor.missingTileSignals, 'prepend must not expose missing tiles').toBe(0);
+    expect(compositor.checkerboardSignals, 'prepend must not expose checkerboard content').toBe(0);
+    expect(compositor.blankRenderPasses, 'prepend must not expose blank render passes').toBe(0);
+    const samples = await stopMonitor();
+    expect(samples.length, 'rAF monitor must observe the prepend').toBeGreaterThanOrEqual(3);
+    const invalidFrames = samples.filter(
+      (sample) => !sample.hasLayout || !sample.hasText || !sample.intersectsViewport || sample.clipped,
+    ).length;
+    expect(invalidFrames, 'the retained anchor must stay in laid-out, unclipped DOM').toBe(0);
 
     const anchorAfter = page.locator(`[data-item-id="${anchor.id}"]`);
     const anchorAfterHandle = await anchorAfter.elementHandle();
@@ -297,26 +282,20 @@ async function runCollision(
     const anchorDrift = Math.abs(afterBounds.y - anchor.bounds.y);
     expect(anchorDrift).toBeLessThanOrEqual(1);
 
-    const contrast = await analyzeContrast(page, capture.frames, anchor.bounds);
-    expect(contrast.baseline, 'anchor crop must contain visible ink').toBeGreaterThan(4);
-    expect(
-      contrast.minimum,
-      `anchor crop blanked in a compositor frame (${contrast.minimum} vs baseline ${contrast.baseline})`,
-    ).toBeGreaterThanOrEqual(contrast.baseline * 0.4);
-    return { ...contrast, animationName, anchorDrift };
+    return { animationName, anchorDrift, frameCount: samples.length, invalidFrames, compositor };
   } finally {
     await context.close();
   }
 }
 
-test('delayed load-older prepend never presents blank tiles while a turn streams', async ({ browser }) => {
+test('delayed load-older prepend keeps the retained anchor laid out while a turn streams', async ({ browser }) => {
   const harness = await launchHarness();
   try {
     const turns = Array.from({ length: SEEDED_TURNS }, (_, index) => ({
       userText: `Historical question ${index}`,
       items: [{
         kind: 'assistant_text',
-        summary: `Historical response ${index} with enough stable text to leave visible raster ink.`,
+        summary: `Historical response ${index} with enough stable text to keep the anchor laid out.`,
       }],
     }));
     const seed = await harness.rpc<{
@@ -332,9 +311,9 @@ test('delayed load-older prepend never presents blank tiles while a turn streams
 
     const control = await runCollision(browser, harness, threadId, true);
     const animated = await runCollision(browser, harness, threadId, false);
-    expect(animated.minimum / animated.baseline).toBeGreaterThanOrEqual(
-      (control.minimum / control.baseline) * 0.8,
-    );
+    expect(animated.invalidFrames).toBe(control.invalidFrames);
+    expect(animated.frameCount).toBeGreaterThan(0);
+    expect(animated.compositor.renderPasses).toBeGreaterThan(0);
   } finally {
     await harness.close();
   }

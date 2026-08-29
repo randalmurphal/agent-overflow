@@ -44,6 +44,21 @@ func warnIfEmbeddedDistStale() string {
 	return verdict
 }
 
+// embeddedAssetDigest identifies the exact frontend bundle served from the
+// binary. It is computed independently of the adjacent-dist freshness check
+// because the adjacent tree is not present in installed builds.
+func embeddedAssetDigest() string {
+	dist, err := fs.Sub(assets, "frontend/dist")
+	if err != nil {
+		return ""
+	}
+	hash, err := hashFSTree(dist)
+	if err != nil {
+		return ""
+	}
+	return "sha256:" + hash
+}
+
 // checkEmbeddedDistFreshness compares the embedded frontend/dist against
 // an on-disk one and returns (verdict, warning). The warning is
 // non-empty only for a stale embed. No on-disk dist (an installed

@@ -2,6 +2,10 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $PidTypesJson,
   [Parameter(Mandatory = $true)]
+  [string] $ManifestPath,
+  [Parameter(Mandatory = $true)]
+  [int] $ExpectedBrowserPid,
+  [Parameter(Mandatory = $true)]
   [string] $Out,
   [int] $Seconds = 600,
   [int] $EveryMs = 1000,
@@ -16,6 +20,23 @@ Set-StrictMode -Version Latest
 if ($Seconds -lt 1) { throw "Seconds must be at least 1, got $Seconds" }
 if ($EveryMs -lt 1000 -or $EveryMs % 1000 -ne 0) {
   throw "EveryMs must be a whole number of seconds and at least 1000, got $EveryMs"
+}
+
+if (-not [System.IO.File]::Exists($ManifestPath)) { throw "Instance manifest does not exist: $ManifestPath" }
+$manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+if ($null -eq $manifest.instanceId -or [string]::IsNullOrWhiteSpace([string] $manifest.instanceId)) {
+  throw 'Instance manifest has no instanceId'
+}
+$manifestTarget = if ($null -ne $manifest.target) { $manifest.target } else { $manifest.page }
+$manifestTargetId = if ($null -ne $manifest.targetId) { $manifest.targetId } else { $manifestTarget.id }
+$manifestMarker = if ($null -ne $manifest.pageMarker) { $manifest.pageMarker } else { $manifestTarget.pageMarker }
+if ([string]::IsNullOrWhiteSpace([string] $manifestTargetId)) { throw 'Instance manifest has no targetId' }
+if ([string]::IsNullOrWhiteSpace([string] $manifestMarker)) { throw 'Instance manifest has no page marker' }
+if ([string]::IsNullOrWhiteSpace([string] $manifest.origin) -and [string]::IsNullOrWhiteSpace([string] $manifestTarget.origin)) {
+  throw 'Instance manifest has no exact page origin'
+}
+if ($null -ne $manifest.browserPid -and [int] $manifest.browserPid -ne $ExpectedBrowserPid) {
+  throw "Instance manifest browser PID $($manifest.browserPid) does not match $ExpectedBrowserPid"
 }
 
 $entries = @()
@@ -35,6 +56,9 @@ if ($browserEntries.Count -ne 1) {
   throw "Expected exactly one browser process from CDP, got $($browserEntries.Count)"
 }
 $browserProcessId = [int] $browserEntries[0].id
+if ($browserProcessId -ne $ExpectedBrowserPid) {
+  throw "CDP browser PID $browserProcessId does not match the supervisor-selected browser PID $ExpectedBrowserPid"
+}
 $browser = Get-CimInstance Win32_Process -Filter "ProcessId = $browserProcessId"
 if ($null -eq $browser -or $browser.Name -notlike 'msedgewebview2*') {
   throw "CDP browser PID $browserProcessId is not a live msedgewebview2 process"

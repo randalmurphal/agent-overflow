@@ -6,35 +6,36 @@
 // Why a request/reply pair rather than a push: the answer is a function of
 // live DOM, so only the frontend can compute it, and the caller is a Bash
 // tool or a Playwright spec that wants one value back from one call.
-// `HarnessUIQuery` emits `harness:ui-query {id, spec}` and parks on the id;
-// the bridge answers with `HarnessUIQueryReply(id, result)`. Both live on
+// `HarnessUIQuery` emits `harness:ui-query {id, pageId, spec}` and parks on
+// the id and selected page; the bridge answers with
+// `HarnessUIQueryReply(pageId, id, result)`. Both live on
 // the Harness receiver, so the reply path exists exactly where the query
 // path does — under --harness/--soak, LocalOnly.
 //
-// Correlation rules, all of them consequences of "several frontends may be
-// attached to one backend" (a browser tab beside the webview, two tabs of a
-// remote session):
-//
-//   - FIRST reply wins. The waiter is removed under the same lock that reads
-//     it, so a second reply for the same id finds nothing.
-//   - A late or duplicate reply is DROPPED SILENTLY. It names an id whose
-//     caller has already been answered or has already timed out; erroring
-//     would turn a harmless race into a red test in the bridge.
+// Correlation is page-bound. A frontend registers an immutable page ID with
+// the per-instance marker before it can answer. A reply from another page is
+// dropped while the selected page remains responsible for the waiter.
+// A late or duplicate reply is also dropped silently after the waiter is gone.
 //   - A timeout says "no frontend attached or harness bridge inactive",
 //     because those are the two states a caller can actually fix (open the
 //     page; build a frontend whose bootstrap carries harness:true).
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/transport"
 )
 
 // harnessUIQueryTimeout bounds a caller-driven query. Long enough that a
@@ -68,17 +69,26 @@ const (
 // (frontend/src/lib/harness/), and the backend deliberately knows nothing
 // about its kinds beyond the perf ops it issues itself.
 type harnessUIQueryEvent struct {
-	ID   string          `json:"id"`
-	Spec json.RawMessage `json:"spec"`
+	ID     string          `json:"id"`
+	Spec   json.RawMessage `json:"spec"`
+	PageID string          `json:"pageId"`
 }
 
 // harnessUIBridge is the waiter registry. Its own mutex, deliberately not
 // the Harness-wide one: a query parks for up to 10s and must not hold the
 // lock that scenario rules, recordings and the replayer share.
 type harnessUIBridge struct {
-	mu      sync.Mutex
-	seq     uint64
-	waiters map[string]chan json.RawMessage
+	mu          sync.Mutex
+	seq         uint64
+	waiters     map[string]harnessUIWaiter
+	pages       map[string]HarnessPageIdentity
+	pageOwners  map[string]*transport.ConnState
+	pageChanged chan struct{}
+}
+
+type harnessUIWaiter struct {
+	ch     chan json.RawMessage
+	pageID string
 }
 
 func (b *harnessUIBridge) register() (string, chan json.RawMessage) {
@@ -88,10 +98,114 @@ func (b *harnessUIBridge) register() (string, chan json.RawMessage) {
 	id := "uq-" + strconv.FormatUint(b.seq, 10)
 	ch := make(chan json.RawMessage, 1)
 	if b.waiters == nil {
-		b.waiters = make(map[string]chan json.RawMessage, 1)
+		b.waiters = make(map[string]harnessUIWaiter, 1)
 	}
-	b.waiters[id] = ch
+	b.waiters[id] = harnessUIWaiter{ch: ch}
 	return id, ch
+}
+
+func (b *harnessUIBridge) registerPage(identity HarnessPageIdentity, owner *transport.ConnState) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pages == nil {
+		b.pages = make(map[string]HarnessPageIdentity, 1)
+	}
+	if b.pageOwners == nil {
+		b.pageOwners = make(map[string]*transport.ConnState, 1)
+	}
+	if existing, exists := b.pages[identity.PageID]; exists {
+		if existing != identity {
+			return fmt.Errorf("frontend page %q is already registered", identity.PageID)
+		}
+		b.pageOwners[identity.PageID] = owner
+		return nil
+	}
+	b.pages[identity.PageID] = identity
+	b.pageOwners[identity.PageID] = owner
+	if b.pageChanged != nil {
+		close(b.pageChanged)
+	}
+	b.pageChanged = make(chan struct{})
+	return nil
+}
+
+func (b *harnessUIBridge) unregisterPage(pageID string, owner *transport.ConnState) {
+	b.mu.Lock()
+	if owner != nil && b.pageOwners[pageID] != owner {
+		b.mu.Unlock()
+		return
+	}
+	delete(b.pages, pageID)
+	delete(b.pageOwners, pageID)
+	if b.pageChanged != nil {
+		close(b.pageChanged)
+	}
+	b.pageChanged = make(chan struct{})
+	b.mu.Unlock()
+}
+
+func (b *harnessUIBridge) targetPage(spec json.RawMessage) (string, error) {
+	var envelope struct {
+		PageID string `json:"pageId"`
+	}
+	if err := json.Unmarshal(spec, &envelope); err != nil {
+		return "", fmt.Errorf("decode ui query target: %w", err)
+	}
+	deadline := time.NewTimer(harnessUIQueryNoClientGrace)
+	defer deadline.Stop()
+	for {
+		b.mu.Lock()
+		if envelope.PageID != "" {
+			if _, ok := b.pages[envelope.PageID]; !ok {
+				b.mu.Unlock()
+				return "", fmt.Errorf("frontend page %q is not registered", envelope.PageID)
+			}
+			b.mu.Unlock()
+			return envelope.PageID, nil
+		}
+		if len(b.pages) == 1 {
+			for pageID := range b.pages {
+				b.mu.Unlock()
+				return pageID, nil
+			}
+		}
+		if len(b.pages) > 1 {
+			count := len(b.pages)
+			b.mu.Unlock()
+			return "", fmt.Errorf("%d frontend pages registered; ui query must name pageId", count)
+		}
+		changed := b.pageChanged
+		if changed == nil {
+			changed = make(chan struct{})
+			b.pageChanged = changed
+		}
+		b.mu.Unlock()
+		select {
+		case <-changed:
+		case <-deadline.C:
+			return "", nil
+		}
+	}
+}
+
+func (b *harnessUIBridge) setWaiterPage(id, pageID string) {
+	b.mu.Lock()
+	if waiter, ok := b.waiters[id]; ok {
+		waiter.pageID = pageID
+		b.waiters[id] = waiter
+	}
+	b.mu.Unlock()
+}
+
+func (b *harnessUIBridge) pageIDs() []HarnessPageIdentity {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	pages := make([]HarnessPageIdentity, 0, len(b.pages))
+	for _, page := range b.pages {
+		pages = append(pages, page)
+	}
+	sort.Slice(pages, func(i, j int) bool { return pages[i].PageID < pages[j].PageID })
+	return pages
 }
 
 // release drops a waiter. Idempotent, so the query path can defer it
@@ -105,9 +219,12 @@ func (b *harnessUIBridge) release(id string) {
 // deliver hands a reply to its waiter, reporting whether one existed. The
 // take-and-delete happens under one lock acquisition, which is what makes
 // "first reply wins" a property rather than a race.
-func (b *harnessUIBridge) deliver(id string, result json.RawMessage) bool {
+func (b *harnessUIBridge) deliver(pageID, id string, result json.RawMessage) bool {
 	b.mu.Lock()
-	ch, ok := b.waiters[id]
+	waiter, ok := b.waiters[id]
+	if ok && waiter.pageID != pageID {
+		ok = false
+	}
 	if ok {
 		delete(b.waiters, id)
 	}
@@ -117,7 +234,7 @@ func (b *harnessUIBridge) deliver(id string, result json.RawMessage) bool {
 	}
 	// Buffered to 1 and this is the only send, so it cannot block even if
 	// the caller has already abandoned the channel on a timeout.
-	ch <- result
+	waiter.ch <- result
 	return true
 }
 
@@ -140,13 +257,72 @@ func (h *Harness) HarnessUIQuery(spec json.RawMessage) (json.RawMessage, error) 
 	return h.queryUI(spec, harnessUIQueryTimeout)
 }
 
-// HarnessUIQueryReply resolves the waiter for `id`. Called by the frontend
-// bridge; never by a test directly, except to prove the drop rules.
+// HarnessRegisterPage authenticates and records one frontend page. The page
+// id is immutable for its load and is removed when its transport connection
+// closes. A marker from another harness instance cannot register, even when
+// both instances share one browser debugger endpoint.
+func (h *Harness) HarnessRegisterPage(ctx context.Context, pageID, marker, origin string) (HarnessPageIdentity, error) {
+	pageID = strings.TrimSpace(pageID)
+	marker = strings.TrimSpace(marker)
+	origin = strings.TrimSpace(origin)
+	if pageID == "" || marker == "" || origin == "" {
+		return HarnessPageIdentity{}, fmt.Errorf("page registration requires pageId, marker, and origin")
+	}
+	if marker != h.pageMarker {
+		return HarnessPageIdentity{}, fmt.Errorf("frontend page marker does not match this harness instance")
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" {
+		return HarnessPageIdentity{}, fmt.Errorf("frontend page origin is invalid")
+	}
+	if h.app == nil {
+		return HarnessPageIdentity{}, fmt.Errorf("harness app unavailable")
+	}
+	if server := h.app.transportServer.Load(); server != nil && !sameHarnessOrigin(origin, server.AppURL()) {
+		return HarnessPageIdentity{}, fmt.Errorf("frontend page origin %q does not match this harness origin", origin)
+	}
+	identity := HarnessPageIdentity{PageID: pageID, Marker: marker, Origin: origin}
+	state := transport.ConnStateFromContext(ctx)
+	if err := h.ui.registerPage(identity, state); err != nil {
+		return HarnessPageIdentity{}, err
+	}
+	if state != nil {
+		if !state.RegisterCleanup(func() { h.ui.unregisterPage(pageID, state) }) {
+			h.ui.unregisterPage(pageID, state)
+			return HarnessPageIdentity{}, fmt.Errorf("frontend page connection is closing")
+		}
+	}
+	return identity, nil
+}
+
+func sameHarnessOrigin(aRaw, bRaw string) bool {
+	a, errA := url.Parse(aRaw)
+	b, errB := url.Parse(bRaw)
+	if errA != nil || errB != nil || a.Scheme != b.Scheme || a.Host == "" || b.Host == "" {
+		return false
+	}
+	if strings.EqualFold(a.Host, b.Host) {
+		return true
+	}
+	return a.Port() == b.Port() && isHarnessLoopback(a.Hostname()) && isHarnessLoopback(b.Hostname())
+}
+
+func isHarnessLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// HarnessUIQueryReply resolves the waiter for `id` only when pageID is the
+// immutable page identity selected for that query. Called by the frontend
+// bridge; a wrong page is dropped without disturbing the real waiter.
 //
 // An id with no waiter is a no-op and NOT an error: it means the caller was
 // already answered by another attached frontend or has already timed out,
 // and neither is the replying bridge's fault.
-func (h *Harness) HarnessUIQueryReply(id string, result json.RawMessage) error {
+func (h *Harness) HarnessUIQueryReply(pageID, id string, result json.RawMessage) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return fmt.Errorf("query id must be non-empty")
@@ -157,8 +333,8 @@ func (h *Harness) HarnessUIQueryReply(id string, result json.RawMessage) error {
 	if err := requireValidJSON("result", result); err != nil {
 		return err
 	}
-	if !h.ui.deliver(id, result) {
-		log.Printf("harness: ui-query reply for unknown id %q dropped (late, duplicate, or timed out)", id)
+	if !h.ui.deliver(pageID, id, result) {
+		log.Printf("harness: ui-query reply for page %q and id %q dropped (wrong, late, duplicate, or timed out)", pageID, id)
 	}
 	return nil
 }
@@ -173,9 +349,18 @@ func (h *Harness) queryUI(spec json.RawMessage, timeout time.Duration) (json.Raw
 	if err := requireValidJSON("spec", spec); err != nil {
 		return nil, err
 	}
+	pageID := ""
+	if h.app == nil || h.app.eventBus.Load() != nil {
+		var err error
+		pageID, err = h.ui.targetPage(spec)
+		if err != nil {
+			return nil, err
+		}
+	}
 	id, ch := h.ui.register()
+	h.ui.setWaiterPage(id, pageID)
 	defer h.ui.release(id)
-	h.app.emit(eventchan.HarnessUIQuery, harnessUIQueryEvent{ID: id, Spec: spec})
+	h.app.emit(eventchan.HarnessUIQuery, harnessUIQueryEvent{ID: id, Spec: spec, PageID: pageID})
 
 	if timeout > harnessUIQueryNoClientGrace {
 		// Only shorten the wait; never lengthen one. The perf sampler

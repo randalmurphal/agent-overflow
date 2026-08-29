@@ -55,7 +55,7 @@ func TestHarnessListMethodsReportsTheWholeWireSurface(t *testing.T) {
 		t.Fatalf("HarnessListMethods returned %d names, dispatcher registered %d", len(got), len(names))
 	}
 	// Both halves of the surface, and the method describing itself.
-	for _, want := range []string{"HarnessListMethods", "HarnessInfo", "HarnessReset", "ListThreads"} {
+	for _, want := range []string{"HarnessListMethods", "HarnessCapabilities", "HarnessInfo", "HarnessReset", "ListThreads"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("HarnessListMethods omits %q", want)
 		}
@@ -95,5 +95,54 @@ func TestHarnessListMethodsIsAJSONArray(t *testing.T) {
 	}
 	if string(raw) != `["Alpha","Zeta"]` {
 		t.Fatalf("encoded %s, want sorted and deduped", raw)
+	}
+}
+
+func TestHarnessCapabilitiesCatalogIsVersionedAndDefensive(t *testing.T) {
+	h, _ := newHarnessTestApp(t)
+	h.setWireMethods([]string{"HarnessCapabilities", "SendMessage"})
+	caps, err := h.HarnessCapabilities()
+	if err != nil {
+		t.Fatalf("HarnessCapabilities: %v", err)
+	}
+	if caps.ProtocolRevision != harnessProtocolRevision {
+		t.Fatalf("protocol revision = %d, want %d", caps.ProtocolRevision, harnessProtocolRevision)
+	}
+	for _, name := range []string{"HarnessCapabilities", "SendMessage"} {
+		if !slices.Contains(caps.Methods, name) {
+			t.Errorf("methods omit %q: %v", name, caps.Methods)
+		}
+	}
+	for _, name := range []string{"frames", "busy", "dom"} {
+		if !slices.Contains(caps.Meters, name) {
+			t.Errorf("meters omit %q: %v", name, caps.Meters)
+		}
+	}
+	for _, name := range []string{"open", "reload"} {
+		if !slices.Contains(caps.Actions, name) {
+			t.Errorf("actions omit %q: %v", name, caps.Actions)
+		}
+	}
+	for _, name := range []string{"viewport", "element", "globals", "monitor", "perf", "open", "reload"} {
+		if !slices.Contains(caps.Queries, name) {
+			t.Errorf("queries omit %q: %v", name, caps.Queries)
+		}
+	}
+	for _, name := range []string{"burst-stream", "active-multi-pane", "many-threads"} {
+		if !slices.Contains(caps.Workloads, name) {
+			t.Errorf("workloads omit %q: %v", name, caps.Workloads)
+		}
+	}
+	if caps.Build.Version == "" {
+		t.Fatal("build version is empty")
+	}
+	caps.Methods[0] = "clobbered"
+	caps.Meters[0] = "clobbered"
+	again, err := h.HarnessCapabilities()
+	if err != nil {
+		t.Fatalf("HarnessCapabilities second call: %v", err)
+	}
+	if slices.Contains(again.Methods, "clobbered") || slices.Contains(again.Meters, "clobbered") {
+		t.Fatal("capability catalog handed out mutable backing storage")
 	}
 }

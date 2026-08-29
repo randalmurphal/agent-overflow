@@ -21,7 +21,10 @@ const (
 	// workload. They are options so a machine-specific harness profile can
 	// tighten them without changing this package.
 	DefaultCeilingBytes        uint64 = 600 << 20
-	DefaultAvailableFloorBytes uint64 = 512 << 20
+	// Keep enough unreserved memory for a large allocation burst between the
+	// 100 ms watchdog samples. A sub-gigabyte floor can still let the host OOM
+	// before the next exact process-tree measurement.
+	DefaultAvailableFloorBytes uint64 = 2 << 30
 )
 
 type persisted struct {
@@ -108,7 +111,7 @@ func (m *Manager) Reserve(req Request) (Lease, error) {
 	if err != nil {
 		return Lease{}, err
 	}
-	state.Leases = m.pruneDeadExpired(state.Leases, now)
+	state.Leases = m.pruneDead(state.Leases)
 	for _, existing := range state.Leases {
 		if existing.RunID == req.RunID && existing.Worktree == req.Worktree && existing.DataRoot == req.DataRoot {
 			return Lease{}, fmt.Errorf("%w: run=%s worktree=%s root=%s", ErrAlreadyReserved, req.RunID, req.Worktree, req.DataRoot)
@@ -225,8 +228,9 @@ func (m *Manager) Release(lease Lease) error {
 	return ErrLeaseNotFound
 }
 
-// Snapshot reads leases and prunes dead expired owners. Alive owners are
-// never removed merely because their TTL elapsed.
+// Snapshot reads leases and prunes verified-dead owners. Alive owners are
+// never removed merely because their TTL elapsed. Removing a dead owner even
+// before TTL expiry is what lets a crashed detached `up` release capacity.
 func (m *Manager) Snapshot() (Snapshot, error) {
 	m.local.Lock()
 	defer m.local.Unlock()
@@ -239,7 +243,7 @@ func (m *Manager) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	state.Leases = m.pruneDeadExpired(state.Leases, m.clock())
+	state.Leases = m.pruneDead(state.Leases)
 	if err := m.save(state); err != nil {
 		return Snapshot{}, err
 	}
@@ -251,16 +255,20 @@ func (m *Manager) Snapshot() (Snapshot, error) {
 	return Snapshot{Leases: state.Leases, AvailableBytes: available, ReservedBytes: sumCeilings(state.Leases), AvailableFloorBytes: m.floor}, nil
 }
 
-func (m *Manager) pruneDeadExpired(leases []Lease, now time.Time) []Lease {
+func (m *Manager) pruneDead(leases []Lease) []Lease {
 	kept := leases[:0]
 	for _, lease := range leases {
-		if now.Before(lease.ExpiresAt) || lease.OwnerPID <= 0 {
+		if lease.OwnerPID <= 0 {
 			kept = append(kept, lease)
 			continue
 		}
 		state, err := m.processes.State(lease.OwnerPID)
 		// Any probe error is an unknown owner and must preserve the lease.
-		if err != nil || state.Alive {
+		// A live owner with a different birth marker is a reused PID, not the
+		// original run. Drop it so the old reservation cannot strand capacity
+		// or be mistaken for the new process. Alive owners remain reserved
+		// after TTL when their birth marker still matches.
+		if err != nil || (state.Alive && (lease.OwnerBirthID == "" || state.BirthID == lease.OwnerBirthID)) {
 			kept = append(kept, lease)
 			continue
 		}

@@ -10,6 +10,8 @@
 //
 // Full guide: cmd/ao-harness/AGENTS.md.
 // Contract: docs/specs/testing-harness.md §3.
+//
+//go:generate go run . --generate-docs ../../docs/reference/ao-harness.md
 package main
 
 import (
@@ -28,6 +30,9 @@ type command struct {
 	// summary is the one-line description in `ao-harness help`.
 	summary string
 	run     func(e *env, args []string) error
+	// children describes command families. The same tree drives group help
+	// and the generated reference, so adding a subcommand has one source.
+	children []command
 }
 
 // commands is a function rather than a package var because `help` prints
@@ -35,33 +40,38 @@ type command struct {
 // initialization cycle.
 func commands() []command {
 	return []command{
-		{"up", "start a harness instance (detached) and print how to reach it", runUp},
-		{"down", "stop an instance (SIGTERM, then kill after 5s)", runDown},
-		{"list", "list known instances, pruning rows whose process is gone", runList},
-		{"info", "identity, evidence paths and URL for one instance", runInfo},
-		{"open", "print the instance URL (--browser opens it)", runOpen},
-		{"rpc", "call any App or Harness method by name with JSON arguments", runRPC},
-		{"seed", "apply a HarnessSeed spec (-f file, or - for stdin)", runSeed},
-		{"reset", "wipe app state without rebooting", runReset},
-		{"threads", "list thread rows, drafts included", runThreads},
-		{"items", "list a thread's items", runItems},
-		{"send", "send a message to a thread", runSend},
-		{"scenario", "set|list|clear mock scenario rules, rebuild one from a real thread, or validate files offline", runScenario},
-		{"clone", "build a harness data root from a copy of a real app data dir", runClone},
-		{"mock", "list|advance|emit|exit against registered mock providers", runMock},
-		{"events", "tail|await|count events on the wire", runEvents},
-		{"record", "start|stop a replay bundle capture", runRecord},
-		{"bundles", "list recorded replay bundles", runBundles},
-		{"replay", "bundle|file|pause|resume|step|stop|status", runReplay},
-		{"logs", "tail backend|frontend-errors|ui-trace", runLogs},
-		{"db", "run one read-only SELECT against the instance database", runDB},
-		{"ui", "snapshot|query|state|diff the attached frontend", runUI},
-		{"perf", "start|stop|status|watch the perf meters", runPerf},
-		{"bench", "run a bench workload and write a perf report", runBench},
-		{"profile", "record a CPU profile of one scripted turn (needs a Chromium devtools endpoint)", runProfile},
-		{"health", "roll up an instance's liveness, errors, memory and mocks", runHealth},
-		{"version", "print this CLI's build stamp", runVersion},
-		{"help", "print this help", runHelp},
+		{name: "up", summary: "start a harness instance (detached) and print how to reach it", run: runUp},
+		{name: "down", summary: "stop an instance (SIGTERM, then kill after 5s)", run: runDown},
+		{name: "list", summary: "list known instances, pruning rows whose process is gone", run: runList},
+		{name: "info", summary: "identity, evidence paths and URL for one instance", run: runInfo},
+		{name: "open", summary: "print the instance URL (--browser opens it)", run: runOpen},
+		{name: "rpc", summary: "call any App or Harness method by name with JSON arguments", run: runRPC},
+		{name: "seed", summary: "apply a HarnessSeed spec (-f file, or - for stdin)", run: runSeed},
+		{name: "reset", summary: "wipe app state without rebooting", run: runReset},
+		{name: "threads", summary: "list thread rows, drafts included", run: runThreads},
+		{name: "items", summary: "list a thread's items", run: runItems},
+		{name: "send", summary: "send a message to a thread", run: runSend},
+		{name: "scenario", summary: "set|list|clear mock scenario rules, rebuild one from a real thread, or validate files offline", run: runScenario, children: scenarioCommandDescriptors()},
+		{name: "clone", summary: "build a harness data root from a copy of a real app data dir", run: runClone},
+		{name: "mock", summary: "list|advance|emit|exit against registered mock providers", run: runMock, children: mockCommandDescriptors()},
+		{name: "events", summary: "tail|await|count events on the wire", run: runEvents, children: eventsCommandDescriptors()},
+		{name: "record", summary: "start|stop a replay bundle capture", run: runRecord, children: recordCommandDescriptors()},
+		{name: "bundles", summary: "list recorded replay bundles", run: runBundles},
+		{name: "replay", summary: "bundle|file|pause|resume|step|stop|status", run: runReplay, children: replayCommandDescriptors()},
+		{name: "logs", summary: "tail backend|frontend-errors|ui-trace", run: runLogs},
+		{name: "db", summary: "run one read-only SELECT against the instance database", run: runDB},
+		{name: "ui", summary: "snapshot|query|state|diff the attached frontend", run: runUI, children: uiCommandDescriptors()},
+		{name: "perf", summary: "start|stop|status|watch the perf meters", run: runPerf, children: perfCommandDescriptors()},
+		{name: "monitor", summary: "list or operate typed app-feel monitor specifications", run: runMonitor, children: monitorCommandDescriptors()},
+		{name: "bench", summary: "run a bench workload and write a perf report", run: runBench},
+		{name: "run", summary: "run one strict managed workload plan", run: runManaged},
+		{name: "profile", summary: "record a CPU profile of one scripted turn (needs a Chromium devtools endpoint)", run: runProfile},
+		{name: "compare", summary: "prepare or run an offline A/B comparison capsule", run: runCompare, children: compareCommandDescriptors()},
+		{name: "postmortem", summary: "read-only offline inspection of a stopped harness evidence root", run: runPostmortem},
+		{name: "artifacts", summary: "list, pin, unpin, or clean failed-run artifacts", run: runArtifacts, children: artifactsCommandDescriptors()},
+		{name: "health", summary: "roll up an instance's liveness, errors, memory and mocks", run: runHealth},
+		{name: "version", summary: "print this CLI's build stamp", run: runVersion},
+		{name: "help", summary: "print this help", run: runHelp},
 	}
 }
 
@@ -80,6 +90,24 @@ func newEnv(stdout, stderr io.Writer) *env {
 // Run executes one invocation and returns the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	e := newEnv(stdout, stderr)
+	if len(args) > 0 && args[0] == "--watchdog" {
+		if err := runDetachedWatchdog(args[1:]); err != nil {
+			fmt.Fprintf(stderr, "ao-harness watchdog: %v\n", err)
+			return exitError
+		}
+		return exitOK
+	}
+	if len(args) >= 1 && args[0] == "--generate-docs" {
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, "ao-harness: --generate-docs needs exactly one output path")
+			return exitUsage
+		}
+		if err := writeReferenceDoc(args[1]); err != nil {
+			fmt.Fprintf(stderr, "ao-harness: generate docs: %v\n", err)
+			return exitError
+		}
+		return exitOK
+	}
 	// -h before a command name means the whole tool, not the globals the
 	// root flag set happens to hold. --version is answered the same way:
 	// it is a question about the binary, not about an instance.
@@ -155,7 +183,7 @@ func usage() string {
 	b.WriteString("ao-harness: drive an agent test harness instance\n\n")
 	b.WriteString("usage: ao-harness [global flags] <command> [args]\n\n")
 	b.WriteString("global flags:\n")
-	b.WriteString("  --instance <id|dataRoot>  which instance to act on (default: the only live\n")
+	b.WriteString("  --instance <id|idPrefix|dataRoot>  which instance to act on (default: the only live\n")
 	b.WriteString("                            one, else this worktree's default data root)\n")
 	b.WriteString("  --registry-dir <dir>      override the instance registry directory\n")
 	b.WriteString("  -o <text|json>            output format for read commands\n\n")

@@ -32,3 +32,16 @@ func ConfigureGroup(command *exec.Cmd) {
 	}
 	command.WaitDelay = time.Second
 }
+
+// KillConfiguredGroup applies the same process-group boundary used by
+// context cancellation. Callers that own a command must use this instead of
+// Process.Kill, which leaves descendants behind.
+func KillConfiguredGroup(command *exec.Cmd) error {
+	if command == nil || command.Process == nil {
+		return os.ErrProcessDone
+	}
+	if command.Cancel == nil {
+		return errors.New("process group was not configured")
+	}
+	return command.Cancel()
+}

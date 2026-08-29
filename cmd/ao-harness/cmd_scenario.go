@@ -13,7 +13,7 @@ import (
 	"agent-overflow/internal/harnessclient"
 )
 
-var scenarioSubcommands = []string{"set", "list", "show", "clear", "validate", "from-thread"}
+var scenarioSubcommands = commandNames(scenarioCommandDescriptors())
 
 func runScenario(e *env, args []string) error {
 	if done, err := groupHelp(e, "scenario", args, scenarioSubcommands...); done {
@@ -92,6 +92,9 @@ func scenarioSet(e *env, args []string) error {
 
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessSetScenario"}}); err != nil {
+			return err
+		}
 		result, err := client.Call(ctx, "HarnessSetScenario", spec)
 		if err != nil {
 			return err
@@ -207,6 +210,9 @@ func scenarioClear(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessClearScenarios"}}); err != nil {
+			return err
+		}
 		if _, err := client.Call(ctx, "HarnessClearScenarios"); err != nil {
 			return err
 		}

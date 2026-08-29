@@ -676,7 +676,7 @@ func TestProfileBackendArgs(t *testing.T) {
 	t.Cleanup(func() { activeProfile = orig })
 
 	activeProfile = ""
-	if got := profileBackendArgs(); len(got) != 0 {
+	if got, err := profileBackendArgs(); err != nil || len(got) != 0 {
 		t.Errorf("default profile backend args = %v, want none", got)
 	}
 
@@ -690,9 +690,16 @@ func TestProfileBackendArgs(t *testing.T) {
 		{appidentity.ProfilePerf, []string{"--soak", "--isolated-profile", "perf", "--launcher-pid", self}},
 	} {
 		activeProfile = tc.profile
-		got := profileBackendArgs()
-		if !slices.Equal(got, tc.want) {
-			t.Errorf("%s backend args = %v, want %v", tc.profile, got, tc.want)
+		got, err := profileBackendArgs()
+		if err != nil {
+			t.Fatalf("%s profile backend args: %v", tc.profile, err)
+		}
+		if len(got) < 4 || !slices.Equal(got[:len(tc.want)-2], tc.want[:len(tc.want)-2]) {
+			t.Errorf("%s backend args = %v, want prefix %v", tc.profile, got, tc.want)
+		}
+		pidIndex := slices.Index(got, "--launcher-pid")
+		if pidIndex < 0 || pidIndex+1 >= len(got) || got[pidIndex+1] != self {
+			t.Errorf("%s launcher pid args = %v, want pid %s", tc.profile, got, self)
 		}
 	}
 }

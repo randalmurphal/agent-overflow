@@ -9,7 +9,49 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+
+	"agent-overflow/internal/atomicfile"
 )
+
+const defaultQueryOutputBytes = 64 << 10
+
+type queryOutputBudget struct {
+	maxBytes int64
+	full     bool
+	file     string
+}
+
+func (e *env) bindQueryOutputBudget(flags *flag.FlagSet) *queryOutputBudget {
+	budget := &queryOutputBudget{maxBytes: defaultQueryOutputBytes}
+	flags.Int64Var(&budget.maxBytes, "max-bytes", budget.maxBytes, "refuse JSON output larger than this (use --full or --file for complete output)")
+	flags.BoolVar(&budget.full, "full", false, "allow the complete query result on stdout")
+	flags.StringVar(&budget.file, "file", "", "write the complete query result to this file")
+	flags.StringVar(&budget.file, "out", "", "alias for --file")
+	return budget
+}
+
+func (e *env) writeQueryJSON(raw json.RawMessage, budget *queryOutputBudget) error {
+	if budget == nil {
+		return e.writeRawJSON(raw)
+	}
+	if budget.maxBytes < 1 && !budget.full && budget.file == "" {
+		return usagef("--max-bytes must be positive (or use --full / --file)")
+	}
+	if budget.file != "" {
+		if err := atomicfile.Write(budget.file, append(indentJSON(raw), '\n')); err != nil {
+			return fmt.Errorf("write query result %s: %w", budget.file, err)
+		}
+		if e.jsonOutput() {
+			return e.writeJSON(map[string]any{"file": budget.file, "bytes": len(raw), "full": true})
+		}
+		e.printf("query result written to %s (%d bytes)\n", budget.file, len(raw))
+		return nil
+	}
+	if !budget.full && int64(len(raw)) > budget.maxBytes {
+		return usagef("query result is %d bytes, over --max-bytes %d; use --full or --file", len(raw), budget.maxBytes)
+	}
+	return e.writeRawJSON(raw)
+}
 
 const (
 	exitOK    = 0
@@ -38,6 +80,9 @@ type env struct {
 	registryDir string
 	// format is "text" (default) or "json".
 	format string
+	// pageID selects one registered frontend when an instance has multiple
+	// pages. Empty is safe only when the backend has exactly one page.
+	pageID string
 }
 
 func (e *env) jsonOutput() bool { return e.format == "json" }
@@ -47,9 +92,17 @@ func (e *env) jsonOutput() bool { return e.format == "json" }
 // makes both `ao-harness -o json info` and `ao-harness info -o json`
 // work — an agent will type either.
 func (e *env) bindGlobals(flags *flag.FlagSet) {
-	flags.StringVar(&e.instance, "instance", e.instance, "instance id or data root to act on")
+	flags.StringVar(&e.instance, "instance", e.instance, "instance id, unique idPrefix, or data root to act on")
 	flags.StringVar(&e.registryDir, "registry-dir", e.registryDir, "override the harness instance registry directory")
 	flags.StringVar(&e.format, "o", e.format, "output format: text or json")
+	flags.StringVar(&e.pageID, "page-id", e.pageID, "exact frontend page identity for ui/perf/bench commands")
+}
+
+// bindJSONFlag keeps the long spelling available on commands that stream or
+// otherwise commonly run alone. It is an alias for -o json, not a second
+// output format, and inherits a global -o json default.
+func (e *env) bindJSONFlag(flags *flag.FlagSet) *bool {
+	return flags.Bool("json", e.jsonOutput(), "emit JSON (NDJSON for streaming commands)")
 }
 
 // usageErr marks a wrong-arguments failure, which exits 2 and prints
@@ -151,12 +204,16 @@ var errHelp = errors.New("help requested")
 // family routes on args[0], so without this a caller asking `events -h`
 // what its subcommands are gets `unknown events subcommand "-h"` — the
 // question answered as a mistake.
-func groupHelp(e *env, group string, args []string, subcommands ...string) (bool, error) {
+func groupHelp(e *env, group string, args []string, fallback ...string) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
 	}
 	switch args[0] {
 	case "-h", "--help", "-help", "help":
+		subcommands := fallback
+		if descriptor, ok := commandByName(group); ok && len(descriptor.children) > 0 {
+			subcommands = commandNames(descriptor.children)
+		}
 		fmt.Fprintf(e.stdout, "usage: ao-harness %s <%s> [flags]\n\n", group, strings.Join(subcommands, "|"))
 		fmt.Fprintf(e.stdout, "Run `ao-harness %s <subcommand> -h` for one subcommand's flags.\n", group)
 		return true, nil
@@ -170,6 +227,15 @@ func (e *env) writeJSON(value any) error {
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
 		return fmt.Errorf("write JSON output: %w", err)
+	}
+	return nil
+}
+
+// writeJSONLine is the streaming counterpart to writeJSON. It deliberately
+// keeps the encoder compact so each value is one complete NDJSON record.
+func (e *env) writeJSONLine(value any) error {
+	if err := json.NewEncoder(e.stdout).Encode(value); err != nil {
+		return fmt.Errorf("write JSON line: %w", err)
 	}
 	return nil
 }
@@ -195,6 +261,17 @@ func (e *env) writeRawJSON(raw json.RawMessage) error {
 
 func (e *env) printf(format string, args ...any) {
 	fmt.Fprintf(e.stdout, format, args...)
+}
+
+// progressf keeps stdout a single JSON document when a command is run with
+// -o json. Human-readable progress belongs on stdout in text mode, but it
+// must never corrupt a pipeline consuming the JSON result.
+func (e *env) progressf(format string, args ...any) {
+	if e.jsonOutput() {
+		fmt.Fprintf(e.stderr, format, args...)
+		return
+	}
+	e.printf(format, args...)
 }
 
 // table writes aligned rows. Terse by design: a terminal reader wants

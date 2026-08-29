@@ -365,6 +365,12 @@ export interface HarnessElementMatch {
   role: string;
   ariaLabel: string;
   testId: string;
+  /** Native form state. Empty/false means the element has no such state. */
+  value: string;
+  checked: boolean;
+  disabled: boolean;
+  focused: boolean;
+  selected: boolean;
 }
 
 export interface HarnessElement {
@@ -404,6 +410,32 @@ function isVisible(el: Element, rect: HarnessRect): boolean {
   return rect.w > 0 && rect.h > 0;
 }
 
+/**
+ * Read native control state without an `evaluate`-style escape hatch. The
+ * semantic query is intentionally useful to a flow runner, so callers do not
+ * need to inspect implementation classes or execute page code.
+ */
+function controlState(doc: Document, el: Element): Pick<
+  HarnessElementMatch,
+  'value' | 'checked' | 'disabled' | 'focused' | 'selected'
+> {
+  const control = el as Element & {
+    value?: unknown;
+    checked?: unknown;
+    disabled?: unknown;
+    selected?: unknown;
+  };
+  return {
+    value: typeof control.value === 'string' ? control.value : '',
+    checked: control.checked === true,
+    // :disabled includes fieldset inheritance, unlike merely checking the
+    // attribute, which is the state a real user can act on.
+    disabled: typeof el.matches === 'function' && el.matches(':disabled'),
+    focused: doc.activeElement === el,
+    selected: control.selected === true,
+  };
+}
+
 export function readElement(
   doc: Document,
   selector: string,
@@ -418,6 +450,7 @@ export function readElement(
   const rect = rectOf(el);
   const clipper = clippingAncestor(el);
   const text = readTextSummary(el, options.textCap ?? DEFAULT_ELEMENT_TEXT_CAP);
+  const state = controlState(doc, el);
   return {
     v: 1,
     selector,
@@ -433,6 +466,7 @@ export function readElement(
       role: attr(el, 'role'),
       ariaLabel: attr(el, 'aria-label'),
       testId: attr(el, 'data-testid'),
+      ...state,
     },
   };
 }

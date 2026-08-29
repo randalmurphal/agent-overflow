@@ -15,7 +15,15 @@ func applyDetachAttrs(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.HideWindow = true
-	cmd.SysProcAttr.CreationFlags |= 0x00000008 // DETACHED_PROCESS
+	// CREATE_NEW_PROCESS_GROUP gives the fallback task-tree terminator a
+	// boundary even when the launch is attached. DETACHED_PROCESS is only
+	// needed when the caller itself is returning.
+	cmd.SysProcAttr.CreationFlags |= 0x00000200 // CREATE_NEW_PROCESS_GROUP
+	if cmd.Stdout != nil || cmd.Stderr != nil {
+		// A detached launch redirects both streams to files. Do not detach
+		// an attached launch from its caller's console by accident.
+		cmd.SysProcAttr.CreationFlags |= 0x00000008 // DETACHED_PROCESS
+	}
 }
 
 // requestStop is a kill on Windows: there is no SIGTERM, and a detached
@@ -28,3 +36,5 @@ func applyDetachAttrs(cmd *exec.Cmd) {
 func requestStop(proc *os.Process) error {
 	return proc.Kill()
 }
+
+func requestKill(proc *os.Process) error { return proc.Kill() }

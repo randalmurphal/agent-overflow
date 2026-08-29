@@ -97,3 +97,62 @@ func TestReadInstanceFileRefusesAnUnattachableFile(t *testing.T) {
 		t.Fatal("an instance file with no port or token read cleanly")
 	}
 }
+
+func TestBootstrapValidateForRejectsMismatchedRoot(t *testing.T) {
+	root := t.TempDir()
+	bs := Bootstrap{DataRoot: root, DataDir: filepath.Join(root, "agent-overflow"), Identity: instanceinfo.Identity{ID: instanceinfo.ID(root), IdentityVersion: instanceinfo.IdentityVersion}}
+	if err := bs.ValidateFor(t.TempDir(), bs.DataDir); err == nil {
+		t.Fatal("ValidateFor accepted a bootstrap from another root")
+	}
+}
+
+func TestBootstrapValidateForAcceptsLegacyUnknownIdentity(t *testing.T) {
+	root := t.TempDir()
+	bs := Bootstrap{DataRoot: root, DataDir: filepath.Join(root, "agent-overflow")}
+	if err := bs.ValidateFor(root, bs.DataDir); err != nil {
+		t.Fatalf("legacy bootstrap should remain readable: %v", err)
+	}
+}
+
+func TestReadInstanceFileRejectsCurrentIdentityPathMismatch(t *testing.T) {
+	dataDir := t.TempDir()
+	data, err := json.Marshal(Bootstrap{
+		Port: 9, Token: "tok", DataRoot: t.TempDir(), DataDir: dataDir,
+		Identity: instanceinfo.Identity{IdentityVersion: instanceinfo.IdentityVersion, ID: "0123abcd", BootNonce: "boot"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, instanceinfo.InstanceFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadInstanceFile(dataDir); err == nil {
+		t.Fatal("ReadInstanceFile accepted a current identity with mismatched paths")
+	}
+}
+
+func TestReadInstanceFileRefusesSymlinkedDataDirAndFile(t *testing.T) {
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, instanceinfo.InstanceFileName), []byte(`{"port":9,"token":"tok"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(t.TempDir(), "data-dir-link")
+	if err := os.Symlink(target, linkDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := ReadInstanceFile(linkDir); err == nil {
+		t.Fatal("ReadInstanceFile followed a symlinked data directory")
+	}
+
+	dir := t.TempDir()
+	fileTarget := filepath.Join(t.TempDir(), "instance.json")
+	if err := os.WriteFile(fileTarget, []byte(`{"port":9,"token":"tok"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(fileTarget, filepath.Join(dir, instanceinfo.InstanceFileName)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := ReadInstanceFile(dir); err == nil {
+		t.Fatal("ReadInstanceFile followed a symlinked instance file")
+	}
+}

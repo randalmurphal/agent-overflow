@@ -44,11 +44,12 @@ exists to make, and the failure reads as a protocol error rather than as
 
 ## Target selection never guesses
 
-`SelectPageTarget` resolves in one order: attachable page targets (a page
-with no `webSocketDebuggerUrl` is one another debugger client already
-holds — reported as such, because "no page target" is the wrong diagnosis
-for it), then the page whose URL is on the same ORIGIN as the caller's
-instance URL, then — only if the origin matched nothing — the sole page.
+`SelectPageTarget` resolves only an attachable page whose URL is on the exact
+ORIGIN and carries the authenticated per-instance page marker. A page with no
+`webSocketDebuggerUrl` is one another debugger client already holds — reported
+as such, because "no page target" is the wrong diagnosis for it. There is no
+sole-page fallback. Explicit `ws://` endpoints are rediscovered and checked
+against the selected target rather than bypassing identity validation.
 
 Anything else is an error listing the candidates with their debugger URLs,
 so a caller can name one directly. A browser with three tabs open must not

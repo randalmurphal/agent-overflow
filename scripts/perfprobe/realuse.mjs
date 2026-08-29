@@ -1,6 +1,6 @@
 // Low-overhead real-use telemetry: visible frame delivery, sampled busy time,
 // Chromium task/heap/DOM levels, and per-process CPU. No trace, profile, GC, or content capture.
-// usage: probe realuse [--for <sec>] [--every-ms <ms>] [--out <jsonl>] [--append] [--allow-user-app]
+// usage: probe realuse [--for <sec>] [--every-ms <ms>] [--out <jsonl>] [--append]
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import {
   connectBrowser,
   connectTarget,
   evaluate,
+  loadInstanceManifest,
   sleep,
 } from './lib/cdp.mjs';
 import { metricDelta, metricMap, processCpuDelta } from './lib/realuse.mjs';
@@ -21,7 +22,7 @@ const valueOptions = new Set([
   '--require-title',
   '--require-browser-arg',
 ]);
-const booleanOptions = new Set(['--allow-user-app', '--append']);
+const booleanOptions = new Set(['--append']);
 const options = new Map();
 const args = process.argv.slice(2);
 for (let index = 0; index < args.length;) {
@@ -54,7 +55,6 @@ const seconds = numberOption('--for', 86_400);
 const everyMs = numberOption('--every-ms', 10_000);
 const output = path.resolve(stringOption('--out', `realuse-${Date.now()}.jsonl`));
 const append = options.has('--append');
-const allowUserApp = options.has('--allow-user-app');
 const requiredTitle = stringOption('--require-title');
 const requiredBrowserArg = stringOption('--require-browser-arg');
 
@@ -62,12 +62,6 @@ if (seconds < 10) throw new Error(`--for must be at least 10 seconds, got ${seco
 if (!Number.isInteger(everyMs) || everyMs < 5_000) {
   throw new Error(`--every-ms must be a whole number at least 5000, got ${everyMs}`);
 }
-if (PORT === '9223' && !allowUserApp) {
-  throw new Error(
-    'realuse installs a bounded frame observer in the user app. Pass --allow-user-app to confirm that monitoring was requested.',
-  );
-}
-
 function exactArgument(commandLine, argument) {
   const escaped = argument.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(commandLine);
@@ -342,6 +336,7 @@ const stopExpression = `(() => {
 })()`;
 
 async function selectPageTarget() {
+  const manifest = loadInstanceManifest();
   const response = await fetch(`${BASE}/json/list`);
   if (!response.ok) throw new Error(`CDP target list returned HTTP ${response.status}`);
   const targets = await response.json();
@@ -351,6 +346,9 @@ async function selectPageTarget() {
     throw new Error(
       `expected exactly one${requiredTitle ? ` ${JSON.stringify(requiredTitle)}` : ''} page on CDP ${PORT}, got ${pages.length}`,
     );
+  }
+  if (pages[0].id !== manifest.target.targetId) {
+    throw new Error(`selected page ${pages[0].id} is not the supervisor target ${manifest.target.targetId}`);
   }
   pageOrigin(pages[0].url);
   if (!pages[0].webSocketDebuggerUrl) throw new Error('selected page has no debugger URL');
@@ -387,6 +385,7 @@ process.once('SIGTERM', requestStop);
 
 try {
   const target = await selectPageTarget();
+  const manifest = loadInstanceManifest();
   page = await connectTarget(target.webSocketDebuggerUrl);
   browser = await connectBrowser();
   const system = await browser.send('SystemInfo.getInfo');
@@ -420,6 +419,8 @@ try {
     utc: new Date().toISOString(),
     cdpPort: Number(PORT),
     targetId: target.id,
+    instanceId: manifest.instanceId,
+    pageMarker: manifest.target.pageMarker,
     title: target.title,
     origin,
     browserPid: initialProcesses.find((process) => process.type === 'browser')?.id ?? null,

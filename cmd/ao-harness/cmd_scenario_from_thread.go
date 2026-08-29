@@ -65,6 +65,11 @@ func scenarioFromThread(e *env, args []string) error {
 
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if *set {
+			if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessSetScenario"}}); err != nil {
+				return err
+			}
+		}
 		row, err := resolveThreadSelector(ctx, client, *threadSel)
 		if err != nil {
 			return err

@@ -63,7 +63,7 @@ test('a live mock turn runs the full pipeline and renders', async ({ harness, pa
   );
   await harness.rpc('SendMessage', threadId, 'Say hello', null);
 
-  // Deterministic wait on the wire, then pixel assertions in the DOM.
+  // Deterministic wait on the wire, then semantic assertions in the DOM.
   await harness.waitForEvent('provider:turn_completed');
   await page.goto(harness.url);
   await page.getByText('Live turn').click();

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // The event side of a connection: what arrived, what a caller is still
@@ -39,6 +40,39 @@ type Event struct {
 	// ring: the client should re-read through list endpoints rather than
 	// trust the history it holds.
 	Gap bool `json:"gap,omitempty"`
+}
+
+// SequenceGap records a forward jump in one channel's event sequence. The
+// transport assigns sequences per channel, so a single global cursor would
+// manufacture gaps whenever two channels interleave.
+type SequenceGap struct {
+	Channel  string    `json:"channel"`
+	Expected uint64    `json:"expected"`
+	Observed uint64    `json:"observed"`
+	At       time.Time `json:"at"`
+	Replay   bool      `json:"replay,omitempty"`
+}
+
+// SequenceFault records an event that did not advance a channel's sequence.
+// A duplicate or rewind is distinct from a forward gap. Both invalidate a
+// stream oracle, but they need different investigation paths.
+type SequenceFault struct {
+	Channel  string    `json:"channel"`
+	Previous uint64    `json:"previous"`
+	Observed uint64    `json:"observed"`
+	At       time.Time `json:"at"`
+	Replay   bool      `json:"replay,omitempty"`
+}
+
+type channelSequence struct {
+	last uint64
+	seen bool
+}
+
+type replaySequence struct {
+	baseline uint64
+	observed map[uint64]struct{}
+	gap      bool
 }
 
 // logEntry is an Event plus the consume bit. Consumption is what makes
@@ -255,6 +289,35 @@ func (c *Client) Clear() {
 	c.mu.Unlock()
 }
 
+// SequenceGaps returns a snapshot of transport sequence gaps observed on
+// this connection. It includes explicit replay gap markers and live forward
+// jumps. The slice is safe for callers to retain.
+func (c *Client) SequenceGaps() []SequenceGap {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]SequenceGap(nil), c.seqGaps...)
+}
+
+// SequenceFaults returns duplicate or backwards sequence observations on
+// this connection. A replay can legitimately arrive out of order, so replay
+// observations are marked and callers may decide whether to reject them.
+func (c *Client) SequenceFaults() []SequenceFault {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]SequenceFault(nil), c.seqFaults...)
+}
+
+// ClearSequenceObservations starts a fresh stream oracle without dropping
+// the event log. This is useful after a deliberate backend reset when the
+// caller does not want the old connection's sequence space in its receipt.
+func (c *Client) ClearSequenceObservations() {
+	c.mu.Lock()
+	c.sequences = make(map[string]channelSequence)
+	c.seqGaps = nil
+	c.seqFaults = nil
+	c.mu.Unlock()
+}
+
 // Events snapshots the log in arrival order.
 func (c *Client) Events() []Event {
 	c.mu.Lock()
@@ -287,6 +350,7 @@ func (c *Client) Listen(fn func(Event)) (cancel func()) {
 
 func (c *Client) dispatch(event Event) {
 	c.mu.Lock()
+	c.observeSequenceLocked(event)
 	entry := logEntry{Event: event}
 	// Offer to waiters before filing, exactly as the TS client's
 	// synchronous notification does. Waiter keys come off a monotonic
@@ -340,6 +404,126 @@ func (c *Client) dispatch(event Event) {
 	for _, fn := range listeners {
 		fn(event)
 	}
+}
+
+func (c *Client) observeSequenceLocked(event Event) {
+	if c.sequences == nil {
+		c.sequences = make(map[string]channelSequence)
+	}
+	// A replay gap marker is an instruction to resync. Its sequence is the
+	// server's current head and must become the cursor. If it is ignored,
+	// every live event after a backend restart looks like a second gap and a
+	// caller can never establish the new sequence space.
+	if event.Gap {
+		c.markReplayGapLocked(event.Channel)
+		state := c.sequences[event.Channel]
+		expected := uint64(0)
+		if state.seen {
+			expected = state.last + 1
+		}
+		c.seqGaps = append(c.seqGaps, SequenceGap{
+			Channel: event.Channel, Expected: expected, Observed: event.Seq,
+			At: time.Now().UTC(), Replay: true,
+		})
+		if event.Seq > 0 {
+			c.sequences[event.Channel] = channelSequence{last: event.Seq, seen: true}
+		}
+		return
+	}
+	if event.Seq == 0 {
+		// Locally injected frames have no transport sequence and cannot prove
+		// anything about the server's sequence space.
+		return
+	}
+	state := c.sequences[event.Channel]
+	if c.replayInFlightLocked(event.Channel) {
+		// Replay and live delivery share the server write lock but not one
+		// ordering. A live seq 12 can arrive before replayed seq 10 and 11.
+		// Keep the highest cursor and defer strict continuity until the replay
+		// completion marker. Treating 10 as a rewind here manufactures a
+		// stream fault for a delivery order the wire explicitly permits.
+		if !state.seen || event.Seq > state.last {
+			c.sequences[event.Channel] = channelSequence{last: event.Seq, seen: true}
+		}
+		c.recordReplaySequenceLocked(event.Channel, event.Seq)
+		return
+	}
+	if !state.seen {
+		c.sequences[event.Channel] = channelSequence{last: event.Seq, seen: true}
+		return
+	}
+	switch {
+	case event.Seq == state.last+1:
+		state.last = event.Seq
+		c.sequences[event.Channel] = state
+	case event.Seq > state.last+1:
+		c.seqGaps = append(c.seqGaps, SequenceGap{
+			Channel: event.Channel, Expected: state.last + 1, Observed: event.Seq,
+			At: time.Now().UTC(),
+		})
+		state.last = event.Seq
+		c.sequences[event.Channel] = state
+	default:
+		c.seqFaults = append(c.seqFaults, SequenceFault{
+			Channel: event.Channel, Previous: state.last, Observed: event.Seq,
+			At: time.Now().UTC(),
+		})
+	}
+}
+
+func (c *Client) recordReplaySequenceLocked(channel string, seq uint64) {
+	for _, channels := range c.replaySequences {
+		if replay, ok := channels[channel]; ok && !replay.gap {
+			replay.observed[seq] = struct{}{}
+		}
+	}
+}
+
+func (c *Client) markReplayGapLocked(channel string) {
+	for _, channels := range c.replaySequences {
+		if replay, ok := channels[channel]; ok {
+			replay.gap = true
+		}
+	}
+}
+
+func (c *Client) reconcileReplayLocked(id string) {
+	channels := c.replaySequences[id]
+	for channel, replay := range channels {
+		if replay.gap || len(replay.observed) == 0 {
+			continue
+		}
+		max := uint64(0)
+		for seq := range replay.observed {
+			if seq > max {
+				max = seq
+			}
+		}
+		if max <= replay.baseline || replay.baseline == ^uint64(0) {
+			continue
+		}
+		for expected := replay.baseline + 1; ; expected++ {
+			if _, ok := replay.observed[expected]; !ok {
+				c.seqGaps = append(c.seqGaps, SequenceGap{
+					Channel: channel, Expected: expected, Observed: max,
+					At: time.Now().UTC(), Replay: true,
+				})
+				break
+			}
+			if expected == max {
+				break
+			}
+		}
+	}
+}
+
+func (c *Client) replayInFlightLocked(channel string) bool {
+	for _, channels := range c.replayChannels {
+		if _, ok := channels[channel]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) recentChannels(n int) string {

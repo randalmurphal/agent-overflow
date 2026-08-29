@@ -117,6 +117,21 @@ function paint(...timestamps: number[]): void {
 }
 
 describe('frame window', () => {
+  it('distinguishes an explicit empty meter list from the default all-meter set', () => {
+    startPerfRun({ meters: [] });
+    paint(0, 16);
+    const sample = collectPerfSample();
+    expect(sample.frames).toBe(0);
+    const summary = stopPerfRun();
+    expect(summary?.meters).toEqual([]);
+    expect(summary?.unavailableMeters).toEqual([]);
+  });
+
+  it('rejects unknown meter names at the start boundary', () => {
+    expect(() => startPerfRun({ meters: ['framez'] })).toThrow(/unknown perf meter/);
+    expect(perfRunActive()).toBe(false);
+  });
+
   // maxFrameMs is documented (cmd/ao-harness/cmd_perf.go) as the per-sample
   // worst frame, and a live watcher reads it as one. Deriving it from the
   // run-wide histogram max made every sample after a stall report that

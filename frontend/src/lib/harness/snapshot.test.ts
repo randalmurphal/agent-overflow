@@ -218,6 +218,28 @@ describe('readViewport', () => {
   });
 });
 
+describe('readElement control state', () => {
+  it('reports value, checked, disabled, focused and selected state', () => {
+    const doc = html(`
+      <input id="text" value="draft" />
+      <input id="check" type="checkbox" checked disabled />
+      <select id="choice"><option value="a">A</option><option value="b" selected>B</option></select>`);
+    const text = doc.querySelector<HTMLInputElement>('#text')!;
+    text.focus();
+
+    expect(readElement(doc, '#text').first).toMatchObject({
+      value: 'draft', checked: false, disabled: false, focused: true, selected: false,
+    });
+    expect(readElement(doc, '#check').first).toMatchObject({
+      value: 'on', checked: true, disabled: true, focused: false, selected: false,
+    });
+    expect(readElement(doc, '#choice').first).toMatchObject({
+      value: 'b', checked: false, disabled: false, focused: false, selected: false,
+    });
+    expect(readElement(doc, '#choice option[selected]').first).toMatchObject({ selected: true });
+  });
+});
+
 describe('readElement', () => {
   it('counts matches and describes the first', () => {
     const doc = html(`

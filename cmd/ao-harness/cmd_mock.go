@@ -19,7 +19,7 @@ import (
 // who typed a gate name at an exited mock finds out immediately.
 const advanceReportTimeout = 3 * time.Second
 
-var mockSubcommands = []string{"list", "advance", "emit", "exit"}
+var mockSubcommands = commandNames(mockCommandDescriptors())
 
 func runMock(e *env, args []string) error {
 	if done, err := groupHelp(e, "mock", args, mockSubcommands...); done {
@@ -147,6 +147,9 @@ func mockAdvance(e *env, args []string) error {
 
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessMockCommand"}}); err != nil {
+			return err
+		}
 		mocks, _, err := listMocks(ctx, client)
 		if err != nil {
 			return err
@@ -155,8 +158,24 @@ func mockAdvance(e *env, args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := validateAdvanceGate(mockID, gate, mocks); err != nil {
+			return err
+		}
 		return e.issueAdvance(ctx, client, mockID, gate)
 	})
+}
+
+func validateAdvanceGate(mockID, gate string, mocks []mockRow) error {
+	if strings.TrimSpace(gate) != "" {
+		return nil
+	}
+	for _, mock := range mocks {
+		if mock.MockID != mockID {
+			continue
+		}
+		return fmt.Errorf("mock %s has no gate to advance (state: %s; see `ao-harness mock list`)", mockID, gateCell(mock))
+	}
+	return fmt.Errorf("mock %s has no gate to advance (state unavailable; see `ao-harness mock list`)", mockID)
 }
 
 // advanceArgs resolves the positional grammar against what is actually
@@ -334,6 +353,9 @@ func oneMockID(command string, rest []string) (string, error) {
 func sendMockCommand(e *env, mockID string, cmd control.Command) error {
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessMockCommand"}}); err != nil {
+			return err
+		}
 		if _, err := client.Call(ctx, "HarnessMockCommand", mockID, cmd); err != nil {
 			return err
 		}

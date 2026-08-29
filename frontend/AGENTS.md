@@ -815,8 +815,8 @@ why vendored packages are `workspace:` and never `file:` — pnpm resolves a
   Oilpan pages (the renderer floor ratchet, 2026-08-25; sprite fragments
   don't dedupe, so `url(file.svg#frag)` was no fix). Masks are
   `mask-type:alpha`, objectBoundingBox units, 24-unit content scaled to the
-  unit square — pixel-identical to the old `mask-size: contain` rendering
-  on these square spans (spritecheck3/4 probes). The span's
+  unit square — preserves the old `mask-size: contain` layout on these square
+  spans (soak rig layout and compositor probes). The span's
   color/`mask-mode` styling lives in `app.css`
   (`.lucide-icon`/`.mask-icon`, including the `forced-colors: active` →
   `CanvasText` fallback without which icons vanish in Windows High

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,26 @@ type fakeMemory struct {
 	mu        sync.Mutex
 	available uint64
 	err       error
+}
+
+type scriptedMemory struct {
+	mu      sync.Mutex
+	values  []uint64
+	last    uint64
+	readErr error
+}
+
+func (f *scriptedMemory) AvailableMemory() (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return 0, f.readErr
+	}
+	if len(f.values) != 0 {
+		f.last = f.values[0]
+		f.values = f.values[1:]
+	}
+	return f.last, nil
 }
 
 func (f *fakeMemory) AvailableMemory() (uint64, error) {
@@ -45,7 +66,7 @@ type fakeRSS struct {
 
 func (f fakeRSS) RSS(int) (uint64, error) { return f.rss, f.err }
 
-func testManager(t *testing.T, memory *fakeMemory, processes *fakeProcesses, now *time.Time) *Manager {
+func testManager(t *testing.T, memory MemoryReader, processes *fakeProcesses, now *time.Time) *Manager {
 	t.Helper()
 	if _, ok := processes.states[42]; !ok {
 		processes.states[42] = ProcessState{Alive: true, BirthID: "boot-1"}
@@ -93,6 +114,61 @@ func TestReserveUsesDefaultAndAggregatesCapacity(t *testing.T) {
 	}
 }
 
+func TestReservationsCoordinateAcrossManagers(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("host locking is intentionally unsupported on this platform")
+	}
+	now := time.Unix(100, 0)
+	dir := filepath.Join(t.TempDir(), "global")
+	proc := &fakeProcesses{states: map[int]ProcessState{
+		42: {Alive: true, BirthID: "boot-1"},
+		43: {Alive: true, BirthID: "boot-2"},
+	}}
+	newManager := func(memory *fakeMemory) *Manager {
+		m, err := New(Options{Dir: dir, DefaultCeilingBytes: 300, AvailableFloorBytes: 100, LeaseTTL: time.Minute, Memory: memory, Processes: proc, Clock: func() time.Time { return now }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	m1 := newManager(&fakeMemory{available: 500})
+	m2 := newManager(&fakeMemory{available: 500})
+	first, second := request(), request()
+	first.RunID, first.Worktree, first.DataRoot, first.OwnerPID, first.OwnerBirthID = "run-1", "/repo/wt-1", "/tmp/ao-root-1", 42, "boot-1"
+	second.RunID, second.Worktree, second.DataRoot, second.OwnerPID, second.OwnerBirthID = "run-2", "/repo/wt-2", "/tmp/ao-root-2", 43, "boot-2"
+	results := make(chan error, 2)
+	go func() { _, err := m1.Reserve(first); results <- err }()
+	go func() { _, err := m2.Reserve(second); results <- err }()
+	var reserveErrs [2]error
+	reserveErrs[0], reserveErrs[1] = <-results, <-results
+	var nilErrs, capacityErrors int
+	for _, reserveErr := range reserveErrs {
+		if reserveErr == nil {
+			nilErrs++
+		} else if errors.Is(reserveErr, ErrCapacityExceeded) {
+			capacityErrors++
+		} else {
+			t.Fatalf("cross-manager reserve err = %v", reserveErr)
+		}
+	}
+	if nilErrs != 1 || capacityErrors != 1 {
+		t.Fatalf("cross-manager reserve results = nil:%d capacity:%d, want one each", nilErrs, capacityErrors)
+	}
+	// Re-read the durable state. Two successful 300-byte claims would leave
+	// less than the 100-byte floor, which the shared lock must prevent.
+	snapshot, err := m1.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	successes := len(snapshot.Leases)
+	if successes != 1 {
+		t.Fatalf("cross-manager reservations = %d, want 1", successes)
+	}
+	if snapshot.ReservedBytes != 300 {
+		t.Fatalf("reserved bytes = %d, want 300", snapshot.ReservedBytes)
+	}
+}
+
 func TestReserveRefusesWhenAvailableFloorWouldBeBreached(t *testing.T) {
 	now := time.Unix(100, 0)
 	m := testManager(t, &fakeMemory{available: 99}, &fakeProcesses{states: map[int]ProcessState{}}, &now)
@@ -127,6 +203,25 @@ func TestExpiredLeasePrunesOnlyVerifiedDeadOwner(t *testing.T) {
 	}
 	if err := m.Release(lease); !errors.Is(err, ErrLeaseNotFound) {
 		t.Fatalf("release pruned lease err = %v", err)
+	}
+}
+
+func TestDeadLeaseReleasesCapacityBeforeTTL(t *testing.T) {
+	now := time.Unix(100, 0)
+	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
+	m := testManager(t, &fakeMemory{available: 500}, proc, &now)
+	if _, err := m.Reserve(request()); err != nil {
+		t.Fatal(err)
+	}
+	proc.mu.Lock()
+	proc.states[42] = ProcessState{}
+	proc.mu.Unlock()
+	snapshot, err := m.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Leases) != 0 {
+		t.Fatalf("dead lease remains before TTL: %+v", snapshot.Leases)
 	}
 }
 
@@ -172,7 +267,7 @@ func TestReserveRejectsMismatchedBirthIdentity(t *testing.T) {
 	}
 }
 
-func TestPIDReuseDoesNotPruneExpiredLease(t *testing.T) {
+func TestPIDReusePrunesExpiredLease(t *testing.T) {
 	now := time.Unix(100, 0)
 	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
 	m := testManager(t, &fakeMemory{available: 500}, proc, &now)
@@ -187,8 +282,8 @@ func TestPIDReuseDoesNotPruneExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Leases) != 1 {
-		t.Fatal("expired lease for a reused PID was pruned")
+	if len(snap.Leases) != 0 {
+		t.Fatalf("expired lease for a reused PID remains: %+v", snap.Leases)
 	}
 }
 
@@ -222,6 +317,195 @@ func TestMonitorEmitsSafetyCeilingAndStops(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("monitor did not stop")
+	}
+}
+
+func TestMonitorEmitsAvailableFloorAndStops(t *testing.T) {
+	now := time.Unix(100, 0)
+	mem := &scriptedMemory{values: []uint64{500, 500, 99, 99}, last: 500}
+	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
+	m := testManager(t, mem, proc, &now)
+	lease, err := m.Reserve(request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan Event, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- m.Monitor(ctx, lease, time.Millisecond, fakeRSS{rss: 1}, func(event Event) {
+			events <- event
+			cancel()
+		})
+	}()
+	select {
+	case event := <-events:
+		if event.Reason != ReasonAvailableFloor || event.AvailableBytes != 99 || event.AvailableFloorBytes != 100 {
+			t.Fatalf("event = %+v", event)
+		}
+		if event.RSSBytes != 0 {
+			t.Fatalf("host pressure event RSS = %d, want 0", event.RSSBytes)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("monitor emitted no host pressure event")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("monitor did not stop")
+	}
+}
+
+func TestMonitorHostPressureWinsWhenRSSReadFails(t *testing.T) {
+	now := time.Unix(100, 0)
+	mem := &fakeMemory{available: 500}
+	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
+	m := testManager(t, mem, proc, &now)
+	lease, err := m.Reserve(request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem.mu.Lock()
+	mem.available = 99
+	mem.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan Event, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- m.Monitor(ctx, lease, time.Millisecond, fakeRSS{err: errors.New("child disappeared")}, func(event Event) {
+			events <- event
+			cancel()
+		})
+	}()
+	select {
+	case event := <-events:
+		if event.Reason != ReasonAvailableFloor {
+			t.Fatalf("event reason = %q, want %q", event.Reason, ReasonAvailableFloor)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("monitor emitted no host pressure event")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("monitor returned after host pressure event: %v", err)
+	}
+}
+
+func TestMonitorDoesNotStormOnPersistentPressure(t *testing.T) {
+	now := time.Unix(100, 0)
+	mem := &fakeMemory{available: 500}
+	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
+	m := testManager(t, mem, proc, &now)
+	lease, err := m.Reserve(request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem.mu.Lock()
+	mem.available = 99
+	mem.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	var mu sync.Mutex
+	count := 0
+	done := make(chan error, 1)
+	go func() {
+		done <- m.Monitor(ctx, lease, time.Millisecond, fakeRSS{rss: 1}, func(Event) {
+			mu.Lock()
+			count++
+			mu.Unlock()
+		})
+	}()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 1 {
+		t.Fatalf("persistent host pressure emitted %d events, want 1", count)
+	}
+}
+
+func TestMonitorNoFalseTriggerAtThresholds(t *testing.T) {
+	now := time.Unix(100, 0)
+	mem := &fakeMemory{available: 500}
+	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
+	m := testManager(t, mem, proc, &now)
+	lease, err := m.Reserve(request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem.mu.Lock()
+	mem.available = 100
+	mem.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	var mu sync.Mutex
+	count := 0
+	done := make(chan error, 1)
+	go func() {
+		done <- m.Monitor(ctx, lease, time.Millisecond, fakeRSS{rss: 100}, func(Event) {
+			mu.Lock()
+			count++
+			mu.Unlock()
+		})
+	}()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 0 {
+		t.Fatalf("threshold values emitted %d events, want 0", count)
+	}
+}
+
+func TestMonitorCancellationBeforeSample(t *testing.T) {
+	now := time.Unix(100, 0)
+	m := testManager(t, &fakeMemory{available: 500}, &fakeProcesses{states: map[int]ProcessState{}}, &now)
+	lease, err := m.Reserve(request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- m.Monitor(ctx, lease, time.Hour, fakeRSS{rss: 1}, func(Event) {}) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("monitor did not honor cancellation")
+	}
+}
+
+func TestMonitorReportsOwnerProbeError(t *testing.T) {
+	now := time.Unix(100, 0)
+	proc := &fakeProcesses{states: map[int]ProcessState{42: {Alive: true, BirthID: "boot-1"}}}
+	m := testManager(t, &fakeMemory{available: 500}, proc, &now)
+	lease, err := m.Reserve(request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc.mu.Lock()
+	proc.err = errors.New("identity probe failed")
+	proc.mu.Unlock()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- m.Monitor(context.Background(), lease, time.Millisecond, fakeRSS{rss: 1}, func(Event) {})
+	}()
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "monitor owner") {
+			t.Fatalf("monitor error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("monitor did not report owner probe error")
 	}
 }
 

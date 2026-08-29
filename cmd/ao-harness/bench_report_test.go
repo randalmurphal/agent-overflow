@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/harnessclient"
 )
 
 // The bench arithmetic is the part a wrong answer would be believed: a
@@ -111,6 +115,38 @@ func TestAggregateBenchMetricsOmitsUnmeasured(t *testing.T) {
 		if agg[name].Min == 0 {
 			t.Errorf("%s folded an unsampled run in as zero: %+v", name, agg[name])
 		}
+	}
+}
+
+func TestAggregateBenchMetricsOmitsUnselectedFrontendScalars(t *testing.T) {
+	report := benchTestReport(1000, 60, 12, 8<<20)
+	report.Frontend.Meters = []string{"dom"}
+	report.Frontend.Frames = perfFrameSummary{FPS: 60, P95Ms: 12}
+	report.Frontend.LongTasks = 3
+	report.Frontend.LayoutShift = 0.5
+	report.Frontend.DomNodes = perfSeries{Count: 1, Max: 900}
+	agg := aggregateBenchMetrics([]perfReport{report})
+	for _, name := range []string{"frames.fps", "frames.p95Ms", "longTasks", "layoutShift"} {
+		if _, ok := agg[name]; ok {
+			t.Errorf("%s was aggregated even though its meter was not selected", name)
+		}
+	}
+	if _, ok := agg["domNodes.max"]; !ok {
+		t.Fatal("domNodes.max missing for the selected dom meter")
+	}
+}
+
+func TestAggregateBenchMetricsOmitsUnavailableFrontendScalars(t *testing.T) {
+	report := benchTestReport(1000, 60, 12, 8<<20)
+	report.Frontend.Meters = []string{"frames", "memory"}
+	report.Frontend.UnavailableMeters = []string{"memory"}
+	report.Frontend.HeapBytes = perfSeries{Count: 2, Max: 4 << 20}
+	agg := aggregateBenchMetrics([]perfReport{report})
+	if _, ok := agg["jsHeap.maxBytes"]; ok {
+		t.Fatal("jsHeap.maxBytes was aggregated despite unavailable memory meter")
+	}
+	if _, ok := agg["frames.fps"]; !ok {
+		t.Fatal("frames.fps missing for the available frames meter")
 	}
 }
 
@@ -256,6 +292,13 @@ func TestCompareToBaselineNoReferenceNeverDrifts(t *testing.T) {
 // --baseline reads back, so its key names are a contract with future runs.
 func TestBenchDocumentShape(t *testing.T) {
 	document := benchDocument{
+		benchReportIdentity: benchReportIdentity{
+			SchemaVersion:       benchReportSchemaVersion,
+			Leg:                 "correctness",
+			Instrument:          "perf:all",
+			BuildFingerprint:    fingerprintBenchParts("test"),
+			WorkloadFingerprint: fingerprintBenchParts("burst-stream", "bench-burst-stream", "sustained text-delta flood with chunked partial writes"),
+		},
 		Workload:    "burst-stream",
 		Description: "sustained text-delta flood with chunked partial writes",
 		Scenario:    "bench-burst-stream",
@@ -277,7 +320,7 @@ func TestBenchDocumentShape(t *testing.T) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"workload", "repeat", "startedAt", "instance", "version", "runs", "aggregate"} {
+	for _, key := range []string{"schemaVersion", "leg", "instrument", "buildFingerprint", "workloadFingerprint", "workload", "repeat", "startedAt", "instance", "version", "runs", "aggregate"} {
 		if _, ok := decoded[key]; !ok {
 			t.Errorf("report document is missing %q", key)
 		}
@@ -302,6 +345,99 @@ func TestBenchDocumentShape(t *testing.T) {
 	}
 	if got := baseline.Aggregate["frames.fps"]; got.P50 != 58 || got.LowerIsBetter {
 		t.Errorf("frames.fps did not survive the round trip: %+v", got)
+	}
+}
+
+func TestBenchIdentityIncludesBuildAssetsAndMeasurementConfig(t *testing.T) {
+	workload := benchWorkload{Name: "w", Scenario: "scenario", Summary: "summary"}
+	bs := harnessclient.Bootstrap{Version: "1.0"}
+	caps := harnessclient.HarnessCapabilities{
+		Build:  harnessclient.HarnessBuildCapabilities{Version: "1.0", Stamp: "1.0 (abc-dirty)"},
+		Assets: harnessclient.HarnessAssetsCapabilities{Freshness: "match", Digest: "sha256:asset-a"},
+	}
+	info := harnessclient.HarnessInfo{AssetsFreshness: "match", AssetsDigest: "sha256:asset-a"}
+	base := benchReportIdentityFor(bs, caps, info, workload, benchPerfSpec{SampleMs: 1000, BudgetsMs: []float64{6}, Monitors: []string{"frame-pacing"}, MonitorLeg: "instrumented-renderer"}, time.Second, false, benchLegFrameCPU)
+	changed := benchReportIdentityFor(bs, caps, info, workload, benchPerfSpec{SampleMs: 2000, BudgetsMs: []float64{8}, Monitors: []string{"long-task"}, MonitorLeg: "instrumented-renderer"}, time.Second, false, benchLegFrameCPU)
+	if base.TimingFingerprint == changed.TimingFingerprint || base.BudgetFingerprint == changed.BudgetFingerprint || base.MonitorFingerprint == changed.MonitorFingerprint {
+		t.Fatalf("measurement configuration did not affect identity: base=%+v changed=%+v", base, changed)
+	}
+	pageChanged := benchReportIdentityFor(bs, caps, info, workload, benchPerfSpec{SampleMs: 1000, PageID: "other-page"}, time.Second, false, benchLegFrameCPU)
+	if base.PageID == pageChanged.PageID {
+		t.Fatal("page identity did not affect the report identity")
+	}
+	caps.Build.Stamp = "1.0 (def)"
+	if base.BuildFingerprint == benchReportIdentityFor(bs, caps, info, workload, benchPerfSpec{SampleMs: 1000}, time.Second, false, benchLegFrameCPU).BuildFingerprint {
+		t.Fatal("build stamp did not affect identity")
+	}
+	info.AssetsDigest = "sha256:asset-b"
+	if base.AssetsFingerprint == benchReportIdentityFor(bs, caps, info, workload, benchPerfSpec{SampleMs: 1000}, time.Second, false, benchLegFrameCPU).AssetsFingerprint {
+		t.Fatal("asset digest did not affect identity")
+	}
+}
+
+func TestRenderPerfReportDoesNotInventUnselectedFrontendMetrics(t *testing.T) {
+	report := perfReport{Frontend: &perfFrontendSummary{
+		Meters:   []string{"dom"},
+		Frames:   perfFrameSummary{FPS: 60},
+		DomNodes: perfSeries{Count: 1, Min: 10, Last: 20, Max: 20},
+	}}
+	output := renderPerfReport(report)
+	if strings.Contains(output, "60.0 fps") || strings.Contains(output, "long tasks") || strings.Contains(output, "js heap max") {
+		t.Fatalf("unselected frontend metrics were rendered as measurements:\n%s", output)
+	}
+	if !strings.Contains(output, "dom 10 -> 20") {
+		t.Fatalf("selected DOM metric missing:\n%s", output)
+	}
+}
+
+func TestRenderPerfReportDoesNotPrintUnavailableBackendRSSAsZero(t *testing.T) {
+	output := renderPerfReport(perfReport{Backend: perfBackendReport{
+		RSSBytes:        perfSeries{},
+		WebviewRSSBytes: perfSeries{},
+	}})
+	if strings.Contains(output, "rss max 0B") || strings.Contains(output, "webview rss max 0B") {
+		t.Fatalf("unavailable RSS metrics were rendered as zero:\n%s", output)
+	}
+	if !strings.Contains(output, "rss max -") || !strings.Contains(output, "webview rss max -") {
+		t.Fatalf("unavailable RSS metrics were not rendered as unavailable:\n%s", output)
+	}
+}
+
+func TestPerfReportErrorRejectsUnavailableHalves(t *testing.T) {
+	if err := perfReportError(perfReport{FrontendError: "page gone"}); err == nil {
+		t.Fatal("frontend error was accepted as a successful perf report")
+	}
+	if err := perfReportError(perfReport{MonitorsError: "heartbeat gap"}); err == nil {
+		t.Fatal("monitor error was accepted as a successful perf report")
+	}
+}
+
+func TestBenchRunReportPersistsValidityReceipt(t *testing.T) {
+	report := benchRunReport{
+		Run: 1,
+		Validity: benchValidityReceipt{
+			V: 1, Valid: false,
+			Reasons: []string{"source event sequence has 1 gap(s)"},
+			Gaps:    []harnessclient.SequenceGap{{Channel: "provider:turn_completed", Expected: 4, Observed: 6}},
+		},
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"validity"`) || !strings.Contains(text, `"gaps"`) {
+		t.Fatalf("run report dropped validity receipt: %s", text)
+	}
+}
+
+func TestBenchBaselineRejectsLegacyOrIncompleteIdentity(t *testing.T) {
+	if err := validateBenchBaselineIdentity(benchBaseline{}); err == nil || !strings.Contains(err.Error(), "legacy") {
+		t.Fatalf("legacy baseline validation = %v, want legacy refusal", err)
+	}
+	baseline := benchBaseline{benchReportIdentity: benchReportIdentity{SchemaVersion: benchReportSchemaVersion}}
+	if err := validateBenchBaselineIdentity(baseline); err == nil || !strings.Contains(err.Error(), "leg") {
+		t.Fatalf("incomplete baseline validation = %v, want missing identity", err)
 	}
 }
 
@@ -541,7 +677,7 @@ func TestParseBudgetsMs(t *testing.T) {
 	// A bad entry REFUSES rather than being skipped: silently gating on
 	// fewer budgets than the caller typed is how a budget stops being
 	// enforced with nobody the wiser.
-	for _, bad := range []string{"6,,8", "6,fast", "6,0", "6,-2", "6,Inf"} {
+	for _, bad := range []string{"6,,8", "6,fast", "6,0", "6,-2", "6,Inf", "6,NaN"} {
 		if _, err := parseBudgetsMs(bad); err == nil {
 			t.Errorf("parseBudgetsMs(%q) accepted a bad entry", bad)
 		}
@@ -653,5 +789,26 @@ func TestPerfReportRoundTripsWorstTicksAndTimeOrigin(t *testing.T) {
 	}
 	if len(decoded.Frontend.Busy.Worst) != 1 || decoded.Frontend.Busy.Worst[0].BusyMs != 41 {
 		t.Errorf("worst ticks did not survive: %#v", decoded.Frontend.Busy.Worst)
+	}
+}
+
+func TestManagedBenchOutputPathIsAnExactFileAndCheckpointStaysBesideIt(t *testing.T) {
+	root := t.TempDir()
+	selected := target{DataDir: filepath.Join(root, "agent-overflow")}
+	document := benchDocument{Workload: "burst-stream", Status: "succeeded"}
+	reportPath := filepath.Join(root, "artifacts", "run", "bench-report.json")
+	path, err := writeBenchDocument(document, selected, reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != reportPath {
+		t.Fatalf("report path = %q, want %q", path, reportPath)
+	}
+	if info, err := os.Stat(reportPath); err != nil || info.IsDir() {
+		t.Fatalf("exact report file = %v, err=%v", info, err)
+	}
+	wantCheckpoint := filepath.Join(filepath.Dir(reportPath), "burst-stream-checkpoint.json")
+	if got := benchCheckpointPath(selected, "burst-stream", reportPath); got != wantCheckpoint {
+		t.Fatalf("checkpoint path = %q, want %q", got, wantCheckpoint)
 	}
 }

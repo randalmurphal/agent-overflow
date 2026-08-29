@@ -62,6 +62,8 @@ type harnessPaths struct {
 	// "dev-server". Computed once at boot; HarnessInfo exposes it and
 	// `ao-harness health` flags "stale".
 	AssetsFreshness string
+	// AssetsDigest identifies the exact bundle served by this harness.
+	AssetsDigest string
 }
 
 // runHarness boots the agent test harness. The shape mirrors
@@ -82,11 +84,14 @@ func runHarness(flags cliFlags) {
 		fatalf("harness: %v", err)
 	}
 	paths.AssetsFreshness = warnIfEmbeddedDistStale()
+	paths.AssetsDigest = embeddedAssetDigest()
 	if flags.window {
 		// After prepareHarness (its refusals compare against the real
 		// config root) and before the first GLib call. See
 		// isolateWebviewStorage.
-		isolateWebviewStorage(paths.DataRoot)
+		if err := isolateWebviewStorage(paths.DataRoot); err != nil {
+			fatalf("harness: %v", err)
+		}
 	}
 
 	appService := newIsolatedProviderApp(paths)
@@ -119,7 +124,7 @@ func runHarness(flags cliFlags) {
 	if err := appService.Start(bootCtx); err != nil {
 		log.Printf("app: service startup: %v", err)
 		srv.MarkStartupFailed()
-		if err := writeHarnessBootstrap(bootstrapOut, srv, paths, err); err != nil {
+		if err := writeHarnessBootstrap(bootstrapOut, srv, paths, err, instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")); err != nil {
 			log.Printf("harness: write bootstrap: %v", err)
 		}
 		waitForHeadlessShutdown(appService, srv)
@@ -127,7 +132,7 @@ func runHarness(flags cliFlags) {
 	}
 	srv.MarkReady()
 
-	if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil); err != nil {
+	if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil, instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")); err != nil {
 		shutdownHeadless(appService, srv)
 		fatalf("harness: write bootstrap: %v", err)
 	}
@@ -136,7 +141,8 @@ func runHarness(flags cliFlags) {
 	// attach, which is true only now.
 	// No launcher pid: --harness is never spawned by the Windows launcher
 	// (that shell is --soak), so nobody but this process hosts a window.
-	instance := publishInstance(srv, paths, instanceinfo.ModeHarness, flags.window, 0)
+	instance := publishInstance(srv, paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")
+	h.setInstanceRemoval(instance.remove)
 	defer instance.remove()
 
 	if flags.window {
@@ -213,6 +219,16 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 	dataRoot, err := filepath.Abs(flags.dataDir)
 	if err != nil {
 		return harnessPaths{}, fmt.Errorf("resolve --data-dir: %w", err)
+	}
+	// Check the spelling before canonicalizing so an owned leaf symlink is
+	// refused, then retain the canonical existing ancestors for every child
+	// created below it.
+	if err := refuseSymlink(dataRoot); err != nil {
+		return harnessPaths{}, err
+	}
+	dataRoot, err = instanceinfo.CanonicalPath(dataRoot)
+	if err != nil {
+		return harnessPaths{}, fmt.Errorf("canonicalize --data-dir: %w", err)
 	}
 	if err := refuseRealDataDir(dataRoot); err != nil {
 		return harnessPaths{}, err
@@ -349,12 +365,12 @@ func refuseSymlink(path string) error {
 // cleaning, tolerating paths that don't exist yet (falls back to
 // lexical comparison).
 func sameCanonicalPath(a, b string) bool {
-	ca, errA := filepath.EvalSymlinks(a)
-	cb, errB := filepath.EvalSymlinks(b)
+	ca, errA := instanceinfo.CanonicalPath(a)
+	cb, errB := instanceinfo.CanonicalPath(b)
 	if errA != nil || errB != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
+		return false
 	}
-	return ca == cb
+	return filepath.Clean(ca) == filepath.Clean(cb)
 }
 
 // isolateHarnessHome redirects $HOME (and %USERPROFILE% on Windows) to
@@ -484,11 +500,13 @@ type harnessBootstrap struct {
 	// Isolated boots resolve it under their own --data-dir
 	// (bootSettingsDir honors the override), so it is the harness's own
 	// id and never the developer's.
-	ClientID string `json:"clientId,omitempty"`
+	ClientID   string `json:"clientId,omitempty"`
+	PageMarker string `json:"pageMarker,omitempty"`
 	// StartupError is set when App.Start failed; the transport still
 	// serves (bootstrap returns the terminal failure state) so the
 	// caller can read logs, but the harness is not usable.
 	StartupError string `json:"startupError,omitempty"`
+	instanceinfo.Identity
 }
 
 // newHarnessBootstrap assembles the payload. Split from the write so
@@ -497,8 +515,9 @@ type harnessBootstrap struct {
 // instance must not be reading a second, drifting description of it.
 func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr error) harnessBootstrap {
 	clientID := ensureClientID()
+	pageMarker := srv.PageMarker()
 	bs := harnessBootstrap{
-		URL:          appURLWithClientID(srv.AppURL(), clientID),
+		URL:          appURLWithPageMarker(appURLWithClientID(srv.AppURL(), clientID), pageMarker),
 		Port:         portFromAddr(srv.Addr()),
 		Token:        srv.Token(),
 		DataRoot:     paths.DataRoot,
@@ -508,6 +527,7 @@ func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr e
 		PID:          os.Getpid(),
 		Version:      version,
 		ClientID:     clientID,
+		PageMarker:   pageMarker,
 	}
 	if startupErr != nil {
 		bs.StartupError = startupErr.Error()
@@ -515,8 +535,14 @@ func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr e
 	return bs
 }
 
-func writeHarnessBootstrap(out *os.File, srv *transport.Server, paths harnessPaths, startupErr error) error {
-	payload, err := json.Marshal(newHarnessBootstrap(srv, paths, startupErr))
+func writeHarnessBootstrap(out *os.File, srv *transport.Server, paths harnessPaths, startupErr error, identities ...instanceinfo.Identity) error {
+	bootstrap := newHarnessBootstrap(srv, paths, startupErr)
+	if len(identities) > 0 {
+		bootstrap.Identity = identities[0]
+	} else {
+		bootstrap.Identity = instanceIdentityFor(paths, instanceinfo.ModeHarness, false, 0, "", "", "", "")
+	}
+	payload, err := json.Marshal(bootstrap)
 	if err != nil {
 		return fmt.Errorf("marshal harness bootstrap: %w", err)
 	}

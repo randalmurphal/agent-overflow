@@ -56,18 +56,56 @@
 // unrelated `viewport`.
 
 import { Call } from '@wailsio/runtime';
-import { whenHarnessSession } from '../transport/harnessMode';
+import { harnessPageMarker, whenHarnessSession } from '../transport/harnessMode';
 import { isViewOnlySession } from '../transport/runMode';
 import { wailsEventOn } from './wailsEvents';
+import { onTransportStatusChange } from './transportStatus.svelte';
 
 interface UIQueryEvent {
-  id?: unknown;
-  spec?: unknown;
+	id?: unknown;
+	spec?: unknown;
+	pageId?: unknown;
 }
 
 type BridgeModule = typeof import('../harness/bridge');
 
 let bridgeModule: Promise<BridgeModule> | null = null;
+
+// Immutable for this document lifetime. Re-installing the bridge after a
+// reconnect must not let a stale page identity answer a newer page's query.
+const FRONTEND_PAGE_ID = (() => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `page-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+})();
+
+/** Test seam for constructing a targeted synthetic event. */
+export function __frontendPageIDForTest(): string {
+  return FRONTEND_PAGE_ID;
+}
+
+let pageRegistration: Promise<void> | null = null;
+
+function publishPageIdentity(): void {
+  if (typeof window === 'undefined' || !window.history || typeof window.history.replaceState !== 'function') return;
+  try {
+    const current = new URL(window.location.href);
+    if (current.searchParams.get('pageId') === FRONTEND_PAGE_ID) return;
+    current.searchParams.set('pageId', FRONTEND_PAGE_ID);
+    window.history.replaceState(null, '', current.pathname + `?${current.searchParams.toString()}` + current.hash);
+  } catch (err) {
+    console.error('harness bridge: publish page identity failed:', err);
+  }
+}
+
+function registerPage(): Promise<void> {
+  pageRegistration ??= Call.ByName('HarnessRegisterPage', FRONTEND_PAGE_ID, harnessPageMarker(),
+    typeof window !== 'undefined' ? window.location.origin : '').then((identity: unknown) => {
+      if (!identity || typeof identity !== 'object' || (identity as { pageId?: unknown }).pageId !== FRONTEND_PAGE_ID) {
+        throw new Error('harness page registration returned a different page identity');
+      }
+    });
+  return pageRegistration;
+}
 
 function loadBridge(): Promise<BridgeModule> {
   bridgeModule ??= import('../harness/bridge').then((mod) => {
@@ -82,9 +120,10 @@ function loadBridge(): Promise<BridgeModule> {
   return bridgeModule;
 }
 
-async function answer(id: string, spec: unknown): Promise<void> {
+async function answer(id: string, pageId: string, spec: unknown): Promise<void> {
   let result: unknown;
   try {
+    await registerPage();
     const mod = await loadBridge();
     result = await mod.answerHarnessQuery(spec);
     // A query addressed to another attached page's perf run. Answering
@@ -97,7 +136,7 @@ async function answer(id: string, spec: unknown): Promise<void> {
     result = { error: err instanceof Error ? err.message : String(err) };
   }
   try {
-    await Call.ByName('HarnessUIQueryReply', id, result);
+    await Call.ByName('HarnessUIQueryReply', pageId, id, result);
   } catch (err) {
     // A refused reply is a harness-side fault worth seeing in the page
     // console, but it must not take the subscription down with it.
@@ -113,7 +152,21 @@ async function answer(id: string, spec: unknown): Promise<void> {
  */
 export function installHarnessBridge(): () => void {
   let stopSubscription: (() => void) | null = null;
+  let stopTransportStatus: (() => void) | null = null;
+  let active = true;
+  const subscribe = () => {
+    if (!active || stopSubscription !== null) return;
+    stopSubscription = wailsEventOn<UIQueryEvent>('harness:ui-query', (event) => {
+      if (!active) return;
+      const id = typeof event?.id === 'string' ? event.id : '';
+      const pageId = typeof event?.pageId === 'string' ? event.pageId : '';
+      if (!id) return;
+      if (!pageId || pageId !== FRONTEND_PAGE_ID) return;
+      void answer(id, pageId, event.spec);
+    });
+  };
   const cancelArm = whenHarnessSession(() => {
+    if (!active) return;
     // Locality, read at ARM time rather than at install time: the manifest
     // sets the remote bit before it sets the harness bit (see
     // transport/bootstrap.ts), so by the time this runs the answer is
@@ -121,19 +174,49 @@ export function installHarnessBridge(): () => void {
     // subscription here would be a listener for an event that cannot
     // arrive — and the module it would load is loopback-only tooling.
     if (isViewOnlySession()) return;
-    stopSubscription = wailsEventOn<UIQueryEvent>('harness:ui-query', (event) => {
-      const id = typeof event?.id === 'string' ? event.id : '';
-      if (!id) return;
-      void answer(id, event.spec);
+    publishPageIdentity();
+    stopTransportStatus = onTransportStatusChange((status) => {
+      if (!active) return;
+      if (status.status === 'connected') {
+        pageRegistration = null;
+        void registerPage().then(subscribe).catch((err) => {
+          console.error('harness bridge: page registration failed:', err);
+        });
+      } else {
+        pageRegistration = null;
+      }
+    });
+    // The initial transport may already be usable even when the status
+    // mirror has not observed its first connected edge yet.
+    void registerPage().then(subscribe).catch((err) => {
+      console.error('harness bridge: page registration failed:', err);
     });
   });
   return () => {
+    active = false;
     cancelArm();
-    stopSubscription?.();
-    stopSubscription = null;
-    if (!bridgeModule) return;
+    const unregister = () => {
+      stopSubscription?.();
+      stopTransportStatus?.();
+      stopSubscription = null;
+      stopTransportStatus = null;
+    };
+    if (!bridgeModule) {
+      unregister();
+      return;
+    }
     const pending = bridgeModule;
     bridgeModule = null;
-    void pending.then((mod) => mod.stopHarnessBridge()).catch(() => {});
+    void pending.then((mod) => {
+      const receipt = mod.stopHarnessBridge('page-unload');
+      if (receipt.errors.length > 0) {
+        console.error('harness bridge: teardown receipt reported errors:', receipt.errors);
+      }
+      if (receipt.perf !== null || receipt.monitors.length > 0) {
+        console.info('harness bridge: retained partial teardown receipt', receipt);
+      }
+    }).catch((err) => {
+      console.error('harness bridge: teardown failed:', err);
+    }).finally(unregister);
   };
 }

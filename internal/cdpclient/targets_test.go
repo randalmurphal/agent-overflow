@@ -71,7 +71,7 @@ func TestSelectPageTargetReconcilesLoopbackSpellings(t *testing.T) {
 		page("http://localhost:4321/?token=abc", "ws://instance"),
 		page("https://example.com/", "ws://other"),
 	}
-	got, err := SelectPageTarget(targets, "http://127.0.0.1:4321/?token=zzz")
+	got, err := SelectPageTarget(targets, "http://127.0.0.1:4321/?token=abc")
 	if err != nil {
 		t.Fatalf("SelectPageTarget: %v", err)
 	}
@@ -80,17 +80,13 @@ func TestSelectPageTargetReconcilesLoopbackSpellings(t *testing.T) {
 	}
 }
 
-func TestSelectPageTargetFallsBackToTheOnlyPage(t *testing.T) {
+func TestSelectPageTargetRefusesAnUnmarkedOnlyPage(t *testing.T) {
 	targets := []Target{
 		{Type: "background_page", URL: "chrome://x", WebSocketDebuggerURL: "ws://bg"},
 		page("about:blank", "ws://only"),
 	}
-	got, err := SelectPageTarget(targets, "http://127.0.0.1:4321/")
-	if err != nil {
-		t.Fatalf("SelectPageTarget: %v", err)
-	}
-	if got.WebSocketDebuggerURL != "ws://only" {
-		t.Fatalf("picked %q, want the only page", got.WebSocketDebuggerURL)
+	if _, err := SelectPageTarget(targets, "http://127.0.0.1:4321/?page=expected"); err == nil {
+		t.Fatal("an unmarked sole page must not be selected")
 	}
 }
 
@@ -113,7 +109,7 @@ func TestSelectPageTargetRefusesAmbiguity(t *testing.T) {
 func TestSelectPageTargetRefusesTwoPagesOnTheSameOrigin(t *testing.T) {
 	targets := []Target{
 		page("http://127.0.0.1:4321/?token=a", "ws://a"),
-		page("http://127.0.0.1:4321/design/", "ws://b"),
+		page("http://127.0.0.1:4321/design/?token=a", "ws://b"),
 	}
 	_, err := SelectPageTarget(targets, "http://127.0.0.1:4321/?token=a")
 	if err == nil {
@@ -142,5 +138,26 @@ func TestSelectPageTargetWithNoPages(t *testing.T) {
 	_, err := SelectPageTarget([]Target{{Type: "worker", URL: "x"}}, "")
 	if err == nil || !strings.Contains(err.Error(), "no page target") {
 		t.Fatalf("want a no-page-target error, got %v", err)
+	}
+}
+
+func TestSelectPageTargetRefusesWrongPageMarker(t *testing.T) {
+	targets := []Target{page("http://127.0.0.1:4321/?page=instance-marker", "ws://instance")}
+	if _, err := SelectPageTarget(targets, "http://127.0.0.1:4321/?page=other-marker"); err == nil {
+		t.Fatal("a page with the wrong marker must not be selected")
+	}
+}
+
+func TestSelectPageTargetForPageDisambiguatesSameOriginPages(t *testing.T) {
+	targets := []Target{
+		page("http://127.0.0.1:4321/?page=instance-marker&pageId=other", "ws://other"),
+		page("http://127.0.0.1:4321/?page=instance-marker&pageId=wanted", "ws://wanted"),
+	}
+	got, err := SelectPageTargetForPage(targets, "http://127.0.0.1:4321/?page=instance-marker", "wanted")
+	if err != nil {
+		t.Fatalf("SelectPageTargetForPage: %v", err)
+	}
+	if got.WebSocketDebuggerURL != "ws://wanted" {
+		t.Fatalf("picked %q, want ws://wanted", got.WebSocketDebuggerURL)
 	}
 }

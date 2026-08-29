@@ -26,6 +26,20 @@ func TestIDIsStableShortAndPerDataRoot(t *testing.T) {
 	}
 }
 
+func TestVerifyProcessIdentityRejectsPartialDestructiveEvidence(t *testing.T) {
+	for name, identity := range map[string]ProcessIdentity{
+		"missing start time": {Executable: "/bin/agent-overflow", Namespace: "linux"},
+		"missing executable": {StartTime: "123", Namespace: "linux"},
+		"missing namespace":  {StartTime: "123", Executable: "/bin/agent-overflow"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := VerifyProcessIdentity(999999, identity); err == nil {
+				t.Fatal("accepted incomplete process identity")
+			}
+		})
+	}
+}
+
 func TestIDCanonicalizesSpellingsOfOneRoot(t *testing.T) {
 	root := t.TempDir()
 	// A relative spelling, a trailing slash, and a doubled separator all
@@ -68,6 +82,22 @@ func TestIDOfMissingPathFallsBackToLexical(t *testing.T) {
 	}
 	if after := ID(root); after != before {
 		t.Fatalf("id changed once the root existed: %q then %q", before, after)
+	}
+}
+
+func TestCanonicalPathResolvesExistingSymlinkedAncestorForMissingRoot(t *testing.T) {
+	realParent := t.TempDir()
+	linkParent := filepath.Join(t.TempDir(), "parent-link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	wanted := filepath.Join(linkParent, "new-root")
+	got, err := CanonicalPath(wanted)
+	if err != nil {
+		t.Fatalf("CanonicalPath: %v", err)
+	}
+	if want := filepath.Join(realParent, "new-root"); got != want {
+		t.Fatalf("CanonicalPath(%q) = %q, want %q", wanted, got, want)
 	}
 }
 
@@ -173,6 +203,22 @@ func TestListMarksDeadPidsStaleAndSortsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestListDoesNotMarkForeignNamespacePIDStale(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "registry")
+	row := newRow("dddddddd", 1)
+	row.PIDNamespace = "pid:[foreign]"
+	if err := WriteIn(dir, row); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ListIn(dir, func(int) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Stale {
+		t.Fatalf("foreign namespace row = %+v, want live/unknown", rows)
+	}
+}
+
 func TestListSkipsJunkAndMissingDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "registry")
 	if rows, err := ListIn(dir, nil); err != nil || rows != nil {
@@ -252,5 +298,107 @@ func TestProcessAliveOnOurselvesAndOnNobody(t *testing.T) {
 	}
 	if ProcessAlive(0) || ProcessAlive(-1) {
 		t.Error("ProcessAlive accepted a non-pid")
+	}
+}
+
+func TestCanonicalValidationRejectsIDAndDataDirMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := ValidatePaths("deadbeef", root, filepath.Join(root, "agent-overflow")); err == nil {
+		t.Fatal("ValidatePaths accepted an id for another root")
+	}
+	if err := ValidatePaths(ID(root), root, filepath.Join(t.TempDir(), "agent-overflow")); err == nil {
+		t.Fatal("ValidatePaths accepted a data dir outside the root")
+	}
+}
+
+func TestProcessIdentityMatchesCurrentProcess(t *testing.T) {
+	identity, err := CaptureProcessIdentity(os.Getpid())
+	if err != nil {
+		t.Skipf("process identity unavailable: %v", err)
+	}
+	if identity.StartTime == "" || identity.Executable == "" || identity.Namespace == "" {
+		t.Fatalf("incomplete process identity: %+v", identity)
+	}
+	if err := VerifyProcessIdentity(os.Getpid(), identity); err != nil {
+		t.Fatalf("VerifyProcessIdentity: %v", err)
+	}
+	identity.StartTime += "-reused"
+	if err := VerifyProcessIdentity(os.Getpid(), identity); err == nil {
+		t.Fatal("VerifyProcessIdentity accepted a changed birth marker")
+	}
+}
+
+func TestSameLifecycleRejectsRestartNonce(t *testing.T) {
+	a := Identity{IdentityVersion: IdentityVersion, ID: "0123abcd", Mode: ModeHarness, BootNonce: "first"}
+	b := a
+	b.BootNonce = "second"
+	if a.SameLifecycle(b) {
+		t.Fatal("different boot nonce treated as one lifecycle")
+	}
+}
+
+func TestCurrentLauncherIdentityRequiresAllFields(t *testing.T) {
+	identity := Identity{IdentityVersion: IdentityVersion, BootNonce: "boot", LauncherPid: 42}
+	if err := identity.Validate("/tmp/root", "/tmp/root/agent-overflow"); err == nil {
+		t.Fatal("accepted current identity with incomplete launcher identity")
+	}
+}
+
+func TestCurrentLauncherIdentityRejectsFieldsWithoutPID(t *testing.T) {
+	identity := Identity{IdentityVersion: IdentityVersion, BootNonce: "boot", LauncherProfile: string(ModePerf)}
+	if err := identity.Validate("/tmp/root", "/tmp/root/agent-overflow"); err == nil {
+		t.Fatal("accepted launcher identity fields without a launcher pid")
+	}
+}
+
+func TestCurrentLauncherIdentityValidatesCrossBoundaryFields(t *testing.T) {
+	root := t.TempDir()
+	identity := Identity{
+		IdentityVersion:          IdentityVersion,
+		BootNonce:                "boot",
+		LauncherPid:              42,
+		LauncherProcessStartTime: "123",
+		LauncherExecutablePath:   `C:\\Agent\\agent-overflow.exe`,
+		LauncherProfile:          string(ModePerf),
+		LauncherDataRoot:         root,
+		LauncherWebviewProfile:   `C:\\Agent\\webview-perf`,
+		LauncherPIDNamespace:     "windows",
+	}
+	if err := identity.Validate(root, filepath.Join(root, "agent-overflow")); err != nil {
+		t.Fatalf("valid cross-boundary launcher identity rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*Identity){
+		"birth marker": func(i *Identity) { i.LauncherProcessStartTime = "not-a-number" },
+		"namespace":    func(i *Identity) { i.LauncherPIDNamespace = "linux" },
+		"profile":      func(i *Identity) { i.LauncherProfile = "prod" },
+		"data root":    func(i *Identity) { i.LauncherDataRoot = filepath.Join(root, "other") },
+	} {
+		copy := identity
+		mutate(&copy)
+		if err := copy.Validate(root, filepath.Join(root, "agent-overflow")); err == nil {
+			t.Errorf("accepted launcher identity with changed %s", name)
+		}
+	}
+}
+
+func TestIsAbsolutePathAcceptsWindowsLauncherPaths(t *testing.T) {
+	for _, path := range []string{`C:\\Agent\\agent-overflow.exe`, `\\\\server\\share\\webview`, "/tmp/webview"} {
+		if !IsAbsolutePath(path) {
+			t.Errorf("IsAbsolutePath(%q) = false", path)
+		}
+	}
+	for _, path := range []string{"C:relative.exe", "relative/webview", ""} {
+		if IsAbsolutePath(path) {
+			t.Errorf("IsAbsolutePath(%q) = true", path)
+		}
+	}
+}
+
+func TestSameLifecycleRejectsLauncherPIDChange(t *testing.T) {
+	a := Identity{IdentityVersion: IdentityVersion, ID: "0123abcd", BootNonce: "boot", LauncherPid: 1}
+	b := a
+	b.LauncherPid = 2
+	if a.SameLifecycle(b) {
+		t.Fatal("different launcher pid treated as one lifecycle")
 	}
 }

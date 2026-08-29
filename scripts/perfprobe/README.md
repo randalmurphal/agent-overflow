@@ -26,8 +26,13 @@ scripts/perfprobe/probe heapsnapshot before
 scripts/perfprobe/probe snapshot-detached /mnt/c/Users/<you>/AppData/Local/Temp/ao-perfprobe/heap-before.heapsnapshot
 AO_CDP_PORT=9224 scripts/perfprobe/probe sample --every 60 --for 3600
 AO_CDP_PORT=9226 scripts/perfprobe/probe webviewmem --for 600 --every-ms 1000
-scripts/perfprobe/probe realuse --for 86400 --every-ms 10000 --allow-user-app
+AO_PERFPROBE_MANIFEST=<supervisor instance manifest> \
+scripts/perfprobe/probe realuse --for 86400 --every-ms 10000
 ```
+
+The `AO_PERFPROBE_MANIFEST` setting applies to every online command in the
+examples above. It is a probe-ownership manifest, not the harness lifecycle
+`run-manifest.json`. Create one after the page is open as described below.
 
 Env:
 
@@ -37,18 +42,87 @@ Env:
   path after every online run so you can feed saved files back to the offline probes.
 - `AO_WINDOWS_NODE_EXE`: exact WSL path to Windows `node.exe`. Set this for a
   systemd user service whose restricted `PATH` cannot discover Windows programs.
+- `AO_PERFPROBE_MANIFEST`: supervisor-created JSON manifest for the exact
+  instance, loopback origin, page target ID, page marker, and shared probe lease.
+  Every online probe requires it. Direct script execution uses the same check.
+- `AO_PERFPROBE_LEASE`: optional lease directory override. The manifest's
+  `leasePath` wins when present.
+
+### Prepare a probe manifest
+
+Online probes refuse a bare CDP port. Before running one, bind the exact
+instance and page to a private manifest. This sequence is safe for the WSL
+perf shell, whose CDP port is 9226. Use 9224 for the soak shell.
+
+```sh
+INSTANCE="$HOME/.agent-overflow-perf"
+CDP_PORT=9226
+INFO_JSON="$(bin/ao-harness --instance "$INSTANCE" -o json info)"
+INSTANCE_ID="$(printf '%s' "$INFO_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+PAGE_ORIGIN="$(printf '%s' "$INFO_JSON" | python3 -c 'import json,sys; from urllib.parse import urlsplit; print(urlsplit(json.load(sys.stdin)["url"]).scheme + "://" + urlsplit(json.load(sys.stdin)["url"]).netloc)')"
+PAGE_MARKER="$(printf '%s' "$INFO_JSON" | python3 -c 'import json,sys; pages=json.load(sys.stdin)["info"].get("frontendPages", []); print(pages[0]["marker"] if len(pages)==1 else "")')"
+test -n "$PAGE_MARKER" || { echo "expected exactly one registered frontend page; inspect `bin/ao-harness --instance \"$INSTANCE\" -o json info`" >&2; exit 2; }
+
+# Query Windows loopback through node.exe and require exactly one page on the
+# selected backend origin with the selected harness page marker.
+NODE_EXE="${AO_WINDOWS_NODE_EXE:-node.exe}"
+TARGET_ID="$("$NODE_EXE" -e '
+const [origin, marker, port] = process.argv.slice(1);
+fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json()).then((pages) => {
+  const matches = pages.filter((p) => {
+    if (p.type !== "page" || !p.webSocketDebuggerUrl) return false;
+    const url = new URL(p.url);
+    return url.origin === origin && url.searchParams.get("page") === marker;
+  });
+  if (matches.length !== 1) throw new Error(`expected one owned page, found ${matches.length}`);
+  process.stdout.write(matches[0].id);
+}).catch((error) => { console.error(error.message); process.exitCode = 1; });
+' "$PAGE_ORIGIN" "$PAGE_MARKER" "$CDP_PORT")" || exit 1
+test -n "$TARGET_ID" || { echo "could not resolve the owned CDP page" >&2; exit 1; }
+
+MANIFEST_WSL="$(mktemp -p "$INSTANCE" ao-perfprobe-manifest.XXXXXX.json)"
+LEASE_DIR="$INSTANCE/perfprobe-leases"
+MANIFEST_WIN="$(wslpath -w "$MANIFEST_WSL")"
+LEASE_WIN="$(wslpath -w "$LEASE_DIR")"
+python3 - "$MANIFEST_WSL" "$INSTANCE_ID" "$PAGE_ORIGIN" "$PAGE_MARKER" "$TARGET_ID" "$LEASE_WIN" <<'PY'
+import json, pathlib, sys
+out, instance_id, origin, marker, target_id, lease = sys.argv[1:]
+pathlib.Path(out).write_text(json.dumps({
+    "instanceId": instance_id,
+    "origin": origin,
+    "target": {"targetId": target_id, "pageMarker": marker},
+    "leasePath": lease,
+}) + "\n")
+PY
+chmod 600 "$MANIFEST_WSL"
+export AO_CDP_PORT="$CDP_PORT" AO_PERFPROBE_MANIFEST="$MANIFEST_WIN"
+scripts/perfprobe/probe webviewmem --for 60 --every-ms 1000
+rm -f "$MANIFEST_WSL"
+```
+
+The manifest records no token. Keep it under the selected isolated root, do
+not reuse it after the page or backend restarts, and remove it when the probe
+ends. A new page target requires a new manifest. The probe lease directory is
+also instance-local, so separate worktrees cannot block one another.
+- `AO_PROBE_MAX_EVENT_BYTES`: maximum in-memory CDP event history per
+  connection, default 16 MiB. The connection fails loudly when exceeded.
+- `AO_PROBE_MAX_STREAM_BYTES`: maximum one streamed CDP result, default 512
+  MiB. This bounds traces and heap snapshots before they can exhaust the
+  probe process.
 
 No probe changes persisted app state. `scroll-contract` mounts an invisible
 offscreen scroller for one synchronous readback check and removes it before
 returning. `compositor-contract` reads computed styles and the layer tree of the
 mounted timeline. `ab` injects a CSS override and can drive synthetic wheel
-scrolling. It refuses port 9223 without `--allow-user-app` because that is the port
-of the app somebody is actually using.
+scrolling. Mutating probes require the supervisor manifest and have no user-app escape hatch.
+The supervisor manifest must name the exact instance even on a developer-selected
+port.
 
-Port 9223 also hard-refuses probes that install page observers/state, alter
-rendering, reload, click, type, or scroll. Run those against perf on 9226. The
-guard is central in `probe`, including for older scripts with no local refusal;
-read-only traces, profiles, process/DOM censuses, and screenshots remain allowed.
+The declarative policy in `lib/policy.mjs` classifies every online probe and
+refuses unlisted scripts or incompatible CDP instruments. The shared lease
+allows compatible counter/page-observer pairs and refuses competing trace,
+profiler, or mutating instruments. Ownership is revalidated before every CDP
+command, including after a target replacement.
 
 `realuse` is the deliberate consent-gated exception. It records focused and
 unfocused rAF gaps in fixed-size histograms, samples main-thread busy time once
@@ -57,9 +131,8 @@ polls cumulative Chromium task, heap, DOM, and per-process CPU counters. It does
 not record page text, URLs beyond the loopback origin, screenshots, input, or
 stack traces. Hidden intervals reset the frame clock, and gaps above two seconds
 are labeled as suspend/resume instead of dropped frames. The page state has a
-two-minute watchdog and is removed on a clean collector exit. Port 9223 requires
-the explicit `--allow-user-app` flag even though the monitor does not change
-rendering. `realuse-state` reports whether that page-side monitor remains armed.
+two-minute watchdog and is removed on a clean collector exit. `realuse-state`
+reports whether that page-side monitor remains armed.
 
 The JSONL appends one labeled session per collector restart. Summarize it,
 optionally joined with the exact-profile memory CSV, without attaching to the

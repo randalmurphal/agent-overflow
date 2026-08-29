@@ -38,12 +38,13 @@ will type either:
 | `--instance <id\|idPrefix\|dataRoot>` | which instance to act on (see resolution below); defaults to `$AO_HARNESS_INSTANCE` |
 | `--registry-dir <dir>` | override the discovery registry directory (tests) |
 | `-o <text\|json>` | output format; text is terse tables, json is stable |
+| `--page-id <id>` | exact attached frontend page for `ui`, `perf`, and `bench` commands |
 
 | Command | Purpose |
 |---|---|
 | `clone --from <real dataDir>` | build a harness data root from a scrubbed copy of a real app data dir; `--data-dir --force`. Does not boot |
-| `up` | boot a detached instance; `--window --soak --autopilot --data-dir --binary --mock-provider --dev-assets --keep-home --timeout` |
-| `down [--all]` | SIGTERM, then kill after 5s. On a Windows-launcher instance it then closes the launcher window too, via WSL interop against the `launcherPid` the backend published — after confirming the pid's image name is an agent-overflow launcher (see `launcher_kill.go`). Refusals are one operator note, never a failed command |
+| `up` | boot a detached instance; `--window --soak --autopilot --data-dir --binary --mock-provider --dev-assets --keep-home --timeout --memory-limit-bytes` |
+| `down [--all]` | SIGTERM, then kill after 5s. On a Windows-launcher instance it then closes the launcher window too, via WSL interop against the immutable launcher identity the backend published. The PID, birth marker, executable path, profile, data root, WebView profile, nonce, and namespace are checked before taskkill (see `launcher_kill.go`). Refusals are one operator note, never a failed command |
 | `list` | known instances, pruning rows whose process is gone |
 | `info` | identity, URL, and every evidence path |
 | `open [--browser]` | print the instance URL |
@@ -62,8 +63,97 @@ will type either:
 | `perf start\|stop\|status\|watch` | the perf meters |
 | `bench <workload>` | run a scripted workload with the meters armed and write a report |
 | `profile` | record a CPU profile of one scripted turn (needs a Chromium devtools endpoint) |
+| `artifacts list\|pin\|unpin\|clean` | host-global failed-run artifact retention; `clean --dry-run` reports candidates without deletion |
 | `health [--watch]` | roll one instance's liveness, errors, memory and mocks into a verdict |
 | `version` | this CLI's build stamp (`--version` answers the same, before any instance is resolved) |
+
+`up --soak` starts the soak backend mode. It does not start the Windows
+launcher. Use `make soak` for that launcher shell. `up --keep-home` leaves the
+real home visible to child processes only. The backend keeps provider state in
+the harness home, but a child provider, mock, or git process may read the
+developer's real home.
+
+`up` installs a hard per-instance memory boundary before exec. It defaults to
+600 MiB and can be lowered or raised with `--memory-limit-bytes` only when the
+host governor has capacity. Linux uses cgroup v2, Windows uses a Job Object,
+and macOS uses inherited `RLIMIT_DATA` plus the host-floor watchdog. Unsupported
+or unavailable platform enforcement fails the launch.
+
+`bench` is a borrowed-instance operation. It resets and mutates the selected
+harness, then leaves that instance running. Use `run --plan` for a fresh
+disposable run.
+
+### Managed run plans
+
+`run --plan` is the disposable entrypoint. A fresh plan owns an absent or
+empty `dataRoot`, applies the host memory ceiling, and writes its manifest
+before starting the adapter. Paths in a plan are absolute. `output` must be
+inside the run's derived artifact root, `<dataRoot>.artifacts/<runId>`.
+Set `preserveRoot` when the successful run's data root should remain for
+inspection. Failed fresh roots are retained in the artifact registry.
+
+Run a page-backed bench with a fresh root and keep the result:
+
+```json
+{
+  "version": 1,
+  "runId": "burst-check",
+  "workload": "burst-stream",
+  "dataRoot": "/tmp/ao-burst-check",
+  "instance": "/tmp/ao-burst-check",
+  "adapter": "bench",
+  "ownership": "fresh",
+  "window": true,
+  "preserveRoot": true,
+  "ceiling": { "maxPrivateBytes": 629145600 }
+}
+```
+
+```sh
+ao-harness run --plan /tmp/burst-check.json
+```
+
+Run a functional flow with a durable report path:
+
+```json
+{
+  "version": 1,
+  "runId": "functional-smoke",
+  "workload": "functional-smoke",
+  "dataRoot": "/tmp/ao-functional-smoke",
+  "adapter": "functional",
+  "scenario": "/absolute/path/to/flow.json",
+  "output": "/tmp/ao-functional-smoke.artifacts/functional-smoke/report.json",
+  "ownership": "fresh",
+  "ceiling": { "maxPrivateBytes": 629145600 }
+}
+```
+
+For a portable A/B capsule, use `adapter: "compare"`, set `capsule` to an
+absolute manifest path, and use a fresh `dataRoot`; the compare adapter makes
+its own disposable A/B roots. Do not point a fresh plan at a live or borrowed
+app root. Use the ordinary command verbs only when deliberately selecting a
+borrowed harness instance.
+
+`compare run --base-dir` is optional. When omitted, disposable A/B roots are
+created below the OS temporary directory. Set it when the roots need to remain
+on a specific volume or be inspected during the run. The directory must not
+overlap the immutable capsule or the real app data root.
+
+```json
+{
+  "version": 1,
+  "runId": "compare-check",
+  "workload": "replay",
+  "dataRoot": "/tmp/ao-compare-check",
+  "adapter": "compare",
+  "capsule": "/absolute/path/to/capsule/manifest.json",
+  "window": true,
+  "instrument": "perf",
+  "ownership": "fresh",
+  "ceiling": { "maxPrivateBytes": 629145600 }
+}
+```
 
 ### Exit codes
 
@@ -103,6 +193,16 @@ gets their instance back untouched.
   layout noise is not a finding), status and overlay changes.
 - `ui query <selector>` and `ui state <name> [json args]` are the
   element and globals query kinds.
+
+Frontend query results default to a 64 KiB JSON output budget. Use
+`--full` to allow a complete result on stdout or `--file <path>` to write
+the complete result without putting it in a terminal pipeline. Event tails
+default to 1,000 matching records on stdout. `--full` removes that event-count
+cap. `--file <path>` captures the complete stream without an event-count cap,
+with a 64 MiB byte bound by default. Use `--max-bytes` or `--timeout` to choose
+a different explicit safety bound. A bounded capture is reported as incomplete
+rather than as a full stream. These limits bound accidental output, not the
+saved UI snapshot or event ring.
 - `ui reload` and `ui open --thread <sel>` are the two page actions
   `bench` already performed internally, exposed because they are what a
   human debugging a live instance needs by hand: `reset` leaves the SPA
@@ -303,7 +403,7 @@ plausible fabricated dialect.
 The whole recipe:
 
 ```
-ao-harness clone --from ~/.local/share/agent-overflow
+ao-harness clone --from ~/.config/agent-overflow
 ao-harness up --data-dir <root the clone printed> --window
 ao-harness scenario from-thread --thread last --turns 3 --set
 ao-harness send --thread <id> --wait '<the recorded prompt>'

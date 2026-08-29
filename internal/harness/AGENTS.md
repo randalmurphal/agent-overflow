@@ -29,8 +29,14 @@ this file covers the package boundaries.
   root a reader must already be able to open — so a planted row can at
   worst name a path.
 - `scenario/` — the mock scenario document: `Parse`/`Validate`, step
-  types, `${VAR}` substitution, and the `//go:embed`-shipped library
-  (`library/*.json`) with `LoadLibrary` / `Library` / `DefaultName`.
+	types, `${VAR}` substitution, and the `//go:embed`-shipped library
+	(`library/*.json`) with `LoadLibrary` / `Library` / `DefaultName`.
+
+- `containment/` — OS-owned memory limits for harness launches. Linux uses
+  cgroup v2 or inherited `RLIMIT_DATA` when cgroup delegation is unavailable,
+  Windows uses a Job Object, and macOS uses inherited `RLIMIT_DATA` with the
+  governor host-floor backstop. It fails closed when no boundary can be
+  installed.
 
 ## Responsibility boundary
 
