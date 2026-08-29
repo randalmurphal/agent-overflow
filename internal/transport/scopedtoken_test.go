@@ -183,6 +183,16 @@ func TestAuthorizeScopedMethodByKindAndGrant(t *testing.T) {
 	}
 }
 
+func TestAuthorizeScopedMethodRefusesUnknownScopeKind(t *testing.T) {
+	frameErr := AuthorizeScopedMethod(CallerScope{Kind: "future"}, "WorkflowAgentRunStatus")
+	if frameErr == nil || frameErr.Code != ErrCodeInvalidScope {
+		t.Fatalf("unknown scope kind = %#v, want %s", frameErr, ErrCodeInvalidScope)
+	}
+	if !strings.Contains(frameErr.Message, `"future"`) {
+		t.Fatalf("unknown scope refusal does not name kind: %q", frameErr.Message)
+	}
+}
+
 // TestResolveGrantAdmitsTheHumanDecisionMethods pins the separation `resolve`
 // exists for: a phase that may start work and stop it is not thereby allowed to
 // answer the decision its author routed to a human. The row-level half — which
@@ -335,6 +345,18 @@ func TestScopedRPCRouteAuthorizesAndRevokes(t *testing.T) {
 	status, _ = postScoped(t, server, "never-minted", "WorkflowAgentRunStatus", "item")
 	if status != http.StatusUnauthorized {
 		t.Fatalf("unknown token status = %d, want 401", status)
+	}
+}
+
+func TestScopedRPCRouteRefusesUnknownScopeKind(t *testing.T) {
+	server, _, registry := newScopedRPCServer(t)
+	registry.put("future-token", CallerScope{Kind: "future", ThreadID: "t", ProjectID: "p"})
+	status, frame := postScoped(t, server, "future-token", "WorkflowAgentRunStatus", "item")
+	if status != http.StatusOK {
+		t.Fatalf("unknown scope status = %d, want 200", status)
+	}
+	if frame.Error == nil || frame.Error.Code != ErrCodeInvalidScope {
+		t.Fatalf("unknown scope frame = %#v, want %s", frame, ErrCodeInvalidScope)
 	}
 }
 
