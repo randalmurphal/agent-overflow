@@ -10,7 +10,7 @@ overrides:
 
 patchedDependencies:
   '@lucide/svelte@1.28.0':
-    hash: 97f1c648f901b14e16ed4740719d4f1167695e75ddbc6c8da0f2f09fefe468af
+    hash: 4d132e4e3de3462a6741fa152891c8a7661e729b2f4b85fdb34195480491c552
     path: patches/@lucide__svelte@1.28.0.patch
   marked@16.4.2:
     hash: af17897d1897ae056bb246a4cedfb41eaf25095f07b76c2d9b5589fd8f9cc119
@@ -31,7 +31,7 @@ importers:
         version: 5.3.0
       '@lucide/svelte':
         specifier: 1.28.0
-        version: 1.28.0(patch_hash=97f1c648f901b14e16ed4740719d4f1167695e75ddbc6c8da0f2f09fefe468af)(svelte@5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b))
+        version: 1.28.0(patch_hash=4d132e4e3de3462a6741fa152891c8a7661e729b2f4b85fdb34195480491c552)(svelte@5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b))
       '@wailsio/runtime':
         specifier: 3.0.0-beta.1
         version: 3.0.0-beta.1
@@ -1708,7 +1708,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@lucide/svelte@1.28.0(patch_hash=97f1c648f901b14e16ed4740719d4f1167695e75ddbc6c8da0f2f09fefe468af)(svelte@5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b))':
+  '@lucide/svelte@1.28.0(patch_hash=4d132e4e3de3462a6741fa152891c8a7661e729b2f4b85fdb34195480491c552)(svelte@5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b))':
     dependencies:
       svelte: 5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b)
 

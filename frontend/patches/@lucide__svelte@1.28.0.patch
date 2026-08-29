@@ -2,7 +2,7 @@ diff --git a/dist/Icon.svelte b/dist/Icon.svelte
 index 1f65faa12e726bc6a6e8f834986131a02177b7d5..b10315854eeab66c48405408e8b6e6056d063c36 100644
 --- a/dist/Icon.svelte
 +++ b/dist/Icon.svelte
-@@ -1,26 +1,100 @@
+@@ -1,26 +1,99 @@
 -<script lang="ts">import defaultAttributes from './defaultAttributes.js';
 +<script lang="ts" module>
 +// AGENT OVERFLOW PATCH (mask-icons): render every lucide icon as a CSS-mask
@@ -15,9 +15,8 @@ index 1f65faa12e726bc6a6e8f834986131a02177b7d5..b10315854eeab66c48405408e8b6e605
 +// such node on the next cache walk (measured: 72% of Oilpan churn in a
 +// scroll-heavy window). Each <svg> also joins the document's SMIL
 +// time-container list, which Blink copies once per animation frame. A
-+// mask-sprite span has neither cost and is pixel-equivalent at these sizes
-+// (measured mean diff ~1/255 for the mask conversion; sprite refs paint
-+// identically — spritecheck3/4 probes).
++// mask-sprite span has neither cost and preserves the same CSS geometry at
++// these sizes. Soak rig layout and compositor probes cover the conversion.
 +//
 +// The span carries no inline background/mask-mode styling: the app stylesheet
 +// owns those via `.lucide-icon` (background-color: currentColor; mask:
