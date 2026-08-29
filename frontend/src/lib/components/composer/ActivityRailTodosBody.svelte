@@ -13,6 +13,7 @@
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import Circle from '@lucide/svelte/icons/circle';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
 
   interface Props {
     liveTodo: LiveTodo;
@@ -44,6 +45,19 @@
 
   let visibleSteps = $derived(
     showAll ? sortedSteps : sortedSteps.slice(0, TODO_TRUNCATION_LIMIT),
+  );
+
+  // Step ids are provider-authored and truncated to 64 runes by triage
+  // (internal/triage/task_state.go), so two long ids can collide after the
+  // cut — and a repeated key in a keyed `{#each}` throws
+  // `each_key_duplicate`, aborting the whole update flush
+  // (utils/uniqueEachKeys.ts). The `id:`/`i:` prefixes keep the id
+  // namespace disjoint from the id-less fallback, so a step literally
+  // named "2" can never collide with an id-less step at index 2.
+  let visibleStepKeys = $derived(
+    uniqueEachKeys(visibleSteps, (entry) =>
+      entry.step.id != null ? `id:${entry.step.id}` : `i:${entry.originalIndex}`,
+    ),
   );
   let hiddenCount = $derived(Math.max(0, sortedSteps.length - visibleSteps.length));
   let hasOverflow = $derived(sortedSteps.length > TODO_TRUNCATION_LIMIT);
@@ -91,7 +105,7 @@
     {summaryLabel}
   </div>
   <ul class="flex flex-col gap-0.5 pl-1" data-testid="activity-rail-todos-list">
-    {#each visibleSteps as entry (entry.step.id ?? entry.originalIndex)}
+    {#each visibleSteps as entry, entryIndex (visibleStepKeys[entryIndex] ?? entryIndex)}
       <li class="flex flex-wrap items-start gap-x-1.5 gap-y-px py-px text-[0.75rem] leading-snug">
         {#if entry.step.status === 'inProgress'}
           <SteppedSpinner

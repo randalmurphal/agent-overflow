@@ -1139,6 +1139,11 @@ export function createUseStickToBottomController(
     get escapedFromLock() {
       return escapedFromLockState;
     },
+    // Scroll-event ATTRIBUTION, not follow gating — see the interface doc
+    // for why this must not fold in pauseDepth the way isSticky does.
+    get positionOwnerDriven() {
+      return !escapedFromLockState;
+    },
     get isWarm() {
       return warm;
     },

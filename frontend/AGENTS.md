@@ -578,6 +578,21 @@ paths that never run in production.
   component split exists.
 - Do NOT put business logic in templates. Derive in `<script>`, render in
   the template.
+- Do NOT leave a template expression inside a nullable-guarded `{#if}`
+  branch partial. Every expression that dereferences the guarded value must
+  be TOTAL — optional-chained with a neutral default, or a single `$derived`
+  that folds the other inputs and null-checks internally. An attribute or
+  text effect carrying a SECOND reactive dep re-runs on that dep, and it can
+  be asked to render after the guarded value went null but before the branch
+  condition tears the branch down; TypeScript's narrowing hides it entirely.
+  The extra dep is usually the culprit rather than a bystander — it is what
+  nulls the value. `MessageNavRail`'s preview card read `previewAnchor.y`
+  beside `railTop` and crashed in production (2026-08-29); it now reads one
+  folded `previewCard` through `?.`. The guard is a SOURCE rule,
+  `nullableGuardTotality.test.ts`, because an ordinary flush is parent-first
+  and destroys the branch first — only a tree-order violation (a nested
+  `flushSync` inside `update_effect`, the `flush-caps` mid-pass abort)
+  exposes it, so no component test can stage the class.
 - Do NOT call `window.runtime` directly. Use `stores/bindings.ts`.
 - Do NOT preload heavy payloads.
 - Do NOT statically import conditional feature surfaces from eager code.

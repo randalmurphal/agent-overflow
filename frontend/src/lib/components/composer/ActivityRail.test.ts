@@ -791,6 +791,46 @@ describe('<ActivityRail>', () => {
     expect(fetches).toBe(baseline);
   });
 
+  // The production defect the refresh scheduler replaced (2026-08-29): the
+  // pill read 10 while the truth was 3-4. Background upserts arrive per wire
+  // round, so while any pane streams the gaps between them stay under the
+  // coalescing delay — and a TRAILING debounce restarts its timer on every
+  // one, so the refetch that would have corrected the count never ran at all.
+  // The count here must converge while the stream is still going, not after
+  // it stops.
+  it('corrects the Background count under an unbroken upsert stream', async () => {
+    vi.useFakeTimers();
+    let live = [
+      backgroundLaunch({ id: 'bg-1' }),
+      backgroundLaunch({ id: 'bg-2' }),
+      backgroundLaunch({ id: 'bg-3' }),
+    ];
+    setBindingMock('ListLiveBackgroundTasks', async () => live);
+    const pane = await buildPane();
+
+    const { getByTestId } = render(ActivityRailHost, { props: { pane } });
+    await vi.advanceTimersByTimeAsync(0);
+    await tick();
+    expect(getByTestId('activity-rail-background-count').textContent?.trim()).toBe('3');
+
+    // Two of the three finish, and the stream never pauses: a background
+    // upsert every 60ms — inside the 100ms coalescing delay — from here on.
+    live = [backgroundLaunch({ id: 'bg-1' })];
+    for (let i = 0; i < 10; i += 1) {
+      applyItemStreamEvent({
+        action: 'upsert',
+        threadId: pane.threadId!,
+        item: backgroundLaunch({ id: `bg-stream-${i}`, itemIndex: i + 1 }),
+      });
+      flushItemEventQueue();
+      await vi.advanceTimersByTimeAsync(60);
+      await tick();
+    }
+
+    // 600ms of unbroken stream, and the pill agrees with the backend.
+    expect(getByTestId('activity-rail-background-count').textContent?.trim()).toBe('1');
+  });
+
   it('projects a direct Codex child tool without re-fetching the tray', async () => {
     vi.useFakeTimers();
     let fetches = 0;

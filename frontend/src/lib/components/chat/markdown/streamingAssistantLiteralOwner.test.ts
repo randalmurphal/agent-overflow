@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import {
+  attachStreamdownLiteralHost,
+  type StreamdownLiteralHostHandle,
+} from 'svelte-streamdown';
+import {
   AllowlistedPathCompletionGuard,
-  createStreamingAssistantDomSink,
-} from './streamingAssistantDomSink';
+  createStreamingAssistantLiteralOwner,
+} from './streamingAssistantLiteralOwner';
 import type {
   StreamingAssistantParserCheckpoint,
   StreamingAssistantRevealSink,
 } from '../../../stores/streamingAssistantReveal';
-import StreamingAssistantDomSinkHarness from './StreamingAssistantDomSinkHarness.svelte';
+import StreamingAssistantLiteralOwnerHarness from './StreamingAssistantLiteralOwnerHarness.svelte';
 
 function checkpointForSource(source: string): StreamingAssistantParserCheckpoint {
   let tailEnd = source.length;
@@ -53,22 +57,39 @@ function restoreLiteral(
   );
 }
 
+/**
+ * The production shape of an active literal host: the span renders EMPTY and
+ * the vendored controller (divergence 21) is the single writer of its
+ * children. `publish` is the authoritative parser update the renderer makes;
+ * `base` is the node the controller created for it, which the owner adopts
+ * rather than replaces.
+ */
 function makeRoot(text = 'seed'): {
   root: HTMLElement;
   host: HTMLSpanElement;
   base: Text;
+  handle: StreamdownLiteralHostHandle;
+  publish(next: string): void;
 } {
   const root = document.createElement('div');
   const volatile = document.createElement('div');
   volatile.className = 'md-volatile';
   const host = document.createElement('span');
   host.dataset.streamdownDirectAppendSafe = '';
-  const base = document.createTextNode(text);
-  host.append(base);
   volatile.append(host);
   root.append(volatile);
   document.body.append(root);
-  return { root, host, base };
+  const handle = attachStreamdownLiteralHost(host);
+  handle.publish({}, text);
+  return {
+    root,
+    host,
+    base: host.firstChild as Text,
+    handle,
+    // A fresh token is what a re-lex produces: equal text under a new token is
+    // still a structural change the controller has to reconcile.
+    publish: (next: string) => handle.publish({}, next),
+  };
 }
 
 function expectGraphemeSafeNodeCuts(nodes: readonly Text[]): void {
@@ -84,10 +105,10 @@ function expectGraphemeSafeNodeCuts(nodes: readonly Text[]): void {
   }
 }
 
-describe('streaming assistant DOM sink', () => {
-  it('removes direct text without mutating the Svelte node on a consistent reset', () => {
+describe('streaming assistant literal owner', () => {
+  it('relinquishes the run on reset without removing any visible byte', () => {
     const { root, host, base } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -98,15 +119,124 @@ describe('streaming assistant DOM sink', () => {
     expect(base.data).toBe('seed');
     expect(host.childNodes).toHaveLength(2);
 
+    // The old sink deleted its siblings here, ahead of a Svelte flush that had
+    // not happened yet — the visible string shrank back to the parser
+    // checkpoint until the authoritative render caught up. Reset now
+    // relinquishes the RUN only.
     sink.reset();
-    expect(host.textContent).toBe('seed');
-    expect(host.childNodes).toHaveLength(1);
+    expect(host.textContent).toBe('seed next');
+    expect(host.childNodes).toHaveLength(2);
     expect(host.firstChild).toBe(base);
     root.remove();
   });
 
+  it('extends in place when the authoritative update continues what it painted', () => {
+    const { root, host, base, publish } = makeRoot();
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    expect(canAppendLiteral(sink, 'seed ', 'seed next ', 'next ')).toBe(true);
+    sink.appendLiteral('seed next ', 'next ');
+    const revealed = host.lastChild as Text;
+    sink.reset();
+
+    // The ordinary punctuation/structure fallback: the parser has caught up
+    // with exactly what the reveal already painted, plus its own new bytes.
+    publish('seed next word.');
+
+    expect(host.textContent).toBe('seed next word.');
+    // Nothing was torn down to get there: the nodes already on screen are the
+    // SAME nodes, so no reader can have observed a shorter string.
+    expect(host.firstChild).toBe(base);
+    expect(base.data).toBe('seed');
+    expect(Array.from(host.childNodes)).toContain(revealed);
+    root.remove();
+  });
+
+  it('replaces a diverging authoritative update through the atomic primitive', () => {
+    const { root, host, publish } = makeRoot();
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    expect(canAppendLiteral(sink, 'seed ', 'seed next longer ', 'next longer ')).toBe(true);
+    sink.appendLiteral('seed next longer ', 'next longer ');
+    sink.reset();
+
+    // `replaceChildren` is the divergence primitive: the DOM `replace all`
+    // algorithm queues ONE record carrying both the removals and the addition,
+    // so no reader can see between the two halves. That RECORD-level guarantee
+    // is a real-engine property — happy-dom decomposes the call into separate
+    // records — and is asserted in
+    // `ChatMarkdown.directRevealMonotonic.browser.test.ts`. What this test
+    // pins is that the owner reaches for that primitive at all, instead of
+    // removing its nodes and appending replacements.
+    const replaceChildren = vi.spyOn(host, 'replaceChildren');
+    let replaceCalls: unknown[][] = [];
+    try {
+      // Shorter than what is painted, so it cannot be reached by extending —
+      // the genuine-divergence branch (a trimmed final summary).
+      publish('seed trimmed');
+      // Read the call log BEFORE restoring: `mockRestore` resets it.
+      replaceCalls = replaceChildren.mock.calls.map((call) => [...call]);
+    } finally {
+      replaceChildren.mockRestore();
+    }
+
+    expect(host.textContent).toBe('seed trimmed');
+    // One call, carrying the whole authoritative leaf as a single node.
+    expect(replaceCalls).toHaveLength(1);
+    expect(replaceCalls[0]).toHaveLength(1);
+    expect((replaceCalls[0][0] as Text).data).toBe('seed trimmed');
+    root.remove();
+  });
+
+  it('hands ownership back when the host detaches, in one task', async () => {
+    const { root, host, handle } = makeRoot();
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    expect(canAppendLiteral(sink, 'seed ', 'seed next ', 'next ')).toBe(true);
+    sink.appendLiteral('seed next ', 'next ');
+    expect(handle.owned).toBe(true);
+
+    // Settle: the vendored host unmounts and releases its owner. Ownership
+    // returns to the renderer with the reveal's bytes still on screen — the
+    // settled static render is what replaces them, in its own flush.
+    handle.detach();
+    await Promise.resolve();
+
+    expect(handle.owned).toBe(false);
+    expect(host.textContent).toBe('seed next');
+    // The released owner must not keep writing through a host it no longer
+    // holds.
+    expect(canAppendLiteral(sink, 'seed next ', 'seed next again ', 'again ')).toBe(false);
+    root.remove();
+  });
+
+  it('takes ownership of the host when a run starts and keeps the renderer out', () => {
+    const { root, host, handle, publish } = makeRoot();
+    const sink = createStreamingAssistantLiteralOwner({
+      getRoot: () => root,
+      canAppendSource: () => true,
+    });
+    expect(handle.owned).toBe(false);
+
+    expect(canAppendLiteral(sink, 'seed ', 'seed next ', 'next ')).toBe(true);
+    expect(handle.owned).toBe(true);
+    sink.appendLiteral('seed next ', 'next ');
+
+    // While owned, an authoritative update is routed THROUGH the owner rather
+    // than rendered by the controller, so the revealed suffix survives it.
+    publish('seed next more');
+    expect(host.textContent).toBe('seed next more');
+    root.remove();
+  });
+
   it('does not desynchronize Svelte text when an authoritative leaf stays unchanged', async () => {
-    const view = render(StreamingAssistantDomSinkHarness);
+    const view = render(StreamingAssistantLiteralOwnerHarness);
     const harness = view.component as unknown as {
       append(source: string, nextSource: string, delta: string): boolean;
       resetAndRender(text: string): Promise<void>;
@@ -124,7 +254,7 @@ describe('streaming assistant DOM sink', () => {
     const segment = vi.spyOn(Intl.Segmenter.prototype, 'segment');
     try {
       const { root, host } = makeRoot();
-      const sink = createStreamingAssistantDomSink({
+      const sink = createStreamingAssistantLiteralOwner({
         getRoot: () => root,
         canAppendSource: () => true,
       });
@@ -146,35 +276,34 @@ describe('streaming assistant DOM sink', () => {
     }
   });
 
-  it('clears owned nodes and state when direct-node removal fails', () => {
-    const { root, host, base } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+  it('starts a fresh run against its own painted text after a fallback', () => {
+    const { root, host } = makeRoot();
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
     expect(canAppendLiteral(sink, 'seed ', 'seed next ', 'next ')).toBe(true);
     sink.appendLiteral('seed next ', 'next ');
-    const direct = host.childNodes.item(1) as Text;
-    direct.remove = () => { throw new Error('remove failed'); };
 
-    expect(() => sink.reset()).toThrow('remove failed');
-    expect(host.childNodes).toHaveLength(1);
-    expect(host.firstChild).toBe(base);
-
-    // The authoritative render that follows a reset owns the base node. Once
-    // it lands, this same sink can start a fresh literal run.
-    base.data = 'seed next';
+    // A fallback relinquishes the run but leaves the bytes. The owner still
+    // holds the host, so the next run adopts what IT painted — there is no
+    // authoritative render in between to wait for. This is the whole
+    // difference from the old sink, which needed Svelte to restate the text
+    // before it could append again.
+    sink.reset();
     expect(canAppendLiteral(sink,
       'seed next ',
       'seed next again ',
       'again ',
     )).toBe(true);
+    sink.appendLiteral('seed next again ', 'again ');
+    expect(host.textContent).toBe('seed next again');
     root.remove();
   });
 
   it('rejects a host changed between direct appends', () => {
     const { root, base } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -193,7 +322,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('rejects an incomplete-parser suffix inside the trailing text leaf', () => {
     const { root } = makeRoot('Term\n: detail:');
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -209,7 +338,7 @@ describe('streaming assistant DOM sink', () => {
   it('adopts a matching non-ASCII parser tail without inspecting the canonical rope', () => {
     const source = 'Prefix café 東京 👩‍💻 ';
     const { root, host } = makeRoot(source.trimEnd());
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -255,7 +384,7 @@ describe('streaming assistant DOM sink', () => {
   it('restores sink-owned text onto a remounted parser checkpoint', () => {
     const first = makeRoot();
     let root = first.root;
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -280,7 +409,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('restores pending spaces without displaying a trailing whitespace node', () => {
     const { root, host } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -300,7 +429,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('does not duplicate source whitespace already present in the parser host', () => {
     const { root, host } = makeRoot('seed ');
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -315,7 +444,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('rejects a parser host with trailing whitespace absent from the source', () => {
     const { root } = makeRoot('seed  ');
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -326,7 +455,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('never splits a Unicode code point across bounded direct Text nodes', () => {
     const { root, host } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -349,7 +478,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('lets an unbroken word exceed the node bound instead of splitting its shaping run', () => {
     const { root, host } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -384,7 +513,7 @@ describe('streaming assistant DOM sink', () => {
     clusterEnd,
   ) => {
     const { root, host } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -412,7 +541,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('allows one grapheme to exceed the nominal node bound rather than splitting it', () => {
     const { root, host } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });
@@ -432,7 +561,7 @@ describe('streaming assistant DOM sink', () => {
 
   it('rejects a restore whose delta proof does not cover the canonical source', () => {
     const { root, host } = makeRoot();
-    const sink = createStreamingAssistantDomSink({
+    const sink = createStreamingAssistantLiteralOwner({
       getRoot: () => root,
       canAppendSource: () => true,
     });

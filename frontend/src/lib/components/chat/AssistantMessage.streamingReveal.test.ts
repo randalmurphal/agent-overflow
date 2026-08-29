@@ -423,7 +423,14 @@ describe('assistant streaming reveal integration', () => {
     const authoritativeHost = view.container.querySelector(
       '[data-streamdown-direct-append-safe]',
     );
-    expect(authoritativeHost?.childNodes).toHaveLength(1);
+    // The host presents the whole canonical tail exactly once. How many
+    // bounded Text nodes carry it is the literal owner's business — the render
+    // context change relinquishes the RUN, and an authoritative update that
+    // merely extends what the reveal already painted appends to those nodes
+    // rather than collapsing the leaf (divergence 21). Asserting a node count
+    // here is what a delete-then-rebuild reset used to guarantee, and that
+    // rebuild is the rollback the single owner exists to remove.
+    expect(authoritativeHost?.textContent).toBe('first words paint directly');
   });
 
   it('keeps the volatile markdown tree bounded across direct literal runs', async () => {

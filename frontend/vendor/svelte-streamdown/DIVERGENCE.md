@@ -424,8 +424,9 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     the getters read. Upstream perf bug, upstream-PR candidate.
     Regression: `markdown/streamdownThemeMemo.test.ts` (identity stable
     across reads, re-mints on theme prop change).
-21. **the active trailing literal leaf has an append marker**
-    (`Streamdown.svelte`, `Block.svelte`). A streaming prose update used
+21. **the active trailing literal leaf has ONE imperative owner**
+    (`Streamdown.svelte`, `Block.svelte`, `LiteralHost.svelte`,
+    `literal-host.ts`). A streaming prose update used
     to replace the whole assistant row and run Svelte, block splitting,
     marked, style, and layout for every revealed word. The active volatile
     block now marks only its final text leaf when every token on that path is
@@ -435,22 +436,58 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     markdown. Table pipes, row breaks, alignment markers, and rowspan carets
     remain structural deltas. Links and unknown extension tokens are excluded.
     The marker does not alter settled output and `display:
-    contents` adds no layout box. App code owns all appended nodes and removes
-    them before fallback, so the vendored renderer never has to reconcile DOM
-    it did not create. The pane updates the raw canonical row in place while
+    contents` adds no layout box.
+
+    **The marked leaf is rendered by a controller, never by Svelte.**
+    `LiteralHost.svelte` renders an EMPTY span and attaches
+    `literal-host.ts`'s controller, which is the single writer of that
+    element's children; the renderer publishes the parser's authoritative
+    leaf text INTO it (`publish(token, text)`) instead of rendering a Text
+    node of its own. An app-side owner may `adopt` the element and take over
+    presentation while it streams, and an authoritative update is then routed
+    through that owner rather than written behind its back. Adoption mutates
+    nothing — the owner inherits exactly what is on screen. Token identity is
+    half the update proof: equal text under a NEW token is a structural change
+    that still reconciles, and the same token with the same text is an
+    unrelated rerender that must not disturb a live revealed suffix.
+
+    This replaces the previous split ownership, and the previous claim that
+    app code "owns all appended nodes and removes them before fallback" is
+    now FALSE by design. Two writers on one visible text run was a defect,
+    not a division of labour: the app deleted its appended siblings in one
+    task and Svelte re-extended its own parser-owned node in a later one, so
+    the visible string shrank back to an older parser checkpoint and regrew.
+    A `MutationObserver` repro caught three such rollbacks in one paragraph
+    reveal (a long prefix dropping back to `The hour-long`). Chromium
+    coalesces that before the next frame; WebView2 is allowed to present it,
+    which is what the user saw as a settle flicker and an extra line of text
+    at completion. The rule both writers are now held to is ownership, not
+    timing: **the visible string only ever EXTENDS, until a genuine
+    divergence replaces it in a single mutation record.** A fallback
+    relinquishes the RUN and never deletes visible bytes; `replaceChildren`
+    is the divergence primitive because the DOM `replace all` algorithm
+    queues ONE record carrying both the removals and the addition, so no
+    reader can observe between the two halves.
+
+    The pane updates the raw canonical row in place while
     every mounted assistant-body projection receives the same suffix. This
     keeps imperative reads and later mounts current without waking Streamdown.
-    App-side ownership resets that checkpoint on source, metadata, workspace,
-    view-only, streaming-mode, and volatile-tail changes, and restores its
-    literal suffix if another visible projection remounts. The sink rejects
+    App-side ownership relinquishes that checkpoint on source, metadata,
+    workspace, view-only, streaming-mode, and volatile-tail changes, and
+    restores its literal suffix if another visible projection remounts. The
+    owner rejects
     incomplete-parser leaves whose text contains a synthetic trailing byte,
     and path-link completion scans only a bounded crossing tail. Host-specific
     performance extension, not an upstream bug. Drop it if upstream exposes an
-    equivalent incremental trailing-leaf hook. Regression:
+    equivalent incremental trailing-leaf hook — an upstream hook must offer
+    the same single-owner guarantee, not merely an append point. Regression:
     `ChatMarkdown.directRevealDifferential.test.ts`,
+    `ChatMarkdown.directRevealMonotonic.browser.test.ts` (mutation-level
+    monotonicity: the rollback class, red against a reintroduced
+    delete-before-write),
     `ChatMarkdown.directRevealSelection.browser.test.ts`, and
     `AssistantMessage.streamingReveal.test.ts`, plus
-    `markdown/streamingAssistantDomSink.test.ts` and
+    `markdown/streamingAssistantLiteralOwner.test.ts` and
     `stores/streamingAssistantReveal.test.ts` for ownership transitions.
 22. **default completed blocks use one compact fixed-tag owner**
     (`Streamdown.svelte`, `CompactBlocks.svelte`, `document-interaction.ts`,

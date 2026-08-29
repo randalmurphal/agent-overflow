@@ -35,6 +35,9 @@
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     onCompensation?: (compensation: EngineCompensation) => void;
+    /** Wired through the handle's `subscribeContentGeometry` (the
+     * production component no longer has a geometry prop); the fixture
+     * keeps the prop shape so suites stay declarative. */
     onContentGeometry?: (sample: ContentGeometrySample) => void;
     trackReadingAnchor?: () => boolean;
     /** Called from a template expression inside the row snippet, so it
@@ -124,6 +127,13 @@
     onRowRender?.(id);
     return '';
   }
+
+  $effect(() => {
+    const cb = onContentGeometry;
+    const list = listRef;
+    if (!cb || !list) return;
+    return list.subscribeContentGeometry(cb);
+  });
 </script>
 
 <!-- The fixed viewport lives on the HOST, not the scroller: a
@@ -151,7 +161,6 @@
     {onscroll}
     {onscrollend}
     {onCompensation}
-    {onContentGeometry}
     {trackReadingAnchor}
     {applyScrollTarget}
     headerSize={currentHeaderSize}

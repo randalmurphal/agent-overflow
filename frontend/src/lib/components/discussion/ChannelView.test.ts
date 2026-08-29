@@ -392,7 +392,7 @@ describe('<ChannelView>', () => {
   });
 
   it('retry does not race itself: a slower first retry cannot clobber a newer one', async () => {
-    // retryInitialLoad must claim a fresh generation. Reusing the
+    // beginInitialLoad must claim a fresh generation. Reusing the
     // current one let two rapid Retry clicks run two un-cancellable
     // concurrent loads with the SLOWER resolver winning — a stale
     // failure landing after the newer retry's success re-raised the
@@ -438,6 +438,58 @@ describe('<ChannelView>', () => {
 
     expect(queryByText(/failed to load channel/i)).toBeNull();
     expect(await findByText('second retry wins')).toBeInTheDocument();
+    consoleErr.mockRestore();
+  });
+
+  it('re-arms the restore consent on Retry so a recovered channel still lands at the bottom', async () => {
+    // The restore-snap consent is ONE-SHOT: the failed attempt's own
+    // post-load forceStick({reason:'restore'}) already spent the arm the
+    // mount edge put up. Retry used to bump only the generation, so it
+    // reached the controller's consent gate empty and the forceStick was
+    // refused — a freshly loaded channel rendered at whatever offset the
+    // reader's intervening gesture left, with the escape still standing
+    // and follow frozen. Same class as the 2026-08-29 chat incident: a
+    // lifecycle edge inferred from leftover state instead of stated.
+    let callCount = 0;
+    setBindingMock('GetChannelMessages', async () => {
+      callCount++;
+      if (callCount === 1) throw new Error('rpc-down');
+      return [makeMsg({ sequence: 0, content: 'recovered' })];
+    });
+    const pane = await buildPane();
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getByRole, getByTestId, queryByTestId, findByText } = render(ChannelView, {
+      props: { pane, channelId: 'channel-1' },
+    });
+    const scroll = getByTestId('channel-message-list') as HTMLElement;
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, get: () => 1000 });
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, get: () => 600 });
+
+    // Attempt 1 fails. Its own forceStick still ran (the finally is
+    // unconditional), consuming the mount arm and clearing the escape.
+    await settleInitialLoad();
+    expect(await findByText(/failed to load channel/i)).toBeInTheDocument();
+
+    // The reader scrolls up while the banner is showing, standing the
+    // escape back up and clearing at-bottom.
+    scroll.scrollTop = 400;
+    await fireEvent.wheel(scroll, { deltaY: -100 });
+    scroll.scrollTop = 200;
+    await fireEvent.scroll(scroll);
+    await vi.advanceTimersByTimeAsync(16);
+    await tick();
+    for (let i = 0; i < 3; i++) await Promise.resolve();
+    expect(getByTestId('scroll-to-bottom')).toBeInTheDocument();
+
+    await fireEvent.click(getByRole('button', { name: /retry/i }));
+    await settleInitialLoad();
+
+    // Retry re-armed, so the post-load forceStick was admitted: bottom
+    // target = 1000 - 600, escape cleared, chip gone. Without the re-arm
+    // scrollTop stays at 200 and the chip stays up.
+    expect(await findByText('recovered')).toBeInTheDocument();
+    expect(scroll.scrollTop).toBe(400);
+    expect(queryByTestId('scroll-to-bottom')).toBeNull();
     consoleErr.mockRestore();
   });
 

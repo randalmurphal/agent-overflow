@@ -142,9 +142,17 @@ export function mergeNavTicks(
 ): MergedNavTicks {
   const ticks: NavTick[] = [];
   const asUnloaded = (t: BaselineTick): NavTick => ({ ...t, nodeIndex: null });
+  // Belt and braces on top of the position bounds: the baseline is a
+  // point-in-time RPC snapshot, so an id the window has since loaded can
+  // sit at a stale position OUTSIDE the bounds (an edit-and-resend moved
+  // it). The rail keys its `{#each}` by tick id, and a repeated key
+  // throws `each_key_duplicate` mid-flush — one stale snapshot must
+  // never cost the pane its update batch.
+  const loadedIds = new Set(loaded.map((t) => t.id));
   if (hasMoreHistory && windowFirst) {
     for (const t of baseline) {
       if (comparePosition(t, windowFirst) >= 0) break;
+      if (loadedIds.has(t.id)) continue;
       ticks.push(asUnloaded(t));
     }
   }
@@ -154,6 +162,7 @@ export function mergeNavTicks(
   if (hasMoreNewer && windowLast) {
     for (const t of baseline) {
       if (comparePosition(t, windowLast) <= 0) continue;
+      if (loadedIds.has(t.id)) continue;
       ticks.push(asUnloaded(t));
     }
   }

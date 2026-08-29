@@ -41,6 +41,7 @@
 		type StreamdownToken
 	} from './marked/index.js';
 	import AnimatedText from './AnimatedText.svelte';
+	import LiteralHost from './LiteralHost.svelte';
 	import { useStreamdown } from './context.svelte.js';
 	import { renderStaticTokenHtml } from './static-html.js';
 	import { getContext } from 'svelte';
@@ -103,9 +104,7 @@
 					{#if streamdown.animation.enabled && !insidePopover && !isStatic}
 						<AnimatedText text={token.text || ''} />
 					{:else if isTrailingToken && isSafeTokenPath}
-						<span data-streamdown-direct-append-safe style="display: contents">
-							{token.text}
-						</span>
+						<LiteralHost text={token.text || ''} {token} />
 					{:else}
 						{token.text}
 					{/if}
@@ -299,9 +298,7 @@
 						{#if streamdown.animation.enabled && !insidePopover && !isStatic}
 							<AnimatedText text={'text' in token ? token.text || '' : ''} />
 						{:else if isTrailingToken && isSafeTokenPath}
-							<span data-streamdown-direct-append-safe style="display: contents">
-								{'text' in token ? token.text : ''}
-							</span>
+							<LiteralHost text={('text' in token ? token.text : '') || ''} {token} />
 						{:else}
 							{'text' in token ? token.text : ''}
 						{/if}

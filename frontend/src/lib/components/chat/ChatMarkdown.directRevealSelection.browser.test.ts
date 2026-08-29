@@ -7,6 +7,24 @@ type Harness = {
   append(delta: string): Promise<boolean>;
 };
 
+/**
+ * Absolute character offset of a selection endpoint within `root`.
+ *
+ * Selection assertions are written against this rather than against a
+ * particular Text node, because which node holds a given character is the
+ * literal owner's business and it legitimately differs before and after an
+ * authoritative render (divergence 21: an update that merely EXTENDS what the
+ * reveal painted appends to the existing bounded nodes instead of collapsing
+ * the leaf into one). What must not move is where the reader's selection sits
+ * in the text.
+ */
+function textOffsetWithin(root: Element, node: Node, offset: number): number {
+  const prefix = document.createRange();
+  prefix.selectNodeContents(root);
+  prefix.setEnd(node, offset);
+  return prefix.toString().length;
+}
+
 function textRangeWidth(root: Element): number {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const first = walker.nextNode();
@@ -152,9 +170,11 @@ describe('direct markdown reveal selection', () => {
 
     expect(host.textContent).toBe('Alpha beta .');
     expect(selection?.toString()).toBe('beta');
-    expect(selection?.getRangeAt(0).startContainer).toBe(host.firstChild);
-    expect(selection?.anchorOffset).toBe(10);
-    expect(selection?.focusOffset).toBe(6);
+    // The endpoints still sit on the same characters. Under single ownership
+    // the fallback appends rather than rebuilding the leaf, so in practice
+    // nothing touches these nodes at all.
+    expect(textOffsetWithin(host, selection!.anchorNode!, selection!.anchorOffset)).toBe(10);
+    expect(textOffsetWithin(host, selection!.focusNode!, selection!.focusOffset)).toBe(6);
   });
 
   it.each([
@@ -215,8 +235,8 @@ describe('direct markdown reveal selection', () => {
         ? selection?.anchorOffset
         : selection?.focusOffset;
 
-      expect(insideNode).toBe(host.firstChild);
-      expect(insideOffset).toBe(authoritativeOffset);
+      expect(insideNode && host.contains(insideNode)).toBe(true);
+      expect(textOffsetWithin(host, insideNode!, insideOffset!)).toBe(authoritativeOffset);
       expect(outsideNode).toBe(outsideText);
       expect(outsideOffset).toBe(outsideText.length);
     },

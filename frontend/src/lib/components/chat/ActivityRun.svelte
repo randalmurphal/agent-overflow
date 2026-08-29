@@ -1005,7 +1005,7 @@
           contentGeometry={scrollbarGeometry}
           ariaLabel="Scroll activity run"
           ownerDrivenPosition={() =>
-            stick ? !stick.escapedFromLock : followingBottom && !readerScrolling}
+            stick ? stick.positionOwnerDriven : followingBottom && !readerScrolling}
           onUserScrollStart={() => {
             armReaderScroll();
             stick?.setEscapedFromLock(true);

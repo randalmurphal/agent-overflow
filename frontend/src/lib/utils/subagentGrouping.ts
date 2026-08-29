@@ -34,6 +34,19 @@
 //         tray and the pane are its live surfaces. A completion observed
 //         by a Codex `wait_agent` renders as that card under the wait
 //         group, so `WaitGroupNode.children` are nodes, not leaves.
+//   - ONE card even when a launch has MANY completion siblings. A Codex
+//     detached spawn can deliver several durable `tool_completion` rows
+//     for one launch — the mailbox keys a delivery by content plus resume
+//     generation, deliberately, so a resumed child's later answers are
+//     each their own row (internal/triage/codex_background_mailbox.go).
+//     The FIRST such row in canonical order (wait-claimed or not) is the
+//     card's `anchor`; every later one stays an ordinary chronological
+//     leaf where it sits, so no delivery is lost. The card's status source
+//     (`completion`) is the LATEST loaded delivery, not the anchor. Making
+//     every delivery a card minted N group nodes that all keyed on the
+//     launch id, which is `each_key_duplicate` in the row `{#each}` — a
+//     thrown key error aborts the Svelte update batch and the pane freezes
+//     (production incident 2026-08-29).
 //   - Wait carriers use a stable structural wrapper from first render; Codex
 //     subagent target completions render beneath them when linked by
 //     `wait_carrier_id` or shared wait payload correlation.
@@ -213,9 +226,26 @@ export interface SubagentGroupNode {
    *     completion sibling. When the parent `wait_agent`ed on the child,
    *     that sibling is a child of the wait group, and the card renders
    *     there (`WaitGroupNode.children` are nodes, not only leaves).
+   *
+   * With several completion siblings for one launch the anchor is the
+   * FIRST in canonical order and the rest render as their own leaves (see
+   * the header contract, incident 2026-08-29). It is therefore the card's
+   * POSITIONAL identity too: `timelineNodeKey` keys a group node on it,
+   * because `groupKey` is shared by every card built for one launch.
    */
   anchor: Item;
-  /** Stable structural key for virtualization and expansion state. */
+  /**
+   * EXPANSION key — the launch id, and deliberately NOT the positional
+   * key. `pane.isSubagentGroupExpanded` / `toggleSubagentGroupExpanded`
+   * and the `subagentGroupExpanded` registry key on it, so a card's
+   * open/closed state belongs to the LAUNCH and survives its anchor
+   * moving (an earlier delivery paging in). The key the virtualizer and
+   * the `{#each}` blocks use is `timelineNodeKey`, which keys on the
+   * ANCHOR — the row the card occupies — because the one-card rule is an
+   * invariant of this pass rather than of the id: while it was keyed on
+   * `groupKey`, a launch with three completion deliveries emitted three
+   * cards under one key and the pane froze (incident 2026-08-29).
+   */
   groupKey: string;
   /**
    * The launch's background completion sibling (the Go `complete:<id>`
@@ -239,6 +269,13 @@ export interface SubagentGroupNode {
    * (which completes in place and has no sibling at all). At a page
    * boundary where the sibling loaded but the launch did not, the sibling
    * renders as a compact leaf of its own and no card exists.
+   *
+   * When a launch has SEVERAL loaded siblings this is the LATEST of them,
+   * which is not the `anchor` (the first): the card sits where the agent's
+   * completion first landed, and reports the outcome the agent last
+   * delivered. The later deliveries also render as leaves in their own
+   * place, so the header is a summary of a row that is still visible where
+   * it happened, never a replacement for it.
    *
    * NOT counted in `descendantCount` and not a preview candidate of ITS
    * OWN card: it is that card's header source, not its transcript.
@@ -783,11 +820,18 @@ export function subagentGroupKeysFor(itemId: string): [string, string, string] {
  * stale-thread collisions when a snapshot is restored after a switch.
  *
  * Memoized per node object: every input is immutable for the node's
- * lifetime (a leaf's `item`, a group's `groupKey`, a run's `runId` are
+ * lifetime (a leaf's `item`, a group's `anchor`, a run's `runId` are
  * all fixed at mint — the mutable run stamps are not key inputs), and
  * leaf/read_group nodes are reference-stable across projection passes,
  * so the virtualizer's getKey and the run's `{#each}` keys stop minting
- * strings per render.
+ * strings per render. `enforceUniqueTimelineNodeKeys` re-mints through
+ * this same map when it finds a collision, which is why the repair holds
+ * across renders instead of re-deciding every pass.
+ *
+ * A group node keys on its ANCHOR — the row it occupies — not on its
+ * `groupKey` (the launch id, which is the EXPANSION key and is shared by
+ * every card a launch could produce). For an awaited launch the two are
+ * the same item, so those keys are unchanged.
  */
 const nodeKeyByNode = new WeakMap<TimelineNode, string>();
 
@@ -796,7 +840,7 @@ export function timelineNodeKey(node: TimelineNode): string {
   if (cached !== undefined) return cached;
   let key: string;
   if (node.kind === 'leaf') key = `l:${node.item.threadId}:${node.item.id}`;
-  else if (node.kind === 'group') key = `g:${node.parent.threadId}:${node.groupKey}`;
+  else if (node.kind === 'group') key = `g:${node.parent.threadId}:${node.anchor.id}`;
   else if (node.kind === 'wait_group') key = `wg:${node.parent.threadId}:${node.groupKey}`;
   else if (node.kind === 'read_group') key = `rg:${node.threadId}:${node.groupKey}`;
   else if (node.kind === 'activity_run') key = `ar:${node.threadId}:${node.runId}`;
@@ -806,6 +850,128 @@ export function timelineNodeKey(node: TimelineNode): string {
   }
   nodeKeyByNode.set(node, key);
   return key;
+}
+
+// ---------------------------------------------------------------------
+// Key-uniqueness tripwire
+// ---------------------------------------------------------------------
+
+/**
+ * Per-list key sets, pooled by walk depth. The walk runs on every
+ * projection pass over every node in the window, so it must allocate
+ * nothing; nesting is bounded by MAX_DEPTH plus the run/read wrappers, so
+ * the pool never grows past a handful of entries.
+ *
+ * A MAP rather than a Set because the repair has to tell two different
+ * corruptions apart: two DISTINCT nodes minting one key (repairable — the
+ * later one gets a suffix) and one node object appearing twice in one list
+ * (not repairable through a per-object memo; see `repairDuplicateKey`).
+ */
+const KEY_SCOPE_POOL: Map<string, TimelineNode>[] = [];
+let duplicateKeyRepairs = 0;
+let duplicateKeySharedNodes = 0;
+let duplicateKeySample = '';
+
+/**
+ * Last line of defence before Svelte sees the projection: no keyed list it
+ * is handed may contain two rows with the same key.
+ *
+ * Svelte's keyed `{#each}` THROWS on a duplicate (`each_key_duplicate`),
+ * and a throw inside an update batch aborts the whole batch — the pane
+ * stops rendering and the app looks frozen (production incident
+ * 2026-08-29: a Codex launch with three durable completion deliveries
+ * produced three cards under one key). The projection's own invariants are
+ * what keep keys unique; this exists because a violation of one of them
+ * must degrade into a repaired key and a diagnostic, never into a freeze.
+ * It therefore never throws — `TimelineVirtualizer.keysFor`'s throw stays
+ * as the top-level backstop for the root list, where a wrong key is a
+ * scroll-geometry corruption rather than a dead pane.
+ *
+ * Per-list scopes, deliberately not one global set: leaf nodes are cached
+ * per Item and are legitimately reference-shared between two lists (a run
+ * and the group it wraps), and only collisions WITHIN one keyed block are
+ * a defect.
+ */
+export function enforceUniqueTimelineNodeKeys(nodes: readonly TimelineNode[]): void {
+  duplicateKeyRepairs = 0;
+  duplicateKeySharedNodes = 0;
+  duplicateKeySample = '';
+  walkKeyScope(nodes, 0);
+  if (duplicateKeyRepairs === 0 && duplicateKeySharedNodes === 0) return;
+  // Constant message, variables in `detail` — a key in the message would
+  // mint a fresh dedupe signature per defect and walk past the
+  // per-signature cap. Console too: a remote session cannot persist (the
+  // reporter is LocalOnly), and there the console line is the only
+  // evidence.
+  const detail =
+    `${duplicateKeyRepairs} re-keyed, ${duplicateKeySharedNodes} shared-node, sample ${duplicateKeySample}`;
+  console.warn(`[subagentGrouping] duplicate timeline node keys in one list (${detail})`);
+  reportFrontendDiagnostic(
+    'subagentGrouping: duplicate timeline node key within one rendered list — keys re-minted so ' +
+      'the keyed each-block cannot throw and abort the update batch',
+    detail,
+  );
+}
+
+function walkKeyScope(nodes: readonly TimelineNode[], depth: number): void {
+  if (nodes.length === 0) return;
+  let scope = KEY_SCOPE_POOL[depth];
+  if (scope === undefined) {
+    scope = new Map<string, TimelineNode>();
+    KEY_SCOPE_POOL[depth] = scope;
+  }
+  scope.clear();
+  for (const node of nodes) {
+    let key = timelineNodeKey(node);
+    const holder = scope.get(key);
+    if (holder !== undefined) key = repairDuplicateKey(node, holder, key, scope);
+    scope.set(key, node);
+    if (node.kind === 'group' || node.kind === 'wait_group' || node.kind === 'activity_run') {
+      // The child lists are keyed blocks of their own (`SubagentBodyClip`'s
+      // virtualizer, `WaitGroup`'s and `ActivityRun`'s `{#each}`), so each
+      // gets its own scope one level down.
+      walkKeyScope(node.children, depth + 1);
+    }
+  }
+  // The scope is pooled, so drop the node references rather than pinning a
+  // window's worth of Items until the next pass reuses this depth.
+  scope.clear();
+}
+
+/**
+ * Re-mint `node`'s key with an occurrence suffix so the later of two
+ * colliding rows is distinguishable. Written through `nodeKeyByNode`, the
+ * memo `timelineNodeKey` reads, so the repaired key is what every later
+ * render of THIS node object sees — a suffix recomputed per pass would
+ * remount the row on every projection.
+ */
+function repairDuplicateKey(
+  node: TimelineNode,
+  holder: TimelineNode,
+  key: string,
+  scope: Map<string, TimelineNode>,
+): string {
+  if (holder === node) {
+    // The SAME node object twice in one list — the projection handed the
+    // same row to the renderer twice. A per-object memo cannot separate
+    // two occurrences of one object, and the honest repair (rendering it
+    // once) is a change to the list, which this pass must not make: the
+    // arrays it walks are the cached children of cached card nodes. Report
+    // and leave it; only a structural fix upstream can close this one.
+    duplicateKeySharedNodes += 1;
+    if (!duplicateKeySample) duplicateKeySample = key;
+    return key;
+  }
+  let occurrence = 2;
+  let candidate = `${key}#${occurrence}`;
+  while (scope.has(candidate)) {
+    occurrence += 1;
+    candidate = `${key}#${occurrence}`;
+  }
+  nodeKeyByNode.set(node, candidate);
+  duplicateKeyRepairs += 1;
+  if (!duplicateKeySample) duplicateKeySample = candidate;
+  return candidate;
 }
 
 /**
@@ -1226,14 +1392,34 @@ export function groupItemsBySubagent(
   // there. Every completion of a detached launch qualifies, wait-claimed
   // or not; an awaited launch that somehow carries a sibling keeps the
   // sibling as a leaf of its own.
+  //
+  // ONE card per launch, and the FIRST sibling in canonical order is it.
+  // A launch can have several durable completion rows — Codex's background
+  // mailbox keys a delivery by content plus resume generation on purpose,
+  // so a resumed child's later answers are separate rows and collapsing
+  // them is a BACKEND change this pass must never make. Mapping every one
+  // of them to the launch minted a card per delivery, all keyed on the
+  // launch id, and the duplicate key threw out of the row `{#each}` and
+  // froze the pane (incident 2026-08-29). First-wins holds across
+  // wait-claimed and unclaimed siblings alike: whichever renders first in
+  // timeline order is the card, and the rest fall through `buildNode` to
+  // the ordinary leaf paths where they sit (top-level row, or a child of
+  // the wait group that claimed them) so no delivery is lost.
   const cardLaunchByCompletionID = new Map<string, Item>();
+  // Last write in canonical order wins: the card reports what the agent
+  // most recently delivered, however far back its card sits. Its `has`
+  // check doubles as the first-wins gate — a launch absent from it has
+  // not delivered yet, so the current row is the anchor.
+  const latestCompletionByLaunchID = new Map<string, Item>();
   for (const item of sortedWithCarriers) {
     if (item.kind !== 'tool_completion' || !item.completionOf) continue;
     if (item.toolName === 'wait_agent') continue;
     const launch = itemByID.get(item.completionOf);
-    if (launch && detachedLaunchIDs.has(launch.id)) {
+    if (!launch || !detachedLaunchIDs.has(launch.id)) continue;
+    if (!latestCompletionByLaunchID.has(launch.id)) {
       cardLaunchByCompletionID.set(item.id, launch);
     }
+    latestCompletionByLaunchID.set(launch.id, item);
   }
 
   // A launch's background completion sibling is NOT filtered here: it is
@@ -1449,11 +1635,19 @@ export function groupItemsBySubagent(
 
   /**
    * The completion sibling a card folds in as its status source. For a
-   * card at its completion point the anchor IS that sibling — including a
-   * wait-claimed Codex completion, which the launch fold never recorded.
+   * card at its completion point that is the LATEST loaded sibling —
+   * wait-claimed ones included, which the launch fold never recorded —
+   * rather than the `anchor`, which is the FIRST and only fixes where the
+   * card sits. A launch that delivered three times reports its third
+   * outcome from a card that stayed at the first (incident 2026-08-29);
+   * the later deliveries are still visible as their own leaves.
+   *
+   * Falls back to the anchor for safety only: the anchor is by
+   * construction in `latestCompletionByLaunchID` for every detached card.
    */
   function cardCompletion(item: Item, anchor: Item): Item | undefined {
-    return anchor.id !== item.id ? anchor : launchCompletionByLaunchID.get(item.id);
+    if (anchor.id === item.id) return launchCompletionByLaunchID.get(item.id);
+    return latestCompletionByLaunchID.get(item.id) ?? anchor;
   }
 
   /**
@@ -1474,6 +1668,10 @@ export function groupItemsBySubagent(
         // and either a detached launch's pre-card row or a bucketless
         // non-launch. (Forked-Skill detection is cross-item, so a row can
         // become — or stop being — a launch with its own Item unchanged.)
+        // A launch's SECOND and later completion deliveries are leaves and
+        // stay in this map's absence; an earlier one paging in takes the
+        // anchor off a row that was the card, and this same check rebuilds
+        // it as the leaf it has become.
         if (cardLaunchByCompletionID.has(item.id)) return false;
         if (detachedLaunchIDs.has(item.id)) return true;
         const bucket = childrenByParent.get(item.id);
@@ -1511,6 +1709,11 @@ export function groupItemsBySubagent(
     depth: number,
   ): boolean {
     const node = entry.node;
+    // The anchor pins WHERE the card sits: it moves only when an earlier
+    // delivery pages in, and the cached node is then rebuilt at the new
+    // one. The completion compare is the other half — a NEW delivery
+    // leaves the anchor alone but changes the card's status source, so it
+    // has to re-resolve through `cardCompletion` (2026-08-29).
     if (entry.depth !== depth || node.anchor !== anchor) return false;
     if (aggregates?.(node.parent.id) !== entry.fold) return false;
     if (cardCompletion(node.parent, anchor) !== node.completion) return false;

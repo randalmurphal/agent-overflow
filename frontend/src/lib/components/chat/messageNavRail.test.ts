@@ -128,6 +128,26 @@ describe('mergeNavTicks', () => {
     expect(merged.ticks.map((t) => t.id)).toEqual(['b1', 'b2', 'b4', 'b5']);
   });
 
+  it('a loaded id never re-renders from a stale baseline position', () => {
+    // The baseline snapshot can hold an id the window has since loaded at
+    // a DIFFERENT position (edit-and-resend moved it), which sits outside
+    // the window bounds — the rail keys ticks by id, so without the id
+    // dedupe this duplicated a keyed-each key and aborted the flush.
+    const staleBaseline = [base('b1', 0), base('moved', 1), base('b5', 6)];
+    const loadedWithMoved = [tick('moved', 5, 9)];
+    const merged = mergeNavTicks(
+      staleBaseline,
+      loadedWithMoved,
+      { turnIndex: 2, itemIndex: 0 },
+      { turnIndex: 5, itemIndex: 3 },
+      true,
+      true,
+    );
+    expect(merged.ticks.map((t) => t.id)).toEqual(['b1', 'moved', 'b5']);
+    expect(merged.loadedStart).toBe(1);
+    expect(merged.loadedEnd).toBe(1);
+  });
+
   it('an empty window still maps the whole baseline as unloaded', () => {
     const merged = mergeNavTicks(baseline, [], null, null, true, false);
     expect(merged.ticks.map((t) => t.nodeIndex)).toEqual([null, null, null, null, null]);

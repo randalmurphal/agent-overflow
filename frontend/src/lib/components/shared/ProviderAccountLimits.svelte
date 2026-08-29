@@ -5,8 +5,17 @@
   import { rateLimitDisplayName } from '../../stores/rateLimitsInfo.svelte';
   import type { RateLimitEntry } from '../../types/events';
   import { formatResetCountdown } from '../../utils/format';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
 
   let { limits }: { limits: RateLimitEntry[] } = $props();
+
+  // limitId is provider-reported; nothing upstream promises the wire
+  // never repeats a (limitId, windowMins) pair, and a repeated key in a
+  // keyed `{#each}` throws `each_key_duplicate` mid-flush
+  // (utils/uniqueEachKeys.ts).
+  const limitKeys = $derived(
+    uniqueEachKeys(limits, (limit) => `${limit.limitId}:${limit.windowMins}`),
+  );
 
   function limitLabel(limit: RateLimitEntry): string {
     const name = rateLimitDisplayName(limit);
@@ -23,7 +32,7 @@
 
 {#if limits.length > 0}
   <div class="mt-2 grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
-    {#each limits as limit (`${limit.limitId}:${limit.windowMins}`)}
+    {#each limits as limit, limitIndex (limitKeys[limitIndex] ?? limitIndex)}
       <div class="min-w-0">
         <div class="flex items-center justify-between gap-2 text-[0.65625rem]">
           <span class="truncate text-fg-muted">{limitLabel(limit)}</span>

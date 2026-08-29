@@ -5,3 +5,4 @@ export { lex, parseBlocks, createParseBlocksCache, updateParseBlockStringMateria
 export { parseIncompleteMarkdown, IncompleteMarkdownParser } from './utils/parse-incomplete-markdown.js';
 export { bundledLanguagesInfo, createLanguageSet } from './utils/bundledLanguages.js';
 export { acquireDocumentInteraction } from './document-interaction.js';
+export { STREAMDOWN_LITERAL_HOST, attachStreamdownLiteralHost, streamdownLiteralHostOf } from './literal-host.js';

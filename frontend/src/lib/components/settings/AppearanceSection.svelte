@@ -168,7 +168,16 @@
     const { dark, light } = theme.variants;
     if ((dark === undefined) === (light === undefined)) return null;
     if (theme.variants[resolvedMode] !== undefined) return null;
-    return { name: theme.name, polarity: dark !== undefined ? ('dark' as const) : ('light' as const) };
+    const polarity = dark !== undefined ? ('dark' as const) : ('light' as const);
+    // The sentence folds in here rather than living as an `{@const}` in the
+    // branch: it reads `resolvedMode`, which is the very thing that nulls
+    // this value, so as a template expression it could be asked to render
+    // off a dead `benchedUiTheme` before the branch tears down.
+    return {
+      name: theme.name,
+      polarity,
+      title: `${theme.name} is ${polarity}-only — the default interface theme applies while in ${resolvedMode} mode`,
+    };
   });
 
   /**
@@ -243,14 +252,13 @@
     >
       <div class="flex items-center gap-1.5">
         {#if benchedUiTheme}
-          {@const benchedTitle = `${benchedUiTheme.name} is ${benchedUiTheme.polarity}-only — the default interface theme applies while in ${resolvedMode} mode`}
           <span
             class="flex items-center text-fg-subtle"
-            title={benchedTitle}
-            aria-label={benchedTitle}
+            title={benchedUiTheme?.title ?? ''}
+            aria-label={benchedUiTheme?.title ?? ''}
             data-testid="settings-ui-theme-benched"
           >
-            <Icon icon={benchedUiTheme.polarity === 'dark' ? Moon : Sun} size={13} strokeWidth={1.8} />
+            <Icon icon={benchedUiTheme?.polarity === 'dark' ? Moon : Sun} size={13} strokeWidth={1.8} />
           </span>
         {/if}
         <select

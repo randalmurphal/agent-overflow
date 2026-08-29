@@ -38,6 +38,7 @@ import type { SpringChase } from './spring';
 import { nowMs } from './time';
 import { trace } from './trace';
 import type { ScrollWriteCaller, WarmReason } from './types';
+import { reportFrontendDiagnostic } from '../frontendErrorCapture';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import type { ContentGeometrySample } from '../virtual/types';
 
@@ -220,7 +221,8 @@ export interface ContentObserver {
   detach(): void;
   /** External-source entry: one engine-sourced content-geometry sample
    * (TimelineVirtualizer post-flush) into the same pipeline an RO
-   * delivery takes. */
+   * delivery takes. Requires the option AND an attached scroller —
+   * both breaches are loud (see deliverSample). */
   deliverSample(sample: ContentGeometrySample): void;
   /** Reset the warm-up gate: sync-pin mode until quiet/failsafe fires again. */
   beginWarmup(): void;
@@ -356,6 +358,14 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // slice application's armWarmup): open the cold-load settle window so
     // post-warm cascade/sync growth sync-pins. See COLD_LOAD_SETTLE_MAX_MS.
     coldLoadSettleUntil = nowMs() + COLD_LOAD_SETTLE_MAX_MS;
+    // DELIBERATELY not reset here: previousHeight/previousWidth (the
+    // resize-correlation baseline). A re-arm on a surface that stays
+    // attached (same-thread reload, retry) keeps the last observed
+    // geometry as its baseline, so the first delivery after the re-arm
+    // computes a real delta instead of a first-observation zero. Only
+    // detach clears them — the element is gone, so the baseline is too.
+    // Flagged 2026-08-29 (lifecycle-edge sweep): reviewed, ambiguity is
+    // real but both readers tolerate a stale baseline for one delivery.
   }
 
   function skipWarmup(): void {
@@ -771,6 +781,29 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         'deliverContentGeometry requires the externalContentGeometry option — ' +
           'without it the controller also observes contentEl and the two sources conflict',
       );
+    }
+    // A sample delivered while DETACHED is LOST: processSample returns on
+    // the missing scrollEl, and the source's own dedupe will not offer
+    // the same tuple twice — which is exactly how a populated first mount
+    // ended up at scrollTop=0 under a sticky-bottom claim. The source
+    // must therefore subscribe after attach
+    // (TimelineVirtualizerHandle.subscribeContentGeometry), and after
+    // that wiring the production path cannot reach this branch at all;
+    // it stays as the contract's tripwire.
+    //
+    // Loud in dev/test, silent-but-reported in production: a throw
+    // crossing back into a Svelte effect aborts the update batch that
+    // called it, which is a worse failure than one lost sample.
+    if (!deps.getScrollEl()) {
+      const message =
+        'deliverContentGeometry called while the scroll controller is detached — ' +
+        'the sample is lost; subscribe to the geometry source AFTER attach()';
+      if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
+        throw new Error(message);
+      }
+      console.error(message);
+      reportFrontendDiagnostic(message);
+      return;
     }
     processSample(sample.height, sample.width, sample);
   }

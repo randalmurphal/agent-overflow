@@ -111,6 +111,27 @@ export interface TimelineVirtualizerHandle {
   scrollToIndex(index: number, opts?: { align?: ScrollToIndexAlign; offset?: number }): void;
   revalidate(): void;
   /**
+   * Subscribe to this INSTANCE's content-geometry samples — the ONLY
+   * way geometry leaves the virtualizer. The new subscriber
+   * synchronously receives the current sample when the scroller has
+   * already reported a width (the gate that starts deliveries); later
+   * samples arrive as they are produced. The returned function
+   * unsubscribes, and an unsubscribed source delivers nothing.
+   *
+   * Replayable and instance-bound on purpose. The fire-and-forget
+   * geometry prop this replaced lost any sample published before its
+   * consumer could take it — the scroll controller not yet attached —
+   * dropped by the controller AND then suppressed forever by the
+   * adapter's field-by-field dedupe, because the tuple never changed
+   * again. That
+   * left a populated first mount rendered at scrollTop=0 under a
+   * sticky-bottom claim. Subscribing after attach, with the replay,
+   * closes that window with no second observer and no polling; instance
+   * identity is what makes an identical tuple from a NEW virtualizer
+   * (the `{#key pane.threadId}` remount) replay rather than dedupe.
+   */
+  subscribeContentGeometry(onSample: (sample: ContentGeometrySample) => void): () => void;
+  /**
    * The scroll controller wrote scrollTop (browser-rounded readback).
    * Wired from the controller's `onScrollTopWritten` option so the
    * engine's offset never lags an authored write — see

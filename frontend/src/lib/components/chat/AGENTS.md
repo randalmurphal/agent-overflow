@@ -503,8 +503,24 @@ cacheable. The static Copy button is handled by one document delegate and reads
 `<code>.textContent`; do not put the source back into an attribute or per-block
 listener.
 
-The direct assistant prose sink keeps parser-owned text separate from bounded
-sink-owned Text nodes. It may cut only at `Intl.Segmenter` word boundaries.
+The direct assistant prose reveal
+(`markdown/streamingAssistantLiteralOwner.ts`) is the SINGLE owner of the
+active literal host's visible text, and that is a correctness boundary, not a
+performance one. The vendored host renders empty and hands the element to this
+owner (divergence 21); nothing else writes its children. Splitting one visible
+text run between Svelte and an imperative sink is what produced the settle
+flicker: the sink deleted its appended siblings in one task and Svelte
+re-extended the parser's node in a later one, so the visible string rolled
+back to an older parser checkpoint and regrew. The invariant is therefore
+**extend-only**: a reveal delta extends the visible string, an authoritative
+parser update either extends it too or — when the upstream text genuinely
+diverges — replaces it in ONE `replaceChildren` mutation, and a fallback
+relinquishes the RUN without deleting visible bytes. Never reintroduce a
+delete-then-recreate path, and never "fix" a rollback with timing.
+Guard: `ChatMarkdown.directRevealMonotonic.browser.test.ts`, which replays
+every `MutationRecord` and fails on a shrink that is not a single atomic swap.
+
+The owner may cut Text nodes only at `Intl.Segmenter` word boundaries.
 Code-point boundaries are insufficient because Blink can shape adjacent Text
 nodes as separate runs, exposing a detached combining mark, broken emoji join,
 or cursive-script seam while `textContent` remains correct. Ordinary appends

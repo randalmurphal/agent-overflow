@@ -616,6 +616,59 @@ describe('<AskUserQuestionCard>', () => {
     );
   });
 
+  // Option labels are model-authored, so nothing upstream promises they are
+  // distinct. Keyed on the label, a repeat throws `each_key_duplicate` out of
+  // the update flush, which aborts the batch and freezes the pane (incident
+  // 2026-08-29). Every option must still render.
+  it('renders every option when two of them carry the same label', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          {
+            id: 'approach',
+            header: 'Approach',
+            question: 'Which approach?',
+            options: [
+              { label: 'Rewrite', description: 'From scratch' },
+              { label: 'Rewrite', description: 'Keep the tests' },
+              { label: 'Patch', description: 'Smallest diff' },
+            ],
+          },
+        ],
+        answers: { approach: 'Patch' },
+      }),
+    });
+
+    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, { props: { item } });
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    const options = getAllByTestId('ask-user-question-option');
+    expect(options).toHaveLength(3);
+    expect(options.map((o) => o.getAttribute('data-selected'))).toEqual(['false', 'false', 'true']);
+  });
+
+  it('renders duplicate labels across two questions independently', async () => {
+    const item = makeItem({
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'AskUserQuestion',
+      meta: buildMeta({
+        questions: [
+          { id: 'a', header: 'A', question: 'First?', options: [{ label: 'Yes' }, { label: 'Yes' }] },
+          { id: 'b', header: 'B', question: 'Second?', options: [{ label: 'Yes' }, { label: 'No' }] },
+        ],
+      }),
+    });
+
+    const { getByTestId, getAllByTestId } = render(AskUserQuestionCard, { props: { item } });
+    await fireEvent.click(getByTestId('ask-user-question-toggle'));
+
+    expect(getAllByTestId('ask-user-question-option')).toHaveLength(4);
+  });
+
   it('falls back gracefully when meta lacks the expected shape', () => {
     // Defensive coverage: a legacy persisted row, or a tool_use that
     // failed mid-parse, should still render a header even if no

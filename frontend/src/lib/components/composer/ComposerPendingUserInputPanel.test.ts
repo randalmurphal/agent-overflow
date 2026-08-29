@@ -33,6 +33,71 @@ function activePreviewText(getByTestId: (id: string) => HTMLElement): string {
 }
 
 describe('<ComposerPendingUserInputPanel>', () => {
+  // Option labels are model-authored, so nothing upstream promises they are
+  // distinct. Keyed on the label, a repeat throws `each_key_duplicate` out of
+  // the update flush, aborting the batch and freezing the pane this panel is
+  // anchored in (incident 2026-08-29).
+  it('renders every option when two of them carry the same label', () => {
+    const { getByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            {
+              id: 'approach',
+              header: 'Approach',
+              question: 'Which approach?',
+              options: [
+                { label: 'Rewrite', description: 'From scratch' },
+                { label: 'Rewrite', description: 'Keep the tests' },
+                { label: 'Patch', description: 'Smallest diff' },
+              ],
+            },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('user-input-options').querySelectorAll('[data-user-input-option]'))
+      .toHaveLength(3);
+  });
+
+  // The side-by-side branch keys the SAME list a second time, into the preview
+  // cell — so it needs its own coverage, not the option column's.
+  it('renders every preview layer when two options share a label', () => {
+    const { getByTestId } = render(ComposerPendingUserInputPanel, {
+      props: {
+        request: request({
+          questions: [
+            {
+              id: 'approach',
+              header: 'Approach',
+              question: 'Which approach?',
+              options: [
+                { label: 'Rewrite', description: '', preview: 'first' },
+                { label: 'Rewrite', description: '', preview: 'second' },
+              ],
+            },
+          ],
+        }),
+        customAnswer: '',
+        submitSignal: 0,
+        setCustomAnswerText: vi.fn(),
+        onResolve: vi.fn(),
+        onResolved: vi.fn(),
+        onError: vi.fn(),
+      },
+    });
+
+    expect(getByTestId('user-input-preview').querySelectorAll('[data-user-input-preview]'))
+      .toHaveLength(2);
+  });
+
   it('does not auto-submit when the user clicks an option', async () => {
     // Mouse click should select only — auto-advance/auto-submit is the
     // keyboard fast path. The user has to click the explicit submit

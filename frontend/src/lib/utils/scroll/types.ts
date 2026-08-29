@@ -165,6 +165,22 @@ export interface UseStickToBottomController {
   /** True when the user has explicitly moved the outer scroller away from bottom. */
   readonly escapedFromLock: boolean;
   /**
+   * THE answer for `OverlayScrollbar`'s `ownerDrivenPosition` prop: true
+   * while the position belongs to this controller rather than the reader,
+   * i.e. until an explicit reader escape. It is `!escapedFromLock`, NOT
+   * `isSticky`: `isSticky` also demands `pauseDepth === 0`, and every
+   * `preserveViewportBottom` transaction (auto-collapse releases, bulk
+   * collapse, restore snaps) runs under a pause lease — so keying the bar's
+   * activity fade on `isSticky` made the transaction's own restore write
+   * and the browser's shrink-clamp read as reader scrolling, flashing the
+   * bar at the bottom the moment a glide ended (2026-08-29). A pause lease
+   * is an owner HOLDING the position, which is the opposite of a reader
+   * gesture. Escape itself arms on the input event (wheel/key/touch),
+   * before the browser dispatches the resulting scroll event, so the first
+   * scroll frame of a real gesture already reads true here.
+   */
+  readonly positionOwnerDriven: boolean;
+  /**
    * True once the warm-up gate has cleared — a quiet window of content
    * silence elapsed, FAILSAFE_MS tripped, or an engine-sourced sample
    * carried settle evidence (window fully measured within epsilon of its
@@ -396,8 +412,14 @@ export interface UseStickToBottomController {
    * sample's settle evidence additionally lets the warm gate reveal a
    * priors-hit revisit immediately (see observers.ts).
    *
-   * Wired as
-   * `<TimelineVirtualizer onContentGeometry={stick.deliverContentGeometry}>`.
+   * Every consumer subscribes to the virtualizer instance
+   * (`TimelineVirtualizerHandle.subscribeContentGeometry`) from an
+   * effect ordered AFTER `attach`, because a sample delivered while the
+   * controller is detached is lost and the source's dedupe never
+   * re-offers it. Delivering while detached is therefore a contract
+   * breach: it throws in dev/test and reports + drops in production.
+   * The virtualizer deliberately has no fire-and-forget geometry prop —
+   * that wiring is what silently lost the pre-attach sample.
    */
   deliverContentGeometry(sample: ContentGeometrySample): void;
 }

@@ -41,18 +41,29 @@
   $effect(() => {
     const scroll = scrollEl;
     const content = contentEl;
-    if (!scroll || !content) return;
-    untrack(() => {
+    const list = listRef;
+    if (!scroll || !content || !list) return;
+    // Geometry is a subscription taken AFTER attach — never a
+    // fire-and-forget wire — so a sample the virtualizer published
+    // before this effect ran replays into an attached controller
+    // instead of being dropped and deduped away (the 2026-08-29
+    // populated-first-mount class; deliverContentGeometry throws on a
+    // detached delivery in dev).
+    const unsubscribe = untrack(() => {
       stick.attach(scroll, content);
       // A newly expanded digest starts at its newest activity. Claiming the
       // bottom before rows finish measuring also makes later live growth use
       // the same spring as the main timeline.
       stick.forceStick();
+      return list.subscribeContentGeometry(stick.deliverContentGeometry);
     });
     void tick().then(() => {
       if (scrollEl === scroll) stick.observe('content');
     });
-    return () => stick.detach();
+    return () => {
+      unsubscribe();
+      stick.detach();
+    };
   });
 
   function handleScroll(offset: number): void {
@@ -82,7 +93,6 @@
       onCompensation={stick.applyEngineCompensation}
       applyScrollTarget={stick.applyScrollTarget}
       trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
-      onContentGeometry={stick.deliverContentGeometry}
     >
       {#snippet children(node)}
         {@render renderNode(node, depth)}
@@ -100,7 +110,7 @@
     target={scrollEl}
     contentGeometry={scrollbarGeometry}
     ariaLabel="Scroll agent activity"
-    ownerDrivenPosition={() => !stick.escapedFromLock}
+    ownerDrivenPosition={() => stick.positionOwnerDriven}
     onUserScrollStart={() => stick.setEscapedFromLock(true)}
     onUserScrollEnd={(atBottom) => {
       if (atBottom) stick.markAtBottom();

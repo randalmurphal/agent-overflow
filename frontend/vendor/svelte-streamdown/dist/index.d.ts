@@ -5,3 +5,4 @@ export { type Extension, type StreamdownToken, type ParseBlocksCache, type Parse
 export { parseIncompleteMarkdown, type Plugin, IncompleteMarkdownParser } from './utils/parse-incomplete-markdown.js';
 export { bundledLanguagesInfo, createLanguageSet, type LanguageInfo } from './utils/bundledLanguages.js';
 export { acquireDocumentInteraction, type DocumentInteraction, type InteractionRange } from './document-interaction.js';
+export { STREAMDOWN_LITERAL_HOST, attachStreamdownLiteralHost, streamdownLiteralHostOf, type StreamdownLiteralHost, type StreamdownLiteralHostHandle, type StreamdownLiteralHostOwner } from './literal-host.js';

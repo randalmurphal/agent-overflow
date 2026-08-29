@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ElicitationField } from '../../../utils/elicitationSchema';
+  import { uniqueEachKeys } from '../../../utils/uniqueEachKeys';
 
   interface Props {
     requestId: string;
@@ -11,6 +12,17 @@
   }
 
   let { requestId, field, value, error, onChange, onToggleOption }: Props = $props();
+
+  // Enum/oneOf values come from the MCP SERVER's schema; nothing upstream
+  // promises they are distinct. Keyed straight into the `{#each}` blocks
+  // below a repeat throws `each_key_duplicate`, which aborts the update
+  // flush and freezes the pane (utils/uniqueEachKeys.ts).
+  const optionKeys = $derived(
+    uniqueEachKeys(
+      field.kind === 'select' || field.kind === 'multi-select' ? field.options : [],
+      (option) => option.value,
+    ),
+  );
 
   function stringInputType(format: string | undefined): string {
     if (format === 'email') return 'email';
@@ -83,13 +95,13 @@
       onchange={(e) => onChange(field.name, (e.target as HTMLSelectElement).value)}
     >
       <option value="">Select…</option>
-      {#each field.options as opt (opt.value)}
+      {#each field.options as opt, optIndex (optionKeys[optIndex] ?? optIndex)}
         <option value={opt.value}>{opt.label}</option>
       {/each}
     </select>
   {:else if field.kind === 'multi-select'}
     <div class="mt-1 space-y-1" data-testid="el-input-{field.name}">
-      {#each field.options as opt (opt.value)}
+      {#each field.options as opt, optIndex (optionKeys[optIndex] ?? optIndex)}
         {@const selected = ((value as string[] | undefined) ?? []).includes(opt.value)}
         <label class="flex items-center gap-2 text-xs text-text-primary">
           <input

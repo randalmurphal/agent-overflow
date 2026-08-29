@@ -41,9 +41,16 @@
   // `applyScrollTarget` prop so the controller performs and tags the
   // write — test harnesses pass a direct writer, so the exception lives
   // in test code, not here. The component is also the
-  // controller's content-geometry source (`onContentGeometry`): the
-  // spacer height it writes IS the content height, so chat runs no second
-  // ResizeObserver over the content element.
+  // controller's content-geometry source: the spacer height it writes IS
+  // the content height, so chat runs no second ResizeObserver over the
+  // content element. The ONLY way out is `subscribeContentGeometry` on
+  // the handle: replayable and instance-bound, so a consumer subscribes
+  // AFTER its own machinery (the scroll controller's `attach`) is ready
+  // and still receives the sample this instance already published. A
+  // fire-and-forget geometry prop used to exist beside it and is
+  // deliberately gone — it silently lost any sample published before
+  // its consumer could take it, and the dedupe never re-offered the
+  // tuple (the 2026-08-29 populated-first-mount-at-scrollTop-0 bug).
   //
   // Constructor-once by design: `estimate`, `bufferSize`, and `renderAll`
   // configure the engine at mount. The `{#key pane.threadId}` remount is
@@ -117,11 +124,6 @@
      * content, so tracking a reading anchor would cost a hit-test per
      * scroll event and change nothing. Defaults to always-track. */
     trackReadingAnchor?: () => boolean;
-    /** Engine-sourced content-geometry samples → the scroll controller's
-     * `deliverContentGeometry` (replaces its contentEl ResizeObserver).
-     * Delivered post-flush alongside compensations, and only when the
-     * (height, width, settle) tuple actually changed. */
-    onContentGeometry?: (sample: ContentGeometrySample) => void;
     children: Snippet<[item: T, index: number]>;
   }
 
@@ -141,7 +143,6 @@
     onCompensation,
     applyScrollTarget,
     trackReadingAnchor,
-    onContentGeometry,
     children,
   }: Props = $props();
 
@@ -349,6 +350,16 @@
   let scrollerContentHeight: number | undefined;
   let maxFirstMeasureCorrectionPx = 0;
   let lastGeometrySample: ContentGeometrySample | undefined;
+  // Subscribers reach this source through the imperative handle
+  // (`subscribeContentGeometry`), so a consumer can attach its own
+  // machinery FIRST and then take
+  // the sample this instance has already published. A Set rather than an
+  // array because the unsubscribe is a delete BY IDENTITY, and because
+  // deleting during iteration is defined not to visit the removed entry
+  // — a callback that unsubscribes itself mid-delivery is safe. Nothing
+  // is allocated to maintain it: entries change only on
+  // subscribe/unsubscribe, never per sample.
+  const geometrySubscribers = new Set<(sample: ContentGeometrySample) => void>();
 
   function windowFullyMeasured(): boolean {
     const [start, end] = engine.getWindow();
@@ -364,20 +375,37 @@
     return true;
   }
 
-  function maybeDeliverContentGeometry(): void {
-    if (!onContentGeometry || scrollerContentWidth === undefined) return;
-    const sample: ContentGeometrySample = {
+  /**
+   * The sample describing the surface RIGHT NOW, or undefined before the
+   * scroller RO has reported a width (the first-delivery gate the
+   * contentEl RO had). Pure read of already-computed state — no layout.
+   */
+  function buildContentGeometrySample(): ContentGeometrySample | undefined {
+    if (scrollerContentWidth === undefined) return undefined;
+    return {
       height: engine.getTotalSize() + renderHeaderSize,
       width: scrollerContentWidth,
       windowMeasured: windowFullyMeasured(),
       maxFirstMeasureCorrectionPx,
       viewportHeight: scrollerContentHeight,
     };
+  }
+
+  function maybeDeliverContentGeometry(): void {
+    // Nobody is listening: skip the window-measured scan entirely (the
+    // review surfaces mount this component with no geometry consumer).
+    // A subscriber arriving later does not lose anything — it is handed
+    // a freshly built sample at subscribe time.
+    if (geometrySubscribers.size === 0) return;
+    const sample = buildContentGeometrySample();
+    if (!sample) return;
     const prev = lastGeometrySample;
     // Field-by-field on purpose — but TypeScript will NOT flag a field
     // added to ContentGeometrySample and missed here; a missed field
     // silently swallows deliveries that differ only in it. Update this
-    // compare alongside the type.
+    // compare alongside the type. The dedupe is per INSTANCE and stays
+    // harmless for a late consumer: replay comes from subscription, not
+    // from re-delivering a suppressed tuple.
     if (
       prev &&
       prev.height === sample.height &&
@@ -389,7 +417,9 @@
       return;
     }
     lastGeometrySample = sample;
-    onContentGeometry(sample);
+    // Deleting during iteration is safe (a removed entry is not
+    // visited), so a callback that unsubscribes itself is fine.
+    for (const notify of geometrySubscribers) notify(sample);
   }
 
   // Recomputes on EVERY data identity change (each streaming beat passes
@@ -1220,6 +1250,32 @@
     applyUpdate(engine.applyViewportResize(scroller.clientHeight - paddingTop - paddingBottom));
     actualScrollOffset = scroller.scrollTop;
     applyUpdate(engine.applyScroll(engineOffsetFor(scroller.scrollTop)));
+  }
+
+  /**
+   * Content-geometry subscription (see TimelineVirtualizerHandle). The
+   * subscriber is handed the CURRENT sample synchronously when this
+   * instance has one to give — that replay is the whole point: a
+   * consumer must be able to wire itself up AFTER its own machinery is
+   * ready (the scroll controller's `attach`) without losing the sample
+   * this source already published and deduped away.
+   *
+   * `untrack` because the build reads component state ($derived header
+   * size, engine geometry) and a subscribing `$effect` must not become
+   * a reader of it — it would re-subscribe on every geometry change.
+   */
+  export function subscribeContentGeometry(
+    onSample: (sample: ContentGeometrySample) => void,
+  ): () => void {
+    geometrySubscribers.add(onSample);
+    const sample = untrack(buildContentGeometrySample);
+    if (sample) {
+      lastGeometrySample = sample;
+      onSample(sample);
+    }
+    return () => {
+      geometrySubscribers.delete(onSample);
+    };
   }
 
   // ------------------------------------------------------------------

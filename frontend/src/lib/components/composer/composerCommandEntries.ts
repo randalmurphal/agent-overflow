@@ -290,38 +290,67 @@ export interface CommandMenuSources {
  * Provider/skill names colliding with an intercepted command are dropped, not
  * rendered twice: the intercepted one is what a send would run, and a menu
  * offering both would be offering a choice that does not exist.
+ *
+ * `pushSection` extends that same rule to a source colliding with ITSELF,
+ * which is not hypothetical: a Claude session frame enumerates commands from
+ * several scopes at once (user, project, plugin, MCP prompt) and reports one
+ * name per scope, and `unionProviderCommands` enriches that list without
+ * collapsing it. Two rows carrying one `label` is what
+ * `ComposerSlashPopover`'s keyed `{#each}` throws `each_key_duplicate` on —
+ * and a throw inside an update flush aborts the batch and freezes the pane
+ * (incident 2026-08-29). First occurrence wins, so source order and the
+ * priority it encodes are untouched.
  */
 export function buildCommandSections(sources: CommandMenuSources): ComposerCommandSection[] {
   const intercepted = sources.atStart ? interceptedCommandsFor(sources.provider) : [];
   const shadowed = new Set(interceptedCommandsFor(sources.provider).map((c) => c.name));
   const sections: ComposerCommandSection[] = [];
 
-  const ao = SLASH_COMMANDS.map(aoCommandEntry);
-  const appEntries = [...ao, ...intercepted.map(interceptedCommandEntry)];
-  if (appEntries.length > 0) {
-    sections.push({ id: 'ao', header: 'Agent Overflow', entries: appEntries });
+  function pushSection(id: string, header: string, entries: ComposerCommandEntry[]): void {
+    const deduped = dedupeEntriesByLabel(entries);
+    if (deduped.length > 0) sections.push({ id, header, entries: deduped });
   }
+
+  const ao = SLASH_COMMANDS.map(aoCommandEntry);
+  pushSection('ao', 'Agent Overflow', [...ao, ...intercepted.map(interceptedCommandEntry)]);
   if (!sources.atStart) return sections;
 
   const providerId = (sources.provider ?? '').trim();
   if (providerId === 'codex') {
-    const skills = sources.skills
-      .filter((skill) => !shadowed.has(skill.name))
-      .map(codexSkillEntry);
-    if (skills.length > 0) {
-      sections.push({ id: 'skills', header: 'Codex skills', entries: skills });
-    }
+    pushSection(
+      'skills',
+      'Codex skills',
+      sources.skills.filter((skill) => !shadowed.has(skill.name)).map(codexSkillEntry),
+    );
     return sections;
   }
 
   const staticCommands = mergeStaticClaudeCommands(sources.probeCommands, sources.claudeSkills);
-  const commands = unionProviderCommands(sources.sessionCommands, staticCommands)
-    .filter((command) => !shadowed.has(command.name) && !isHiddenProviderCommand(command.name))
-    .map(providerCommandEntry);
-  if (commands.length > 0) {
-    sections.push({ id: 'provider', header: 'Provider commands', entries: commands });
-  }
+  pushSection(
+    'provider',
+    'Provider commands',
+    unionProviderCommands(sources.sessionCommands, staticCommands)
+      .filter((command) => !shadowed.has(command.name) && !isHiddenProviderCommand(command.name))
+      .map(providerCommandEntry),
+  );
   return sections;
+}
+
+/**
+ * One row per label. The label is the row's identity everywhere downstream —
+ * what the popover keys on, and what a selection inserts — so two entries
+ * sharing one are the same row twice, whatever their kinds.
+ */
+function dedupeEntriesByLabel(entries: ComposerCommandEntry[]): ComposerCommandEntry[] {
+  if (entries.length < 2) return entries;
+  const seen = new Set<string>();
+  const out: ComposerCommandEntry[] = [];
+  for (const entry of entries) {
+    if (seen.has(entry.label)) continue;
+    seen.add(entry.label);
+    out.push(entry);
+  }
+  return out;
 }
 
 /**

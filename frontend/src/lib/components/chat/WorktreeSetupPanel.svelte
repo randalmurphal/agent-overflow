@@ -94,7 +94,7 @@
 </script>
 
 {#if view}
-  {#if view.dismissed}
+  {#if view?.dismissed}
     <div
       class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2"
       data-testid="worktree-setup-bar"
@@ -122,7 +122,7 @@
     <div
       class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2"
       data-testid="worktree-setup-panel"
-      data-state={view.state}
+      data-state={view?.state}
     >
       <div
         class="flex max-h-[45vh] min-h-0 flex-col border bg-surface-1/95 shadow-sheet
@@ -155,18 +155,18 @@
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-          {#if view.steps.length > 0}
-            <WorktreeSetupSteps steps={view.steps} statuses={view.stepStatuses} />
+          {#if (view?.steps.length ?? 0) > 0}
+            <WorktreeSetupSteps steps={view?.steps ?? []} statuses={view?.stepStatuses ?? []} />
           {/if}
-          {#if failed && view.error}
+          {#if failed && view?.error}
             <p
               class="mt-2 whitespace-pre-wrap break-words text-xs text-error"
               data-testid="worktree-setup-error"
-            >{failedStep ? `${failedStep.label}: ` : ''}{view.error}</p>
+            >{failedStep ? `${failedStep.label}: ` : ''}{view?.error ?? ''}</p>
           {/if}
-          {#if view.output}
+          {#if view?.output}
             <AnsiText
-              source={view.output}
+              source={view?.output ?? ''}
               class="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[0.6875rem] leading-relaxed text-text-secondary"
             />
           {/if}

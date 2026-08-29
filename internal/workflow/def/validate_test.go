@@ -97,6 +97,9 @@ func TestValidateGoldenErrorsNameOffendingElement(t *testing.T) {
 			r.Workflow.Phases[0].Outputs["approach"] = Variable{Schema: JSONSchema{Type: "string"}}
 			r.Workflow.Phases[1].Inputs["plan.approach"] = Variable{Schema: JSONSchema{Type: "string", Enum: []any{"safe"}}}
 		}, validBindings(), "variable.type", "input \"plan.approach\""},
+		{"duplicate enum", func(r *ResolvedWorkflow) {
+			r.Workflow.Inputs["goal"] = Variable{Schema: JSONSchema{Type: "string", Enum: []any{"safe", "bold", "safe"}}}
+		}, validBindings(), "schema.enum", "input \"goal\""},
 		{"object shape", func(r *ResolvedWorkflow) {
 			r.Workflow.Phases[0].Outputs["approach"] = Variable{Schema: JSONSchema{Type: "object", Properties: map[string]JSONSchema{"summary": {Type: "string"}}}}
 			r.Workflow.Phases[1].Inputs["plan.approach"] = Variable{Schema: JSONSchema{Type: "object", Properties: map[string]JSONSchema{"summary": {Type: "string"}}, Required: []string{"summary"}}}

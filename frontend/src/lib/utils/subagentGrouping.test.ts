@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  enforceUniqueTimelineNodeKeys,
   finalAssistantTextIdsByTurn,
   findTimelineNodeIndex,
   groupItemsBySubagent,
@@ -17,6 +20,7 @@ import {
   type WaitGroupNode,
   type TimelineNode,
 } from './subagentGrouping';
+import { groupConsecutiveReads } from './readGrouping';
 import type { SubagentFoldAggregate } from './subagentFold';
 import type { Item } from '../types/models';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
@@ -2824,5 +2828,391 @@ describe('groupItemsBySubagent — card reuse across passes', () => {
     const third = expectWaitGroup(groupItemsBySubagent([carrier, finished])[0]);
     expect(third).not.toBe(first);
     expect(third.completion?.id).toBe('complete:wait-1');
+  });
+});
+
+// A detached launch can have MANY durable completion rows. Codex's
+// background mailbox keys a delivery by content plus resume generation
+// (internal/triage/codex_background_mailbox.go), so a resumed child's later
+// answers are separate `tool_completion` rows by design — the backend must
+// never collapse them. Turning each into a card minted N group nodes under
+// one key, and the duplicate key threw out of the row `{#each}`, aborting
+// the Svelte update batch: the pane froze (production 2026-08-29).
+describe('groupItemsBySubagent — one card per launch across repeated deliveries', () => {
+  function codexSpawn(id: string, itemIndex: number): Item {
+    return mkItem({
+      id,
+      itemIndex,
+      kind: 'tool_call',
+      toolName: 'collab_agent',
+      isBackground: true,
+      summary: 'spawn',
+      meta: toolMeta({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
+    });
+  }
+
+  /** The mailbox's row shape: `complete:<launch>:delivery:<content hash>`. */
+  function delivery(
+    launchId: string,
+    hash: string,
+    itemIndex: number,
+    overrides: Partial<Item> = {},
+  ): Item {
+    return mkItem({
+      id: `complete:${launchId}:delivery:${hash}`,
+      itemIndex,
+      kind: 'tool_completion',
+      toolName: 'collab_agent',
+      isBackground: true,
+      completionOf: launchId,
+      summary: `delivery ${hash}`,
+      ...overrides,
+    });
+  }
+
+  function keysWithin(nodes: readonly TimelineNode[]): string[] {
+    const keys: string[] = [];
+    for (const node of nodes) {
+      keys.push(timelineNodeKey(node));
+      if (node.kind === 'group' || node.kind === 'wait_group') {
+        keys.push(...keysWithin(node.children));
+      }
+    }
+    return keys;
+  }
+
+  function expectNoDuplicateKeys(nodes: readonly TimelineNode[]): void {
+    const keys = keysWithin(nodes);
+    expect(new Set(keys).size).toBe(keys.length);
+  }
+
+  it('anchors ONE card at the first delivery and leaves the rest as leaves', () => {
+    const nodes = groupItemsBySubagent([
+      codexSpawn('spawn-1', 0),
+      delivery('spawn-1', 'aaa', 1),
+      delivery('spawn-1', 'bbb', 2),
+      delivery('spawn-1', 'ccc', 3),
+    ]);
+
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'spawn-1',
+      'complete:spawn-1:delivery:aaa',
+      'complete:spawn-1:delivery:bbb',
+      'complete:spawn-1:delivery:ccc',
+    ]);
+    // The spawn row is the immutable pre-card leaf; the FIRST delivery is
+    // the card; the later two are ordinary chronological leaves, so every
+    // durable delivery stays visible where it landed.
+    expect(expectLeaf(nodes[0]).item.id).toBe('spawn-1');
+    const card = expectGroup(nodes[1]);
+    expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
+    expect(expectLeaf(nodes[2]).item.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(expectLeaf(nodes[3]).item.id).toBe('complete:spawn-1:delivery:ccc');
+    expect(nodes.filter((node) => node.kind === 'group')).toHaveLength(1);
+    // Status comes from the LATEST delivery even though the card sits at
+    // the first: the card reports what the agent last said.
+    expect(card.completion?.id).toBe('complete:spawn-1:delivery:ccc');
+    // Expansion still keys on the launch — that is what makes an opened
+    // card stay open when its anchor moves.
+    expect(card.groupKey).toBe('spawn-1');
+    // …and the ROW key is the anchor's, which is what the freeze was about.
+    expect(timelineNodeKey(card)).toBe('g:thread-1:complete:spawn-1:delivery:aaa');
+    expectNoDuplicateKeys(nodes);
+  });
+
+  it('keeps the anchor and its key put when a fourth delivery appends', () => {
+    const items = [
+      codexSpawn('spawn-1', 0),
+      delivery('spawn-1', 'aaa', 1),
+      delivery('spawn-1', 'bbb', 2),
+      delivery('spawn-1', 'ccc', 3),
+    ];
+    const before = expectGroup(groupItemsBySubagent(items)[1]);
+    const beforeKey = timelineNodeKey(before);
+
+    const nodes = groupItemsBySubagent([...items, delivery('spawn-1', 'ddd', 4)]);
+    const after = expectGroup(nodes[1]);
+    expect(after.anchor.id).toBe(before.anchor.id);
+    expect(timelineNodeKey(after)).toBe(beforeKey);
+    // The new delivery is a new leaf, and the card's status follows it.
+    expect(expectLeaf(nodes[4]).item.id).toBe('complete:spawn-1:delivery:ddd');
+    expect(after.completion?.id).toBe('complete:spawn-1:delivery:ddd');
+    expectNoDuplicateKeys(nodes);
+  });
+
+  it('leaves a later wait-claimed delivery a leaf inside its wait group', () => {
+    const nodes = groupItemsBySubagent([
+      codexSpawn('spawn-1', 0),
+      delivery('spawn-1', 'aaa', 1),
+      mkItem({
+        id: 'wait-1',
+        itemIndex: 2,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        meta: codexWaitAgentMeta(),
+      }),
+      delivery('spawn-1', 'bbb', 3, {
+        meta: toolMeta({ wait_carrier_id: 'wait-1' }),
+      }),
+    ]);
+
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'spawn-1',
+      'complete:spawn-1:delivery:aaa',
+      'wait-1',
+    ]);
+    const card = expectGroup(nodes[1]);
+    expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
+    const wait = expectWaitGroup(nodes[2]);
+    // The wait-claimed delivery renders under the wait as a LEAF, not as a
+    // second card for the same launch.
+    expect(wait.children.map((child) => expectLeaf(child).item.id)).toEqual([
+      'complete:spawn-1:delivery:bbb',
+    ]);
+    expect(card.completion?.id).toBe('complete:spawn-1:delivery:bbb');
+    expectNoDuplicateKeys(nodes);
+  });
+
+  it('lets a wait-claimed FIRST delivery anchor the card inside the wait group', () => {
+    // First-wins is by timeline order, not by which list a delivery lands
+    // in: a completion the wait claimed can be the card, and then the
+    // unclaimed one after it is the plain leaf.
+    const nodes = groupItemsBySubagent([
+      codexSpawn('spawn-1', 0),
+      mkItem({
+        id: 'wait-1',
+        itemIndex: 1,
+        kind: 'tool_call',
+        toolName: 'wait_agent',
+        meta: codexWaitAgentMeta(),
+      }),
+      delivery('spawn-1', 'aaa', 2, { meta: toolMeta({ wait_carrier_id: 'wait-1' }) }),
+      delivery('spawn-1', 'bbb', 3),
+    ]);
+
+    const wait = expectWaitGroup(nodes[1]);
+    const card = expectGroup(wait.children[0]);
+    expect(card.parent.id).toBe('spawn-1');
+    expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
+    expect(timelineNodeKey(card)).toBe('g:thread-1:complete:spawn-1:delivery:aaa');
+    expect(expectLeaf(nodes[2]).item.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(card.completion?.id).toBe('complete:spawn-1:delivery:bbb');
+    expectNoDuplicateKeys(nodes);
+  });
+
+  it('moves the anchor to an EARLIER delivery paged in by load-older', () => {
+    // The one legitimate anchor move: the window's earlier edge grows and a
+    // delivery that already existed becomes the first LOADED one. The card
+    // relocates to it, the old anchor becomes an ordinary leaf, and the
+    // projection stays duplicate-free through the transition.
+    const spawn = codexSpawn('spawn-1', 0);
+    const later = delivery('spawn-1', 'bbb', 3);
+    const first = groupItemsBySubagent([spawn, later]);
+    expect(expectGroup(first[1]).anchor.id).toBe('complete:spawn-1:delivery:bbb');
+
+    const earlier = delivery('spawn-1', 'aaa', 2);
+    const nodes = groupItemsBySubagent([spawn, earlier, later]);
+    const card = expectGroup(nodes[1]);
+    expect(card.anchor.id).toBe('complete:spawn-1:delivery:aaa');
+    expect(timelineNodeKey(card)).toBe('g:thread-1:complete:spawn-1:delivery:aaa');
+    expect(expectLeaf(nodes[2]).item.id).toBe('complete:spawn-1:delivery:bbb');
+    expect(nodes.filter((node) => node.kind === 'group')).toHaveLength(1);
+    expectNoDuplicateKeys(nodes);
+  });
+
+  it('leaves an awaited launch anchored on itself, key unchanged', () => {
+    const nodes = groupItemsBySubagent([
+      agentLaunch('agent-1', 0),
+      mkItem({ id: 'child', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'agent-1' }),
+    ]);
+    const card = expectGroup(nodes[0]);
+    expect(card.anchor).toBe(card.parent);
+    expect(card.groupKey).toBe('agent-1');
+    expect(timelineNodeKey(card)).toBe('g:thread-1:agent-1');
+  });
+});
+
+// Structural regression fixture: the item shapes from the pane that froze on
+// 2026-08-29, with every content field replaced by a placeholder at
+// extraction time (ids, kinds, tool names, parent/completion links, turn and
+// item indexes, and only the meta keys the launch predicate reads). It is
+// here because the freeze was a SHAPE — 14 launches with 2-4 durable
+// completion deliveries each — that no hand-written fixture had.
+describe('groupItemsBySubagent — production snapshot shape', () => {
+  // Read from disk rather than imported: the fixture is test input, not a
+  // module, and nothing should pull 200 items into the app's build graph.
+  const snapshot = JSON.parse(
+    readFileSync(
+      join(process.cwd(), 'src/lib/utils/__fixtures__/subagentGroupingProductionSnapshot.json'),
+      'utf8',
+    ),
+  ) as Item[];
+
+  /**
+   * Duplicate keys WITHIN one rendered list, which is the only scope that
+   * matters: `each_key_duplicate` is per keyed block, and leaf nodes are
+   * legitimately reference-shared between lists.
+   */
+  function duplicateKeysPerList(nodes: readonly TimelineNode[], found: string[] = []): string[] {
+    const seen = new Set<string>();
+    for (const node of nodes) {
+      const key = timelineNodeKey(node);
+      if (seen.has(key)) found.push(key);
+      seen.add(key);
+      if (node.kind === 'group' || node.kind === 'wait_group') {
+        duplicateKeysPerList(node.children, found);
+      }
+    }
+    return found;
+  }
+
+  it('carries the multi-delivery shape the freeze needed', () => {
+    const deliveriesByLaunch = new Map<string, number>();
+    for (const item of snapshot) {
+      if (item.kind !== 'tool_completion' || !item.completionOf) continue;
+      deliveriesByLaunch.set(item.completionOf, (deliveriesByLaunch.get(item.completionOf) ?? 0) + 1);
+    }
+    const repeated = [...deliveriesByLaunch.values()].filter((count) => count > 1);
+    expect(repeated.length).toBeGreaterThanOrEqual(10);
+    expect(Math.max(...repeated)).toBeGreaterThanOrEqual(3);
+  });
+
+  it('projects the whole snapshot with no duplicate key in any list', () => {
+    const nodes = groupConsecutiveReads(groupItemsBySubagent(snapshot));
+    expect(duplicateKeysPerList(nodes)).toEqual([]);
+  });
+
+  it('renders exactly one card per launch that has any card at all', () => {
+    const nodes = groupConsecutiveReads(groupItemsBySubagent(snapshot));
+    const cardsByLaunch = new Map<string, number>();
+    const walk = (list: readonly TimelineNode[]): void => {
+      for (const node of list) {
+        if (node.kind === 'group') {
+          cardsByLaunch.set(node.parent.id, (cardsByLaunch.get(node.parent.id) ?? 0) + 1);
+        }
+        if (node.kind === 'group' || node.kind === 'wait_group') walk(node.children);
+      }
+    };
+    walk(nodes);
+    expect(cardsByLaunch.size).toBeGreaterThan(0);
+    expect([...cardsByLaunch.values()].filter((count) => count !== 1)).toEqual([]);
+  });
+});
+
+// The class tripwire: whatever the projection gets wrong, Svelte must never
+// be handed two rows with one key inside a keyed block — the throw aborts the
+// update batch and the pane stops rendering (2026-08-29). Diagnostics are
+// asserted through the real capture pipeline, per test/helpers/diagnostics.
+describe('enforceUniqueTimelineNodeKeys', () => {
+  const diagnostics = installDiagnosticsCapture();
+
+  it('re-keys the later of two colliding rows and keeps the order', async () => {
+    // Two distinct Items carrying one id — what a transport-gap replay
+    // produces — so the projection mints two leaves with the same key.
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'dup', itemIndex: 0, summary: 'first' }),
+      mkItem({ id: 'dup', itemIndex: 1, summary: 'second' }),
+    ]);
+    expect(nodes.map((node) => timelineNodeKey(node))).toEqual([
+      'l:thread-1:dup',
+      'l:thread-1:dup',
+    ]);
+
+    enforceUniqueTimelineNodeKeys(nodes);
+
+    expect(nodes.map((node) => timelineNodeKey(node))).toEqual([
+      'l:thread-1:dup',
+      'l:thread-1:dup#2',
+    ]);
+    expect(nodes.map((node) => expectLeaf(node).item.summary)).toEqual(['first', 'second']);
+
+    const records = await diagnostics.all();
+    expect(records).toHaveLength(1);
+    expect(records[0].message).toContain('duplicate timeline node key');
+    // Constant message, variables in the detail — otherwise every colliding
+    // key mints its own dedupe signature.
+    expect(records[0].message).not.toContain('l:thread-1:dup');
+    expect(records[0].detail).toContain('l:thread-1:dup#2');
+    expect(diagnostics.warnings().join('\n')).toContain('duplicate timeline node keys');
+  });
+
+  it('holds the repaired key across later renders', () => {
+    const nodes = groupItemsBySubagent([
+      mkItem({ id: 'dup', itemIndex: 0 }),
+      mkItem({ id: 'dup', itemIndex: 1 }),
+    ]);
+    enforceUniqueTimelineNodeKeys(nodes);
+    const repaired = timelineNodeKey(nodes[1]);
+    // A suffix recomputed per pass would remount the row on every
+    // projection; the memo is what makes the repair stable.
+    enforceUniqueTimelineNodeKeys(nodes);
+    expect(timelineNodeKey(nodes[1])).toBe(repaired);
+  });
+
+  it('repairs a collision inside a card body, not only the root list', async () => {
+    const nodes = groupItemsBySubagent([
+      agentLaunch('agent-1', 0),
+      mkItem({ id: 'dup', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'agent-1' }),
+      mkItem({ id: 'dup', itemIndex: 2, kind: 'tool_call', toolName: 'Bash', parentId: 'agent-1' }),
+    ]);
+    const card = expectGroup(nodes[0]);
+    expect(card.children).toHaveLength(2);
+
+    enforceUniqueTimelineNodeKeys(nodes);
+
+    expect(card.children.map((child) => timelineNodeKey(child))).toEqual([
+      'l:thread-1:dup',
+      'l:thread-1:dup#2',
+    ]);
+    expect(await diagnostics.messages()).toHaveLength(1);
+  });
+
+  it('leaves a node that is reference-shared between two LISTS alone', async () => {
+    // Leaf nodes are cached per Item, so one node object legitimately
+    // appears in a run and in the group the run wraps. Only a collision
+    // inside ONE keyed block is a defect; a global set would "repair"
+    // every shared leaf and remount it.
+    const shared = expectLeaf(groupItemsBySubagent([mkItem({ id: 'shared' })])[0]);
+    const launch = agentLaunch('agent-1', 0);
+    const card: SubagentGroupNode = {
+      kind: 'group',
+      parent: launch,
+      anchor: launch,
+      groupKey: 'agent-1',
+      children: [shared],
+      descendantCount: 1,
+      loadedDescendantCount: 1,
+      latestChildSummary: '',
+    };
+
+    enforceUniqueTimelineNodeKeys([shared, card]);
+
+    expect(timelineNodeKey(shared)).toBe('l:thread-1:shared');
+    expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  it('says nothing about a well-formed projection', async () => {
+    const nodes = groupItemsBySubagent([
+      agentLaunch('agent-1', 0),
+      mkItem({ id: 'c1', itemIndex: 1, kind: 'tool_call', toolName: 'Bash', parentId: 'agent-1' }),
+      mkItem({ id: 'after', itemIndex: 2, summary: 'prose' }),
+    ]);
+    enforceUniqueTimelineNodeKeys(nodes);
+    expect(await diagnostics.messages()).toEqual([]);
+  });
+
+  it('reports — and cannot repair — the SAME node object twice in one list', async () => {
+    // The residual case: a per-object key memo cannot separate two
+    // occurrences of one object, and rewriting the list is not this pass's
+    // to make. The report is the whole remedy; `TimelineVirtualizer.keysFor`
+    // stays the top-level backstop.
+    const shared = expectLeaf(groupItemsBySubagent([mkItem({ id: 'twice' })])[0]);
+
+    enforceUniqueTimelineNodeKeys([shared, shared]);
+
+    expect(timelineNodeKey(shared)).toBe('l:thread-1:twice');
+    const records = await diagnostics.all();
+    expect(records).toHaveLength(1);
+    expect(records[0].detail).toContain('1 shared-node');
   });
 });

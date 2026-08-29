@@ -5,8 +5,8 @@
   import ChatMarkdown from './ChatMarkdown.svelte';
   import {
     AllowlistedPathCompletionGuard,
-    createStreamingAssistantDomSink,
-  } from './markdown/streamingAssistantDomSink';
+    createStreamingAssistantLiteralOwner,
+  } from './markdown/streamingAssistantLiteralOwner';
 
   let {
     workspacePath = '',
@@ -35,7 +35,7 @@
     return revealRouter.parserSourceFor(ITEM_ID, canonical, RENDER_CONTEXT);
   });
   const pathCompletionGuard = new AllowlistedPathCompletionGuard();
-  const sink = createStreamingAssistantDomSink({
+  const sink = createStreamingAssistantLiteralOwner({
     getRoot: () => directRoot,
     canAppendSource: (source, nextSource, delta) =>
       !pathCompletionGuard.completes(pathRefs, source, nextSource, delta),
@@ -73,6 +73,19 @@
   export async function synchronize(): Promise<void> {
     revealRouter.clearItem(ITEM_ID);
     presentationRevision += 1;
+    await tick();
+  }
+
+  /**
+   * The completion shape: the wire replaces the streamed body with the
+   * provider's final text, which may differ from what the reveal already
+   * painted. `retireItem` retires the direct presentation and asks for the
+   * authoritative render in the same task the canonical row is replaced in.
+   */
+  export async function complete(finalSource: string): Promise<void> {
+    revealRouter.retireItem(ITEM_ID, () => { presentationRevision += 1; });
+    canonical = finalSource;
+    baselineSource = finalSource;
     await tick();
   }
 

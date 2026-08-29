@@ -1067,4 +1067,56 @@ describe('<ActivityRun>', () => {
       expect(clips[1].dataset.scrollOwner).toBe('controller');
     });
   });
+  // A run's rows are a keyed `{#each}`, and svelte THROWS on a duplicate key
+  // (`each_key_duplicate`) — a throw inside an update batch aborts the batch,
+  // so the pane stops rendering and reads as frozen. Codex's background
+  // mailbox delivers a durable `tool_completion` per content + resume
+  // generation, so one detached spawn routinely lands several; while each of
+  // them became a card, all three keyed on the launch id (production
+  // 2026-08-29).
+  describe('repeated completion deliveries for one launch', () => {
+    function spawn(id: string, index: number): Item {
+      return makeItem({
+        id,
+        itemIndex: index,
+        kind: 'tool_call',
+        toolName: 'collab_agent',
+        isBackground: true,
+        status: 'completed',
+        summary: 'spawn',
+        meta: JSON.stringify({ toolName: 'collab_agent', input: { tool: 'spawn_agent' } }),
+      });
+    }
+
+    function delivery(launchId: string, hash: string, index: number): Item {
+      return makeItem({
+        id: `complete:${launchId}:delivery:${hash}`,
+        itemIndex: index,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        isBackground: true,
+        status: 'completed',
+        completionOf: launchId,
+        summary: `delivery ${hash}`,
+      });
+    }
+
+    it('renders three deliveries in one run as one card plus two leaves', async () => {
+      await updateSetting('activityRunWindowRows', 20);
+      const { container, getAllByTestId } = await renderRun([
+        spawn('spawn-1', 0),
+        delivery('spawn-1', 'aaa', 1),
+        delivery('spawn-1', 'bbb', 2),
+        delivery('spawn-1', 'ccc', 3),
+      ], 'codex');
+
+      // Reaching this line at all is most of the claim: the render would
+      // throw on a duplicate key before any assertion ran.
+      expect(container.querySelectorAll('[data-run-child]')).toHaveLength(4);
+      expect(getAllByTestId('subagent-group')).toHaveLength(1);
+      const keys = [...container.querySelectorAll('[data-run-child]')]
+        .map((el) => el.getAttribute('data-run-child'));
+      expect(new Set(keys).size).toBe(keys.length);
+    });
+  });
 });

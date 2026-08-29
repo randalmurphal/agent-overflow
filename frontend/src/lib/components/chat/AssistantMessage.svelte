@@ -21,8 +21,8 @@
   import { RawJsonFenceFormatter } from './markdown/rawJsonFence';
   import {
     AllowlistedPathCompletionGuard,
-    createStreamingAssistantDomSink,
-  } from './markdown/streamingAssistantDomSink';
+    createStreamingAssistantLiteralOwner,
+  } from './markdown/streamingAssistantLiteralOwner';
   import type { StreamingAssistantRenderContext } from '../../stores/streamingAssistantReveal';
   import { isViewOnlySession } from '../../transport/runMode';
   import { isHarnessSession } from '../../transport/harnessMode';
@@ -193,7 +193,7 @@
   });
   const pathCompletionGuard = new AllowlistedPathCompletionGuard();
   let bodyRoot: HTMLElement;
-  const directRevealSink = createStreamingAssistantDomSink({
+  const directRevealSink = createStreamingAssistantLiteralOwner({
     getRoot: () => bodyRoot,
     canAppendSource: (source, nextSource, delta) =>
       !directSourceIsRawJson &&

@@ -433,6 +433,35 @@
     return { y, translatePercent: previewTranslateYPercent(railH > 0 ? y / railH : 0.5) };
   });
 
+  // ONE nullable derived carrying everything the card renders, so every
+  // template expression inside the guarded branch can be total. The
+  // position needs `railTop` as well as the anchor, and railTop's inputs
+  // (railH ← availableHeightPx, ticks.length) are exactly what kills the
+  // anchor — a tick-list replacement, a column resize, the sync module's
+  // rAF resetHover. An attribute effect reading `previewAnchor.y` beside
+  // `railTop` can therefore be asked to render on the surviving dep after
+  // the anchor is already null, before the branch tears down (crash
+  // 2026-08-29). Folded here, the branch's expressions read one nullable
+  // through `?.`: the dying frame renders neutral instead of throwing,
+  // and the `{#if}` still owns whether the card exists at all.
+  let previewCard = $derived.by(() => {
+    const anchor = previewAnchor;
+    if (anchor === null) return null;
+    const turn = preview;
+    if (!turn || !turn.userText) return null;
+    return {
+      top: `calc(${railTop} + ${anchor.y}px)`,
+      // Named `translateY`, not `transform`: a bare `transform:` property
+      // in an object literal reads as an authored CSS declaration to the
+      // compositor-state scan (architecture.test.ts). The one authored
+      // piece of state here is the style directive below, already
+      // inventoried.
+      translateY: `translateY(${anchor.translatePercent}%)`,
+      userText: turn.userText,
+      assistantText: turn.assistantText,
+    };
+  });
+
   const ARROW_CLASSES = [
     'pointer-events-auto absolute left-1.5 z-30',
     'inline-flex items-center justify-center',
@@ -583,7 +612,7 @@
       </div>
     </div>
 
-    {#if previewAnchor !== null && preview && preview.userText}
+    {#if previewCard}
       <!-- Turn preview. Anchored to the hovered tick's position within
            the rail window; cards near the window's edges flip instead
            of clipping. Selectable on purpose — mouseleave keeps the
@@ -593,14 +622,14 @@
         role="tooltip"
         class="pointer-events-auto absolute z-40 w-80 max-w-[min(20rem,60vw)] cursor-text select-text rounded-lg border border-border-subtle bg-card p-3 shadow-sheet"
         style:left={`${NAV_RAIL_HIT_WIDTH_PX}px`}
-        style:top={`calc(${railTop} + ${previewAnchor.y}px)`}
-        style:transform={`translateY(${previewAnchor.translatePercent}%)`}
+        style:top={previewCard?.top ?? '0px'}
+        style:transform={previewCard?.translateY ?? 'none'}
         onmouseleave={handleHoverLeave}
         data-testid="nav-rail-preview"
       >
-        <p class="line-clamp-2 text-xs font-medium text-text-primary">{preview.userText}</p>
-        {#if preview.assistantText}
-          <p class="mt-1.5 line-clamp-3 text-xs text-text-secondary">{preview.assistantText}</p>
+        <p class="line-clamp-2 text-xs font-medium text-text-primary">{previewCard?.userText ?? ''}</p>
+        {#if previewCard?.assistantText}
+          <p class="mt-1.5 line-clamp-3 text-xs text-text-secondary">{previewCard?.assistantText ?? ''}</p>
         {/if}
       </div>
     {/if}

@@ -6954,6 +6954,26 @@ describe('createUseStickToBottomController — external content-geometry source'
       ).toThrow(/externalContentGeometry/);
     });
 
+    it('throws when delivering a sample while detached', () => {
+      // A sample delivered with no scroller is LOST — the pipeline drops
+      // it, and the virtualizer's own dedupe never offers the same tuple
+      // again, which is how a populated first mount ended up at
+      // scrollTop=0 claiming the bottom. The source must subscribe after
+      // attach (TimelineVirtualizerHandle.subscribeContentGeometry), so
+      // reaching this at all is a contract breach, not a race to
+      // tolerate: loud here (dev/test), reported-and-dropped in
+      // production, where a throw would abort the caller's update batch.
+      controller.detach();
+      expect(() =>
+        controller.deliverContentGeometry({
+          height: 800,
+          width: 800,
+          windowMeasured: false,
+          maxFirstMeasureCorrectionPx: 0,
+        }),
+      ).toThrow(/detached/);
+    });
+
     it('first sample snaps scrollTop to target when sticky', () => {
       geom.scrollTop = 0;
       deliver(800);

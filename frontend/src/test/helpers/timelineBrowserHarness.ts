@@ -270,8 +270,11 @@ export async function mountTimeline(
   threadId: string,
   items: Item[],
   quiet: QuietBottomOptions,
+  // Provider-sensitive scenarios (Codex detached-launch shapes) override the
+  // thread; the id always comes from `threadId`.
+  thread?: Partial<Parameters<typeof makeThread>[0]>,
 ): Promise<MountedTimeline> {
-  const pane = await buildPane(makeThread({ id: threadId }), items);
+  const pane = await buildPane(makeThread({ ...thread, id: threadId }), items);
   const host = document.createElement('div');
   // Fixed, definite size: MessageTimeline's root is `h-full`, so the host is
   // the viewport. position:fixed keeps document scrollbars out of the test.

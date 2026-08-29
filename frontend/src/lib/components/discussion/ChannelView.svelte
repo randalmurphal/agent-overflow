@@ -79,19 +79,7 @@
     // Only re-run when the channelId prop changes; don't subscribe to the
     // pane state the load path reads/writes, or we loop on every push.
     if (!channelId) return;
-    const generation = ++loadGeneration;
     untrack(() => {
-      // Suspend auto-follow until the initial load lands and we
-      // explicitly forceStick: armRestoreSnap sets the defensive escape
-      // (without it, the initial batch growing contentEl on the next
-      // frame while the controller is still in its default isAtBottom
-      // state would sync-pin to the eventual bottom mid-flight) and arms
-      // the one-shot restore-snap consent for the post-load
-      // forceStick({reason:'restore'}) below. Simplified mirror of the
-      // switch-edge choreography MessageTimeline runs through
-      // components/chat/timelineRestore.svelte.ts (handleSwitchEdgePre →
-      // restore effect) — no snapshots here, just the consent arming.
-      stick.armRestoreSnap();
       // Only wipe the channel buffer when switching to a different
       // channel — re-entry of the same channel keeps whatever the last
       // snapshot said (status is authoritative now, not seeded).
@@ -99,7 +87,7 @@
         pane.clearChannel();
         lastChannelId = channelId;
       }
-      void loadInitial(generation);
+      beginInitialLoad();
     });
 
     return () => {
@@ -138,19 +126,43 @@
         await tick();
         if (generation === loadGeneration) {
           // reason:'restore' so an intervening user scroll-up (which
-          // re-clears the restore-snap consent armed above) preserves
-          // the user's position instead of slamming them to the bottom.
+          // re-clears the restore-snap consent `beginInitialLoad` armed)
+          // preserves the user's position instead of slamming them to
+          // the bottom.
           stick.forceStick({ reason: 'restore' });
         }
       }
     }
   }
 
-  function retryInitialLoad(): void {
-    // Bump the generation exactly like the mount effect: reusing the
-    // current one would let two rapid retries run two un-cancellable
-    // concurrent loads with the slower resolver winning.
+  /**
+   * The ONE entry into the initial-load choreography. Both callers — the
+   * channel-edge $effect and the error banner's Retry — are the same
+   * lifecycle edge (re-entering the load), so neither may state half of it.
+   *
+   * Two halves, and both are load-bearing:
+   *
+   * - Bump the generation, so a second entry cancels the first instead of
+   *   letting two un-cancellable loads race with the slower resolver winning.
+   * - Arm. `armRestoreSnap` sets the defensive escape (without it, the
+   *   initial batch growing contentEl on the next frame while the controller
+   *   is still in its default isAtBottom state would sync-pin to the eventual
+   *   bottom mid-flight) and arms the one-shot restore-snap consent that
+   *   `loadInitial`'s `forceStick({reason:'restore'})` spends. Retry used to
+   *   skip the arm: the first attempt's forceStick had already consumed the
+   *   mount arm, so the retry's was refused by the controller's consent gate
+   *   and a freshly loaded channel rendered at whatever offset an
+   *   intervening gesture left, with follow frozen. Same class as the
+   *   2026-08-29 chat incident — a lifecycle edge inferred from leftover
+   *   state instead of stated.
+   *
+   * Simplified mirror of the switch-edge choreography MessageTimeline runs
+   * through components/chat/timelineRestore.svelte.ts (handleSwitchEdgePre →
+   * restore effect) — no snapshots here, just the consent arming.
+   */
+  function beginInitialLoad(): void {
     const generation = ++loadGeneration;
+    stick.armRestoreSnap();
     void loadInitial(generation);
   }
 
@@ -322,7 +334,7 @@
             class="rounded-[var(--radius-card)] border border-error/30 bg-error/5 px-3.5 py-2.5 text-[0.75rem] text-error flex items-center gap-3"
           >
             <span class="flex-1">Failed to load channel: {loadError}</span>
-            <Button variant="secondary" size="xs" onclick={retryInitialLoad}>
+            <Button variant="secondary" size="xs" onclick={beginInitialLoad}>
               {#snippet children()}Retry{/snippet}
             </Button>
           </div>
@@ -370,7 +382,7 @@
       contentGeometry={scrollbarGeometry}
       ariaLabel="Scroll discussion messages"
       placement="inset-y-0 right-0.5 w-1.5"
-      ownerDrivenPosition={() => stick.isSticky}
+      ownerDrivenPosition={() => stick.positionOwnerDriven}
       onUserScrollStart={() => stick.setEscapedFromLock(true)}
       onUserScrollEnd={(atBottom) => {
         if (atBottom) stick.forceStick();

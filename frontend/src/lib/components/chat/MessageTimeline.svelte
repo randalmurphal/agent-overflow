@@ -166,9 +166,9 @@
   // Wrapper around <TimelineVirtualizer>: the warm-up visibility gate's
   // hide target, and the controller's registered content element. The
   // controller does NOT observe it (`externalContentGeometry`) — content
-  // geometry arrives engine-sourced through the virtualizer's
-  // `onContentGeometry` samples, post-flush and before the paint that
-  // displays the change.
+  // geometry arrives engine-sourced through the virtualizer's geometry
+  // subscription, post-flush and before the paint that displays the
+  // change.
   let contentEl: HTMLDivElement | undefined = $state(undefined);
   const scrollbarGeometry = createContentGeometryNotifier();
   const userMessageOverflow = createUserMessageOverflowCoordinator();
@@ -284,7 +284,9 @@
     quietContextSignal: () => anyMarkdownSettledSinceArm || mountedMarkdownCount === 0,
     // The virtualizer is the content-geometry source (its spacer height
     // IS the content height) — the controller creates no contentEl RO;
-    // samples arrive through `onContentGeometry` below.
+    // samples arrive through the geometry subscription below, which is
+    // taken after `attach` so the first one cannot be delivered (and
+    // lost) while this controller is still detached.
     externalContentGeometry: true,
     onContentGeometryProcessed: scrollbarGeometry.notify,
     // ... and learns every controller write the moment it lands, so the
@@ -577,6 +579,34 @@
       surface.removeEventListener('touchmove', onUserGesture);
       surface.removeEventListener('keydown', onUserGesture);
     };
+  });
+
+  // Content geometry: the virtualizer IS the source (see the template
+  // comment on contentEl), and this is the ONLY consumer of it here.
+  //
+  // Subscription (the virtualizer has no geometry prop), declared AFTER
+  // the attach effect above so it runs after it: a prop-delivered sample
+  // that lands before `stick.attach` has an element is dropped by the
+  // controller and then suppressed forever by the virtualizer's
+  // field-by-field dedupe, because the tuple never changes again — a
+  // populated first mount then sat at scrollTop=0 claiming the bottom.
+  // The subscription replays this instance's current sample on
+  // subscribe, so ordering is a contract instead of a race. The
+  // `{#key pane.threadId}` remount makes each virtualizer a fresh
+  // source; the teardown unsubscribes the old instance before the new
+  // one is subscribed, and instance identity is what lets an identical
+  // tuple from the new virtualizer through.
+  $effect(() => {
+    const list = listRef;
+    if (!list) return;
+    return list.subscribeContentGeometry((sample) => {
+      stick.deliverContentGeometry(sample);
+      // Streaming growth and remeasure shift row offsets without a
+      // scroll event; keep the rail's marker + in-view fill honest.
+      // rAF-coalesced inside the rail, so bursts cost one recompute
+      // per frame.
+      navRail?.scheduleViewportSync();
+    });
   });
 
   // The scroll surface's CONTENT-box width, sourced ONLY from the async
@@ -902,9 +932,10 @@
            the virtualizer's stable mounted-row plane and the controller's
            registered geometry target (geometry itself is
            engine-sourced: the virtualizer's container has `contain:
-           size; height: totalSize+'px'`, so its `onContentGeometry`
-           samples report the content height the controller would
-           otherwise have had to re-observe). {#key pane.threadId} forces the
+           size; height: totalSize+'px'`, so the samples it publishes
+           through the geometry subscription above report the content
+           height the controller would otherwise have had to
+           re-observe). {#key pane.threadId} forces the
            <TimelineVirtualizer> to remount on every thread switch so its
            engine resets with the timeline. `estimate` replays the
            previous visit's measured sizes when the priors validity key
@@ -931,14 +962,6 @@
           onCompensation={stick.applyEngineCompensation}
           applyScrollTarget={stick.applyScrollTarget}
           trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
-          onContentGeometry={(sample) => {
-            stick.deliverContentGeometry(sample);
-            // Streaming growth and remeasure shift row offsets without a
-            // scroll event; keep the rail's marker + in-view fill honest.
-            // rAF-coalesced inside the rail, so bursts cost one recompute
-            // per frame.
-            navRail?.scheduleViewportSync();
-          }}
         >
           {#snippet header()}
             <!-- The timeline header has stable identity and exact geometry.
@@ -1100,14 +1123,16 @@
        native-gutter hit test used to arm: a drag/track-click/strip-wheel
        escapes bottom-follow (which also bails any in-flight spring), and
        releasing at the bottom re-sticks exactly like the jump chip. Owner
-       writes (the follow spring pinning per streamed chunk) keep the bar
-       faded via ownerDrivenPosition. -->
+       writes — the follow spring pinning per streamed chunk, and every
+       preserveViewportBottom transaction's shrink-clamp + restore (those
+       run under a pause lease, so isSticky is false exactly then) — keep
+       the bar faded via positionOwnerDriven. -->
   <OverlayScrollbar
     target={scrollEl}
     contentGeometry={scrollbarGeometry}
     ariaLabel="Scroll message history"
     placement="inset-y-0 right-0.5 w-1.5"
-    ownerDrivenPosition={() => stick.isSticky}
+    ownerDrivenPosition={() => stick.positionOwnerDriven}
     onUserScrollStart={() => stick.setEscapedFromLock(true)}
     onUserScrollEnd={(atBottom) => {
       if (atBottom) stick.forceStick();

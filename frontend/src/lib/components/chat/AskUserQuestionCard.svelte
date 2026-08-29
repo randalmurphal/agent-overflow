@@ -57,6 +57,7 @@
   import { EMPTY_PATH_REFS, getPathRefsFromMeta } from '../../utils/pathLinkify';
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
 
   let { pane, item }: { pane?: PaneSession & RowUiRegistry & ScrollHost; item: Item } = $props();
 
@@ -102,6 +103,15 @@
   const questions = $derived.by<AskQuestion[]>(() => {
     return extractQuestions(itemMeta);
   });
+
+  // Option labels are MODEL-authored: nothing upstream promises they are
+  // distinct, and a repeated label keyed straight into the `{#each}` below
+  // throws `each_key_duplicate` — which aborts the whole update flush and
+  // freezes the pane (utils/uniqueEachKeys.ts). Same array shape as
+  // `q.options`, so the index is always in range.
+  const questionOptionKeys = $derived(
+    questions.map((q) => uniqueEachKeys(q.options ?? [], (option) => option.label)),
+  );
 
   // Answers are persisted directly on `item.meta.answers` for both providers:
   // Codex on its request_user_input row, Claude when triage merges the resolved
@@ -217,7 +227,7 @@
               </div>
               {#if q.options && q.options.length > 0}
                 <ul class="ml-2 space-y-1">
-                  {#each q.options as option (option.label)}
+                  {#each q.options as option, optionIndex (questionOptionKeys[qIndex]?.[optionIndex] ?? optionIndex)}
                     {@const isSelected = matched.has(option.label)}
                     <li
                       class="flex items-start gap-2 text-[0.6875rem]"

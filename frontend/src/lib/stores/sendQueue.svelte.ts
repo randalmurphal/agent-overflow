@@ -247,7 +247,14 @@ export function replaceFlushedForThread(
 /** Move a batch of items to Zone 2. Called by the
  * `provider:queue_flushed` handler. Items are added to Zone 2 with
  * the wall clock at handler time; the flushedAt is informational
- * only. */
+ * only.
+ *
+ * Idempotent per userItemId: `provider:queue_flushed` rides the event
+ * ring, so a reconnect replay re-delivers the frame, and a blind
+ * append rendered the same pending message twice (and handed a
+ * userItemId-keyed `{#each}` a duplicate key — an aborted flush,
+ * utils/uniqueEachKeys.ts). An entry already in Zone 2 keeps its
+ * original flushedAt and lifecycle; the replay carries nothing newer. */
 export function markItemsFlushed(
   threadId: string,
   items: readonly { queueItemId: string; userItemId: string; message: string }[],
@@ -256,12 +263,17 @@ export function markItemsFlushed(
   const now = Date.now();
   const queueItemIds = new Set(items.map((item) => item.queueItemId));
   const removedQueuedItems = removeQueuedItemsById(threadId, queueItemIds);
+  const knownUserItemIds = new Set(
+    flushedByThread.get(threadId).map((entry) => entry.userItemId),
+  );
   const additions: FlushedItem[] = [];
   for (const item of items) {
     if (isFlushedConfirmed(threadId, item.userItemId)) {
       forgetFlushedConfirmation(threadId, item.userItemId);
       continue;
     }
+    if (knownUserItemIds.has(item.userItemId)) continue;
+    knownUserItemIds.add(item.userItemId);
     additions.push({
       queueItemId: item.queueItemId,
       userItemId: item.userItemId,
