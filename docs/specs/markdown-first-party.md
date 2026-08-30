@@ -198,12 +198,24 @@ Mechanics:
 
 ### W5 - store/file splits (after W3)
 
-Split with real seams, all callers updated, no shims:
+Split with real seams, all callers updated, no shims. DONE:
 
-- `frontend/src/lib/stores/thread.svelte.ts` (2,808)
-- `frontend/src/lib/stores/threadStreamingReveal.svelte.ts` (1,267)
-- `frontend/src/lib/stores/thread.svelte.test.ts` (10,829) - split by
-  behavior area alongside the store split.
+- `frontend/src/lib/stores/thread.svelte.ts` (2,808 -> 1,663) into the
+  concerns `ThreadPane` composes: `threadItemWindow.svelte.ts`,
+  `threadDraftPlaceholder.svelte.ts`, `threadPaneScroll.svelte.ts`,
+  `threadPaneTurns.svelte.ts`, `threadPaneErrors.svelte.ts`,
+  `threadPaneCompanions.ts`. Pieces of the owner, constructed once per
+  pane, not sibling stores - the sole-ownership rule in
+  `stores/AGENTS.md` is unchanged.
+- `frontend/src/lib/stores/threadStreamingReveal.svelte.ts` (1,386 ->
+  540) into `threadRevealSmoothers.ts` (resources),
+  `threadRevealGate.svelte.ts` (ordering) and `threadRevealRouting.ts`
+  (direct-vs-parser). The `prepareItemReplacement` chokepoint and its
+  invariant guard stay together in the root file.
+- `frontend/src/lib/stores/thread.svelte.test.ts` (11,121 -> 1,123) into
+  13 sibling suites named after the module each covers, plus
+  `test/helpers/threadPane.ts` for the shared fixtures and the
+  binding-mock environment. 282 cases, unchanged.
 
 ### W6 - invariants + test ergonomics (parallel-safe with W1)
 
@@ -232,7 +244,8 @@ Split with real seams, all callers updated, no shims:
 - Root-level script forwarders (root package.json with check/test
   forwarding to frontend/) so repo-root invocations fail helpfully.
 - Triage the three flaky tests: `ChatMarkdown.directRevealSelection.browser`,
-  `thread.svelte.test.ts > "reconciles a streaming upsert that jumps ahead"`,
+  `threadRevealSequencer.test.ts > "reconciles a streaming upsert that
+  jumps ahead"`,
   `PerItemSmoother.test.ts`.
 
 ## Gates

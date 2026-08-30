@@ -71,7 +71,10 @@ primitive to build on, and its attach/apply contract:
 `ThreadPane` (`stores/thread.svelte.ts`) is the sole owner of per-thread
 runtime UI state, from visible items and streaming flags through
 approvals, channel messages, checkpoints and scroll-controller
-registration. Add to it rather than beside it. Layout stores own
+registration. It is a composition root over `thread*` helper modules that
+are constructed once per pane and are pieces of that owner, not sibling
+stores ([`stores/AGENTS.md`](src/lib/stores/AGENTS.md) § The ThreadPane
+modules). Add to it rather than beside it. Layout stores own
 placement, order and min-size. A command-palette action resolves against
 an explicit target pane, because enablement can change while the palette
 is open.

@@ -128,7 +128,7 @@ function itemUpsertCountsAsActivity(upsert: PendingItemUpsert): boolean {
 function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming: Item): boolean {
   // A brand-new row opens the spring latch THROUGH THIS PREDICATE only
   // for text-like kinds. Non-text appends still stamp — but at the
-  // pane's arm site (`armLiveContentAppendSpring` in thread.svelte.ts),
+  // pane's arm site (`armLiveContentAppendSpring` in threadPaneScroll.svelte.ts),
   // which shares the structural arm's restore gates (loading /
   // discussion / controller-attached); this ungated per-row predicate
   // must not duplicate that decision without them.

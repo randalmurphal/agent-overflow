@@ -551,7 +551,7 @@ the rows that arrive 100–300ms later would mount through an open gate and
 run their estimate cascade in front of the reader.
 
 The **initial-slice re-arm** closes it again: `applyInitialSlice`'s call
-site in `thread.svelte.ts` (`armInitialSliceWarmup`) calls
+site in `threadPaneScroll.svelte.ts` (`armInitialSliceWarmup`) calls
 `PaneScrollController.armWarmup` synchronously with the item mutation
 (strictly before the flush that mounts those rows, the same ordering
 contract `markStructuralContentPending` carries), so the hide covers the
@@ -923,7 +923,7 @@ sync-pin invisibly instead of deferring to a dead chase after the append
 settles.
 
 The pane data layer is the sole owner of the arm, with two arm shapes in
-`thread.svelte.ts`: `armLiveContentAppendSpring` (arm + liveness stamp)
+`threadPaneScroll.svelte.ts`: `armLiveContentAppendSpring` (arm + liveness stamp)
 for `applyProviderItemUpserts` (a wire append to the loaded tail) and
 `recomputeRevealPass` (the reveal gate releasing withheld rows, which are
 already in `pane.items` and mount without any upsert in that flush), and bare

@@ -552,7 +552,7 @@ different bugs, split by whether the row's height is clamped:
   therefore re-wraps the visible 3 lines at settle: not the height/pin jump
   §B chased, but a real, user-visible reflow of the text in place. Fixed by
   retaining the full live tail across a content-consistent settle
-  (`threadStreamingReveal.svelte.ts`, `settledTailSummaries`, served while
+  (`threadRevealSmoothers.ts`, `settledTailSummaries`, served while
   the row's `summary` still matches what was retained, dropped on overwrite,
   offscreen prune, or budget eviction), so the collapsed body never swaps
   strings in front of the reader.

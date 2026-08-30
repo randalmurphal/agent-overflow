@@ -49,7 +49,8 @@ stops waking readers.
 - `providerAccounts.svelte.ts` is the one account load, login, switch,
   refresh and remove path, for the picker and Settings alike.
 - `thread.svelte.ts` (`ThreadPane`) is the sole owner of per-thread runtime
-  UI state. Add to it rather than beside it.
+  UI state. Add to it rather than beside it — as a module it COMPOSES, never
+  as a sibling store that shares the ownership. See "The ThreadPane modules".
 - An authoritative install that evicts absent rows
   (`installTimelineItems({disposeDropped: true})`) must first fold in the
   rows SQLite structurally cannot hold: pending sends persist only on wire
@@ -73,6 +74,45 @@ stops waking readers.
   outpace the RPC round-trip and no install ever lands. Use
   `utils/refreshScheduler.ts` (architecture rule 5); generation guards are
   for user-input-driven flows where the newest intent wins.
+
+## The ThreadPane modules
+
+`thread.svelte.ts` is the composition root, not a monolith. Each module
+below is constructed ONCE PER PANE inside `createThreadPane`, never shared
+between panes and never keyed independently, so the sole-ownership rule
+above still holds: they are pieces of the owner, not siblings of it. Each
+carries a header saying what it owns and what it must not touch, and takes
+its collaborators as explicit arguments (lazy getter arrows where
+construction order is circular) rather than reaching for pane state.
+
+| Module | Owns |
+|---|---|
+| `threadItemWindow.svelte.ts` | `items`, the id index, `timelineRevision`, and every write to the window |
+| `threadItemStreamApply.ts` | the upsert / delta / meta / patch machine |
+| `threadTimelineWindow.svelte.ts` | history cursors and the load methods |
+| `threadSwitchLoad.svelte.ts` | switch, sync, replica paint, cache pipeline |
+| `threadSubagentMemory.ts` | fold registry, eviction, child hydration |
+| `threadRowUiState.svelte.ts` | per-row expansion / attachment handles |
+| `threadDraftPlaceholder.svelte.ts` | the pre-materialization phase |
+| `threadPaneScroll.svelte.ts` | controller slot, spring arming, scroll intent |
+| `threadPaneTurns.svelte.ts` | `latestSettledTurn` and the timeline turn facet |
+| `threadPaneCompanions.ts` | which companion surfaces this pane has open |
+| `threadPaneErrors.svelte.ts` | the banner-stack error slots |
+
+Streaming reveal is three modules behind one composition root, split the
+same way. `threadStreamingReveal.svelte.ts` keeps the CHOKEPOINT
+(`prepareItemReplacement`) and its invariant guard, and must not be split
+away from either; `threadRevealSmoothers.ts` owns the smoother map and
+retained tails, `threadRevealGate.svelte.ts` owns `revealBoundary` and
+`recomputeReveal`, and `threadRevealRouting.ts` owns direct-vs-parser
+routing. Suites are named after the module: `threadItemWindow`,
+`threadItemStreamApply`, `threadTimelineWindow`, `threadSwitchLoad`,
+`threadSubagentFold`, `threadDraftPlaceholder`, `threadPaneScroll`,
+`threadPaneTurns`, `threadPaneCompanions`, `threadPaneErrors`,
+`threadPaneRowUiHandles`, `threadPaneRevealSmoothing`,
+`threadRevealSequencer` — plus `thread.svelte.test.ts` for the
+composition root itself. Shared fixtures and the binding-mock environment
+are `test/helpers/threadPane.ts` (`installThreadPaneTestEnv`).
 
 ## The reveal invariant
 
@@ -121,7 +161,8 @@ the byte-faithful wire replay.
 
 Nothing here may be "fixed" by skipping, rushing or popping the drain —
 that is the reveal-queue doctrine, and the header comment on
-`recomputeReveal` records why each attempt was rejected.
+`recomputeReveal` (`threadRevealGate.svelte.ts`) records why each attempt
+was rejected.
 
 State ownership taxonomy and the entity-keying doctrine:
 [`frontend/AGENTS.md`](../../../AGENTS.md).

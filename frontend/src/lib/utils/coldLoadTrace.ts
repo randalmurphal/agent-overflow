@@ -176,7 +176,7 @@ export function coldLoadSyncStatus(paneId: string, status: string): void {
 
 /** Mark the fetch leg's initial-slice application: how many rows the
  * pane holds afterwards, and whether that application re-armed the warm
- * gate (`armInitialSliceWarmup` in thread.svelte.ts). No-op if no
+ * gate (`armInitialSliceWarmup` in threadPaneScroll.svelte.ts). No-op if no
  * session is open for the pane (trace was disabled at switchStart, or
  * the session was already closed). */
 export function coldLoadItemsApplied(

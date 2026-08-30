@@ -38,6 +38,7 @@ fast path in this tree falls back that way, so correctness never depends
 on one engaging.
 
 The smoother that drives reveal deltas is NOT here — it is
+`stores/threadRevealSmoothers.ts`, behind the chokepoint in
 `stores/threadStreamingReveal.svelte.ts`, and its one rule is
 [stores/AGENTS.md § The reveal invariant](../stores/AGENTS.md#the-reveal-invariant).
 `smoothing/PerItemSmoother.ts` is the pacing primitive it uses.

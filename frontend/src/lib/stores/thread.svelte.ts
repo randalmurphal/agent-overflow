@@ -16,6 +16,8 @@
 //   threadRowUiState.svelte.ts        per-row expansion/attachment state
 //   threadDraftPlaceholder.svelte.ts  the pre-materialization phase
 //   threadPaneScroll.svelte.ts        controller slot, spring arming, scroll intent
+//   threadPaneTurns.svelte.ts         turn start/settle/clear + the timeline facet
+//   threadPaneCompanions.ts           plan / review / design-preview / agent surfaces
 //   threadPaneErrors.svelte.ts        the banner-stack error slots
 //   threadChannelState / threadDesignState / threadActivityRuns /
 //   threadPendingInteractiveState / liveTodoState / threadLiveStateHydration
