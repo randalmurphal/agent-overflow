@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { expectCleanTransitions } from '../../test/helpers/transitions';
 import {
   StreamingAssistantRevealRouter,
   type StreamingAssistantRevealSink,
@@ -58,6 +59,60 @@ function parserSource(
 ): string {
   return router.parserSourceFor('item', source, RENDER_CONTEXT);
 }
+
+describe('assistant reveal sink registration transitions', () => {
+  // Idempotent release and rejected duplicate registration each have
+  // their own test below. The lap those two miss is RE-registration: a
+  // row unmounts and remounts (virtualizer recycle, pane switch, a
+  // `{#key}` remount on a settings change) and the router must come back
+  // to the same resting state every time, never feeding a released sink.
+  it('re-registers cleanly and never feeds a released sink', () => {
+    const router = new StreamingAssistantRevealRouter();
+    const canonical = { value: '' };
+    const released: Array<{ fixture: SinkFixture; appendedAtRelease: number }> = [];
+    let live: SinkFixture | null = null;
+
+    expectCleanTransitions('assistant reveal sink registration', {
+      on() {
+        live = makeSink();
+        return router.register('item', live.sink, () => {});
+      },
+      off(handle) {
+        if (live) {
+          released.push({ fixture: live, appendedAtRelease: live.appended.length });
+          live = null;
+        }
+        (handle as () => void)();
+      },
+      whileOn() {
+        // Arm a checkpoint, then a direct append: a fresh registration
+        // has to be reachable, or every lap would pass vacuously.
+        const target = live!;
+        expect(publish(router, canonical, 'seed ', -1)).toBe(false);
+        expect(publish(router, canonical, 'more ')).toBe(true);
+        expect(target.appended).toEqual(['more ']);
+      },
+      onAgain() {
+        expect(() => router.register('item', live!.sink, () => {})).toThrow(
+          /already registered/,
+        );
+      },
+      read: () => ({
+        presentationHeld:
+          router.parserSourceFor('item', canonical.value, RENDER_CONTEXT)
+            !== canonical.value,
+        staleSinksFed: released.filter(
+          (entry) => entry.fixture.appended.length > entry.appendedAtRelease,
+        ).length,
+      }),
+    });
+
+    expect(released).not.toHaveLength(0);
+    for (const entry of released) {
+      expect(entry.fixture.reset).toHaveBeenCalledOnce();
+    }
+  });
+});
 
 describe('streaming assistant reveal bridge', () => {
   it('rejects an empty publish instead of minting ambiguous append lineage', () => {

@@ -3,7 +3,23 @@
 Svelte 5 (runes only), Vite 8 (Rolldown), Tailwind 4, TypeScript.
 `pnpm run check` and `pnpm run build` are blockers, `pnpm test` is the
 unit gate (`test:browser` and `test:manual` are separate vitest
-projects).
+projects). They live here, in `frontend/`, but the repo root carries a
+`package.json` of forwarders so running one from there does the right
+thing instead of failing on a missing manifest.
+
+`pnpm run check:file <file.ts> …` is the tight loop: `tsc` over exactly
+those files and what they import, ~2s against the full check's ~20s. It
+covers no `.svelte` file and no Svelte component's props, and prints
+that on every run. svelte-check has no per-file mode and its narrowest
+scope, `--workspace <dir>`, measured SLOWER than checking everything
+(23s vs 20s) because the cost is building the TypeScript program, not
+running the diagnostics — so there is no scoped `.svelte` check to have.
+`pnpm run check` stays the thing you run before calling it done.
+
+There is no formatter, and that is deliberate. No prettier, no eslint,
+no `.editorconfig`, no commit hook: `pnpm exec prettier` fails because
+the dependency does not exist, and adding it would rewrite files nobody
+asked to have rewritten. Match the file you are editing.
 
 Area guides: [`stores/`](src/lib/stores/AGENTS.md),
 [`transport/`](src/lib/transport/AGENTS.md), and under
@@ -211,6 +227,46 @@ changes get a component test. Scroll behavior is covered in
 `utils/scroll/` (`index.svelte.test.ts`, the exhaustive `resolver.test.ts`
 and the frame-level `scrollInterleavings.test.ts`) plus
 `components/chat/scroll.test.ts`.
+
+A globally suppressed engine warning is a defect-ledger entry, not a
+config setting. "ResizeObserver loop completed with undelivered
+notifications" was filtered out of the browser suite's error sink as
+benign noise, and it hid a user-visible stale-frame paint bug for the
+whole 2026-08-28 session: an undelivered notification means the
+observer's write slid past the frame it belonged to, which is precisely
+a row painting last frame's geometry. Suppress at the narrowest scope
+that unblocks the test, name the defect it stands for, and pair it with
+an assertion that the suppressed condition does not occur where it
+matters — never a suite-wide filter. The two real instances are
+documented at their sites: `MessageTimeline.svelte`'s
+`observeScrollSurfaceContentWidth` (ancestor resolved before row
+observers) and `TimelineVirtualizer.svelte`'s
+`deferNewRowObservationUntilNextFrame` (overscan rows registered next
+frame, outside the painted window).
+
+A stateful door gets a transition test, not just an on-state assertion.
+`test/helpers/transitions.ts` drives on→off→on, teardown twice, a second
+engagement, and teardown-mid-flight, comparing the state you name after
+every lap. The leaks the 2026-08 perf session found by hand all lived in
+the SECOND lap — a re-register that duplicated a sink, a toggle that kept
+a stale checkpoint, a cache that carried the previous mode.
+
+A wait that gives up must FAIL, and its budget is wall-clock, never a
+count of loop turns. Both halves came from the same 2026-08-30 flake:
+`harnessBridge.test.ts`'s poll helper spent 500 `setTimeout(0)` hops and
+then RETURNED, so a cold dynamic import that outran them left the case
+asserting against state that had not arrived — and the arrival then
+landed inside the NEXT case, past the `afterEach` that had just zeroed
+the counters. One slow import, two failing tests, neither naming the
+wait. The event loop spins hops happily while a starved worker gets no
+CPU, so hops measure the fast machine rather than the work.
+
+Do not quantize a continuous measurement in an assertion. The same
+session's second flake compared which 125ms slot two aligned animations
+floored into, when what the aligner promises is that their PHASES agree
+to within a frame — a pair a millisecond either side of a slot boundary
+failed a mechanism that was working. Assert the distance, with the
+tolerance the mechanism actually claims.
 
 `vi.mock` a shared store with an `importOriginal` spread, never a
 whole-module factory. A factory listing only the exports one test drives

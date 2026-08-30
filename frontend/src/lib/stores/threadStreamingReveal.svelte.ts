@@ -25,6 +25,52 @@ import {
 import { createThreadAssistantReveal } from './threadAssistantReveal.svelte';
 import type { ProvenAppend } from 'svelte-streamdown';
 
+/**
+ * THE REVEAL INVARIANT (see `stores/AGENTS.md` § The reveal invariant).
+ *
+ * While a smoother owns an assistant row, the row's published text IS
+ * that smoother's reveal cursor. A reconciliation may leave it there,
+ * hand the smoother a longer suffix to drain, or hand ownership over
+ * with a summary that WINS the row — snapping forward. It may never
+ * publish text the reader has already been shown less of: text that
+ * rewinds behind the cursor is the one rule five separate 2026-08 perf
+ * bugs each broke a different way (aad27067 is the latest).
+ *
+ * Dev/test only, and DEAD-CODE-ELIMINATED from the production bundle:
+ * both operands fold to literals under `vite build`, so the guarded
+ * blocks and `getRevealed()` materialization never reach a shipped
+ * frame. Mirrors `utils/scroll/observers.ts`'s gate.
+ */
+const ASSERT_REVEAL_INVARIANT =
+  import.meta.env.DEV || import.meta.env.MODE === 'test';
+
+/**
+ * Tripwire for the invariant above. Exported for its own unit test —
+ * once the chokepoint is correct no production path can trip it, so the
+ * guard would otherwise be untested code.
+ *
+ * `cursor` is the smoother's revealed text at the moment the
+ * reconciliation started; `published` is the summary about to become
+ * observable. A published string SHORTER than the cursor and a prefix
+ * of it is a visible rewind (the 2026-08-29 shape: 1021 chars revealed
+ * to ~130, republished at ~130 and stranded). A published string that
+ * DIVERGES is a legitimate authoritative overwrite and passes.
+ */
+export function assertRevealCursorNotRewound(
+  itemId: string,
+  cursor: string,
+  published: string,
+): void {
+  if (published.length >= cursor.length) return;
+  if (!cursor.startsWith(published)) return;
+  throw new Error(
+    `reveal invariant violated for ${itemId}: reconciliation published ` +
+      `${published.length} chars behind the smoother cursor at ${cursor.length}. ` +
+      'Row text may never rewind behind an active reveal — keep the smoother ' +
+      'draining, or let a genuinely divergent summary win the row outright.',
+  );
+}
+
 export interface ThreadStreamingRevealOptions {
   /** Current item for an id, or undefined when not loaded. */
   getItemById(itemId: string): Item | undefined;
@@ -999,7 +1045,34 @@ export function createThreadStreamingReveal(
     return true;
   }
 
+  /**
+   * The row-text chokepoint of every wholesale commit: `commitTimelineItems`
+   * and `upsertItemsBatch` both publish exactly what this returns. Guard
+   * the reveal invariant here — one place covers fold eviction, prune,
+   * revert, replica paint and cache install alike.
+   *
+   * Only assistant PROSE is compared. Reasoning-tail rows publish a
+   * tail-TRIMMED view of the cursor, so their length is not a reveal
+   * position; snap statuses (`errored` / `killed` / `declined`) are the
+   * documented authoritative-summary handover, which snaps the smoother
+   * first and then lets the patch's own text ("[interrupted] …") win.
+   */
   function prepareItemReplacement(incoming: Item): Item {
+    if (!ASSERT_REVEAL_INVARIANT) return prepareItemReplacementRaw(incoming);
+    const guardedEntry =
+      isSmoothLiveContentKind(incoming.kind) &&
+      !isReasoningTailKind(incoming.kind) &&
+      !isSnapStatus(incoming.status)
+        ? itemSmoothers.get(incoming.id)
+        : undefined;
+    if (!guardedEntry) return prepareItemReplacementRaw(incoming);
+    const cursor = guardedEntry.smoother.getRevealed();
+    const prepared = prepareItemReplacementRaw(incoming);
+    assertRevealCursorNotRewound(incoming.id, cursor, prepared.summary);
+    return prepared;
+  }
+
+  function prepareItemReplacementRaw(incoming: Item): Item {
     const entry = itemSmoothers.get(incoming.id);
     if (!entry) return incoming;
     const current = options.getItemById(incoming.id);
@@ -1032,6 +1105,10 @@ export function createThreadStreamingReveal(
       received,
       incoming.updatedAt,
     );
+    // True when the incoming summary is BEHIND the cursor rather than a
+    // re-assert of it: the row must keep its own visible text on the way
+    // out, whatever happens to the smoother.
+    let trailsTheCursor = false;
     if (
       !belongsToCurrentStream &&
       incomingSummary.length < received.length &&
@@ -1050,6 +1127,7 @@ export function createThreadStreamingReveal(
       // final assistant text froze at ~130 of 1021 chars whenever a
       // subagent child settled inside the drain window).
       belongsToCurrentStream = true;
+      trailsTheCursor = true;
     }
 
     if (!belongsToCurrentStream) {
@@ -1065,7 +1143,13 @@ export function createThreadStreamingReveal(
     // above.
     if (incoming.status !== 'streaming' && entry.smoother.isCaughtUp()) {
       settleSmootherRetainingTail(incoming.id);
-      return incoming;
+      // A settle re-assert carries the text the smoother already revealed,
+      // so it publishes itself. A snapshot that merely TRAILS the cursor
+      // carries less, and handing the row over to it truncates text the
+      // reader has already been shown — the same rewind the drain-window
+      // case below avoids, reached when the drain happened to finish
+      // first. Fall through to the current-summary return instead.
+      if (!trailsTheCursor) return incoming;
     }
     if (
       incoming.summary === current.summary &&
