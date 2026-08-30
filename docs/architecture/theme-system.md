@@ -60,9 +60,9 @@ palette change automatically. A theme only has to set base tokens.
   mermaid host alike.
 - `frontend/src/lib/utils/theme.ts#applyThemeClass(resolved)` is a pure
   DOM applier stamping `html.light` / `html.dark` (only `.light` is
-  read by our CSS; `.dark` exists for the vendored streamdown's
-  MutationObserver), idempotent against the live DOM so no-op applies
-  don't wake that observer.
+  read by our CSS; `.dark` is kept as the conventional root marker —
+  the vendored streamdown observer that read it is deleted), idempotent
+  against the live DOM so no-op applies don't touch the attribute.
 - Applied from `App.svelte`, alongside `applyFonts` and `applyFontScale`.
   The theme one is an `$effect.pre`: App's pre-effect stamps the class
   ahead of every descendant effect, so a consumer that reads resolved
@@ -130,7 +130,7 @@ runtime palette change repaints everything for free **except**:
 | Consumer | Today | For custom palettes |
 |---|---|---|
 | **xterm terminals** (`terminal/terminalTheme.ts`, applied in `terminalXterm.ts`, `TerminalBody.svelte`, `TakeControlTerminal.svelte`) | **BRIDGED (phase 2).** Was: hand-maintained hex `DARK`/`LIGHT` `ITheme` duplicates (44 values) that CSS vars never reached, because xterm rejects `oklch`, and the app.css comment claiming otherwise was stale. Now the `ITheme` is resolved from the live cascade through `utils/cssColorProbe.ts` (the same module the phase-1 mermaid bridge uses, so there is still exactly one resolver), and the re-apply effect tracks the palette identity rather than just the light/dark flip. See §9. | WebGL addon has a GPU glyph-atlas cache, so verify visually after palette changes. |
-| **Mermaid** (`StreamdownMermaidHost.svelte` + vendored `Streamdown.svelte:52`) | **BRIDGED (phase 1).** Was: built-in `'dark'`/`'default'` palettes only, diagram fills/strokes/labels a wholly uncaptured surface. Now `theme:'base'` + `themeVariables` resolved from app tokens (`chat/markdown/mermaidTokens.ts`, via the probe in `utils/cssColorProbe.ts`); the `{#key}` and the vendored SVG cache key both key on the palette. | Widen the palette identity when theme files land (see §7 phase 2). |
+| **Mermaid** (`StreamdownMermaidHost.svelte` + vendored `Streamdown.svelte`) | **BRIDGED (phase 1).** Was: built-in `'dark'`/`'default'` palettes only, diagram fills/strokes/labels a wholly uncaptured surface. Now `theme:'base'` + `themeVariables` resolved from app tokens (`chat/markdown/mermaidTokens.ts`, via the probe in `utils/cssColorProbe.ts`); the `{#key}` and the vendored SVG cache key both key on the palette. | Widen the palette identity when theme files land (see §7 phase 2). |
 | **Native window background** (`main_desktop.go`) | **BRIDGED (phase 2).** Was: `NewRGBA(22,22,30)` hardcoded at construction, the resize-flash color, wrong for light theme already. Now `SetWindowBackgroundColor` (LocalOnly) paints it live from the app's cascade-reading `$effect`, and construction reads the `windowBackground` cache out of `themes/appearance.json` before the webview exists. See §9.3. | — |
 | **WSL launcher pages** (`cmd/agent-overflow-windows/picker.go`) | Inline HTML, hardcoded `#16161e` + Tokyo Night. Pre-app bootstrap; could at best read settings JSON off disk for light/dark. | Low priority. |
 | **Favicon** (`public/favicon.svg`) | Static, dark tile. | Optional `prefers-color-scheme` inside the SVG. |
@@ -768,8 +768,8 @@ What changed:
   a link; `pre code` stays on the block's own text; code chips inside
   headings/quotes deliberately keep the chip color. There is no
   utility form for these tokens. The `--color-md-*` aliases exist so
-  `streamdownTheme.ts` can cancel vendor palette classes with classes
-  naming the same token.
+  `streamdownTheme.ts`'s class table can name the same token the
+  cascade paints, and so cannot disagree with it.
 - **Curated themes state the prose roles** from the same hues their
   code axis gives the `markup-*` families (so chat prose and fenced
   markdown agree when both axes are on the theme), plus a per-theme

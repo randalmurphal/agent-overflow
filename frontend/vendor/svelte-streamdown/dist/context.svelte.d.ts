@@ -1,5 +1,5 @@
 import type { Component, Snippet } from 'svelte';
-import type { DeepPartialTheme, Theme } from './theme.js';
+import type { Theme } from './theme.js';
 import type { MermaidConfig } from 'mermaid';
 import type { KatexOptions } from 'katex';
 import type { ProvenAppend } from './marked/index.js';
@@ -105,8 +105,7 @@ export type StreamdownProps = {
     defaultOrigin?: string;
     allowedLinkPrefixes?: string[];
     allowedImagePrefixes?: string[];
-    theme?: DeepPartialTheme;
-    mergeTheme?: boolean;
+    theme: Theme;
     mermaidConfig?: MermaidConfig;
     katexConfig?: KatexOptions | ((inline: boolean) => KatexOptions);
     translations?: {

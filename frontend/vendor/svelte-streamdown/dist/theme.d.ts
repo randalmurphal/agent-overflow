@@ -1,6 +1,17 @@
-import { type ClassValue } from 'clsx';
-export declare const cn: (...inputs: ClassValue[]) => string;
-export declare const theme: {
+/**
+ * The class table `<Streamdown>` renders from. Upstream shipped a Tailwind
+ * base table here plus a `mergeTheme` helper that tailwind-merged a host's
+ * partial override over it on every read; both are gone. The host now owns
+ * ONE flat table and hands it in whole, so this file declares only the shape
+ * the render path reads.
+ *
+ * Every slot below has at least one reader in `Block.svelte`,
+ * `Elements/*.svelte`, `static-html.ts` or the host's own code hosts. Adding a
+ * slot here without a reader, or reading one that is not declared, fails
+ * `chat/markdown/streamdownTheme.test.ts`, which derives the roster from the
+ * render path's source.
+ */
+export interface Theme {
     link: {
         base: string;
         blocked: string;
@@ -36,15 +47,12 @@ export declare const theme: {
         base: string;
         checkbox: string;
     };
+    /** `header`, `buttons`, `language`, `skeleton` and `line` died with the
+     * vendored shiki code component: the host renders code DOM itself. */
     code: {
         base: string;
         container: string;
-        header: string;
-        buttons: string;
-        language: string;
-        skeleton: string;
         pre: string;
-        line: string;
     };
     codespan: {
         base: string;
@@ -100,23 +108,21 @@ export declare const theme: {
     strong: {
         base: string;
     };
-    mermaid: {
-        base: string;
-        icon: string;
-        buttons: string;
-    };
-    math: {
-        block: string;
-        inline: string;
-    };
-    br: {
-        base: string;
-    };
     em: {
         base: string;
     };
     del: {
         base: string;
+    };
+    /** `icon` died with the download control; the surviving expand button
+     * renders `icons.fullscreen`, which carries its own sizing. */
+    mermaid: {
+        base: string;
+        buttons: string;
+    };
+    math: {
+        block: string;
+        inline: string;
     };
     footnoteRef: {
         base: string;
@@ -130,33 +136,8 @@ export declare const theme: {
     descriptionDetail: {
         base: string;
     };
-    inlineCitation: {
-        preview: string;
-        carousel: {
-            header: string;
-            stepCounter: string;
-            buttons: string;
-            title: string;
-            url: string;
-            favicon: string;
-        };
-        list: {
-            base: string;
-            item: string;
-            title: string;
-            url: string;
-            favicon: string;
-        };
-    };
+    /** `popover` died with the footnote popover. */
     components: {
         button: string;
-        popover: string;
     };
-};
-export type Theme = typeof theme;
-type DeepPartial<T> = {
-    [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
-};
-export type DeepPartialTheme = DeepPartial<Theme>;
-export declare const mergeTheme: (customTheme?: DeepPartialTheme) => Theme;
-export {};
+}

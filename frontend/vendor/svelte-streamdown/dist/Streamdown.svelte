@@ -2,7 +2,6 @@
 	import Block from './Block.svelte';
 	import CompactBlocks from './CompactBlocks.svelte';
 	import { StreamdownContext, type StreamdownProps } from './context.svelte.js';
-	import { mergeTheme } from './theme.js';
 	import {
 		lex,
 		parseBlocks,
@@ -28,7 +27,6 @@
 		mermaidConfig = {},
 		katexConfig,
 		translations,
-		mergeTheme: shouldMergeTheme = true,
 		streamdown = $bindable(),
 		renderHtml,
 		diagnostics = false,
@@ -49,16 +47,16 @@
 		...snippets
 	}: StreamdownProps = $props();
 
-	// Divergence entry 20: theme resolution is memoized. Upstream's context
-	// getter ran mergeTheme on EVERY `streamdown.theme` access — a full deep
-	// merge (per-subkey twMerge/clsx parse over the whole theme) per read,
-	// from every template effect of every element component, re-invoked on
-	// each streaming delta. Profiled at 33MB/45s of allocation during
-	// sustained streaming, plus a fresh object identity per read that
-	// defeated any downstream equality check. One $derived per theme
-	// change; the getters below serve the cached objects.
-	const resolvedTheme = $derived(shouldMergeTheme ? mergeTheme(theme) : theme);
-
+	// Divergence entry 20 (mermaidConfig half): the context getter must serve
+	// a memoized object. Upstream rebuilt its value on EVERY read, from every
+	// template effect of every element component, re-invoked on each streaming
+	// delta — and a fresh identity per read defeats every downstream equality
+	// check (the mermaid render cache keys on it). One $derived per config
+	// change; the getter below serves the cached object.
+	//
+	// The theme half of that entry is gone: the host hands in one flat table
+	// and `get theme()` returns the prop itself, so there is nothing to merge
+	// and nothing to memoize.
 	const resolvedMermaidConfig = $derived({ ...mermaidConfig });
 
 	type IncrementalLexMetrics = {
@@ -111,7 +109,7 @@
 			return snippets;
 		},
 		get theme() {
-			return resolvedTheme;
+			return theme;
 		},
 		get mermaidConfig() {
 			return resolvedMermaidConfig;

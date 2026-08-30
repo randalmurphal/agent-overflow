@@ -19,12 +19,11 @@ export type ResolvedTheme = 'light' | 'dark';
  * Stamps `html.light` / `html.dark` for the already-resolved mode.
  *
  * BOTH classes are written even though only `html.light` is read by our own
- * CSS. `.dark` is kept as a conventional root marker for the vendored
- * streamdown's MutationObserver; that observer's outputs are currently
- * short-circuited (`mermaidConfig.theme` is always set, and the shiki Code
- * path is replaced by our own host), but stamping both is cheap insurance
- * against a future consumer — ours or the vendor's — reading the
- * conventional marker.
+ * CSS. `.dark` is kept as the conventional root marker: the vendored
+ * streamdown's `html.dark` MutationObserver that once read it is deleted
+ * (its outputs were already short-circuited — `mermaidConfig.theme` is
+ * always set and the shiki Code path is our own host), but stamping both is
+ * cheap insurance against a future consumer reading the conventional marker.
  *
  * Idempotent, and deliberately reads the live DOM rather than caching the
  * last value: a no-op call must not touch the class attribute at all, or

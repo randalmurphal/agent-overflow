@@ -4,12 +4,13 @@
 
 /* `vendor/` holds in-repo third-party packages (svelte-streamdown — see
    its VENDOR.md). They were `node_modules` installs until they were
-   vendored, so Tailwind's automatic content detection never saw them:
-   their utility classes are library defaults we override wholesale via
-   Streamdown's `mergeTheme`, and generating CSS for the ones we don't
-   use would both bloat the bundle and start applying rules to markup
-   that has rendered unstyled since day one. Vendoring must not change
-   what the cascade contains. */
+   vendored, so Tailwind's automatic content detection never saw them.
+   The markdown class table is the app's own
+   (`chat/markdown/streamdownTheme.ts`, scanned as normal `src/` source);
+   what is left inside `vendor/` is stray literals on branches this host
+   never renders, and generating CSS for those would both bloat the
+   bundle and start applying rules to markup that has rendered unstyled
+   since day one. Vendoring must not change what the cascade contains. */
 @source not "../vendor";
 
 :root {
@@ -376,9 +377,9 @@ html.light {
   /* Markdown prose roles (defaults in tokens.css; md-inline-code and its
      chip ground are UI-axis like the rest). The `.markdown-body` element
      rules below are their normal consumers; the aliases exist so a
-     collision class can name the same value (streamdownTheme.ts uses
-     text-md-link / text-md-blockquote to cancel vendor palette classes
-     with the color the cascade actually paints). */
+     class can name the same value (streamdownTheme.ts uses
+     text-md-link / text-md-blockquote so the markdown theme table
+     cannot disagree with the color the cascade actually paints). */
   --color-md-heading: var(--md-heading);
   --color-md-bold: var(--md-bold);
   --color-md-link: var(--md-link);

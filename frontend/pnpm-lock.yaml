@@ -126,9 +126,6 @@ importers:
 
   vendor/svelte-streamdown:
     dependencies:
-      clsx:
-        specifier: ^2.1.1
-        version: 2.1.1
       katex:
         specifier: ^0.16.22
         version: 0.16.45
@@ -141,9 +138,6 @@ importers:
       svelte:
         specifier: ^5.0.0
         version: 5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b)
-      tailwind-merge:
-        specifier: ^3.3.1
-        version: 3.5.0
 
 packages:
 
@@ -1322,9 +1316,6 @@ packages:
   svelte@5.56.8:
     resolution: {integrity: sha512-PY8LOw7xP6c8IOiVqdo0sbbZVYhXRSfklOQLAUyGBKqjTX0wx/z4l/9J+PmBpmlLnxzEb1NqltxQ5/wZme/Cmg==}
     engines: {node: '>=18'}
-
-  tailwind-merge@3.5.0:
-    resolution: {integrity: sha512-I8K9wewnVDkL1NTGoqWmVEIlUcB9gFriAEkXkfCjX5ib8ezGxtR3xD7iZIxrfArjEsH7F1CHD4RFUtxefdqV/A==}
 
   tailwindcss@4.3.3:
     resolution: {integrity: sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==}
@@ -2608,8 +2599,6 @@ snapshots:
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
-
-  tailwind-merge@3.5.0: {}
 
   tailwindcss@4.3.3: {}
 

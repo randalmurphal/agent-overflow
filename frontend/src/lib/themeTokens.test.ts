@@ -280,7 +280,7 @@ const TOKEN_SHADOW_UTILITY = new RegExp(
 
 /**
  * Comments are documentation, not output. `chat/markdown/streamdownTheme.ts`
- * describes the vendor palette classes it overrides in its comments, and a
+ * describes the palette classes its table replaced in its comments, and a
  * scanner that counted those would push the tree toward documenting less.
  * (Class names are deliberately not spelled verbatim there either, for the
  * Tailwind-scans-comments reason in this file's header.)

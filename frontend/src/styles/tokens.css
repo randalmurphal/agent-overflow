@@ -63,8 +63,8 @@
 
   /* Markdown text roles in chat prose. Consumed by the `.markdown-body`
      rules in app.css — there is no utility form; the @theme aliases exist
-     only so streamdownTheme.ts can spell colliding classes that name the
-     same value. Left alone they derive from the text palette, so the
+     only so streamdownTheme.ts's class table can name the same value the
+     cascade paints. Left alone they derive from the text palette, so the
      default theme keeps a quiet, mostly-monochrome transcript with a
      small focal lift on headings / bold / inline code; a curated theme
      states real colors here (typically the same hues its code axis gives
@@ -101,7 +101,7 @@
      panels also sit on. Same shape as --card directly above — a derived
      role over surface-1, which is why both live here rather than in
      app.css's palette. Two consumers, one value: `.markdown-body pre`
-     reads the var directly and the Streamdown override
+     reads the var directly and the markdown theme table
      (chat/markdown/streamdownTheme.ts `code.base`) uses `bg-code-block`.
      Token name and utility name are the same string on purpose. */
   --code-block: var(--surface-1);

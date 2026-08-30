@@ -6,7 +6,6 @@
   // across source changes.
 
   import { setContext } from 'svelte';
-  import { mergeTheme } from 'svelte-streamdown';
   import type { Tokens } from 'marked';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
@@ -22,11 +21,10 @@
   };
 
   let { kind, source }: { kind: HostKind; source: string } = $props();
-  const fullTheme = mergeTheme(chatMarkdownTheme);
 
   setContext('streamdown', {
     pendingAsyncCount: 0,
-    theme: fullTheme,
+    theme: chatMarkdownTheme,
     mermaidConfig: { theme: 'default' },
     katexConfig: undefined,
     icons: undefined,

@@ -57,7 +57,8 @@ Svelte runtime is not duplicated.
 `package.json` here keeps upstream's identity and `peerDependencies`
 verbatim. `exports` lost `./code`, and `dependencies` lost `shiki`,
 `@shikijs/langs`, `@shikijs/themes` and `@floating-ui/dom`, with the code
-that used them (`DIVERGENCE.md` entry 28). Also dropped: `scripts`, `devDependencies`,
+that used them (`DIVERGENCE.md` entry 28), then `clsx` and `tailwind-merge`
+with the theme merge (entry 20). Also dropped: `scripts`, `devDependencies`,
 `publishConfig`, `packageManager`, `pnpm`, `files` — they describe
 upstream's SvelteKit build/publish pipeline, which does not exist in a
 dist-only tree (`scripts.prepare` runs `svelte-kit sync`, an install-time
@@ -72,8 +73,9 @@ Three build-config couplings exist because the code moved out of
   library back in the entry chunk.
 - `src/app.css` — `@source not "../vendor";`. Tailwind skips
   `node_modules` automatically but not `vendor/`, so without this it starts
-  generating utilities for the library's default theme classes, which we
-  override wholesale anyway.
+  generating utilities for stray class literals on branches this host never
+  renders. The markdown class table itself is app source
+  (`chat/markdown/streamdownTheme.ts`) and is scanned normally.
 - `svelte.config.js` — `onwarn` drops compiler warnings from `vendor/`.
   Vendored code compiles as project source now, so upstream's authoring
   choices would otherwise warn on every build and test run.

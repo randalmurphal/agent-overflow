@@ -1,45 +1,35 @@
-// Theme override for `<Streamdown>` in ChatMarkdown.
+// THE markdown theme. One flat table, handed to `<Streamdown>` whole.
 //
-// `svelte-streamdown`'s built-in base theme hardcodes light
-// colors (gray-100 backgrounds, gray-200 borders, etc.) and chunky
-// cards (rounded-xl + visible borders + heavy padding) that fight our
-// surface tokens and read as dated callouts inside the chat. We pass
-// this override via the `theme` prop; with `mergeTheme=true` the
-// library's `mergeTheme` helper runs `tailwind-merge` (`cn`) on each
-// class string, so our values supersede the conflicting bases — our
-// `bg-surface-1` replaces the vendor's gray-100 background, and so on.
+// It used to be an override layer: the library shipped a Tailwind base theme
+// (hardcoded light colors, chunky rounded-xl cards) and merged a host's
+// partial table over it per read with `tailwind-merge`, so an override only
+// cancelled a vendor value when it collided in the same (modifier, utility
+// category) key. Both halves are gone — the base table, the merge helper,
+// `clsx` and `tailwind-merge`. What is written here IS what renders, and the
+// entries below are the merge's settled output, so no class had to change.
 //
-// NOTE: do not write a vendor class VERBATIM in these comments.
-// Tailwind scans comments too, so quoting one compiles a real (dead)
-// rule plus its `--color-*` entry into the bundle — the exact palette
-// leak this file exists to close. Name the scale in prose instead.
+// NOTE: do not write a Tailwind palette class VERBATIM in these comments.
+// Tailwind scans comments too, so quoting one compiles a real (dead) rule plus
+// its `--color-*` entry into the bundle. Name the scale in prose instead.
 //
 // Design intent — "sleek but defined":
 //   - No outer borders on code blocks, tables, or mermaid wrappers.
-//     Definition comes from a single elevation step (surface-0 page
-//     bg → surface-1 block bg) and a thin internal divider for
-//     header / row separation.
-//   - Tighter padding — code header is one-line chrome, table cells
-//     drop the 200-400px width clamps.
-//   - Tokens come from `app.css` `@theme` (`bg-surface-1`,
-//     `text-fg-muted`, `border-border-subtle`, etc.) so light/dark
-//     theme switching keeps working without a second copy of values.
+//     Definition comes from a single elevation step (surface-0 page bg →
+//     surface-1 block bg) and a thin internal divider for header / row
+//     separation.
+//   - Tighter padding — code header is one-line chrome, table cells drop the
+//     200-400px width clamps.
+//   - Tokens come from `app.css` `@theme` (`bg-surface-1`, `text-fg-muted`,
+//     `border-border-subtle`, etc.) so light/dark theme switching keeps
+//     working without a second copy of values.
+//
+// The roster is enforced, not documented: `streamdownTheme.test.ts` derives
+// every `streamdown.theme.<group>.<slot>` read out of the render path's source
+// and fails in both directions — a slot the renderer reads and this table
+// omits renders `class={undefined}`, and an entry nothing reads is a dead
+// Tailwind rule in the bundle.
 
-// Cancelling a vendor color requires COLLIDING with it, not merely
-// naming the same element. `tailwind-merge` groups by (modifier,
-// utility category): the vendor's blue-600 text class and `text-info`
-// collide, but the SAME class carried under an
-// `[&>[data-alert-title]]:` modifier and a bare `text-info` do NOT —
-// the modifier is part of the key, so both survive and the vendor
-// palette still paints. Every override below is written in the same
-// shape the vendor key uses (see `vendor/svelte-streamdown/dist/
-// theme.js`); the alert entries in particular keep that modifier on
-// their text color for exactly this reason.
-
-// `DeepPartialTheme` is declared inside `svelte-streamdown/dist/theme`
-// but not re-exported at the package root (only `Theme` is). Inline a
-// structural type so we don't depend on the internal path.
-type ThemeOverride = Record<string, Record<string, string>>;
+import type { Theme } from 'svelte-streamdown';
 
 // `md-blk` marks every element that can be a DIRECT child of the
 // .md-committed / .md-volatile wrapper — the app.css edge-margin resets
@@ -53,55 +43,102 @@ type ThemeOverride = Record<string, Record<string, string>>;
 // first/last in a message — streamdownTheme.test.ts pins the roster.
 export const MD_BLOCK_MARKER = 'md-blk';
 
-export const chatMarkdownTheme: ThemeOverride = {
+export const chatMarkdownTheme: Theme = {
+  // Links: `text-md-link` names the token the unlayered `.markdown-body a`
+  // rule (app.css) actually paints, themeable per palette. The blocked
+  // variant is a <span>, so no element rule competes and its class does
+  // paint; a code label inside it keeps the de-emphasis via the app.css
+  // carve-out.
+  link: {
+    base: 'text-md-link font-medium underline wrap-anywhere hover:text-md-link',
+    blocked: 'text-fg-hint',
+  },
+  // Compact heading sizing that matches the `.markdown-body` rules in
+  // app.css, rather than the library's mt-6/mb-2/text-3xl chat-hostile scale.
+  h1: { base: 'md-blk mt-3 mb-1 text-lg font-semibold' },
+  h2: { base: 'md-blk mt-3 mb-1 text-base font-semibold' },
+  h3: { base: 'md-blk mt-2 mb-1 text-[0.9375rem] font-semibold' },
+  h4: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
+  h5: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
+  h6: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
+  // Block-level entries that carry nothing but the md-blk marker (see its
+  // doc above); spacing is the cascade's.
+  paragraph: { base: 'md-blk' },
+  // pl matches `.markdown-body ul/ol` in app.css (which wins the cascade):
+  // 2em of marker room so wide fonts don't clip — see the comment there.
+  ul: { base: 'md-blk ml-0 pl-[2em] list-outside list-disc whitespace-normal' },
+  ol: { base: 'md-blk ml-0 pl-[2em] list-outside whitespace-normal' },
+  // `marker:hidden` is load-bearing for task items, whose marker is the
+  // rendered checkbox.
+  li: { base: 'marker:hidden py-0.5', checkbox: 'mr-2' },
   code: {
-    // Drop the border + rounded-xl card; use a single rounded-md
-    // wrapper with no border. Background contrast (the code-block
-    // ground vs the page's surface-0) is what now defines the block.
-    // These three entries are consumed by `StreamdownCodeHost` (which
-    // renders the pre/code DOM itself from backend spans); the
-    // library's header / skeleton / line-wrapper classes have no
-    // consumer, so chat surfaces stay zero-chrome — the host's
-    // hover-revealed copy button is the only affordance.
+    // No border, no rounded-xl card: a single rounded-md wrapper. Background
+    // contrast (the code-block ground vs the page's surface-0) is what
+    // defines the block.
     //
-    // `bg-code-block` rather than `bg-surface-1`: the code-block ground
-    // is its own role (it travels with a code theme), even though the
-    // token currently aliases the surface-1 elevation tier. Keep in
-    // step with `.markdown-body pre`'s `--code-block` in app.css.
+    // `bg-code-block` rather than `bg-surface-1`: the code-block ground is
+    // its own role (it travels with a code theme), even though the token
+    // currently aliases the surface-1 elevation tier. Keep in step with
+    // `.markdown-body pre`'s `--code-block` in app.css.
     //
-    // `border-border-subtle` alongside `border-0`: tailwind-merge treats
-    // border WIDTH and border COLOR as different categories, so
-    // `border-0` alone leaves the vendor's gray-200 border color
-    // standing. Inert at zero width today, but one `border` away from
-    // painting a light-mode gray in dark mode.
+    // `border-border-subtle` alongside `border-0`: border WIDTH and border
+    // COLOR are separate concerns, and this block is one `border` away from
+    // painting. Inert at zero width today.
     base: 'md-blk my-3 w-full overflow-hidden rounded-md border-0 border-border-subtle flex flex-col bg-code-block',
-    // Same background as base — the inner container is mostly there
-    // for the relative positioning the host's copy overlay expects.
+    // Same background as base — the inner container is mostly there for the
+    // relative positioning the host's copy overlay expects.
     container: 'relative overflow-visible bg-transparent p-0 font-mono text-[0.8125rem]',
-    // The pre/code body. Transparent bg so it inherits the wrapper's
-    // surface-1; tightened horizontal padding.
+    // The pre/code body. Transparent bg so it inherits the wrapper's ground;
+    // tightened horizontal padding.
+    //
+    // All three entries are consumed by `StreamdownCodeHost` /
+    // `staticCodeBlock.ts`, which render the pre/code DOM themselves from
+    // backend spans. Chat code blocks are zero-chrome: the host's
+    // hover-revealed copy button is the only affordance.
     pre: 'whitespace-pre-wrap wrap-anywhere overflow-x-visible font-mono p-3 bg-transparent',
   },
   // Inline code. `app.css` already styles `.markdown-body code` via
-  // `--code-inline-bg`, so we just clear Streamdown's hardcoded gray
-  // bg and let the cascade win. Layout stays here because it is
-  // specific to Streamdown codespans: they participate in normal
-  // inline layout, and long paths / hashes may break under constraint.
+  // `--code-inline-bg`, so the background stays transparent and the cascade
+  // wins. Layout stays here because it is specific to codespans: they
+  // participate in normal inline layout, and long paths / hashes may break
+  // under constraint.
   codespan: {
-    base: [
-      'inline whitespace-pre-wrap wrap-anywhere align-baseline',
-      'rounded px-1.5 py-0.5 font-mono text-[0.9em] leading-[1.35] bg-transparent',
-    ].join(' '),
+    base: 'inline whitespace-pre-wrap wrap-anywhere align-baseline rounded px-1.5 py-0.5 font-mono text-[0.9em] leading-[1.35] bg-transparent',
+  },
+  // Reached only without an `image` snippet: `ChatMarkdown` supplies
+  // `StreamdownImageHost`, which owns its own classes. The harnesses that
+  // mount `<Streamdown>` bare fall through to these.
+  image: {
+    base: 'group relative my-4  mx-auto w-fit block',
+    image: 'max-w-full rounded-lg',
+  },
+  // `text-md-blockquote` names the token the unlayered `.markdown-body
+  // blockquote` rule in app.css paints (var(--md-blockquote)), so the class
+  // cannot disagree with what the cascade renders.
+  blockquote: {
+    base: 'md-blk border-border-subtle text-md-blockquote my-3 border-l-2 pl-3 italic',
+  },
+  // GFM alerts (`> [!NOTE]` … ). The variant entry lands on the alert
+  // container (left border), its `[data-alert-title]` row (via the descendant
+  // modifier — the title is a CHILD of the element carrying the class), and
+  // the inline SVG icon, which inherits `stroke` from the container. Each
+  // variant maps onto the semantic token that already means the same thing
+  // everywhere else in the app; the border is toned to /45 so a 4px rule
+  // doesn't out-shout the prose it introduces.
+  alert: {
+    base: 'relative my-4 border-l-4 p-4 md-blk',
+    title: 'text-sm font-semibold flex items-center gap-2 mb-2 capitalize',
+    icon: 'size-5',
+    note: '[&>[data-alert-title]]:text-info stroke-info border-info/45',
+    tip: '[&>[data-alert-title]]:text-success stroke-success border-success/45',
+    warning: '[&>[data-alert-title]]:text-warning stroke-warning border-warning/45',
+    caution: '[&>[data-alert-title]]:text-error stroke-error border-error/45',
+    important: '[&>[data-alert-title]]:text-accent stroke-accent border-accent/45',
   },
   table: {
-    // No outer border / rounded shell — definition comes from the
-    // header bg + per-row separators below.
-    //
-    // `border-border-subtle` for the same width-vs-color reason as
-    // `code.base` and `mermaid.base`: the vendor sets a full border here,
-    // and `border-0` cancels only the WIDTH. Without a colliding border
-    // COLOR the vendor's light-mode gray survived the merge — inert at
-    // zero width, one `border` away from painting.
+    // No outer border / rounded shell — definition comes from the header bg
+    // plus the per-row separators below. `border-border-subtle` for the same
+    // width-vs-color reason as `code.base`.
     base: 'md-blk overflow-visible max-w-full my-3 border-0 border-border-subtle rounded-none',
     // table-auto (not fixed): app.css `.markdown-body … table` already forces
     // table-layout:auto via higher specificity, so `table-fixed` here was a
@@ -109,112 +146,50 @@ export const chatMarkdownTheme: ThemeOverride = {
     // content (see the table block + overflow-wrap note in app.css).
     table: 'w-full table-auto border-collapse min-w-0',
   },
-  thead: {
-    base: 'bg-surface-1 text-fg-muted',
-  },
-  tbody: {
-    base: '',
-  },
-  tfoot: {
-    base: 'bg-surface-1 border-t border-border-subtle',
-  },
+  thead: { base: 'bg-surface-1 text-fg-muted' },
+  tbody: { base: '' },
+  tfoot: { base: 'bg-surface-1 border-t border-border-subtle' },
   tr: {
-    base: 'border-border-subtle border-b transition-colors hover:bg-surface-1/40',
+    base: 'not-last:border-b border-border-subtle border-b transition-colors hover:bg-surface-1/40',
   },
-  td: {
-    // Drop the 200-400px width clamp — chat tables are usually
-    // narrow, and clamped cells push them past the column bounds.
-    base: 'px-3 py-1.5 text-[0.8125rem] min-w-0 max-w-none break-words text-fg',
-  },
+  // No 200-400px width clamp — chat tables are usually narrow, and clamped
+  // cells push them past the column bounds.
+  td: { base: 'px-3 py-1.5 text-[0.8125rem] min-w-0 max-w-none break-words text-fg' },
   th: {
     base: 'px-3 py-1.5 text-[0.8125rem] font-medium min-w-0 max-w-none break-words text-fg-muted text-left',
   },
-  hr: {
-    base: 'md-blk border-border-subtle my-5',
-  },
-  blockquote: {
-    // `text-md-blockquote` exists to CANCEL the vendor default's palette
-    // class via tailwind-merge, not to paint: the unlayered
-    // `.markdown-body blockquote` rule in app.css owns the color
-    // (var(--md-blockquote)), and the alias names the same token so the
-    // class cannot disagree with what the cascade renders.
-    base: 'md-blk border-border-subtle text-md-blockquote my-3 border-l-2 pl-3 italic',
-  },
-  // GFM alerts (`> [!NOTE]` … ). Each vendor key carries a full literal
-  // palette for its variant — blue-600 for note, green-600 for tip,
-  // and so on, as a text class under an `[&>[data-alert-title]]:`
-  // modifier plus a bare border and stroke class — landing on the alert
-  // container (left border), its `[data-alert-title]` row, and the
-  // inline SVG icon, which inherits `stroke` from the container.
-  // Map each variant onto the semantic token that already means the
-  // same thing everywhere else in the app; the border is toned down to
-  // /45 so a 4px rule doesn't out-shout the prose it introduces.
-  alert: {
-    base: 'md-blk',
-    note: '[&>[data-alert-title]]:text-info stroke-info border-info/45',
-    tip: '[&>[data-alert-title]]:text-success stroke-success border-success/45',
-    warning: '[&>[data-alert-title]]:text-warning stroke-warning border-warning/45',
-    caution: '[&>[data-alert-title]]:text-error stroke-error border-error/45',
-    important: '[&>[data-alert-title]]:text-accent stroke-accent border-accent/45',
-  },
-  // Mermaid: strip the white-card shell so diagrams sit on the chat
-  // surface like everything else. The Streamdown component renders one
-  // control (expand); the wrapper just needs to be a frame.
+  sup: { base: 'text-sm' },
+  sub: { base: 'text-sm' },
+  hr: { base: 'md-blk border-border-subtle my-5' },
+  strong: { base: 'font-semibold' },
+  em: { base: 'italic' },
+  // `~~strike~~`. De-emphasis here means the same thing `.markdown-body del`
+  // means, so it uses the same tier.
+  del: { base: 'text-fg-subtle' },
+  // Mermaid: no white-card shell, so diagrams sit on the chat surface like
+  // everything else. Background stays on the elevation tier, NOT on
+  // `--code-block`: a diagram is not code and must not move when a code theme
+  // changes. `border-border-subtle` for the width-vs-color reason above.
+  //
+  // The repeated `group` is the merge's literal output (both halves named it)
+  // preserved so the flattening changed no class attribute at all. It is a
+  // marker class: the duplicate is inert, and dropping one is a free cleanup
+  // for whoever next edits this entry.
   mermaid: {
-    // `border-border-subtle` for the same width-vs-color reason as
-    // `code.base` above. Background stays on the elevation tier, NOT on
-    // `--code-block`: a diagram is not code and must not move when a
-    // code theme changes.
-    base: 'md-blk group relative my-3 h-auto rounded-md border-0 border-border-subtle bg-surface-1 overflow-hidden items-center min-h-[300px]',
-    icon: 'size-4',
+    base: 'group md-blk group relative my-3 h-auto rounded-md border-0 border-border-subtle bg-surface-1 overflow-hidden items-center min-h-[300px]',
     buttons: 'absolute right-1 top-1 flex h-fit w-fit items-center gap-1',
   },
-  // Header buttons (the mermaid expand control). Streamdown's default
-  // uses gray-600 text with a gray-100 hover fill, neither of which
-  // exists in our theme; remap to our text + surface-2 hover.
+  math: { block: 'md-blk', inline: '' },
+  // Footnote reference chip (`[^1]`).
+  footnoteRef: { base: 'px-1 py-0.5 rounded-md text-fg-muted bg-surface-1/80' },
+  // Definition lists: the term is the focal text and the detail is body copy,
+  // exactly the fg/fg-muted split.
+  descriptionList: { base: 'my-4 space-y-2 md-blk' },
+  descriptionTerm: { base: 'font-semibold border-l-2 pl-4 text-fg border-border-subtle' },
+  descriptionDetail: { base: 'ml-4 leading-relaxed text-fg-muted' },
+  // The one header button left: mermaid's expand control.
   components: {
-    button: 'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer p-1 text-fg-hint transition-colors hover:text-fg hover:bg-surface-2/60 rounded w-6 h-6 flex items-center justify-center',
-    popover: 'min-w-[250px] max-w-md fixed z-[1000] max-h-md overflow-y-auto rounded-md bg-surface-1 border border-border-subtle p-2 shadow-menu',
+    button:
+      'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer p-1 text-fg-hint transition-colors hover:text-fg hover:bg-surface-2/60 rounded w-6 h-6 flex items-center justify-center',
   },
-  // Links: the color classes collide the vendor's blue-600 pair away and
-  // name the token the unlayered `.markdown-body a` rule (app.css) actually
-  // paints — var(--md-link), themeable per palette. The blocked variant is
-  // a <span>, so no element rule competes and its class does paint; a code
-  // label inside it keeps the de-emphasis via the app.css carve-out.
-  link: {
-    base: 'text-md-link font-medium underline wrap-anywhere hover:text-md-link',
-    blocked: 'text-fg-hint',
-  },
-  // Headings inside markdown lose Streamdown's default `mt-6 mb-2
-  // text-3xl` — chat surfaces want compact heading sizing that
-  // matches `app.css` `.markdown-body` rules. Clearing each entry
-  // hands control back to the cascade.
-  h1: { base: 'md-blk mt-3 mb-1 text-lg font-semibold' },
-  h2: { base: 'md-blk mt-3 mb-1 text-base font-semibold' },
-  h3: { base: 'md-blk mt-2 mb-1 text-[0.9375rem] font-semibold' },
-  h4: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
-  h5: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
-  h6: { base: 'md-blk mt-2 mb-1 text-sm font-semibold' },
-  // pl matches `.markdown-body ul/ol` in app.css (which wins the
-  // cascade): 2em of marker room so wide fonts don't clip — see the
-  // comment there.
-  ul: { base: 'md-blk ml-0 pl-[2em] list-outside list-disc whitespace-normal' },
-  ol: { base: 'md-blk ml-0 pl-[2em] list-outside whitespace-normal' },
-  li: { base: 'py-0.5', checkbox: 'mr-2' },
-  // Block-level entries the override otherwise leaves to the vendor:
-  // named here ONLY to carry the md-blk marker (see its doc above).
-  paragraph: { base: 'md-blk' },
-  math: { block: 'md-blk' },
-  descriptionList: { base: 'md-blk' },
-  // `~~strike~~`. Vendor ships gray-600 text; de-emphasis here means
-  // the same thing `.markdown-body del` means, so use the same tier.
-  del: { base: 'text-fg-subtle' },
-  // Footnote reference chip (`[^1]`). Vendor: gray-600 text on a
-  // gray-100/80 fill — a light-mode chip that stayed light in dark mode.
-  footnoteRef: { base: 'text-fg-muted bg-surface-1/80' },
-  // Definition lists. Vendor: gray-900 text with a gray-200 border on
-  // the term, gray-700 text on the detail — the term is the focal text
-  // and the detail is body copy, exactly the fg/fg-muted split.
-  descriptionTerm: { base: 'text-fg border-border-subtle' },
-  descriptionDetail: { base: 'text-fg-muted' },
 };
