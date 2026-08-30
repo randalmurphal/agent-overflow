@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { useStreamdown } from '../context.svelte';
-	import type { Tokens } from 'marked';
+	import type { Tokens } from '../../parser/engine';
 	import type { MermaidConfig } from 'mermaid';
 	import { fullscreenIcon } from './icons';
 

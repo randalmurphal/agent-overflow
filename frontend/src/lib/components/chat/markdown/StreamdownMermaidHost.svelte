@@ -53,7 +53,7 @@
 
   import { untrack } from 'svelte';
   import Mermaid from '../../../markdown/render/elements/Mermaid.svelte';
-  import type { Tokens } from 'marked';
+  import type { Tokens } from '../../../markdown';
   import { mermaidPaletteIdentity } from './mermaidTokens';
   import {
     readMermaidRenderedHeight,

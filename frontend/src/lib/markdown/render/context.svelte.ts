@@ -67,7 +67,7 @@ export const useStreamdown = (): StreamdownContext => {
 };
 
 import type { AlertToken, MathToken, SubSupToken, TableToken, THead, TBody, TFoot, THeadRow, TRow, TD, TH, Extension, GenericToken, CitationToken, MdxToken } from '../parser/index';
-import type { Tokens } from 'marked';
+import type { Tokens } from '../parser/engine';
 import type { ListItemToken, ListToken } from '../parser/extensions/list';
 import type { Footnote, FootnoteRef } from '../parser/extensions/footnotes';
 import type { DescriptionDetailToken, DescriptionListToken, DescriptionTermToken, DescriptionToken } from '../parser/extensions/dl';

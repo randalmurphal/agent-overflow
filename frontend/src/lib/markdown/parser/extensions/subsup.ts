@@ -1,4 +1,4 @@
-import type { Token } from 'marked';
+import type { Token } from '../engine';
 import type { Extension } from '../index';
 const subRule = /^~([^~`\s]+)~(?!\d)/; // ~text~ — no spaces/backticks (code spans bind tighter); closing ~ not before a digit so approx-range prose like ~5~10 / ~50~100 stays plain instead of sub(5)
 const supRule = /^\^([^\^`\s](?:[^\^`]*[^\^`\s])?)\^/; // ^text^ — no backticks (code spans bind tighter)

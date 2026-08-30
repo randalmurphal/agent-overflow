@@ -1,5 +1,5 @@
 import type { Extension } from '../index';
-import type { Token } from 'marked';
+import type { Token } from '../engine';
 
 /** Attribute values an MDX tag can carry: a quoted string, or a `{}` expression narrowed to a JSON scalar. */
 export type MdxAttributes = Record<string, string | number | boolean>;

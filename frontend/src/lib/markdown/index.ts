@@ -11,6 +11,7 @@ export { useStreamdown } from './render/context.svelte';
 export type { Theme } from './render/theme';
 export type { Footnote } from './parser/extensions/footnotes';
 export {
+  Lexer,
   lex,
   lexFootnoteDefinitions,
   parseBlocks,
@@ -24,6 +25,10 @@ export {
 } from './parser/index';
 export type {
   Extension,
+  LexerOptions,
+  Token,
+  Tokens,
+  TokensList,
   StreamdownToken,
   ParseBlocksCache,
   ParseBlocksLexPath,

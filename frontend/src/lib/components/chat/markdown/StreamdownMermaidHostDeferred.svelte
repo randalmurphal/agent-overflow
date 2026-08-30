@@ -7,7 +7,7 @@
   // stays self-contained and `markdownSerialize.ts` keeps round-tripping
   // the source.
 
-  import type { Tokens } from 'marked';
+  import type { Tokens } from '../../../markdown';
 
   // `id` is part of the wire interface the real host consumes (passes
   // to the renderer's inner `<Mermaid>` for its anchor id), so

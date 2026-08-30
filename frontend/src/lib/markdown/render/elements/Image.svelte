@@ -2,7 +2,7 @@
 	import { useStreamdown } from '../context.svelte';
 	import { transformUrl } from './url';
 	import Slot from './Slot.svelte';
-	import type { Tokens } from 'marked';
+	import type { Tokens } from '../../parser/engine';
 	import type { Snippet } from 'svelte';
 
 	const streamdown = useStreamdown();

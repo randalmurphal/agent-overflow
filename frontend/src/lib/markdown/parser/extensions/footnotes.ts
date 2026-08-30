@@ -1,6 +1,6 @@
 import type { Extension, StreamdownToken } from '../index';
 import type { StreamdownContext } from '../../render/context.svelte';
-import type { Lexer, TokenizerThis } from 'marked';
+import type { TokenizerThis } from '../engine';
 import { getContext } from 'svelte';
 const footnoteRegex = /^\[\^([^\]\n]+)\]:(?:[ \t]+|\n|$)([^\n]*(?:\n(?:[ \t]+[^\n]*)?)*)/;
 const footnoteRefRegex = /^\[\^([^\]\n]+)\]/;
@@ -27,14 +27,11 @@ export function markedFootnote(): Extension[] {
     const ensureMaps = (tokenizer: TokenizerThis): FootnoteMaps => {
         const streamdown = safeGetContext();
         if (!streamdown) {
-            const lexer = footnoteLexer(tokenizer.lexer);
-            if (!lexer.hasFootnotes) {
-                lexer.footnotes = {
-                    refs: new Map(),
-                    footnotes: new Map()
-                };
-                lexer.hasFootnotes = true;
-            }
+            const lexer = tokenizer.lexer;
+            lexer.footnotes ??= {
+                refs: new Map(),
+                footnotes: new Map()
+            };
             return lexer.footnotes;
         }
         else {
@@ -125,18 +122,10 @@ export type FootnoteRef = {
 export type FootnoteToken = Footnote | FootnoteRef;
 /**
  * The per-document footnote tables. Owned by the Streamdown context when one
- * exists (component rendering) and hung on the Lexer otherwise (a bare
+ * exists (component rendering) and by `Lexer.footnotes` otherwise (a bare
  * `lex` / `lexFootnoteDefinitions` call) — see `ensureMaps` above.
  */
 export type FootnoteMaps = {
     refs: Map<string, FootnoteRef>;
     footnotes: Map<string, Footnote>;
 };
-
-/**
- * A Lexer carrying the footnote tables. marked's `Lexer` export is an alias,
- * so its declaration cannot be augmented — this is the one named seam, rather
- * than a cast at each of the half-dozen reads across the parser.
- */
-export type FootnoteLexer = Lexer & { footnotes: FootnoteMaps; hasFootnotes: boolean };
-export const footnoteLexer = (lexer: Lexer): FootnoteLexer => lexer as FootnoteLexer;

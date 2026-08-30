@@ -1,8 +1,8 @@
 import type { Extension } from '../index';
-import type { Tokenizer, Tokens } from 'marked';
+import type { Tokenizer, Tokens } from '../engine';
 
 type variantType = 'note' | 'tip' | 'important' | 'warning' | 'caution';
-import { Lexer } from 'marked';
+import { Lexer } from '../engine';
 const variants: variantType[] = ['note', 'tip', 'important', 'warning', 'caution'];
 export function createSyntaxPattern(type: variantType): string {
     return `^\\s*[\\*_]*\\[!${type.toUpperCase()}\\][\\*_]*\\s*`;
@@ -20,44 +20,6 @@ const VARIANT_PATTERNS = variants.map((type) => ({
 // overwhelming majority of positions that cannot possibly be a blockquote.
 // Mirrors marked's own `rules.other.blockquoteStart`.
 const BLOCKQUOTE_OPEN = /^ {0,3}>/;
-// Trailing newlines are `rtrim`ed off the block rule's match before the
-// tokenizer walks its lines, so they are never part of what it consumes.
-// Scanned rather than `match.replace(/\n+$/, '')`: this runs once per
-// blockquote per FULL LEX, and the volatile tail re-lexes on every reveal
-// tick, so the discarded copy of every quoted block was pure garbage per
-// frame. `\n` is charCode 10, and the old regex matched nothing else.
-const trimmedNewlineEnd = (value: string): number => {
-    let end = value.length;
-    while (end > 0 && value.charCodeAt(end - 1) === 10)
-        end -= 1;
-    return end;
-};
-/**
- * The prefix of `src` that marked's blockquote tokenizer consumed.
- *
- * marked rebuilds a blockquote's `raw` by re-joining the lines it walked,
- * and two of its continuation branches splice the INNER (marker-stripped)
- * token's raw back into the OUTER one. So `raw` can come back holding bytes
- * the source never had at that offset (`">  - - \n$$\n"` -> `">  - -\n\n\n$$"`)
- * and even longer than the source itself (`"> - a\n[^a]:"` -> `"> - a\n[^a]:\n"`).
- * Both shapes terminate, which is why they went unnoticed: marked only ever
- * reads `raw.length` to advance, so the LENGTH is the consumption even when
- * the bytes are not, and the over-run is one byte past the end of the block
- * rule's own match — nothing crashes, nothing is swallowed.
- *
- * What it breaks is the contract every incremental path in this pipeline is
- * built on: a block token's `raw` names the bytes it consumed. That is what
- * `parseBlocks`' contiguity sum and `incrementalLex`'s raw-offset arithmetic
- * check their offsets against. A raw longer than the source makes such a sum
- * meaningless; a same-length-different-bytes raw passes it while the cached
- * block's raw no longer describes the source it came from.
- *
- * Report the prefix that `raw.length` names — the consumption is unchanged —
- * clamped to the block rule's own match minus the newlines the tokenizer
- * rtrims. The tokenizer cannot read past its match, so an over-long `raw` is
- * always the splice bug and never a longer read.
- */
-const consumedPrefix = (src: string, match: string, raw: string): string => src.slice(0, Math.min(raw.length, trimmedNewlineEnd(match)));
 export const markedAlert: Extension = {
     name: 'alert',
     level: 'block',
@@ -78,21 +40,17 @@ export const markedAlert: Extension = {
         // A per-call lexer makes that structurally impossible — there is no
         // field left to remember to reset when marked grows another one —
         // and it costs a handful of assignments: the rules tables it points
-        // at are marked's module constants, shared by every instance.
+        // at are the engine's module constants, shared by every instance.
         const lexer = new Lexer({ gfm: true });
         const tokenizer = lexer.options.tokenizer;
         const activeTokenizer = this.lexer.options.tokenizer;
         // `new Lexer()` always installs both; the guard keeps the reads total
-        // rather than asserting through marked's optional declaration.
+        // rather than asserting through the options bag's optional declaration.
         if (!tokenizer || !activeTokenizer)
-            return undefined;
-        const cap = tokenizer.rules.block.blockquote.exec(src);
-        if (!cap)
             return undefined;
         const blockquoteToken = tokenizer.blockquote(src);
         if (!blockquoteToken)
             return undefined;
-        blockquoteToken.raw = consumedPrefix(src, cap[0], blockquoteToken.raw);
         // The body is re-lexed through the ACTIVE lexer (below), so the
         // alert's children — and their inline queue entries — belong to the
         // document being parsed, not to the scratch lexer above.

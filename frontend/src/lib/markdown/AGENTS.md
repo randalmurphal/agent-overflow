@@ -48,8 +48,11 @@ The smoother that drives reveal deltas is NOT here — it is
 index.ts            the public barrel
 parser/
   index.ts            internal barrel (re-exports only)
-  lexer.ts            marked rule overrides, extension registries,
-                      cached options, lex / lexCapture /
+  engine/             the absorbed marked 16.4.2 lexer: Lexer, Tokenizer,
+                      rules (grammar + our overrides), helpers, tokens,
+                      options
+  lexer.ts            extension registries, cached options,
+                      lex / lexCapture /
                       lexFootnoteDefinitions / isKeptType
   provenAppend.ts     createProvenAppend, createMaterializedProvenAppend,
                       matchesProvenAppend, materializeString
@@ -68,7 +71,7 @@ parser/
   incompleteMarkdown.context.ts     block contexts, fence sealing
   incompleteMarkdown.inline.ts      speculative inline emphasis (DISABLED)
   incompleteMarkdown.structural.ts  links, footnotes, math, dl, MDX
-  extensions/         the 13 marked extensions (alert, list, table, math, …)
+  extensions/         the 13 engine extensions (alert, list, table, math, …)
 render/
   Streamdown.svelte   the root: props → context → blocks → one of two paths
   Block.svelte        one volatile block, reactive
@@ -163,7 +166,7 @@ marker: `<code>.textContent` owns the source.
 
 ## Landmines
 
-- **marked token raws are V8 substrings of the parser input.** A
+- **Token raws are V8 substrings of the parser input.** A
   long-lived block array therefore retains one whole historical document
   per checkpoint that introduced a block.
   `updateParseBlockStringMaterialization` copies each completed block
@@ -179,14 +182,17 @@ marker: `<code>.textContent` owns the source.
   for the life of the page (16,511 over one corpus) and carried
   reference definitions between documents.
 - **A blockquote token's `raw` is the consumed prefix of the source.**
-  marked rebuilds it by re-joining walked lines and splices inner
+  marked rebuilt it by re-joining walked lines and spliced inner
   marker-stripped raws back in, so `raw` came back holding bytes the
-  source never had at that offset. Nothing crashed, because marked only
-  reads `raw.length` — but a block token's `raw` naming its consumed
-  bytes is the contract every offset sum in this tree tests against.
-- **The extension tokenizers gate on a character code first.** marked
-  invokes every registered tokenizer at every candidate position; the
-  inline footnote one called `getContext` before checking for `[^`, so
+  source never had at that offset — and, in the list-continuation
+  branch, one byte more than the block rule even matched. Nothing
+  crashed, because marked only reads `raw.length` — but a block token's
+  `raw` naming its consumed bytes is the contract every offset sum in
+  this tree tests against. `engine/Tokenizer.ts#blockquote` now returns
+  `src.slice(0, …)` and the shim `marked-alert` carried is gone.
+- **The extension tokenizers gate on a character code first.** The
+  lexer invokes every registered tokenizer at every candidate position;
+  the inline footnote one called `getContext` before checking for `[^`, so
   ordinary prose paid a thrown-and-caught Svelte lifecycle error per
   inline token. An extension-heavy 20,000-parse benchmark fell 1.98s →
   0.46s when the gates went in.
@@ -236,6 +242,18 @@ ordinary first-party code now, so fix it like any other file. The
 incremental parser, the literal host, `CompactBlocks`, `staticHtml` and
 every test beside them are original.
 
-`marked` is still an external dependency, lexer-path only, pinned by
-`patches/marked@16.4.2.patch`. Absorbing it is wave W4 of
+`parser/engine/` is marked 16.4.2's lexing half (MIT, in `LICENSE`),
+absorbed in W4 of
 [`markdown-first-party.md`](../../../../docs/specs/markdown-first-party.md).
+The `marked` package, its pnpm patch and its 16.4.2 pin are gone. The
+Parser/Renderer/Hooks/`marked()` surface was never reachable from here
+and is not absorbed. Divergences from upstream are commented at their
+sites, in three groups: the allocation-free extension dispatch (one
+receiver per Lexer, indexed loops — formerly the pnpm patch), the app's
+own rule overrides (`~~`-only strikethrough, no mailto autolinking,
+homogeneous leading runs in the GFM inline `text` rule) and the
+blockquote `raw` fix above. The 17.x/18.x ReDoS and quadratic-backtracking
+fixes are ported by semantics; their token-shape changes deliberately are
+not, so output stays 16.4.2-identical. Fix bugs there like any other file
+— but a fix that upstream also made is worth diffing against, because the
+grammar tables are still recognisably theirs.

@@ -64,7 +64,7 @@
  * ('full' | 'list-append' | 'table-append') so descent coverage cannot
  * regress to silent full re-lexes.
   */
-import type { Tokens } from 'marked';
+import type { Tokens } from './engine';
 import { createProvenAppend, matchesProvenAppend } from './provenAppend';
 import type { ProvenAppend } from './provenAppend';
 import { lexCapture } from './lexer';

@@ -212,7 +212,7 @@ Text nodes only at `Intl.Segmenter` word boundaries, because Blink shapes
 adjacent Text nodes as separate runs and can expose a detached combining
 mark or broken emoji join.
 
-Path linkification runs inside marked parsing from the server-validated
+Path linkification runs inside markdown parsing from the server-validated
 `PathRef[]` allowlist on item metadata, and the generated href carries a
 per-page-load nonce that is the only `agent-overflow:open` form
 `transformUrl` admits. Explicit markdown-link hrefs are the second half,

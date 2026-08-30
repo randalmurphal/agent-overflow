@@ -14,19 +14,47 @@ lexing and block-parsing path (`parser/parseBlocks.ts`,
 `render/documentInteraction.ts`, `render/paragraphSpacing.ts`, and every
 test beside this tree.
 
-`boundary/` carries its own LICENSE (incremark) and is unrelated to the
-notice below.
+`parser/engine/` is marked (https://github.com/markedjs/marked), baseline
+16.4.2, licensed below: its Lexer, Tokenizer, grammar tables, lexing
+helpers and token types, absorbed as first-party TypeScript. The
+Parser/Renderer/Hooks/`marked()` half is not here. Divergences are
+commented at their sites — allocation-free extension dispatch, the app's
+own rule overrides, a blockquote `raw` fidelity fix, and hand-ported
+17.x/18.x ReDoS and quadratic-backtracking fixes.
 
-The parser still calls into the `marked` package, which is an external
-dependency at this point rather than code in this directory; when that
-lexer path is absorbed here (campaign wave W4) its MIT notice — MarkedJS
-contributors 2018-2025, Christopher Jeffrey 2011-2018 — is appended below.
+`boundary/` carries its own LICENSE (incremark) and is unrelated to the
+notices below.
 
 ----------------------------------------------------------------------
 
 MIT License
 
 Copyright (c) 2024 Arnaud Derbey
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+----------------------------------------------------------------------
+
+marked — https://github.com/markedjs/marked
+
+Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/)
+Copyright (c) 2011-2018, Christopher Jeffrey (https://github.com/chjj/)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

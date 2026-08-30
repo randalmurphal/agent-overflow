@@ -9,7 +9,7 @@
  * list, table or open fence. Every guard falls back to a full lex, so
  * correctness never depends on a fast path.
  */
-import { Lexer } from 'marked';
+import { Lexer } from './engine';
 import {
     DEFAULT_BLOCK_OPTIONS,
     blockExtensionsOf,

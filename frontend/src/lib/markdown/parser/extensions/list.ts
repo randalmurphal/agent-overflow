@@ -1,15 +1,5 @@
-import type { Lexer, MarkedOptions } from 'marked';
+import type { Lexer, LexerOptions } from '../engine';
 import type { Extension, GenericToken } from '../index';
-
-/**
- * marked declares `inlineQueue` private, but `tokenizeListItemContent` has to
- * REWIND it: `blockTokens` only ever appends inline work, so a discarded
- * first pass would otherwise leave its entries queued against text that no
- * token holds any more. The field is public at runtime; this is the one place
- * that names it through marked's declarations.
- */
-const inlineQueueOf = (lexer: Lexer): unknown[] =>
-	(lexer as unknown as { inlineQueue: unknown[] }).inlineQueue;
 
 export function letterToInt(letter: string): number {
     return letter.toLowerCase().charCodeAt(0) - 96;
@@ -114,7 +104,7 @@ function stripMarkerAlignment(text: string): string {
     return lines.join('\n');
 }
 export function tokenizeListItemContent(lexer: Lexer, item: ListItemToken, top: boolean): void {
-    const queued = inlineQueueOf(lexer).length;
+    const queued = lexer.inlineQueue.length;
     lexer.state.top = top;
     const tokens = lexer.blockTokens(item.text, []);
     // `tokens[0]` starts at offset 0 of the item's content, so an
@@ -137,7 +127,7 @@ export function tokenizeListItemContent(lexer: Lexer, item: ListItemToken, top: 
         // code region rejoins its first line instead of being spliced onto
         // a foreign token. The discarded pass's inline work goes with it —
         // blockTokens only ever appends to the queue.
-        inlineQueueOf(lexer).length = queued;
+        lexer.inlineQueue.length = queued;
         lexer.state.top = top;
         item.tokens = lexer.blockTokens(stripMarkerAlignment(item.text), []);
         return;
@@ -222,11 +212,11 @@ function listMarkerMayStart(source: string): boolean {
     const next = source.charCodeAt(end + 1);
     return end + 1 === source.length || next === 9 || next === 10 || next === 32;
 }
-export function parseListSource(src: string, options: MarkedOptions, sourceOnly: true): ListBoundaryToken | undefined;
-export function parseListSource(src: string, options: MarkedOptions, sourceOnly?: false): ListToken | undefined;
+export function parseListSource(src: string, options: LexerOptions, sourceOnly: true): ListBoundaryToken | undefined;
+export function parseListSource(src: string, options: LexerOptions, sourceOnly?: false): ListToken | undefined;
 export function parseListSource(
     src: string,
-    options: MarkedOptions,
+    options: LexerOptions,
     sourceOnly = false
 ): ListToken | ListBoundaryToken | undefined {
     if (!listMarkerMayStart(src))

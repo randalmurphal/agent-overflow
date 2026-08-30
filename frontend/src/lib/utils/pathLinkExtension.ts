@@ -30,7 +30,7 @@
 //     code spans (`` `src/foo.ts` ``) and fenced code blocks are
 //     correctly skipped without any DOM ancestry tests.
 
-import type { Token, Tokens, TokensList } from 'marked';
+import type { Token, Tokens, TokensList } from '../markdown';
 import type { PathRef } from '../types/models';
 import { openInEditorLabel } from './editorLinkLabel';
 

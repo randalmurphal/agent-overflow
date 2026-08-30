@@ -119,7 +119,7 @@
     type DocumentInteraction,
     type ProvenAppend,
   } from '../../../markdown';
-  import type { Tokens } from 'marked';
+  import type { Tokens } from '../../../markdown';
   import { onDestroy, onMount, untrack } from 'svelte';
   import CopyButton from '../../primitives/CopyButton.svelte';
   import { addToast } from '../../../stores/toast.svelte';

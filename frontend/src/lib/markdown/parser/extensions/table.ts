@@ -1,5 +1,5 @@
 import type { Extension } from '../index';
-import type { Lexer, Token } from 'marked';
+import type { Lexer, Token } from '../engine';
 import type { TableAlignment } from './tableSource';
 
 export interface SpanTableOptions {

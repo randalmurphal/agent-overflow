@@ -75,16 +75,16 @@ export default defineConfig({
               test: /src\/lib\/transport\//,
             },
             // The markdown renderer is a sizeable amount of code
-            // (Streamdown core + marked + element renderers + token
-            // utilities) and only the chat surface uses it. Splitting
-            // it off keeps the main `index.js` bundle from ballooning
-            // on initial load and means upgrades don't bust unrelated
-            // chunks.
+            // (Streamdown core + the absorbed marked lexer + element
+            // renderers + token utilities) and only the chat surface
+            // uses it. Splitting it off keeps the main `index.js`
+            // bundle from ballooning on initial load and means upgrades
+            // don't bust unrelated chunks.
             //
             // `src/lib/markdown/` is first-party source (the tree used
-            // to be a vendored package; see its LICENSE), so the
-            // alternation matches BOTH the in-repo path and the two
-            // remaining node_modules halves it still pulls in. The
+            // to be a vendored package plus the `marked` dependency; see
+            // its LICENSE), so the alternation matches the in-repo path
+            // and the one node_modules half it still pulls in. The
             // `src/` alternative deliberately requires the trailing
             // slash so `markdown/` matches the directory, never a
             // sibling file. Verify against `dist/assets` after any
@@ -92,7 +92,7 @@ export default defineConfig({
             // folding ~153KB into the entry chunk.
             {
               name: "markdown-vendor",
-              test: /(?:node_modules\/(?:marked|idiomorph)|src\/lib\/markdown)\//,
+              test: /(?:node_modules\/idiomorph|src\/lib\/markdown)\//,
             },
           ],
         },

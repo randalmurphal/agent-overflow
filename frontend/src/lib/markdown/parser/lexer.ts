@@ -1,16 +1,14 @@
 /**
- * The lexer seam: marked's rule overrides, the extension registries, the
- * cached options objects, and the two lex entry points everything else in
- * this tree builds on.
+ * The lexer seam: the extension registries, the cached options objects, and
+ * the lex entry points everything else in this tree builds on.
  *
- * Importing this module APPLIES the rule overrides below. Every Lexer in the
- * tree is constructed from `getLexOptions`/`getBlockOptions`, so any code
- * path that lexes has already evaluated this module.
+ * The grammar itself lives in `engine/` (marked 16.4.2's lexing half, absorbed
+ * as first-party source); the rule overrides this module used to apply by
+ * mutating `Lexer.rules` at import time are literals in `engine/rules.ts` now.
  */
-import { Lexer } from 'marked';
-import type { MarkedOptions, MarkedToken, Token, TokenizerStartFunction, TokenizerThis, Tokens, TokensList } from 'marked';
+import { Lexer } from './engine';
+import type { LexerOptions, MarkedToken, Token, TokenizerStartFunction, TokenizerThis, Tokens, TokensList } from './engine';
 import type { AlertToken } from './extensions/alert';
-import { footnoteLexer } from './extensions/footnotes';
 import type { Footnote, FootnoteMaps, FootnoteToken } from './extensions/footnotes';
 import type { MathToken } from './extensions/math';
 import type { SubSupToken } from './extensions/subsup';
@@ -36,33 +34,6 @@ import { markedAlign, markedAlignBlock } from './extensions/align';
 import { markedCitations } from './extensions/citations';
 import { markedMdx, markedMdxBlock } from './extensions/mdx';
 import { markedBlockquoteBlock } from './extensions/blockquoteSource';
-// marked 16's GFM del regex treats ~text~ (single tilde) as strikethrough,
-// producing false positives on approximate values like ~240MB. Require ~~.
-const _fixedDel = /^(~~)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/;
-Lexer.rules.inline.gfm.del = Lexer.rules.inline.breaks.del = _fixedDel;
-// Disable marked's mailto autolinking. Agent prose commonly uses
-// labels like `composer@0.7s`; marked sees those as email addresses,
-// Streamdown rejects the resulting `mailto:` URL, then renders a
-// visible `[blocked]` marker. HTTP/HTTPS/FTP and `www.` autolinks
-// still go through the original rules.
-const _emailUrlAlternative = '|^[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])';
-const _emailAutolinkAlternative = "|[a-zA-Z0-9.!#$%&'*+/=?_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])";
-const _removeRegexAlternative = (re: RegExp, alternative: string): RegExp => new RegExp(re.source.replace(alternative, ''), re.flags);
-Lexer.rules.inline.gfm.url = _removeRegexAlternative(Lexer.rules.inline.gfm.url, _emailUrlAlternative);
-Lexer.rules.inline.breaks.url = _removeRegexAlternative(Lexer.rules.inline.breaks.url, _emailUrlAlternative);
-Lexer.rules.inline.normal.autolink = _removeRegexAlternative(Lexer.rules.inline.normal.autolink, _emailAutolinkAlternative);
-Lexer.rules.inline.gfm.autolink = _removeRegexAlternative(Lexer.rules.inline.gfm.autolink, _emailAutolinkAlternative);
-Lexer.rules.inline.breaks.autolink = _removeRegexAlternative(Lexer.rules.inline.breaks.autolink, _emailAutolinkAlternative);
-Lexer.rules.inline.pedantic.autolink = _removeRegexAlternative(Lexer.rules.inline.pedantic.autolink, _emailAutolinkAlternative);
-// marked's GFM inline `text` rule begins with `[`~]+` — a COMBINED run of
-// backticks AND tildes — so a `~` fused to a backtick (e.g. ~`code`) gets
-// swallowed into a literal text run and the code span never opens (it can
-// also mis-pair onto a later backtick, producing a stray pill mid-line).
-// Split that leading class into homogeneous runs so a backtick is never
-// consumed as part of a tilde run. Mirrors the _fixedDel override above.
-const _fixText = (re: RegExp): RegExp => new RegExp(re.source.replace('[`~]+|[^`~]', '`+|~+|[^`~]'), re.flags);
-Lexer.rules.inline.gfm.text = _fixText(Lexer.rules.inline.gfm.text);
-Lexer.rules.inline.breaks.text = _fixText(Lexer.rules.inline.breaks.text);
 // Default plugin sets, in registration order. Hoisted so the options object
 // (and the regexes/closures inside each plugin) is built once, not per chunk.
 // The tokenizers are stateless at creation time — per-document state lives on
@@ -93,14 +64,12 @@ const DEFAULT_BLOCK_EXTENSIONS: Extension[] = [
     markedAlignBlock,
     markedMdxBlock
 ];
-const parseExtensions = (...extensions: Extension[]): MarkedOptions => {
+const parseExtensions = (...extensions: Extension[]): LexerOptions => {
     const options: LexOptions = {
         gfm: true,
         extensions: {
             block: [],
             inline: [],
-            childTokens: {},
-            renderers: {},
             startBlock: [],
             startInline: []
         }
@@ -130,8 +99,8 @@ const parseExtensions = (...extensions: Extension[]): MarkedOptions => {
 // hot path skips rebuilding ~20 tokenizer registrations on every streamed chunk.
 const DEFAULT_LEX_OPTIONS = parseExtensions(...DEFAULT_LEX_EXTENSIONS);
 export const DEFAULT_BLOCK_OPTIONS = parseExtensions(...DEFAULT_BLOCK_EXTENSIONS);
-const lexOptionsCache = new WeakMap<Extension[], MarkedOptions>();
-const blockOptionsCache = new WeakMap<Extension[], MarkedOptions>();
+const lexOptionsCache = new WeakMap<Extension[], LexerOptions>();
+const blockOptionsCache = new WeakMap<Extension[], LexerOptions>();
 const blockExtensionsCache = new WeakMap<Extension[], Extension[] | null>();
 export const blockExtensionsOf = (extensions: Extension[]): Extension[] | null => {
     if (extensions.length === 0)
@@ -163,7 +132,7 @@ export const sameExtensionSequence = (left: Extension[] | null, right: Extension
     }
     return true;
 };
-export const getLexOptions = (extensions: Extension[]): MarkedOptions => {
+export const getLexOptions = (extensions: Extension[]): LexerOptions => {
     if (extensions.length === 0)
         return DEFAULT_LEX_OPTIONS;
     let options = lexOptionsCache.get(extensions);
@@ -173,7 +142,7 @@ export const getLexOptions = (extensions: Extension[]): MarkedOptions => {
     }
     return options;
 };
-export const getBlockOptions = (extensions: Extension[]): MarkedOptions => {
+export const getBlockOptions = (extensions: Extension[]): LexerOptions => {
     const blockExtensions = blockExtensionsOf(extensions);
     if (!blockExtensions)
         return DEFAULT_BLOCK_OPTIONS;
@@ -207,9 +176,9 @@ export const lexFootnoteDefinitions = (
     markdown: string,
     extensions: Extension[] = []
 ): Map<string, Footnote> | null => {
-    const lexer = footnoteLexer(new Lexer(getLexOptions(extensions)));
+    const lexer = new Lexer(getLexOptions(extensions));
     lexer.lex(markdown);
-    return lexer.hasFootnotes ? lexer.footnotes.footnotes : null;
+    return lexer.footnotes?.footnotes ?? null;
 };
 // A token the render list keeps: marked's blank-line `space` tokens and
 // footnote definitions own source bytes but produce no rendered block.
@@ -224,13 +193,11 @@ export const lexCapture = (
     seedLinks: LinkTable | null,
     seedFootnotes: FootnoteMaps | null
 ): LexCapture => {
-    const lexer = footnoteLexer(new Lexer(getLexOptions(extensions)));
+    const lexer = new Lexer(getLexOptions(extensions));
     if (seedLinks)
         Object.assign(lexer.tokens.links, seedLinks);
-    if (seedFootnotes) {
+    if (seedFootnotes)
         lexer.footnotes = seedFootnotes;
-        lexer.hasFootnotes = true;
-    }
     const tokens = lexer.lex(markdown).filter((token) => isKeptType(token.type)) as StreamdownToken[];
     return {
         tokens,
@@ -238,7 +205,7 @@ export const lexCapture = (
         // In component context the footnote extension uses the shared
         // Streamdown maps and never touches the lexer — null here keeps
         // the cache out of the way and the context authoritative.
-        footnotes: lexer.hasFootnotes ? lexer.footnotes : null
+        footnotes: lexer.footnotes
     };
 };
 
@@ -272,14 +239,12 @@ export type LexCapture = {
 };
 
 /** The options object `parseExtensions` builds, with its arrays non-optional. */
-type LexOptions = MarkedOptions & {
+type LexOptions = LexerOptions & {
 	extensions: {
-		block: NonNullable<NonNullable<MarkedOptions['extensions']>['block']>;
-		inline: NonNullable<NonNullable<MarkedOptions['extensions']>['inline']>;
-		childTokens: NonNullable<MarkedOptions['extensions']>['childTokens'];
-		renderers: NonNullable<MarkedOptions['extensions']>['renderers'];
-		startBlock: NonNullable<NonNullable<MarkedOptions['extensions']>['startBlock']>;
-		startInline: NonNullable<NonNullable<MarkedOptions['extensions']>['startInline']>;
+		block: NonNullable<NonNullable<LexerOptions['extensions']>['block']>;
+		inline: NonNullable<NonNullable<LexerOptions['extensions']>['inline']>;
+		startBlock: NonNullable<NonNullable<LexerOptions['extensions']>['startBlock']>;
+		startInline: NonNullable<NonNullable<LexerOptions['extensions']>['startInline']>;
 	};
 };
 export type { MathToken, AlertToken, FootnoteToken, SubSupToken, BrToken, HrToken, AlignToken, CitationToken, MdxToken };

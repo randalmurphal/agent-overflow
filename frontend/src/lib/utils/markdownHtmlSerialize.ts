@@ -6,9 +6,9 @@
 // clipboard carries it, and fall back to the markdown `text/plain`
 // flavor when it doesn't (editors, terminals, code fields).
 //
-// **The parsing authority is the app's own marked.** `lex()` is the
-// marked pipeline `lib/markdown/` renders from (see
-// `frontend/AGENTS.md` § Vendor Patches), so what lands on the
+// **The parsing authority is the app's own lexer.** `lex()` is the
+// pipeline `lib/markdown/` renders from (its absorbed marked engine
+// included, see `lib/markdown/AGENTS.md`), so what lands on the
 // clipboard is parsed exactly the way the on-screen message was — same
 // strikethrough rule, same `$`-prose guard, same list/table grammar. A
 // second markdown parser here would be a second source of truth and

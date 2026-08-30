@@ -304,11 +304,13 @@ LICENSE — there is no `vendor/` tree and no divergence ledger. Never edit
 corrupts every project on the machine.
 
 The markdown pipeline is the one adoption so far, at
-[`src/lib/markdown/`](src/lib/markdown/AGENTS.md) (formerly
-`vendor/svelte-streamdown/`): fix parser bugs there, never duplicating
-the fix in `markdownEnhance.ts` or the host wrappers. Its area guide owns
-the parser map, the host seams, the path-relative URL security boundary
-and the test map.
+[`src/lib/markdown/`](src/lib/markdown/AGENTS.md) — `svelte-streamdown`
+(formerly `vendor/svelte-streamdown/`) plus marked's lexing half in
+`parser/engine/`, which replaced both the `marked` dependency and its
+pnpm patch. Fix parser bugs there, never duplicating the fix in
+`markdownEnhance.ts` or the host wrappers. Its area guide owns the parser
+map, the host seams, the path-relative URL security boundary and the test
+map.
 
 `patches/svelte@5.56.8.patch` has six hunks, each dropping when its suite
 passes against an unpatched release. `svelte-patch-zombie-leak.test.ts`
@@ -323,12 +325,6 @@ fixed in 5.56.5.
 | flush-loop-caps | Both synchronous flush loops were unbounded, so a cycle was an unreportable renderer freeze (2026-08-07: WebView2 wedged 8+ minutes, no paint, no error, nothing in any log). The caps abort and throw a svelte-shaped error that `utils/frontendErrorCapture.ts` persists, message kept in production. PR candidate. | `svelte-patch-flush-caps.test.ts` |
 | reconnect-dedupe | `get()` on a disconnected, dirty, previously-run derived registered it twice in one dep, so losing its last reader left that dep and everything upstream connected for the app's life (2026-08-23 heap snapshot: a closed pane's 3.4k detached nodes). PR candidate. | `svelte-patch-reconnect-dedupe.test.ts`, `chatview-dom-retention.test.ts` |
 | flip-phases | An animated keyed-each reorder interleaved abort / read / create per item, forcing up to N style-layout passes in one microtask (34.6ms of gBCR self-time in a sidebar-reorder burst, 2026-08-26). Three phased loops instead: identical geometry, one forced pass. PR candidate. | `svelte-patch-flip-phases.test.ts` |
-
-`patches/marked@16.4.2.patch`, allocation-free extension dispatch: one
-typed receiver per Lexer and indexed loops, replacing a closure and a
-fresh `{ lexer }` receiver per extension candidate at every token
-position. The public shape is unchanged and Marked's own suites pass
-patched. Drop it when upstream stops allocating inside the token loops.
 
 `patches/@lucide__svelte@1.28.0.patch`, mask-icons: `dist/Icon.svelte`
 renders a CSS-mask `<span>` against the patch's own hidden `<mask>`

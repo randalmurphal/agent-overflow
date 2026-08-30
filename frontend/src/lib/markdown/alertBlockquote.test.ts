@@ -19,7 +19,7 @@
 //     shapes terminate, so nothing crashed; what broke is the contract every
 //     incremental path leans on, that a block token's `raw` names the bytes
 //     it consumed.
-import { Lexer } from 'marked';
+import { Lexer } from './parser/engine';
 import { describe, expect, it } from 'vitest';
 import { lex } from './index';
 import { markedAlert } from './parser/extensions/alert';

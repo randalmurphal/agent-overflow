@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Tokens } from 'marked';
+  import type { Tokens } from '../../../markdown';
   import { GetLocalImageData } from '../../../stores/bindings';
   import { base64ToBytes } from '../../../utils/base64';
   import { errString } from '../../../utils/errors';

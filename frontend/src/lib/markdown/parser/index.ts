@@ -6,7 +6,8 @@
  *
  * | module                    | owns                                        |
  * |---------------------------|---------------------------------------------|
- * | `lexer.ts`                | marked rule overrides, extension registries, cached options, `lex` |
+ * | `engine/`                 | the absorbed marked 16.4.2 lexer + grammar   |
+ * | `lexer.ts`                | extension registries, cached options, `lex` |
  * | `provenAppend.ts`         | the append-lineage proof both layers key on |
  * | `geometry.ts`             | append-safety predicates shared by both layers |
  * | `parseBlocks.ts`          | document -> outer block boundaries           |
@@ -18,6 +19,8 @@
  */
 export { lex, lexFootnoteDefinitions } from './lexer';
 export type { Extension, GenericToken, StreamdownToken } from './lexer';
+export { Lexer } from './engine';
+export type { LexerOptions, Token, Tokens, TokensList } from './engine';
 export type {
   MathToken,
   AlertToken,

@@ -1,5 +1,5 @@
 import type { Extension } from '../index';
-import type { Token } from 'marked';
+import type { Token } from '../engine';
 const CENTER_BLOCK = /^\[center\]\n(?:([\s\S]*?)\n)?(?:\[\/center\]|(?=\[(?:center|right)\]\n))/;
 const RIGHT_BLOCK = /^\[right\]\n(?:([\s\S]*?)\n)?(?:\[\/right\]|(?=\[(?:center|right)\]\n))/;
 export const parseAlignSource = (

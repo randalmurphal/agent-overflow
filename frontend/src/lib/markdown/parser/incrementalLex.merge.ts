@@ -7,10 +7,8 @@
  * Every function here returns null rather than guessing. A null is a full
  * re-lex in `incrementalLex.ts`, which is always correct.
  */
-import { Lexer } from 'marked';
-import type { Token } from 'marked';
+import { Lexer } from './engine';
 import { getLexOptions, lexCapture } from './lexer';
-import { footnoteLexer } from './extensions/footnotes';
 import type { Extension } from './lexer';
 import { lastLineStartOf, sealedLengthOf, tableTailUnsafe } from './geometry';
 import type { TableAppendInfo } from './geometry';
@@ -96,20 +94,18 @@ const declaresDefs = (src: string, extensions: Extension[]): boolean => {
 // chokepoint finalizeList uses, so the marker-line indented-code rewrite
 // cannot depend on which path re-tokenized the item.
 const loosenTailItems = (items: ListItemToken[], extensions: Extension[], cache: IncrementalLexCache): void => {
-    const lexer = footnoteLexer(new Lexer(getLexOptions(extensions)));
+    const lexer = new Lexer(getLexOptions(extensions));
     if (cache.links)
         Object.assign(lexer.tokens.links, cache.links);
-    if (cache.footnotes) {
+    if (cache.footnotes)
         lexer.footnotes = cache.footnotes;
-        lexer.hasFootnotes = true;
-    }
     for (const item of items) {
         item.loose = true;
         tokenizeListItemContent(lexer, item, true);
     }
-    // marked declares `inlineQueue` private; draining it here is what the
-    // outer `lex()` would have done for these standalone-lexed items.
-    const queue = (lexer as unknown as { inlineQueue: { src: string; tokens: Token[] }[] }).inlineQueue;
+    // Draining the queue here is what the outer `lex()` would have done for
+    // these standalone-lexed items.
+    const queue = lexer.inlineQueue;
     for (let i = 0; i < queue.length; i++) {
         const next = queue[i];
         lexer.inlineTokens(next.src, next.tokens);

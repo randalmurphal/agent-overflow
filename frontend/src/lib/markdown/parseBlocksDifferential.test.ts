@@ -1,4 +1,4 @@
-import { Lexer } from 'marked';
+import { Lexer } from './parser/engine';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createParseBlocksCache,

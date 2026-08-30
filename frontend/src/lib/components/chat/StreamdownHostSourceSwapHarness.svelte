@@ -6,7 +6,7 @@
   // across source changes.
 
   import { setContext } from 'svelte';
-  import type { Tokens } from 'marked';
+  import type { Tokens } from '../../markdown';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';

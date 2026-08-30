@@ -1,4 +1,4 @@
-import type { Tokens } from 'marked';
+import type { Tokens } from '../../../markdown';
 import { addToast } from '../../../stores/toast.svelte';
 import { copyToClipboard } from '../../../utils/clipboard';
 import { maskSpriteRef } from '../../../utils/maskSprite';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Lexer } from 'marked';
+import { Lexer } from '../markdown';
 
 import {
   LOCAL_IMAGE_HREF_PREFIX,

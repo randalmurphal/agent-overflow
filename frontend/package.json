@@ -32,7 +32,6 @@
     "@xterm/xterm": "6.0.0",
     "idiomorph": "^0.7.4",
     "katex": "0.16.45",
-    "marked": "16.4.2",
     "mermaid": "11.16.1",
     "svelte": "5.56.8"
   },

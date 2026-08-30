@@ -36,7 +36,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-import { Lexer } from 'marked';
+import { Lexer } from './parser/engine';
 import {
   parseBlocks,
   createParseBlocksCache,
