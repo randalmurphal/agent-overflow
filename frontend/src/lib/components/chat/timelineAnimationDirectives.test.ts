@@ -14,8 +14,8 @@
 //
 // Scope caveat: the walk covers this DIRECTORY, but the hazard is the
 // scroller's DOM SUBTREE. Components rendered into rows from outside it —
-// today the vendored streamdown popovers (`transition:scale|global` on
-// click-gated dialogs) — carry directives this test cannot see; a new
+// `lib/markdown/render/` and `primitives/` — carry directives this test
+// cannot see; a new
 // external dependency rendered inside rows needs the same check by hand.
 
 import { readdirSync, readFileSync } from 'node:fs';

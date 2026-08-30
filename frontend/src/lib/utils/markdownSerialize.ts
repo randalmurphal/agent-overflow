@@ -319,7 +319,7 @@ function parseListStart(startAttr: string | null): number {
 /**
  * `[x] ` / `[ ] ` for a GFM task-list item, `''` for a plain one.
  *
- * svelte-streamdown renders `- [x] done` as
+ * The renderer renders `- [x] done` as
  * `<li><input type="checkbox" checked disabled>done</li>`, so the checked
  * state lives only on the input — the visible text carries none of it and
  * the browser default copy drops it entirely. Checkedness is read from the

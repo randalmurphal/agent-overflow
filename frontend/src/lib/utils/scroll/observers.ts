@@ -92,7 +92,7 @@ const COLD_LOAD_SETTLE_MAX_MS = 8000;
 // After attach() or forceStick(), the controller stays in sync-pin mode
 // until contentRO has been quiet for QUIET_MS or the FAILSAFE_MS
 // deadline trips. This defends against the mount-time spring-chase
-// regression: the virtualizer's per-row ResizeObserver and svelte-streamdown's
+// regression: the virtualizer's per-row ResizeObserver and the markdown
 // async typesetting (shiki/KaTeX/mermaid) fire many positive deltas
 // while content is settling, and we don't want those to look like
 // "real" content arrival.
@@ -112,14 +112,14 @@ const QUIET_MS = 100;
 const FAILSAFE_MS = 2500;
 // Shortened quiet window used when the consumer's `quietContextSignal`
 // is truthy at bump time — that signal means "I have first-hand evidence
-// the visible async typesetting (svelte-streamdown's
+// the visible async typesetting (the markdown renderer's
 // shiki / katex / mermaid) is done." We still want ONE frame of
 // contentRO silence after the last event so the post-typesetting layout
 // has time to settle, but the conservative 100ms wait that defends
 // against late typesetting is no longer needed. 16ms ≈ one rAF tick.
 //
 // CRITICAL: the shortened window is only sound once the SURFACE has
-// stopped moving. `quietContextSignal` reports svelte-streamdown's async
+// stopped moving. `quietContextSignal` reports the renderer's async
 // state — it is blind to the engine's estimate→measure cascade, which mounts
 // rows at ESTIMATED_ROW_SIZE and grows scrollHeight over a sequence of
 // contentRO fires spaced WIDER than SETTLED_QUIET_MS. If we shorten the

@@ -3,16 +3,15 @@
    * Singleton footnote-body popup.
    *
    * `[^1]` renders as a chip inline with the prose; the `[^1]: body`
-   * definition renders nowhere (the parser drops the block — see
-   * `vendor/svelte-streamdown/DIVERGENCE.md` entry 28). This host is the
-   * only place the body is shown: one delegated `click` listener on
+   * definition renders nowhere (the parser drops the block). This host
+   * is the only place the body is shown: one delegated `click` listener on
    * `document` picks up every footnote chip in every mounted markdown
    * surface, so rows allocate no popup instances and no per-chip
    * handlers — the same memory model as `DiagramInteractionHost`.
    *
-   * The seam is `data-footnote-label` on the chip (divergence 29): the
-   * vendored renderer publishes which footnote the chip refers to and
-   * stops there. Resolving that label to a body is document-level work
+   * The seam is `data-footnote-label` on the chip (markdown/AGENTS.md
+   * § Host seams): the renderer publishes which footnote the chip refers
+   * to and stops there. Resolving that label to a body is document-level work
    * the render path cannot do, and `markdown/footnoteDefinitions.ts`
    * owns it — lazily, on this click, never during render. A label the
    * document never defines resolves to nothing and the chip stays inert.
@@ -24,7 +23,7 @@
    * it portals the floating element to `<body>`, which is what keeps the
    * popup out of the virtualizer row's containment scope (a
    * `position: fixed` overlay inside `contain: paint` positions against
-   * the row, not the viewport — the failure that killed the vendored
+   * the row, not the viewport — the failure that killed the library's
    * floating-ui popover). It also inherits the app's clip-boundary
    * resolution, so a popup whose chip scrolls behind the sidebar is cut
    * at the same edge its chip is, and closes when the chip is gone.

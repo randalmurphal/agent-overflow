@@ -259,10 +259,8 @@ describe('<ChatMarkdown> path-link rendering', () => {
   it('renders a repo-relative link as plain text without a [blocked] tag', async () => {
     // PR/issue bodies routinely carry repo-relative links like
     // `[docs/guide.md](docs/guide.md)` — not navigable from the app,
-    // but not *blocked URLs* either. The Link.svelte divergence in the
-    // vendored svelte-streamdown (`DIVERGENCE.md` entry 10) drops the
-    // " [blocked]"
-    // suffix for schemeless relative references (the href survives as
+    // but not *blocked URLs* either. `Link.svelte` drops the
+    // " [blocked]" suffix for schemeless relative references (the href survives as
     // the hover title); disallowed absolute URLs keep the tag.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -368,7 +366,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
 
   it('never renders a raw same-origin img for a /-leading image src', async () => {
     // Image.svelte carried the same isPathRelativeUrl bypass Link.svelte
-    // lost (DIVERGENCE.md entry 17 follow-up): `![x](/api/whatever)`
+    // lost (markdown/AGENTS.md § Security boundary): `![x](/api/whatever)`
     // rendered a raw <img> issuing a model-authored same-origin GET.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -390,8 +388,8 @@ describe('<ChatMarkdown> path-link rendering', () => {
     // streamdown would render `[x](/home/user/x.md)` as a RAW anchor
     // (its isPathRelativeUrl branch bypasses transformUrl) — a same-tab
     // top-level navigation onto the SPA origin: a 404 at best, an
-    // origin-isolation escape at worst. The vendored Link.svelte drops
-    // that branch (DIVERGENCE.md entry 17); the href renders as a
+    // origin-isolation escape at worst. `Link.svelte` drops that branch
+    // (markdown/AGENTS.md § Security boundary); the href renders as a
     // non-navigable schemeless reference instead.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -545,7 +543,7 @@ describe('<ChatMarkdown> warm-gate presence registration', () => {
 });
 
 describe('<ChatMarkdown> library chrome removed in the W1 sweep', () => {
-  // The vendored renderer used to ship four interactive surfaces this app
+  // The renderer used to ship four interactive surfaces this app
   // never wanted: a footnote popover, a table download menu, a citation
   // carousel, and mermaid's inline panzoom toolbar. All four are gone.
   // These assertions pin what SURVIVED, so a future edit that revives the
@@ -563,7 +561,7 @@ describe('<ChatMarkdown> library chrome removed in the W1 sweep', () => {
     const chip = container.querySelector('[data-streamdown-footnote-ref]')!;
     expect(chip.textContent).toBe('note');
     // The library's `<dialog>` and its floating-ui positioning are gone; the
-    // chip only PUBLISHES the definition body (divergence 29) and the app's
+    // chip only PUBLISHES which footnote it is, and the app's
     // `FootnotePopoverHost` renders it. Nothing mounts inside the row.
     expect(container.querySelector('dialog')).toBeNull();
     expect(container.querySelector('[data-streamdown-footnote-popover]')).toBeNull();
@@ -571,7 +569,7 @@ describe('<ChatMarkdown> library chrome removed in the W1 sweep', () => {
     expect(chip.getAttribute('aria-controls')).toBeNull();
     // The one seam that replaced it: the chip says WHICH footnote it is and
     // that clicking it opens something. The host resolves the body
-    // document-level and owns the open state (divergence 29).
+    // document-level and owns the open state.
     expect(chip.getAttribute('data-footnote-label')).toBe('note');
     expect(chip.getAttribute('aria-haspopup')).toBe('dialog');
     expect(chip.getAttribute('aria-expanded')).toBeNull();

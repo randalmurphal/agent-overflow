@@ -13,7 +13,7 @@ import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
 // `class={undefined}` — an element that silently loses all of its styling.
 //
 // So the roster is derived from the CODE, not maintained here: every
-// `streamdown.theme.<group>.<slot>` read across the render path (the vendored
+// `streamdown.theme.<group>.<slot>` read across the render path (the
 // tree plus the app's own hosts) must exist in the table, and every entry in
 // the table must have a reader. Both directions matter — the first catches a
 // deleted entry, the second stops dead class strings from surviving in a

@@ -1,7 +1,7 @@
 // Mermaid palette bridge — app tokens → `mermaid` `themeVariables`.
 //
 // Without this, diagrams are the one markdown surface with a palette of
-// its own: the vendored `Streamdown.svelte` falls back to mermaid's
+// its own: `Streamdown.svelte` falls back to mermaid's
 // built-in `'dark'` / `'default'` themes, whose fills, strokes and label
 // colors have no relationship to anything else on screen. We instead
 // pin `theme: 'base'` — mermaid's derive-everything-from-variables theme
@@ -146,7 +146,7 @@ function paletteIdentityFor(resolved: ResolvedTheme): string {
 // 2. **The returned object's IDENTITY is the contract.** `getSettings()`
 //    is reassigned wholesale on every settings write, so the `$derived`
 //    in `ChatMarkdown` that calls this invalidates on EVERY save. Only
-//    handing back the same object reference stops the vendored
+//    handing back the same object reference stops the renderer's
 //    `Mermaid.svelte`'s `{@attach}` from re-running `mermaid.render` for
 //    every visible diagram on an unrelated settings change. Never return
 //    a fresh object for an unchanged identity.
@@ -170,7 +170,7 @@ let warnedUnresolved = false;
  * The `html.light` / `html.dark` stamp is App.svelte's `$effect.pre`,
  * which is a render effect on the root component and therefore runs
  * before every descendant user effect in the flush by construction — the
- * vendored `Mermaid.svelte` reads this config inside an `{@attach}`,
+ * `Mermaid.svelte` reads this config inside an `{@attach}`,
  * which Svelte builds as a user effect.
  *
  * The one caller passes `getResolvedTheme()`, the same resolver

@@ -129,7 +129,7 @@ export class IncompleteMarkdownParser {
             ...speculativeInlinePlugins,
             ...structuralPlugins
         ];
-        // Divergence 4: the ten speculative inline completers mis-close on a
+        // The ten speculative inline completers mis-close on a
         // lone delimiter mid-stream, so they are registered and then dropped.
         // The structural completers keep upstream's behavior. Re-enabling the
         // safe ones (bold/italic/strike) is a separate follow-up; this list is

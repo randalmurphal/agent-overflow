@@ -48,7 +48,7 @@ export interface Theme {
         checkbox: string;
     };
     /** `header`, `buttons`, `language`, `skeleton` and `line` died with the
-     * vendored shiki code component: the host renders code DOM itself. */
+     * deleted shiki code component: the host renders code DOM itself. */
     code: {
         base: string;
         container: string;

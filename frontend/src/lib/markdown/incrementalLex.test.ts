@@ -1,4 +1,4 @@
-// Equivalence proof for the svelte-streamdown incremental-lex patch hunk.
+// Equivalence proof for the incremental-lex fast paths.
 //
 // `incrementalLex` promises IDENTICAL output to a fresh `lex` at every
 // streamed prefix — the fast paths (re-lex from the last list item or table

@@ -1055,11 +1055,13 @@ pending a product call: the `animate-spin` loading ring on
 `primitives/Button` (load-older/newer, the message editor's working
 state, plan-card expansion: a *transform* animation, so a straight
 violation of the fade-never-move rule, and live during exactly the
-head-splice compensation commits load paging performs), and the vendored
-streamdown popovers' `transition:scale|global` dialogs (click-gated,
-outside the directive tripwire's `components/chat` walk). Removing or
-converting these (e.g. to the ticker-driven `SteppedSpinner`) changes
-visible behavior, so they are a decision, not a cleanup. (A third exception, the
+head-splice compensation commits load paging performs). Removing or
+converting it (e.g. to the ticker-driven `SteppedSpinner`) changes
+visible behavior, so it is a decision, not a cleanup. `lib/markdown/render/`
+is the other subtree the walks miss; it carries no animation or transition
+today, and the popovers that used to (`transition:scale|global` on
+click-gated dialogs) were deleted with the rest of the library chrome.
+(A third exception, the
 user-message jump-target glow, turned out to be dead code. Its only
 producer died with `DiffPanelDrawer` in the review-pane redesign, and
 the whole flash mechanism was removed rather than left dormant.)

@@ -6,7 +6,7 @@ import {
 
 // The lookup exists because the renderer cannot answer it: a `[^1]: body`
 // definition is always its own block, blocks are lexed in isolation, and
-// the definition token never reaches the DOM (vendor DIVERGENCE entry 29).
+// the definition token never reaches the DOM.
 // What is pinned here is that the answer comes from the real grammar — a
 // `[^x]:` line inside a fence is code, a definition inside a list item is
 // still a definition — and that the registry is scoped to the surface that

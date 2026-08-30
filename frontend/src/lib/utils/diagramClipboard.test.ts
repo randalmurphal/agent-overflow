@@ -44,7 +44,7 @@ function setClipboard(value: unknown): void {
 const NS = 'http://www.w3.org/2000/svg';
 
 /**
- * The live DOM shape svelte-streamdown produces: mermaid's own `<svg>`
+ * The live DOM shape the markdown tree produces: mermaid's own `<svg>`
  * (percentage width + inline max-width) nested inside the outer host
  * `<svg data-mermaid-svg>`. The host's inline transform is no longer
  * written by the library, but the export must still survive one — the

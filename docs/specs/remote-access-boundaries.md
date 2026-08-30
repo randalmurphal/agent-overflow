@@ -15,9 +15,9 @@ Found by audit, each step verified in code. All three were reachable
 are spec §16 phase 0.
 
 > **Status 2026-08-18: A and B are fixed at their shared root cause.**
-> The vendored `Link.svelte` no longer has the `isPathRelativeUrl`
-> raw-anchor branch, and `Image.svelte` no longer has its raw-`src`
-> twin (DIVERGENCE.md entry 17): an anchor or `<img>` renders only for
+> `Link.svelte` no longer has the `isPathRelativeUrl` raw-anchor
+> branch, and `Image.svelte` no longer has its raw-`src` twin
+> (`frontend/src/lib/markdown/AGENTS.md` § Security boundary): an anchor or `<img>` renders only for
 > a `transformUrl`-approved URL, so neither a `/`-leading nor a
 > `//host` href can top-level-navigate the window (or issue a raw
 > same-origin fetch) from model output. Path-shaped markdown hrefs
@@ -35,8 +35,8 @@ are spec §16 phase 0.
 > wants even with the navigation path closed.
 
 **A. Model-authored content can reach the full method surface.**
-The markdown renderer's `Link.svelte` (then vendored, now
-`src/lib/markdown/render/elements/`) renders any href where
+The markdown renderer's `Link.svelte`
+(`frontend/src/lib/markdown/render/elements/`) renders any href where
 `isPathRelativeUrl` is true (literally `startsWith('/')`) through a
 branch that **bypasses `transformUrl`**, emitting the raw href with no
 `target`/`rel`. The click delegate's `safeExternalURL` returns null for

@@ -162,7 +162,7 @@ interface ParsedPathTarget {
  *     never. A refused click surfaces as a toast. Without the rewrite
  *     these hrefs are worse than useless: a raw `/`-leading href is a
  *     same-tab navigation onto the SPA origin (a 404), so the
- *     vendored streamdown Link element refuses to render raw anchors
+ *     markdown renderer's Link element refuses to render raw anchors
  *     for them at all.
  *
  * Href rewriting requires a non-empty `workspacePath` for EVERY shape

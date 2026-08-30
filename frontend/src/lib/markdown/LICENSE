@@ -5,9 +5,11 @@ modified: dead features removed, the theme flattened into the app's token
 layer, and the parser reworked for incremental streaming.
 
 Original to agent-overflow, sharing no upstream lineage: the incremental
-lexing and block-parsing path in `parser/index.ts` (`parseBlocks`,
-`incrementalLex`, the `ProvenAppend` brand and the trailing-block descent
-records), `render/literalHost.ts` + `LiteralHost.svelte`,
+lexing and block-parsing path (`parser/parseBlocks.ts`,
+`parser/parseBlocks.cache.ts`, `parser/geometry.ts`,
+`parser/incrementalLex*.ts` and `parser/provenAppend.ts` — the
+`ProvenAppend` brand and the trailing-block descent records included),
+`render/literalHost.ts` + `LiteralHost.svelte`,
 `render/CompactBlocks.svelte`, `render/staticHtml.ts`,
 `render/documentInteraction.ts`, `render/paragraphSpacing.ts`, and every
 test beside this tree.

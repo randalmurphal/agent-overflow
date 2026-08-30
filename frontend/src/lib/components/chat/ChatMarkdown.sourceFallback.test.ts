@@ -4,7 +4,7 @@ import { render, waitFor } from '@testing-library/svelte';
 // Regression coverage for the source-text fallback inside the real
 // math / mermaid hosts. The fallback is the fix for "spring starts
 // at the top of the freshly-rendered block" on boundary commit:
-// without it, svelte-streamdown's Math / Mermaid components render
+// without it, the renderer's Math / Mermaid components render
 // an empty inner wrapper until their async `import('katex')` /
 // `import('mermaid')` resolves, contentEl dips below the streaming
 // bottom, the browser auto-clamps scrollTop, and the stick-to-bottom

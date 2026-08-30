@@ -5,7 +5,7 @@ import ChatMarkdown from './ChatMarkdown.svelte';
 import FootnotePopoverHost from './FootnotePopoverHost.svelte';
 
 // The reason this popup is not built inside the renderer, pinned with real
-// geometry. The vendored floating-ui popover was a `position: fixed`
+// geometry. The deleted floating-ui popover was a `position: fixed`
 // element rendered INSIDE the row; a timeline row is containment-scoped, and
 // `contain: paint` makes the row a containing block for fixed descendants,
 // so the popup positioned against the row instead of the viewport and landed

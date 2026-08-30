@@ -597,7 +597,7 @@ describe('<ChannelView>', () => {
   it('initial channel load + async row growth sync-pins scrollTop in the same paint as each contentRO delta', async () => {
     // Regression: before sync-pin landed, autonomous content growth on
     // a sticky session armed a spring driver that chased the moving
-    // bottom visibly. svelte-streamdown's async typesetting (shiki /
+    // bottom visibly. The markdown renderer's async typesetting (shiki /
     // KaTeX / mermaid / parseIncompleteMarkdown rebalance) keeps
     // growing message rows for hundreds of ms after first paint, so
     // the chase showed up as a top-to-bottom scroll preamble on every

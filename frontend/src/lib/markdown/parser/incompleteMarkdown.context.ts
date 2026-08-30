@@ -5,7 +5,7 @@
  * (fenced code, `$$` math, `[center]`, `[right]`) so the inline completers can
  * skip lines they must not touch, then seals whatever is still open at the end
  * of the document. Sealing an open fence replicates the OPENER's leading
- * prefix, fence char and run length (divergence 11): a flush-left ``` under a
+ * prefix, fence char and run length: a flush-left ``` under a
  * list-indented fence is not a closer per CommonMark — it terminates the list
  * and opens a new top-level fence, which rendered as a phantom empty code
  * block under the streaming one until the real closer arrived.

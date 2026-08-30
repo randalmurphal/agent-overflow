@@ -1,7 +1,7 @@
 <script lang="ts">
   // Test-only harness for exercising host prop reuse directly. Rendering
   // StreamdownMathHost / StreamdownMermaidHost outside a Streamdown tree fails
-  // because their inner svelte-streamdown components require context; this
+  // because their inner markdown-tree components require context; this
   // supplies the minimum context while keeping a single host instance mounted
   // across source changes.
 

@@ -452,7 +452,7 @@ export interface UseStickToBottomOptions {
   /**
    * Optional consumer-supplied signal that the visible
    * async-typesetting context has settled (e.g. all currently-mounted
-   * svelte-streamdown instances have signaled `onsettled` since the
+   * markdown renderer instances have signaled `onsettled` since the
    * warm gate was last armed). When truthy at the moment
    * `bumpQuietTimer` fires, the warm-gate quiet window is shortened
    * from QUIET_MS to SETTLED_QUIET_MS — we trust there is no late

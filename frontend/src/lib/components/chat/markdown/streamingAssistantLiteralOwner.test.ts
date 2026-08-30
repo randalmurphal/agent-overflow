@@ -59,7 +59,7 @@ function restoreLiteral(
 
 /**
  * The production shape of an active literal host: the span renders EMPTY and
- * the vendored controller (divergence 21) is the single writer of its
+ * the literal-host controller is the single writer of its
  * children. `publish` is the authoritative parser update the renderer makes;
  * `base` is the node the controller created for it, which the owner adopts
  * rather than replaces.
@@ -202,7 +202,7 @@ describe('streaming assistant literal owner', () => {
     sink.appendLiteral('seed next ', 'next ');
     expect(handle.owned).toBe(true);
 
-    // Settle: the vendored host unmounts and releases its owner. Ownership
+    // Settle: the literal host unmounts and releases its owner. Ownership
     // returns to the renderer with the reveal's bytes still on screen — the
     // settled static render is what replaces them, in its own flush.
     handle.detach();

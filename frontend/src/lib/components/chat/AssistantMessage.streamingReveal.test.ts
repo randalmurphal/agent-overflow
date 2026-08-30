@@ -435,7 +435,7 @@ describe('assistant streaming reveal integration', () => {
     // bounded Text nodes carry it is the literal owner's business — the render
     // context change relinquishes the RUN, and an authoritative update that
     // merely extends what the reveal already painted appends to those nodes
-    // rather than collapsing the leaf (divergence 21). Asserting a node count
+    // rather than collapsing the leaf. Asserting a node count
     // here is what a delete-then-rebuild reset used to guarantee, and that
     // rebuild is the rollback the single owner exists to remove.
     expect(authoritativeHost?.textContent).toBe('first words paint directly');

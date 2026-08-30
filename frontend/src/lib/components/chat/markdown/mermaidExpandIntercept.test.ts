@@ -3,7 +3,7 @@ import { render, waitFor } from '@testing-library/svelte';
 import StreamdownHostSourceSwapHarness from '../StreamdownHostSourceSwapHarness.svelte';
 
 /**
- * Verifies the capture-phase intercept that routes the vendored Mermaid
+ * Verifies the capture-phase intercept that routes the renderer's Mermaid
  * component's "Toggle expand" button to `DiagramModal`.
  *
  * The button is the ONLY diagram control the library still renders: the

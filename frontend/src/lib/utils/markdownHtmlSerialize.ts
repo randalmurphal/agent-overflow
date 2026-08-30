@@ -7,7 +7,7 @@
 // flavor when it doesn't (editors, terminals, code fields).
 //
 // **The parsing authority is the app's own marked.** `lex()` is the
-// patched marked pipeline svelte-streamdown renders from (see
+// marked pipeline `lib/markdown/` renders from (see
 // `frontend/AGENTS.md` § Vendor Patches), so what lands on the
 // clipboard is parsed exactly the way the on-screen message was — same
 // strikethrough rule, same `$`-prose guard, same list/table grammar. A
@@ -23,7 +23,7 @@
 // simply never reaches a branch that could emit it.
 //
 // Raw HTML in the source is DROPPED, matching the rendered view:
-// ChatMarkdown passes `renderHtml={false}`, so svelte-streamdown
+// ChatMarkdown passes `renderHtml={false}`, so the renderer
 // renders `html` tokens as nothing. Copy is truthful to what was on
 // screen, and the flavor stays inert by construction.
 //
@@ -44,7 +44,7 @@ import { lex } from '../markdown';
  * The shape of the marked tokens this serializer reads.
  *
  * `lex()` returns a wide union (marked's own tokens plus a dozen
- * svelte-streamdown extension tokens) whose members disagree on the
+ * markdown extension tokens) whose members disagree on the
  * type of shared field names — `align` is `(string|null)[]` on a table
  * and `string|null` on a cell, for instance. Narrowing that union at
  * every access would mean a cast per branch; declaring the fields we

@@ -13,7 +13,7 @@ type Harness = {
  * Selection assertions are written against this rather than against a
  * particular Text node, because which node holds a given character is the
  * literal owner's business and it legitimately differs before and after an
- * authoritative render (divergence 21: an update that merely EXTENDS what the
+ * authoritative render (an update that merely EXTENDS what the
  * reveal painted appends to the existing bounded nodes instead of collapsing
  * the leaf into one). What must not move is where the reader's selection sits
  * in the text.

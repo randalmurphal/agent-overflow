@@ -193,7 +193,7 @@ export const chatMarkdownTheme: Theme = {
   // carries its own line-height) so a chip cannot grow the 1.65 prose line
   // it sits in. Clicking it opens the definition body: the chip publishes
   // its label on `data-footnote-label` and `chat/FootnotePopoverHost.svelte`
-  // resolves and shows the definition (vendor DIVERGENCE entry 29).
+  // resolves and shows the definition.
   footnoteRef: { base: 'px-1 py-0.5 rounded-md text-xs text-fg-muted bg-surface-1/80' },
   // Definition lists: the term is the focal text and the detail is body copy,
   // exactly the fg/fg-muted split.

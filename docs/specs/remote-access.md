@@ -812,7 +812,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 
 0. **Open content-isolation defects.** Independent of everything else
    and reachable today, in the desktop webview, with no remote feature
-   enabled: the vendored streamdown `Link.svelte` relative branch
+   enabled: the markdown renderer's `Link.svelte` relative branch
    (root-relative and protocol-relative hrefs render as live anchors,
    bypassing `transformUrl`), an anchor-navigation guard, `/design/`
    hardening (origin/content-type posture, response headers, symlink

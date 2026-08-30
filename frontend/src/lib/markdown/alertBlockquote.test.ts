@@ -1,4 +1,4 @@
-// Coverage for the two vendored `marked/marked-alert.js` fixes.
+// Coverage for the two `parser/extensions/alert.ts` fixes.
 //
 // The alert extension owns EVERY blockquote, not just the `[!NOTE]` ones:
 // it is registered ahead of marked's built-ins, matches the plain blockquote

@@ -3,7 +3,7 @@
 // property.
 //
 // `serializeRangeToMarkdown` reads a fragment from `Range.cloneContents`,
-// and svelte-streamdown renders the checkbox with Svelte's `checked={…}`
+// and the renderer renders the checkbox with Svelte's `checked={…}`
 // binding — a property assignment that never writes the content attribute.
 // Cloning carries it because the HTML cloning steps for <input> propagate
 // checkedness; happy-dom does not implement that, so the unit suite can

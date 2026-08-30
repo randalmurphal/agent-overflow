@@ -280,7 +280,7 @@
   // Svelte flushes every render effect in the tree before any user effect.
   // That is what guarantees the document is fully re-themed before a consumer
   // resolves a palette off the cascade — the mermaid bridge resolves inside
-  // the vendored `Mermaid.svelte`'s `{@attach}` and the xterm bridge inside
+  // `markdown/render/elements/Mermaid.svelte`'s `{@attach}`, and the xterm bridge inside
   // TerminalBody's effect, both of which Svelte builds as user effects.
   //
   // BOTH halves are pre-effects, and the second one is why: the resolved CSS

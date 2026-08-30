@@ -7,11 +7,11 @@
 	// element, same class, same marker attribute — so the reference
 	// keeps rendering inline with the prose it annotates.
 	//
-	// Divergence 29: the chip publishes its LABEL and nothing else. It
+	// The footnote seam: the chip publishes its LABEL and nothing else. It
 	// cannot publish the body: `token.content` is the tokenizer's empty
 	// placeholder for almost every real document, because a definition is
 	// always its own block and each block is lexed by its own Lexer
-	// (`marked/index.js`, incrementalLex's cross-BLOCK note). Resolution is
+	// (see incrementalLex's cross-BLOCK note). Resolution is
 	// therefore document-level, and the host does it —
 	// `lexFootnoteDefinitions` answers "what is `[^label]`?" for a whole
 	// source, and `chat/FootnotePopoverHost.svelte` opens the popup. No

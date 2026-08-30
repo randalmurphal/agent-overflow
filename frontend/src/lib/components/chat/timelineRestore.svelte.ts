@@ -360,8 +360,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   //
   // - Non-empty timeline: forceStick() lands scrollTop at the current
   //   target in a single write. Any subsequent contentEl growth from
-  //   svelte-streamdown's
-  //   async typesetting (shiki / KaTeX / mermaid /
+  //   markdown async typesetting (shiki / KaTeX / mermaid /
   //   parseIncompleteMarkdown rebalance) and from the virtualizer's
   //   per-row measurements refining row heights gets handled invisibly
   //   by the controller's contentRO sync-pin path: each positive delta

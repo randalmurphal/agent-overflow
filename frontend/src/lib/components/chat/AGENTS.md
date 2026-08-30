@@ -177,14 +177,12 @@ subscribe to every chat tick. Inline diff affordances route into
 ## Markdown rendering
 
 `ChatMarkdown.svelte` mounts the renderer from
-[`lib/markdown/`](../../markdown/LICENSE) — first-party source, imported
+[`lib/markdown/`](../../markdown/AGENTS.md) — first-party source, imported
 through its `index.ts` barrel and nothing deeper — with host wrappers
 under `markdown/` for Code, Mermaid and Math. Fix parser bugs in that
 tree, never duplicating the fix in `markdownEnhance.ts` or a host
-wrapper. It began as the vendored `svelte-streamdown` package, whose
-ledger still sits at
-[`DIVERGENCE.md`](../../../../vendor/svelte-streamdown/DIVERGENCE.md)
-with stale `dist/...` paths until the promotion campaign retires it.
+wrapper. Its area guide owns the parser map, the host seams, the
+path-relative URL security boundary and the test map.
 
 Mermaid and Math stamp their source on `data-mermaid-source` and
 `data-math-source`, keeping markdown copy and diagram actions working.
@@ -193,7 +191,7 @@ Code uses a source-free `data-code-source=""` marker, because
 
 A footnote body is the one thing NOT recoverable from the DOM: a `[^1]:
 body` definition renders nothing, and per-block lexing leaves the ref
-token's back-reference empty (divergence 29). The chip publishes
+token's back-reference empty. The chip publishes
 `data-footnote-label`, `markdown/footnoteDefinitions.ts` resolves it
 against the source each `.markdown-body` registers, and
 `FootnotePopoverHost.svelte` — one app-level instance, one delegated
@@ -202,8 +200,8 @@ on the click and never during render.
 
 The direct assistant prose reveal
 (`markdown/streamingAssistantLiteralOwner.ts`) is the SINGLE owner of the
-active literal host's visible text, a correctness boundary: the vendored
-host renders empty and hands the element over (divergence 21). The
+active literal host's visible text, a correctness boundary: the host
+renders empty and hands the element over. The
 invariant is **extend-only**. A reveal delta extends the visible string,
 an authoritative parser update either extends it or replaces it in ONE
 `replaceChildren` mutation, and a fallback relinquishes the RUN without

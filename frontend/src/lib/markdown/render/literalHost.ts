@@ -1,6 +1,5 @@
 /**
- * Single-owner text controller for the active trailing literal leaf
- * (divergence 21).
+ * Single-owner text controller for the active trailing literal leaf.
  *
  * The host used to contain a Svelte-owned Text node that app code appended
  * SIBLINGS to. Two writers on one visible text run: on every authoritative

@@ -29,7 +29,7 @@
  *    synchronous for that reason.
  *
  * 3. The element handed in is the LIVE diagram: mermaid's own `<svg>`
- *    nested inside svelte-streamdown's outer `svg[data-mermaid-svg]`
+ *    nested inside the markdown tree's outer `svg[data-mermaid-svg]`
  *    host, emitted with `width="100%"` and an inline `max-width`
  *    (`useMaxWidth`). Serialising that verbatim exports a root with no
  *    intrinsic size, which rasterises blank or cropped.
@@ -122,7 +122,7 @@ function requireClipboard(need: 'write' | 'writeText'): Clipboard {
  * pixel size to rasterise it at. See note 3 for what is being undone.
  */
 function exportableDiagram(live: SVGSVGElement): ExportableDiagram {
-  // svelte-streamdown renders mermaid's own `<svg>` INSIDE its outer
+  // The markdown tree renders mermaid's own `<svg>` INSIDE its outer
   // `<svg data-mermaid-svg>` host, and the host is what the context menu
   // resolves. Descend to the diagram root before exporting.
   const root = Array.from(live.children).find(isSvgElement) ?? live;

@@ -291,28 +291,24 @@ Generate one with `scripts/generate-freeze-replay-fixture.mjs`.
 
 ## Vendor patches
 
-Third-party divergence lives in one of two places, and the choice is
-about the upstream, not the change. `patches/` holds pnpm patches keyed
-to exact versions in `pnpm-workspace.yaml`, so a bump without re-rolling
-fails `pnpm install` (`pnpm patch <pkg>@<version> --edit-dir <dir>` then
-`pnpm patch-commit`). Use it while the upstream is alive and the fix is
-meant to be dropped. `vendor/` holds in-repo pnpm workspace packages, for
-a dormant upstream and permanent divergence. Each vendored package keeps
-a `VENDOR.md` (upstream URL, baseline, how to diff a release) and a
-`DIVERGENCE.md` ledger beside its code, which a one-file patch has
-nowhere to keep, so patch hunks are listed below instead. Never edit
+Third-party divergence has two shapes, and the choice is about the
+upstream, not the change. A live upstream whose fix is meant to be
+dropped gets a pnpm patch: `patches/` is keyed to exact versions in
+`pnpm-workspace.yaml`, so a bump without re-rolling fails `pnpm install`
+(`pnpm patch <pkg>@<version> --edit-dir <dir>` then `pnpm patch-commit`).
+A patch has nowhere to keep its rationale, so each one's hunks are
+documented below. A dormant upstream and permanent divergence gets
+ADOPTED into `src/` as ordinary first-party code carrying the upstream
+LICENSE — there is no `vendor/` tree and no divergence ledger. Never edit
 `node_modules`: packages are hardlinked from the pnpm store, so an edit
-corrupts every project on the machine, and that is why vendored packages
-are `workspace:` rather than `file:`.
+corrupts every project on the machine.
 
-`vendor/` currently holds no package. The markdown pipeline used to live
-there as `vendor/svelte-streamdown/` and is now first-party source at
-[`src/lib/markdown/`](src/lib/markdown/LICENSE): fix parser bugs there,
-never duplicating the fix in `markdownEnhance.ts` or the host wrappers.
-Its ledger (`vendor/svelte-streamdown/DIVERGENCE.md`) and
-`VENDOR.md` survive at the old path only until the promotion campaign
-retires them ([`markdown-first-party.md`](../docs/specs/markdown-first-party.md)),
-and the `dist/...` paths inside them are stale.
+The markdown pipeline is the one adoption so far, at
+[`src/lib/markdown/`](src/lib/markdown/AGENTS.md) (formerly
+`vendor/svelte-streamdown/`): fix parser bugs there, never duplicating
+the fix in `markdownEnhance.ts` or the host wrappers. Its area guide owns
+the parser map, the host seams, the path-relative URL security boundary
+and the test map.
 
 `patches/svelte@5.56.8.patch` has six hunks, each dropping when its suite
 passes against an unpatched release. `svelte-patch-zombie-leak.test.ts`

@@ -1,7 +1,7 @@
 <script lang="ts">
   // Streaming-aware markdown renderer.
   //
-  // Powered by `svelte-streamdown`, which mounts a Svelte component tree
+  // Powered by `lib/markdown/`, which mounts a Svelte component tree
   // directly off marked tokens — every paragraph, code block, math block,
   // diagram, etc. is its own keyed Svelte child. The DOM is reactive but
   // node identity is preserved across content updates, so:
@@ -169,15 +169,14 @@
   // a raw relative anchor (url.js's `inputWasRelative` return).
   // Passing a defaultOrigin here would reopen origin-isolation defect
   // A (docs/specs/remote-access-boundaries.md) through transformUrl
-  // itself, bypassing the vendored Link/Image fixes.
+  // itself, bypassing the Link/Image URL policy.
 
-  // Diagram palette. Without a `mermaidConfig` the vendored Streamdown
-  // falls back to mermaid's built-in `'dark'`/`'default'` themes, which
+  // Diagram palette. Without a `mermaidConfig` the renderer falls back
+  // to mermaid's built-in `'dark'`/`'default'` themes, which
   // are the only colors in the app that come from nowhere near the token
   // layer. `markdown/mermaidTokens.ts` resolves our tokens to concrete
   // sRGB and pins `theme: 'base'` so mermaid derives everything from
-  // them. Streamdown's context exposes this to the vendored
-  // `Mermaid.svelte`; ChatMarkdown owns it because the CONTEXT is
+  // them. Streamdown's context exposes this to `Mermaid.svelte`; ChatMarkdown owns it because the CONTEXT is
   // created here — `StreamdownMermaidHost` is a child of it and has no
   // door back up.
   //
@@ -191,7 +190,7 @@
   // font read inside the resolver both go through the wholesale-replaced
   // settings object). That is fine and load-bearing: the resolver's memo
   // returns the SAME object for an unchanged palette identity, which is
-  // what stops the vendored `Mermaid.svelte`'s `{@attach}` from
+  // what stops `Mermaid.svelte`'s `{@attach}` from
   // re-rendering every visible diagram on an unrelated save.
   const mermaidConfig = $derived(resolveMermaidThemeConfig(getResolvedTheme()));
 
@@ -210,8 +209,7 @@
 
   // Streaming-only block-boundary memoization. When `streaming === true`,
   // the source is split at the last stable markdown block boundary
-  // (incremark's BoundaryDetector — vendored under
-  // `lib/markdown/boundary/`); the committed prefix is parsed once and
+  // (incremark's BoundaryDetector, `lib/markdown/boundary/`); the committed prefix is parsed once and
   // never re-parses while streaming, and the volatile tail re-parses on
   // every update with `parseIncompleteMarkdown` enabled to absorb
   // half-typed fences / tables / setext underlines.

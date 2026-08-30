@@ -2,8 +2,8 @@
 //
 // `[^1]` renders as a chip inline with the prose; its `[^1]: body`
 // definition renders nowhere — the parser drops the block, and the
-// renderer's per-block lexers never connect the two (vendor
-// DIVERGENCE entry 29). So the body cannot be recovered from the DOM,
+// renderer's per-block lexers never connect the two (markdown/AGENTS.md
+// § Host seams). So the body cannot be recovered from the DOM,
 // and it cannot be recovered from the ref token either. It is recovered
 // from the SOURCE, which is canonical anyway.
 //

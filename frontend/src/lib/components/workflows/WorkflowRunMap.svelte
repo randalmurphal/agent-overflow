@@ -255,9 +255,11 @@
       {#each model.waves as wave (wave.key)}
         <!--
           `data-wave-expanded`, not `data-expanded`: the latter is a namespace
-          the vendored streamdown's fullscreen rule reaches into (DIVERGENCE
-          entry 16), and a run map inside a markdown surface must not inherit
-          a layout rule about mermaid diagrams.
+          the markdown renderer's fullscreen rule once reached into (an
+          unscoped `:global([data-expanded='true'])` that pinned this row
+          `position: fixed` over the whole app), and a run map inside a
+          markdown surface must not inherit a layout rule about mermaid
+          diagrams.
         -->
         <li
           class="run-map-node"

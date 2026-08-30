@@ -24,7 +24,7 @@
 // path the chat surface runs (`freezeReplayHarness.ts`), at the recorded wire
 // boundaries, at per-word reveal granularity (what `ChatMarkdown` actually
 // sees), and at seeded fuzzed boundaries — plus synthetic token-soup fuzz over
-// the vendored marked extensions, super-linearity probes for the shapes our
+// the marked extensions, super-linearity probes for the shapes our
 // divergence touches, and the AnsiText/Idiomorph command-output path.
 //
 // Findings that turned into permanent coverage get their own always-on suite
@@ -279,7 +279,7 @@ describe.skipIf(!HAVE_FIXTURE)('freeze replay — fuzzed re-chunking (seeded)', 
 
 // ── Synthetic fuzz (no corpus needed) ─────────────────────────────────────
 
-describe('freeze replay — structural termination fuzz over the vendored marked', () => {
+describe('freeze replay — structural termination fuzz over marked', () => {
   // A block/inline extension that returns a zero-length `raw` makes marked's
   // `while (src)` loops spin forever (marked has no progress guard for
   // extension tokenizers). Hunt for one over shapes agent prose actually
@@ -353,7 +353,7 @@ describe('freeze replay — structural termination fuzz over the vendored marked
 // An extension that returns a token with an empty `raw` (or a `raw` that
 // isn't a prefix of `src`) spins forever while `tokens` grows, which is
 // exactly the observed signature (one core pegged, memory climbing, no
-// repaint). svelte-streamdown registers 13 custom extensions, several of
+// repaint). The parser registers 13 custom extensions, several of
 // them carrying our divergence. Wrap every one and fuzz.
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -539,7 +539,7 @@ describe('freeze replay — super-linear shape probes', () => {
   );
 
   it(
-    'marker-alignment code path (divergence entry 13) re-lexes each aligned item',
+    'marker-alignment code path re-lexes each aligned item',
     () => {
       let src = '';
       for (let i = 0; i < 400; i++) src += `-     $${i} aligned value ${i}\n`;

@@ -1,4 +1,4 @@
-// End-to-end proof of the svelte-streamdown incremental-lex patch hunk at
+// End-to-end proof of the incremental-lex fast paths at
 // the DOM layer: while a long list or table streams through the REAL
 // timeline (real pane, real smoother, real ChatMarkdown split), the
 // elements of already-sealed items/rows must keep their DOM identity and

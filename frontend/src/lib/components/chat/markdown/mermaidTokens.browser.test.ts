@@ -131,7 +131,7 @@ describe('mermaid token bridge (real cascade)', () => {
 
   it('produces genuinely different palettes per mode', () => {
     // The proof that the probe reads the live cascade rather than a
-    // constant — and the reason the vendored SVG cache had to start
+    // constant — and the reason the SVG cache had to start
     // keying on themeVariables (both modes pin `theme: 'base'`).
     applyThemeClass('light');
     const light = resolveMermaidThemeConfig('light').themeVariables as Record<
@@ -152,7 +152,7 @@ describe('mermaid token bridge (real cascade)', () => {
     // Load-bearing, not an optimization detail: `ChatMarkdown`'s
     // `$derived` re-evaluates on every settings write (the settings
     // object is replaced wholesale), and only identity-stability stops
-    // the vendored `{@attach}` from re-running `mermaid.render` for every
+    // `Mermaid.svelte`'s `{@attach}` from re-running `mermaid.render` for every
     // visible diagram on an unrelated save.
     applyThemeClass('dark');
     const first = resolveMermaidThemeConfig('dark');

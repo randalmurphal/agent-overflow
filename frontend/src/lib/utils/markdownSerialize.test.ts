@@ -275,7 +275,7 @@ describe('serializeRangeToMarkdown — task lists', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('- [x] done\n- [ ] todo');
   });
 
-  // The property path — svelte-streamdown binds `checked` as a DOM property
+  // The property path — the renderer binds `checked` as a DOM property
   // and never writes the attribute — is proved in
   // markdownSerialize.browser.test.ts: preserving checkedness across
   // Range.cloneContents is the HTML cloning steps' job, and happy-dom does

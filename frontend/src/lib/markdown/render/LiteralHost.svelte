@@ -1,8 +1,8 @@
 <script lang="ts">
-	// Divergence 21: the active trailing literal leaf. The span renders EMPTY —
+	// The active trailing literal leaf. The span renders EMPTY —
 	// no Svelte-owned Text node — and its controller is the single writer of the
 	// element's children, so the parser and the app's streaming reveal can never
-	// hold the same visible text run between them. See `literal-host.ts`.
+	// hold the same visible text run between them. See `literalHost.ts`.
 	import {
 		attachStreamdownLiteralHost,
 		type StreamdownLiteralHostHandle

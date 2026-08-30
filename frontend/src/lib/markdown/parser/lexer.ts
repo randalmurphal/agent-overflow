@@ -189,7 +189,8 @@ export const lex = (markdown: string, extensions: Extension[] = []): StreamdownT
         .lex(markdown)
         .filter((token) => token.type !== 'space' && token.type !== 'footnote') as StreamdownToken[];
 };
-// Divergence 29: `[^label]` → its `[^label]: body` definition, for a whole
+// The footnote seam (see AGENTS.md § Host seams): `[^label]` → its
+// `[^label]: body` definition, for a whole
 // document. The render path cannot answer this. A definition is always its
 // own block, parseBlocks splits blocks apart, and each Block lexes its
 // string in its own Lexer (see incrementalLex's cross-BLOCK note), so the
