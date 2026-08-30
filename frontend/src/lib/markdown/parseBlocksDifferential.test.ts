@@ -60,7 +60,7 @@ function expectAppendEquivalent(
     const append = createProvenAppend(previous, prefix.slice(previous.length));
     const actual = parseBlocks(prefix, extensions, cache, append);
     const expected = parseBlocks(prefix, extensions);
-    expect(actual).toEqual(expected);
+    expect(actual).toEqualWithFirstDivergence(expected);
     if (cache.lastPath === 'paragraph-append') paragraphAppends++;
     paths.add(cache.lastPath);
     previous = prefix;
@@ -70,7 +70,7 @@ function expectAppendEquivalent(
 
 function expectFullLexEquivalent(text: string): void {
   const blockTokens = parseBlocks(text).flatMap((block) => lex(block));
-  expect(withoutRaw(blockTokens)).toEqual(withoutRaw(lex(text)));
+  expect(withoutRaw(blockTokens)).toEqualWithFirstDivergence(withoutRaw(lex(text)));
 }
 
 const TRANSITION_CORPUS = [
@@ -443,7 +443,8 @@ describe('parseBlocks append differential', () => {
     parseBlocks(first, [], cache);
 
     const replacement = 'Fresh replacement text';
-    expect(parseBlocks(replacement, [], cache)).toEqual(parseBlocks(replacement, []));
+    expect(parseBlocks(replacement, [], cache))
+      .toEqualWithFirstDivergence(parseBlocks(replacement, []));
     expect(cache.lastPath).toBe('full');
 
     const next = `${replacement} keeps growing.`;
@@ -452,7 +453,7 @@ describe('parseBlocks append differential', () => {
       [],
       cache,
       createProvenAppend(replacement, ' keeps growing.'),
-    )).toEqual(parseBlocks(next, []));
+    )).toEqualWithFirstDivergence(parseBlocks(next, []));
     expect(cache.lastPath).toBe('paragraph-append');
   });
 

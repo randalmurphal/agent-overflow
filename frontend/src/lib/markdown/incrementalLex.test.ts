@@ -22,6 +22,7 @@
 // scope here.
 import { describe, expect, it, vi } from 'vitest';
 import { expectCleanTransitions } from '../../test/helpers/transitions';
+import { describeFirstDivergence } from '../../test/helpers/firstDivergence';
 import {
   createIncrementalLexCache,
   createMaterializedProvenAppend,
@@ -304,18 +305,12 @@ describe('incrementalLex streamed equivalence', () => {
               complete ? parseIncompleteMarkdown : null,
             );
             const reference = fullReference(prefix, complete);
-            const incStr = JSON.stringify(incremental);
-            const refStr = JSON.stringify(reference);
-            if (incStr !== refStr) {
-              // The raw strings run to megabytes and the reporter truncates
-              // them into uselessness — fail with the divergence window.
-              let d = 0;
-              while (d < Math.min(incStr.length, refStr.length) && incStr[d] === refStr[d]) d++;
+            if (JSON.stringify(incremental) !== JSON.stringify(reference)) {
+              // The raw trees run to megabytes; report only the window.
               expect.fail(
                 `token divergence at prefix length ${prefix.length} (path=${cache.lastPath})\n` +
                 `stream tail: ${JSON.stringify(prefix.slice(-80))}\n` +
-                `expected …${refStr.slice(Math.max(0, d - 200), d + 240)}…\n` +
-                `received …${incStr.slice(Math.max(0, d - 200), d + 240)}…`,
+                describeFirstDivergence(incremental, reference),
               );
             }
             if (doc.descent && cache.lastPath === doc.descent) descents += 1;

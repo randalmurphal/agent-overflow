@@ -243,12 +243,12 @@ describe('single volatile Streamdown block', () => {
     await tick();
 
     const state = forensics(view.container);
-    expect(state.content).toBe(initial);
+    expect(state.content).toEqualWithFirstDivergence(initial);
     expect(state.lastPath).toBe('initial-boundary');
     expect(state.trailingBlock?.kind).toBe('paragraph');
     expect(state.documentParseCalls).toBe(1);
     expect(state.incrementalLexMetrics.calls).toBeGreaterThan(0);
-    expect(view.container.textContent).toBe(initial);
+    expect(view.container.textContent).toEqualWithFirstDivergence(initial);
 
     const delta = ' keeps growing on its current line.';
     const append = createProvenAppend(initial, delta);
@@ -265,7 +265,7 @@ describe('single volatile Streamdown block', () => {
     expect(state.lastPath).toBe('single-block');
     expect(state.documentParseCalls).toBe(1);
     expect(state.incrementalLexMetrics.calls).toBeGreaterThan(1);
-    expect(view.container.textContent).toBe(append.next);
+    expect(view.container.textContent).toEqualWithFirstDivergence(append.next);
 
     await view.rerender({
       content: append.next,
@@ -302,7 +302,7 @@ describe('single volatile Streamdown block', () => {
     await tick();
     expect(state.lastPath).toBe('single-block');
     expect(state.documentParseCalls).toBe(parsedCalls + 1);
-    expect(view.container.textContent).toBe(resumed.next);
+    expect(view.container.textContent).toEqualWithFirstDivergence(resumed.next);
   });
 
   it('returns to document parsing at a newline, then skips same-line fence growth', async () => {

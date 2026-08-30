@@ -11,6 +11,7 @@
 // these resets, one test's thread snapshot / item cache / active turn
 // leaks into the next as "already warm" or "still streaming" state.
 import { afterEach, beforeEach } from 'vitest';
+import './helpers/firstDivergence';
 import { cleanup } from '@testing-library/svelte';
 import { resetWailsMocks } from './mocks/wailsio-runtime';
 import { resetBindingMocks, setBindingMock } from './mocks/bindings-app';
