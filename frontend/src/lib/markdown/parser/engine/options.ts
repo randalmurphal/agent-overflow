@@ -9,7 +9,6 @@
  */
 import type { Token, Tokens, TokensList } from './tokens';
 import type { Lexer } from './Lexer';
-import type { Tokenizer } from './Tokenizer';
 
 /** The receiver an extension tokenizer is invoked with. */
 export interface TokenizerThis {
@@ -40,13 +39,6 @@ export interface LexerOptions {
   /** Log an infinite-loop bailout instead of throwing it. */
   silent?: boolean;
 
-  /**
-   * The tokenizer that turns markdown text into tokens. `Lexer` installs one
-   * on the options object if the caller did not, so a cached options object
-   * is also a cached tokenizer.
-   */
-  tokenizer?: Tokenizer | null;
-
   /** Registered extension tokenizers, pre-sorted by level. */
   extensions?: null | {
     inline?: TokenizerExtensionFunction[];
@@ -64,7 +56,6 @@ export function getDefaultOptions(): LexerOptions {
     gfm: true,
     pedantic: false,
     silent: false,
-    tokenizer: null,
   };
 }
 

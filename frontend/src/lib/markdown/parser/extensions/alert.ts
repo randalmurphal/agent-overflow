@@ -42,19 +42,13 @@ export const markedAlert: Extension = {
         // and it costs a handful of assignments: the rules tables it points
         // at are the engine's module constants, shared by every instance.
         const lexer = new Lexer({ gfm: true });
-        const tokenizer = lexer.options.tokenizer;
-        const activeTokenizer = this.lexer.options.tokenizer;
-        // `new Lexer()` always installs both; the guard keeps the reads total
-        // rather than asserting through the options bag's optional declaration.
-        if (!tokenizer || !activeTokenizer)
-            return undefined;
-        const blockquoteToken = tokenizer.blockquote(src);
+        const blockquoteToken = lexer.tokenizer.blockquote(src);
         if (!blockquoteToken)
             return undefined;
         // The body is re-lexed through the ACTIVE lexer (below), so the
         // alert's children — and their inline queue entries — belong to the
         // document being parsed, not to the scratch lexer above.
-        processAlertToken(blockquoteToken, activeTokenizer);
+        processAlertToken(blockquoteToken, this.lexer.tokenizer);
         return blockquoteToken;
     }
 };

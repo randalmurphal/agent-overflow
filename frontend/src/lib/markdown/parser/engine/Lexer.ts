@@ -56,7 +56,17 @@ export class Lexer {
    */
   footnotes: FootnoteMaps | null = null;
 
-  private tokenizer: Tokenizer;
+  /**
+   * Owned per Lexer, never cached on the shared options object. marked
+   * stored the tokenizer on `options` and re-pointed `tokenizer.lexer`
+   * at construction, so two Lexers sharing one cached options bag shared
+   * one Tokenizer — and constructing the second mid-lex of the first
+   * corrupted the first's `tokenizer.lexer` back-pointer (upstream fixed
+   * the symptom per-call in 17.0.5 f3a3ec05; owning the instance removes
+   * the shared field instead). A Tokenizer is three assignments; the
+   * rules tables it points at are module constants.
+   */
+  readonly tokenizer: Tokenizer;
 
   /**
    * The receiver every extension tokenizer and start function is invoked
@@ -70,8 +80,7 @@ export class Lexer {
     this.tokens = [] as unknown as TokensList;
     this.tokens.links = Object.create(null);
     this.options = options || defaultOptions;
-    this.options.tokenizer = this.options.tokenizer || new Tokenizer();
-    this.tokenizer = this.options.tokenizer;
+    this.tokenizer = new Tokenizer();
     this.tokenizer.options = this.options;
     this.tokenizer.lexer = this;
     this.tokenizerContext = { lexer: this };
