@@ -74,5 +74,10 @@ this file covers the package boundaries.
   library entries.
 - Every shipped scenario line must survive the real provider parsers
   (`scenario/library_parsers_test.go`).
+- A scenario that claims a downstream effect the parsers alone cannot
+  show gets a test that drives its own lines through that path:
+  `file-edit-diff`'s inline diff payload is pinned by
+  `internal/triage/scenario_file_edit_diff_test.go` (parser + Router +
+  store), the usage-limit pair by `scenario/library_parsers_test.go`.
 - Scenario validation happens at load/set time, never inside a spawned
   mock. A bad script must fail the RPC that installed it.

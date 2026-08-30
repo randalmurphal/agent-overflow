@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "file-edit-diff",
+  "description": "Claude Edit whose tool_result carries a two-hunk structuredPatch, the only library scenario that makes triage persist an inline diff PAYLOAD — the diff card renders real +/- rows instead of the disabled header file-edit leaves behind. Writes the post-edit file into the workspace too, so git status, checkpoints, and the emitted patch agree.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "edit-settings",
+      "steps": [
+        {
+          "emit": {
+            "lines": [
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-edit-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-edit-${TURN}\",\"name\":\"Edit\",\"input\":{\"file_path\":\"${CWD}/src/settings.ts\",\"old_string\":\"export const config = {\\n  retries: 3,\\n  timeout: 1000,\\n  verbose: false,\\n};\",\"new_string\":\"export const config = {\\n  retries: 5,\\n  timeout: 250,\\n  verbose: true,\\n  label: \\\"turn ${TURN}\\\",\\n};\"}}]}}"
+            ]
+          }
+        },
+        {
+          "writeFile": {
+            "path": "src/settings.ts",
+            "content": "export const config = {\n  retries: 5,\n  timeout: 250,\n  verbose: true,\n  label: \"turn ${TURN}\",\n};\n\n// Applied on every request path.\nconst KNOWN_KEYS = [\"retries\", \"timeout\", \"verbose\"];\n\nexport function pick(input) {\n  return Object.entries(input).filter(([key]) => KNOWN_KEYS.includes(key));\n}\n\nexport function apply(input) {\n  if (!input) return config;\n  return { ...config, ...pick(input) };\n}\n"
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 60,
+            "lines": [
+              "{\"type\":\"user\",\"tool_use_result\":{\"filePath\":\"${CWD}/src/settings.ts\",\"oldString\":\"export const config = {\\n  retries: 3,\\n  timeout: 1000,\\n  verbose: false,\\n};\",\"newString\":\"export const config = {\\n  retries: 5,\\n  timeout: 250,\\n  verbose: true,\\n  label: \\\"turn ${TURN}\\\",\\n};\",\"originalFile\":\"export const config = {\\n  retries: 3,\\n  timeout: 1000,\\n  verbose: false,\\n};\\n\\n// Applied on every request path.\\nconst KNOWN_KEYS = [\\\"retries\\\", \\\"timeout\\\", \\\"verbose\\\"];\\n\\nexport function pick(input) {\\n  return Object.entries(input).filter(([key]) => KNOWN_KEYS.includes(key));\\n}\\n\\nexport function apply(input) {\\n  return { ...config, ...input };\\n}\\n\",\"userModified\":false,\"replaceAll\":false,\"structuredPatch\":[{\"oldStart\":1,\"oldLines\":7,\"newStart\":1,\"newLines\":8,\"lines\":[\" export const config = {\",\"-  retries: 3,\",\"-  timeout: 1000,\",\"-  verbose: false,\",\"+  retries: 5,\",\"+  timeout: 250,\",\"+  verbose: true,\",\"+  label: \\\"turn ${TURN}\\\",\",\" };\",\" \",\" // Applied on every request path.\"]},{\"oldStart\":12,\"oldLines\":5,\"newStart\":13,\"newLines\":6,\"lines\":[\" }\",\" \",\" export function apply(input) {\",\"-  return { ...config, ...input };\",\"+  if (!input) return config;\",\"+  return { ...config, ...pick(input) };\",\" }\"]}]},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-edit-${TURN}\",\"content\":\"The file ${CWD}/src/settings.ts has been updated successfully.\"}]}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-done-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Tightened the config defaults and made apply() filter unknown keys.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-done-${TURN}\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Tightened the config defaults and made apply() filter unknown keys.\"}]}}",
+              "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

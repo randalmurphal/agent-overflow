@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/headlessshell"
 )
 
 // chromeForTestingManifestURL is the canonical manifest published by
@@ -143,7 +144,7 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 		i.HTTPClient = http.DefaultClient
 	}
 
-	platform, err := currentPlatform()
+	platform, err := headlessshell.Platform()
 	if err != nil {
 		i.emit(InstallProgress{Phase: "error", Error: err.Error()})
 		return InstallResult{}, err
@@ -191,12 +192,12 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 		}
 	}
 
-	cacheDir := filepath.Join(i.ConfigDir, "headless-shell")
+	cacheDir := filepath.Join(i.ConfigDir, headlessshell.CacheDirName)
 	versionDir := filepath.Join(cacheDir, stable.Version)
-	binaryPath := binaryPathFor(versionDir, platform)
+	binaryPath := headlessshell.BinaryPath(versionDir, platform)
 
 	// Already installed?
-	if isExecutable(binaryPath) {
+	if headlessshell.Executable(binaryPath) {
 		i.emit(InstallProgress{Phase: "ready", Version: stable.Version})
 		i.pruneOldVersions(cacheDir, stable.Version)
 		return InstallResult{Version: stable.Version, BinaryPath: binaryPath}, nil
@@ -224,7 +225,7 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	}
 	_ = os.Remove(zipPath)
 
-	if !isExecutable(binaryPath) {
+	if !headlessshell.Executable(binaryPath) {
 		// Either the zip layout shifted upstream or chmod failed.
 		// Walk the version dir and try to recover the binary path.
 		recovered, walkErr := findHeadlessShell(versionDir, platform)
@@ -523,42 +524,11 @@ func extractZipFile(file *zip.File, dst string, maxBytes int64) (int64, error) {
 	return written, nil
 }
 
-// currentPlatform returns the Chrome-for-Testing platform string for
-// the running OS+arch.
-func currentPlatform() (string, error) {
-	switch runtime.GOOS + "/" + runtime.GOARCH {
-	case "linux/amd64":
-		return "linux64", nil
-	case "darwin/amd64":
-		return "mac-x64", nil
-	case "darwin/arm64":
-		return "mac-arm64", nil
-	case "windows/amd64":
-		return "win64", nil
-	default:
-		return "", fmt.Errorf("unsupported platform %s/%s — Chrome-for-Testing has no chrome-headless-shell build", runtime.GOOS, runtime.GOARCH)
-	}
-}
-
-// binaryPathFor is the canonical post-extraction path under
-// versionDir. The Chrome-for-Testing zips for chrome-headless-shell
-// always extract to a single subdirectory named after the platform.
-func binaryPathFor(versionDir, platform string) string {
-	bin := "chrome-headless-shell"
-	if platform == "win64" {
-		bin = "chrome-headless-shell.exe"
-	}
-	return filepath.Join(versionDir, "chrome-headless-shell-"+platform, bin)
-}
-
 // findHeadlessShell walks versionDir looking for the executable.
 // Used as a fallback when the canonical layout shifts (defensive —
 // has not been observed in practice as of Chrome 148).
 func findHeadlessShell(versionDir, platform string) (string, error) {
-	target := "chrome-headless-shell"
-	if platform == "win64" {
-		target = "chrome-headless-shell.exe"
-	}
+	target := headlessshell.BinaryName(platform)
 	var found string
 	err := filepath.Walk(versionDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -623,20 +593,4 @@ func assertHTTPS(rawURL string) error {
 		return fmt.Errorf("screenshot: refuse non-https url scheme %q", u.Scheme)
 	}
 	return nil
-}
-
-func isExecutable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	if info.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		// Trust filename + existence; Windows uses extension-based
-		// dispatch and the zip preserves the .exe.
-		return strings.HasSuffix(strings.ToLower(path), ".exe")
-	}
-	return info.Mode()&0o111 != 0
 }

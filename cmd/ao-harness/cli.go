@@ -274,6 +274,13 @@ func (e *env) progressf(format string, args ...any) {
 	e.printf(format, args...)
 }
 
+// warnf reports something that went wrong but did not fail the command.
+// Always stderr, in both formats: a warning must not corrupt a JSON
+// pipeline, and it must not be silently dropped either.
+func (e *env) warnf(format string, args ...any) {
+	fmt.Fprintf(e.stderr, "ao-harness: WARNING: "+format+"\n", args...)
+}
+
 // table writes aligned rows. Terse by design: a terminal reader wants
 // the columns that identify a row, and -o json carries everything else.
 func (e *env) table(header []string, rows [][]string) error {

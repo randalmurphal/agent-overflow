@@ -41,10 +41,11 @@ type command struct {
 func commands() []command {
 	return []command{
 		{name: "up", summary: "start a harness instance (detached) and print how to reach it", run: runUp},
-		{name: "down", summary: "stop an instance (SIGTERM, then kill after 5s)", run: runDown},
+		{name: "down", summary: "stop an instance (SIGTERM, then kill after 5s; --force for an orphaned pid)", run: runDown},
 		{name: "list", summary: "list known instances, pruning rows whose process is gone", run: runList},
 		{name: "info", summary: "identity, evidence paths and URL for one instance", run: runInfo},
 		{name: "open", summary: "print the instance URL (--browser opens it)", run: runOpen},
+		{name: "attach", summary: "host the instance page in a headless browser so ui/perf/bench work unattended", run: runAttach},
 		{name: "rpc", summary: "call any App or Harness method by name with JSON arguments", run: runRPC},
 		{name: "seed", summary: "apply a HarnessSeed spec (-f file, or - for stdin)", run: runSeed},
 		{name: "reset", summary: "wipe app state without rebooting", run: runReset},

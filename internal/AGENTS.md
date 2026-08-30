@@ -30,6 +30,7 @@ the package's whole documentation, so they carry more.
 | `discussion/` | Multi-agent deliberation coordination. (guide) |
 | `design/` | Design-mode workdir, watcher, diagnostics, MCP tool surface, HTTP file handler. (guide) |
 | `screenshot/` | Headless-Chromium full-page capture behind the design `read_screenshot` MCP tool. (guide) |
+| `headlessshell/` | The on-disk layout of the `chrome-headless-shell` cache: `Platform`, `BinaryPath`, `Executable`, and `Installed(configDir)` (newest already-downloaded version, never a download). Split out of `screenshot/` so `cmd/ao-harness attach` can find the same binary without linking chromedp. Stdlib only, no network; `screenshot`'s installer is the only writer. |
 | `attachment/` | Message attachment storage (metadata in store, bytes on disk). (guide) |
 | `settings/` | Persistent settings JSON with validation. (guide) |
 | `atomicfile/` | Crash-safe private state files (temp + fsync + rename, 0600/0700). (guide) |

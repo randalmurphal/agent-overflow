@@ -49,6 +49,11 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
 
 ## Layout
 
+- The cache's LAYOUT is `internal/headlessshell` (platform string,
+  version-dir binary path, executable check, `Installed`). This package
+  is its only writer; `cmd/ao-harness attach` reads it to host a harness
+  page headlessly, and must be able to do that without linking chromedp.
+  Move layout knowledge there, never back here.
 - `installer.go`: `Install(ctx)` resolves the Stable channel from the
   Chrome-for-Testing manifest and is cached idempotently across calls.
   Its `InstallProgress` events fire over `InstallEventName`, which

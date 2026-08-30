@@ -32,7 +32,15 @@ the process being judged. Anything else goes through an RPC.
 
 `open --browser` puts the RPC token on the browser's argv
 (`/proc/*/cmdline`) and in history. The default, printing the URL, does
-not.
+not. `attach` has the same exposure, for the same reason: the page URL
+is the authenticated one.
+
+Two sanctioned reads outside the "files the backend writes" rule, both
+of an executable path only: `attach` resolves a browser through
+`$AO_HARNESS_BROWSER`, then the `chrome-headless-shell` the app's
+design-mode installer cached under the `internal/appdirs` root
+(`internal/headlessshell`), then `exec.LookPath`. It never downloads —
+this binary has no network story and must not grow one.
 
 ## Rules this binary enforces
 
@@ -156,6 +164,27 @@ inherited the number. `up` applies the mirror image, refusing a root
 whose instance file names a live process and allowing a boot over a dead
 one.
 
+**`down --force` overrides exactly one of those refusals**: the data root
+claims NO instance (its file was deleted under a living process), so the
+row is UNCONFIRMED rather than CONTRADICTED. A root naming a different
+pid, a mismatched identity, a foreign namespace: still refused, forced or
+not, because there something else is claiming the root and the row is the
+thing that is wrong. Without the flag the refusal is unchanged.
+
+Force is not "kill the pid the file says". The pid has to look like ours
+on its own evidence before anything is signalled (`decideForcedStop`):
+same PID namespace, whatever birth marker and executable the ROW recorded
+(a mismatch means the pid was recycled and is refused however much the
+occupant resembles us), and a `/proc` name AND executable base name that
+both prefix-match `agent-overflow` — prefix because the kernel caps comm
+at 15 characters, both because comm follows the path handed to execve
+while `exe` is the file actually running, and a symlink named for us
+satisfies only one. Anything else refuses and NAMES what the pid actually
+is. A confirmed pid then takes the ordinary unauthenticated escalation
+(`TerminateProcessVerified`: TERM, then KILL, re-verifying the identity
+before each), and the row is pruned afterwards; a pid already gone is
+pruned with no signal at all.
+
 ## Guards worth keeping
 
 **`db` is read-only twice over, and harness-only.** The connection is
@@ -205,6 +234,41 @@ probes the bridge BEFORE it resets anything, so a caller who forgot the
 window gets their instance back untouched. `profile` and `bench --trace`
 instead need a Chromium DevTools endpoint and refuse with that stated:
 WebKitGTK serves no CDP at all.
+
+**`attach` is how a shell gets that page with nobody watching.** It
+spawns a headless Chromium on the instance URL, waits for the page to
+register and its bridge to answer, and only then reports success. Four
+rules it does not bend:
+
+- The page it waits for must be NEW. `PageMarker` names the BACKEND, not
+  one document, so a bare marker match is satisfied by any window
+  already open — an attach whose browser died on the spot reported
+  success against somebody else's page (found live 2026-08-30). The
+  registered page ids are snapshotted before the spawn and excluded
+  after it. Any future code that answers "is my page up" from
+  `HarnessInfo` needs the same before/after pair, not a marker alone.
+
+- A wait that runs out FAILS. The budget is `--timeout`, wall-clock, and
+  the browser group is killed before the error returns — a caller must
+  never be told "attached" about a page that is not there. The browser
+  exiting on its own is likewise a failure, foreground or not.
+- Teardown is `procutil`'s group kill, never `Process.Kill`. Chromium is
+  a process TREE; killing the parent leaves renderers holding the
+  profile. `--detach` gets `Setsid` (Windows: `CREATE_NEW_PROCESS_GROUP`
+  + `DETACHED_PROCESS`) on top of the same `ConfigureGroup` contract, so
+  it survives the CLI and is still reachable by one `kill -<pid>`. It is
+  spawned on `context.Background()` for that reason; `exec` refuses a
+  `Cancel` on a command not built by `CommandContext`.
+- The argv carries no rendering flags beyond what an unattended launch
+  needs. This page is what `perf` and `bench` MEASURE, so the
+  memory-shaving options `internal/screenshot` uses (`--no-zygote`,
+  `--in-process-gpu`) are deliberately absent. A headless-shell page is
+  still not a fidelity model of WebView2 or WebKitGTK — it is a bridge
+  host, and cross-engine numbers are not comparable.
+
+`--detach` leaves its browser profile in a temp directory, because that
+directory is the running browser's live state; the printed stop line
+names both. Only a failed or foreground attach cleans up.
 
 ## Anti-patterns
 
