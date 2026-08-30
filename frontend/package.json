@@ -32,7 +32,7 @@
     "@xterm/xterm": "6.0.0",
     "idiomorph": "^0.7.4",
     "katex": "0.18.4",
-    "mermaid": "11.16.1",
+    "mermaid": "11.17.2",
     "svelte": "5.56.8"
   },
   "devDependencies": {
