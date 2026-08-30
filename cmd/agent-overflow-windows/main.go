@@ -1155,7 +1155,12 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 		resp, err := client.Get(url)
 		if err == nil {
 			sawHTTPResponse = true
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+			// 64KB bounds a rogue server's response while leaving room
+			// for the real document: Bootstrap grew past 256 bytes once
+			// harness boots added pageMarker + store identity, and a cap
+			// below the document size truncates valid JSON — decode then
+			// fails on every boot (observed 2026-08-30, harness profile).
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				if err := validateBootstrapResponse(body, port, token); err != nil {
@@ -1178,7 +1183,7 @@ func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) 
 			// Server is reachable but rejected. Surface the response
 			// shape (status + first bytes of body) so a future
 			// regression in handleBootstrap shows up clearly.
-			log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body))
+			log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body[:min(len(body), 256)]))
 			return bootstrapHTTPError{StatusCode: resp.StatusCode, URL: redacted}
 		}
 		lastErr = err

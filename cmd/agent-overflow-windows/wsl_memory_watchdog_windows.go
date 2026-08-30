@@ -202,12 +202,20 @@ func runWSLMemoryProbeCommand(ctx context.Context, distro string, pid int, execu
 	var output cappedProbeOutput
 	output.limit = wslMemoryMaxOutput
 	cmd.Stdout = &output
+	// Capture stderr too: the script's diagnostics and wsl.exe's own
+	// error text both land there, and a probe failure STOPS THE BACKEND,
+	// so an error that swallows them turns a diagnosable kill into
+	// "exit status 1" (observed 2026-08-30).
+	var stderr cappedProbeOutput
+	stderr.limit = wslMemoryMaxOutput
+	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err != nil {
 		if output.overflow {
 			return wslBackendSample{}, errWSLMemoryProbeOutputLimit
 		}
-		return wslBackendSample{}, fmt.Errorf("wsl memory probe: %w", err)
+		return wslBackendSample{}, fmt.Errorf("wsl memory probe: %w (stdout: %q, stderr: %q)",
+			err, output.Bytes(), stderr.Bytes())
 	}
 	out := output.Bytes()
 	if len(out) > wslMemoryMaxOutput {
