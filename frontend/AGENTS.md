@@ -212,6 +212,22 @@ changes get a component test. Scroll behavior is covered in
 and the frame-level `scrollInterleavings.test.ts`) plus
 `components/chat/scroll.test.ts`.
 
+A globally suppressed engine warning is a defect-ledger entry, not a
+config setting. "ResizeObserver loop completed with undelivered
+notifications" was filtered out of the browser suite's error sink as
+benign noise, and it hid a user-visible stale-frame paint bug for the
+whole 2026-08-28 session: an undelivered notification means the
+observer's write slid past the frame it belonged to, which is precisely
+a row painting last frame's geometry. Suppress at the narrowest scope
+that unblocks the test, name the defect it stands for, and pair it with
+an assertion that the suppressed condition does not occur where it
+matters — never a suite-wide filter. The two real instances are
+documented at their sites: `MessageTimeline.svelte`'s
+`observeScrollSurfaceContentWidth` (ancestor resolved before row
+observers) and `TimelineVirtualizer.svelte`'s
+`deferNewRowObservationUntilNextFrame` (overscan rows registered next
+frame, outside the painted window).
+
 A stateful door gets a transition test, not just an on-state assertion.
 `test/helpers/transitions.ts` drives on→off→on, teardown twice, a second
 engagement, and teardown-mid-flight, comparing the state you name after
