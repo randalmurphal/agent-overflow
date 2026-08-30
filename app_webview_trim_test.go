@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 )
 
 // The trim RPC's four outcomes, and the one emission it is allowed to make.
@@ -107,7 +108,9 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 	t.Run("an open provider turn refuses the trim entirely", func(t *testing.T) {
 		app, emitted := newApp(t)
 
-		live := newSessionLiveness(time.Now())
+		// Aged past the recent-wire window: this subtest exercises the
+		// activeTurns arm alone.
+		live := newSessionLiveness(time.Now().Add(-time.Minute))
 		live.activeTurns.Add(1)
 		app.mu.Lock()
 		app.sessions["thread-1"] = session{liveness: live}
@@ -136,6 +139,83 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		}
 		if got := trimEmits(*emitted); got != 1 {
 			t.Fatalf("webview:trim emissions after the turn ended = %d, want 1", got)
+		}
+	})
+
+	t.Run("a Claude turn refuses the trim through triage round state", func(t *testing.T) {
+		// The 2026-08-27 live defect: Claude sessions never emit
+		// EventTurnStart, so the activeTurns counter is permanently zero
+		// for them and the old gate let every idle trim land mid-turn as
+		// a 60-130ms GC stall. The router's wire-round state is the
+		// provider-agnostic arm that must catch it.
+		app, emitted := newApp(t)
+		app.ensureTriageRouter()
+
+		thread := testThread("thread-trim-claude")
+		if err := app.store.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread() error = %v", err)
+		}
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind:      provider.EventTurnStart,
+			ThreadID:  thread.ID,
+			TurnID:    "turn-trim",
+			Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("turn start: %v", err)
+		}
+
+		outcome, err := app.RequestWebviewMemoryTrim(true)
+		if err != nil {
+			t.Fatalf("RequestWebviewMemoryTrim() error = %v", err)
+		}
+		if outcome != "skipped-active-turn" {
+			t.Fatalf("mid-round outcome = %q, want %q", outcome, "skipped-active-turn")
+		}
+		if got := trimEmits(*emitted); got != 0 {
+			t.Fatalf("webview:trim emissions mid-round = %d, want 0", got)
+		}
+
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind:         provider.EventTurnComplete,
+			ThreadID:     thread.ID,
+			TurnID:       "turn-trim",
+			TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
+			Timestamp:    time.Now(),
+		}); err != nil {
+			t.Fatalf("turn complete: %v", err)
+		}
+		if outcome, _ := app.RequestWebviewMemoryTrim(true); outcome != "requested" {
+			t.Fatalf("post-round outcome = %q, want %q", outcome, "requested")
+		}
+	})
+
+	t.Run("recent wire activity refuses the trim without any open turn", func(t *testing.T) {
+		// The sidechain tail: a backgrounded subagent keeps streaming
+		// after the parent round soft-closes. No turn-state predicate
+		// covers it; the lastActivity stamp does.
+		app, emitted := newApp(t)
+
+		live := newSessionLiveness(time.Now())
+		app.mu.Lock()
+		app.sessions["thread-1"] = session{liveness: live}
+		app.mu.Unlock()
+
+		outcome, err := app.RequestWebviewMemoryTrim(true)
+		if err != nil {
+			t.Fatalf("RequestWebviewMemoryTrim() error = %v", err)
+		}
+		if outcome != "skipped-active-turn" {
+			t.Fatalf("recent-wire outcome = %q, want %q", outcome, "skipped-active-turn")
+		}
+		if got := trimEmits(*emitted); got != 0 {
+			t.Fatalf("webview:trim emissions with recent wire = %d, want 0", got)
+		}
+
+		// Quiet wire past the window: the gate opens.
+		live.lastActivityUnixNano.Store(
+			time.Now().Add(-webviewTrimRecentWireWindow - time.Second).UnixNano())
+		if outcome, _ := app.RequestWebviewMemoryTrim(true); outcome != "requested" {
+			t.Fatalf("quiet-wire outcome = %q, want %q", outcome, "requested")
 		}
 	})
 }

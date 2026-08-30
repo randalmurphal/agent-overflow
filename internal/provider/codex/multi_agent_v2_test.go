@@ -1,7 +1,11 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -658,14 +662,17 @@ func TestMultiAgentV2RejectedQuarantineDoesNotCacheMetadata(t *testing.T) {
 	}
 }
 
-func TestCollabHistoryOwnershipsSupportV1AndV2(t *testing.T) {
-	response := json.RawMessage(`{
-		"thread":{"id":"root-provider-thread","turns":[{"items":[
-			{"id":"spawn-v1","type":"collabAgentToolCall","tool":"spawnAgent","receiverThreadIds":["child-v1"],"prompt":"inspect"},
-			{"id":"spawn-v2","type":"subAgentActivity","kind":"started","agentThreadId":"child-v2","agentPath":"/root/review"}
-		]}]}
-	}`)
-	ownerships, err := collabHistoryOwnerships(response)
+func TestCollabResumeOwnershipsSupportV1AndV2(t *testing.T) {
+	ownerships, err := collabResumeOwnerships([]ResumeCollabLaunch{
+		{
+			ItemID: "spawn-v1",
+			Meta:   json.RawMessage(`{"input":{"tool":"spawnAgent","receiverThreadIds":["child-v1"],"prompt":"inspect"}}`),
+		},
+		{
+			ItemID: "spawn-v2",
+			Meta:   json.RawMessage(`{"input":{"tool":"spawn_agent","receiverThreadIds":["child-v2"],"agentPath":"/root/review"}}`),
+		},
+	})
 	if err != nil {
 		t.Fatalf("parse history ownerships: %v", err)
 	}
@@ -680,43 +687,155 @@ func TestCollabHistoryOwnershipsSupportV1AndV2(t *testing.T) {
 	}
 }
 
+func TestCollabResumeOwnershipsKeepValidRowsWhenOneIsMalformed(t *testing.T) {
+	ownerships, err := collabResumeOwnerships([]ResumeCollabLaunch{
+		{ItemID: "broken", Meta: json.RawMessage(`{"input":`)},
+		{ItemID: "valid", Meta: json.RawMessage(`{"input":{"tool":"spawn_agent","receiverThreadIds":["child-valid"]}}`)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "broken") {
+		t.Fatalf("partial decode error = %v, want broken launch identity", err)
+	}
+	if len(ownerships) != 1 || ownerships[0].ParentItemID != "valid" || ownerships[0].ChildThreadID != "child-valid" {
+		t.Fatalf("valid ownerships = %+v", ownerships)
+	}
+}
+
+func TestCollabResumeOwnershipRecoveryHasNoTotalChildLimit(t *testing.T) {
+	s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
+	// Keep the test at the ownership boundary: a closed session suppresses the
+	// asynchronous metadata reads after every edge has been registered.
+	s.closing.Store(true)
+	const childCount = 300
+	launches := make([]ResumeCollabLaunch, 0, childCount)
+	for i := 0; i < childCount; i++ {
+		suffix := strconv.Itoa(i)
+		launches = append(launches, ResumeCollabLaunch{
+			ItemID: "spawn-" + suffix,
+			Meta:   json.RawMessage(`{"input":{"tool":"spawn_agent","receiverThreadIds":["child-` + suffix + `"]}}`),
+		})
+	}
+
+	s.rehydrateCollabOwnership(launches)
+	if got := len(s.collab.childParentByThread); got != childCount {
+		t.Fatalf("recovered child ownerships = %d, want all %d", got, childCount)
+	}
+}
+
+func TestReadCollabThreadSnapshotLoadsOnlyLatestTurnStatus(t *testing.T) {
+	capturePath := filepath.Join(t.TempDir(), "requests.jsonl")
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+		Binary: "sh",
+		Args: []string{"-c", `
+			while IFS= read -r line; do
+				printf '%s\n' "$line" >> "$CAPTURE_PATH"
+				id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+				if printf '%s' "$line" | grep -q '"method":"thread/read"'; then
+					printf '{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"child-a","status":{"type":"idle"}}}}\n' "$id"
+				elif printf '%s' "$line" | grep -q '"method":"thread/turns/list"'; then
+					printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[{"id":"turn-a","status":"completed","itemsView":"notLoaded"}]}}\n' "$id"
+				fi
+			done
+		`},
+		Env: map[string]string{"CAPTURE_PATH": capturePath},
+	})
+	if err != nil {
+		t.Fatalf("spawn snapshot server: %v", err)
+	}
+	s := &Session{
+		proc:    proc,
+		ctx:     ctx,
+		pending: make(map[int64]chan json.RawMessage),
+		cancel:  cancel,
+	}
+	go s.readLoop()
+	t.Cleanup(func() {
+		cancel()
+		_ = proc.Close()
+	})
+
+	snapshot, err := s.readCollabThreadSnapshot(context.Background(), "child-a")
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if snapshot != (collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "completed"}) {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read captured requests: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(captured)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("request count = %d, want metadata plus one turn-status page: %s", len(lines), captured)
+	}
+	var readRequest struct {
+		Method string `json:"method"`
+		Params struct {
+			IncludeTurns *bool `json:"includeTurns"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &readRequest); err != nil {
+		t.Fatalf("decode thread/read: %v", err)
+	}
+	if readRequest.Method != "thread/read" || readRequest.Params.IncludeTurns == nil || *readRequest.Params.IncludeTurns {
+		t.Fatalf("thread/read requested transcript turns: %s", lines[0])
+	}
+	var turnsRequest struct {
+		Method string `json:"method"`
+		Params struct {
+			Limit         int    `json:"limit"`
+			SortDirection string `json:"sortDirection"`
+			ItemsView     string `json:"itemsView"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &turnsRequest); err != nil {
+		t.Fatalf("decode thread/turns/list: %v", err)
+	}
+	if turnsRequest.Method != threadTurnsListMethod || turnsRequest.Params.Limit != 1 ||
+		turnsRequest.Params.SortDirection != "desc" || turnsRequest.Params.ItemsView != "notLoaded" {
+		t.Fatalf("latest-turn request was not minimal: %s", lines[1])
+	}
+}
+
 func TestCollabHistoryTerminalReconciliation(t *testing.T) {
 	tests := []struct {
 		name       string
-		response   json.RawMessage
+		snapshot   collabThreadSnapshot
 		wantStatus string
 	}{
 		{
 			name:       "completed idle child",
-			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+			snapshot:   collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "completed"},
 			wantStatus: "completed",
 		},
 		{
 			name:       "failed idle child",
-			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"failed"}]}}`),
+			snapshot:   collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "failed"},
 			wantStatus: "errored",
 		},
 		{
 			name:       "interrupted idle child",
-			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"interrupted"}]}}`),
+			snapshot:   collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "interrupted"},
 			wantStatus: "interrupted",
 		},
 		{
-			name:     "active child with previous completed turn",
-			response: json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"active"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+			name:     "active child",
+			snapshot: collabThreadSnapshot{ThreadID: "child-a", Status: "active"},
 		},
 		{
 			name:     "idle child with in-progress turn",
-			response: json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"inProgress"}]}}`),
+			snapshot: collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "inProgress"},
 		},
 		{
 			name:       "system error child",
-			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"systemError"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+			snapshot:   collabThreadSnapshot{ThreadID: "child-a", Status: "systemError"},
 			wantStatus: "errored",
 		},
 		{
 			name:       "not loaded child",
-			response:   json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"notLoaded"},"turns":[{"id":"turn-a","status":"completed"}]}}`),
+			snapshot:   collabThreadSnapshot{ThreadID: "child-a", Status: "notLoaded", LatestTurnStatus: "completed"},
 			wantStatus: "completed",
 		},
 	}
@@ -730,7 +849,7 @@ func TestCollabHistoryTerminalReconciliation(t *testing.T) {
 			_, err := s.reconcileCollabHistoryTerminal(collabHistoryJob{Ownership: collabHistoryOwnership{
 				ParentItemID:  "spawn-a",
 				ChildThreadID: "child-a",
-			}}, tt.response, 0)
+			}}, tt.snapshot, 0)
 			if err != nil {
 				t.Fatalf("reconcile terminal history: %v", err)
 			}
@@ -768,7 +887,7 @@ func TestCollabHistoryTerminalReconciliationRejectsStaleAndMismatchedSnapshots(t
 		ParentItemID:  "spawn-a",
 		ChildThreadID: "child-a",
 	}}
-	completed := json.RawMessage(`{"thread":{"id":"child-a","status":{"type":"idle"},"turns":[{"id":"turn-a","status":"completed"}]}}`)
+	completed := collabThreadSnapshot{ThreadID: "child-a", Status: "idle", LatestTurnStatus: "completed"}
 
 	revisionBeforeRead := s.childLifecycleRevisionForThread("child-a")
 	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/review", "spawn-a") {
@@ -783,7 +902,7 @@ func TestCollabHistoryTerminalReconciliationRejectsStaleAndMismatchedSnapshots(t
 		t.Fatalf("stale snapshot overwrote live lifecycle: %+v", events)
 	}
 
-	mismatched := json.RawMessage(`{"thread":{"id":"child-other","status":{"type":"idle"},"turns":[{"status":"completed"}]}}`)
+	mismatched := collabThreadSnapshot{ThreadID: "child-other", Status: "idle", LatestTurnStatus: "completed"}
 	if _, err := s.reconcileCollabHistoryTerminal(job, mismatched, s.childLifecycleRevisionForThread("child-a")); err == nil {
 		t.Fatal("accepted terminal history for a different child thread")
 	}

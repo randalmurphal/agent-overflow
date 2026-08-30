@@ -1,8 +1,8 @@
 # The soak rig
 
-A **soak** is a second, fully isolated copy of the real desktop app —
-real Windows launcher, real WebView2 window, real SPA, real Go backend
-inside WSL — left visible and untouched for hours while background
+A **soak** is a second, fully isolated copy of the real desktop app
+(real Windows launcher, real WebView2 window, real SPA, real Go backend
+inside WSL) left visible and untouched for hours while background
 activity streams over the WebSocket. It exists to reproduce the WebView2
 renderer hang: the host-side watchdog reported *"renderer ran no script
 for 20s"* on a window that was **visible on the main monitor, not
@@ -20,13 +20,13 @@ make soak-contract # verify scrollTop quantization + compositor ownership in Web
 ```
 
 A soak is a **preset**, not a mode. `make soak` is `make harness-wsl`
-— the Windows launcher shell of the [agent test
-harness](agent-harness.md) — plus `--autopilot`, the flag that arms the
+(the Windows launcher shell of the [agent test
+harness](agent-harness.md)) plus `--autopilot`, the flag that arms the
 scenario below. This document describes that preset on the Windows
 shell, which is the one that reproduces the WebView2 renderer hang. The
 same preset also runs behind a native Wails window (`make soak-window`,
 i.e. `--soak --autopilot --window`) on linux/macOS, with its own
-per-worktree data root and instance registry row — see
+per-worktree data root and instance registry row. See
 [agent-harness.md § Windowed mode](agent-harness.md#windowed-mode---window)
 and `docs/specs/testing-harness.md`. Everything below about provider
 isolation applies to both; the profile/launcher table is
@@ -39,16 +39,16 @@ Two independent isolations, one axis each.
 Two measurement caveats before drawing renderer conclusions from a
 Windows-shell run. First, `make soak` / `make harness-wsl` build the SPA
 with `--minify false` (the `launch-wsl` recipe is the dev-wsl one), so
-the renderer executes the unminified bundle — identifier names retained,
-larger script text; `import.meta.env.DEV` gates stay off, so behavior is
+the renderer executes the unminified bundle (identifier names retained,
+larger script text); `import.meta.env.DEV` gates stay off, so behavior is
 production, but byte-for-byte memory numbers are not. Second, if
 `FRONTEND_DEVSERVER_URL` is set in the launching shell, the backend
 proxies the Vite dev server (HMR WebSocket included) instead of serving
-the embedded bundle — a different renderer workload entirely; the boot
+the embedded bundle, a different renderer workload entirely; the boot
 log announces it loudly. Unset it for any run whose numbers matter.
 
 
-### Provider isolation — it is the harness's, not a copy of it
+### Provider isolation: it is the harness's, not a copy of it
 
 The soak backend boots through **`prepareHarness`** and
 **`newIsolatedProviderApp`** (`main_harness.go:118`), the same
@@ -78,13 +78,13 @@ dir, or if any of its directories is a symlink (`main_harness.go:215`,
 **No real `claude`/`codex` binary is reachable from a soak instance, and
 no real provider home is.**
 
-### Instance isolation — one profile axis, not three flags
+### Instance isolation: one profile axis, not three flags
 
 Everything the launcher owns per-instance derives from ONE value:
 `--profile soak` (or `AGENT_OVERFLOW_PROFILE=soak`), parsed in
 `cmd/agent-overflow-windows/flags.go:56` and folded with the build stamp
-by `appidentity.LauncherMode` (`internal/appidentity/profile.go:50`) —
-a soak launched from the dev build is `soak`, never `dev`.
+by `appidentity.LauncherMode` (`internal/appidentity/profile.go:50`).
+A soak launched from the dev build is `soak`, never `dev`.
 
 | collision point | normal instance | soak instance | anchor |
 | --- | --- | --- | --- |
@@ -99,7 +99,7 @@ a soak launched from the dev build is `soak`, never `dev`.
 | `wsl.json` writes | persisted | **refused** | `cmd/agent-overflow-windows/main.go:1010` |
 
 Why one axis and not three flags: a soak that shared *any single one* of
-these reaches into the developer's live instance — a shared
+these reaches into the developer's live instance. A shared
 single-instance id means the soak URL opens in **their** window; a
 shared WebView2 dir means shared localStorage and the same IndexedDB
 thread replica. The `harness` profile (`make harness-wsl`) is a third
@@ -111,8 +111,8 @@ rather than a silent fall back to the default instance
 (`appidentity.NormalizeProfile`).
 
 Debug is the soak's Wails log level because half the watchdog narrative
-— *"render watchdog armed"*, *"standing down"*, *"render recovery
-re-navigating"* — is logged at debug by the pinned wails fork. At the
+(*"render watchdog armed"*, *"standing down"*, *"render recovery
+re-navigating"*) is logged at debug by the pinned wails fork. At the
 default level an episode has a start line and no story.
 
 ## How the two halves meet
@@ -122,14 +122,14 @@ parameterised by `LAUNCH_PROFILE`): cross-compile the Linux backend and
 the Windows `.exe`, stage the exe to a versioned `%LOCALAPPDATA%` path,
 launch it through Windows. The soak leg adds two things:
 
-1. `make mockprovider`, then `cp bin/ao-mockprovider ~/.local/bin/` —
-   the WSL payload installs the backend at `~/.local/bin/agent-overflow`
+1. `make mockprovider`, then `cp bin/ao-mockprovider ~/.local/bin/`.
+   The WSL payload installs the backend at `~/.local/bin/agent-overflow`
    and `resolveMockProvider` looks *beside the running executable*
    (`main_harness.go:318`), so that is where the mock has to be.
 2. `--profile soak` on the launcher's argv, which becomes
    `--soak --autopilot --launcher-pid <pid>` on the WSL backend's argv
    (`profileBackendArgs`, `cmd/agent-overflow-windows/main.go`). These
-   ride argv rather than env vars deliberately — WSLENV passthrough is
+   ride argv rather than env vars deliberately: WSLENV passthrough is
    for diagnostics, and anything load-bearing across the WSL boundary
    belongs in explicit launch args.
 
@@ -143,7 +143,7 @@ Same isolation, different shell. `--harness` prints an `__AO_HARNESS__`
 line and expects a browser to be pointed at it; the launcher can only
 parse the ordinary `__AO_BOOTSTRAP__` `{port, token, clientId}` contract
 (`internal/wsllauncher`). `--soak` is that contract plus harness
-isolation — the launcher-owned wire name for the launcher-shell
+isolation: the launcher-owned wire name for the launcher-shell
 instance, historical and never typed by a user. What makes it a SOAK is
 `--autopilot`, which arms the steady state below; without it the same
 boot is the Windows harness, waiting to be driven. Nothing is
@@ -162,9 +162,9 @@ At boot + 3s (`soakArmDelay`, enough for the frontend to attach so the
 steady state includes streaming from the first frames rather than
 replayed history), `armSoakSteadyState` seeds and arms:
 
-- **Thread A — "Soak: idle thread"**: one completed short turn, then
+- **Thread A, "Soak: idle thread"**: one completed short turn, then
   nothing. This is the idle half of the incident's window.
-- **Thread B — "Soak: background agents"**: a live turn that launches
+- **Thread B, "Soak: background agents"**: a live turn that launches
   three async `local_agent` subagents and never completes.
 
 The script is the embedded library scenario
@@ -173,7 +173,7 @@ The script is the embedded library scenario
 1. The parent assistant message, then per agent *n* ∈ {1,2,3}: an
    `Agent` `tool_use`, a `system/task_started{task_type:"local_agent"}`,
    and the async `tool_result` ack (`isAsync`, `status:"async_launched"`,
-   `agentId`) — the real Claude background-subagent shape.
+   `agentId`), the real Claude background-subagent shape.
 2. An **unbounded `repeat`** whose body walks the three agents,
    `delayMs: 5000` apart, emitting a small burst each: subagent
    `message_start` → text deltas → a subagent tool_use/tool_result →
@@ -182,7 +182,7 @@ The script is the embedded library scenario
    `${ITER}`.
 
 So the cadence is **one burst per subagent per ~15s**, ~5s apart from
-each other — inside the brief's "a burst every 5–20s per subagent, small
+each other, inside the brief's "a burst every 5–20s per subagent, small
 payloads". The turn never emits `result`, so it stays live indefinitely
 and the working indicator keeps animating; that is the closest match to
 "activity streaming indefinitely", and it is the deliberate choice over
@@ -191,11 +191,11 @@ letting each turn end and restart.
 **Tuning without a rebuild**: drop an edited copy of the scenario at
 `~/.agent-overflow-soak/soak-scenario.json` and restart. It replaces the
 embedded one and is validated at boot (`installSoakScenario`,
-`main_soak.go:175`) — a bad edit fails in `launcher-soak.log`, not as
+`main_soak.go:175`). A bad edit fails in `launcher-soak.log`, not as
 frames that never arrive.
 
 **Tool ids must be unique across boots.** The soak data dir persists,
-and triage upserts tool rows by provider tool id — so a scenario whose
+and triage upserts tool rows by provider tool id, so a scenario whose
 `tool_use` ids are deterministic (`tu-burn-edit-${TURN}-${ITER}`
 restarting from 1) lands every "new" tool call on the PREVIOUS boot's
 completed row in an old turn. The symptom is a timeline streaming prose
@@ -213,7 +213,7 @@ where `count <= 0` means forever. Two rules keep it from being a foot-gun:
 
 - an unbounded repeat must contain a **pacing step** among its direct
   children (`delayMs > 0`, `stall`, `waitSignal`, `approval`, or an
-  `emit` with `delayBetweenMs > 0`) — validation rejects a hot loop;
+  `emit` with `delayBetweenMs > 0`), since validation rejects a hot loop;
 - the body runs **unreported**, so an infinite loop does not flood the
   mock control channel or the event bus with `step_started` reports.
 
@@ -228,13 +228,13 @@ only checker for a `make soak-window` instance. The Windows shell has
 its launcher-side view too:
 
 Teardown on this shell: `ao-harness down` stops the WSL backend, then
-closes the launcher window too — the backend publishes the launcher's
+closes the launcher window too. The backend publishes the launcher's
 Windows pid (`--launcher-pid`) in its discovery files, and `down`
 taskkills it over WSL interop after confirming the pid's image name is
 an agent-overflow launcher (`cmd/ao-harness/launcher_kill.go`). The
-launcher still deliberately does not exit when its child **crashes** —
-a launcher that vanished on backend death would take the window, and
-its evidence, with it — so a crashed run's window stays up for autopsy
+launcher still deliberately does not exit when its child **crashes**
+(a launcher that vanished on backend death would take the window, and
+its evidence, with it), so a crashed run's window stays up for autopsy
 until you close it or run `down`.
 
 `make soak-check` (`scripts/soak-check.sh`) is read-only. It resolves
@@ -244,11 +244,11 @@ launches; the `launcher: profile=soak` boot marker is the separator) and
 reports:
 
 - whether an `--autopilot` backend is alive in this distro (checked
-  WSL-side via argv — `--soak` alone would also match a harness-wsl
+  WSL-side via argv, since `--soak` alone would also match a harness-wsl
   instance, which is not a soak);
 - start time and uptime;
 - counts of `renderer ran no script`, `render recovery episode N
-  started` / `closed`, `rebuilding controller` — and an explicit warning
+  started` / `closed`, `rebuilding controller`, plus an explicit warning
   when an episode is open with no close, i.e. the renderer has not come
   back;
 - the last dozen watchdog lines, plus the full-history grep one-liner
@@ -257,7 +257,7 @@ reports:
 Chromium's own log (`webview2-soak\EBWebView\chrome_debug.log`) is
 opt-in as everywhere else: `AGENT_OVERFLOW_WEBVIEW_LOG=1 make soak`.
 Note the WebView2 console-window caveat in
-`cmd/agent-overflow-windows/AGENTS.md` — closing that console kills the
+`cmd/agent-overflow-windows/AGENTS.md`. Closing that console kills the
 app, which would end the soak.
 
 `make soak-contract` attaches to the soak WebView2 over its isolated CDP
@@ -273,12 +273,12 @@ timeline-scroller layers fail the probe. It changes no app state.
 store is empty and the live turn is re-armed on the *same* thread every
 boot, so ten restarts still leave two threads. If the data dir holds
 threads that the rig did not seed (you drove it by hand), it refuses to
-arm rather than sending a prompt into your work — delete
+arm rather than sending a prompt into your work. Delete
 `~/.agent-overflow-soak` to reseed.
 
 ## Related
 
-- [agent-harness.md](agent-harness.md) — the mocking machinery the soak
+- [agent-harness.md](agent-harness.md): the mocking machinery the soak
   reuses wholesale, and the `Harness` RPC surface a running soak exposes.
-- [`cmd/agent-overflow-windows/AGENTS.md`](../../cmd/agent-overflow-windows/AGENTS.md)
-  — launcher internals, log locations, WebView2 profile pinning.
+- [`cmd/agent-overflow-windows/AGENTS.md`](../../cmd/agent-overflow-windows/AGENTS.md):
+  launcher internals, log locations, WebView2 profile pinning.

@@ -53,6 +53,32 @@ func TestCallSendsMethodByNameWithPositionalParams(t *testing.T) {
 	}
 }
 
+func TestCheckCapabilitiesDecodesAndCachesTheHandshake(t *testing.T) {
+	backend := newFakeBackend(t)
+	var calls int
+	backend.handle = func(frame transport.ClientFrame) (json.RawMessage, *transport.FrameError) {
+		calls++
+		if frame.Method != "HarnessCapabilities" {
+			t.Fatalf("method = %q, want HarnessCapabilities", frame.Method)
+		}
+		return json.RawMessage(`{"protocolRevision":1,"methods":["HarnessSeed"],"meters":["frames"],"actions":["reload"],"queries":["viewport"],"workloads":["burst-stream"],"build":{"version":"test"},"assets":{"freshness":"match"}}`), nil
+	}
+	client := backend.dial(t)
+	caps, err := client.CheckCapabilities(testContext(t))
+	if err != nil {
+		t.Fatalf("CheckCapabilities: %v", err)
+	}
+	if caps.ProtocolRevision != 1 || len(caps.Methods) != 1 || caps.Build.Version != "test" {
+		t.Fatalf("capabilities = %#v", caps)
+	}
+	if _, err := client.CheckCapabilities(testContext(t)); err != nil {
+		t.Fatalf("cached CheckCapabilities: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("handshake calls = %d, want 1", calls)
+	}
+}
+
 func TestCallRawForwardsEncodedParamsVerbatim(t *testing.T) {
 	// The CLI's `rpc` verb takes JSON text off the command line. Encoding
 	// it a second time would turn an object into a string.

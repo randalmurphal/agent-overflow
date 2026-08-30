@@ -6,9 +6,9 @@ like, then merges any new entries into the running process's
 
 ## Why it exists
 
-When the binary is launched outside an interactive terminal — the
+When the binary is launched outside an interactive terminal (the
 WSL-side backend spawned by `wsl.exe -d <distro> -- <bin>`, a macOS
-`.app` double-clicked from Finder, a Linux desktop entry — the
+`.app` double-clicked from Finder, a Linux desktop entry), the
 inherited `$PATH` is the OS's minimal default, not the `$PATH` the
 user's shell rc files build. As a result `exec.LookPath("claude")`
 misses anything installed via:
@@ -17,7 +17,7 @@ misses anything installed via:
 - `asdf` (`~/.asdf/shims`)
 - `volta` (`~/.volta/bin`)
 - npm with custom prefix (`~/.npm-global/bin`)
-- user-local installs (`~/.local/bin` — the `pip --user` and the
+- user-local installs (`~/.local/bin`, the `pip --user` and the
   Anthropic Claude Code installer location on Linux)
 
 A startup probe that runs `<user-shell> -ilc 'printenv PATH'` and
@@ -37,26 +37,26 @@ That's it. The function:
    echo …'` with sentinel markers bracketing the value.
 3. Extracts the bracketed PATH from stdout (banners / MOTDs / etc.
    before/after are ignored).
-4. Merges the captured PATH with the inherited PATH — login-shell
+4. Merges the captured PATH with the inherited PATH: login-shell
    ordering wins, duplicates are dropped, empty entries are skipped.
 5. Calls `os.Setenv("PATH", merged)` if anything changed.
 
 Errors are best-effort. Any failure (no shell, shell exited non-zero,
 sentinel markers missing, etc.) returns an error but leaves PATH
-untouched. Callers log the error and proceed — provider detection
+untouched. Callers log the error and proceed. Provider detection
 will surface a "binary not found" status banner if PATH genuinely
 lacks the binary.
 
 ## Layout
 
-- `shellenv.go` — public `Sync` entry, no build tag (so callers
+- `shellenv.go`: public `Sync` entry, no build tag (so callers
   always link). Delegates to platform-specific `doSync`.
-- `shellenv_unix.go` (`!windows`) — implementation: shell candidate
+- `shellenv_unix.go` (`!windows`) is the implementation: shell candidate
   selection, the `-ilc` probe, sentinel parsing, PATH merging.
-- `shellenv_windows.go` (`windows`) — stub that returns nil. The
+- `shellenv_windows.go` (`windows`): stub that returns nil. The
   Windows `.exe` is the launcher in `cmd/agent-overflow-windows`; it
   never spawns provider children, so there's nothing to probe.
-- `shellenv_unix_test.go` (`!windows`) — pure-helper tests
+- `shellenv_unix_test.go` (`!windows`): pure-helper tests
   (`mergePath`, `extractPath`, `candidateShells`) plus a fake-shell
   fixture that exercises the full `probe` / `Sync` round-trip without
   depending on bash being installed or having nvm configured.
@@ -71,7 +71,7 @@ lacks the binary.
   is invisible.
 - `-c <script>` is how we deliver the probe.
 
-`bash`, `zsh`, `dash`, `ksh` all accept `-ilc`. `fish` does not — its
+`bash`, `zsh`, `dash`, `ksh` all accept `-ilc`. `fish` does not. Its
 short flags differ. A user with `SHELL=fish` will see the primary
 shell fail and the candidate loop fall through to `/bin/bash` (which
 in their setup probably doesn't have nvm, but at least it doesn't
@@ -110,8 +110,8 @@ namespacing convention there is `__T3CODE_*`, ours is `__AO_*`.
 
 ## References
 
-- `/Users/randy/repos/t3-code/apps/desktop/src/syncShellEnvironment.ts`
-  — reference implementation we're aligning with.
-- `internal/provider/detect.go` — the consumer most affected by this:
+- `/Users/randy/repos/t3-code/apps/desktop/src/syncShellEnvironment.ts`:
+  reference implementation we're aligning with.
+- `internal/provider/detect.go` is the consumer most affected by this:
   `DetectProvider` calls `exec.LookPath` against a settings-supplied
   binary name.

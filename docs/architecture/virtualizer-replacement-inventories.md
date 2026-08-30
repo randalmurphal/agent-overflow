@@ -1,14 +1,14 @@
-# Bespoke Timeline Virtualizer — Evidence Inventories
+# Bespoke Timeline Virtualizer: Evidence Inventories
 
 Companion to [virtualizer-replacement-plan.md](virtualizer-replacement-plan.md).
 Two investigations run 2026-07-02 on branch `virtualizer/bespoke-engine`
 (main at `90ba7f77`, the merged scroll re-architecture):
 
-- **Part A** — upstream `virtua` anatomy, from the source checkout at
-  `/home/rmurphy/repos/virtua`, tag `0.49.1` (commit `4d7002d`, MIT).
-- **Part B** — the exhaustive app-side touchpoint inventory: every prop,
-  handle call, patch seam, test, and DOM contract that the replacement
-  must satisfy, delete, or leave alone.
+- **Part A** covers upstream `virtua` anatomy, from the source checkout
+  at `/home/rmurphy/repos/virtua`, tag `0.49.1` (commit `4d7002d`, MIT).
+- **Part B** is the exhaustive app-side touchpoint inventory: every
+  prop, handle call, patch seam, test, and DOM contract that the
+  replacement must satisfy, delete, or leave alone.
 
 ## Validation notes (read before trusting either part)
 
@@ -20,8 +20,8 @@ and dispositions on their judgment calls:
    suffix sums so "tail mutations don't invalidate." The verified math
    says otherwise: `setItemSize` invalidates via
    `_computedOffsetIndex = min(index, watermark)` (cache.ts:51), i.e.
-   only offsets *after* the changed index. Tail mutations — the 60Hz
-   streaming path — therefore invalidate almost nothing today, and
+   only offsets *after* the changed index. Tail mutations (the 60Hz
+   streaming path) therefore invalidate almost nothing today, and
    appends are `push` + lazy extension. It is *head prepends* (rare,
    user-triggered load-older) that pay an O(window) memo rebuild, and
    the window is bounded (hundreds to low thousands of rows). Suffix
@@ -34,7 +34,7 @@ and dispositions on their judgment calls:
    to −1 when a cheaper `min()` bound is available.
 2. Part A's LOC counts, ACTION constants, `_frozenRange` mechanics, and
    the `ACTION_MANUAL_SCROLL = 7` non-export were re-verified against
-   the checkout — accurate.
+   the checkout and are accurate.
 3. Part B's "no other production mount" claim was re-verified:
    `shared/VirtualList.svelte` (homegrown fixed-height list) and
    `utils/diffSidebarVirtualizer.svelte.ts` (IntersectionObserver) exist
@@ -44,7 +44,7 @@ and dispositions on their judgment calls:
 
 ---
 
-# Part A — upstream virtua 0.49.1 anatomy
+# Part A: upstream virtua 0.49.1 anatomy
 
 Verified against `/home/rmurphy/repos/virtua` at tag `0.49.1` (commit
 `4d7002d`). LOC totals: **src/core = 3,198 total / 1,821 excluding
@@ -57,12 +57,12 @@ total / 784 excluding VList.ssr.spec.ts**.
 |---|---|---|
 | `src/core/cache.ts` | 234 | The size/offset model: parallel `_sizes[]` / `_offsets[]` arrays with lazily-extended memoized prefix sums, binary search (`findIndex`), range computation with locality hints (`computeRange`), median-based default-size estimation, length-change (append/prepend/remove) bookkeeping, snapshot take/restore. Pure functions over a plain object; imports only `types.js` + `utils.js`. |
 | `src/core/store.ts` | 477 | The state machine. `createVirtualStore` (store.ts:118) closes over cache + scroll state (`scrollOffset`, `jump`, `pendingJump`, `_flushedJump`, `_scrollDirection`, `_scrollMode`, `_frozenRange`, `_prevRange`, `isSSR`, `_isViewportMeasured`) and exposes read accessors, `_flushJump`, a bitflag pub/sub, and a single `$update(ACTION_*, payload)` reducer. All jump/compensation *decisions* live here; the DOM write does not. |
-| `src/core/scroller.ts` | 645 | DOM scroll side: `createScrollObserver` (scroll/wheel/touch listeners, 150 ms debounced scrollend, `_fixScrollJump` — the one internal scrollTop write), `createScrollScheduler` (async measure-converge loop behind scrollTo/scrollBy/scrollToIndex), `createScroller` (element scroller, the only one the app uses), plus `createWindowScroller` (419–586) and `createGridScroller` (600–645) — both irrelevant. |
-| `src/core/resizer.ts` | 293 | ResizeObserver plumbing: `createResizer` (46–89, the one used), plus window (100–155) and grid (160–293) variants — irrelevant. |
+| `src/core/scroller.ts` | 645 | DOM scroll side: `createScrollObserver` (scroll/wheel/touch listeners, 150 ms debounced scrollend, and `_fixScrollJump`, the one internal scrollTop write), `createScrollScheduler` (async measure-converge loop behind scrollTo/scrollBy/scrollToIndex), `createScroller` (element scroller, the only one the app uses), plus `createWindowScroller` (419–586) and `createGridScroller` (600–645), both irrelevant. |
+| `src/core/resizer.ts` | 293 | ResizeObserver plumbing: `createResizer` (46–89, the one used), plus window (100–155) and grid (160–293) variants, which are irrelevant. |
 | `src/core/environment.ts` | 45 | `isIOSWebKit()` UA/maxTouchPoints detection (29–38), `isSmoothScrollSupported`, multi-document `getCurrentWindow/Document` helpers (iframe-safe RO construction). |
 | `src/core/utils.ts` | 57 | `clamp`, `sort`, `microtask`, `createPromise` (deconstructed promise), `once`, `NULL = null` (minification aliases). |
 | `src/core/types.ts` | 44 | `ItemResize`, `ItemsRange`, `InternalCacheSnapshot` (`[sizes[], defaultSize]`), branded public `CacheSnapshot`, `ScrollToIndexOpts`. |
-| `src/core/index.ts` | 26 | Barrel; does **not** export `ACTION_MANUAL_SCROLL` — which is why the app's patch hardcodes the literal `7`. |
+| `src/core/index.ts` | 26 | Barrel; does **not** export `ACTION_MANUAL_SCROLL`, which is why the app's patch hardcodes the literal `7`. |
 | `src/svelte/Virtualizer.svelte` | 192 | The adapter: instantiates store/resizer/scroller, mirrors store into one `stateVersion` rune, derives range/indexes, renders keyed `ListItem`s, runs `$fixScrollJump` in a post-render `$effect`, exports the ~10 handle methods. |
 | `src/svelte/ListItem.svelte` | 62 | One absolutely-positioned row: `top: {offset}px`, registers itself with the resizer in an `$effect`, `visibility:hidden` while unmeasured. |
 | `src/svelte/Virtualizer.type.ts` | 136 | Props + `VirtualizerHandle` docs (the 10 handle methods). |
@@ -72,53 +72,54 @@ total / 784 excluding VList.ssr.spec.ts**.
 
 ## 2. The size/offset cache
 
-**Data structure** (cache.ts:14–22): a plain object of two parallel
-number arrays plus a dirty watermark —
+**Data structure** (cache.ts:14–22). A plain object of two parallel
+number arrays plus a dirty watermark:
 
-- `_sizes: number[]` — measured size per index, `UNCACHED = -1` sentinel
-  (cache.ts:9); reads fall back to `_defaultItemSize` (cache.ts:35–38).
-- `_offsets: number[]` — memoized prefix sums, valid only up to
+- `_sizes: number[]` holds the measured size per index, with an
+  `UNCACHED = -1` sentinel (cache.ts:9); reads fall back to
+  `_defaultItemSize` (cache.ts:35–38).
+- `_offsets: number[]` holds memoized prefix sums, valid only up to
   `_computedOffsetIndex`.
-- `_computedOffsetIndex` — watermark of how far the prefix sums are
-  valid; `-1` = nothing computed.
+- `_computedOffsetIndex` is the watermark of how far the prefix sums
+  are valid; `-1` = nothing computed.
 
 **Operations & complexity:**
 
-- `getItemSize` — O(1) (cache.ts:35).
-- `setItemSize` — O(1); invalidates by
+- `getItemSize` is O(1) (cache.ts:35).
+- `setItemSize` is O(1); invalidates by
   `_computedOffsetIndex = min(index, _computedOffsetIndex)`
   (cache.ts:43–53); returns whether it was the initial measurement.
-- `getItemOffset` — memoized prefix-sum extension: walks from the
+- `getItemOffset` is a memoized prefix-sum extension: walks from the
   watermark to the requested index, filling `_offsets` as it goes, then
   advances the watermark (cache.ts:58–82). Amortized O(1) for repeated
   nearby queries, O(n) worst-case after invalidation. Guards
   `_offsets[0] = 0` to avoid a NaN→infinite-rerender loop
   (cache.ts:67–72, PR #160).
-- `findIndex` — binary search over computed offsets with optional
+- `findIndex` is a binary search over computed offsets with optional
   `[low, high]` bounds (cache.ts:89–107). Each probe calls
   `getItemOffset`, so a cold cache pays one O(n) fill, then O(log n).
-- `computeRange` — locality-optimized: compares `prevStartIndex`'s
+- `computeRange` is locality-optimized: compares `prevStartIndex`'s
   offset to the target and searches only forward or only backward,
   reusing the found `end`/`start` as the bound for the second search
   (cache.ts:112–132). Also clamps `prevStartIndex` for shrunk lists
   (cache.ts:118–119).
-- `updateCacheLength` — append pushes `UNCACHED`; **prepend (isShift)
-  uses `unshift` in a loop** (cache.ts:24–30, called at cache.ts:221) —
-  O(n·k) for k prepended rows — and **discards the entire offset
-  memoization** (`_computedOffsetIndex = -1`, cache.ts:212–214).
+- `updateCacheLength`: append pushes `UNCACHED`. **Prepend (isShift)
+  uses `unshift` in a loop** (cache.ts:24–30, called at cache.ts:221),
+  which is O(n·k) for k prepended rows, and it **discards the entire
+  offset memoization** (`_computedOffsetIndex = -1`, cache.ts:212–214).
   Returns the signed size delta (estimated for `UNCACHED`) which
   becomes the scroll jump (cache.ts:222, 226–233).
-- `estimateDefaultItemSize` — median of all measured sizes
+- `estimateDefaultItemSize` is the median of all measured sizes
   (cache.ts:137–170). **Inactive in the app**:
   `shouldAutoEstimateItemSize` is `!itemSize` (Virtualizer.svelte:49)
   and the app passes `itemSize=56`.
-- `takeCacheSnapshot` — `[sizes.slice(), defaultSize]`
+- `takeCacheSnapshot` returns `[sizes.slice(), defaultSize]`
   (cache.ts:198–200); restore via `initCache` third arg with
   length-mismatch tolerance (cache.ts:182–188, issue #441).
 
 **Extractability: excellent.** Zero DOM dependency, imports only
 `types.js`/`utils.js`, and `cache.spec.ts` (1,348 LOC) tests it in
-isolation — the spec suite ports with it. On lift, fix the
+isolation, so the spec suite ports with it. On lift, fix the
 `unshift`-loop prepend and the full offset invalidation on shift (see
 validation note 1: stay top-anchored; make prepends one splice).
 
@@ -129,13 +130,13 @@ reducer, store.ts:255–475):
 
 | Action | Effect |
 |---|---|
-| `ACTION_SCROLL = 1` (store.ts:261–319) | New scroll offset from the DOM. Early-breaks on same offset **in native mode only** (262–265) — the early-break the app's patch defeats with a manual-mark. Computes `isJustJumped = flushedJump && distance < abs(flushedJump)+1` (267–277; +1 tolerates subpixel loss from integer scrollTop writes) to avoid latching a bogus direction from its own compensation write. Latches `_scrollDirection` from delta **only when `_scrollMode === SCROLL_BY_NATIVE`** (279–285) — the "unmarked programmatic write = user scroll" classification. Clears `isSSR` (299–301). Skips virtual-state update outside elastic-scroll bounds (306–317). `shouldSync = distance > viewportSize` (316). |
-| `ACTION_SCROLL_END = 2` (320–329) | Resets `_scrollDirection = SCROLL_IDLE`, `_scrollMode = SCROLL_BY_NATIVE`, `_frozenRange = null`, and flags the pendingJump flush. This is why `markProgrammaticScroll()` must be re-fired before *every* write — the mark dies at scrollend. |
-| `ACTION_ITEM_RESIZE = 3` (331–417) | Batch of `[index, size]`. Filters no-ops; computes a compensation jump via the `shouldKeep` matrix (343–377): keep-all under `SCROLL_BY_SHIFT`; keep-if-before-frozen-range under manual smooth scroll (#380/#758); otherwise keep if the item is fully above the visible start (not scrolling down, native — #385/#865) or above-start-and-not-spanning (868). Then writes sizes into the cache (381–390), optionally runs median estimation (393–406), `shouldSync = true` (416). |
+| `ACTION_SCROLL = 1` (store.ts:261–319) | New scroll offset from the DOM. Early-breaks on same offset **in native mode only** (262–265). This is the early-break the app's patch defeats with a manual-mark. Computes `isJustJumped = flushedJump && distance < abs(flushedJump)+1` (267–277; +1 tolerates subpixel loss from integer scrollTop writes) to avoid latching a bogus direction from its own compensation write. Latches `_scrollDirection` from delta **only when `_scrollMode === SCROLL_BY_NATIVE`** (279–285), the "unmarked programmatic write = user scroll" classification. Clears `isSSR` (299–301). Skips virtual-state update outside elastic-scroll bounds (306–317). `shouldSync = distance > viewportSize` (316). |
+| `ACTION_SCROLL_END = 2` (320–329) | Resets `_scrollDirection = SCROLL_IDLE`, `_scrollMode = SCROLL_BY_NATIVE`, `_frozenRange = null`, and flags the pendingJump flush. This is why `markProgrammaticScroll()` must be re-fired before *every* write. The mark dies at scrollend. |
+| `ACTION_ITEM_RESIZE = 3` (331–417) | Batch of `[index, size]`. Filters no-ops; computes a compensation jump via the `shouldKeep` matrix (343–377): keep-all under `SCROLL_BY_SHIFT`; keep-if-before-frozen-range under manual smooth scroll (#380/#758); otherwise keep if the item is fully above the visible start (not scrolling down, native, per #385/#865) or above-start-and-not-spanning (868). Then writes sizes into the cache (381–390), optionally runs median estimation (393–406), `shouldSync = true` (416). |
 | `ACTION_VIEWPORT_RESIZE = 4` (419–428) | Sets `viewportSize`; first ever measure sets `_isViewportMeasured` and forces sync. |
 | `ACTION_ITEMS_LENGTH_CHANGE = 5` (429–441) | `payload = [length, isShift]`. With shift: `applyJump(updateCacheLength(..., true))` and `_scrollMode = SCROLL_BY_SHIFT` (430–433). Without: just resize the cache. |
 | `ACTION_START_OFFSET_CHANGE = 6` (442–445) | Sets `startSpacerSize` (the `startMargin` prop). |
-| `ACTION_MANUAL_SCROLL = 7` (446–449) | Sets `_scrollMode = SCROLL_BY_MANUAL_SCROLL` — the entire body. This is what the app's `markProgrammaticScroll()` patch fires. Does **not** bump `stateVersion`. |
+| `ACTION_MANUAL_SCROLL = 7` (446–449) | Sets `_scrollMode = SCROLL_BY_MANUAL_SCROLL`, and that is the entire body. This is what the app's `markProgrammaticScroll()` patch fires. Does **not** bump `stateVersion`. |
 | `ACTION_BEFORE_MANUAL_SMOOTH_SCROLL = 8` (450–454) | Sets `_frozenRange` to the destination range so those rows pre-mount and pre-measure before a smooth scroll. App never uses smooth. |
 
 **Jump pipeline** (no `_flushDelayedJumps` symbol in 0.49.1; the pieces
@@ -152,24 +153,24 @@ are):
   `getItemOffset` and *added* into `getVisibleOffset` while pending
   (store.ts:149, 155) so geometry stays coherent before the flush.
 - **Frozen render**: while `_flushedJump` is set, `$getRange` returns
-  `_prevRange` verbatim (store.ts:201–204, issue #597) — render stays
+  `_prevRange` verbatim (store.ts:201–204, issue #597). Render stays
   frozen until the compensation write's scroll event arrives and clears
   it (267–268).
 
 **Direction tracking drives** (`SCROLL_IDLE/DOWN/UP`, store.ts:24–30):
 
-1. **Directional buffer drop** — `$getRange` (store.ts:210–219): when
+1. **Directional buffer drop** in `$getRange` (store.ts:210–219): when
    direction ≠ DOWN, extend `startOffset` backward by `bufferSize`;
    when ≠ UP, extend `endOffset` forward. A latched DOWN drops the
-   entire *backward* overscan — the source of the app's settle flicker
-   with unmarked writes.
+   entire *backward* overscan, which is the source of the app's settle
+   flicker with unmarked writes.
 2. iOS jump deferral (store.ts:170–177).
 3. `$isScrolling()` → `pointer-events: none` on the container
    (store.ts:239; Virtualizer.svelte:169).
 4. Scrollend gate for flushing pendingJump (store.ts:322–325).
 
 **150 ms timings** live in scroller.ts: the debounced synthetic
-scrollend (`debounce(..., 150)`, scroller.ts:76–88 — it *re-arms
+scrollend (`debounce(..., 150)`, scroller.ts:76–88, which *re-arms
 itself* while `wheeling || touching`), the wheel-continuation window
 `150 > timeDelta && 50 < timeDelta` (scroller.ts:118–127), and the
 measurement-wait cancel timer in the scroll scheduler
@@ -196,34 +197,34 @@ at scrollend (store.ts:327).
 (`UPDATE_VIRTUAL_STATE/SIZE/SCROLL/SCROLL_END`, store.ts:71–77); every
 mutating action bumps a wrapping int32 `stateVersion` and notifies
 matching subscribers with a `sync` hint (store.ts:457–474). The Svelte
-adapter ignores the sync hint entirely (Virtualizer.svelte:53–61) —
-the flushSync commentary is React-only.
+adapter ignores the sync hint entirely (Virtualizer.svelte:53–61).
+The flushSync commentary is React-only.
 
 ## 4. createResizer (resizer.ts:46–89)
 
-- **One ResizeObserver for everything** — viewport root and all rows
+- **One ResizeObserver for everything.** Viewport root and all rows
   share a single RO; constructed lazily on first `_observe` via
   `getCurrentWindow(getCurrentDocument(e)).ResizeObserver`
-  (resizer.ts:10–30) — lazy for SSR, window-scoped for iframes
+  (resizer.ts:10–30), lazy for SSR and window-scoped for iframes
   (Chromium bug 1491739).
 - Element→index mapping is a `WeakMap` (resizer.ts:52), written in
   `$observeItem` (79–85), which returns an unobserve closure.
-- **Entry batching**: the RO callback partitions entries in one pass —
-  the viewport entry dispatches `ACTION_VIEWPORT_RESIZE`, row entries
+- **Entry batching**: the RO callback partitions entries in one pass.
+  The viewport entry dispatches `ACTION_VIEWPORT_RESIZE`, row entries
   accumulate into one `ItemResize[]` dispatched as a single
   `ACTION_ITEM_RESIZE` (resizer.ts:54–73). One store mutation per RO
   flush.
 - **`display:none` guard**: entries whose target has no `offsetParent`
-  are skipped (resizer.ts:58) — zero-sized rects from hidden subtrees
-  would otherwise poison the cache.
+  are skipped (resizer.ts:58), because zero-sized rects from hidden
+  subtrees would otherwise poison the cache.
 - **No initial-measure skip**: the initial RO callback *is* the initial
   measurement; `setItemSize`'s return value distinguishes initial vs
-  re-measure (cache.ts:48). Uses `contentRect[sizeKey]` — content-box,
-  so row borders/margins are invisible to the cache.
+  re-measure (cache.ts:48). Uses `contentRect[sizeKey]`, which is
+  content-box, so row borders/margins are invisible to the cache.
 - **Worth stealing: essentially all of it.** ~45 LOC, correct, minimal.
-- Fragility note: `_unobserve` is `ro!.unobserve(e)` (resizer.ts:23–24)
-  — a non-null assertion that throws if item cleanup runs when the RO
-  was never constructed.
+- Fragility note: `_unobserve` is `ro!.unobserve(e)` (resizer.ts:23–24),
+  a non-null assertion that throws if item cleanup runs when the RO was
+  never constructed.
 
 ## 5. createScroller (scroller.ts:289–414)
 
@@ -231,14 +232,14 @@ the flushSync commentary is React-only.
   `scroll` listener stamps `lastScrollTime`, dispatches `ACTION_SCROLL`
   with the normalized offset, re-arms the debounced scrollend (90–103).
   `wheel` (passive) purely *infers* that scrolling is still in progress
-  when frame drops swallow scroll events — sets `wheeling` if a wheel
+  when frame drops swallow scroll events. It sets `wheeling` if a wheel
   arrives 50–150 ms after the last scroll event with nonzero delta on
   the scroll axis (107–130); the scrollend debounce refuses to fire
   while `wheeling || touching` (77–83). `touchstart`/`touchend`
   (passive) track finger state; on iOS WebKit, `touchend` sets
   `justTouchEnded` so the next scroll event marks
   `stillMomentumScrolling` (132–141, 93–95).
-- **The `$fixScrollJump` write site** — the exact code the app's
+- **The `$fixScrollJump` write site** is the exact code the app's
   `setScrollApplier` patch replaces: `_fixScrollJump`
   (scroller.ts:156–167) flushes the jump and calls
   `updateScrollOffset`, whose element-scroller implementation is
@@ -261,19 +262,19 @@ the flushSync commentary is React-only.
   these for per-frame pin writes and needed the patch.
 - **`scrollToIndex`** (377–409): clamps index, resolves `nearest` by
   comparing item bounds to the viewport (380–395), computes the target
-  as `offset + startSpacerSize + itemOffset + align adjustment` —
+  as `offset + startSpacerSize + itemOffset + align adjustment`,
   recomputed lazily via `getTargetOffset()` on each retry so it tracks
   re-measurements.
 - **RTL/negative offsets**: `normalizeScrollOffset` + `isNegative` from
-  computed `direction: rtl` (scroller.ts:42–54, 325–327) — dead weight
+  computed `direction: rtl` (scroller.ts:42–54, 325–327), dead weight
   for the app.
 
 ## 6. Top-anchored assumptions inventory (the parts a bottom-anchored engine does NOT port)
 
-1. **Prefix sums from index 0 downward** (cache.ts:67–82) —
+1. **Prefix sums from index 0 downward** (cache.ts:67–82) are
    coordinate-agnostic in principle; see validation note 1 (KEPT, with
    prepend-cost surgery only).
-2. **The entire jump-compensation pipeline** —
+2. **The entire jump-compensation pipeline**:
    `jump`/`pendingJump`/`_flushedJump`/`isJustJumped`/frozen render
    (store.ts:130–132, 168–182, 201–204, 243–247, 267–277, 460–463)
    plus the write site (scroller.ts:156–167, 348–357) exists solely
@@ -281,9 +282,9 @@ the flushSync commentary is React-only.
    a fixed scrollTop. This is what the `setScrollApplier` patch
    reroutes today and what the bespoke engine replaces with "emit a
    compensation observation; controller decides."
-3. **`shouldKeep` matrix** (store.ts:341–378) — every branch is "is
+3. **`shouldKeep` matrix** (store.ts:341–378): every branch is "is
    this item above the visible start?" geometry.
-4. **`shift` prepend machinery** — `SCROLL_BY_SHIFT` mode,
+4. **`shift` prepend machinery**: `SCROLL_BY_SHIFT` mode,
    unshift-based cache fill, full offset invalidation,
    keep-distance-from-end via jumps (cache.ts:24–30, 212–233;
    store.ts:344–350, 430–433; scroller.ts:162–166, 354–357).
@@ -296,26 +297,27 @@ the flushSync commentary is React-only.
 8. **Row positioning `top: offsetpx`** (ListItem.svelte:43–57) and
    **container `height: totalSize`** growing downward
    (Virtualizer.svelte:161–171). Note the RTL-horizontal path already
-   computes end-anchored offsets — `getItemOffset(index, fromEnd)` =
-   `totalSize − offset − size` (store.ts:154–160) — a tiny existing
-   proof that end-anchored positioning slots into the same cache.
-9. **`overflow-anchor: none`** (Virtualizer.svelte:164) — virtua must
+   computes end-anchored offsets, where `getItemOffset(index, fromEnd)`
+   = `totalSize − offset − size` (store.ts:154–160). That is a tiny
+   existing proof that end-anchored positioning slots into the same
+   cache.
+9. **`overflow-anchor: none`** (Virtualizer.svelte:164). Virtua must
    opt out of native scroll anchoring because its own compensation
    would fight it. The bespoke engine makes this decision deliberately
    (and keeps the opt-out: OUR controller is the anchor authority).
-10. **SSR freeze semantics** (§7) — seeded range `[0, ssrCount-1]` is
+10. **SSR freeze semantics** (§7): seeded range `[0, ssrCount-1]` is
     top-anchored ("first N items").
 
-## 7. ssrCount — exactly what it changes
+## 7. ssrCount: exactly what it changes
 
 1. `isSSR = !!ssrCount` (store.ts:125) and the initial range seed
    `_prevRange = [0, max(ssrCount-1, 0)]` (store.ts:136).
 2. `$getRange` returns that seeded `_prevRange` verbatim while
-   `!_isViewportMeasured || isSSR` (store.ts:192–198) — exactly the
+   `!_isViewportMeasured || isSSR` (store.ts:192–198), so exactly the
    first `ssrCount` items mount regardless of viewport size.
 3. `isSSR` is cleared in exactly one place: the first `ACTION_SCROLL`
    (store.ts:299–301). In happy-dom (no real layout, no scroll events)
-   the range stays frozen at `[0, ssrCount-1]` indefinitely — that
+   the range stays frozen at `[0, ssrCount-1]` indefinitely, and that
    determinism is why it works as a test harness knob.
 
 Svelte wart: the Svelte `ListItem` has no `_isSSR` handling, so
@@ -326,10 +328,10 @@ engine's test seam should be a first-class render-all mode instead.
 ## 8. Svelte adapter
 
 **Subscription / rerender granularity** (Virtualizer.svelte:44–96): the
-adapter collapses the whole store into **one** `$state` number —
-`stateVersion` — and derives `range`, `isScrolling`, `totalSize`,
+adapter collapses the whole store into **one** `$state` number
+(`stateVersion`) and derives `range`, `isScrolling`, `totalSize`,
 `indexes` off it. Per-item `offset`/`hide` are recomputed inline in the
-`#each` for every rendered index on every store mutation (186–187) —
+`#each` for every rendered index on every store mutation (186–187), a
 whole-window recompute, with Svelte's keyed-each + prop-equality
 diffing limiting DOM touches to rows whose values changed.
 
@@ -346,7 +348,7 @@ element attachment behind `tick().then(...)` (104–111, issues
 → `scroller.$dispose()`. Post-render `$effect` calls
 `scroller.$fixScrollJump()` once per version change (131–136).
 
-**Fragile spots (teardown TypeErrors) — the do-not-reproduce list:**
+**Fragile spots (teardown TypeErrors), the do-not-reproduce list:**
 
 1. **Unguarded `tick().then` mount race** (Virtualizer.svelte:105–111):
    no destroyed flag; unmount before the tick resolves →
@@ -359,31 +361,31 @@ element attachment behind `tick().then(...)` (104–111, issues
 3. **Scheduler leak on dispose**: `scroller.$dispose` never calls
    `cancelScroll` (scroller.ts:363–368); an in-flight measurement-wait
    loop with `viewportSize === 0` has no cancel timer and its
-   subscription was wiped — the promise never settles, pinning the
+   subscription was wiped. The promise never settles, pinning the
    closure forever.
 4. **`elementRef` non-null assumption** in ListItem's `$effect`
-   (ListItem.svelte:29, 37) — unchecked invariant.
+   (ListItem.svelte:29, 37), an unchecked invariant.
 
 ## 9. Steal-vs-skip verdict
 
 ### Lift near-verbatim (MIT, attribute to inokawa/virtua)
 
-- **`cache.ts` (234 LOC) + `cache.spec.ts` (1,348 LOC)** — the crown
+- **`cache.ts` (234 LOC) + `cache.spec.ts` (1,348 LOC)** is the crown
   jewel; coordinate-agnostic; port the spec suite with it. Surgery:
   one-splice prepend, cheaper shift invalidation (validation note 1).
 - **`createResizer` shape** (resizer.ts:10–89): lazy single RO, WeakMap
   indexing, one-batch dispatch, `offsetParent` guard. Change: emit
   measurement observations; mind content-box vs border-box.
-- **`environment.ts:29–38`** `isIOSWebKit()` — verbatim.
+- **`environment.ts:29–38`**: `isIOSWebKit()` verbatim.
 - **Style contracts**: `contain: size style` + `overflow-anchor:none` +
   `flex:none` on container; `contain: layout style` +
   `visibility:hidden`-until-measured on rows; `pointer-events:none`
   while scrolling (each line is a shipped bug fix, #775/#800).
 - **Scroll-observer edge-case kit** (scroller.ts:56–146): 150 ms
   self-re-arming scrollend debounce gated on `wheeling||touching`, the
-  50–150 ms wheel-continuation inference, passive listener set — lift
-  as *observations feeding the controller*, not behavior.
-- **`isJustJumped` ±1px subpixel tolerance** (store.ts:270–277) — any
+  50–150 ms wheel-continuation inference, passive listener set. Lift
+  these as *observations feeding the controller*, not behavior.
+- **`isJustJumped` ±1px subpixel tolerance** (store.ts:270–277). Any
   engine that ever compensates scrollTop needs this self-echo
   classifier.
 - **Store skeleton pattern** (monotonic int32 `stateVersion` + bitmask
@@ -392,24 +394,24 @@ element attachment behind `tick().then(...)` (104–111, issues
 ### Read for edge-case knowledge only
 
 - **`shouldKeep` matrix** (store.ts:341–378) with its issue
-  bibliography (#380, #385, #758, #865, #868) — the case taxonomy of
+  bibliography (#380, #385, #758, #865, #868): the case taxonomy of
   when resize compensation is owed.
-- **Scroll scheduler convergence loop** (scroller.ts:178–277) — how to
+- **Scroll scheduler convergence loop** (scroller.ts:178–277): how to
   scroll to an unmeasured target; corner cases #450, #590, #733, #750.
-- **iOS momentum overflow-hidden hack** + iOS jump deferral — desktop
+- **iOS momentum overflow-hidden hack** + iOS jump deferral. Desktop
   webview doesn't need them today; keep the reference.
 - **Elastic-scroll bounds guard** (store.ts:306–317) and
   shorter-than-viewport jump fallback (scroller.ts:162–166).
-- **`estimateDefaultItemSize`** — median approach, if flat-estimate
+- **`estimateDefaultItemSize`**: median approach, if flat-estimate
   ever goes adaptive.
-- **Svelte adapter teardown bugs** (§8) — the do-not-reproduce
+- **Svelte adapter teardown bugs** (§8): the do-not-reproduce
   checklist.
 
-### Skip — the top-anchored machinery being replaced
+### Skip: the top-anchored machinery being replaced
 
 The entire jump pipeline; `SCROLL_BY_SHIFT` + shift prepend; direction
 latch + directional buffer drop + native/manual `ScrollMode`
-classification (replace with explicit intent from the controller — it
+classification (replace with explicit intent from the controller, which
 already knows user-vs-programmatic); frozen range / smooth scroll;
 `startMargin`; RTL/horizontal; `keepMounted`; SSR freeze; window/grid
 scrollers and resizers; VList/WindowVirtualizer.
@@ -417,15 +419,15 @@ scrollers and resizers; VList/WindowVirtualizer.
 **Bottom line**: ~280 LOC of core (cache + resizer pattern + env
 detection + style contract) lifts nearly clean with its 1,300-line test
 suite; the scroll-observer timing heuristics and the `isJustJumped`
-predicate port as observation logic; everything else — roughly the
+predicate port as observation logic; everything else (roughly the
 whole of store.ts's mutation logic and scroller.ts's write paths, i.e.
-the machinery both patch hunks exist to subvert — is the top-anchored
+the machinery both patch hunks exist to subvert) is the top-anchored
 compensation engine the bespoke design deletes rather than
 re-implements.
 
 ---
 
-# Part B — app-side touchpoint inventory
+# Part B: app-side touchpoint inventory
 
 All paths relative to the repo root. Classification: **MIGRATES** (needs
 an equivalent on the new engine's handle/props), **DELETES** (exists
@@ -435,51 +437,53 @@ only because virtua is a second writer / opaque store), **STAYS**
 ## 1. Imports & package plumbing
 
 **Runtime imports (production):**
-- `frontend/src/lib/components/chat/MessageTimeline.svelte:3` —
-  `import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte'`
-  — the ONLY production value import. **MIGRATES.**
+- `frontend/src/lib/components/chat/MessageTimeline.svelte:3` has
+  `import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte'`,
+  the ONLY production value import. **MIGRATES.**
 
 **Type-only imports (production):**
-- `frontend/src/lib/utils/threadVirtuaSizeCache.ts:69` —
+- `frontend/src/lib/utils/threadVirtuaSizeCache.ts:69` has
   `import type { VirtualizerProps }` (derives `VirtuaCacheSnapshot`,
   line 75). **DELETES** (whole module replaced by live per-item
   priors).
-- `frontend/src/lib/components/chat/messageTimelineTrace.ts:6` —
+- `frontend/src/lib/components/chat/messageTimelineTrace.ts:6` has
   `import type { VirtualizerHandle }` (trace signature, line 37).
   **MIGRATES** (retype to new handle).
 
 **Test imports:**
-- `frontend/src/lib/components/chat/virtuaShiftCache.test.ts:24-27` —
-  `createVirtualStore, ACTION_ITEMS_LENGTH_CHANGE` from
+- `frontend/src/lib/components/chat/virtuaShiftCache.test.ts:24-27`
+  imports `createVirtualStore, ACTION_ITEMS_LENGTH_CHANGE` from
   `'virtua/unstable_core'`. **DELETES.**
 - `frontend/src/test/integration/virtua-patch-fixtures/VirtuaApplierHost.svelte:12,23`
-  and `VirtuaBufferRetentionHost.svelte:12,22` — real `Virtualizer` +
-  handle type. **DELETES.**
+  and `VirtuaBufferRetentionHost.svelte:12,22` use the real
+  `Virtualizer` + handle type. **DELETES.**
 - `frontend/src/lib/components/chat/messageTimelineVirtuaMarking.test.ts:16-18`
-  — `vi.mock('virtua/svelte', …)` → StubVirtualizer.
+  does `vi.mock('virtua/svelte', …)` → StubVirtualizer.
   **DELETES/rewrites** against new handle.
 
 **Manifests:**
-- `frontend/package.json:41` — `"virtua": "0.49.1"`. **DELETES.**
-- `frontend/pnpm-workspace.yaml:4` — `patchedDependencies`. **DELETES.**
-- `frontend/pnpm-lock.yaml` — lockfile entries + patch hash. **DELETES.**
+- `frontend/package.json:41` pins `"virtua": "0.49.1"`. **DELETES.**
+- `frontend/pnpm-workspace.yaml:4` lists `patchedDependencies`.
+  **DELETES.**
+- `frontend/pnpm-lock.yaml` holds lockfile entries + patch hash.
+  **DELETES.**
 - `frontend/patches/virtua@0.49.1.patch` (two logical hunks):
-  1. **manual-scroll marking** — exports `markProgrammaticScroll()` =
+  1. **manual-scroll marking** exports `markProgrammaticScroll()` =
      `store.$update(7)` so the controller's sync per-frame pin writes
      aren't classified as user scroll-downs (which latch a direction
      and drop the entire backward buffer).
-  2. **scroll-applier seam** — `setScrollApplier(fn)` routes
+  2. **scroll-applier seam**: `setScrollApplier(fn)` routes
      `$fixScrollJump`'s direct scrollTop write to an external applier
      (absolute target, raw `(jump, shift)`, synchronous; return true =
      you wrote, false = core pokes its own store at the current DOM
      offset so a decline never desyncs the model).
-  Both hunks **DELETE** — their *semantics* (single writer,
+  Both hunks **DELETE**, because their *semantics* (single writer,
   programmatic-vs-user classification, head-shift compensation) are
   exactly what the bespoke engine must provide natively.
 - **No hits** in `Makefile`, root `package.json`, scripts, or
   `frontend/vite.config.ts` / `frontend/vitest.config.ts`.
 
-## 2. Component usage — the single production mount
+## 2. Component usage: the single production mount
 
 `frontend/src/lib/components/chat/MessageTimeline.svelte:1966-2094`,
 inside `{#key pane.threadId}` (1965/2121) inside `contentEl` (1961).
@@ -487,7 +491,7 @@ inside `{#key pane.threadId}` (1965/2121) inside `contentEl` (1961).
 virtua references; `shared/VirtualList.svelte` is a homegrown
 fixed-height virtualizer (sidebar-scale lists) and
 `utils/diffSidebarVirtualizer.svelte.ts` is an IntersectionObserver
-file-level virtualizer — both unrelated (**STAY**). Only the two
+file-level virtualizer, both unrelated (**STAY**). Only the two
 browser-test fixtures mount additional Virtualizers.
 
 Props (line refs in MessageTimeline.svelte):
@@ -495,7 +499,7 @@ Props (line refs in MessageTimeline.svelte):
 | Prop | Line | Value / purpose | Classification |
 |---|---|---|---|
 | `bind:this={listRef}` | 1967 | imperative handle (`$state`, line 200) | MIGRATES |
-| `scrollRef={scrollEl}` | 1968 | external scroll container — MessageTimeline owns scrolling; virtua only measures | MIGRATES |
+| `scrollRef={scrollEl}` | 1968 | external scroll container (MessageTimeline owns scrolling; virtua only measures) | MIGRATES |
 | `data={revealedNodes}` | 1969 | reveal-gated grouped `TimelineNode[]` (derivation 261-294) | MIGRATES |
 | `cache={virtuaReplayCache}` | 1970 | measured-size snapshot, **consumed once at construction** (comments 203-211, 1954-1960) | DELETES (live priors) |
 | `shift={virtualizerShiftAtHead}` | 1971 | head-mutation hint = `pane.pendingTimelineShiftAtHead \|\| timelineWindowPruneShiftAtHead` (297-299) | MIGRATES (head-splice semantics) |
@@ -513,58 +517,58 @@ Not used anywhere: `horizontal`, `overscan`, `startMargin`,
 ## 3. Handle-method call sites (production), grouped by feature
 
 **Bottom-pin / restore:**
-- `MessageTimeline.svelte:464` — `scrollToIndex(lastIndex, {align:'end'})`
+- `MessageTimeline.svelte:464` calls `scrollToIndex(lastIndex, {align:'end'})`
   in `notifyHostLayoutSettled` (host-layout re-pin when sticky).
   **MIGRATES**
-- `:468` — `scrollTo(listRef.getScrollOffset())` — non-sticky
+- `:468` calls `scrollTo(listRef.getScrollOffset())` for the non-sticky
   host-layout reconcile: rewrites the SAME offset to force virtua to
   re-sync rendered range to host geometry. **DELETES** (virtua-model
   resync; new engine exposes an explicit "revalidate geometry" entry
   instead).
-- `:1518-1523, 1556-1624` — bottom restore path deliberately uses
+- `:1518-1523, 1556-1624`: the bottom restore path deliberately uses
   `forceStick()` NOT `scrollToIndex(end)` (two-writers oscillation,
   comment 1540-1544). **STAYS**
 
 **Timeline-window prune anchor transaction
 (`preserveTimelineWindowAnchor`, 472-599):**
-- `:487-493` — `captureTimelineAnchor(revealedNodes, currentListRef,
-  currentListRef.getScrollOffset(), {clampIndex:true})` — uses
+- `:487-493` calls `captureTimelineAnchor(revealedNodes, currentListRef,
+  currentListRef.getScrollOffset(), {clampIndex:true})`, which uses
   `TimelineGeometry` = `{findItemIndex(offset), getItemOffset(index)}`
   (`timelineScroll.ts:15-18,110-125`; anchor =
   `{itemId, offsetTop: getItemOffset(idx) - offset}`). **MIGRATES**
-- `:528` — `scrollToIndex(lastIndex, {align:'end'})` restore-bottom
+- `:528` calls `scrollToIndex(lastIndex, {align:'end'})` restore-bottom
   after prune. **MIGRATES**
-- `:541-544` — `scrollToIndex(idx, {align:'start',
+- `:541-544` calls `scrollToIndex(idx, {align:'start',
   offset:-anchor.offsetTop})` restore-anchor after prune. **MIGRATES**
 
 **Load-older / load-newer anchor math:**
-- Load-older (`:1718-1736`) does **no** handle call — position held
+- Load-older (`:1718-1736`) does **no** handle call. Position is held
   entirely by the `shift` prop (comment 1710-1717). **MIGRATES** as
   shift semantics.
-- `:1752` — manual Load-newer button: `scrollToIndex(lastIndex,
+- `:1752` is the manual Load-newer button: `scrollToIndex(lastIndex,
   {align:'end'})`. **MIGRATES**
 - Auto-load triggers: `:1158` `list.findItemIndex(offset)` (top zone),
-  `:1194` `list.findItemIndex(edge.bottomProbeOffset)` (bottom zone) —
-  deferred thunks behind cheap gates
+  `:1194` `list.findItemIndex(edge.bottomProbeOffset)` (bottom zone),
+  both deferred thunks behind cheap gates
   (`timelineScroll.ts:147-170,186-195`). **MIGRATES**
 
 **Scroll-to-item / search / restore-anchor:**
-- `:1699` — `scrollToIndex(idx, {align:'start', offset:-snap.offsetTop})`
+- `:1699` calls `scrollToIndex(idx, {align:'start', offset:-snap.offsetTop})`
   (thread-switch anchor restore).
-- `:1820` — `scrollToIndex(idx, {align:'center'})` (`scrollToItem`,
+- `:1820` calls `scrollToIndex(idx, {align:'center'})` (`scrollToItem`,
   driven by `pane.scrollToItemRequest` nonce effect 1825-1832;
   publisher: `MessageSearch.svelte:150-158`). **MIGRATES**
 
 **Snapshot persistence:**
-- `:1249` — `getScrollOffset()` + `:1253` `captureTimelineAnchor(...)`
-  in `saveScrollSnapshotForThread` (TypeError-swallowing teardown guard
-  1244-1264 — a virtua-specific "inner ref nulls mid-teardown" wart;
-  **DELETES** the guard, **MIGRATES** the capture).
+- `:1249` `getScrollOffset()` + `:1253` `captureTimelineAnchor(...)`
+  live in `saveScrollSnapshotForThread` (TypeError-swallowing teardown
+  guard 1244-1264, a virtua-specific "inner ref nulls mid-teardown"
+  wart; **DELETES** the guard, **MIGRATES** the capture).
 
 **Row-UI prune visible range (`currentVisibleTimelineRange`, :1027-1047):**
 - `:1036` `getViewportSize()`, `:1038` `getScrollOffset()`,
   `:1039-1040` `findItemIndex(offset)` / `findItemIndex(offset+viewport)`
-  — cached-geometry-only reads (explicit "no clientHeight forced
+  are cached-geometry-only reads (explicit "no clientHeight forced
   layout" rationale). Another TypeError teardown guard (1043-1046).
   **MIGRATES** (range query), guard **DELETES**.
 
@@ -573,25 +577,25 @@ Not used anywhere: `horizontal`, `overscan`, `startMargin`,
   **DELETES.**
 
 **Dev diagnostics:**
-- `:901-902` — `getScrollSize()` + `getCache()` in
+- `:901-902` calls `getScrollSize()` + `getCache()` in
   `captureTimelineGeometry` (pane geometry probe; reads `cache[0]` as
-  sizes array — coupled to virtua's opaque `[sizes[], estimate]`
+  sizes array, coupled to virtua's opaque `[sizes[], estimate]`
   shape). `utils/paneGeometryProbe.ts:57-89`. **MIGRATES in spirit**
   (new engine exposes per-index size introspection) / shape
   **DELETES**.
-- `messageTimelineTrace.ts:105-107` —
+- `messageTimelineTrace.ts:105-107` calls
   `getScrollOffset/getScrollSize/getViewportSize` in render trace.
   **MIGRATES** (rename).
 
 **Patch wiring:**
-- `:421` — `onBeforeScrollTopWrite: () => listRef?.markProgrammaticScroll()`.
+- `:421` sets `onBeforeScrollTopWrite: () => listRef?.markProgrammaticScroll()`.
   **DELETES.**
-- `:951-953` — `$effect(() => { listRef?.setScrollApplier(stick.applyVirtuaScrollCompensation); })`.
+- `:951-953` runs `$effect(() => { listRef?.setScrollApplier(stick.applyVirtuaScrollCompensation); })`.
   **DELETES** (see §5).
 
-## 4. The size-cache replay dance (all DELETES — replaced by live per-item priors)
+## 4. The size-cache replay dance (all DELETES: replaced by live per-item priors)
 
-1. **Store** — `frontend/src/lib/utils/threadVirtuaSizeCache.ts`:
+1. **Store** lives in `frontend/src/lib/utils/threadVirtuaSizeCache.ts`:
    `VirtuaCacheSnapshot` (75), key `{width, structureSig, expansionSig}`
    (78-82), `setThreadVirtuaSizeCache` (113, LRU re-insert),
    `getReplayableVirtuaCache` (129, exact-match-or-undefined + LRU
@@ -599,32 +603,32 @@ Not used anywhere: `horizontal`, `overscan`, `startMargin`,
    `MAX_ENTRIES = 50` (98). Header (1-67) documents why replay is safe
    (virtua 0.49.1's resize handler no-ops equal sizes) and the
    deliberately-unkeyed display-settings residual.
-2. **Key construction** — `MessageTimeline.svelte:1285-1291`
+2. **Key construction** happens in `MessageTimeline.svelte:1285-1291`
    `currentVirtuaSizeKey()`: `width = Math.round(scrollSurfaceContentWidth)`
    (fed only by the async RO in `scrollSurfaceWidth.ts` via effect
    695-704), `structureSig = timelineStructureSignature(revealedNodes)`
-   (`utils/timelineStructureSignature.ts` — positional encoding
+   (`utils/timelineStructureSignature.ts`, a positional encoding
    *because virtua's size cache is index-addressed*, line 29),
    `expansionSig = pane.expansionSignature()`
    (`stores/threadRowUiState.svelte.ts:52`).
-3. **Capture** — `maybePersistVirtuaSizeCache()` (:1315-1341): gated by
+3. **Capture** is `maybePersistVirtuaSizeCache()` (:1315-1341), gated by
    `restoredThreadId === threadId`,
    `getScrollSize() !== lastPersistedScrollSize` (:1298, reset on
    threadId edge :1354), TypeError teardown skip; then `getCache()` +
    `setThreadVirtuaSizeCache`. Triggers: co-located with every
    `saveScrollSnapshot()` (:1219-1230) **and** the isWarm rising-edge
    effect (:1373-1379, `lastWarmForCapture`, `untrack`ed).
-4. **Replay** — `virtuaReplayCache` `$state` (:209-210) resolved in
+4. **Replay** uses the `virtuaReplayCache` `$state` (:209-210), resolved in
    `$effect.pre` on the threadId edge only (:1350-1358,
    `virtuaReplayCacheThreadId` dedupe :210) *before* the
    `{#key pane.threadId}` remount, because `cache` is constructor-once;
    passed at :1970. Mismatch ⇒ `undefined` ⇒ flat 56px estimate.
-5. **Invalidation** — `stores/threads.svelte.ts:53` (thread delete),
+5. **Invalidation** happens at `stores/threads.svelte.ts:53` (thread delete),
    `stores/thread.svelte.ts:1776` (same-thread reswitch /
    revert-to-checkpoint), `:3260` (`removeItemById`), `:3294`
    (`removeItemsFromTurn`). Store-side note at
    `thread.svelte.ts:1748-1754`.
-6. **Consumers/tests** — `scroll.test.ts:203-325` (persist + ABA replay
+6. **Consumers/tests** are `scroll.test.ts:203-325` (persist + ABA replay
    + structureSig stability), `threadVirtuaSizeCache.test.ts`,
    `thread.svelte.test.ts:41-45`,
    `threadRowUiState.svelte.test.ts:802-804`,
@@ -634,40 +638,41 @@ Inputs the new priors system must reproduce: per-index measured heights
 valid under (width, node sequence + leaf content, expansion state);
 output consumed at mount to skip the estimate→measure cascade. The
 warm-up hide gate (`hideContentForWarmup`, :631-632) and
-`armWarmupWithReset` (:431-434) are the cascade-masking companions —
-**STAY** while any estimate-based mounting exists, otherwise shrink.
+`armWarmupWithReset` (:431-434) are the cascade-masking companions.
+They **STAY** while any estimate-based mounting exists, otherwise
+shrink.
 
 ## 5. Scroll-controller seams encoding virtua-specific behavior
 
 **The applier pipeline (DELETES as a virtua seam; re-lands as the
 engine's native compensation observation):**
-- `utils/scroll/index.svelte.ts:450-479` —
+- `utils/scroll/index.svelte.ts:450-479` defines
   `applyVirtuaScrollCompensation(target, jump, shift)`: builds
   `VirtuaCompensationObservation` `{target, jump, shift, scrollTop,
   bottomTarget: targetScrollTop(), clientHeight, widthReflowActive}`
   (:452-460), delegates to the pure resolver, applies via
   `writeScrollTop` (:477), returns false to decline (detached ⇒
   decline, :448-449). Exported :884.
-- `utils/scroll/resolver.ts:410-517` — `resolveVirtuaCompensation`.
+- `utils/scroll/resolver.ts:410-517` holds `resolveVirtuaCompensation`.
   Decision tiers (provenance at 422-453): ① `shift` verbatim write
   (:497); ② `!warm || !isAtBottom || escaped || paused` → write (:500);
-  ③ **anchor-redirect** — DOM already pinned && target moves
+  ③ **anchor-redirect**, where DOM already pinned && target moves
   meaningfully above bottom → write `bottomTarget` instead, caller
   `'virtua.anchorRedirect'` (:503-509, cold-switch flicker 8bf8b97f);
   ④ width-reflow window active → write (:510); ⑤ spring active &&
   |jump| ≤ clientHeight → **decline** (:513-514, mid-stream
   settle-flicker snap; decline is safe only because the patch pokes
   virtua's store); ⑥ default write (:516). Types (:466-491).
-- `utils/scroll/types.ts:18` — `ScrollWriteCaller` union includes
+- `utils/scroll/types.ts:18`: the `ScrollWriteCaller` union includes
   `VirtuaWriteCaller`; `:214-227` `applyVirtuaScrollCompensation` on
   the controller interface.
 - Tiers ①-④'s *outcomes* (head-shift anchors hold; reading-position
   stability; never paint a frame short of the bottom while pinned;
   width-reflow lands same-paint) become internal requirements of the
-  new engine — pinned by `compensationOutcome.browser.test.ts`.
+  new engine, pinned by `compensationOutcome.browser.test.ts`.
 
 **Programmatic-write marking:**
-- `utils/scroll/types.ts:270-298` — `onBeforeScrollTopWrite` option
+- `utils/scroll/types.ts:270-298` carries the `onBeforeScrollTopWrite`
   contract (must-not-throw, fires even on no-op writes, per-write
   because virtua clears the mark on scrollend). Invoked at the
   chokepoint `index.svelte.ts:293-296` immediately before the write
@@ -682,19 +687,19 @@ engine's native compensation observation):**
   `scrollTo`. Rule codified in `components/chat/AGENTS.md:21-24`.
   **MIGRATES if** the new engine's scroll-to-index writes through its
   own path; **DELETES if** scroll-to-index becomes a controller
-  primitive (preferred — then external-writer tagging has no remaining
-  consumer in chat).
+  primitive (preferred, because external-writer tagging then has no
+  remaining consumer in chat).
 
 **Host-layout retry ladder (MessageTimeline :436-470, adapter
 :601-617):**
-- `hostLayoutRetryToken`/`retryHostLayoutSettled` (:436-444) — retries
+- `hostLayoutRetryToken`/`retryHostLayoutSettled` (:436-444) retries
   `notifyHostLayoutSettled` up to 2 rAFs while `listRef` is unbound;
   then `runExternalScroll(preserveIntent)` doing
   sticky→`scrollToIndex(end)`+`markAtBottom`, else
   `scrollTo(getScrollOffset())` self-rewrite (:454-469).
   `paneScrollController.observe('host-layout')` routes here (:605-617;
   kind defined `utils/scroll/types.ts:35-50`, default instant re-pin
-  `index.svelte.ts:711-723`). Trigger: `PaneHost.svelte:133-165` —
+  `index.svelte.ts:711-723`). Trigger: `PaneHost.svelte:133-165`, a
   double-rAF after pane reorder (`paneOrderKey`), because insertBefore
   leaves "virtua's rendered range out of sync with the pane's
   scrollTop" (:136). **Ladder + offset-rewrite DELETE**; the *pane-move
@@ -707,106 +712,109 @@ engine's native compensation observation):**
   content-driven, **STAYS**.
 
 **Shift choreography (MIGRATES as head-splice semantics):**
-- `stores/thread.svelte.ts:490-507` — `pendingTimelineShiftAtHead`
-  contract; set/reset around loadOlder head-grow (:2863-2885) and
-  loadNewer tail-grow-then-head-prune split across two flushes
-  (:3077-3098) so one `shift` boolean can represent each mutation.
-- `MessageTimeline.svelte:295-299, 510-522` —
+- `stores/thread.svelte.ts:490-507` holds the
+  `pendingTimelineShiftAtHead` contract; set/reset around loadOlder
+  head-grow (:2863-2885) and loadNewer tail-grow-then-head-prune split
+  across two flushes (:3077-3098) so one `shift` boolean can represent
+  each mutation.
+- `MessageTimeline.svelte:295-299, 510-522` holds the
   `timelineWindowPruneShiftAtHead` one-flush mark, driven by
   `isPureKeyedHeadDrop` (`timelineScroll.ts:127-139`).
 
 **Other resolver/observer/intent tiers that exist because of virtua
 (mostly STAY but re-justify):**
-- `resolver.ts:291-297, 376-382` — overshoot guard / negative-delta
-  chase defense against "virtua applyJump mis-corrections" — **STAYS**
-  structurally (browser clamping is engine-independent); the virtua
-  branches can simplify.
-- `intent.ts:545-556` — the 1ms deferred scroll-classification gate —
-  **STAYS** (still needed for RO-correlated layout scrolls) with
+- `resolver.ts:291-297, 376-382` holds the overshoot guard /
+  negative-delta chase defense against "virtua applyJump
+  mis-corrections". It **STAYS** structurally (browser clamping is
+  engine-independent); the virtua branches can simplify.
+- `intent.ts:545-556` is the 1ms deferred scroll-classification gate.
+  It **STAYS** (still needed for RO-correlated layout scrolls) with
   reduced load.
-- `observers.ts:87-97` — `SETTLED_QUIET_MS`/`WARMUP_SETTLE_EPSILON_PX`
+- `observers.ts:87-97` has `SETTLED_QUIET_MS`/`WARMUP_SETTLE_EPSILON_PX`
   calibrated to the 56px estimate cascade; `:158` `widthReflowActive()`
-  is exported *as a virtua-compensation input* — the export **DELETES**
-  with the seam, the window itself **STAYS**.
-- `spring.ts:48-57, 454-457` — token/decline-tier commentary;
-  oscillationSnap (:348) motivated by virtua row-remount clamps —
+  is exported *as a virtua-compensation input*, so the export
+  **DELETES** with the seam while the window itself **STAYS**.
+- `spring.ts:48-57, 454-457` holds token/decline-tier commentary;
+  oscillationSnap (:348) is motivated by virtua row-remount clamps. The
   kinematics **STAY**.
-- `utils/springAnimationLatch.ts:15,32-35` — provenance comments only.
+- `utils/springAnimationLatch.ts:15,32-35` has provenance comments only.
   **STAYS.**
 
 ## 6. Test infrastructure
 
 **Virtua-coupled (DELETE or rewrite at cutover):**
-- `src/test/mocks/StubVirtualizer.svelte` — fakes the whole
+- `src/test/mocks/StubVirtualizer.svelte` fakes the whole
   `VirtualizerHandle` as zero/no-ops, renders all rows flat; records
   `markProgrammaticScroll` into `src/test/mocks/virtuaMarkRecorder.ts`.
-- `components/chat/messageTimelineVirtuaMarking.test.ts` — closes the
+- `components/chat/messageTimelineVirtuaMarking.test.ts` closes the
   onBeforeScrollTopWrite→handle seam via the stub.
-- `components/chat/virtuaShiftCache.test.ts` — drives the REAL
+- `components/chat/virtuaShiftCache.test.ts` drives the REAL
   `virtua/unstable_core` store to tripwire `shift` cache-unshift
   semantics (deliberately version-coupled, header 1-27). Replace with
   equivalent head-splice tests on the new engine's size store.
 - `src/test/integration/virtua-patch-buffer-retention.browser.test.ts`
-  + fixture — patch hunk 1 drop-rule guard.
+  + fixture is the patch hunk 1 drop-rule guard.
 - `src/test/integration/virtua-patch-scroll-applier.browser.test.ts`
-  + fixture — patch hunk 2 guard.
-- `MessageTimeline.svelte:166-176 + 1975` — the happy-dom `ssrCount`
-  render-all shim. **MIGRATES** — new engine needs the same render-all
-  test seam.
-- `scroll.test.ts` (44 mentions) — happy-dom integration against REAL
+  + fixture is the patch hunk 2 guard.
+- `MessageTimeline.svelte:166-176 + 1975` is the happy-dom `ssrCount`
+  render-all shim. **MIGRATES**, because the new engine needs the same
+  render-all test seam.
+- `scroll.test.ts` (44 mentions) is happy-dom integration against REAL
   virtua in render-all mode; size-cache persist/replay tests (:203-325)
   delete with the cache; most other tests assert controller/snapshot
   behavior and **survive** with comment updates.
 - `paneGeometryProbe.test.ts:30` (`virtuaScrollSize` field),
-  `thread.svelte.test.ts:41-45`,
-  `threadRowUiState.svelte.test.ts:802-804` — size-cache-adjacent,
+  `thread.svelte.test.ts:41-45`, and
+  `threadRowUiState.svelte.test.ts:802-804` are size-cache-adjacent,
   adjust with §4.
 
-**Engine-agnostic (STAY as-is — the cutover safety net):**
-- `components/chat/streamingOutcome.browser.test.ts` — outcome-only
+**Engine-agnostic (STAY as-is, the cutover safety net):**
+- `components/chat/streamingOutcome.browser.test.ts` is outcome-only
   (contracts C1/C9/C16), relative thresholds, no mechanism spies;
   explicitly written "so the suite survives every stage of the scroll
   rewrite". Unmount-batch counting works against any windowing engine.
-- `components/chat/remountReturn.browser.test.ts` — scroll-away/return
-  outcomes (no scrollHeight dips, no scrollTop reversals, bounded
-  unmount batches, clean landing).
-- `components/chat/compensationOutcome.browser.test.ts` — pins the
+- `components/chat/remountReturn.browser.test.ts` covers
+  scroll-away/return outcomes (no scrollHeight dips, no scrollTop
+  reversals, bounded unmount batches, clean landing).
+- `components/chat/compensationOutcome.browser.test.ts` pins the
   three above-viewport-growth outcomes (pinned tail never moves;
   reading anchor holds; huge correction snaps in one paint). Scenario
-  names virtua but assertions are pure outcome — this is the spec for
+  names virtua but assertions are pure outcome, so this is the spec for
   the new engine's internal compensation.
-- `components/chat/rowMarginContainment.browser.test.ts` — CSS
+- `components/chat/rowMarginContainment.browser.test.ts` is the CSS
   containment guard; the mounted stand-in hardcodes
-  `contain: layout style` as "virtua's item wrapper stand-in" — stays
-  if the new engine's item wrapper keeps `contain: layout`, else update
-  the stand-in.
-- `src/test/helpers/timelineBrowserHarness.ts` — real-Chromium harness;
-  virtua-aware waits (`:265`, `:273`, `:128` 150ms scrollend debounce
-  constant) need constant/name updates only.
+  `contain: layout style` as "virtua's item wrapper stand-in", which
+  stays if the new engine's item wrapper keeps `contain: layout`, else
+  update the stand-in.
+- `src/test/helpers/timelineBrowserHarness.ts` is the real-Chromium
+  harness; virtua-aware waits (`:265`, `:273`, `:128` 150ms scrollend
+  debounce constant) need constant/name updates only.
 - `components/chat/timelineScroll.test.ts`,
-  `utils/scroll/index.svelte.test.ts` (74 mentions — the
+  `utils/scroll/index.svelte.test.ts` (74 mentions, where the
   onBeforeScrollTopWrite hook-ordering tests delete),
-  `utils/scroll/resolver.test.ts` (35 mentions — the
+  `utils/scroll/resolver.test.ts` (35 mentions, where the
   `resolveVirtuaCompensation` matrix deletes/renames; the content-delta
   matrix stays).
-- `frontend/vitest.config.ts` — unit/browser project split (`:45-113`);
-  no virtua reference; **STAYS**. `src/test/setup.browser.ts:20,65-70`
-  clears the size cache per test — deletes with §4.
+- `frontend/vitest.config.ts` has the unit/browser project split
+  (`:45-113`); no virtua reference; **STAYS**.
+  `src/test/setup.browser.ts:20,65-70` clears the size cache per test
+  and deletes with §4.
 
-## 7. Row/DOM contracts the new engine must honor (verified — all STAY)
+## 7. Row/DOM contracts the new engine must honor (verified: all STAY)
 
-- **`[data-row-index]` wrapper** — `MessageTimeline.svelte:1995-1996`;
-  consumed by `paneGeometryProbe` (`:916`),
-  `timelineRowElementForIndex` (`timelineScroll.ts:95-100`), diagnostic
-  traces, and browser tests. Codified `components/chat/AGENTS.md:42-45`.
-- **`data-item-id` only on TimelineLeaf's root** —
+- **`[data-row-index]` wrapper** lives at
+  `MessageTimeline.svelte:1995-1996`; consumed by `paneGeometryProbe`
+  (`:916`), `timelineRowElementForIndex` (`timelineScroll.ts:95-100`),
+  diagnostic traces, and browser tests. Codified
+  `components/chat/AGENTS.md:42-45`.
+- **`data-item-id` only on TimelineLeaf's root**, at
   `TimelineLeaf.svelte:56`; structural rows deliberately unanchored.
-- **`data-row-geometry-content`** wrapper — `:2016`, paired with
+- **`data-row-geometry-content`** wrapper at `:2016`, paired with
   `frontend/src/app.css:341` `display: flow-root` (BFC contains
   trailing row margins; settle-flicker fix). The margin-divergence
   oracle `startVirtuaMarginDivergenceTrace`
   (`messageTimelineTrace.ts:189-241`, effect :992-995) watches the
-  `contain: layout` item wrapper vs the row — the *invariant* (measured
+  `contain: layout` item wrapper vs the row. The *invariant* (measured
   row total === row content box) transfers to whatever wrapper the new
   engine emits.
 - **scrollEl styles** (:1894-1908): `overflow-anchor: none` (:1899),
@@ -815,24 +823,25 @@ engine's native compensation observation):**
   rationale :1878-1890), composer-clearance
   `padding-bottom = var(--composer-height) + 16px` **on scrollEl not
   contentEl** (:1901), paint-only top fade mask (:1902-1903).
-- **contentEl** (:1961-1963) — the controller's content-RO target;
+- **contentEl** (:1961-1963) is the controller's content-RO target;
   `contentEl.scrollHeight` must equal the engine's totalSize exactly
   (comment :1949-1951; virtua achieves it via
   `contain: size; height: totalSize`). Warmup hides via `visibility`,
   not display (:1963).
-- **`{#key pane.threadId}` remount block** (:1965/2121) — resets engine
+- **`{#key pane.threadId}` remount block** (:1965/2121) resets engine
   row-size state per thread; MessageTimeline itself (and
-  scrollEl/contentEl) persist across switches — the restore/`armWarmup`
-  `$effect.pre` choreography (:1395-1474) depends on that split.
+  scrollEl/contentEl) persist across switches, and the
+  restore/`armWarmup` `$effect.pre` choreography (:1395-1474) depends
+  on that split.
 - **Row-shell stability rules** (AGENTS.md:46-56): stable outer shell
   after first render, row state in pane registries keyed by item id, no
   `smooth:true`, no `scrollIntoView`.
-- **pointer-events during scroll** — does **not** exist in the app
+- **pointer-events during scroll** does **not** exist in the app
   today (virtua applies it internally; verified no app-side toggling).
 
 ## 8. Everything else
 
-**Comment-only mentions** (no code dependency — update wording at
+**Comment-only mentions** (no code dependency, update wording at
 cutover): ~35 files, list captured 2026-07-02; notable stale item:
 `UserMessage.svelte:92-95` says "bufferSize=900" but the constant is
 1800px.
@@ -840,7 +849,7 @@ cutover): ~35 files, list captured 2026-07-02; notable stale item:
 **Docs referencing virtua** (rewrite at V3): frontend-scroll.md,
 scroll-contracts.md, scroll-rearchitecture-plan.md,
 scroll-rearchitecture-inventories.md (§A4 maps the minified core names
-for patch re-rolls — obsolete at V3), settle-flicker-analysis.md
+for patch re-rolls, obsolete at V3), settle-flicker-analysis.md
 (historical, annotate only), chat-rewrite.md,
 docs/specs/tool-call-ui-redesign/README.md, frontend/AGENTS.md (scroll
 section + Vendor Patches §virtua), components/chat/AGENTS.md,

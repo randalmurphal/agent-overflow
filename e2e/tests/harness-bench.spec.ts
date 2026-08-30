@@ -38,6 +38,7 @@ interface BenchAggregate {
 }
 
 interface BenchDocument {
+  status: 'running' | 'succeeded' | 'failed';
   workload: string;
   scenario?: string;
   repeat: number;
@@ -98,12 +99,19 @@ test('bench burst-stream drives a real turn and writes a report', async ({ harne
     expect(stdout).toContain('frames.fps');
 
     const files = (await readdir(outDir)).filter((name) => name.endsWith('.json'));
-    expect(files, 'the bench must write exactly one report').toHaveLength(1);
-    expect(files[0]!).toMatch(/^burst-stream-\d{8}-\d{6}\.json$/);
+    expect(files).toContain('burst-stream-checkpoint.json');
+    const reports = files.filter((name) => name !== 'burst-stream-checkpoint.json');
+    expect(reports, 'the bench must write exactly one final report').toHaveLength(1);
+    expect(reports[0]!).toMatch(/^burst-stream-\d{8}-\d{6}\.json$/);
 
     const document = JSON.parse(
-      await readFile(path.join(outDir, files[0]!), 'utf8'),
+      await readFile(path.join(outDir, reports[0]!), 'utf8'),
     ) as BenchDocument;
+    const checkpoint = JSON.parse(
+      await readFile(path.join(outDir, 'burst-stream-checkpoint.json'), 'utf8'),
+    ) as BenchDocument;
+    expect(checkpoint.status).toBe('succeeded');
+    expect(checkpoint.runs).toHaveLength(1);
     expect(document.workload).toBe('burst-stream');
     expect(document.scenario).toBe('bench-burst-stream');
     expect(document.repeat).toBe(1);

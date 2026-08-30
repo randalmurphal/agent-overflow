@@ -1,7 +1,7 @@
 // The replica's public surface: an IndexedDB copy of recently viewed
 // thread windows that paints before `SyncThreadWindow` answers and is
 // replaced by the page it returns
-// (docs/specs/thread-replica-sync.md §6).
+// (docs/architecture/thread-replica-sync.md §6).
 //
 // Three invariants live here rather than in the callers:
 //

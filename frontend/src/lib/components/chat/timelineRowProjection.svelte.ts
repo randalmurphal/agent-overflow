@@ -19,6 +19,7 @@ import type {
 import type { Item } from '../../types/models';
 import { formatElapsedSeconds } from '../../utils/format';
 import {
+  enforceUniqueTimelineNodeKeys,
   groupItemsBySubagent,
   sliceRevealedNodes,
   type TimelineNode,
@@ -126,13 +127,21 @@ export function createTimelineRowProjection(
     pane.activityRuns.revision;
     activityRunDefaultCollapsed();
     activityRunWindowRows();
-    return untrack(() =>
-      groupActivityRuns(nodes, {
+    return untrack(() => {
+      const runs = groupActivityRuns(nodes, {
         identity: pane.activityRuns,
         getItem: (id) => pane.getItemById(id),
         withheld,
-      }),
-    );
+      });
+      // Last thing before Svelte sees the projection. Every keyed block
+      // downstream (the virtualizer's root list, a run's `{#each}`, a
+      // card's body clip, a wait group's children) THROWS on a duplicate
+      // key, and a throw inside an update batch aborts the batch: the pane
+      // stops rendering and reads as frozen (incident 2026-08-29). The
+      // tripwire re-keys the collision and reports it instead.
+      enforceUniqueTimelineNodeKeys(runs);
+      return runs;
+    });
   });
   let codexReceiverLabels = $derived.by(() => {
     const provider = options.getPane().thread?.provider;

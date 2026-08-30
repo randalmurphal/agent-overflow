@@ -107,7 +107,7 @@ func TestAttachAndCallCorrelatesOutOfOrderReplies(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, target, err := Attach(ctx, fake.endpoint(), "http://127.0.0.1:4321/?token=other")
+	conn, target, err := Attach(ctx, fake.endpoint(), "http://127.0.0.1:4321/?token=t")
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestCallSurfacesProtocolErrors(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, _, err := Attach(ctx, fake.endpoint(), "")
+	conn, _, err := Attach(ctx, fake.endpoint(), "http://127.0.0.1:4321/?token=t")
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestSubscriptionFiltersAndDelivers(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, _, err := Attach(ctx, fake.endpoint(), "")
+	conn, _, err := Attach(ctx, fake.endpoint(), "http://127.0.0.1:4321/?token=t")
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestCallFailsWhenTheBrowserGoesAway(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	conn, _, err := Attach(ctx, fake.endpoint(), "")
+	conn, _, err := Attach(ctx, fake.endpoint(), "http://127.0.0.1:4321/?token=t")
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -222,6 +222,17 @@ func TestCallFailsWhenTheBrowserGoesAway(t *testing.T) {
 	defer sub.Close()
 	if _, err := sub.Wait(ctx); err == nil {
 		t.Fatal("a wait must not outlive the connection")
+	}
+}
+
+func TestAttachExplicitWSRefusesTargetMismatch(t *testing.T) {
+	fake := newFakeDevtools(t, func(*fakeSession, map[string]any) {})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	endpoint := Endpoint{WSURL: "ws" + strings.TrimPrefix(fake.server.URL, "http") + "/devtools/page/wrong"}
+	_, _, err := Attach(ctx, endpoint, "http://127.0.0.1:4321/?token=t")
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("Attach accepted a mismatched explicit page: %v", err)
 	}
 }
 

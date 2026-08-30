@@ -80,6 +80,7 @@ function getItemRegex(bull) {
 // tight pass, the loose re-tokenize, and the incremental-lex tail loosener
 // all route through it, so streamed and settled renders cannot disagree.
 const MARKER_LINE_HAS_CONTENT = /^[^\n]*\S/;
+const MULTIPLE_LINE_BREAKS = /\n.*\n/;
 // The marker line's leading run is fake indentation (alignment), so remove
 // exactly that much from every line — clamped per line, so a line indented
 // less than the first keeps its own column. The first line lands at column 0,
@@ -129,22 +130,28 @@ export function tokenizeListItemContent(lexer, item, top) {
     }
     item.tokens = tokens;
 }
-function finalizeList(list, lexer) {
+function finalizeListSource(list) {
     if (list.tokens.length === 0)
         return;
     // Trim trailing newline from last item
     const lastItem = list.tokens[list.tokens.length - 1];
     lastItem.raw = lastItem.raw.trimEnd();
-    lastItem.text = lastItem.text.trimEnd();
+    if (lastItem.text !== undefined)
+        lastItem.text = lastItem.text.trimEnd();
     list.raw = list.raw.trimEnd();
+}
+function finalizeList(list, lexer) {
+    finalizeListSource(list);
     // Handle child tokens
     for (const item of list.tokens) {
         tokenizeListItemContent(lexer, item, false);
         // A blank line inside a single item also makes the list loose
         if (!list.loose) {
-            const spaceTokens = item.tokens.filter((token) => token.type === 'space');
-            if (spaceTokens.length > 0 && spaceTokens.some((token) => /\n.*\n/.test(token.raw))) {
-                list.loose = true;
+            for (const token of item.tokens) {
+                if (token.type === 'space' && MULTIPLE_LINE_BREAKS.test(token.raw)) {
+                    list.loose = true;
+                    break;
+                }
             }
         }
     }
@@ -160,45 +167,88 @@ function finalizeList(list, lexer) {
 function escapeForRegex(s) {
     return s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
 }
-export const markedList = {
-    name: 'list',
-    level: 'block',
-    tokenizer(src) {
-        let cap = RULE_RE.exec(src);
-        if (!cap)
-            return undefined;
-        const bullet = cap[1].trim();
-        const isOrdered = bullet !== '*' && bullet !== '-' && bullet !== '+';
-        let bull;
-        let type = '';
-        let expectedValue = null;
-        // Detect list type (Roman, alphabetic, numeric)
-        if (isOrdered) {
-            if (ROMAN_UPPER_RE.test(bullet)) {
-                type = 'upper-roman';
-                bull = `${romanUpper}\\${bullet.slice(-1)}`;
-            }
-            else if (ROMAN_LOWER_RE.test(bullet)) {
-                type = 'lower-roman';
-                bull = `${romanLower}\\${bullet.slice(-1)}`;
-            }
-            else if (LOWER_ALPHA_RE.test(bullet)) {
-                type = 'lower-alpha';
-                bull = `[a-z]\\${bullet.slice(-1)}`;
-            }
-            else if (UPPER_ALPHA_RE.test(bullet)) {
-                type = 'upper-alpha';
-                bull = `[A-Z]\\${bullet.slice(-1)}`;
-            }
-            else {
-                type = 'decimal';
-                bull = `\\d{1,9}\\${bullet.slice(-1)}`;
-            }
+function firstLineOf(source) {
+    const newline = source.indexOf('\n');
+    return newline === -1 ? source : source.slice(0, newline);
+}
+function listMarkerMayStart(source) {
+    let index = 0;
+    while (index < source.length && index < 4 && source.charCodeAt(index) === 32)
+        index++;
+    if (index > 3 || index >= source.length)
+        return false;
+    const marker = source.charCodeAt(index);
+    if (marker === 42 || marker === 43 || marker === 45) {
+        const next = source.charCodeAt(index + 1);
+        return index + 1 === source.length || next === 9 || next === 10 || next === 32;
+    }
+    let end = index;
+    if (marker >= 48 && marker <= 57) {
+        while (end < source.length && end - index < 10) {
+            const code = source.charCodeAt(end);
+            if (code < 48 || code > 57)
+                break;
+            end++;
+        }
+    }
+    else if ((marker >= 65 && marker <= 90) || (marker >= 97 && marker <= 122)) {
+        while (end < source.length) {
+            const code = source.charCodeAt(end);
+            if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122)))
+                break;
+            end++;
+        }
+    }
+    else {
+        return false;
+    }
+    const punctuation = source.charCodeAt(end);
+    if (punctuation !== 41 && punctuation !== 46)
+        return false;
+    const next = source.charCodeAt(end + 1);
+    return end + 1 === source.length || next === 9 || next === 10 || next === 32;
+}
+export function parseListSource(src, options, sourceOnly = false) {
+    if (!listMarkerMayStart(src))
+        return undefined;
+    const originalSource = src;
+    let cap = RULE_RE.exec(src);
+    if (!cap)
+        return undefined;
+    const bullet = cap[1].trim();
+    const isOrdered = bullet !== '*' && bullet !== '-' && bullet !== '+';
+    let bull;
+    let type = '';
+    let expectedValue = null;
+    // Detect list type (Roman, alphabetic, numeric)
+    if (isOrdered) {
+        if (ROMAN_UPPER_RE.test(bullet)) {
+            type = 'upper-roman';
+            bull = `${romanUpper}\\${bullet.slice(-1)}`;
+        }
+        else if (ROMAN_LOWER_RE.test(bullet)) {
+            type = 'lower-roman';
+            bull = `${romanLower}\\${bullet.slice(-1)}`;
+        }
+        else if (LOWER_ALPHA_RE.test(bullet)) {
+            type = 'lower-alpha';
+            bull = `[a-z]\\${bullet.slice(-1)}`;
+        }
+        else if (UPPER_ALPHA_RE.test(bullet)) {
+            type = 'upper-alpha';
+            bull = `[A-Z]\\${bullet.slice(-1)}`;
         }
         else {
-            bull = this.lexer.options.pedantic ? escapeForRegex(bullet) : '[*+-]';
+            type = 'decimal';
+            bull = `\\d{1,9}\\${bullet.slice(-1)}`;
         }
-        const list = {
+    }
+    else {
+        bull = options.pedantic ? escapeForRegex(bullet) : '[*+-]';
+    }
+    const list = sourceOnly
+        ? null
+        : {
             type: 'list',
             raw: '',
             ordered: isOrdered,
@@ -207,140 +257,185 @@ export const markedList = {
             start: undefined, // Will be set when first item is processed
             tokens: []
         };
-        // Get next list item
-        // Updated regex to properly handle empty list items (space after bullet, then newline)
-        const itemRegex = getItemRegex(bull);
-        let endsWithBlankLine = false;
-        // Check if current bullet point can start a new List Item
-        while (src) {
-            let raw = '';
-            let itemContents = '';
-            let endEarly = false;
-            if (!(cap = itemRegex.exec(src)))
-                break;
-            raw = cap[0];
-            const bullet = cap[1].trim();
-            src = src.substring(raw.length);
-            const line = cap[2]
-                ? cap[2].split('\n', 1)[0].replace(/^\t+/, (t) => ' '.repeat(4 * t.length))
-                : '';
-            const nextLine = src.split('\n', 1)[0];
-            const blankLine = !line.trim();
-            let indent = 0;
-            if (this.lexer.options.pedantic) {
-                indent = 2;
+    // Get next list item
+    // Updated regex to properly handle empty list items (space after bullet, then newline)
+    const itemRegex = getItemRegex(bull);
+    let endsWithBlankLine = false;
+    let sourceOnlyConsumed = 0;
+    let sourceOnlyItems = 0;
+    let sourceOnlySealedLen = 0;
+    let sourceOnlyLastItemLen = 0;
+    // Check if current bullet point can start a new List Item
+    while (src) {
+        let raw = '';
+        let itemContents = '';
+        let endEarly = false;
+        if (!(cap = itemRegex.exec(src)))
+            break;
+        raw = cap[0];
+        const bullet = cap[1].trim();
+        src = src.substring(raw.length);
+        const line = cap[2]
+            ? cap[2].replace(/^\t+/, (t) => ' '.repeat(4 * t.length))
+            : '';
+        const nextLine = firstLineOf(src);
+        const blankLine = !line.trim();
+        let indent = 0;
+        if (options.pedantic) {
+            indent = 2;
+            if (!sourceOnly)
                 itemContents = line.trimStart();
-            }
-            else if (blankLine) {
-                indent = cap[1].length + 1;
-            }
-            else {
-                indent = cap[2].search(/[^ ]/); // Find first non-space char
-                indent = indent > 4 ? 1 : indent; // Treat indented code blocks (> 4 spaces) as having only 1 indent
+        }
+        else if (blankLine) {
+            indent = cap[1].length + 1;
+        }
+        else {
+            indent = cap[2].search(/[^ ]/); // Find first non-space char
+            indent = indent > 4 ? 1 : indent; // Treat indented code blocks (> 4 spaces) as having only 1 indent
+            if (!sourceOnly)
                 itemContents = line.slice(indent);
-                indent += cap[1].length;
-            }
-            if (blankLine && /^[ \t]*$/.test(nextLine)) {
-                // Items begin with at most one blank line
-                raw += nextLine + '\n';
-                src = src.substring(nextLine.length + 1);
-                endEarly = true;
-            }
-            if (!endEarly) {
-                const { nextBullet, hr, fences, heading, html } = LIST_BOUNDARY_TABLE[Math.min(3, indent - 1)];
-                let sawBlankLine = false;
-                // Check if following lines should be included in List Item
-                while (src) {
-                    const rawLine = src.split('\n', 1)[0];
-                    const nextLineWithoutTabs = rawLine.replace(/\t/g, '    ');
-                    const isBlankLine = !nextLineWithoutTabs.trim();
-                    const isIndented = nextLineWithoutTabs.search(/[^ ]/) >= indent;
-                    if (fences.test(nextLineWithoutTabs) ||
-                        heading.test(nextLineWithoutTabs) ||
-                        html.test(nextLineWithoutTabs) ||
-                        nextBullet.test(nextLineWithoutTabs) ||
-                        hr.test(nextLineWithoutTabs))
-                        break;
-                    // A blank line followed by a dedented non-bullet line ends the item:
-                    // that line starts a new top-level block (a bullet after a blank line
-                    // is a loose-list continuation and was already caught by nextBullet).
-                    if (sawBlankLine && !isBlankLine && !isIndented)
-                        break;
+            indent += cap[1].length;
+        }
+        if (blankLine && /^[ \t]*$/.test(nextLine)) {
+            // Items begin with at most one blank line
+            raw += nextLine + '\n';
+            src = src.substring(nextLine.length + 1);
+            endEarly = true;
+        }
+        if (!endEarly) {
+            const { nextBullet, hr, fences, heading, html } = LIST_BOUNDARY_TABLE[Math.min(3, indent - 1)];
+            let sawBlankLine = false;
+            // Check if following lines should be included in List Item
+            while (src) {
+                const rawLine = firstLineOf(src);
+                const nextLineWithoutTabs = rawLine.includes('\t')
+                    ? rawLine.replace(/\t/g, '    ')
+                    : rawLine;
+                const isBlankLine = !nextLineWithoutTabs.trim();
+                const isIndented = nextLineWithoutTabs.search(/[^ ]/) >= indent;
+                if (fences.test(nextLineWithoutTabs) ||
+                    heading.test(nextLineWithoutTabs) ||
+                    html.test(nextLineWithoutTabs) ||
+                    nextBullet.test(nextLineWithoutTabs) ||
+                    hr.test(nextLineWithoutTabs))
+                    break;
+                // A blank line followed by a dedented non-bullet line ends the item:
+                // that line starts a new top-level block (a bullet after a blank line
+                // is a loose-list continuation and was already caught by nextBullet).
+                if (sawBlankLine && !isBlankLine && !isIndented)
+                    break;
+                if (!sourceOnly) {
                     if (isIndented || isBlankLine) {
                         itemContents += '\n' + nextLineWithoutTabs.slice(indent);
                     }
                     else {
                         itemContents += '\n' + nextLineWithoutTabs;
                     }
-                    sawBlankLine = isBlankLine;
-                    raw += rawLine + '\n';
-                    src = src.substring(rawLine.length + 1);
                 }
+                sawBlankLine = isBlankLine;
+                raw += rawLine + '\n';
+                src = src.substring(rawLine.length + 1);
             }
-            if (!list.loose) {
-                // If the previous item ended with a blank line, the list is loose
-                if (endsWithBlankLine) {
-                    list.loose = true;
-                }
-                else if (/\n[ \t]*\n[ \t]*$/.test(raw)) {
-                    endsWithBlankLine = true;
-                }
-            }
-            let isTask = null;
-            let isChecked = false;
-            // Check for task list items
-            if (this.lexer.options.gfm) {
-                isTask = /^\[[ xX]] /.exec(itemContents);
-                if (isTask) {
-                    isChecked = isTask[0] !== '[ ] ';
-                    itemContents = itemContents.replace(/^\[[ xX]] +/, '');
-                }
-            }
-            let value = null;
-            if (!isOrdered) {
-                // Do nothing for unordered lists
-            }
-            else if (type === 'decimal') {
-                value = parseInt(bullet.slice(0, -1), 10);
-            }
-            else if (type === 'lower-alpha' || type === 'upper-alpha') {
-                value = letterToInt(bullet.slice(0, -1));
-            }
-            else if (type === 'lower-roman' || type === 'upper-roman') {
-                value = romanToInt(bullet.slice(0, -1));
-            }
-            // Handle expectedValue initialization and validation
-            let skipped = false;
-            if (isOrdered) {
-                if (expectedValue === null) {
-                    // First item: set expectedValue to this item's value (or 1 if parsing failed)
-                    expectedValue = value ?? 1;
-                    // Set the start property for ordered lists
-                    list.start = expectedValue;
-                }
-                else {
-                    // Subsequent items: check if value matches expected
-                    skipped = value !== null && value !== expectedValue;
-                    // Increment expectedValue for next item
-                    expectedValue += 1;
-                }
-            }
-            list.tokens.push({
-                type: 'list_item',
-                raw,
-                task: !!isTask,
-                checked: isChecked,
-                loose: false,
-                text: itemContents,
-                value,
-                skipped,
-                tokens: []
-            });
-            list.raw += raw;
         }
-        if (list.tokens.length === 0)
+        if (!sourceOnly && !list.loose) {
+            // If the previous item ended with a blank line, the list is loose
+            if (endsWithBlankLine) {
+                list.loose = true;
+            }
+            else if (/\n[ \t]*\n[ \t]*$/.test(raw)) {
+                endsWithBlankLine = true;
+            }
+        }
+        if (sourceOnly) {
+            if (sourceOnlyItems > 0)
+                sourceOnlySealedLen += sourceOnlyLastItemLen;
+            sourceOnlyLastItemLen = raw.length;
+            sourceOnlyConsumed += raw.length;
+            sourceOnlyItems++;
+            continue;
+        }
+        let isTask = null;
+        let isChecked = false;
+        // Check for task list items
+        if (options.gfm) {
+            isTask = /^\[[ xX]] /.exec(itemContents);
+            if (isTask) {
+                isChecked = isTask[0] !== '[ ] ';
+                itemContents = itemContents.replace(/^\[[ xX]] +/, '');
+            }
+        }
+        let value = null;
+        if (!isOrdered) {
+            // Do nothing for unordered lists
+        }
+        else if (type === 'decimal') {
+            value = parseInt(bullet.slice(0, -1), 10);
+        }
+        else if (type === 'lower-alpha' || type === 'upper-alpha') {
+            value = letterToInt(bullet.slice(0, -1));
+        }
+        else if (type === 'lower-roman' || type === 'upper-roman') {
+            value = romanToInt(bullet.slice(0, -1));
+        }
+        // Handle expectedValue initialization and validation
+        let skipped = false;
+        if (isOrdered) {
+            if (expectedValue === null) {
+                // First item: set expectedValue to this item's value (or 1 if parsing failed)
+                expectedValue = value ?? 1;
+                // Set the start property for ordered lists
+                list.start = expectedValue;
+            }
+            else {
+                // Subsequent items: check if value matches expected
+                skipped = value !== null && value !== expectedValue;
+                // Increment expectedValue for next item
+                expectedValue += 1;
+            }
+        }
+        list.tokens.push({
+            type: 'list_item',
+            raw,
+            task: !!isTask,
+            checked: isChecked,
+            loose: false,
+            text: itemContents,
+            value,
+            skipped,
+            tokens: []
+        });
+        list.raw += raw;
+    }
+    if (sourceOnly) {
+        if (sourceOnlyItems === 0)
             return undefined;
-        // Finalize the list
+        return {
+            type: 'list',
+            raw: originalSource.slice(0, sourceOnlyConsumed).trimEnd(),
+            sealedLen: sourceOnlySealedLen
+        };
+    }
+    if (list.tokens.length === 0)
+        return undefined;
+    return list;
+}
+export const markedListBlock = {
+    name: 'list',
+    level: 'block',
+    tokenizer(src) {
+        const list = parseListSource(src, this.lexer.options, true);
+        if (!list)
+            return undefined;
+        return list;
+    }
+};
+export const markedList = {
+    name: 'list',
+    level: 'block',
+    tokenizer(src) {
+        const list = parseListSource(src, this.lexer.options);
+        if (!list)
+            return undefined;
         finalizeList(list, this.lexer);
         return list;
     }

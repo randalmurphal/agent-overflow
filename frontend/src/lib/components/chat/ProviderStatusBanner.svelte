@@ -229,13 +229,13 @@
       role="alert"
       aria-live="polite"
       data-testid="provider-status-banner"
-      data-status={providerStatus.status}
+      data-status={providerStatus?.status}
       class="border-b {providerBannerClasses} px-4 py-2 flex items-center gap-2"
     >
       <p class="text-xs flex-1 line-clamp-2" title={providerBannerMessage}>
         {providerBannerMessage}
       </p>
-      {#if providerStatus.status === 'not_found'}
+      {#if providerStatus?.status === 'not_found'}
         <button
           onclick={handleRecheckBinary}
           disabled={rechecking}
@@ -245,7 +245,7 @@
           {rechecking ? 'Checking…' : 'Recheck'}
         </button>
       {/if}
-      {#if providerStatus.actionable && primaryActionLabel}
+      {#if providerStatus?.actionable && primaryActionLabel}
         <button
           onclick={handlePrimaryAction}
           disabled={rechecking}

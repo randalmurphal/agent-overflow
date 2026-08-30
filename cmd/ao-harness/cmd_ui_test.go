@@ -2,11 +2,21 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestUIQueryErrorNamesHowToAttachAPage(t *testing.T) {
+	err := uiQueryError(errors.New("harness ui query timed out: no frontend attached or harness bridge inactive"))
+	for _, want := range []string{"make harness-window", "ao-harness open"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err, want)
+		}
+	}
+}
 
 // The snapshot FILE is the other half of `ui diff`: one side of every
 // comparison comes off disk, and nothing rewrites it when the app is

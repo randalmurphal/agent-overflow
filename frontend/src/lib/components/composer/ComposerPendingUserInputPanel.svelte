@@ -23,6 +23,7 @@
     toggleOptionAnswer,
     type UserInputAnswers,
   } from './pendingUserInput';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
 
   interface Props {
     request: UserInputRequest;
@@ -74,6 +75,14 @@
   // list in a single column — the preview field is silently ignored.
   const hasPreviews = $derived(
     !!question && !question.multiSelect && (question.options?.some((option) => option.preview?.trim()) ?? false),
+  );
+
+  // Option labels are MODEL-authored, so two options can carry the same
+  // one. Keyed straight into the `{#each}` blocks below that throws
+  // `each_key_duplicate`, which aborts the update flush and freezes the
+  // pane this panel is anchored in (utils/uniqueEachKeys.ts).
+  const optionKeys = $derived(
+    uniqueEachKeys(question?.options ?? [], (option) => option.label),
   );
 
   $effect(() => {
@@ -410,7 +419,7 @@
              height and every button grows with the preview. Buttons keep
              their natural height and pack to the top. -->
         <div class="grid content-start gap-1.5">
-          {#each question.options as option, optionIndex (option.label)}
+          {#each question.options as option, optionIndex (optionKeys[optionIndex] ?? optionIndex)}
             {@const selected = selectedAnswers(answers, question).includes(option.label)}
             <UserInputOptionButton
               label={option.label}
@@ -448,7 +457,7 @@
           class="grid rounded border border-border-subtle bg-surface-0 px-2.5 py-1.5"
           data-testid="user-input-preview"
         >
-          {#each question.options as option, previewIndex (option.label)}
+          {#each question.options as option, previewIndex (optionKeys[previewIndex] ?? previewIndex)}
             {@const active = previewIndex === focusedOptionIndex}
             <div
               class="col-start-1 row-start-1 min-w-0 max-h-60 overflow-y-auto {active ? '' : 'invisible'}"
@@ -466,7 +475,7 @@
       </div>
     {:else}
       <div class="mt-3 grid gap-1.5" data-testid="user-input-options">
-        {#each question.options as option, optionIndex (option.label)}
+        {#each question.options as option, optionIndex (optionKeys[optionIndex] ?? optionIndex)}
           {@const selected = selectedAnswers(answers, question).includes(option.label)}
           <UserInputOptionButton
             label={option.label}

@@ -45,6 +45,13 @@ func TestManagerWithManagedChrome(t *testing.T) {
 	config := Config{Enabled: true, ShowWindow: os.Getenv("AO_BROWSER_HEADFUL") == "1", PersistSiteData: true}
 	manager := NewManager(installer, filepath.Join(root, "state"), config)
 	manager.state = newTestStateStore(filepath.Join(root, "state"), bytes.Repeat([]byte{3}, 32))
+	popupAdopted := make(chan struct{}, 1)
+	manager.pageAdopted = func() {
+		select {
+		case popupAdopted <- struct{}{}:
+		default:
+		}
+	}
 	t.Cleanup(func() { _ = manager.Close() })
 	access := Access{ThreadID: "thread", Workspace: root, ProjectRoot: root}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -87,16 +94,16 @@ func TestManagerWithManagedChrome(t *testing.T) {
 	if _, err := manager.Click(ctx, access, opened.ID, "#popup"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		pages, err := manager.Pages(ctx, access)
-		if err == nil && len(pages) == 2 && (pages[0].Title == "Popup" || pages[1].Title == "Popup") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("popup pages = %#v, %v", pages, err)
-		}
-		time.Sleep(25 * time.Millisecond)
+	popupCtx, cancelPopup := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelPopup()
+	select {
+	case <-popupAdopted:
+	case <-popupCtx.Done():
+		t.Fatalf("popup was not adopted: %v", popupCtx.Err())
+	}
+	pages, err := manager.Pages(ctx, access)
+	if err != nil || len(pages) != 2 || (pages[0].Title != "Popup" && pages[1].Title != "Popup") {
+		t.Fatalf("popup pages = %#v, %v", pages, err)
 	}
 	if err := manager.Close(); err != nil {
 		t.Fatal(err)

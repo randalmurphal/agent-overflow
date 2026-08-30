@@ -48,6 +48,9 @@ func runRPC(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{method}}); err != nil {
+			return err
+		}
 		result, err := client.CallRaw(ctx, method, params)
 		if err != nil {
 			return suggestMethod(ctx, client, method, err)
@@ -220,6 +223,9 @@ func runSeed(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessSeed"}}); err != nil {
+			return err
+		}
 		result, err := client.CallRaw(ctx, "HarnessSeed", []json.RawMessage{spec})
 		if err != nil {
 			return err
@@ -266,6 +272,9 @@ func runReset(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessReset"}}); err != nil {
+			return err
+		}
 		if _, err := client.Call(ctx, "HarnessReset"); err != nil {
 			return err
 		}
@@ -447,6 +456,9 @@ func runSend(e *env, args []string) error {
 		ctx = waitCtx
 	}
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"SendMessage"}}); err != nil {
+			return err
+		}
 		row, err := resolveThreadSelector(ctx, client, *thread)
 		if err != nil {
 			return err

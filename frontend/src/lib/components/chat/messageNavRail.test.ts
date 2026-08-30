@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { Item } from '../../types/models';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import {
+  NAV_RAIL_HIT_WIDTH_PX,
   NAV_TICK_SPACING_PX,
+  NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX,
+  NAV_RAIL_ROW_LEFT_PADDING_PX,
+  NAV_RAIL_ROW_MAX_WIDTH_PX,
+  NAV_RAIL_ROW_RIGHT_PADDING_PX,
+  NAV_RAIL_TEXT_GAP_PX,
+  NAV_RAIL_TICK_LEFT_PX,
   deriveNavTicks,
   itemWindowBounds,
   mergeNavTicks,
@@ -121,6 +128,26 @@ describe('mergeNavTicks', () => {
     expect(merged.ticks.map((t) => t.id)).toEqual(['b1', 'b2', 'b4', 'b5']);
   });
 
+  it('a loaded id never re-renders from a stale baseline position', () => {
+    // The baseline snapshot can hold an id the window has since loaded at
+    // a DIFFERENT position (edit-and-resend moved it), which sits outside
+    // the window bounds — the rail keys ticks by id, so without the id
+    // dedupe this duplicated a keyed-each key and aborted the flush.
+    const staleBaseline = [base('b1', 0), base('moved', 1), base('b5', 6)];
+    const loadedWithMoved = [tick('moved', 5, 9)];
+    const merged = mergeNavTicks(
+      staleBaseline,
+      loadedWithMoved,
+      { turnIndex: 2, itemIndex: 0 },
+      { turnIndex: 5, itemIndex: 3 },
+      true,
+      true,
+    );
+    expect(merged.ticks.map((t) => t.id)).toEqual(['b1', 'moved', 'b5']);
+    expect(merged.loadedStart).toBe(1);
+    expect(merged.loadedEnd).toBe(1);
+  });
+
   it('an empty window still maps the whole baseline as unloaded', () => {
     const merged = mergeNavTicks(baseline, [], null, null, true, false);
     expect(merged.ticks.map((t) => t.nodeIndex)).toEqual([null, null, null, null, null]);
@@ -144,6 +171,19 @@ describe('itemWindowBounds', () => {
 });
 
 describe('rail geometry', () => {
+  it('keeps expanded ticks inside the hit strip and text beyond a dead gutter', () => {
+    expect(NAV_RAIL_TICK_LEFT_PX + TICK_FULL_WIDTH_PX).toBe(NAV_RAIL_HIT_WIDTH_PX);
+    expect(NAV_RAIL_ROW_LEFT_PADDING_PX - NAV_RAIL_HIT_WIDTH_PX)
+      .toBe(NAV_RAIL_TEXT_GAP_PX);
+    expect(NAV_RAIL_TEXT_GAP_PX).toBe(8);
+    expect(
+      NAV_RAIL_ROW_MAX_WIDTH_PX
+      - NAV_RAIL_ROW_LEFT_PADDING_PX
+      - NAV_RAIL_ROW_RIGHT_PADDING_PX,
+    ).toBe(NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX);
+    expect(NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX).toBe(920);
+  });
+
   it('grows by the spacing constant until the column caps the window', () => {
     // Literal, not recomputed from the constant: a spacing change is a
     // deliberate test edit, not an automatic pass. 8px (user-tuned
@@ -329,7 +369,9 @@ describe('previewTranslateYPercent', () => {
 });
 
 describe('railGapLow', () => {
-  const offsetFor = (nodeIndex: number): number => nodeIndex * 500;
+  const geometry = {
+    getItemOffset: (nodeIndex: number): number => nodeIndex * 500,
+  };
   const allLoaded: MergedNavTicks = {
     ticks: [tick('a', 0, 0), tick('b', 1, 2), tick('c', 2, 4)],
     loadedStart: 0,
@@ -337,19 +379,19 @@ describe('railGapLow', () => {
   };
 
   it('names the gap, including the ends the dot hides at', () => {
-    expect(railGapLow(allLoaded, -50, offsetFor)).toBe(-1); // above first
-    expect(railGapLow(allLoaded, 500, offsetFor)).toBe(0); // between a and b
-    expect(railGapLow(allLoaded, 2500, offsetFor)).toBe(2); // at/past last
-    expect(railGapLow({ ticks: [], loadedStart: -1, loadedEnd: -1 }, 0, offsetFor)).toBeNull();
+    expect(railGapLow(allLoaded, -50, geometry)).toBe(-1); // above first
+    expect(railGapLow(allLoaded, 500, geometry)).toBe(0); // between a and b
+    expect(railGapLow(allLoaded, 2500, geometry)).toBe(2); // at/past last
+    expect(railGapLow({ ticks: [], loadedStart: -1, loadedEnd: -1 }, 0, geometry)).toBeNull();
   });
 
   it('reaching a tick hops the gap in one step, never a fraction', () => {
     // Center inside message a (offset 0..999): still gap 0. Reaching
     // b's own offset moves straight to gap 1.
-    expect(railGapLow(allLoaded, 0, offsetFor)).toBe(0);
-    expect(railGapLow(allLoaded, 999, offsetFor)).toBe(0);
-    expect(railGapLow(allLoaded, 1000, offsetFor)).toBe(1);
-    expect(railGapLow(allLoaded, 1999, offsetFor)).toBe(1);
+    expect(railGapLow(allLoaded, 0, geometry)).toBe(0);
+    expect(railGapLow(allLoaded, 999, geometry)).toBe(0);
+    expect(railGapLow(allLoaded, 1000, geometry)).toBe(1);
+    expect(railGapLow(allLoaded, 1999, geometry)).toBe(1);
   });
 
   it('points into the unloaded gaps at the window edges', () => {
@@ -360,10 +402,10 @@ describe('railGapLow', () => {
     };
     // Above the first loaded tick (offset 500): between unloaded
     // history p and it — loadedStart − 1.
-    expect(railGapLow(withUnloaded, 200, offsetFor)).toBe(0);
+    expect(railGapLow(withUnloaded, 200, geometry)).toBe(0);
     // At/after the last loaded tick: between it and the unloaded tail,
     // NOT the past-the-end sentinel — s is still ahead.
-    expect(railGapLow(withUnloaded, 1200, offsetFor)).toBe(2);
+    expect(railGapLow(withUnloaded, 1200, geometry)).toBe(2);
   });
 
   it('answers null with nothing loaded (no geometry to place against)', () => {
@@ -372,9 +414,9 @@ describe('railGapLow', () => {
       loadedStart: -1,
       loadedEnd: -1,
     };
-    expect(railGapLow(noneLoaded, 500, offsetFor)).toBeNull();
+    expect(railGapLow(noneLoaded, 500, geometry)).toBeNull();
     // A single tick has no gap to be in.
-    expect(railGapLow({ ticks: [tick('a', 0, 0)], loadedStart: 0, loadedEnd: 0 }, 0, offsetFor)).toBeNull();
+    expect(railGapLow({ ticks: [tick('a', 0, 0)], loadedStart: 0, loadedEnd: 0 }, 0, geometry)).toBeNull();
   });
 });
 
@@ -386,26 +428,28 @@ describe('tickNearestCenter', () => {
     loadedStart: 0,
     loadedEnd: 2,
   };
-  const offsetForNode = (n: number) => n * 100;
-  const sizeForNode = () => 100;
+  const geometry = {
+    getItemOffset: (nodeIndex: number) => nodeIndex * 100,
+    sizeAt: () => 100,
+  };
 
   it('picks the on-screen tick whose row center is nearest the given center', () => {
-    expect(tickNearestCenter(merged, [0, 2], 400, offsetForNode, sizeForNode)).toBe(1);
-    expect(tickNearestCenter(merged, [0, 2], 120, offsetForNode, sizeForNode)).toBe(0);
-    expect(tickNearestCenter(merged, [0, 2], 900, offsetForNode, sizeForNode)).toBe(2);
+    expect(tickNearestCenter(merged, [0, 2], 400, geometry)).toBe(1);
+    expect(tickNearestCenter(merged, [0, 2], 120, geometry)).toBe(0);
+    expect(tickNearestCenter(merged, [0, 2], 900, geometry)).toBe(2);
   });
 
   it('only considers ticks inside the range', () => {
     // Center hugs u1, but the range says only u2/u3 are on screen.
-    expect(tickNearestCenter(merged, [1, 2], 60, offsetForNode, sizeForNode)).toBe(1);
+    expect(tickNearestCenter(merged, [1, 2], 60, geometry)).toBe(1);
   });
 
   it('a single-tick range answers that tick wherever the center is', () => {
-    expect(tickNearestCenter(merged, [2, 2], 0, offsetForNode, sizeForNode)).toBe(2);
+    expect(tickNearestCenter(merged, [2, 2], 0, geometry)).toBe(2);
   });
 
   it('a tie goes to the earlier tick', () => {
     // Center 300 is 250 from both row centers 50 and 550.
-    expect(tickNearestCenter(merged, [0, 1], 300, offsetForNode, sizeForNode)).toBe(0);
+    expect(tickNearestCenter(merged, [0, 1], 300, geometry)).toBe(0);
   });
 });

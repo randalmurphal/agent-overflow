@@ -903,7 +903,7 @@ CREATE TABLE thread_import_state (
 		Version: 55,
 		Name:    "thread_history_stamps",
 		// The client-replica invalidation contract
-		// (docs/specs/thread-replica-sync.md §3): two counters on every
+		// (docs/architecture/thread-replica-sync.md §3): two counters on every
 		// thread that any persisted item mutation provably advances, plus
 		// the store's identity row.
 		//

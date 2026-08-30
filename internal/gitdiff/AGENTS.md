@@ -1,29 +1,29 @@
 # gitdiff/
 
 Review-pane diff sources computed by shelling out to `git`. Every
-function takes a workspace path and returns bytes/values — no state, no
+function takes a workspace path and returns bytes/values. No state, no
 constructors.
 
 ## What this package owns
 
-- `worktree.go` — `DiffWorkspaceVsHead` (uncommitted tracked changes +
+- `worktree.go`: `DiffWorkspaceVsHead` (uncommitted tracked changes +
   untracked-not-ignored files, `git status` semantics) and
   `DiffBranchBaseToWorktree` (merge-base of the base branch → a
   synthetic tree of the current worktree, so committed + staged +
   unstaged + untracked share one patch stream). Plus the
   `IsGitRepository` probe.
-- `commits.go` — `ListCommits` / `ListCommitsRange` (the per-commit
+- `commits.go`: `ListCommits` / `ListCommitsRange` (the per-commit
   selector rows, `base..head` newest first, capped at
   `maxListedCommits`), `ListRecentCommits` (plain `git log` from HEAD,
-  merges included — codex's own review-picker source, backing the
+  merges included. Codex's own review-picker source, backing the
   `/review` commit completion; unborn HEAD is an empty answer),
   `CommitDiff` (a single commit's patch:
-  first-parent for merge commits — matching how GitHub/GitLab render a
-  commit — `diff-tree --root` for a root commit), and
+  first-parent for merge commits (matching how GitHub/GitLab render a
+  commit), `diff-tree --root` for a root commit), and
   `ShowFileAtCommit` (hunk-gap expansion when a commit is selected).
-- `refs.go` — the two ref resolvers, biased in opposite directions on
+- `refs.go`: the two ref resolvers, biased in opposite directions on
   purpose:
-  - `resolveBaseRef` — the BASE side of every comparison (what a branch
+  - `resolveBaseRef` is the BASE side of every comparison (what a branch
     is measured against). Prefers the remote-tracking ref: the base
     branch's configured `@{upstream}` when it names one (a fork's `main`
     tracking `upstream/main`), else `origin/<base>`, else the local ref,
@@ -32,21 +32,21 @@ constructors.
     under-reports the diff; preferring the remote-tracking ref makes the
     review pane agree with what the forge will show for the same branch.
     An upstream configured as another LOCAL branch (`branch.x.remote =
-    .`) is rejected — it is not evidence of a remote. No fetch happens
+    .`) is rejected. It is not evidence of a remote. No fetch happens
     here: this reads whatever the last fetch left (worktree cuts and the
     background cadence own the refreshing).
-  - `resolveNamedRef` — the ref the caller is DESCRIBING (the branch
+  - `resolveNamedRef` is the ref the caller is DESCRIBING (the branch
     whose own commits are listed, e.g. `ListBranchCommits`' second
     argument). Local first, remote only as a fallback, because
     "which commits would deleting this branch lose" must count unpushed
     ones. Also what maps the picker's short names onto revisions: the
     picker projects "origin/feature" to "feature", which git's revision
     resolution won't DWIM on its own.
-- `run.go` — subprocess plumbing: `runGit` variants with env scrubbing
+- `run.go` holds the subprocess plumbing: `runGit` variants with env scrubbing
   (`GIT_EXTERNAL_DIFF` / `GIT_DIFF_OPTS` cleared), a hard
   `maxDiffOutputBytes` stdout cap, and `WaitDelay` so a wedged pipe
   can't hang a review-pane load.
-- `options.go` — `Options`, the last parameter of every patch producer
+- `options.go`: `Options`, the last parameter of every patch producer
   (`DiffWorkspaceVsHead`, `DiffBranchBaseToWorktree`, `CommitDiff`).
   Its `gitArgs` builds the argv, so the canonical flag set
   (`--patch --minimal --no-color --no-ext-diff --no-textconv`) is
@@ -56,7 +56,7 @@ constructors.
 ## Ignore-whitespace (`Options.IgnoreWhitespace`)
 
 The review pane's "hide whitespace changes" toggle. Passes `-w`
-(`--ignore-all-space`) and nothing else — deliberately NOT
+(`--ignore-all-space`) and nothing else. Deliberately NOT
 `--ignore-blank-lines`, which would change which lines *exist* rather
 than how they compare.
 
@@ -85,14 +85,14 @@ case (a draft whose line left the displayed patch).
 
 ## What does NOT belong here
 
-- Regular git operations (branch, commit, push, fetch, forge CLIs) —
+- Regular git operations (branch, commit, push, fetch, forge CLIs).
   `internal/git` owns those.
-- Deciding which thread/workspace to diff — `app_review_diffs.go` /
+- Deciding which thread/workspace to diff. `app_review_diffs.go` /
   `app_forge_review.go` resolve threads and call in.
 
 ## References
 
-- `app_review_diffs.go` — the workspace / branch / per-commit bindings.
-- `app_forge_review.go` — PR-scope commit listing over a local clone.
-- `docs/architecture/review-pane-design.md` — the surface these diffs
+- `app_review_diffs.go`: the workspace / branch / per-commit bindings.
+- `app_forge_review.go`: PR-scope commit listing over a local clone.
+- `docs/architecture/review-pane-design.md`: the surface these diffs
   feed.

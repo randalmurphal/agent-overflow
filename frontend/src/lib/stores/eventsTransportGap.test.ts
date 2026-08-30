@@ -1,4 +1,4 @@
-// Transport-gap stamp discipline (docs/specs/thread-replica-sync.md
+// Transport-gap stamp discipline (docs/architecture/thread-replica-sync.md
 // §3.4). A gap carries no entity key, so the only safe answer is to
 // forget what we claimed to know about the backend's counters — in every
 // tier that holds a stamp, not just the registry.

@@ -159,34 +159,49 @@ if (typeof globalThis.matchMedia === 'undefined') {
   })) as unknown as typeof matchMedia;
 }
 
-// happy-dom exposes `localStorage` as an empty object without the Storage
-// prototype methods attached, so tests that exercise code using
-// localStorage hit "setItem is not a function". Install a minimal
-// in-memory Storage implementation once, and clear it between tests in
-// the afterEach below so specs don't leak state at each other.
-const __storage = new Map<string, string>();
-const memoryStorage: Storage = {
-  get length() { return __storage.size; },
-  clear(): void { __storage.clear(); },
-  getItem(key: string): string | null {
-    return __storage.has(key) ? (__storage.get(key) as string) : null;
-  },
-  setItem(key: string, value: string): void { __storage.set(key, String(value)); },
-  removeItem(key: string): void { __storage.delete(key); },
-  key(index: number): string | null {
-    return Array.from(__storage.keys())[index] ?? null;
-  },
-};
+// happy-dom and Node do not expose reliable Storage objects in every
+// supported runtime. Node 24, for example, installs a host storage object
+// whose methods are unusable without --localstorage-file. Give unit tests
+// deterministic, independent local/session stores so storage behavior and
+// failure injection do not depend on the host process.
+function makeMemoryStorage(): Storage {
+  const entries = new Map<string, string>();
+  return {
+    get length() { return entries.size; },
+    clear(): void { entries.clear(); },
+    getItem(key: string): string | null {
+      return entries.has(key) ? (entries.get(key) as string) : null;
+    },
+    setItem(key: string, value: string): void { entries.set(key, String(value)); },
+    removeItem(key: string): void { entries.delete(key); },
+    key(index: number): string | null {
+      return Array.from(entries.keys())[index] ?? null;
+    },
+  };
+}
+
+const memoryStorage = makeMemoryStorage();
+const memorySessionStorage = makeMemoryStorage();
 Object.defineProperty(globalThis, 'localStorage', {
   value: memoryStorage,
   configurable: true,
   writable: true,
 });
+Object.defineProperty(globalThis, 'sessionStorage', {
+  value: memorySessionStorage,
+  configurable: true,
+  writable: true,
+});
 if (typeof globalThis.window !== 'undefined') {
-  // Keep window.localStorage in sync so components that reach through
-  // window explicitly see the same store as globalThis.localStorage.
+  // Keep window storage in sync so components that reach through window
+  // explicitly see the same stores as globalThis.
   Object.defineProperty(globalThis.window, 'localStorage', {
     value: memoryStorage,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(globalThis.window, 'sessionStorage', {
+    value: memorySessionStorage,
     configurable: true,
     writable: true,
   });
@@ -266,6 +281,9 @@ afterEach(() => {
   try {
     if (typeof localStorage !== 'undefined' && typeof localStorage.clear === 'function') {
       localStorage.clear();
+    }
+    if (typeof sessionStorage !== 'undefined' && typeof sessionStorage.clear === 'function') {
+      sessionStorage.clear();
     }
   } catch {
     // ignore — tests running without localStorage continue happily.

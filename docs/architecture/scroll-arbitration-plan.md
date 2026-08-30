@@ -37,7 +37,7 @@ re-derives these lessons as a user-visible bug.
 
 A second, related problem: **structural mutations are scheduled at wire
 events, not visual quiet.** The recent-window prune runs at
-`settleTurn` — but the reveal smoother deliberately keeps draining for
+`settleTurn`. But the reveal smoother deliberately keeps draining for
 seconds after the wire settles (the reveal is never rushed), so the most
 expensive flush in the app (40–80ms measured; 78–186ms in production
 traces) lands mid-glide by construction. The auto-collapse gate and the
@@ -47,12 +47,12 @@ never got it.
 
 ## Design
 
-Four pieces. Each is a generalization of a fix that already shipped —
-none is speculative.
+Four pieces. Each is a generalization of a fix that already shipped.
+None is speculative.
 
 ### 1. Bottom-edge arbitration: `requestBottom`
 
-The bottom is the only contested destination — every collision above
+The bottom is the only contested destination. Every collision above
 except the head-splice one was two writers fighting over the trip to the
 bottom. Replace the scattered one-shot bottom writes with one controller
 entry point that states the priority rule once:
@@ -80,13 +80,13 @@ requestBottom(opts: {
 
 What this deletes:
 
-- `PreserveViewportBottomOptions.yieldToStructuralAppend` — every
+- `PreserveViewportBottomOptions.yieldToStructuralAppend`: every
   system restore yields by construction; reader restores pass `'claim'`.
 - The `pauseAutoScroll` release's inline
-  `structuralAppendPending() || isActive()` branch — the release calls
+  `structuralAppendPending() || isActive()` branch: the release calls
   `requestBottom({ takeover: 'yield' })`.
 - `restoreTimelineWindowAnchorAfterPrune`'s inline `autoScrollInFlight`
-  stand-down — its sticky branch calls the same thing.
+  stand-down: its sticky branch calls the same thing.
 - The duplicated `observe('live-content') + saveScrollSnapshot + return`
   choreography in both transactions.
 
@@ -94,8 +94,8 @@ What this deliberately does NOT change: the resolver stays the decision
 authority for *deliveries* (contentRO, engine compensation); `forceStick`
 keeps its consent gate (it is the `'claim'` path for restores and already
 correct); `scrollToIndex` navigations keep the takeover guard (they are
-programs, not one-shots — the guard is their own revalidation, which is
-the right shape for a program).
+programs, not one-shots, and the guard is their own revalidation, which
+is the right shape for a program).
 
 The invariant, stated once and testable: **while the bottom-follow
 program is engaged, no system-initiated write may retarget the viewport;
@@ -116,10 +116,10 @@ make the recent-window prune its third consumer:
   across the whole reveal drain (liveness stamps on every reveal tick),
   so "spring idle" *means* "nothing is streaming visibly and no glide is
   running". The glide's own settle synthesizes the scrollend that
-  re-runs the scheduler — deferral loses nothing.
+  re-runs the scheduler. Deferral loses nothing.
 - **Sequencing**: at most one *geometry-mutating* pass per quiet
-  callback, in deterministic order — (1) recent-window prune retry,
-  (2) auto-collapse releases — with the remainder re-scheduled for the
+  callback, in deterministic order: (1) recent-window prune retry,
+  (2) auto-collapse releases. The remainder is re-scheduled for the
   next tick, so two expensive flushes never stack on one frame. The
   row-UI prune mutates no geometry and always runs.
 
@@ -127,12 +127,12 @@ The prune migration itself:
 
 - `settleTurn` stops calling `pruneToRecentWindowIfNeeded()` directly
   when a scroll controller is registered; it marks the existing
-  `recentWindowPrunePending` flag instead (the deferred-retry plumbing —
-  `hasDeferredRecentWindowPrune` / `retryDeferredRecentWindowPrune` —
+  `recentWindowPrunePending` flag instead (the deferred-retry plumbing
+  `hasDeferredRecentWindowPrune` / `retryDeferredRecentWindowPrune`
   already exists for the anchor-veto case and is reused, replacing the
   `stick.isSticky`-keyed retry `$effect` in MessageTimeline).
   A pane with no registered controller (no mounted timeline) prunes
-  immediately as today — no reader to disturb.
+  immediately as today. No reader to disturb.
 - The streaming append path and its active-turn defer are unchanged.
 - `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS` is unchanged and remains
   the only force: a run of back-to-back turns that never reaches quiet
@@ -143,19 +143,19 @@ The prune migration itself:
 ### 3. Provenance: evidence-based clamp detection
 
 The sentinel oscillation guard exists to rescue `scrollTop` from a
-**browser clamp** (content dipped, browser clamped, content restored —
-scrollTop stranded low). It currently *infers* the clamp from a baseline
+**browser clamp** (content dipped, browser clamped, content restored,
+leaving scrollTop stranded low). It currently *infers* the clamp from a baseline
 equality (`target ≈ sentinelEntryTarget`), which is why an authored
-head-splice displacement — same numeric shape — tripped it
+head-splice displacement (same numeric shape) tripped it
 (bug-report-20260801T213259Z) and needed `invalidateSentinelBaseline`.
 
 Replace inference with evidence. The chokepoint already reads back the
 browser-rounded `scrollTop` after every authored write (`taggedTop`),
 and the intent machine already classifies user gestures. So the
 controller can maintain a one-field ledger: **the last explained
-scrollTop** — updated on every authored write and on every classified
+scrollTop**, updated on every authored write and on every classified
 user scroll. A sentinel tick that observes `el.scrollTop` differing from
-the ledger has *witnessed* unexplained movement (a clamp — the only
+the ledger has *witnessed* unexplained movement (a clamp, the only
 unexplained mover left). The snap then requires baseline match **AND**
 witnessed unexplained movement since sentinel entry.
 
@@ -163,11 +163,11 @@ What this deletes: `invalidateSentinelBaseline` and its head-splice call
 site (an authored write updates the ledger, so it can never read as a
 clamp), and the same evidence gates the resolver's
 `isSentinelOscillationStranded` via a new snapshot field. Genuine
-dip-restore recovery keeps working — the dip's clamp is exactly what the
+dip-restore recovery keeps working. The dip's clamp is exactly what the
 ledger witnesses.
 
 Risk note: this assumes a clamp changes `el.scrollTop` synchronously
-with the layout that shrank `scrollHeight` (it does — clamping is part
+with the layout that shrank `scrollHeight` (it does: clamping is part
 of layout, not an async scroll event), and the sentinel tick reads
 geometry fresh each frame. The interleaving suite pins both the
 dip-restore recovery and the head-splice glide against the new
@@ -175,7 +175,7 @@ mechanism.
 
 ### 4. Interleaving invariants: test the class, not the instance
 
-The five incidents were all *transitions* — states were individually
+The five incidents were all *transitions*. States were individually
 fine. Alongside the per-incident browser tests (kept), add a
 combinatorial driver in the mock-geometry unit suite
 (`utils/scroll/scrollInterleavings.test.ts`) built on the
@@ -193,7 +193,7 @@ advance):
      compensation's exact delta.
   2. No single frame moves the viewport more than the spring's bounded
      step (velocity cap × catch-up steps) plus authored compensation
-     deltas — unless the op is a declared snap (`'claim'`, oscillation
+     deltas, unless the op is a declared snap (`'claim'`, oscillation
      recovery, reduced motion).
   3. Once inputs go quiet, the viewport reaches the current target and
      stays (no residual writers).
@@ -220,8 +220,8 @@ failing test before it is a bug report.
    `invalidateSentinelBaseline` and its head-splice call site deleted.
 4. Interleaving suite lands alongside 2 and 3 as their safety net;
    scenario browser tests keep covering real-layout behavior. **Shipped**
-   (2026-08-01): `scroll/scrollInterleavings.test.ts` — 10 viewport ops
-   × 5 starting states on the shared `testGeometry.ts` scaffolding.
+   (2026-08-01): `scroll/scrollInterleavings.test.ts` with 10 viewport
+   ops × 5 starting states on the shared `testGeometry.ts` scaffolding.
    Op-time check: a system op that begins mid-glide may not author a
    write that lands at the bottom target (trace-attributed, so native
    clamps don't false-positive). Per drained frame: escaped viewports
@@ -248,7 +248,7 @@ independently revertable.
 
 For before/after comparison: single-append flush ~27ms total; 20-append
 ~51ms (~2–5ms per mounted markdown row); prune 800→500 with one mount
-~33ms (sync data work 4.1ms — disposal, index rebuild, projection);
+~33ms (sync data work 4.1ms: disposal, index rebuild, projection);
 33 mounted short rows ~41ms. Pure projection over 770 items ~2ms.
 Production traces: 78–186ms prune-correlated long tasks at settle,
 mid-drain. Separate observation, out of scope: dropped-frame clusters

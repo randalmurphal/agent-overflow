@@ -208,7 +208,7 @@ func waitForStartJoiners(t *testing.T, app *App, threadID string) {
 // clears that flag the moment the child goes terminal, and the window the tail
 // exists for is exactly the one after that, while the child's FINAL_ANSWER is
 // still undelivered in the parent's mailbox.
-func TestThreadHasUnresolvedCodexSubagents(t *testing.T) {
+func TestCodexResumeCollabLaunchesReturnsOnlyUnresolvedOwnership(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread, err := createTestThread(t, app, "codex", "/tmp/w-codex-resume-tail", "gpt-5.3-codex", "")
 	if err != nil {
@@ -223,8 +223,10 @@ func TestThreadHasUnresolvedCodexSubagents(t *testing.T) {
 		t.Fatalf("insert turn: %v", err)
 	}
 
-	if app.threadHasUnresolvedCodexSubagents(thread.ID) {
-		t.Fatal("a thread that never spawned an agent asked for a rollout tail")
+	if launches, err := app.codexResumeCollabLaunches(thread.ID); err != nil {
+		t.Fatalf("load empty resume ownership: %v", err)
+	} else if len(launches) != 0 {
+		t.Fatalf("a thread that never spawned an agent returned ownership: %+v", launches)
 	}
 
 	launch := store.Item{
@@ -248,8 +250,12 @@ func TestThreadHasUnresolvedCodexSubagents(t *testing.T) {
 	if err := app.store.InsertItem(launch); err != nil {
 		t.Fatalf("seed spawn launch: %v", err)
 	}
-	if !app.threadHasUnresolvedCodexSubagents(thread.ID) {
-		t.Fatal("a spawn launch with no completion row did not ask for a rollout tail")
+	launches, err := app.codexResumeCollabLaunches(thread.ID)
+	if err != nil {
+		t.Fatalf("load unresolved resume ownership: %v", err)
+	}
+	if len(launches) != 1 || launches[0].ItemID != "spawn-1" || !strings.Contains(string(launches[0].Meta), `"child-1"`) {
+		t.Fatalf("unresolved resume ownership = %+v, want compact spawn-1 metadata", launches)
 	}
 
 	if err := app.store.InsertItem(store.Item{
@@ -267,7 +273,9 @@ func TestThreadHasUnresolvedCodexSubagents(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed completion sibling: %v", err)
 	}
-	if app.threadHasUnresolvedCodexSubagents(thread.ID) {
-		t.Fatal("a spawn whose answer already landed still asked for a rollout tail")
+	if launches, err := app.codexResumeCollabLaunches(thread.ID); err != nil {
+		t.Fatalf("load settled resume ownership: %v", err)
+	} else if len(launches) != 0 {
+		t.Fatalf("a spawn whose answer already landed returned ownership: %+v", launches)
 	}
 }

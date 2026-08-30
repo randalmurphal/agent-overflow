@@ -9,8 +9,10 @@
  * themes leave plain identifiers and operators unstyled, and helix
  * queries capture every identifier as @variable.
  *
- * Theme flip is pure CSS: html.light overrides the variables, no
- * re-request, no new spans. */
+ * syntaxSpans.ts maps those rule-less families to plain segments, avoiding a
+ * DOM span whose computed style would be identical to its parent. Theme flip
+ * is pure CSS: html.light overrides the variables, no re-request, no new
+ * spans. */
 
 :root {
   --syntax-keyword: #ff7b72;

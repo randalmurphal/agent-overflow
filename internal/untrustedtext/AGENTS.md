@@ -19,7 +19,7 @@ and pure.
 - **Truncation is visible.** A cut value ends in `TruncationSuffix`,
   appended outside the quoting so a reader can tell truncation from
   content. A non-positive budget means "no budget", never "empty".
-- Invalid UTF-8 is replaced (`�`), not dropped — bytes that are not
+- Invalid UTF-8 is replaced (`�`), not dropped. Bytes that are not
   text still show up as something.
 
 ## Anti-patterns
@@ -33,5 +33,5 @@ and pure.
 
 ## References
 
-- `internal/workflow/wake/` — wake composer (primary consumer).
-- `app_workflow_triage.go` — triage seed composer.
+- `internal/workflow/wake/` is the wake composer (primary consumer).
+- `app_workflow_triage.go` is the triage seed composer.

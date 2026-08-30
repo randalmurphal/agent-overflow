@@ -260,6 +260,7 @@
           a layout rule about mermaid diagrams.
         -->
         <li
+          class="run-map-node"
           data-testid="workflow-map-wave"
           data-wave-item-id={wave.itemId}
           data-wave-expanded={runMapWaveIsOpen(wave)}

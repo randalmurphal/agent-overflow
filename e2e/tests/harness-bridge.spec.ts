@@ -382,7 +382,7 @@ test("a query with no page attached times out, and its late reply is dropped", a
   // Deliberately no page.goto: nothing is subscribed to harness:ui-query
   // except this client, which observes the directive without answering it.
   const pending = harness.rpc("HarnessUIQuery", { v: 1, kind: "viewport" });
-  const directive = await harness.waitForEvent<{ id: string; spec: unknown }>(
+  const directive = await harness.waitForEvent<{ id: string; pageId: string; spec: unknown }>(
     "harness:ui-query",
   );
   expect(directive.id).toMatch(/^uq-\d+$/);
@@ -395,8 +395,8 @@ test("a query with no page attached times out, and its late reply is dropped", a
   // must be accepted and dropped — the replying bridge did nothing wrong,
   // and erroring would turn a lost race into a red test in the frontend.
   // A refusal surfaces as a rejected RPC, which fails this test.
-  await harness.rpc("HarnessUIQueryReply", directive.id, { v: 1, panes: [] });
-  await harness.rpc("HarnessUIQueryReply", "uq-never-issued", {});
+  await harness.rpc("HarnessUIQueryReply", directive.pageId, directive.id, { v: 1, panes: [] });
+  await harness.rpc("HarnessUIQueryReply", directive.pageId, "uq-never-issued", {});
 });
 
 // The Go structs in cmd/ao-harness/ui_diff.go mirror

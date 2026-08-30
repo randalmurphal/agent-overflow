@@ -41,6 +41,7 @@ func Spawn(selfExe string) (*Client, error) {
 	cmd := exec.Command(selfExe, reapSubcommand)
 	cmd.ExtraFiles = []*os.File{r} // lands as fd 3 (controlFD) in the child
 	cmd.Stderr = os.Stderr         // surface the sidecar's diagnostics
+	applySidecarProcessAttrs(cmd)
 	if err := cmd.Start(); err != nil {
 		r.Close()
 		w.Close()

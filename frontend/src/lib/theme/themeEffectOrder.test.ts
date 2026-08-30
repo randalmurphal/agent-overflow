@@ -1,7 +1,7 @@
 // Pins the theme effect ORDER in `App.svelte`, which until now was enforced by
 // a comment.
 //
-// The rule (docs/specs/theme-system.md §9.1, and this package's own headers):
+// The rule (docs/architecture/theme-system.md §9.1, and this package's own headers):
 // the mode-class stamp and the style rewrite are BOTH `$effect.pre`, in that
 // order, and everything that READS the applied cascade back is a plain
 // `$effect` after them. Svelte flushes every render effect in the tree before

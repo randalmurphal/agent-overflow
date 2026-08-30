@@ -388,7 +388,7 @@ describe('<SubagentGroup>', () => {
     expect(leaves).toHaveLength(2);
 
     const scroll = getByTestId('subagent-group-scroll');
-    expect(scroll.className).toContain('max-h-[min(50vh,20rem)]');
+    expect(scroll.style.maxHeight).toBe('min(50vh, 20rem)');
     expect(scroll.className).toContain('overflow-y-auto');
 
     await fireEvent.click(toggle);

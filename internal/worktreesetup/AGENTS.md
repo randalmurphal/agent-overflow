@@ -17,12 +17,12 @@ finding that tells the author to move it here (see
 - `Run` blocks. It is called from the app-owned provisioning path before the
   first turn runs in a new worktree, never from the workflow engine
   goroutine.
-- A failure is always an error — never a warning, never a partial success.
+- A failure is always an error, never a warning, never a partial success.
   The caller decides what that means: workflow provisioning rolls the worktree
   back and parks `needs-human(setup-failed)`, while a chat thread keeps the
   worktree, surfaces the failure, and offers a retry (`app_worktree_setup.go`).
 - Observation is optional and additive. `RunObserved` is the whole engine and
-  `Run` is it with a no-op observer — there is ONE execution path, so the
+  `Run` is it with a no-op observer. There is ONE execution path, so the
   blocking caller cannot drift from the streaming one.
 
 ## Files
@@ -38,7 +38,7 @@ finding that tells the author to move it here (see
 
 `Run` copies first, then executes commands in authored order, stopping at the
 first failure. Every command shares ONE `context.WithTimeout` derived from
-`Config.Timeout` (`DefaultTimeout` = 10m when absent) — the bound is on the
+`Config.Timeout` (`DefaultTimeout` = 10m when absent). The bound is on the
 recipe, not per command, because a recipe that takes longer than its budget is
 finished either way. Each command runs in its own process group and a timeout
 kills that group (`internal/procutil`), so a step that backgrounded its real
@@ -47,15 +47,15 @@ work cannot outlive the bound.
 The run loop owns the command's output sink and passes it in as an
 `io.Writer`: one bounded tail buffer (16 KiB) whose contents the failure
 message quotes, multiplexed with the observer's per-step writer. That
-`io.MultiWriter` is the one seam streaming goes through — the failure text is
+`io.MultiWriter` is the one seam streaming goes through. The failure text is
 built from the tail either way, so an observed run and a blocking one produce
 byte-identical errors.
 
 `ResolveSteps` is the pure projection callers render a progress list from. It
 is what `RunObserved` itself walks, so the list a caller shows before the run
 starts is exactly the list the observer reports against. The copy phase is
-step 0 and is omitted entirely when the recipe names no globs — a step that
-provably does nothing is noise — and indices stay contiguous either way
+step 0 and is omitted entirely when the recipe names no globs (a step that
+provably does nothing is noise), and indices stay contiguous either way
 because steps are addressed by position in the returned slice.
 
 ## Copy safety
@@ -72,7 +72,7 @@ These are the properties the copy phase exists to hold. Each has a test.
   recipe copy an arbitrary host file into a worktree by naming a link the
   repository happens to contain. Destinations are additionally written through
   `os.OpenRoot` on both ends.
-- A glob that matches nothing — or whose only matches were skipped as unsafe —
+- A glob that matches nothing (or whose only matches were skipped as unsafe)
   is a hard error. The recipe named a file it expected to exist; a worktree
   silently missing it breaks later, somewhere else.
 - Files are written to a unique `.ao-copy-<uuid>` temp name, fsynced, and
@@ -89,8 +89,8 @@ authored recipe, so this table is the contract.
 
 | Variable | Value |
 |---|---|
-| `AO_PROJECT_ROOT` | absolute path of the project's main checkout — the tree `copy` globs read from |
-| `AO_WORKTREE_PATH` | absolute path of the worktree being set up — also the command's working directory |
+| `AO_PROJECT_ROOT` | absolute path of the project's main checkout, the tree `copy` globs read from |
+| `AO_WORKTREE_PATH` | absolute path of the worktree being set up, also the command's working directory |
 
 They exist because a recipe can name neither checkout on its own: the worktree
 path is generated per worktree, and the project root is not the working
@@ -98,7 +98,7 @@ directory. Without them the only expressible way to bring `.env` across is a
 copy glob, which snapshots the file and then silently diverges from the main
 checkout.
 
-A `run` entry is an **argv, not a shell line** — nothing here is parsed or
+A `run` entry is an **argv, not a shell line**. Nothing here is parsed or
 expanded. A recipe that wants expansion asks for a shell explicitly:
 
 ```json

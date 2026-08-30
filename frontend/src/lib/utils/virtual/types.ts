@@ -62,10 +62,11 @@ export interface RowEstimate {
 /**
  * One engine-sourced content-geometry sample, delivered by
  * TimelineVirtualizer after the template flush (DOM consistent, still
- * pre-paint) — the replacement for the scroll controller's contentEl
- * ResizeObserver in chat. `height` is the engine's totalSize, which the
- * spacer's explicit height makes identical to the content element's
- * height; `width` is the scroller's content-box width from the adapter's
+ * pre-paint). This replaces the scroll controller's contentEl
+ * ResizeObserver in chat. `height` is the engine's total size plus its
+ * optional leading header, which the outer wrapper's explicit height
+ * makes identical to the virtualizer's scroll-content height. `width` is
+ * the scroller's content-box width from the adapter's
  * own ResizeObserver (the single async width source — never a
  * synchronous layout read). The two settle fields are per-row settle
  * evidence for the controller's warm-up gate: everything mounted has
@@ -74,7 +75,7 @@ export interface RowEstimate {
  * estimate cascade measures large ones).
  */
 export interface ContentGeometrySample {
-  /** Content height = the engine's totalSize (the spacer height just written). */
+  /** Total scroll-content height, including the virtualizer's leading header. */
   height: number;
   /** Scroller content-box width (the wrap point; width-reflow classification). */
   width: number;
@@ -85,10 +86,10 @@ export interface ContentGeometrySample {
   /**
    * Scroller content-box height from the adapter's own ResizeObserver —
    * async RO data, never a synchronous layout read. The controller's
-   * read-free delta path (scroll/observers.ts) keys on it: while the
+   * read-free delta path (scroll/observers.ts) keys on it. While the
    * viewport holds still, the post-delta bottom target is pure
-   * arithmetic; a change here is the signal that clientHeight moved and
-   * cached geometry must be re-read. Optional because RO-sourced
+   * arithmetic. A change here signals that the content-box viewport
+   * moved and cached scrollTop must be refreshed. Optional because RO-sourced
    * pipelines (ChannelView's contentEl RO) have no scroller entry —
    * absent means "unknown", which disables the arithmetic path, never
    * misclassifies.
@@ -109,6 +110,27 @@ export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';
 export interface TimelineVirtualizerHandle {
   scrollToIndex(index: number, opts?: { align?: ScrollToIndexAlign; offset?: number }): void;
   revalidate(): void;
+  /**
+   * Subscribe to this INSTANCE's content-geometry samples — the ONLY
+   * way geometry leaves the virtualizer. The new subscriber
+   * synchronously receives the current sample when the scroller has
+   * already reported a width (the gate that starts deliveries); later
+   * samples arrive as they are produced. The returned function
+   * unsubscribes, and an unsubscribed source delivers nothing.
+   *
+   * Replayable and instance-bound on purpose. The fire-and-forget
+   * geometry prop this replaced lost any sample published before its
+   * consumer could take it — the scroll controller not yet attached —
+   * dropped by the controller AND then suppressed forever by the
+   * adapter's field-by-field dedupe, because the tuple never changed
+   * again. That
+   * left a populated first mount rendered at scrollTop=0 under a
+   * sticky-bottom claim. Subscribing after attach, with the replay,
+   * closes that window with no second observer and no polling; instance
+   * identity is what makes an identical tuple from a NEW virtualizer
+   * (the `{#key pane.threadId}` remount) replay rather than dedupe.
+   */
+  subscribeContentGeometry(onSample: (sample: ContentGeometrySample) => void): () => void;
   /**
    * The scroll controller wrote scrollTop (browser-rounded readback).
    * Wired from the controller's `onScrollTopWritten` option so the

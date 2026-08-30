@@ -13,7 +13,7 @@ sniffs argv to pick a mode:
   (`textgen.go`).
 - `exec --ephemeral` → Codex one-shot text generation (`textgen.go`).
   Checked BEFORE the protocol sniff, which reads every argv without
-  `app-server` as Claude — `codex exec` carries no such marker.
+  `app-server` as Claude. `codex exec` carries no such marker.
 - `--version` → a string satisfying both providers' version gates
   (`version.go`).
 
@@ -23,7 +23,7 @@ The third invocation shape, beside a session and the probe: a prompt on
 stdin, one structured answer, exit. No scenario, no control-channel
 registration, no turn lifecycle. `internal/textgen`'s `RunClaude` /
 `RunCodex` build both argvs; the answer travels differently per provider
-and `textgen.go` matches each side exactly — Claude prints a `result`
+and `textgen.go` matches each side exactly: Claude prints a `result`
 line carrying `structured_output` (the LAST non-empty stdout line is what
 `DecodeClaudeStructuredLastLine` reads), Codex writes the bare JSON to the
 `--output-last-message` FILE and stdout is ignored.
@@ -62,7 +62,7 @@ un-enriched catalog and the merge policy never runs at all.
 
 One row deliberately DISAGREES with the shipped catalog: `claude-haiku-4-5`
 claims `supportsFastMode: true`, which `provider.ClaudeModels` does not.
-That single divergence is what makes the merge observable — it produces one
+That single divergence is what makes the merge observable. It produces one
 `DriftCapability` line and adds `ModelCapabilityFastMode`. A payload that
 agreed everywhere would be indistinguishable from no payload at all. The
 other row is the `default` POINTER (`resolvedModel: "claude-opus-5[1m]"`),
@@ -72,7 +72,7 @@ capability, so it contributes no drift.
 ## Structured-output schemas are validated, not accepted
 
 A structured-output schema is checked against `internal/providerschema`
-and an invalid one exits non-zero, matching what the real CLIs do —
+and an invalid one exits non-zero, matching what the real CLIs do:
 Claude validates `--json-schema` at spawn, the Codex app-server validates
 `outputSchema` on each `turn/start`.
 
@@ -81,7 +81,7 @@ workflow suite pass green while every real provider run dies at spawn,
 which is precisely how five schema defects survived a fully green harness
 (no `$schema` draft handling, a leaked `multiline` keyword, open nested
 objects, partial `required` lists). If a scenario now fails here, fix the
-generator — do not relax the check.
+generator. Do not relax the check.
 
 ## How a session runs
 
@@ -89,8 +89,8 @@ generator — do not relax the check.
 channel assignment (env `AO_HARNESS_CONTROL*`, via
 `internal/harness/control.FromEnv`), `AO_MOCK_SCENARIO_FILE`, or a
 builtin per-protocol fallback (announced on stderr). `engine.go`
-executes turns step by step — emit/fixture/writeFile/approval/
-waitSignal/stall/exit per `internal/harness/scenario` — posting
+executes turns step by step (emit/fixture/writeFile/approval/
+waitSignal/stall/exit per `internal/harness/scenario`), posting
 progress reports and long-polling live commands when a control channel
 exists. Without one, the binary still works standalone.
 
@@ -105,7 +105,7 @@ Two engine facts follow from that, and both used to be per-process:
 
 - **`scenario_done` fires once per TURN.** Under the default
   `afterTurns: repeatLast`, turns 2..N re-run the last scripted turn and
-  finish exactly as turn 1 did — a once-per-process latch meant every
+  finish exactly as turn 1 did. A once-per-process latch meant every
   turn after the first reported nothing, so the ordinary
   send/await/assert/send-again shape hung on the second await. The
   dedupe is still per turn (one turn can reach the report by more than
@@ -114,7 +114,7 @@ Two engine facts follow from that, and both used to be per-process:
   arriving before its gate opens is parked, stamped with the turn that
   was live when it landed, and only satisfies a gate of that same turn.
   `finishTurn` and an interrupt both discard whatever is left, reporting
-  each discard — an advance that outlived its turn is a command a test
+  each discard. An advance that outlived its turn is a command a test
   issued and nothing consumed, and letting it survive is how the next
   turn appears to skip its first gate for no reason. Within one turn an
   UNNAMED advance still releases whichever gate opens next; that is the
@@ -151,7 +151,7 @@ app actually sent and where it sent it.
 Scenario lines own assistant content framing (`message_start` before
 text/thinking, `message_stop` after). When touching either side,
 verify against a real fixture or a spike (`docs/references/claude.md`,
-`docs/references/spike-policy.md`) — do not guess wire behaviour.
+`docs/references/spike-policy.md`). Do not guess wire behaviour.
 
 Claude interrupted turns end with the verified 2.1.170
 `result{subtype:error_during_execution,is_error:true,
@@ -163,7 +163,7 @@ terminal_reason:aborted_streaming}` shape. Codex interrupted turns end with
 The mock used to answer every `control_request` with a success carrying
 `{}`. That is worse than useless: `mcp_status` rendered an empty server
 list, `mcp_authenticate` FAILED every time (the app rejects a success
-response with no payload), and — the real cost — an outbound wire-KEY
+response with no payload), and (the real cost) an outbound wire-KEY
 bug was invisible, because a mock that acks anything acks a misspelled
 request too. The CLI destructures the fields it wants off `request` and
 never validates the object, so `server_name` where it reads `serverName`
@@ -174,7 +174,7 @@ So `writeClaudeControlAck` validates each subtype's REQUIRED keys and
 answers an error `control_response` naming the key it wanted, and
 answers the successful ones with a minimally real payload. The key
 spellings come from `internal/provider/claude`'s
-`TestControlRequestWireKeys`, read off the binary — not from what looks
+`TestControlRequestWireKeys` (read off the binary), not from what looks
 consistent, because the CLI mixes camelCase and snake_case per handler
 with no rule (`mcp_toggle.serverName` beside `stop_task.task_id`). A
 subtype the mock has never heard of still gets the permissive `{}`, and
@@ -201,8 +201,8 @@ does on its own:
   Overflow sends every mid-turn message with `turn/steer` and must never call
   either method; both answer with a JSON-RPC error, which is what turns a
   regrown caller into a failing harness run instead of a duplicated turn.
-  `list` and `delete` DO answer (over an empty queue — nothing here can fill
-  one) because AO still calls them for the rollback purge and the
+  `list` and `delete` DO answer (over an empty queue, since nothing here can
+  fill one) because AO still calls them for the rollback purge and the
   legacy-row sunset. `thread/queue/update` and `.../reorder` are refused too,
   for the same reason they always were: a mock more permissive than the app
   would let a harness run pass against a wrapper nothing verifies.
@@ -212,7 +212,7 @@ does on its own:
   `thread/resume` can only report what is already there. That durability
   is the point: every rollback cuts through a throwaway resume session, a
   second mock process that never saw the start, and a mode held in memory
-  would read as legacy there — sending a genuinely paginated thread down
+  would read as legacy there, sending a genuinely paginated thread down
   the `thread/fork` fallback with no error anywhere. `thread/revert`
   refuses a legacy thread with upstream's own -32600 and its verbatim
   wording, which is what AO's classifier turns into
@@ -225,14 +225,14 @@ does on its own:
   the same surface a turn's own input does AND writes the `item/completed`
   the running turn would carry, with the caller's `clientUserMessageId` echoed
   back as `clientId`. Adapter-owned because neither value exists until the
-  steer arrives — and load-bearing: AO registers a steer's pending send BY
+  steer arrives, and load-bearing: AO registers a steer's pending send BY
   that client id, so an echo without it leaves the message rendering as
   injected provider context. `turn/start` binds the same id as `${CLIENT_ID}`
   for the scenario's own echo line.
 
 An anchor neither cut recognises is believed on a RESUMED thread and
 refused on a STARTED one. The mock keeps no rollout, so on a resumed
-thread not knowing a turn is ignorance rather than evidence — and every
+thread not knowing a turn is ignorance rather than evidence, and every
 real rollback lands there. On a thread this process started it ran the
 whole history, so an unknown anchor is nonsense and stays an error.
 
@@ -248,10 +248,10 @@ nothing.
 The default is now the JSON-RPC MethodNotFound error, which means the
 methods the app calls as a matter of course need real answers or the
 DEFAULT harness experience breaks rather than only the optional
-surfaces. `handleReadRequest` covers those — `account/read`,
+surfaces. `handleReadRequest` covers those (`account/read`,
 `account/usage/read`, `thread/read`, `thread/turns/list`,
 `thread/settings/update`, `skills/list`, `config/read`,
-`mcpServerStatus/list`, `thread/backgroundTerminals/list` — each with
+`mcpServerStatus/list`, `thread/backgroundTerminals/list`), each with
 the minimum the app's own decoder needs and nothing invented beyond it
 (a terminating cursor, a `thread.status.type`, an account with a plan).
 Genuinely optional or newer surfaces (`thread/compact/start`,
@@ -262,8 +262,8 @@ the fallback. A scenario's own `responses` template still outranks both.
 
 ## Scenario knobs the adapters own
 
-`startupDelayMs` holds the FIRST provider frame — Claude's `system/init`,
-Codex's `initialize` response — and is paid once per process, because a
+`startupDelayMs` holds the FIRST provider frame (Claude's `system/init`,
+Codex's `initialize` response) and is paid once per process, because a
 per-frame sleep would turn a 5s spawn-delay scenario into a
 5s-per-turn one. It is the only way to drive the app's cold-start window
 from a scenario. `providerVersion` overrides what the mock claims to be
@@ -271,7 +271,7 @@ in both places the app parses a version from, which is how a spec pins a
 DOWNGRADE and drives the closed side of a version gate; without it every
 mock is 99.0.0 and every gate is open. `emit.coalesce` writes the step's
 lines in one stdout write, for reproducing a reader that mishandles
-several NDJSON lines arriving in a single read — invisible when each
+several NDJSON lines arriving in a single read, invisible when each
 line gets its own syscall, so it is mutually exclusive with the pacing
 knobs that mean the opposite.
 

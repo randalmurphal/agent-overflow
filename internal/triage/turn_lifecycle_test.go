@@ -1227,3 +1227,55 @@ func TestTurnCompleteErrorWithOpenRoundUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// TestAnyInFlightTurnOrRound pins the whole-router predicate the webview
+// trim gate consults: true while any thread has an open wire round OR a
+// logical turn surviving a wire-round boundary, false once both clear,
+// and false on a nil router (the App's lazy-triage paths).
+func TestAnyInFlightTurnOrRound(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+
+	if router.AnyInFlightTurnOrRound() {
+		t.Fatal("empty router reports an in-flight turn")
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  "t1",
+		TurnID:    "turn-a",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	if !router.AnyInFlightTurnOrRound() {
+		t.Fatal("open round not reported")
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		ThreadID:     "t1",
+		TurnID:       "turn-a",
+		TurnComplete: normalTurnCompleteMeta(),
+		Timestamp:    time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	if router.AnyInFlightTurnOrRound() {
+		t.Fatal("settled round still reported in flight")
+	}
+
+	// The round-2+ re-round shape: currentRoundOpen set without
+	// setOpenTurn (maybeEmitReRoundOnInit). The predicate must see it.
+	router.mu.Lock()
+	router.state("t1").currentRoundOpen = true
+	router.mu.Unlock()
+	if !router.AnyInFlightTurnOrRound() {
+		t.Fatal("re-round (currentRoundOpen without openTurnSet) not reported")
+	}
+
+	var nilRouter *Router
+	if nilRouter.AnyInFlightTurnOrRound() {
+		t.Fatal("nil router reports an in-flight turn")
+	}
+}

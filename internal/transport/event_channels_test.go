@@ -98,6 +98,7 @@ var (
 		"webview:trim", // 2026-08-25: replaying a stale trim would GC an active session
 	}
 	frozenLatestOnlyChannels = []string{
+		"browser:install-progress", // superseding artifact-install phase
 		// A LEVEL, not an edge: a reconnecting launcher replays with a
 		// zero cursor and must converge on the current keep-awake state.
 		"power:keepawake",

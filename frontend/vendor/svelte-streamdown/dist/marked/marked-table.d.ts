@@ -1,4 +1,5 @@
 import type { Extension } from './index.js';
+import type { Lexer } from 'marked';
 export interface SpanTableOptions {
     useTheadTbody?: boolean;
     useTfoot?: boolean;
@@ -56,5 +57,11 @@ type WorkingRow = WorkingCell[];
 export declare const DEFAULT_OPTIONS: Required<SpanTableOptions>;
 export declare const getTableCell: (text: string, cell: BaseCell, type: "th" | "td", align: string | null) => string;
 export declare const splitCells: (tableRow: string, count: number | null, prevRow?: WorkingRow | null, maxColspan?: number | null) => WorkingRow;
+export declare const tokenizeTableTail: (src: string, lexer: Lexer) => {
+    raw: string;
+    align: (string | null)[];
+    headerRowCount: number;
+    rows: TRow[];
+} | null;
 export declare const markedTable: Extension;
 export {};

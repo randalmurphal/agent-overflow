@@ -14,7 +14,7 @@
 // remote browser or a view-only `--connect` session therefore READS the themes
 // directory perfectly well and is REFUSED every write. Collapsing both into
 // one `available` boolean inverted the per-client residency the spec promises
-// (docs/specs/theme-system.md §6.1): every `theme:changed` refetch adopted the
+// (docs/architecture/theme-system.md §6.1): every `theme:changed` refetch adopted the
 // desktop's selection, clobbered the client's own choice, and re-armed a write
 // path that could only fail. So the two are tracked apart:
 //

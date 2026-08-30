@@ -98,11 +98,16 @@
   let todosOpen = $derived(pane.activityRailTodosOpen);
   let backgroundOpen = $derived(pane.activityRailBackgroundOpen);
 
-  let completedCount = $derived.by(() => {
-    if (!liveTodo) return 0;
+  // The whole badge as one string, not a count beside a `liveTodo.steps`
+  // read: as two template expressions the merged text run carried both
+  // `completedCount` and `liveTodo`, so it could be asked to re-render on
+  // the count after the todo snapshot went null and before the branch tore
+  // down. Folded, the run reads one nullable.
+  let todoProgressLabel = $derived.by(() => {
+    if (!liveTodo) return '';
     let n = 0;
     for (const step of liveTodo.steps) if (step.status === 'completed') n++;
-    return n;
+    return `${n}/${liveTodo.steps.length}`;
   });
 
   // First in-progress step for the collapsed segment preview. The char cap
@@ -201,7 +206,7 @@
         <span
           class="shrink-0 rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
           data-testid="activity-rail-todos-count"
-        >{completedCount}/{liveTodo.steps.length}</span>
+        >{todoProgressLabel}</span>
         {#if inProgressPreview}
           <span
             class="min-w-0 truncate text-fg-hint/70"

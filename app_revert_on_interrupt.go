@@ -70,7 +70,7 @@ type UserMessageRevertedEvent struct {
 	KeptAnchorTurnItemIDs []string `json:"keptAnchorTurnItemIds,omitempty"`
 	// HistoryRev / HistoryEpoch are the thread's history stamps AFTER the
 	// cut, read inside the deleting transaction
-	// (docs/specs/thread-replica-sync.md §3, §4). A client that applies
+	// (docs/architecture/thread-replica-sync.md §3, §4). A client that applies
 	// this event has mirrored the cut exactly, so it may adopt them and
 	// keep its cached window instead of dropping it. Never adopt them on
 	// an event whose removal instruction was not fully applied — an

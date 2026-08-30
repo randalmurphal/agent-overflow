@@ -14,12 +14,7 @@ export async function takeMemoryDump(browser, level = 'detailed') {
   });
   await browser.send('Tracing.requestMemoryDump', { levelOfDetail: level });
   await sleep(level === 'detailed' ? 1500 : 800);
-  const done = new Promise((res) => {
-    const t = setInterval(() => {
-      const e = browser.events.find((x) => x.method === 'Tracing.tracingComplete');
-      if (e) { clearInterval(t); res(e.params); }
-    }, 100);
-  });
+  const done = browser.waitFor('Tracing.tracingComplete');
   await browser.send('Tracing.end');
   const complete = await done;
   const data = await readStream(browser, complete.stream);

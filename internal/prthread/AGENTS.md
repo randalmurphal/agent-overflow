@@ -5,9 +5,9 @@ sidebar title, building the first user message, picking a code fence
 that won't be closed by inner backtick runs, and truncating oversized
 titles / diffs on rune boundaries.
 
-The App-coupled glue — forge CLI invocation (`gh view`, `glab mr
-view`), local-clone resolution, project-row creation, and store
-reads/writes — stays in `app_thread_from_pr.go`.
+The App-coupled glue stays in `app_thread_from_pr.go`: forge CLI
+invocation (`gh view`, `glab mr view`), local-clone resolution,
+project-row creation, and store reads/writes.
 
 ## Surface
 
@@ -29,7 +29,7 @@ reads/writes — stays in `app_thread_from_pr.go`.
   `PRMetadata`) and stdlib. No store, no provider, no App.
 - The fence-picking rule (strictly longer than the longest run,
   minimum 3) is captured here so the contract is explicit and tested
-  directly — a future "PR diff in markdown" renderer should call
+  directly. A future "PR diff in markdown" renderer should call
   this same helper rather than re-deriving the rule.
 - `TruncateTitle` guards Bug C6: byte-based slicing at 117 used to
   split a multibyte rune into an invalid UTF-8 sequence. The

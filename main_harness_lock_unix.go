@@ -8,6 +8,19 @@ import (
 	"syscall"
 )
 
+func openHarnessLock(path string, mode os.FileMode) (*os.File, error) {
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW, uint32(mode.Perm()))
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("create lock file descriptor")
+	}
+	return file, nil
+}
+
 // lockFileExclusiveNonBlocking takes a BSD advisory lock (flock) on the
 // open descriptor. Reports (false, nil) when another process holds it —
 // which is the ordinary refusal, not an error.

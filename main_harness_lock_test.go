@@ -92,6 +92,28 @@ func TestHarnessInstanceLockNamesTheHolder(t *testing.T) {
 	}
 }
 
+func TestHarnessInstanceLockRefusesASymlink(t *testing.T) {
+	dir := newHarnessLockDir(t)
+	target := filepath.Join(t.TempDir(), "protected")
+	if err := os.WriteFile(target, []byte("protected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, harnessLockFileName)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if lock, err := acquireHarnessInstanceLock(dir, "harness"); err == nil {
+		lock.releaseForTest(t)
+		t.Fatal("acquired a symlinked harness lock")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "protected" {
+		t.Fatalf("symlink target changed to %q", data)
+	}
+}
+
 // TestHarnessBootModeNamesTheFlag pins that --soak and --harness share
 // one lock but are told apart in the refusal message.
 func TestHarnessBootModeNamesTheFlag(t *testing.T) {
@@ -100,6 +122,9 @@ func TestHarnessBootModeNamesTheFlag(t *testing.T) {
 	}
 	if got := harnessBootMode(cliFlags{soak: true}); got != "soak" {
 		t.Errorf("harnessBootMode(--soak) = %q", got)
+	}
+	if got := harnessBootMode(cliFlags{soak: true, isolatedProfile: "perf"}); got != "perf" {
+		t.Errorf("harnessBootMode(--soak --isolated-profile perf) = %q", got)
 	}
 }
 

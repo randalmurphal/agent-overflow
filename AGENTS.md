@@ -1,136 +1,141 @@
 # Agent Overflow
 
-Desktop app for using coding agents (Claude Code, Codex) with a shared UX.
-Ground-up rewrite of [`forge`](/Users/randy/repos/forge) optimizing for
-performance, memory efficiency, and minimal code.
+Desktop app for driving coding agents (Claude Code, Codex) through one
+shared UX. Optimized for performance, memory efficiency, and minimal code.
 
 ## Stack
 
 - **Backend**: Go 1.26, Wails v3 (system webview shell only), SQLite via
   `modernc.org/sqlite` (pure Go, no CGO). WAL mode. Syntax-highlight
-  spans via tree-sitter (`internal/highlight`) — the one cgo dependency
+  spans via tree-sitter (`internal/highlight`), the one cgo dependency
   besides the platform webview glue; grammars compile in with the
-  standard toolchain (Windows WSL payload builds with gcc in WSL).
-- **Frontend**: Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4, TypeScript.
-- **IPC**: HTTP+WebSocket via `internal/transport/`. Wails' binding generator
-  still emits the typed TS wrappers; in production `@wailsio/runtime` resolves
-  to `frontend/src/lib/transport/runtime.ts`, which forwards calls over WS.
-  Server push goes through the per-channel event ring on the same connection.
-  The same wire shape backs the embedded webview and `agent-overflow --connect`.
+  standard toolchain (the Windows WSL payload builds with gcc in WSL).
+- **Frontend**: Svelte 5 (runes), Vite 8 (Rolldown), Tailwind CSS 4,
+  TypeScript.
+- **IPC**: HTTP+WebSocket via `internal/transport/`. Wails' binding
+  generator still emits the typed TS wrappers; in production
+  `@wailsio/runtime` resolves to `frontend/src/lib/transport/runtime.ts`,
+  which forwards calls over WS. Server push goes through the per-channel
+  event ring on the same connection. The same wire shape backs the
+  embedded webview and `agent-overflow --connect`.
 - **Providers**: Claude Code CLI (NDJSON over stdio) and Codex app-server
   (JSON-RPC 2.0 over stdio).
 
 ## Commands
 
 Requires Go 1.26.2+, Node 24+, and pnpm 10+. On Linux, install
-`libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`, and `gcc`
-before `make install` (the GTK4 / WebKitGTK 6.0 stack ships on
-Ubuntu 23.04+ / Debian 13+).
+`libgtk-4-dev`, `libwebkitgtk-6.0-dev`, `pkg-config`, and `gcc` before
+`make install` (the GTK4 / WebKitGTK 6.0 stack ships on Ubuntu 23.04+ /
+Debian 13+).
 
-- `make install` — installs `wails3` CLI (via `go.mod` tool directive) + pnpm deps
-- `make dev` — dev mode, hot reload (local supervisor)
-- `make build` — production build (`wails3 build`)
-- `make go-build` — `go build ./...` with repo-standard platform env
-- `make go-test` — `go test ./...` with repo-standard platform env
-- `make check` — `make go-build` + `cd frontend && pnpm run check`
-- `make test` — `make go-test` + `cd frontend && pnpm test`
-- `make verify` — full release gate
-- `make release` — builds direct-install artifacts in `dist/release/<version>/`
-- `make harness` — boots the agent test harness (real app, isolated data
-  dir, mocked providers); `make harness-window` opens the real webview
-  window on it; `make harness-wsl` is the Windows shell (real launcher +
-  WebView2 window, own profile beside your dev instance); `make e2e`
-  runs the Playwright suite against it. `bin/ao-harness` (built by
-  `make harness-build`) drives any instance from a shell: boot, seed,
-  scenario, events, read-only db, semantic UI snapshots, perf runs,
-  bench workloads, health rollup.
-  See [docs/architecture/agent-harness.md](docs/architecture/agent-harness.md).
-- `make soak` — the harness-wsl shell plus the soak preset
-  (`--autopilot`): streams background-subagent activity indefinitely,
-  for hours-long renderer/hang reproductions beside your own running
-  app; `make soak-check` summarizes it. `make soak-window` is the
-  native-window equivalent on linux/macOS.
-  See [docs/architecture/soak-rig.md](docs/architecture/soak-rig.md).
-- `make provider-smoke` — manual real-provider gate; **spends real model
-  tokens** and needs authenticated `claude` + `codex` CLIs on PATH. Run it
-  before a release and after upgrading either provider CLI.
-  See [providersmoke_test.go](providersmoke_test.go).
-- `make import-corpus-smoke` — manual session-import gate; spends no tokens
-  and spawns nothing, but needs a **copy** of your provider homes. The
-  committed importer tests run on synthetic fixtures, which only know the
-  shapes whoever wrote them knew about; this runs the Claude transcript
-  reader, the Codex rollout reader, and the store writer over a real corpus
-  and reports what it found (warnings by code, unknown wire types, corrupt
-  lines, peak heap). Format drift shows up as a new code or a new unknown
-  type; only a session that fails to load, convert, Build, or apply its batch
-  to the throwaway store fails the gate.
-  Point it at copies via `AO_IMPORT_CORPUS_CLAUDE` /
-  `AO_IMPORT_CORPUS_CODEX` — a root that overlaps the live `~/.claude` or
-  `~/.codex` is refused outright, and there is no fallback to a real home.
-  Run it after upgrading either provider CLI and before shipping importer
-  changes. Unlike `provider-smoke` it carries no build tag: `make go-test`
-  compiles it and both legs skip when their variable is unset. See
-  [importcorpussmoke_test.go](importcorpussmoke_test.go).
+| Target | What it does |
+|---|---|
+| `make install` | `wails3` CLI (via the `go.mod` tool directive) + pnpm deps |
+| `make dev` | dev mode, hot reload (local supervisor) |
+| `make build` | production build (`wails3 build`) |
+| `make go-build` / `make go-test` | `go build ./...` / `go test ./...` with repo-standard platform env |
+| `make check` | `make go-build` + frontend `pnpm run check` |
+| `make test` | `make go-test` + frontend `pnpm test` |
+| `make verify` | full release gate |
+| `make release` | direct-install artifacts in `dist/release/<version>/` |
+| `make harness` | real app, isolated data dir, mocked providers; `harness-window` / `harness-wsl` open a real window on it, `make e2e` runs Playwright against it, `bin/ao-harness` drives any instance from a shell. See [agent-harness.md](docs/architecture/agent-harness.md). |
+| `make soak` | the harness shell plus the indefinite streaming preset, for hours-long renderer reproductions beside your own app; `soak-check` summarizes, `soak-window` is the native equivalent. See [soak-rig.md](docs/architecture/soak-rig.md). |
+| `make provider-smoke` | manual real-provider gate. **Spends real model tokens**; needs authenticated `claude` + `codex` on PATH. Run before a release and after upgrading either provider CLI. See [providersmoke_test.go](providersmoke_test.go). |
+| `make import-corpus-smoke` | manual session-import gate over a **copy** of your provider homes (`AO_IMPORT_CORPUS_CLAUDE` / `AO_IMPORT_CORPUS_CODEX`; a root overlapping a live home is refused, and there is no fallback). Spends no tokens. Run after provider CLI upgrades and before importer changes. See [importcorpussmoke_test.go](importcorpussmoke_test.go). |
 
 Every task must leave `make go-build`, `make go-test`,
-`cd frontend && pnpm run check`, and `cd frontend && pnpm run build` passing.
-On macOS, use the Make targets rather than bare `go build ./...` /
-`go test ./...`; the Makefile exports the cgo deployment target flags Wails
-needs to keep Objective-C objects and final binaries on the same minimum macOS
-version.
+`cd frontend && pnpm run check`, and `cd frontend && pnpm run build`
+passing. On macOS, use the Make targets rather than bare
+`go build ./...` / `go test ./...`: the Makefile exports the cgo
+deployment-target flags Wails needs to keep Objective-C objects and
+final binaries on the same minimum macOS version.
 
 ## Core Principles
 
 1. **Go is triage + pipe.** No event sourcing, no orchestration engine,
-   no in-memory read models. The deliberate exceptions — lightweight
-   coordination when brokering between multiple provider processes and the
-   frontend (deliberation turn tracking, design option flow), and the workflows
-   engine (`internal/workflow/`; spec: `docs/specs/workflows-system.md`), which
-   sequences phases over the same thread/provider runtime — are coordination,
-   not orchestration, and are called out where they live.
-2. **Provider process is the source of truth during a turn.** Don't duplicate
-   its state. Provider session files (`~/.claude/`, `~/.codex/`) are the
-   authoritative history for crash recovery.
+   no in-memory read models. The deliberate exceptions are coordination,
+   not orchestration, and are called out where they live: lightweight
+   brokering between provider processes and the frontend (deliberation
+   turn tracking, design option flow), and the workflows engine
+   (`internal/workflow/`; spec: `docs/specs/workflows-system.md`), which
+   sequences phases over the same thread/provider runtime.
+2. **Provider process is the source of truth during a turn.** Don't
+   duplicate its state. Provider session files (`~/.claude/`,
+   `~/.codex/`) are the authoritative history for crash recovery.
 3. **SQLite is a history cache, not an event store.** Persist per-item on
    completion, not per-turn. Derived, version-stamped render metadata
-   (`pathRefs`, highlight span blobs) may persist alongside history —
-   it's cache content too: stale entries are dropped and recomputed,
-   never migrated. Raw content stays canonical.
+   (`pathRefs`, highlight span blobs) may persist alongside history as
+   cache content: stale entries are dropped and recomputed, never
+   migrated. Raw content stays canonical.
 4. **Frontend memory is bounded by the visible thread.** Heavy payloads
    (diffs, command output, thinking) live in SQLite and load on demand.
 5. **Errors are user-facing state, not log entries.**
 6. **Provider-specific code stays in provider-specific packages.** Don't
    force a unified abstraction across Claude and Codex.
-7. **Project ≠ workspace.** A project is the git repo. A workspace is where
-   the provider operates (project root, or a separate worktree). Threads
-   track both.
+7. **Project ≠ workspace.** A project is the git repo. A workspace is
+   where the provider operates (project root, or a separate worktree).
+   Threads track both.
+8. **Every platform is production.** macOS, Windows (the WSL launcher),
+   and Linux; embedded webview and `--connect` browser alike. Paths,
+   spawning, and filesystem code must hold on all of them: build paths
+   with `filepath`, assume nothing about home layout or case
+   sensitivity, and put platform behavior behind the existing
+   `*_darwin.go` / `*_windows.go` splits rather than runtime guesses.
+
+## Working In This Repo
+
+- **Fix the root cause.** If the fix you are writing is a workaround,
+  the code underneath is wrong: fix that, or surface the tradeoff and
+  get approval before settling.
+- **Close the class, not the instance.** When a bug can recur, make it
+  structural: narrow the API, validate inside the function, add the
+  tripwire test or lint. Then sweep for siblings of the same pattern.
+- **Consider every place.** A change to a shared shape updates every
+  caller, every sibling path with the same pattern, and both providers
+  when it applies to both. Compiling is not the same as complete.
+- **Prefer clean, simple solutions.** Minimal code is a project goal. A
+  solution that needs a paragraph of justification is usually wrong;
+  resist speculative states, modes, and knobs nobody asked for.
+- **Write through the performance lens, always.** Visual performance,
+  memory consumption, and the actual work a change causes are weighed on
+  every edit, not tuned later: do the least work needed, allocate the
+  least that suffices, and stay correct under partial failure. Applies
+  to all code, hot path or not.
+- **Visible UI behavior changes only with approval.** Perf, refactor,
+  and bug-fix work keeps pixels, motion, and interactions identical
+  unless the visible change is itself what was requested.
+- **A fixed bug ships its lesson.** When the bug's class could recur,
+  update the nearest AGENTS.md (or the doc it points to) in the same
+  change.
+- **A change keeps the guides true.** Before reporting done, sweep
+  `**/AGENTS.md` and `docs/` for claims your change falsified and fix
+  them in the same commit. Full maintenance rules (fact routing, the
+  sweep, retiring enforced prose, index sync):
+  [conventions.md § Maintaining the Guides](docs/architecture/conventions.md#maintaining-the-guides).
 
 ## Improving As You Go
 
-This is a ground-up rewrite optimizing for performance, memory efficiency,
-and minimal code. Treat those goals as ongoing: if you spot a chance to
-improve architecture, cut allocations, tighten a hot path, or delete dead
-code while working on something else, take it. Don't be afraid to change
-existing code — nothing here is a cathedral yet. Don't leave the codebase
-slightly worse than you found it because the improvement wasn't in the
-ticket.
+Performance, memory efficiency, and minimal code are ongoing goals: if
+you spot a chance to improve architecture, cut allocations, tighten a
+hot path, or delete dead code while working on something else, take it.
+Nothing here is a cathedral yet. Don't leave the codebase slightly worse
+than you found it because the improvement wasn't in the ticket.
 
 Guardrails:
 
 - **Surface it.** Call out opportunistic changes alongside the primary
-  change so they can be reviewed on their own merits, not buried in the
-  diff.
-- **Stay adjacent.** Fix what you're touching or immediately adjacent to.
-  If a larger refactor looks warranted, propose it before starting.
+  change so they can be reviewed on their own merits.
+- **Stay adjacent.** Fix what you're touching or immediately adjacent
+  to. Propose larger refactors before starting them.
 - **Don't shortcut by duplicating.** If the right fix lives in shared
-  code, change shared code — don't copy-paste a local workaround to avoid
-  a broader edit. "Not my file" isn't a reason to work around a bug.
-- **Don't violate Core Principles.** A cleanup that reintroduces in-memory
-  read models, forces a unified Claude/Codex abstraction, etc. is not an
-  improvement.
+  code, change the shared code. "Not my file" isn't a reason to work
+  around a bug.
+- **Don't violate Core Principles.** A cleanup that reintroduces
+  in-memory read models or forces a unified Claude/Codex abstraction is
+  not an improvement.
 - **Reliability under partial/failure conditions counts as quality.**
   Streaming reconnects, provider restarts, partial NDJSON lines, session
-  resume — if you notice brittle handling while you're in the area, fix
+  resume: if you notice brittle handling while you're in the area, fix
   it.
 
 ## Repo Map
@@ -143,25 +148,23 @@ Guardrails:
 /frontend/                    Svelte 5 app (see frontend/AGENTS.md)
 /e2e/                         Playwright suite for the agent test harness (see e2e/AGENTS.md)
 /docs/architecture/           deep-dive design docs
-/docs/GLOSSARY.md             coined vocabulary + terms with conflicting meanings across subsystems (wave, lane, spine, ghost, envelope, ...)
-/docs/references/             external reference repos + spike policy
-/docs/archive/                historical specs + ralph-loop artifacts
+/docs/GLOSSARY.md             coined vocabulary + terms with conflicting meanings across subsystems
+/docs/references/             provider wire references + spike policy
 ```
 
 Area guides live alongside their code as `AGENTS.md` (with a `CLAUDE.md`
-symlink). Start at the area closest to what you're touching — it will link
+symlink). Start at the area closest to what you're touching; it links
 down if more depth is needed.
 
 ## Conventions
 
 - Go: `internal/` for every non-main package. No `pkg/`.
-- Svelte: runes only (`$state`, `$derived`, `$effect`, `$props`). No legacy
-  stores or reactive `$:` syntax.
+- Svelte: runes only (`$state`, `$derived`, `$effect`, `$props`). No
+  legacy stores or reactive `$:` syntax.
 - Tailwind v4: CSS-native config via `@theme` in `app.css`. No
   `tailwind.config.js`.
-- Wails bindings live in `frontend/bindings/` and are regenerated —
-  never edit by hand. Always pass `-ts` to `wails3 generate bindings`
-  so Wails emits TypeScript files instead of JS bindings.
+- Wails bindings live in `frontend/bindings/` and are regenerated, never
+  edited by hand. Always pass `-ts` to `wails3 generate bindings`.
 - Events go Go → frontend via `a.emit(name, data)` (the transport-aware
   helper on `*App`); frontend calls Go via the typed wrappers in
   `frontend/src/lib/stores/bindings.ts`. Both flow through
@@ -170,40 +173,24 @@ down if more depth is needed.
 ## When Behavior Is Unclear
 
 If you're uncertain how Claude Code, Codex, or an external tool behaves,
-**do not guess from this repo**. Write a small isolated spike test outside
-the project to confirm the behavior, then port the learning in. See
-[docs/references/spike-policy.md](docs/references/spike-policy.md).
+**do not guess from this repo**. Write a small isolated spike test
+outside the project to confirm the behavior, then port the learning in.
+See [docs/references/spike-policy.md](docs/references/spike-policy.md).
 
-## Reference Repos
+## References
 
-- **forge** (`/Users/randy/repos/forge`) — the Node/Effect project this one
-  rewrites. UX and provider-handling reference. See
-  [docs/references/forge.md](docs/references/forge.md).
-- **Claude Code source** (`/Users/randy/repos/claude-code-source-code`) —
-  TypeScript source of an older Claude Code release. Use when binary
-  behavior is unclear; cross-check against the installed binary because
-  the local copy can lag. See
+- **Claude Code source**: a local checkout of the CLI's TypeScript
+  source. Location, caveats, and how it lags the installed binary:
   [docs/references/claude.md](docs/references/claude.md).
-- **Codex source** (`/home/rmurphy/repos/codex`, upstream
-  https://github.com/openai/codex) — authoritative Codex CLI and
-  app-server behavior.
-- **CodexMonitor** (https://github.com/Dimillian/CodexMonitor) — Tauri,
-  feature-complete reference implementation of a Codex app-server client.
-
-See [docs/references/codex.md](docs/references/codex.md) for how to use
-these when touching Codex code, and
-[docs/references/claude.md](docs/references/claude.md) for Claude.
-
-**Codex background terminals:** `exec_command` can yield back to the
-model while the PTY keeps running; `source: "unifiedExecStartup"` is the
-wire-typed signal for these background terminals. Per-process
-termination is available since codex 0.140.0
-(`thread/backgroundTerminals/terminate {threadId, processId}`), alongside
-`list` and the thread-wide `clean`. See
-[docs/references/codex.md §Background terminals](docs/references/codex.md#background-terminals)
-and [invariant 25](docs/architecture/invariants.md#25-codex-backgrounding-uses-wire-typed-signals-never-heuristics).
-What remains client-unreachable is killing a spawned collab-agent child
-thread — `close_agent` is a model tool only.
+- **Codex source** (https://github.com/openai/codex): authoritative
+  Codex CLI and app-server behavior. How to use it:
+  [docs/references/codex.md](docs/references/codex.md).
+- **CodexMonitor** (https://github.com/Dimillian/CodexMonitor): Tauri,
+  feature-complete reference implementation of a Codex app-server
+  client.
+- **Wire references**: `docs/references/claude-wire.md` and
+  `docs/references/codex-wire.md` are the single sources of truth for
+  parser work on either provider.
 
 ## Permanent invariants
 
@@ -218,59 +205,41 @@ thread — `close_agent` is a model tool only.
   `internal/transport/AGENTS.md` for the authz and replay rules.
 
 - **`.claude/` and `.playwright-mcp/` MUST stay excluded from the
-  Wails3 dev watcher.** Claude Code's parallel-agent harness creates
-  full-repo worktrees under `.claude/worktrees/agent-*/` whenever an
-  agent is spawned with `isolation: "worktree"`. Each contains
-  hundreds of `.go` / `.ts` files matching the dev_mode
-  watched_extension patterns; without the explicit exclude in
-  `build/config.yml#dev_mode.ignore.dir`, Wails3 registers thousands
-  of fsnotify watches at startup and the dev process crashes (incident
-  2026-05-02 — backend rebuild storm + WebSocket disconnect cascade,
-  visible as repeated HMR-update messages in the dev log). `git_ignore:
-  true` is set, but it has not been enough on its own — keep the
-  explicit dir-level exclude in place. The same exclusion is mirrored
-  defensively in `frontend/vite.config.ts#server.watch.ignored` even
-  though those paths sit outside Vite's project root.
+  Wails3 dev watcher.** Claude Code's worktree isolation creates
+  full-repo checkouts under `.claude/worktrees/agent-*/`; each one
+  matches thousands of watched extensions, and without the explicit
+  exclude in `build/config.yml#dev_mode.ignore.dir` the fsnotify watch
+  storm crashes the dev process (incident 2026-05-02). `git_ignore:
+  true` alone was not enough; keep the dir-level exclude, and its
+  defensive mirror in `frontend/vite.config.ts#server.watch.ignored`.
 
 - **Tests MUST never reach a real provider binary or the developer's
   real provider homes.** `make go-test` runs on machines whose
   `~/.claude` / `~/.codex` hold live logins. Claude refresh tokens are
-  single-use: a test that spawns the real CLI and then kills it (every
-  fixture teardown does) can consume a refresh token without persisting
-  the rotation, which destroys the developer's login hours later — and
-  every leaked session burns real, billed tokens (incidents 2026-07-29:
-  HOME-unisolated startup test pruned all saved credential slots;
-  2026-08-03: workflow wake delivery spawned 143 real Claude sessions
-  over nine days and killed the active account's OAuth grant). Spawning
-  a real CLI is what `make provider-smoke` is for — an explicit, manual,
-  token-spending gate — never `make go-test`. Enforcement:
-  `setupE2EApp` and `newTestAppWithStore` both poison the provider
-  binary settings, stub text generation and the live Codex model
-  catalog, detach HOME/USERPROFILE, and fail any test that still spawns
-  (`app_e2e_isolation_test.go`, thin glue over `internal/kerneltest`,
-  which holds the importable guard so a fixture in ANY package can
-  install it); `resolveTextGenerationExecutor`
-  additionally refuses real CLI execution inside any test binary, and
-  the boot prune refuses a metadata store whose `providerHome` stamp
-  does not match the credential home; a session-starting test installs
-  `testutil.WriteMockClaudeScript` / `WriteMockCodexSession` over the
-  poison. Any NEW fixture that constructs an `*App` able to start
-  sessions, and any new spawn path (probes, catalogs, textgen-style
-  side effects), must be wired into the same guard — via
-  `kerneltest.IsolateSpawns` if it lives outside package `main` —
-  mocking stays mandatory-by-default, never opt-in per test.
+  single-use, so a test that spawns and kills the real CLI can destroy
+  the developer's login hours later, and every leaked session burns
+  real, billed tokens (incidents 2026-07-29 and 2026-08-03: wiped
+  credential slots, 143 leaked real sessions, a dead OAuth grant).
+  Spawning a real CLI is what `make provider-smoke` is for, never
+  `make go-test`. Enforcement lives in `internal/kerneltest` (see its
+  AGENTS.md): `setupE2EApp` and `newTestAppWithStore` poison provider
+  binaries, stub text generation and the Codex catalog, detach
+  HOME/USERPROFILE, and fail any test that still spawns;
+  `resolveTextGenerationExecutor` refuses real CLI execution inside any
+  test binary; the boot prune refuses a store whose `providerHome`
+  stamp mismatches the credential home. Any NEW fixture that constructs
+  a session-capable `*App`, and any new spawn path, must wire into the
+  same guard (`kerneltest.IsolateSpawns` outside package `main`).
+  Mocking is mandatory-by-default, never opt-in per test.
 
 ## Deferred (Not Currently in Scope)
 
-These are intentional non-goals for the current phase — don't implement
-them without a scope conversation first.
+Intentional non-goals for the current phase. Don't implement without a
+scope conversation first.
 
-- **Correction-needed / mid-turn correction flow.** Forge has this as
-  a workflow/gate mechanic (`thread.correct` command, guidance channel
-  projection, `correction-needed` interactive-request kind). Workflows are
-  landing under `docs/specs/workflows-system.md`, but this correction flow
-  remains deferred pending its own scope conversation. It does not map to a
-  Codex or Claude wire-level event, and t3-code (the
-  reference UX we most closely track) doesn't implement either.
-  If a "let me course-correct mid-turn" primitive is wanted independently,
-  it becomes its own feature, not forge parity.
+- **Correction-needed / mid-turn correction flow.** A workflow/gate
+  mechanic for steering an agent mid-turn. It maps to no Codex or
+  Claude wire-level event, and t3-code (still a UX reference for some
+  surfaces, though core functionality has diverged) doesn't implement
+  one either. If a "course-correct mid-turn" primitive is wanted, it
+  becomes its own feature with its own design.

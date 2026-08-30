@@ -147,9 +147,9 @@ func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
 		a.applyKeepAwake(next)
 	}
 	if patchTouchesBrowserSettings(patch) {
-		// Tool exposure flips synchronously in the AO MCP server; process
-		// teardown and provider refresh happen after the settings write and do
-		// not require either provider process to restart.
+		// Disabling revokes tool calls synchronously; enabling publishes the
+		// tools after the manager accepts the new config. Process teardown and
+		// provider refresh remain asynchronous and require no provider restart.
 		a.scheduleBrowserSettings(next)
 	}
 	a.ReconfigureObservability(prev, next)

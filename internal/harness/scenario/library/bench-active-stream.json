@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "name": "bench-active-stream",
+  "description": "Bench workload: one long agentic turn paced at the reader-facing reveal rate. It starts with a normal rich-Markdown response and tool pair, then keeps one assistant message actively streaming complete Markdown sections until the runner interrupts it at the requested duration. Unlike bench-burst-stream, this measures sustained rich-Markdown parsing and spring tail-follow rather than a synthetic 1ms wire flood.",
+  "provider": "claude",
+  "turns": [
+    {
+      "label": "active-rich-markdown",
+      "steps": [
+        {
+          "emit": {
+            "delayBetweenMs": 150,
+            "chunkBytes": 64,
+            "chunkIntervalMs": 1,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-active-report-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"# Active pane report\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n\\nThe renderer is processing \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"**streamed Markdown**\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" while \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"`requestAnimationFrame`\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" keeps the spring-scrolled \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"tail in view.\\n\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"## Checks\\n\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"- Parser state survives punctuation, \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"*emphasis*, and \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"[links](https://example.test/perf).\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"- Unicode stays intact: \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"café, 東京, and 🧪.\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"- Inline JSON such as \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"`{\\\"ok\\\":true}` remains ordinary prose.\\n\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"| Surface | State |\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"| --- | --- |\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"| Markdown | streaming |\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"| Scroll | following |\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"| Turn | ${TURN} |\\n\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"```ts\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"type PaneSample = {\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"  pane: number;\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"  active: boolean;\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"};\\n\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"const sample: PaneSample = \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"{ pane: ${TURN}, active: true };\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"```\\n\\n\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"> The next tool result creates \"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"a normal agentic pause before the turn completes.\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_stop\",\"data\":{\"type\":\"content_block_stop\",\"index\":0}}",
+              "{\"type\":\"stream_event\",\"event\":\"message_stop\",\"data\":{\"type\":\"message_stop\"}}",
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-active-report-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"text\",\"text\":\"# Active pane report\\n\\nThe renderer is processing **streamed Markdown** while `requestAnimationFrame` keeps the spring-scrolled tail in view.\\n\\n## Checks\\n\\n- Parser state survives punctuation, *emphasis*, and [links](https://example.test/perf).\\n- Unicode stays intact: café, 東京, and 🧪.\\n- Inline JSON such as `{\\\"ok\\\":true}` remains ordinary prose.\\n\\n| Surface | State |\\n| --- | --- |\\n| Markdown | streaming |\\n| Scroll | following |\\n| Turn | ${TURN} |\\n\\n```ts\\ntype PaneSample = {\\n  pane: number;\\n  active: boolean;\\n};\\n\\nconst sample: PaneSample = { pane: ${TURN}, active: true };\\n```\\n\\n> The next tool result creates a normal agentic pause before the turn completes.\"}]}}"
+            ]
+          }
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 100,
+            "lines": [
+              "{\"type\":\"assistant\",\"message\":{\"id\":\"msg-bench-active-tool-${TURN}\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu-bench-active-${TURN}\",\"name\":\"Read\",\"input\":{\"file_path\":\"${CWD}/pkg/doc.go\"}}]}}",
+              "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu-bench-active-${TURN}\",\"content\":\"// Package pkg is bench fixture content.\\npackage pkg\\n\"}]}}"
+            ]
+          }
+        },
+        {
+          "delayMs": 1200
+        },
+        {
+          "emit": {
+            "delayBetweenMs": 150,
+            "chunkBytes": 64,
+            "chunkIntervalMs": 1,
+            "lines": [
+              "{\"type\":\"stream_event\",\"event\":\"message_start\",\"data\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-bench-active-long-${TURN}\",\"role\":\"assistant\"}}}",
+              "{\"type\":\"stream_event\",\"event\":\"content_block_start\",\"data\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
+            ]
+          }
+        },
+        {
+          "repeat": {
+            "count": 0,
+            "steps": [
+              {
+                "emit": {
+                  "delayBetweenMs": 175,
+                  "chunkBytes": 64,
+                  "chunkIntervalMs": 1,
+                  "lines": [
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n\\n### Working set ${ITER}\\n\\n\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"The active pane keeps **streamed Markdown**, `inline code`, and [a link](https://example.test/active/${ITER}) readable. \"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Unicode remains intact: café, 東京, 🧪, and iteration ${ITER}.\\n\\n\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"- The parser carries state across wire chunks.\\n- The reveal queue stays bounded.\\n- The spring follows the live edge.\\n\\n\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"| Iteration | Parser | Scroll |\\n| ---: | :--- | :--- |\\n| ${ITER} | active | following |\\n\\n\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"```ts\\n\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"const sample${ITER} = { pane: ${TURN}, active: true };\\n\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"console.log(sample${ITER});\\n```\\n\\n\"}}}",
+                    "{\"type\":\"stream_event\",\"event\":\"content_block_delta\",\"data\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"> Visible progress marker ${ITER}. The next section continues the same ordinary long turn.\"}}}"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "afterTurns": "repeatLast"
+}

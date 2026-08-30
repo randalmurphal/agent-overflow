@@ -30,6 +30,7 @@
 // invalidation for one moved marker.
 
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
+import { createAnimationFrameBatcher } from '../../utils/animationFrameBatcher';
 import {
   railClipOffsetPx,
   railGapLow,
@@ -109,6 +110,11 @@ export interface NavRailViewportSync {
 // center: the scroller cannot go further, so the edge message can never
 // be centered.
 const AT_EDGE_EPSILON_PX = 2;
+
+// Every visible pane asks for the same post-scroll viewport pass. One browser
+// rAF is enough to run all rails, and avoids four registrations/callback entry
+// points per display frame in the normal four-pane layout.
+const viewportSyncFrames = createAnimationFrameBatcher('message-nav-rail');
 
 export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportSync {
   // Plain array of tick elements, index-aligned with the tick list.
@@ -193,8 +199,7 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
                 merged,
                 range,
                 center,
-                (nodeIndex) => list.getItemOffset(nodeIndex),
-                (nodeIndex) => list.sizeAt(nodeIndex),
+                list,
               );
     applyCurrent(next);
 
@@ -208,7 +213,7 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
     if (next !== null) {
       positionFrac = tickFraction(next, count);
     } else {
-      const gapLo = railGapLow(merged, center, (nodeIndex) => list.getItemOffset(nodeIndex));
+      const gapLo = railGapLow(merged, center, list);
       if (gapLo === null) {
         // No loaded geometry to measure against: fall back to the raw
         // scroll proportion so the clipped strip still tracks.
@@ -278,12 +283,14 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
     if (clipMoved) ctx.onClipChange?.();
   }
 
+  function runScheduledSync(): void {
+    frame = undefined;
+    syncNow();
+  }
+
   function schedule(): void {
     if (frame !== undefined || !ctx.isEnabled()) return;
-    frame = requestAnimationFrame(() => {
-      frame = undefined;
-      syncNow();
-    });
+    frame = viewportSyncFrames.request(runScheduledSync);
   }
 
   return {
@@ -312,7 +319,7 @@ export function createNavRailViewportSync(ctx: NavRailSyncCtx): NavRailViewportS
     schedule,
     cancel() {
       if (frame !== undefined) {
-        cancelAnimationFrame(frame);
+        viewportSyncFrames.cancel(frame);
         frame = undefined;
       }
     },

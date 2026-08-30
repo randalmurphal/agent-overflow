@@ -2,7 +2,9 @@
 // `ListLiveBackgroundTasks` polling, three event subscriptions
 // (`provider:item_event`-derived `onItemUpsert`,
 // `provider:background_tasks_changed`, `provider:background_task_state`),
-// and a debounced refresh. Exposes reactive `tasks` / `runningCount` /
+// and the rate-bounded refresh they drive (`utils/refreshScheduler` — a plain
+// trailing debounce here starved forever under a live stream and left the pill
+// showing a count nothing had refuted). Exposes reactive `tasks` / `runningCount` /
 // `hasPendingCompletion` for the rail's toggle pill and
 // expanded body.
 //
@@ -25,7 +27,7 @@ import type {
 import type { Item } from '../../types/models';
 import { asProviderID, type ProviderID } from '../../types/providers';
 import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
-import { debounce } from '../../utils/debounce';
+import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { parseJsonObject } from '../../utils/parseJsonObject';
 import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
 
@@ -33,7 +35,14 @@ import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
 // terminal state but doesn't linger after the user has read it. Just
 // long enough to register; not long enough to feel sticky.
 const COMPLETION_RETENTION_MS = 200;
-const REFRESH_DEBOUNCE_MS = 100;
+// The tray pill is an authoritative count read at a glance, and background
+// activity arrives as an unbroken event stream while any pane streams — so the
+// coalescing delay needs an absolute bound behind it. 100ms collapses a burst;
+// 400ms is the longest the pill may disagree with the backend (it read 10 over
+// a truth of 3-4 under the old trailing debounce, 2026-08-29) and caps a flood
+// at a handful of list calls per second.
+const REFRESH_DELAY_MS = 100;
+const REFRESH_MAX_WAIT_MS = 400;
 
 function projectLatestCodexTool(items: Item[], tool: Item): Item[] {
   const parentId = tool.parentId?.trim();
@@ -104,37 +113,42 @@ export function createBackgroundController(
   const threadId = $derived(getPane().thread?.id ?? null);
   const provider = $derived(asProviderID(getPane().thread?.provider));
 
-  let fetchSeq = 0;
-  async function refreshItems(): Promise<void> {
-    const id = threadId;
-    const seq = ++fetchSeq;
-    if (!id) {
-      backgroundItems = [];
-      return;
-    }
-    try {
-      const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
-      if (seq !== fetchSeq) return;
-      if (id !== threadId) return;
-      backgroundItems = (items ?? []).filter((item) => item.threadId === id);
-    } catch (err) {
-      if (seq !== fetchSeq) return;
-      if (id !== threadId) return;
-      console.error('ActivityRail: ListLiveBackgroundTasks failed:', err);
-      backgroundItems = [];
-    }
-  }
+  // The scheduler owns staleness: its token flips false the moment a run is
+  // superseded, the thread switches (reset) or the controller unmounts
+  // (dispose), which is what the hand-rolled fetchSeq used to do — badly, since
+  // it could not see a dispose. The thread-id comparison stays beside it: the
+  // token answers "is this run still the live one", the id answers "is this
+  // answer about the thread we are showing".
+  const refresh = createRefreshScheduler({
+    name: 'activityRailBackground',
+    delayMs: REFRESH_DELAY_MS,
+    maxWaitMs: REFRESH_MAX_WAIT_MS,
+    run: async (token) => {
+      const id = threadId;
+      if (!id) {
+        backgroundItems = [];
+        return;
+      }
+      try {
+        const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
+        if (!token.isCurrent() || id !== threadId) return;
+        backgroundItems = (items ?? []).filter((item) => item.threadId === id);
+      } catch (err) {
+        if (!token.isCurrent() || id !== threadId) return;
+        console.error('ActivityRail: ListLiveBackgroundTasks failed:', err);
+        backgroundItems = [];
+      }
+    },
+  });
 
-  const debouncedRefresh = debounce(
-    () => { void refreshItems(); },
-    REFRESH_DEBOUNCE_MS,
-  );
-
-  // Refetch when the thread switches.
+  // Refetch when the thread switches. Through the SAME scheduler as the event
+  // refreshes, so the switch load cannot race one issued moments before it;
+  // reset() is what makes the outgoing thread's in-flight answer stale.
   $effect(() => {
     threadId;
     backgroundItems = [];
-    void refreshItems();
+    refresh.reset();
+    refresh.request({ immediate: true });
   });
 
   const tasks = $derived<TrayTask[]>(
@@ -167,7 +181,7 @@ export function createBackgroundController(
             // the hierarchy. Ordinary child tools can update the existing
             // tray projection directly and avoid a full recursive query per
             // tool call; reconnect hydration still comes from the store.
-            debouncedRefresh();
+            refresh.request();
           } else {
             backgroundItems = projectLatestCodexTool(backgroundItems, item);
           }
@@ -177,28 +191,28 @@ export function createBackgroundController(
           item.isBackground
           || item.completionOf
         ) {
-          debouncedRefresh();
+          refresh.request();
         }
       });
       const cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
         'provider:background_tasks_changed',
         (evt) => {
           if (!evt || evt.threadId !== threadId) return;
-          debouncedRefresh();
+          refresh.request();
         },
       );
       const cancelBackgroundTaskState = wailsEventOn<BackgroundTaskStateEvent>(
         'provider:background_task_state',
         (evt) => {
           if (!evt || evt.threadId !== threadId) return;
-          debouncedRefresh();
+          refresh.request();
         },
       );
       return () => {
         cancelItemUpsert();
         cancelBackgroundTasksChanged();
         cancelBackgroundTaskState();
-        debouncedRefresh.cancel();
+        refresh.dispose();
       };
     },
   };

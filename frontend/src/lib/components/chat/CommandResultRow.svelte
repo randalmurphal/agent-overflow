@@ -212,14 +212,14 @@
        states. An untruncated row has nothing to fetch and renders none of it. -->
   {#if view.truncated && expansion}
     <div class={isAgentResult ? 'pb-2 text-[0.6875rem]' : 'ml-5 border-l border-border-subtle px-3 pb-2 text-[0.6875rem]'}>
-      {#if expansion.loading}
+      {#if expansion?.loading}
         <p class="animate-pulse text-fg-subtle" role="status" aria-live="polite">Loading…</p>
-      {:else if expansion.error}
-        <p class="text-error" role="alert">Failed to load: {expansion.error}</p>
+      {:else if expansion?.error}
+        <p class="text-error" role="alert">Failed to load: {expansion?.error ?? ''}</p>
         <button
           type="button"
           class={LOAD_BUTTON_CLASS}
-          onclick={() => expansion.retry()}
+          onclick={() => expansion?.retry()}
           data-testid="command-result-retry"
         >
           Retry
@@ -235,14 +235,14 @@
         >
           {#if expanded}Show less ↑{:else}Show full {isAgentResult ? 'result' : 'output'}{sizeLabel ? ` (${sizeLabel})` : ''} ↓{/if}
         </button>
-        {#if expanded && expansion.hasMore}
+        {#if expanded && expansion?.hasMore}
           <button
             type="button"
             class="{LOAD_BUTTON_CLASS} ml-3"
-            onclick={() => withRowAnchored(() => expansion.showFull())}
+            onclick={() => withRowAnchored(() => expansion?.showFull())}
             data-testid="command-result-show-more"
           >
-            Load more {isAgentResult ? 'result' : 'output'} ({formatPayloadSize(expansion.totalSize)}) ↓
+            Load more {isAgentResult ? 'result' : 'output'} ({formatPayloadSize(expansion?.totalSize ?? 0)}) ↓
           </button>
         {/if}
       {/if}

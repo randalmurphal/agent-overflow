@@ -757,4 +757,36 @@ describe('run build reuse across passes', () => {
     );
     expect(third.summaryItemIds).toBe(second.summaryItemIds);
   });
+
+  it('lean build: a plain tool run shares one array for members and summary', () => {
+    // No member can have an out-of-band completion, so the summary
+    // sequence IS the member sequence — building a second array (and the
+    // dedupe set behind it) per streaming beat was part of the 64MB/min
+    // projection allocation rate (2026-08-27).
+    const nodes = [
+      tool('t1', 'Bash'),
+      leaf({ id: 'c1', kind: 'tool_completion', completionOf: 't1' }),
+      leaf({ id: 'th1', kind: 'thinking' }),
+      readGroup(['r1', 'r2']),
+    ];
+    const node = run(project(nodes), 0);
+    expect(node.memberItemIds).toEqual(['t1', 'c1', 'th1', 'r1', 'r2']);
+    expect(node.summaryItemIds).toBe(node.memberItemIds);
+  });
+
+  it('a run holding a subagent card still reuses its build when the card node is unchanged', () => {
+    // Card nodes are reference-stable across passes now (cached per
+    // launch Item in subagentGrouping); a run containing one must hit the
+    // build cache like any all-leaf run does.
+    const reg = identity();
+    const nodes = [tool('t1', 'Bash'), detachedGroup('g1', 'complete:g1')];
+    const first = run(project(nodes, { identity: reg }), 0);
+    const second = run(project(nodes, { identity: reg }), 0);
+    expect(second).not.toBe(first);
+    expect(second.memberItemIds).toBe(first.memberItemIds);
+    expect(second.summaryItemIds).toBe(first.summaryItemIds);
+    // The card path still runs the out-of-band branch: identity is the
+    // anchor, dedupe intact.
+    expect(first.summaryItemIds).toEqual(['t1', 'complete:g1']);
+  });
 });

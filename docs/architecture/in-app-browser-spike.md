@@ -3,7 +3,7 @@
 > **Status: spike completed and production implementation landed, 2026-08-26.**
 > The measurement executable was isolated under `/tmp` and is not retained.
 > The resulting contract and implementation are documented in
-> `docs/specs/browser-tools.md` and `internal/browser/`.
+> `docs/architecture/browser-tools.md` and `internal/browser/`.
 
 ## Decision
 
@@ -265,7 +265,14 @@ AO would expose the trusted main UI and its bound methods to any local process.
 AO should own the MCP endpoint and reuse the tokenized, lazy-start pattern from
 `internal/design/mcp.go`. Do not enable Wails' global MCP server in production.
 
-## Recommended architecture
+## Recommended architecture (historical)
+
+The production contract evolved slightly from this pre-implementation model:
+site data is shared by canonical workspace, while opaque capabilities and page
+ownership remain per provider thread. Provider subagents inherit their parent
+session's MCP endpoint. The shipped behavior is authoritative in
+[`browser-tools.md`](browser-tools.md); this section preserves the decision
+evidence that led there.
 
 Use one provider-neutral MCP server owned by the Agent Overflow backend. The
 durable owner is an AO root thread, not a transient provider process. Its
@@ -328,7 +335,7 @@ explicit statement that interactions are synthetic. Restrict schemes to
 destinations beyond loopback are allowed. The browser window must never receive
 AO transport credentials or be able to target the main AO renderer.
 
-## Rough implementation cost
+## Rough implementation cost (pre-implementation estimate)
 
 These are engineering estimates, not measured schedules.
 
@@ -342,9 +349,11 @@ These are engineering estimates, not measured schedules.
 The fastest safe reduction in current resource use is therefore to change MCP
 ownership and sharing first, not the rendering engine.
 
-## Follow-up product decisions
+## Product decisions carried into implementation
 
-The built-in browser should have two separate settings:
+The original two settings below shipped, along with independent site-data
+persistence and outside-workspace file-authority settings. See
+[`browser-tools.md`](browser-tools.md) for their final defaults and behavior.
 
 - **Browser tools enabled**, default on. The AO-owned HTTP MCP endpoint remains
   registered even while disabled, but advertises no browser tools and does not
@@ -386,7 +395,12 @@ credential storage, restore ordering, cleanup, and tests. Cookie-only restore
 is smaller but does not reliably preserve sites that keep sessions in local
 storage or IndexedDB.
 
-## Production gates
+## Historical production-gate checklist
+
+This was the spike's conservative pre-implementation checklist, not a claim
+that every item became the shipped product boundary. Where it differs, the
+implemented contract and threat model in [`browser-tools.md`](browser-tools.md)
+are authoritative.
 
 Whichever backend is chosen, it is not ready until all of these hold:
 
@@ -417,20 +431,3 @@ Whichever backend is chosen, it is not ready until all of these hold:
   launcher WebSocket with correlated backend-initiated commands and an explicit
   capability role. A headless WSL Chromium backend needs no launcher extension.
 - Tests use controlled local pages and never start real providers.
-
-## Verification notes
-
-The worktree was set up with `make install`. The final `make go-build`,
-`pnpm run check`, and `pnpm run build` runs passed.
-
-The baseline `make go-test` run had two unrelated failures:
-
-- `internal/gitwatch.TestNoAsyncRefreshWithoutForge` observed one unexpected
-  full status call.
-- `internal/workflowhost.TestUnitWorktreesOfSeparateFanOutsShareOneItemBranch`
-  compares macOS's `/private/var/...` canonical path with `/var/...`.
-
-Both failures reproduced three times in isolation before any repository file
-was changed. In the final full run, `gitwatch` passed and the macOS path-alias
-failure in `workflowhost` remained. The browser spike used no providers and
-modified no runtime code.

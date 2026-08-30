@@ -6,11 +6,11 @@ silently drifting between three call sites.
 
 ## Layout
 
-- `keys.go` — `Browser()` returns the standard zoom / reload /
+- In `keys.go`, `Browser()` returns the standard zoom / reload /
   fullscreen accelerators. Used by `main.go` (desktop window +
   `runClient` `--connect` window) and `cmd/agent-overflow-windows/main.go`
   (WSL launcher window). `WithDevTools()` layers the F12 →
-  OpenDevTools binding on top — unconditional on desktop/connect
+  OpenDevTools binding on top. It is unconditional on desktop/connect
   windows (production builds compile OpenDevTools to a no-op), gated
   on `launcherMode == "dev"` in the WSL launcher (one .exe for dev and
   prod, devtools always compiled in).

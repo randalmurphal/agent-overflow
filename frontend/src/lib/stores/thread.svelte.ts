@@ -1,4 +1,5 @@
 import { tick } from 'svelte';
+import { matchesProvenAppend, type ProvenAppend } from 'svelte-streamdown';
 import type { Item, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
 import type {
@@ -66,7 +67,7 @@ import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
-import { createRevealGateTripwire } from './revealGateTripwire';
+import type { StreamingAssistantRenderContext } from './streamingAssistantReveal';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import { createThreadSubagentMemory } from './threadSubagentMemory';
 import { createThreadLiveStateHydration } from './threadLiveStateHydration';
@@ -93,6 +94,8 @@ import {
 
 /** Shared "nothing was dropped" list, so the common replacement allocates none. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
+/** Shared empty error list for the successful commit path. */
+const NO_ERRORS: readonly unknown[] = Object.freeze([]);
 
 // The only re-export left here is threadPaneShared's — the pane's OWN
 // vocabulary, which this module is the composition root for.
@@ -246,34 +249,131 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       if (!itemIndexById.has(item.id)) itemBoxes.drop(item.id);
     }
   }
+
   /**
-   * The ONE in-place row write. Every path that replaces a single loaded
-   * row (smoother reveal, delta, meta, field patch) goes through here so
-   * the revisions derived from a row's fields cannot be missed by a new
-   * caller: the bump is a property of writing, not something each writer
-   * remembers. Both exist to keep an O(window) walk off a ~50Hz path —
-   * the offscreen row-UI prune's no-op bail, and the activity-run
-   * header's summary signature — so both are decided from the single
-   * comparison this function is already holding.
+   * Reset masked parser checkpoints before a wholesale row replacement becomes
+   * observable. Every affected row is attempted even when one sink reports a
+   * reset failure, then the commit is refused so `items`, indexes, and boxes
+   * cannot describe different windows.
+   */
+  function reconcileItemReplacements(
+    previous: readonly Item[],
+    nextItems: readonly Item[],
+  ): void {
+    const errors: unknown[] = [];
+    for (const item of nextItems) {
+      const previousIndex = itemIndexById.get(item.id);
+      if (previousIndex === undefined) continue;
+      const prior = previous[previousIndex];
+      if (!prior || prior.id !== item.id) {
+        errors.push(new Error(`timeline item index is stale for ${item.id}`));
+        continue;
+      }
+      try {
+        streamingReveal.reconcileItemWrite(prior, item);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'timeline item replacement reconciliation failed');
+    }
+  }
+  /**
+   * The one reactive in-place row write. Every path that replaces a
+   * single loaded row (authoritative smoother reveal, delta, meta, field
+   * patch) goes through here. Preflighted literal assistant suffixes use the
+   * narrow quiet writer below. A new caller cannot miss revisions derived
+   * from row fields because the bump belongs to the write, not to each writer.
+   * Both revisions keep an O(window) walk off a ~50Hz path. They cover
+   * the offscreen row-UI prune's no-op bail and the activity-run header's
+   * summary signature. This function decides both from the comparison it
+   * already holds.
    *
    * Wholesale replacements go through `commitTimelineItems` instead,
    * which bumps retention unconditionally; a run's membership change
    * there is re-stamped by the projection's own epoch.
    */
   function writeItemAt(index: number, next: Item): void {
+    if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+      throw new RangeError(`timeline item write index ${index} is outside the loaded window`);
+    }
     const previous = items[index];
+    if (previous.id !== next.id) {
+      throw new Error(
+        `timeline item write cannot replace ${previous.id} with ${next.id} at index ${index}`,
+      );
+    }
+    streamingReveal.reconcileItemWrite(previous, next);
     if (rowUiRetentionChanged(previous, next)) rowUiRetentionRevision += 1;
+    const errors: unknown[] = [];
     // Same chokepoint logic for the activity-run header: it summarises the
     // rows in a run from five fields, and this is the write that fires at
     // reveal cadence. Comparing them here is what lets the header key on a
     // number instead of rebuilding the tuple for every member per tick.
     if (activityRunSummaryFieldsChanged(previous, next)) {
-      activityRuns.noteMemberContentChanged(next.id);
+      try {
+        activityRuns.noteMemberContentChanged(next.id);
+      } catch (error) {
+        errors.push(error);
+      }
     }
     items[index] = next;
-    switchLoad.noteItemMutation(next.id);
-    itemBoxes.set(next.id, next);
+    try {
+      itemBoxes.set(next.id, next);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      switchLoad.noteItemMutation(next.id);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        `timeline item write finalization failed for ${next.id}`,
+      );
+    }
   }
+
+  /**
+   * Direct literal reveal keeps the canonical raw row current while every
+   * mounted representation paints the same suffix. The reveal router is the
+   * only caller and passes the opaque append proof minted for that suffix.
+   * Verifying the proof keeps misuse impossible without a startsWith scan:
+   * V8 can flatten the growing cons string and copy the whole message on every
+   * reveal when code inspects its prefix.
+   */
+  function appendDirectAssistantLiteral(
+    index: number,
+    itemId: string,
+    append: ProvenAppend,
+    updatedAt: number,
+  ): void {
+    if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+      throw new RangeError(`direct assistant reveal index ${index} is outside the loaded window`);
+    }
+    const current = items[index];
+    if (!current || current.id !== itemId) {
+      throw new Error(`direct assistant reveal lost item ${itemId} at index ${index}`);
+    }
+    if (
+      current.kind !== 'assistant_text' ||
+      !matchesProvenAppend(append, current.summary, append.next)
+    ) {
+      throw new Error(`invalid direct assistant reveal for ${itemId}`);
+    }
+    if (itemBoxes.get(itemId) !== current) {
+      throw new Error(`direct assistant reveal lost the canonical row box for ${itemId}`);
+    }
+    // Stamp first. If conflict tracking ever fails, the canonical row must
+    // remain at the source the router still knows how to render.
+    switchLoad.noteItemMutation(itemId);
+    current.summary = append.next;
+    current.updatedAt = Math.max(updatedAt, current.updatedAt);
+  }
+
   const rowUiState = createThreadRowUiState({
     getItemById,
     // Read at dispose time, after the caller has already replaced `items`
@@ -281,31 +381,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     loadedPayloadRefs: () => items,
   });
   // Per-item smoother + reveal-gate machinery lives in
-  // threadStreamingReveal.svelte.ts. Every items-mutation path that can
-  // change which top-level rows exist relative to a live smoother must
-  // call `streamingReveal.recomputeReveal()` (or `.disposeAll()`).
-  // Diagnostic-only watch over that invariant: the items-commit
-  // chokepoints below arm it, the reveal recompute (and disposeAll)
-  // clear it, and a microtask reports whatever is still dirty. It only
-  // observes — it must never recompute, which would rush the readable
-  // drain. See revealGateTripwire.ts.
-  // Declaration order is load-bearing: `streamingReveal` is declared BELOW,
-  // so `isRevealGateEngaged` reads it through the closure and is safe only
-  // because nothing calls the tripwire synchronously during construction —
-  // an eager call here would hit the const's temporal dead zone.
-  const revealTripwire = createRevealGateTripwire({
-    getThreadId: () => thread?.id ?? null,
-    isRevealGateEngaged: () => streamingReveal.revealBoundary !== null,
-  });
+  // threadStreamingReveal.svelte.ts. Item-window commits finalize through
+  // `finalizeItemsCommit` below, so no caller can publish a new window while
+  // leaving the readable-drain boundary derived from the old one.
   const streamingReveal = createThreadStreamingReveal({
     getItemById,
     getItemIndex: (itemId) => itemIndexById.get(itemId),
     getItems: () => items,
     setItemAt: writeItemAt,
+    appendDirectAssistantLiteral,
     stampLiveContent,
     armStructuralSpring: armLiveContentAppendSpring,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
-    noteRevealSynced: revealTripwire.noteRevealSynced,
   });
   // Windowed-history / paging machinery (loaded-window cursors and flags,
   // the prune paths, and the four load methods) lives in
@@ -324,7 +411,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     installTimelineItems,
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
-    recomputeReveal: streamingReveal.recomputeReveal,
     getScrollController: () => scrollController,
     hydrateSubagentChildren: (rootItemID) =>
       subagentMemory.hydrateChildren(rootItemID),
@@ -557,7 +643,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     dropTimelineItems,
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
-    recomputeReveal: streamingReveal.recomputeReveal,
     // An anchor the OPEN agent pane is scoped to (or holds on its trail)
     // retains its children exactly like an expanded card: the pane is a
     // live view of those rows, so folding them out from under it would
@@ -793,9 +878,57 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // Dropped rows can include hydrated subagent children — re-arm their
     // anchors for hydration. See threadSubagentMemory.ts
     // `resetHydrationExhausted` for the full rationale.
-    subagentMemory.resetHydrationExhausted(exhaustedScope);
-    for (const item of droppedItems) streamingReveal.disposeSmootherFor(item.id);
-    rowUiState.disposeItems(droppedItems);
+    const errors: unknown[] = [];
+    try {
+      subagentMemory.resetHydrationExhausted(exhaustedScope);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      streamingReveal.disposeSmoothersForItems(droppedItems);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      rowUiState.disposeItems(droppedItems);
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'dropped timeline item disposal failed');
+    }
+  }
+
+  /**
+   * Complete an item-window commit before control returns to its caller.
+   * `afterCommit` owns domain work that must see the newly installed window;
+   * the reveal gate is always derived after that work, including when it
+   * throws. This keeps gate synchronization inside the mutation API instead
+   * of depending on every caller to remember a paired second call.
+   */
+  function finalizeItemsCommit<T>(
+    context: string,
+    afterCommit: ((committed: T) => void) | undefined,
+    committed: T,
+    priorErrors: readonly unknown[] = NO_ERRORS,
+  ): void {
+    let errors: unknown[] | null =
+      priorErrors.length > 0 ? [...priorErrors] : null;
+    if (afterCommit) {
+      try {
+        afterCommit(committed);
+      } catch (error) {
+        (errors ??= []).push(error);
+      }
+    }
+    try {
+      streamingReveal.recomputeReveal();
+    } catch (error) {
+      (errors ??= []).push(error);
+    }
+    if (errors) {
+      throw new AggregateError(errors, `${context} finalization failed`);
+    }
   }
 
   /** Set difference, for the callers that hand over a finished array. */
@@ -820,13 +953,29 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * that disagrees (a short list leaks row UI state; a long one releases
    * state a surviving row still reads).
    */
+  interface TimelineItemsCommitOptions {
+    exhaustedScope?: ReadonlySet<string>;
+    recordLiveReplacement?: boolean;
+    afterCommit?: () => void;
+  }
+
   function commitTimelineItems(
     nextItems: Item[],
     droppedItems: readonly Item[],
-    exhaustedScope?: ReadonlySet<string>,
+    commitOptions: TimelineItemsCommitOptions = {},
   ): boolean {
+    nextItems = streamingReveal.prepareItemReplacements(nextItems);
     const previous = items;
+    reconcileItemReplacements(previous, nextItems);
     items = nextItems;
+    const errors: unknown[] = [];
+    if (commitOptions.recordLiveReplacement) {
+      try {
+        switchLoad.noteItemWindowReplacement(previous, nextItems);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     // Indexes first: the box sync drops a previous row only when
     // `itemIndexById` no longer knows it.
     rebuildItemIndexes(items);
@@ -840,8 +989,16 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // fast path bypasses this function but never drops existing rows.
     // Eviction callers record their folds BEFORE replacing, with the
     // anchors still loaded, so those folds are retained.
-    subagentMemory.retainFoldAnchors();
-    disposeDroppedItemState(droppedItems, exhaustedScope);
+    try {
+      subagentMemory.retainFoldAnchors();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      disposeDroppedItemState(droppedItems, commitOptions.exhaustedScope);
+    } catch (error) {
+      errors.push(error);
+    }
     timelineRevision++;
     // Unconditional: a wholesale replacement can drop an active row, land
     // one, or re-link a payload, and proving otherwise would cost the very
@@ -855,12 +1012,17 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // every summary-relevant field on rows whose run membership is
     // untouched (the cache paint reconciled by `SyncThreadWindow`), and
     // that is invisible to both of the header's per-run signals.
-    activityRuns.noteWholesaleReplace();
-    // Diagnostic only: a wholesale replacement changes which top-level
-    // rows exist relative to a live smoother, so the caller owes the
-    // reveal gate a recompute. Nothing is recomputed here — see
-    // revealGateTripwire.ts.
-    revealTripwire.noteItemsCommitted('commitTimelineItems');
+    try {
+      activityRuns.noteWholesaleReplace();
+    } catch (error) {
+      errors.push(error);
+    }
+    finalizeItemsCommit(
+      'timeline window replacement',
+      commitOptions.afterCommit,
+      undefined,
+      errors,
+    );
     return true;
   }
 
@@ -869,14 +1031,27 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     options: {
       disposeDropped?: boolean;
       exhaustedScope?: ReadonlySet<string>;
+      afterCommit?: () => void;
     } = {},
   ): boolean {
-    if (items === nextItems) return false;
-    switchLoad.noteItemWindowReplacement(items, nextItems);
+    if (items === nextItems) {
+      if (options.afterCommit) {
+        finalizeItemsCommit(
+          'timeline window replacement',
+          options.afterCommit,
+          undefined,
+        );
+      }
+      return false;
+    }
     return commitTimelineItems(
       nextItems,
       options.disposeDropped ? droppedItemsBetween(items, nextItems) : NO_ITEMS,
-      options.exhaustedScope,
+      {
+        exhaustedScope: options.exhaustedScope,
+        recordLiveReplacement: true,
+        afterCommit: options.afterCommit,
+      },
     );
   }
 
@@ -890,13 +1065,26 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     options: {
       disposeDropped?: boolean;
       exhaustedScope?: ReadonlySet<string>;
+      afterCommit?: () => void;
     } = {},
   ): boolean {
-    if (items === nextItems) return false;
+    if (items === nextItems) {
+      if (options.afterCommit) {
+        finalizeItemsCommit(
+          'timeline window installation',
+          options.afterCommit,
+          undefined,
+        );
+      }
+      return false;
+    }
     return commitTimelineItems(
       nextItems,
       options.disposeDropped ? droppedItemsBetween(items, nextItems) : NO_ITEMS,
-      options.exhaustedScope,
+      {
+        exhaustedScope: options.exhaustedScope,
+        afterCommit: options.afterCommit,
+      },
     );
   }
 
@@ -922,8 +1110,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       else kept.push(item);
     }
     if (dropped.length === 0) return dropped;
-    switchLoad.noteItemWindowReplacement(items, kept);
-    commitTimelineItems(kept, dropped, options.exhaustedScope);
+    commitTimelineItems(kept, dropped, {
+      exhaustedScope: options.exhaustedScope,
+      recordLiveReplacement: true,
+    });
     return dropped;
   }
 
@@ -932,10 +1122,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // lives in threadSubagentMemory.ts as `subagentMemory`.
   // The per-item smoother + reveal-gate sequencer (disposeSmootherFor,
   // disposeAll, recomputeReveal, getOrCreateSmoothing, etc.) live in
-  // threadStreamingReveal.svelte.ts as `streamingReveal`. Every
-  // items-mutation path that can change which top-level rows exist
-  // relative to a live smoother must call `streamingReveal.recomputeReveal()`
-  // (or `.disposeAll()`, which clears the boundary).
+  // threadStreamingReveal.svelte.ts as `streamingReveal`. Both item-window
+  // commit chokepoints finalize the reveal gate internally, after all domain
+  // work that can change the final window or smoother set.
 
   /**
    * The upsert path's commit chokepoint, and the reason
@@ -947,32 +1136,64 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    * walk. Index maintenance rides along because the result says which
    * of the two shapes it is (full rebuild vs. tail-append patch).
    */
-  function commitUpsertResult(next: ApplyItemUpsertsToWindowResult): void {
-    items = next.items;
-    switchLoad.noteItemMutations(next.changedItems);
-    if (next.indexesNeedRebuild) {
-      rebuildItemIndexes(items);
-    } else {
-      const firstAppendIndex = items.length - next.appendedItems.length;
-      for (let index = 0; index < next.appendedItems.length; index += 1) {
-        itemIndexById.set(
-          next.appendedItems[index].id,
-          firstAppendIndex + index,
-        );
+  function commitUpsertResult(
+    next: ApplyItemUpsertsToWindowResult,
+    afterCommit: (committed: ApplyItemUpsertsToWindowResult) => void,
+  ): void {
+    const errors: unknown[] = [];
+    for (const changed of next.changedItems) {
+      const previousIndex = itemIndexById.get(changed.id);
+      if (previousIndex !== undefined) {
+        try {
+          streamingReveal.reconcileItemWrite(items[previousIndex], changed);
+        } catch (error) {
+          errors.push(error);
+        }
       }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'timeline item upsert reconciliation failed');
+    }
+    items = next.items;
+    try {
+      switchLoad.noteItemMutations(next.changedItems);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      if (next.indexesNeedRebuild) {
+        rebuildItemIndexes(items);
+      } else {
+        const firstAppendIndex = items.length - next.appendedItems.length;
+        for (let index = 0; index < next.appendedItems.length; index += 1) {
+          itemIndexById.set(
+            next.appendedItems[index].id,
+            firstAppendIndex + index,
+          );
+        }
+      }
+    } catch (error) {
+      errors.push(error);
     }
     // The merge never drops a row, so there is nothing to un-box;
     // `changedItems` carries the appended rows too.
-    for (const item of next.changedItems) itemBoxes.set(item.id, item);
+    for (const item of next.changedItems) {
+      try {
+        itemBoxes.set(item.id, item);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     if (next.structureChanged) timelineRevision++;
     if (next.rowUiRetentionChanged) rowUiRetentionRevision += 1;
     for (const id of next.summaryFieldsChangedIds) {
-      activityRuns.noteMemberContentChanged(id);
+      try {
+        activityRuns.noteMemberContentChanged(id);
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    // Diagnostic only, same contract as `commitTimelineItems`: the merge
-    // can append a successor that must withhold behind the frontier, so
-    // the batch owes one recompute. See revealGateTripwire.ts.
-    revealTripwire.noteItemsCommitted('commitUpsertResult');
+    finalizeItemsCommit('timeline item upsert', afterCommit, next, errors);
   }
 
   // The streaming item-application machine (upsertItemsBatch and the
@@ -984,9 +1205,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // below the last state they capture.
 
   // Thread live-state hydration protocol (applyPendingInteractiveSnapshot,
-  // hydratePendingInteractiveRequests, applyThreadLiveStateSnapshot,
-  // hydrateThreadLiveState) lives in threadLiveStateHydration.ts as
-  // `liveStateHydration`.
+  // applyThreadLiveStateSnapshot, startLiveStateFetch) lives in
+  // threadLiveStateHydration.ts as `liveStateHydration`.
 
   // Child-transcript hydration for a subagent launch anchor
   // (hydrateSubagentChildren) lives in threadSubagentMemory.ts as
@@ -996,8 +1216,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // timeline on purpose (removeItemsFromTurn / removeRevertedItems /
   // removeItemById). The drop itself and the disposal that follows it
   // belong to `dropTimelineItems` → `disposeDroppedItemState`; what is
-  // left here is what removal adds on top: a reveal recompute, and
-  // evicting the warm-re-entry cache so a thread-switch restore cannot
+  // left here is evicting the warm-re-entry cache so a thread-switch restore cannot
   // resurrect rows the user just destroyed.
   //
   // Routing through the chokepoint is also a behavior fix. Hand-rolling
@@ -1018,7 +1237,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // documents as clearing wholesale.
     const removed = dropTimelineItems(shouldRemove);
     if (removed.length === 0) return removed;
-    streamingReveal.recomputeReveal();
     if (thread) switchLoad.dropCachedWindow(thread.id);
     return removed;
   }
@@ -1574,6 +1792,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       // ("+ New" on a pane that was showing a thread). destroyPane's
       // cascade observer also lands here — second call is a no-op.
       closeCompanionsForSource(paneId);
+      // Dispose before severing the thread/window pair. disposeAll clears its
+      // state before reporting callback failures, so an aborted clear leaves a
+      // coherent settled pane that can be cleared again.
+      streamingReveal.disposeAll();
       thread = null;
       updateEffectiveModel('');
       draftPlaceholder = null;
@@ -1581,7 +1803,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       subagentMemory.clearFolds();
       rowUiState.clear();
       activityRuns.clear();
-      streamingReveal.disposeAll();
       // Clearing to empty: drop the live-content stamp too (see
       // installCacheOrFreshState — keeps a stale stamp from springing the
       // next thread's settled content). The switchGeneration bump below
@@ -2069,6 +2290,21 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      */
     isItemSmoothing(itemId: string): boolean {
       return streamingReveal.isSmoothing(itemId);
+    },
+
+    get assistantRevealRegistrationGeneration() {
+      return streamingReveal.assistantRevealRegistrationGeneration;
+    },
+    registerAssistantRevealSink: streamingReveal.registerAssistantRevealSink,
+    assistantMarkdownParserSource(
+      itemId: string,
+      canonicalSource: string,
+      renderContext: StreamingAssistantRenderContext,
+    ): string {
+      return streamingReveal.assistantParserSource(itemId, canonicalSource, renderContext);
+    },
+    assistantMarkdownSourceAppend(itemId: string, parserSource: string) {
+      return streamingReveal.assistantSourceAppend(itemId, parserSource);
     },
 
     // Snap every behind smoother straight to its full received text on

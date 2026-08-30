@@ -12,6 +12,16 @@ func claudeTurn(items ...recordedItem) recordedTurn {
 	return recordedTurn{TurnIndex: 3, UserText: "do the thing", Items: items}
 }
 
+// mkPieces builds unstamped pieces — the shape an old row with no
+// created_at reads as.
+func mkPieces(texts ...string) []recordedPiece {
+	out := make([]recordedPiece, len(texts))
+	for i, text := range texts {
+		out[i] = recordedPiece{Text: text}
+	}
+	return out
+}
+
 func synthOne(t *testing.T, provider string, turn recordedTurn) (*scenario.Scenario, synthStats) {
 	t.Helper()
 	doc, stats, err := synthesizeScenario(synthOptions{
@@ -65,7 +75,7 @@ func frameKinds(lines []string) []string {
 func TestClaudeTextItemEmitsOneDeltaPerRecordedChunk(t *testing.T) {
 	doc, stats := synthOne(t, scenario.ProviderClaude, claudeTurn(recordedItem{
 		ID: "blk-1", Kind: kindAssistantText, Role: "assistant",
-		Pieces: []string{"Hello ", "from the ", "recording."},
+		Pieces: mkPieces("Hello ", "from the ", "recording."),
 	}))
 
 	lines := linesOf(doc.Turns[0])
@@ -118,7 +128,7 @@ func TestClaudeTextItemWithNoPayloadReplaysEmptyAndIsCounted(t *testing.T) {
 
 func TestClaudeThinkingItemUsesTheThinkingBlockVocabulary(t *testing.T) {
 	doc, _ := synthOne(t, scenario.ProviderClaude, claudeTurn(recordedItem{
-		ID: "th-1", Kind: kindThinking, Role: "assistant", Pieces: []string{"weighing ", "options"},
+		ID: "th-1", Kind: kindThinking, Role: "assistant", Pieces: mkPieces("weighing ", "options"),
 	}))
 	lines := linesOf(doc.Turns[0])
 	for _, want := range []string{`"type":"thinking"`, `"thinking":""`} {
@@ -142,11 +152,11 @@ func TestClaudeToolPairKeepsRecordedOrderAndPairing(t *testing.T) {
 		recordedItem{ID: "tu-a", Kind: kindToolCall, ToolName: "Read", Role: "assistant",
 			Input: `{"file_path":"/x/y.go"}`},
 		recordedItem{ID: "tc-a", Kind: kindToolCompletion, CompletionOf: "tu-a", Role: "user",
-			Pieces: []string{"package y"}},
+			Pieces: mkPieces("package y")},
 		recordedItem{ID: "tu-b", Kind: kindToolCall, ToolName: "Bash", Role: "assistant",
 			Input: `{"command":"ls"}`},
 		recordedItem{ID: "tc-b", Kind: kindToolCompletion, CompletionOf: "tu-b", Role: "user",
-			Pieces: []string{"a\nb"}},
+			Pieces: mkPieces("a\nb")},
 	))
 	lines := linesOf(doc.Turns[0])
 	if got, want := frameKinds(lines), []string{"assistant", "user", "assistant", "user", "result"}; !equalStrings(got, want) {
@@ -171,6 +181,114 @@ func TestClaudeToolPairKeepsRecordedOrderAndPairing(t *testing.T) {
 	}
 }
 
+// An inline tool completion folds into the tool_call row — only
+// background tools get a sibling tool_completion row. The synthesizer
+// must put the folded result back on the wire, or every inline tool
+// replays unresolved and the app's turn-end sweep marks it failed
+// (observed live 2026-08-27: 565 of 572 replayed tools "turn ended with
+// tool unresolved / command failed").
+func TestClaudeFoldedInlineCompletionEmitsAPairedToolResult(t *testing.T) {
+	doc, _ := synthOne(t, scenario.ProviderClaude, claudeTurn(recordedItem{
+		ID: "tu-a", Kind: kindToolCall, ToolName: "Bash", Role: "assistant",
+		Status: "completed", Input: `{"command":"ls"}`, Pieces: mkPieces("a\nb\n"),
+	}))
+	lines := linesOf(doc.Turns[0])
+	if got, want := frameKinds(lines), []string{"assistant", "user", "result"}; !equalStrings(got, want) {
+		t.Fatalf("frames = %v, want %v", got, want)
+	}
+	if toolUseID(t, lines[0]) != toolResultID(t, lines[1]) {
+		t.Fatalf("folded result is not paired: use %q result %q", toolUseID(t, lines[0]), toolResultID(t, lines[1]))
+	}
+	if !strings.Contains(lines[1], `"content":"a\nb\n"`) {
+		t.Errorf("folded result dropped the recorded output: %s", lines[1])
+	}
+	if strings.Contains(lines[1], "is_error") {
+		t.Errorf("a completed tool carries is_error: %s", lines[1])
+	}
+}
+
+// A tool_call recorded as errored replays as an errored tool, not a
+// silently successful one.
+func TestClaudeErroredToolCallCarriesIsError(t *testing.T) {
+	doc, _ := synthOne(t, scenario.ProviderClaude, claudeTurn(recordedItem{
+		ID: "tu-a", Kind: kindToolCall, ToolName: "Bash", Role: "assistant",
+		Status: "errored", Input: `{"command":"boom"}`, Pieces: mkPieces("exit 1"),
+	}))
+	lines := linesOf(doc.Turns[0])
+	if !strings.Contains(lines[1], `"is_error":true`) {
+		t.Fatalf("errored tool result has no is_error: %s", lines[1])
+	}
+}
+
+// A call answered by an explicit sibling tool_completion row must not
+// ALSO get a folded result — that would deliver two results for one
+// tool_use.
+func TestClaudeSiblingCompletionSuppressesTheFoldedResult(t *testing.T) {
+	doc, _ := synthOne(t, scenario.ProviderClaude, claudeTurn(
+		recordedItem{ID: "tu-a", Kind: kindToolCall, ToolName: "Bash", Role: "assistant",
+			Status: "completed", Input: `{"command":"sleep"}`},
+		recordedItem{ID: "tc-a", Kind: kindToolCompletion, CompletionOf: "tu-a", Role: "user",
+			Pieces: mkPieces("done")},
+	))
+	lines := linesOf(doc.Turns[0])
+	if got, want := frameKinds(lines), []string{"assistant", "user", "result"}; !equalStrings(got, want) {
+		t.Fatalf("frames = %v, want %v (exactly one result for the pair)", got, want)
+	}
+}
+
+// A `running` row recorded no completion — the tool was still live when
+// the thread was recorded — so nothing is synthesized for it.
+func TestClaudeRunningToolCallGetsNoFabricatedResult(t *testing.T) {
+	doc, _ := synthOne(t, scenario.ProviderClaude, claudeTurn(recordedItem{
+		ID: "tu-a", Kind: kindToolCall, ToolName: "Bash", Role: "assistant",
+		Status: "running", Input: `{"command":"tail -f x"}`,
+	}))
+	lines := linesOf(doc.Turns[0])
+	if got, want := frameKinds(lines), []string{"assistant", "result"}; !equalStrings(got, want) {
+		t.Fatalf("frames = %v, want %v", got, want)
+	}
+}
+
+// Real cadence: a recorded gap of gapStepThresholdMs or more becomes a
+// delay step (capped at GapCapMs); sub-threshold frames stream in one
+// burst. Same-millisecond frames keep recorded order, so pairings hold.
+func TestRealCadenceTurnsRecordedGapsIntoDelaySteps(t *testing.T) {
+	doc, _, err := synthesizeScenario(synthOptions{
+		Name: "x", Provider: scenario.ProviderClaude, ThreadID: "t", DelayMs: 15,
+		CadenceReal: true, GapCapMs: 2000,
+		Turns: []recordedTurn{{TurnIndex: 1, Items: []recordedItem{
+			{ID: "tu-a", Kind: kindToolCall, ToolName: "Bash", Role: "assistant",
+				Status: "completed", Input: `{}`, Pieces: mkPieces("out"),
+				CreatedAtMs: 1000, UpdatedAtMs: 6000}, // 5s gap → capped to 2000
+			{ID: "a-1", Kind: kindAssistantText, Role: "assistant",
+				CreatedAtMs: 6010, UpdatedAtMs: 6010,
+				Pieces: []recordedPiece{{Text: "done", AtMs: 6010}}}, // 10ms after → same burst
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := doc.Turns[0].Steps
+	// tool_use burst, capped delay, then result + text block + turn result.
+	var delays []int
+	for _, step := range steps {
+		if step.DelayMs != 0 {
+			delays = append(delays, step.DelayMs)
+		}
+	}
+	if len(delays) != 1 || delays[0] != 2000 {
+		t.Fatalf("delay steps = %v, want exactly [2000] (the capped tool gap)", delays)
+	}
+	// The document must still survive the real parser.
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scenario.Parse(encoded); err != nil {
+		t.Fatalf("the real parser refused a real-cadence document: %v", err)
+	}
+}
+
 // Recorded ids are namespaced by turn so a replay into the thread that
 // already holds the original does not collide on (thread_id, id).
 func TestEmittedIDsAreNamespacedByTurn(t *testing.T) {
@@ -188,7 +306,7 @@ func TestEmittedIDsAreNamespacedByTurn(t *testing.T) {
 func TestClaudeRefusesAToolCompletionWithNoPairing(t *testing.T) {
 	_, _, err := synthesizeScenario(synthOptions{
 		Name: "x", Provider: scenario.ProviderClaude, Turns: []recordedTurn{claudeTurn(
-			recordedItem{ID: "tc-a", Kind: kindToolCompletion, Role: "user", Pieces: []string{"out"}},
+			recordedItem{ID: "tc-a", Kind: kindToolCompletion, Role: "user", Pieces: mkPieces("out")},
 		)},
 	})
 	if err == nil {
@@ -208,7 +326,7 @@ func TestAppInternalKindsAreSkippedAndCounted(t *testing.T) {
 		recordedItem{ID: "n-2", Kind: "notification", Role: "system"},
 		recordedItem{ID: "r-1", Kind: "api_retry", Role: "system"},
 		recordedItem{ID: "c-1", Kind: "compaction", Role: "system"},
-		recordedItem{ID: "blk", Kind: kindAssistantText, Role: "assistant", Pieces: []string{"done"}},
+		recordedItem{ID: "blk", Kind: kindAssistantText, Role: "assistant", Pieces: mkPieces("done")},
 	))
 	if got, want := stats.SkippedSummary(), "api_retry 1, compaction 1, notification 2"; got != want {
 		t.Fatalf("skipped = %q, want %q", got, want)
@@ -225,8 +343,8 @@ func TestAppInternalKindsAreSkippedAndCounted(t *testing.T) {
 // Turn and the mock's own adapter echoes the envelope back.
 func TestUserTextIsNeverReplayedAsAFrame(t *testing.T) {
 	doc, stats := synthOne(t, scenario.ProviderClaude, claudeTurn(
-		recordedItem{ID: "u-1", Kind: kindUserText, Role: "user", Pieces: []string{"do the thing"}},
-		recordedItem{ID: "blk", Kind: kindAssistantText, Role: "assistant", Pieces: []string{"ok"}},
+		recordedItem{ID: "u-1", Kind: kindUserText, Role: "user", Pieces: mkPieces("do the thing")},
+		recordedItem{ID: "blk", Kind: kindAssistantText, Role: "assistant", Pieces: mkPieces("ok")},
 	))
 	for _, line := range linesOf(doc.Turns[0]) {
 		if strings.Contains(line, "do the thing") {
@@ -246,12 +364,12 @@ func TestSynthesizedDocumentSurvivesTheRealParser(t *testing.T) {
 		DelayMs: 15,
 		Turns: []recordedTurn{
 			{TurnIndex: 1, UserText: "one", Items: []recordedItem{
-				{ID: "t-1", Kind: kindThinking, Role: "assistant", Pieces: []string{"hm"}},
-				{ID: "a-1", Kind: kindAssistantText, Role: "assistant", Pieces: []string{"first"}},
+				{ID: "t-1", Kind: kindThinking, Role: "assistant", Pieces: mkPieces("hm")},
+				{ID: "a-1", Kind: kindAssistantText, Role: "assistant", Pieces: mkPieces("first")},
 			}},
 			{TurnIndex: 2, UserText: "two", Items: []recordedItem{
 				{ID: "tu-1", Kind: kindToolCall, ToolName: "Bash", Role: "assistant", Input: `{"command":"ls"}`},
-				{ID: "tc-1", Kind: kindToolCompletion, CompletionOf: "tu-1", Role: "user", Pieces: []string{"a"}},
+				{ID: "tc-1", Kind: kindToolCompletion, CompletionOf: "tu-1", Role: "user", Pieces: mkPieces("a")},
 			}},
 		},
 	})
@@ -289,7 +407,7 @@ func TestSynthesizedDocumentSurvivesTheRealParser(t *testing.T) {
 func TestCodexAgentMessageStreamsEveryRecordedChunk(t *testing.T) {
 	doc, stats := synthOne(t, scenario.ProviderCodex, claudeTurn(recordedItem{
 		ID: "msg-1", Kind: kindAssistantText, Role: "assistant",
-		Pieces: []string{"Hello! ", "This is codex."},
+		Pieces: mkPieces("Hello! ", "This is codex."),
 	}))
 	want := []string{
 		"turn/started",
@@ -316,7 +434,7 @@ func TestCodexAgentMessageStreamsEveryRecordedChunk(t *testing.T) {
 // the synthesizer refuses and names the gap instead.
 func TestCodexRefusesTheKindsTheLibraryDoesNotDemonstrate(t *testing.T) {
 	cases := map[string]recordedItem{
-		"reasoning":       {ID: "r-1", Kind: kindThinking, Role: "assistant", Pieces: []string{"hm"}},
+		"reasoning":       {ID: "r-1", Kind: kindThinking, Role: "assistant", Pieces: mkPieces("hm")},
 		"tool call":       {ID: "t-1", Kind: kindToolCall, ToolName: "shell", Role: "assistant", Input: `{}`},
 		"tool completion": {ID: "c-1", Kind: kindToolCompletion, CompletionOf: "t-1", Role: "user"},
 	}

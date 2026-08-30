@@ -11,9 +11,9 @@ the store assigns when the row is first inserted.
 
 Wire order is deceptive. Claude emits text deltas, tool_use, thinking
 blocks, and `system.task_notification` events interleaved. Codex emits
-`turn/*` and `tool/*` notifications out of their final rendering order
-— a backgrounded tool completion can arrive mid-stream, before the
-streaming text it follows has settled. If we used wire order, the
+`turn/*` and `tool/*` notifications out of their final rendering
+order. A backgrounded tool completion can arrive mid-stream, before
+the streaming text it follows has settled. If we used wire order, the
 frontend would have to re-sort on every upsert, and "new row shows up
 above an in-flight row" bugs would recur.
 
@@ -46,8 +46,8 @@ Considered alternatives:
 
 ## Consequences
 
-- The streaming-phase interrupt queue (see ADR-003) is mandatory —
-  without it, the server-assigned index would put backgrounded
+- The streaming-phase interrupt queue (see ADR-003) is mandatory.
+  Without it, the server-assigned index would put backgrounded
   completions in the wrong visual position.
 - `item_index` must never be rewritten. Any future "move this item
   up" feature needs a different mechanism (a separate sort-key

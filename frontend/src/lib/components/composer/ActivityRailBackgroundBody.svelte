@@ -5,14 +5,13 @@
   // primitives: Claude stops a backgrounded task by its task id
   // (`StopClaudeTask`, fanned out for Stop All), Codex terminates one
   // unified-exec PTY by its process id
-  // (`TerminateCodexBackgroundTerminal`) and has a thread-wide
-  // `CleanCodexBackgroundTerminals` for Stop All. Spawned Codex
-  // collab-agent children remain unstoppable from the client — there is
-  // no wire path — so they render without either control.
+  // (`TerminateCodexBackgroundTerminal`) and interrupts an owned subagent
+  // turn by launch id (`StopCodexSubagent`). Stop All fans out across both.
 
   import {
     CleanCodexBackgroundTerminals,
     StopClaudeTask,
+    StopCodexSubagent,
     TerminateCodexBackgroundTerminal,
   } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
@@ -23,6 +22,7 @@
   } from '../../providers/catalog';
   import {
     isCodexStoppableTask,
+    isCodexSubagentTask,
     trayRowStopTarget,
     trayTaskAgentInfo,
     trayTaskLabel,
@@ -60,7 +60,8 @@
   // Claude's Stop All is a fan-out over the same per-row targets, so it
   // resolves through the same helper — one definition of "which rows are
   // stoppable" keeps the bulk button from ever disagreeing with the rows
-  // beneath it. Codex's Stop All is a single thread-wide RPC instead.
+  // beneath it. Codex combines one thread-wide terminal cleanup with a
+  // targeted interrupt for each live subagent launch.
   let claudeStoppableTaskIDs = $derived.by<string[]>(() => {
     if (backgroundStop !== 'claude-task') return [];
     const ids: string[] = [];
@@ -70,10 +71,25 @@
     }
     return ids;
   });
-  let hasCodexStoppable = $derived(
+  let codexSubagentLaunchIDs = $derived.by<string[]>(() => {
+    if (backgroundStop !== 'codex-background-terminals') return [];
+    return tasks
+      .filter(
+        (task) =>
+          task.status === 'running' && isCodexSubagentTask(task) && task.launch !== null,
+      )
+      .map((task) => task.launch!.id);
+  });
+  let hasCodexBackgroundTerminals = $derived(
     backgroundStop === 'codex-background-terminals'
-      && tasks.some((t) => t.status === 'running' && isCodexStoppableTask(t)),
+      && tasks.some(
+        (task) =>
+          task.status === 'running'
+          && !isCodexSubagentTask(task)
+          && isCodexStoppableTask(task),
+      ),
   );
+  let hasCodexStoppable = $derived(codexSubagentLaunchIDs.length > 0 || hasCodexBackgroundTerminals);
   let canStopAll = $derived(claudeStoppableTaskIDs.length > 0 || hasCodexStoppable);
 
   let stoppingRows = $state<Set<string>>(new Set());
@@ -93,6 +109,12 @@
       if (backgroundStop === 'claude-task') {
         await StopClaudeTask(threadId, stopTarget);
       } else if (backgroundStop === 'codex-background-terminals') {
+        const task = tasks.find((candidate) => candidate.rowId === rowId);
+        if (task && isCodexSubagentTask(task)) {
+          const stopped = await StopCodexSubagent(threadId, stopTarget);
+          if (!stopped) addToast('info', 'That subagent had already stopped.');
+          return;
+        }
         // The boolean is the wire's own answer: false means the RPC
         // matched no running process. No item/completed follows, so the
         // row would sit at "running" with no explanation — say so
@@ -123,7 +145,20 @@
           }
         }
       } else if (backgroundStop === 'codex-background-terminals') {
-        await CleanCodexBackgroundTerminals(threadId);
+        const stops: Promise<unknown>[] = codexSubagentLaunchIDs.map((launchID) =>
+          StopCodexSubagent(threadId!, launchID).then((stopped) => {
+            if (!stopped) addToast('info', 'A subagent had already stopped.');
+          }),
+        );
+        if (hasCodexBackgroundTerminals) {
+          stops.push(CleanCodexBackgroundTerminals(threadId));
+        }
+        const results = await Promise.allSettled(stops);
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            addToast('error', `Failed to stop task: ${errString(result.reason)}`);
+          }
+        }
       }
     } catch (err) {
       addToast('error', `Failed to stop tasks: ${errString(err)}`);

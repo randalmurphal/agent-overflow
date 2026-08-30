@@ -49,3 +49,8 @@ Built-in browser MCP backed by one lazily launched managed Chrome process.
 - Unit tests use fake controllers and temporary state directories.
 - Real-Chrome coverage must install into a temporary directory and must never
   start a provider CLI or touch provider homes.
+
+## References
+
+- `docs/architecture/browser-tools.md`: shipped product and authority contract.
+- `docs/architecture/in-app-browser-spike.md`: measured engine and ownership decision evidence.

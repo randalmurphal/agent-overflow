@@ -41,7 +41,7 @@ const UNREACHABLE_KEYS: Record<string, string> = {
   // the pre/code DOM itself from backend highlight spans, and the vendored
   // shiki `Code.svelte` is replaced wholesale. Chat code blocks are
   // zero-chrome — the host's hover-revealed copy button is the only
-  // affordance. See docs/specs/theme-system.md §4.3.
+  // affordance. See docs/architecture/theme-system.md §4.3.
   'code.header': 'replaced by StreamdownCodeHost; the vendor header never renders',
   'code.skeleton': 'replaced by StreamdownCodeHost; there is no vendor loading skeleton',
   'code.buttons': 'replaced by StreamdownCodeHost; the host owns its own button row',
@@ -168,11 +168,10 @@ describe('chatMarkdownTheme', () => {
   describe('md-blk block marker', () => {
     // Every element that can render as a DIRECT child of the streamdown
     // root (the .md-committed / .md-volatile wrapper) carries md-blk, and
-    // nothing else does. The app.css edge-margin resets key on the marker
-    // (`.markdown-body > … > .md-blk:first-child`) precisely so that
-    // position in the selector is never a bare structural pseudo — see the
-    // MD_BLOCK_MARKER doc in streamdownTheme.ts and
-    // src/lib/styleInvalidation.test.ts for the invalidation-set mechanism.
+    // nothing else does. Streamdown uses it to find the two direct edge
+    // blocks and publishes explicit `sd-trim-*` classes. app.css therefore
+    // needs no structural pseudo whose invalidation set reacts to nested
+    // syntax-span changes. See the MD_BLOCK_MARKER doc in streamdownTheme.ts.
     //
     // A block-level key missing the marker keeps its own edge margin when
     // it lands first/last in a message; an inline key carrying it would

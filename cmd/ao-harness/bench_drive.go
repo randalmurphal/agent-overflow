@@ -8,7 +8,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -33,8 +36,7 @@ const (
 	// a turn closes. Generous on purpose: the mock finishes a burst-stream
 	// turn in about a second and the reveal drain runs for ten or more, and
 	// a workload three times that size is still a legitimate run rather
-	// than a wedged one. Past this the window ends anyway, with a note —
-	// see waitForRevealDrain.
+	// than a wedged one. Past this the measurement is incomplete and fails.
 	benchDrainTimeout = 60 * time.Second
 	// benchDrainPollInterval paces the drain probe. The answer is three
 	// integers off store state, so this is about not becoming part of the
@@ -46,11 +48,17 @@ const (
 	// created, and a single empty reading taken in that gap would close the
 	// window in the middle of the stream.
 	benchDrainConfirmations = 2
+	// A clean interrupt should return as soon as the mock acknowledges it.
+	// This bound exists for the failure path, where every started pane still
+	// has to receive an interrupt even if one provider is wedged.
+	benchInterruptTimeout = 20 * time.Second
 	// revealDrainGlobal is the page-side probe the drain wait polls. It is
 	// installed by main.ts in every build (unlike the UI_TRACE diagnostics
 	// globals) and whitelisted in frontend/src/lib/harness/globals.ts.
 	revealDrainGlobal = "__aoRevealDrain"
 )
+
+var benchThreadIDPattern = regexp.MustCompile(`\A[A-Za-z0-9_-]+\z`)
 
 // benchSubscribedChannels is what the bench connection narrows itself to.
 // A bench is an INSTRUMENT: burst-stream and giant-turn push thousands of
@@ -61,7 +69,13 @@ const (
 // that awaits nothing (many-threads polls the page instead) is happy with
 // the same narrow set.
 func benchSubscribedChannels() []string {
-	return []string{string(eventchan.ProviderTurnCompleted)}
+	return []string{
+		string(eventchan.ProviderTurnStarted),
+		string(eventchan.ProviderItemEvent),
+		string(eventchan.ProviderSubagentProgress),
+		string(eventchan.ProviderTurnCompleted),
+		string(eventchan.ProviderSessionDied),
+	}
 }
 
 func narrowBenchSubscription(ctx context.Context, client *harnessclient.Client) error {
@@ -84,28 +98,66 @@ func probeBridge(ctx context.Context, e *env, client *harnessclient.Client) erro
 
 // reloadPage navigates the attached page and waits for its bridge to come
 // back. The reload query's OWN answer is best-effort by design: the page
-// is about to drop the socket the reply rides on, so a failure here proves
-// nothing either way and the re-probe is what decides.
-func reloadPage(ctx context.Context, e *env, client *harnessclient.Client) error {
+// is about to drop the socket the reply rides on, so most failures here prove
+// nothing either way. A no-frontend refusal is definitive and returns its
+// page-opening guidance instead of entering the re-probe loop.
+func reloadPage(ctx context.Context, e *env, client *harnessclient.Client, marker string) (string, error) {
 	reloadCtx, cancel := context.WithTimeout(ctx, benchBridgeTimeout)
-	defer cancel()
-	_, _ = e.queryUI(reloadCtx, client, map[string]any{"kind": "reload"})
+	_, reloadErr := e.queryUI(reloadCtx, client, map[string]any{"kind": "reload"})
+	cancel()
+	if reloadErr != nil && strings.Contains(reloadErr.Error(), "no frontend attached") {
+		return "", reloadErr
+	}
 
 	deadline := time.Now().Add(benchBridgeTimeout)
+	oldPageID := strings.TrimSpace(e.pageID)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		if err := sleepCtx(ctx, benchReloadPollInterval); err != nil {
-			return err
+			return "", err
+		}
+		infoCtx, infoCancel := context.WithTimeout(ctx, benchProbeTimeout)
+		info, err := client.Info(infoCtx)
+		infoCancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		pageID := freshPageID(info.FrontendPages, marker, oldPageID)
+		if pageID == "" {
+			lastErr = fmt.Errorf("no fresh frontend page with marker %q", marker)
+			continue
 		}
 		probeCtx, probeCancel := context.WithTimeout(ctx, benchProbeTimeout)
-		_, err := e.queryUI(probeCtx, client, map[string]any{"kind": "element", "selector": "body"})
+		_, err = e.queryUI(probeCtx, client, map[string]any{"kind": "element", "selector": "body", "pageId": pageID})
 		probeCancel()
 		if err == nil {
-			return nil
+			e.pageID = pageID
+			return pageID, nil
 		}
 		lastErr = err
 	}
-	return fmt.Errorf("the page did not come back after a reload: %w", lastErr)
+	return "", fmt.Errorf("the page did not come back after a reload: %w", lastErr)
+}
+
+// freshPageID selects the document created by a reload, never the previous
+// page registration when it is still present during teardown. Marker matches
+// the backend instance and oldPageID forces an identity transition.
+func freshPageID(pages []harnessclient.HarnessPageIdentity, marker, oldPageID string) string {
+	var fallback string
+	for _, page := range pages {
+		if page.Marker != marker || strings.TrimSpace(page.PageID) == "" {
+			continue
+		}
+		if page.PageID != oldPageID {
+			return page.PageID
+		}
+		fallback = page.PageID
+	}
+	if oldPageID == "" {
+		return fallback
+	}
+	return ""
 }
 
 // activateThread drives the production thread-open path from outside the
@@ -167,14 +219,14 @@ func waitForActiveThread(ctx context.Context, e *env, client *harnessclient.Clie
 	var last string
 	for time.Now().Before(deadline) {
 		probeCtx, cancel := context.WithTimeout(ctx, benchProbeTimeout)
-		view, _, err := e.takeViewport(probeCtx, client, 0, 0)
+		view, _, err := e.takeViewport(probeCtx, client, 300, 0)
 		cancel()
 		if err != nil {
 			return err
 		}
 		last = view.ActiveThreadID
 		for _, pane := range view.Panes {
-			if pane.ThreadID == threadID {
+			if pane.ThreadID == threadID && view.Settled {
 				return nil
 			}
 		}
@@ -194,7 +246,10 @@ type revealDrain struct {
 }
 
 func (d revealDrain) empty() bool {
-	return d.Draining == 0 && d.Smoothers == 0
+	// A boundary owner can create the next smoother between two probes. Treat
+	// that state as live even when no smoother is currently registered, or the
+	// measurement window ends in the hand-off gap.
+	return d.Draining == 0 && d.Smoothers == 0 && d.Boundaries == 0
 }
 
 // waitForRevealDrain blocks until the page has finished REVEALING what the
@@ -215,14 +270,16 @@ func (d revealDrain) empty() bool {
 // store state instead: live smoothers and standing reveal boundaries, per
 // pane.
 //
-// Three degradations, none of them a failed run. A page whose bridge has
-// no such global (an older build) answers `unavailable` and the wait
-// returns immediately with a note. So does a bridge whose whitelist has
-// never heard of it, which arrives as a query ERROR rather than an answer.
-// And a drain still going at the timeout ends the window anyway, with a
-// note naming what was still outstanding — a slow drain is a finding to
-// read in the report, not a reason to throw away the run that produced it.
+// Every missing signal is a failed measurement. This command drives the
+// current attached build, not an older compatibility target. Ending at wire
+// completion after a bridge error or timeout would produce a green report
+// that silently excluded the main-thread reveal work it claims to measure.
 func waitForRevealDrain(ctx context.Context, e *env, client *harnessclient.Client, timeout time.Duration) error {
+	_, err := waitForRevealDrainObserved(ctx, e, client, timeout)
+	return err
+}
+
+func waitForRevealDrainObserved(ctx context.Context, e *env, client *harnessclient.Client, timeout time.Duration) (revealDrain, error) {
 	deadline := time.Now().Add(timeout)
 	confirmations := 0
 	var last revealDrain
@@ -233,52 +290,47 @@ func waitForRevealDrain(ctx context.Context, e *env, client *harnessclient.Clien
 		})
 		cancel()
 		if err != nil {
-			e.drainNote("the page could not answer %s (%v); the window ends at turn completion",
-				revealDrainGlobal, err)
-			return nil
+			return last, fmt.Errorf("query reveal drain through %s: %w", revealDrainGlobal, err)
 		}
 		var answer struct {
 			Unavailable bool        `json:"unavailable"`
 			Value       revealDrain `json:"value"`
 		}
 		if err := json.Unmarshal(raw, &answer); err != nil {
-			e.drainNote("the page's %s answer did not decode (%v); the window ends at turn completion",
-				revealDrainGlobal, err)
-			return nil
+			return last, fmt.Errorf("decode reveal drain from %s: %w", revealDrainGlobal, err)
 		}
 		if answer.Unavailable {
-			e.drainNote("this page does not install %s; the window ends at turn completion",
-				revealDrainGlobal)
-			return nil
+			return last, fmt.Errorf("the attached page does not install %s", revealDrainGlobal)
 		}
 		last = answer.Value
 		if last.empty() {
 			confirmations++
 			if confirmations >= benchDrainConfirmations {
-				return nil
+				return last, nil
 			}
 		} else {
 			confirmations = 0
 		}
 		if !time.Now().Before(deadline) {
-			e.drainNote("the reveal queue was still draining after %s (%d pane(s), %d smoother(s)); the window ends here",
-				timeout, last.Draining, last.Smoothers)
-			return nil
+			return last, fmt.Errorf(
+				"reveal queue still draining after %s (%d pane(s), %d smoother(s), %d boundary owner(s))",
+				timeout, last.Draining, last.Smoothers, last.Boundaries,
+			)
 		}
 		if err := sleepCtx(ctx, benchDrainPollInterval); err != nil {
-			return err
+			return last, err
 		}
 	}
 }
 
-// drainNote is one operator sentence about a measurement window, never an
-// error. Silent under -o json, where the document is the answer and a
-// stray line would corrupt it.
-func (e *env) drainNote(format string, args ...any) {
-	if e.jsonOutput() {
-		return
+func waitForRunRevealDrain(ctx context.Context, run *benchRun, timeout time.Duration) error {
+	drain, err := waitForRevealDrainObserved(ctx, run.env, run.client, timeout)
+	run.drain = drain
+	run.drainObserved = drain.Panes > 0 || drain.Draining > 0 || drain.Smoothers > 0 || drain.Boundaries > 0
+	if err == nil && !run.drainObserved {
+		return errors.New("reveal drain probe returned no mounted panes")
 	}
-	e.printf("note: "+format+"\n", args...)
+	return err
 }
 
 // awaitTurnCompletion parks on `provider:turn_completed` for one thread.
@@ -286,7 +338,14 @@ func (e *env) drainNote(format string, args ...any) {
 // must not reimplement the payload match.
 func awaitTurnCompletion(ctx context.Context, client *harnessclient.Client, threadID string) error {
 	channel := string(eventchan.ProviderTurnCompleted)
-	if _, err := client.WaitForEvent(ctx, channel, func(ev harnessclient.Event) bool {
+	if _, err := client.WaitForEvent(ctx, channel, matchTurnCompletion(threadID)); err != nil {
+		return fmt.Errorf("the turn never completed: %w", err)
+	}
+	return nil
+}
+
+func matchTurnCompletion(threadID string) func(harnessclient.Event) bool {
+	return func(ev harnessclient.Event) bool {
 		if ev.Gap {
 			return false
 		}
@@ -294,10 +353,7 @@ func awaitTurnCompletion(ctx context.Context, client *harnessclient.Client, thre
 			ThreadID string `json:"threadId"`
 		}
 		return json.Unmarshal(ev.Data, &payload) == nil && payload.ThreadID == threadID
-	}); err != nil {
-		return fmt.Errorf("the turn never completed: %w", err)
 	}
-	return nil
 }
 
 // driveOneTurn sends the workload's message, waits for the app to close the
@@ -305,10 +361,12 @@ func awaitTurnCompletion(ctx context.Context, client *harnessclient.Client, thre
 // lets the meters run one more settle window.
 func driveOneTurn(ctx context.Context, run *benchRun) error {
 	threadID := run.threadIDs[0]
+	run.sourceStartedAt = time.Now()
+	run.startedThreadIDs = append(run.startedThreadIDs, threadID)
 	// The turn keeps its own budget. The drain that follows is bounded
-	// separately (and answers with a note rather than an error), so folding
-	// the two into one deadline would let a slow drain report itself as a
-	// turn that never completed.
+	// separately, so folding the two into one deadline would let a slow drain
+	// report itself as a turn that never completed instead of an incomplete
+	// renderer measurement.
 	turnCtx, cancel := context.WithTimeout(ctx, benchTurnTimeout)
 	if _, err := run.client.Call(turnCtx, "SendMessage", threadID,
 		fmt.Sprintf("bench %s run %d", run.workload.Name, run.index), nil); err != nil {
@@ -320,7 +378,7 @@ func driveOneTurn(ctx context.Context, run *benchRun) error {
 	if err != nil {
 		return err
 	}
-	if err := waitForRevealDrain(ctx, run.env, run.client, benchDrainTimeout); err != nil {
+	if err := waitForRunRevealDrain(ctx, run, benchDrainTimeout); err != nil {
 		return err
 	}
 	return sleepCtx(ctx, benchSettleMs*time.Millisecond)
@@ -338,6 +396,7 @@ func driveThreadSwitchStorm(ctx context.Context, run *benchRun) error {
 	)
 	stormCtx, cancel := context.WithTimeout(ctx, benchTurnTimeout)
 	defer cancel()
+	run.sourceStartedAt = time.Now()
 	for pass := 0; pass < passes; pass++ {
 		for _, threadID := range run.threadIDs {
 			if err := activateThread(stormCtx, run.client, threadID); err != nil {
@@ -358,7 +417,7 @@ func driveThreadSwitchStorm(ctx context.Context, run *benchRun) error {
 	// reading. It runs anyway, uniformly with every other workload: a
 	// switch INTO a thread whose last turn was still revealing is exactly
 	// the case where the assumption would be wrong.
-	if err := waitForRevealDrain(stormCtx, run.env, run.client, benchDrainTimeout); err != nil {
+	if err := waitForRunRevealDrain(stormCtx, run, benchDrainTimeout); err != nil {
 		return err
 	}
 	return sleepCtx(stormCtx, benchSettleMs*time.Millisecond)
@@ -397,8 +456,10 @@ func openPanesForMultiPaneStream(ctx context.Context, run *benchRun) error {
 // is what saturates a tick here. Sending serially would measure three
 // sequential turns.
 func driveMultiPaneStream(ctx context.Context, run *benchRun) error {
+	run.sourceStartedAt = time.Now()
 	turnCtx, cancel := context.WithTimeout(ctx, benchTurnTimeout)
 	for i, threadID := range run.threadIDs {
+		run.startedThreadIDs = append(run.startedThreadIDs, threadID)
 		if _, err := run.client.Call(turnCtx, "SendMessage", threadID,
 			fmt.Sprintf("bench %s run %d pane %d", run.workload.Name, run.index, i+1), nil); err != nil {
 			cancel()
@@ -417,23 +478,8 @@ func driveMultiPaneStream(ctx context.Context, run *benchRun) error {
 		}
 	}
 	cancel()
-	if err := waitForRevealDrain(ctx, run.env, run.client, benchDrainTimeout); err != nil {
+	if err := waitForRunRevealDrain(ctx, run, benchDrainTimeout); err != nil {
 		return err
 	}
 	return sleepCtx(ctx, benchSettleMs*time.Millisecond)
-}
-
-// sleepCtx is the only wait shape in this file. A bare time.Sleep would
-// keep a cancelled bench pacing a workload against an instance nobody is
-// waiting on any more — a Ctrl-C during a settle would sit there for a
-// second and change the numbers of a run that is already abandoned.
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }

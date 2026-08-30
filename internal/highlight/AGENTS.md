@@ -12,36 +12,26 @@ the text it already holds.
 (goldmark+chroma, removed in `2ed0609f`) shipped rendered HTML and was
 deleted because raw content is canonical. This package does not reverse
 that decision: it returns the same kind of overlay metadata as
-`PathRef[]` linkification — class ids over byte ranges, never HTML.
+`PathRef[]` linkification. Class ids over byte ranges, never HTML.
 The frontend owns all DOM.
 
 **Whole-document parsing is the point.** Both previous frontend Shiki
 stacks tokenized per line, statelessly, which broke every multi-line
 construct (Python docstrings, block comments, template literals). Every
-entry point here parses a complete virtual document — for patches, each
-hunk's reconstructed old/new sides — so grammar state carries across
+entry point here parses a complete virtual document (for patches, each
+hunk's reconstructed old/new sides) so grammar state carries across
 lines by construction.
-
-## Layout
-
-| File | Role |
-|---|---|
-| `doc.go` | Package purpose + declined-optimization notes. |
-| `registry.go` | `Lang` enum, extension map (mirrors what frontend `diffLanguage.ts` did), fence-name aliases. |
-| `classids.go` | Class taxonomy (~28 coalesced families), capture-name → class coalescer. The taxonomy is the CSS contract — a one-way door; extend, don't renumber. |
-| `encode.go` | Per-byte class buffer → `EncodedLine` run-length pairs `[byteLen, classId, ...]`. Nil runs = plain line (the common case). |
-| `caps.go` | Input caps + parse timeout. The primary defense: a cgo parser crash is process-fatal, so pathological inputs are bounded out before reaching C. |
-| `patch.go` | Unified-diff parser → per-hunk old/new virtual docs + patch-line refs. Response contract is patch-aligned: result line `i` ↔ patch text line `i`. |
-| `jshash.go` | Frontend hash parity: fnv1a over UTF-16 code units (`FrontendContentKey`, `FrontendLineHashes`), byte-compatible with `frontend/src/lib/utils/fnv1a.ts`. Parity pinned by node-generated vectors in `jshash_test.go`. |
-| `fencescan.go` | Streaming markdown fence scanner (`ScanFences`) for the highlight seed push. Deliberately stricter than marked (flush-left openers only) — divergence is fail-safe, see below. |
-| `patchsplit.go` | `SplitPatchFiles`: multi-file unified diff → per-file (path, patch-text) seeds, mirroring the frontend's `parsePatchFiles` byte-for-byte. |
-| `version.go` | `SchemaVersion()`: fingerprint over the class taxonomy + grammar/query set, exposed by the `HighlightSchemaVersion` RPC. Version-stamps every persisted span blob so spans computed under an old grammar are dropped, not misrendered. |
 
 ## Contracts
 
 - **Degrade, never error.** Unknown language, over-cap input, parse
   timeout, malformed patch → plain spans (`Truncated` flagged where
   applicable). Highlighting failures must never break a diff render.
+- **Input caps are a crash defense, not a perf tweak.** A cgo parser
+  crash is process-fatal, so `caps.go` bounds pathological inputs out
+  before they reach C.
+- **The class taxonomy in `classids.go` is the CSS contract**, a one-way
+  door shared with `frontend/src/app.css`. Extend it, never renumber.
 - **Absent lines are plain.** `Result.Lines` may be SHORTER than the
   input's line count (nil for unknown languages and oversized inputs);
   every renderer treats a missing index as a plain line. This is what
@@ -50,13 +40,13 @@ lines by construction.
   per-patch `patchParseBudget` are the gates).
 - **Wall-clock degradation is transient, size caps are permanent.** A
   result degraded by a failed parse or by the per-patch parse budget
-  is marked `Incomplete` and never memoized (Cache skips it — the same
-  input can succeed on an idle retry); a result degraded by a
+  is marked `Incomplete` and never memoized (Cache skips it, since the
+  same input can succeed on an idle retry); a result degraded by a
   byte/line cap is deterministic and caches normally. `Incomplete`
   crosses the RPC boundary (`HighlightResult`), and the frontend
   caches apply the same rule: `codeSpanCache` skips it, the diff span
   cache retries it at a damped cadence. Parse timeouts go through the
-  parser-level deadline, not `ParseWithOptions` — the v0.25 binding
+  parser-level deadline, not `ParseWithOptions`. The v0.25 binding
   leaks its options payload on every call (see pool.go).
 - **Byte offsets.** Run lengths are UTF-8 byte counts; the frontend
   slices its own copy of the text. The server never re-ships content.
@@ -68,12 +58,12 @@ lines by construction.
   construct left open at the end of one hunk can't poison the next
   across the invisible gap.
 - **Primed docs splice BOTH sides of the hunk.** `PatchWithContext`
-  builds prefix + hunk + suffix from the resolved file content — the
+  builds prefix + hunk + suffix from the resolved file content. The
   suffix is load-bearing, not garnish: a hunk inside a raw-text
   element (svelte/html `<script>`) paints fully plain without the
   closing tag, because the grammar never emits the node the language
   injection anchors on. Changing this construction changes span
-  output for identical inputs — bump `patchDocStrategyVersion`
+  output for identical inputs. Bump `patchDocStrategyVersion`
   (version.go) so persisted blobs computed under the old strategy
   retire instead of pinning stale colors.
 - **Unmapped captures fail CI, render plain at runtime.**
@@ -85,7 +75,7 @@ lines by construction.
 
 Clients don't pay a highlight RPC round trip for always-rendered
 content: the app layer precomputes spans as the same seed wire shapes
-and both pushes them live and persists them with history —
+and both pushes them live and persists them with history:
 `app_highlight_seed.go` (streaming code fences → `highlight:seed`
 events for remote clients, plus settle-time `codeSpans` enrichment
 into `items.meta` via the triage `SetCodeSpanEnricher` hook),
@@ -97,12 +87,12 @@ workspace file still matches the patch: the producer primes each
 file's parse with real file content when
 `PatchMatchesContent(patch, content)` verifies the match, marks those
 seeds `Primed`, and the frontend cache upgrades unprimed entries in
-place (never the reverse) — quality no loopback RPC recompute can
+place (never the reverse). That is quality no loopback RPC recompute can
 reach later. Cold loads read the persisted blobs; live clients get
 the event push; the RPC path covers every miss. Persisted blobs are
 stamped with
 `SchemaVersion()` (`hv`) and content-addressed per fence/file, so a
-stale blob — old grammar, edited content — is inert and the RPC
+stale blob (old grammar, edited content) is inert and the RPC
 recomputes. Rules that live here:
 
 - **Seeds still ship no content.** Code-fence seeds carry a cumulative
@@ -113,14 +103,14 @@ recomputes. Rules that live here:
   client computes is simply never looked up.
 - **Seeds are complete, valid-UTF-8 results only.** Producers skip
   `Incomplete` results (a pre-inserted incomplete entry would sit out
-  the client's damping window with nothing scheduled to retry it — the
-  RPC path owns incomplete retries) and skip invalid UTF-8 sources:
+  the client's damping window with nothing scheduled to retry it, since
+  the RPC path owns incomplete retries) and skip invalid UTF-8 sources:
   JSON transport maps each invalid byte to U+FFFD, so the client's
-  hash/key would MATCH while the spans cover the original byte lengths
-  — the one divergence that would misalign colors instead of missing
+  hash/key would MATCH while the spans cover the original byte lengths,
+  the one divergence that would misalign colors instead of missing
   the cache.
 - **Divergence is fail-safe by construction.** `ScanFences` vs marked,
-  `SplitPatchFiles` vs `parsePatchFiles`, hash parity — any drift makes
+  `SplitPatchFiles` vs `parsePatchFiles`, hash parity. Any drift makes
   a seed miss and the client falls back to the RPC path (today's
   behavior), never to misaligned colors. Keep parity tests
   (`jshash_test.go`, `patchsplit_test.go`, `fencescan_test.go`) in

@@ -3,9 +3,11 @@
 // The backend (internal/highlight) returns per-line runs as flat
 // [byteLen, classId, ...] pairs over the line's UTF-8 bytes; this
 // module slices the text the frontend already holds into styled
-// segments. Class ids map to `syntax-<name>` CSS classes via the
-// HighlightClassNames table fetched once per page load; app.css owns
-// the colors per theme, so a theme toggle costs zero re-requests.
+// segments. Class ids with a visual rule map to `syntax-<name>` CSS
+// classes via the HighlightClassNames table fetched once per page load;
+// capture families that deliberately inherit the code color stay plain.
+// syntax.css owns the colors per theme, so a theme toggle costs zero
+// re-requests.
 
 import { HighlightClassNames, HighlightSchemaVersion } from '../stores/bindings';
 import type { EncodedLine } from '../../../bindings/agent-overflow/internal/highlight/models.js';
@@ -18,13 +20,30 @@ export interface SpanSegment {
   className: string;
 }
 
+// syntax.css deliberately gives these capture families no rule. Mapping them
+// to a class would retain one DOM element per identifier/operator even though
+// every supported and custom theme must render them as inherited code text.
+// Keep the backend taxonomy intact on the wire, but collapse its visually
+// plain families at the rendering boundary.
+const INHERITED_SYNTAX_FAMILIES = new Set([
+  'variable',
+  'parameter',
+  'operator',
+  'punctuation',
+  'embedded',
+]);
+
 // Index = class id; entry '' = unstyled ("none" and anything unknown).
 let classNameTable: string[] = [];
 let classNamesLoaded = false;
 
 /** Test seam + ensureSyntaxClassNames target. Id 0 maps to ''. */
 export function initSyntaxClassNames(names: string[]): void {
-  classNameTable = names.map((name, id) => (id === 0 || !name ? '' : `syntax-${name}`));
+  classNameTable = names.map((name, id) => (
+    id === 0 || !name || INHERITED_SYNTAX_FAMILIES.has(name)
+      ? ''
+      : `syntax-${name}`
+  ));
   classNamesLoaded = true;
 }
 
@@ -143,6 +162,14 @@ export function spanSegments(text: string, line: EncodedLine | null | undefined)
   if (!runs || runs.length < 2) return [{ text, className: '' }];
 
   const segments: SpanSegment[] = [];
+  const appendSegment = (segmentText: string, className: string): void => {
+    const previous = segments[segments.length - 1];
+    if (previous?.className === className) {
+      previous.text += segmentText;
+      return;
+    }
+    segments.push({ text: segmentText, className });
+  };
   let charIdx = 0;
   for (let i = 0; i + 1 < runs.length && charIdx < text.length; i += 2) {
     let bytes = runs[i] ?? 0;
@@ -153,11 +180,11 @@ export function spanSegments(text: string, line: EncodedLine | null | undefined)
       charIdx += cp >= 0x10000 ? 2 : 1;
     }
     if (charIdx > start) {
-      segments.push({ text: text.slice(start, charIdx), className: syntaxClassName(runs[i + 1] ?? 0) });
+      appendSegment(text.slice(start, charIdx), syntaxClassName(runs[i + 1] ?? 0));
     }
   }
   if (charIdx < text.length) {
-    segments.push({ text: text.slice(charIdx), className: '' });
+    appendSegment(text.slice(charIdx), '');
   }
   return segments;
 }

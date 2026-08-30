@@ -5,6 +5,7 @@
 
   import DirectoryBrowser from '../sidebar/DirectoryBrowser.svelte';
   import type { WorkflowDefinitionInput } from '../../types/workflow';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
 
   interface Props {
     inputs: readonly WorkflowDefinitionInput[];
@@ -24,6 +25,22 @@
     const value = seeds[name];
     return value === undefined || value === null ? '' : String(value);
   }
+
+  // Enum values are hand-authored YAML. The Go validator now refuses
+  // duplicates (internal/workflow/def/schema.go, schema.enum), but frozen
+  // run snapshots are decoded and never re-validated, so a pre-rule
+  // definition can still deliver a repeat — and a repeated key in a keyed
+  // `{#each}` throws `each_key_duplicate`, aborting the whole update flush
+  // (utils/uniqueEachKeys.ts).
+  const enumKeysByInput = $derived.by(() => {
+    const map = new Map<string, string[]>();
+    for (const input of inputs) {
+      if (input.enum?.length) {
+        map.set(input.name, uniqueEachKeys(input.enum, (option) => String(option)));
+      }
+    }
+    return map;
+  });
 </script>
 
 <div class="grid gap-3 sm:grid-cols-2" data-testid="workflow-intake-seeds">
@@ -50,7 +67,7 @@
           data-testid={`workflow-seed-${input.name}`}
         >
           <option value="">Choose…</option>
-          {#each input.enum as option (String(option))}<option value={String(option)}>{String(option)}</option>{/each}
+          {#each input.enum as option, optionIndex (enumKeysByInput.get(input.name)?.[optionIndex] ?? optionIndex)}<option value={String(option)}>{String(option)}</option>{/each}
         </select>
       </label>
     {:else if input.multiline}

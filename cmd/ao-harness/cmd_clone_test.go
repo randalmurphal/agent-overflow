@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -332,6 +333,95 @@ func TestCloneCopiesAttachmentBytes(t *testing.T) {
 		if string(got) != want {
 			t.Errorf("attachment %s = %q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestCloneForceReconcilesAttachmentsWithoutDeletingUnrelatedContent(t *testing.T) {
+	configRootFixture(t)
+	sourceBefore := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{
+		"removed/old.txt": "old",
+		"kept.txt":        "before",
+	}})
+	targetRoot := filepath.Join(t.TempDir(), "root")
+	runCloneInto(t, sourceBefore, targetRoot)
+
+	// Both files are outside the attachment tree. A force clone must not turn
+	// its narrow reconciliation into a reset of the target root.
+	outsideRoot := filepath.Join(targetRoot, "operator-note.txt")
+	outsideData := filepath.Join(targetRoot, appDataDirName, "operator-note.txt")
+	for _, path := range []string{outsideRoot, outsideData} {
+		if err := os.WriteFile(path, []byte("keep me"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sourceAfter := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{
+		"kept.txt":     "after",
+		"added/new.md": "new",
+	}})
+	runCloneInto(t, sourceAfter, targetRoot, "--force")
+
+	attachments := filepath.Join(targetRoot, appDataDirName, attachmentsDirName)
+	if _, err := os.Stat(filepath.Join(attachments, "removed", "old.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed source attachment still exists: %v", err)
+	}
+	for name, want := range map[string]string{
+		"kept.txt":     "after",
+		"added/new.md": "new",
+	} {
+		got, err := os.ReadFile(filepath.Join(attachments, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatalf("attachment %s: %v", name, err)
+		}
+		if string(got) != want {
+			t.Errorf("attachment %s = %q, want %q", name, got, want)
+		}
+	}
+	for _, path := range []string{outsideRoot, outsideData} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("unrelated target content %s: %v", path, err)
+		}
+		if string(got) != "keep me" {
+			t.Errorf("unrelated target content %s changed to %q", path, got)
+		}
+	}
+}
+
+func TestCloneForceRefusesASymlinkedAttachmentTree(t *testing.T) {
+	configRootFixture(t)
+	sourceBefore := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{"kept.txt": "before"}})
+	targetRoot := filepath.Join(t.TempDir(), "root")
+	runCloneInto(t, sourceBefore, targetRoot)
+
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "kept.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attachments := filepath.Join(targetRoot, appDataDirName, attachmentsDirName)
+	if err := os.Remove(filepath.Join(attachments, "kept.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(attachments); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, attachments); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	sourceAfter := newCloneSource(t, cloneSourceOptions{attachments: map[string]string{"new.txt": "new"}})
+	e, _, _ := testEnv(t.TempDir())
+	err := runClone(e, []string{"--from", sourceAfter, "--data-dir", targetRoot, "--force"})
+	if err == nil || !strings.Contains(err.Error(), "attachments target") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("force clone accepted a symlinked attachment tree: %v", err)
+	}
+	got, readErr := os.ReadFile(outsideFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "outside" {
+		t.Fatalf("force clone modified content behind the target symlink: %q", got)
 	}
 }
 

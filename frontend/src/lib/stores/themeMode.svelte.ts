@@ -4,7 +4,7 @@
 // triggering Svelte 5's `state_unsafe_mutation` guard.
 //
 // The mode moved OUT of `settings.theme` and into
-// `<configDir>/themes/appearance.json` (docs/specs/theme-system.md §6.2):
+// `<configDir>/themes/appearance.json` (docs/architecture/theme-system.md §6.2):
 // theme is a property of the CLIENT MACHINE, not of a backend, and a client
 // will eventually be able to attach to more than one backend at a time. This
 // module's public surface did not move with it — every consumer still calls

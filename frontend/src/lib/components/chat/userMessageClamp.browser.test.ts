@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mount, unmount, tick } from 'svelte';
+import { cleanup, render } from '@testing-library/svelte';
 // Real production cascade: the clamp is `${USER_MESSAGE_CLAMP_LINES}lh`
 // against the bubble's own line box, and the fade is a mask that only exists
 // in app.css-compiled component styles. Both are invisible to happy-dom,
@@ -13,8 +14,15 @@ import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { USER_MESSAGE_CLAMP_LINES } from './userMessageClamp';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
+import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 
 const mounted: Array<{ app: object; host: HTMLElement }> = [];
+const renderedHosts: HTMLElement[] = [];
+let resizeLoopErrors: ReturnType<typeof captureResizeObserverLoopErrors>;
+
+beforeEach(() => {
+  resizeLoopErrors = captureResizeObserverLoopErrors();
+});
 
 /** No windowed rows to speak of — this suite mounts one message. */
 const NO_ROWS_LOADED = {
@@ -86,10 +94,26 @@ async function mountMessage(
   });
   mounted.push({ app, host });
   await tick();
-  // The overflow read happens in an effect fed by the clip's own width
-  // observer; give the engine a frame to deliver it.
+  // The batched overflow request resolves after the mount flush and before
+  // the first paint.
   await raf();
   return host;
+}
+
+async function mountRerenderableMessage(
+  summary: string,
+  opts: { width?: number; pane?: ThreadPane } = {},
+) {
+  const host = document.createElement('div');
+  host.style.cssText = `width: ${opts.width ?? 700}px;`;
+  document.body.appendChild(host);
+  renderedHosts.push(host);
+  const view = render(UserMessage, {
+    target: host,
+    props: { item: makeItem(summary), pane: opts.pane },
+  });
+  await raf();
+  return { host, rerender: view.rerender };
 }
 
 afterEach(async () => {
@@ -97,6 +121,10 @@ afterEach(async () => {
     await unmount(app);
     host.remove();
   }
+  cleanup();
+  for (const host of renderedHosts.splice(0)) host.remove();
+  resizeLoopErrors.stop();
+  expect(resizeLoopErrors.messages).toEqual([]);
 });
 
 const clip = (host: HTMLElement) =>
@@ -210,5 +238,58 @@ describe('user message clamp', () => {
 
     host.style.width = '900px';
     await waitFor(() => toggle(host) === null, 'control retires after re-wrap back');
+  });
+
+  it('re-measures on collapse after the expanded text stopped overflowing', async () => {
+    const { pane } = makePane();
+    const host = await mountMessage(REWRAPS, { width: 260, pane });
+    expect(toggle(host)?.textContent).toBe('Show more');
+
+    toggle(host)!.click();
+    await waitFor(() => toggle(host)?.textContent === 'Show less', 'expanded narrow text');
+    host.style.width = '900px';
+    await raf();
+
+    toggle(host)!.click();
+    await waitFor(
+      () => toggle(host) === null,
+      'stale overflow state to clear after collapse',
+    );
+    expect(clip(host).scrollHeight).toBe(clip(host).clientHeight);
+    expect(clip(host).getAttribute('data-clamped')).toBeNull();
+  });
+
+  it('never applies a previous text\'s overflow result to replacement text', async () => {
+    const { host, rerender } = await mountRerenderableMessage(LONG, { width: 900 });
+    expect(toggle(host)?.textContent).toBe('Show more');
+
+    await rerender({ item: makeItem(SHORT) });
+    expect(toggle(host)).toBeNull();
+
+    const staleInsertions: Element[] = [];
+    const mutations = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          if (node.matches('[data-testid="user-message-clamp-toggle"]')) {
+            staleInsertions.push(node);
+          }
+          staleInsertions.push(
+            ...node.querySelectorAll('[data-testid="user-message-clamp-toggle"]'),
+          );
+        }
+      }
+    });
+    mutations.observe(host, { childList: true, subtree: true });
+
+    // REWRAPS passes the cheap clampability bound but fits at this width. A
+    // cached `true` from LONG must not insert a stale control while the new
+    // paragraph waits for its pre-paint geometry measurement.
+    await rerender({ item: makeItem(REWRAPS) });
+    await raf();
+    mutations.disconnect();
+
+    expect(toggle(host)).toBeNull();
+    expect(staleInsertions).toEqual([]);
   });
 });

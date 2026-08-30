@@ -91,10 +91,22 @@ func validateSchemaDefinition(schema JSONSchema, element string) []Finding {
 	if invalidRange(schema.MinItems, schema.MaxItems) {
 		findings = append(findings, finding("schema.items", element, "item bounds must be non-negative and minItems must not exceed maxItems"))
 	}
+	seenEnumValues := make(map[string]struct{}, len(schema.Enum))
 	for _, value := range schema.Enum {
 		if value == nil || !literalMatches(schema, value) {
 			findings = append(findings, finding("schema.enum", element, fmt.Sprintf("enum value %v does not match type %q", value, schema.Type)))
+			continue
 		}
+		// A duplicate enum value is a dead line: no supplied input can ever
+		// mean the second occurrence, and downstream renderers keying on the
+		// values (the intake form's <select>) have to repair the repeat.
+		// Refused here so the author learns at validation, not by watching.
+		key := enumValueKey(value)
+		if _, duplicate := seenEnumValues[key]; duplicate {
+			findings = append(findings, finding("schema.enum", element, fmt.Sprintf("duplicate enum value %v", value)))
+			continue
+		}
+		seenEnumValues[key] = struct{}{}
 	}
 	for name, property := range schema.Properties {
 		findings = append(findings, validateSchemaDefinition(property, element+".properties."+name)...)
@@ -257,6 +269,32 @@ func ValidateInput(workflow Workflow, name string, value any) []string {
 		return []string{fmt.Sprintf("$.seeds.%s is not declared by workflow %q", name, workflow.ID)}
 	}
 	return validateJSONValue(variable.Schema, value, "$.seeds."+name)
+}
+
+// enumValueKey renders one TYPE-VALID enum value into the identity duplicate
+// detection compares. Numbers normalize through the same float64 conversion
+// predicate comparison uses (numberAsFloat64), so `1` and `1.0` are one value;
+// array/object literals key by their JSON encoding, since Go slices and maps
+// are not comparable. Values of different schema types cannot cross-collide:
+// literalMatches has already pinned every value reaching this to the schema's
+// one declared type.
+func enumValueKey(value any) string {
+	if number, ok := numberAsFloat64(value); ok {
+		return fmt.Sprintf("%g", number)
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case bool:
+		return fmt.Sprintf("%t", typed)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		// Unmarshalable values cannot come out of YAML/JSON decoding; fall
+		// back to the fmt rendering rather than treating them as one value.
+		return fmt.Sprintf("%#v", value)
+	}
+	return string(encoded)
 }
 
 func numericallyEqual(left, right any) bool {

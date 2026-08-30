@@ -149,8 +149,11 @@ func refuseRealAppDatabase(path string) error {
 // non-existent --file falls back to the lexical form, which is the right
 // answer for a path that names nothing yet.
 func underDir(path, dir string) bool {
-	path = instanceinfo.CanonicalPath(path)
-	dir = instanceinfo.CanonicalPath(dir)
+	path, pathErr := instanceinfo.CanonicalPath(path)
+	dir, dirErr := instanceinfo.CanonicalPath(dir)
+	if pathErr != nil || dirErr != nil {
+		return false
+	}
 	rel, err := filepath.Rel(dir, path)
 	if err != nil {
 		return false

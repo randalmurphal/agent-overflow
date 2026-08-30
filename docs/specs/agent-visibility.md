@@ -35,7 +35,7 @@ launch, how do progress and terminal signals arrive, which controls exist
   title regeneration). Claude creates it from the Agent/Task launch input
   before child output as `user:subagent-prompt:<launchID>`. The inline echo
   or sidechain transcript later stamps the transcript uuid onto that row in
-  place. Codex MultiAgentV2 has no prompt to show at any price — the model
+  place. Codex MultiAgentV2 has no prompt to show at any price. The model
   service encrypts `spawn_agent.message` and the child's NEW_TASK payload
   alike, so no client can read it. Its only plaintext statement of the
   task is the model-chosen `task_name`, and the card title and pane
@@ -47,8 +47,8 @@ launch, how do progress and terminal signals arrive, which controls exist
   (ruling 2026-08-23). Its transcript streams to the parent parented to
   the launch, so the answer already renders in the card body and the
   pane as its own assistant row. The FINAL_ANSWER on the completion
-  sibling is a 240-char preview and stays the COLLAPSED one-liner only —
-  it was briefly rendered in the body too, which showed the same text
+  sibling is a 240-char preview and stays the COLLAPSED one-liner only.
+  It was briefly rendered in the body too, which showed the same text
   twice, unformatted and cut mid-word.
 - Expanded body is an allowlist (ruling 2026-08-23): the initial prompt
   (first `user_text`), tool call rows, a provider refusal's reason
@@ -65,9 +65,9 @@ launch, how do progress and terminal signals arrive, which controls exist
 - Pane keeps the composer shell, non-interactive, with Stop (= kill
   where the wire can) as its only live control; background button and
   status/elapsed sit in the pane header beside the breadcrumb (Q20).
-  The shell's top row is the working chip — the agent's own spinner
-  sprite / LED chase, verb and elapsed timer, keyed on the launch — while
-  the agent runs (ruling 2026-08-23, reversing the earlier "no run timer,
+  While the agent runs, the shell's top row is the working chip: the
+  agent's own spinner sprite / LED chase, verb and elapsed timer, keyed
+  on the launch (ruling 2026-08-23, reversing the earlier "no run timer,
   no spinner" call); idle, the row stays as a height twin.
 - Pane lifetime mirrors the review pane: persisted and restored, closed
   when the source thread changes, closes itself when the scoped row is
@@ -103,21 +103,21 @@ launch, how do progress and terminal signals arrive, which controls exist
   `permission_denied` fixed (ce580f3f); `can_use_tool` approvals must
   resolve `agent_id` → launch tool_use (parser task map, triage row
   lookup as fallback) so the approval row nests under the card. The
-  approval itself shows ONLY in the composer's approval UI — no pill on
-  the card, awaited or background (user ruling 2026-08-23 reverses
+  approval itself shows ONLY in the composer's approval UI, with no pill
+  on the card, awaited or background (user ruling 2026-08-23 reverses
   Q10b).
 - Notifications (bell/toast) fire for top-level nodes only; nested
   completions update their card silently (Q11).
 - A DETACHED launch (async ack, `run_in_background`, a Codex spawn, a
-  SendMessage resume carrier, or backgrounded mid-flight —
+  SendMessage resume carrier, or backgrounded mid-flight:
   `launchRunsDetached`) keeps the launch row it had before this feature,
   plus ONE approved addition, the open-in-pane door (ruling 2026-08-23):
   a Claude background launch is the compact agent row (robot icon,
   label, model, description, the `backgrounded` indicator, launch time;
-  no ticker, no text pill — c58f9b55), a Codex `spawn_agent` launch is
+  no ticker, no text pill, see c58f9b55), a Codex `spawn_agent` launch is
   the collab `launched` row. Neither changes after the spawn and neither
-  is ever a card. The launch's ONE card — status, duration, tool count,
-  tokens, the expandable transcript, open-in-pane — renders AT its
+  is ever a card. The launch's ONE card (status, duration, tool count,
+  tokens, the expandable transcript, open-in-pane) renders AT its
   completion sibling (`SubagentGroupNode.anchor`): top-level, inside the
   parent card for a nested node, or under the `wait_agent` group that
   claimed a Codex completion (`WaitGroupNode.children` are nodes), after
@@ -130,7 +130,7 @@ launch, how do progress and terminal signals arrive, which controls exist
   rendering (`utils/notificationFilter.ts`), which is why the card sits
   at the sibling rather than folding it onto a card at the launch (the
   fold-and-drop version left the transcript with no trace of the agent
-  finishing — regression 2026-08-22; tripwire
+  finishing, regression 2026-08-22; tripwire
   `utils/backgroundCompletionVisibility.test.ts`). Awaited launches are
   unchanged: one card at the launch, completing in place.
 - Row actions (open-in-pane, background, stop) render before the
@@ -170,7 +170,7 @@ launch, how do progress and terminal signals arrive, which controls exist
       breadcrumb; reload restores the pane to the same scope.
 - [ ] Every agent card and pane opens with what the agent was asked to
       do, and an agent that is awaited inline streams its thinking,
-      prose and final answer as it produces them — not only its tool
+      prose and final answer as it produces them, not only its tool
       calls.
 - [ ] A subagent's `permission_denied` and `can_use_tool` rows nest
       under its card; the card shows the approval pill while the prompt

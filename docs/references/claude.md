@@ -1,12 +1,12 @@
 # Claude Code References
 
 When touching `internal/provider/claude/` or any Claude-specific
-behavior, use these as the source of truth — not guesses derived from
+behavior, use these as the source of truth, not guesses derived from
 our own code.
 
 ## Reference Repos
 
-- **Claude Code source** — local mirror at
+- **Claude Code source**: local mirror at
   `/Users/randy/repos/claude-code-source-code/`.
   - TypeScript source for an older Claude Code release.
   - Useful when the installed `claude` binary's behavior is unclear
@@ -20,7 +20,7 @@ our own code.
     in newer binaries; `initializeEntrypoint` (`main.tsx`) added
     overrides that rewrite preset env values.
 
-- **Anthropic Claude Agent SDK** — `@anthropic-ai/claude-agent-sdk`.
+- **Anthropic Claude Agent SDK**: `@anthropic-ai/claude-agent-sdk`.
   - Authoritative wire format and option shapes for stream-json
     invocations.
   - Read when the question is "what does the SDK actually send to
@@ -34,8 +34,8 @@ our own code.
 
 ## Workflow
 
-1. For wire shapes, start with `docs/references/claude-wire.md` —
-   it pins canonical examples and known ambiguities.
+1. For wire shapes, start with `docs/references/claude-wire.md`.
+   It pins canonical examples and known ambiguities.
 2. For runtime behavior questions (how `--resume` filters, how the
    CLI decides entrypoint, how telemetry is tagged), grep the local
    `claude-code-source-code/src` first; it's faster than parsing the
@@ -47,15 +47,15 @@ our own code.
 
 ## Version-gated behaviors worth knowing
 
-- **Todo/task tool surface (≥2.1.233)** — the CLI removes
+- **Todo/task tool surface (≥2.1.233)**: the CLI removes
   `TodoWrite` and the `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`
-  tools for modern models (opus ≥4.8; sonnet/fable/mythos ≥5 — older
-  families keep them) unless the session opts in: a truthy
+  tools for modern models (opus ≥4.8; sonnet/fable/mythos ≥5, with older
+  families keeping them) unless the session opts in: a truthy
   `CLAUDE_CODE_ENABLE_TODO_TOOLS` (1/true/yes/on), one of the five
   names in `--allowedTools`, background/job mode, or a remote statsig
   gate (`tengu_rosy_wren`) that must never be depended on. Modern
-  models get only the Task\* family even when opted in — `TodoWrite`
-  stays absent. AO opts every session in — headless via
+  models get only the Task\* family even when opted in. `TodoWrite`
+  stays absent. AO opts every session in: headless via
   `claude.withClaudeSessionEnvDefaults`, the TUI via `claudetui.buildEnv`
   (a user-overridable default on both paths, deliberately not a
   reserved pin; see `internal/provider/pinnedenv.go`).
@@ -63,17 +63,17 @@ our own code.
   four Task\* tools bare and all four with the env var.
   `CLAUDE_CODE_ENABLE_TASKS=false` is the separate whole-feature
   opt-OUT (default on).
-- **Task-reminder nudges** — the CLI injects a "The task tools haven't
+- **Task-reminder nudges**: the CLI injects a "The task tools haven't
   been used recently…" reminder after 10 turns without a task write
   (and at most every 10 turns; turn-based, not token-based). Double
   gated: the producer requires `TaskUpdate` in the session's tool set
   AND the reminder mode ≠ "off", so removing the tools also removes
   the nudges. `CLAUDE_CODE_TODO_REMINDER_MODE=off` (env override over
   the `tengu_soft_slate_nudge` statsig gate, default "baseline") kills
-  the nudges while KEEPING the tools — AO's Settings → todo nudges
+  the nudges while KEEPING the tools. AO's Settings → todo nudges
   toggle exports it on both spawn paths, same user-overridable-default
   posture as the opt-in above. Verified on 2.1.233 binary analysis.
-- **Completed task lists self-delete (≥2.1.233)** — once every task in
+- **Completed task lists self-delete (≥2.1.233)**: once every task in
   a list is `completed`, the CLI arms a 5s timer and then deletes the
   list's `~/.claude/tasks/<list-id>/*.json` files, bumping the
   high-water mark first so later ids stay monotonic. Nothing is

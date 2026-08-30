@@ -98,6 +98,29 @@ describe('sendQueue store', () => {
       expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
     });
 
+    it('markItemsFlushed is idempotent for a re-delivered flush event', () => {
+      // provider:queue_flushed rides the event ring; a reconnect replay
+      // re-delivers the frame. A second append with the same userItemId
+      // rendered the message twice and duplicated a keyed-each key.
+      const batch = [
+        { queueItemId: 'q:0', userItemId: 'u:0', message: 'a' },
+        { queueItemId: 'q:1', userItemId: 'u:1', message: 'b' },
+      ];
+      markItemsFlushed('t1', batch);
+      const revisionAfterFirst = getQueueRevisionForThread('t1');
+      markItemsFlushed('t1', batch);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0', 'u:1']);
+      expect(getQueueRevisionForThread('t1')).toBe(revisionAfterFirst);
+    });
+
+    it('markItemsFlushed drops in-batch duplicates', () => {
+      markItemsFlushed('t1', [
+        { queueItemId: 'q:0', userItemId: 'u:0', message: 'a' },
+        { queueItemId: 'q:0', userItemId: 'u:0', message: 'a' },
+      ]);
+      expect(getFlushedForThread('t1').map((f) => f.userItemId)).toEqual(['u:0']);
+    });
+
     it('confirmFlushedByUserItemId removes a single entry', () => {
       markItemsFlushed('t1', [
         { queueItemId: 'q:0', userItemId: 'u:0', message: 'a' },

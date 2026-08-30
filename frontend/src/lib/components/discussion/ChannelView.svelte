@@ -8,6 +8,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import { relativeTime } from '../../utils/format';
   import Button from '../primitives/Button.svelte';
@@ -52,8 +53,10 @@
     );
   }
 
+  const scrollbarGeometry = createContentGeometryNotifier();
   const stick = createUseStickToBottomController({
     liveContentActive: channelLiveContentActive,
+    onContentGeometryProcessed: scrollbarGeometry.notify,
   });
 
   let messages = $derived(pane.channelMessages);
@@ -76,19 +79,7 @@
     // Only re-run when the channelId prop changes; don't subscribe to the
     // pane state the load path reads/writes, or we loop on every push.
     if (!channelId) return;
-    const generation = ++loadGeneration;
     untrack(() => {
-      // Suspend auto-follow until the initial load lands and we
-      // explicitly forceStick: armRestoreSnap sets the defensive escape
-      // (without it, the initial batch growing contentEl on the next
-      // frame while the controller is still in its default isAtBottom
-      // state would sync-pin to the eventual bottom mid-flight) and arms
-      // the one-shot restore-snap consent for the post-load
-      // forceStick({reason:'restore'}) below. Simplified mirror of the
-      // switch-edge choreography MessageTimeline runs through
-      // components/chat/timelineRestore.svelte.ts (handleSwitchEdgePre →
-      // restore effect) — no snapshots here, just the consent arming.
-      stick.armRestoreSnap();
       // Only wipe the channel buffer when switching to a different
       // channel — re-entry of the same channel keeps whatever the last
       // snapshot said (status is authoritative now, not seeded).
@@ -96,7 +87,7 @@
         pane.clearChannel();
         lastChannelId = channelId;
       }
-      void loadInitial(generation);
+      beginInitialLoad();
     });
 
     return () => {
@@ -135,19 +126,43 @@
         await tick();
         if (generation === loadGeneration) {
           // reason:'restore' so an intervening user scroll-up (which
-          // re-clears the restore-snap consent armed above) preserves
-          // the user's position instead of slamming them to the bottom.
+          // re-clears the restore-snap consent `beginInitialLoad` armed)
+          // preserves the user's position instead of slamming them to
+          // the bottom.
           stick.forceStick({ reason: 'restore' });
         }
       }
     }
   }
 
-  function retryInitialLoad(): void {
-    // Bump the generation exactly like the mount effect: reusing the
-    // current one would let two rapid retries run two un-cancellable
-    // concurrent loads with the slower resolver winning.
+  /**
+   * The ONE entry into the initial-load choreography. Both callers — the
+   * channel-edge $effect and the error banner's Retry — are the same
+   * lifecycle edge (re-entering the load), so neither may state half of it.
+   *
+   * Two halves, and both are load-bearing:
+   *
+   * - Bump the generation, so a second entry cancels the first instead of
+   *   letting two un-cancellable loads race with the slower resolver winning.
+   * - Arm. `armRestoreSnap` sets the defensive escape (without it, the
+   *   initial batch growing contentEl on the next frame while the controller
+   *   is still in its default isAtBottom state would sync-pin to the eventual
+   *   bottom mid-flight) and arms the one-shot restore-snap consent that
+   *   `loadInitial`'s `forceStick({reason:'restore'})` spends. Retry used to
+   *   skip the arm: the first attempt's forceStick had already consumed the
+   *   mount arm, so the retry's was refused by the controller's consent gate
+   *   and a freshly loaded channel rendered at whatever offset an
+   *   intervening gesture left, with follow frozen. Same class as the
+   *   2026-08-29 chat incident — a lifecycle edge inferred from leftover
+   *   state instead of stated.
+   *
+   * Simplified mirror of the switch-edge choreography MessageTimeline runs
+   * through components/chat/timelineRestore.svelte.ts (handleSwitchEdgePre →
+   * restore effect) — no snapshots here, just the consent arming.
+   */
+  function beginInitialLoad(): void {
     const generation = ++loadGeneration;
+    stick.armRestoreSnap();
     void loadInitial(generation);
   }
 
@@ -169,22 +184,36 @@
     stick.attach(scrollEl, contentEl);
   });
 
-  // Composer-section RO. Discussion's textarea + button live in a
-  // sibling flex section that's NOT inside the controller's contentEl,
-  // so a height change there (e.g. the concluded-toggle swapping the
-  // textarea+button for a "Discussion has concluded" paragraph)
-  // shrinks/grows the scrollEl's clientHeight without firing the
-  // content RO. The composer-geometry observation re-pins scrollTop to
-  // the new target so a sticky user doesn't drift away from the last
-  // message. The textarea itself is `rows={1}` with no autosize, so the
-  // more dramatic Shift+Enter case doesn't actually change height — but
-  // the RO costs nothing per-event and future-proofs against a textarea
-  // that grows.
+  // One owner RO covers both inputs that the content observer cannot see:
+  // composer-section changes and direct viewport changes from pane/window
+  // layout. Either can change scrollEl.clientHeight without changing
+  // contentEl. The controller re-pins a sticky reader first, then the shared
+  // geometry notifier lets the overlay sample the settled position and thumb
+  // size. Observing both with one callback also avoids restoring a duplicate
+  // target observer inside OverlayScrollbar.
   $effect(() => {
-    if (!composerEl) return;
-    const observed = composerEl;
-    const ro = new ResizeObserver(() => stick.observe('composer-geometry'));
-    ro.observe(observed);
+    const composer = composerEl;
+    const scroll = scrollEl;
+    if (!composer || !scroll) return;
+    let previousViewportHeight: number | undefined;
+    const ro = new ResizeObserver((entries) => {
+      let viewportHeightChanged = false;
+      let composerChanged = false;
+      for (const entry of entries) {
+        if (entry.target === composer) composerChanged = true;
+        if (entry.target !== scroll) continue;
+        const nextHeight = entry.contentRect.height;
+        viewportHeightChanged = previousViewportHeight === undefined ||
+          nextHeight !== previousViewportHeight;
+        previousViewportHeight = nextHeight;
+      }
+      if (composerChanged || viewportHeightChanged) {
+        stick.observe('composer-geometry');
+      }
+      scrollbarGeometry.notify(scroll.scrollHeight - scroll.clientHeight > 1);
+    });
+    ro.observe(composer);
+    ro.observe(scroll);
     return () => ro.disconnect();
   });
 
@@ -305,7 +334,7 @@
             class="rounded-[var(--radius-card)] border border-error/30 bg-error/5 px-3.5 py-2.5 text-[0.75rem] text-error flex items-center gap-3"
           >
             <span class="flex-1">Failed to load channel: {loadError}</span>
-            <Button variant="secondary" size="xs" onclick={retryInitialLoad}>
+            <Button variant="secondary" size="xs" onclick={beginInitialLoad}>
               {#snippet children()}Retry{/snippet}
             </Button>
           </div>
@@ -350,10 +379,10 @@
          shared pane-scroll-surface class applies). -->
     <OverlayScrollbar
       target={scrollEl}
-      content={contentEl}
+      contentGeometry={scrollbarGeometry}
       ariaLabel="Scroll discussion messages"
       placement="inset-y-0 right-0.5 w-1.5"
-      ownerDrivenPosition={() => stick.isSticky}
+      ownerDrivenPosition={() => stick.positionOwnerDriven}
       onUserScrollStart={() => stick.setEscapedFromLock(true)}
       onUserScrollEnd={(atBottom) => {
         if (atBottom) stick.forceStick();

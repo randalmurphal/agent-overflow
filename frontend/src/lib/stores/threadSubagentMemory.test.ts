@@ -75,7 +75,6 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     },
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
-    recomputeReveal: () => {},
     isSubagentGroupExpanded: (groupKey) => expandedGroups.has(groupKey),
     agentPaneHeldRows: () => paneHeldRows,
   });

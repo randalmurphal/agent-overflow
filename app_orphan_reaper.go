@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,32 +26,31 @@ const orphanReaperSweepGrace = 2 * time.Second
 // while the app is healthy; this one defends against the app itself dying. Two layers: first sweep any orphans a previous run left
 // behind (before any new session can register, so the load→kill→clear
 // can't race a fresh Add), then start the live sidecar that kills watched
-// groups the instant this process dies. Failures degrade rather than
-// block startup — without the sidecar, the next launch's sweep is still a
-// backstop.
-func (a *App) startOrphanReaper(dbDir string) {
+// groups the instant this process dies. A missing sidecar is a startup error.
+// The next launch's sweep cannot protect providers spawned by this launch
+// after an ungraceful death.
+func (a *App) startOrphanReaper(dbDir string) error {
 	if runtime.GOOS != "darwin" {
-		return
+		return nil
 	}
 	reg := orphanreaper.NewRegistry(filepath.Join(dbDir, "orphan-registry.json"))
 	a.orphanRegistry = reg
 
 	if err := orphanreaper.Sweep(reg, orphanreaper.GopsutilProcInfo(), orphanReaperSweepGrace); err != nil {
-		log.Printf("orphanreaper: startup sweep: %v", err)
+		return fmt.Errorf("startup sweep: %w", err)
 	}
 
 	exe, err := os.Executable()
 	if err != nil {
-		log.Printf("orphanreaper: cannot resolve executable, skipping sidecar: %v", err)
-		return
+		return fmt.Errorf("resolve executable: %w", err)
 	}
 	client, err := orphanreaper.Spawn(exe)
 	if err != nil {
-		log.Printf("orphanreaper: start sidecar: %v", err)
-		return
+		return fmt.Errorf("start sidecar: %w", err)
 	}
 	a.orphanReaper = client
 	log.Printf("orphanreaper: sidecar active")
+	return nil
 }
 
 // stopOrphanReaper closes the sidecar at shutdown. Closing the control

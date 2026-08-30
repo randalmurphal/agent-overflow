@@ -1,6 +1,16 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { splitAtBoundary, type BoundarySplit } from './split';
 import { StreamingBoundarySplitter } from './streamingSplitter';
+import { BoundaryDetector } from './BoundaryDetector';
+import { createProvenAppend } from 'svelte-streamdown';
+import { expectedStreamingFenceTexts } from '../../../test/helpers/streamingFenceOracle';
+
+function expectFenceCompletePrefix(split: BoundarySplit): void {
+  expect(
+    expectedStreamingFenceTexts(split.prefix).hasOpenFence,
+    `committed prefix ends inside a fence: ${JSON.stringify(split.prefix.slice(-160))}`,
+  ).toBe(false);
+}
 
 // Reference = the OLD ChatMarkdown behaviour: pure `splitAtBoundary`
 // fed the running high-water prefix length, with the shrink/empty
@@ -38,6 +48,7 @@ function assertEquivalentCharByChar(doc: string) {
     const want = reference(text);
     // prefix+tail must always reconstruct the source.
     expect(got.prefix + got.tail).toBe(text);
+    expectFenceCompletePrefix(got);
     expect(
       got,
       `divergence at prefix length ${i} of ${doc.length}\n` +
@@ -118,18 +129,10 @@ describe('StreamingBoundarySplitter — equivalence to splitAtBoundary', () => {
     expect(regrown).toEqual(splitAtBoundary('short now grows.\n\nA second block starts here', 0));
   });
 
-  it('never drops or duplicates text on an out-of-contract in-place swap', () => {
-    // The contract is append-only (+ wholesale shrink). A same-length-or-
-    // longer, different-content replacement is OUT of contract: the resume
-    // uses the detector's cached block context for the OLD content, which
-    // can pick a mid-block split point for the NEW content. The hard
-    // invariant that must survive even then is `prefix + tail === text`
-    // (no dropped or duplicated characters) — worst case is a transient
-    // mis-split that self-corrects once a real boundary commits, never
-    // data loss. The only same-id re-stream path in production resets the
-    // summary to empty first (emitStreamingBlockStart emits an empty-
-    // summary upsert), which the shrink guard catches; this pins the floor
-    // for the input the contract formally excludes.
+  it('resets detector checkpoints on a longer in-place rewrite', () => {
+    // Append-only growth is the fast path, but replacements are valid inputs.
+    // A rewrite that changes committed bytes must discard the old detector
+    // context and match a fresh split of the new source.
     const splitter = new StreamingBoundarySplitter();
     // Commit a boundary, leaving an OPEN fence in a non-initial context.
     splitter.split('Para one.\n\nPara two.\n\n```ts\nconst x = 1;');
@@ -139,6 +142,7 @@ describe('StreamingBoundarySplitter — equivalence to splitAtBoundary', () => {
     const swapped = 'Z'.repeat(40) + '\n\na wholly different paragraph follows here';
     const got = splitter.split(swapped);
     expect(got.prefix + got.tail).toBe(swapped);
+    expect(got).toEqual(splitAtBoundary(swapped, 0));
   });
 
   it('returns empty for empty source and recovers afterwards', () => {
@@ -168,6 +172,7 @@ describe('StreamingBoundarySplitter — incremental line cache', () => {
       const got = splitter.split(text);
       const want = reference(text);
       expect(got.prefix + got.tail).toBe(text);
+      expectFenceCompletePrefix(got);
       expect(got).toEqual(want);
     }
   }
@@ -193,6 +198,141 @@ describe('StreamingBoundarySplitter — incremental line cache', () => {
     assertEquivalentChunked(mixedDoc, [3, 1, 17, 2, 40, 5]);
     assertEquivalentChunked(mixedDoc, [64]);
     assertEquivalentChunked(mixedDoc, [1, 200]);
+  });
+
+  it('never commits an open fence under sparse jittered source advances', () => {
+    const document = Array.from({ length: 20 }, (_, iteration) => [
+      `### Working set ${iteration}`,
+      '',
+      `Paragraph ${iteration} remains ordinary Markdown.`,
+      '',
+      '```ts',
+      `const sample${iteration} = true;`,
+      '```',
+      '',
+      `> Visible progress marker ${iteration}.`,
+    ].join('\n')).join('\n\n');
+
+    for (let seed = 1; seed <= 64; seed++) {
+      let state = seed;
+      const sizes: number[] = [];
+      for (let index = 0; index < 48; index++) {
+        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+        sizes.push(1 + (state % 600));
+      }
+      assertEquivalentChunked(document, sizes);
+    }
+  });
+
+  it('uses trusted append lineage without rescanning the growing source', () => {
+    const splitter = new StreamingBoundarySplitter();
+    const reference = makeReference();
+    let source = 'First paragraph';
+    expect(splitter.split(source)).toEqual(reference(source));
+
+    const startsWith = vi.spyOn(String.prototype, 'startsWith')
+      .mockImplementation(() => {
+        throw new Error('trusted append fell back to a prefix scan');
+      });
+    try {
+      for (const delta of [' grows.', '\n\n', 'Second paragraph', ' continues.']) {
+        const append = createProvenAppend(source, delta);
+        source = append.next;
+        expect(splitter.split(source, append)).toEqual(reference(source));
+      }
+    } finally {
+      startsWith.mockRestore();
+    }
+  });
+
+  it('publishes a tail suffix only while the volatile block extends in place', () => {
+    const splitter = new StreamingBoundarySplitter();
+    let source = '```ts\nconst first = 1;';
+    let previous = splitter.split(source);
+    expect(splitter.tailAppend).toBeUndefined();
+
+    for (const delta of ['\n', 'const second', ' = 2;']) {
+      const append = createProvenAppend(source, delta);
+      source = append.next;
+      const next = splitter.split(source, append);
+      expect(splitter.tailAppend?.delta).toBe(delta);
+      expect(previous.tail + delta).toBe(next.tail);
+      previous = next;
+    }
+
+    // Closing the fence advances the stable boundary. The new volatile tail
+    // is not an extension of the old open-fence tail, so forwarding the source
+    // delta to Streamdown would violate its append contract.
+    const closeAndFollow = '\n```\n\nfollowing paragraph';
+    const closeAppend = createProvenAppend(source, closeAndFollow);
+    source = closeAppend.next;
+    const closed = splitter.split(source, closeAppend);
+    expect(closed.prefix.length).toBeGreaterThan(previous.prefix.length);
+    expect(splitter.tailAppend).toBeUndefined();
+
+    const replacement = source.replace('following', 'different');
+    splitter.split(replacement);
+    expect(splitter.tailAppend).toBeUndefined();
+  });
+
+  it('never strands a completed fence closer at the volatile-tail boundary', () => {
+    const splitter = new StreamingBoundarySplitter();
+    let source = '';
+
+    for (let iteration = 0; iteration < 12; iteration++) {
+      const deltas = [
+        `\n\n### Working set ${iteration}\n\n`,
+        `The active pane keeps **streamed Markdown**, \`inline code\`, and [a link](https://example.test/active/${iteration}) readable. `,
+        `Unicode remains intact: café, 東京, 🧪, and iteration ${iteration}.\n\n`,
+        '- The parser carries state across wire chunks.\n- The reveal queue stays bounded.\n- The spring follows the live edge.\n\n',
+        `| Iteration | Parser | Scroll |\n| ---: | :--- | :--- |\n| ${iteration} | active | following |\n\n`,
+        '```ts\n',
+        `const sample${iteration} = { pane: 1, active: true };\n`,
+        `console.log(sample${iteration});\n\`\`\`\n\n`,
+        `> Visible progress marker ${iteration}. The next section continues the same ordinary long turn.`,
+      ];
+      for (const delta of deltas) {
+        const append = createProvenAppend(source, delta);
+        source = append.next;
+        const split = splitter.split(source, append);
+        expect(
+          split.tail.startsWith('```\n'),
+          `iteration ${iteration}, tail ${JSON.stringify(split.tail.slice(0, 120))}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('resumes at the trailing line inside an uncommitted code fence', () => {
+    const starts: number[] = [];
+    const original = BoundaryDetector.prototype.findStableBoundary;
+    const findStableBoundary = vi
+      .spyOn(BoundaryDetector.prototype, 'findStableBoundary')
+      .mockImplementation(function (this: BoundaryDetector, lines, startLine, context) {
+        starts.push(startLine);
+        return original.call(this, lines, startLine, context);
+      });
+    try {
+      const splitter = new StreamingBoundarySplitter();
+      let source = '```ts\n';
+      splitter.split(source);
+      for (let line = 0; line < 100; line++) {
+        const delta = `const value${line} = ${line};\n`;
+        const append = createProvenAppend(source, delta);
+        source = append.next;
+        splitter.split(source, append);
+      }
+
+      expect(starts.at(-1)).toBeGreaterThan(95);
+      const contextCache = (
+        splitter as unknown as {
+          detector: { contextCache: Map<number, unknown> };
+        }
+      ).detector.contextCache;
+      expect(contextCache.size).toBeLessThanOrEqual(2);
+    } finally {
+      findStableBoundary.mockRestore();
+    }
   });
 
   it('matches char-by-char on a CRLF document', () => {
@@ -243,5 +383,25 @@ describe('StreamingBoundarySplitter — incremental line cache', () => {
     expect(splitter.split(grown)).toEqual(
       splitAtBoundary(grown, got.prefix.length),
     );
+  });
+
+  it('resets when a same-length rewrite has fewer lines than the committed source', () => {
+    const splitter = new StreamingBoundarySplitter();
+    const first = [
+      'Paragraph one.',
+      '',
+      'Paragraph two.',
+      '',
+      'Paragraph three.',
+      '',
+      'Trailing paragraph.',
+    ].join('\n');
+    const committed = splitter.split(first);
+    expect(committed.prefix.length).toBeGreaterThan(0);
+
+    const rewritten = 'x'.repeat(first.length);
+    const got = splitter.split(rewritten);
+    expect(got.prefix + got.tail).toBe(rewritten);
+    expect(got).toEqual(splitAtBoundary(rewritten, 0));
   });
 });

@@ -1,5 +1,5 @@
-// The run map's scroll arithmetic (RUN-MAP.md §9), as pure functions over
-// elements and rects.
+// The run map's scroll arithmetic (docs/architecture/workflow-run-map.md §9), as
+// pure functions over elements and rects.
 //
 // It is split out of `runMapFollow.svelte.ts` because the two answer different
 // kinds of question. Everything here is "where is this box relative to that

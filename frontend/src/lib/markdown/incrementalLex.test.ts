@@ -20,14 +20,17 @@
 // never resolved mid-stream in the first place (each Block lexes its
 // string in isolation) — that pre-existing upstream property is out of
 // scope here.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createIncrementalLexCache,
+  createMaterializedProvenAppend,
   createParseBlocksCache,
+  createProvenAppend,
   incrementalLex,
   lex,
   parseBlocks,
   parseIncompleteMarkdown,
+  updateParseBlockStringMaterialization,
 } from 'svelte-streamdown';
 
 interface CorpusDoc {
@@ -230,6 +233,22 @@ const fullReference = (prefix: string, complete: boolean) =>
   lex(complete ? parseIncompleteMarkdown(prefix.trim()) : prefix);
 
 describe('incrementalLex streamed equivalence', () => {
+  it('reports only calls that perform parser work', () => {
+    const observed: Array<{ path: string; inputLength: number }> = [];
+    const cache = createIncrementalLexCache((path, inputLength) => {
+      observed.push({ path, inputLength });
+    });
+    const initial = 'A paragraph';
+    incrementalLex(initial, [], cache, parseIncompleteMarkdown);
+    incrementalLex(initial, [], cache, parseIncompleteMarkdown);
+    incrementalLex(`${initial} grows`, [], cache, parseIncompleteMarkdown);
+
+    expect(observed).toEqual([
+      { path: 'full', inputLength: initial.length },
+      { path: 'full', inputLength: `${initial} grows`.length },
+    ]);
+  });
+
   for (const doc of CORPUS) {
     for (const chunking of CHUNKINGS) {
       for (const complete of [true, false]) {
@@ -364,6 +383,317 @@ describe('incrementalLex streamed equivalence', () => {
     const second = incrementalLex(text, [], cache, parseIncompleteMarkdown);
     expect(second).toBe(first);
   });
+
+  it('keeps an open fenced-code stream equivalent through partial and real closers', () => {
+    const text = [
+      '````ts title="stream"',
+      'const first = `literal`;',
+      '```',
+      'const second = 2;',
+      '``',
+      'const third = 3;',
+      '`````',
+      '',
+      'Paragraph after the closed fence.',
+    ].join('\n');
+    const cache = createIncrementalLexCache();
+    let previous = '';
+    let codeAppends = 0;
+    for (const prefix of prefixes(text, [1, 2, 7, 19])) {
+      const delta = prefix.slice(previous.length);
+      const append = createProvenAppend(previous, delta);
+      const incremental = incrementalLex(
+        prefix,
+        [],
+        cache,
+        parseIncompleteMarkdown,
+        append,
+      );
+      expect(incremental).toEqual(fullReference(prefix, true));
+      if (cache.lastPath === 'code-append') codeAppends += 1;
+      previous = prefix;
+    }
+    expect(codeAppends, 'the open-fence append path must engage').toBeGreaterThan(5);
+  });
+
+  it('falls back when a valid fence closer gains trailing tabs', () => {
+    const seed = '```ts\nconst value = 1;\n';
+    const partial = `${seed}\`\``;
+    const complete = `${partial}\`\t\n\nParagraph after the fence.`;
+    const cache = createIncrementalLexCache();
+    incrementalLex(seed, [], cache, parseIncompleteMarkdown);
+    incrementalLex(
+      partial,
+      [],
+      cache,
+      parseIncompleteMarkdown,
+      createProvenAppend(seed, partial.slice(seed.length)),
+    );
+    expect(cache.lastPath).toBe('code-append');
+
+    const append = createProvenAppend(partial, complete.slice(partial.length));
+    expect(incrementalLex(
+      complete,
+      [],
+      cache,
+      parseIncompleteMarkdown,
+      append,
+    )).toEqual(fullReference(complete, true));
+    expect(cache.lastPath).toBe('full');
+
+    const blockCache = createParseBlocksCache();
+    parseBlocks(seed, [], blockCache);
+    parseBlocks(
+      partial,
+      [],
+      blockCache,
+      createProvenAppend(seed, partial.slice(seed.length)),
+    );
+    expect(parseBlocks(
+      complete,
+      [],
+      blockCache,
+      createProvenAppend(partial, complete.slice(partial.length)),
+    )).toEqual(parseBlocks(complete, []));
+    expect(blockCache.trailingBlock?.kind).not.toBe('fence');
+  });
+
+  it('rejects stale and fabricated append proofs across source replacements', () => {
+    const first = '```ts\nalpha line';
+    const replacement = '```ts\nbeta! line';
+
+    const blockCache = createParseBlocksCache();
+    parseBlocks(first, [], blockCache);
+    const stale = createProvenAppend('unrelated source', replacement);
+    expect(parseBlocks(replacement, [], blockCache, stale)).toEqual(
+      parseBlocks(replacement, []),
+    );
+    expect(blockCache.lastBlockAppend).toBeUndefined();
+
+    const fabricated = {
+      previous: first,
+      delta: replacement.slice(first.length),
+      next: replacement,
+    } as unknown as ReturnType<typeof createProvenAppend>;
+    parseBlocks(first, [], blockCache);
+    expect(parseBlocks(replacement, [], blockCache, fabricated)).toEqual(
+      parseBlocks(replacement, []),
+    );
+    expect(blockCache.lastBlockAppend).toBeUndefined();
+
+    const lexCache = createIncrementalLexCache();
+    incrementalLex(first, [], lexCache, parseIncompleteMarkdown);
+    const tokens = incrementalLex(
+      replacement,
+      [],
+      lexCache,
+      parseIncompleteMarkdown,
+      fabricated,
+    );
+    expect(tokens).toEqual(fullReference(replacement, true));
+    expect(lexCache.lastPath).toBe('full');
+  });
+
+  it('accepts an independently materialized append on both incremental layers', () => {
+    const previous = '- alpha\n- beta';
+    const deltas = ['\n- gamma', '\n- delta'];
+    const append = createMaterializedProvenAppend(previous, deltas);
+    expect(append).toEqual({
+      previous,
+      delta: deltas.join(''),
+      next: previous + deltas.join(''),
+    });
+    expect(Object.isFrozen(append)).toBe(true);
+
+    const blockCache = createParseBlocksCache();
+    parseBlocks(previous, [], blockCache);
+    expect(parseBlocks(append.next, [], blockCache, append)).toEqual(
+      parseBlocks(append.next, []),
+    );
+
+    const lexCache = createIncrementalLexCache();
+    incrementalLex(previous, [], lexCache, parseIncompleteMarkdown);
+    expect(incrementalLex(
+      append.next,
+      [],
+      lexCache,
+      parseIncompleteMarkdown,
+      append,
+    )).toEqual(fullReference(append.next, true));
+    expect(lexCache.lastPath).toBe('list-append');
+  });
+
+  it('materializes many pending deltas without a spread-sized append operation', () => {
+    const deltas = Array.from({ length: 20_000 }, (_, index) =>
+      String.fromCharCode(97 + (index % 26)),
+    );
+    const append = createMaterializedProvenAppend('seed:', deltas);
+    expect(append.previous).toBe('seed:');
+    expect(append.delta).toBe(deltas.join(''));
+    expect(append.next).toBe(`seed:${deltas.join('')}`);
+  });
+
+  it('detaches cached block strings across append and replacement transitions', () => {
+    const first = [
+      'Paragraph one.',
+      '',
+      'Paragraph two.',
+      '',
+      'Paragraph three.',
+      '',
+      'Paragraph four.',
+      '',
+      'Paragraph five with unicode 🚀 and an unpaired surrogate \ud800.',
+    ].join('\n');
+    const cache = createParseBlocksCache();
+    const blocks = parseBlocks(first, [], cache);
+    expect(cache.materializationEnabled).toBe(false);
+
+    const initialJoin = vi.spyOn(Array.prototype, 'join');
+    updateParseBlockStringMaterialization(cache, true);
+    expect(initialJoin).toHaveBeenCalledTimes(blocks.length);
+    initialJoin.mockRestore();
+    expect(cache.blocks).toBe(blocks);
+    expect(cache.materializationEnabled).toBe(true);
+    expect(cache.materializedBlocks).toEqual(cache.blocks);
+    expect(cache.dirtyBlockStart).toBe(cache.blocks.length);
+    expect(cache.raws.join('')).toBe(first);
+    expect(cache.blocks).toEqual(parseBlocks(first, []));
+
+    // A repeated call is a no-op. An append reuses the independent value for
+    // an unchanged reparsed block and copies only the block that really grew.
+    const unchangedJoin = vi.spyOn(Array.prototype, 'join');
+    updateParseBlockStringMaterialization(cache, true);
+    expect(unchangedJoin).not.toHaveBeenCalled();
+    unchangedJoin.mockRestore();
+    const delta = ' keeps growing.';
+    const second = first + delta;
+    expect(parseBlocks(
+      second,
+      [],
+      cache,
+      createProvenAppend(first, delta),
+    )).toEqual(parseBlocks(second, []));
+    expect(cache.dirtyBlockStart).toBeLessThan(cache.blocks.length);
+    const appendJoin = vi.spyOn(Array.prototype, 'join');
+    updateParseBlockStringMaterialization(cache, true);
+    expect(appendJoin).toHaveBeenCalledTimes(1);
+    appendJoin.mockRestore();
+    expect(cache.dirtyBlockStart).toBe(cache.blocks.length);
+    expect(cache.raws.join('')).toBe(second);
+
+    // A non-append replacement rebuilds the cache, after which the same
+    // operation detaches every new block without stale history.
+    const replacement = '# Replacement\n\nFresh body.';
+    expect(parseBlocks(replacement, [], cache)).toEqual(
+      parseBlocks(replacement, []),
+    );
+    expect(cache.dirtyBlockStart).toBe(0);
+    updateParseBlockStringMaterialization(cache, true);
+    expect(cache.materializedBlocks).toEqual(cache.blocks);
+    expect(cache.raws.join('')).toBe(replacement);
+
+    // Mode transitions release the independent history. Re-enabling with an
+    // unchanged parse must revisit every block rather than trusting stale state.
+    updateParseBlockStringMaterialization(cache, false);
+    updateParseBlockStringMaterialization(cache, false);
+    expect(cache.materializationEnabled).toBe(false);
+    expect(cache.materializedBlocks).toEqual([]);
+    expect(cache.dirtyBlockStart).toBe(0);
+    const reenabledJoin = vi.spyOn(Array.prototype, 'join');
+    updateParseBlockStringMaterialization(cache, true);
+    expect(reenabledJoin).toHaveBeenCalledTimes(cache.blocks.length);
+    reenabledJoin.mockRestore();
+    expect(cache.materializationEnabled).toBe(true);
+  });
+
+  it('rejects an empty materialized append', () => {
+    expect(() => createMaterializedProvenAppend('seed', [])).toThrow(
+      'materialized append needs one or more non-empty deltas',
+    );
+    expect(() => createMaterializedProvenAppend('seed', ['next', ''])).toThrow(
+      'materialized append needs one or more non-empty deltas',
+    );
+  });
+});
+
+describe('incrementalLex token identity', () => {
+  it('preserves ECMAScript trim semantics across proven whitespace appends', () => {
+    const whitespace = [
+      '\u0009', '\u000A', '\u000B', '\u000C', '\u000D', '\u0020', '\u00A0',
+      '\u1680', '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
+      '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u2028', '\u2029',
+      '\u202F', '\u205F', '\u3000', '\uFEFF',
+    ];
+
+    for (const edge of whitespace) {
+      const cache = createIncrementalLexCache();
+      let source = edge;
+      expect(incrementalLex(source, [], cache, parseIncompleteMarkdown))
+        .toEqual(fullReference(source, true));
+      for (const delta of [`value${edge}`, `${edge}more${edge}`, 'end']) {
+        const append = createProvenAppend(source, delta);
+        source = append.next;
+        expect(incrementalLex(source, [], cache, parseIncompleteMarkdown, append))
+          .toEqual(fullReference(source, true));
+      }
+    }
+
+    const formerWhitespace = '\u180E';
+    const cache = createIncrementalLexCache();
+    expect(incrementalLex(
+      `${formerWhitespace}value${formerWhitespace}`,
+      [],
+      cache,
+      parseIncompleteMarkdown,
+    )).toEqual(fullReference(`${formerWhitespace}value${formerWhitespace}`, true));
+  });
+
+  it('invalidates cached tokens when incomplete-markdown mode changes', () => {
+    const cache = createIncrementalLexCache();
+    const source = '```ts\nconst value = 1;';
+
+    expect(incrementalLex(
+      source,
+      [],
+      cache,
+      parseIncompleteMarkdown,
+    )).toEqual(lex(parseIncompleteMarkdown(source.trim())));
+    expect(incrementalLex(source, [], cache, null)).toEqual(lex(source));
+    expect(cache.lastPath).toBe('full');
+    expect(incrementalLex(
+      source,
+      [],
+      cache,
+      parseIncompleteMarkdown,
+    )).toEqual(lex(parseIncompleteMarkdown(source.trim())));
+    expect(cache.lastPath).toBe('full');
+  });
+
+  it('reuses unchanged inline subtrees through a paragraph fallback', () => {
+    const cache = createIncrementalLexCache();
+    const first = incrementalLex(
+      'Prefix **stable bold** before the live tail',
+      [],
+      cache,
+      parseIncompleteMarkdown,
+    );
+    const paragraph = first[0] as { tokens: Array<{ type: string }> };
+    const stable = paragraph.tokens.find((token) => token.type === 'strong');
+    expect(stable).toBeDefined();
+
+    const second = incrementalLex(
+      'Prefix **stable bold** before the live tail grows.',
+      [],
+      cache,
+      parseIncompleteMarkdown,
+    );
+    const nextParagraph = second[0] as { tokens: Array<{ type: string }> };
+
+    expect(cache.lastPath).toBe('full');
+    expect(nextParagraph).not.toBe(paragraph);
+    expect(nextParagraph.tokens.find((token) => token.type === 'strong')).toBe(stable);
+  });
 });
 
 describe('incremental lexing performance contract', () => {
@@ -377,6 +707,7 @@ describe('incremental lexing performance contract', () => {
   // outside noise in both directions.
   const bigList = bullets(660, (i) => `- Item ${i}: the \`resolver\` keeps a **steady** cadence while pass ${i} holds the viewport across its flush.`);
   const bigTable = tableOf(660, (i) => `| Item ${i} | the \`resolver\` keeps a **steady** cadence on pass ${i} | ${i * 7} |`);
+  const bigFence = `\`\`\`ts\n${bullets(1600, (i) => `const value${i} = computeThing(alpha, beta); // streamed code line ${i}`)}`;
 
   const median = (samples: number[]): number => {
     const sorted = [...samples].sort((a, b) => a - b);
@@ -386,14 +717,20 @@ describe('incremental lexing performance contract', () => {
   const lexAppendContract = (text: string, path: 'list-append' | 'table-append'): void => {
     const cache = createIncrementalLexCache();
     // Establish the stream mid-document, then measure steady-state appends.
-    incrementalLex(text.slice(0, text.length - 2100), [], cache, parseIncompleteMarkdown);
+    let previous = text.slice(0, text.length - 2100);
+    incrementalLex(previous, [], cache, parseIncompleteMarkdown);
     const appendTimes: number[] = [];
     for (let cut = 2100 - 21; cut >= 0; cut -= 21) {
-      const prefix = text.slice(0, text.length - cut);
+      const proof = createProvenAppend(
+        previous,
+        text.slice(previous.length, text.length - cut),
+      );
+      const prefix = proof.next;
       const t0 = performance.now();
-      incrementalLex(prefix, [], cache, parseIncompleteMarkdown);
+      incrementalLex(prefix, [], cache, parseIncompleteMarkdown, proof);
       appendTimes.push(performance.now() - t0);
       expect(cache.lastPath).toBe(path);
+      previous = prefix;
     }
     const fullTimes: number[] = [];
     for (let i = 0; i < 5; i++) {
@@ -415,9 +752,60 @@ describe('incremental lexing performance contract', () => {
     lexAppendContract(bigTable, 'table-append');
   });
 
+  it('incrementalLex open-fence append takes the dedicated path', () => {
+    const cache = createIncrementalLexCache();
+    const initial = bigFence.slice(0, bigFence.length - 2100);
+    incrementalLex(initial, [], cache, parseIncompleteMarkdown);
+    let previous = initial;
+    for (let cut = 2100 - 21; cut >= 0; cut -= 21) {
+      const prefix = bigFence.slice(0, bigFence.length - cut);
+      const append = createProvenAppend(previous, prefix.slice(previous.length));
+      incrementalLex(
+        prefix,
+        [],
+        cache,
+        parseIncompleteMarkdown,
+        append,
+      );
+      expect(cache.lastPath).toBe('code-append');
+      previous = prefix;
+    }
+  });
+
+  it('does not slice the whole open-fence body for an ordinary append', () => {
+    const cache = createIncrementalLexCache();
+    const initial = `\`\`\`ts\n${'const value = 1;\n'.repeat(800)}partial`;
+    incrementalLex(initial, [], cache, parseIncompleteMarkdown);
+    const delta = ' suffix';
+    const next = initial + delta;
+    const append = createProvenAppend(initial, delta);
+    const bodyStart = '```ts\n'.length;
+    const originalSlice = String.prototype.slice;
+    const slice = vi.spyOn(String.prototype, 'slice').mockImplementation(function (
+      this: string,
+      start?: number,
+      end?: number,
+    ): string {
+      if (String(this) === next && start === bodyStart && end === next.length) {
+        throw new Error('open fence body was sliced from its first line');
+      }
+      return Reflect.apply(originalSlice, this, [start, end]) as string;
+    });
+    try {
+      incrementalLex(next, [], cache, parseIncompleteMarkdown, append);
+    } finally {
+      slice.mockRestore();
+    }
+    expect(cache.lastPath).toBe('code-append');
+  });
+
   const parseBlocksAppendContract = (doc: string, kind: 'list' | 'table'): void => {
-    const cache = createParseBlocksCache();
+    let maxLexInput = 0;
+    const cache = createParseBlocksCache((_path, inputLength) => {
+      maxLexInput = Math.max(maxLexInput, inputLength);
+    });
     parseBlocks(doc.slice(0, doc.length - 2100), [], cache);
+    maxLexInput = 0;
     const appendTimes: number[] = [];
     for (let cut = 2100 - 21; cut >= 0; cut -= 21) {
       const prefix = doc.slice(0, doc.length - cut);
@@ -426,15 +814,9 @@ describe('incremental lexing performance contract', () => {
       appendTimes.push(performance.now() - t0);
     }
     expect(cache.trailingBlock?.kind, 'descent record must be live at scale').toBe(kind);
-    const fullTimes: number[] = [];
-    for (let i = 0; i < 5; i++) {
-      const t0 = performance.now();
-      parseBlocks(doc, []);
-      fullTimes.push(performance.now() - t0);
-    }
     const append = median(appendTimes);
-    const full = median(fullTimes);
-    expect(append, `append=${append.toFixed(3)}ms full=${full.toFixed(3)}ms`).toBeLessThan(full / 5);
+    expect(maxLexInput, `largest marked input was ${maxLexInput} of ${doc.length} code units`)
+      .toBeLessThan(doc.length / 10);
     expect(append).toBeLessThan(10);
   };
 
@@ -444,6 +826,58 @@ describe('incremental lexing performance contract', () => {
 
   it('parseBlocks append with a trailing table costs far less than a fresh parse', () => {
     parseBlocksAppendContract(`Intro paragraph.\n\n${bigTable}`, 'table');
+  });
+
+  it('parseBlocks descends into an open trailing fence', () => {
+    const cache = createParseBlocksCache();
+    const initial = bigFence.slice(0, bigFence.length - 2100);
+    parseBlocks(initial, [], cache);
+    let previous = initial;
+    for (let cut = 2100 - 21; cut >= 0; cut -= 21) {
+      const prefix = bigFence.slice(0, bigFence.length - cut);
+      const append = createProvenAppend(previous, prefix.slice(previous.length));
+      const blocks = parseBlocks(
+        prefix,
+        [],
+        cache,
+        append,
+      );
+      expect(blocks).toEqual(parseBlocks(prefix, []));
+      expect(cache.trailingBlock?.kind).toBe('fence');
+      previous = prefix;
+    }
+  });
+
+  it('updates one block array instead of copying every sealed block per append', () => {
+    const sealed = Array.from(
+      { length: 2_000 },
+      (_, index) => `Paragraph ${index} stays sealed.`,
+    ).join('\n\n');
+    const firstSource = `${sealed}\n\nTrailing paragraph`;
+    const cache = createParseBlocksCache();
+    const blocks = parseBlocks(firstSource, [], cache);
+    const nextSource = `${firstSource} keeps growing.`;
+    const next = parseBlocks(
+      nextSource,
+      [],
+      cache,
+      createProvenAppend(firstSource, ' keeps growing.'),
+    );
+
+    expect(next).toBe(blocks);
+    expect(next).toEqual(parseBlocks(nextSource, []));
+    let offset = 0;
+    for (let index = 0; index < cache.raws.length; index++) {
+      expect(cache.rawStarts[index]).toBe(offset);
+      const blockIndex = cache.blockIndexes[index];
+      expect(blockIndex < 0 ? false : cache.blocks[blockIndex] === cache.raws[index])
+        .toBe(cache.keep[index]);
+      if (blockIndex >= 0) {
+        expect(cache.blockRawIndexes[blockIndex]).toBe(index);
+      }
+      offset += cache.raws[index].length;
+    }
+    expect(offset).toBe(nextSource.length);
   });
 });
 
@@ -501,4 +935,74 @@ describe('parseBlocks trailing-block descent', () => {
       expect(parseBlocks(prefix, [], cache)).toEqual(parseBlocks(prefix, []));
     }
   });
+});
+
+describe('open-fence append differential fuzz', () => {
+  const nextRandom = (state: { value: number }): number => {
+    state.value = (Math.imul(state.value, 1_664_525) + 1_013_904_223) >>> 0;
+    return state.value;
+  };
+
+  const makeFenceDoc = (index: number): string => {
+    const state = { value: (0x9e37_79b9 ^ index) >>> 0 };
+    const char = index % 2 === 0 ? '`' : '~';
+    const length = 3 + (nextRandom(state) % 6);
+    const fence = char.repeat(length);
+    const lines = [`${' '.repeat(index % 4)}${fence}${char === '`' ? 'ts title=x' : 'python title=x'}`];
+    const lineCount = 3 + (nextRandom(state) % 10);
+    for (let line = 0; line < lineCount; line++) {
+      const shape = nextRandom(state) % 7;
+      if (shape === 0) lines.push(`${char.repeat(Math.max(1, length - 1))}`);
+      else if (shape === 1) lines.push(`${' '.repeat(nextRandom(state) % 4)}${char.repeat(length)}x`);
+      else if (shape === 2) lines.push(`${char === '`' ? '~' : '`'}`.repeat(length + 2));
+      else if (shape === 3) lines.push(`const emoji_${line} = "😀";`);
+      else if (shape === 4) lines.push(`  nested ${char.repeat(2)} literal ${line}`);
+      else if (shape === 5) lines.push('');
+      else lines.push(`value_${line} = compute(${nextRandom(state) % 10_000})`);
+    }
+    if (index % 3 !== 0) {
+      const trailing = index % 4 === 0
+        ? '  '
+        : index % 4 === 1
+          ? '\t '
+          : '';
+      lines.push(`${' '.repeat(nextRandom(state) % 4)}${char.repeat(length + (index % 2))}${trailing}`);
+      lines.push('');
+      lines.push(`paragraph after fence ${index}`);
+    }
+    const separator = index % 11 === 0 ? '\r\n' : '\n';
+    return lines.join(separator);
+  };
+
+  for (let index = 0; index < 64; index++) {
+    it(`matches fresh block and token parses for generated fence ${index}`, () => {
+      const source = makeFenceDoc(index);
+      const blockCache = createParseBlocksCache();
+      const lexCache = createIncrementalLexCache();
+      const state = { value: (0xa511_e9b3 ^ index) >>> 0 };
+      let previous = '';
+      let offset = 0;
+      while (offset < source.length) {
+        offset = Math.min(source.length, offset + 1 + (nextRandom(state) % 17));
+        const prefix = source.slice(0, offset);
+        const append = createProvenAppend(
+          previous,
+          prefix.slice(previous.length),
+        );
+        expect(parseBlocks(prefix, [], blockCache, append)).toEqual(
+          parseBlocks(prefix, []),
+        );
+        expect(
+          incrementalLex(
+            prefix,
+            [],
+            lexCache,
+            parseIncompleteMarkdown,
+            append,
+          ),
+        ).toEqual(fullReference(prefix, true));
+        previous = prefix;
+      }
+    });
+  }
 });

@@ -16,7 +16,7 @@
 // ladders are upstream values with nothing invented — and both run in
 // gruvbox's own HARD CONTRAST pairing (`contrast = hard`: bg0_hard with
 // fg0), which is what keeps the app crisp where the soft pairing read hazy
-// (see the luminance-range rule in `docs/specs/theme-system.md` §9.11):
+// (see the luminance-range rule in `docs/architecture/theme-system.md` §9.11):
 //
 //   dark   dark0_hard #1d2021 → dark0 #282828 → dark1 #3c3836 → dark2 #504945
 //          with fg0 #fbf1c7 focal over fg4 #a89984 supporting

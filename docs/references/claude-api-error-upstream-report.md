@@ -1,4 +1,4 @@
-# DRAFT — upstream bug report for anthropics/claude-code
+# Draft upstream bug report for anthropics/claude-code
 
 > Status: **draft, not filed**. File on maintainer go-ahead. Sanitized
 > fixture lives at
@@ -22,10 +22,10 @@ When an API request inside a turn fails transiently and is retried
 (`system/api_retry` on the stream; the turn then completes normally),
 the CLI does not write the corresponding `system/api_error` rows to the
 session JSONL at retry time. It buffers them and appends them **at the
-next user send** — but with `parentUuid` pointing at the transcript
+next user send**, but with `parentUuid` pointing at the transcript
 leaf from *retry time* (a mid-turn row), not the file's current leaf.
-The rest of the turn — everything after the retry point, including the
-final assistant message — is bypassed in the parent graph.
+The rest of the turn (everything after the retry point, including the
+final assistant message) is bypassed in the parent graph.
 
 Because session-resume context is reconstructed by walking `parentUuid`
 from the file's last uuid-bearing transcript row, and the next user row
@@ -33,10 +33,10 @@ chains onto the api_error rows, this has two user-visible consequences:
 
 1. **Every cold `--resume` of an affected session silently drops the
    prior turn's tail** (often the final assistant answer) from the
-   model's context. No error — the model just doesn't remember the end
-   of its own previous turn.
+   model's context. There is no error. The model just doesn't remember
+   the end of its own previous turn.
 2. **`--resume <id> --resume-session-at <uuid>` hard-fails for any
-   bypassed row** (e.g. the turn's final assistant message — exactly
+   bypassed row** (e.g. the turn's final assistant message, exactly
    the uuid an SDK client would pass):
    ```json
    {"type":"result","subtype":"error_during_execution","is_error":true,
@@ -65,7 +65,7 @@ the next user send's row chains onto the last of them
 
 1. Run a turn that hits a transient API failure mid-turn (ECONNRESET /
    529 with successful retry). The turn completes normally on the wire.
-   The session JSONL at this point is healthy — no api_error rows.
+   The session JSONL at this point is healthy, with no api_error rows.
 2. Send any next message. The api_error rows are appended now, with
    `parentUuid` pointing at the mid-turn row from step 1, followed by
    the new user row chained onto them.
@@ -80,7 +80,7 @@ The checked-in 8-row fixture reproduces the topology directly: drop it
 into `~/.claude/projects/<slug>/<id>.jsonl` and run step 4 against
 `a3-final`.
 
-## Bisect — the stale parent is the whole bug
+## Bisect: the stale parent is the whole bug
 
 Performed on a real affected session (2026-06-10, 2.1.170), mutating
 only the api_error rows and attempting `--resume-session-at` the
@@ -88,7 +88,7 @@ turn's final assistant row:
 
 | Mutation | Resume result |
 |---|---|
-| File unchanged (stale parents) | **FAILS** — "No message found with message.uuid of: ..." |
+| File unchanged (stale parents) | **FAILS**: "No message found with message.uuid of: ..." |
 | api_error rows deleted | works |
 | api_error rows kept, `parentUuid` re-chained to file predecessor | works |
 
@@ -100,7 +100,7 @@ Either of:
 - When writing deferred rows, parent them on the file's **current**
   leaf rather than the buffered retry-time leaf.
 
-The rows themselves are useful diagnostics — only the stale parent is
+The rows themselves are useful diagnostics. Only the stale parent is
 harmful.
 
 ## Impact
@@ -110,5 +110,5 @@ Any client that resumes sessions by uuid (the Python agent SDK's
 affected: the failure appears one full turn AFTER the network blip that
 caused it, on a session whose wire stream showed a successful turn, and
 the resulting error message names a uuid that demonstrably exists in
-the file — just off the parentUuid branch. Recovery requires manually
+the file, just off the parentUuid branch. Recovery requires manually
 re-chaining the JSONL.

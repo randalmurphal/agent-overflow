@@ -3,9 +3,12 @@ package harnessclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,8 +22,9 @@ import (
 // of what Launch does — argv assembly, the bootstrap wait, the stderr
 // tail, detaching — depends on which program prints the line.
 const (
-	fakeBackendEnv     = "HARNESSCLIENT_FAKE_BACKEND"
-	fakeBackendArgvEnv = "HARNESSCLIENT_FAKE_ARGV_FILE"
+	fakeBackendEnv      = "HARNESSCLIENT_FAKE_BACKEND"
+	fakeBackendArgvEnv  = "HARNESSCLIENT_FAKE_ARGV_FILE"
+	fakeBackendChildPID = "HARNESSCLIENT_FAKE_CHILD_PID_FILE"
 )
 
 func TestMain(m *testing.M) {
@@ -39,6 +43,25 @@ func fakeBackendMain(mode string) {
 		_ = os.WriteFile(path, record, 0o600)
 	}
 	fmt.Fprintln(os.Stderr, "fake backend: starting")
+	if mode == "child-only" {
+		for {
+			time.Sleep(time.Minute)
+		}
+	}
+	if mode == "linger-child" {
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), fakeBackendEnv+"=child-only")
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "fake backend: child start: %v\n", err)
+			os.Exit(4)
+		}
+		if path := os.Getenv(fakeBackendChildPID); path != "" {
+			_ = os.WriteFile(path, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+		}
+		defer child.Wait()
+	}
 
 	switch mode {
 	case "die":
@@ -55,6 +78,9 @@ func fakeBackendMain(mode string) {
 		"dataRoot": dataDirFromArgs(), "dataDir": filepath.Join(dataDirFromArgs(), "agent-overflow"),
 		"mockProvider": "/bin/mock", "pid": os.Getpid(), "version": "test",
 	}
+	if mode == "wrong-pid" {
+		payload["pid"] = os.Getpid() + 1
+	}
 	if mode == "startup-error" {
 		payload["startupError"] = "open database: disk is full"
 	}
@@ -64,6 +90,9 @@ func fakeBackendMain(mode string) {
 	if mode == "linger" {
 		// Live until the test terminates us, which is what makes the
 		// detached path assertable.
+		time.Sleep(2 * time.Minute)
+	}
+	if mode == "wrong-pid" {
 		time.Sleep(2 * time.Minute)
 	}
 }
@@ -120,7 +149,7 @@ func TestLaunchReadsTheBootstrapLineAndSpellsTheModeFlags(t *testing.T) {
 		t.Fatalf("decode argv: %v", err)
 	}
 	got := strings.Join(argv, " ")
-	for _, want := range []string{"--harness", "--data-dir " + dataRoot, "--mock-provider /opt/bin/ao-mockprovider"} {
+	for _, want := range []string{"--harness", "--data-dir " + instanceinfo.NormalizeSystemPath(dataRoot), "--mock-provider /opt/bin/ao-mockprovider"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv %q is missing %q", got, want)
 		}
@@ -177,6 +206,41 @@ func TestLaunchReportsAClosedStdoutWithoutABootstrapLine(t *testing.T) {
 	}
 }
 
+func TestLaunchRefusesBootstrapFromAnotherProcess(t *testing.T) {
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "wrong-pid", t.TempDir()))
+	if err == nil {
+		t.Fatal("Launch accepted a bootstrap whose pid did not match the spawned process")
+	}
+	if !strings.Contains(err.Error(), "does not match spawned pid") {
+		t.Fatalf("error does not name the bootstrap identity mismatch: %v", err)
+	}
+	if launched == nil {
+		t.Fatal("Launch discarded the cleanup handle after a bootstrap identity mismatch")
+	}
+	if err := launched.Kill(context.Background()); err != nil {
+		t.Fatalf("cleanup handle could not terminate failed launch: %v", err)
+	}
+}
+
+func TestLaunchReturnsCleanupHandleWhenIdentityCaptureFails(t *testing.T) {
+	previous := captureProcessIdentity
+	captureProcessIdentity = func(int) (instanceinfo.ProcessIdentity, error) {
+		return instanceinfo.ProcessIdentity{}, errors.New("identity probe unavailable")
+	}
+	t.Cleanup(func() { captureProcessIdentity = previous })
+
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "linger", t.TempDir()))
+	if err == nil || !strings.Contains(err.Error(), "identity probe unavailable") {
+		t.Fatalf("Launch error = %v, want identity capture failure", err)
+	}
+	if launched == nil {
+		t.Fatal("Launch discarded the cleanup handle after identity capture failure")
+	}
+	if err := launched.Kill(context.Background()); err != nil {
+		t.Fatalf("cleanup handle could not be retried: %v", err)
+	}
+}
+
 func TestLaunchRefusesAStartedBackendWhoseAppFailed(t *testing.T) {
 	// The transport serves so logs stay readable, but the instance is not
 	// usable; handing it back as a success would produce RPC failures
@@ -228,6 +292,36 @@ func TestDetachedLaunchWritesItsLogsAndOutlivesTheLauncher(t *testing.T) {
 	}
 }
 
+func TestTerminateKillsOwnedProcessGroupDescendants(t *testing.T) {
+	childPIDFile := filepath.Join(t.TempDir(), "child.pid")
+	opts := fakeBackendOpts(t, "linger-child", t.TempDir())
+	opts.Env = append(opts.Env, fakeBackendChildPID+"="+childPIDFile)
+	launched, err := Launch(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	childPIDBytes, err := os.ReadFile(childPIDFile)
+	if err != nil {
+		_ = launched.Terminate(context.Background())
+		t.Fatalf("read child pid: %v", err)
+	}
+	childPID, err := strconv.Atoi(string(childPIDBytes))
+	if err != nil {
+		_ = launched.Terminate(context.Background())
+		t.Fatalf("parse child pid: %v", err)
+	}
+	if !instanceinfo.ProcessAlive(childPID) {
+		_ = launched.Terminate(context.Background())
+		t.Fatalf("child %d exited before teardown", childPID)
+	}
+	if err := launched.Terminate(context.Background()); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if instanceinfo.ProcessAlive(childPID) {
+		t.Fatalf("child %d survived owned process-group teardown", childPID)
+	}
+}
+
 func TestLaunchRefusesADetachWithNowhereToWrite(t *testing.T) {
 	opts := fakeBackendOpts(t, "linger", t.TempDir())
 	opts.Detach = true
@@ -242,5 +336,17 @@ func TestLaunchValidatesItsInputs(t *testing.T) {
 	}
 	if _, err := Launch(context.Background(), LaunchOptions{Binary: "/bin/true"}); err == nil {
 		t.Error("Launch accepted an empty data root")
+	}
+}
+
+func TestLaunchRefusesSymlinkedCapturePath(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "outside.log")
+	link := filepath.Join(root, "capture.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := Launch(context.Background(), LaunchOptions{Binary: "/bin/true", DataRoot: root, StdoutPath: link}); err == nil {
+		t.Fatal("Launch accepted a symlinked stdout capture path")
 	}
 }

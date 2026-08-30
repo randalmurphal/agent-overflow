@@ -6,9 +6,10 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "playwright test",
-    "test:headed": "playwright test --headed",
-    "test:freeze-repro": "playwright test --config=playwright.manual.config.ts freeze-repro.manual.spec.ts"
+    "test": "go run ../cmd/ao-harness-e2e --test",
+    "test:headed": "go run ../cmd/ao-harness-e2e --test --headed",
+    "harness:flow": "go run ../cmd/ao-harness-e2e --flow",
+    "test:freeze-repro": "go run ../cmd/ao-harness-e2e --freeze-repro"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

@@ -77,10 +77,11 @@ describe('App integration — messaging flow', () => {
     expect(sendMock.mock.calls[0][2]).toEqual({
       attachmentIds: [],
     });
-    // The send swapped the <textarea> element to release Blink's
-    // per-keystroke edit-command retention (recreateInput), so the
-    // pre-send node reference is detached — re-query for the live one.
-    expect(textarea.isConnected).toBe(false);
+    // The send schedules an idle-slot swap of the <textarea> element to
+    // release Blink's per-keystroke edit-command retention (recreateInput),
+    // so the pre-send node reference detaches once the slot fires —
+    // re-query for the live one.
+    await waitFor(() => expect(textarea.isConnected).toBe(false));
     expect((getByLabelText('Message Input') as HTMLTextAreaElement).value).toBe('');
   });
 
@@ -490,9 +491,8 @@ describe('App integration — messaging flow', () => {
   // after turn_completed (invariant 24), the activity rail's Background
   // segment renders it as a pending row, the "…" badge renders on the
   // inline card, and when the sibling tool_completion finally lands the
-  // row updates rather than duplicating. This pins the cross-cutting
-  // behavior that was the chief migration risk out of forge's buffered
-  // mode.
+  // row updates rather than duplicating. This pins that
+  // cross-cutting behavior.
   //
   // The Background segment's retention clock is 2 s from
   // completion.createdAt (COMPLETION_RETENTION_MS). We stamp createdAt

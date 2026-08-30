@@ -8,7 +8,7 @@ responsive.
 
 ## Layout
 
-- `search.go` — `Searcher` type with the TTL-cached `workspaceIndex`,
+- `search.go` holds the `Searcher` type with the TTL-cached `workspaceIndex`,
   the git / filesystem-walk strategies, and the scoring that produces
   the @-picker result list. `gitCommand` is overridable in tests so
   unit tests never shell out.
@@ -21,16 +21,16 @@ responsive.
   - Respecting `.gitignore` (via `git ls-files`) and the hard-coded
     `IgnoredDirs` whitelist outside git.
 - What does NOT belong here:
-  - File content search (grep) — that's a future feature with its own
+  - File content search (grep). That's a future feature with its own
     package.
-  - Rendering the @-picker — the frontend owns presentation.
+  - Rendering the @-picker. The frontend owns presentation.
 
 ## Extension points
 
 - To tune the @-picker defaults: adjust `DefaultTTL`,
   `DefaultMaxEntries`, `DefaultResultLimit` in `search.go`.
 - To ignore additional directory names outside git: extend
-  `IgnoredDirs`. Keep the list short — inside a repo we defer to
+  `IgnoredDirs`. Keep the list short. Inside a repo we defer to
   `.gitignore`.
 - To add a new result field: extend `WorkspaceFile`, update the
   frontend binding.
@@ -41,8 +41,3 @@ responsive.
   The whitelist is the gatekeeper; additions need a justification.
 - Do NOT bypass the TTL cache. Callers hit `Searcher`, not raw walks.
 - Do NOT scan content. This is a path-only index.
-
-## References
-
-- Forge parity target: the defaults match forge's @-picker closely
-  enough to avoid surprising users who switch between the two.

@@ -8,12 +8,12 @@ validation, caps, and rotation machinery:
 - the always-on frontend runtime-error log (`frontend-errors.jsonl`)
   fed by the global `error` / `unhandledrejection` handlers, so render
   exceptions are diagnosable without devtools open (a silent render
-  throw also permanently leaks Svelte deriveds — see
+  throw also permanently leaks Svelte deriveds. See
   `ReportFrontendErrorBatch` in `app_ui_trace.go`).
 
 ## Layout
 
-- `uitrace.go` — `Tracer` with `New(configDir)` (render trace),
+- `uitrace.go` defines `Tracer` with `New(configDir)` (render trace),
   `NewErrors(configDir)` (error log), `Path()`, and `Append(lines)`.
   `Append` validates each line (per-line cap, JSON shape) and the
   batch (line count + byte cap), then writes under a process-local
@@ -37,7 +37,7 @@ validation, caps, and rotation machinery:
 ## Anti-patterns
 
 - Do NOT break the file layout (`DirName` / `FileName` /
-  `ErrorFileName`) or the JSONL format — tools that tail the files
+  `ErrorFileName`) or the JSONL format. Tools that tail the files
   depend on both.
 - Do NOT silently truncate or drop oversized lines/batches. Returning
   an error keeps the misbehaviour visible to the caller instead of

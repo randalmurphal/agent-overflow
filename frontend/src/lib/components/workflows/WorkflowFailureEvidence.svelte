@@ -5,6 +5,15 @@
   interface Props { detail: WorkflowItemDetail }
   let { detail }: Props = $props();
 
+  let reasonWord = $derived.by(() => {
+    const reason = detail.item.reason || 'failed';
+    return reason.replace(/^check-failed-/, '').replaceAll('-', ' ');
+  });
+
+  // The failure line is folded whole. Spread across the template it was a
+  // merged text run over `failedCheck` AND `reasonWord`, so the run could
+  // re-render on the reason after the check went null and before the branch
+  // tore down.
   let failedCheck = $derived.by(() => {
     const checks = new Set(detail.checkPhaseIds ?? []);
     const candidates = detail.phases.filter((phase) => {
@@ -19,7 +28,9 @@
       || textOutput(output?.detail)
       || textOutput(output?.summary)
       || 'check failed';
-    return { phase, detailText };
+    return {
+      text: `✗ ${phase.phaseId} — ${detailText} ×${phase.attempt} · ${reasonWord}`,
+    };
   });
 
   let diagnosis = $derived.by(() => {
@@ -29,16 +40,11 @@
     }
     return null;
   });
-
-  let reasonWord = $derived.by(() => {
-    const reason = detail.item.reason || 'failed';
-    return reason.replace(/^check-failed-/, '').replaceAll('-', ' ');
-  });
 </script>
 
 <section class="space-y-1 text-sm" data-testid="wf-failure-evidence">
   {#if failedCheck}
-    <p class="text-error" data-testid="wf-failure-check">✗ {failedCheck.phase.phaseId} — {failedCheck.detailText} ×{failedCheck.phase.attempt} · {reasonWord}</p>
+    <p class="text-error" data-testid="wf-failure-check">{failedCheck?.text ?? ''}</p>
   {:else}
     <p class="text-error" data-testid="wf-failure-check">✗ {detail.item.reason || 'workflow failed'}</p>
   {/if}

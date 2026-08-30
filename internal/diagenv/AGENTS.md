@@ -7,7 +7,7 @@ full set without importing the packages that implement each diagnostic.
 
 ## Layout
 
-- `diagenv.go` — the variable-name constants (`Pprof`, `RendererDiag`)
+- `diagenv.go`: the variable-name constants (`Pprof`, `RendererDiag`)
   and `Passthrough()`, the list both launcher hops feed into
   `wsllauncher.AppendWSLENV`.
 
@@ -31,7 +31,7 @@ full set without importing the packages that implement each diagnostic.
 
 ## Anti-patterns
 
-- Do NOT put behavior here. This package is names only — a diagnostic
+- Do NOT put behavior here. This package is names only. A diagnostic
   that needs code lives with the subsystem it inspects.
 - Do NOT add a variable to `Passthrough()` that isn't a diagnostic
   opt-in. Feature configuration goes through settings, not env vars.

@@ -3,14 +3,14 @@
 The DOM adapter for the bespoke windowing engine (`utils/virtual/`),
 shared by every virtualized surface: the chat timeline
 (`chat/MessageTimeline.svelte`), discussion channels, and the review
-pane. It is surface-agnostic — chat-specific behavior (priors, restore,
+pane. It is surface-agnostic. Chat-specific behavior (priors, restore,
 paging, row projection) lives with its surface in `components/chat/`.
 
-- `TimelineVirtualizer.svelte` — binds the engine to the DOM: one lazy
+- `TimelineVirtualizer.svelte` binds the engine to the DOM: one lazy
   ResizeObserver for scroller + mounted rows, scroll-event feed, spacer +
   absolute row positioning, scrollend synthesis, the imperative handle
   (`TimelineVirtualizerHandle` in `utils/virtual/types.ts`).
-- `VirtualRow.svelte` — the per-row mount/measure wrapper.
+- `VirtualRow.svelte` is the per-row mount/measure wrapper.
 
 The adapter also owns the **reading anchor**: the one DOM measurement the
 engine cannot make for itself. Whole-row `[index, height]` cannot say
@@ -26,7 +26,7 @@ viewport top".
 Ownership contract (see `docs/architecture/frontend-scroll.md`): this
 component NEVER writes scrollTop. Compensations surface as observations;
 imperative scrolls go through the required `applyScrollTarget` prop, so
-each consumer decides who owns the write — chat passes the scroll
+each consumer decides who owns the write. Chat passes the scroll
 controller chokepoint, simpler surfaces may pass a direct writer they
 own. Do not add chat imports here; the dependency runs one way only
 (surfaces import the adapter, never the reverse).
@@ -46,6 +46,6 @@ only continue a journey nobody else has redirected: each pass checks the
 live position against where its own last write left it (compensation
 writes and the browser's shrink-clamp count as its own side) and cancels
 on any other motion. A stale absolute target re-fired over a reader
-gesture or a spring glide is a visible yank — do not weaken this guard
+gesture or a spring glide is a visible yank. Do not weaken this guard
 to "keep converging harder"; a navigation that lost the viewport has
 nothing left to navigate.

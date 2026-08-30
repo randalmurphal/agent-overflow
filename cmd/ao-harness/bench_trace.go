@@ -103,6 +103,9 @@ func (s *traceSession) stop(ctx context.Context) ([]byte, error) {
 	if err := json.Unmarshal(event.Params, &complete); err != nil {
 		return nil, fmt.Errorf("decode tracingComplete: %w", err)
 	}
+	if complete.DataLossOccurr {
+		return nil, fmt.Errorf("the browser reported trace data loss")
+	}
 	if complete.Stream == "" {
 		return nil, fmt.Errorf("the browser completed the trace without a stream handle")
 	}
@@ -164,6 +167,7 @@ type traceFrame struct {
 	FunctionName string `json:"functionName"`
 	URL          string `json:"url"`
 	LineNumber   int    `json:"lineNumber"`
+	ColumnNumber int    `json:"columnNumber"`
 }
 
 // traceEvent is the subset of a trace event this parse reads. `args` is
@@ -178,7 +182,10 @@ type traceEvent struct {
 
 // forcedLayoutGroup is one call site's tally.
 type forcedLayoutGroup struct {
-	// Frame is functionName@url:line — the thing to go open.
+	// Frame is functionName@url:line:column — the thing to go open. Chromium's
+	// timeline stack already reports both coordinates one-based. This differs
+	// from Runtime.CallFrame, whose coordinates are zero-based, so do not apply
+	// that protocol type's conversion here.
 	Frame string `json:"frame"`
 	Count int    `json:"count"`
 	// Style and Layout split the count by which pass was forced:
@@ -316,7 +323,7 @@ func formatTraceFrame(frame traceFrame) string {
 	if frame.URL == "" {
 		return name
 	}
-	return fmt.Sprintf("%s@%s:%d", name, frame.URL, frame.LineNumber)
+	return fmt.Sprintf("%s@%s:%d:%d", name, frame.URL, frame.LineNumber, frame.ColumnNumber)
 }
 
 // mergeTraceSummaries folds a bench's repeats into one answer, then keeps

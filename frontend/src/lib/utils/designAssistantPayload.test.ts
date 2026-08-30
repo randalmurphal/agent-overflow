@@ -111,6 +111,20 @@ describe('parseDesignAssistantPayloads', () => {
           { id: 'q', prompt: 'p', choices: [{ label: 'has no id' }] },
         ],
       },
+      // duplicate question id — answer state and the picker's keyed
+      // {#each} are keyed by it, so a repeat aliases two questions
+      { kind: 'clarification_request', requestId: 'r', questions: [
+        { id: 'q', prompt: 'p1', choices: [{ id: 'a', label: 'A' }] },
+        { id: 'q', prompt: 'p2', choices: [{ id: 'b', label: 'B' }] },
+      ] },
+      // duplicate choice id inside one question — isSelected/toggleChoice
+      // match by it, so a repeat aliases two visible rows
+      { kind: 'clarification_request', requestId: 'r', questions: [
+        { id: 'q', prompt: 'p', choices: [
+          { id: 'a', label: 'A' },
+          { id: 'a', label: 'also A' },
+        ] },
+      ] },
     ];
     for (const c of cases) {
       const text = '```aoflow-design\n' + JSON.stringify(c) + '\n```';

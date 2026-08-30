@@ -568,9 +568,10 @@ var channelPolicies = []ChannelPolicy{
 	{
 		Channel:   eventchan.BrowserInstallProgress,
 		Audience:  AudienceLoopbackOnly,
-		Retention: RetentionDefault,
+		Retention: RetentionLatestOnly,
 		Why: "Managed full-Chrome install progress; error strings can quote " +
-			"manifest URLs. Local UI feedback for a host-side artifact.",
+			"manifest URLs. Each phase supersedes the prior phase, so reconnect " +
+			"and live-drop recovery need only the newest state.",
 	},
 	{
 		Channel:   eventchan.ScreenshotInstallProgress,

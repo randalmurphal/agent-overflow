@@ -218,7 +218,10 @@ export class IncompleteMarkdownParser {
                                 const lastLine = result
                                     .slice(lastNewline + 1)
                                     .replace(/^[ \t]*(?:>[ \t]*)*/, '');
-                                if (new RegExp(`^\\${fence.char}{1,2}$`).test(lastLine)) {
+                                const isPartialCloser = lastLine.length > 0 &&
+                                    lastLine.length < fence.length &&
+                                    Array.from(lastLine).every((ch) => ch === fence.char);
+                                if (isPartialCloser) {
                                     result = result.slice(0, lastNewline);
                                 }
                             }

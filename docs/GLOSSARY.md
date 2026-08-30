@@ -15,14 +15,14 @@ subsystems, and an unqualified use is a real trap.
 
 | Term | Meanings |
 |---|---|
-| **wave** | (a) campaign wave: one traversal of a campaign spine's graph, one child run along the tail-self-call edge (`docs/architecture/workflow-campaigns.md`). (b) project workstream phase: a chunk of a planned effort, e.g. "wave 2 of the cold-thread-loading work" (`docs/specs/thread-replica-sync.md`). |
-| **lane** | (a) campaign task lane: the second starter workflow a campaign spine calls per task (`workflow-campaigns.md`). (b) run-map fan lane: one branch column of a fan-out phase in the UI (`docs/specs/workflows-system-ui/RUN-MAP.md` §2). (c) delegation lane: an isolated worktree at `~/repos/ao-lanes/<id>` where a codex packet runs (`docs/specs/workflows-system-packets/LEDGER.md`). |
-| **spine** | (a) campaign spine: the self-calling workflow definition (`workflow-campaigns.md`). (b) run-map spine: the vertical CSS connector line, `.run-map-spine` (`RUN-MAP.md` §2). (c) dispatch spine: `internal/triage/router.go` as the switch every concern hangs off (`docs/architecture/conventions.md`). |
+| **wave** | (a) campaign wave: one traversal of a campaign spine's graph, one child run along the tail-self-call edge (`docs/architecture/workflow-campaigns.md`). (b) project workstream phase: a chunk of a planned effort, e.g. "wave 2 of the cold-thread-loading work" (`docs/architecture/thread-replica-sync.md`). |
+| **lane** | (a) campaign task lane: the second starter workflow a campaign spine calls per task (`workflow-campaigns.md`). (b) run-map fan lane: one branch column of a fan-out phase in the UI (`docs/architecture/workflow-run-map.md` §2). |
+| **spine** | (a) campaign spine: the self-calling workflow definition (`workflow-campaigns.md`). (b) run-map spine: the vertical CSS connector line, `.run-map-spine` (`docs/architecture/workflow-run-map.md` §2). (c) dispatch spine: `internal/triage/router.go` as the switch every concern hangs off (`docs/architecture/conventions.md`). |
 | **run** | (a) workflow run: one execution of a workflow definition, which IS a work-item row (`docs/specs/workflows-system.md` §3a). (b) activity run: a collapsed stretch of consecutive activity rows in the chat timeline, with its own `runId` (`docs/architecture/activity-runs.md`). |
 | **item** | (a) work item: a workflow run (`workflows-system.md` §2). (b) timeline item: a `store.Item` row with `item_index` (`docs/architecture/invariants.md` §1). Both docs say "the item" with no qualifier. |
-| **ghost** | (a) run-map ghost: a not-yet-reached future phase, rendered as a bare line with no box (`RUN-MAP.md` §2). (b) Codex ghost row: a persisted background tool_call orphaned by a dead subprocess, flipped to `errored`/`lost` at session start (`internal/codexghost/AGENTS.md`). (c) ghost-text: the Claude TUI's inline completion hint (`docs/architecture/claude-tui-provider.md`). |
+| **ghost** | (a) run-map ghost: a not-yet-reached future phase, rendered as a bare line with no box (`docs/architecture/workflow-run-map.md` §2). (b) Codex ghost row: a persisted background tool_call orphaned by a dead subprocess, flipped to `errored`/`lost` at session start (`internal/codexghost/AGENTS.md`). (c) ghost-text: the Claude TUI's inline completion hint (`docs/architecture/claude-tui-provider.md`). |
 | **profile** | (a) project profile: the workflow bindings `profile.yaml` (`workflows-system.md` §8). (b) instance profile: `--profile harness\|soak`, the value every per-instance isolation axis derives from (`docs/architecture/soak-rig.md`). (c) chat model profile: the provider/model/effort/fast-mode tuple on a thread (`internal/chatmodel/AGENTS.md`). |
-| **envelope** | (a) control envelope: a phase's structured result (`workflows-system.md` §3). (b) input envelope: the persisted `input_envelope` a held start renders from at release (`internal/workflow/engine/AGENTS.md`). (c) budget envelope: the root item's token/USD/wall-clock ceiling enforced across the tree (`workflows-system.md` §3a). (d) replica envelope: a `SyncThreadWindow` response carrying an attested stamp (`docs/specs/thread-replica-sync.md`). |
+| **envelope** | (a) control envelope: a phase's structured result (`workflows-system.md` §3). (b) input envelope: the persisted `input_envelope` a held start renders from at release (`internal/workflow/engine/AGENTS.md`). (c) budget envelope: the root item's token/USD/wall-clock ceiling enforced across the tree (`workflows-system.md` §3a). (d) replica envelope: a `SyncThreadWindow` response carrying an attested stamp (`docs/architecture/thread-replica-sync.md`). |
 | **sweep** | (a) needs-attention sweep: the human `j`/`k` triage pass over parked runs (`workflows-system.md` §7). (b) crash sweep: startup reconciliation failing rows still claiming `running` (`internal/workflow/engine/AGENTS.md`). (c) retention sweep: age-based log pruning, also `orphanreaper.Sweep` (`internal/AGENTS.md`). |
 | **lease** | (a) scroll lease: depth-counted auto-scroll suspension (`docs/architecture/scroll-rearchitecture-inventories.md`). (b) input lease: the take-control arbitration token on a Claude-TUI terminal (`docs/architecture/claude-tui-provider.md`). (c) expansion lease: an activity-run row's keep-me-mounted claim while expanded (`activity-runs.md`). |
 | **element** | (a) workflow element: any phase, fan-out unit, or join that runs a turn or command (`internal/workflow/runner/AGENTS.md`). (b) array element: the `over:`/`as:` fan-out binding value (`workflows-system.md` §3). Plus the DOM sense throughout the frontend. |
@@ -33,7 +33,7 @@ subsystems, and an unqualified use is a real trap.
 
 ## Project, workspace, worktree
 
-The one distinction this repo redefines outright. Source: root `CLAUDE.md`
+The one distinction this repo redefines outright. Source: root `AGENTS.md`
 Core Principle 7.
 
 | Term | Definition |
@@ -80,10 +80,10 @@ Source: `docs/specs/workflows-system.md` unless noted.
 | Term | Definition |
 |---|---|
 | **campaign** | One root run of a recursive spine whose last phase calls itself; the tree pauses/stops/discards as a unit. Loop until dry, not for N waves (`docs/architecture/workflow-campaigns.md`). |
-| **wave chain** | The root → child → grandchild chain along tail self-calls; wave ordinal = position in the chain. Everything else renders as composition (`RUN-MAP.md` §3). |
+| **wave chain** | The root → child → grandchild chain along tail self-calls; wave ordinal = position in the chain. Everything else renders as composition (`docs/architecture/workflow-run-map.md` §3). |
 | **lap** | The run-map's unit of the wave chain: one wave's segment. A lap can hold two waves when a tail call was retried (`frontend/src/lib/utils/workflowRunMapTypes.ts`). |
 | **composition** | A called run that is not a tail self-call, rendered as a chain inside its parent's node, recursively. Collapses by default at every depth. |
-| **frontier** | The leaves with status `running` or parked causes, needs-human first. The frontier path decides folding, never depth (`RUN-MAP.md` §5). |
+| **frontier** | The leaves with status `running` or parked causes, needs-human first. The frontier path decides folding, never depth (`docs/architecture/workflow-run-map.md` §5). |
 | **settled (wave)** | Not live, or has tail children. A wave that called the next lap is still `running` in the engine, so folding on run state alone would keep every ancestor expanded. |
 | **fan** | A fan-out phase's parallel branch columns that fork and rejoin in the run map. A folded lane carries `chain: []`; collapsed means not built, everywhere. |
 | **R1 / two hues** | The overlay's color law: amber = a human is blocked, red = failed, everything else neutral. One decider module; never inline a hue (`frontend/AGENTS.md`). |
@@ -118,7 +118,7 @@ Source: `frontend/AGENTS.md`.
 |---|---|
 | **entityStore vs keyedSignalRegistry** | The two keyed-store primitives, chosen by "is there something to RELEASE?": `entityStore` when the key is backed by an acquirable backend resource; `keyedSignalRegistry` when the key is push-fed. |
 | **entity keying** | State is keyed by its entity (app / project / workspace / PR / thread / pane), never by its consumer. |
-| **replica** | IndexedDB copy of recently-viewed thread windows that paints before the sync RPC returns, validated by a per-thread `rev`/`epoch` stamp pair. A paint accelerator, not a source of truth (`docs/specs/thread-replica-sync.md`). |
+| **replica** | IndexedDB copy of recently-viewed thread windows that paints before the sync RPC returns, validated by a per-thread `rev`/`epoch` stamp pair. A paint accelerator, not a source of truth (`docs/architecture/thread-replica-sync.md`). |
 | **companion pane** | A secondary pane (review / plan / design-preview) opened beside a chat pane. |
 | **overlay** | A sibling of `<PaneHost>` (workflows, settings): never a pane kind, never replaces the pane strip. |
 
@@ -135,9 +135,9 @@ Source: `frontend/AGENTS.md`.
 | **the sentinel** | The `default` branch of `Router.Handle` returning `ErrUnhandledEventKind`, existing so a coverage test can loop `AllEventKinds` and fail loudly on a new kind (`docs/architecture/triage-routing.md`). |
 | **stash** | `pending_background_task_terminals`: a queued completion held until the agent observes it, drained by `task_notification` (a timing trigger, never a status source) (`docs/architecture/invariants.md` §21). |
 | **turn** | The unit `Stop` interrupts. Turn activity is wire-pushed, never derived from items; `turn_index` is monotonic per thread (`invariants.md` §3, §10, §22). |
-| **external-queue turn** | A Codex turn that starts on a thread AO owns without AO sending `turn/start` — the app-server's queue service dispatched a row `codex queue --thread` wrote into `state_5.sqlite`. Adopted, never refused, and stamped `Meta.origin = "external-queue"` so the injected prompt is not rendered as something the user typed (`internal/provider/codex/AGENTS.md` §"Externally queued turns"). |
+| **external-queue turn** | A Codex turn that starts on a thread AO owns without AO sending `turn/start`. The app-server's queue service dispatched a row `codex queue --thread` wrote into `state_5.sqlite`. Adopted, never refused, and stamped `Meta.origin = "external-queue"` so the injected prompt is not rendered as something the user typed (`docs/references/codex-wire.md` §"Externally queued turns"). |
 | **peer session-turn** | A turn on a provider session AO is connected to that some OTHER client's action produced. The external-queue turn is the one AO currently sees; the term names the class, so a second producer is distinguishable rather than folded into "not ours". |
-| **history cut** | Truncating a provider thread's own history at a turn boundary, the provider-side half of edit-and-resend. Codex has three, all turn-granular; AO uses two — the in-place `thread/revert { beforeTurnId }` (keeps the thread id) and `thread/fork { lastTurnId }` (mints a new one). The two anchors describe the same boundary from opposite sides, which is why they are resolved separately (`internal/provider/codex/AGENTS.md` §"History truncation"). |
+| **history cut** | Truncating a provider thread's own history at a turn boundary, the provider-side half of edit-and-resend. Codex has three, all turn-granular; AO uses two: the in-place `thread/revert { beforeTurnId }` (keeps the thread id) and `thread/fork { lastTurnId }` (mints a new one). The two anchors describe the same boundary from opposite sides, which is why they are resolved separately (`internal/provider/codex/AGENTS.md` §"History truncation"). |
 | **item_index** | Server-assigned, immutable after first upsert, in intended-appearance order, not wire-arrival order. The timeline ordering contract rests on this (`invariants.md` §1). |
 
 ## Test rigs and process
@@ -153,7 +153,7 @@ Source: `frontend/AGENTS.md`.
 | **health rollup** | `ao-harness health`: one ok/warn/red line per concern (liveness, new errors, oracle triggers, RSS, DB size, mocks, replay, perf), file concerns cursor-tracked since last check. The generalized `make soak-check`. |
 | **the four pins** | `providerBinaryOverride`, `credentialHomeOverride`, `fileKeychainOverride`, `backgroundFetchDisabled`: the isolation set every mocked boot mode must take together. Three of four is the shape that burned a real login. |
 | **spike** | A small isolated experiment outside the project to confirm external tool behavior, then ported in (`docs/references/spike-policy.md`). |
-| **packet** | A scoped, independently-reviewable unit of delegated implementation work, each leaving the gates green with independent review before merge (`docs/specs/workflows-system-packets.md`). |
+| **packet** | A scoped, independently-reviewable unit of delegated implementation work, each leaving the gates green with independent review before merge (coined during the workflows delegation effort). |
 | **test seam** | Production-code hook that stays nil/no-op in production and lets tests synchronize deterministically instead of sleeping. `SetEventHook` is the reference (`docs/architecture/conventions.md`). |
 | **prefix verbs** | `handleFoo` / `persistFoo` / `parseFoo` / `emitFoo` / `buildFoo` each carry a contract. `buildFoo` means pure, no I/O (`conventions.md`). |
 | **oracle (standing)** | An in-app diagnostic observer that must remain silent; it asserts a bug class has not returned. |

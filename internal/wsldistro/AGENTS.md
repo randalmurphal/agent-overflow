@@ -1,6 +1,6 @@
 # internal/wsldistro/
 
-Cross-process schema for `%APPDATA%\agent-overflow\wsl.json` — the
+Cross-process schema for `%APPDATA%\agent-overflow\wsl.json`, the
 launcher's persisted distro pick + payload-install bookkeeping.
 Shared between `cmd/agent-overflow-windows` (writes after a
 successful boot) and the WSL-side backend's Settings UI distro
@@ -8,16 +8,16 @@ switcher (writes when the user changes the picker).
 
 ## Layout
 
-- `wsldistro.go` — `Config` struct + `Load(dir)` / `Save(dir, c)`.
+- `wsldistro.go` holds the `Config` struct + `Load(dir)` / `Save(dir, c)`.
   Cross-platform: only the on-disk shape lives here, not platform
   path resolution.
-- `path.go` (`!windows`) — `WSLConfigDir()` resolves the WSL-side
+- In `path.go` (`!windows`), `WSLConfigDir()` resolves the WSL-side
   path to the launcher's wsl.json directory by reading the
   `AGENT_OVERFLOW_WIN_APPDATA` env var (translated from `%APPDATA%`
   via WSLENV's `/p` flag). Validates the env value is absolute,
   free of `..` segments, and points at a real directory before
   returning it.
-- `path_windows.go` (`windows`) — `WSLConfigDir()` resolves
+- In `path_windows.go` (`windows`), `WSLConfigDir()` resolves
   `%APPDATA%\agent-overflow` directly with a `UserHomeDir` fallback.
 
 ## Responsibility boundary
@@ -44,7 +44,7 @@ torn write would leave `Load` returning a decode error and trap the
 user at the picker. The atomic-rename guarantee is load-bearing.
 
 File mode is `0o600`; directory mode is `0o700`. The schema is
-per-user state — a multi-user host shouldn't expose another user's
+per-user state. A multi-user host shouldn't expose another user's
 distro choice.
 
 ## Env-var threat model
@@ -60,9 +60,9 @@ preferable to writing into an attacker-prepared path.
 
 ## References
 
-- `cmd/agent-overflow-windows/main.go::exportAppDataToWSL` — the
+- `cmd/agent-overflow-windows/main.go::exportAppDataToWSL` is the
   launcher's WSLENV setup.
-- `app_wsl.go` — the WSL backend's bound methods that consume this
+- `app_wsl.go` holds the WSL backend's bound methods that consume this
   package.
-- `internal/wsllauncher/AGENTS.md` — the sibling package that owns
+- `internal/wsllauncher/AGENTS.md` covers the sibling package that owns
   WSL discovery and process spawn.

@@ -1,12 +1,37 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestHealthWatchJSONIsOneNDJSONRecordPerCheck(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	e := &env{stdout: &stdout, stderr: &stderr, format: "json"}
+	report := healthReport{At: "2026-08-29T00:00:00Z", Instance: "test"}
+	if err := e.printHealth(report, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.printHealth(report, true); err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(&stdout)
+	for i := 0; i < 2; i++ {
+		var got healthReport
+		if err := dec.Decode(&got); err != nil {
+			t.Fatalf("decode record %d: %v; output=%q", i+1, err, stdout.String())
+		}
+	}
+	var extra any
+	if err := dec.Decode(&extra); err == nil {
+		t.Fatal("watch emitted an unexpected third record")
+	}
+}
 
 // The health rollup's whole point is that a second run reports what
 // happened SINCE the first. These tests drive the cursor and the scanners

@@ -27,7 +27,9 @@ import {
   createParseBlocksCache,
   incrementalLex,
   createIncrementalLexCache,
+  createProvenAppend,
   parseIncompleteMarkdown,
+  type ProvenAppend,
 } from 'svelte-streamdown';
 import { StreamingBoundarySplitter } from './boundary';
 
@@ -47,13 +49,19 @@ export const DEFAULT_STEP_BUDGET_MS = 2_000;
 export class StreamdownInstance {
   private blocksCache = createParseBlocksCache();
   private lexCaches: ReturnType<typeof createIncrementalLexCache>[] = [];
+  private lastContent: string | undefined;
   /** `cache.lastPath` per block per render — the incremental fast-path breadcrumb. */
   readonly paths: string[] = [];
 
   constructor(private readonly completeIncomplete: boolean) {}
 
-  render(content: string): number {
-    const blocks = parseBlocks(content, [], this.blocksCache);
+  render(content: string, append?: ProvenAppend): number {
+    // A mounted Svelte component does not re-run its content-derived parser
+    // when its primitive string prop is unchanged. The committed Streamdown
+    // instance commonly stays unchanged for thousands of tail reveals.
+    if (content === this.lastContent) return 0;
+    this.lastContent = content;
+    const blocks = parseBlocks(content, [], this.blocksCache, append);
     let tokenCount = 0;
     for (let i = 0; i < blocks.length; i++) {
       if (!this.lexCaches[i]) this.lexCaches[i] = createIncrementalLexCache();
@@ -63,6 +71,7 @@ export class StreamdownInstance {
         [],
         cache,
         this.completeIncomplete ? parseIncompleteMarkdown : null,
+        i === blocks.length - 1 ? this.blocksCache.lastBlockAppend : undefined,
       );
       this.paths.push(cache.lastPath as string);
       tokenCount += tokens.length;
@@ -78,11 +87,20 @@ export class ChatMarkdownPipeline {
   private splitter = new StreamingBoundarySplitter();
   private prefix = new StreamdownInstance(false);
   private tail = new StreamdownInstance(true);
+  private previousSource = '';
 
-  step(source: string): void {
-    const { prefix, tail } = this.splitter.split(source);
+  step(source: string, appendDelta?: string): void {
+    const append = appendDelta !== undefined &&
+      source.length === this.previousSource.length + appendDelta.length
+      ? createProvenAppend(this.previousSource, appendDelta)
+      : undefined;
+    // Replay drivers supply exact append deltas. Use the proof's constructed
+    // value so the harness exercises production's no-prefix-scan path.
+    const canonicalSource = append?.next ?? source;
+    this.previousSource = canonicalSource;
+    const { prefix, tail } = this.splitter.split(canonicalSource, append);
     if (prefix) this.prefix.render(prefix);
-    if (tail || !prefix) this.tail.render(tail);
+    if (tail || !prefix) this.tail.render(tail, this.splitter.tailAppend);
   }
 }
 
@@ -96,7 +114,12 @@ export type ReplayDriver = () => (source: string) => void;
 
 export const streamingDriver: ReplayDriver = () => {
   const pipeline = new ChatMarkdownPipeline();
-  return (source) => pipeline.step(source);
+  let previousLength = 0;
+  return (source) => {
+    const appendDelta = source.slice(previousLength);
+    previousLength = source.length;
+    pipeline.step(source, appendDelta);
+  };
 };
 
 export const settledDriver: ReplayDriver = () => (source) => renderSettled(source);

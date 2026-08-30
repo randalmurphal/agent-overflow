@@ -51,6 +51,15 @@ interface AnchorFold {
   terminalPreview: string;
   terminalTurnIndex: number;
   terminalItemIndex: number;
+  /**
+   * Memoized `aggregate()` result, cleared by every mutation of this fold.
+   * The grouping pipeline reads aggregates once per card per projection
+   * pass (~10Hz while streaming), and a stable reference is what lets the
+   * card-node cache in `subagentGrouping.ts` ref-compare its fold input
+   * instead of comparing fields — a fresh object per call would both churn
+   * and defeat that compare.
+   */
+  built: SubagentFoldAggregate | null;
 }
 
 export interface SubagentFoldRegistry {
@@ -96,6 +105,7 @@ export function createSubagentFoldRegistry(): SubagentFoldRegistry {
         terminalPreview: '',
         terminalTurnIndex: -1,
         terminalItemIndex: -1,
+        built: null,
       };
       byAnchor.set(anchorId, fold);
     }
@@ -114,6 +124,7 @@ export function createSubagentFoldRegistry(): SubagentFoldRegistry {
       if (anchorByEvictedId.has(item.id)) return false;
       const fold = foldFor(anchorId);
       fold.evictedIds.add(item.id);
+      fold.built = null;
       anchorByEvictedId.set(item.id, anchorId);
       if (preview && positionAtOrAfter(fold, item)) {
         fold.terminalPreview = preview;
@@ -135,6 +146,7 @@ export function createSubagentFoldRegistry(): SubagentFoldRegistry {
         const fold = byAnchor.get(anchorId);
         if (!fold) continue;
         fold.evictedIds.delete(id);
+        fold.built = null;
         // The preview intentionally survives reclaim: the rows are back in
         // memory, so the grouping's loaded-children preview wins by
         // position, and an empty fold is dropped wholesale below.
@@ -145,12 +157,13 @@ export function createSubagentFoldRegistry(): SubagentFoldRegistry {
     aggregate(anchorId) {
       const fold = byAnchor.get(anchorId);
       if (!fold || fold.evictedIds.size === 0) return undefined;
-      return {
+      fold.built ??= {
         evictedCount: fold.evictedIds.size,
         terminalPreview: fold.terminalPreview,
         terminalTurnIndex: fold.terminalTurnIndex,
         terminalItemIndex: fold.terminalItemIndex,
       };
+      return fold.built;
     },
 
     dropAnchor: dropAnchorFold,
@@ -193,6 +206,7 @@ export function createSubagentFoldRegistry(): SubagentFoldRegistry {
           terminalPreview: entry.terminalPreview,
           terminalTurnIndex: entry.terminalTurnIndex,
           terminalItemIndex: entry.terminalItemIndex,
+          built: null,
         };
         byAnchor.set(entry.anchorId, fold);
         for (const id of fold.evictedIds) anchorByEvictedId.set(id, entry.anchorId);

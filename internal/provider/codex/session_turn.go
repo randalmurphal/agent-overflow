@@ -352,7 +352,7 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		"turnId":   turnID,
 	})
 
-	s.drainPendingApprovals("cancel", false, true)
+	s.drainPendingApprovalsForScope(s.rootThreadID(), "cancel", true)
 	return err
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -61,7 +62,7 @@ func TestHarnessUIQueryResolvesOnItsReply(t *testing.T) {
 	if string(event.Spec) != `{"v":1,"kind":"viewport"}` {
 		t.Errorf("spec forwarded as %s, want it verbatim", event.Spec)
 	}
-	if err := h.HarnessUIQueryReply(event.ID, json.RawMessage(`{"v":1,"panes":[]}`)); err != nil {
+	if err := h.HarnessUIQueryReply("", event.ID, json.RawMessage(`{"v":1,"panes":[]}`)); err != nil {
 		t.Fatalf("HarnessUIQueryReply: %v", err)
 	}
 
@@ -105,10 +106,10 @@ func TestHarnessUIQueryReplyAfterTimeoutIsDropped(t *testing.T) {
 	}
 	event := mustEmittedQuery(t, emitted)
 
-	if err := h.HarnessUIQueryReply(event.ID, json.RawMessage(`{"v":1}`)); err != nil {
+	if err := h.HarnessUIQueryReply("", event.ID, json.RawMessage(`{"v":1}`)); err != nil {
 		t.Errorf("a late reply must be dropped silently, got %v", err)
 	}
-	if err := h.HarnessUIQueryReply("uq-never-issued", json.RawMessage(`{}`)); err != nil {
+	if err := h.HarnessUIQueryReply("", "uq-never-issued", json.RawMessage(`{}`)); err != nil {
 		t.Errorf("a reply for an unknown id must be dropped silently, got %v", err)
 	}
 }
@@ -136,7 +137,7 @@ func TestHarnessUIQueryFirstReplyWinsAndTheSecondIsDropped(t *testing.T) {
 		wg.Add(1)
 		go func(slot int, payload string) {
 			defer wg.Done()
-			errs[slot] = h.HarnessUIQueryReply(event.ID, json.RawMessage(payload))
+			errs[slot] = h.HarnessUIQueryReply("", event.ID, json.RawMessage(payload))
 		}(i, body)
 	}
 	wg.Wait()
@@ -172,7 +173,7 @@ func TestHarnessUIQuerySurfacesABridgeError(t *testing.T) {
 		done <- err
 	}()
 	event := mustEmittedQuery(t, emitted)
-	if err := h.HarnessUIQueryReply(event.ID, json.RawMessage(`{"error":"unknown query kind \"nope\""}`)); err != nil {
+	if err := h.HarnessUIQueryReply("", event.ID, json.RawMessage(`{"error":"unknown query kind \"nope\""}`)); err != nil {
 		t.Fatalf("HarnessUIQueryReply: %v", err)
 	}
 
@@ -191,10 +192,10 @@ func TestHarnessUIQueryRefusesMalformedInput(t *testing.T) {
 	if _, err := h.HarnessUIQuery(json.RawMessage(`{oops`)); err == nil {
 		t.Error("a non-JSON spec must be refused")
 	}
-	if err := h.HarnessUIQueryReply("  ", json.RawMessage(`{}`)); err == nil {
+	if err := h.HarnessUIQueryReply("", "  ", json.RawMessage(`{}`)); err == nil {
 		t.Error("an empty id must be refused")
 	}
-	if err := h.HarnessUIQueryReply("uq-1", json.RawMessage(`{oops`)); err == nil {
+	if err := h.HarnessUIQueryReply("", "uq-1", json.RawMessage(`{oops`)); err == nil {
 		t.Error("a non-JSON result must be refused")
 	}
 }
@@ -288,7 +289,7 @@ func TestHarnessUIQueryAnswersInsideTheGrace(t *testing.T) {
 			return
 		}
 		go func() {
-			_ = h.HarnessUIQueryReply(event.ID, json.RawMessage(`{"v":1,"panes":[]}`))
+			_ = h.HarnessUIQueryReply("", event.ID, json.RawMessage(`{"v":1,"panes":[]}`))
 		}()
 	}
 
@@ -298,5 +299,57 @@ func TestHarnessUIQueryAnswersInsideTheGrace(t *testing.T) {
 	}
 	if string(result) != `{"v":1,"panes":[]}` {
 		t.Fatalf("result = %s", result)
+	}
+}
+
+func TestHarnessRegisterPageRejectsWrongMarker(t *testing.T) {
+	h, _ := newUIQueryHarness(t)
+	h.pageMarker = "instance-marker"
+	if _, err := h.HarnessRegisterPage(context.Background(), "page-1", "other-marker", "http://127.0.0.1:4321"); err == nil {
+		t.Fatal("a page from another harness instance must be refused")
+	}
+}
+
+func TestHarnessUIQueryTargetsOneRegisteredPage(t *testing.T) {
+	h, emitted := newUIQueryHarness(t)
+	bus := transport.NewEventBus(16)
+	t.Cleanup(bus.Close)
+	h.app.SetEventBus(bus)
+	h.pageMarker = "instance-marker"
+	for _, id := range []string{"page-1", "page-2"} {
+		if _, err := h.HarnessRegisterPage(context.Background(), id, h.pageMarker, "http://127.0.0.1:4321"); err != nil {
+			t.Fatalf("register %s: %v", id, err)
+		}
+	}
+	done := make(chan json.RawMessage, 1)
+	go func() {
+		result, err := h.HarnessUIQuery(json.RawMessage(`{"v":1,"kind":"viewport","pageId":"page-1"}`))
+		if err != nil {
+			t.Errorf("HarnessUIQuery: %v", err)
+		}
+		done <- result
+	}()
+	event := mustEmittedQuery(t, emitted)
+	if event.PageID != "page-1" {
+		t.Fatalf("query targeted page %q, want page-1", event.PageID)
+	}
+	if err := h.HarnessUIQueryReply("page-2", event.ID, json.RawMessage(`{"from":"wrong"}`)); err != nil {
+		t.Fatalf("wrong page reply: %v", err)
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("wrong page resolved query with %s", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := h.HarnessUIQueryReply("page-1", event.ID, json.RawMessage(`{"from":"right"}`)); err != nil {
+		t.Fatalf("right page reply: %v", err)
+	}
+	select {
+	case result := <-done:
+		if string(result) != `{"from":"right"}` {
+			t.Fatalf("result = %s", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("right page did not resolve query")
 	}
 }

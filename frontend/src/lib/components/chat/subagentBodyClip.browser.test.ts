@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import '../../../app.css';
 import { fireEvent, render } from '@testing-library/svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
+import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 import SubagentBodyClipHarness from './SubagentBodyClipHarness.svelte';
 
 function distanceFromBottom(element: HTMLElement): number {
@@ -19,6 +20,8 @@ function firstVisibleRow(clip: HTMLElement): { text: string; top: number } {
 
 describe('subagent body clip', () => {
   it('caps and virtualizes a long digest, then follows appended work at the bottom', async () => {
+    const resizeObserverErrors = captureResizeObserverLoopErrors();
+    onTestFinished(resizeObserverErrors.stop);
     const { getByTestId, container } = render(SubagentBodyClipHarness);
     const clip = getByTestId('subagent-group-scroll');
 
@@ -44,9 +47,12 @@ describe('subagent body clip', () => {
       360,
     );
     expect(container.textContent).toContain('Read row 180');
+    expect(resizeObserverErrors.messages).toEqual([]);
   });
 
   it('hands wheel control to the reader and resumes follow only after returning to bottom', async () => {
+    const resizeObserverErrors = captureResizeObserverLoopErrors();
+    onTestFinished(resizeObserverErrors.stop);
     const { getByTestId } = render(SubagentBodyClipHarness);
     const clip = getByTestId('subagent-group-scroll');
     await waitFor(
@@ -85,5 +91,6 @@ describe('subagent body clip', () => {
       'bottom follow after reader returns',
       360,
     );
+    expect(resizeObserverErrors.messages).toEqual([]);
   });
 });

@@ -1,8 +1,8 @@
 # internal/composerdraft/
 
 Builds the composer-draft row a thread should be restored to when a
-stored `user_text` item is rehydrated into the composer. Three flows
-go through this package:
+stored `user_text` item is rehydrated into the composer. Four flows go
+through this package:
 
 - Revert-to-message: when the user reverts a thread to before a prior
   prompt, the prompt's text + attachments are projected back into the
@@ -11,20 +11,35 @@ go through this package:
   attachment IDs need to be cloned across thread namespaces before
   building, so the App wraps `FromParts` after running its
   `cloneUserMessageAttachmentsForDraft` helper.
-- Flush-queue dispatch: a queued user message that ends up being
-  flushed (e.g. on session interrupt) reverts to a draft via the same
-  shape.
+- Flush-queue restore: queued user messages that never reached the
+  provider (session death, failed resend) merge back into whatever the
+  composer already holds.
+- Edit-and-resend (`app_revert_and_resend.go`): the same merge, staged
+  so the saga can settle it back if the resend fails.
 
-## Surface
+## Which builder to call
 
-| Symbol | Purpose |
+| Symbol | Use when |
 |---|---|
-| `FromUserItem(targetThreadID, userItem, updatedAt) (store.ThreadDraft, error)` | Builds a `ThreadDraft` from a `store.Item` directly. Use when the source item's attachment IDs are valid for the target thread (same thread). |
-| `FromParts(targetThreadID, content, attachmentIDs, sourcePlan, updatedAt) (store.ThreadDraft, error)` | Builds a `ThreadDraft` from pre-resolved parts. Use when the attachment IDs were re-keyed by the caller (cross-thread fork-and-revert). |
+| `FromUserItem(targetThreadID, userItem, updatedAt)` | The source item's attachment IDs are already valid for the target thread (same thread). |
+| `FromParts(targetThreadID, content, attachmentIDs, sourcePlan, updatedAt)` | The caller re-keyed the attachment IDs (cross-thread fork-and-revert). |
+| `MergeParts(targetThreadID, current, parts, updatedAt)` | Something must be ADDED to a draft the user may already be typing in. Never overwrite that row with a `From*` result. |
 
-Both helpers populate `TerminalChips: "[]"` deliberately — terminal
-chips are composer-only context and not part of the persisted user
-item; restoring them from the source item would be incorrect.
+`MergeParts` takes `[]Part` (the same content / attachment-ID /
+source-plan triple `PartFromUserItem` projects out of a stored item) and
+folds it into `current` under fixed rules: restored parts first in
+caller order and the existing draft content LAST, blank-line separated,
+because the restored messages were typed before whatever is sitting in
+the composer now. Attachment IDs dedupe on first occurrence. An existing
+pending plan implementation wins; only when the draft has none does a
+source plan common to every restored part carry through.
+
+Both `From*` builders hard-set `TerminalChips: "[]"`, because terminal
+chips are composer-only context, not part of the persisted user item.
+`MergeParts` is the opposite and deliberately so: it carries the CURRENT
+row's chips through untouched (defaulting to `"[]"` only when the row
+has none), since that draft is the user's live composer and a merge must
+not cost them context they staged themselves.
 
 ## Responsibility boundary
 
@@ -32,7 +47,7 @@ item; restoring them from the source item would be incorrect.
   via the existing `usermessage.FromItem` decode + JSON re-encoding.
 - What does NOT belong here: cross-thread attachment cloning (needs
   `a.attachments` from the App) and the binding-tier types (`Draft`,
-  `TerminalChip`) — those stay in `app_draft.go` because the Wails
+  `TerminalChip`), which stay in `app_draft.go` because the Wails
   binding generator emits TS types from the main-package shapes.
 
 ## Anti-patterns
@@ -40,5 +55,6 @@ item; restoring them from the source item would be incorrect.
 - Do NOT inline the wire shape here. Wails bindings must stay in the
   main package; if the wire shape ever needs to change, the App layer
   marshals back and forth, not this package.
-- Do NOT silently smuggle `TerminalChips` from anywhere; the empty `[]`
-  is part of the contract.
+- Do NOT let a `From*` builder carry `TerminalChips` out of a stored
+  user item. The empty `[]` is part of that contract, and `MergeParts`
+  preserving the live draft's own chips is not a precedent for it.

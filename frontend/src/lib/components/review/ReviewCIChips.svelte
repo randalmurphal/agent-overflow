@@ -5,6 +5,7 @@
   import { OpenExternalURL } from '../../stores/bindings';
   import type { CIJob, CIPipeline } from '../../types/models';
   import { ciStatusDotClass, ciStatusTextClass, formatCIDuration } from '../../utils/ciStatus';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
 
   // Git-style pipeline chips: one per stage (GitLab) / workflow
   // (GitHub), rendered on the PR header's meta line. Hover shows the
@@ -26,6 +27,18 @@
 
   const stages = $derived(pipeline?.stages ?? []);
   const openStage = $derived(openStageIndex !== null ? (stages[openStageIndex] ?? null) : null);
+
+  // Neither key below is forge-guaranteed unique, and a repeated key in a
+  // keyed `{#each}` throws `each_key_duplicate` mid-flush (an aborted
+  // update batch — utils/uniqueEachKeys.ts). Stage names are map-deduped
+  // per forge, but a GitHub workflow literally named "External" collides
+  // with the synthetic external-checks stage; job ids are EMPTY for
+  // external checks (internal/git/ci.go — CheckRuns and StatusContexts
+  // both), so two same-named external checks fall back to one name key.
+  const stageKeys = $derived(uniqueEachKeys(stages, (stage) => stage.name));
+  const openStageJobKeys = $derived(
+    uniqueEachKeys(openStage?.jobs ?? [], (job) => job.id ?? job.name),
+  );
 
   function stageTooltip(stage: { status: string; jobs: CIJob[] }): string {
     const tally = new Map<string, number>();
@@ -52,7 +65,7 @@
 
 {#if stages.length > 0}
   <div class="flex flex-wrap items-center gap-1" data-testid="review-ci-chips">
-    {#each stages as stage, index (stage.name)}
+    {#each stages as stage, index (stageKeys[index] ?? index)}
       <button
         bind:this={chipEls[index]}
         type="button"
@@ -98,7 +111,7 @@
       class="max-h-80 min-w-56 overflow-y-auto rounded-[var(--radius-control)] border border-border-subtle bg-surface-1 py-1 text-xs shadow-menu"
       data-testid="review-ci-jobs"
     >
-      {#each openStage.jobs as job (job.id ?? job.name)}
+      {#each openStage.jobs as job, jobIndex (openStageJobKeys[jobIndex] ?? jobIndex)}
         <button
           type="button"
           class="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-surface-2/60"

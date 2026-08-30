@@ -11,7 +11,7 @@ import (
 	"agent-overflow/internal/harnessclient"
 )
 
-var recordSubcommands = []string{"start", "stop"}
+var recordSubcommands = commandNames(recordCommandDescriptors())
 
 func runRecord(e *env, args []string) error {
 	if done, err := groupHelp(e, "record", args, recordSubcommands...); done {
@@ -66,6 +66,9 @@ func recordStart(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessRecordStart"}}); err != nil {
+			return err
+		}
 		result, err := client.Call(ctx, "HarnessRecordStart", rest[0], *thread)
 		if err != nil {
 			return err
@@ -85,6 +88,9 @@ func recordStop(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessRecordStop"}}); err != nil {
+			return err
+		}
 		result, err := client.Call(ctx, "HarnessRecordStop")
 		if err != nil {
 			return err
@@ -150,7 +156,7 @@ func decodeBundles(raw json.RawMessage) ([]bundleMeta, error) {
 	return bundles, nil
 }
 
-var replaySubcommands = []string{"bundle", "file", "pause", "resume", "step", "stop", "status"}
+var replaySubcommands = commandNames(replayCommandDescriptors())
 
 func runReplay(e *env, args []string) error {
 	if done, err := groupHelp(e, "replay", args, replaySubcommands...); done {
@@ -196,6 +202,9 @@ func replayStart(e *env, method, command, positional, argName string, args []str
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{method}}); err != nil {
+			return err
+		}
 		if method == "HarnessReplayBundle" {
 			if err := refuseUnknownBundle(ctx, client, rest[0]); err != nil {
 				return err
@@ -257,6 +266,15 @@ func replayControl(e *env, verb string, args []string) error {
 	}[verb]
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		if verb != "status" {
+			method := map[string]string{
+				"pause": "HarnessReplayPause", "resume": "HarnessReplayResume",
+				"step": "HarnessReplayStep", "stop": "HarnessReplayStop",
+			}[verb]
+			if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{method}}); err != nil {
+				return err
+			}
+		}
 		result, err := client.Call(ctx, method)
 		if err != nil {
 			return err

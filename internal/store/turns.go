@@ -261,7 +261,7 @@ type CrashedTurn struct {
 // the next boot. The SELECT is O(crashed rows) via the partial index
 // idx_turns_inflight. Thread activity is deliberately NOT bumped —
 // sweeping crash residue is not a user interaction (matches
-// FlipGhostBackgroundRowsOnStart).
+// RecoverCodexBackgroundRuntime).
 //
 // Returns the settled turns so the caller can log the repair.
 func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {

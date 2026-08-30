@@ -19,21 +19,17 @@
    * by construction in both themes with no colour duplicated from the bubble.
    *
    * Overflow is measured, not guessed: the clip's own
-   * `scrollHeight`/`clientHeight` decides whether the control appears, re-read
-   * whenever the clip's width changes (a divider drag re-wraps the text, and a
-   * message that fit at one width does not at another). The width comes from
-   * a row-local ResizeObserver on the clip — one that exists only on the
-   * clamped branch, never a global one. Deliberately NOT Svelte's
-   * `bind:clientWidth`: the dimension binding takes a synchronous
-   * `clientWidth` read at mount, inside the effect flush with the mounting
-   * tree still dirty, forcing a whole-document layout per clampable message
-   * — on cold thread switches AND on every windowing remount mid-scroll
-   * (108ms across 10 cold switches, coldload profile 2026-08-26). An RO's
-   * initial delivery is the same sample post-layout, where the read is
-   * free. The read is bounded: while collapsed the clip's height is pinned
-   * by the clamp, so the state the measure effect writes cannot feed back
-   * into the width it depends on.
+   * `scrollHeight`/`clientHeight` decides whether the control appears. Mount,
+   * text replacement, and collapse requests batch their reads before paint,
+   * so one dirty-layout flush covers every user row mounted together. Width
+   * reflows inside MessageTimeline use its existing scroll-surface observer:
+   * that target sits above the virtual rows, so the toggle is settled before
+   * their ResizeObserver deliveries. A clip-local observer inserted the
+   * button after its row ancestor had already delivered, causing Chromium's
+   * undelivered-notification loop and one-frame-stale row geometry. Standalone
+   * messages retain a local observer because no virtual row exists there.
    */
+  import { getContext, onDestroy } from 'svelte';
   import type {
     PaneSession,
     RowUiRegistry,
@@ -43,10 +39,16 @@
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { preservePaneScrollAnchorAt } from './preserveScrollAnchor';
   import {
-    USER_MESSAGE_CLAMP_EPSILON_PX,
     USER_MESSAGE_CLAMP_LINES,
     userMessageMayClamp,
   } from './userMessageClamp';
+  import {
+    USER_MESSAGE_OVERFLOW_COORDINATOR_CONTEXT,
+    measureUserMessageOverflowNow,
+    requestUserMessageOverflowMeasurement,
+    type UserMessageOverflowCoordinator,
+    type UserMessageOverflowProbe,
+  } from './userMessageOverflowMeasurement';
 
   interface Props {
     /** The message text, attachment markers already stripped. */
@@ -68,10 +70,17 @@
   const expanded = $derived(pane ? pane.isUserMessageExpanded(itemId) : localExpanded);
 
   let clipEl: HTMLParagraphElement | undefined = $state();
-  let clipWidth = $state(0);
-  let overflows = $state(false);
+  let overflowResult:
+    | { element: HTMLParagraphElement | undefined; text: string; overflows: boolean }
+    | undefined = $state.raw();
 
   const collapsed = $derived(clampable && !expanded);
+  const overflows = $derived(
+    overflowResult !== undefined &&
+      overflowResult.element === clipEl &&
+      overflowResult.text === text &&
+      overflowResult.overflows,
+  );
   // An expanded message always offers the way back, even before the effect
   // below has run: on a remount that restored `expanded` from the registry
   // the clip is not in the DOM to measure, and a missing "Show less" would
@@ -81,24 +90,55 @@
     chatRowDomId(pane, 'user-message-text', encodeURIComponent(itemId)),
   );
 
+  const overflowCoordinator = getContext<UserMessageOverflowCoordinator | undefined>(
+    USER_MESSAGE_OVERFLOW_COORDINATOR_CONTEXT,
+  );
+  const overflowProbe: UserMessageOverflowProbe = {
+    element: () => clipEl,
+    active: () => collapsed,
+    apply: (next) => {
+      const previous = overflowResult;
+      if (
+        previous !== undefined &&
+        previous.element === clipEl &&
+        previous.text === text &&
+        previous.overflows === next
+      ) {
+        return;
+      }
+      overflowResult = { element: clipEl, text, overflows: next };
+    },
+  };
+  const unregisterOverflowProbe = overflowCoordinator?.register(overflowProbe);
+  onDestroy(() => unregisterOverflowProbe?.());
+
+  // A timeline owns one shallow scroll-surface width observer and measures
+  // every mounted user message from that delivery. A standalone message has
+  // no such owner, so it keeps a local width observer. Its initial delivery
+  // is state-neutral because the pre-layout request below has already set the
+  // answer; later deliveries cannot feed a virtual-row observer because this
+  // branch only exists outside MessageTimeline.
   $effect(() => {
     const el = clipEl;
-    if (!el) return;
-    const widths = new ResizeObserver((entries) => {
-      clipWidth = entries[entries.length - 1].contentRect.width;
+    if (!el || overflowCoordinator) return;
+    const widths = new ResizeObserver(() => {
+      measureUserMessageOverflowNow(overflowProbe);
     });
     widths.observe(el);
     return () => widths.disconnect();
   });
 
   $effect(() => {
-    if (!collapsed) return;
     const el = clipEl;
-    // Depend on the measured width: re-wrapping is the only thing that can
-    // change the answer for a fixed text.
-    const width = clipWidth;
-    if (!el || width <= 0) return;
-    overflows = el.scrollHeight - el.clientHeight > USER_MESSAGE_CLAMP_EPSILON_PX;
+    const shouldMeasure = collapsed;
+    // Re-measure same-branch text replacements as well as mount/collapse
+    // transitions. Reading the value is the dependency; the batch measures
+    // the post-flush DOM in the next microtask, before the browser's first
+    // ResizeObserver delivery and paint.
+    void text;
+    if (!el || !shouldMeasure) return;
+    if (overflowCoordinator) overflowCoordinator.request(overflowProbe);
+    else requestUserMessageOverflowMeasurement(overflowProbe);
   });
 
   function toggle(): void {

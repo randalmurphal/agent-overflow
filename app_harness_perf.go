@@ -23,6 +23,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -56,18 +57,23 @@ const (
 	// sample (and hold an armed page meter) forever; past this the sampler
 	// self-finishes and parks the report for collection.
 	harnessPerfDefaultMaxDurationMs = 30 * 60 * 1000
+	maxHarnessPerfDurationMs        = int64((1<<63 - 1) / int64(time.Millisecond))
 )
 
 // HarnessPerfSpec is what a caller arms a run with. Everything is optional;
 // the zero value is a 1s run with default meters and the default long-frame
 // threshold.
 type HarnessPerfSpec struct {
-	SampleMs int `json:"sampleMs,omitempty"`
+	// PageID selects the exact registered frontend page when an instance has
+	// more than one harness page attached.
+	PageID   string `json:"pageId,omitempty"`
+	SampleMs int    `json:"sampleMs,omitempty"`
 	// LongFrameMs is the frame-time above which a frame counts as long.
 	// Forwarded to the bridge verbatim; 0 means the bridge's default (50ms).
 	LongFrameMs int `json:"longFrameMs,omitempty"`
-	// Meters narrows which in-page meters arm. Empty means all of them.
-	// Forwarded verbatim — the vocabulary is the bridge's.
+	// Meters narrows which in-page meters arm. Omitted means all of them;
+	// an explicit empty list arms no in-page meters. Forwarded verbatim —
+	// the vocabulary is the bridge's.
 	Meters []string `json:"meters,omitempty"`
 	// BudgetsMs are the main-thread budgets the busy meter reports fit
 	// against, in milliseconds. Forwarded verbatim; empty means the
@@ -84,6 +90,11 @@ type HarnessPerfSpec struct {
 	// came back. Negative means no ceiling, for an hours-long soak that
 	// deliberately wants one.
 	MaxDurationMs int64 `json:"maxDurationMs,omitempty"`
+	// Monitors are typed app-feel monitors armed beside the perf meters.
+	// Their lifecycle is heartbeat-bound to this run and their stop result is
+	// persisted in the combined report.
+	Monitors         []string `json:"monitors,omitempty"`
+	CompatibilityLeg string   `json:"compatibilityLeg,omitempty"`
 }
 
 // HarnessPerfStatusResult answers "is a run armed, and how is it doing".
@@ -122,9 +133,11 @@ type harnessPerfBackendSample struct {
 	Goroutines  int    `json:"goroutines"`
 	// RSSBytes / Processes are absent off linux, and Processes is empty for
 	// a headless harness (there is no webview child to find).
-	RSSBytes         uint64            `json:"rssBytes,omitempty"`
-	ChildrenRSSBytes uint64            `json:"childrenRssBytes,omitempty"`
-	Processes        []procrss.Process `json:"processes,omitempty"`
+	RSSBytes             uint64            `json:"rssBytes,omitempty"`
+	ChildrenRSSBytes     uint64            `json:"childrenRssBytes,omitempty"`
+	RSSAvailable         bool              `json:"rssAvailable"`
+	WebviewRSSMeasurable bool              `json:"webviewRssMeasurable"`
+	Processes            []procrss.Process `json:"processes,omitempty"`
 }
 
 // harnessPerfEvent is the `harness:perf` wire shape: one folded sample.
@@ -198,6 +211,8 @@ type HarnessPerfReport struct {
 	Frontend      json.RawMessage          `json:"frontend,omitempty"`
 	FrontendError string                   `json:"frontendError,omitempty"`
 	Backend       harnessPerfBackendReport `json:"backend"`
+	Monitors      json.RawMessage          `json:"monitors,omitempty"`
+	MonitorsError string                   `json:"monitorsError,omitempty"`
 }
 
 // harnessPerfState is the one armed run. Its own mutex: the sampler
@@ -220,6 +235,7 @@ type harnessPerfState struct {
 
 type harnessPerfRun struct {
 	id          string
+	pageID      string
 	sampleMs    int
 	maxDuration time.Duration
 	prefixes    []string
@@ -227,13 +243,20 @@ type harnessPerfRun struct {
 	stop        chan struct{}
 	done        chan struct{}
 
-	seq             int
-	frontendSamples int
-	lastErr         string
-	report          harnessPerfBackendReport
+	seq              int
+	frontendSamples  int
+	lastErr          string
+	report           harnessPerfBackendReport
+	monitors         []string
+	compatibilityLeg string
+	monitorHeartbeat json.RawMessage
+	monitorLastError string
+	frontendEnabled  bool
 }
 
-// HarnessPerfStart arms the in-page meters and begins backend sampling.
+// HarnessPerfStart arms the requested in-page meters and begins backend
+// sampling. An explicit empty meter list keeps the page clean while retaining
+// backend samples for a control leg.
 //
 // The arm goes through the same ui-query mechanism everything else does, so
 // "no frontend attached" fails HERE — loudly, at the call that asked for
@@ -249,6 +272,9 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 	prefixes := spec.WebviewPrefixes
 	if len(prefixes) == 0 {
 		prefixes = procrss.DefaultWebviewPrefixes
+	}
+	if spec.MaxDurationMs > maxHarnessPerfDurationMs {
+		return HarnessPerfStatusResult{}, fmt.Errorf("maxDurationMs %d overflows a duration (maximum %d)", spec.MaxDurationMs, maxHarnessPerfDurationMs)
 	}
 	maxDuration := time.Duration(spec.MaxDurationMs) * time.Millisecond
 	switch {
@@ -266,40 +292,83 @@ func (h *Harness) HarnessPerfStart(spec HarnessPerfSpec) (HarnessPerfStatusResul
 	}
 	h.perf.nextID++
 	run := &harnessPerfRun{
-		id:          fmt.Sprintf("perf-%d", h.perf.nextID),
-		sampleMs:    sampleMs,
-		maxDuration: maxDuration,
-		prefixes:    prefixes,
-		startedAt:   time.Now(),
-		stop:        make(chan struct{}),
-		done:        make(chan struct{}),
+		id:              fmt.Sprintf("perf-%d", h.perf.nextID),
+		pageID:          spec.PageID,
+		sampleMs:        sampleMs,
+		maxDuration:     maxDuration,
+		prefixes:        prefixes,
+		startedAt:       time.Now(),
+		stop:            make(chan struct{}),
+		done:            make(chan struct{}),
+		frontendEnabled: spec.Meters == nil || len(spec.Meters) > 0,
+	}
+	if len(spec.Monitors) > 0 {
+		run.monitors = append([]string(nil), spec.Monitors...)
+		run.compatibilityLeg = spec.CompatibilityLeg
 	}
 	h.perf.run = run
 	// A new run supersedes an uncollected self-finished one: keeping it
 	// would hand the NEXT stop a report from a run two arms ago.
 	h.perf.expired = nil
 	h.perf.mu.Unlock()
+	monitorsArmed := false
+	cleanupStart := func(cause error) (HarnessPerfStatusResult, error) {
+		if monitorsArmed {
+			stopSpec, marshalErr := json.Marshal(map[string]any{"v": 1, "kind": "monitor", "op": "stop", "runId": run.id, "pageId": run.pageID})
+			if marshalErr != nil {
+				cause = errors.Join(cause, marshalErr)
+			} else if _, stopErr := h.queryUI(stopSpec, harnessPerfStopQueryTimeout); stopErr != nil {
+				cause = errors.Join(cause, fmt.Errorf("stop frontend monitors after failed arm: %w", stopErr))
+			}
+		}
+		h.clearPerfRun(run)
+		return HarnessPerfStatusResult{}, cause
+	}
 
+	if len(run.monitors) > 0 {
+		monitorArm, marshalErr := json.Marshal(map[string]any{
+			"v": 1, "kind": "monitor", "op": "start", "runId": run.id,
+			"pageId":     run.pageID,
+			"monitorIds": run.monitors, "compatibilityLeg": run.compatibilityLeg,
+			"heartbeatTimeoutMs": maxInt(3000, sampleMs*3),
+		})
+		if marshalErr != nil {
+			return cleanupStart(marshalErr)
+		}
+		monitorsArmed = true
+		if _, queryErr := h.queryUI(monitorArm, harnessUIQueryTimeout); queryErr != nil {
+			return cleanupStart(fmt.Errorf("arm frontend monitors: %w", queryErr))
+		}
+		run.monitorHeartbeat, _ = json.Marshal(map[string]any{"v": 1, "kind": "monitor", "op": "heartbeat", "runId": run.id, "pageId": run.pageID})
+	}
 	arm, err := json.Marshal(map[string]any{
 		"v":           1,
 		"kind":        "perf",
 		"op":          "start",
 		"runId":       run.id,
+		"pageId":      run.pageID,
 		"longFrameMs": spec.LongFrameMs,
 		"meters":      spec.Meters,
 		"budgetsMs":   spec.BudgetsMs,
 	})
 	if err != nil {
-		h.clearPerfRun(run)
-		return HarnessPerfStatusResult{}, err
+		return cleanupStart(err)
 	}
-	if _, err := h.queryUI(arm, harnessUIQueryTimeout); err != nil {
-		h.clearPerfRun(run)
-		return HarnessPerfStatusResult{}, fmt.Errorf("arm frontend meters: %w", err)
+	if run.frontendEnabled {
+		if _, err := h.queryUI(arm, harnessUIQueryTimeout); err != nil {
+			return cleanupStart(fmt.Errorf("arm frontend meters: %w", err))
+		}
 	}
 
 	go h.runPerfSampler(run)
 	return h.HarnessPerfStatus()
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 // HarnessPerfStop stops the sampler, tells the bridge to stop, and returns
@@ -395,16 +464,41 @@ func (h *Harness) finishPerfRunOwned(run *harnessPerfRun) (HarnessPerfReport, bo
 		SampleMs:   run.sampleMs,
 		DurationMs: time.Since(run.startedAt).Milliseconds(),
 	}
-	stop, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "stop", "runId": run.id})
-	if err == nil {
-		summary, queryErr := h.queryUI(stop, harnessPerfStopQueryTimeout)
-		if queryErr != nil {
-			report.FrontendError = queryErr.Error()
+	if run.frontendEnabled {
+		stop, err := json.Marshal(map[string]any{"v": 1, "kind": "perf", "op": "stop", "runId": run.id, "pageId": run.pageID})
+		if err == nil {
+			summary, queryErr := h.queryUI(stop, harnessPerfStopQueryTimeout)
+			if queryErr != nil {
+				report.FrontendError = queryErr.Error()
+			} else {
+				report.Frontend = summary
+			}
 		} else {
-			report.Frontend = summary
+			report.FrontendError = err.Error()
 		}
-	} else {
-		report.FrontendError = err.Error()
+	}
+	if len(run.monitors) > 0 {
+		monitorStop, marshalErr := json.Marshal(map[string]any{"v": 1, "kind": "monitor", "op": "stop", "runId": run.id, "pageId": run.pageID})
+		if marshalErr != nil {
+			report.MonitorsError = marshalErr.Error()
+		} else if result, queryErr := h.queryUI(monitorStop, harnessPerfStopQueryTimeout); queryErr != nil {
+			report.MonitorsError = queryErr.Error()
+		} else {
+			report.Monitors = result
+			var monitorResult struct {
+				Status string `json:"status"`
+			}
+			if decodeErr := json.Unmarshal(result, &monitorResult); decodeErr != nil {
+				report.MonitorsError = fmt.Sprintf("decode monitor result: %v", decodeErr)
+			} else if monitorResult.Status != "complete" {
+				report.MonitorsError = fmt.Sprintf("monitor run returned status %q", monitorResult.Status)
+			}
+		}
+		h.perf.mu.Lock()
+		if report.MonitorsError == "" {
+			report.MonitorsError = run.monitorLastError
+		}
+		h.perf.mu.Unlock()
 	}
 
 	h.perf.mu.Lock()

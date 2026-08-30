@@ -13,7 +13,7 @@
 // bgDark #21222c → background #282a36 → bgLight #343746. Anchoring at
 // #282a36 compressed the app into an ~13:1 luminance range and it read hazy
 // beside the default theme (~17:1); see the luminance-range rule in
-// `docs/specs/theme-system.md` §9.11. Every step is a published Dracula
+// `docs/architecture/theme-system.md` §9.11. Every step is a published Dracula
 // value — the canonical background becomes the card tier, which is where
 // most content actually sits.
 //

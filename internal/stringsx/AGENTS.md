@@ -5,23 +5,23 @@ package can depend on it without introducing a cycle.
 
 ## Layout
 
-- `firstnonempty.go` — `FirstNonEmpty` (exact match) and
+- `firstnonempty.go` holds `FirstNonEmpty` (exact match) and
   `FirstNonEmptyTrimmed` (whitespace-stripped). Use the first for
   already-normalized inputs (JSON fields); use the second for user- or
   provider-sourced strings where leading/trailing whitespace counts as
   empty.
-- `clip.go` — `Clip(s, max)` truncates by bytes for hard UI-field
+- In `clip.go`, `Clip(s, max)` truncates by bytes for hard UI-field
   ceilings (diagnostics payloads, log redaction). Returns `""` for
   non-positive `max`. `ClipRunes(s, maxBytes)` and `TailRunes(s,
-  maxBytes)` are its rune-safe siblings — same byte budget, cut backed
-  off (head) or advanced (tail) to a rune boundary — for text that still
-  has to decode after the cut: prompt sections handed to a provider CLI,
-  anything a terminal renders. All three return `""` for a non-positive
-  budget.
-- `joinnonempty.go` — `JoinNonEmpty(sep, parts...)` trims each part and
-  joins the non-blank survivors with `sep`. Used for composing system
-  prompts where any section may be empty.
-- `ansi.go` — `SkipANSIEscape(s, i)` returns the index just past the
+  maxBytes)` are its rune-safe siblings, with the same byte budget and
+  the cut backed off (head) or advanced (tail) to a rune boundary. Use
+  them for text that still has to decode after the cut: prompt sections
+  handed to a provider CLI, anything a terminal renders. All three
+  return `""` for a non-positive budget.
+- In `joinnonempty.go`, `JoinNonEmpty(sep, parts...)` trims each part
+  and joins the non-blank survivors with `sep`. Used for composing
+  system prompts where any section may be empty.
+- In `ansi.go`, `SkipANSIEscape(s, i)` returns the index just past the
   ANSI/OSC escape at `s[i]` (CSI / OSC / charset / bare ESC; an
   unterminated sequence resumes past the ESC instead of swallowing the
   tail). Generic over `[]byte | string` so the claudetui PTY scan and the

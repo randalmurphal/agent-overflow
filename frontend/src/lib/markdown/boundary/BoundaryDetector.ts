@@ -104,7 +104,7 @@ class ListBoundaryChecker implements StabilityChecker {
     const listItem = isListItemStart(line)
 
     // 检查当前行是否有足够的缩进以作为列表内容
-    const contentIndent = line.match(/^(\s*)/)?.[1].length ?? 0
+    const contentIndent = line.search(/\S/)
     const isListContent = contentIndent > (context.listIndent ?? 0)
 
     // 只有当当前行不是列表内容且不是空行时，列表才算结束
@@ -226,6 +226,7 @@ class EmptyLineBoundaryChecker implements StabilityChecker {
 export class BoundaryDetector {
   private readonly containerConfig: ContainerConfig | undefined
   private readonly checkers: StabilityChecker[]
+  private readonly listBoundaryChecker = new ListBoundaryChecker()
   /** 缓存每一行结束时对应的 Context，避免重复计算 */
   private contextCache: Map<number, BlockContext> = new Map()
 
@@ -234,7 +235,7 @@ export class BoundaryDetector {
     // 初始化稳定性检查器链
     this.checkers = [
       new ContainerBoundaryChecker(this.containerConfig),
-      new ListBoundaryChecker(),
+      this.listBoundaryChecker,
       new FootnoteBoundaryChecker(),
       new NewBlockBoundaryChecker(),
       new EmptyLineBoundaryChecker()
@@ -248,6 +249,19 @@ export class BoundaryDetector {
   clearContextCache(beforeLine: number): void {
     for (const key of this.contextCache.keys()) {
       if (key < beforeLine) {
+        this.contextCache.delete(key)
+      }
+    }
+  }
+
+  /**
+   * Keep only the two checkpoints an append-aware caller can resume from.
+   * The committed boundary covers a later rewrite. The line before the
+   * trailing line covers the next append. A one-shot caller need not use it.
+   */
+  retainContextCheckpoints(committedLine: number, appendResumeLine: number): void {
+    for (const key of this.contextCache.keys()) {
+      if (key !== committedLine && key !== appendResumeLine) {
         this.contextCache.delete(key)
       }
     }
@@ -272,8 +286,8 @@ export class BoundaryDetector {
 
     // 尝试从缓存获取 startLine - 1 的 context，如果匹配则直接用，否则用传入的 context
     let tempContext = startLine > 0 && this.contextCache.has(startLine - 1)
-      ? { ...this.contextCache.get(startLine - 1)! }
-      : { ...context }
+      ? this.contextCache.get(startLine - 1)!
+      : context
 
     for (let i = startLine; i < lines.length; i++) {
       const line = lines[i]
@@ -281,6 +295,45 @@ export class BoundaryDetector {
       const wasInContainer = tempContext.inContainer
       const wasContainerDepth = tempContext.containerDepth
       const wasInList = tempContext.inList
+
+      // ListContextUpdater clears `inList` while it consumes the first
+      // unindented block after a blank line. Running the checker only after
+      // that update made its list-end branch unreachable, so the completed
+      // list and the following live block both stayed volatile. Detect the
+      // boundary against the prior context, then clear the list before the
+      // current line enters the updater chain. This also lets a heading or
+      // fence after the list establish its own context instead of inheriting
+      // stale list state through the higher-priority updater.
+      const listBoundaryBeforeLine = this.listBoundaryChecker.check(
+        i,
+        tempContext,
+        lines,
+      )
+      if (listBoundaryBeforeLine >= 0) {
+        tempContext = {
+          ...tempContext,
+          inList: false,
+          listOrdered: undefined,
+          listIndent: undefined,
+          listMayEnd: false,
+        }
+      }
+      // FootnoteContextUpdater has the same transition shape. An unindented
+      // line ends the definition, but clearing the flag before the checker ran
+      // hid the boundary and prevented the new line's own updater from running.
+      const footnoteBoundaryBeforeLine = tempContext.inFootnote &&
+        !isEmptyLine(line) &&
+        !isFootnoteContinuation(line) &&
+        !isFootnoteDefinitionStart(line)
+        ? i - 1
+        : -1
+      if (footnoteBoundaryBeforeLine >= 0) {
+        tempContext = {
+          ...tempContext,
+          inFootnote: false,
+          footnoteIdentifier: undefined,
+        }
+      }
 
       // 在 updateContext 之前检查明确的块边界
       // 如果当前行是代码块 fence 开始、新标题开始或分割线，且前一行不在 fenced code 中
@@ -298,18 +351,27 @@ export class BoundaryDetector {
       if (!wasInFencedCode && !wasInContainer && !wasInList && hasExplicitBlockBoundary && !isSetextUnderline) {
         // 前一个 block 已完成，可以标记为稳定边界
         stableLine = i - 1
-        stableContext = { ...tempContext }
+        stableContext = tempContext
       }
 
       tempContext = updateContext(line, tempContext, this.containerConfig)
 
       // 写入缓存：第 i 行结束后的 context
-      this.contextCache.set(i, { ...tempContext })
+      this.contextCache.set(i, tempContext)
+
+      if (listBoundaryBeforeLine >= 0) {
+        stableLine = listBoundaryBeforeLine
+        stableContext = tempContext
+      }
+      if (footnoteBoundaryBeforeLine >= 0) {
+        stableLine = footnoteBoundaryBeforeLine
+        stableContext = tempContext
+      }
 
       if (wasInFencedCode && !tempContext.inFencedCode) {
         if (i < lines.length - 1) {
           stableLine = i
-          stableContext = { ...tempContext }
+          stableContext = tempContext
         }
         continue
       }
@@ -321,7 +383,7 @@ export class BoundaryDetector {
       if (wasInContainer && wasContainerDepth === 1 && !tempContext.inContainer) {
         if (i < lines.length - 1) {
           stableLine = i
-          stableContext = { ...tempContext }
+          stableContext = tempContext
         }
         continue
       }
@@ -337,7 +399,7 @@ export class BoundaryDetector {
       const stablePoint = this.checkStability(i, tempContext, lines)
       if (stablePoint >= 0) {
         stableLine = stablePoint
-        stableContext = { ...tempContext }
+        stableContext = tempContext
       }
     }
 

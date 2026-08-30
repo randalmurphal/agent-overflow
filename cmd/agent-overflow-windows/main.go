@@ -61,6 +61,8 @@ import (
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/diagenv"
+	"agent-overflow/internal/harness/governor"
+	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/uikeys"
@@ -103,8 +105,9 @@ var launcherMode = "prod"
 // AGENT_OVERFLOW_PROFILE env var), set once in main() right after flag
 // parsing and read-only afterwards. Empty is the normal instance;
 // appidentity.ProfileHarness is the isolated instance an agent or a
-// developer drives, and appidentity.ProfileSoak is that same instance
-// with the soak autopilot armed.
+// developer drives, appidentity.ProfileSoak is that same instance with the
+// soak autopilot armed, and appidentity.ProfilePerf is the isolated target
+// reserved for destructive renderer benchmarks.
 //
 // It is a package variable for the same reason launcherMode is: every
 // per-instance name (single-instance id, title, WebView2 profile, CDP
@@ -242,6 +245,12 @@ func main() {
 			os.Exit(0)
 		}
 		log.Fatalf("flags: %v", flagErr)
+	}
+	if err := installHarnessBoundary(governor.DefaultCeilingBytes); err != nil {
+		log.Fatalf("harness containment: %v", err)
+	}
+	if err := prepareWebviewStorage(launcherRuntimeMode()); err != nil {
+		log.Fatalf("webview2 storage: %v", err)
 	}
 	if activeProfile != "" {
 		log.Printf("launcher: profile=%s (isolated instance: id/title/webview/log/window-state/data-dir)", activeProfile)
@@ -473,8 +482,14 @@ type launcherApp struct {
 	window  *application.WebviewWindow
 	distros []wsllauncher.Distro
 
-	mu       sync.Mutex
-	launcher *wsllauncher.Launcher
+	mu                sync.Mutex
+	launcher          *wsllauncher.Launcher
+	launcherWait      *launcherExit
+	memoryWatchCancel context.CancelFunc
+	memoryGovernor    *governor.Manager
+	memoryLease       *governor.Lease
+	memoryLeaseCancel context.CancelFunc
+	backendBootstrap  *wsllauncher.Bootstrap
 	// notificationService presents Windows toasts. notificationClient is the
 	// narrow WS bridge back to the WSL backend; notificationCancel stops its
 	// reconnect loop on backend exit or launcher shutdown. All are guarded by
@@ -505,6 +520,25 @@ type launcherApp struct {
 	// scrubbed URL. atomic.Pointer because the writer is launchAndShow
 	// (goroutine) and the reader is the Wails event loop.
 	backendURL atomic.Pointer[string]
+}
+
+type launcherExit struct {
+	done chan struct{}
+	mu   sync.Mutex
+	err  error
+}
+
+func (e *launcherExit) set(err error) {
+	e.mu.Lock()
+	e.err = err
+	close(e.done)
+	e.mu.Unlock()
+}
+
+func (e *launcherExit) error() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.err
 }
 
 // PickDistro is bound to the picker HTML. It's invoked once when the
@@ -605,6 +639,17 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 			return fmt.Errorf("backend booted but unreachable from Windows: %w", err)
 		}
 	}
+	a.mu.Lock()
+	a.backendBootstrap = bs
+	a.mu.Unlock()
+	if activeProfile != "" {
+		if err := writeWSLContainmentEvidence(context.Background(), distro, binPath, bs); err != nil {
+			if stopErr := a.stopLaunchedBackend(l, bs); stopErr != nil {
+				return errors.Join(fmt.Errorf("write WSL containment evidence: %w", err), stopErr)
+			}
+			return fmt.Errorf("write WSL containment evidence: %w", err)
+		}
+	}
 
 	if err := a.startNotificationBridge(bs, l); err != nil {
 		log.Printf("notifications: start launcher bridge: %v", err)
@@ -641,7 +686,11 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	if bs.ClientID != "" {
 		cidParam = "&cid=" + url.QueryEscape(bs.ClientID)
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s%s", bs.Port, bs.Token, cidParam)
+	pageParam := ""
+	if bs.PageMarker != "" {
+		pageParam = "&page=" + url.QueryEscape(bs.PageMarker)
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/?t=%s%s%s", bs.Port, bs.Token, cidParam, pageParam)
 	// Same redaction shape probeBootstrap uses. The token is
 	// the per-launch credential; leaking it through launcher.log (which
 	// persists in %APPDATA% across runs and is a likely artifact in user
@@ -705,6 +754,9 @@ func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string
 		return l, bs, nil
 	}
 	if !retryWithFreshTransportPort(probeErr) {
+		if stopErr := a.stopLaunchedBackend(l, bs); stopErr != nil {
+			return nil, nil, errors.Join(probeErr, stopErr)
+		}
 		return nil, nil, probeErr
 	}
 
@@ -712,7 +764,9 @@ func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string
 	// Retire the unreachable backend first. It is healthy inside the
 	// distro and holds the app's SQLite store; two backends on one data
 	// dir would fight over the writer.
-	a.stopLaunchedBackend(l)
+	if err := a.stopLaunchedBackend(l, bs); err != nil {
+		return nil, nil, err
+	}
 
 	l, bs, err = a.launchBackend(ctx, distro, binPath, []string{resetTransportPortArg})
 	if err != nil {
@@ -752,14 +806,31 @@ func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string
 // (internal/wsllauncher/AGENTS.md). --data-dir is deliberately NOT
 // spelled here: the launcher runs on the Windows side and has no Linux
 // path to offer, so the backend resolves its own default.
-func profileBackendArgs() []string {
+func profileBackendArgs() ([]string, error) {
+	if activeProfile == "" {
+		return nil, nil
+	}
+	identity, err := instanceinfo.CaptureProcessIdentity(os.Getpid())
+	if err != nil {
+		return nil, fmt.Errorf("capture launcher process identity: %w", err)
+	}
+	mode := launcherRuntimeMode()
+	args := []string{
+		"--launcher-pid", strconv.Itoa(os.Getpid()),
+		"--launcher-start-time", identity.StartTime,
+		"--launcher-executable", identity.Executable,
+		"--launcher-profile", mode,
+		"--launcher-webview-profile", webviewDataDir(mode),
+	}
 	switch activeProfile {
 	case appidentity.ProfileHarness:
-		return []string{"--soak", "--launcher-pid", strconv.Itoa(os.Getpid())}
+		return append([]string{"--soak"}, args...), nil
 	case appidentity.ProfileSoak:
-		return []string{"--soak", "--autopilot", "--launcher-pid", strconv.Itoa(os.Getpid())}
+		return append([]string{"--soak", "--autopilot"}, args...), nil
+	case appidentity.ProfilePerf:
+		return append([]string{"--soak", "--isolated-profile", "perf"}, args...), nil
 	default:
-		return nil
+		return nil, fmt.Errorf("unknown launcher profile %q", activeProfile)
 	}
 }
 
@@ -768,35 +839,155 @@ func profileBackendArgs() []string {
 // profile's own flags.
 func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string, extraArgs []string) (*wsllauncher.Launcher, *wsllauncher.Bootstrap, error) {
 	phaseStarted := time.Now()
-	args := append(profileBackendArgs(), extraArgs...)
+	if err := a.acquireHarnessReservation(distro); err != nil {
+		return nil, nil, err
+	}
+	profileArgs, err := profileBackendArgs()
+	if err != nil {
+		_ = a.releaseHarnessReservation()
+		return nil, nil, err
+	}
+	args := append(profileArgs, extraArgs...)
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:         distro,
 		BinaryPath:     binPath,
 		ExtraArgs:      args,
 		PassthroughEnv: diagenv.Passthrough(),
+		MemoryLimitBytes: func() uint64 {
+			if activeProfile != "" {
+				return governor.DefaultCeilingBytes
+			}
+			return 0
+		}(),
+		UseParentJob: activeProfile != "",
 	})
 	logBootPhase("launcher.wsl_launch", phaseStarted)
 	if err != nil {
+		_ = a.releaseHarnessReservation()
 		return nil, nil, fmt.Errorf("%w: %w", errLaunchFailed, err)
 	}
 
 	a.mu.Lock()
 	a.launcher = l
+	waitDone := &launcherExit{done: make(chan struct{})}
+	a.launcherWait = waitDone
+	if activeProfile != "" {
+		a.memoryWatchCancel = startWSLMemoryWatchdog(context.Background(), distro, binPath, bs, governor.DefaultCeilingBytes, func() {
+			log.Printf("harness memory watchdog: stopping isolated launcher after WSL safety failure")
+			if err := l.Stop(); err != nil {
+				log.Printf("harness memory watchdog: stop WSL launcher: %v", err)
+			}
+			a.mu.Lock()
+			app := a.wails
+			a.mu.Unlock()
+			if app != nil {
+				app.Quit()
+			}
+		})
+	}
 	a.mu.Unlock()
+	go func() { waitDone.set(l.Wait()) }()
 	return l, bs, nil
 }
 
 // stopLaunchedBackend tears down a backend we are abandoning and clears
 // it from the launcher state, so OnShutdown can't later Stop a child
 // that a newer launch has already replaced.
-func (a *launcherApp) stopLaunchedBackend(l *wsllauncher.Launcher) {
+func (a *launcherApp) stopLaunchedBackend(l *wsllauncher.Launcher, bs *wsllauncher.Bootstrap) error {
 	a.mu.Lock()
+	var waitDone *launcherExit
+	var watchCancel context.CancelFunc
 	if a.launcher == l {
 		a.launcher = nil
+		waitDone = a.launcherWait
+		a.launcherWait = nil
+		watchCancel = a.memoryWatchCancel
+		a.memoryWatchCancel = nil
+		a.backendBootstrap = nil
 	}
 	a.mu.Unlock()
-	if err := l.Stop(); err != nil {
-		log.Printf("launcher: stop unreachable backend: %v", err)
+	if watchCancel != nil {
+		watchCancel()
+	}
+	backendGone := false
+	if bs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if err := a.shutdownBackend(ctx, bs); err == nil {
+			if err := waitBackendGone(ctx, bs); err != nil {
+				log.Printf("launcher: backend acknowledged shutdown but stayed reachable: %v", err)
+			} else {
+				backendGone = true
+			}
+		} else {
+			log.Printf("launcher: authenticated backend shutdown unavailable: %v; using Job Object fallback", err)
+		}
+	}
+	stopErr := l.Stop()
+	if stopErr != nil {
+		log.Printf("launcher: stop backend fallback: %v", stopErr)
+	}
+	if waitDone != nil {
+		select {
+		case <-waitDone.done:
+			waitErr := waitDone.error()
+			if waitErr != nil {
+				log.Printf("launcher: backend wrapper exited with error: %v", waitErr)
+			}
+		case <-time.After(shutdownTimeout):
+			return errors.New("launcher backend wrapper did not exit after stop")
+		}
+	}
+	if stopErr != nil {
+		return stopErr
+	}
+	if bs == nil {
+		return nil
+	}
+	if backendGone {
+		return a.releaseHarnessReservation()
+	}
+	return errors.New("backend teardown was not authenticated or confirmed; refusing to reuse its data root")
+}
+
+// shutdownBackend uses the token from the just-validated bootstrap. The Job
+// Object only owns the Windows wsl.exe process and WSL may transfer Linux
+// children to wslhost.exe, so closing it is a fallback, never proof that the
+// backend or its providers have stopped.
+func (a *launcherApp) shutdownBackend(ctx context.Context, bs *wsllauncher.Bootstrap) error {
+	client, err := wsllauncher.NewNotificationClient(wsllauncher.NotificationClientConfig{
+		WSURL:      fmt.Sprintf("ws://127.0.0.1:%d/ws", bs.Port),
+		Token:      bs.Token,
+		Present:    func(notify.Send) error { return nil },
+		MinBackoff: 20 * time.Millisecond,
+		MaxBackoff: 100 * time.Millisecond,
+		Logf:       log.Printf,
+	})
+	if err != nil {
+		return err
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go client.Run(runCtx)
+	return client.Shutdown(ctx)
+}
+
+func waitBackendGone(ctx context.Context, bs *wsllauncher.Bootstrap) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := probeBootstrapWithConfig(bs.Port, bs.Token, bootstrapProbeConfig{
+			AttemptTimeout: 200 * time.Millisecond,
+			Deadline:       300 * time.Millisecond,
+			PollInterval:   50 * time.Millisecond,
+		}); err != nil && errors.Is(err, errBackendUnreachable) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("backend remained reachable: %w", ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -1144,16 +1335,17 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			a.mu.Lock()
 			flush := a.flushGeometry
 			l := a.launcher
+			bs := a.backendBootstrap
 			cancelNotifications := a.notificationCancel
 			a.mu.Unlock()
-			if cancelNotifications != nil {
-				cancelNotifications()
-			}
 			if flush != nil {
 				flush()
 			}
 			if l != nil {
-				_ = l.Stop()
+				a.stopLaunchedBackend(l, bs)
+			}
+			if cancelNotifications != nil {
+				cancelNotifications()
 			}
 		},
 	})
@@ -1273,14 +1465,20 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 	if startDrain {
 		go a.drainNotificationActivations()
 	}
-	go func() {
-		err := launcher.Wait()
-		unexpectedExit := ctx.Err() == nil
-		a.notificationCancel()
-		if err != nil && unexpectedExit {
-			log.Printf("notifications: WSL backend exited; stopping launcher bridge: %v", err)
-		}
-	}()
+	a.mu.Lock()
+	waitDone := a.launcherWait
+	a.mu.Unlock()
+	if waitDone != nil {
+		go func() {
+			<-waitDone.done
+			err := waitDone.error()
+			unexpectedExit := ctx.Err() == nil
+			a.notificationCancel()
+			if err != nil && unexpectedExit {
+				log.Printf("notifications: WSL backend exited; stopping launcher bridge: %v", err)
+			}
+		}()
+	}
 	return nil
 }
 
@@ -1394,8 +1592,8 @@ func wslSingleInstanceMode() string {
 //
 // mode adds the loopback CDP attach point so a developer can talk
 // Chrome DevTools / wsjson to the WebView2 from inside WSL, on a
-// per-mode port (appidentity.DevToolsPort — dev and soak differ so both
-// can be attached at once). The protocol is unauthenticated, so
+// per-mode port (appidentity.DevToolsPort, distinct for every diagnostic
+// profile so all can be attached at once). The protocol is unauthenticated, so
 // production gets no port at all.
 //
 // Memory experiments tried and pulled back: --single-process (~290 MB
@@ -1556,7 +1754,7 @@ func rotateChromeDebugLog(dataDir string) {
 // launcher-<profile>.log, never on the developer's.
 func wailsLogLevel(mode string) slog.Level {
 	switch mode {
-	case appidentity.ModeSoak, appidentity.ModeHarness:
+	case appidentity.ModeSoak, appidentity.ModeHarness, appidentity.ModePerf:
 		return slog.LevelDebug
 	case appidentity.ModeDev:
 		return slog.LevelInfo
@@ -1609,16 +1807,11 @@ func (a *launcherApp) run() {
 	// Stop again here as a belt-and-braces. Stop is idempotent.
 	a.mu.Lock()
 	l := a.launcher
+	bs := a.backendBootstrap
 	a.mu.Unlock()
 	if l != nil {
-		shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		go func() {
-			_ = l.Stop()
-		}()
-		select {
-		case <-shutCtx.Done():
-		case <-time.After(shutdownTimeout):
+		if err := a.stopLaunchedBackend(l, bs); err != nil {
+			log.Printf("launcher: final backend teardown: %v", err)
 		}
 	}
 }

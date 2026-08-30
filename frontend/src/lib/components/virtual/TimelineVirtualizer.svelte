@@ -23,13 +23,16 @@
     RowEstimate,
     ScrollToIndexAlign,
   } from '../../utils/virtual/types';
+  import { observedScrollTopFromEvent } from '../../utils/scroll/eventObservation';
   import VirtualRow from './VirtualRow.svelte';
 
   // The bespoke timeline virtualizer adapter: binds the pure engine
-  // (utils/virtual/) to the DOM. One lazy ResizeObserver measures the
-  // scroller (viewport) and every mounted row; scroll events feed the
-  // engine's range computation; engine updates come back as one window +
-  // container height application per input batch.
+  // (utils/virtual/) to the DOM. One lazy ResizeObserver measures every
+  // mounted row and, for fixed viewports, the scroller; scroll events feed
+  // the engine's range computation; engine updates come back as one window +
+  // container height application per input batch. Intrinsically-sized nested
+  // viewports use the separate max-height contract below so a row delivery
+  // never observes and then resizes its own ancestor.
   //
   // Ownership contract (plan §2): this component NEVER writes scrollTop.
   // Geometry changes that would move content above the viewport surface
@@ -38,9 +41,16 @@
   // `applyScrollTarget` prop so the controller performs and tags the
   // write — test harnesses pass a direct writer, so the exception lives
   // in test code, not here. The component is also the
-  // controller's content-geometry source (`onContentGeometry`): the
-  // spacer height it writes IS the content height, so chat runs no second
-  // ResizeObserver over the content element.
+  // controller's content-geometry source: the spacer height it writes IS
+  // the content height, so chat runs no second ResizeObserver over the
+  // content element. The ONLY way out is `subscribeContentGeometry` on
+  // the handle: replayable and instance-bound, so a consumer subscribes
+  // AFTER its own machinery (the scroll controller's `attach`) is ready
+  // and still receives the sample this instance already published. A
+  // fire-and-forget geometry prop used to exist beside it and is
+  // deliberately gone — it silently lost any sample published before
+  // its consumer could take it, and the dedupe never re-offered the
+  // tuple (the 2026-08-29 populated-first-mount-at-scrollTop-0 bug).
   //
   // Constructor-once by design: `estimate`, `bufferSize`, and `renderAll`
   // configure the engine at mount. The `{#key pane.threadId}` remount is
@@ -82,6 +92,16 @@
     headerSize?: number;
     /** External scroll container. The engine never owns or styles it. */
     scrollRef?: HTMLElement;
+    /**
+     * Makes the external scroller size to virtual content up to this CSS
+     * max-height. The virtualizer applies the same value to the scroller and
+     * an isolated measurement probe, then derives viewport height as
+     * min(totalSize, measuredLimit). In this mode it never observes the
+     * scroller: a row ResizeObserver callback changes the virtual container's
+     * height, so observing that auto-height ancestor would defer its
+     * notification and emit a ResizeObserver loop error.
+     */
+    intrinsicViewportMaxHeight?: string;
     /** Per-row size estimate (priors → kind table → default). */
     estimate?: RowEstimate;
     /** Symmetric overscan px on each side of the visible range. */
@@ -104,11 +124,6 @@
      * content, so tracking a reading anchor would cost a hit-test per
      * scroll event and change nothing. Defaults to always-track. */
     trackReadingAnchor?: () => boolean;
-    /** Engine-sourced content-geometry samples → the scroll controller's
-     * `deliverContentGeometry` (replaces its contentEl ResizeObserver).
-     * Delivered post-flush alongside compensations, and only when the
-     * (height, width, settle) tuple actually changed. */
-    onContentGeometry?: (sample: ContentGeometrySample) => void;
     children: Snippet<[item: T, index: number]>;
   }
 
@@ -118,6 +133,7 @@
     header,
     headerSize,
     scrollRef,
+    intrinsicViewportMaxHeight,
     estimate,
     bufferSize = DEFAULT_BUFFER_PX,
     renderAll = false,
@@ -127,9 +143,28 @@
     onCompensation,
     applyScrollTarget,
     trackReadingAnchor,
-    onContentGeometry,
     children,
   }: Props = $props();
+
+  function validateIntrinsicViewportMaxHeight(value: string | undefined): string | undefined {
+    if (value === undefined) return undefined;
+    const trimmed = value.trim();
+    if (
+      trimmed === '' ||
+      (typeof CSS !== 'undefined' && !CSS.supports('height', trimmed))
+    ) {
+      throw new Error('TimelineVirtualizer intrinsicViewportMaxHeight must be a valid CSS height');
+    }
+    return trimmed;
+  }
+
+  // Unlike engine construction options, viewport ownership is a DOM contract
+  // and remains transition-safe when a caller changes it. The attachment
+  // effect below unobserves the prior owner, restores its inline max-height,
+  // and observes the new owner in the same flush.
+  const intrinsicViewportLimitCss = $derived(
+    validateIntrinsicViewportMaxHeight(intrinsicViewportMaxHeight),
+  );
 
   function validatedHeaderSize(snippet: Snippet | undefined, size: number | undefined): number {
     if (!snippet) {
@@ -198,6 +233,7 @@
   let pendingCompensation: EngineCompensation | null = null;
   let deliveredGeometryVersion = -1;
   let deliveredDataSnapshot: object | null = null;
+  let appliedIntrinsicViewportLimitCss: string | undefined;
 
   function queueCompensation(next: EngineCompensation): void {
     const prior = pendingCompensation;
@@ -234,6 +270,17 @@
   });
 
   $effect(() => {
+    const currentIntrinsicViewportLimitCss = intrinsicViewportLimitCss;
+    if (currentIntrinsicViewportLimitCss !== appliedIntrinsicViewportLimitCss) {
+      appliedIntrinsicViewportLimitCss = currentIntrinsicViewportLimitCss;
+      // A delivery for the old probe cannot size the new mode. Fixed mode
+      // receives a mandatory scroller delivery; intrinsic mode receives one
+      // from the newly observed probe.
+      intrinsicViewportLimitPx = undefined;
+    }
+    if (currentIntrinsicViewportLimitCss !== undefined) {
+      untrack(applyIntrinsicViewportSize);
+    }
     const currentGeometryVersion = geometryVersion;
     const currentData = reconciledData;
     void contentGeometryTrigger;
@@ -303,6 +350,16 @@
   let scrollerContentHeight: number | undefined;
   let maxFirstMeasureCorrectionPx = 0;
   let lastGeometrySample: ContentGeometrySample | undefined;
+  // Subscribers reach this source through the imperative handle
+  // (`subscribeContentGeometry`), so a consumer can attach its own
+  // machinery FIRST and then take
+  // the sample this instance has already published. A Set rather than an
+  // array because the unsubscribe is a delete BY IDENTITY, and because
+  // deleting during iteration is defined not to visit the removed entry
+  // — a callback that unsubscribes itself mid-delivery is safe. Nothing
+  // is allocated to maintain it: entries change only on
+  // subscribe/unsubscribe, never per sample.
+  const geometrySubscribers = new Set<(sample: ContentGeometrySample) => void>();
 
   function windowFullyMeasured(): boolean {
     const [start, end] = engine.getWindow();
@@ -318,20 +375,37 @@
     return true;
   }
 
-  function maybeDeliverContentGeometry(): void {
-    if (!onContentGeometry || scrollerContentWidth === undefined) return;
-    const sample: ContentGeometrySample = {
+  /**
+   * The sample describing the surface RIGHT NOW, or undefined before the
+   * scroller RO has reported a width (the first-delivery gate the
+   * contentEl RO had). Pure read of already-computed state — no layout.
+   */
+  function buildContentGeometrySample(): ContentGeometrySample | undefined {
+    if (scrollerContentWidth === undefined) return undefined;
+    return {
       height: engine.getTotalSize() + renderHeaderSize,
       width: scrollerContentWidth,
       windowMeasured: windowFullyMeasured(),
       maxFirstMeasureCorrectionPx,
       viewportHeight: scrollerContentHeight,
     };
+  }
+
+  function maybeDeliverContentGeometry(): void {
+    // Nobody is listening: skip the window-measured scan entirely (the
+    // review surfaces mount this component with no geometry consumer).
+    // A subscriber arriving later does not lose anything — it is handed
+    // a freshly built sample at subscribe time.
+    if (geometrySubscribers.size === 0) return;
+    const sample = buildContentGeometrySample();
+    if (!sample) return;
     const prev = lastGeometrySample;
     // Field-by-field on purpose — but TypeScript will NOT flag a field
     // added to ContentGeometrySample and missed here; a missed field
     // silently swallows deliveries that differ only in it. Update this
-    // compare alongside the type.
+    // compare alongside the type. The dedupe is per INSTANCE and stays
+    // harmless for a late consumer: replay comes from subscription, not
+    // from re-delivering a suppressed tuple.
     if (
       prev &&
       prev.height === sample.height &&
@@ -343,7 +417,9 @@
       return;
     }
     lastGeometrySample = sample;
-    onContentGeometry(sample);
+    // Deleting during iteration is safe (a removed entry is not
+    // visited), so a callback that unsubscribes itself is fine.
+    for (const notify of geometrySubscribers) notify(sample);
   }
 
   // Recomputes on EVERY data identity change (each streaming beat passes
@@ -510,14 +586,18 @@
   const plane = $derived(projection.plane);
 
   // ------------------------------------------------------------------
-  // Measurement: one lazy ResizeObserver for the scroller + every row
+  // Measurement: one lazy ResizeObserver for rows + the viewport owner
   // ------------------------------------------------------------------
   let resizeObserver: ResizeObserver | undefined;
+  let intrinsicViewportLimitEl = $state<HTMLDivElement | undefined>();
+  let intrinsicViewportLimitPx: number | undefined;
+  let deferNewRowObservations = false;
+  let deferredRowObservationFrame: number | undefined;
+  const deferredRowObservations = new Set<HTMLElement>();
   const rowIndexes = new WeakMap<Element, number>();
-  // Reverse lookup for headAnchorAt. Entries go stale when a head splice
-  // re-indexes rows (the old index keeps pointing at its element until
-  // another row claims it), so every read is verified against rowIndexes
-  // before use.
+  // Reverse lookup for headAnchorAt. `setRowIndex` removes an element's prior
+  // index before installing its new one, so a large head prune cannot retain
+  // mounted DOM through unreachable high-index entries.
   const rowElementByIndex = new Map<number, HTMLElement>();
   let observedScroller: HTMLElement | undefined;
 
@@ -698,22 +778,64 @@
     return shift;
   }
 
+  function deferNewRowObservationUntilNextFrame(): void {
+    // A measurement correction can expand the virtual window. Svelte mounts
+    // those new overscan rows in the microtask after this callback. Calling
+    // observe() on same-depth rows before the browser closes the current
+    // delivery makes their mandatory first notifications ineligible for this
+    // cycle, which Chromium reports as a ResizeObserver loop. They are beyond
+    // the already-painted window, so register them at the start of the next
+    // frame instead. Existing visible rows stay observed continuously.
+    deferNewRowObservations = true;
+    deferredRowObservationFrame ??= requestAnimationFrame(() => {
+      deferredRowObservationFrame = undefined;
+      deferNewRowObservations = false;
+      const observer = ensureResizeObserver();
+      for (const element of deferredRowObservations) {
+        if (element.isConnected && rowIndexes.has(element)) observer.observe(element);
+      }
+      deferredRowObservations.clear();
+    });
+  }
+
   function handleResizeEntries(entries: ResizeObserverEntry[]): void {
+    const [windowStartBefore, windowEndBefore] = engine.getWindow();
     let viewportHeight: number | undefined;
     const resizes: [number, number][] = [];
     for (const entry of entries) {
       const target = entry.target as HTMLElement;
-      // Zero-sized rects arrive for display:none subtrees (hidden pane);
-      // measuring them would collapse every row to 0.
-      if (!target.offsetParent) continue;
+      if (target === intrinsicViewportLimitEl) {
+        const limit = entry.contentRect.height;
+        if (!(limit > 0) || !Number.isFinite(limit)) {
+          // display:none collapses the fixed-height probe to a zero RO entry.
+          // Keep the last valid limit until the pane is shown again. A visible
+          // zero-height probe still has a client rect and remains a hard
+          // configuration error.
+          if (limit === 0 && target.getClientRects().length === 0) continue;
+          throw new Error(
+            'TimelineVirtualizer intrinsic viewport max-height resolved to a non-positive size',
+          );
+        }
+        if (limit !== intrinsicViewportLimitPx) {
+          intrinsicViewportLimitPx = limit;
+          contentGeometryTrigger++;
+        }
+        continue;
+      }
+      // ResizeObserver already gives us the box that triggered this delivery.
+      // A display:none subtree reports 0x0; recording it would collapse every
+      // row to zero. Do not re-query offsetParent here. That synchronous
+      // visibility read forced layout once per visible row delivery while four
+      // streaming panes were continuously measuring their tails.
+      if (entry.contentRect.width === 0 && entry.contentRect.height === 0) continue;
       if (target === observedScroller) {
         viewportHeight = entry.contentRect.height;
         if (viewportHeight !== scrollerContentHeight) {
           scrollerContentHeight = viewportHeight;
-          // A clientHeight move invalidates the controller's cached
-          // bottom-target arithmetic; the bumped delivery below carries
-          // the new viewportHeight so the next delta falls back to a
-          // real read (delta-0 deliveries return before consuming it).
+          // A content-box viewport move can race a browser scroll clamp.
+          // The bumped delivery below carries the new viewportHeight so
+          // the controller refreshes cached scrollTop even when virtual
+          // content height did not change.
           contentGeometryTrigger++;
         }
         // Sibling width observer: MessageTimeline's
@@ -737,6 +859,17 @@
       }
       const index = rowIndexes.get(target);
       if (index !== undefined) {
+        if (
+          intrinsicViewportLimitCss !== undefined &&
+          entry.contentRect.width !== scrollerContentWidth
+        ) {
+          // A virtual row is width:100% of the scroller content box, so its
+          // RO entry is also the exact async width sample. Reusing it avoids
+          // a width probe whose size would change when this content crosses
+          // the native-scrollbar threshold.
+          scrollerContentWidth = entry.contentRect.width;
+          contentGeometryTrigger++;
+        }
         // Content-box height: trailing row margins stay contained by the
         // [data-row-geometry-content] flow-root contract, so content-box
         // and visual extent agree (settle-flicker analysis).
@@ -758,6 +891,28 @@
     }
     if (viewportHeight !== undefined) applyUpdate(engine.applyViewportResize(viewportHeight));
     if (resizes.length) applyUpdate(engine.applyMeasurements(resizes, measureStraddleShift));
+    if (intrinsicViewportLimitCss !== undefined) applyIntrinsicViewportSize();
+    const [windowStartAfter, windowEndAfter] = engine.getWindow();
+    if (
+      windowStartAfter !== windowStartBefore ||
+      windowEndAfter !== windowEndBefore
+    ) {
+      // Only a range change can mount a row during the flush this callback
+      // scheduled. Steady streaming remeasures keep observing their existing
+      // rows without paying a second rAF callback on every reveal beat.
+      deferNewRowObservationUntilNextFrame();
+    }
+  }
+
+  function applyIntrinsicViewportSize(): void {
+    const limit = intrinsicViewportLimitPx;
+    if (limit === undefined) return;
+    const viewport = Math.min(engine.getTotalSize() + renderHeaderSize, limit);
+    if (viewport !== scrollerContentHeight) {
+      scrollerContentHeight = viewport;
+      contentGeometryTrigger++;
+    }
+    applyUpdate(engine.applyViewportResize(viewport));
   }
 
   function ensureResizeObserver(): ResizeObserver {
@@ -771,18 +926,31 @@
   // O(window) delivery burst on every load-older prepend. Both are
   // stable references by design (see VirtualRow's Props doc).
   function registerRow(element: HTMLElement): () => void {
-    ensureResizeObserver().observe(element);
+    if (deferNewRowObservations) {
+      deferredRowObservations.add(element);
+    } else {
+      ensureResizeObserver().observe(element);
+    }
     return () => {
       const index = rowIndexes.get(element);
       if (index !== undefined && rowElementByIndex.get(index) === element) {
         rowElementByIndex.delete(index);
       }
       rowIndexes.delete(element);
+      deferredRowObservations.delete(element);
       resizeObserver?.unobserve(element);
     };
   }
 
   function setRowIndex(element: HTMLElement, index: number): void {
+    const previousIndex = rowIndexes.get(element);
+    if (
+      previousIndex !== undefined &&
+      previousIndex !== index &&
+      rowElementByIndex.get(previousIndex) === element
+    ) {
+      rowElementByIndex.delete(previousIndex);
+    }
     rowIndexes.set(element, index);
     rowElementByIndex.set(index, element);
   }
@@ -822,11 +990,11 @@
     onscrollend?.();
   }
 
-  function handleScroll(): void {
+  function handleScroll(event: Event): void {
     const scroller = observedScroller;
     if (!scroller) return;
     lastScrollTime = performance.now();
-    const offset = scroller.scrollTop;
+    const offset = observedScrollTopFromEvent(event) ?? scroller.scrollTop;
     if (headSpliceAnchor && Math.abs(offset - actualScrollOffset) > 0.01) {
       headSpliceAnchor = null;
     }
@@ -866,9 +1034,18 @@
 
   $effect(() => {
     const scroller = scrollRef;
+    const intrinsicLimit = intrinsicViewportLimitEl;
+    const attachedIntrinsicLimitCss = intrinsicViewportLimitCss;
     if (!scroller) return;
+    const priorInlineMaxHeight = scroller.style.maxHeight;
+    if (attachedIntrinsicLimitCss === undefined) {
+      ensureResizeObserver().observe(scroller);
+    } else {
+      if (!intrinsicLimit) return;
+      scroller.style.maxHeight = attachedIntrinsicLimitCss;
+      ensureResizeObserver().observe(intrinsicLimit);
+    }
     observedScroller = scroller;
-    ensureResizeObserver().observe(scroller);
     scroller.addEventListener('scroll', handleScroll, { passive: true });
     scroller.addEventListener('wheel', handleWheel, { passive: true });
     scroller.addEventListener('touchstart', handleTouchStart, { passive: true });
@@ -880,7 +1057,12 @@
       scroller.removeEventListener('touchstart', handleTouchStart);
       scroller.removeEventListener('touchend', handleTouchEnd);
       scroller.removeEventListener('touchcancel', handleTouchEnd);
-      resizeObserver?.unobserve(scroller);
+      if (attachedIntrinsicLimitCss === undefined) {
+        resizeObserver?.unobserve(scroller);
+      } else {
+        if (intrinsicLimit) resizeObserver?.unobserve(intrinsicLimit);
+        scroller.style.maxHeight = priorInlineMaxHeight;
+      }
       observedScroller = undefined;
       clearTimeout(scrollEndTimer);
       scrollEndTimer = undefined;
@@ -891,6 +1073,12 @@
     clearIndexScroll();
     clearTimeout(scrollEndTimer);
     scrollEndTimer = undefined;
+    if (deferredRowObservationFrame !== undefined) {
+      cancelAnimationFrame(deferredRowObservationFrame);
+      deferredRowObservationFrame = undefined;
+    }
+    deferredRowObservations.clear();
+    rowElementByIndex.clear();
     resizeObserver?.disconnect();
     resizeObserver = undefined;
   });
@@ -1064,6 +1252,32 @@
     applyUpdate(engine.applyScroll(engineOffsetFor(scroller.scrollTop)));
   }
 
+  /**
+   * Content-geometry subscription (see TimelineVirtualizerHandle). The
+   * subscriber is handed the CURRENT sample synchronously when this
+   * instance has one to give — that replay is the whole point: a
+   * consumer must be able to wire itself up AFTER its own machinery is
+   * ready (the scroll controller's `attach`) without losing the sample
+   * this source already published and deduped away.
+   *
+   * `untrack` because the build reads component state ($derived header
+   * size, engine geometry) and a subscribing `$effect` must not become
+   * a reader of it — it would re-subscribe on every geometry change.
+   */
+  export function subscribeContentGeometry(
+    onSample: (sample: ContentGeometrySample) => void,
+  ): () => void {
+    geometrySubscribers.add(onSample);
+    const sample = untrack(buildContentGeometrySample);
+    if (sample) {
+      lastGeometrySample = sample;
+      onSample(sample);
+    }
+    return () => {
+      geometrySubscribers.delete(onSample);
+    };
+  }
+
   // ------------------------------------------------------------------
   // Read-only handle (see TimelineVirtualizerHandle in utils/virtual/types)
   // ------------------------------------------------------------------
@@ -1114,6 +1328,24 @@
   style:width="100%"
   style:height="{renderTotalSize + renderHeaderSize}px"
 >
+  {#if intrinsicViewportLimitCss !== undefined}
+    <!-- Fixed and zero-width so the probe resolves viewport/rem units but can
+         neither participate in the virtual content height nor expand the
+         scroller's overflow area. -->
+    <div
+      bind:this={intrinsicViewportLimitEl}
+      data-virtual-intrinsic-viewport-limit
+      aria-hidden="true"
+      style:position="fixed"
+      style:left="-10000px"
+      style:top="0px"
+      style:width="0px"
+      style:height={intrinsicViewportLimitCss}
+      style:visibility="hidden"
+      style:pointer-events="none"
+      style:contain="strict"
+    ></div>
+  {/if}
   {#if renderHeader}
     <div
       data-virtual-header

@@ -49,7 +49,9 @@
   import { GetThreadTurnPreview, GetThreadUserMessageTicks } from '../../stores/bindings';
   import Icon from '../primitives/Icon.svelte';
   import {
+    NAV_RAIL_HIT_WIDTH_PX,
     NAV_RAIL_MIN_TICKS,
+    NAV_RAIL_TICK_LEFT_PX,
     deriveNavTicks,
     itemWindowBounds,
     mergeNavTicks,
@@ -99,14 +101,16 @@
   // the arrows, and bounded so a click in the wider left gutter never
   // teleports the reader to the first/last message.
   const STRIP_PAD_PX = 12;
-  // Hover dwell before an unloaded tick's preview RPC fires — a fisheye
-  // sweep across the rail must not fan out one request per tick.
-  const REMOTE_PREVIEW_DEBOUNCE_MS = 120;
+  // One grace period when the pointer first enters the rail. It prevents a
+  // pass across the gutter from throwing a card over the transcript. After
+  // activation, every tick preview follows immediately so the reader can
+  // scan the thread without paying this delay per message.
+  const PREVIEW_ACTIVATION_GRACE_MS = 120;
   // The gap dot's x: centered on the RESTING tick's visual span. Ticks
-  // are left-3 (12px) + their resting width, so their at-rest center is
-  // 12 + rest/2. Rest-state on purpose — the magnify effect is transient
-  // and the dot deliberately does not track it.
-  const MARKER_CENTER_X_PX = 12 + TICK_REST_WIDTH_PX / 2;
+  // start at NAV_RAIL_TICK_LEFT_PX + their resting width. Rest-state on
+  // purpose — the magnify effect is transient and the dot deliberately
+  // does not track it.
+  const MARKER_CENTER_X_PX = NAV_RAIL_TICK_LEFT_PX + TICK_REST_WIDTH_PX / 2;
 
   // ============================================================
   // Tick sourcing: store baseline + loaded-window splice
@@ -123,6 +127,7 @@
     void generation;
     baseline = [];
     remotePreviews = {};
+    resetHover();
     if (!threadId) return;
     void (async () => {
       try {
@@ -223,15 +228,28 @@
       : Math.min(activeIndex, ticks.length - 1),
   );
 
-  // Previews for unloaded ticks, fetched on hover dwell and cached for
-  // the thread's lifetime in this pane (reset with the baseline).
+  // Preview activation is session-shaped, not tick-shaped. The first tick
+  // waits through one grace period; once that fires, previewIndex follows
+  // activeIndex synchronously until the pointer leaves both rail and card.
+  let previewIndex: number | null = $state(null);
+  let previewActivated = false;
+  let previewActivationTimer: ReturnType<typeof setTimeout> | undefined;
+  let resolvedPreviewIndex = $derived(
+    previewIndex === null || ticks.length === 0
+      ? null
+      : Math.min(previewIndex, ticks.length - 1),
+  );
+
+  // Previews for unloaded ticks, fetched once the rail's entry grace has
+  // elapsed and cached for the thread's lifetime in this pane (reset with
+  // the baseline).
   let remotePreviews: Record<string, NavTickPreview> = $state.raw({});
   const remotePreviewInFlight = new Set<string>();
-  let remotePreviewTimer: ReturnType<typeof setTimeout> | undefined;
 
   function fetchRemotePreview(threadId: string, id: string): void {
-    if (remotePreviewInFlight.has(id)) return;
-    remotePreviewInFlight.add(id);
+    const requestKey = `${threadId}\0${id}`;
+    if (remotePreviewInFlight.has(requestKey)) return;
+    remotePreviewInFlight.add(requestKey);
     void (async () => {
       try {
         const p = (await GetThreadTurnPreview(threadId, id)) as NavTickPreview;
@@ -240,35 +258,23 @@
       } catch (err) {
         console.error('Failed to load nav rail preview:', err);
       } finally {
-        remotePreviewInFlight.delete(id);
+        remotePreviewInFlight.delete(requestKey);
       }
     })();
   }
 
-  // Hover-dwell trigger for unloaded ticks. An $effect (not part of the
-  // preview derivation) because it starts an RPC.
+  // Unloaded-tick fetch. The entry grace already established intent, so
+  // changing ticks in an active scan starts this immediately rather than
+  // stacking a second per-message delay on top.
   $effect(() => {
-    const idx = resolvedActive;
-    if (remotePreviewTimer !== undefined) {
-      clearTimeout(remotePreviewTimer);
-      remotePreviewTimer = undefined;
-    }
+    const idx = resolvedPreviewIndex;
     if (idx === null) return;
     const tick = ticks[idx];
     if (!tick || tick.nodeIndex !== null) return;
     if (remotePreviews[tick.id]) return;
     const threadId = pane.threadId;
     if (!threadId) return;
-    remotePreviewTimer = setTimeout(() => {
-      remotePreviewTimer = undefined;
-      fetchRemotePreview(threadId, tick.id);
-    }, REMOTE_PREVIEW_DEBOUNCE_MS);
-    return () => {
-      if (remotePreviewTimer !== undefined) {
-        clearTimeout(remotePreviewTimer);
-        remotePreviewTimer = undefined;
-      }
-    };
+    fetchRemotePreview(threadId, tick.id);
   });
 
   // Guard BEFORE touching pane.items so an idle rail tracks only the
@@ -277,8 +283,8 @@
   // `pane.getItemById` so a streaming answer's in-place writes reach the
   // card; an unloaded one reads the RPC cache.
   let preview = $derived.by(() => {
-    if (resolvedActive === null) return null;
-    const tick = ticks[resolvedActive];
+    if (resolvedPreviewIndex === null) return null;
+    const tick = ticks[resolvedPreviewIndex];
     if (!tick) return null;
     if (tick.nodeIndex !== null) return turnPreview(pane.items, tick.id, pane.getItemById);
     return remotePreviews[tick.id] ?? null;
@@ -305,7 +311,35 @@
 
   function handleStripMove(event: MouseEvent): void {
     const idx = indexFromStripOffsetY(event.offsetY);
-    activeIndex = idx >= 0 ? idx : null;
+    if (idx < 0) {
+      resetHover();
+      return;
+    }
+    activeIndex = idx;
+    if (previewActivated) {
+      previewIndex = idx;
+      return;
+    }
+    if (previewActivationTimer !== undefined) return;
+    previewActivationTimer = setTimeout(() => {
+      previewActivationTimer = undefined;
+      if (activeIndex === null) return;
+      previewActivated = true;
+      previewIndex = activeIndex;
+    }, PREVIEW_ACTIVATION_GRACE_MS);
+  }
+
+  function cancelPreviewActivation(): void {
+    if (previewActivationTimer === undefined) return;
+    clearTimeout(previewActivationTimer);
+    previewActivationTimer = undefined;
+  }
+
+  function resetHover(): void {
+    cancelPreviewActivation();
+    previewActivated = false;
+    previewIndex = null;
+    activeIndex = null;
   }
 
   function handleHoverLeave(event: MouseEvent): void {
@@ -314,7 +348,7 @@
     // dead space.
     const next = event.relatedTarget;
     if (next instanceof Node && containerEl?.contains(next)) return;
-    activeIndex = null;
+    resetHover();
   }
 
   function handleStripClick(event: MouseEvent): void {
@@ -351,7 +385,7 @@
     // about which tick it points at. Guarded so the rAF path writes
     // state only when a hover actually exists.
     onClipChange: () => {
-      if (activeIndex !== null) activeIndex = null;
+      if (activeIndex !== null) resetHover();
     },
   });
 
@@ -382,7 +416,10 @@
     untrack(() => sync.schedule());
   });
 
-  $effect(() => () => sync.cancel());
+  $effect(() => () => {
+    cancelPreviewActivation();
+    sync.cancel();
+  });
 
   let railTop = $derived(`calc(50% - ${railH / 2}px)`);
 
@@ -391,9 +428,38 @@
   // synced value, recomputed per hover-index change — the cadence the
   // card moves at anyway (wheel over the strip drops the hover).
   let previewAnchor = $derived.by(() => {
-    if (resolvedActive === null) return null;
-    const y = tickFraction(resolvedActive, ticks.length) * naturalH - sync.getClipOffsetPx();
+    if (resolvedPreviewIndex === null) return null;
+    const y = tickFraction(resolvedPreviewIndex, ticks.length) * naturalH - sync.getClipOffsetPx();
     return { y, translatePercent: previewTranslateYPercent(railH > 0 ? y / railH : 0.5) };
+  });
+
+  // ONE nullable derived carrying everything the card renders, so every
+  // template expression inside the guarded branch can be total. The
+  // position needs `railTop` as well as the anchor, and railTop's inputs
+  // (railH ← availableHeightPx, ticks.length) are exactly what kills the
+  // anchor — a tick-list replacement, a column resize, the sync module's
+  // rAF resetHover. An attribute effect reading `previewAnchor.y` beside
+  // `railTop` can therefore be asked to render on the surviving dep after
+  // the anchor is already null, before the branch tears down (crash
+  // 2026-08-29). Folded here, the branch's expressions read one nullable
+  // through `?.`: the dying frame renders neutral instead of throwing,
+  // and the `{#if}` still owns whether the card exists at all.
+  let previewCard = $derived.by(() => {
+    const anchor = previewAnchor;
+    if (anchor === null) return null;
+    const turn = preview;
+    if (!turn || !turn.userText) return null;
+    return {
+      top: `calc(${railTop} + ${anchor.y}px)`,
+      // Named `translateY`, not `transform`: a bare `transform:` property
+      // in an object literal reads as an authored CSS declaration to the
+      // compositor-state scan (architecture.test.ts). The one authored
+      // piece of state here is the style directive below, already
+      // inventoried.
+      translateY: `translateY(${anchor.translatePercent}%)`,
+      userText: turn.userText,
+      assistantText: turn.assistantText,
+    };
   });
 
   const ARROW_CLASSES = [
@@ -414,7 +480,8 @@
        the strip, arrows, and preview card opt back in. -->
   <div
     bind:this={containerEl}
-    class="pointer-events-none absolute left-0 top-8 z-30 w-10"
+    class="pointer-events-none absolute left-0 top-8 z-30"
+    style:width={`${NAV_RAIL_HIT_WIDTH_PX}px`}
     style:bottom={`calc(var(--composer-height, 0px) + 1rem)`}
     data-testid="message-nav-rail"
   >
@@ -436,7 +503,7 @@
       onmouseleave={handleHoverLeave}
       onclick={handleStripClick}
       onmousedown={(e) => e.preventDefault()}
-      onwheel={() => (activeIndex = null)}
+      onwheel={resetHover}
     ></button>
 
     {#if overflowing}
@@ -511,7 +578,9 @@
             <div
               use:sync.registerTick={i}
               data-current="false"
-              class="absolute left-3 -mt-px h-0.5 origin-left rounded-full bg-border-strong transition-transform duration-150 motion-reduce:transition-none data-[current=true]:bg-accent"
+              data-hovered={resolvedActive === i ? 'true' : 'false'}
+              class="nav-rail-tick absolute -mt-px h-0.5 origin-left rounded-full transition-transform duration-150 motion-reduce:transition-none"
+              style:left={`${NAV_RAIL_TICK_LEFT_PX}px`}
               style:top={`${tickFraction(i, ticks.length) * 100}%`}
               style:width={`${TICK_REST_WIDTH_PX}px`}
               style:transform={tickStyleTransform(i)}
@@ -543,7 +612,7 @@
       </div>
     </div>
 
-    {#if previewAnchor !== null && preview && preview.userText}
+    {#if previewCard}
       <!-- Turn preview. Anchored to the hovered tick's position within
            the rail window; cards near the window's edges flip instead
            of clipping. Selectable on purpose — mouseleave keeps the
@@ -551,17 +620,35 @@
            can be selected without the card vanishing. -->
       <div
         role="tooltip"
-        class="pointer-events-auto absolute left-10 z-40 w-80 max-w-[min(20rem,60vw)] cursor-text select-text rounded-lg border border-border-subtle bg-card p-3 shadow-sheet"
-        style:top={`calc(${railTop} + ${previewAnchor.y}px)`}
-        style:transform={`translateY(${previewAnchor.translatePercent}%)`}
+        class="pointer-events-auto absolute z-40 w-80 max-w-[min(20rem,60vw)] cursor-text select-text rounded-lg border border-border-subtle bg-card p-3 shadow-sheet"
+        style:left={`${NAV_RAIL_HIT_WIDTH_PX}px`}
+        style:top={previewCard?.top ?? '0px'}
+        style:transform={previewCard?.translateY ?? 'none'}
         onmouseleave={handleHoverLeave}
         data-testid="nav-rail-preview"
       >
-        <p class="line-clamp-2 text-xs font-medium text-text-primary">{preview.userText}</p>
-        {#if preview.assistantText}
-          <p class="mt-1.5 line-clamp-3 text-xs text-text-secondary">{preview.assistantText}</p>
+        <p class="line-clamp-2 text-xs font-medium text-text-primary">{previewCard?.userText ?? ''}</p>
+        {#if previewCard?.assistantText}
+          <p class="mt-1.5 line-clamp-3 text-xs text-text-secondary">{previewCard?.assistantText ?? ''}</p>
         {/if}
       </div>
     {/if}
   </div>
 {/if}
+
+<style>
+  /* Theme roles, not element opacity: custom themes own every color and idle
+     ticks create no opacity effect nodes. Current wins over hover because the
+     viewport position is the rail's authoritative claim. None transitions. */
+  :global(.nav-rail-tick) {
+    background-color: var(--color-border);
+  }
+
+  :global(.nav-rail-tick[data-hovered='true']) {
+    background-color: var(--color-border-strong);
+  }
+
+  :global(.nav-rail-tick[data-current='true']) {
+    background-color: var(--color-accent);
+  }
+</style>

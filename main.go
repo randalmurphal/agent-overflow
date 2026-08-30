@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -24,6 +25,7 @@ import (
 	"agent-overflow/internal/atomicfile"
 	"agent-overflow/internal/diagenv"
 	"agent-overflow/internal/externalurl"
+	"agent-overflow/internal/harness/darwinbundle"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/observability/goroutinedump"
 	"agent-overflow/internal/observability/pprofserve"
@@ -134,6 +136,16 @@ func main() {
 	flags, err := parseFlags(os.Args[1:])
 	if err != nil {
 		fatalf("%v", err)
+	}
+	if runtime.GOOS == "darwin" && flags.window {
+		// A windowed isolated macOS boot must come from the per-run bundle
+		// wrapper. Verify before any Wails/GTK initialization can cache the
+		// production bundle's WebKit data store.
+		expected := os.Getenv("AO_EXPECTED_BUNDLE_ID")
+		nonce := os.Getenv("AO_HARNESS_BUNDLE_NONCE")
+		if err := darwinbundle.Verify(os.Args[0], flags.dataDir, expected, nonce); err != nil {
+			fatalf("harness: %v", err)
+		}
 	}
 	dataDirRoot = flags.dataDir
 	resetTransportPortPin = flags.resetTransportPort
@@ -247,6 +259,17 @@ type bootTransportOptions struct {
 	AllowDevServerAssets bool
 }
 
+type harnessPageMarkerProvider interface {
+	harnessPageMarker() string
+}
+
+func harnessPageMarker(receiver any) string {
+	if marker, ok := receiver.(harnessPageMarkerProvider); ok {
+		return marker.harnessPageMarker()
+	}
+	return ""
+}
+
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
 	started := time.Now()
 	defer logBootPhase("transport.total", started)
@@ -310,7 +333,8 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// receiver are exactly the boots whose /bootstrap.json says
 		// harness, so the SPA's bridge can never load against a wire that
 		// has no harness methods on it.
-		Harness: opts.HarnessReceiver != nil,
+		Harness:    opts.HarnessReceiver != nil,
+		PageMarker: harnessPageMarker(opts.HarnessReceiver),
 		// Late-bound: appService.DesignServer is a bound method value,
 		// not the result of calling it. The transport server consults
 		// this getter per-request so the /design/ route registers
@@ -529,17 +553,21 @@ func writeBootstrap(fd int, srv *transport.Server) error {
 	bs := struct {
 		Port  int    `json:"port"`
 		Token string `json:"token"`
+		PID   int    `json:"pid"`
 		// ClientID is this installation's durable UI-state identity
 		// (see ensureClientID). The launcher threads it onto the
 		// webview URL as ?cid= so the frontend's per-client ui_state
 		// bucket survives the per-launch origin change. Empty when the
 		// backend couldn't persist one; the frontend then falls back
 		// to a best-effort browser-cached ID.
-		ClientID string `json:"clientId,omitempty"`
+		ClientID   string `json:"clientId,omitempty"`
+		PageMarker string `json:"pageMarker,omitempty"`
 	}{
-		Port:     portFromAddr(srv.Addr()),
-		Token:    srv.Token(),
-		ClientID: ensureClientID(),
+		Port:       portFromAddr(srv.Addr()),
+		Token:      srv.Token(),
+		PID:        os.Getpid(),
+		ClientID:   ensureClientID(),
+		PageMarker: srv.PageMarker(),
 	}
 	payload, err := json.Marshal(bs)
 	if err != nil {
@@ -722,6 +750,20 @@ func appURLWithClientID(pageURL, clientID string) string {
 		return pageURL
 	}
 	return pageURL + "&cid=" + url.QueryEscape(clientID)
+}
+
+// appURLWithPageMarker adds the per-harness page marker without changing an
+// ordinary boot URL. The marker remains in browser history after the token is
+// scrubbed, which lets CDP match the exact page rather than a same-origin tab.
+func appURLWithPageMarker(pageURL, marker string) string {
+	if pageURL == "" || marker == "" {
+		return pageURL
+	}
+	separator := "&"
+	if !strings.Contains(pageURL, "?") {
+		separator = "?"
+	}
+	return pageURL + separator + "page=" + url.QueryEscape(marker)
 }
 
 // ensureClientIDIn is the dir-parameterized core of ensureClientID,

@@ -24,7 +24,7 @@ if (fileIdx >= 0) {
   const cats = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'disabled-by-default-devtools.timeline.invalidationTracking', 'disabled-by-default-devtools.timeline.stack', 'blink.user_timing', 'v8.execute', 'disabled-by-default-v8.gc'];
   await b.send('Tracing.start', { traceConfig: { includedCategories: cats, excludedCategories: ['*'] }, transferMode: 'ReturnAsStream' });
   await sleep(SECS * 1000);
-  const done = new Promise((res) => b.on((e) => { if (e.method === 'Tracing.tracingComplete') res(e.params); }));
+  const done = b.waitFor('Tracing.tracingComplete');
   await b.send('Tracing.end');
   const complete = await done;
   data = await readStream(b, complete.stream);
@@ -51,18 +51,23 @@ const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 const top = (map, n, by = (v) => v) => [...map.entries()].sort((a, b) => by(b[1]) - by(a[1])).slice(0, n);
 // One resolver over every bundle URL in the trace (hidden maps served
 // beside the assets; offline --file runs or builds without AO_SOURCEMAP
-// resolve nothing and frames print raw). Trace stack frames and
-// FunctionCall data both carry v8's 0-based line/column.
+// resolve nothing and frames print raw). Unlike Profiler and HeapProfiler
+// call frames, timeline stack frames and FunctionCall data use 1-based line
+// AND column coordinates. Passing those through unchanged shifts every frame
+// into an unrelated source-map segment on a minified multi-line bundle.
 const traceUrls = new Set();
 for (const e of main) {
   if (e.args?.data?.url) traceUrls.add(e.args.data.url);
   for (const f of e.args?.beginData?.stackTrace || []) if (f.url) traceUrls.add(f.url);
 }
 const resolve = await createFrameResolver([...traceUrls]);
-const label = (fn, url, line0, col0) => {
-  const m = url ? resolve(url, line0 || 0, col0 || 0) : null;
+const traceCoordinate0 = (value) => Math.max(0, (value || 1) - 1);
+const label = (fn, url, line1, col1) => {
+  const m = url
+    ? resolve(url, traceCoordinate0(line1), traceCoordinate0(col1))
+    : null;
   if (m) return `${fn || m.name || '(anon)'} ${m.source}:${m.line}`;
-  return `${fn || '(anon)'} ${(url || '').split('/').pop()}:${line0}`;
+  return `${fn || '(anon)'} ${(url || '').split('/').pop()}:${line1}`;
 };
 const frameOf = (st) => (st && st[0] ? label(st[0].functionName, st[0].url, st[0].lineNumber, st[0].columnNumber) : '');
 

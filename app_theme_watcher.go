@@ -23,7 +23,7 @@ const themeSelfWriteWindow = dirWatchSelfWriteWindow
 
 // themeWatcher watches <configDir>/themes for theme-file changes and
 // calls emit (debounced) so the frontend refetches. The agent-edit loop
-// in docs/specs/theme-system.md §7 is this watcher.
+// in docs/architecture/theme-system.md §7 is this watcher.
 //
 // It is a defined type over dirWatcher, not a wrapper: the fields, the
 // event loop, the debounce and the suppression ledger are that struct's

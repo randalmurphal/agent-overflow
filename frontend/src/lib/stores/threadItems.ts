@@ -194,7 +194,7 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
  *    contain no longer exists (or no longer sits here) as of the read
  *    the stamps attest, so it is dropped. That is what makes the
  *    subsequent write-back safe: everything persisted descends from the
- *    attested page (docs/specs/thread-replica-sync.md §6.1 step 4).
+ *    attested page (docs/architecture/thread-replica-sync.md §6.1 step 4).
  *  - **Live rows are newer than the page.** Anything the wire touched
  *    since the switch began post-dates the page's read snapshot, so its
  *    version wins where both have the row, and it is kept where the page

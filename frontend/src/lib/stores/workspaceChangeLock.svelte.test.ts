@@ -322,11 +322,14 @@ describe('createWorkspaceChangeLockState', () => {
     });
   });
 
-  // The initial check and every event-driven refresh are separate RPCs on
-  // ONE entity generation, so nothing in the primitive orders them. An older
-  // IDLE answer landing after a newer BUSY one unlocks the destructive
-  // controls over a sibling thread's live agent.
-  it('discards a workspace-activity response that a newer one already superseded', async () => {
+  // Responses used to be able to overtake each other: the initial check and
+  // every event refresh were separate RPCs on ONE entity generation, and an
+  // older IDLE answer landing after a newer BUSY one unlocked the destructive
+  // controls over a sibling thread's live agent. The refresh scheduler removes
+  // the race instead of stamping it — refreshes serialize behind the call in
+  // flight, so there is never a second answer to overtake with, and the burst
+  // is answered by exactly ONE trailing check.
+  it('serializes refreshes behind the check in flight and trails it with exactly one', async () => {
     vi.useFakeTimers();
     const pending: Array<(activity: Activity) => void> = [];
     const list = setBindingMock('GetWorkspaceActivity', () =>
@@ -340,20 +343,55 @@ describe('createWorkspaceChangeLockState', () => {
     const state = getByTestId('workspace-change-lock');
     await vi.waitFor(() => expect(list.mock.calls.length).toBe(1));
 
-    // A sibling's turn opens while the initial check is still in flight.
-    emitWailsEvent('provider:turn_started', { threadId: 'a-sibling-thread' });
-    await vi.advanceTimersByTimeAsync(100);
+    // Sibling turns open, repeatedly, while the initial check is still out.
+    for (let i = 0; i < 5; i += 1) {
+      emitWailsEvent('provider:turn_started', { threadId: `sibling-${i}` });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(list.mock.calls.length).toBe(1);
+
+    // The first answer lands. It is already out of date, and the trailing
+    // check — one, not five — is what corrects it.
+    pending[0](idle());
+    await vi.advanceTimersByTimeAsync(500);
     expect(list.mock.calls.length).toBe(2);
 
-    // The NEWER answer lands first…
     pending[1](busyWithTurn());
-    await vi.waitFor(() => expect(state).toHaveAttribute('data-locked', 'true'));
+    await vi.waitFor(() => {
+      expect(state).toHaveAttribute('data-locked', 'true');
+      expect(state.getAttribute('data-reason') ?? '').toMatch(/agent is responding/);
+    });
 
-    // …and the older, slower one must not overwrite it.
+    // And nothing further: the burst is spent, so the scheduler goes quiet
+    // instead of re-polling at the event rate.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(list.mock.calls.length).toBe(2);
+  });
+
+  // The window the serialization does not close: a refresh in flight when the
+  // ENTRY dies (last release, thread re-point, reconnect) can still answer.
+  // The scheduler's token is what makes that answer inert — a late IDLE
+  // applied after a teardown would unlock a workspace nobody re-verified.
+  it('drops the answer to a check that was in flight when the entry died', async () => {
+    vi.useFakeTimers();
+    const pending: Array<(activity: Activity) => void> = [];
+    setBindingMock('GetWorkspaceActivity', () =>
+      new Promise<Activity>((resolve) => {
+        pending.push(resolve);
+      }),
+    );
+    const pane = await buildPane();
+
+    const view = render(Harness, { props: { pane } });
+    await vi.waitFor(() => expect(pending.length).toBe(1));
+
+    view.unmount();
+    expect(workspaceChangeLockKeys()).toEqual([]);
+
     pending[0](idle());
-    await vi.advanceTimersByTimeAsync(50);
-    expect(state).toHaveAttribute('data-locked', 'true');
-    expect(state.getAttribute('data-reason') ?? '').toMatch(/agent is responding/);
+    await vi.advanceTimersByTimeAsync(500);
+    // Nothing was resurrected by the late answer.
+    expect(workspaceChangeLockKeys()).toEqual([]);
   });
 
   // GetWorkspaceActivity is loopback-only. A remote session's refusal is
@@ -502,10 +540,11 @@ describe('createWorkspaceChangeLockState', () => {
     expect(workspaceChangeLockKeys()).toEqual([]);
   });
 
-  // The listeners are installed BEFORE the initial check is awaited, and the
-  // primitive has nothing to release until the run RETURNS a cleanup. Without
-  // the abort hook a torn-down entry kept refreshing beside its replacement —
-  // forever, when the RPC it is parked on never answers.
+  // The listeners are installed before the initial check answers, so a torn
+  // down entry must stop refreshing on the teardown itself rather than when
+  // its RPC returns — which, parked on a call that never answers, is never.
+  // The source's cleanup covers that (and the abort hook covers the microtask
+  // before the primitive holds it).
   it('releases the listeners when the entry dies while the initial check hangs', async () => {
     vi.useFakeTimers();
     const list = setBindingMock('GetWorkspaceActivity', () => new Promise<Activity>(() => {}));

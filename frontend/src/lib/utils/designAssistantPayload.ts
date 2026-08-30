@@ -85,22 +85,34 @@ function parseClarification(record: Record<string, unknown>): DesignAssistantPay
   if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return null;
 
   const questions: ClarificationRequest['questions'] = [];
+  // Ids are MODEL-authored, and everything downstream assumes they are
+  // unique: answer state is keyed by question id, `isSelected` /
+  // `toggleChoice` match by choice id (a duplicate would alias two
+  // visible rows to one selection), and the picker's keyed `{#each}`
+  // would throw `each_key_duplicate` mid-flush. Rejecting the block is
+  // the same posture every other malformed shape here gets.
+  const seenQuestionIds = new Set<string>();
   for (const raw of rawQuestions) {
     if (!raw || typeof raw !== 'object') return null;
     const q = raw as Record<string, unknown>;
     const id = typeof q.id === 'string' ? q.id : '';
     const prompt = typeof q.prompt === 'string' ? q.prompt : '';
     if (!id || !prompt) return null;
+    if (seenQuestionIds.has(id)) return null;
+    seenQuestionIds.add(id);
 
     const rawChoices = q.choices;
     if (!Array.isArray(rawChoices) || rawChoices.length === 0) return null;
     const choices: ClarificationRequest['questions'][number]['choices'] = [];
+    const seenChoiceIds = new Set<string>();
     for (const rc of rawChoices) {
       if (!rc || typeof rc !== 'object') return null;
       const choice = rc as Record<string, unknown>;
       const cid = typeof choice.id === 'string' ? choice.id : '';
       const label = typeof choice.label === 'string' ? choice.label : '';
       if (!cid || !label) return null;
+      if (seenChoiceIds.has(cid)) return null;
+      seenChoiceIds.add(cid);
       choices.push({ id: cid, label });
     }
 

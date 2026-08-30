@@ -1,5 +1,6 @@
 import { type StreamdownToken, type Extension } from './index.js';
 export declare function markedFootnote(): Extension[];
+export declare const markedFootnoteBlock: Extension;
 /**
  * Represents a single footnote.
  */

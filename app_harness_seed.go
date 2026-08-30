@@ -432,8 +432,9 @@ func (h *Harness) seedItem(threadID string, turnIndex, itemIndex int, at int64, 
 }
 
 // HarnessReset returns the harness to a blank slate without a process
-// restart: every provider session is stopped, in-flight turn rows are
-// settled the same way startup crash recovery settles them, every
+// restart: every provider session is stopped, in-flight turn rows and
+// orphaned background launches are settled through the startup recovery
+// paths, every
 // project is deleted through the production cascade (which reaps
 // checkpoints, drafts, attachments, and per-thread in-memory state),
 // generated seed workspaces are removed so the same names re-seed
@@ -500,6 +501,14 @@ func (h *Harness) HarnessReset() (err error) {
 	if h.app.triage != nil {
 		if _, err := h.app.triage.RecoverCrashedTurns(); err != nil {
 			return fmt.Errorf("settle in-flight turns: %w", err)
+		}
+		// StopSession made every persisted running background launch an
+		// orphan. Production project deletion correctly refuses those rows,
+		// so settle them through the same idempotent path startup uses before
+		// applying the delete cascade. Without this step an indefinite soak
+		// scenario could never be reset by the harness that started it.
+		if _, err := h.app.triage.RecoverOrphanedBackgroundTasks(); err != nil {
+			return fmt.Errorf("settle orphaned background tasks: %w", err)
 		}
 	}
 	// Mock registrations belong to the sessions just stopped; carrying

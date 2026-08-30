@@ -1,12 +1,12 @@
 # internal/codexghost/
 
-Pure summary-rewrite helpers used by the Codex ghost-row flip — the
-rule that on every Codex session start transitions persisted
+Pure summary-rewrite helpers used by Codex runtime retirement, the
+rule that on every Codex session end or app restart transitions persisted
 background `tool_call` rows from a now-dead subprocess into the
 timeline's `errored` / `lost` state.
 
 The App-side bookkeeping (the store call, the emit fan-out, the
-`flipCodexGhostBackgroundRowsOnStart` saga, the warm-reconnect
+`retireCodexBackgroundRuntime` path, the warm-reconnect
 reconciler) stays in `app_codex_reconcile.go` because it owns the
 store + transport boundary. This package only owns the summary
 rewrite contract that both call sites share.
@@ -28,5 +28,5 @@ rewrite contract that both call sites share.
 ## Anti-patterns
 
 - Do NOT change the contract without also updating the integration
-  tests in the main package — the App-side saga depends on the
+  tests in the main package. The App-side saga depends on the
   idempotence and the trim semantics.

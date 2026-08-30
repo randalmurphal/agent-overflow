@@ -44,7 +44,7 @@ function ingestPanes(): Iterable<ThreadPaneIngest> {
 }
 
 /**
- * The stamp half of gap recovery (docs/specs/thread-replica-sync.md
+ * The stamp half of gap recovery (docs/architecture/thread-replica-sync.md
  * §3.4). The registry is dropped wholesale — it holds one entry per
  * thread and re-earning it costs one window fetch — but the registry is
  * not the only place a stamp lives: every L1 snapshot carries a COPY

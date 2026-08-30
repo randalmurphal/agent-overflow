@@ -24,7 +24,12 @@ type ThreadLiveState struct {
 	ActiveTurn             *LiveStateActiveTurn                `json:"activeTurn,omitempty"`
 	QueueItems             []QueuedItem                        `json:"queueItems"`
 	FlushedItems           []QueueFlushedItem                  `json:"flushedItems"`
-	Interactive            provider.PendingInteractiveRequests `json:"interactive"`
+	// DeferredItems are pending-send timeline rows not yet persisted to
+	// SQLite (they persist on their wire echo), in FIFO send order. A
+	// refresh reconciling against a ListThreadSliceAround page merges
+	// these in so the user's own just-sent message survives the install.
+	DeferredItems []store.Item                        `json:"deferredItems"`
+	Interactive   provider.PendingInteractiveRequests `json:"interactive"`
 	Todo                   *LiveStateTodo                      `json:"todo,omitempty"`
 	ProviderAccount        *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
 	// CompactingSinceUnixMs is non-zero while the provider is compacting
@@ -64,9 +69,10 @@ type LiveStateTodoStep struct {
 func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	threadID = strings.TrimSpace(threadID)
 	state := ThreadLiveState{
-		ThreadID:     threadID,
-		QueueItems:   []QueuedItem{},
-		FlushedItems: []QueueFlushedItem{},
+		ThreadID:      threadID,
+		QueueItems:    []QueuedItem{},
+		FlushedItems:  []QueueFlushedItem{},
+		DeferredItems: []store.Item{},
 		Interactive: provider.PendingInteractiveRequests{
 			Approvals:  []provider.ApprovalRequest{},
 			UserInputs: []provider.UserInputRequest{},
@@ -97,6 +103,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		}
 	}
 	state.Interactive = live.Interactive
+	state.DeferredItems = append(state.DeferredItems, live.DeferredItems...)
 	for _, item := range live.QueueItems {
 		state.QueueItems = append(state.QueueItems, flushqueue.ItemFromTriage(threadID, item))
 	}

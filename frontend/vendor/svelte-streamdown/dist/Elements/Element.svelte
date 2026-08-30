@@ -3,7 +3,7 @@
 	import Link from './Link.svelte';
 	import Image from './Image.svelte';
 	import Alert from './Alert.svelte';
-	import type { StreamdownToken } from '../marked/index.js';
+	import type { ProvenAppend, StreamdownToken } from '../marked/index.js';
 	import Slot from './Slot.svelte';
 	import { useStreamdown } from '../context.svelte.js';
 	import FootnoteRef from './FootnoteRef.svelte';
@@ -11,7 +11,15 @@
 	import TableDownload from './TableDownload.svelte';
 	// Import fallback components
 	import { CodeFallback, MermaidFallback, MathFallback } from './fallbacks/index.js';
-	let { token, children }: { token: StreamdownToken; children: Snippet } = $props();
+	let {
+		token,
+		children,
+		codeTextAppend
+	}: {
+		token: StreamdownToken;
+		children: Snippet;
+		codeTextAppend?: ProvenAppend;
+	} = $props();
 	const streamdown = useStreamdown();
 
 	// Use provided components or fallback to lightweight versions
@@ -60,7 +68,11 @@
 	</Slot>
 {:else if token.type === 'paragraph'}
 	<Slot props={{ children, token }} render={streamdown.snippets.paragraph}>
-		<p data-streamdown-paragraph={id} {style} class={streamdown.theme.paragraph.base}>
+		<p
+			data-streamdown-paragraph={id}
+			{style}
+			class={`${streamdown.theme.paragraph.base}${streamdown.parseIncompleteMarkdown === true ? ' sd-volatile-paragraph' : ''}`}
+		>
 			{@render children()}
 		</p>
 	</Slot>
@@ -76,7 +88,7 @@
 	</Slot>
 {:else if token.type === 'code'}
 	<Slot props={{ children, token }} render={streamdown.snippets.code}>
-		<CodeComponent {id} {token} />
+		<CodeComponent {id} {token} textAppend={codeTextAppend} />
 	</Slot>
 {:else if token.type === 'codespan'}
 	<Slot props={{ children, token }} render={streamdown.snippets.codespan}>
@@ -109,7 +121,7 @@
 			{style}
 			style:list-style-type={token.task ? 'none' : undefined}
 			{...token.value && !token.task ? { value: token.value } : {}}
-			class={streamdown.theme.li.base}
+			class={`${streamdown.theme.li.base}${token.task ? ' md-task-list-item' : ''}`}
 		>
 			{#if token.task}
 				<input
@@ -291,7 +303,7 @@
 {:else if token.type === 'def'}
 	<!-- TODO This does not seems to be tokenized for now -->
 {:else if token.type === 'escape'}
-	<!-- TODO This does not seems to be tokenized for now -->
+	{token.text}
 {:else if token.type === 'space'}
 	<!-- TODO This does not seems to be tokenized for now -->
 {:else if token.type === 'text'}

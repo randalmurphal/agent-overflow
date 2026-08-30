@@ -5,9 +5,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  HARNESS_TEARDOWN_RECEIPT_STORAGE_KEY,
   MUTATION_CLOCK_LINGER_MS,
   answerHarnessQuery,
   isHarnessNoReply,
+  lastHarnessBridgeTeardownReceipt,
   mutationClockArmed,
   sinceLastMutationMs,
   stopHarnessBridge,
@@ -21,6 +23,7 @@ interface ErrorEnvelope {
 
 afterEach(() => {
   stopHarnessBridge();
+  sessionStorage.removeItem(HARNESS_TEARDOWN_RECEIPT_STORAGE_KEY);
   delete (window as { __stickState?: unknown }).__stickState;
   delete (window as { __agentOverflowUiTrace?: unknown }).__agentOverflowUiTrace;
   delete (window as { __aoRevealDrain?: unknown }).__aoRevealDrain;
@@ -34,10 +37,21 @@ describe('answerHarnessQuery', () => {
     }
   });
 
-  it('refuses a version it does not speak', async () => {
+	it('refuses a version it does not speak', async () => {
     const result = (await answerHarnessQuery({ v: 2, kind: 'viewport' })) as ErrorEnvelope;
     expect(result.error).toContain('unsupported query version 2');
-  });
+	});
+
+	it('requires an integer version and rejects unknown fields', async () => {
+		const missing = (await answerHarnessQuery({ kind: 'viewport' })) as ErrorEnvelope;
+		expect(missing.error).toContain('requires v');
+		for (const v of ['1', 1.5, Infinity]) {
+			const result = (await answerHarnessQuery({ v, kind: 'viewport' })) as ErrorEnvelope;
+			expect(result.error).toContain('finite integer');
+		}
+		const result = (await answerHarnessQuery({ v: 1, kind: 'viewport', typo: true })) as ErrorEnvelope;
+		expect(result.error).toContain('unknown field "typo"');
+	});
 
   it('names an unknown kind rather than answering emptily', async () => {
     const result = (await answerHarnessQuery({ v: 1, kind: 'nope' })) as ErrorEnvelope;
@@ -65,6 +79,24 @@ describe('answerHarnessQuery', () => {
     expect(empty.count).toBe(0);
     const missing = (await answerHarnessQuery({ v: 1, kind: 'element' })) as ErrorEnvelope;
     expect(missing.error).toContain('requires a selector');
+  });
+
+  it('only includes element scroll geometry when the query requests it', async () => {
+    document.body.innerHTML = '<main id="target">content</main>';
+    const plain = (await answerHarnessQuery({
+      v: 1,
+      kind: 'element',
+      selector: '#target',
+    })) as { first: { scroll?: unknown } };
+    expect(plain.first.scroll).toBeUndefined();
+
+    const withScroll = (await answerHarnessQuery({
+      v: 1,
+      kind: 'element',
+      selector: '#target',
+      includeScroll: true,
+    })) as { first: { scroll?: unknown } };
+    expect(withScroll.first.scroll).toBeDefined();
   });
 });
 
@@ -256,6 +288,20 @@ describe('perf ops', () => {
     expect(fallback.busy.budgets.map((budget) => budget.budgetMs)).toEqual([6, 8, 16]);
   });
 
+  it('keeps an explicit empty meter list distinct from omitted meters', async () => {
+    const armed = (await answerHarnessQuery({
+      v: 1,
+      kind: 'perf',
+      op: 'start',
+      meters: [],
+    })) as { armed: boolean };
+    expect(armed.armed).toBe(true);
+    const summary = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'stop' })) as {
+      meters: string[];
+    };
+    expect(summary.meters).toEqual([]);
+  });
+
   it('names an unknown op', async () => {
     const result = (await answerHarnessQuery({ v: 1, kind: 'perf', op: 'wat' })) as ErrorEnvelope;
     expect(result.error).toContain('unknown perf op "wat"');
@@ -362,12 +408,21 @@ describe('perf ops', () => {
     })) as { armed: boolean; runId: string };
     expect(armed).toMatchObject({ armed: true, runId: 'perf-reload' });
 
+    const teardownReceipt = stopHarnessBridge('page-unload');
+    expect(teardownReceipt.perf).toMatchObject({
+      kind: 'perf-teardown',
+      runId: 'perf-reload',
+      partial: true,
+    });
+    expect(lastHarnessBridgeTeardownReceipt()).toEqual(teardownReceipt);
+
     // The reload: a brand-new module graph, which is exactly the state the
-    // page comes back in. The original module is still armed and is what
-    // afterEach tears down.
+    // page comes back in. The old page's receipt remains available to the
+    // teardown caller, while the new page starts with no run of its own.
     vi.resetModules();
     const reloaded = await import('./bridge');
     try {
+      expect(reloaded.lastHarnessBridgeTeardownReceipt()).toEqual(teardownReceipt);
       const stopped = await reloaded.answerHarnessQuery({
         v: 1,
         kind: 'perf',
@@ -548,5 +603,52 @@ describe('mutation clock', () => {
     expect(mutationClockArmed()).toBe(true);
     stopHarnessBridge();
     expect(mutationClockArmed()).toBe(false);
+  });
+
+  it('returns and retains partial perf and monitor receipts on page teardown', async () => {
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', runId: 'teardown-perf', meters: ['dom'] });
+    await answerHarnessQuery({
+      v: 1,
+      kind: 'monitor',
+      op: 'start',
+      runId: 'teardown-monitor',
+      monitorIds: ['semantic-dom-stability'],
+      atMs: 1,
+    });
+    const receipt = stopHarnessBridge('page-unload');
+    expect(receipt).toMatchObject({ v: 1, kind: 'bridge-teardown', reason: 'page-unload', partial: true });
+    expect(receipt.perf).toMatchObject({ kind: 'perf-teardown', reason: 'bridge-teardown', partial: true, runId: 'teardown-perf' });
+    expect(receipt.monitors).toHaveLength(1);
+    expect(lastHarnessBridgeTeardownReceipt()).toEqual(receipt);
+  });
+
+  it('retains the close receipt across repeated teardown calls', async () => {
+    await answerHarnessQuery({ v: 1, kind: 'monitor', op: 'start', runId: 'close-monitor', monitorIds: ['semantic-dom-stability'], atMs: 1 });
+    const first = stopHarnessBridge('bridge-close');
+    expect(first).toMatchObject({
+      kind: 'bridge-teardown',
+      reason: 'bridge-close',
+      partial: true,
+      monitors: [{ runId: 'close-monitor' }],
+    });
+
+    const repeated = stopHarnessBridge('bridge-close');
+    expect(repeated).toEqual(first);
+    expect(lastHarnessBridgeTeardownReceipt()).toEqual(first);
+    expect(JSON.parse(sessionStorage.getItem(HARNESS_TEARDOWN_RECEIPT_STORAGE_KEY) ?? 'null')).toEqual(first);
+  });
+
+  it('reports receipt persistence failures without dropping measured data', async () => {
+    await answerHarnessQuery({ v: 1, kind: 'perf', op: 'start', runId: 'persistence-failure', meters: ['dom'] });
+    const setItem = vi.spyOn(sessionStorage, 'setItem').mockImplementation(() => {
+      throw new Error('storage quota exceeded');
+    });
+    try {
+      const receipt = stopHarnessBridge('bridge-close');
+      expect(receipt.perf).toMatchObject({ runId: 'persistence-failure', partial: true });
+      expect(receipt.errors).toContain('teardown receipt persistence failed: storage quota exceeded');
+    } finally {
+      setItem.mockRestore();
+    }
   });
 });

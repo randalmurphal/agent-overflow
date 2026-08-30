@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  __resetSpringFrameBatcherForTest,
   createSpringChase,
   SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME,
   SPRING_WRITE_REFUSAL_LATCH_TICKS,
@@ -124,11 +125,13 @@ function makeHarness(
     isEscaped: () => false,
     selectionActive: () => false,
     targetScrollTop: () => target,
+    currentScrollTop: () => scrollTop,
     scrollTopIsAtTarget: (t) => Math.abs(scrollTop - t) <= ARRIVAL_DISTANCE_PX,
     arrival,
     writeScrollTop: (caller, value) => {
       writes.push({ caller, value });
       store(value);
+      return scrollTop;
     },
     liveContentActive: () => liveContentActive,
     prefersReducedMotion: () => false,
@@ -179,6 +182,7 @@ beforeEach(() => {
     return rafQueue.length;
   });
   vi.stubGlobal('cancelAnimationFrame', () => {});
+  __resetSpringFrameBatcherForTest();
   vi.spyOn(performance, 'now').mockImplementation(() => now);
 });
 
@@ -189,6 +193,26 @@ afterEach(() => {
   // pending lines through the (unavailable-in-unit-tests) file binding.
   clearUiRenderTrace();
   setUiRenderTraceEnabled(false);
+});
+
+describe('spring frame ownership', () => {
+  it('coalesces concurrent pane chases onto one native animation frame', () => {
+    const left = makeHarness();
+    const right = makeHarness();
+    left.setTarget(300);
+    right.setTarget(450);
+    left.spring.markTargetChanged();
+    right.spring.markTargetChanged();
+
+    left.spring.start();
+    right.spring.start();
+
+    expect(rafQueue).toHaveLength(1);
+    frame();
+    expect(left.getScrollTop()).toBeGreaterThan(0);
+    expect(right.getScrollTop()).toBeGreaterThan(0);
+    expect(rafQueue).toHaveLength(1);
+  });
 });
 
 describe('spring velocity cap', () => {
@@ -926,6 +950,33 @@ describe('glide shaping (decel envelope + quantized tail)', () => {
 describe('quantized motion floor', () => {
   it('holds one CSS pixel per 60Hz-equivalent frame without a refresh-rate rung', () => {
     expect(SPRING_QUANTIZED_MOTION_FLOOR_PX_PER_FRAME).toBe(1);
+  });
+
+  it('does not submit writes that a witnessed whole-pixel engine would reject', () => {
+    const refreshInterval = 1000 / 165;
+    const h = makeHarness({ quantize: true });
+    h.setTarget(100);
+    h.spring.markTargetChanged();
+    h.spring.start();
+    for (let i = 0; i < 330; i++) frame(refreshInterval);
+
+    const writesBefore = h.writes.length;
+    h.setTarget(160);
+    h.spring.markTargetChanged();
+    let movingFrames = 0;
+    for (let i = 0; i < 495 && h.getScrollTop() < 158; i++) {
+      const before = h.getScrollTop();
+      frame(refreshInterval);
+      if (h.getScrollTop() !== before) movingFrames++;
+    }
+
+    expect(h.getScrollTop()).toBeGreaterThanOrEqual(158);
+    const submittedWrites = h.writes.length - writesBefore;
+    // Two natural fractional writes establish the engine contract. After
+    // that, a frame whose rounded destination is the current pixel has no
+    // observable write to make. Keep a small allowance for the witnesses and
+    // the exact arrival write.
+    expect(submittedWrites).toBeLessThanOrEqual(movingFrames + 3);
   });
 
   function assertQuantizedTailCadence(warmHz: number, chaseHz: number): number {

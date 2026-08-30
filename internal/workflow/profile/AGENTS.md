@@ -15,25 +15,25 @@ resolution for the workflow system.
   is injective over the validated `[a-z0-9-]+` grammar, so two secrets can never
   collide on one variable), and `Mask` replaces every non-empty resolved value
   in text captured back from that process. Anything that hands secrets to a
-  subprocess uses both — never one without the other.
+  subprocess uses both, never one without the other.
 - Binding names are `[a-z0-9-]+`. `capacities` is the one exception: it also
   accepts `provider:<name>`, the reserved namespace for the implicit
   per-provider resource every agent phase acquires. No other colon-bearing
   capacity name validates, so the namespace cannot be squatted.
 - `max_fan_out_width` is a **ceiling, not a capacity** (D29): a capacity paces
   work that all still runs, this refuses a fan-out attempt outright. It is a
-  `*int` so "absent" is distinguishable from an authored zero — absent resolves
+  `*int` so "absent" is distinguishable from an authored zero. Absent resolves
   to `def.DefaultMaxFanOutWidth` through the single `def.EffectiveMaxFanOutWidth`,
   and an authored `0` or negative is a finding rather than an ignored line.
   There is deliberately **no value meaning unlimited**: a project that wants a
   wider bound writes the wider number. `Default()` leaves it unset for the same
-  reason — one implementation of "unset means the default", not two that could
-  drift.
+  reason. There is one implementation of "unset means the default", not two
+  that could drift.
 
 ## The retired `worktree_setup` block
 
-The worktree setup recipe — files copied from the main checkout and argv
-commands run at worktree creation — no longer lives in this package. It is
+The worktree setup recipe (files copied from the main checkout and argv
+commands run at worktree creation) no longer lives in this package. It is
 per-project app settings now (`internal/worktreesetup`, persisted on the
 project row, edited in Settings → Projects), so chat-thread worktrees and
 workflow worktrees run the same one.
@@ -50,14 +50,7 @@ Authoring format, copy-safety rules, and the `AO_PROJECT_ROOT` /
 `AO_WORKTREE_PATH` environment contract are documented in
 [`internal/worktreesetup/AGENTS.md`](../../worktreesetup/AGENTS.md).
 
-## Files
-
-| File | Responsibility |
-|---|---|
-| `types.go` | Profile authoring, binding, and finding types. |
-| `parse.go` | Size-bounded strict YAML parsing and absent-file defaults. |
-| `validate.go` | Collected structural and semantic validation. |
-| `secrets.go` | Explicit env/file resolution, child-process env rendering, and masking. |
+## Testing
 
 Tests use `t.TempDir` and `t.Setenv`; they never inspect shared application
 configuration.

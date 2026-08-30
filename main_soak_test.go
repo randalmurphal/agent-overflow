@@ -59,11 +59,30 @@ func TestParseFlagsSoakConflicts(t *testing.T) {
 		{"--harness", "--data-dir", "/tmp/x", "--autopilot"},
 		{"--launcher-pid", "4242"},
 		{"--soak", "--launcher-pid", "-4242"},
+		{"--isolated-profile", "perf"},
+		{"--soak", "--isolated-profile", "unknown"},
+		{"--soak", "--isolated-profile", "perf", "--autopilot"},
 	}
 	for _, args := range cases {
 		if _, err := parseFlags(args); err == nil {
 			t.Errorf("parseFlags(%v) accepted conflicting flags, want error", args)
 		}
+	}
+}
+
+func TestParseFlagsPerfUsesItsOwnRootAndIdentity(t *testing.T) {
+	flags, err := parseFlags([]string{"--soak", "--isolated-profile", "PERF", "--print-url-fd", "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags.dataDir != perfDefaultDataRoot() {
+		t.Fatalf("perf data dir = %q, want %q", flags.dataDir, perfDefaultDataRoot())
+	}
+	if flags.dataDir == harnessDefaultDataRoot() || flags.dataDir == soakDefaultDataRoot() {
+		t.Fatalf("perf data dir collides with another launcher profile: %q", flags.dataDir)
+	}
+	if got := isolatedBootMode(flags); got != instanceinfo.ModePerf {
+		t.Fatalf("perf mode = %q, want %q", got, instanceinfo.ModePerf)
 	}
 }
 
@@ -108,12 +127,23 @@ func TestParseFlagsSoakWithoutAutopilotIsTheHarnessInstance(t *testing.T) {
 // published for a teardown to signal, so it has to survive parsing
 // exactly.
 func TestParseFlagsCarriesTheLauncherPID(t *testing.T) {
-	flags, err := parseFlags([]string{"--soak", "--launcher-pid", "4242", "--print-url-fd", "0"})
+	flags, err := parseFlags([]string{
+		"--soak",
+		"--launcher-pid", "4242",
+		"--launcher-start-time", "133485408000000000",
+		"--launcher-executable", `C:\Agent Overflow\agent-overflow.exe`,
+		"--launcher-profile", "harness",
+		"--launcher-webview-profile", `C:\Agent Overflow\webview2-harness`,
+		"--print-url-fd", "0",
+	})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
 	if flags.launcherPID != 4242 {
 		t.Fatalf("launcherPID = %d, want 4242", flags.launcherPID)
+	}
+	if flags.launcherStartTime != "133485408000000000" || flags.launcherProfile != "harness" {
+		t.Fatalf("launcher identity was not preserved: %#v", flags)
 	}
 	bare, err := parseFlags([]string{"--soak", "--print-url-fd", "0"})
 	if err != nil {

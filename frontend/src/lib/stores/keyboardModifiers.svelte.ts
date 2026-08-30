@@ -1,6 +1,6 @@
 // Tracks the user's platform modifier-key state with a visibility delay so
 // the sidebar can fade in keyboard-jump hint pills only after a deliberate
-// hold (mirrors forge / t3-code: a quick modifier tap shouldn't flash hint
+// hold (a quick modifier tap shouldn't flash hint
 // pills on every project row).
 //
 // Single window listener pair, attached lazily on first subscription

@@ -1,6 +1,10 @@
 package codex
 
-import "context"
+import (
+	"context"
+
+	"agent-overflow/internal/provider"
+)
 
 // NewProbeOnlyTestSession returns a *Session whose Probe method
 // resolves exclusively from the supplied function, skipping the
@@ -74,4 +78,27 @@ func NewTerminateBackgroundTerminalTestSession(
 	return &Session{
 		terminateBackgroundTerminalFn: terminateFn,
 	}
+}
+
+// NewInterruptSubagentTestSession returns a session with one pending child
+// owned by launchID. Only the child turn/interrupt wire write is replaced, so
+// the same launch ownership and repeated-stop checks run as in production.
+func NewInterruptSubagentTestSession(
+	launchID string,
+	interruptFn func(ctx context.Context, childThreadID, turnID string) error,
+) *Session {
+	const childThreadID = "test-child-thread"
+	session := &Session{
+		threadID: "test-thread",
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{childThreadID: launchID},
+			childRuntimeByThread: map[string]childRuntimeState{
+				childThreadID: {phase: childRuntimePending},
+			},
+		},
+		onEvent:              func(provider.ProviderEvent) {},
+		interruptChildTurnFn: interruptFn,
+	}
+	session.setRootThreadID("test-root-thread")
+	return session
 }

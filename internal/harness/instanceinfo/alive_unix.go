@@ -5,6 +5,9 @@ package instanceinfo
 import (
 	"errors"
 	"os"
+	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -25,5 +28,26 @@ func ProcessAlive(pid int) bool {
 		return false
 	}
 	err = proc.Signal(syscall.Signal(0))
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	// Linux signal 0 also succeeds for a zombie until its parent reaps it.
+	// A zombie cannot execute shutdown or own live work, so treating it as
+	// alive makes group teardown mistake an exited leader for a PID-reuse
+	// hazard and strand its surviving descendants.
+	if runtime.GOOS == "linux" {
+		data, statErr := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if statErr == nil {
+			if close := strings.LastIndexByte(string(data), ')'); close >= 0 {
+				fields := strings.Fields(string(data)[close+1:])
+				if len(fields) > 0 {
+					switch fields[0] {
+					case "Z", "X", "x":
+						return false
+					}
+				}
+			}
+		}
+	}
 	return err == nil || errors.Is(err, syscall.EPERM)
 }

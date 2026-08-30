@@ -41,7 +41,11 @@
   } from '../../../stores/worktreeIntent.svelte';
   import type { WorkspaceChangeLockState } from '../../../stores/workspaceChangeLock.svelte';
   import { wailsEventOn } from '../../../stores/wailsEvents';
-  import { debounce } from '../../../utils/debounce';
+  import {
+    createRefreshScheduler,
+    type RefreshScheduler,
+    type RefreshToken,
+  } from '../../../utils/refreshScheduler';
   import Popover from '../../primitives/Popover.svelte';
   import { restorePickerFocus } from '../../panes/paneComposerFocus';
   import type { PopoverCloseReason } from '../../../utils/popoverOwnership';
@@ -114,29 +118,28 @@
   let disabledReason = $derived(workspaceLock.threadReason);
   let workspaceChangingDisabled = $derived(workspaceLock.threadLocked);
 
-  async function handleTrigger(): Promise<void> {
+  function handleTrigger(): void {
     open = !open;
     if (!open) {
       confirm = null;
       return;
     }
     // The placeholder only shows for the open's first fetch; the live
-    // refreshes below swap the list in place.
+    // refreshes below swap the list in place. The fetch itself is the
+    // scheduler's opening request, in the effect below.
     loading = true;
-    await refreshWorktreeList();
   }
 
-  // Sequence token instead of an in-flight guard: an event-triggered
-  // refresh arriving during a fetch must still run (dropping it would
-  // leave just-started activity unreflected); stale responses lose to
-  // the latest call instead.
-  let fetchSeq = 0;
+  // Every refresh — the open's own load, the event-driven re-checks, and the
+  // one after a removal — goes through this, so only one list call is ever in
+  // flight and a late answer is inert. The scheduler's token replaced a
+  // hand-rolled sequence number that could not see the popover close.
+  let refresh: RefreshScheduler | null = null;
 
-  async function refreshWorktreeList(): Promise<void> {
+  async function refreshWorktreeList(token: RefreshToken): Promise<void> {
     if (!pane.thread) return;
     const projectId = pane.thread.projectId;
     if (!pane.threadId && !projectId) return;
-    const seq = ++fetchSeq;
     try {
       let res: WorktreeListItem[] | null;
       if (pane.threadId) {
@@ -144,35 +147,48 @@
       } else {
         res = (await GitListWorktreesForProject(projectId!)) as WorktreeListItem[] | null;
       }
-      if (seq !== fetchSeq) return;
+      if (!token.isCurrent()) return;
       worktrees = Array.isArray(res) ? res : [];
     } catch (err) {
       console.error('GitListWorktrees failed:', err);
-      if (seq !== fetchSeq) return;
+      if (!token.isCurrent()) return;
+      // Delete gating stays conservative on a failure: no rows means no
+      // trash affordance to click, rather than rows carrying a deleteBlocked
+      // flag nothing has verified.
       worktrees = [];
     } finally {
-      if (seq === fetchSeq) loading = false;
+      if (token.isCurrent()) loading = false;
     }
   }
 
   // deleteBlocked is a point-in-time flag: a turn starting or ending
   // anywhere in the project flips it, and this popover can sit open
   // across that. Re-fetch on the live activity signals so the rows never
-  // go stale in either direction. Trailing debounce because turn events
-  // fire per wire round — several per second while a pane streams.
+  // go stale in either direction. 250ms coalesces the per-wire-round turn
+  // events; the 1s deadline is what a trailing debounce could not give —
+  // under a pane that streams without pausing, those events never stop
+  // arriving and the rows never refreshed at all.
   $effect(() => {
     if (!open) return;
-    const scheduleRefresh = debounce(() => {
-      void refreshWorktreeList();
-    }, 250);
+    const scheduler = createRefreshScheduler({
+      name: 'EnvPicker',
+      delayMs: 250,
+      maxWaitMs: 1_000,
+      run: refreshWorktreeList,
+    });
+    refresh = scheduler;
+    const request = (): void => scheduler.request();
     const cancels = [
-      wailsEventOn('provider:turn_started', scheduleRefresh),
-      wailsEventOn('provider:turn_completed', scheduleRefresh),
-      wailsEventOn('provider:background_tasks_changed', scheduleRefresh),
-      wailsEventOn('provider:background_task_state', scheduleRefresh),
+      wailsEventOn('provider:turn_started', request),
+      wailsEventOn('provider:turn_completed', request),
+      wailsEventOn('provider:background_tasks_changed', request),
+      wailsEventOn('provider:background_task_state', request),
     ];
+    // The open's first fetch, through the same scheduler as everything else.
+    scheduler.request({ immediate: true });
     return () => {
-      scheduleRefresh.cancel();
+      scheduler.dispose();
+      if (refresh === scheduler) refresh = null;
       for (const cancel of cancels) cancel();
     };
   });
@@ -386,7 +402,7 @@
       // store handles that sync. Either way, refresh the list so the row
       // disappears.
       confirm = null;
-      await refreshWorktreeList();
+      refresh?.request({ immediate: true });
     } catch (err) {
       console.error('RemoveOtherWorktree failed:', err);
       if (confirm) {

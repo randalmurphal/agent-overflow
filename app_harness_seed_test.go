@@ -6,12 +6,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness"
 	projectconfig "agent-overflow/internal/project"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/engine"
 )
 
@@ -89,6 +92,53 @@ func TestHarnessSeedProviderHomeFilesWriteAndResetWipes(t *testing.T) {
 	}
 	if _, err := os.Stat(gitconfig); err != nil {
 		t.Fatalf("reset removed .gitconfig: %v", err)
+	}
+}
+
+// A soak scenario leaves background launches running by design. Reset first
+// stops every provider session, which makes those launches orphans, then must
+// settle them before production project deletion applies its live-work guard.
+// Otherwise the harness cannot reset the exact long-running workload it owns.
+func TestHarnessResetSettlesBackgroundTasksAfterStoppingSessions(t *testing.T) {
+	h, app := newHarnessTestApp(t)
+	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	seeded, err := h.seed(HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "reset-background-task",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{
+			Title: "running background task",
+			Turns: []HarnessSeedTurn{{
+				UserText: "start it",
+				Items: []HarnessSeedItem{{
+					Kind: "assistant_text", Summary: "Starting the task.",
+				}},
+			}},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	threadID := seeded.Projects[0].ThreadIDs[0]
+	now := time.Now().UnixMilli()
+	if err := app.store.InsertItem(store.Item{
+		ID: "tool-reset-background", ThreadID: threadID,
+		TurnIndex: 0, ItemIndex: 2, Kind: "tool_call", Role: "assistant",
+		Status: "running", IsBackground: true, ToolName: "Agent",
+		Summary: "background review", Meta: `{"task_id":"task-reset-background"}`,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert running background task: %v", err)
+	}
+	if count, err := app.countRunningBackgroundTasks(threadID); err != nil || count != 1 {
+		t.Fatalf("running background task precondition = %d, %v", count, err)
+	}
+
+	if err := h.HarnessReset(); err != nil {
+		t.Fatalf("HarnessReset: %v", err)
+	}
+	projects, err := app.store.ListProjects()
+	if err != nil || len(projects) != 0 {
+		t.Fatalf("projects after reset = %+v, %v", projects, err)
 	}
 }
 

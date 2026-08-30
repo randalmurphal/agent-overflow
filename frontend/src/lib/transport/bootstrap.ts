@@ -4,7 +4,7 @@
 // connection to an arbitrary scheme.
 
 import { setViewOnlySessionFromBootstrap } from './runMode';
-import { setHarnessSessionFromBootstrap } from './harnessMode';
+import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
 
@@ -96,7 +96,7 @@ export interface Bootstrap {
   /**
    * Stable per-store UUID keying the client-side thread replica, plus
    * the generation that is re-minted whenever the backend's history
-   * counters lose continuity (docs/specs/thread-replica-sync.md §3.3).
+   * counters lose continuity (docs/architecture/thread-replica-sync.md §3.3).
    * Absent from the `--connect` stub's injected manifest — absence
    * disables the replica rather than sharing another backend's database.
    */
@@ -109,6 +109,7 @@ export interface Bootstrap {
    * ./harnessMode.ts.
    */
   harness?: boolean;
+  pageMarker?: string;
 }
 
 // Session-scoped stash for the bootstrap token. The token arrives once
@@ -181,6 +182,7 @@ export async function defaultBootstrap(opts?: { revalidate?: boolean }): Promise
     validateWsUrl(injected.wsUrl, false);
     const normalized = { ...injected, mode: normalizeRunMode(injected.mode), remote: injected.remote === true };
     setViewOnlySessionFromBootstrap(normalized.remote);
+    setHarnessPageMarkerFromBootstrap(normalized.pageMarker);
     setHarnessSessionFromBootstrap(normalized.harness === true);
     setBackendIdentityFromBootstrap(normalized.backendId, normalized.replicaGeneration);
     return normalized;
@@ -241,6 +243,10 @@ async function fetchManifest(
   data.mode = normalizeRunMode(data.mode);
   data.remote = data.remote === true;
   setViewOnlySessionFromBootstrap(data.remote);
+  setHarnessPageMarkerFromBootstrap(data.pageMarker);
+  // The harness bridge registers its page synchronously when this latch
+  // flips. Publish the marker first so that first-load registration cannot
+  // race with the waiter callback.
   setHarnessSessionFromBootstrap(data.harness === true);
   // Re-validated on every manifest resolution, which is what makes a
   // mid-session generation re-mint (a restored backend) observable on
@@ -260,7 +266,10 @@ async function fetchManifest(
     urlToken !== ''
   ) {
     try {
-      window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+      const retained = new URLSearchParams(window.location.search);
+      retained.delete('t');
+      const suffix = retained.toString();
+      window.history.replaceState(null, '', window.location.pathname + (suffix ? `?${suffix}` : '') + window.location.hash);
     } catch {
       // Some embeddings throw on replaceState; the token-on-URL is
       // already a soft secret, so swallowing is acceptable.

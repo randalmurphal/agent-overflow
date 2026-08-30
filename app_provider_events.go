@@ -282,6 +282,13 @@ func (a *App) clearAutoReconnectAttempted(threadID string) {
 // safe because Claude's deltas stream through here at high cadence
 // during a turn — lastActivity is constantly being refreshed.
 //
+// Any NEW consumer of activeTurns must not read it as "a turn is
+// open" — for Claude it never is. Pair it with triage's
+// AnyInFlightTurnOrRound and/or the lastActivity stamp, the way
+// hasActiveProviderTurn (app_webview_trim.go) does; reading the
+// counter alone is the bug that let every idle trim land mid-Claude-
+// turn as a 60-130ms GC stall (2026-08-27).
+//
 // On EventSessionStatus("disconnected") we drain activeTurns to 0
 // because the subprocess is going away and any in-flight counter is
 // no longer meaningful. Without the drain, a turn that errored before
@@ -409,6 +416,11 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	// dies. Release is idempotent and pgid<=1 is guarded inside.
 	if ps := removed.providerSession(); ps != nil {
 		a.releaseSessionProcess(ps.PID())
+	}
+	if removed.provider == string(provider.Codex) {
+		if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+			log.Printf("app: retire Codex runtime after provider exit on %s: %v", threadID, err)
+		}
 	}
 	if a.triage != nil {
 		a.triage.ClearEffectiveModel(threadID)

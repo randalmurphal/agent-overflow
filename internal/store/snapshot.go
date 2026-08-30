@@ -164,7 +164,7 @@ func (s *Store) RestoreFrom(srcPath string) (identity Identity, retErr error) {
 	// future that snapshot was taken before — a divergent future the
 	// counters cannot express, because they only ever count up. Re-minting
 	// the replica generation is what invalidates those clients wholesale
-	// (docs/specs/thread-replica-sync.md §3.3); it happens regardless of
+	// (docs/architecture/thread-replica-sync.md §3.3); it happens regardless of
 	// what generation the snapshot carried, since the snapshot's own value
 	// is just another stamp from another timeline. The live backend_id
 	// read before the copy is written back in the same statement: it names

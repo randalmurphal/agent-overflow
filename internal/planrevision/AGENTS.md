@@ -15,7 +15,7 @@ stay in `app_proposed_plans.go`.
 
 | Function | Purpose |
 |---|---|
-| `BuildPrompt(comments) string` | Renders draft comments into the agent-readable block. `<selected_text>\ncomment: <body>`, blank-separated, fully empty entries skipped. The plan body already sits in the thread, so we only emit comments — no need to restate the plan. |
+| `BuildPrompt(comments) string` | Renders draft comments into the agent-readable block. `<selected_text>\ncomment: <body>`, blank-separated, fully empty entries skipped. The plan body already sits in the thread, so we only emit comments. No need to restate the plan. |
 | `IDsOf(comments) []string` | Projects a comment slice into its ID list, preserving order. Returns an empty (non-nil) slice for the empty input. |
 
 ## Design notes

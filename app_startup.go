@@ -88,7 +88,9 @@ func (a *App) Start(ctx context.Context) error {
 	// Runs after subsystems so the data dir is ready; before the probe
 	// goroutines and any session RPC so the startup sweep can't race a
 	// fresh registry Add. See app_orphan_reaper.go.
-	a.startOrphanReaper(dbDir)
+	if err := a.startOrphanReaper(dbDir); err != nil {
+		return fmt.Errorf("start orphan reaper: %w", err)
+	}
 
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
@@ -539,6 +541,13 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		log.Printf("app: settled %d crashed in-flight turns as interrupted", settled)
 	}
 	logBootPhase("app.recover_crashed_turns", sweepStarted)
+	// Codex child identities are resumable, but live turns and background PTYs
+	// belong to the app-server process. Retire that runtime state before any
+	// provider session can start so the tray never presents prior-process work
+	// as still running.
+	codexRuntimeSweepStarted := time.Now()
+	a.recoverCodexBackgroundRuntimeOnStartup()
+	logBootPhase("app.recover_codex_background_runtime", codexRuntimeSweepStarted)
 	// Synthesize session_died terminals for backgrounded launches whose
 	// owning Claude session did not survive the previous app instance.
 	// Without this sweep the launches would render as "running" forever
@@ -630,7 +639,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 // retiredSettingsFieldNames, so neither the typed value nor the
 // unknown-field preservation carries it any more. This one-time
 // migration is the only legitimate reader left, which is exactly what
-// that accessor exists for (docs/specs/theme-system.md §6.2).
+// that accessor exists for (docs/architecture/theme-system.md §6.2).
 //
 // Neither half fails boot. A themes directory that cannot be created
 // costs live reload and the on-disk reference; GetThemeFiles still

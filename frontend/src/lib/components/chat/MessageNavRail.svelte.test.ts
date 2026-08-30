@@ -176,20 +176,74 @@ describe('MessageNavRail', () => {
     expect(onJumpToItem).toHaveBeenCalledWith('u1');
   });
 
-  it('hover raises the preview card with the turn ask and final reply', async () => {
+  it('waits once on rail entry, then follows ticks immediately until leave', async () => {
+    vi.useFakeTimers();
     const items = [
       item({ id: 'u1', summary: 'first ask' }),
       item({ id: 'a1', kind: 'assistant_text', role: 'assistant', summary: 'reply one', itemIndex: 1 }),
       item({ id: 'u2', summary: 'second ask', turnIndex: 1 }),
+      item({ id: 'u3', summary: 'third ask', turnIndex: 2 }),
     ];
-    const { getByTestId, queryByTestId } = renderRail({ pane: makePane({ items }) });
-    expect(queryByTestId('nav-rail-preview')).toBeNull();
-    await fireEvent.mouseMove(getByTestId('nav-rail-strip'));
-    const card = getByTestId('nav-rail-preview');
-    expect(card.textContent).toContain('first ask');
-    expect(card.textContent).toContain('reply one');
-    await fireEvent.mouseLeave(getByTestId('nav-rail-strip'));
-    expect(queryByTestId('nav-rail-preview')).toBeNull();
+    try {
+      const { getByTestId, queryByTestId } = renderRail({ pane: makePane({ items }) });
+      const strip = getByTestId('nav-rail-strip');
+      expect(queryByTestId('nav-rail-preview')).toBeNull();
+
+      await fireEvent.mouseMove(strip);
+      expect(queryByTestId('nav-rail-preview'), 'entry transit must stay quiet').toBeNull();
+      await vi.advanceTimersByTimeAsync(119);
+      await tick();
+      expect(queryByTestId('nav-rail-preview')).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      await tick();
+      expect(getByTestId('nav-rail-preview').textContent).toContain('first ask');
+      expect(getByTestId('nav-rail-preview').textContent).toContain('reply one');
+
+      // offsetY 28 maps past the 12px vertical grace to the final tick.
+      // Once the rail session is active, this update pays no second dwell.
+      const moveToThird = new MouseEvent('mousemove', { bubbles: true });
+      Object.defineProperty(moveToThird, 'offsetY', { value: 28 });
+      strip.dispatchEvent(moveToThird);
+      await tick();
+      expect(getByTestId('nav-rail-preview').textContent).toContain('third ask');
+
+      await fireEvent.mouseLeave(strip);
+      expect(queryByTestId('nav-rail-preview')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an entry transit and charges the grace again on re-entry', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = renderRail({
+        pane: makePane({
+          items: [
+            item({ id: 'u1', summary: 'first ask' }),
+            item({ id: 'u2', summary: 'second ask', turnIndex: 1 }),
+          ],
+        }),
+      });
+      const strip = getByTestId('nav-rail-strip');
+
+      await fireEvent.mouseMove(strip);
+      await vi.advanceTimersByTimeAsync(60);
+      await fireEvent.mouseLeave(strip);
+      await vi.advanceTimersByTimeAsync(120);
+      await tick();
+      expect(queryByTestId('nav-rail-preview')).toBeNull();
+
+      await fireEvent.mouseMove(strip);
+      await vi.advanceTimersByTimeAsync(119);
+      await tick();
+      expect(queryByTestId('nav-rail-preview')).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      await tick();
+      expect(getByTestId('nav-rail-preview').textContent).toContain('first ask');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('an unloaded tick fetches its preview over the RPC after a hover dwell', async () => {

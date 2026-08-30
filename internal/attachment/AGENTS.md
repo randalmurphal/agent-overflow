@@ -6,10 +6,10 @@ package's problem.
 
 ## Layout
 
-- `store.go` — `Store` type plus the `Upload` / `Read` / `Delete`
+- `store.go`: `Store` type plus the `Upload` / `Read` / `Delete`
   lifecycle. Owns the `tmp → insert-row → atomic rename` sequence so a
   crash at any point leaves a consistent view.
-- `thumbnail.go` — `Store.Thumbnail` lazy thumbnail generator. Decodes
+- `thumbnail.go`: `Store.Thumbnail` lazy thumbnail generator. Decodes
   PNG/JPEG/GIF/WEBP at request time, resizes to 256px, persists the
   result on the attachments row (`thumbnail_data`, `thumbnail_mime`)
   via the SQLite store. Carries the decode-bomb guard
@@ -26,8 +26,8 @@ package's problem.
   - Per-thread directory layout on disk.
   - Thumbnail generation pipeline (decode → resize → encode → cache).
 - What does NOT belong here:
-  - Attachment metadata queries — those live on `store.Store`.
-  - Rendering or serving — the frontend reads via bindings.
+  - Attachment metadata queries. Those live on `store.Store`.
+  - Rendering or serving. The frontend reads via bindings.
 
 ## Extension points
 
@@ -49,5 +49,5 @@ package's problem.
 
 ## References
 
-- `internal/store/attachments.go` — metadata schema.
-- `docs/architecture/schema.md` — attachment row reference.
+- `internal/store/attachments.go`: metadata schema.
+- `docs/architecture/schema.md`: attachment row reference.

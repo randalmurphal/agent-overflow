@@ -21,7 +21,7 @@
 // Mocha anchored at base compressed the app into an ~11:1 luminance range
 // and read hazy beside the default theme (~17:1); entering at mantle widens
 // the range while every step stays published (see the luminance-range rule
-// in `docs/specs/theme-system.md` §9.11). Latte enters through mantle for
+// in `docs/architecture/theme-system.md` §9.11). Latte enters through mantle for
 // the same reason it always did: on a light ground the base→surface0 step
 // is a visible slab. Borders take the overlay ramp, text the text/subtext
 // ramp, and the accent is Mauve (Catppuccin's own default accent).

@@ -10,10 +10,11 @@
 // The token-level equivalence corpus lives in
 // src/lib/markdown/incrementalLex.test.ts; this file only guards the layer
 // unit tests cannot see: tokens → Svelte each-diffing → real DOM.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import '../../../app.css';
 import { makeItem } from '../../../test/helpers/chat';
 import { raf, wait } from '../../../test/helpers/browserFrames';
+import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 import {
   SEED_COUNT,
   mountTimeline,
@@ -91,6 +92,8 @@ const CASES: ReuseCase[] = [
 describe('streaming incremental token reuse (real timeline × Chromium)', () => {
   for (const testCase of CASES) {
     it(testCase.name, async () => {
+      const resizeObserverErrors = captureResizeObserverLoopErrors();
+      onTestFinished(resizeObserverErrors.stop);
       const { itemId, finalText } = testCase;
       const threadId = `thread-${itemId}`;
       const { pane, scrollEl } = await mountTimeline(
@@ -150,12 +153,18 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
         if (revealed >= finalText.length) break;
         const current = units()[testCase.observeIndex];
         expect(current, `sealed unit replaced at sample ${samples}`).toBe(observed);
-        expect(observed.textContent, `sealed unit text changed at sample ${samples}`).toBe(observedText);
+        expect(
+          observed.textContent,
+          `sealed unit text changed at sample ${samples}`,
+        ).toBe(observedText);
         samples += 1;
         await raf();
         await raf();
       }
-      expect(pane.getItemById(itemId)?.summary.length, 'stream must fully reveal').toBe(finalText.length);
+      expect(
+        pane.getItemById(itemId)?.summary.length,
+        'stream must fully reveal',
+      ).toBe(finalText.length);
       // The identity property is only proven if the drain gave us real samples.
       expect(samples).toBeGreaterThan(50);
 
@@ -166,6 +175,7 @@ describe('streaming incremental token reuse (real timeline × Chromium)', () => 
       const settled = units();
       expect(settled[testCase.settledCount - UNITS].textContent).toContain('Item 0');
       expect(settled[testCase.settledCount - 1].textContent).toContain(`Item ${UNITS - 1}`);
+      expect(resizeObserverErrors.messages).toEqual([]);
     }, 60_000);
   }
 });

@@ -190,7 +190,7 @@ describe('isCodexStoppableTask', () => {
     ).toBe(false);
   });
 
-  it('returns false for Codex subagents even when they are background rows', () => {
+  it('returns true for a live Codex subagent launch', () => {
     expect(
       isCodexStoppableTask(makeTrayTask({
         launch: makeItem({
@@ -200,7 +200,7 @@ describe('isCodexStoppableTask', () => {
           meta: JSON.stringify({ input: { tool: 'spawn_agent' } }),
         }),
       })),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -270,8 +270,8 @@ describe('trayRowStopTarget', () => {
       ),
     ).toBeNull();
 
-    // Spawned collab-agent child — a separate thread, and `close_agent`
-    // is a model tool with no client path.
+    // Spawned collab-agent child targets the owning launch row. The backend
+    // resolves that id to a child provider thread.
     expect(
       trayRowStopTarget(
         makeTrayTask({
@@ -284,7 +284,7 @@ describe('trayRowStopTarget', () => {
         }),
         'codex-background-terminals',
       ),
-    ).toBeNull();
+    ).toBe('agent');
 
     // Backgrounded, but the wire has not named a process id yet.
     expect(

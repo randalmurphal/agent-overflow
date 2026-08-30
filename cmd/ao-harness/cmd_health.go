@@ -67,7 +67,17 @@ func runHealth(e *env, args []string) error {
 		if err != nil {
 			// A watch must survive an instance that went away and came
 			// back: print the failure as a line and keep the cadence.
-			e.printf("%s red  health           %v\n", time.Now().Format(time.RFC3339), err)
+			if e.jsonOutput() {
+				if writeErr := e.writeJSONLine(map[string]any{
+					"at":     time.Now().Format(time.RFC3339),
+					"status": "red",
+					"error":  err.Error(),
+				}); writeErr != nil {
+					return writeErr
+				}
+			} else {
+				e.printf("%s red  health           %v\n", time.Now().Format(time.RFC3339), err)
+			}
 		} else if err := e.printHealth(report, true); err != nil {
 			return err
 		}
@@ -81,6 +91,9 @@ func runHealth(e *env, args []string) error {
 
 func (e *env) printHealth(report healthReport, watch bool) error {
 	if e.jsonOutput() {
+		if watch {
+			return e.writeJSONLine(report)
+		}
 		return e.writeJSON(report)
 	}
 	if watch {
@@ -105,9 +118,17 @@ func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 	if err != nil {
 		return healthReport{}, err
 	}
+	if err := validateTargetPaths(t.DataRoot, t.DataDir); err != nil {
+		return healthReport{}, fmt.Errorf("instance %s target paths are unsafe: %w", t.ID, err)
+	}
 	report := healthReport{At: time.Now().Format(time.RFC3339), Instance: t.ID}
 
 	bs, bsErr := harnessclient.ReadInstanceFile(t.DataDir)
+	if bsErr == nil {
+		if validateErr := bs.ValidateFor(t.DataRoot, t.DataDir); validateErr != nil {
+			return healthReport{}, fmt.Errorf("instance %s bootstrap identity is unsafe: %w", t.ID, validateErr)
+		}
+	}
 	// "Nothing was ever started here" is its own answer, and it is not a
 	// red rollup. With no registry row AND no instance file, the target
 	// was invented by the default-data-root fallback — health was
@@ -118,7 +139,7 @@ func (e *env) collectHealth(ctx context.Context) (healthReport, error) {
 			"no instance is running here: nothing claims %s (start one with `ao-harness up`, or name another with --instance / `ao-harness list`)",
 			t.DataRoot)
 	}
-	alive := bsErr == nil && instanceinfo.ProcessAlive(bs.PID)
+	alive := bsErr == nil && instanceinfo.ProcessAliveInNamespace(bs.PID, bs.PIDNamespace)
 	report.Sections = append(report.Sections, processSection(t, bs, bsErr, alive))
 
 	dataDir := t.DataDir

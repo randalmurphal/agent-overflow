@@ -140,7 +140,7 @@
 
   // Discussion children (threads with a parentThreadId) cannot be
   // deleted in isolation — the parent thread owns the subtree's
-  // lifecycle. Matches forge's right-click visibility.
+  // lifecycle.
   let canDelete = $derived(!thread.parentThreadId);
   let selectedThreads = $derived.by(() => {
     if (!inBulkContext) return [] as Thread[];

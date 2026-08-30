@@ -9,7 +9,7 @@ entry, ok := promptoverride.Match(settings.PromptOverridesForProvider(t.Provider
 prompt := promptoverride.Render(entry.Prompt, promptoverride.Facts{WorkDir: ..., ...})
 ```
 
-Gathering the facts is NOT this package's job — that needs git subprocesses,
+Gathering the facts is NOT this package's job. That needs git subprocesses,
 the model catalog, and the host probe, so it lives in
 `app_session_prompt_override.go`. What lives here is everything that is
 decidable from data alone, which is what keeps the matching and substitution
@@ -31,7 +31,7 @@ left-to-right pass:
 
 Adding a token means adding it to the constants, to `Render`, to `Facts`, to
 the app-layer fact gatherer (`promptOverrideFacts`), and to the render table
-test — plus the frontend's insert menu, which is not optional:
+test, plus the frontend's insert menu, which is not optional:
 `TestPlaceholderTokensMatchTheFrontendMirror` parses
 `frontend/src/lib/utils/promptOverrides.ts` and fails on drift in either
 direction. A token only the legend knows renders literally into the model's
@@ -40,15 +40,15 @@ context; a token only Go knows is a substitution nobody is told about.
 ## Matching is by normalized model slug
 
 `Match` normalizes both sides through `provider.NormalizeModelSlug` and
-nothing else. That function is also where the `[1m]` marker is trimmed — for
-Claude and claude-tui only — so an entry saved as `claude-opus-5` matches a
+nothing else. That function is also where the `[1m]` marker is trimmed (for
+Claude and claude-tui only), so an entry saved as `claude-opus-5` matches a
 thread launched on `claude-opus-5[1m]`, and an alias (`opus`) matches its
 resolved id. Without that, a user who switches a thread to the 1M tier
 silently loses their override.
 
 Do NOT re-apply `provider.TrimContextMarker` on the way in, which this
 package did until it was removed: the marker rule is Claude's, and layering
-it on top applied it to CODEX ids too — a bracketed codex id would be
+it on top applied it to CODEX ids too. A bracketed codex id would be
 trimmed on this one path and nowhere else in the app, so an entry could
 match here and miss everywhere the same id is compared. The provider package
 owns which providers the rule covers.
@@ -56,7 +56,7 @@ owns which providers the rule covers.
 Entries are evaluated in the user's order and the first enabled entry listing
 the model wins. Disabled entries and entries with a blank prompt are skipped
 rather than matched-and-ignored, so a blank draft never shadows a working entry
-further down the list — `TestMatchWalksPastABlankDraftToAWorkingEntry` pins
+further down the list. `TestMatchWalksPastABlankDraftToAWorkingEntry` pins
 both skip reasons, because turning either `continue` into a return otherwise
 passes the whole suite.
 
@@ -75,14 +75,14 @@ error: the workspace path could not be canonicalized (it does not exist).
 Creating the directory is deliberately elsewhere: `Render` is called on the
 live-config reconcile path as well as the spawn path, so nothing here may have
 a side effect. `App.ensureClaudeMemoryDir` does the `MkdirAll`. It runs
-wherever an override is RENDERED — the spawn path, and the reconcile path when
+wherever an override is RENDERED: the spawn path, and the reconcile path when
 a live `set_model.system_prompt` swap lands a prompt that claims the directory
 already exists.
 
 ## Anti-patterns
 
 - Do NOT gather facts here. No subprocesses, no `os` reads beyond the
-  path canonicalization `ClaudeMemoryDir` delegates — this package must stay
+  path canonicalization `ClaudeMemoryDir` delegates. This package must stay
   cheap enough to call on every reconcile.
 - Do NOT make an unknown placeholder an error. It is user prose, not syntax.
 - Do NOT introduce a second render pass or a regex-based one. The single-pass

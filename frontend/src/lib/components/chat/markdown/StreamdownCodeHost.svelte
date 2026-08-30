@@ -3,9 +3,10 @@
   // syntax spans (internal/highlight over the HighlightCode RPC) —
   // svelte-streamdown's built-in shiki Code component is out of the
   // pipeline entirely. The wrapper:
-  //   1. Stamps the raw source on `data-code-source` so the markdown-
-  //      aware copy serializer (`utils/markdownSerialize.ts`) can
-  //      recover the original text.
+  //   1. Keeps a source-free `data-code-source` marker for code-block
+  //      discovery. The DOM text and CopyButton already own the source, so
+  //      duplicating a growing block into an attribute only wastes Oilpan
+  //      memory.
   //   2. Hosts a hover-revealed CopyButton overlay in the top-right
   //      corner — the only visible chrome.
   //
@@ -26,6 +27,9 @@
   // pending window holds a `registerAsyncResource` gate so
   // Streamdown's `onsettled` (the chat warm-gate signal) fires only
   // after spans are cached.
+  // A completed host never replaces itself with static HTML. CompactBlocks is
+  // the sole retirement owner, and span adoption waits while a native text
+  // selection intersects this block so highlighting cannot erase the range.
   //
   // Remote clients additionally receive backend-pushed span seeds
   // (`highlight:seed` → liveCodeSeeds.svelte.ts) for streaming fences:
@@ -43,25 +47,13 @@
   // flashing plain for the round trip.
 
   import type { EncodedLine } from '../../../utils/syntaxSpans';
+  import { resetCompletedCodeBlockRenderersForTest } from './staticCodeBlock';
 
   /** Minimum spacing between request fires. Requests serialize on the
    * in-flight one, so this floor only matters when the round trip is
    * faster than it — it keeps a local backend from being asked to
    * re-parse the same growing block on every streamed chunk. */
   const MIN_FIRE_INTERVAL_MS = 25;
-
-  // marked exposes token.lang as the FULL trimmed info string
-  // ("py title=x"); highlight identity is its first word — matching
-  // the backend fence scanner's seed keys (highlight.infoLang) and
-  // giving the backend's LangFromName a resolvable name. The full
-  // string stays on data-code-lang for fence-faithful serialization.
-  export function infoWord(lang: string): string {
-    for (let i = 0; i < lang.length; i += 1) {
-      const ch = lang[i];
-      if (ch === ' ' || ch === '\t') return lang.slice(0, i);
-    }
-    return lang;
-  }
 
   // Last adopted spans per language, for remount seeding (see above).
   // Fence languages are arbitrary first words of info strings, so the
@@ -95,31 +87,74 @@
   export function __resetStreamdownCodeHostForTest(): void {
     lastAdopted.clear();
     lastAdoptedChars = 0;
+    resetCompletedCodeBlockRenderersForTest();
   }
 
   export function __streamdownCodeHostStatsForTest(): { lastAdopted: number; chars: number } {
     return { lastAdopted: lastAdopted.size, chars: lastAdoptedChars };
   }
+
+  export function appendCodeLines(lines: string[], delta: string): void {
+    if (lines.length === 0) lines.push('');
+    let start = 0;
+    let newline = delta.indexOf('\n');
+    if (newline < 0) {
+      lines[lines.length - 1] += delta;
+      return;
+    }
+    lines[lines.length - 1] += delta.slice(0, newline);
+    while (newline >= 0) {
+      start = newline + 1;
+      newline = delta.indexOf('\n', start);
+      lines.push(newline < 0 ? delta.slice(start) : delta.slice(start, newline));
+    }
+  }
 </script>
 
 <script lang="ts">
-  import { useStreamdown } from 'svelte-streamdown';
+  import {
+    acquireDocumentInteraction,
+    matchesProvenAppend,
+    useStreamdown,
+    type DocumentInteraction,
+    type ProvenAppend,
+  } from 'svelte-streamdown';
   import type { Tokens } from 'marked';
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import CopyButton from '../../primitives/CopyButton.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { spanSegments } from '../../../utils/syntaxSpans';
-  import { getCachedBlockSpans, requestBlockSpans } from './codeSpanCache';
+  import {
+    appendCodeSourceIdentity,
+    createCodeSourceIdentity,
+    getCachedBlockSpansByIdentity,
+    requestBlockSpansByIdentity,
+    type CodeSourceIdentity,
+  } from './codeSpanCache';
+  import {
+    clearCompletedCodeBlockRenderer,
+    codeFenceInfoWord,
+    publishCompletedCodeBlockRenderer,
+    renderStaticCodeBlockHtml,
+  } from './staticCodeBlock';
   import { liveCodeSeedGeneration, matchLiveCodeSeed } from './liveCodeSeeds.svelte';
 
-  let { token, id }: { token: Tokens.Code; id: string } = $props();
+  let {
+    token,
+    id,
+    textAppend,
+  }: {
+    token: Tokens.Code;
+    id: string;
+    textAppend?: ProvenAppend;
+  } = $props();
 
   const streamdown = useStreamdown();
 
   // Highlight identity for this block (see infoWord above). Everything
   // span-related — cache keys, seed matching, RPC lang — uses this;
   // only the data-code-lang stamp keeps the full info string.
-  let highlightLang = $derived(infoWord(token.lang ?? ''));
+  let highlightLang = $derived(codeFenceInfoWord(token.lang ?? ''));
 
   // Resolved spans plus the exact (lang, source) they were computed
   // for. Language is part of the identity: the same text under a new
@@ -127,12 +162,64 @@
   let spans = $state<EncodedLine[] | null>(null);
   let spansFor = $state('');
   let spansForLang = $state('');
+  let staleUsable = $state(false);
+
+  // Keep line materialization append-only too. Splitting the full growing
+  // code source on every token allocated every old line again and made a long
+  // open fence O(n²) after the parser itself had become incremental.
+  const initialText = untrack(() => token.text);
+  let renderedText = initialText;
+  let renderedLang = untrack(() => highlightLang);
+  let sourceIdentity = createCodeSourceIdentity(initialText);
+  let lines = $state(initialText.split('\n'));
+  let codeRoot = $state<HTMLElement>();
+  const completedRendererOwner = {};
+  let documentInteraction: DocumentInteraction | undefined;
+  let pendingAdoption: {
+    lang: string;
+    text: string;
+    result: EncodedLine[] | null;
+  } | undefined;
+  let codeForensics: {
+    readonly tokenText: string;
+    readonly renderedText: string;
+    readonly renderedLines: string;
+    readonly spansFor: string;
+    readonly spansForLang: string;
+  } | undefined;
+  $effect.pre(() => {
+    const text = token.text;
+    const lang = highlightLang;
+    if (text !== renderedText) {
+      const appended = matchesProvenAppend(textAppend, renderedText, text);
+      if (appended) {
+        appendCodeLines(lines, textAppend.delta);
+        sourceIdentity = appendCodeSourceIdentity(sourceIdentity, textAppend);
+        staleUsable = spans !== null &&
+          spansForLang === lang &&
+          (staleUsable || spansFor === renderedText);
+      } else {
+        lines = text.split('\n');
+        sourceIdentity = createCodeSourceIdentity(text);
+        staleUsable = spans !== null &&
+          spansForLang === lang &&
+          text.startsWith(spansFor);
+      }
+      renderedText = text;
+    }
+    if (lang !== renderedLang) {
+      staleUsable = spans !== null &&
+        spansForLang === lang &&
+        text.startsWith(spansFor);
+      renderedLang = lang;
+    }
+  });
 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlight = false;
   let lastFireAt = 0;
   let pendingLang = '';
-  let pendingText = '';
+  let pendingSource = sourceIdentity;
   // True while the pending (lang, text) still needs a fire. Set by
   // schedule(), consumed when a fire takes the pending content, and
   // cleared by cancelScheduled() — a synchronous adoption satisfies
@@ -165,11 +252,89 @@
     }
   }
 
-  function adopt(lang: string, text: string, result: EncodedLine[] | null): void {
+  function selectionOwnsCode(): boolean {
+    if (!documentInteraction || !codeRoot) return false;
+    if (documentInteraction.selectionPending) return true;
+    for (const interactionRange of documentInteraction.ranges) {
+      if (
+        interactionRange.endpointAncestors.has(codeRoot) ||
+        interactionRange.range.intersectsNode(codeRoot)
+      ) return true;
+    }
+    return false;
+  }
+
+  function focusOwnsCode(): boolean {
+    if (!documentInteraction || !codeRoot) return false;
+    if (documentInteraction.focusedAncestors.has(codeRoot)) return true;
+    const active = codeRoot.ownerDocument.activeElement;
+    return active !== null && codeRoot.contains(active);
+  }
+
+  function applyAdoption(lang: string, text: string, result: EncodedLine[] | null): void {
     spans = result;
     spansFor = text;
     spansForLang = lang;
+    const currentText = token.text;
+    staleUsable = result !== null &&
+      lang === highlightLang &&
+      (text === currentText || currentText.startsWith(text));
     if (result) rememberAdoption(lang, text, result);
+    publishCompletedRenderer(lang, text);
+  }
+
+  function adopt(lang: string, text: string, result: EncodedLine[] | null): void {
+    if (selectionOwnsCode()) {
+      pendingAdoption = { lang, text, result };
+      return;
+    }
+    pendingAdoption = undefined;
+    if (
+      streamdown.parseIncompleteMarkdown === false &&
+      lang === highlightLang &&
+      text === token.text &&
+      !focusOwnsCode()
+    ) {
+      if (result) rememberAdoption(lang, text, result);
+      // The parent can retire this completed island immediately. Publishing
+      // the exact renderer avoids first building the same syntax-span DOM in
+      // Svelte and then replacing it with identical static DOM one microtask
+      // later.
+      publishCompletedRenderer(lang, text, result);
+      return;
+    }
+    applyAdoption(lang, text, result);
+  }
+
+  function flushPendingAdoption(): void {
+    const pending = pendingAdoption;
+    if (!pending || selectionOwnsCode()) return;
+    pendingAdoption = undefined;
+    adopt(pending.lang, pending.text, pending.result);
+  }
+
+  function publishCompletedRenderer(
+    lang: string,
+    text: string,
+    settledSpans?: readonly EncodedLine[] | null,
+  ): void {
+    if (
+      streamdown.parseIncompleteMarkdown !== false ||
+      lang !== highlightLang ||
+      text !== token.text
+    ) return;
+    const staticLineSpans = settledSpans === undefined
+      ? lineSpans
+      : (index: number): EncodedLine | null => settledSpans?.[index] ?? null;
+    publishCompletedCodeBlockRenderer(
+      completedRendererOwner,
+      streamdown,
+      lang,
+      text,
+      (staticID) =>
+        renderStaticCodeBlockHtml(token, staticID, streamdown, lines, staticLineSpans),
+    );
+    streamdown.requestStaticRetry();
   }
 
   // A synchronous adoption (cache hit, language-less fence, already
@@ -193,9 +358,12 @@
     }
   }
 
-  function schedule(lang: string, text: string): void {
+  function schedule(lang: string, source: CodeSourceIdentity): void {
+    if (streamdown.parseIncompleteMarkdown === false) {
+      clearCompletedCodeBlockRenderer(completedRendererOwner);
+    }
     pendingLang = lang;
-    pendingText = text;
+    pendingSource = source;
     pendingDirty = true;
     holdGate();
     // Serialize on the in-flight request: its finally drains the
@@ -222,11 +390,17 @@
     lastFireAt = performance.now();
     const seq = ++fireSeq;
     const lang = pendingLang;
-    const text = pendingText;
+    const source = pendingSource;
+    const text = source.source;
     try {
-      const result = await requestBlockSpans(lang, text);
+      const result = await requestBlockSpansByIdentity(lang, source);
       if (!destroyed && result && seq === fireSeq) {
         adopt(lang, text, result);
+      } else if (!destroyed && result === null && seq === fireSeq) {
+        // Preserve the component's current plain/stale rendering for the
+        // parent-owned compaction pass. A failure stays uncached, so a future
+        // mount still retries the backend.
+        publishCompletedRenderer(lang, text);
       }
     } finally {
       inFlight = false;
@@ -246,11 +420,26 @@
   $effect(() => {
     const text = token.text;
     const lang = highlightLang;
+    const source = sourceIdentity;
     // Tracked alongside the token: a backend-pushed seed (remote
     // clients, highlight:seed) can arrive BETWEEN token changes — e.g.
     // the final seed after the last delta — and must re-run the match
     // below. Loopback clients never receive seeds, so this stays 0.
     liveCodeSeedGeneration();
+    if (streamdown.diagnostics && codeRoot && !codeForensics) {
+      const root = codeRoot as HTMLElement & { __aoCodeForensics?: unknown };
+      codeForensics = {
+        get tokenText() { return token.text; },
+        get renderedText() { return renderedText; },
+        get renderedLines() { return lines.join('\n'); },
+        get spansFor() { return spansFor; },
+        get spansForLang() { return spansForLang; },
+      };
+      Object.defineProperty(root, '__aoCodeForensics', {
+        configurable: true,
+        value: codeForensics,
+      });
+    }
     untrack(() => {
       if (spansForLang === lang && spansFor === text && spans !== null) {
         // Already exact for the current token: any queued or in-flight
@@ -264,7 +453,7 @@
         adopt(lang, text, null);
         return;
       }
-      const hit = getCachedBlockSpans(lang, text);
+      const hit = getCachedBlockSpansByIdentity(lang, source);
       if (hit) {
         cancelScheduled();
         adopt(lang, text, hit);
@@ -291,6 +480,7 @@
           spans = last.spans;
           spansFor = last.text;
           spansForLang = lang;
+          staleUsable = true;
         }
       }
       if (seed) {
@@ -298,7 +488,7 @@
         // the current text than whatever spans this instance already
         // paints from (its own last response or the lastAdopted seed).
         const currentCoverage =
-          spansForLang === lang && spans !== null && text.startsWith(spansFor)
+          spansForLang === lang && spans !== null && staleUsable
             ? spansFor.length
             : 0;
         if (seed.covered.length > currentCoverage) {
@@ -311,12 +501,29 @@
           adopt(lang, seed.covered + '\n', seed.spans);
         }
       }
-      schedule(lang, text);
+      schedule(lang, source);
     });
+  });
+
+  onMount(() => {
+    const ownerDocument = codeRoot?.ownerDocument ?? document;
+    documentInteraction = acquireDocumentInteraction(ownerDocument, flushPendingAdoption);
+    flushPendingAdoption();
+    return () => {
+      documentInteraction?.release();
+      documentInteraction = undefined;
+    };
   });
 
   onDestroy(() => {
     destroyed = true;
+    pendingAdoption = undefined;
+    clearCompletedCodeBlockRenderer(completedRendererOwner);
+    const root = codeRoot as (HTMLElement & { __aoCodeForensics?: unknown }) | undefined;
+    if (root && root.__aoCodeForensics === codeForensics) {
+      delete root.__aoCodeForensics;
+    }
+    codeForensics = undefined;
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
@@ -330,13 +537,11 @@
     }
   });
 
-  let lines = $derived(token.text.split('\n'));
   let exact = $derived(spansForLang === highlightLang && spansFor === token.text);
   // Stale spans are only trustworthy when the current text EXTENDS the
   // source they were computed for (streaming append). A replacement
   // (different language, rewritten block) must render plain until its
   // own result lands — especially since that result can reject.
-  let staleUsable = $derived(spansForLang === highlightLang && token.text.startsWith(spansFor));
 
   function lineSpans(index: number): EncodedLine | null {
     if (!spans) return null;
@@ -349,6 +554,7 @@
     const completeLines = spansFor.endsWith('\n') ? spans.length : spans.length - 1;
     return index < completeLines ? (spans[index] ?? null) : null;
   }
+
 </script>
 
 <!-- Named Tailwind group (`group/codeblock`) so the hover scope is
@@ -357,8 +563,9 @@
      for its timestamp/copy-row chrome), revealing every code block's
      copy button whenever any part of the message is hovered. -->
 <div
+  bind:this={codeRoot}
   class="streamdown-code-host group/codeblock relative"
-  data-code-source={token.text}
+  data-code-source=""
   data-code-lang={token.lang ?? ''}
 >
   <div

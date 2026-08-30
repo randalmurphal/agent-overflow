@@ -26,7 +26,7 @@ const (
 // that has not answered in five seconds is not mid-render; it is gone.
 const bridgeProbeTimeout = 5 * time.Second
 
-var uiSubcommands = []string{"snapshot", "query", "state", "diff", "reload", "open"}
+var uiSubcommands = commandNames(uiCommandDescriptors())
 
 func runUI(e *env, args []string) error {
 	if done, err := groupHelp(e, "ui", args, uiSubcommands...); done {
@@ -60,16 +60,23 @@ func runUI(e *env, args []string) error {
 
 func uiReload(e *env, args []string) error {
 	flags := e.newFlagSet("ui reload")
+	asJSON := e.bindJSONFlag(flags)
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		e.format = "json"
 	}
 	if len(rest) != 0 {
 		return usagef("ui reload takes no positional arguments (got %v)", rest)
 	}
 	ctx := context.Background()
-	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
-		if err := reloadPage(ctx, e, client); err != nil {
+	return e.withClient(ctx, func(client *harnessclient.Client, _ target, bs harnessclient.Bootstrap) error {
+		if err := requireHarnessProtocol(client, capabilityRequirements{Methods: []string{"HarnessUIQuery"}, Actions: []string{"reload"}}); err != nil {
+			return err
+		}
+		if _, err := reloadPage(ctx, e, client, bs.PageMarker); err != nil {
 			return err
 		}
 		if e.jsonOutput() {
@@ -96,11 +103,15 @@ func uiReload(e *env, args []string) error {
 // harness-side instead would put a pane nobody ships on the screen.
 func uiOpen(e *env, args []string) error {
 	flags := e.newFlagSet("ui open --thread <id|#N|last|title-prefix> [--new-pane]")
+	asJSON := e.bindJSONFlag(flags)
 	thread := flags.String("thread", "", "thread selector: id, #N from `threads`, `last`, or a unique title prefix")
 	newPane := flags.Bool("new-pane", false, "open in a NEW pane beside the others, the way a ctrl-click on a sidebar row does")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		e.format = "json"
 	}
 	if *thread == "" && len(rest) == 1 {
 		*thread = rest[0]
@@ -114,6 +125,16 @@ func uiOpen(e *env, args []string) error {
 	}
 	ctx := context.Background()
 	return e.withClient(ctx, func(client *harnessclient.Client, _ target, _ harnessclient.Bootstrap) error {
+		requirements := capabilityRequirements{Actions: []string{"open"}}
+		if *newPane {
+			requirements.Methods = []string{"HarnessUIQuery"}
+			requirements.Queries = []string{"open"}
+		} else {
+			requirements.Methods = []string{"HarnessEmit"}
+		}
+		if err := requireHarnessProtocol(client, requirements); err != nil {
+			return err
+		}
 		row, err := resolveThreadSelector(ctx, client, *thread)
 		if err != nil {
 			return err
@@ -142,6 +163,11 @@ func uiOpen(e *env, args []string) error {
 // typed struct so a bridge that grows a field needs no release here.
 func (e *env) queryUI(ctx context.Context, client *harnessclient.Client, spec map[string]any) (json.RawMessage, error) {
 	spec["v"] = 1
+	if _, explicit := spec["pageId"]; !explicit {
+		if pageID := strings.TrimSpace(e.pageID); pageID != "" {
+			spec["pageId"] = pageID
+		}
+	}
 	raw, err := client.Call(ctx, "HarnessUIQuery", spec)
 	if err != nil {
 		return nil, uiQueryError(err)
@@ -167,6 +193,8 @@ func uiQueryError(err error) error {
 
 func uiSnapshot(e *env, args []string) error {
 	flags := e.newFlagSet("ui snapshot")
+	asJSON := e.bindJSONFlag(flags)
+	budget := e.bindQueryOutputBudget(flags)
 	pane := flags.String("pane", "", "print only this pane id")
 	settledMs := flags.Int("settled-ms", 0, "how long the DOM must be quiet to report settled (bridge default: 300)")
 	textHead := flags.Int("text-head", 0, "characters of each row's text to include (bridge default)")
@@ -178,6 +206,9 @@ func uiSnapshot(e *env, args []string) error {
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		e.format = "json"
 	}
 	if len(rest) != 0 {
 		return usagef("ui snapshot takes no positional arguments (got %v)", rest)
@@ -193,8 +224,8 @@ func uiSnapshot(e *env, args []string) error {
 				return err
 			}
 		}
-		if e.jsonOutput() {
-			return e.writeRawJSON(raw)
+		if budget.file != "" || e.jsonOutput() {
+			return e.writeQueryJSON(raw, budget)
 		}
 		e.renderViewport(view, *pane)
 		return nil
@@ -264,10 +295,15 @@ func (e *env) renderViewport(view uiViewport, only string) {
 
 func uiQuery(e *env, args []string) error {
 	flags := e.newFlagSet("ui query <selector>")
+	asJSON := e.bindJSONFlag(flags)
+	budget := e.bindQueryOutputBudget(flags)
 	textCap := flags.Int("text-cap", 0, "characters of textContent to include (bridge default)")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		e.format = "json"
 	}
 	if len(rest) != 1 {
 		return usagef("ui query needs exactly one CSS selector (got %v)", rest)
@@ -282,8 +318,14 @@ func uiQuery(e *env, args []string) error {
 		if err != nil {
 			return err
 		}
-		if e.jsonOutput() {
-			return e.writeRawJSON(raw)
+		if budget.file != "" || e.jsonOutput() {
+			if budget.file != "" {
+				return e.writeQueryJSON(raw, budget)
+			}
+			if err := e.writeQueryJSON(raw, budget); err != nil {
+				return err
+			}
+			return nil
 		}
 		var result struct {
 			Selector string `json:"selector"`
@@ -322,9 +364,14 @@ func uiQuery(e *env, args []string) error {
 
 func uiState(e *env, args []string) error {
 	flags := e.newFlagSet("ui state <name> [json args...]")
+	asJSON := e.bindJSONFlag(flags)
+	budget := e.bindQueryOutputBudget(flags)
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		e.format = "json"
 	}
 	if len(rest) == 0 {
 		return usagef("ui state needs a global name (e.g. __stickState, uiTrace.recent)")
@@ -347,18 +394,23 @@ func uiState(e *env, args []string) error {
 		if err != nil {
 			return err
 		}
-		return e.writeRawJSON(raw)
+		return e.writeQueryJSON(raw, budget)
 	})
 }
 
 func uiDiffCommand(e *env, args []string) error {
 	flags := e.newFlagSet("ui diff")
+	asJSON := e.bindJSONFlag(flags)
+	budget := e.bindQueryOutputBudget(flags)
 	threshold := flags.Float64("threshold", uiGeometryThresholdPx, "report a geometry delta at or above this many pixels")
 	settledMs := flags.Int("settled-ms", 0, "how long the DOM must be quiet to report settled")
 	save := flags.Bool("save", true, "store the new snapshot as the next diff's baseline")
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		e.format = "json"
 	}
 	if len(rest) != 0 {
 		return usagef("ui diff takes no positional arguments (got %v)", rest)
@@ -384,12 +436,16 @@ func uiDiffCommand(e *env, args []string) error {
 			}
 		}
 		diff := diffViewports(previous.Viewport, current.Viewport, *threshold)
-		if e.jsonOutput() {
-			return e.writeJSON(map[string]any{
+		if budget.file != "" || e.jsonOutput() {
+			encoded, err := json.Marshal(map[string]any{
 				"before": previous.TakenAt,
 				"after":  current.TakenAt,
 				"diff":   diff,
 			})
+			if err != nil {
+				return fmt.Errorf("encode ui diff: %w", err)
+			}
+			return e.writeQueryJSON(encoded, budget)
 		}
 		e.printf("%s", renderUIDiff(diff, previous, current))
 		return nil

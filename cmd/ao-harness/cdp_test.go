@@ -62,6 +62,14 @@ func TestResolveCDPEndpointNamesThisInstancesPort(t *testing.T) {
 	}
 }
 
+func TestResolveCDPEndpointNamesPerfPort(t *testing.T) {
+	row := instanceinfo.Instance{Row: instanceinfo.Row{Identity: instanceinfo.Identity{ID: "abcd1234", Mode: instanceinfo.ModePerf}}}
+	_, err := resolveCDPEndpoint("", target{ID: row.ID, Row: &row})
+	if err == nil || !strings.Contains(err.Error(), "--cdp 9226") {
+		t.Fatalf("refusal should point at the perf instance's own port: %v", err)
+	}
+}
+
 func TestResolveCDPEndpointParsesAPort(t *testing.T) {
 	endpoint, err := resolveCDPEndpoint("9225", target{})
 	if err != nil {
@@ -86,6 +94,41 @@ func TestBenchTraceWithoutAnEndpointFailsBeforeAttaching(t *testing.T) {
 	}
 	if strings.Contains(stdout, "bench burst-stream: run") {
 		t.Fatalf("the bench started driving before refusing:\n%s", stdout)
+	}
+}
+
+func TestBenchRefusesProfilerOwnedLegsBeforeResolvingAnInstance(t *testing.T) {
+	for _, leg := range []string{"cpu-profile", "allocation"} {
+		code, stdout, stderr := run(t, "bench", "burst-stream", "--leg", leg,
+			"--registry-dir", t.TempDir())
+		if code != exitUsage {
+			t.Fatalf("%s: exit = %d, want %d\nstdout: %s\nstderr: %s", leg, code, exitUsage, stdout, stderr)
+		}
+		if !strings.Contains(stderr, "not implemented by `ao-harness bench`") {
+			t.Fatalf("%s: refusal does not name the owning profiler: %s", leg, stderr)
+		}
+	}
+}
+
+func TestBenchCleanMemoryRejectsFrontendMetersBeforeResolvingAnInstance(t *testing.T) {
+	code, stdout, stderr := run(t, "bench", "burst-stream", "--leg", "clean-memory", "--meter", "frames",
+		"--registry-dir", t.TempDir())
+	if code != exitUsage {
+		t.Fatalf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, exitUsage, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "clean-memory leg cannot use frontend meters") {
+		t.Fatalf("refusal does not identify the contaminated clean-memory leg: %s", stderr)
+	}
+}
+
+func TestParseBenchOptionsReadsOptionsAfterWorkload(t *testing.T) {
+	e, _, _ := testEnv(t.TempDir())
+	opts, rest, err := parseBenchOptions(e, []string{"burst-stream", "--leg", "clean-memory", "--meter", "frames", "--registry-dir", t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 1 || len(*opts.meters) != 1 || (*opts.meters)[0] != "frames" {
+		t.Fatalf("rest=%v meters=%v", rest, *opts.meters)
 	}
 }
 

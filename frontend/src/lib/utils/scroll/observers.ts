@@ -38,6 +38,7 @@ import type { SpringChase } from './spring';
 import { nowMs } from './time';
 import { trace } from './trace';
 import type { ScrollWriteCaller, WarmReason } from './types';
+import { reportFrontendDiagnostic } from '../frontendErrorCapture';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import type { ContentGeometrySample } from '../virtual/types';
 
@@ -191,24 +192,23 @@ export interface ContentObserverDeps {
   targetScrollTop(): number;
   refreshIsNearBottom(): number;
   /**
-   * Learn the content-height → bottom-target offset from a read-path
-   * delivery. Call AFTER the delivery's real reads (layout already
-   * forced, so the reads inside are free).
+   * Read-free bottom geometry for an authoritative virtualizer sample.
+   * Computes target = content height - content-box viewport height and
+   * pairs it with cached scrollTop. Null when that cached position cannot
+   * be trusted. The caller then takes the real-read path.
    */
-  learnContentTargetOffset(height: number): void;
-  /**
-   * Read-free bottom geometry for a delivery of `height`: computes the
-   * target from the learned offset and returns the decision inputs,
-   * refreshing the near-bottom band from the same arithmetic. Null when
-   * the cache cannot answer — the caller must then take the real-read
-   * path (refreshIsNearBottom + targetScrollTop + scrollTop +
-   * learnContentTargetOffset), which resyncs it.
-   */
-  contentGeometryForHeight(height: number): { target: number; scrollTop: number } | null;
+  contentGeometryForSample(
+    height: number,
+    viewportHeight: number,
+  ): { target: number; scrollTop: number } | null;
+  /** Publish the exact bottom target carried by an external geometry sample. */
+  cacheExternalBottomTarget(height: number, viewportHeight: number): void;
   writeScrollTop(caller: ScrollWriteCaller, value: number): void;
   resolverStateSnapshot(): ResolverState;
   /** OS prefers-reduced-motion OR the app's low-power setting. */
   prefersReducedMotion(): boolean;
+  /** Secondary consumers run after the controller has applied this sample. */
+  contentGeometryProcessed(scrollable: boolean): void;
   /** Narrowed to what a delivery decision may drive on the spring. */
   spring: Pick<SpringChase, 'structuralAppendPending' | 'snapOscillationToBottom' | 'markTargetChanged' | 'start'>;
 }
@@ -221,7 +221,8 @@ export interface ContentObserver {
   detach(): void;
   /** External-source entry: one engine-sourced content-geometry sample
    * (TimelineVirtualizer post-flush) into the same pipeline an RO
-   * delivery takes. */
+   * delivery takes. Requires the option AND an attached scroller —
+   * both breaches are loud (see deliverSample). */
   deliverSample(sample: ContentGeometrySample): void;
   /** Reset the warm-up gate: sync-pin mode until quiet/failsafe fires again. */
   beginWarmup(): void;
@@ -357,6 +358,14 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // slice application's armWarmup): open the cold-load settle window so
     // post-warm cascade/sync growth sync-pins. See COLD_LOAD_SETTLE_MAX_MS.
     coldLoadSettleUntil = nowMs() + COLD_LOAD_SETTLE_MAX_MS;
+    // DELIBERATELY not reset here: previousHeight/previousWidth (the
+    // resize-correlation baseline). A re-arm on a surface that stays
+    // attached (same-thread reload, retry) keeps the last observed
+    // geometry as its baseline, so the first delivery after the re-arm
+    // computes a real delta instead of a first-observation zero. Only
+    // detach clears them — the element is gone, so the baseline is too.
+    // Flagged 2026-08-29 (lifecycle-edge sweep): reviewed, ambiguity is
+    // real but both readers tolerate a stale baseline for one delivery.
   }
 
   function skipWarmup(): void {
@@ -471,18 +480,38 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   ): void {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return;
+    if (settle?.viewportHeight !== undefined) {
+      deps.cacheExternalBottomTarget(nextHeight, settle.viewportHeight);
+    }
+    // External virtualizer samples already carry the exact content-box
+    // viewport, so their scrollability hint stays read-free. Native RO
+    // deliveries run after layout and can read the real scroll range without
+    // forcing another layout pass. Secondary consumers use this edge without
+    // sampling hidden geometry on every streaming beat.
+    const reportProcessedGeometry = (): void => {
+      const viewportHeight = settle?.viewportHeight;
+      deps.contentGeometryProcessed(
+        viewportHeight !== undefined
+          ? nextHeight - viewportHeight > 1
+          : scrollEl.scrollHeight - scrollEl.clientHeight > 1,
+      );
+    };
     const prev = previousHeight;
     const prevWidth = previousWidth;
     previousHeight = nextHeight;
     previousWidth = nextWidth;
     // Engine-sourced deliveries carry the scroller's content-box height
-    // from its RO entry. While it holds still, clientHeight held still,
+    // from its RO entry. While it holds still, the viewport held still,
     // and the delta path below may answer from cached geometry instead
     // of forced-layout reads; any move (or an RO-sourced pipeline, which
     // never reports one) disqualifies this delivery from the cache.
     const nextViewportHeight = settle?.viewportHeight;
+    const prevViewportHeight = previousViewportHeight;
     const viewportStable = nextViewportHeight !== undefined
-      && nextViewportHeight === previousViewportHeight;
+      && nextViewportHeight === prevViewportHeight;
+    const viewportChanged = nextViewportHeight !== undefined
+      && prevViewportHeight !== undefined
+      && nextViewportHeight !== prevViewportHeight;
     previousViewportHeight = nextViewportHeight;
     const widthChanged = prevWidth !== undefined
       && Math.abs(nextWidth - prevWidth) > CONTENT_REFLOW_WIDTH_EPSILON_PX;
@@ -543,7 +572,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         deps.writeScrollTop(decision.write.caller, decision.write.value);
       }
       deps.refreshIsNearBottom();
-      deps.learnContentTargetOffset(nextHeight);
+      reportProcessedGeometry();
       return;
     }
 
@@ -567,10 +596,17 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // window. The raw signals are traced separately below.
     const pinnedRemeasureActive =
       pinnedRemeasureSettleUntil > nowMs() || coldLoadSettleActive;
-    // Common case: the virtualizer re-measures a same-height row, padding-bottom
-    // CSS variable updates with identical computed value, etc. No
-    // geometry change → nothing to chase, no scroll-event tagging needed.
+    // Common cases include a virtualizer remeasuring a same-height row,
+    // padding-bottom changes, or a CSS variable resolves to the same value.
+    // No virtual content change means there is nothing to chase and no
+    // scroll-event tagging is needed.
     if (delta === 0) {
+      // A padding-only composer resize changes the content-box viewport
+      // without changing virtual content height. Refresh cached scrollTop
+      // now so the next stable read-free delivery cannot inherit a browser
+      // clamp from the old viewport. The target itself is carried by the
+      // next sample and needs no mutable offset to rebase.
+      if (viewportChanged) deps.refreshIsNearBottom();
       if (widthChanged && isUiRenderTraceEnabled()) trace('scroll.contentRO.widthReflow', () => ({
         prevWidth: prevWidth === undefined ? null : roundCssPx(prevWidth),
         nextWidth: roundCssPx(nextWidth),
@@ -581,6 +617,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         scrollHeight: Math.round(scrollEl.scrollHeight),
         clientHeight: Math.round(scrollEl.clientHeight),
       }));
+      reportProcessedGeometry();
       return;
     }
     resizeDifference = delta;
@@ -595,28 +632,25 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     // the engine's are routed through the controller and token-tagged.)
     resizeCorrelatedUntaggedScrollBudget = 1;
 
-    // Geometry for the decision — read-free on the hot path. A delivery
-    // carries the content height, and the bottom target is that height
-    // plus a constant offset the controller learned on the last
-    // read-path delivery; scrollTop cannot have moved since the
-    // controller's last real read (scroll events, chokepoint writes and
-    // spring ticks all resync its cache). The forced-layout read this
-    // replaces ran once per delivery INSIDE the flush/RO window — up to
+    // Geometry for the decision is read-free on the hot path. A
+    // virtualizer delivery carries both content height and content-box
+    // viewport height, whose difference is the DOM bottom target because
+    // scroller padding is present on both sides of scrollHeight -
+    // clientHeight. Cached scrollTop cannot have moved since the
+    // controller's last real read. Scroll events, chokepoint writes, and
+    // spring ticks all resync it. The forced-layout read this replaces
+    // ran once per delivery inside the flush/RO window. Up to
     // four passes in a single 3-pane streaming frame, and the first
     // reader of a dirty frame pays the whole pending style recalc
-    // (storm capture 2026-08-26). Height-plus-offset, never a running
-    // delta: resyncs between deliveries rebase to DOM that already
-    // contains the next delivery's change, so delta arithmetic
-    // double-counted it (2026-08-26, rest 8px short of bottom). The
-    // cache answers only while the viewport held still and the wrap
-    // width did not move; everything else — first fire, width reflow,
-    // viewport resize, floored-short content, RO-sourced pipelines —
-    // takes the real reads below, which re-learn the offset. A shrink
+    // (storm capture 2026-08-26). The cache answers only while the
+    // viewport and wrap width held still. First fire, width reflow,
+    // viewport resize, floored-short content, and RO-sourced pipelines
+    // take the real reads below, which resync cached scrollTop. A shrink
     // the browser clamps ahead of us is seen here as overshoot and
     // resolved by the same overshoot-snap the real read produced; the
     // chokepoint's own fresh-read clamp still guards the actual write.
     const cachedGeometry = viewportStable && !widthChanged
-      ? deps.contentGeometryForHeight(nextHeight)
+      ? deps.contentGeometryForSample(nextHeight, nextViewportHeight)
       : null;
     let target: number;
     let scrollTopAtDelivery: number;
@@ -635,7 +669,6 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       // `const target` discipline.
       target = deps.targetScrollTop();
       scrollTopAtDelivery = scrollEl.scrollTop;
-      deps.learnContentTargetOffset(nextHeight);
     }
     // Every decision about this delivery — overshoot snap, stranded-
     // oscillation recovery, sync-pin vs spring, negative re-stick — is
@@ -717,6 +750,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     }
 
     scheduleResizeDifferenceClear(delta);
+    reportProcessedGeometry();
   }
 
   function attach(): void {
@@ -747,6 +781,29 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
         'deliverContentGeometry requires the externalContentGeometry option — ' +
           'without it the controller also observes contentEl and the two sources conflict',
       );
+    }
+    // A sample delivered while DETACHED is LOST: processSample returns on
+    // the missing scrollEl, and the source's own dedupe will not offer
+    // the same tuple twice — which is exactly how a populated first mount
+    // ended up at scrollTop=0 under a sticky-bottom claim. The source
+    // must therefore subscribe after attach
+    // (TimelineVirtualizerHandle.subscribeContentGeometry), and after
+    // that wiring the production path cannot reach this branch at all;
+    // it stays as the contract's tripwire.
+    //
+    // Loud in dev/test, silent-but-reported in production: a throw
+    // crossing back into a Svelte effect aborts the update batch that
+    // called it, which is a worse failure than one lost sample.
+    if (!deps.getScrollEl()) {
+      const message =
+        'deliverContentGeometry called while the scroll controller is detached — ' +
+        'the sample is lost; subscribe to the geometry source AFTER attach()';
+      if (import.meta.env.DEV || import.meta.env.MODE === 'test') {
+        throw new Error(message);
+      }
+      console.error(message);
+      reportFrontendDiagnostic(message);
+      return;
     }
     processSample(sample.height, sample.width, sample);
   }

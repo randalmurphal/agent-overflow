@@ -30,13 +30,13 @@
 // Thresholds are calibrated from healthy runs with ~2x headroom (same method
 // as streamingOutcome.browser.test.ts); healthy-run numbers are recorded
 // next to each constant.
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // Real production cascade: row margins, markdown typography, and the
 // [data-row-geometry-content] flow-root rule all participate in the geometry
 // under test.
 import '../../../app.css';
 import { makeItem } from '../../../test/helpers/chat';
-import { raf, wait } from '../../../test/helpers/browserFrames';
+import { raf, wait, waitFor } from '../../../test/helpers/browserFrames';
 import {
   SEED_COUNT,
   distanceToBottom,
@@ -51,6 +51,7 @@ import {
 } from '../../../test/helpers/timelineBrowserHarness';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
+import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
 
 // Quiet-point distance to bottom (suite standard): the controller pins to
 // the exact bottom; 2px absorbs fractional-DPR rounding without masking a
@@ -98,7 +99,23 @@ const GROWTH_PARAGRAPHS = Array.from({ length: 6 }, (_, p) =>
   `Growth paragraph ${p}: this paragraph exists to make the row substantially taller when it re-renders, the way payload expansion or late typesetting grows an already-scrolled-past row in production, wrapping across several visual lines at timeline width.`,
 ).join('\n\n');
 
+const REWRAPPING_USER_MESSAGE = Array.from(
+  { length: 16 },
+  (_, i) => `sentence ${i} about the migration plan`,
+).join(' ');
+
 setupTimelineHarness();
+
+let resizeLoopErrors: ReturnType<typeof captureResizeObserverLoopErrors>;
+
+beforeEach(() => {
+  resizeLoopErrors = captureResizeObserverLoopErrors();
+});
+
+afterEach(() => {
+  resizeLoopErrors.stop();
+  expect(resizeLoopErrors.messages).toEqual([]);
+});
 
 function seedItems(threadId: string): Item[] {
   return seedTimelineItems(threadId, SEED_PROSE);
@@ -355,5 +372,41 @@ describe('above-viewport compensation outcomes (real MessageTimeline × real win
       `viewport hung ${maxOffRun} consecutive frames >${OFF_BOTTOM_THRESHOLD_PX}px off the bottom — the suppressed-correction spring chase (20260622T041049Z)`,
     ).toBeLessThanOrEqual(MAX_CONSECUTIVE_OFF_BOTTOM_FRAMES);
     expect(distanceToBottom(scrollEl), 'must rest at the bottom').toBeLessThanOrEqual(QUIET_BOTTOM_EPSILON_PX);
+  });
+});
+
+describe('user-message overflow in the virtual timeline', () => {
+  it('settles width-driven clamp changes before the row observer delivers', async () => {
+    const threadId = 'thread-user-clamp-width';
+    const items = seedItems(threadId);
+    items[SEED_COUNT - 2] = makeItem({
+      id: `seed-${SEED_COUNT - 2}`,
+      threadId,
+      turnIndex: SEED_COUNT - 2,
+      itemIndex: 0,
+      kind: 'user_text',
+      role: 'user',
+      status: 'completed',
+      summary: REWRAPPING_USER_MESSAGE,
+      createdAt: SEED_COUNT - 2,
+      updatedAt: SEED_COUNT - 2,
+    });
+    const { host, scrollEl } = await mountTimeline(threadId, items, QUIET_BOTTOM);
+    const row = () => scrollEl.querySelector<HTMLElement>(
+      `[data-item-id="seed-${SEED_COUNT - 2}"]`,
+    );
+    const toggle = () => row()?.querySelector('[data-testid="user-message-clamp-toggle"]');
+
+    host.style.width = '1000px';
+    await waitFor(() => row() !== null && toggle() === null, 'wide user message to fit');
+
+    host.style.width = '320px';
+    await waitFor(() => toggle() !== null, 'narrow user message to clamp');
+    expect(
+      row()?.querySelector('[data-testid="user-message-summary"]')?.getAttribute('data-clamped'),
+    ).toBe('true');
+
+    host.style.width = '1000px';
+    await waitFor(() => toggle() === null, 'widened user message to fit again');
   });
 });

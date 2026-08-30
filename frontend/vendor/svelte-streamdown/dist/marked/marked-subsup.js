@@ -8,6 +8,8 @@ export const markedSub = {
         return i === -1 ? undefined : i;
     },
     tokenizer(src) {
+        if (src.charCodeAt(0) !== 126)
+            return undefined;
         const match = src.match(subRule);
         if (match) {
             return {
@@ -27,6 +29,8 @@ export const markedSup = {
         return i === -1 ? undefined : i;
     },
     tokenizer(src) {
+        if (src.charCodeAt(0) !== 94)
+            return undefined;
         const match = src.match(supRule);
         if (match) {
             return {

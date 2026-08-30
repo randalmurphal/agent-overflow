@@ -1,3 +1,9 @@
+import {
+  createProvenAppend,
+  matchesProvenAppend,
+  type ProvenAppend,
+} from 'svelte-streamdown';
+
 // Raw-JSON assistant messages rendered as a formatted `json` code block.
 //
 // A session running under an output schema (every workflow phase, on
@@ -29,6 +35,43 @@
 
 const INDENT = '  ';
 
+type RawJsonPrefixState = 'pending' | 'tentative' | 'json' | 'prose';
+
+class RawJsonPrefixClassifier {
+  private state: RawJsonPrefixState = 'pending';
+  private opener = 0;
+
+  get isRawJson(): boolean {
+    return this.state === 'tentative' || this.state === 'json';
+  }
+
+  push(chunk: string): void {
+    if (this.state === 'json' || this.state === 'prose') return;
+    for (let index = 0; index < chunk.length; index++) {
+      const code = chunk.charCodeAt(index);
+      if (isWs(code)) continue;
+      if (this.opener === 0) {
+        if (code !== 0x7b && code !== 0x5b) {
+          this.state = 'prose';
+          return;
+        }
+        this.opener = code;
+        this.state = 'tentative';
+        continue;
+      }
+      this.state = isValidSecondSignificantCodeUnit(this.opener, code)
+        ? 'json'
+        : 'prose';
+      return;
+    }
+  }
+
+  reset(): void {
+    this.state = 'pending';
+    this.opener = 0;
+  }
+}
+
 /** Whether a message body is an unfenced JSON document (or the start of
  * one). Cheap: reads leading whitespace and at most two characters. */
 export function isRawJsonSource(source: string): boolean {
@@ -46,6 +89,12 @@ export function isRawJsonSource(source: string): boolean {
   const next = source[i];
   if (open === '{') return next === '"' || next === '}';
   return next === '"' || next === '{' || next === '[' || next === ']';
+}
+
+function isValidSecondSignificantCodeUnit(open: number, next: number): boolean {
+  return open === 0x7b
+    ? next === 0x22 || next === 0x7d
+    : next === 0x22 || next === 0x7b || next === 0x5b || next === 0x5d;
 }
 
 function isWs(code: number): boolean {
@@ -75,6 +124,7 @@ function isWs(code: number): boolean {
  * `streaming` ends.
  */
 export class RawJsonFenceFormatter {
+  private readonly classifier = new RawJsonPrefixClassifier();
   private prev = '';
   private out = '';
   private depth = 0;
@@ -82,44 +132,148 @@ export class RawJsonFenceFormatter {
   private escape = false;
   private pendingOpen = false;
   private rootClosed = false;
+  private rootTailStarted = false;
   private isJson = false;
+  private lastRenderAppended = false;
+  private lastRendered = '';
+  private previousStreaming = false;
+  private lastOutputAppend: ProvenAppend | undefined;
+
+  get sourceIsRawJson(): boolean {
+    return this.classifier.isRawJson;
+  }
+
+  get outputAppend(): ProvenAppend | undefined {
+    return this.lastOutputAppend;
+  }
 
   /** The markdown source ChatMarkdown should render for `source`. Non-JSON
    * sources come back unchanged (same string identity). Idempotent for a
    * given (source, streaming) pair, so it is safe inside a `$derived`. */
-  render(source: string, streaming: boolean): string {
-    if (!isRawJsonSource(source)) {
-      if (this.isJson) this.reset();
-      return source;
+  render(source: string, streaming: boolean, sourceAppend?: ProvenAppend): string {
+    if (source === this.prev) {
+      this.lastRenderAppended = false;
+      return this.finish(
+        this.isJson ? this.renderFence(streaming) : source,
+        streaming,
+      );
     }
-    if (!this.isJson || source.length < this.prev.length || !source.startsWith(this.prev)) {
+
+    const previousSourceLength = this.prev.length;
+    let chunk: string;
+    const appendProven = matchesProvenAppend(sourceAppend, this.prev, source);
+    if (appendProven && sourceAppend) {
+      chunk = sourceAppend.delta;
+      this.lastRenderAppended = true;
+    } else if (
+      source.length > this.prev.length &&
+      source.startsWith(this.prev)
+    ) {
+      chunk = source.slice(this.prev.length);
+      this.lastRenderAppended = true;
+    } else {
       this.reset();
-      this.isJson = true;
+      chunk = source;
+      this.lastRenderAppended = false;
     }
-    this.consume(source, this.prev.length);
+
+    const wasJson = this.isJson;
+    const wasRootClosed = this.rootClosed;
+    this.classifier.push(chunk);
+    this.isJson = this.classifier.isRawJson;
+    if (!this.isJson) {
+      if (wasJson) this.clearFormatting();
+      this.prev = source;
+      return this.finish(
+        source,
+        streaming,
+        this.lastRenderAppended && !wasJson && !appendProven ? chunk : undefined,
+        appendProven && !wasJson ? sourceAppend : undefined,
+      );
+    }
+
+    const formattedDelta = this.consume(chunk);
     this.prev = source;
-    const body = '```json\n' + this.out;
-    if (this.rootClosed || streaming) return body;
-    return body + '\n```';
+    const rendered = this.renderFence(streaming);
+    const outputStayedAppendOnly = wasRootClosed ||
+      (this.previousStreaming && (streaming || this.rootClosed));
+    const outputDelta = this.lastRenderAppended
+      ? wasJson
+        ? outputStayedAppendOnly ? formattedDelta : undefined
+        : previousSourceLength === 0
+          ? rendered
+          : undefined
+      : undefined;
+    return this.finish(rendered, streaming, outputDelta);
   }
 
   private reset(): void {
+    this.classifier.reset();
     this.prev = '';
+    this.isJson = false;
+    this.lastRenderAppended = false;
+    this.lastOutputAppend = undefined;
+    this.clearFormatting();
+  }
+
+  private clearFormatting(): void {
     this.out = '';
     this.depth = 0;
     this.inString = false;
     this.escape = false;
     this.pendingOpen = false;
     this.rootClosed = false;
-    this.isJson = false;
+    this.rootTailStarted = false;
   }
 
-  private consume(source: string, from: number): void {
+  private renderFence(streaming: boolean): string {
+    const body = '```json\n' + this.out;
+    return this.rootClosed || streaming ? body : body + '\n```';
+  }
+
+  private finish(
+    rendered: string,
+    streaming: boolean,
+    outputDelta?: string,
+    outputAppend?: ProvenAppend,
+  ): string {
+    this.lastOutputAppend = undefined;
+    if (
+      outputAppend &&
+      matchesProvenAppend(outputAppend, this.lastRendered, rendered)
+    ) {
+      this.lastOutputAppend = outputAppend;
+      rendered = outputAppend.next;
+    } else if (outputDelta !== undefined) {
+      const append = createProvenAppend(this.lastRendered, outputDelta);
+      // Formatting is prefix-stable by construction and `outputDelta` is the
+      // only mutation applied above. Make that append the canonical returned
+      // string rather than rebuilding and comparing the growing document.
+      // The randomized prefix/final differential tests guard this invariant.
+      this.lastOutputAppend = append;
+      rendered = append.next;
+    }
+    this.lastRendered = rendered;
+    this.previousStreaming = streaming;
+    return rendered;
+  }
+
+  private consume(source: string): string {
     let out = '';
     const n = source.length;
-    for (let i = from; i < n; i += 1) {
+    for (let i = 0; i < n; i += 1) {
       if (this.rootClosed) {
-        out += source.slice(i);
+        const tail = source.slice(i);
+        if (!this.rootTailStarted) {
+          this.rootTailStarted = true;
+          // A fence closer is valid only when nothing follows its marker on
+          // that physical line. Preserve a source-owned line break. Insert
+          // one when trailing prose begins inline so the promised markdown
+          // tail cannot turn the closer back into code content.
+          const first = tail.charCodeAt(0);
+          if (first !== 0x0a && first !== 0x0d) out += '\n';
+        }
+        out += tail;
         break;
       }
       const ch = source[i];
@@ -169,6 +323,7 @@ export class RawJsonFenceFormatter {
       }
     }
     this.out += out;
+    return out;
   }
 
   private closeRoot(): string {

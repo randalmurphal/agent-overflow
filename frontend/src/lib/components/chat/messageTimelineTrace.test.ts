@@ -209,6 +209,40 @@ describe('messageTimelineTrace', () => {
     root.remove();
   });
 
+  it('never observes a row removed before its deferred baseline frame', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const stop = startTimelineRowResizeTrace(root);
+    const observer = firstResizeObserver();
+
+    const row = document.createElement('div');
+    row.dataset.rowIndex = 'transient';
+    root.appendChild(row);
+    root.removeChild(row);
+    await nextFrame();
+
+    expect(observer.isObserved(row)).toBe(false);
+    stop();
+    root.remove();
+  });
+
+  it('cancels a pending row baseline when the trace stops', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const stop = startTimelineRowResizeTrace(root);
+    const observer = firstResizeObserver();
+
+    const row = document.createElement('div');
+    row.dataset.rowIndex = 'pending';
+    root.appendChild(row);
+    await Promise.resolve();
+    stop();
+    await nextFrame();
+
+    expect(observer.isObserved(row)).toBe(false);
+    root.remove();
+  });
+
   it('ignores child-list mutations inside an already tracked row', async () => {
     const root = document.createElement('div');
     document.body.appendChild(root);

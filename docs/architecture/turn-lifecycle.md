@@ -36,18 +36,18 @@ invocation the agent makes produces exactly one `tool_call` row.
 
 ### Applies equally to
 
-- Inline tools (Read, Grep, Edit, inline Bash) — completion carries
+- Inline tools (Read, Grep, Edit, inline Bash): completion carries
   the exit/stdout result.
 - Backgrounded Claude tools (Bash with `run_in_background:true`,
-  Task subagent) — completion is the **placeholder** tool_result
+  Task subagent): completion is the **placeholder** tool_result
   (`backgroundTaskId: ...`); actual task result lands via the task
   lifecycle (below).
-- TaskOutput — a regular inline tool the agent may call to retrieve a
+- TaskOutput: a regular inline tool the agent may call to retrieve a
   still-retained background task. Its own `tool_use_id`'s completion
   is the retrieval result. Any background-task details it surfaces are
   additive and must not replace the TaskOutput tool row.
 - Codex tools (shell, mcp, fileChange, collab spawn/wait/resume/close)
-  — all complete via `item/completed`.
+  all complete via `item/completed`.
 
 ### Status flipping on completion
 
@@ -117,30 +117,30 @@ When a turn ends, triage force-closes any `tool_call` rows with
 `status='running' && !is_background && turn_index=currentTurn` to
 `status='errored'` with a synthesized completion. This handles
 provider bugs where a `tool_result` is dropped. Backgrounded
-launches are exempt — they legitimately stay `running`.
+launches are exempt. They legitimately stay `running`.
 
 ## 2. Task lifecycle (Claude only)
 
 Backgrounded tasks produce a **separate** event stream keyed by
-`task_id`. This is strictly additive — it layers task-completion
+`task_id`. This is strictly additive: it layers task-completion
 details on top of the tool-call row; it never replaces the tool
 lifecycle.
 
 ### Participants
 
-- `system/task_started` — mirrors the mapping `task_id ↔ tool_use_id`
+- `system/task_started`: mirrors the mapping `task_id ↔ tool_use_id`
   into `items.meta.task_id` so reconnect can correlate by task_id
   alone.
 - `system/task_updated` with `patch.status` in
-  `{completed, failed, killed}` — **authoritative lifecycle
+  `{completed, failed, killed}`: **authoritative lifecycle
   terminal**. Emits `EventBackgroundTaskTerminal`.
 - `user` tool_result for TaskOutput with
-  `tool_use_result.task.status` terminal — explicit agent retrieval of
+  `tool_use_result.task.status` terminal: explicit agent retrieval of
   a still-retained task. It can carry `exitCode`, `output`, `result`,
   `description`, and sometimes `output_file`. It is useful as
   enrichment/fallback, but the UI lifecycle must not depend on the
   agent choosing to call it.
-- `system/task_notification` — **not a completion source**. It is an
+- `system/task_notification`: **not a completion source**. It is an
   agent notification. It may carry `summary` and `output_file` that the
   UI can render as a separate notification row, but it must not mutate
   task completion state. See
@@ -151,24 +151,24 @@ lifecycle.
 Three additional `system/*` pushes ride the same `task_id` keyspace.
 None of them is a lifecycle transition, and none may be treated as one.
 
-- **`system/task_progress` — live only, never history.** The CLI emits a
+- **`system/task_progress`: live only, never history.** The CLI emits a
   tick after every tool round the subagent completes, carrying
   cumulative `usage{total_tokens, tool_uses, duration_ms}` plus the
   agent's `description` and `last_tool_name`. The parser resolves the
   tick's `task_id` to the LAUNCH `tool_use_id` and emits
   `EventSubagentProgress`; triage MERGES it into an in-memory entry
   keyed `(threadId, itemId)` and fans it out on
-  `provider:subagent_progress`. Nothing is written per tick — persisting
+  `provider:subagent_progress`. Nothing is written per tick: persisting
   a row per tool round for work the provider already records is exactly
   what principle 3 forbids. The FINAL numbers land once, on the launch
   row's `meta.subagentProgress`, when the launch reaches its terminal
   (`persistSubagentFinalProgress`), which is also where
   `task_notification`'s authoritative `usage` block folds in. A tick
   whose `task_id` this parser cannot resolve (it reconnected mid-agent)
-  is dropped with a log line — never emitted with an empty `ItemID`,
+  is dropped with a log line, never emitted with an empty `ItemID`,
   which would address the wrong row.
 - **`system/task_updated` with `patch.is_backgrounded: true` and NO
-  `patch.status` — stamps the launch row.** This is the only wire-typed
+  `patch.status`: stamps the launch row.** This is the only wire-typed
   statement that a FOREGROUND agent was moved to the background
   mid-flight, i.e. the moment ordinary sidechain forwarding stops. It emits
   `EventSubagentBackgrounded` on the launch `tool_use_id`; triage flips
@@ -179,10 +179,10 @@ None of them is a lifecycle transition, and none may be treated as one.
   terminal and must not clear the task's liveness: the §E5 async ack that
   follows still needs to carry `is_background: true`. A patch that DOES
   carry a terminal `status` takes the terminal path above unchanged.
-- **`system/background_tasks_changed` — a LEVEL set, and a tray nudge.**
+- **`system/background_tasks_changed`: a LEVEL set, and a tray nudge.**
   The payload's `tasks` array is the provider's FULL replacement set of
   currently-backgrounded tasks, not a delta, and the distinction between
-  an ABSENT `tasks` key (no statement — dropped) and an EMPTY array (a
+  an ABSENT `tasks` key (no statement, dropped) and an EMPTY array (a
   real "nothing is backgrounded now") is load-bearing, exactly as it is
   for `commands_changed`. It emits `EventBackgroundTasksChanged`, which
   triage forwards on the shared `provider:background_tasks_changed`
@@ -194,7 +194,7 @@ None of them is a lifecycle transition, and none may be treated as one.
 AO can also DRIVE this transition rather than only observe it:
 `Session.BackgroundTask` sends `control_request{subtype:
 "background_tasks", tool_use_id}` and verifies
-`response.backgrounded == true` — a `false` is the provider saying no
+`response.backgrounded == true`. A `false` is the provider saying no
 foreground task matched, which is an error, not a silent no-op.
 `App.BackgroundClaudeTask` is the bound method behind it (local-only,
 same class as `StopClaudeTask`). The `task_updated` and
@@ -203,7 +203,7 @@ the row is already stamped by the time the call returns.
 
 ### Inline `local_agent` launches emit this lifecycle too
 
-`system/task_started` fires for EVERY Bash/Task invocation — foreground
+`system/task_started` fires for EVERY Bash/Task invocation, foreground
 (awaited) and backgrounded alike. Consequently a `local_agent`
 (Task/Agent tool) launch that completes INLINE via its own real
 `tool_result` (no `is_background` on the launch) still gets a later
@@ -213,10 +213,10 @@ exactly as a real backgrounded launch's would; the function's
 `!launch.IsBackground` early return is what keeps an inline launch from
 getting a redundant `tool_completion` sibling alongside its
 already-completed launch row. See
-[claude-wire.md §E5 "Async local_agent launch (bare ack)"](../references/claude-wire.md#user-message--tool_result-blocks)
+[claude-wire.md §E5 "Async local_agent launch (bare ack)"](../references/claude-wire.md#user-message-tool_result-blocks)
 for the additional async-ack launch shape this applies to.
 
-### Resuming an idle async agent — the SendMessage rebind carrier
+### Resuming an idle async agent: the SendMessage rebind carrier
 
 An async `local_agent` launch (previous section) goes idle once it
 finishes and can be resumed by the model calling the harness's resume
@@ -224,7 +224,7 @@ tool (observed: `SendMessage`, `input.to: <agentId>`). The CLI reacts
 by re-firing `system/task_started` with the SAME `task_id` but the
 resuming tool's OWN `tool_use_id`, carrying the ORIGINAL agent's
 `description`/`subagent_type`. See
-[claude-wire.md §E6 "Resuming an idle async agent"](../references/claude-wire.md#user-message--tool_result-blocks)
+[claude-wire.md §E6 "Resuming an idle async agent"](../references/claude-wire.md#user-message-tool_result-blocks)
 for the full wire shapes.
 
 AO embraces the rebind instead of routing the resumed lifecycle back
@@ -234,14 +234,14 @@ round's **background carrier**.
 - The parser lets `rememberTaskToolUse` rebind normally (no
   first-binding-wins) and marks the resuming tool_use backgrounded via
   the same mechanism `run_in_background` launches use, so its own
-  `tool_result` ack — which carries no async marker of its own —
+  `tool_result` ack, which carries no async marker of its own,
   still emits `EventToolComplete{is_background:true}`.
 - Triage's keep-running flip (§1 above, the `!launch.IsBackground` →
   `IsBackground` transition) additionally rewrites the carrier's
   `Summary` to the resumed agent's identity (`"Agent: <description>"`,
   preferring the original launch row's own Summary when it's still
   around) whenever the launch row's meta carries
-  `resumes_tool_use_id` — stamped by the parser's enriched
+  `resumes_tool_use_id`, stamped by the parser's enriched
   meta-only `EventToolStart` for the rebind `task_started`. Without
   this the carrier would read "SendMessage -> done" instead of
   identifying the agent it's resuming.
@@ -249,12 +249,12 @@ round's **background carrier**.
   `tool_completion` sibling under the carrier
   (`"complete:"+carrierID`, distinct from round 1's
   `"complete:"+originalLaunchID`) through the SAME `writeBackgroundCompletionSibling`
-  path — no special-casing needed there.
+  path, with no special-casing needed there.
 
 Why: the idle-session reaper (`app_session_reaper.go`) keeps a quiet
 session alive only while `ListRunningBackgroundToolCalls` is
 non-empty. The ORIGINAL launch already has its round-1 sibling once
-round 1 completes, so it can never satisfy that predicate again — if
+round 1 completes, so it can never satisfy that predicate again. If
 nothing else is backgrounded, a quiet resumed agent would get its
 whole session reaped mid-run without the carrier. The original launch
 row and its round-1 sibling are untouched by round 2; the original
@@ -266,7 +266,7 @@ summary.
 `taskToolUses` binding AND the `agentLaunchToolUses` launch-tool
 marker for the resuming tool (a double restart mid-stream), the resume
 is undetectable from that instance's state alone and the round is
-reaper-unprotected. Not engineered around — see the parser's
+reaper-unprotected. Not engineered around. See the parser's
 `task_started` case comment.
 
 ### Merge rule
@@ -282,11 +282,11 @@ dedup is required, but store-level merging must be monotonic: status
 can move to terminal, but output/exit-code/output-file data should not
 be erased by a later lifecycle-only event.
 
-### Tray decoupling — process state vs. agent observation (Tray-A)
+### Tray decoupling: process state vs. agent observation (Tray-A)
 
-The tray reflects **process state** — "is this background process
-still running on the host?" — while the chat reflects **agent
-observation state** — "has the agent observed completion?". The two
+The tray reflects **process state** ("is this background process
+still running on the host?") while the chat reflects **agent
+observation state** ("has the agent observed completion?"). The two
 diverge when the host process exits but the agent hasn't yet noticed
 (e.g. a backgrounded `sleep 30` finishes mid-turn while the agent is
 still streaming text). Splitting the two prevents the chat from
@@ -303,21 +303,21 @@ Implementation:
    written yet.** Triage emits
    `provider:background_task_state{state:"exited"}` so the frontend
    can refresh.
-2. **Agent observation** — `system/task_notification` (the model
+2. **Agent observation**, either `system/task_notification` (the model
    sees the queued attachment on the next iteration) or a
-   `TaskOutput` `tool_result` (the model explicitly polled) — drains
+   `TaskOutput` `tool_result` (the model explicitly polled), drains
    the stash via `TakePendingBackgroundTerminal` and, **only when the
    launch is actually backgrounded** (`launch.IsBackground`), writes
    the `tool_completion` sibling at the current write head and emits
    `provider:background_task_state{state:"drained"}`. An INLINE launch
-   (see above) still drains the stash — the drain is the load-bearing
+   (see above) still drains the stash (the drain is the load-bearing
    side effect keeping `pending_background_task_terminals` from
-   leaking — but writes no sibling and emits no `"drained"` event; that
+   leaking) but writes no sibling and emits no `"drained"` event; that
    is safe because `ListLiveBackgroundTasks` never surfaces a
    foreground launch in the first place. After a real backgrounded
    drain, the tray surfaces both rows joined together until they age
    out via retention. When the `task_notification` event itself performs
-   the drain, the sibling is written — and reaches the wire — **before**
+   the drain, the sibling is written (and reaches the wire) **before**
    the notification row: the frontend hides the report-bearing
    notification row only once a completed lifecycle row with the same
    `task_id` exists (`notificationFilter.ts`), so notification-first
@@ -327,12 +327,12 @@ Implementation:
 3. **`task_updated` with `status="killed"`** is a deliberate carve-out:
    the `killed` status is only reached via the user's explicit
    `stop_task` (the StopClaudeTask binding behind the tray's Stop
-   button). The user already knows the process was stopped — there's
-   nothing for the agent to "observe" — so triage skips the stash and
+   button). The user already knows the process was stopped (there's
+   nothing for the agent to "observe"), so triage skips the stash and
    writes the sibling immediately so chat shows the killed badge
    without waiting for a future turn.
 
-### Crash recovery — recoverable Claude background launches
+### Crash recovery: recoverable Claude background launches
 
 If the previous app instance died while a Claude backgrounded launch was
 still in `status='running'`, the agent will never observe its
@@ -358,7 +358,7 @@ again.
 
 A `task_id` is **not** required. The synthetic completion sibling is
 keyed off the launch id (`backgroundCompletionID` returns
-`"complete:"+launchID`), so it is idempotent with or without one — and
+`"complete:"+launchID`), so it is idempotent with or without one, and
 the `task_id` only gates the (task-id-keyed) stash drain above. This
 matters for `claude-tui`: the interactive provider reconstructs
 `is_background=1` from the tool_use input but never reconstructs
@@ -366,11 +366,16 @@ matters for `claude-tui`: the interactive provider reconstructs
 Requiring one is exactly what left them rendering "running" forever
 after a restart.
 
-Codex background projections use a different lifecycle. Inactive Codex
-rows can remain `status='running'` with
-`live_background_active=false`; they are hidden from live-background
-queries and are owned by the Codex ghost-flip/reconcile path, not this
-Claude task recovery sweep.
+Codex background projections use a different lifecycle. On startup, before a
+provider can spawn, `Store.RecoverCodexBackgroundRuntime` retires every live
+projection owned by the prior app-server. Running background terminals become
+`errored/lost`. Completed spawn cards keep `status='completed'`, receiver ids,
+and incomplete ownership, but receive `live_background_active=false` and
+`codex_background_end_reason="session_ended"`. No completion sibling is
+invented because AO cannot know whether the child completed just before the
+disconnect. A later typed child `turn/started` sets the launch live again and
+removes the end reason. The same scoped retirement runs when a Codex session
+ends inside a live app process.
 
 ### Output
 
@@ -453,8 +458,8 @@ One-to-one with a user → assistant round-trip. The authoritative
 `provider:turn_started` and `provider:turn_completed` fire **per wire
 round**, not per logical turn. A round corresponds to one provider
 stop signal: Claude `result`, Claude soft message_delta stop_reason,
-or Codex `turn/completed`. A logical agent-overflow turn — one
-user-typed prompt — can span multiple
+or Codex `turn/completed`. A logical agent-overflow turn (one
+user-typed prompt) can span multiple
 rounds. The canonical multi-round case is Claude's CLI synthesizing a
 `type:"user"` envelope from a `task_notification`: the assistant's
 first `end_turn` lands as result envelope #1, the synthesized prompt
@@ -466,7 +471,7 @@ Two cadences run in parallel:
 
 | Cadence | Driver | Granularity | What it controls |
 |---|---|---|---|
-| Frontend visibility | `currentRoundByThread` / `setOpenRoundSnapshot` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions — working indicator, Stop button, composer block, read-state projection |
+| Frontend visibility | `currentRoundByThread` / `setOpenRoundSnapshot` / `takeOpenRound` | Per wire round | `provider:turn_started`/`provider:turn_completed` emissions: working indicator, Stop button, composer block, read-state projection |
 | Persistence | `claimTurnSettlement` / `settleTurnRow` | Per logical turn (turnIndex) | `turns` row UPDATE, streaming-item settlement |
 
 Round entry points:
@@ -478,7 +483,7 @@ Round entry points:
 - **`handleInit` re-round branch** opens rounds 2+ when an
   `EventInit` arrives for a thread whose current logical turn is
   already settled (`settledTurns[turnKey]==true`). Calls
-  `setOpenRoundSnapshot` only — does NOT call `setOpenTurn`. This is
+  `setOpenRoundSnapshot` only, and does NOT call `setOpenTurn`. This is
   load-bearing: id-allocating counters must survive across the
   multi-result-per-turn boundary so post-round-1 rows don't collide
   with rows already persisted under the same logical turn (see
@@ -567,18 +572,18 @@ The `turns` row carries:
 - `turn_index` (incrementing per-thread counter)
 - `started_at` (ms)
 - `completed_at` (ms, nullable; null = turn is in-flight right now.
-  Crash leftovers are settled as `interrupted` by the boot sweep — see
-  §Crash behavior — so null never survives an app restart)
+  Crash leftovers are settled as `interrupted` by the boot sweep, per
+  §Crash behavior, so null never survives an app restart)
 - `stop_reason` (text: `end_turn` / `max_tokens` / `tool_use` /
   `stop_sequence` / `refusal` / `error` / `interrupted`)
-- `assistant_message_id` (text, nullable) — provider-derived final
+- `assistant_message_id` (text, nullable): provider-derived final
   assistant message id when available. Claude derives it from the last
   in-stream assistant `message.id`; current Codex `turn/completed`
   does not carry one.
-- `token_usage_json` — the turn's per-turn usage delta (aggregate
+- `token_usage_json`: the turn's per-turn usage delta (aggregate
   across models; the per-model split lands in `usage_ledger`).
   First-non-empty-wins across multi-result settles.
-- `error_message` — populated when `stop_reason` indicates error.
+- `error_message`: populated when `stop_reason` indicates error.
 
 ### Crash behavior
 
@@ -594,17 +599,17 @@ items. `Router.RecoverCrashedTurns` runs once during
 null row is provably crash residue) and performs the same settle the
 in-app path would have: `completed_at=now`,
 `stop_reason='interrupted'`, item flip with the " — interrupted"
-suffix (backgrounded launches exempt — the background recovery sweep
+suffix (backgrounded launches exempt, since the background recovery sweep
 below owns those). One transaction, O(crashed rows) via the partial
 index `idx_turns_inflight`. Without this sweep the null row wedges
-`GetActiveTurn`-guarded flows — most visibly revert, whose "interrupt
+`GetActiveTurn`-guarded flows, most visibly revert, whose "interrupt
 the current turn" error is unsatisfiable when no session exists to
 interrupt.
 
 Post-sweep, a `completed_at=null` row during an app run means
 genuinely live provider work. The durable "interrupted" signal that
 survives restarts is `stop_reason='interrupted'`; the sidebar's boot
-pill (`Thread.HasIncompleteTurn`) covers both encodings — an unseen
+pill (`Thread.HasIncompleteTurn`) covers both encodings: an unseen
 in-flight turn, or an unseen settled-interrupted turn.
 
 The frontend still shows no active-turn spinner for any of this
@@ -616,7 +621,7 @@ If a later turn exists for the same thread, any older
 historical corruption from a dropped/faulty completion and is ignored
 by backend active-turn checks (and settled by the same boot sweep).
 
-### Non-goals — no session-liveness probing
+### Non-goals: no session-liveness probing
 
 The UI does NOT probe provider session liveness to infer turn
 state. A session can legitimately have backgrounded tasks still
@@ -625,7 +630,7 @@ running while its owning turn has completed (common case:
 "is the process still alive" tells you nothing useful about turn
 state. Session probe code exists at
 `internal/provider/codex/session_probe.go` for recovery/resume use
-cases only — it must not feed turn detection.
+cases only. It must not feed turn detection.
 
 ## Event table (wire → internal → frontend)
 
@@ -638,9 +643,9 @@ cases only — it must not feed turn detection.
 | Claude `system/task_updated` terminal | `EventBackgroundTaskTerminal` | `provider:background_task_state` exited | Stash terminal in `pending_background_task_terminals`; no chat sibling yet |
 | Claude TaskOutput `tool_result` | `EventToolComplete` + optional `EventBackgroundTaskTerminal` | `provider:item_event` upsert | Close TaskOutput row; drain stash and write/enrich sibling when terminal data is present |
 | Claude `system/task_notification` | `EventBackgroundTaskNotification` (+ `meta.usage` when present) | `provider:item_event` upsert (notification row, backgrounded top-level launches only) | No lifecycle state mutation; the authoritative `usage` folds into the launch row's final `meta.subagentProgress` |
-| Claude `system/task_progress` | `EventSubagentProgress` | `provider:subagent_progress` | LIVE ONLY — merged into an in-memory entry per launch, fanned out, never persisted per tick; final numbers persist on the launch row at its terminal |
+| Claude `system/task_progress` | `EventSubagentProgress` | `provider:subagent_progress` | LIVE ONLY: merged into an in-memory entry per launch, fanned out, never persisted per tick; final numbers persist on the launch row at its terminal |
 | Claude `system/task_updated` `patch.is_backgrounded` (no status) | `EventSubagentBackgrounded` | `provider:item_event` patch | Flip `is_background` on the LAUNCH row + stamp `meta.subagentBackgroundedAt`; not a terminal, liveness stays armed |
-| Claude `system/background_tasks_changed` | `EventBackgroundTasksChanged` | `provider:background_tasks_changed` | LEVEL set — forwarded as a tray nudge carrying full membership; absent `tasks` key is dropped, empty array is a real empty set; no row written |
+| Claude `system/background_tasks_changed` | `EventBackgroundTasksChanged` | `provider:background_tasks_changed` | LEVEL set: forwarded as a tray nudge carrying full membership; absent `tasks` key is dropped, empty array is a real empty set; no row written |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 | Codex `item/started` | `EventToolStart` | `provider:item_event` upsert for persisted items | Upsert item row; `unifiedExecStartup` starts stay transient tray state |
 | Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert for persisted items | Update item row; unifiedExec completion clears live state and only persists while a Codex wire round is active |
@@ -691,8 +696,8 @@ registry, never on `ThreadPane`. The pane exposes `pane.activeTurn`
 as a transparent shim onto `getActiveTurn(pane.threadId)` so existing
 readers don't change shape, but no per-pane copy of the data exists.
 This avoids the bug where switching threads cleared the per-pane
-`activeTurn` while the global store still held the live record —
-the chat working indicator would go dark on a thread the backend
+`activeTurn` while the global store still held the live record.
+The chat working indicator would go dark on a thread the backend
 was actively working on.
 
 `aborted` and `errorMessage` on `SettledTurn` remain part of the
@@ -719,13 +724,13 @@ get isTurnActive() {
 
 On `SwitchThread`, the frontend calls `ListRecentTurns(threadId, 2)`
 to rehydrate `latestSettledTurn` from the DB. The global active-turn
-registry is NOT rehydrated from persistence — it's only set on live
+registry is NOT rehydrated from persistence. It's only set on live
 `provider:turn_started` events. A crashed turn rehydrates as "turn
 was interrupted", not "turn is currently active": the boot sweep has
 settled it with `stop_reason='interrupted'` (see §Crash behavior), so
 it surfaces through the normal settled-turn projection. When the user switches AWAY from a thread with a live
 turn and back, the indicator returns because the global registry
-held the record across the switch — nothing in pane lifecycle
+held the record across the switch, and nothing in pane lifecycle
 clears it.
 
 ### Per-thread send queue
@@ -739,7 +744,7 @@ keyed identically to the global active-turn registry, and survives
 thread switches.
 
 `QueueItem` captures everything needed to dispatch the message
-later: `message`, full `attachments` (not ids — click-to-edit
+later: `message`, full `attachments` (not ids: click-to-edit
 needs to restore them into the composer without a backend
 round-trip), `terminalChips`, and plan-revision metadata
 (`sourceProposedPlan`, `revisionSourceProposedPlan`,
@@ -747,8 +752,8 @@ round-trip), `terminalChips`, and plan-revision metadata
 
 **Drain trigger.** Every `provider:turn_completed` listener fires
 `tryDrainNextQueued(threadId)` after the existing
-`projectTurnCompleted` call. Drain is uniform across cause —
-success, error, or aborted — matching both reference UIs:
+`projectTurnCompleted` call. Drain is uniform across cause
+(success, error, or aborted), matching both reference UIs:
 
 - Claude Code's `useQueueProcessor` flips on every `!isQueryActive`
   transition (`src/hooks/useQueueProcessor.ts`).
@@ -765,10 +770,10 @@ the next user message. No special-case wiring.
 
 1. `provider:turn_completed` arrives → `activeTurn` cleared.
 2. `popFront(threadId)` → head item lifted; if undefined, return.
-3. `projectSendStarted(threadId)` → `pendingSendThreads.add` —
-   the working-indicator bridge predicate keeps the spinner up
+3. `projectSendStarted(threadId)` → `pendingSendThreads.add`.
+   The working-indicator bridge predicate keeps the spinner up
    across the RPC roundtrip (see below).
-4. `await SendMessageWithOptions(...)` — typically 50–200ms.
+4. `await SendMessageWithOptions(...)`, typically 50–200ms.
 5. Success → backend emits `provider:turn_started` → existing
    `projectTurnStarted` handler clears `pendingSendThreads`.
 6. Failure → `enqueueAtFront(threadId, item)` restores the popped
@@ -794,7 +799,7 @@ and the counter ticks from `0s`.
 **Approval gate.** During a pending tool approval, the wire round
 hasn't completed (backend's `currentRoundByThread` stays set). No
 `turn_completed` fires until approval resolves. Drain naturally
-waits — there's no special-case approval-aware drain code.
+waits. There's no special-case approval-aware drain code.
 
 **Stdin race (Claude only, accepted).** When round N ends with
 both a queued user message AND a pending bg-subagent task
@@ -803,7 +808,7 @@ to stdin while the CLI may auto-inject the task_notification.
 Whichever reaches the CLI input handler first becomes round N+1.
 Claude Code's source resolves this deterministically via
 in-process priority (user `next` beats notification `later`); we
-cannot — stdin write order is non-deterministic. Accepted: the
+cannot, because stdin write order is non-deterministic. Accepted: the
 model handles both messages in arrival order, ordering is
 non-deterministic but the timeline reflects what the agent
 actually saw, not a presumed order.
@@ -817,14 +822,14 @@ should call `resetSendQueueForTest()` in `beforeEach`.
 Every terminal failure mode lands on one of five paths so the
 working indicator clears and the user gets actionable copy:
 
-1. **API error mid-turn (session alive)** — Claude `assistant.error`
+1. **API error mid-turn (session alive)**: Claude `assistant.error`
    parses to a fatal `EventError` tagged `expect_turn_complete: true`.
    The wire `result{is_error:true}` then arrives and settles the turn
    normally; triage routes the error item as `kind: "api_error"`
    with the SDK enum on Meta. The frontend renders an `APIErrorRow`
    with branched CTA copy (rate_limit → "Add credits" link,
    authentication_failed → "Run /login", etc).
-2. **Process exit during turn** —
+2. **Process exit during turn**:
    `EventSessionStatus{Content:"error"}` → triage promotes to
    `provider:session_died` event, persists a `notification` row with
    `meta.kind = "session_died"`, and synthesizes an
@@ -835,31 +840,31 @@ working indicator clears and the user gets actionable copy:
    timeline as historical record; the typed event drives the
    `ProviderStatusBanner`'s session-error slot with Reconnect
    button.
-3. **Clean EOF mid-turn (no `EventSessionStatus{"error"}`)** —
+3. **Clean EOF mid-turn (no `EventSessionStatus{"error"}`).**
    `Router.CleanupThread` is the safety net: any open turn at
    teardown synthesizes a truncated turn-complete before state is
    torn down. Idempotent against the path above via
    `claimTurnSettlement`.
-4. **Codex `error+willRetry:false`** — sets `meta.fatal:true` so the
+4. **Codex `error+willRetry:false`**: sets `meta.fatal:true` so the
    triage `handleError` fatal branch closes the turn. No
    `expect_turn_complete` opt-in (Codex doesn't follow up with a
    `result` envelope), so the synthetic truncated turn-complete fires.
 5. **Error `result` with no open round and no open turn** (pre-init
-   startup failure — e.g. an unusable `--resume-session-at` cursor,
-   invariant 28; the process emits only the error result and lingers) —
+   startup failure, e.g. an unusable `--resume-session-at` cursor,
+   invariant 28; the process emits only the error result and lingers):
    `handleTurnComplete`'s orphan branch persists an error item
    attributed to the pending-send head when one exists (the send that
    triggered the doomed lazy start), else the last turn index, and
    suppresses the queued-send flush so deferred sends aren't
-   dispatched into a dead session. Settled turns are excluded — a late
+   dispatched into a dead session. Settled turns are excluded: a late
    wire `result` folding into a soft-closed round still routes to
    `persistLateTurnPayload`, never here. The app layer additionally
-   reaps the never-inited session (`teardownDeadPreInitSession` —
+   reaps the never-inited session (`teardownDeadPreInitSession`,
    Claude-only, since the lingering-process failure mode is the Claude
    CLI's; token- and epoch-guarded so a racing user retry's
    replacement session is never torn down) after restoring any queued
    sends to the composer draft, so the next send lazy-starts fresh;
-   recovery is a manual retry — the failure mode is deterministic, so
+   recovery is a manual retry: the failure mode is deterministic, so
    auto-retry would loop silently. The error-item upsert is the single
    frontend surface (it clears the optimistic pending-send indicator);
    no `session_died` banner fires for a session that never lived. See
@@ -876,7 +881,7 @@ Transient retries (Claude `system.api_retry`, Codex
 `error+willRetry:true`) land on `EventAPIRetry` and produce a
 single timeline row with deterministic id `retry:<turnIndex>` so
 re-attempts upsert in place. Mirroring Claude Code's
-`SystemAPIErrorMessage.tsx`, attempts < 4 are dropped silently —
+`SystemAPIErrorMessage.tsx`, attempts < 4 are dropped silently, since
 most retries succeed within three attempts. Forward-progress events
 (text, tool start/complete, turn complete) flip the row's status
 to `completed` so it reads as historical context. There is no
@@ -901,7 +906,7 @@ counterpart "retry succeeded" wire signal from either provider.
 - **Probing session liveness for turn state.** See §Non-goals.
 - **Rewriting tool_use_id between start and complete.** Breaks the
   tool-lifecycle invariant. See `internal/provider/codex/session.go`'s
-  close_agent rewrite — it's symmetric (both start AND complete
+  close_agent rewrite. It's symmetric (both start AND complete
   rewrite), but even that pattern is a smell; prefer one-shot upserts.
 - **Consuming a tool's `tool_result` in another code path.** This
   was the TaskOutput bug's root cause. The standard completion path

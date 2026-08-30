@@ -187,7 +187,7 @@ export interface ClaudeThinking {
 }
 
 export interface Settings {
-  // NOTE: `theme` used to live here and is RETIRED (docs/specs/theme-system.md
+  // NOTE: `theme` used to live here and is RETIRED (docs/architecture/theme-system.md
   // §6.2). The light/dark mode is a property of the client machine, not of a
   // backend, so it lives in `<configDir>/themes/appearance.json` and is read
   // through `stores/appearance.svelte.ts`. The Go field is retired the same

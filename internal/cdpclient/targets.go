@@ -31,8 +31,26 @@ type Endpoint struct {
 	// HTTPBase is the debugger's HTTP root ("http://127.0.0.1:9224"),
 	// empty when WSURL was given directly.
 	HTTPBase string
-	// WSURL skips discovery entirely.
+	// WSURL names a requested page, but Attach still rediscovers and verifies
+	// it against the authenticated target listing.
 	WSURL string
+}
+
+// ForRediscovery converts a page-specific websocket selector into its
+// debugger HTTP base. A page reload mints a new websocket target, so callers
+// that retain the old WSURL must rediscover by authenticated page identity.
+func (e Endpoint) ForRediscovery() (Endpoint, error) {
+	if e.HTTPBase != "" {
+		return e, nil
+	}
+	if e.WSURL == "" {
+		return Endpoint{}, fmt.Errorf("devtools endpoint has neither an HTTP base nor a page websocket")
+	}
+	base, err := debuggerHTTPBase(e.WSURL)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	return Endpoint{HTTPBase: base}, nil
 }
 
 // ParseEndpoint reads the four spellings an operator has: a bare port, a
@@ -94,19 +112,43 @@ func parsePort(s string) (int, error) {
 	return n, nil
 }
 
-// Attach resolves an endpoint to one page and opens its debugger socket.
-// A ws:// endpoint skips discovery: the caller already named the target,
-// and asking the browser to confirm it would only add a way to fail.
+// Attach resolves an endpoint to one authenticated page and opens its
+// debugger socket. Even an explicit ws:// URL is checked against the
+// debugger's target listing. The URL is a selector, not proof that it names
+// this harness instance.
 func Attach(ctx context.Context, endpoint Endpoint, wantURL string) (*Conn, Target, error) {
+	return AttachForPage(ctx, endpoint, wantURL, "")
+}
+
+// AttachForPage is Attach with an optional harness page identity. The page
+// identity is carried in the target URL by the frontend bridge, so a shared
+// browser endpoint can be selected without falling back to whichever tab the
+// debugger lists first.
+func AttachForPage(ctx context.Context, endpoint Endpoint, wantURL, pageID string) (*Conn, Target, error) {
 	if endpoint.WSURL != "" {
-		conn, err := Dial(ctx, endpoint.WSURL)
-		return conn, Target{WebSocketDebuggerURL: endpoint.WSURL}, err
+		base, err := debuggerHTTPBase(endpoint.WSURL)
+		if err != nil {
+			return nil, Target{}, err
+		}
+		targets, err := ListTargets(ctx, base)
+		if err != nil {
+			return nil, Target{}, err
+		}
+		target, err := selectPageTarget(targets, wantURL, pageID)
+		if err != nil {
+			return nil, Target{}, err
+		}
+		if target.WebSocketDebuggerURL != endpoint.WSURL {
+			return nil, Target{}, fmt.Errorf("explicit devtools page does not match the authenticated instance page: got %s, want %s", endpoint.WSURL, target.WebSocketDebuggerURL)
+		}
+		conn, err := Dial(ctx, target.WebSocketDebuggerURL)
+		return conn, target, err
 	}
 	targets, err := ListTargets(ctx, endpoint.HTTPBase)
 	if err != nil {
 		return nil, Target{}, err
 	}
-	target, err := SelectPageTarget(targets, wantURL)
+	target, err := selectPageTarget(targets, wantURL, pageID)
 	if err != nil {
 		return nil, Target{}, err
 	}
@@ -115,6 +157,18 @@ func Attach(ctx context.Context, endpoint Endpoint, wantURL string) (*Conn, Targ
 		return nil, target, err
 	}
 	return conn, target, nil
+}
+
+func debuggerHTTPBase(wsURL string) (string, error) {
+	u, err := url.Parse(wsURL)
+	if err != nil || u.Host == "" || (u.Scheme != "ws" && u.Scheme != "wss") {
+		return "", fmt.Errorf("invalid explicit devtools page url %q", wsURL)
+	}
+	scheme := "http"
+	if u.Scheme == "wss" {
+		scheme = "https"
+	}
+	return scheme + "://" + u.Host, nil
 }
 
 // targetListTimeout bounds the discovery GET. Loopback, so anything
@@ -152,14 +206,24 @@ func ListTargets(ctx context.Context, httpBase string) ([]Target, error) {
 	return targets, nil
 }
 
-// SelectPageTarget picks the page to attach to.
+// SelectPageTarget picks the page to attach to without a page identity.
 //
-// The rule, in order: page targets that are actually attachable; then the
-// one whose URL sits on the same origin as wantURL; then, if wantURL
-// matched nothing (or was not given), the ONLY page. Anything else is an
-// error listing the candidates — a browser with three tabs open must not
-// be profiled at whichever one the listing happened to put first.
+// The rule is strict: an attachable page must be on the same origin as
+// wantURL and carry the same authenticated page marker. There is no sole-page
+// fallback. Anything else is an error listing the candidates — a browser
+// with three tabs open must not be profiled at whichever one the listing put
+// first.
 func SelectPageTarget(targets []Target, wantURL string) (Target, error) {
+	return selectPageTarget(targets, wantURL, "")
+}
+
+// SelectPageTargetForPage picks the page using the authenticated page marker
+// and an optional exact frontend page identity.
+func SelectPageTargetForPage(targets []Target, wantURL, pageID string) (Target, error) {
+	return selectPageTarget(targets, wantURL, pageID)
+}
+
+func selectPageTarget(targets []Target, wantURL, pageID string) (Target, error) {
 	var pages, detached []Target
 	for _, t := range targets {
 		if t.Type != "page" {
@@ -183,40 +247,23 @@ func SelectPageTarget(targets []Target, wantURL string) (Target, error) {
 		return Target{}, fmt.Errorf("no page target on this devtools endpoint (%d target(s) of other kinds)", len(targets))
 	}
 
-	if wantURL != "" {
-		var matched []Target
-		for _, t := range pages {
-			if sameOrigin(t.URL, wantURL) {
-				matched = append(matched, t)
-			}
-		}
-		switch len(matched) {
-		case 1:
-			return matched[0], nil
-		case 0:
-			// Fall through to the single-page rule: a page can be showing
-			// something else entirely (a blank tab mid-navigation) and still
-			// be the only thing here.
-		default:
-			return Target{}, fmt.Errorf(
-				"%d page targets are on %s; name one with a ws:// debugger url%s",
-				len(matched), wantURL, renderCandidates(matched))
-		}
-	}
-
-	if len(pages) == 1 {
-		return pages[0], nil
-	}
-	return Target{}, fmt.Errorf(
-		"%d page targets on this devtools endpoint and none is on %s; name one with a ws:// debugger url%s",
-		len(pages), orAny(wantURL), renderCandidates(pages))
-}
-
-func orAny(wantURL string) string {
 	if wantURL == "" {
-		return "a known url"
+		return Target{}, fmt.Errorf("cannot select a page without the authenticated instance url%s", renderCandidates(pages))
 	}
-	return wantURL
+	var matched []Target
+	for _, t := range pages {
+		if sameOrigin(t.URL, wantURL) && samePageMarker(t.URL, wantURL) && samePageID(t.URL, pageID) {
+			matched = append(matched, t)
+		}
+	}
+	switch len(matched) {
+	case 1:
+		return matched[0], nil
+	case 0:
+		return Target{}, fmt.Errorf("no page target on the authenticated instance origin and page marker %s%s", pageMarkerForURL(wantURL), renderCandidates(pages))
+	default:
+		return Target{}, fmt.Errorf("%d page targets match the authenticated instance origin and page marker; name one with a ws:// debugger url%s", len(matched), renderCandidates(matched))
+	}
 }
 
 func renderCandidates(targets []Target) string {
@@ -244,6 +291,9 @@ func sameOrigin(targetURL, wantURL string) bool {
 	if errA != nil || errB != nil || a.Host == "" || b.Host == "" {
 		return false
 	}
+	if !strings.EqualFold(a.Scheme, b.Scheme) {
+		return false
+	}
 	if strings.EqualFold(a.Host, b.Host) {
 		return true
 	}
@@ -251,6 +301,53 @@ func sameOrigin(targetURL, wantURL string) bool {
 		return false
 	}
 	return isLoopbackHost(a.Hostname()) && isLoopbackHost(b.Hostname())
+}
+
+const pageMarkerQuery = "page"
+const pageIDQuery = "pageId"
+
+func samePageID(targetURL, wantPageID string) bool {
+	if wantPageID == "" {
+		return true
+	}
+	u, err := url.Parse(targetURL)
+	return err == nil && u.Query().Get(pageIDQuery) == wantPageID
+}
+
+func pageMarkerForURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if marker := u.Query().Get(pageMarkerQuery); marker != "" {
+		return marker
+	}
+	// Older harness URLs used the authenticated transport token as the page
+	// marker. Keep that strict check for callers still holding such a URL;
+	// new harness pages carry the dedicated `page` nonce.
+	if marker := u.Query().Get("t"); marker != "" {
+		return marker
+	}
+	return u.Query().Get("token")
+}
+
+func samePageMarker(targetURL, wantURL string) bool {
+	a, errA := url.Parse(targetURL)
+	if errA != nil {
+		return false
+	}
+	marker := pageMarkerForURL(wantURL)
+	if marker == "" {
+		return false
+	}
+	actual := a.Query().Get(pageMarkerQuery)
+	if actual == "" {
+		actual = a.Query().Get("t")
+	}
+	if actual == "" {
+		actual = a.Query().Get("token")
+	}
+	return actual == marker
 }
 
 func isLoopbackHost(host string) bool {

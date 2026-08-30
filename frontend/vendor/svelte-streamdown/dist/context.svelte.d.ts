@@ -4,6 +4,7 @@ import type { MermaidConfig } from 'mermaid';
 import type { KatexOptions } from 'katex';
 import type { LanguageInfo } from './utils/bundledLanguages.js';
 import type { ThemeRegistration } from 'shiki';
+import type { ProvenAppend } from './marked/index.js';
 export interface StreamdownContext extends Omit<StreamdownProps, keyof Snippets | 'class' | 'theme' | 'shikiTheme' | 'inlineCitationsMode'> {
     snippets: Snippets;
     shikiTheme: string;
@@ -27,6 +28,9 @@ export declare class StreamdownContext<Source extends Record<string, any> = Reco
     isMounted: boolean;
     pendingAsyncCount: number;
     registerAsyncResource(): () => void;
+    staticRetryGeneration: number;
+    requestStaticRetry(): void;
+    registerStaticRetry(listener: () => void): () => void;
     get animationTextStyle(): string | undefined;
     get animationBlockStyle(): string | undefined;
     constructor(props: Omit<StreamdownProps, keyof Snippets | 'class'> & {
@@ -96,14 +100,35 @@ export type Snippets<Source extends Record<string, any> = Record<string, any>> =
 export type StreamdownProps<Source extends Record<string, any> = Record<string, any>> = {
     streamdown?: StreamdownContext;
     static?: boolean;
+    /** Install source-preserving runtime diagnostics on rendered roots. */
+    diagnostics?: boolean;
+    /** Render synchronous completed blocks as escaped fixed HTML without Svelte token anchors. */
+    compactStaticHtml?: boolean;
+    /** Mark the first direct md-blk for host-owned outer-margin trimming. */
+    trimFirstBlockMargin?: boolean;
+    /** Mark the last direct md-blk for host-owned outer-margin trimming. */
+    trimLastBlockMargin?: boolean;
+    /** Host-owned serializers for completed custom components. Returning null keeps the component mounted. */
+    staticRenderers?: {
+        code?: (token: Tokens.Code, id: string, streamdown: StreamdownContext) => string | null;
+    };
+    /** Host frame coordinator used to amortize completed component retirement. */
+    staticWorkScheduler?: {
+        request(callback: FrameRequestCallback): number;
+        cancel(handle: number): void;
+    };
     sources?: {
         [key: string]: Source;
     };
     inlineCitationsMode?: 'list' | 'carousel';
     element?: HTMLElement;
     content: string;
+    /** Opaque proof that content extends the previous value. */
+    contentAppend?: ProvenAppend;
     class?: string;
     parseIncompleteMarkdown?: boolean;
+    /** Host proof that content is an isolated volatile tail, permitting one render lex. */
+    isolatedVolatileTail?: boolean;
     defaultOrigin?: string;
     allowedLinkPrefixes?: string[];
     allowedImagePrefixes?: string[];
@@ -172,6 +197,7 @@ export type StreamdownProps<Source extends Record<string, any> = Record<string, 
         code?: Component<{
             token: Tokens.Code;
             id: string;
+            textAppend?: ProvenAppend;
         }, any, any>;
         mermaid?: Component<{
             token: Tokens.Code;

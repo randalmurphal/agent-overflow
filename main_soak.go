@@ -84,6 +84,8 @@ func soakDefaultDataRoot() string { return launcherDefaultDataRoot("agent-overfl
 
 func harnessDefaultDataRoot() string { return launcherDefaultDataRoot("agent-overflow-harness") }
 
+func perfDefaultDataRoot() string { return launcherDefaultDataRoot("agent-overflow-perf") }
+
 func launcherDefaultDataRoot(name string) string {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
@@ -107,6 +109,9 @@ func isolatedBootMode(flags cliFlags) instanceinfo.Mode {
 	if flags.autopilot {
 		return instanceinfo.ModeSoak
 	}
+	if flags.isolatedProfile == string(instanceinfo.ModePerf) {
+		return instanceinfo.ModePerf
+	}
 	return instanceinfo.ModeHarness
 }
 
@@ -126,10 +131,13 @@ func runSoak(flags cliFlags) {
 		fatalf("%s: %v", label, err)
 	}
 	paths.AssetsFreshness = warnIfEmbeddedDistStale()
+	paths.AssetsDigest = embeddedAssetDigest()
 	if flags.window {
 		// After prepareHarness, before the first GLib call — see
 		// isolateWebviewStorage for why both ends of that window matter.
-		isolateWebviewStorage(paths.DataRoot)
+		if err := isolateWebviewStorage(paths.DataRoot); err != nil {
+			fatalf("%s: %v", label, err)
+		}
 	}
 
 	appService := newIsolatedProviderApp(paths)
@@ -184,7 +192,8 @@ func runSoak(flags cliFlags) {
 	// a graceful exit. This is exactly the instance a tool wants to attach
 	// to hours later, when nobody still has its stdout — and the one whose
 	// launcher pid a teardown needs.
-	instance := publishInstance(srv, paths, mode, flags.window, flags.launcherPID)
+	instance := publishInstance(srv, paths, mode, flags.window, flags.launcherPID, flags.launcherStartTime, flags.launcherExecutable, flags.launcherProfile, flags.launcherWebviewProfile)
+	h.setInstanceRemoval(instance.remove)
 	defer instance.remove()
 
 	if flags.autopilot {

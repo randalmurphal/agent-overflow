@@ -87,8 +87,11 @@ func patchTouchesBrowserSettings(patch map[string]any) bool {
 }
 
 func (a *App) scheduleBrowserSettings(next settings.Settings) {
-	if a.browser.mcp != nil {
-		a.browser.mcp.SetEnabled(next.BrowserEnabled)
+	if !next.BrowserEnabled && a.browser.mcp != nil {
+		// Revoke authority before the async process teardown begins. Enabling
+		// takes the opposite order in applyBrowserSettings: the manager must be
+		// ready to accept calls before the tool list becomes visible.
+		a.browser.mcp.SetEnabled(false)
 	}
 	generation := a.browser.settingsGeneration.Add(1)
 	a.browser.applyWG.Add(1)
@@ -108,6 +111,9 @@ func (a *App) applyBrowserSettings(next settings.Settings) {
 		if err := a.browser.manager.Reconfigure(browserConfigFromSettings(next)); err != nil {
 			log.Printf("browser: apply settings: %v", err)
 		}
+	}
+	if a.browser.mcp != nil {
+		a.browser.mcp.SetEnabled(next.BrowserEnabled)
 	}
 	// Compare against the last provider refresh, not UpdateSettings' immediate
 	// previous snapshot. A later display/persistence update may supersede a
