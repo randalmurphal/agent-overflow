@@ -81,8 +81,8 @@ type HarnessPerfSpec struct {
 	// not a refusal — the bridge cleans the list — because a bad budget
 	// narrows nothing, it just would not have been reported.
 	BudgetsMs []float64 `json:"budgetsMs,omitempty"`
-	// WebviewPrefixes overrides which child process names count as webview
-	// processes in the /proc walk. Empty means procrss.DefaultWebviewPrefixes.
+	// WebviewPrefixes overrides which owned process names count as webview
+	// processes. Empty means procrss.DefaultWebviewPrefixes.
 	WebviewPrefixes []string `json:"webviewPrefixes,omitempty"`
 	// MaxDurationMs caps how long the run samples before it self-finishes.
 	// Zero means harnessPerfDefaultMaxDurationMs — NOT unlimited, because
@@ -112,13 +112,13 @@ type HarnessPerfStatusResult struct {
 	FrontendSamples int    `json:"frontendSamples"`
 	ElapsedMs       int64  `json:"elapsedMs,omitempty"`
 	LastError       string `json:"lastError,omitempty"`
-	// RSSAvailable reports whether this platform has a /proc to walk.
+	// RSSAvailable reports whether this platform has a native process sampler.
 	RSSAvailable bool `json:"rssAvailable"`
 	// WebviewRSSMeasurable reports whether any sample so far MATCHED a
 	// webview child process. False is the norm on the Windows/WSL
 	// topology, where WebView2 is the launcher's child rather than ours:
 	// the renderer's memory is real but unreachable from this process's
-	// /proc subtree, and a reader must be able to tell that from "the
+	// backend ownership set, and a reader must be able to tell that from "the
 	// renderer used nothing".
 	WebviewRSSMeasurable bool `json:"webviewRssMeasurable"`
 	// EndedRunID names a run the duration ceiling self-finished whose
@@ -131,8 +131,8 @@ type harnessPerfBackendSample struct {
 	HeapBytes   uint64 `json:"heapBytes"`
 	HeapObjects uint64 `json:"heapObjects"`
 	Goroutines  int    `json:"goroutines"`
-	// RSSBytes / Processes are absent off linux, and Processes is empty for
-	// a headless harness (there is no webview child to find).
+	// RSSBytes / Processes are absent on unsupported platforms, and Processes
+	// is empty for a headless harness (there is no webview helper to find).
 	RSSBytes             uint64            `json:"rssBytes,omitempty"`
 	ChildrenRSSBytes     uint64            `json:"childrenRssBytes,omitempty"`
 	RSSAvailable         bool              `json:"rssAvailable"`
@@ -184,7 +184,7 @@ type harnessPerfBackendReport struct {
 	HeapObjects harnessPerfSeries `json:"heapObjects"`
 	Goroutines  harnessPerfSeries `json:"goroutines"`
 	// RSSBytes covers the backend process. Count 0 means no sample landed:
-	// the platform has no /proc, or every read of it failed.
+	// the platform has no native sampler, or every read of it failed.
 	RSSBytes harnessPerfSeries `json:"rssBytes"`
 	// WebviewRSSBytes covers the matched children summed, and takes a
 	// sample only on a tick that MATCHED at least one. Count 0 therefore

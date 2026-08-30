@@ -598,8 +598,9 @@ a human sees, and most timeline bugs live in the difference.
 **Perf runs are backend-clocked.** `HarnessPerfStart` arms the in-page
 meters through one ui-query, then samples on its own ticker (default
 1000ms, floor 250ms): each tick reads Go heap/goroutines through
-`runtime/metrics`, reads the backend's own RSS and its WebKit children's
-from `/proc` (`internal/procrss`, linux only), pulls one frontend sample
+`runtime/metrics`, reads the backend's own RSS and its owned WebKit helpers
+through `internal/procrss` (`/proc` on Linux; process table + responsible
+process ownership + libproc on macOS), pulls one frontend sample
 with a `perf/collect` query, and emits both halves as one `harness:perf`
 frame. Two reasons for one clock rather than a page-side push: a reader
 correlating a frame stall against the Go heap gets one timeline instead
@@ -687,10 +688,12 @@ to the default set. (`ao-harness` is stricter at its own edge and refuses
 a `--budgets` entry it cannot parse, since a silently shortened budget
 list is a gate quietly not being enforced.)
 
-`internal/procrss` matches webview processes by name PREFIX because the
-kernel truncates `/proc/<pid>/status`'s `Name:` at 15 characters
-(`WebKitWebProce`, never `WebKitWebProcess`). Off linux `Sample` returns
-`ErrUnsupported` and the RSS series is simply absent.
+`internal/procrss` matches webview processes by name PREFIX because Linux
+truncates `/proc/<pid>/status`'s `Name:` at 15 characters. On macOS it joins
+ordinary descendants with their macOS responsible-process sets before reading
+libproc RSS; that join is what finds WebKit/Chrome helpers whose PPID is
+launchd. Unsupported platforms return `ErrUnsupported` and the RSS series is
+simply absent.
 
 **The renderer series takes a sample only when a child actually
 matched.** `webviewRssBytes.count == 0` means "not measurable from this
@@ -699,7 +702,7 @@ WebView2 is the launcher's child and never appears in the backend's
 subtree, and `HarnessPerfStatus.webviewRssMeasurable` says so directly.
 Recording a zero on an unmatched tick would report a renderer that used
 no memory, which is a different and false claim. `SampleAll` is the
-sibling that takes EVERY descendant whatever it is named, which is what a
+sibling that takes every owned process whatever it is named, which is what a
 whole-tree figure needs: an empty prefix list cannot express that, since
 prefix matching skips a process it does not recognise by design.
 
@@ -744,8 +747,8 @@ absent or empty root, applies the host memory ceiling, and preserves failed
 roots for inspection. In addition to the governor reservation and watchdog,
 the shared launcher installs a hard per-run boundary before exec: Linux uses a
 private cgroup v2 (`memory.max`, swap disabled, OOM group kill). macOS has no
-usable memory rlimit or aggregate process-tree primitive, so its exact-tree
-ceiling and host-floor watchdog are the enforceable boundary. On Windows,
+usable memory rlimit, so its native application-responsibility ceiling and
+host-floor watchdog are the enforceable boundary. On Windows,
 `ao-harness up --window` and
 the WSL launcher put the native launcher/WebView2 tree in a memory-limited
 Job Object. The WSL backend gets an inherited `RLIMIT_DATA` and an exact
@@ -758,8 +761,10 @@ Windows launcher is started by `make soak`.
 
 Windowed make targets do not launch the backend binary directly. They call
 `ao-harness up --window` and remain in the foreground until the instance
-closes, with a teardown trap for Ctrl-C. The macOS bundle helper only creates
-the per-run WKWebView bundle and then delegates to that same supervisor path.
+closes, with a teardown trap for Ctrl-C. The macOS bundle helper creates the
+per-run WKWebView bundle, arranges an in-place responsibility-disclaimed exec,
+and then delegates to that same supervisor path. On exit it removes the
+generated bundle and its exact bundle-id-scoped user-Library WebKit state.
 On Windows, the launcher Job Object bounds its WebView2 tree, while the WSL
 backend receives an inherited Linux address-space limit and an exact-identity
 watchdog. One Job Object cannot account for both Windows and WSL namespaces.

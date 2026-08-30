@@ -38,7 +38,7 @@ func runUp(e *env, args []string) error {
 	mockProvider := flags.String("mock-provider", "", "ao-mockprovider path (default: the backend resolves it beside itself)")
 	devAssets := flags.String("dev-assets", "", "serve the frontend from this Vite dev server URL instead of the embedded build")
 	keepHome := flags.Bool("keep-home", false, "leave $HOME real for child processes; backend provider state stays isolated")
-	memoryLimit := flags.Uint64("memory-limit-bytes", governor.DefaultCeilingBytes, "hard per-instance memory limit covering the backend and descendants (default 600 MiB)")
+	memoryLimit := flags.Uint64("memory-limit-bytes", governor.DefaultCeilingBytes, "hard per-instance memory limit covering the backend and descendants (default 2 GiB)")
 	timeout := flags.Duration("timeout", harnessclient.DefaultLaunchTimeout, "how long to wait for the bootstrap line")
 	rest, err := e.parse(flags, args)
 	if err != nil {

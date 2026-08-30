@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,6 +74,22 @@ func countPagesLocked(scopes map[string]*workspaceScope) int {
 	return count
 }
 
+func ambiguousPageError(pages []*managedPage) error {
+	sort.Slice(pages, func(i, j int) bool { return pages[i].createdAt < pages[j].createdAt })
+	refs := make([]string, 0, len(pages))
+	for _, p := range pages {
+		info := p.cachedInfo()
+		ref := info.ID
+		if info.Label != "" {
+			ref += " (" + info.Label + ")"
+		} else if info.Title != "" {
+			ref += " (" + truncateUTF8(info.Title, 80) + ")"
+		}
+		refs = append(refs, ref)
+	}
+	return fmt.Errorf("browser: page_id is required because this thread has %d open pages; call browser_pages and pass the intended page_id (%s)", len(pages), strings.Join(refs, ", "))
+}
+
 func (p *managedPage) touch() { p.lastUse.Store(time.Now().UnixNano()) }
 
 func operationContext(caller, pageCtx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -115,7 +132,17 @@ func pageInfo(ctx context.Context, id string) (PageInfo, error) {
 	if err := chromedp.Run(ctx, chromedp.Location(&location), chromedp.Title(&title)); err != nil {
 		return PageInfo{}, fmt.Errorf("browser: read page state: %w", err)
 	}
-	return PageInfo{ID: id, URL: location, Title: title}, nil
+	return PageInfo{ID: id, URL: truncateUTF8(location, maxBrowserURLBytes), Title: truncateUTF8(title, maxBrowserTitleBytes)}, nil
+}
+
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	for limit > 0 && (value[limit]&0xc0) == 0x80 {
+		limit--
+	}
+	return value[:limit]
 }
 
 func canonicalRoot(path string) (string, error) {

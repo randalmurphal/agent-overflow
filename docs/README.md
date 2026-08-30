@@ -114,6 +114,7 @@ External repos and tools we track, and how to use them. Under
 | [`codex.md`](references/codex.md) | Codex source + CodexMonitor: how to use them when touching Codex code. |
 | [`codex-wire.md`](references/codex-wire.md) | Canonical Codex JSON-RPC shapes + collab-agent lifecycle. Single source of truth for Codex parser work. |
 | [`codex-instructions-tools.md`](references/codex-instructions-tools.md) | Codex's own instruction blocks and tool surface, as an appendix to `codex.md`. |
+| [`codex-browser-parity.md`](references/codex-browser-parity.md) | Exact map from the bundled Codex browser skill API to AO's built-in browser MCP tools and validation. |
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
 | [`ao-harness.md`](references/ao-harness.md) | Generated command and output reference for the `ao-harness` shell driver. |

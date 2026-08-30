@@ -96,16 +96,20 @@ func (a *App) ListThreadMcpServers(threadID string) ([]ThreadMCPServer, error) {
 			if err != nil {
 				return nil, fmt.Errorf("list thread mcp servers: %w", err)
 			}
-			return rows, nil
+			return a.withBrowserMCPRow(t, rows, true), nil
 		case sess.codex != nil:
 			rows, err := a.codexSessionMCPRows(ctx, sess.codex)
 			if err != nil {
 				return nil, fmt.Errorf("list thread mcp servers: %w", err)
 			}
-			return rows, nil
+			return a.withBrowserMCPRow(t, rows, true), nil
 		}
 	}
-	return a.ListWorkspaceMcpServers(t.Provider, t.WorkspacePath)
+	rows, err := a.ListWorkspaceMcpServers(t.Provider, t.WorkspacePath)
+	if err != nil {
+		return nil, err
+	}
+	return a.withBrowserMCPRow(t, rows, false), nil
 }
 
 // ListWorkspaceMcpServers returns the config+cache view of a
@@ -149,12 +153,12 @@ func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) err
 	if name == "" {
 		return errors.New("set thread mcp server enabled: server name is required")
 	}
-	if isAppManagedMCPServer(name) {
-		return errors.New("set thread mcp server enabled: built-in browser is controlled in Settings")
-	}
 	t, err := a.store.GetThread(threadID)
 	if err != nil {
 		return fmt.Errorf("set thread mcp server enabled: load thread: %w", err)
+	}
+	if isAppManagedMCPServer(name) {
+		return a.setBrowserThreadMCPEnabled(t, enabled)
 	}
 	switch t.Provider {
 	case string(provider.Claude):
@@ -236,7 +240,7 @@ func claudeSessionMCPRows(ctx context.Context, sess *claude.Session) ([]ThreadMC
 	}
 	rows := make([]ThreadMCPServer, 0, len(statuses))
 	for _, st := range statuses {
-		if st.Scope == mcpScopeClaudeAI || isAppManagedMCPServer(st.Name) {
+		if st.Scope == mcpScopeClaudeAI {
 			continue
 		}
 		mapped := claude.MCPStatusFromRaw(st.Status)
@@ -396,9 +400,6 @@ func (a *App) codexSessionMCPRows(ctx context.Context, sess *codex.Session) ([]T
 	rows := make([]ThreadMCPServer, 0, len(list.Data))
 	seen := make(map[string]struct{}, len(list.Data))
 	for _, entry := range list.Data {
-		if isAppManagedMCPServer(entry.Name) {
-			continue
-		}
 		row := ThreadMCPServer{
 			Provider:   mcpProviderCodex,
 			Name:       entry.Name,

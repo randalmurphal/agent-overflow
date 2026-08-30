@@ -190,14 +190,12 @@ controlled macOS test, one Chromium process with contexts did not have the
 large resource disadvantage that motivated replacing it.
 
 This Chromium curve is a lower bound too. `chromedp.DefaultExecAllocatorOptions`
-disables site-per-process and client phishing protection, and headless shell is
-not a full headful browser. Production arbitrary web should use a suitable full
-Chrome-for-Testing artifact when fuller browser protections or headful mode are
-requirements. The manager-wide headless/headful launch mode is chosen before
-lazy process start; it is not a per-session switch inside one browser process.
-The launcher must restore site isolation and available fraudulent-site
-protections; cross-site frames and real applications will spawn more processes
-and consume more memory. Headful mode was not measured.
+disables site-per-process and client phishing protection, and the measured
+headless-shell artifact is not the full Chrome-for-Testing artifact production
+now uses. The production launcher restores site isolation and runs full Chrome
+in headless mode; cross-site frames and real applications spawn more processes
+and consume more memory than this topology measurement. Headful mode was not
+measured and is not part of the shipped product.
 
 ## Why the existing Wails browser is not enough
 
@@ -351,18 +349,21 @@ ownership and sharing first, not the rendering engine.
 
 ## Product decisions carried into implementation
 
-The original two settings below shipped, along with independent site-data
-persistence and outside-workspace file-authority settings. See
-[`browser-tools.md`](browser-tools.md) for their final defaults and behavior.
+The spike originally proposed two launch settings. The shipped implementation
+keeps the global tools toggle, site-data persistence, and outside-workspace
+file-authority setting, but replaced the visible-process choice with the
+thread companion described in [`browser-tools.md`](browser-tools.md).
 
 - **Browser tools enabled**, default on. The AO-owned HTTP MCP endpoint remains
   registered even while disabled, but advertises no browser tools and does not
   launch Chromium. This makes the off-state almost free and keeps live toggling
   possible.
-- **Show browser window**, default on. Headful versus headless is a Chromium
-  process launch choice, so changing this setting after lazy launch requires a
-  controlled browser-process restart (or merely minimizing a still-headful
-  window, which saves essentially no resources).
+- **Browser companion**, explicit and on demand. Chromium always runs headless;
+  pages remain in the background until the agent or user presents one. The
+  explicitly selected CDP page is then screencast into an ephemeral pane beside
+  its owner thread. This avoids the misleading external Chrome window, the
+  session split a second native Wails webview would create, and focus stealing
+  between concurrent subagents.
 
 The tools-enabled setting does not require a provider restart. AO uses Claude's
 native `mcp_toggle` control request and Codex's

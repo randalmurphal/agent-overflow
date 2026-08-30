@@ -212,14 +212,16 @@ describe('companionPanes store', () => {
     openCompanion('p1', 'plan');
     openCompanion('p1', 'design-preview');
     openCompanion('p1', 'review');
+    openCompanion('p1', 'browser');
     openCompanion('p1', 'take-control');
-    expect(paneIds()).toEqual(['p1', 'take-control-p1', 'plan-p1', 'design-preview-p1', 'review-p1']);
+    expect(paneIds()).toEqual(['p1', 'take-control-p1', 'plan-p1', 'design-preview-p1', 'review-p1', 'browser-p1']);
 
     destroyPane('p1');
 
     expect(isCompanionOpen('p1', 'plan')).toBe(false);
     expect(isCompanionOpen('p1', 'design-preview')).toBe(false);
     expect(isCompanionOpen('p1', 'review')).toBe(false);
+    expect(isCompanionOpen('p1', 'browser')).toBe(false);
     expect(isCompanionOpen('p1', 'take-control')).toBe(false);
     expect(getPaneLayoutItems()).toEqual([]);
   });

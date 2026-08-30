@@ -93,6 +93,22 @@ func TestChromeBinaryPathsMatchPublishedArchiveLayouts(t *testing.T) {
 	}
 }
 
+func TestInstallerUsesSuppliedExecutableWithoutNetwork(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "chrome")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	installer := NewInstaller("", ArtifactChrome, eventchan.BrowserInstallProgress, nil)
+	installer.BinaryPath = binary
+	result, err := installer.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BinaryPath != binary || result.Version != "supplied" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestInstallerInstallsFullChromeArtifact(t *testing.T) {
 	platform, err := currentPlatform()
 	if err != nil {

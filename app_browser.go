@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -16,7 +17,6 @@ import (
 func browserConfigFromSettings(current settings.Settings) appbrowser.Config {
 	return appbrowser.Config{
 		Enabled:               current.BrowserEnabled,
-		ShowWindow:            current.BrowserShowWindow,
 		PersistSiteData:       current.BrowserPersistSiteData,
 		AllowOutsideWorkspace: current.BrowserAllowOutsideWorkspace,
 	}
@@ -59,6 +59,70 @@ func isAppManagedMCPServer(name string) bool {
 	return strings.TrimSpace(name) == appbrowser.ServerName
 }
 
+func (a *App) withBrowserMCPRow(thread store.Thread, rows []ThreadMCPServer, live bool) []ThreadMCPServer {
+	if a.browser.mcp == nil {
+		return rows
+	}
+	globalEnabled := a.currentSettings().BrowserEnabled
+	threadEnabled := globalEnabled && a.browser.mcp.ThreadEnabled(thread.ID)
+	source := mcpRowSourceConfig
+	if live {
+		source = mcpRowSourceSession
+	}
+	for i := range rows {
+		if !isAppManagedMCPServer(rows[i].Name) {
+			continue
+		}
+		if !threadEnabled {
+			rows[i].Disabled = true
+			rows[i].Status = string(mcpstatus.StatusDisabled)
+			rows[i].Tools = nil
+		}
+		rows[i].Source = source
+		return rows
+	}
+	status := mcpstatus.StatusNotStarted
+	if !threadEnabled {
+		status = mcpstatus.StatusDisabled
+	}
+	return append(rows, ThreadMCPServer{
+		Provider: thread.Provider,
+		Name:     appbrowser.ServerName,
+		Status:   string(status),
+		Disabled: !threadEnabled,
+		Source:   source,
+	})
+}
+
+func (a *App) setBrowserThreadMCPEnabled(thread store.Thread, enabled bool) error {
+	if !a.currentSettings().BrowserEnabled {
+		return fmt.Errorf("browser tools are disabled in Settings")
+	}
+	if a.browser.mcp == nil {
+		return fmt.Errorf("browser MCP unavailable")
+	}
+	a.browser.mcp.SetThreadEnabled(thread.ID, enabled)
+	live, ok := a.sessionManager().get(thread.ID)
+	if !ok {
+		a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.Provider(thread.Provider), Name: appbrowser.ServerName})
+		return nil
+	}
+	switch {
+	case live.claude != nil:
+		ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
+		defer cancel()
+		if err := live.claude.ToggleMCPServer(ctx, appbrowser.ServerName, enabled); err != nil {
+			a.browser.mcp.SetThreadEnabled(thread.ID, !enabled)
+			return err
+		}
+	case live.codex != nil:
+		live.codex.ForgetMCPStartupState(appbrowser.ServerName)
+		a.requestCodexMCPReload(thread.ID)
+	}
+	a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.Provider(thread.Provider), Name: appbrowser.ServerName})
+	return nil
+}
+
 func (a *App) teardownBrowserThread(threadID string) {
 	if a.browser.mcp != nil {
 		a.browser.mcp.UnregisterThread(threadID)
@@ -78,7 +142,7 @@ func (a *App) ClearBrowserSiteData() error {
 }
 
 func patchTouchesBrowserSettings(patch map[string]any) bool {
-	for _, key := range []string{"browserEnabled", "browserShowWindow", "browserPersistSiteData", "browserAllowOutsideWorkspace"} {
+	for _, key := range []string{"browserEnabled", "browserPersistSiteData", "browserAllowOutsideWorkspace"} {
 		if _, ok := patch[key]; ok {
 			return true
 		}
@@ -116,25 +180,29 @@ func (a *App) applyBrowserSettings(next settings.Settings) {
 		a.browser.mcp.SetEnabled(next.BrowserEnabled)
 	}
 	// Compare against the last provider refresh, not UpdateSettings' immediate
-	// previous snapshot. A later display/persistence update may supersede a
+	// previous snapshot. A later site-data/authority update may supersede a
 	// queued enable update before its worker runs; the final worker must still
 	// deliver that skipped enable transition to live provider sessions.
 	if a.browser.liveEnabled.Swap(next.BrowserEnabled) != next.BrowserEnabled {
 		a.refreshLiveBrowserMCP(next.BrowserEnabled)
+		for _, providerName := range []mcpstatus.Provider{mcpstatus.ProviderClaude, mcpstatus.ProviderCodex} {
+			a.mcpStatus().Invalidate(mcpstatus.Key{Provider: providerName, Name: appbrowser.ServerName})
+		}
 	}
 }
 
 func (a *App) refreshLiveBrowserMCP(enabled bool) {
 	for _, live := range a.sessionManager().browserMCPSessions() {
+		threadEnabled := enabled && (a.browser.mcp == nil || a.browser.mcp.ThreadEnabled(live.threadID))
 		switch {
 		case live.claude != nil:
-			go func(threadID string) {
+			go func(threadID string, threadEnabled bool) {
 				ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
 				defer cancel()
-				if err := live.claude.ToggleMCPServer(ctx, appbrowser.ServerName, enabled); err != nil {
+				if err := live.claude.ToggleMCPServer(ctx, appbrowser.ServerName, threadEnabled); err != nil {
 					a.emitWireErrorToThread(threadID, "browser tools: live Claude refresh failed: "+sanitizeMCPError(err.Error()))
 				}
-			}(live.threadID)
+			}(live.threadID, threadEnabled)
 		case live.codex != nil:
 			live.codex.ForgetMCPStartupState(appbrowser.ServerName)
 			a.requestCodexMCPReload(live.threadID)

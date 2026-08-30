@@ -31,6 +31,12 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "BackgroundClaudeTask", ID: 2098425262},                 // main.App.BackgroundClaudeTask
 	{Name: "BookmarkUIRenderTrace", ID: 1374242488},                // main.App.BookmarkUIRenderTrace
 	{Name: "BrowseDirectory", ID: 320967638},                       // main.App.BrowseDirectory
+	{Name: "BrowserCompanionDo", ID: 197228034},                    // main.App.BrowserCompanionDo
+	{Name: "BrowserCompanionInput", ID: 2747693029},                // main.App.BrowserCompanionInput
+	{Name: "BrowserCompanionNextFrame", ID: 776020183},             // main.App.BrowserCompanionNextFrame
+	{Name: "BrowserCompanionResize", ID: 2921114943},               // main.App.BrowserCompanionResize
+	{Name: "BrowserCompanionSubscribe", ID: 668496681},             // main.App.BrowserCompanionSubscribe
+	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912},          // main.App.BrowserCompanionUnsubscribe
 	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport
 	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate
 	{Name: "CheckThreadImportUpdates", ID: 2932719708},             // main.App.CheckThreadImportUpdates

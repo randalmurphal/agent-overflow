@@ -124,6 +124,9 @@ share a watcher per canonical cwd via refcount.
 
 - Inject `Manager.installFn` to force the polling-fallback path without
   exhausting real OS limits.
+- Tests isolating subscribe/attach refresh decisions must also inject a no-op
+  `installFn`; macOS FSEvents may emit an initial root event immediately after
+  a successful real install, which is a valid filesystem refresh.
 - Inject `StatusFn` to control the status sequence and avoid shelling
   out to `git` in unit tests; integration tests can use the real
   `gitops.Core.Status` against a `testutil.InitGitRepo` repo.

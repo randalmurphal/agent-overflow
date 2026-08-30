@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/harness/instanceinfo"
 )
 
@@ -119,6 +120,66 @@ func Create(binary, dataRoot, plistTemplate string, runID ...string) (string, er
 		return "", err
 	}
 	return appPath, nil
+}
+
+// Cleanup removes one generated harness bundle and the exact per-bundle
+// WKWebView state macOS stores outside the harness data root. The bundle id is
+// validated from both the app path and Info.plist before any user-Library path
+// is touched; the production bundle id can never enter this path.
+func Cleanup(dataRoot, appPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("darwin bundle: resolve home for cleanup: %w", err)
+	}
+	return cleanupRoots(dataRoot, filepath.Join(home, "Library"), appPath)
+}
+
+func cleanupRoots(dataRoot, libraryRoot, appPath string) error {
+	root, err := instanceinfo.CanonicalPath(dataRoot)
+	if err != nil {
+		return fmt.Errorf("darwin bundle: canonicalize cleanup root: %w", err)
+	}
+	appPath, err = filepath.Abs(appPath)
+	if err != nil {
+		return fmt.Errorf("darwin bundle: resolve cleanup app: %w", err)
+	}
+	appPath, err = instanceinfo.CanonicalPath(appPath)
+	if err != nil {
+		return fmt.Errorf("darwin bundle: canonicalize cleanup app: %w", err)
+	}
+	webkitRoot := filepath.Join(root, ".ao-webview")
+	if filepath.Dir(appPath) != webkitRoot || filepath.Ext(appPath) != ".app" {
+		return fmt.Errorf("darwin bundle: cleanup app %s is outside %s", appPath, webkitRoot)
+	}
+	plist, err := os.ReadFile(filepath.Join(appPath, "Contents", "Info.plist"))
+	if err != nil {
+		return fmt.Errorf("darwin bundle: read cleanup Info.plist: %w", err)
+	}
+	id, err := plistIdentifier(plist)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(id, bundlePrefix) || filepath.Base(appPath) != id+".app" {
+		return fmt.Errorf("darwin bundle: cleanup id %q does not match app %s", id, appPath)
+	}
+
+	var cleanupErrs []error
+	for _, path := range []string{
+		appPath,
+		filepath.Join(libraryRoot, "WebKit", id),
+		filepath.Join(libraryRoot, "Caches", id),
+		filepath.Join(libraryRoot, "HTTPStorages", id),
+		filepath.Join(libraryRoot, "Saved Application State", id+".savedState"),
+		filepath.Join(libraryRoot, "Preferences", id+".plist"),
+	} {
+		if err := os.RemoveAll(path); err != nil {
+			cleanupErrs = errorsx.Append(cleanupErrs, fmt.Errorf("remove %s: %w", path, err))
+		}
+	}
+	if err := os.Remove(webkitRoot); err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTEMPTY) {
+		cleanupErrs = errorsx.Append(cleanupErrs, fmt.Errorf("remove empty bundle root: %w", err))
+	}
+	return errors.Join(cleanupErrs...)
 }
 
 func rejectSymlink(path string) error {

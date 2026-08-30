@@ -203,7 +203,7 @@ func backendMetric(read func(perfBackendReport) perfSeries) func(perfReport) (fl
 }
 
 // benchMetrics is the report's whole vocabulary, in print order. A metric
-// that a run could not measure (no frontend answered, no /proc to walk) is
+// that a run could not measure (no frontend answered, no process sampler) is
 // ABSENT from that run rather than zero: a zero would fold into the
 // aggregate and quietly halve a mean.
 func benchMetrics() []benchMetric {

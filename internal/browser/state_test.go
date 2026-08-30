@@ -2,12 +2,85 @@ package browser
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/chromedp/cdproto/network"
+	keyring "github.com/zalando/go-keyring"
 )
+
+func TestStateStoreKeyringKeyPersistsWithoutFallbackFile(t *testing.T) {
+	root := t.TempDir()
+	values := make(map[string]string)
+	configure := func(store *stateStore) {
+		store.keyringGet = func(service, user string) (string, error) {
+			value, ok := values[service+"\x00"+user]
+			if !ok {
+				return "", keyring.ErrNotFound
+			}
+			return value, nil
+		}
+		store.keyringSet = func(service, user, value string) error {
+			values[service+"\x00"+user] = value
+			return nil
+		}
+	}
+	first := newStateStore(root)
+	configure(first)
+	key1, err := first.encryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := newStateStore(root)
+	configure(second)
+	key2, err := second.encryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(key1, key2) {
+		t.Fatal("keyring key did not survive a new state store")
+	}
+	if _, err := os.Stat(first.keyPath); !os.IsNotExist(err) {
+		t.Fatalf("keyring path unexpectedly wrote fallback key: %v", err)
+	}
+}
+
+func TestStateStoreKeyringFailureFallsBackToPrivateFile(t *testing.T) {
+	root := t.TempDir()
+	store := newStateStore(root)
+	store.keyringGet = func(string, string) (string, error) { return "", errors.New("keychain locked") }
+	key, err := store.encryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(key) != 32 {
+		t.Fatalf("key length = %d", len(key))
+	}
+	info, err := os.Stat(store.keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("fallback mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestManagerFileStateKeyOptionNeverTouchesDesktopKeyring(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(nil, root, Config{}, ManagerOptions{FileStateKey: true})
+	manager.state.keyringGet = func(string, string) (string, error) {
+		t.Fatal("file-key manager touched desktop keyring")
+		return "", nil
+	}
+	if _, err := manager.state.encryptionKey(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(manager.state.keyPath); err != nil {
+		t.Fatalf("file-key manager did not persist private key: %v", err)
+	}
+}
 
 func TestStateStoreEncryptedRoundTrip(t *testing.T) {
 	root := t.TempDir()

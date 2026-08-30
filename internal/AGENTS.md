@@ -40,7 +40,7 @@ the package's whole documentation, so they carry more.
 | `diagenv/` | Names of the opt-in diagnostic env vars and the WSLENV `Passthrough()` list. Names only. (guide) |
 | `platform/` | Runtime-environment probes (WSL detection etc.). (guide) |
 | `sysstat/` | Host CPU + memory sampler backing the sidebar footer. (guide) |
-| `procrss/` | Per-process RSS for THIS process and its webview children, read from a `/proc`-shaped tree: `stat` for every pid (parent map needs all), then `status` VmRSS only for ours. Backs harness perf runs. Name match is by PREFIX because the kernel truncates `Name:` at 15 chars. Linux-only; elsewhere `Sample` returns `ErrUnsupported` and the series records absent. |
+| `procrss/` | Per-process RSS for THIS process and its owned helpers. Linux reads a `/proc` parent tree; macOS joins descendants with their OS responsible-process sets so launchd-parented WebKit/Chrome XPC helpers are included, then reads RSS through libproc. Backs harness perf, health, and the macOS watchdog. Name match is by prefix. Other platforms return `ErrUnsupported`. |
 | `workspacefiles/` | Workspace-scoped file search for @-mention completion. (guide) |
 | `testutil/` | Shared test helpers (mock provider scripts, git repo, project fixtures). (guide) |
 | `kerneltest/` | Importable provider-spawn isolation guard. Any fixture in ANY package that constructs a session-capable App, or adds a new spawn path, must install `IsolateSpawns`. (guide) |

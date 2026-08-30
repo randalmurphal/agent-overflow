@@ -15,7 +15,7 @@ import {
   type ProcessTreeProof,
 } from './harness-process.ts';
 
-export const FALLBACK_MEMORY_LIMIT_BYTES = 600 << 20;
+export const FALLBACK_MEMORY_LIMIT_BYTES = 2 * 2 ** 30;
 // Preserve enough headroom to absorb a burst between 100 ms samples on hosts
 // where an aggregate cgroup or Job Object is unavailable.
 export const HOST_AVAILABLE_FLOOR_BYTES = 2 * 2 ** 30;
@@ -170,6 +170,8 @@ export class HarnessWatchdog {
       console.error(`harness watchdog: verified teardown failed: ${(shutdownError as Error).message}`);
     }
     const detail = cause ? `: ${cause.message}` : '';
-    console.error(`harness watchdog tripped: ${reason}${detail}; evidence ${evidencePath}`);
+    console.error(
+      `harness watchdog tripped: ${reason}${detail}; rss=${rssBytes} ceiling=${memoryLimitBytes} available=${availableBytes}; evidence ${evidencePath}`,
+    );
   }
 }

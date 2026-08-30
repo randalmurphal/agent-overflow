@@ -1,9 +1,15 @@
+import { spawn } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { test, expect } from '@playwright/test';
 import { launchHarness } from '../src/harness.js';
-import { captureProcessIdentity, verifyProcessGroupMemberProof } from '../src/harness-process.js';
+import {
+  captureProcessGroupMemberProof,
+  captureProcessIdentity,
+  terminateChildTreeAndWaitVerified,
+  verifyProcessGroupMemberProof,
+} from '../src/harness-process.js';
 
 async function fakeBinary(source: string): Promise<{ root: string; binary: string; pidFile: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-lifecycle-'));
@@ -42,6 +48,49 @@ test('refuses a launch when the caller tree is not supervised', async () => {
 test('rejects a reused process-group member identity', async () => {
   const identity = await captureProcessIdentity(process.pid);
   await expect(verifyProcessGroupMemberProof({ ...identity, birth: identity.birth + '-reused' })).resolves.toBe(false);
+});
+
+test('reaps an owned helper after the process-group leader exits during graceful teardown', async () => {
+  test.skip(process.platform === 'win32', 'Unix process-group regression');
+  const fake = await fakeBinary(`
+    const { spawn } = await import('node:child_process');
+    const { writeFileSync } = await import('node:fs');
+    const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    writeFileSync(process.env.AO_PID_FILE, String(child.pid));
+    process.on('SIGTERM', () => process.exit(0));
+    setInterval(() => {}, 1000);
+  `);
+  const leader = spawn(fake.binary, [], {
+    detached: true,
+    env: { ...process.env, AO_PID_FILE: fake.pidFile },
+    stdio: 'ignore',
+  });
+  try {
+    await expect.poll(async () => {
+      try {
+        return Number(await readFile(fake.pidFile, 'utf8'));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+        throw error;
+      }
+    }).toBeGreaterThan(0);
+    const helperPID = Number(await readFile(fake.pidFile, 'utf8'));
+    const identity = await captureProcessIdentity(leader.pid);
+    const memberProof = await captureProcessGroupMemberProof(identity);
+    expect(memberProof?.pid).toBe(helperPID);
+
+    await terminateChildTreeAndWaitVerified(leader, identity, 'SIGTERM', memberProof);
+    await expect.poll(() => processExists(helperPID), { timeout: 5_000 }).toBe(false);
+  } finally {
+    if (leader.pid) {
+      try {
+        process.kill(-leader.pid, 'SIGKILL');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    }
+    await rm(fake.root, { recursive: true, force: true });
+  }
 });
 
 test('reaps a child that prints malformed bootstrap JSON', async () => {

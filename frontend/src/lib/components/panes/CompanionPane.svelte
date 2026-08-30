@@ -16,7 +16,7 @@
     sourcePaneId: string;
   }
 
-  // Panel bodies load lazily so the plan/design/review feature chunks
+  // Panel bodies load lazily so browser/plan/design/review feature chunks
   // stay out of the eager startup graph — a companion pane only exists
   // after an explicit user action.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -27,6 +27,7 @@
     'design-preview': () => import('../design/DesignPreviewRhsPanel.svelte'),
     review: () => import('../review/ReviewPane.svelte'),
     agent: () => import('../agent/AgentPane.svelte'),
+    browser: () => import('../browser/BrowserPane.svelte'),
   } satisfies Record<CompanionPanelKind, CompanionLoader>;
 
   let { paneId, kind, sourcePaneId }: Props = $props();
@@ -58,6 +59,8 @@
         ? 'Review'
         : kind === 'agent'
           ? 'Agent'
+          : kind === 'browser'
+            ? 'Browser'
           : 'Design Preview'}
     class="flex h-full min-h-0 flex-col border-l border-border bg-surface-1"
     data-testid={`companion-pane-${kind}`}

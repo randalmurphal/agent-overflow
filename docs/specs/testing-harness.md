@@ -77,13 +77,13 @@ Windowed-harness specifics, versus `runDesktop`:
   config root) and before any GLib call. `AO_HARNESS_KEEP_HOME` does not
   opt out of this. Webview storage is never shared.
 - **Webview storage isolation (macOS)**: WKWebView's default data store
-  is keyed by bundle identity, not `$HOME`; a dev binary shares
-  storage across instances. Needs verification on a mac; until then the
-  windowed mac harness carries a boot log line naming the limitation.
-  Candidate fix if verification fails: fork patch adding
-  `WKWebsiteDataStore dataStoreForIdentifier:` wiring (the fork already
-  carries the Windows `WebviewUserDataPath` analog). Compile-correct
-  code now, behavioral verification deferred to a mac.
+  is keyed by bundle identity, not `$HOME`; a raw dev binary would share
+  storage across instances. `ao-darwin-harness` creates a nonce-qualified
+  bundle id for each run and verifies it before Wails starts. After the
+  supervised process exits it removes that exact generated bundle and its
+  bundle-id-scoped `~/Library/WebKit`, cache, HTTP storage, saved-state, and
+  preference paths. Cleanup validates the harness prefix plus the agreement
+  between app filename and Info.plist before touching user-Library state.
 - **Window geometry** persists to the instance's own settings.json (the
   data-dir override already routes this correctly).
 - Soak's autopilot (`armSoakSteadyState`) runs identically under
@@ -98,7 +98,10 @@ The make target waits while the supervised instance is live and traps
 Ctrl-C or a closed window into `ao-harness down`, so it retains the old
 foreground workflow without bypassing containment. On macOS,
 `ao-darwin-harness` creates the unique bundle required by WKWebView, then
-invokes the same supervised `up --window` path. WSLg renders Linux windows
+exec-disclaims the backend from the launching app's macOS responsibility chain
+and invokes the same supervised `up --window` path. The disclaimer lets memory
+accounting include this run's launchd-parented WebKit helpers without charging
+the Agent Overflow/Codex process that started the harness. WSLg renders Linux windows
 on the Windows desktop, so the mode is live-testable in the WSL dev
 environment.
 
@@ -148,7 +151,7 @@ shipped surface of record is `ao-harness --help` and
 
 | Command | Behavior |
 |---|---|
-| `up [--window] [--soak] [--data-dir D] [--binary B] [--mock-provider M] [--dev-assets URL] [--keep-home] [--memory-limit-bytes N]` | Spawn detached, capture stderr to `<dataDir>/logs/backend-stderr.log`, wait for bootstrap, print instance summary. The default memory ceiling is 600 MiB. Refuses a second instance on the same data root. |
+| `up [--window] [--soak] [--data-dir D] [--binary B] [--mock-provider M] [--dev-assets URL] [--keep-home] [--memory-limit-bytes N]` | Spawn detached, capture stderr to `<dataDir>/logs/backend-stderr.log`, wait for bootstrap, print instance summary. The default memory ceiling is 2 GiB. Refuses a second instance on the same data root. |
 | `down [--all]` / `list` / `info` | SIGTERM (escalate KILL after 5s) / registry listing with liveness / `HarnessInfo` + paths + URL. |
 | `rpc <Method> [json-arg…]` | Generic named RPC (App + Harness methods). Args are raw JSON values. |
 | `seed [-f spec.json\|-]` | `HarnessSeed`. |
@@ -185,13 +188,17 @@ default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
 
 Every `up`, managed `run`, and compare leg installs the platform memory policy
-before starting the backend. `up` defaults to 600 MiB and managed plans may
-choose a lower or higher limit within host capacity. The bound covers the backend, mock
-providers, browser/webview children, and profilers that remain in the
-backend's process tree. Worktree reservations use the same 600 MiB claim, so
+before starting the backend. `up` defaults to 2 GiB and managed plans may
+choose a lower or higher limit within host capacity. The ceiling was raised
+from 600 MiB when the in-app browser made full managed Chrome a legitimate
+app-owned child; 1 GiB and 1.5 GiB trials also killed the browser-companion
+E2E during Chrome's measured 1.69 GB aggregate-RSS macOS startup peak. The
+bound covers the backend, mock providers, browser/webview children, and
+profilers that remain in the
+backend's process tree. Worktree reservations use the same 2 GiB claim, so
 parallel harnesses cannot overcommit the host's available-memory floor.
 
-- Linux uses a private cgroup v2 with `memory.max=600 MiB`,
+- Linux uses a private cgroup v2 with `memory.max=2 GiB`,
   `memory.swap.max=0`, and `memory.oom.group=1`. The child enters it through
   `SysProcAttr.UseCgroupFD` before exec. If the host exposes a read-only or
   non-delegated hierarchy, the launcher falls back to inherited
@@ -207,16 +214,17 @@ parallel harnesses cannot overcommit the host's available-memory floor.
   `logs/harness-containment.json` evidence record as other supervised
   launches. Detached `up` keeps its boundary alive through the
   launcher/watchdog state rather than relying on a caller's process lifetime.
-- macOS has no aggregate process-tree memory primitive, and current kernels
-  reject lowering `RLIMIT_DATA`, `RLIMIT_RSS`, and `RLIMIT_AS`. The 100ms
-  exact-tree ceiling and host available-memory watchdog are therefore the
-  enforceable boundary. macOS cannot promise a pre-allocation kernel cap, so
+- macOS current kernels reject lowering `RLIMIT_DATA`, `RLIMIT_RSS`, and
+  `RLIMIT_AS`. The 100ms native application-responsibility ceiling and host
+  available-memory watchdog are therefore the enforceable boundary. The
+  responsibility join includes WebKit renderer/network/GPU XPC services even after
+  launchd reparents them. macOS cannot promise a pre-allocation kernel cap, so
   reports retain that limitation and containment evidence says
   `watchdog-only-darwin`.
 
 The governor remains the cross-platform diagnostic and host-floor backstop.
 Kernel containment is the primary OOM protection where the OS exposes it;
-macOS necessarily uses the reactive exact-tree sampler.
+macOS necessarily uses the reactive native responsibility sampler.
 
 Detached `up` starts a separate watchdog that owns no application state. It
 samples the authenticated backend's exact birth identity and process tree
@@ -309,9 +317,10 @@ walk, computed-style probes); one union, one version field.
 `HarnessPerfStart({sampleMs, meters, budgetsMs})` arms them; samples stream on
 `harness:perf`; `HarnessPerfStop()` returns the summary document.
 **Backend-side samples** ride the same report: Go runtime heap/goroutine
-counts, and on linux the RSS of the backend + webview child processes
-(`/proc` walk from the window process tree). The WebKitWebProcess RSS
-is the number Task-Manager-style questions are actually about.
+counts, plus backend and webview RSS on Linux and macOS. Linux walks `/proc`;
+macOS reads libproc and joins the app's responsible-process set so
+launchd-parented WebKit helpers remain attributable. Renderer RSS is the
+number Task-Manager-style questions are actually about.
 
 **Bench workloads** are ordinary scenario-library entries plus seed
 specs, named `bench-*`: `bench-burst-stream` (delta flood at

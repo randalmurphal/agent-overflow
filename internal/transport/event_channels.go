@@ -566,6 +566,13 @@ var channelPolicies = []ChannelPolicy{
 			"answer RPCs are LocalOnly. Same class as provider:approval.",
 	},
 	{
+		Channel:   eventchan.BrowserCompanionState,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionEphemeral,
+		Why: "Per-thread live page titles and URLs, including file paths. The " +
+			"subscribe RPC returns a complete snapshot, so replay is unnecessary.",
+	},
+	{
 		Channel:   eventchan.BrowserInstallProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionLatestOnly,

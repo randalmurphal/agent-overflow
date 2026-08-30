@@ -13,6 +13,7 @@ export {
     BranchPruneCandidates,
     BranchPruneResult,
     BranchPruneSelection,
+    BrowserCompanionAction,
     BusyThread,
     ChannelParticipantState,
     ChannelStatePayload,

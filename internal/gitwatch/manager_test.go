@@ -906,6 +906,10 @@ func TestNoAsyncRefreshWithoutForge(t *testing.T) {
 	}
 	fastStub := newStubStatus(fastStatus)
 	mgr := NewManager(ManagerConfig{StatusFn: fullFn, FastStatusFn: fastStub.fn()})
+	// This case isolates Subscribe's attach decision. A real FSEvents install
+	// may legitimately emit an initial root event, which exercises the separate
+	// filesystem-refresh path and calls the full status function.
+	mgr.installFn = func([]gitops.WatchRoot, chan<- notify.EventInfo) error { return nil }
 	t.Cleanup(mgr.Close)
 
 	dir := makeRepoDir(t)

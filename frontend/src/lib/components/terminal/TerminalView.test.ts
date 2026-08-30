@@ -61,6 +61,7 @@ vi.mock('../../stores/bindings', () => ({
 vi.mock('../../stores/toast.svelte', () => ({ addToast: vi.fn() }));
 
 vi.mock('../../stores/panes.svelte', () => ({
+  addPaneThreadMountedObserver: vi.fn(() => () => {}),
   destroyPane: vi.fn(),
   // The header's shared PaneTitleHandle reads pane focus (for the outline) and
   // writes the row back after a rename.

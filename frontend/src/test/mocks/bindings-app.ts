@@ -165,6 +165,12 @@ export const RefreshProviderAccountUsage = dispatch('RefreshProviderAccountUsage
 export const GetSettings = dispatch('GetSettings');
 export const UpdateSettings = dispatch('UpdateSettings');
 export const ClearBrowserSiteData = dispatch('ClearBrowserSiteData');
+export const BrowserCompanionDo = dispatch('BrowserCompanionDo');
+export const BrowserCompanionInput = dispatch('BrowserCompanionInput');
+export const BrowserCompanionNextFrame = dispatch('BrowserCompanionNextFrame');
+export const BrowserCompanionResize = dispatch('BrowserCompanionResize');
+export const BrowserCompanionSubscribe = dispatch('BrowserCompanionSubscribe');
+export const BrowserCompanionUnsubscribe = dispatch('BrowserCompanionUnsubscribe');
 
 // Appearance / themes (stores/appearance.svelte.ts). Both writes are
 // local-only on the wire, so a test that wants the DEGRADED path throws a

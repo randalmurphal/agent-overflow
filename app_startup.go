@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/appdirs"
@@ -590,16 +591,21 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.design.reactor = design.NewReactor(a.design.diagnostics, a.newDesignCapturer())
 	a.design.mcp = design.NewMCPServer(a.design.reactor)
 	browserSettings := a.currentSettings()
+	browserInstaller := chromium.NewInstaller(dbDir, chromium.ArtifactChrome, eventchan.BrowserInstallProgress, a.emit)
+	browserInstaller.BinaryPath = strings.TrimSpace(os.Getenv("AO_BROWSER_BINARY"))
 	a.browser.manager = appbrowser.NewManager(
-		chromium.NewInstaller(dbDir, chromium.ArtifactChrome, eventchan.BrowserInstallProgress, a.emit),
+		browserInstaller,
 		dbDir,
 		appbrowser.Config{
 			Enabled:               browserSettings.BrowserEnabled,
-			ShowWindow:            browserSettings.BrowserShowWindow,
 			PersistSiteData:       browserSettings.BrowserPersistSiteData,
 			AllowOutsideWorkspace: browserSettings.BrowserAllowOutsideWorkspace,
 		},
+		appbrowser.ManagerOptions{FileStateKey: a.fileKeychainOverride},
 	)
+	a.browser.manager.SetEventSink(func(event appbrowser.CompanionEvent) {
+		a.emit(eventchan.BrowserCompanionState, event)
+	})
 	a.browser.mcp = appbrowser.NewMCPServer(a.browser.manager, browserSettings.BrowserEnabled)
 	a.browser.liveEnabled.Store(browserSettings.BrowserEnabled)
 	a.terminals = terminal.NewManager(a.terminalOutputCallback, a.terminalExitCallback)

@@ -384,6 +384,33 @@ export async function waitForOwnedTreeExit(
   }
 }
 
+/**
+ * Recheck only identities captured from this launch. A Unix process-group
+ * probe can return EPERM after the owned members are gone (notably on macOS),
+ * and treating that ambiguous kernel answer as proof of survival both lies in
+ * diagnostics and preserves a disposable data root forever.
+ */
+export async function ownedProcessTreeAlive(
+  child: ChildProcess,
+  identity?: ProcessIdentity,
+  memberProof?: ProcessGroupMemberProof,
+  treeProof?: ProcessTreeProof,
+): Promise<boolean> {
+  const proofs = [identity, memberProof, treeProof?.root, ...(treeProof?.descendants ?? [])]
+    .filter((proof): proof is ProcessIdentity => proof !== undefined);
+  const seen = new Set<string>();
+  for (const proof of proofs) {
+    const key = `${proof.pid}:${proof.birth}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (await verifyProcessIdentity(proof)) return true;
+  }
+  // When launch failed before any identity could be captured, absence of a
+  // proof is not permission to declare the process gone. The ChildProcess
+  // status is the only safe evidence left.
+  return proofs.length === 0 && child.exitCode === null && child.signalCode === null;
+}
+
 export async function terminateChildTreeAndWaitVerified(
   child: ChildProcess,
   identity: ProcessIdentity | undefined,
@@ -433,7 +460,15 @@ export async function terminateChildTreeAndWaitVerified(
   if (exited.resolved) return;
   if (identity) {
     if (!(await verifyProcessIdentity(identity))) {
-      throw new Error(`refusing escalation because pid ${identity.pid} identity changed`);
+      // The group leader can exit after the graceful group signal while an
+      // owned helper (Chromium is the common case) is still unwinding. The
+      // original leader identity cannot authenticate escalation any more, but
+      // a previously captured, still-live member identity can. This is the
+      // same proven-group case handled above when the leader was already gone
+      // on entry; cover the race where it disappears during the grace window.
+      if (!memberProof || !(await verifyProcessGroupMemberProof(memberProof))) {
+        throw new Error(`refusing escalation because pid ${identity.pid} identity changed`);
+      }
     }
   } else if (!memberProof || !(await verifyProcessGroupMemberProof(memberProof))) {
     throw new Error(`refusing escalation because pid ${child.pid ?? 'unknown'} member proof changed`);

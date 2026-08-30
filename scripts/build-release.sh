@@ -5,10 +5,11 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=""
 SKIP_MACOS=0
 SKIP_WSL=0
+ONLY_MACOS=0
 
 usage() {
 	cat <<'USAGE'
-Usage: scripts/build-release.sh [--version VERSION] [--skip-macos] [--skip-wsl]
+Usage: scripts/build-release.sh [--version VERSION] [--skip-macos] [--skip-wsl] [--only-macos]
 
 Builds release artifacts from the current checkout into dist/release/VERSION.
 The tree must be clean before and after the build so generated metadata cannot
@@ -31,6 +32,10 @@ while [ "$#" -gt 0 ]; do
 			SKIP_WSL=1
 			shift
 			;;
+		--only-macos)
+			ONLY_MACOS=1
+			shift
+			;;
 		-h|--help)
 			usage
 			exit 0
@@ -42,6 +47,11 @@ while [ "$#" -gt 0 ]; do
 			;;
 	esac
 done
+
+if [ "$ONLY_MACOS" -eq 1 ] && [ "$SKIP_MACOS" -eq 1 ]; then
+	echo "ERROR: --only-macos and --skip-macos are mutually exclusive" >&2
+	exit 2
+fi
 
 if [ -z "$VERSION" ]; then
 	VERSION=$(sed -n 's/^  version: "\([^"]*\)"/\1/p' "$ROOT_DIR/build/config.yml")
@@ -103,42 +113,38 @@ validate_launcher() {
 	fi
 }
 
-# The darwin zip is arch-labeled and the in-app updater matches assets by that
-# label, so a mislabeled slice would ship an unrunnable build to updaters. The
-# bundle must be UNIVERSAL (arm64 + x86_64) before it may be published under an
-# arch name — the check stays even though only arm64 is published, because the
-# asset name promises a bundle that runs on the machines the label covers.
-validate_universal_macho() {
+# The Darwin zip is arch-labeled and the in-app updater matches assets by that
+# label, so a mislabeled slice would ship an unrunnable build to updaters.
+validate_arm64_macho() {
 	path=$1
 	[ -f "$path" ] || { echo "ERROR: missing macOS binary: $path" >&2; exit 1; }
 	if command -v lipo >/dev/null 2>&1; then
 		archs=$(lipo -archs "$path" 2>/dev/null || true)
 		case "$archs" in
-			*arm64*x86_64*|*x86_64*arm64*) ;;
+			*arm64*) ;;
 			*)
-				echo "ERROR: macOS binary is not universal (archs: ${archs:-unreadable}); refusing to publish arch-labeled assets: $path" >&2
+				echo "ERROR: macOS binary has no arm64 slice (archs: ${archs:-unreadable}): $path" >&2
 				exit 1
 				;;
 		esac
 	else
 		desc=$(file -b "$path" 2>/dev/null || true)
 		case "$desc" in
-			*universal*) ;;
+			*arm64*) ;;
 			*)
-				echo "ERROR: macOS binary is not universal (file: ${desc:-unreadable}); refusing to publish arch-labeled assets: $path" >&2
+				echo "ERROR: macOS binary is not arm64 (file: ${desc:-unreadable}): $path" >&2
 				exit 1
 				;;
 		esac
 	fi
 }
 
-# The universal bundle ships under the darwin-arm64 name only — Intel Macs are
-# no longer a target. The name stays exactly that: the updater's asset matcher
-# requires BOTH the platform and arch tokens, so a "universal"-named zip would
-# match nobody and a rename would strand already-shipped clients.
 package_darwin_zips() {
-	validate_universal_macho "$ROOT_DIR/bin/agent-overflow.app/Contents/MacOS/agent-overflow"
-	( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
+	app="$ROOT_DIR/bin/agent-overflow.app"
+	validate_arm64_macho "$app/Contents/MacOS/agent-overflow"
+	"$ROOT_DIR/scripts/sign-notarize-macos.sh" "$app"
+	"$ROOT_DIR/scripts/verify-macos-app.sh" --require-notarized "$app"
+	ditto -c -k --sequesterRsrc --keepParent "$app" "$OUT_DIR/agent-overflow-darwin-arm64.zip"
 }
 
 validate_version
@@ -155,50 +161,47 @@ esac
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-echo "==> Building Linux artifact"
-case "$(uname -s):$(uname -m)" in
+if [ "$ONLY_MACOS" -eq 0 ]; then
+	echo "==> Building Linux artifact"
+	case "$(uname -s):$(uname -m)" in
 	Linux:x86_64|Linux:amd64)
-		make -C "$ROOT_DIR" build VERSION="$VERSION"
-		validate_elf "$ROOT_DIR/bin/agent-overflow"
-		copy_file "$ROOT_DIR/bin/agent-overflow" "$OUT_DIR/agent-overflow-linux-amd64"
-		;;
-	*)
-		echo "ERROR: Linux amd64 release artifacts must be built on Linux amd64/WSL." >&2
-		echo "       Rerun there, or add an explicit cross-build path before releasing." >&2
-		exit 1
-		;;
-esac
-
-if [ "$SKIP_WSL" -eq 0 ]; then
-	case "$(uname -s)" in
-		Linux)
-			echo "==> Building Windows WSL launcher"
-			make -C "$ROOT_DIR" build-wsl WSL_VERSION="$VERSION" WSL_FORCE_RELINK=1
-			validate_elf "$ROOT_DIR/bin/agent-overflow-linux"
-			validate_launcher "$ROOT_DIR/bin/agent-overflow.exe"
-			copy_file "$ROOT_DIR/bin/agent-overflow.exe" "$OUT_DIR/agent-overflow-wsl-amd64.exe"
+			make -C "$ROOT_DIR" build VERSION="$VERSION"
+			validate_elf "$ROOT_DIR/bin/agent-overflow"
+			copy_file "$ROOT_DIR/bin/agent-overflow" "$OUT_DIR/agent-overflow-linux-amd64"
 			;;
-		*)
-			echo "==> Skipping WSL launcher build on $(uname -s); rerun on Linux/WSL for Windows artifacts."
+	*)
+			echo "ERROR: Linux amd64 release artifacts must be built on Linux amd64/WSL." >&2
+			echo "       Rerun there, or use --only-macos for the signed Mac artifact." >&2
+			exit 1
 			;;
 	esac
+
+	if [ "$SKIP_WSL" -eq 0 ]; then
+		case "$(uname -s)" in
+			Linux)
+				echo "==> Building Windows WSL launcher"
+				make -C "$ROOT_DIR" build-wsl WSL_VERSION="$VERSION" WSL_FORCE_RELINK=1
+				validate_elf "$ROOT_DIR/bin/agent-overflow-linux"
+				validate_launcher "$ROOT_DIR/bin/agent-overflow.exe"
+				copy_file "$ROOT_DIR/bin/agent-overflow.exe" "$OUT_DIR/agent-overflow-wsl-amd64.exe"
+				;;
+			*)
+				echo "==> Skipping WSL launcher build on $(uname -s); rerun on Linux/WSL for Windows artifacts."
+				;;
+		esac
+	fi
 fi
 
 if [ "$SKIP_MACOS" -eq 0 ]; then
 	case "$(uname -s)" in
 		Darwin)
-			echo "==> Building macOS app bundle (universal)"
-			( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package:universal )
+			echo "==> Building macOS app bundle (arm64)"
+			( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package )
 			package_darwin_zips
 			;;
 		*)
-			if command -v docker >/dev/null 2>&1 && docker image inspect wails-cross >/dev/null 2>&1; then
-				echo "==> Building macOS app bundle with Docker cross image (universal)"
-				( cd "$ROOT_DIR" && VERSION="$VERSION" wails3 task darwin:package:universal )
-				package_darwin_zips
-			else
-				echo "==> Skipping macOS app bundle; Docker image wails-cross is not available."
-			fi
+			echo "ERROR: signed/notarized macOS release artifacts must be built on macOS." >&2
+			exit 1
 			;;
 	esac
 fi

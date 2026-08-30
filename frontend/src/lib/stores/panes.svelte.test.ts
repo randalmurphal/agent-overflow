@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createPane,
+  addPaneThreadMountedObserver,
   closePanesShowingThread,
   closePanesShowingThreads,
   destroyPane,
@@ -425,6 +426,22 @@ describe('panes store', () => {
 
       expect(mounted).toBe(right);
       expect(right.threadId).toBe('no-target');
+    });
+
+    it('notifies thread-owned companion state after a mount commits', async () => {
+      const thread = makeThread({ id: 'browser-return' });
+      mockThreadSwitch(thread);
+      const pane = createPane('main');
+      const mounted: Array<[string, string]> = [];
+      const off = addPaneThreadMountedObserver((paneId, threadId) => {
+        mounted.push([paneId, threadId]);
+      });
+      try {
+        await mountThreadInPane(thread, pane);
+      } finally {
+        off();
+      }
+      expect(mounted).toEqual([['main', 'browser-return']]);
     });
 
     it('focusPane sets logical focus without dispatching a reveal', () => {

@@ -20,7 +20,7 @@ const (
 	// Defaults are deliberately conservative for a visible multi-pane
 	// workload. They are options so a machine-specific harness profile can
 	// tighten them without changing this package.
-	DefaultCeilingBytes        uint64 = 600 << 20
+	DefaultCeilingBytes uint64 = 2 << 30
 	// Keep enough unreserved memory for a large allocation burst between the
 	// 100 ms watchdog samples. A sub-gigabyte floor can still let the host OOM
 	// before the next exact process-tree measurement.

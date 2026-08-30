@@ -24,6 +24,12 @@ run sh -c "cd '$ROOT_DIR/frontend' && pnpm run test:browser"
 run make -C "$ROOT_DIR" build
 
 case "$(uname -s)" in
+	Darwin)
+		run "$ROOT_DIR/scripts/verify-macos-app.sh" "$ROOT_DIR/bin/agent-overflow.app"
+		;;
+esac
+
+case "$(uname -s)" in
 	Linux)
 		run make -C "$ROOT_DIR" build-wsl
 		;;

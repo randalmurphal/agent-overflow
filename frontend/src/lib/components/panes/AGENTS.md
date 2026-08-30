@@ -32,6 +32,10 @@ contract explicit:
   an exactly-fitting layout into a phantom horizontal scrollbar.
 - Global app surfaces do not belong in the pane loop unless the feature
   is intentionally one-instance-per-pane.
+- Browser companions are live, ephemeral projections of an explicitly
+  presented backend Chrome target. Background pages do not open them; normal
+  page activity does not steal their selected tab. They are never layout
+  persisted and must release their screencast subscription on unmount.
 
 Do not put chat behavior in this directory. Pane components mount and
 measure; chat/terminal/sidebar behavior stays in the owning feature

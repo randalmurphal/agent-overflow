@@ -524,14 +524,13 @@ export class Settings {
     "lowPowerMode": boolean;
 
     /**
-     * BrowserEnabled exposes Agent Overflow's built-in browser MCP tools to
-     * headless Claude and Codex sessions. BrowserShowWindow selects a visible
-     * full Chrome window; BrowserPersistSiteData checkpoints encrypted cookies
-     * and local storage per workspace. All three default on. Outside-workspace
+     * BrowserEnabled exposes Agent Overflow's built-in browser MCP tools and
+     * companion pane to Claude and Codex sessions. BrowserPersistSiteData
+     * checkpoints encrypted cookies and local storage per workspace. Both
+     * default on. Outside-workspace
      * file access is the separate, deliberately off-by-default authority grant.
      */
     "browserEnabled": boolean;
-    "browserShowWindow": boolean;
     "browserPersistSiteData": boolean;
     "browserAllowOutsideWorkspace"?: boolean;
     "confirmArchive": boolean;
@@ -1052,9 +1051,6 @@ export class Settings {
         if (!("browserEnabled" in $$source)) {
             this["browserEnabled"] = false;
         }
-        if (!("browserShowWindow" in $$source)) {
-            this["browserShowWindow"] = false;
-        }
         if (!("browserPersistSiteData" in $$source)) {
             this["browserPersistSiteData"] = false;
         }
@@ -1181,85 +1177,85 @@ export class Settings {
      */
     static createFrom($$source: any = {}): Settings {
         const $$createField5_0 = $$createType0;
+        const $$createField20_0 = $$createType0;
         const $$createField21_0 = $$createType0;
-        const $$createField22_0 = $$createType0;
+        const $$createField22_0 = $$createType2;
         const $$createField23_0 = $$createType2;
-        const $$createField24_0 = $$createType2;
+        const $$createField24_0 = $$createType4;
         const $$createField25_0 = $$createType4;
-        const $$createField26_0 = $$createType4;
+        const $$createField26_0 = $$createType0;
         const $$createField27_0 = $$createType0;
-        const $$createField28_0 = $$createType0;
-        const $$createField31_0 = $$createType5;
-        const $$createField32_0 = $$createType6;
-        const $$createField34_0 = $$createType7;
-        const $$createField52_0 = $$createType8;
-        const $$createField53_0 = $$createType9;
-        const $$createField54_0 = $$createType10;
-        const $$createField56_0 = $$createType0;
-        const $$createField57_0 = $$createType12;
-        const $$createField62_0 = $$createType0;
-        const $$createField64_0 = $$createType0;
-        const $$createField69_0 = $$createType13;
+        const $$createField30_0 = $$createType5;
+        const $$createField31_0 = $$createType6;
+        const $$createField33_0 = $$createType7;
+        const $$createField51_0 = $$createType8;
+        const $$createField52_0 = $$createType9;
+        const $$createField53_0 = $$createType10;
+        const $$createField55_0 = $$createType0;
+        const $$createField56_0 = $$createType12;
+        const $$createField61_0 = $$createType0;
+        const $$createField63_0 = $$createType0;
+        const $$createField68_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
         }
         if ("claudeHiddenModels" in $$parsedSource) {
-            $$parsedSource["claudeHiddenModels"] = $$createField21_0($$parsedSource["claudeHiddenModels"]);
+            $$parsedSource["claudeHiddenModels"] = $$createField20_0($$parsedSource["claudeHiddenModels"]);
         }
         if ("codexHiddenModels" in $$parsedSource) {
-            $$parsedSource["codexHiddenModels"] = $$createField22_0($$parsedSource["codexHiddenModels"]);
+            $$parsedSource["codexHiddenModels"] = $$createField21_0($$parsedSource["codexHiddenModels"]);
         }
         if ("claudeCustomEnv" in $$parsedSource) {
-            $$parsedSource["claudeCustomEnv"] = $$createField23_0($$parsedSource["claudeCustomEnv"]);
+            $$parsedSource["claudeCustomEnv"] = $$createField22_0($$parsedSource["claudeCustomEnv"]);
         }
         if ("codexCustomEnv" in $$parsedSource) {
-            $$parsedSource["codexCustomEnv"] = $$createField24_0($$parsedSource["codexCustomEnv"]);
+            $$parsedSource["codexCustomEnv"] = $$createField23_0($$parsedSource["codexCustomEnv"]);
         }
         if ("claudePromptOverrides" in $$parsedSource) {
-            $$parsedSource["claudePromptOverrides"] = $$createField25_0($$parsedSource["claudePromptOverrides"]);
+            $$parsedSource["claudePromptOverrides"] = $$createField24_0($$parsedSource["claudePromptOverrides"]);
         }
         if ("codexPromptOverrides" in $$parsedSource) {
-            $$parsedSource["codexPromptOverrides"] = $$createField26_0($$parsedSource["codexPromptOverrides"]);
+            $$parsedSource["codexPromptOverrides"] = $$createField25_0($$parsedSource["codexPromptOverrides"]);
         }
         if ("claudeDisabledTools" in $$parsedSource) {
-            $$parsedSource["claudeDisabledTools"] = $$createField27_0($$parsedSource["claudeDisabledTools"]);
+            $$parsedSource["claudeDisabledTools"] = $$createField26_0($$parsedSource["claudeDisabledTools"]);
         }
         if ("codexDisabledTools" in $$parsedSource) {
-            $$parsedSource["codexDisabledTools"] = $$createField28_0($$parsedSource["codexDisabledTools"]);
+            $$parsedSource["codexDisabledTools"] = $$createField27_0($$parsedSource["codexDisabledTools"]);
         }
         if ("claudeCrossSession" in $$parsedSource) {
-            $$parsedSource["claudeCrossSession"] = $$createField31_0($$parsedSource["claudeCrossSession"]);
+            $$parsedSource["claudeCrossSession"] = $$createField30_0($$parsedSource["claudeCrossSession"]);
         }
         if ("claudeSubagentLimits" in $$parsedSource) {
-            $$parsedSource["claudeSubagentLimits"] = $$createField32_0($$parsedSource["claudeSubagentLimits"]);
+            $$parsedSource["claudeSubagentLimits"] = $$createField31_0($$parsedSource["claudeSubagentLimits"]);
         }
         if ("claudeThinking" in $$parsedSource) {
-            $$parsedSource["claudeThinking"] = $$createField34_0($$parsedSource["claudeThinking"]);
+            $$parsedSource["claudeThinking"] = $$createField33_0($$parsedSource["claudeThinking"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField52_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField51_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField53_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField52_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField54_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField53_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField56_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField55_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("remoteEndpoints" in $$parsedSource) {
-            $$parsedSource["remoteEndpoints"] = $$createField57_0($$parsedSource["remoteEndpoints"]);
+            $$parsedSource["remoteEndpoints"] = $$createField56_0($$parsedSource["remoteEndpoints"]);
         }
         if ("spinnerCustomVerbs" in $$parsedSource) {
-            $$parsedSource["spinnerCustomVerbs"] = $$createField62_0($$parsedSource["spinnerCustomVerbs"]);
+            $$parsedSource["spinnerCustomVerbs"] = $$createField61_0($$parsedSource["spinnerCustomVerbs"]);
         }
         if ("spinnerDisabledAnimations" in $$parsedSource) {
-            $$parsedSource["spinnerDisabledAnimations"] = $$createField64_0($$parsedSource["spinnerDisabledAnimations"]);
+            $$parsedSource["spinnerDisabledAnimations"] = $$createField63_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField69_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField68_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }

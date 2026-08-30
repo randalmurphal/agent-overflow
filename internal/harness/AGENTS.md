@@ -38,12 +38,14 @@ this file covers the package boundaries.
 - `darwinbundle/`: gives an isolated macOS harness executable its own
   application bundle. WKWebView keys its default data store by bundle id, so
   the ordinary `com.agentoverflow.app` bundle must never host an isolated
-  run. A no-op on every other platform.
+  run. Cleanup removes the exact generated bundle and bundle-id-scoped
+  user-Library WebKit state after the supervised process exits. A no-op on
+  every other platform.
 - `containment/`: memory containment policy for harness launches. Linux uses
   cgroup v2 or inherited `RLIMIT_DATA` when cgroup delegation is unavailable,
-  Windows uses a Job Object, and macOS uses the exact-tree ceiling and
-  host-floor watchdog because its kernel rejects lowering the available
-  memory rlimits. Unsupported platforms fail closed.
+  Windows uses a Job Object, and macOS uses a native application-responsibility
+  ceiling plus host-floor watchdog because its kernel rejects lowering the
+  available memory rlimits. Unsupported platforms fail closed.
 
 ## Responsibility boundary
 

@@ -26,7 +26,7 @@ A pure client. It links `internal/harnessclient` (WS peer plus process
 supervisor) and no App code, so it cannot fabricate app state: every
 capability is an RPC the backend already exposes, and every file it reads
 is one the backend already writes. One sanctioned out-of-band read:
-`health` samples the backend's `/proc` tree directly
+`health` samples the backend's native process ownership set directly
 (`procrss.SampleAll`), because liveness must not depend on the wire of
 the process being judged. Anything else goes through an RPC.
 
@@ -53,11 +53,12 @@ isolation for harness and soak alike is
 [soak-rig.md](../../docs/architecture/soak-rig.md) § Provider isolation.
 
 **Every launch is OOM-safe by construction, never by hope.** `up`
-reserves host capacity, applies the platform memory policy (600 MiB default,
+reserves host capacity, applies the platform memory policy (2 GiB default,
 `--memory-limit-bytes` within host capacity), and arms a detached watchdog
 before it reports success. Linux and Windows add a hard kernel boundary;
-macOS enforces the exact-tree ceiling reactively because it has no usable
-memory rlimit or aggregate process primitive.
+macOS enforces the application-responsibility ceiling reactively because it has
+no usable memory rlimit. The native responsibility sample includes
+launchd-parented WebKit/Chrome helpers that a parent/child walk cannot see.
 Any new workload, run adapter, or launch path inherits this or does not
 ship. Platform matrix:
 [testing-harness.md](../../docs/specs/testing-harness.md). Related:

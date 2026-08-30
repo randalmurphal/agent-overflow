@@ -305,11 +305,11 @@ func rssSection(pid int, alive bool) healthSection {
 		return healthSection{Name: "rss", Status: healthOK, Detail: "not sampled: no live process"}
 	}
 	if !procrss.Supported() {
-		return healthSection{Name: "rss", Status: healthOK, Detail: "not available off linux"}
+		return healthSection{Name: "rss", Status: healthOK, Detail: "not available on this platform"}
 	}
 	tree, err := procrss.SampleAll(pid)
 	if err != nil {
-		return healthSection{Name: "rss", Status: healthWarn, Detail: "read /proc: " + err.Error()}
+		return healthSection{Name: "rss", Status: healthWarn, Detail: "sample process memory: " + err.Error()}
 	}
 	return healthSection{Name: "rss", Status: healthOK,
 		Detail: fmt.Sprintf("tree %s (backend %s + %d child process(es) %s)",
@@ -480,8 +480,8 @@ func perfSection(ctx context.Context, client *harnessclient.Client) healthSectio
 		// so is the difference between "nothing is running" and "your run
 		// ended without you".
 		EndedRunID string `json:"endedRunId"`
-		// WebviewRSSMeasurable is false when no webview child ever matched
-		// the /proc walk — the normal answer on Windows/WSL, where
+		// WebviewRSSMeasurable is false when no webview helper ever matched
+		// the native ownership walk — the normal answer on Windows/WSL, where
 		// WebView2 belongs to the launcher. Reporting it is what keeps a
 		// reader from taking an absent renderer figure for a zero one.
 		WebviewRSSMeasurable bool `json:"webviewRssMeasurable"`

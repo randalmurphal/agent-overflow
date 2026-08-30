@@ -13,7 +13,6 @@ const DEFAULT_SETTINGS: Settings = {
   streamingEnabled: true,
   lowPowerMode: false,
   browserEnabled: true,
-  browserShowWindow: true,
   browserPersistSiteData: true,
   browserAllowOutsideWorkspace: false,
   // Keep-awake mirrors internal/settings: enabled follows the

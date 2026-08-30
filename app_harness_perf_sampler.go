@@ -152,7 +152,7 @@ func sampleHarnessPerfBackend(prefixes []string) harnessPerfBackendSample {
 	}
 	tree, err := procrss.Sample(os.Getpid(), prefixes)
 	if err != nil {
-		// A /proc read that fails leaves the series short by one sample
+		// A native process read that fails leaves the series short by one sample
 		// rather than failing the run; the RSS series' Count is what says
 		// how many landed.
 		return sample

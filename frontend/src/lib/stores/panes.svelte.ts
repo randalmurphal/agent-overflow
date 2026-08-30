@@ -30,6 +30,7 @@ let panePersistenceHandler: (() => void) | null = null;
 // panes.svelte.ts never depends on companion stores — the dependency runs one
 // way only (companion stores read the pane registry, never the reverse).
 let paneDestroyedObservers: Array<(paneId: string) => void> = [];
+let paneThreadMountedObservers: Array<(paneId: string, threadId: string) => void> = [];
 
 export function setPanePersistenceHandler(handler: (() => void) | null): void {
   panePersistenceHandler = handler;
@@ -39,6 +40,17 @@ export function addPaneDestroyedObserver(observer: (paneId: string) => void): ()
   paneDestroyedObservers = [...paneDestroyedObservers, observer];
   return () => {
     paneDestroyedObservers = paneDestroyedObservers.filter((existing) => existing !== observer);
+  };
+}
+
+export function addPaneThreadMountedObserver(
+  observer: (paneId: string, threadId: string) => void,
+): () => void {
+  paneThreadMountedObservers = [...paneThreadMountedObservers, observer];
+  return () => {
+    paneThreadMountedObservers = paneThreadMountedObservers.filter(
+      (existing) => existing !== observer,
+    );
   };
 }
 
@@ -471,6 +483,13 @@ async function replaceThreadInPane(
   focusedPaneId = target.paneId;
   revealPane(target.paneId);
   await target.switchThread(thread);
+  for (const observer of paneThreadMountedObservers) {
+    try {
+      observer(target.paneId, thread.id);
+    } catch (err) {
+      reportFrontendDiagnostic('panes: thread-mounted observer failed', String(err));
+    }
+  }
   requestPanePersistence();
   return target;
 }

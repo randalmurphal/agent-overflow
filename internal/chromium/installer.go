@@ -92,6 +92,12 @@ type Installer struct {
 	// shorter timeout or a recorded round-tripper.
 	HTTPClient *http.Client
 
+	// BinaryPath bypasses manifest/download resolution with an explicitly
+	// supplied Chrome executable. The E2E harness points this at Playwright's
+	// already-installed Chromium so each isolated data root does not download a
+	// second browser. Empty in normal production startup.
+	BinaryPath string
+
 	// Emit receives InstallProgress events. nil is allowed — events
 	// are dropped silently.
 	Emit func(channel eventchan.Channel, data any)
@@ -128,6 +134,17 @@ func NewInstaller(configDir string, artifact Artifact, channel eventchan.Channel
 // upstream rolls, but the byte download is skipped when the version
 // directory already exists.
 func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
+	if i.BinaryPath != "" {
+		binaryPath, err := filepath.Abs(i.BinaryPath)
+		if err != nil {
+			return InstallResult{}, fmt.Errorf("chromium: resolve supplied binary: %w", err)
+		}
+		if !isExecutable(binaryPath) {
+			return InstallResult{}, fmt.Errorf("chromium: supplied binary is not executable: %s", binaryPath)
+		}
+		i.emit(InstallProgress{Phase: "ready", Version: "supplied"})
+		return InstallResult{Version: "supplied", BinaryPath: binaryPath}, nil
+	}
 	if i.ConfigDir == "" {
 		return InstallResult{}, fmt.Errorf("chromium: installer ConfigDir required")
 	}

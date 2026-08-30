@@ -5,8 +5,10 @@ observes crossings. It never starts, stops, or signals an application.
 
 `internal/harness/containment` installs the kernel boundary where the OS
 provides one (cgroup v2, Job Object, or `RLIMIT_DATA`). macOS has no usable
-memory boundary, so callers enforce this package's exact-tree ceiling and
-host-floor events through their existing identity-checked termination path.
+memory boundary, so callers enforce this package's application-responsibility
+ceiling and host-floor events through their existing identity-checked
+termination path. The Darwin sample includes launchd-parented WebKit/Chrome
+helpers assigned to owned responsible processes as well as descendants.
 The governor itself remains accounting and observation only: do not add a
 kill path here.
 
@@ -42,7 +44,9 @@ kill path here.
 
 ## Defaults and callers
 
-`DefaultCeilingBytes` is 600 MiB, `DefaultAvailableFloorBytes` is 2 GiB.
+`DefaultCeilingBytes` is 2 GiB (enough for the app plus managed Chrome's
+measured 1.69 GB aggregate-RSS macOS startup peak),
+`DefaultAvailableFloorBytes` is 2 GiB.
 The floor absorbs an allocation burst between the watchdog's 100ms
 samples; a sub-gigabyte floor can let the host OOM before the next exact
 measurement. Both are `Options` fields so a machine-specific profile

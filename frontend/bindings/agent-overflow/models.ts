@@ -224,6 +224,29 @@ export class BranchPruneSelection {
     }
 }
 
+export class BrowserCompanionAction {
+    "kind": string;
+    "pageId"?: string;
+    "address"?: string;
+
+    /** Creates a new BrowserCompanionAction instance. */
+    constructor($$source: Partial<BrowserCompanionAction> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BrowserCompanionAction instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BrowserCompanionAction {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BrowserCompanionAction($$parsedSource as Partial<BrowserCompanionAction>);
+    }
+}
+
 /**
  * BusyThread is one thread's contribution to WorkspaceActivity. At least one
  * leg is set; idle threads are not listed.

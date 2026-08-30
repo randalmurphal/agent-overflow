@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -26,6 +27,7 @@ import (
 
 const runNonceEnv = "AO_HARNESS_BUNDLE_NONCE"
 const expectedBundleIDEnv = "AO_EXPECTED_BUNDLE_ID"
+const disclaimResponsibilityEnv = "AO_HARNESS_DISCLAIM_RESPONSIBILITY"
 
 func main() {
 	flags := flag.NewFlagSet("ao-darwin-harness", flag.ExitOnError)
@@ -33,6 +35,7 @@ func main() {
 	dataRoot := flags.String("data-root", "", "isolated harness data root")
 	plist := flags.String("plist", "build/darwin/Info.dev.plist", "Info.plist template")
 	driver := flags.String("driver", "", "path to the ao-harness driver")
+	mockProvider := flags.String("mock-provider", "", "path to ao-mockprovider (default: beside --binary)")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		fatal(err)
 	}
@@ -53,18 +56,24 @@ func main() {
 		fatal(err)
 	}
 	executable := appPath + "/Contents/MacOS/agent-overflow"
-	upArgs, err := supervisedUpArgs(backendArgs, executable, *dataRoot)
+	resolvedMock := strings.TrimSpace(*mockProvider)
+	if resolvedMock == "" {
+		resolvedMock = filepath.Join(filepath.Dir(*binary), "ao-mockprovider")
+	}
+	upArgs, err := supervisedUpArgs(backendArgs, executable, *dataRoot, resolvedMock)
 	if err != nil {
 		fatal(err)
 	}
 	env := append([]string{}, os.Environ()...)
-	env = append(env, runNonceEnv+"="+nonce, expectedBundleIDEnv+"="+darwinbundle.BundleID(*dataRoot, nonce))
-	if err := runSupervised(*driver, upArgs, env, *dataRoot); err != nil {
+	env = append(env, runNonceEnv+"="+nonce, expectedBundleIDEnv+"="+darwinbundle.BundleID(*dataRoot, nonce), disclaimResponsibilityEnv+"=1")
+	runErr := runSupervised(*driver, upArgs, env, *dataRoot)
+	cleanupErr := darwinbundle.Cleanup(*dataRoot, appPath)
+	if err := errors.Join(runErr, cleanupErr); err != nil {
 		fatal(err)
 	}
 }
 
-func supervisedUpArgs(backendArgs []string, executable, dataRoot string) ([]string, error) {
+func supervisedUpArgs(backendArgs []string, executable, dataRoot, mockProvider string) ([]string, error) {
 	soak := slices.Contains(backendArgs, "--soak")
 	autopilot := slices.Contains(backendArgs, "--autopilot")
 	for _, arg := range backendArgs {
@@ -81,6 +90,9 @@ func supervisedUpArgs(backendArgs []string, executable, dataRoot string) ([]stri
 		return nil, errors.New("--autopilot requires --soak")
 	}
 	args := []string{"up", "--window", "--binary", executable, "--data-dir", dataRoot}
+	if strings.TrimSpace(mockProvider) != "" {
+		args = append(args, "--mock-provider", mockProvider)
+	}
 	if soak {
 		args = append(args, "--soak")
 	}

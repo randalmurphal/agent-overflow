@@ -13,8 +13,9 @@ type darwinGroup struct {
 
 // macOS has no supported cgroup/job-object equivalent, and current macOS
 // kernels reject attempts to lower RLIMIT_DATA, RLIMIT_RSS, and RLIMIT_AS.
-// The governor's exact-tree ceiling and host-floor watchdog are therefore the
-// enforceable boundary on this platform. Configure still validates and owns
+// The governor's application-responsibility ceiling (ordinary descendants plus
+// launchd-parented WebKit XPC helpers) and host-floor watchdog are therefore
+// the enforceable boundary on this platform. Configure still validates and owns
 // the launch transition so callers cannot accidentally skip platform policy.
 func Prepare(limit uint64) (Group, error) {
 	if limit == 0 {

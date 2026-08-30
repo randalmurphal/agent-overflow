@@ -13,15 +13,15 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func TestBrowserSettingsDefaultToEnabledVisiblePersistent(t *testing.T) {
+func TestBrowserSettingsDefaultToEnabledPersistent(t *testing.T) {
 	config := browserConfigFromSettings(settings.DefaultSettings)
-	if !config.Enabled || !config.ShowWindow || !config.PersistSiteData || config.AllowOutsideWorkspace {
+	if !config.Enabled || !config.PersistSiteData || config.AllowOutsideWorkspace {
 		t.Fatalf("browser config = %+v", config)
 	}
 }
 
 func TestBrowserMCPConfigRegistersOnlyHeadlessProviders(t *testing.T) {
-	manager := appbrowser.NewManager(nil, t.TempDir(), appbrowser.Config{Enabled: true})
+	manager := appbrowser.NewManager(nil, t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{})
 	server := appbrowser.NewMCPServer(manager, true)
 	app := &App{}
 	app.browser.manager, app.browser.mcp = manager, server
@@ -77,6 +77,28 @@ func TestRefreshLiveBrowserMCPUsesClaudeToggle(t *testing.T) {
 	}
 }
 
+func TestRefreshLiveBrowserMCPPreservesThreadDisable(t *testing.T) {
+	app, _, _ := newMCPTestApp(t)
+	app.browser.mcp = appbrowser.NewMCPServer(nil, true)
+	app.browser.mcp.SetThreadEnabled("browser-claude-disabled", false)
+	captureDir := t.TempDir()
+	sess, err := claude.NewSession(context.Background(), "browser-claude-disabled", claude.Config{
+		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir: t.TempDir(),
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessions["browser-claude-disabled"] = session{provider: string(provider.Claude), token: "browser-toggle-disabled", claude: sess}
+
+	app.refreshLiveBrowserMCP(true)
+	envelope := readClaudeMcpToggleCapture(t, captureDir, 3*time.Second)
+	if envelope.Request["enabled"] != false {
+		t.Fatalf("thread-disabled browser toggle = %#v", envelope.Request)
+	}
+}
+
 func TestBrowserSettingsCoalescingKeepsSkippedEnableTransition(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
@@ -96,7 +118,7 @@ func TestBrowserSettingsCoalescingKeepsSkippedEnableTransition(t *testing.T) {
 	// it must still deliver the true -> false transition to the provider.
 	app.browser.applyMu.Lock()
 	app.scheduleBrowserSettings(settings.Settings{BrowserEnabled: false})
-	app.scheduleBrowserSettings(settings.Settings{BrowserEnabled: false, BrowserShowWindow: true})
+	app.scheduleBrowserSettings(settings.Settings{BrowserEnabled: false, BrowserPersistSiteData: true})
 	app.browser.applyMu.Unlock()
 	app.browser.applyWG.Wait()
 

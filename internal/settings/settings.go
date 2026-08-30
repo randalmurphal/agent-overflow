@@ -102,13 +102,12 @@ type Settings struct {
 	// activity shimmer is suppressed. Display-only — content and timing
 	// are unaffected.
 	LowPowerMode bool `json:"lowPowerMode"`
-	// BrowserEnabled exposes Agent Overflow's built-in browser MCP tools to
-	// headless Claude and Codex sessions. BrowserShowWindow selects a visible
-	// full Chrome window; BrowserPersistSiteData checkpoints encrypted cookies
-	// and local storage per workspace. All three default on. Outside-workspace
+	// BrowserEnabled exposes Agent Overflow's built-in browser MCP tools and
+	// companion pane to Claude and Codex sessions. BrowserPersistSiteData
+	// checkpoints encrypted cookies and local storage per workspace. Both
+	// default on. Outside-workspace
 	// file access is the separate, deliberately off-by-default authority grant.
 	BrowserEnabled               bool   `json:"browserEnabled"`
-	BrowserShowWindow            bool   `json:"browserShowWindow"`
 	BrowserPersistSiteData       bool   `json:"browserPersistSiteData"`
 	BrowserAllowOutsideWorkspace bool   `json:"browserAllowOutsideWorkspace,omitempty"`
 	ConfirmArchive               bool   `json:"confirmArchive"`
@@ -530,7 +529,6 @@ var DefaultSettings = Settings{
 	StreamingEnabled:       true,
 	LowPowerMode:           false,
 	BrowserEnabled:         true,
-	BrowserShowWindow:      true,
 	BrowserPersistSiteData: true,
 	ConfirmArchive:         true,
 	ConfirmDelete:          true,

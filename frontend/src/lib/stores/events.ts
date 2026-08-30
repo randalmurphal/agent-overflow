@@ -154,6 +154,8 @@ import {
   applyWorkflowSoftStopEvent,
 } from './eventsWorkflow';
 import { addToast } from './toast.svelte';
+import { applyBrowserCompanionState } from './browserCompanion.svelte';
+import type { BrowserCompanionEvent } from './bindings';
 
 /**
  * Set up the app's Wails event listeners.
@@ -187,6 +189,10 @@ export function setupEventListeners(): () => void {
         break;
     }
   });
+  const cancelBrowserCompanionState = wailsEventOn<BrowserCompanionEvent>(
+    'browser:companion-state',
+    applyBrowserCompanionState,
+  );
 
   const cancelApproval = wailsEventOn<ApprovalEvent>('provider:approval', applyApprovalEvent);
   const cancelNotificationActivated = wailsEventOn<unknown>(
@@ -508,6 +514,7 @@ export function setupEventListeners(): () => void {
 
   return () => {
     cancelBrowserInstall();
+    cancelBrowserCompanionState();
     cancelItemEvent();
     flushItemEventQueue();
     cancelApproval();

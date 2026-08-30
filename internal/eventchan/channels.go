@@ -107,8 +107,10 @@ const (
 	ProviderUserInput              Channel = "provider:user_input"
 )
 
-// browser:* / screenshot:* — managed browser artifact install progress.
+// browser:* / screenshot:* — managed browser artifact install progress and
+// the live in-app companion surface.
 const (
+	BrowserCompanionState     Channel = "browser:companion-state"
 	BrowserInstallProgress    Channel = "browser:install-progress"
 	ScreenshotInstallProgress Channel = "screenshot:install-progress"
 )

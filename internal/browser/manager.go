@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -21,8 +22,10 @@ import (
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/fetch"
+	cdplog "github.com/chromedp/cdproto/log"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
+	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/storage"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
@@ -30,20 +33,30 @@ import (
 )
 
 const (
-	operationTimeout        = 30 * time.Second
-	idleBrowserDelay        = 2 * time.Minute
-	maxPagesPerThread       = 8
-	maxPagesPerWorkspace    = 24
-	maxPagesTotal           = 64
-	maxWorkspaceContexts    = 12
-	maxSnapshotText         = 100_000
-	maxSnapshotElements     = 500
-	maxEvaluateBytes        = 256_000
-	maxLocalStorageChars    = 1 << 20
-	maxLocalStorageOrigins  = 64
-	maxScreenshotBytes      = 20 << 20
-	maxFullScreenshotHeight = 12_000
-	maxFullScreenshotWidth  = 4_000
+	operationTimeout          = 30 * time.Second
+	idleBrowserDelay          = 2 * time.Minute
+	maxPagesPerThread         = 8
+	maxPagesPerWorkspace      = 24
+	maxPagesTotal             = 64
+	maxWorkspaceContexts      = 12
+	maxSnapshotText           = 100_000
+	maxSnapshotElements       = 500
+	maxEvaluateBytes          = 256_000
+	maxLocalStorageChars      = 1 << 20
+	maxLocalStorageOrigins    = 64
+	maxScreenshotBytes        = 20 << 20
+	maxFullScreenshotHeight   = 12_000
+	maxFullScreenshotWidth    = 4_000
+	maxConsoleEntries         = 500
+	maxConsoleMessageBytes    = 16 << 10
+	maxClipboardBytes         = 8 << 20
+	maxDownloadBytes          = 512 << 20
+	maxWorkspaceDownloadBytes = 2 << 30
+	defaultViewportWidth      = 1280
+	defaultViewportHeight     = 720
+	maxBrowserURLBytes        = 64 << 10
+	maxBrowserTitleBytes      = 4 << 10
+	maxLocatorResultBytes     = 8 << 20
 )
 
 type Manager struct {
@@ -55,55 +68,119 @@ type Manager struct {
 	config  Config
 	closed  bool
 
-	allocCtx      context.Context
-	allocCancel   context.CancelFunc
-	browserCtx    context.Context
-	browserCancel context.CancelFunc
-	startupCancel context.CancelFunc
-	scopes        map[string]*workspaceScope
-	idleTimer     *time.Timer
+	allocCtx       context.Context
+	allocCancel    context.CancelFunc
+	browserCtx     context.Context
+	browserCancel  context.CancelFunc
+	startupCancel  context.CancelFunc
+	scopes         map[string]*workspaceScope
+	idleTimer      *time.Timer
+	eventSink      func(CompanionEvent)
+	subscriptions  map[string]companionSubscriber
+	sessions       map[string]SessionInfo
+	artifactRoot   string
+	artifactInitMu sync.Mutex
+	artifactReady  bool
+	artifactBytes  atomic.Int64
 	// pageAdopted is a test seam for the asynchronous popup ownership handoff.
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
 	pageAdopted func()
 }
 
+type ManagerOptions struct {
+	// FileStateKey keeps isolated harness/test runs out of the user's desktop
+	// keychain. Production leaves this false and stores the encryption key in
+	// the OS credential store.
+	FileStateKey bool
+}
+
 type workspaceScope struct {
-	workspace string
-	ctx       context.Context
-	cancel    func(context.Context) error
-	contextID cdp.BrowserContextID
-	state     storageState
-	pages     map[string]*managedPage
+	workspace     string
+	ctx           context.Context
+	cancel        func(context.Context) error
+	contextID     cdp.BrowserContextID
+	state         storageState
+	pages         map[string]*managedPage
+	downloadDir   string
+	downloadBytes atomic.Int64
 }
 
 type managedPage struct {
-	id      string
-	owner   string
-	target  target.ID
-	access  Access
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	lastUse atomic.Int64
+	id           string
+	owner        string
+	target       target.ID
+	access       Access
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	lastUse      atomic.Int64
+	createdAt    int64
+	metaMu       sync.RWMutex
+	info         PageInfo
+	streamMu     sync.Mutex
+	stream       *pageStream
+	streamCmdMu  sync.Mutex
+	logMu        sync.Mutex
+	logs         []ConsoleLog
+	clipboardMu  sync.Mutex
+	clipboard    []ClipboardItem
+	downloadMu   sync.Mutex
+	downloadSeq  uint64
+	downloads    []DownloadInfo
+	downloadWait chan struct{}
+	frameMu      sync.RWMutex
+	frames       map[cdp.FrameID]struct{}
+	assetMu      sync.Mutex
+	inventories  map[string]AssetInventory
+	assetOrder   []string
+	networkMu    sync.Mutex
+	requests     map[network.RequestID]struct{}
+	lastNetwork  time.Time
+	nodeMu       sync.Mutex
+	nodeRefs     map[string]nodeReference
+	nodeOrder    []string
 }
 
-func NewManager(installer *chromium.Installer, configDir string, config Config) *Manager {
-	return &Manager{
-		installer: installer,
-		state:     newStateStore(configDir),
-		config:    config,
-		scopes:    make(map[string]*workspaceScope),
+func newManagedPage(access Access, targetID target.ID, pageCtx context.Context, cancel context.CancelFunc) *managedPage {
+	return &managedPage{
+		id: uuid.NewString(), owner: access.ThreadID, target: targetID, access: access,
+		ctx: pageCtx, cancel: cancel, createdAt: time.Now().UnixNano(),
+		downloadWait: make(chan struct{}), inventories: make(map[string]AssetInventory),
+		frames:   make(map[cdp.FrameID]struct{}),
+		requests: make(map[network.RequestID]struct{}), lastNetwork: time.Now(),
+		nodeRefs: make(map[string]nodeReference),
 	}
+}
+
+func NewManager(installer *chromium.Installer, configDir string, config Config, opts ManagerOptions) *Manager {
+	state := newStateStore(configDir)
+	if opts.FileStateKey {
+		state.keyFn = state.loadOrCreateFallbackKey
+	}
+	return &Manager{
+		installer:     installer,
+		state:         state,
+		config:        config,
+		scopes:        make(map[string]*workspaceScope),
+		subscriptions: make(map[string]companionSubscriber),
+		sessions:      make(map[string]SessionInfo),
+		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
+	}
+}
+
+func (m *Manager) SetEventSink(sink func(CompanionEvent)) {
+	m.mu.Lock()
+	m.eventSink = sink
+	m.mu.Unlock()
 }
 
 func (m *Manager) Reconfigure(config Config) error {
 	m.mu.Lock()
-	changedLaunch := m.config.ShowWindow != config.ShowWindow
 	changedPersistence := m.config.PersistSiteData != config.PersistSiteData
 	m.config = config
 	m.mu.Unlock()
-	if !config.Enabled || changedLaunch || changedPersistence {
+	if !config.Enabled || changedPersistence {
 		return m.closeBrowser(context.Background(), true)
 	}
 	return nil
@@ -123,6 +200,24 @@ func (m *Manager) Open(ctx context.Context, access Access, rawURL string, opts O
 	return m.navigate(ctx, access, parsed.String(), opts)
 }
 
+func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) {
+	p, err := m.pageForOpen(ctx, access, "")
+	if err != nil {
+		return PageInfo{}, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
+	defer cancel()
+	info, err := pageInfo(opCtx, p.id)
+	if err == nil {
+		p.setInfo(info)
+		info = p.cachedInfo()
+		m.pageChanged(p)
+	}
+	return info, err
+}
+
 func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts OpenOptions) (PageInfo, error) {
 	resolved, err := m.authorizeFile(access, path)
 	if err != nil {
@@ -132,7 +227,7 @@ func (m *Manager) OpenFile(ctx context.Context, access Access, path string, opts
 }
 
 func (m *Manager) navigate(ctx context.Context, access Access, targetURL string, opts OpenOptions) (PageInfo, error) {
-	p, err := m.pageFor(ctx, access, opts.PageID, opts.NewPage)
+	p, err := m.pageForOpen(ctx, access, opts.PageID)
 	if err != nil {
 		return PageInfo{}, err
 	}
@@ -147,13 +242,19 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	p.touch()
 	info, err := pageInfo(opCtx, p.id)
 	if err == nil {
+		p.setInfo(info)
+		info = p.cachedInfo()
 		m.checkpointPage(opCtx, p)
 	}
+	m.pageChanged(p)
 	return info, err
 }
 
 func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) {
 	pages := m.ownedPages(access.ThreadID)
+	m.mu.Lock()
+	activePageID := m.sessionLocked(access.ThreadID).ActivePageID
+	m.mu.Unlock()
 	out := make([]PageInfo, 0, len(pages))
 	for _, p := range pages {
 		p.mu.Lock()
@@ -162,10 +263,14 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 		cancel()
 		p.mu.Unlock()
 		if err == nil {
+			info.Selected = p.id == activePageID
+			info.LastOpened = time.Unix(0, p.lastUse.Load()).UTC().Format(time.RFC3339Nano)
+			p.setInfo(info)
+			info = p.cachedInfo()
 			out = append(out, info)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(out, func(i, j int) bool { return out[i].LastOpened > out[j].LastOpened })
 	return out, nil
 }
 
@@ -178,12 +283,17 @@ func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) e
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	m.captureLocalStorage(opCtx, p)
 	cancel()
+	p.stopStream()
+	m.cancelPageDownloads(p, scope)
 	p.cancel()
 	p.mu.Unlock()
 	m.mu.Lock()
 	delete(scope.pages, p.id)
 	empty := len(scope.pages) == 0
 	m.mu.Unlock()
+	m.repairActivePage(access.ThreadID)
+	m.emitThreadState(access.ThreadID)
+	m.syncThreadStream(access.ThreadID)
 	if empty {
 		return m.disposeScope(ctx, scope.workspace)
 	}
@@ -199,6 +309,9 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 			errs = append(errs, err)
 		}
 	}
+	m.mu.Lock()
+	delete(m.sessions, threadID)
+	m.mu.Unlock()
 	return errors.Join(errs...)
 }
 
@@ -216,20 +329,13 @@ func (m *Manager) Close() error {
 	return m.closeBrowser(context.Background(), true)
 }
 
-func (m *Manager) pageFor(ctx context.Context, access Access, requested string, forceNew bool) (*managedPage, error) {
+func (m *Manager) pageForOpen(ctx context.Context, access Access, requested string) (*managedPage, error) {
 	if strings.TrimSpace(access.ThreadID) == "" || strings.TrimSpace(access.Workspace) == "" {
 		return nil, fmt.Errorf("browser: invalid caller scope")
 	}
-	if requested != "" {
+	if requested = strings.TrimSpace(requested); requested != "" {
 		p, _, err := m.lookupOwnedPage(access, requested)
 		return p, err
-	}
-	if !forceNew {
-		owned := m.ownedPages(access.ThreadID)
-		if len(owned) > 0 {
-			sort.Slice(owned, func(i, j int) bool { return owned[i].lastUse.Load() > owned[j].lastUse.Load() })
-			return owned[0], nil
-		}
 	}
 	return m.createPage(ctx, access)
 }
@@ -320,8 +426,16 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 		return nil, err
 	}
 	targetID := chromedp.FromContext(pageCtx).Target.TargetID
-	p := &managedPage{id: uuid.NewString(), owner: access.ThreadID, target: targetID, access: access, ctx: pageCtx, cancel: pageCancel}
+	p := newManagedPage(access, targetID, pageCtx, pageCancel)
+	p.info = PageInfo{ID: p.id, URL: "about:blank"}
 	if err := m.installPageHandlers(p); err != nil {
+		pageCancel()
+		if newScope {
+			_ = m.disposeScope(context.Background(), workspace)
+		}
+		return nil, err
+	}
+	if err := m.applyConfiguredViewport(p); err != nil {
 		pageCancel()
 		if newScope {
 			_ = m.disposeScope(context.Background(), workspace)
@@ -332,6 +446,7 @@ func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, 
 	m.mu.Lock()
 	scope.pages[p.id] = p
 	m.mu.Unlock()
+	m.pageChanged(p)
 	return p, nil
 }
 
@@ -361,9 +476,15 @@ func (m *Manager) createScope(workspace string) (*workspaceScope, error) {
 		defer cancel()
 		return target.DisposeBrowserContext(contextID).Do(browserCommandContext(disposeCtx))
 	}
-	if err := browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny).WithBrowserContextID(contextID).Do(browserCommandContext(browserCtx)); err != nil {
+	digest := sha256.Sum256([]byte(workspace))
+	downloadDir := filepath.Join(m.artifactRoot, "downloads", fmt.Sprintf("%x", digest[:12]))
+	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 		_ = dispose(context.Background())
-		return nil, fmt.Errorf("browser: deny downloads: %w", err)
+		return nil, fmt.Errorf("browser: create download directory: %w", err)
+	}
+	if err := browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(downloadDir).WithEventsEnabled(true).WithBrowserContextID(contextID).Do(browserCommandContext(browserCtx)); err != nil {
+		_ = dispose(context.Background())
+		return nil, fmt.Errorf("browser: configure downloads: %w", err)
 	}
 	// Browser tools must never turn a website permission prompt into ambient
 	// access to the user's machine. CDP permission names unsupported by a future
@@ -379,7 +500,7 @@ func (m *Manager) createScope(workspace string) (*workspaceScope, error) {
 			return nil, fmt.Errorf("browser: restore cookies: %w", err)
 		}
 	}
-	return &workspaceScope{workspace: workspace, ctx: browserCtx, cancel: dispose, contextID: contextID, state: state, pages: make(map[string]*managedPage)}, nil
+	return &workspaceScope{workspace: workspace, ctx: browserCtx, cancel: dispose, contextID: contextID, state: state, pages: make(map[string]*managedPage), downloadDir: downloadDir}, nil
 }
 
 func (m *Manager) ensureStarted(ctx context.Context) error {
@@ -401,7 +522,6 @@ func (m *Manager) ensureStarted(ctx context.Context) error {
 		m.mu.Unlock()
 		return nil
 	}
-	showWindow := m.config.ShowWindow
 	m.mu.Unlock()
 	if m.installer == nil {
 		return fmt.Errorf("browser: installer unavailable")
@@ -431,17 +551,25 @@ func (m *Manager) ensureStarted(ctx context.Context) error {
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.Flag("enable-automation", true),
 		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-background-networking", true),
+		chromedp.Flag("disable-breakpad", true),
+		chromedp.Flag("disable-component-update", true),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-sync", true),
 		chromedp.Flag("force-color-profile", "srgb"),
+		chromedp.Flag("password-store", "basic"),
 		// ExecAllocator otherwise silently adds --no-sandbox when the parent
 		// runs as root. Failing to launch is safer than weakening isolation.
 		chromedp.Flag("no-sandbox", false),
 		chromedp.ModifyCmdFunc(func(*exec.Cmd) {}),
 		chromedp.CombinedOutput(browserLogWriter{}),
+		chromedp.Flag("headless", "new"),
 	}
-	if !showWindow || (runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "") {
-		opts = append(opts, chromedp.Flag("headless", "new"))
+	if runtime.GOOS == "darwin" {
+		// Chrome's temporary automation profile has no durable secrets. AO
+		// persists the selected cookie/storage subset itself, encrypted. Avoid
+		// Chromium Safe Storage prompts for an ephemeral profile.
+		opts = append(opts, chromedp.Flag("use-mock-keychain", true))
 	}
 	if runtime.GOOS == "linux" {
 		opts = append(opts, chromedp.Flag("disable-dev-shm-usage", true))
@@ -464,6 +592,14 @@ func (m *Manager) ensureStarted(ctx context.Context) error {
 			}
 		case *target.EventTargetDestroyed:
 			go m.removeDestroyedTarget(event.TargetID)
+		case *target.EventTargetInfoChanged:
+			if event.TargetInfo != nil && event.TargetInfo.Type == "page" {
+				m.updateTargetInfo(*event.TargetInfo)
+			}
+		case *browser.EventDownloadWillBegin:
+			m.downloadStarted(event)
+		case *browser.EventDownloadProgress:
+			m.downloadProgress(event)
 		}
 	})
 	m.mu.Lock()
@@ -497,6 +633,41 @@ func (m *Manager) installPageHandlers(p *managedPage) error {
 					_ = fetch.FailRequest(requestID, network.ErrorReasonBlockedByClient).Do(targetCommandContext(ctx))
 				}
 			}()
+		case *page.EventScreencastFrame:
+			m.handleScreencastFrame(p, event)
+		case *page.EventFrameAttached:
+			p.frameMu.Lock()
+			p.frames[event.FrameID] = struct{}{}
+			p.frameMu.Unlock()
+		case *page.EventFrameNavigated:
+			if event.Frame != nil {
+				p.frameMu.Lock()
+				p.frames[event.Frame.ID] = struct{}{}
+				p.frameMu.Unlock()
+			}
+		case *page.EventFrameDetached:
+			p.frameMu.Lock()
+			delete(p.frames, event.FrameID)
+			p.frameMu.Unlock()
+		case *cdpruntime.EventConsoleAPICalled:
+			p.captureConsole(event)
+		case *cdplog.EventEntryAdded:
+			p.captureLogEntry(event)
+		case *network.EventRequestWillBeSent:
+			p.networkMu.Lock()
+			p.requests[event.RequestID] = struct{}{}
+			p.lastNetwork = time.Now()
+			p.networkMu.Unlock()
+		case *network.EventLoadingFinished:
+			p.networkMu.Lock()
+			delete(p.requests, event.RequestID)
+			p.lastNetwork = time.Now()
+			p.networkMu.Unlock()
+		case *network.EventLoadingFailed:
+			p.networkMu.Lock()
+			delete(p.requests, event.RequestID)
+			p.lastNetwork = time.Now()
+			p.networkMu.Unlock()
 		}
 	})
 	patterns := []*fetch.RequestPattern{
@@ -508,6 +679,15 @@ func (m *Manager) installPageHandlers(p *managedPage) error {
 	}
 	if err := fetch.Enable().WithPatterns(patterns).Do(targetCommandContext(p.ctx)); err != nil {
 		return fmt.Errorf("browser: install navigation policy: %w", err)
+	}
+	if err := cdplog.Enable().Do(targetCommandContext(p.ctx)); err != nil {
+		return fmt.Errorf("browser: enable console log capture: %w", err)
+	}
+	if err := cdpruntime.Enable().Do(targetCommandContext(p.ctx)); err != nil {
+		return fmt.Errorf("browser: enable runtime capture: %w", err)
+	}
+	if err := network.Enable().Do(targetCommandContext(p.ctx)); err != nil {
+		return fmt.Errorf("browser: enable network lifecycle: %w", err)
 	}
 	return nil
 }
@@ -550,9 +730,14 @@ func (m *Manager) adoptPopup(info target.Info) {
 		pageCancel()
 		return
 	}
-	p := &managedPage{id: uuid.NewString(), owner: owner, target: info.TargetID, access: access, ctx: pageCtx, cancel: pageCancel}
+	p := newManagedPage(access, info.TargetID, pageCtx, pageCancel)
+	p.info = PageInfo{ID: p.id, URL: truncateUTF8(info.URL, maxBrowserURLBytes), Title: truncateUTF8(info.Title, maxBrowserTitleBytes)}
 	p.touch()
 	if err := m.installPageHandlers(p); err != nil {
+		pageCancel()
+		return
+	}
+	if err := m.applyConfiguredViewport(p); err != nil {
 		pageCancel()
 		return
 	}
@@ -565,6 +750,7 @@ func (m *Manager) adoptPopup(info target.Info) {
 	}
 	scope.pages[p.id] = p
 	m.mu.Unlock()
+	m.pageChanged(p)
 	if m.pageAdopted != nil {
 		m.pageAdopted()
 	}
@@ -573,9 +759,12 @@ func (m *Manager) adoptPopup(info target.Info) {
 func (m *Manager) removeDestroyedTarget(targetID target.ID) {
 	m.mu.Lock()
 	var emptyWorkspace string
+	var owner string
 	for workspace, scope := range m.scopes {
 		for id, p := range scope.pages {
 			if p.target == targetID {
+				owner = p.owner
+				p.stopStream()
 				delete(scope.pages, id)
 				if len(scope.pages) == 0 {
 					emptyWorkspace = workspace
@@ -588,6 +777,10 @@ func (m *Manager) removeDestroyedTarget(targetID target.ID) {
 		}
 	}
 	m.mu.Unlock()
+	if owner != "" {
+		m.emitThreadState(owner)
+		m.syncThreadStream(owner)
+	}
 	if emptyWorkspace != "" {
 		_ = m.disposeScope(context.Background(), emptyWorkspace)
 	}
@@ -626,10 +819,26 @@ func (m *Manager) closeBrowser(caller context.Context, save bool) error {
 	defer m.startMu.Unlock()
 	m.mu.Lock()
 	scopes := make([]*workspaceScope, 0, len(m.scopes))
+	owners := make(map[string]struct{})
 	for _, scope := range m.scopes {
 		scopes = append(scopes, scope)
+		for _, p := range scope.pages {
+			owners[p.owner] = struct{}{}
+			p.stopStream()
+		}
 	}
 	m.scopes = make(map[string]*workspaceScope)
+	for owner := range owners {
+		info := m.sessionLocked(owner)
+		info.ActivePageID = ""
+		info.Visible = false
+		info.UpdatedAt = time.Now()
+		m.sessions[owner] = info
+	}
+	for id, sub := range m.subscriptions {
+		close(sub.done)
+		delete(m.subscriptions, id)
+	}
 	persist := save && m.config.PersistSiteData
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
@@ -639,6 +848,9 @@ func (m *Manager) closeBrowser(caller context.Context, save bool) error {
 	m.browserCtx, m.browserCancel = nil, nil
 	m.allocCtx, m.allocCancel = nil, nil
 	m.mu.Unlock()
+	for owner := range owners {
+		m.emitThreadState(owner)
+	}
 	closeCtx, closeCancel := context.WithTimeout(caller, 20*time.Second)
 	defer closeCancel()
 	errs := make(chan error, len(scopes))

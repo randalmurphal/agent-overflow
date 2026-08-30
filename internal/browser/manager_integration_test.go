@@ -14,9 +14,9 @@ import (
 	"agent-overflow/internal/chromium"
 )
 
-// This opt-in test downloads managed Chrome into a temporary directory. It is
-// excluded from the normal test gate because it needs the public Chrome for
-// Testing network endpoints and downloads a large archive.
+// This opt-in test uses AO_BROWSER_BINARY when supplied, otherwise downloads
+// managed Chrome into a temporary directory. It is excluded from the normal
+// test gate because either path launches a real browser process.
 func TestManagerWithManagedChrome(t *testing.T) {
 	if os.Getenv("AO_BROWSER_INTEGRATION") != "1" {
 		t.Skip("set AO_BROWSER_INTEGRATION=1 to download and exercise managed Chrome")
@@ -42,8 +42,9 @@ func TestManagerWithManagedChrome(t *testing.T) {
 		artifactDir = filepath.Join(root, "artifacts")
 	}
 	installer := chromium.NewInstaller(artifactDir, chromium.ArtifactChrome, "", nil)
-	config := Config{Enabled: true, ShowWindow: os.Getenv("AO_BROWSER_HEADFUL") == "1", PersistSiteData: true}
-	manager := NewManager(installer, filepath.Join(root, "state"), config)
+	installer.BinaryPath = strings.TrimSpace(os.Getenv("AO_BROWSER_BINARY"))
+	config := Config{Enabled: true, PersistSiteData: true}
+	manager := NewManager(installer, filepath.Join(root, "state"), config, ManagerOptions{FileStateKey: true})
 	manager.state = newTestStateStore(filepath.Join(root, "state"), bytes.Repeat([]byte{3}, 32))
 	popupAdopted := make(chan struct{}, 1)
 	manager.pageAdopted = func() {
@@ -65,12 +66,100 @@ func TestManagerWithManagedChrome(t *testing.T) {
 	if err != nil || opened.Title != "Browser fixture" {
 		t.Fatalf("open web = %#v, %v", opened, err)
 	}
+	background, err := manager.Open(ctx, access, server.URL+"/popup", OpenOptions{})
+	if err != nil || background.ID == opened.ID {
+		t.Fatalf("open without page_id did not create a distinct page: %#v, %v", background, err)
+	}
+	if state := manager.CompanionState(access); state.Visible == nil || *state.Visible || state.ActivePageID != opened.ID {
+		t.Fatalf("background open changed presentation state: %#v", state)
+	}
+	if _, err := manager.Snapshot(ctx, access, ""); err == nil || !strings.Contains(err.Error(), "page_id is required") {
+		t.Fatalf("multi-page implicit operation error = %v", err)
+	}
+	if info, err := manager.LabelPage(ctx, access, opened.ID, "app-preview"); err != nil || info.Label != "app-preview" {
+		t.Fatalf("label page = %#v, %v", info, err)
+	}
+	if err := manager.ClosePage(ctx, access, background.ID); err != nil {
+		t.Fatal(err)
+	}
+	visible := true
+	if _, err := manager.Visibility(ctx, access, &visible, opened.ID); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := manager.SubscribeCompanion(access, 800, 600)
+	if err != nil || sub.State.ActivePageID != opened.ID {
+		t.Fatalf("subscribe companion = %#v, %v", sub, err)
+	}
+	frameCtx, cancelFrame := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelFrame()
+	event, err := manager.NextCompanionFrame(frameCtx, sub.ID)
+	if err != nil {
+		t.Fatalf("companion frame not received: %v", err)
+	}
+	if event.Kind != "frame" || event.PageID != opened.ID || !strings.HasPrefix(event.Frame, "/9j/") {
+		t.Fatalf("companion frame = kind %q page %q JPEG %.12q", event.Kind, event.PageID, event.Frame)
+	}
+	if _, err := manager.Evaluate(ctx, access, opened.ID, `document.querySelector('#value').focus()`); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CompanionInput(ctx, access, opened.ID, CompanionInput{Kind: "text", Text: "companion"}); err != nil {
+		t.Fatal(err)
+	}
+	companionValue, err := manager.Evaluate(ctx, access, opened.ID, `document.querySelector('#value').value`)
+	if err != nil || companionValue != "companion" {
+		t.Fatalf("companion text input = %#v, %v", companionValue, err)
+	}
+	if err := manager.CompanionInput(ctx, access, opened.ID, CompanionInput{Kind: "key", Key: "a", Control: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CompanionInput(ctx, access, opened.ID, CompanionInput{Kind: "text", Text: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	companionValue, err = manager.Evaluate(ctx, access, opened.ID, `document.querySelector('#value').value`)
+	if err != nil || companionValue != "q" {
+		t.Fatalf("companion modifier chord = %#v, %v", companionValue, err)
+	}
+	manager.UnsubscribeCompanion(sub.ID)
+	page, _, err := manager.lookupOwnedPage(access, opened.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.streamMu.Lock()
+	streaming := page.stream != nil
+	page.streamMu.Unlock()
+	if streaming {
+		t.Fatal("companion screencast survived final unsubscribe")
+	}
 	snapshot, err := manager.Snapshot(ctx, access, opened.ID)
 	if err != nil || len(snapshot.Elements) < 4 {
 		t.Fatalf("snapshot = %#v, %v", snapshot, err)
 	}
 	if _, err := manager.Type(ctx, access, TypeOptions{PageID: opened.ID, Selector: "#value", Text: "typed", Clear: true}); err != nil {
 		t.Fatal(err)
+	}
+	typedValue, err := manager.Evaluate(ctx, access, opened.ID, `document.querySelector('#value').value`)
+	if err != nil || typedValue != "typed" {
+		t.Fatalf("clear then type = %#v, %v", typedValue, err)
+	}
+	if _, err := manager.Press(ctx, access, opened.ID, "ControlOrMeta+a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Press(ctx, access, opened.ID, "z"); err != nil {
+		t.Fatal(err)
+	}
+	typedValue, err = manager.Evaluate(ctx, access, opened.ID, `document.querySelector('#value').value`)
+	if err != nil || typedValue != "z" {
+		t.Fatalf("modifier chord = %#v, %v", typedValue, err)
+	}
+	if _, err := manager.Locator(ctx, access, LocatorOptions{PageID: opened.ID, Locator: Locator{CSS: "#value"}, Action: "press", Value: "ControlOrMeta+a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Locator(ctx, access, LocatorOptions{PageID: opened.ID, Locator: Locator{CSS: "#value"}, Action: "type", Value: "locator"}); err != nil {
+		t.Fatal(err)
+	}
+	typedValue, err = manager.Evaluate(ctx, access, opened.ID, `document.querySelector('#value').value`)
+	if err != nil || typedValue != "locator" {
+		t.Fatalf("locator modifier chord = %#v, %v", typedValue, err)
 	}
 	if _, err := manager.Click(ctx, access, opened.ID, "#trusted"); err != nil {
 		t.Fatal(err)
@@ -108,7 +197,7 @@ func TestManagerWithManagedChrome(t *testing.T) {
 	if err := manager.Close(); err != nil {
 		t.Fatal(err)
 	}
-	manager2 := NewManager(installer, filepath.Join(root, "state"), config)
+	manager2 := NewManager(installer, filepath.Join(root, "state"), config, ManagerOptions{FileStateKey: true})
 	manager2.state = newTestStateStore(filepath.Join(root, "state"), bytes.Repeat([]byte{3}, 32))
 	t.Cleanup(func() { _ = manager2.Close() })
 	reopened, err := manager2.Open(ctx, access, server.URL, OpenOptions{})
@@ -118,5 +207,16 @@ func TestManagerWithManagedChrome(t *testing.T) {
 	marker, err := manager2.Evaluate(ctx, access, reopened.ID, `localStorage.getItem('marker')`)
 	if err != nil || marker != "saved" {
 		t.Fatalf("restored local storage = %#v, %v", marker, err)
+	}
+	if _, err := manager2.Visibility(ctx, access, &visible, reopened.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager2.SubscribeCompanion(access, 800, 600); err != nil {
+		t.Fatal(err)
+	}
+	closeThreadCtx, cancelCloseThread := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelCloseThread()
+	if err := manager2.CloseThread(closeThreadCtx, access.ThreadID); err != nil {
+		t.Fatalf("close thread with active companion: %v", err)
 	}
 }

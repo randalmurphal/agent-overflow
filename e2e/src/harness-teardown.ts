@@ -3,6 +3,7 @@ import {
   captureProcessGroupMemberProof,
   captureProcessTreeProof,
   terminateChildTreeAndWaitVerified,
+  ownedProcessTreeAlive,
   waitForOwnedTreeExit,
   type ProcessGroupMemberProof,
   type ProcessTreeProof,
@@ -64,8 +65,12 @@ export async function terminateHarness(
       state.complete = true;
       return true;
     } catch (error) {
+      if (!(await ownedProcessTreeAlive(state.child, identity, state.memberProof, state.treeProof))) {
+        state.complete = true;
+        return true;
+      }
       console.error(
-        `harness process ${state.child.pid ?? 'unknown'} survived teardown: ${(error as Error).message}`,
+        `harness teardown failed while owned process ${state.child.pid ?? 'unknown'} remains alive: ${(error as Error).message}`,
       );
       return false;
     }
@@ -101,8 +106,14 @@ export async function terminateHarness(
       state.treeProof,
     );
   } catch (error) {
+    if (!(await ownedProcessTreeAlive(state.child, identity, state.memberProof, state.treeProof))) {
+      state.complete = true;
+      state.closed = true;
+      state.closeSocket();
+      return true;
+    }
     console.error(
-      `harness process ${state.child.pid ?? 'unknown'} survived teardown: ${(error as Error).message}`,
+      `harness teardown failed while owned process ${state.child.pid ?? 'unknown'} remains alive: ${(error as Error).message}`,
     );
     state.closed = true;
     state.closeSocket();

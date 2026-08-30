@@ -221,22 +221,22 @@ describe('pane layout persistence', () => {
     });
   });
 
-  it('snapshots a focused take-control pane as its source thread pane', async () => {
+  it('never snapshots ephemeral take-control or browser companions', async () => {
     const left = makeThread({ id: 'left-thread', title: 'Left' });
     installPaneMocks();
     seedPane('left', left);
     setPaneLayoutItemsForTest([
       { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
       { id: 'take-control-left', paneId: 'take-control-left', kind: 'take-control', widthPx: 660, sourcePaneId: 'left' },
+      { id: 'browser-left', paneId: 'browser-left', kind: 'browser', widthPx: 660, sourcePaneId: 'left' },
     ]);
-    focusPane('take-control-left');
+    focusPane('browser-left');
 
     persistPaneLayout();
     await waitForPaneLayoutPersistenceForTest();
 
-    // take-control panes are never persisted (a live PTY mirror cannot be
-    // restored), so the focus falls back to the source thread pane instead
-    // of pointing at a pane the restore can't produce.
+    // Live PTY and Chrome surfaces cannot be restored, so focus falls back
+    // to the source instead of pointing at a pane restore cannot produce.
     expect(persistedPaneLayout()).toEqual(makeSavedLayout([
       { paneId: 'left', threadId: 'left-thread', widthPx: 660 },
     ], 'left'));

@@ -44,14 +44,25 @@ type encryptedState struct {
 type stateStore struct {
 	root    string
 	keyPath string
+	service string
+	user    string
 
-	mu    sync.Mutex
-	key   []byte
-	keyFn func() ([]byte, error)
+	mu         sync.Mutex
+	key        []byte
+	keyFn      func() ([]byte, error)
+	keyringGet func(service, user string) (string, error)
+	keyringSet func(service, user, value string) error
 }
 
 func newStateStore(configDir string) *stateStore {
-	store := &stateStore{root: filepath.Join(configDir, stateDirectory), keyPath: filepath.Join(configDir, "browser-state.key")}
+	store := &stateStore{
+		root:       filepath.Join(configDir, stateDirectory),
+		keyPath:    filepath.Join(configDir, "browser-state.key"),
+		service:    keyService,
+		user:       keyUser,
+		keyringGet: keyring.Get,
+		keyringSet: keyring.Set,
+	}
 	store.keyFn = store.loadOrCreateKey
 	return store
 }
@@ -194,7 +205,7 @@ func (s *stateStore) loadOrCreateKey() ([]byte, error) {
 	if _, err := os.Stat(s.keyPath); err == nil {
 		return s.loadOrCreateFallbackKey()
 	}
-	encoded, err := keyring.Get(keyService, keyUser)
+	encoded, err := s.keyringGet(s.service, s.user)
 	if err == nil {
 		key, decodeErr := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 		if decodeErr != nil || len(key) != 32 {
@@ -209,7 +220,7 @@ func (s *stateStore) loadOrCreateKey() ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("browser: generate state key: %w", err)
 	}
-	if err := keyring.Set(keyService, keyUser, base64.StdEncoding.EncodeToString(key)); err != nil {
+	if err := s.keyringSet(s.service, s.user, base64.StdEncoding.EncodeToString(key)); err != nil {
 		return s.loadOrCreateFallbackKey()
 	}
 	return key, nil

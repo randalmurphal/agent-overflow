@@ -1,15 +1,14 @@
 // Companion pane registry + lifecycle for every pane paired to a source
-// thread pane: plan, design-preview, review, and take-control.
+// thread pane: plan, design-preview, review, browser, and take-control.
 //
 // Companions are snapped immediately to the source pane's right by
 // paneLayout.svelte.ts, and they belong to the THREAD the source pane was
 // showing when they opened — ThreadPane closes them (closeCompanionsForSource)
 // whenever that thread changes.
 //
-// take-control differs from the panel kinds in two ways: it renders its own
-// surface (TakeControlPane, not a CompanionPane panel body), and it is never
-// persisted — a live PTY mirror cannot be restored across launches. The
-// other kinds are persisted and restored by paneLayoutPersistence.ts.
+// take-control renders its own raw PTY surface. It and browser are ephemeral;
+// browser follows a live Chrome target that cannot be restored. The other
+// kinds are persisted and restored by paneLayoutPersistence.ts.
 
 import {
   addPaneLayoutItem,
@@ -30,6 +29,11 @@ import {
 export type CompanionKind = CompanionPaneKind;
 /** The kinds CompanionPane hosts as panel bodies (everything but take-control). */
 export type CompanionPanelKind = Exclude<CompanionKind, 'take-control'>;
+export type PersistedCompanionKind = Exclude<CompanionKind, 'take-control' | 'browser'>;
+
+function isEphemeralCompanionKind(kind: CompanionKind): boolean {
+  return kind === 'take-control' || kind === 'browser';
+}
 
 export interface CompanionPaneState {
   paneId: string;
@@ -109,7 +113,7 @@ export function openCompanion(
     kind === 'take-control' ? sourceIndex + 1 : companionInsertIndex(sourcePaneId),
     // take-control is ephemeral — buildSnapshot skips it, so opening one
     // must not schedule a settings write it can't contribute to.
-    { persist: kind !== 'take-control' },
+    { persist: !isEphemeralCompanionKind(kind) },
   );
   const state: CompanionPaneState = { paneId, kind, sourcePaneId };
   registerCompanionPane(state);
@@ -124,7 +128,7 @@ export function closeCompanion(paneId: string): void {
   const state = companionPanes.get(paneId);
   if (!state) return;
   unregisterCompanionPane(paneId);
-  removePaneLayoutItem(paneId, { persist: state.kind !== 'take-control' });
+  removePaneLayoutItem(paneId, { persist: !isEphemeralCompanionKind(state.kind) });
   // A focused companion hands focus back to its source. During a source-pane
   // destroy cascade the source is already gone — focusPane no-ops on the
   // missing id and destroyPane's own dangling-focus fixup takes over.
@@ -162,7 +166,7 @@ export function isCompanionOpen(sourcePaneId: string, kind: CompanionKind): bool
 
 export function restoreCompanion(
   sourcePaneId: string,
-  kind: CompanionPanelKind,
+  kind: PersistedCompanionKind,
   paneId: string,
 ): CompanionPaneState {
   const state: CompanionPaneState = { paneId, kind, sourcePaneId };

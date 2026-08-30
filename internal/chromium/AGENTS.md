@@ -8,5 +8,8 @@ and the design screenshot renderer.
 - `ArtifactChrome` and `ArtifactHeadlessShell` may share manifest resolution,
   but have separate cache directories and executable layouts.
 - This package never launches a browser process and never owns browsing state.
+- `Installer.BinaryPath` is an explicit executable override used by the E2E
+  harness to reuse Playwright Chromium; validate it as executable and never
+  silently fall back to a download when it is invalid.
 - Tests use loopback fixture archives with `AllowInsecureScheme`; production
   must never set it.

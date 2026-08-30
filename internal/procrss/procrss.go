@@ -10,30 +10,32 @@ import (
 	"strings"
 )
 
-// ErrUnsupported is returned by Sample on a platform with no /proc.
-var ErrUnsupported = errors.New("procrss: /proc is not available on this platform")
+// ErrUnsupported is returned by Sample on a platform with no supported
+// process-memory sampler.
+var ErrUnsupported = errors.New("procrss: process RSS is not available on this platform")
 
-// DefaultWebviewPrefixes matches every WebKitGTK helper process a windowed
-// harness spawns: WebKitWebProcess (the renderer), WebKitNetworkProcess,
-// WebKitGPUProcess.
+// DefaultWebviewPrefixes matches the WebKit helper processes a windowed
+// harness spawns on Linux and macOS: WebKitWebProcess/WebKitNetworkProcess/
+// WebKitGPUProcess on Linux, and com.apple.WebKit.* XPC services on macOS.
 //
-// Prefixes, not exact names, and that is load-bearing: the kernel caps
-// /proc/<pid>/status's `Name:` at 15 characters, so the renderer reads back
-// as "WebKitWebProce" — an exact-name match would silently find nothing,
-// which is the failure mode this whole package exists to avoid.
-var DefaultWebviewPrefixes = []string{"WebKit"}
+// Prefixes, not exact names, and that is load-bearing: Linux caps
+// /proc/<pid>/status's `Name:` at 15 characters and Darwin's p_comm at 16
+// bytes, so an exact-name match would silently miss helpers on both systems.
+var DefaultWebviewPrefixes = []string{"WebKit", "com.apple.WebKit"}
 
 // Process is one process's identity and resident size.
 type Process struct {
 	PID  int    `json:"pid"`
 	Name string `json:"name"`
-	// RSSBytes is VmRSS. Zero for a kernel thread or a process whose
-	// status file carried no VmRSS line (it had already exited).
+	// RSSBytes is resident memory from the platform's native process API.
+	// On Linux it is VmRSS; zero can represent a kernel thread or a process
+	// whose status file carried no VmRSS line because it had already exited.
 	RSSBytes uint64 `json:"rssBytes"`
 }
 
-// Tree is one sample: the named process plus the matching descendants it
-// owns.
+// Tree is one sample: the named process plus the matching processes it owns.
+// Linux ownership follows descendants; macOS additionally follows the
+// responsible-process set so launchd-parented XPC helpers remain attributable.
 type Tree struct {
 	Self     Process   `json:"self"`
 	Children []Process `json:"children,omitempty"`
@@ -42,7 +44,7 @@ type Tree struct {
 	ChildrenRSSBytes uint64 `json:"childrenRssBytes"`
 }
 
-// TotalRSSBytes is self plus every matched descendant.
+// TotalRSSBytes is self plus every matched owned process.
 func (t Tree) TotalRSSBytes() uint64 { return t.Self.RSSBytes + t.ChildrenRSSBytes }
 
 // SampleRoot is Sample with the procfs root injected, which is what makes

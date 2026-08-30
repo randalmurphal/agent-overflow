@@ -81,6 +81,12 @@ export {
   GetSettings,
   UpdateSettings,
   ClearBrowserSiteData,
+  BrowserCompanionDo,
+  BrowserCompanionInput,
+  BrowserCompanionNextFrame,
+  BrowserCompanionResize,
+  BrowserCompanionSubscribe,
+  BrowserCompanionUnsubscribe,
   GetContextSettings,
 
   // Custom provider environment. Dedicated mutators rather than
@@ -484,11 +490,18 @@ export {
   RemoteEndpointSummary,
   TerminalOpenOptions,
   ThreadMCPServer,
+  BrowserCompanionAction,
   UpdateAvailability,
   BusyThread,
   WorkspaceActivity,
   WorktreeStatus,
 } from '../../../bindings/agent-overflow/models.js';
+export {
+  CompanionEvent as BrowserCompanionEvent,
+  CompanionInput as BrowserCompanionInputEvent,
+  CompanionSubscription as BrowserCompanionSubscription,
+  PageInfo as BrowserPageInfo,
+} from '../../../bindings/agent-overflow/internal/browser/models.js';
 export {
   Keybinding,
 } from '../../../bindings/agent-overflow/internal/keybindings/models.js';

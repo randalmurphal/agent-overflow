@@ -21,7 +21,7 @@ import {
 } from './paneLayout.svelte';
 import { getMinPaneWidth } from './paneDensity.svelte';
 import { FALLBACK_PANE_WIDTH_PX, normalizePaneWidthPx } from '../utils/paneWidths';
-import { restoreCompanion, type CompanionPanelKind } from './companionPanes.svelte';
+import { restoreCompanion, type PersistedCompanionKind } from './companionPanes.svelte';
 import { agentScopeForPane, seedAgentStateForPane } from './agentPane.svelte';
 import {
   focusPane,
@@ -97,7 +97,7 @@ function isSafePersistedPaneId(paneId: string): boolean {
 // for a same-named source pane (companionPaneIdFor('main','plan') ===
 // 'plan-main'), so reject it at the parse edge. Real companion entries
 // keep the shape — this guard applies to thread panes only.
-const COMPANION_SHAPED_PANE_ID = /^(?:plan|design-preview|review|take-control|agent)-/;
+const COMPANION_SHAPED_PANE_ID = /^(?:plan|design-preview|review|take-control|browser|agent)-/;
 
 function isSafePersistedThreadPaneId(paneId: string): boolean {
   return isSafePersistedPaneId(paneId) && !COMPANION_SHAPED_PANE_ID.test(paneId);
@@ -107,8 +107,8 @@ function isSafePersistedThreadId(threadId: string): boolean {
   return threadId.length > 0 && threadId.length <= MAX_THREAD_ID_LENGTH;
 }
 
-// take-control is deliberately absent: a live PTY mirror is never persisted.
-function isPersistedCompanionKind(kind: unknown): kind is CompanionPanelKind {
+// Live PTY/browser surfaces are deliberately absent: neither can be restored.
+function isPersistedCompanionKind(kind: unknown): kind is PersistedCompanionKind {
   return kind === 'plan' || kind === 'design-preview' || kind === 'review' || kind === 'agent';
 }
 
@@ -146,7 +146,7 @@ function parsePersistedAgentScope(value: unknown): AgentPaneScopeSnapshot | null
   return { scopeItemId, breadcrumb };
 }
 
-function companionPaneIdFor(sourcePaneId: string, kind: CompanionPanelKind): string {
+function companionPaneIdFor(sourcePaneId: string, kind: PersistedCompanionKind): string {
   return `${kind}-${sourcePaneId}`;
 }
 

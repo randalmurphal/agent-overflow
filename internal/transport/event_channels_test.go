@@ -48,6 +48,7 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 // this list move together.
 var (
 	frozenLoopbackOnlyChannels = []string{
+		"browser:companion-state",  // local URLs and file paths
 		"browser:install-progress", // 2026-08-26 pass
 		"git:status",
 		"harness:mock",     // 2026-08-25 pass
@@ -91,7 +92,8 @@ var (
 		"highlight:seed",
 	}
 	frozenEphemeralChannels = []string{
-		"harness:ui-query", // a one-shot query directive; a replayed one has no waiter
+		"browser:companion-state", // subscribe returns the complete snapshot
+		"harness:ui-query",        // a one-shot query directive; a replayed one has no waiter
 		"highlight:diff_seed",
 		"highlight:seed",
 		"updater:install",

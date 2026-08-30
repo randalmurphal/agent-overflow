@@ -73,8 +73,13 @@ const CHAT_BAR_FAVORITES_STORE = 'lib/stores/chatBarFavorites.svelte.ts';
 const WORKFLOW_RUN_MAP_STORE = 'lib/stores/workflowRunMap.svelte.ts';
 const APPEARANCE_STORE = 'lib/stores/appearance.svelte.ts';
 const EDITORS_STORE = 'lib/stores/editors.svelte.ts';
+const BROWSER_COMPANION_STORE = 'lib/stores/browserCompanion.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
+  BrowserCompanionSubscribe: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
+  BrowserCompanionNextFrame: owned(BROWSER_COMPANION_STORE, 'the attachment frame loop'),
+  BrowserCompanionUnsubscribe: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
+  BrowserCompanionResize: owned(BROWSER_COMPANION_STORE, 'resizeBrowserCompanion()'),
   GetGitStatus: owned(GIT_STATUS_STORE, 'refreshGitStatus()'),
   GitStatusSubscribe: owned(GIT_STATUS_STORE, 'attachGitStatus()'),
   GitStatusUnsubscribe: owned(GIT_STATUS_STORE, 'the attachment release()'),
