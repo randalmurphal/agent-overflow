@@ -17,13 +17,17 @@
 		id: string;
 	} = $props();
 
-	// DIVERGENCE (entry 17): upstream rendered path-relative srcs
-	// (`isPathRelativeUrl`) as raw <img src> without consulting
-	// transformUrl — the same allowlist bypass Link.svelte had. A
-	// model-authored `![x](/anything)` issued a same-origin GET against
-	// the transport server, and `![x](//host/x)` a protocol-relative
-	// off-origin fetch. An image now renders only for a
-	// transformUrl-approved src.
+	// SECURITY BOUNDARY: a path-relative src never renders a raw
+	// <img>. Upstream rendered path-relative srcs (`isPathRelativeUrl`)
+	// without consulting transformUrl — the same allowlist bypass
+	// Link.svelte had. A model-authored `![x](/anything)` issued a
+	// same-origin GET against the transport server, and
+	// `![x](//host/x)` a protocol-relative off-origin fetch. An image
+	// renders only for a transformUrl-approved src; path-relative srcs
+	// fall to the blocked-image span (no AO surface produces them —
+	// chat attachments render through dedicated components, not
+	// markdown). Cited by docs/specs/remote-access-boundaries.md; see
+	// markdown/AGENTS.md § Security boundary.
 	const transformedUrl = $derived(
 		transformUrl(token.href, streamdown.allowedImagePrefixes ?? [], streamdown.defaultOrigin)
 	);
