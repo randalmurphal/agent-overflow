@@ -144,6 +144,30 @@ func TestCreateBranchAndCheckout(t *testing.T) {
 	}
 }
 
+func TestCheckoutErrorIncludesGitDiagnosis(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "checkout", "-b", "feature/checkout")
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write feature content: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", "README.txt")
+	testutil.RunGit(t, repo, "commit", "-m", "feature content")
+	testutil.RunGit(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatalf("write uncommitted content: %v", err)
+	}
+
+	err := NewCore().Checkout(repo, "feature/checkout")
+	if err == nil {
+		t.Fatal("expected checkout with conflicting local changes to fail")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "README.txt") ||
+		!strings.Contains(strings.ToLower(message), "local changes") {
+		t.Fatalf("Checkout error = %q, want git's dirty-file diagnosis", message)
+	}
+}
+
 func TestCreateBranchRejectsExistingBranch(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	core := NewCore()

@@ -258,14 +258,26 @@ func (c *Core) Checkout(cwd, branch string) error {
 			return err
 		}
 		if c.branchExists(cwd, local) {
-			_, _, err := c.Execute(cwd, "checkout", local)
-			return err
+			return c.executeCheckout(cwd, local)
 		}
-		_, _, err := c.Execute(cwd, "checkout", "--track", branch)
-		return err
+		return c.executeCheckout(cwd, "--track", branch)
 	}
 
-	_, _, err := c.Execute(cwd, "checkout", branch)
+	return c.executeCheckout(cwd, branch)
+}
+
+// executeCheckout keeps git's diagnosis attached to a failed checkout. The
+// generic command error only carries the exit code, while checkout's stderr
+// identifies the actionable blocker: dirty files, an active worktree, an
+// unresolved merge, and so on.
+func (c *Core) executeCheckout(cwd string, args ...string) error {
+	_, stderr, err := c.Execute(cwd, append([]string{"checkout"}, args...)...)
+	if err == nil {
+		return nil
+	}
+	if message := strings.TrimSpace(stderr); message != "" {
+		return fmt.Errorf("%w: %s", err, message)
+	}
 	return err
 }
 
