@@ -443,7 +443,7 @@ describe('serializeRangeToMarkdown — math and mermaid', () => {
   });
 
   it('does not trust a data-mermaid-source host without a rendered nested SVG', () => {
-    // The outer panzoom SVG exists before Mermaid finishes. Only a nested
+    // The outer host SVG exists before Mermaid finishes. Only a nested
     // rendered SVG proves that the source attribute describes visible output.
     const host = asMarkdownBody(
       '<div class="mermaid streamdown-mermaid-host" data-mermaid-source="evil source">'

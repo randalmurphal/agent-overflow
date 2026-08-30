@@ -3,10 +3,7 @@
 	import { useStreamdown } from '../context.svelte.js';
 	import type { Tokens } from 'marked';
 	import type { MermaidConfig } from 'mermaid';
-	import { on } from 'svelte/events';
-	import { usePanzoom } from '../utils/panzoom.svelte';
-	import { fitViewIcon, fullscreenIcon, zoomInIcon, zoomOutIcon } from './icons.js';
-	import MermaidDownload from './MermaidDownload.svelte';
+	import { fullscreenIcon } from './icons.js';
 
 	// Module-level SVG cache. `mermaid.render` is expensive (hundreds of
 	// ms for non-trivial diagrams) and its output is deterministic for a
@@ -43,45 +40,6 @@
 			mermaid = (await import('mermaid')).default;
 		} finally {
 			resolveAsync?.();
-		}
-	});
-
-	const useIsInsideForMoreThanAQuarterSecond = () => {
-		let isInside = $state(false);
-		let timeout: number | undefined = undefined;
-
-		return {
-			get isInside() {
-				return isInside;
-			},
-			attach: (node: HTMLElement) => {
-				const off1 = on(node, 'mouseenter', () => {
-					timeout = setTimeout(() => {
-						isInside = true;
-					}, 800);
-				});
-
-				const off2 = on(node, 'mouseleave', () => {
-					isInside = false;
-					clearTimeout(timeout);
-				});
-
-				return () => {
-					off1();
-					off2();
-				};
-			}
-		};
-	};
-
-	const insider = useIsInsideForMoreThanAQuarterSecond();
-
-	const panzoom = usePanzoom({
-		minZoom: 0.5,
-		maxZoom: 4,
-		zoomSpeed: 1,
-		get activateMouseWheel() {
-			return insider.isInside && streamdown.controls.mermaidMouseWheelZoom;
 		}
 	});
 
@@ -290,9 +248,6 @@
 						svgTarget.setAttribute(attribute.name, attribute.value);
 					}
 				});
-
-				panzoom.zoomToFit();
-				panzoom.zoomToFit();
 			}
 		} catch (err) {
 			console.warn('Mermaid rendering error:', err);
@@ -304,50 +259,26 @@
 <div data-streamdown-mermaid={id}>
 	{#if mermaid}
 		<div
-			style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
 			class={streamdown.theme.mermaid.base}
 			{@attach (node) => renderMermaid(token.text, node)}
-			{@attach insider.attach}
-			data-expanded={'false'}
 		>
-			{#if streamdown.controls.mermaid}
-				<div class={streamdown.theme.mermaid.buttons}>
-					<button
-						class={streamdown.theme.components.button}
-						aria-label="Zoom to fit"
-						onclick={() => panzoom.zoomToFit()}
-						data-panzoom-ignore
-					>
-						{@render (streamdown.icons?.fitView || fitViewIcon)()}
-					</button>
-					<button
-						class={streamdown.theme.components.button}
-						aria-label="Zoom in"
-						onclick={() => panzoom.zoomIn()}
-						data-panzoom-ignore
-					>
-						{@render (streamdown.icons?.zoomIn || zoomInIcon)()}
-					</button>
-					<button
-						class={streamdown.theme.components.button}
-						aria-label="Zoom out"
-						onclick={() => panzoom.zoomOut()}
-						data-panzoom-ignore
-					>
-						{@render (streamdown.icons?.zoomOut || zoomOutIcon)()}
-					</button>
-					<button
-						class={streamdown.theme.components.button}
-						aria-label="Toggle expand"
-						onclick={() => panzoom.toggleExpand()}
-						data-panzoom-ignore
-					>
-						{@render (streamdown.icons?.fullscreen || fullscreenIcon)()}
-					</button>
-					<MermaidDownload {id} />
-				</div>
-			{/if}
-			<svg {@attach panzoom.attach} data-mermaid-svg></svg>
+			<div class={streamdown.theme.mermaid.buttons}>
+				<!--
+					The one surviving diagram control. It carries no handler of
+					its own: the host intercepts the click in the capture phase
+					and routes it to its own expand surface (Agent Overflow's
+					`StreamdownMermaidHost` → `DiagramModal`, pinned by
+					`markdown/mermaidExpandIntercept.test.ts`). The library's
+					inline panzoom/fullscreen/download chrome was deleted with
+					it — a `position: fixed` overlay lands off-screen inside a
+					containment-scoped virtualizer row, so the host's modal was
+					always the real surface.
+				-->
+				<button class={streamdown.theme.components.button} aria-label="Toggle expand">
+					{@render (streamdown.icons?.fullscreen || fullscreenIcon)()}
+				</button>
+			</div>
+			<svg data-mermaid-svg></svg>
 		</div>
 	{:else}
 		<div class={streamdown.theme.mermaid.base}></div>
@@ -355,23 +286,6 @@
 </div>
 
 <style>
-	/*
-	 * Scoped to the mermaid container this component owns. Upstream wrote
-	 * the selector bare, and `:global` means bare is APP-WIDE: any element
-	 * anywhere carrying `data-expanded="true"` — a perfectly ordinary
-	 * attribute — was yanked out of its layout and pinned fullscreen at
-	 * z-index 2147483647.
-	 */
-	:global([data-streamdown-mermaid] [data-expanded='true']) {
-		position: fixed;
-		top: 16px;
-		left: 16px;
-		width: calc(100vw - 32px);
-		height: calc(100vh - 32px);
-		z-index: 2147483647;
-		margin: 0px;
-	}
-
 	/* Hide Mermaid's temporary rendering containers */
 	:global(div[id^='dmermaid-']) {
 		position: absolute !important;

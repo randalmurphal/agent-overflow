@@ -1,9 +1,1 @@
-export declare const copyIcon: import("svelte").Snippet<[]>;
-export declare const downloadIcon: import("svelte").Snippet<[]>;
-export declare const checkIcon: import("svelte").Snippet<[]>;
-export declare const zoomInIcon: import("svelte").Snippet<[]>;
-export declare const zoomOutIcon: import("svelte").Snippet<[]>;
-export declare const fitViewIcon: import("svelte").Snippet<[]>;
 export declare const fullscreenIcon: import("svelte").Snippet<[]>;
-export declare const chevronRight: import("svelte").Snippet<[]>;
-export declare const chevronLeft: import("svelte").Snippet<[]>;

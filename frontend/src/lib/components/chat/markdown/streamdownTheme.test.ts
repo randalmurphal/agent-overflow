@@ -21,11 +21,7 @@ const PALETTE_CLASS =
 // a near-miss like a bare text color failing to cancel the vendor's
 // title color under its `[&>[data-alert-title]]:` modifier — or a
 // `border-0` that cancels a width and leaves the color standing.
-const merged = mergeTheme(
-  chatMarkdownTheme,
-  // Matches ChatMarkdown.svelte's `baseTheme="tailwind"`.
-  'tailwind',
-) as unknown as Record<string, unknown>;
+const merged = mergeTheme(chatMarkdownTheme) as unknown as Record<string, unknown>;
 
 /**
  * Keys we deliberately do not theme, each because the class never mounts from

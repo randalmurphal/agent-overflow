@@ -7,10 +7,6 @@
 	import Slot from './Slot.svelte';
 	import { useStreamdown } from '../context.svelte.js';
 	import FootnoteRef from './FootnoteRef.svelte';
-	import Citation from './Citation.svelte';
-	import TableDownload from './TableDownload.svelte';
-	// Import fallback components
-	import { CodeFallback, MermaidFallback, MathFallback } from './fallbacks/index.js';
 	let {
 		token,
 		children,
@@ -22,15 +18,19 @@
 	} = $props();
 	const streamdown = useStreamdown();
 
-	// Use provided components or fallback to lightweight versions
-	const CodeComponent = $derived(streamdown.components?.code ?? CodeFallback);
-	const MermaidComponent = $derived(streamdown.components?.mermaid ?? MermaidFallback);
-	const MathComponent = $derived(streamdown.components?.math ?? MathFallback);
+	// The host owns code, mermaid and math rendering: the library ships no
+	// highlighter, no diagram engine and no TeX typesetter of its own. With
+	// no host component the block falls back to its own source text.
+	const CodeComponent = $derived(streamdown.components?.code);
+	const MermaidComponent = $derived(streamdown.components?.mermaid);
+	const MathComponent = $derived(streamdown.components?.math);
 
-	// Only apply animation on block level elements. Leaves text elements to be animated by their text children.
-	const style = $derived(streamdown.isMounted ? streamdown.animationBlockStyle : '');
 	const id = $props.id();
 </script>
+
+{#snippet sourceText(text: string)}
+	<pre class={streamdown.theme.code.pre}><code>{text}</code></pre>
+{/snippet}
 
 {#if token.type === 'heading'}
 	<Slot
@@ -41,27 +41,27 @@
 		render={streamdown.snippets.heading}
 	>
 		{#if token.depth === 1}
-			<h1 data-streamdown-heading-1={id} {style} class={streamdown.theme[`h${token.depth}`].base}>
+			<h1 data-streamdown-heading-1={id} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h1>
 		{:else if token.depth === 2}
-			<h2 data-streamdown-heading-2={id} {style} class={streamdown.theme[`h${token.depth}`].base}>
+			<h2 data-streamdown-heading-2={id} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h2>
 		{:else if token.depth === 3}
-			<h3 data-streamdown-heading-3={id} {style} class={streamdown.theme[`h${token.depth}`].base}>
+			<h3 data-streamdown-heading-3={id} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h3>
 		{:else if token.depth === 4}
-			<h4 data-streamdown-heading-4={id} {style} class={streamdown.theme[`h${token.depth}`].base}>
+			<h4 data-streamdown-heading-4={id} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h4>
 		{:else if token.depth === 5}
-			<h5 data-streamdown-heading-5={id} {style} class={streamdown.theme[`h${token.depth}`].base}>
+			<h5 data-streamdown-heading-5={id} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h5>
 		{:else if token.depth === 6}
-			<h6 data-streamdown-heading-6={id} {style} class={streamdown.theme[`h${token.depth}`].base}>
+			<h6 data-streamdown-heading-6={id} class={streamdown.theme[`h${token.depth}`].base}>
 				{@render children()}
 			</h6>
 		{/if}
@@ -70,7 +70,6 @@
 	<Slot props={{ children, token }} render={streamdown.snippets.paragraph}>
 		<p
 			data-streamdown-paragraph={id}
-			{style}
 			class={`${streamdown.theme.paragraph.base}${streamdown.parseIncompleteMarkdown === true ? ' sd-volatile-paragraph' : ''}`}
 		>
 			{@render children()}
@@ -78,17 +77,27 @@
 	</Slot>
 {:else if token.type === 'blockquote'}
 	<Slot props={{ children, token }} render={streamdown.snippets.blockquote}>
-		<blockquote data-streamdown-blockquote={id} {style} class={streamdown.theme.blockquote.base}>
+		<blockquote data-streamdown-blockquote={id} class={streamdown.theme.blockquote.base}>
 			{@render children()}
 		</blockquote>
 	</Slot>
 {:else if token.type === 'code' && token.lang === 'mermaid'}
 	<Slot props={{ children, token }} render={streamdown.snippets.code}>
-		<MermaidComponent {id} {token} />
+		{#if MermaidComponent}
+			<MermaidComponent {id} {token} />
+		{:else}
+			<div data-streamdown-mermaid={id}>{@render sourceText(token.text)}</div>
+		{/if}
 	</Slot>
 {:else if token.type === 'code'}
 	<Slot props={{ children, token }} render={streamdown.snippets.code}>
-		<CodeComponent {id} {token} textAppend={codeTextAppend} />
+		{#if CodeComponent}
+			<CodeComponent {id} {token} textAppend={codeTextAppend} />
+		{:else}
+			<div data-streamdown-code={id} class={streamdown.theme.code.base}>
+				{@render sourceText(token.text)}
+			</div>
+		{/if}
 	</Slot>
 {:else if token.type === 'codespan'}
 	<Slot props={{ children, token }} render={streamdown.snippets.codespan}>
@@ -118,7 +127,6 @@
 	<Slot props={{ children, token }} render={streamdown.snippets.li}>
 		<li
 			data-streamdown-li={id}
-			{style}
 			style:list-style-type={token.task ? 'none' : undefined}
 			{...token.value && !token.task ? { value: token.value } : {}}
 			class={`${streamdown.theme.li.base}${token.task ? ' md-task-list-item' : ''}`}
@@ -136,12 +144,8 @@
 	</Slot>
 {:else if token.type === 'table'}
 	<Slot props={{ token, children }} render={streamdown.snippets.table}>
-		{#if streamdown.controls.table}
-			<TableDownload {id} {token} />
-		{/if}
 		<div
 			data-streamdown-table={id}
-			{style}
 			class={`${streamdown.theme.table.base} group`}
 			style:overscroll-behavior-x="none"
 		>
@@ -152,25 +156,25 @@
 	</Slot>
 {:else if token.type === 'thead'}
 	<Slot props={{ token, children }} render={streamdown.snippets.thead}>
-		<thead data-streamdown-thead={id} {style} class={streamdown.theme.thead.base}>
+		<thead data-streamdown-thead={id} class={streamdown.theme.thead.base}>
 			{@render children?.()}
 		</thead>
 	</Slot>
 {:else if token.type === 'tbody'}
 	<Slot props={{ token, children }} render={streamdown.snippets.tbody}>
-		<tbody data-streamdown-tbody={id} {style} class={streamdown.theme.tbody.base}>
+		<tbody data-streamdown-tbody={id} class={streamdown.theme.tbody.base}>
 			{@render children?.()}
 		</tbody>
 	</Slot>
 {:else if token.type === 'tfoot'}
 	<Slot props={{ token, children }} render={streamdown.snippets.tfoot}>
-		<tfoot data-streamdown-tfoot={id} {style} class={streamdown.theme.tfoot.base}>
+		<tfoot data-streamdown-tfoot={id} class={streamdown.theme.tfoot.base}>
 			{@render children?.()}
 		</tfoot>
 	</Slot>
 {:else if token.type === 'tr'}
 	<Slot props={{ token, children }} render={streamdown.snippets.tr}>
-		<tr data-streamdown-tr={id} {style} class={streamdown.theme.tr.base}>
+		<tr data-streamdown-tr={id} class={streamdown.theme.tr.base}>
 			{@render children?.()}
 		</tr>
 	</Slot>
@@ -178,7 +182,6 @@
 	{#if token.rowspan > 0}
 		<Slot props={{ children, token }} render={streamdown.snippets.td}>
 			<td
-				{style}
 				data-streamdown-td={id}
 				class={streamdown.theme.td.base}
 				{...token.colspan > 1 ? { colspan: token.colspan } : {}}
@@ -195,7 +198,6 @@
 	{#if token.rowspan > 0}
 		<Slot props={{ children, token }} render={streamdown.snippets.th}>
 			<th
-				{style}
 				data-streamdown-th={id}
 				class={streamdown.theme.th.base}
 				{...token.colspan > 1 ? { colspan: token.colspan } : {}}
@@ -244,7 +246,7 @@
 	</Slot>
 {:else if token.type === 'hr'}
 	<Slot props={{ children, token }} render={streamdown.snippets.hr}>
-		<hr data-streamdown-hr={id} {style} class={streamdown.theme.hr.base} />
+		<hr data-streamdown-hr={id} class={streamdown.theme.hr.base} />
 	</Slot>
 {:else if token.type === 'br'}
 	<br data-streamdown-br={id} />
@@ -256,7 +258,15 @@
 		}}
 		render={streamdown.snippets.math}
 	>
-		<MathComponent {id} {token} />
+		{#if MathComponent}
+			<MathComponent {id} {token} />
+		{:else if token.isInline}
+			<span data-streamdown-inline-math={id} class={streamdown.theme.math.inline}
+				><code>{token.text}</code></span
+			>
+		{:else}
+			<div data-streamdown-block-math={id}>{@render sourceText(token.text)}</div>
+		{/if}
 	</Slot>
 {:else if token.type === 'alert'}
 	<Alert {id} {token} {children} />
@@ -265,18 +275,18 @@
 		<FootnoteRef {token} />
 	</Slot>
 {:else if token.type === 'inline-citations'}
-	<Slot props={{ token }} render={streamdown.snippets.inlineCitation}>
-		<Citation {token} />
-	</Slot>
+	<!--
+		The `citations` tokenizer stays (removing it would change how
+		`[foo]`-shaped prose parses), but the library renders nothing for
+		it: a host that wants citations supplies the `inlineCitation`
+		snippet.
+	-->
+	{@render streamdown.snippets.inlineCitation?.({ token, children })}
 {:else if token.type === 'footnote'}
-	<!-- TODO Footnotes are rendered inside the FootnoteRef popover -->
+	<!-- Footnote bodies render from the document's footnote list, not here. -->
 {:else if token.type === 'descriptionList'}
 	<Slot props={{ children, token }} render={streamdown.snippets.descriptionList}>
-		<dl
-			data-streamdown-description-list={id}
-			style={streamdown.animationBlockStyle}
-			class={streamdown.theme.descriptionList.base}
-		>
+		<dl data-streamdown-description-list={id} class={streamdown.theme.descriptionList.base}>
 			{@render children()}
 		</dl>
 	</Slot>
@@ -286,7 +296,7 @@
 	</Slot>
 {:else if token.type === 'descriptionTerm'}
 	<Slot props={{ children, token }} render={streamdown.snippets.descriptionTerm}>
-		<dt data-streamdown-description-term={id} {style} class={streamdown.theme.descriptionTerm.base}>
+		<dt data-streamdown-description-term={id} class={streamdown.theme.descriptionTerm.base}>
 			{@render children()}
 		</dt>
 	</Slot>
@@ -294,7 +304,6 @@
 	<Slot props={{ children, token }} render={streamdown.snippets.descriptionDetail}>
 		<dd
 			data-streamdown-description-detail={id}
-			{style}
 			class={streamdown.theme.descriptionDetail.base}
 		>
 			{@render children()}

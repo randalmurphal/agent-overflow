@@ -1,6 +1,6 @@
 // Theme override for `<Streamdown>` in ChatMarkdown.
 //
-// `svelte-streamdown`'s built-in `tailwind` baseTheme hardcodes light
+// `svelte-streamdown`'s built-in base theme hardcodes light
 // colors (gray-100 backgrounds, gray-200 borders, etc.) and chunky
 // cards (rounded-xl + visible borders + heavy padding) that fight our
 // surface tokens and read as dated callouts inside the chat. We pass
@@ -158,8 +158,8 @@ export const chatMarkdownTheme: ThemeOverride = {
     important: '[&>[data-alert-title]]:text-accent stroke-accent border-accent/45',
   },
   // Mermaid: strip the white-card shell so diagrams sit on the chat
-  // surface like everything else. The Streamdown component handles
-  // its own panzoom buttons; the wrapper just needs to be a frame.
+  // surface like everything else. The Streamdown component renders one
+  // control (expand); the wrapper just needs to be a frame.
   mermaid: {
     // `border-border-subtle` for the same width-vs-color reason as
     // `code.base` above. Background stays on the elevation tier, NOT on
@@ -169,7 +169,7 @@ export const chatMarkdownTheme: ThemeOverride = {
     icon: 'size-4',
     buttons: 'absolute right-1 top-1 flex h-fit w-fit items-center gap-1',
   },
-  // Header buttons (copy / download / panzoom). Streamdown's default
+  // Header buttons (the mermaid expand control). Streamdown's default
   // uses gray-600 text with a gray-100 hover fill, neither of which
   // exists in our theme; remap to our text + surface-2 hover.
   components: {

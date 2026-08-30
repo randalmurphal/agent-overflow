@@ -2,46 +2,30 @@ import type { Component, Snippet } from 'svelte';
 import type { DeepPartialTheme, Theme } from './theme.js';
 import type { MermaidConfig } from 'mermaid';
 import type { KatexOptions } from 'katex';
-import type { LanguageInfo } from './utils/bundledLanguages.js';
-import type { ThemeRegistration } from 'shiki';
 import type { ProvenAppend } from './marked/index.js';
-export interface StreamdownContext extends Omit<StreamdownProps, keyof Snippets | 'class' | 'theme' | 'shikiTheme' | 'inlineCitationsMode'> {
+export interface StreamdownContext extends Omit<StreamdownProps, keyof Snippets | 'class' | 'theme'> {
     snippets: Snippets;
-    shikiTheme: string;
     theme: Theme;
-    controls: {
-        code: boolean;
-        mermaid: boolean;
-        mermaidMouseWheelZoom: boolean;
-        table: boolean;
-    };
-    inlineCitationsMode: 'list' | 'carousel';
-    animation: {
-        enabled: boolean;
-    } & StreamdownProps['animation'];
 }
-export declare class StreamdownContext<Source extends Record<string, any> = Record<string, any>> {
+export declare class StreamdownContext {
     footnotes: {
         refs: Map<string, FootnoteRef>;
         footnotes: Map<string, Footnote>;
     };
-    isMounted: boolean;
     pendingAsyncCount: number;
     registerAsyncResource(): () => void;
     staticRetryGeneration: number;
     requestStaticRetry(): void;
     registerStaticRetry(listener: () => void): () => void;
-    get animationTextStyle(): string | undefined;
-    get animationBlockStyle(): string | undefined;
     constructor(props: Omit<StreamdownProps, keyof Snippets | 'class'> & {
-        snippets: Snippets<Source>;
+        snippets: Snippets;
     });
 }
-export declare const useStreamdown: () => StreamdownContext<Record<string, any>>;
+export declare const useStreamdown: () => StreamdownContext;
 import type { AlertToken, MathToken, SubSupToken, TableToken, THead, TBody, TFoot, THeadRow, TRow, TD, TH, Extension, GenericToken, CitationToken, MdxToken } from './marked/index.js';
 import type { Tokens } from 'marked';
 import type { ListItemToken, ListToken } from './marked/marked-list.js';
-import type { Footnote, FootnoteRef, FootnoteToken } from './marked/marked-footnotes.js';
+import type { Footnote, FootnoteRef } from './marked/marked-footnotes.js';
 import type { DescriptionDetailToken, DescriptionListToken, DescriptionTermToken, DescriptionToken } from './marked/marked-dl.js';
 type TokenSnippet = {
     heading: Tokens.Heading;
@@ -70,7 +54,6 @@ type TokenSnippet = {
     alert: AlertToken;
     mermaid: Tokens.Code;
     footnoteRef: FootnoteRef;
-    footnotePopover: FootnoteToken;
     sup: SubSupToken;
     sub: SubSupToken;
     descriptionList: DescriptionListToken;
@@ -78,26 +61,20 @@ type TokenSnippet = {
     descriptionTerm: DescriptionTermToken;
     descriptionDetail: DescriptionDetailToken;
     inlineCitation: CitationToken;
-    inlineCitationPopover: CitationToken;
-    inlineCitationContent: CitationToken;
-    inlineCitationPreview: CitationToken;
     mdx: MdxToken;
 };
 type PredefinedElements = keyof TokenSnippet;
-export type Snippets<Source extends Record<string, any> = Record<string, any>> = {
+export type Snippets = {
     [K in PredefinedElements]?: Snippet<[
         {
             children: Snippet;
             token: TokenSnippet[K];
-        } & (K extends 'inlineCitationContent' ? {
-            source: Source;
-            key: string;
-        } : K extends 'mdx' ? {
+        } & (K extends 'mdx' ? {
             props: Record<string, number | string | boolean | null | undefined>;
         } : {})
     ]>;
 };
-export type StreamdownProps<Source extends Record<string, any> = Record<string, any>> = {
+export type StreamdownProps = {
     streamdown?: StreamdownContext;
     static?: boolean;
     /** Install source-preserving runtime diagnostics on rendered roots. */
@@ -117,10 +94,6 @@ export type StreamdownProps<Source extends Record<string, any> = Record<string, 
         request(callback: FrameRequestCallback): number;
         cancel(handle: number): void;
     };
-    sources?: {
-        [key: string]: Source;
-    };
-    inlineCitationsMode?: 'list' | 'carousel';
     element?: HTMLElement;
     content: string;
     /** Opaque proof that content extends the previous value. */
@@ -133,11 +106,7 @@ export type StreamdownProps<Source extends Record<string, any> = Record<string, 
     allowedLinkPrefixes?: string[];
     allowedImagePrefixes?: string[];
     theme?: DeepPartialTheme;
-    baseTheme?: 'tailwind' | 'shadcn';
     mergeTheme?: boolean;
-    shikiTheme?: string;
-    shikiLanguages?: LanguageInfo[];
-    shikiThemes?: Record<string, ThemeRegistration>;
     mermaidConfig?: MermaidConfig;
     katexConfig?: KatexOptions | ((inline: boolean) => KatexOptions);
     translations?: {
@@ -149,38 +118,14 @@ export type StreamdownProps<Source extends Record<string, any> = Record<string, 
             important?: string;
         };
     };
-    controls?: {
-        code?: boolean;
-        mermaid?: boolean | {
-            enabled?: boolean;
-            mouseWheelZoom?: boolean;
-        };
-        table?: boolean;
-    };
     renderHtml?: boolean | ((token: Tokens.HTML | Tokens.Tag) => string);
-    animation?: {
-        animateOnMount?: boolean;
-        enabled?: boolean;
-        type?: 'fade' | 'blur' | 'slideUp' | 'slideDown';
-        duration?: number;
-        timingFunction?: 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'linear';
-        tokenize?: 'word' | 'char';
-    };
     icons?: {
-        copy?: Snippet;
-        download?: Snippet;
         fullscreen?: Snippet;
-        zoomIn?: Snippet;
-        zoomOut?: Snippet;
-        fitView?: Snippet;
         note?: Snippet;
         tip?: Snippet;
         warning?: Snippet;
         caution?: Snippet;
         important?: Snippet;
-        chevronLeft?: Snippet;
-        chevronRight?: Snippet;
-        check?: Snippet;
     };
     extensions?: Extension[];
     children?: Snippet<[{
@@ -193,6 +138,10 @@ export type StreamdownProps<Source extends Record<string, any> = Record<string, 
         children: Snippet;
         props: any;
     }, any, any>>;
+    /**
+     * Host-owned renderers for the three async element kinds. The library
+     * ships none: without a component the block renders its source text.
+     */
     components?: {
         code?: Component<{
             token: Tokens.Code;
@@ -209,5 +158,5 @@ export type StreamdownProps<Source extends Record<string, any> = Record<string, 
         }, any, any>;
     };
     onsettled?: () => void;
-} & Partial<Snippets<Source>>;
+} & Partial<Snippets>;
 export {};

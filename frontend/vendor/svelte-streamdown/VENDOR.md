@@ -9,8 +9,9 @@
 - **Vendored on:** 2026-08-07
 - **Contents:** the published package's `dist/` tree, `LICENSE`, `README.md`.
   The npm tarball ships **only** `dist/` — there is no parallel `src/` to
-  strip, and the package's `exports` map resolves every entry point
-  (`.`, `./code`, `./mermaid`, `./math`) into `dist/`.
+  strip, and the package's `exports` map resolves every surviving entry
+  point (`.`, `./mermaid`, `./math`) into `dist/`. `./code` was dropped
+  with the shiki code component (`DIVERGENCE.md` entry 28).
 
 ## Why it lives here
 
@@ -30,7 +31,9 @@ trust-on-first-use: once the tarball was unpacked into the repo, no
 a record rather than an enforced gate. What stands in for it is that every
 byte differing from upstream 3.1.2 has a ledger entry — so `diff -ru` against
 a freshly fetched baseline (below) is a full audit, and an unexplained hunk in
-that diff is the alarm.
+that diff is the alarm. Since entry 28 this tree is no longer a superset of
+upstream: that diff is now mostly DELETIONS, which entry 28 covers as a
+block.
 
 ## How it is wired in
 
@@ -51,8 +54,10 @@ checked in is what compiles. pnpm still installs this package's own
 and resolves the `svelte` peer to the app's single patched copy, so the
 Svelte runtime is not duplicated.
 
-`package.json` here keeps upstream's identity, `exports`, `peerDependencies`
-and `dependencies` verbatim. Dropped: `scripts`, `devDependencies`,
+`package.json` here keeps upstream's identity and `peerDependencies`
+verbatim. `exports` lost `./code`, and `dependencies` lost `shiki`,
+`@shikijs/langs`, `@shikijs/themes` and `@floating-ui/dom`, with the code
+that used them (`DIVERGENCE.md` entry 28). Also dropped: `scripts`, `devDependencies`,
 `publishConfig`, `packageManager`, `pnpm`, `files` — they describe
 upstream's SvelteKit build/publish pipeline, which does not exist in a
 dist-only tree (`scripts.prepare` runs `svelte-kit sync`, an install-time

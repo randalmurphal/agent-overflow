@@ -22,18 +22,14 @@
   };
 
   let { kind, source }: { kind: HostKind; source: string } = $props();
-  const fullTheme = mergeTheme(chatMarkdownTheme, 'tailwind');
+  const fullTheme = mergeTheme(chatMarkdownTheme);
 
   setContext('streamdown', {
-    isMounted: false,
     pendingAsyncCount: 0,
     theme: fullTheme,
     mermaidConfig: { theme: 'default' },
     katexConfig: undefined,
-    controls: { code: false, mermaid: false, table: false },
     icons: undefined,
-    animationBlockStyle: undefined,
-    animationTextStyle: undefined,
     registerAsyncResource() {
       return () => {};
     },

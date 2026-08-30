@@ -250,8 +250,9 @@ unreachable; vendored `Image.svelte`'s gray chip unreachable with
 
 ### 4.4 Deliberate literals: keep, and mark as such
 
-`imageCompress.ts:110` + vendored `MermaidDownload.svelte:118` (white
-mattes on exported artifacts), `UserMessageBody.svelte:142` (mask alpha
+`imageCompress.ts:110` (white matte on exported artifacts; the vendored
+`MermaidDownload.svelte` that carried the second one was deleted with the
+library's download chrome), `UserMessageBody.svelte:142` (mask alpha
 channel, not a color), design-panel `bg-white` iframe paper, the brand
 coral **value** (tokenize the name, lock the default).
 

@@ -185,7 +185,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: false,
         compactStaticHtml: true,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return context;
         },
@@ -207,7 +206,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: false,
       compactStaticHtml: true,
       diagnostics: true,
-      controls: { code: false, table: false },
       get streamdown() {
         return context;
       },
@@ -231,7 +229,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -258,7 +255,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
 
@@ -272,7 +268,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: false,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).not.toBe('single-block');
@@ -284,7 +279,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).not.toBe('single-block');
@@ -297,7 +291,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).toBe('single-block');
@@ -314,7 +307,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -334,7 +326,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).toBe('single-block');
@@ -347,7 +338,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).not.toBe('single-block');
@@ -360,14 +350,16 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).toBe('single-block');
     expect(state.documentParseCalls).toBe(2);
-    expect(
-      Array.from(view.container.querySelectorAll('code > span'), (line) => line.textContent),
-    ).toEqual(['const first = true; + 1', 'const second = true; // suffix']);
+    // No host `components.code` here, so the fence renders through the
+    // library's source-text fallback: one `<code>` holding the fence body.
+    expect(view.container.querySelector('code')?.textContent?.split('\n')).toEqual([
+      'const first = true; + 1',
+      'const second = true; // suffix',
+    ]);
   });
 
   it('rejects a fabricated same-line append proof', async () => {
@@ -379,7 +371,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -401,7 +392,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
 
@@ -418,7 +408,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return context;
         },
@@ -436,7 +425,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false, table: false },
     });
     await tick();
 
@@ -464,7 +452,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -483,7 +470,6 @@ describe('single volatile Streamdown block', () => {
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
 
@@ -525,7 +511,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return optimizedContext;
         },
@@ -540,7 +525,6 @@ describe('single volatile Streamdown block', () => {
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: false,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return referenceContext;
         },
@@ -558,7 +542,6 @@ describe('single volatile Streamdown block', () => {
         content: split.tail,
         contentAppend: splitter.tailAppend,
         parseIncompleteMarkdown: true,
-        controls: { code: false, table: false },
       };
       await optimized.rerender({ ...props, isolatedVolatileTail: true });
       await reference.rerender({ ...props, isolatedVolatileTail: false });

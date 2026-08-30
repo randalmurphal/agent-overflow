@@ -1,13 +1,13 @@
 <script lang="ts">
+	// `[^1]` reference chip. The popover that used to hang off it (a
+	// floating-ui dialog rendering the footnote body) was deleted: a
+	// `position: fixed` overlay lands off-screen inside a
+	// containment-scoped virtualizer row, exactly as the mermaid
+	// fullscreen overlay did. The chip itself is unchanged — same
+	// element, same class, same marker attribute — so the reference
+	// keeps rendering inline with the prose it annotates.
 	import { useStreamdown } from '../context.svelte.js';
-	import Slot from './Slot.svelte';
 	import type { FootnoteRef } from '../marked/marked-footnotes.js';
-
-	import { useClickOutside } from '../utils/useClickOutside.svelte.js';
-	import { scale } from 'svelte/transition';
-	import Block from '../Block.svelte';
-	import { useKeyDown } from '../utils/useKeyDown.svelte.js';
-	import { Popover } from './popover.svelte.js';
 
 	const streamdown = useStreamdown();
 
@@ -18,64 +18,10 @@
 	} = $props();
 
 	const id = $props.id();
-	const popover = new Popover();
-
-	useKeyDown({
-		keys: ['Escape'],
-		get isActive() {
-			return popover.isOpen;
-		},
-		callback: () => {
-			popover.isOpen = false;
-		}
-	});
-	const clickOutside = useClickOutside({
-		get isActive() {
-			return popover.isOpen;
-		},
-		callback: () => {
-			popover.isOpen = false;
-		}
-	});
 </script>
 
-{#if popover.isOpen}
-	<dialog
-		data-streamdown-footnote-popover={id}
-		id={'footnote-popover-' + id}
-		aria-modal="false"
-		transition:scale|global={{ start: 0.95, duration: 100 }}
-		{@attach clickOutside.attachment}
-		{@attach popover.popoverAttachment}
-		open
-		class={streamdown.theme.components.popover}
-	>
-		<Slot
-			props={{
-				token,
-				isOpen: popover.isOpen
-			}}
-			render={streamdown.snippets.footnotePopover}
-		>
-			{#each token.content.lines as line}
-				<Block block={line} />
-			{/each}
-		</Slot>
-	</dialog>
-{/if}
-
 {#if token.label !== 'streamdown:footnote'}
-	<button
-		data-streamdown-footnote-ref={id}
-		style={streamdown.animationBlockStyle}
-		bind:this={popover.reference}
-		class={streamdown.theme.footnoteRef.base}
-		onclick={() => (popover.isOpen = !popover.isOpen)}
-		aria-expanded={popover.isOpen}
-		aria-haspopup="dialog"
-		aria-controls={'footnote-popover-' + id}
-		{@attach clickOutside.attachment}
-	>
+	<button data-streamdown-footnote-ref={id} class={streamdown.theme.footnoteRef.base}>
 		{token.label.replace('^', '')}
 	</button>
 {/if}

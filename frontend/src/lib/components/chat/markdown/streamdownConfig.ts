@@ -6,11 +6,6 @@ import StreamdownMathHostDeferred from './StreamdownMathHostDeferred.svelte';
 import { renderCachedStaticCodeBlockHtml } from './staticCodeBlock';
 import { createAnimationFrameBatcher } from '../../../utils/animationFrameBatcher';
 
-export const STREAMDOWN_CONTROLS = Object.freeze({
-  code: false,
-  table: false,
-});
-
 export const STREAMDOWN_STATIC_RENDERERS = Object.freeze({
   code: renderCachedStaticCodeBlockHtml,
 });

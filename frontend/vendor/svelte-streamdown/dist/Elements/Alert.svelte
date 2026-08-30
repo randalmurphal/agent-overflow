@@ -40,7 +40,6 @@
 >
 	<div
 		data-streamdown-alert={id}
-		style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
 		class={`${streamdown.theme.alert.base} ${streamdown.theme.alert[token.variant]}`}
 	>
 		<div data-alert-title class={streamdown.theme.alert.title}>

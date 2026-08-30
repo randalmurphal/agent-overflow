@@ -34,7 +34,7 @@ export function renderStaticTokenHtml(
 	streamdown: StreamdownContext,
 	id: string,
 ): string | null {
-	if (streamdown.animation.enabled || streamdown.children) return null;
+	if (streamdown.children) return null;
 
 	const output: string[] = [];
 	const dataId = escapeHtml(id);
@@ -65,7 +65,6 @@ export function renderStaticTokenHtml(
 					output.push(
 						`<${tag} data-streamdown-heading-${token.depth}="${dataId}"` +
 						attribute('class', streamdown.theme[tag as keyof typeof streamdown.theme].base) +
-						' style=""' +
 						'>',
 					);
 					if (!render(children)) return false;
@@ -75,14 +74,14 @@ export function renderStaticTokenHtml(
 
 				case 'paragraph':
 					if (streamdown.snippets.paragraph) return false;
-					output.push(`<p data-streamdown-paragraph="${dataId}"${attribute('class', streamdown.theme.paragraph.base)} style="">`);
+					output.push(`<p data-streamdown-paragraph="${dataId}"${attribute('class', streamdown.theme.paragraph.base)}>`);
 					if (!render(children)) return false;
 					output.push('</p>');
 					break;
 
 				case 'blockquote':
 					if (streamdown.snippets.blockquote) return false;
-					output.push(`<blockquote data-streamdown-blockquote="${dataId}"${attribute('class', streamdown.theme.blockquote.base)} style="">`);
+					output.push(`<blockquote data-streamdown-blockquote="${dataId}"${attribute('class', streamdown.theme.blockquote.base)}>`);
 					if (!render(children)) return false;
 					output.push('</blockquote>');
 					break;
@@ -138,7 +137,7 @@ export function renderStaticTokenHtml(
 					break;
 
 				case 'table':
-					if (streamdown.controls.table || streamdown.snippets.table) return false;
+					if (streamdown.snippets.table) return false;
 					output.push(
 						`<div data-streamdown-table="${dataId}"` +
 						attribute('class', `${streamdown.theme.table.base} group`) +
@@ -158,7 +157,6 @@ export function renderStaticTokenHtml(
 					output.push(
 						`<${token.type} data-streamdown-${token.type}="${dataId}"` +
 						attribute('class', streamdown.theme[token.type].base) +
-						' style=""' +
 						'>',
 					);
 					if (!render(children)) return false;
@@ -168,7 +166,7 @@ export function renderStaticTokenHtml(
 
 				case 'tr':
 					if (streamdown.snippets.tr) return false;
-					output.push(`<tr data-streamdown-tr="${dataId}"${attribute('class', streamdown.theme.tr.base)} style="">`);
+					output.push(`<tr data-streamdown-tr="${dataId}"${attribute('class', streamdown.theme.tr.base)}>`);
 					if (!render(children)) return false;
 					output.push('</tr>');
 					break;
@@ -183,7 +181,6 @@ export function renderStaticTokenHtml(
 					output.push(
 						`<${token.type} data-streamdown-${token.type}="${dataId}"` +
 						attribute('class', streamdown.theme[token.type].base) +
-						' style=""' +
 						(token.colspan > 1 ? attribute('colspan', token.colspan) : '') +
 						(token.rowspan > 1 ? attribute('rowspan', token.rowspan) : '') +
 						attribute('align', align) +
@@ -248,7 +245,7 @@ export function renderStaticTokenHtml(
 
 				case 'hr':
 					if (streamdown.snippets.hr) return false;
-					output.push(`<hr data-streamdown-hr="${dataId}"${attribute('class', streamdown.theme.hr.base)} style="">`);
+					output.push(`<hr data-streamdown-hr="${dataId}"${attribute('class', streamdown.theme.hr.base)}>`);
 					break;
 
 				case 'br':
@@ -274,7 +271,6 @@ export function renderStaticTokenHtml(
 					output.push(
 						`<${tag} data-streamdown-${token.type === 'descriptionTerm' ? 'description-term' : 'description-detail'}="${dataId}"` +
 						attribute('class', streamdown.theme[token.type].base) +
-						' style=""' +
 						'>',
 					);
 					if (!render(children)) return false;

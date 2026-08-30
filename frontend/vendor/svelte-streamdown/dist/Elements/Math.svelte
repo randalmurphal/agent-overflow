@@ -87,7 +87,6 @@
 {#if token.isInline}
 	<span
 		data-streamdown-inline-math={id}
-		style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
 		bind:this={inner}
 		class={streamdown.theme.math.inline}
 	>
@@ -96,7 +95,6 @@
 {:else}
 	<div
 		data-streamdown-block-math={id}
-		style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
 		style:height="fit-content"
 		style:width="100%"
 	>

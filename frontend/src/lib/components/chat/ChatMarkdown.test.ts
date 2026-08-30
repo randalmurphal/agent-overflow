@@ -542,3 +542,64 @@ describe('<ChatMarkdown> warm-gate presence registration', () => {
     expect(container.textContent).toContain('standalone');
   });
 });
+
+describe('<ChatMarkdown> library chrome removed in the W1 sweep', () => {
+  // The vendored renderer used to ship four interactive surfaces this app
+  // never wanted: a footnote popover, a table download menu, a citation
+  // carousel, and mermaid's inline panzoom toolbar. All four are gone.
+  // These assertions pin what SURVIVED, so a future edit that revives the
+  // chrome (or drops the surviving markup with it) fails here.
+
+  it('renders a footnote reference chip and no popover', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: { source: 'A claim[^note].\n\n[^note]: The supporting body.' },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-streamdown-footnote-ref]')).not.toBeNull();
+    });
+
+    const chip = container.querySelector('[data-streamdown-footnote-ref]')!;
+    expect(chip.textContent).toBe('note');
+    // No dialog, and nothing that claims to control one.
+    expect(container.querySelector('dialog')).toBeNull();
+    expect(container.querySelector('[data-streamdown-footnote-popover]')).toBeNull();
+    expect(chip.getAttribute('aria-haspopup')).toBeNull();
+    expect(chip.getAttribute('aria-controls')).toBeNull();
+  });
+
+  it('renders a table with no download control', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '| Left | Right |\n| :--- | ----: |\n| alpha | beta |',
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-streamdown-table]')).not.toBeNull();
+    });
+
+    expect(container.querySelectorAll('td')).toHaveLength(2);
+    expect(container.textContent).toContain('alpha');
+    // The download menu was the only control the table ever rendered.
+    expect(container.querySelector('[data-streamdown-table] button')).toBeNull();
+    expect(container.querySelector('button[aria-label="Download"]')).toBeNull();
+  });
+
+  it('renders citation-shaped prose through the host snippet', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: { source: 'The result holds [1] under load.' },
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('under load');
+    });
+
+    // The `citations` tokenizer stays (it changes how `[foo]` parses), but
+    // ChatMarkdown's `inlineCitation` snippet renders the literal text and
+    // the carousel/list component is gone.
+    expect(container.textContent).toContain('The result holds [1] under load.');
+    expect(container.querySelector('[aria-label^="Citation"]')).toBeNull();
+    expect(container.querySelector('dialog')).toBeNull();
+  });
+});

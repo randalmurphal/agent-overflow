@@ -978,11 +978,12 @@ any element carrying that ordinary attribute `position: fixed` at
 `z-index: 2147483647`. The map's expanded wave row hit it and covered
 the whole app, swallowing every click on the run detail's action row.
 Scoped to `[data-streamdown-mermaid] [data-expanded='true']` and
-recorded as entry 16 in `vendor/svelte-streamdown/DIVERGENCE.md`. The
-map's wave row also moved off the shared attribute name to
-`data-wave-expanded`: the scoping is the fix, and staying out of a
-vendored stylesheet's namespace is what keeps the next component that
-reaches for `data-expanded` from re-finding it.
+recorded as entry 16 in `vendor/svelte-streamdown/DIVERGENCE.md`. That
+rule has since been deleted outright along with the mermaid panzoom that
+set the attribute (entry 28), but the map's wave row keeps its own
+attribute name, `data-wave-expanded`: staying out of a vendored
+stylesheet's namespace is what keeps the next component that reaches for
+`data-expanded` from re-finding a rule like it.
 
 Docs/tests bookkeeping:
 

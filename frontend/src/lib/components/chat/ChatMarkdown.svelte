@@ -42,7 +42,6 @@
   import { resolveMermaidThemeConfig } from './markdown/mermaidTokens';
   import { getResolvedTheme } from '../../stores/themeMode.svelte';
   import {
-    STREAMDOWN_CONTROLS,
     STREAMDOWN_STATIC_RENDERERS,
     STREAMDOWN_STATIC_WORK_SCHEDULER,
     streamdownComponentsFor,
@@ -333,13 +332,11 @@
     {parseIncompleteMarkdown}
     isolatedVolatileTail={parseIncompleteMarkdown}
     {diagnostics}
-    baseTheme="tailwind"
     theme={chatMarkdownTheme}
     {mermaidConfig}
     {allowedLinkPrefixes}
     {allowedImagePrefixes}
     renderHtml={false}
-    controls={STREAMDOWN_CONTROLS}
     compactStaticHtml={true}
     {trimFirstBlockMargin}
     {trimLastBlockMargin}

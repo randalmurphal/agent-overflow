@@ -39,8 +39,8 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
    so the committed-prefix vs volatile-tail two-instance split in
    `ChatMarkdown.svelte` defers math/mermaid typesetting off the
    streaming tail. Our own `StreamdownCodeHost` participates through
-   the same context hooks (no `Code.svelte` change needed — the
-   library's shiki Code component is unused and tree-shaken).
+   the same context hooks (the library's shiki `Code.svelte` was
+   unused and is now deleted — see entry 28).
    Orthogonal to upstream's parse cache — they stack.
 4. **completion-disable** (`utils/parse-incomplete-markdown.js`) — a
    trailing `.filter` drops the 10 inline emphasis/code/math
@@ -313,8 +313,14 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     boundary — `Tokenizer.blockquote` cannot be fixed from here.
     Regression: `markdown/alertBlockquote.test.ts` (both found shapes,
     plus the well-formed blockquotes that must stay byte-identical).
-16. **the fullscreen rule is scoped to mermaid** (`Elements/Mermaid.svelte`)
-    — upstream's expand style is `:global([data-expanded='true'])`, with no
+16. **DELETED with entry 28** (was: the fullscreen rule scoped to mermaid,
+    `Elements/Mermaid.svelte`). The rule, the `data-expanded` attribute and
+    the panzoom that set it are all gone; the record below survives because
+    the LESSON does — a stylesheet from a markdown renderer must not be able
+    to reach a component that has never rendered markdown, and
+    `data-expanded` is exactly the name the next component reaches for
+    (`WorkflowRunMap.svelte` uses `data-wave-expanded` for that reason).
+    Original entry: upstream's expand style is `:global([data-expanded='true'])`, with no
     scope at all. `:global` means app-wide, and `data-expanded` is an
     ordinary attribute name, so ANY element anywhere in the app that
     carried `data-expanded="true"` was pulled out of its layout and pinned
@@ -603,3 +609,56 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     `ChatMarkdown.boundarySpacing.browser.test.ts`,
     `ChatMarkdown.compactStaticAppend.test.ts`, and
     `styleInvalidation.test.ts`.
+28. **dead and decided-out library code is deleted** (2026-08-30, campaign
+    wave 1 of `docs/specs/markdown-first-party.md`). The vendored tree is
+    no longer a superset of upstream 3.1.2: whole files are gone, so a
+    `diff -ru` against the baseline now shows large deletions, all of them
+    covered by this entry. What went, and why:
+    - **Unreachable** — `Elements/index.js` (a barrel nothing imported),
+      `Elements/Code.svelte`, `utils/hightlighter.svelte.js`,
+      `utils/bundledLanguages.js`. Highlighting flows through Go
+      tree-sitter into `StreamdownCodeHost` (entry 3); shiki was never in
+      the production bundle. The `shiki`, `@shikijs/langs` and
+      `@shikijs/themes` dependencies, the `shikiTheme`/`shikiLanguages`/
+      `shikiThemes` props and the `./code` export are gone with it.
+    - **Overridden or disabled by this host** — `Elements/TableDownload.svelte`,
+      `Elements/Citation.svelte` (the COMPONENT only; `marked-citations.js`
+      stays, because removing the tokenizer would change how `[foo]`-shaped
+      prose parses), `Elements/stepperState.svelte.js`, `utils/get.js`,
+      `utils/copy.svelte.js`. With them went the whole `controls` prop —
+      every remaining control is unconditional — plus `sources` and
+      `inlineCitationsMode`. `inline-citations` tokens now render only
+      through the host's `inlineCitation` snippet, which is what
+      `ChatMarkdown` already supplied.
+    - **Superseded by the host's diagram surface** (spec decision 3) —
+      `Elements/MermaidDownload.svelte`, `utils/panzoom.svelte.js`,
+      `utils/save.js`, and the fullscreen/zoom wiring inside
+      `Elements/Mermaid.svelte`. `DiagramInteractionHost` + `DiagramModal`
+      own cursor-anchored zoom, pan and copy. ONE control survives, the
+      `aria-label="Toggle expand"` button, and it deliberately carries no
+      handler: `StreamdownMermaidHost` intercepts the click in the capture
+      phase and routes it to the modal. Regression:
+      `markdown/mermaidExpandIntercept.test.ts` (mounted case included).
+    - **Footnote popover** (spec decision 4) — the `<dialog>` half of
+      `Elements/FootnoteRef.svelte`, `Elements/popover.svelte.js`,
+      `utils/useClickOutside.svelte.js`, `utils/useKeyDown.svelte.js` and
+      the `@floating-ui/dom` dependency. The `[^1]` chip renders exactly as
+      before. NOTE: the footnote BODY has no renderer now — it never had
+      one outside the popover (`Element.svelte`'s `footnote` branch was
+      always empty), so a `[^1]: body` definition contributes nothing to
+      the output. Rendering a footnote list is new UI, not a W1 deletion.
+      Regression: `ChatMarkdown.test.ts`.
+    - **Never-taken branches** — `Elements/fallbacks/*` (replaced by one
+      inline source-text fallback in `Element.svelte`; the host always
+      supplies `components`), `AnimatedText.svelte` and the whole
+      `animation` prop plumbing (`isMounted`, `animationBlockStyle`,
+      `animationTextStyle`, the `sd-*` keyframes, and the `style=""`
+      attributes both render paths emitted to stay byte-identical with each
+      other), and `utils/darkMode.svelte.js` — the host always passes
+      `mermaidConfig.theme`, so the `html.dark` MutationObserver only ever
+      served a fallback nothing reached.
+    - **`shadcnTheme`** and the `baseTheme` prop it was the only branch of.
+      `theme` + `mergeTheme` survive until the campaign's theme-flattening
+      wave.
+    Nothing above changes rendering for this host except the two approved
+    removals (mermaid panzoom/download chrome, footnote popover).

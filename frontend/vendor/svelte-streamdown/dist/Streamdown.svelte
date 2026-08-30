@@ -1,8 +1,8 @@
-<script lang="ts" generics="Source extends Record<string, any> = Record<string, any>">
+<script lang="ts">
 	import Block from './Block.svelte';
 	import CompactBlocks from './CompactBlocks.svelte';
 	import { StreamdownContext, type StreamdownProps } from './context.svelte.js';
-	import { mergeTheme, shadcnTheme } from './theme.js';
+	import { mergeTheme } from './theme.js';
 	import {
 		lex,
 		parseBlocks,
@@ -20,9 +20,6 @@
 		content = '',
 		contentAppend,
 		class: className,
-		shikiTheme,
-		shikiLanguages,
-		shikiThemes,
 		parseIncompleteMarkdown,
 		defaultOrigin,
 		allowedLinkPrefixes = ['*'],
@@ -31,19 +28,14 @@
 		mermaidConfig = {},
 		katexConfig,
 		translations,
-		baseTheme,
 		mergeTheme: shouldMergeTheme = true,
 		streamdown = $bindable(),
 		renderHtml,
-		controls,
-		animation,
 		diagnostics = false,
 		element = $bindable(),
 		icons,
 		children,
 		extensions,
-		sources,
-		inlineCitationsMode = 'carousel',
 		mdxComponents,
 		components,
 		static: isStatic,
@@ -55,22 +47,7 @@
 		staticWorkScheduler,
 		onsettled,
 		...snippets
-	}: StreamdownProps<Source> = $props();
-	import { useDarkMode } from './utils/darkMode.svelte.js';
-
-	const darkMode = useDarkMode();
-
-	const shikiThemedTheme = $derived(
-		shikiThemes
-			? Object.keys(shikiThemes)[0] || 'github-light'
-			: darkMode.current
-				? 'github-dark'
-				: 'github-light'
-	);
-
-	const mermaidThemedTheme = $derived(
-		mermaidConfig?.theme ? mermaidConfig.theme : darkMode.current ? 'dark' : 'default'
-	);
+	}: StreamdownProps = $props();
 
 	// Divergence entry 20: theme resolution is memoized. Upstream's context
 	// getter ran mergeTheme on EVERY `streamdown.theme` access — a full deep
@@ -78,18 +55,11 @@
 	// from every template effect of every element component, re-invoked on
 	// each streaming delta. Profiled at 33MB/45s of allocation during
 	// sustained streaming, plus a fresh object identity per read that
-	// defeated any downstream equality check. One $derived per (theme,
-	// baseTheme) change; the getters below serve the cached objects.
-	const resolvedTheme = $derived(
-		shouldMergeTheme
-			? mergeTheme(theme, baseTheme)
-			: theme || (baseTheme === 'shadcn' ? shadcnTheme : theme)
-	);
+	// defeated any downstream equality check. One $derived per theme
+	// change; the getters below serve the cached objects.
+	const resolvedTheme = $derived(shouldMergeTheme ? mergeTheme(theme) : theme);
 
-	const resolvedMermaidConfig = $derived({
-		theme: mermaidThemedTheme,
-		...mermaidConfig
-	});
+	const resolvedMermaidConfig = $derived({ ...mermaidConfig });
 
 	type IncrementalLexMetrics = {
 		calls: number;
@@ -137,17 +107,11 @@
 		get allowedImagePrefixes() {
 			return allowedImagePrefixes;
 		},
-		get shikiTheme() {
-			return shikiTheme || shikiThemedTheme;
-		},
 		get snippets() {
 			return snippets;
 		},
 		get theme() {
 			return resolvedTheme;
-		},
-		get baseTheme() {
-			return baseTheme;
 		},
 		get mermaidConfig() {
 			return resolvedMermaidConfig;
@@ -161,48 +125,8 @@
 		get translations() {
 			return translations;
 		},
-		get shikiLanguages() {
-			return shikiLanguages;
-		},
-		get shikiThemes() {
-			return shikiThemes;
-		},
-		get sources() {
-			return sources;
-		},
-		get inlineCitationsMode() {
-			return inlineCitationsMode;
-		},
-		get animation() {
-			if (!animation?.enabled)
-				return {
-					enabled: false
-				};
-			return {
-				enabled: true,
-				animateOnMount: animation.animateOnMount ?? false,
-				type: animation.type || 'blur',
-				duration: animation.duration || 500,
-				timingFunction: animation.timingFunction || 'ease-in',
-				tokenize: animation.tokenize || 'word'
-			};
-		},
 		get diagnostics() {
 			return diagnostics;
-		},
-		get controls() {
-			const codeControls = controls?.code ?? true;
-			const mermaid = controls?.mermaid;
-			const isMermaidObject = typeof mermaid === 'object' && mermaid !== null;
-			const mermaidControls = isMermaidObject ? (mermaid.enabled ?? true) : (mermaid ?? true);
-			const mermaidMouseWheelZoom = isMermaidObject ? (mermaid.mouseWheelZoom ?? true) : true;
-			const tableControls = controls?.table ?? true;
-			return {
-				code: codeControls,
-				mermaid: mermaidControls,
-				mermaidMouseWheelZoom,
-				table: tableControls
-			};
 		},
 		get children() {
 			return children;
@@ -516,48 +440,3 @@
 	{/if}
 </div>
 
-<style global>
-	:global {
-		@keyframes sd-fade {
-			from {
-				opacity: 0;
-			}
-			to {
-				opacity: 1;
-			}
-		}
-
-		@keyframes sd-blur {
-			from {
-				opacity: 0;
-				filter: blur(5px);
-			}
-			to {
-				opacity: 1;
-				filter: blur(0px);
-			}
-		}
-
-		@keyframes sd-slideUp {
-			from {
-				transform: translateY(10%);
-				opacity: 0;
-			}
-			to {
-				transform: translateY(0);
-				opacity: 1;
-			}
-		}
-
-		@keyframes sd-slideDown {
-			from {
-				transform: translateY(-10%);
-				opacity: 0;
-			}
-			to {
-				transform: translateY(0);
-				opacity: 1;
-			}
-		}
-	}
-</style>

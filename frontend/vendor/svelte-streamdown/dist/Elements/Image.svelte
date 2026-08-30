@@ -42,7 +42,6 @@
 		>
 			<span
 				data-streamdown-image={id}
-				style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
 				class={streamdown.theme.image.base}
 			>
 				<img

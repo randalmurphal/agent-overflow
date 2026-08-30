@@ -40,11 +40,9 @@
 		type ProvenAppend,
 		type StreamdownToken
 	} from './marked/index.js';
-	import AnimatedText from './AnimatedText.svelte';
 	import LiteralHost from './LiteralHost.svelte';
 	import { useStreamdown } from './context.svelte.js';
 	import { renderStaticTokenHtml } from './static-html.js';
-	import { getContext } from 'svelte';
 
 	let {
 		block,
@@ -81,8 +79,6 @@
 			append
 		)
 	);
-	const insidePopover = getContext('POPOVER');
-	const animationStyle = $derived(streamdown.isMounted ? streamdown.animationBlockStyle : '');
 	const id = $props.id();
 	const staticHtml = $derived(
 		compactStaticHtml && streamdown.parseIncompleteMarkdown === false
@@ -101,9 +97,7 @@
 			{@const isSafeTokenPath = safePath && DIRECT_TEXT_CONTAINERS.has(token.type)}
 			{#if token.type === 'text'}
 				{#if isTextOnlyNode}
-					{#if streamdown.animation.enabled && !insidePopover && !isStatic}
-						<AnimatedText text={token.text || ''} />
-					{:else if isTrailingToken && isSafeTokenPath}
+					{#if isTrailingToken && isSafeTokenPath}
 						<LiteralHost text={token.text || ''} {token} />
 					{:else}
 						{token.text}
@@ -113,40 +107,39 @@
 				{/if}
 			{:else if token.type === 'heading' && !streamdown.snippets.heading}
 				{#if token.depth === 1}
-					<h1 data-streamdown-heading-1={id} style={animationStyle} class={streamdown.theme.h1.base}>
+					<h1 data-streamdown-heading-1={id} class={streamdown.theme.h1.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h1>
 				{:else if token.depth === 2}
-					<h2 data-streamdown-heading-2={id} style={animationStyle} class={streamdown.theme.h2.base}>
+					<h2 data-streamdown-heading-2={id} class={streamdown.theme.h2.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h2>
 				{:else if token.depth === 3}
-					<h3 data-streamdown-heading-3={id} style={animationStyle} class={streamdown.theme.h3.base}>
+					<h3 data-streamdown-heading-3={id} class={streamdown.theme.h3.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h3>
 				{:else if token.depth === 4}
-					<h4 data-streamdown-heading-4={id} style={animationStyle} class={streamdown.theme.h4.base}>
+					<h4 data-streamdown-heading-4={id} class={streamdown.theme.h4.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h4>
 				{:else if token.depth === 5}
-					<h5 data-streamdown-heading-5={id} style={animationStyle} class={streamdown.theme.h5.base}>
+					<h5 data-streamdown-heading-5={id} class={streamdown.theme.h5.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h5>
 				{:else if token.depth === 6}
-					<h6 data-streamdown-heading-6={id} style={animationStyle} class={streamdown.theme.h6.base}>
+					<h6 data-streamdown-heading-6={id} class={streamdown.theme.h6.base}>
 						{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 					</h6>
 				{/if}
 			{:else if token.type === 'paragraph' && !streamdown.snippets.paragraph}
 				<p
 					data-streamdown-paragraph={id}
-					style={animationStyle}
 					class={`${streamdown.theme.paragraph.base}${streamdown.parseIncompleteMarkdown === true ? ' sd-volatile-paragraph' : ''}`}
 				>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</p>
 			{:else if token.type === 'blockquote' && !streamdown.snippets.blockquote}
-				<blockquote data-streamdown-blockquote={id} style={animationStyle} class={streamdown.theme.blockquote.base}>
+				<blockquote data-streamdown-blockquote={id} class={streamdown.theme.blockquote.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</blockquote>
 			{:else if token.type === 'codespan' && !streamdown.snippets.codespan}
@@ -173,7 +166,6 @@
 			{:else if token.type === 'list_item' && !streamdown.snippets.li}
 				<li
 					data-streamdown-li={id}
-					style={animationStyle}
 					style:list-style-type={token.task ? 'none' : undefined}
 					{...token.value && !token.task ? { value: token.value } : {}}
 					class={`${streamdown.theme.li.base}${token.task ? ' md-task-list-item' : ''}`}
@@ -188,10 +180,9 @@
 					{/if}
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</li>
-			{:else if token.type === 'table' && !streamdown.controls.table && !streamdown.snippets.table}
+			{:else if token.type === 'table' && !streamdown.snippets.table}
 				<div
 					data-streamdown-table={id}
-					style={animationStyle}
 					class={`${streamdown.theme.table.base} group`}
 					style:overscroll-behavior-x="none"
 				>
@@ -200,24 +191,23 @@
 					</table>
 				</div>
 			{:else if token.type === 'thead' && !streamdown.snippets.thead}
-				<thead data-streamdown-thead={id} style={animationStyle} class={streamdown.theme.thead.base}>
+				<thead data-streamdown-thead={id} class={streamdown.theme.thead.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</thead>
 			{:else if token.type === 'tbody' && !streamdown.snippets.tbody}
-				<tbody data-streamdown-tbody={id} style={animationStyle} class={streamdown.theme.tbody.base}>
+				<tbody data-streamdown-tbody={id} class={streamdown.theme.tbody.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</tbody>
 			{:else if token.type === 'tfoot' && !streamdown.snippets.tfoot}
-				<tfoot data-streamdown-tfoot={id} style={animationStyle} class={streamdown.theme.tfoot.base}>
+				<tfoot data-streamdown-tfoot={id} class={streamdown.theme.tfoot.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</tfoot>
 			{:else if token.type === 'tr' && !streamdown.snippets.tr}
-				<tr data-streamdown-tr={id} style={animationStyle} class={streamdown.theme.tr.base}>
+				<tr data-streamdown-tr={id} class={streamdown.theme.tr.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</tr>
 			{:else if token.type === 'td' && token.rowspan > 0 && !streamdown.snippets.td}
 				<td
-					style={animationStyle}
 					data-streamdown-td={id}
 					class={streamdown.theme.td.base}
 					{...token.colspan > 1 ? { colspan: token.colspan } : {}}
@@ -230,7 +220,6 @@
 				</td>
 			{:else if token.type === 'th' && token.rowspan > 0 && !streamdown.snippets.th}
 				<th
-					style={animationStyle}
 					data-streamdown-th={id}
 					class={streamdown.theme.th.base}
 					{...token.colspan > 1 ? { colspan: token.colspan } : {}}
@@ -262,27 +251,22 @@
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</del>
 			{:else if token.type === 'hr' && !streamdown.snippets.hr}
-				<hr data-streamdown-hr={id} style={animationStyle} class={streamdown.theme.hr.base} />
+				<hr data-streamdown-hr={id} class={streamdown.theme.hr.base} />
 			{:else if token.type === 'br'}
 				<br data-streamdown-br={id} />
 			{:else if token.type === 'descriptionList' && !streamdown.snippets.descriptionList}
-				<dl
-					data-streamdown-description-list={id}
-					style={streamdown.animationBlockStyle}
-					class={streamdown.theme.descriptionList.base}
-				>
+				<dl data-streamdown-description-list={id} class={streamdown.theme.descriptionList.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</dl>
 			{:else if token.type === 'description' && !streamdown.snippets.description}
 				{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 			{:else if token.type === 'descriptionTerm' && !streamdown.snippets.descriptionTerm}
-				<dt data-streamdown-description-term={id} style={animationStyle} class={streamdown.theme.descriptionTerm.base}>
+				<dt data-streamdown-description-term={id} class={streamdown.theme.descriptionTerm.base}>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
 				</dt>
 			{:else if token.type === 'descriptionDetail' && !streamdown.snippets.descriptionDetail}
 				<dd
 					data-streamdown-description-detail={id}
-					style={animationStyle}
 					class={streamdown.theme.descriptionDetail.base}
 				>
 					{@render renderChildren(children, isTrailingToken, isSafeTokenPath)}
@@ -295,9 +279,7 @@
 					}
 				>
 					{#if isTextOnlyNode}
-						{#if streamdown.animation.enabled && !insidePopover && !isStatic}
-							<AnimatedText text={'text' in token ? token.text || '' : ''} />
-						{:else if isTrailingToken && isSafeTokenPath}
+						{#if isTrailingToken && isSafeTokenPath}
 							<LiteralHost text={('text' in token ? token.text : '') || ''} {token} />
 						{:else}
 							{'text' in token ? token.text : ''}

@@ -34,9 +34,6 @@
 		allowedLinkPrefixes: unknown;
 		defaultOrigin: unknown;
 		renderHtml: unknown;
-		animationEnabled: boolean;
-		controlsCode: boolean;
-		controlsTable: boolean;
 		staticRenderers: unknown;
 	};
 	type StaticWorkScheduler = {
@@ -77,7 +74,6 @@
 	let documentInteraction: DocumentInteraction | undefined;
 
 	function readConfiguration(): Configuration {
-		const controls = streamdown.controls;
 		return {
 			extensions: streamdown.extensions,
 			theme: streamdown.theme,
@@ -86,9 +82,6 @@
 			allowedLinkPrefixes: streamdown.allowedLinkPrefixes,
 			defaultOrigin: streamdown.defaultOrigin,
 			renderHtml: streamdown.renderHtml,
-			animationEnabled: streamdown.animation.enabled,
-			controlsCode: controls.code,
-			controlsTable: controls.table,
 			staticRenderers: streamdown.staticRenderers
 		};
 	}
@@ -101,9 +94,6 @@
 			left.allowedLinkPrefixes === right.allowedLinkPrefixes &&
 			left.defaultOrigin === right.defaultOrigin &&
 			left.renderHtml === right.renderHtml &&
-			left.animationEnabled === right.animationEnabled &&
-			left.controlsCode === right.controlsCode &&
-			left.controlsTable === right.controlsTable &&
 			left.staticRenderers === right.staticRenderers;
 	}
 

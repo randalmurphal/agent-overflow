@@ -1,7 +1,10 @@
 <script lang="ts">
   // Mermaid host. Delegates rendering to svelte-streamdown's built-in
-  // Mermaid component (which provides panzoom, fullscreen toggle, copy
-  // and download). Stashes the original source on a wrapping element
+  // Mermaid component. That component's only control is the "Toggle
+  // expand" button this host intercepts below (its inline panzoom and
+  // download chrome were deleted — `DiagramModal` and
+  // `DiagramInteractionHost` own zoom, pan and copy).
+  // Stashes the original source on a wrapping element
   // tagged `mermaid` + `data-mermaid-source` so the markdown-aware
   // copy serializer (`utils/markdownSerialize.ts`) can round-trip the
   // diagram back to ` ```mermaid ` markdown — the rendered SVG itself

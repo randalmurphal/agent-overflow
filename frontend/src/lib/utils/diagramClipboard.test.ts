@@ -45,8 +45,10 @@ const NS = 'http://www.w3.org/2000/svg';
 
 /**
  * The live DOM shape svelte-streamdown produces: mermaid's own `<svg>`
- * (percentage width + inline max-width) nested inside the panzoom host
- * `<svg data-mermaid-svg>`, which carries the reader's pan/zoom transform.
+ * (percentage width + inline max-width) nested inside the outer host
+ * `<svg data-mermaid-svg>`. The host's inline transform is no longer
+ * written by the library, but the export must still survive one — the
+ * modal's own transform host is the same shape.
  */
 function makeSvg(): SVGSVGElement {
   const host = document.createElementNS(NS, 'svg');
@@ -204,7 +206,7 @@ describe('diagramClipboard', () => {
       expect(writeText.mock.calls[0][0]).toContain('<svg');
     });
 
-    it('exports the diagram root without the panzoom transform or a percentage width', async () => {
+    it('exports the diagram root without a host transform or a percentage width', async () => {
       const { writeText } = installClipboard();
       await copyAsSVG(makeSvg());
       const markup = writeText.mock.calls[0][0];

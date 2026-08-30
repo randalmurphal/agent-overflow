@@ -157,12 +157,10 @@ export function renderStaticCodeBlockHtml(
     }
   }
 
-  const animationStyle = streamdown.isMounted ? streamdown.animationBlockStyle : '';
   return '<div class="streamdown-code-host group/codeblock relative" data-code-source=""' +
     attribute('data-code-lang', token.lang ?? '') +
     '><div' +
       attribute('data-streamdown-code', id) +
-      attribute('style', animationStyle) +
       attribute('class', streamdown.theme.code.base) +
     '><div style="height: fit-content; width: 100%;"' +
       attribute('class', streamdown.theme.code.container) +
