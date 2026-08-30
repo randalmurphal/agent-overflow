@@ -204,6 +204,43 @@ happens through stable sibling ids in triage.
   update the comment in the same commit. A stale comment is worse than
   no comment.
 
+## Maintaining the Guides
+
+The `AGENTS.md` files and the `docs/` tree are a cache over the code:
+useful exactly as long as they are true. Four rules keep them true.
+
+- **Route a new fact to where a future reader looks first, once.** A
+  rule agents must obey in one area → that area's `AGENTS.md`. A
+  cross-cutting mechanism → `docs/architecture/`. Rationale for a
+  choice → the commit message, or an ADR when it is load-bearing. A
+  coined term → `docs/GLOSSARY.md`. A code-local subtlety → a
+  WHY-comment. If the environment already answers it (a Makefile
+  target, `--help`, a config file), leave it there: a doc restating a
+  lookup goes stale, the lookup cannot.
+- **Sweep for falsified claims before reporting a change done.** A
+  behavior change can invalidate doc prose far from the edited files,
+  so `rg` the changed symbols and the behavior phrases they implement
+  across `**/AGENTS.md` and `docs/`, read each hit, and fix every
+  claim the change made false, in the same commit. Done means every
+  doc claim about the touched behavior is verified true or updated.
+  The class this closes: the 2026-08-29 eventbus change made "no later
+  frame announces a drop" false in two documents at once.
+- **Retire prose that enforcement replaced.** When a rule gains a
+  tripwire test, lint, or type shape, shrink its guide bullet to the
+  claim plus a pointer at the enforcement; the test carries the weight
+  from then on. Delete a doc nothing cites (the spec-graduation rule
+  in `docs/README.md`, generalized to the whole tree); git history
+  keeps it. Guides earn their load by staying short enough to read.
+- **Keep the indexes in step.** Adding, renaming, or deleting a doc
+  updates its `docs/README.md` row in the same commit. A new package
+  updates the `internal/AGENTS.md` table and ships the `CLAUDE.md`
+  symlink (§ Adding a package there).
+
+When writing the entry itself: cache what the code cannot say — the
+unwritten convention, the reason, the gotcha. One meaning lives in one
+place; elsewhere, point. An incident citation is one sentence, the date
+and the mechanism.
+
 ## Before You Commit
 
 Every task leaves these passing:
@@ -212,6 +249,9 @@ Every task leaves these passing:
 - `make go-test`
 - `cd frontend && pnpm run check`
 - `cd frontend && pnpm run build`
+
+Plus the falsified-claim sweep above: every doc claim about the
+behavior you changed is verified true or updated.
 
 If any are broken, fix them before the commit lands. "Out of scope" is
 not a valid reason to leave a check red. See the Ownership section of

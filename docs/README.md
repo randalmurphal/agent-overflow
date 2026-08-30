@@ -27,7 +27,7 @@ How the app works today. Under [`architecture/`](architecture/).
 
 | File | 1-line summary |
 |---|---|
-| [`conventions.md`](architecture/conventions.md) | Contributor guardrails: file sizes, naming, error handling, tests, SQL patterns, memory hygiene, Svelte rules. |
+| [`conventions.md`](architecture/conventions.md) | Contributor guardrails: file sizes, naming, error handling, tests, SQL patterns, memory hygiene, Svelte rules, and maintaining the guides themselves. |
 | [`invariants.md`](architecture/invariants.md) | Load-bearing rules with rationale and enforcement. Read before touching triage, store, or the item model. |
 | [`how-to.md`](architecture/how-to.md) | Extension playbooks: new event kind, new item kind, new tool renderer, new migration, new provider, new approval, file splits. |
 | [`adrs/`](architecture/adrs/) | Architecture Decision Records. One file per load-bearing choice. |

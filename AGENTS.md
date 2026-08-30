@@ -107,6 +107,11 @@ final binaries on the same minimum macOS version.
 - **A fixed bug ships its lesson.** When the bug's class could recur,
   update the nearest AGENTS.md (or the doc it points to) in the same
   change.
+- **A change keeps the guides true.** Before reporting done, sweep
+  `**/AGENTS.md` and `docs/` for claims your change falsified and fix
+  them in the same commit. Full maintenance rules (fact routing, the
+  sweep, retiring enforced prose, index sync):
+  [conventions.md § Maintaining the Guides](docs/architecture/conventions.md#maintaining-the-guides).
 
 ## Improving As You Go
 
