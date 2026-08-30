@@ -18,6 +18,13 @@ dist/
 # Dependencies
 node_modules/
 
+# The root package.json is forwarder scripts only (see its `scripts`) — the
+# real project is frontend/, and frontend/pnpm-lock.yaml is the committed
+# lockfile. pnpm still verifies deps before running a script, so any
+# `pnpm run <x>` at the root writes an empty lockfile for the zero-dependency
+# root importer. It is an artifact of the forwarder, never a source of truth.
+/pnpm-lock.yaml
+
 # IDE
 .idea/
 .vscode/

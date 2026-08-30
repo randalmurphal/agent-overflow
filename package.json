@@ -1,0 +1,11 @@
+{
+  "name": "agent-overflow",
+  "private": true,
+  "scripts": {
+    "check": "pnpm --dir frontend run check",
+    "check:file": "pnpm --dir frontend run check:file",
+    "build": "pnpm --dir frontend run build",
+    "test": "pnpm --dir frontend test",
+    "test:browser": "pnpm --dir frontend run test:browser"
+  }
+}

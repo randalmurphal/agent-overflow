@@ -3,7 +3,23 @@
 Svelte 5 (runes only), Vite 8 (Rolldown), Tailwind 4, TypeScript.
 `pnpm run check` and `pnpm run build` are blockers, `pnpm test` is the
 unit gate (`test:browser` and `test:manual` are separate vitest
-projects).
+projects). They live here, in `frontend/`, but the repo root carries a
+`package.json` of forwarders so running one from there does the right
+thing instead of failing on a missing manifest.
+
+`pnpm run check:file <file.ts> …` is the tight loop: `tsc` over exactly
+those files and what they import, ~2s against the full check's ~20s. It
+covers no `.svelte` file and no Svelte component's props, and prints
+that on every run. svelte-check has no per-file mode and its narrowest
+scope, `--workspace <dir>`, measured SLOWER than checking everything
+(23s vs 20s) because the cost is building the TypeScript program, not
+running the diagnostics — so there is no scoped `.svelte` check to have.
+`pnpm run check` stays the thing you run before calling it done.
+
+There is no formatter, and that is deliberate. No prettier, no eslint,
+no `.editorconfig`, no commit hook: `pnpm exec prettier` fails because
+the dependency does not exist, and adding it would rewrite files nobody
+asked to have rewritten. Match the file you are editing.
 
 Area guides: [`stores/`](src/lib/stores/AGENTS.md),
 [`transport/`](src/lib/transport/AGENTS.md), and under
