@@ -21,7 +21,7 @@ import {
   incrementalLex,
   lex,
   parseIncompleteMarkdown,
-} from 'svelte-streamdown';
+} from './index';
 
 interface Token {
   type: string;

@@ -12,7 +12,7 @@ import {
   type Extension,
   type ProvenAppend,
   type useStreamdown,
-} from 'svelte-streamdown';
+} from '../../../markdown';
 import { chatMarkdownTheme } from './streamdownTheme';
 
 type StreamdownContext = ReturnType<typeof useStreamdown>;

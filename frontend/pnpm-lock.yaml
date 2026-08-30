@@ -62,9 +62,6 @@ importers:
       svelte:
         specifier: 5.56.8
         version: 5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b)
-      svelte-streamdown:
-        specifier: workspace:*
-        version: link:vendor/svelte-streamdown
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: 7.2.0
@@ -123,21 +120,6 @@ importers:
       vitest:
         specifier: 4.1.10
         version: 4.1.10(@types/node@25.6.0)(@vitest/browser-playwright@4.1.10)(@vitest/ui@4.1.10)(happy-dom@20.11.1)(vite@8.2.0(@types/node@25.6.0)(jiti@2.7.0))
-
-  vendor/svelte-streamdown:
-    dependencies:
-      katex:
-        specifier: ^0.16.22
-        version: 0.16.45
-      marked:
-        specifier: ^16.2.1
-        version: 16.4.2(patch_hash=af17897d1897ae056bb246a4cedfb41eaf25095f07b76c2d9b5589fd8f9cc119)
-      mermaid:
-        specifier: ^11.15.0
-        version: 11.16.1
-      svelte:
-        specifier: ^5.0.0
-        version: 5.56.8(patch_hash=2d5b9b7a66acbc149a5eca514203f7c3d7b7597611436d23bd3d7b036583306b)
 
 packages:
 

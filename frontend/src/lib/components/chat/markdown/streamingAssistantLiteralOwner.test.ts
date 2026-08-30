@@ -3,7 +3,7 @@ import { render } from '@testing-library/svelte';
 import {
   attachStreamdownLiteralHost,
   type StreamdownLiteralHostHandle,
-} from 'svelte-streamdown';
+} from '../../../markdown';
 import {
   AllowlistedPathCompletionGuard,
   createStreamingAssistantLiteralOwner,

@@ -2,7 +2,7 @@ import {
   createProvenAppend,
   matchesProvenAppend,
   type ProvenAppend,
-} from 'svelte-streamdown';
+} from '../../../markdown';
 
 // Raw-JSON assistant messages rendered as a formatted `json` code block.
 //

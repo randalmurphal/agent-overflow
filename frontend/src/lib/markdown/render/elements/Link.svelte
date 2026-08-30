@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { useStreamdown } from '../context.svelte.js';
-	import { transformUrl } from '../utils/url.js';
+	import { useStreamdown } from '../context.svelte';
+	import { transformUrl } from './url';
 	import Slot from './Slot.svelte';
 	import type { Tokens } from 'marked';
 	import type { Snippet } from 'svelte';

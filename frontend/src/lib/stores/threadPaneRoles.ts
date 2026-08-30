@@ -79,7 +79,7 @@ import type {
 } from './threadRowUiState.svelte';
 import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import type { ThreadPane } from './thread.svelte';
-import type { ProvenAppend } from 'svelte-streamdown';
+import type { ProvenAppend } from '../markdown';
 
 /**
  * Pane identity, the thread it is holding, and the switch-load

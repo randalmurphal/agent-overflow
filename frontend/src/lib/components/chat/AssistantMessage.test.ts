@@ -34,8 +34,8 @@ describe('<AssistantMessage>', () => {
   });
 
   it('renders an unterminated inline marker as literal text during stream', async () => {
-    // The vendored svelte-streamdown (`vendor/svelte-streamdown/`, ledger
-    // entry 4 in its `DIVERGENCE.md`) strips Streamdown's
+    // The renderer in `lib/markdown/` (ledger entry 4 in
+    // `vendor/svelte-streamdown/DIVERGENCE.md`) strips Streamdown's
     // inline-emphasis plugins from `IncompleteMarkdownParser.createDefaultPlugins`,
     // so unterminated `**`, `~~`, backtick, `_`, etc. are no longer
     // speculatively closed mid-stream. The user sees literal `**markdown`

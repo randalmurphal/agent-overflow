@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
-	import { useStreamdown } from '../context.svelte.js';
-	import type { MathToken } from '../marked/index.js';
+	import { useStreamdown } from '../context.svelte';
+	import type { MathToken } from '../../parser/index';
 	import type { KatexOptions } from 'katex';
 	import 'katex/dist/katex.min.css';
 
@@ -31,7 +31,7 @@
 	} = $props();
 
 	const streamdown = useStreamdown();
-	let katexInstance = $state<typeof import('katex') | null>(null);
+	let katexInstance = $state<typeof import('katex').default | null>(null);
 
 	onMount(() => {
 		const resolveAsync = streamdown.registerAsyncResource?.();

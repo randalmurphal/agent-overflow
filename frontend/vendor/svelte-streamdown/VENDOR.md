@@ -1,5 +1,12 @@
 # svelte-streamdown (vendored)
 
+> **The code has moved.** As of W3a the tree lives at
+> `frontend/src/lib/markdown/` as first-party source; only these two
+> documents remain here. Every `dist/...` path below is therefore stale
+> (`dist/marked/*` -> `src/lib/markdown/parser/`, `dist/Elements/*` ->
+> `src/lib/markdown/render/elements/`, the rest -> `render/`). W3b
+> retires both files.
+
 - **Upstream:** https://github.com/beynar/svelte-streamdown
 - **Vendored baseline:** `svelte-streamdown@3.1.2` (npm tarball contents)
 - **Baseline tarball integrity:**

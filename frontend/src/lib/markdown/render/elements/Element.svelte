@@ -3,9 +3,9 @@
 	import Link from './Link.svelte';
 	import Image from './Image.svelte';
 	import Alert from './Alert.svelte';
-	import type { ProvenAppend, StreamdownToken } from '../marked/index.js';
+	import type { ProvenAppend, StreamdownToken } from '../../parser/index';
 	import Slot from './Slot.svelte';
-	import { useStreamdown } from '../context.svelte.js';
+	import { useStreamdown } from '../context.svelte';
 	import FootnoteRef from './FootnoteRef.svelte';
 	let {
 		token,

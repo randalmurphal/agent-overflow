@@ -21,8 +21,8 @@
 //     it consumed.
 import { Lexer } from 'marked';
 import { describe, expect, it } from 'vitest';
-import { lex } from 'svelte-streamdown';
-import { markedAlert } from '../../../vendor/svelte-streamdown/dist/marked/marked-alert.js';
+import { lex } from './index';
+import { markedAlert } from './parser/extensions/alert';
 
 /** Run the extension's tokenizer the way marked's block loop does. */
 const tokenizeBlockquote = (src: string) =>

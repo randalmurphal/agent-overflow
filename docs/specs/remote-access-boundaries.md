@@ -35,7 +35,8 @@ are spec §16 phase 0.
 > wants even with the navigation path closed.
 
 **A. Model-authored content can reach the full method surface.**
-`svelte-streamdown`'s `Link.svelte` renders any href where
+The markdown renderer's `Link.svelte` (then vendored, now
+`src/lib/markdown/render/elements/`) renders any href where
 `isPathRelativeUrl` is true (literally `startsWith('/')`) through a
 branch that **bypasses `transformUrl`**, emitting the raw href with no
 `target`/`rel`. The click delegate's `safeExternalURL` returns null for

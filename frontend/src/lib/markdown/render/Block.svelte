@@ -31,18 +31,18 @@
 </script>
 
 <script lang="ts">
-	import { parseIncompleteMarkdown } from './utils/parse-incomplete-markdown.js';
-	import Element from './Elements/Element.svelte';
+	import { parseIncompleteMarkdown } from '../parser/incompleteMarkdown';
+	import Element from './elements/Element.svelte';
 	import {
 		createIncrementalLexCache,
 		incrementalLex,
 		type IncrementalLexObserver,
 		type ProvenAppend,
 		type StreamdownToken
-	} from './marked/index.js';
+	} from '../parser/index';
 	import LiteralHost from './LiteralHost.svelte';
-	import { useStreamdown } from './context.svelte.js';
-	import { renderStaticTokenHtml } from './static-html.js';
+	import { useStreamdown } from './context.svelte';
+	import { renderStaticTokenHtml } from './staticHtml';
 
 	let {
 		block,

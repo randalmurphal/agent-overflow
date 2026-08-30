@@ -52,7 +52,7 @@
   // actual size change.
 
   import { untrack } from 'svelte';
-  import Mermaid from 'svelte-streamdown/mermaid';
+  import Mermaid from '../../../markdown/render/elements/Mermaid.svelte';
   import type { Tokens } from 'marked';
   import { mermaidPaletteIdentity } from './mermaidTokens';
   import {

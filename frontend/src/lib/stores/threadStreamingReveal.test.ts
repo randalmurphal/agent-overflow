@@ -7,7 +7,7 @@ import { __setSmoothingClockForTest } from './threadPaneShared';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { StreamingAssistantRevealSink } from './streamingAssistantReveal';
 import { getSettings, resetSettingsForTest } from './settings.svelte';
-import { matchesProvenAppend } from 'svelte-streamdown';
+import { matchesProvenAppend } from '../markdown';
 
 class FakeSmoothingClock implements SmoothingClock {
   private nextHandle = 1;

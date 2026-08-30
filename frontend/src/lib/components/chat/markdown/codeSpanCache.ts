@@ -16,7 +16,7 @@ import { HighlightCode } from '../../../stores/bindings';
 import { addToast } from '../../../stores/toast.svelte';
 import { appendFNV1a32, contentKey, fnv1a32 } from '../../../utils/fnv1a';
 import { ensureSyntaxClassNames, type EncodedLine } from '../../../utils/syntaxSpans';
-import { matchesProvenAppend, type ProvenAppend } from 'svelte-streamdown';
+import { matchesProvenAppend, type ProvenAppend } from '../../../markdown';
 
 /** Entry cap. Blocks are small (plain lines carry no runs); 300
  * comfortably covers every visible message's blocks plus the settle

@@ -469,8 +469,8 @@ then gone quiet for `QUIET_MS`, or until `FAILSAFE_MS` elapses. The quiet
 timer is gated on ResizeObserver evidence; do not replace it with a plain
 wall-clock delay.
 
-A consumer that knows its async typesetting (svelte-streamdown's
-shiki/katex/mermaid) has settled can pass `quietContextSignal` to shorten
+A consumer that knows its async typesetting (the markdown renderer's
+katex/mermaid) has settled can pass `quietContextSignal` to shorten
 the quiet window to `SETTLED_QUIET_MS` (~one frame). That shortcut is
 itself gated on **geometry stability**: `quietContextSignal` is blind to
 the engine's estimate→measure cascade, which grows `scrollHeight` over a

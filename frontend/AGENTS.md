@@ -305,11 +305,14 @@ nowhere to keep, so patch hunks are listed below instead. Never edit
 corrupts every project on the machine, and that is why vendored packages
 are `workspace:` rather than `file:`.
 
-`vendor/svelte-streamdown/` is the markdown pipeline. Fix parser bugs
-there and record each in
-[`DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md) (per-entry
-rationale, drop rule, regression test), never duplicating the fix in
-`markdownEnhance.ts` or the host wrappers.
+`vendor/` currently holds no package. The markdown pipeline used to live
+there as `vendor/svelte-streamdown/` and is now first-party source at
+[`src/lib/markdown/`](src/lib/markdown/LICENSE): fix parser bugs there,
+never duplicating the fix in `markdownEnhance.ts` or the host wrappers.
+Its ledger (`vendor/svelte-streamdown/DIVERGENCE.md`) and
+`VENDOR.md` survive at the old path only until the promotion campaign
+retires them ([`markdown-first-party.md`](../docs/specs/markdown-first-party.md)),
+and the `dist/...` paths inside them are stale.
 
 `patches/svelte@5.56.8.patch` has six hunks, each dropping when its suite
 passes against an unpatched release. `svelte-patch-zombie-leak.test.ts`

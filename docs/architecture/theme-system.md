@@ -234,19 +234,21 @@ visual changes** (the rest are exact swaps):
    it at `text-accent-fg` gives it the white label it always intended:
    a visible change, and a fix rather than a regression.
 
-### 4.3 Vendored streamdown keys that reach the screen unthemed
+### 4.3 Streamdown keys that reached the screen unthemed — CLOSED
 
-`chatMarkdownTheme` (`streamdownTheme.ts`) overrides most of the vendor
-base theme, but 9 colored keys leak vendor palette classes
-(`vendor/svelte-streamdown/dist/theme.js`): `alert.note/tip/warning/
-caution/important` (GFM `> [!NOTE]` etc. → `text-blue-600`-family),
-`del.base` (`~~strike~~` → `text-gray-600`, likely in real agent
-prose), `footnoteRef.base`, `descriptionTerm/Detail.base`. Fix is 9
-entries in `streamdownTheme.ts` mapping onto `--info/success/warning/
-error/accent` + `--fg-subtle/hint` + `--card`/`--border-subtle`, with no
-new tokens. (`code.header/skeleton/…` and `inlineCitation.*` verified
-unreachable; vendored `Image.svelte`'s gray chip unreachable with
-`ALLOWED_IMAGE_PREFIXES=['*']`.)
+Historic: `chatMarkdownTheme` (`streamdownTheme.ts`) used to be an
+override layer merged over a vendor base theme, and 9 colored keys leaked
+that base's palette classes: `alert.note/tip/warning/caution/important`
+(GFM `> [!NOTE]` etc. → `text-blue-600`-family), `del.base` (`~~strike~~`
+→ `text-gray-600`, likely in real agent prose), `footnoteRef.base`,
+`descriptionTerm/Detail.base`. All 9 now carry token entries
+(`--info/success/warning/error/accent` + `--fg-subtle/hint` +
+`--card`/`--border-subtle`), no new tokens; the merge and the base theme
+are both gone — `chatMarkdownTheme` is the whole table. (`code.header/
+skeleton/…` and `inlineCitation.*` were verified unreachable and deleted.
+`markdown/render/elements/Image.svelte`'s blocked-image chip, unreachable
+with `ALLOWED_IMAGE_PREFIXES=['*']`, was tokenized when that tree entered
+`src/` and Tailwind's scan.)
 
 ### 4.4 Deliberate literals: keep, and mark as such
 

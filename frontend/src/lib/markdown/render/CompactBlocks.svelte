@@ -1,20 +1,20 @@
 <script lang="ts">
 	import { getAllContexts, mount, onDestroy, onMount, unmount } from 'svelte';
 	import Block from './Block.svelte';
-	import { useStreamdown } from './context.svelte.js';
+	import { useStreamdown } from './context.svelte';
 	import {
 		acquireDocumentInteraction,
 		type DocumentInteraction
-	} from './document-interaction.js';
-	import { lex } from './marked/index.js';
-	import { reconcileParagraphGapsInNodes } from './paragraph-spacing.js';
-	import { renderStaticTokenHtml } from './static-html.js';
+	} from './documentInteraction';
+	import { lex } from '../parser/index';
+	import { reconcileParagraphGapsInNodes } from './paragraphSpacing';
+	import { renderStaticTokenHtml } from './staticHtml';
 
 	type Mounted = ReturnType<typeof mount>;
 	type StaticRecord = {
 		kind: 'static';
 		block: string;
-		nodes: Node[];
+		nodes: ChildNode[];
 	};
 	type ComponentRecord = {
 		kind: 'component';
@@ -107,9 +107,9 @@
 		} catch (error) {
 			reportUnmountFailure(error);
 		}
-		let node: Node | null = record.start;
+		let node: ChildNode | null = record.start;
 		while (node) {
-			const next: Node | null = node.nextSibling;
+			const next: ChildNode | null = node.nextSibling;
 			node.remove();
 			if (node === record.end) break;
 			node = next;
@@ -132,7 +132,7 @@
 		retryCursor = Math.min(retryCursor, length);
 	}
 
-	function staticNodes(html: string): { fragment: DocumentFragment; nodes: Node[] } {
+	function staticNodes(html: string): { fragment: DocumentFragment; nodes: ChildNode[] } {
 		const template = document.createElement('template');
 		template.innerHTML = html;
 		return {
@@ -169,7 +169,7 @@
 					compactStaticHtml: false
 				}
 			});
-			const nodes: Node[] = [];
+			const nodes: ChildNode[] = [];
 			for (let node = start.nextSibling; node && node !== end; node = node.nextSibling) {
 				nodes.push(node);
 			}

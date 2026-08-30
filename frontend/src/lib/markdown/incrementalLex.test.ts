@@ -37,7 +37,7 @@ import {
   parseBlocks,
   parseIncompleteMarkdown,
   updateParseBlockStringMaterialization,
-} from 'svelte-streamdown';
+} from './index';
 
 interface CorpusDoc {
   name: string;

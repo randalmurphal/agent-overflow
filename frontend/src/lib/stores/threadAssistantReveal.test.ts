@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
-import { matchesProvenAppend } from 'svelte-streamdown';
+import { matchesProvenAppend } from '../markdown';
 import { createThreadAssistantReveal } from './threadAssistantReveal.svelte';
 import type {
   StreamingAssistantCommitMode,

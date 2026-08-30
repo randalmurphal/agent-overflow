@@ -10,7 +10,7 @@ import {
   __streamdownCodeHostStatsForTest,
   appendCodeLines,
 } from './markdown/StreamdownCodeHost.svelte';
-import { createProvenAppend } from 'svelte-streamdown';
+import { createProvenAppend } from '../../markdown';
 import {
   lineHashChain,
   resetLiveCodeSeedsForTest,

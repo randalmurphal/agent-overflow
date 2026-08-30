@@ -17,7 +17,7 @@
 //     something to pay per render, and a message with footnotes that
 //     nobody clicks pays nothing at all.
 
-import { lexFootnoteDefinitions, type Footnote } from 'svelte-streamdown';
+import { lexFootnoteDefinitions, type Footnote } from '../../../markdown';
 
 /** The rendered root → the markdown it was rendered from. */
 const sources = new WeakMap<HTMLElement, () => string>();

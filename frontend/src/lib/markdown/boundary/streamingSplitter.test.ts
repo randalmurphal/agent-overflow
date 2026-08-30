@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { splitAtBoundary, type BoundarySplit } from './split';
 import { StreamingBoundarySplitter } from './streamingSplitter';
 import { BoundaryDetector } from './BoundaryDetector';
-import { createProvenAppend } from 'svelte-streamdown';
+import { createProvenAppend } from '../index';
 import { expectedStreamingFenceTexts } from '../../../test/helpers/streamingFenceOracle';
 
 function expectFenceCompletePrefix(split: BoundarySplit): void {

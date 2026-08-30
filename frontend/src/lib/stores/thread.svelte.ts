@@ -1,5 +1,5 @@
 import { tick } from 'svelte';
-import { matchesProvenAppend, type ProvenAppend } from 'svelte-streamdown';
+import { matchesProvenAppend, type ProvenAppend } from '../markdown';
 import type { Item, Project, Thread } from '../types/models';
 import { asProviderID } from '../types/providers';
 import type {

@@ -1,0 +1,45 @@
+The markdown renderer in this directory began as the svelte-streamdown
+package (https://github.com/beynar/svelte-streamdown), baseline 3.1.2,
+licensed below. `render/` and `parser/extensions/` descend from it, heavily
+modified: dead features removed, the theme flattened into the app's token
+layer, and the parser reworked for incremental streaming.
+
+Original to agent-overflow, sharing no upstream lineage: the incremental
+lexing and block-parsing path in `parser/index.ts` (`parseBlocks`,
+`incrementalLex`, the `ProvenAppend` brand and the trailing-block descent
+records), `render/literalHost.ts` + `LiteralHost.svelte`,
+`render/CompactBlocks.svelte`, `render/staticHtml.ts`,
+`render/documentInteraction.ts`, `render/paragraphSpacing.ts`, and every
+test beside this tree.
+
+`boundary/` carries its own LICENSE (incremark) and is unrelated to the
+notice below.
+
+The parser still calls into the `marked` package, which is an external
+dependency at this point rather than code in this directory; when that
+lexer path is absorbed here (campaign wave W4) its MIT notice — MarkedJS
+contributors 2018-2025, Christopher Jeffrey 2011-2018 — is appended below.
+
+----------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2024 Arnaud Derbey
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

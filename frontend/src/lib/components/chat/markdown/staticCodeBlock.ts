@@ -6,7 +6,7 @@ import { spanSegments, type EncodedLine } from '../../../utils/syntaxSpans';
 import { getCachedBlockSpans } from './codeSpanCache';
 
 type StreamdownContext = ReturnType<
-  (typeof import('svelte-streamdown'))['useStreamdown']
+  (typeof import('../../../markdown'))['useStreamdown']
 >;
 
 type CompletedCodeBlockRenderer = {

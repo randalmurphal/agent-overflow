@@ -1,5 +1,12 @@
 # svelte-streamdown divergence ledger
 
+> **The code has moved.** As of W3a the tree lives at
+> `frontend/src/lib/markdown/` as first-party source; only these two
+> documents remain here. Every `dist/...` path below is therefore stale
+> (`dist/marked/*` -> `src/lib/markdown/parser/`, `dist/Elements/*` ->
+> `src/lib/markdown/render/elements/`, the rest -> `render/`). W3b
+> retires both files.
+
 Every entry below is permanent in-tree divergence from upstream 3.1.2, and
 this file is the only record of it. Wiring, build-config couplings and the
 upstream-diff recipe are in [`VENDOR.md`](VENDOR.md); the decision rule for

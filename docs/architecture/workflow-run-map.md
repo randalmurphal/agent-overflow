@@ -972,7 +972,7 @@ called out for review as riders):
    surface entirely.
 
 Rider found during integration, outside this spec's surface: the
-vendored `svelte-streamdown` Mermaid component shipped
+vendored markdown renderer's Mermaid component shipped
 `:global([data-expanded='true'])`, an UNSCOPED app-wide rule that pinned
 any element carrying that ordinary attribute `position: fixed` at
 `z-index: 2147483647`. The map's expanded wave row hit it and covered

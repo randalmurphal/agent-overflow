@@ -1,6 +1,6 @@
-import type { StreamdownContext } from './context.svelte.js';
-import type { StreamdownToken } from './marked/index.js';
-import { transformUrl } from './utils/url.js';
+import type { StreamdownContext } from './context.svelte';
+import type { StreamdownToken } from '../parser/index';
+import { transformUrl } from './elements/url';
 
 function escapeHtml(value: unknown): string {
 	return String(value ?? '')
@@ -64,7 +64,7 @@ export function renderStaticTokenHtml(
 					const tag = `h${token.depth}`;
 					output.push(
 						`<${tag} data-streamdown-heading-${token.depth}="${dataId}"` +
-						attribute('class', streamdown.theme[tag as keyof typeof streamdown.theme].base) +
+						attribute('class', streamdown.theme[tag as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'].base) +
 						'>',
 					);
 					if (!render(children)) return false;

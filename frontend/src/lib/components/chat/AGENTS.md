@@ -176,12 +176,15 @@ subscribe to every chat tick. Inline diff affordances route into
 
 ## Markdown rendering
 
-`ChatMarkdown.svelte` mounts `svelte-streamdown`, VENDORED at
-`frontend/vendor/svelte-streamdown`, with host wrappers under `markdown/`
-for Code, Mermaid and Math. Fix parser bugs in the vendored tree, record
-each in its
-[`DIVERGENCE.md`](../../../../vendor/svelte-streamdown/DIVERGENCE.md), and
-never duplicate the fix in `markdownEnhance.ts` or a host wrapper.
+`ChatMarkdown.svelte` mounts the renderer from
+[`lib/markdown/`](../../markdown/LICENSE) — first-party source, imported
+through its `index.ts` barrel and nothing deeper — with host wrappers
+under `markdown/` for Code, Mermaid and Math. Fix parser bugs in that
+tree, never duplicating the fix in `markdownEnhance.ts` or a host
+wrapper. It began as the vendored `svelte-streamdown` package, whose
+ledger still sits at
+[`DIVERGENCE.md`](../../../../vendor/svelte-streamdown/DIVERGENCE.md)
+with stale `dist/...` paths until the promotion campaign retires it.
 
 Mermaid and Math stamp their source on `data-mermaid-source` and
 `data-math-source`, keeping markdown copy and diagram actions working.

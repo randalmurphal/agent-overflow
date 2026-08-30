@@ -23,7 +23,7 @@ const MERMAID_SOURCE = readFileSync(
   // invoked from anywhere but `frontend/`.
   resolve(
     dirname(fileURLToPath(import.meta.url)),
-    '../../../../../vendor/svelte-streamdown/dist/Elements/Mermaid.svelte',
+    '../../../markdown/render/elements/Mermaid.svelte',
   ),
   'utf8',
 );

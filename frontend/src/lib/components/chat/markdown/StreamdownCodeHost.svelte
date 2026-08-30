@@ -119,7 +119,7 @@
     useStreamdown,
     type DocumentInteraction,
     type ProvenAppend,
-  } from 'svelte-streamdown';
+  } from '../../../markdown';
   import type { Tokens } from 'marked';
   import { onDestroy, onMount, untrack } from 'svelte';
   import CopyButton from '../../primitives/CopyButton.svelte';

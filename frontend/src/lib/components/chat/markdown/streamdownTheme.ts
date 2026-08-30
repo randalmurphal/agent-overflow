@@ -29,7 +29,7 @@
 // omits renders `class={undefined}`, and an entry nothing reads is a dead
 // Tailwind rule in the bundle.
 
-import type { Theme } from 'svelte-streamdown';
+import type { Theme } from '../../../markdown';
 
 // `md-blk` marks every element that can be a DIRECT child of the
 // .md-committed / .md-volatile wrapper — the app.css edge-margin resets

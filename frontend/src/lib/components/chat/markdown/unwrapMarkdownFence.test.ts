@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createProvenAppend } from 'svelte-streamdown';
+import { createProvenAppend } from '../../../markdown';
 import { MarkdownFenceUnwrapper, unwrapMarkdownFence } from './unwrapMarkdownFence';
 
 describe('unwrapMarkdownFence', () => {

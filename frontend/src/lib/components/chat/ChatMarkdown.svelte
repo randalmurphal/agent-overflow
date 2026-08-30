@@ -33,7 +33,7 @@
   // target keeps the structure this component renders.
 
   import { getContext } from 'svelte';
-  import { Streamdown, type ProvenAppend } from 'svelte-streamdown';
+  import { Streamdown, type ProvenAppend } from '../../markdown';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,

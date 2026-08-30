@@ -1,7 +1,7 @@
 import {
   streamdownLiteralHostOf,
   type StreamdownLiteralHost,
-} from 'svelte-streamdown';
+} from '../../../markdown';
 import type { PathRef } from '../../../types/models';
 import type {
   StreamingAssistantParserCheckpoint,

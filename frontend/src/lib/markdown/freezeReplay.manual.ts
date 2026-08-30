@@ -42,22 +42,22 @@ import {
   createParseBlocksCache,
   parseIncompleteMarkdown,
   lex,
-} from 'svelte-streamdown';
+} from './index';
 // Importing the package's `marked/index.js` FIRST applies its patched
 // `Lexer.rules` overrides (fixed del, no mailto autolink, split GFM text run).
-import '../../../vendor/svelte-streamdown/dist/marked/index.js';
-import { markedAlert } from '../../../vendor/svelte-streamdown/dist/marked/marked-alert.js';
-import { markedFootnote } from '../../../vendor/svelte-streamdown/dist/marked/marked-footnotes.js';
-import { markedMath } from '../../../vendor/svelte-streamdown/dist/marked/marked-math.js';
-import { markedSub, markedSup } from '../../../vendor/svelte-streamdown/dist/marked/marked-subsup.js';
-import { markedList } from '../../../vendor/svelte-streamdown/dist/marked/marked-list.js';
-import { markedBr } from '../../../vendor/svelte-streamdown/dist/marked/marked-br.js';
-import { markedHr } from '../../../vendor/svelte-streamdown/dist/marked/marked-hr.js';
-import { markedTable } from '../../../vendor/svelte-streamdown/dist/marked/marked-table.js';
-import { markedDl } from '../../../vendor/svelte-streamdown/dist/marked/marked-dl.js';
-import { markedAlign } from '../../../vendor/svelte-streamdown/dist/marked/marked-align.js';
-import { markedCitations } from '../../../vendor/svelte-streamdown/dist/marked/marked-citations.js';
-import { markedMdx } from '../../../vendor/svelte-streamdown/dist/marked/marked-mdx.js';
+import './parser/index';
+import { markedAlert } from './parser/extensions/alert';
+import { markedFootnote } from './parser/extensions/footnotes';
+import { markedMath } from './parser/extensions/math';
+import { markedSub, markedSup } from './parser/extensions/subsup';
+import { markedList } from './parser/extensions/list';
+import { markedBr } from './parser/extensions/br';
+import { markedHr } from './parser/extensions/hr';
+import { markedTable } from './parser/extensions/table';
+import { markedDl } from './parser/extensions/dl';
+import { markedAlign } from './parser/extensions/align';
+import { markedCitations } from './parser/extensions/citations';
+import { markedMdx } from './parser/extensions/mdx';
 import AnsiText from '../components/chat/AnsiText.svelte';
 import {
   ChatMarkdownPipeline,

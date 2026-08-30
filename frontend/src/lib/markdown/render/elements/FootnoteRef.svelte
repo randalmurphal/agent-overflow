@@ -20,8 +20,8 @@
 	// `aria-haspopup` is unconditional for the same reason the label is the
 	// only payload: whether a definition exists is not knowable here. The
 	// host stamps `aria-expanded` while its popup is open.
-	import { useStreamdown } from '../context.svelte.js';
-	import type { FootnoteRef } from '../marked/marked-footnotes.js';
+	import { useStreamdown } from '../context.svelte';
+	import type { FootnoteRef } from '../../parser/extensions/footnotes';
 
 	const streamdown = useStreamdown();
 

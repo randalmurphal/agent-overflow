@@ -8,7 +8,7 @@ import {
   updateParseBlockStringMaterialization,
   type ParseBlocksCache,
   type ParseBlocksLexPath,
-} from 'svelte-streamdown';
+} from './index';
 import { StreamingBoundarySplitter } from './boundary';
 import { wordUnitOffsets } from './freezeReplayHarness';
 

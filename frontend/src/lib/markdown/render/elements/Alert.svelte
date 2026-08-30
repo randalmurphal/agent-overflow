@@ -13,9 +13,9 @@
 	/><path d="M12 17h.01" />`
 	};
 
-	import { useStreamdown } from '../context.svelte.js';
+	import { useStreamdown } from '../context.svelte';
 	import Slot from './Slot.svelte';
-	import type { AlertToken } from '../marked/index.js';
+	import type { AlertToken } from '../../parser/index';
 	import type { Snippet } from 'svelte';
 
 	const streamdown = useStreamdown();

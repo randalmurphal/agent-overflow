@@ -2,17 +2,6 @@
 @import "./styles/tokens.css";
 @import "./styles/syntax.css";
 
-/* `vendor/` holds in-repo third-party packages (svelte-streamdown — see
-   its VENDOR.md). They were `node_modules` installs until they were
-   vendored, so Tailwind's automatic content detection never saw them.
-   The markdown class table is the app's own
-   (`chat/markdown/streamdownTheme.ts`, scanned as normal `src/` source);
-   what is left inside `vendor/` is stray literals on branches this host
-   never renders, and generating CSS for those would both bloat the
-   bundle and start applying rules to markup that has rendered unstyled
-   since day one. Vendoring must not change what the cascade contains. */
-@source not "../vendor";
-
 :root {
   --surface-0: oklch(0.145 0.014 285.82);
   --surface-1: oklch(0.178 0.014 285.82);

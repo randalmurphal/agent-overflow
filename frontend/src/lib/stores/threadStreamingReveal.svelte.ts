@@ -23,7 +23,7 @@ import {
   type StreamingAssistantRevealSink,
 } from './streamingAssistantReveal';
 import { createThreadAssistantReveal } from './threadAssistantReveal.svelte';
-import type { ProvenAppend } from 'svelte-streamdown';
+import type { ProvenAppend } from '../markdown';
 
 /**
  * THE REVEAL INVARIANT (see `stores/AGENTS.md` § The reveal invariant).

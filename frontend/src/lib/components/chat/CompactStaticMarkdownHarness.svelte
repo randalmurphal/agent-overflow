@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Streamdown } from 'svelte-streamdown';
+  import { Streamdown } from '../../markdown';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';
 
   let { source }: { source: string } = $props();

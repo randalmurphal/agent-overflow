@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Block from './Block.svelte';
 	import CompactBlocks from './CompactBlocks.svelte';
-	import { StreamdownContext, type StreamdownProps } from './context.svelte.js';
+	import { StreamdownContext, type StreamdownProps } from './context.svelte';
 	import {
 		lex,
 		parseBlocks,
@@ -10,10 +10,10 @@
 		type IncrementalLexObserver,
 		type IncrementalLexPath,
 		updateParseBlockStringMaterialization
-	} from './marked/index.js';
-	import { renderStaticTokenHtml } from './static-html.js';
-	import { reconcileParagraphGapsInRoot } from './paragraph-spacing.js';
-	import { onMount } from 'svelte';
+	} from '../parser/index';
+	import { renderStaticTokenHtml } from './staticHtml';
+	import { reconcileParagraphGapsInRoot } from './paragraphSpacing';
+	import { onMount, untrack } from 'svelte';
 
 	let {
 		content = '',
@@ -64,7 +64,10 @@
 		inputCodeUnits: number;
 		byPath: Record<IncrementalLexPath, { calls: number; inputCodeUnits: number }>;
 	};
-	const incrementalLexMetrics: IncrementalLexMetrics | undefined = diagnostics
+	// Allocated once, at init, and deliberately not reactive: the counters
+	// accumulate for the component's whole life, so re-creating them when
+	// `diagnostics` flips would zero the history. `untrack` states that.
+	const incrementalLexMetrics: IncrementalLexMetrics | undefined = untrack(() => diagnostics)
 		? {
 			calls: 0,
 			inputCodeUnits: 0,
@@ -191,13 +194,17 @@
 	// allocate and diff a copy of every sealed block on each tail update. The
 	// fresh state wrapper is the reactive publication; its `values` array stays
 	// stable while parseBlocks updates only the last blocks in place.
+	// The static branch renders `content` whole and nothing reads `values` on
+	// that path; it publishes this shared empty array rather than give the same
+	// field two shapes.
+	const NO_BLOCKS: string[] = [];
 	const blocksState = $derived.by(() => {
 		if (isStatic) {
 			isolatedBlockSource = null;
 			isolatedBlockAppendSafe = false;
 			lastDocumentBlocksState = undefined;
 			lastEvaluationPath = 'static';
-			return { values: content, lastBlockAppend: undefined, path: 'static' };
+			return { values: NO_BLOCKS, lastBlockAppend: undefined, path: 'static' };
 		}
 		const appendMatchesIsolatedBlock = isolatedBlockSource !== null &&
 			matchesProvenAppend(contentAppend, isolatedBlockSource, content);

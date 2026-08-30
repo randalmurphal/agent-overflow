@@ -7,20 +7,20 @@ import {
   parseBlocks,
   type Extension,
   type ParseBlocksCache,
-} from 'svelte-streamdown';
+} from './index';
 import {
   markedListBlock,
   parseListSource,
-} from '../../../vendor/svelte-streamdown/dist/marked/marked-list.js';
-import { parseBlockquoteSource } from '../../../vendor/svelte-streamdown/dist/marked/marked-blockquote-source.js';
-import { markedDl } from '../../../vendor/svelte-streamdown/dist/marked/marked-dl.js';
-import { markedFootnote } from '../../../vendor/svelte-streamdown/dist/marked/marked-footnotes.js';
-import { markedBr } from '../../../vendor/svelte-streamdown/dist/marked/marked-br.js';
-import { markedCitations } from '../../../vendor/svelte-streamdown/dist/marked/marked-citations.js';
-import { markedMath } from '../../../vendor/svelte-streamdown/dist/marked/marked-math.js';
-import { parseMdxSource } from '../../../vendor/svelte-streamdown/dist/marked/marked-mdx.js';
-import { markedSub, markedSup } from '../../../vendor/svelte-streamdown/dist/marked/marked-subsup.js';
-import { markedTableBlock } from '../../../vendor/svelte-streamdown/dist/marked/marked-table-source.js';
+} from './parser/extensions/list';
+import { parseBlockquoteSource } from './parser/extensions/blockquoteSource';
+import { markedDl } from './parser/extensions/dl';
+import { markedFootnote } from './parser/extensions/footnotes';
+import { markedBr } from './parser/extensions/br';
+import { markedCitations } from './parser/extensions/citations';
+import { markedMath } from './parser/extensions/math';
+import { parseMdxSource } from './parser/extensions/mdx';
+import { markedSub, markedSup } from './parser/extensions/subsup';
+import { markedTableBlock } from './parser/extensions/tableSource';
 
 type ParseBlocksPath = ParseBlocksCache['lastPath'];
 

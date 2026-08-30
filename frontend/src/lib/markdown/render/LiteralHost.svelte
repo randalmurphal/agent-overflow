@@ -6,7 +6,7 @@
 	import {
 		attachStreamdownLiteralHost,
 		type StreamdownLiteralHostHandle
-	} from './literal-host.js';
+	} from './literalHost';
 
 	let { text, token }: { text: string; token: unknown } = $props();
 

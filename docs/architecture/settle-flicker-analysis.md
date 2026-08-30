@@ -780,5 +780,5 @@ snapshot:
 Do **not** add heavier instrumentation while the bug is dormant.
 
 Fix layer (once the element is named), per `frontend/CLAUDE.md`: a parser-height
-blip → the `svelte-streamdown` patch; a host/CSS transient → the host wrapper; a
+blip → the markdown parser (`frontend/src/lib/markdown/parser/`); a host/CSS transient → the host wrapper; a
 virtua remeasure → the row geometry / virtua integration.

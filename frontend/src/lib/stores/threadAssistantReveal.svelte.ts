@@ -3,7 +3,7 @@ import {
   createProvenAppend,
   matchesProvenAppend,
   type ProvenAppend,
-} from 'svelte-streamdown';
+} from '../markdown';
 import {
   StreamingAssistantRevealRouter,
   type StreamingAssistantCommitMode,

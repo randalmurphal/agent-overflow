@@ -38,7 +38,7 @@
 // and integer `start` / `colspan` / `rowspan`. No `style`, no event
 // handlers, no `title`, no `img`.
 
-import { lex } from 'svelte-streamdown';
+import { lex } from '../markdown';
 
 /**
  * The shape of the marked tokens this serializer reads.

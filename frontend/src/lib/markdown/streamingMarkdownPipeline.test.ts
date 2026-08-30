@@ -10,7 +10,7 @@ import {
   type ParseBlocksCache,
   type ProvenAppend,
   type StreamdownToken,
-} from 'svelte-streamdown';
+} from './index';
 import { StreamingBoundarySplitter } from './boundary';
 import { expectedStreamingFenceTexts } from '../../test/helpers/streamingFenceOracle';
 

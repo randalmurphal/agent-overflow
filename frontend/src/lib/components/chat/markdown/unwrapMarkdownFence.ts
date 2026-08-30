@@ -2,7 +2,7 @@ import {
   createProvenAppend,
   matchesProvenAppend,
   type ProvenAppend,
-} from 'svelte-streamdown';
+} from '../../../markdown';
 
 const OPENER_RE = /^ {0,3}(`{3,})(markdown|md)\s*$/i;
 // Sticky twin of OPENER_RE for the fast path below: anchored at the

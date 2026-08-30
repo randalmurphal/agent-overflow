@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { useStreamdown } from '../context.svelte.js';
-	import { transformUrl } from '../utils/url.js';
+	import { useStreamdown } from '../context.svelte';
+	import { transformUrl } from './url';
 	import Slot from './Slot.svelte';
 	import type { Tokens } from 'marked';
 	import type { Snippet } from 'svelte';
@@ -54,7 +54,7 @@
 	{:else}
 		<span
 			data-streamdown-image-blocked={id}
-			class="inline-block rounded bg-gray-200 px-3 py-1 text-sm text-gray-600 dark:bg-gray-700 dark:text-gray-400"
+			class="inline-block rounded bg-surface-2 px-3 py-1 text-sm text-secondary"
 			title={`Blocked URL: ${token.href}`}
 		>
 			[Image blocked: {token.text || 'No description'}]

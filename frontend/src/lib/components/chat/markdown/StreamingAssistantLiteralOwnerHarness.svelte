@@ -3,7 +3,7 @@
   import {
     attachStreamdownLiteralHost,
     type StreamdownLiteralHostHandle,
-  } from 'svelte-streamdown';
+  } from '../../../markdown';
   import { createStreamingAssistantLiteralOwner } from './streamingAssistantLiteralOwner';
   import type { StreamingAssistantParserCheckpoint } from '../../../stores/streamingAssistantReveal';
 

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SRC_ROOT, walkSources } from '../../../../test/sourceScan';
 import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
@@ -26,9 +26,9 @@ import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
 
 /** Every file that can read `streamdown.theme.*`. */
 const RENDER_PATH_ROOTS = [
-  // The vendored renderer (Streamdown, Block, CompactBlocks, Element,
-  // Elements/*, static-html).
-  resolve(SRC_ROOT, '..', 'vendor', 'svelte-streamdown', 'dist'),
+  // The renderer (Streamdown, Block, CompactBlocks, Element,
+  // elements/*, staticHtml).
+  join(SRC_ROOT, 'lib', 'markdown', 'render'),
   // The app's own hosts, which render code-block DOM themselves and read the
   // same table (`StreamdownCodeHost.svelte`, `staticCodeBlock.ts`).
   join(SRC_ROOT, 'lib', 'components', 'chat', 'markdown'),
@@ -63,17 +63,17 @@ const DYNAMIC_READS: Array<{ what: string; probe: string; slots: string[] }> = [
     slots: ['h1.base', 'h2.base', 'h3.base', 'h4.base', 'h5.base', 'h6.base'],
   },
   {
-    what: "static-html.ts's heading branch",
-    probe: 'streamdown.theme[tag as keyof typeof streamdown.theme].base',
+    what: "staticHtml.ts's heading branch",
+    probe: "streamdown.theme[tag as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'].base",
     slots: ['h1.base', 'h2.base', 'h3.base', 'h4.base', 'h5.base', 'h6.base'],
   },
   {
-    what: "static-html.ts's list branch",
+    what: "staticHtml.ts's list branch",
     probe: 'streamdown.theme[tag].base',
     slots: ['ul.base', 'ol.base'],
   },
   {
-    what: "static-html.ts's table-section, cell, inline and description branches",
+    what: "staticHtml.ts's table-section, cell, inline and description branches",
     probe: 'streamdown.theme[token.type].base',
     slots: [
       'thead.base',
@@ -135,8 +135,8 @@ describe('chatMarkdownTheme completeness', () => {
   it('scans a render path it could actually read', () => {
     // A scan that found nothing would pass every assertion below forever.
     expect(SOURCES.length).toBeGreaterThan(20);
-    expect(SOURCES.some((f) => f.path.endsWith('/static-html.ts'))).toBe(true);
-    expect(SOURCES.some((f) => f.path.endsWith('/Elements/Element.svelte'))).toBe(true);
+    expect(SOURCES.some((f) => f.path.endsWith('/staticHtml.ts'))).toBe(true);
+    expect(SOURCES.some((f) => f.path.endsWith('/elements/Element.svelte'))).toBe(true);
     expect(SOURCES.some((f) => f.path.endsWith('/StreamdownCodeHost.svelte'))).toBe(true);
     expect(READ.size).toBeGreaterThan(35);
   });

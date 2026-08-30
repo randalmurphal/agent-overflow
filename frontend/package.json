@@ -34,8 +34,7 @@
     "katex": "0.16.45",
     "marked": "16.4.2",
     "mermaid": "11.16.1",
-    "svelte": "5.56.8",
-    "svelte-streamdown": "workspace:*"
+    "svelte": "5.56.8"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.2.0",

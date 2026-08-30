@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { useStreamdown } from '../context.svelte.js';
+	import { useStreamdown } from '../context.svelte';
 	import type { Tokens } from 'marked';
 	import type { MermaidConfig } from 'mermaid';
-	import { fullscreenIcon } from './icons.js';
+	import { fullscreenIcon } from './icons';
 
 	// Module-level SVG cache. `mermaid.render` is expensive (hundreds of
 	// ms for non-trivial diagrams) and its output is deterministic for a
@@ -260,7 +260,11 @@
 	{#if mermaid}
 		<div
 			class={streamdown.theme.mermaid.base}
-			{@attach (node) => renderMermaid(token.text, node)}
+			{@attach (node) => {
+				// An attachment returns a cleanup or nothing; the render is
+				// fire-and-forget, exactly as it has always been.
+				void renderMermaid(token.text, node);
+			}}
 		>
 			<div class={streamdown.theme.mermaid.buttons}>
 				<!--

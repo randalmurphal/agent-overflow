@@ -30,7 +30,7 @@
   // future cleanup of the legacy CSS doesn't get a surprise.
   //
   import { untrack } from 'svelte';
-  import Math from 'svelte-streamdown/math';
+  import Math from '../../../markdown/render/elements/Math.svelte';
   import { readMathRenderedHeight, writeMathRenderedHeight } from './renderedHeightCache';
   import { createRenderedHeightRecorder } from './renderedHeightMeasurement';
 
