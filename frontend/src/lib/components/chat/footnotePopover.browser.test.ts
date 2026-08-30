@@ -147,3 +147,100 @@ describe('footnote popup geometry', () => {
     expect(chip.getAttribute('aria-expanded')).toBe('true');
   });
 });
+
+// The hover contract: resting the pointer on a chip opens the popup after
+// a short delay; leaving both the chip and the popup closes it after a
+// grace window (long enough to travel from one into the other); a click
+// PINS it, after which pointer-leave no longer closes it. Real timers —
+// the delays are 200/300ms and the assertions are arrival/departure, not
+// slot alignment.
+
+function pointerOver(el: Element, relatedTarget: Element | null = null): void {
+  el.dispatchEvent(
+    new PointerEvent('pointerover', { bubbles: true, pointerType: 'mouse', relatedTarget }),
+  );
+}
+
+function pointerOut(el: Element, relatedTarget: Element | null = null): void {
+  el.dispatchEvent(
+    new PointerEvent('pointerout', { bubbles: true, pointerType: 'mouse', relatedTarget }),
+  );
+}
+
+async function hoverFixture(): Promise<HTMLElement> {
+  render(FootnotePopoverHost);
+  const scope = containmentScope();
+  const { container } = render(ChatMarkdown, {
+    props: {
+      source: 'A claim[^note] worth checking.\n\n[^note]: The supporting body.',
+    },
+    target: scope,
+  });
+  return waitFor(() => {
+    const found = container.querySelector<HTMLElement>(
+      '[data-streamdown-footnote-ref]',
+    );
+    expect(found).not.toBeNull();
+    return found!;
+  });
+}
+
+const openPopup = (): HTMLElement | null =>
+  document.body.querySelector<HTMLElement>('[data-footnote-popover]');
+
+describe('footnote popup hover', () => {
+  it('opens on hover after the delay, survives travel into the popup, closes on leave', async () => {
+    const chip = await hoverFixture();
+
+    pointerOver(chip);
+    // The open is delayed — nothing appears synchronously.
+    expect(openPopup()).toBeNull();
+    const popup = await waitFor(() => {
+      const found = openPopup();
+      expect(found).not.toBeNull();
+      return found!;
+    });
+
+    // Travel chip → popup: the departure schedules the grace close and the
+    // arrival cancels it.
+    pointerOut(chip, document.body);
+    pointerOver(popup);
+    await new Promise((r) => setTimeout(r, 450));
+    expect(openPopup()).not.toBeNull();
+
+    // Leaving the popup for unrelated ground closes after the grace.
+    pointerOut(popup, document.body);
+    await waitFor(() => {
+      expect(openPopup()).toBeNull();
+    });
+    expect(chip.getAttribute('aria-expanded')).toBeNull();
+  });
+
+  it('a leave before the open delay cancels the pending open', async () => {
+    const chip = await hoverFixture();
+    pointerOver(chip);
+    pointerOut(chip, document.body);
+    await new Promise((r) => setTimeout(r, 350));
+    expect(openPopup()).toBeNull();
+  });
+
+  it('a click pins a hover-opened popup so pointer-leave no longer closes it', async () => {
+    const chip = await hoverFixture();
+    pointerOver(chip);
+    await waitFor(() => {
+      expect(openPopup()).not.toBeNull();
+    });
+
+    chip.click(); // pin, not toggle-close
+    expect(openPopup()).not.toBeNull();
+
+    pointerOut(chip, document.body);
+    await new Promise((r) => setTimeout(r, 450));
+    expect(openPopup()).not.toBeNull();
+
+    chip.click(); // the pinned popup's chip toggle still closes
+    await waitFor(() => {
+      expect(openPopup()).toBeNull();
+    });
+  });
+});

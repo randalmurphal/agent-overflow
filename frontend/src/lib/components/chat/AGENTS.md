@@ -194,9 +194,10 @@ body` definition renders nothing, and per-block lexing leaves the ref
 token's back-reference empty. The chip publishes
 `data-footnote-label`, `markdown/footnoteDefinitions.ts` resolves it
 against the source each `.markdown-body` registers, and
-`FootnotePopoverHost.svelte` — one app-level instance, one delegated
-click, one `primitives/Popover.svelte` — shows the body. The lookup runs
-on the click and never during render.
+`FootnotePopoverHost.svelte` — one app-level instance, delegated
+click and hover listeners, one `primitives/Popover.svelte` — shows the
+body. Hover previews, click pins. The lookup runs at open time and
+never during render.
 
 The direct assistant prose reveal
 (`markdown/streamingAssistantLiteralOwner.ts`) is the SINGLE owner of the

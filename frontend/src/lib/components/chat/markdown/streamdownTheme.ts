@@ -191,9 +191,9 @@ export const chatMarkdownTheme: Theme = {
   // prose, so it takes the app's smallest named text step instead of
   // inheriting the body size — which also pins its line box (`text-xs`
   // carries its own line-height) so a chip cannot grow the 1.65 prose line
-  // it sits in. Clicking it opens the definition body: the chip publishes
-  // its label on `data-footnote-label` and `chat/FootnotePopoverHost.svelte`
-  // resolves and shows the definition.
+  // it sits in. Hovering it previews the definition body and clicking pins
+  // it: the chip publishes its label on `data-footnote-label` and
+  // `chat/FootnotePopoverHost.svelte` resolves and shows the definition.
   // A footnote reference presents like one: superscript, link-colored,
   // with a hover affordance — the muted inline pill it replaced read as
   // plain prose and nothing said "clickable" (2026-08-30).

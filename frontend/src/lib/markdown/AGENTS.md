@@ -159,7 +159,8 @@ that says it no longer pays.
   popup, no state. `lexFootnoteDefinitions` exports one whole-document
   lex; `chat/markdown/footnoteDefinitions.ts` owns the registry and
   memo, and `chat/FootnotePopoverHost.svelte` renders the body on one
-  app-level popup. The lex is paid on the click, never during render.
+  app-level popup (hover previews, click pins). The lex is paid at
+  open time, never during render.
 
 `data-mermaid-source` and `data-math-source` follow the same pattern for
 values only the parser has. Code uses a source-free `data-code-source=""`
