@@ -492,6 +492,22 @@ frequently cannot unlock without a login session, so the signing key,
 provider credentials, and tsnet state need a defined at-rest strategy
 for unattended boot.
 
+**Session lifecycle on an unattended host.** Today `ArchiveThread` is
+a DB flag only — it never closes the thread's provider session, and
+the idle reaper deliberately skips sessions with running background
+tool calls. Locally, app shutdown eventually reaps what that leaves
+(provider processes are group-killed); on a headless host nothing
+ever does, so an archived thread's dev server and its ~hundreds-of-MB
+provider process burn forever. Required (t3code fixed the same class,
+#5774): archive stops the session — the group kill cascades to dev
+servers and monitors — with a stop-time re-check that the thread was
+not re-engaged in the gap. The reaper's keep-alive-while-working
+choice stays (killing quiet-but-working sessions is rejected
+doctrine); what an unattended host adds is **visibility and control,
+not timeouts**: the running-background-work inventory (which thread,
+what, since when) rides the existing tray machinery over the wire,
+with per-task and per-thread stop controls from any attached client.
+
 Update is a genuine availability requirement once the machine is
 unattended, and a supply-chain risk if remotely triggerable. Resolution:
 download/apply remain `scope: host`; a **remote trigger** exists but
@@ -981,7 +997,9 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    RPC-method and event-channel columns join in phase 3 when the scope
    table generates).
 
-1. **Sync sweep + seams.** Emits, channels, gap entries, race handling,
+1. **Sync sweep + seams.** Archive-closes-session fix (§7 — a
+   standing leak today, acute once hosts are unattended). Emits,
+   channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
    backend UUID, hello frame, multi-backend seams (§10).
 2. **Identity core.** Genuinely N-user from the start, with no implicit
