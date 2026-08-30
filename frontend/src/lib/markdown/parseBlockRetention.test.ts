@@ -16,13 +16,19 @@ const markedModuleUrl = pathToFileURL(
 // parser's internal imports are extensionless (`moduleResolution: bundler`),
 // so the subprocess registers a resolve hook that retries with `.ts`, then
 // with `/index.ts`. Nothing else in the app loads this tree outside Vite.
+//
+// The retry is unconditional for a relative specifier: a "does it already
+// have an extension" test on the string cannot tell `./x.ts` from module
+// names that carry a dot (`./parseBlocks.cache`), and guessing wrong makes
+// the subprocess die with ERR_MODULE_NOT_FOUND in a test about heap bytes.
 const workload = `
 import nodeModule from 'node:module';
 nodeModule.registerHooks({
   resolve(specifier, context, next) {
-    if (specifier.startsWith('.') && !/\\.[a-z]+$/.test(specifier)) {
-      try { return next(specifier + '.ts', context); }
-      catch { return next(specifier + '/index.ts', context); }
+    if (specifier.startsWith('.')) {
+      try { return next(specifier + '.ts', context); } catch {}
+      try { return next(specifier, context); } catch {}
+      return next(specifier + '/index.ts', context);
     }
     return next(specifier, context);
   },
