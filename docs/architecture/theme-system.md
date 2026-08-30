@@ -292,9 +292,9 @@ recoloring, breaks under token renames).
   `app_workflow_definitions_watcher.go` (250ms debounce, and its
   root-watch filter already deliberately ignores settings.json's atomic
   renames, so a theme watcher must not feed back on its own writes).
-- Adding a flat setting costs 4 sync points today (Go struct, Go
-  defaults, TS interface, TS `DEFAULT_SETTINGS`) + allow-list + section
-  UI. Another argument for one `theme` reference + separate theme files
+- Adding a flat setting costs 3 sync points today (Go struct, Go
+  defaults, TS interface — the TS defaults are generated) + allow-list +
+  section UI. Another argument for one `theme` reference + separate theme files
   over N flat color keys.
 - Scope: every appearance setting today is app-global. The per-client
   `ui_state` precedent exists (pane layout), but mixing would be novel.

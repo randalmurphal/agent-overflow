@@ -48,6 +48,16 @@ stops waking readers.
   registry, and may import the RPCs it owns and no others.
 - `providerAccounts.svelte.ts` is the one account load, login, switch,
   refresh and remove path, for the picker and Settings alike.
+- Settings DEFAULTS are never written here. `lib/generated/settingsDefaults.ts`
+  is generated from `internal/settings.DefaultSettings`
+  (`go generate ./internal/settings`); `settings.svelte.ts`,
+  `activityRunPrefs.svelte.ts` and `test/helpers/settings.ts` all read
+  `SETTINGS_DEFAULTS` rather than restating a value. They are load-bearing at
+  runtime, not a pre-load placeholder: Go's `omitempty` drops zero-valued
+  fields on the wire and `mergeSettingsWithDefaults` fills them back in. Which
+  fields get a default and which stay `undefined` is the generator's
+  deny-list, so adding a key here is a Go-side decision
+  (`internal/settings/AGENTS.md` § Frontend defaults).
 - `thread.svelte.ts` (`ThreadPane`) is the sole owner of per-thread runtime
   UI state. Add to it rather than beside it — as a module it COMPOSES, never
   as a sibling store that shares the ownership. See "The ThreadPane modules".

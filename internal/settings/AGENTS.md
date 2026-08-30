@@ -141,6 +141,13 @@ forward-compatible).
 - `remote.go`: the `RemoteEndpoint` shape and its CRUD helpers
   (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
   target list the desktop binary's settings panel exposes.
+- `gendefaults.go` + `gendefaults/`: the generator that makes
+  `DefaultSettings` the SINGLE source of settings defaults. It reflects
+  the struct's json tags (the `knownSettingsFieldNames` walk), takes each
+  value from `DefaultSettings`, materializes zero values explicitly
+  (`omitempty` is ignored; a nil slice emits `[]`), and writes
+  `frontend/src/lib/generated/settingsDefaults.ts`. See "Frontend
+  defaults" below.
 
 ## Responsibility boundary
 
@@ -166,9 +173,43 @@ forward-compatible).
   by `TestClaudeTUIEnabledDefaultsOffAndRoundTrips`. Do not "fix" it by
   adding it to `DefaultSettings`. `writeSparse` persists what differs
   from the defaults, so that would drop the user's `true` on write.
+  Then decide the field's FRONTEND default: either let the generator emit
+  it or add it to `frontendDefaultsDenied` with a reason, and run
+  `go generate ./internal/settings`. `TestFrontendDefaultsDenyListIsTotal`
+  fails until you have chosen one, and
+  `TestFrontendDefaultsSourceIsCheckedIn` fails until you regenerate.
 - To change allowed values for an existing enum: update the map in
   `validate.go` and the migration note; old values are normalized on
   load, never at write time.
+
+## Frontend defaults
+
+The frontend does NOT hand-mirror these defaults. `gendefaults.go` renders
+`DefaultSettings` into `frontend/src/lib/generated/settingsDefaults.ts`
+(`SETTINGS_DEFAULTS`), which the settings store, `activityRunPrefs` and
+`test/helpers/settings.ts` all read. Regenerate with
+`go generate ./internal/settings`.
+
+Three rules, each with a test behind it:
+
+- **The emitted set is exactly the keys the frontend wants defaulted.**
+  Every json field is either emitted or listed in `frontendDefaultsDenied`
+  with a one-line reason (`TestFrontendDefaultsDenyListIsTotal`). Two kinds
+  of reason live there: a field with no TypeScript counterpart at all
+  (`$schemaVersion`, `window`, `editor`) or a redacted one the store must
+  not materialize (`remoteEndpoints`), and a field the TS `Settings` type
+  declares OPTIONAL where absence is the meaning — the prompt/tool
+  overrides and the Claude session axes, where "" or absent means "the
+  provider decides". Materializing that second kind changes merge
+  semantics for anything that tests presence, so it is a deliberate
+  choice, never a default-on.
+- **Zero values are emitted explicitly.** `omitempty` drops them on the
+  wire, so `mergeSettingsWithDefaults` is what puts them back; a key
+  missing here leaves the store holding `undefined` for a field the
+  backend considers set.
+- **`satisfies Settings` in the generated file is the TS-side tripwire.**
+  A new required TS field, or a Go field removed under one, breaks
+  `pnpm run check` rather than drifting silently.
 
 ## Retired fields
 
@@ -241,4 +282,5 @@ gets redacted on read must follow the same pattern in the same commit.
 ## References
 
 - The frontend reads / writes settings through Wails bindings; the
-  generator picks up `Settings` automatically.
+  binding generator picks up `Settings` automatically, and the defaults
+  generator above keeps its DEFAULT VALUES in step.

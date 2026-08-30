@@ -5,6 +5,7 @@
 // client can be handed settings from an older or newer peer.
 
 import { getSettings, updateSetting } from './settings.svelte';
+import { SETTINGS_DEFAULTS } from '../generated/settingsDefaults';
 import {
   ACTIVITY_RUN_WINDOW_ROWS_DEFAULT,
   ACTIVITY_RUN_WINDOW_ROWS_MAX,
@@ -14,10 +15,10 @@ import type { ActivityRunDefaultMode } from '../types/settings';
 
 export type { ActivityRunDefaultMode };
 
-// Mirrors internal/settings.DefaultSettings.ActivityRunDefault. Expanded
-// preserves today's visibility semantics — upgrading hides nothing the
-// user can currently see.
-const DEFAULT_MODE: ActivityRunDefaultMode = 'expanded';
+// Generated from internal/settings.DefaultSettings.ActivityRunDefault, so
+// the fallback for an out-of-range persisted value is the shipped default
+// rather than a second opinion about it.
+const DEFAULT_MODE: ActivityRunDefaultMode = SETTINGS_DEFAULTS.activityRunDefault;
 
 export function getActivityRunDefaultMode(): ActivityRunDefaultMode {
   const mode = getSettings().activityRunDefault;
