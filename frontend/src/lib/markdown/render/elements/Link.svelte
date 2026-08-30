@@ -18,7 +18,7 @@
 	} = $props();
 
 	const transformedUrl = $derived(
-		transformUrl(token.href, streamdown.allowedLinkPrefixes ?? [], streamdown.defaultOrigin)
+		transformUrl(token.href, streamdown.allowedLinkPrefixes ?? [])
 	);
 
 	// A schemeless reference (`docs/guide.md`, `../x`, `#frag`, and

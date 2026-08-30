@@ -32,7 +32,6 @@
 		snippets: unknown;
 		children: unknown;
 		allowedLinkPrefixes: unknown;
-		defaultOrigin: unknown;
 		renderHtml: unknown;
 		staticRenderers: unknown;
 	};
@@ -80,7 +79,6 @@
 			snippets: streamdown.snippets,
 			children: streamdown.children,
 			allowedLinkPrefixes: streamdown.allowedLinkPrefixes,
-			defaultOrigin: streamdown.defaultOrigin,
 			renderHtml: streamdown.renderHtml,
 			staticRenderers: streamdown.staticRenderers
 		};
@@ -92,7 +90,6 @@
 			left.snippets === right.snippets &&
 			left.children === right.children &&
 			left.allowedLinkPrefixes === right.allowedLinkPrefixes &&
-			left.defaultOrigin === right.defaultOrigin &&
 			left.renderHtml === right.renderHtml &&
 			left.staticRenderers === right.staticRenderers;
 	}

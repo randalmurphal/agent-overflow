@@ -20,7 +20,6 @@
 		contentAppend,
 		class: className,
 		parseIncompleteMarkdown,
-		defaultOrigin,
 		allowedLinkPrefixes = ['*'],
 		allowedImagePrefixes = ['*'],
 		theme,
@@ -98,9 +97,6 @@
 		},
 		get parseIncompleteMarkdown() {
 			return parseIncompleteMarkdown;
-		},
-		get defaultOrigin() {
-			return defaultOrigin;
 		},
 		get allowedLinkPrefixes() {
 			return allowedLinkPrefixes;

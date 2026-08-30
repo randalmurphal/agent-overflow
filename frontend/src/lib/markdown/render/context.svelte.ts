@@ -146,7 +146,6 @@ export type StreamdownProps = {
     parseIncompleteMarkdown?: boolean;
     /** Host proof that content is an isolated volatile tail, permitting one render lex. */
     isolatedVolatileTail?: boolean;
-    defaultOrigin?: string;
     allowedLinkPrefixes?: string[];
     allowedImagePrefixes?: string[];
     theme: Theme;

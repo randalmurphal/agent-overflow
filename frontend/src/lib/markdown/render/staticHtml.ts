@@ -196,7 +196,6 @@ export function renderStaticTokenHtml(
 					const href = transformUrl(
 						token.href,
 						streamdown.allowedLinkPrefixes ?? [],
-						streamdown.defaultOrigin,
 					);
 					if (href || token.href === 'streamdown:incomplete-link') {
 						output.push(

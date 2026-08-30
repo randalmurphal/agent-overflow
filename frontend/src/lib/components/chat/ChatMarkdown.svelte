@@ -163,14 +163,6 @@
   const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
   const allowedImagePrefixes = ['*', LOCAL_IMAGE_HREF_PREFIX];
 
-  // LOAD-BEARING ABSENCE: no `defaultOrigin` is ever passed to
-  // Streamdown. With no origin, streamdown's `parseUrl` returns null
-  // for every schemeless href, so the `*` wildcard can never resurrect
-  // a raw relative anchor (url.js's `inputWasRelative` return).
-  // Passing a defaultOrigin here would reopen origin-isolation defect
-  // A (docs/specs/remote-access-boundaries.md) through transformUrl
-  // itself, bypassing the Link/Image URL policy.
-
   // Diagram palette. Without a `mermaidConfig` the renderer falls back
   // to mermaid's built-in `'dark'`/`'default'` themes, which
   // are the only colors in the app that come from nowhere near the token

@@ -29,7 +29,7 @@
 	// markdown). Cited by docs/specs/remote-access-boundaries.md; see
 	// markdown/AGENTS.md § Security boundary.
 	const transformedUrl = $derived(
-		transformUrl(token.href, streamdown.allowedImagePrefixes ?? [], streamdown.defaultOrigin)
+		transformUrl(token.href, streamdown.allowedImagePrefixes ?? [])
 	);
 </script>
 
