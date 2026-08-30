@@ -33,10 +33,10 @@ from the name.
 
 ## Session lock order
 
-`Session` carries five mutexes. Take them in this order or not at all:
+`Session` carries six mutexes. Take them in this order or not at all:
 
 ```
-mu  ->  childLifecycleMu  ->  eventMu
+controlMu  ->  mu  ->  childLifecycleMu  ->  eventMu
 ```
 
 The approvals registry's lock (`approvals`, a shared
@@ -61,7 +61,7 @@ under `childLifecycleMu`, then release `childLifecycleMu` before delivering.
   pinning session state while the app layer runs. A callback re-entering the
   `Session` deadlocks only if a future emitter holds `mu` across an emit.
 - **Atomics exist to stay out of this order.** `codexThreadID`,
-  `appServerVersion`, `threadHistoryMode`, `pendingRevert`,
+  `appServerVersion`, `threadHistoryMode`, `pendingRevert`, `revertEpoch`,
   `threadQueueNative`, `closing` and `nextID` are atomic precisely so
   read-loop paths already holding `mu` can consult them without a second lock.
 
@@ -198,13 +198,16 @@ the paginated consequences:
   default is legacy and `thread/resume` has no history-mode field, so a thread
   that starts legacy can never be reverted. `isHistoryPaginationUnsupported`
   is the one-shot downgrade retry.
-- **Refusals raised BEFORE upstream mutates anything** map to
-  `ErrThreadRevertUnsupported` or `ErrThreadRevertAnchorUnresolvable`, so the
-  caller can fall back to a fork on the same connection. Anything else is a
-  hard failure: `thread/revert` shuts the thread runtime down partway through,
-  and a fork built on a half-reverted thread would agree with neither. Mid-turn
-  revert is refused here even though upstream ALLOWS it, because upstream
-  submits a shutdown and drops the running turn on the floor.
+- **History-preserving refusals** map to `ErrThreadRevertUnsupported` or
+  `ErrThreadRevertAnchorUnresolvable`, so the caller can fall back to a fork.
+  The history-mode gate runs before shutdown. Anchor resolution runs after
+  shutdown, but the handler reloads the unchanged thread before answering.
+  Anything else is a hard failure because it can land between shutdown,
+  pointer replacement, and reload. Mid-turn revert is the Esc un-send
+  primitive: upstream owns active-turn shutdown,
+  persistence, the cut and runtime reload on the existing connection.
+  `controlMu` serializes it against root `turn/interrupt`; `revertEpoch` drops
+  a stale root or child interrupt that waited across the cut.
 - `thread/reverted` releases the RPC's bounded wait. An UNSOLICITED one is
   logged loudly and never acted on: it carries a thread id and no boundary.
 

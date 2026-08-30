@@ -127,9 +127,10 @@ func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string,
 //
 // Extracted so the two history cuts (`thread/fork` here,
 // `thread/revert` in app_codex_revert.go) share ONE connection. The
-// rollback path stops the live session before cutting, so both cuts
-// reach the throwaway branch — deciding between them across two
-// brackets would spawn two app-servers to perform one truncation.
+// cold rollback path stops the live session before cutting, while a live
+// paginated rollback stays on its existing session so thread/revert can own
+// active-turn shutdown. In either case, deciding between cuts across two
+// brackets would spawn needless app-servers.
 func (a *App) withCodexThreadSession(source store.Thread, fn func(*codex.Session) error) error {
 	return a.withCodexThreadSessionPreparedBy(source, nil, fn)
 }

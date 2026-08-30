@@ -43,6 +43,10 @@ while IFS= read -r line; do
         echo "$line" > %q
         echo "{\"jsonrpc\":\"2.0\",\"id\":$id,%s}"
 %s    fi
+    if echo "$line" | grep -q '"method":"turn/interrupt"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        continue
+    fi
 done
 `,
 		bashJSON(fmt.Sprintf(`{"userAgent":%q}`, userAgent)),
@@ -267,10 +271,10 @@ func TestSessionRevertTreatsAnAbsentHistoryModeAsUnsupported(t *testing.T) {
 	}
 }
 
-// TestSessionRevertRefusesMidTurn mirrors upstream's contract by inverting
-// it: upstream would shut the thread down and drop the running turn on the
-// floor, so AO refuses instead of discovering that in production.
-func TestSessionRevertRefusesMidTurn(t *testing.T) {
+// TestSessionRevertAllowsMidTurn pins the upstream operation AO uses for an
+// Esc un-send: thread/revert owns active-turn shutdown and history replacement
+// as one server-side operation.
+func TestSessionRevertAllowsMidTurn(t *testing.T) {
 	capture := t.TempDir() + "/revert-request.json"
 	binary := revertFakeScript(t,
 		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
@@ -281,15 +285,36 @@ func TestSessionRevertRefusesMidTurn(t *testing.T) {
 	s.turn.activeTurnID = "turn-live"
 	s.mu.Unlock()
 
-	_, err := s.Revert(context.Background(), "turn-c")
-	if err == nil || !strings.Contains(err.Error(), "in flight") {
-		t.Fatalf("Revert error = %v, want an in-flight refusal", err)
+	if _, err := s.Revert(context.Background(), "turn-c"); err != nil {
+		t.Fatalf("Revert with active turn: %v", err)
 	}
-	if errors.Is(err, ErrThreadRevertUnsupported) {
-		t.Fatal("a mid-turn refusal must not read as 'unsupported' — falling back to a fork would still cut history under a live turn")
+	if _, statErr := os.Stat(capture); statErr != nil {
+		t.Fatalf("mid-turn Revert did not send thread/revert: %v", statErr)
 	}
-	if _, statErr := os.Stat(capture); statErr == nil {
-		t.Fatal("a mid-turn Revert sent thread/revert anyway")
+}
+
+// TestSessionRevertAfterInterruptAckDoesNotWaitForClientQuiescence covers the
+// ordered race where another caller won controlMu first. The interrupt answer
+// does not promise persistence is idle, but thread/revert owns the remaining
+// shutdown barrier and must still be sent without a client-side wait.
+func TestSessionRevertAfterInterruptAckDoesNotWaitForClientQuiescence(t *testing.T) {
+	capture := t.TempDir() + "/revert-request.json"
+	binary := revertFakeScript(t,
+		"codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		"codex-thread-revert", "paginated", revertOKReply, capture, true)
+
+	s := newRevertSession(t, binary)
+	s.mu.Lock()
+	s.turn.activeTurnID = "turn-live"
+	s.mu.Unlock()
+	if err := s.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if _, err := s.Revert(context.Background(), "turn-c"); err != nil {
+		t.Fatalf("Revert after interrupt answer: %v", err)
+	}
+	if _, err := os.Stat(capture); err != nil {
+		t.Fatalf("thread/revert was not sent after interrupt answer: %v", err)
 	}
 }
 

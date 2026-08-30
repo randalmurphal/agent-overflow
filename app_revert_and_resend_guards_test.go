@@ -62,7 +62,8 @@ func TestRevertAndResendRefusesDuringShutdown(t *testing.T) {
 // TestRevertAndResendRejectsActiveTurn guards the defense-in-depth
 // check: an in-place revert must not truncate a timeline the provider is
 // still writing to. The live-turn un-send (InterruptAndRevertIfClean)
-// owns that case and interrupts first.
+// owns that case and lets Codex thread/revert perform shutdown and cut
+// together.
 func TestRevertAndResendRejectsActiveTurn(t *testing.T) {
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "t-active", "claude", t.TempDir())

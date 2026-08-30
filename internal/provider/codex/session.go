@@ -331,8 +331,11 @@ type Session struct {
 	unclaimedNotifications           map[string]struct{}
 	unclaimedNotificationsOverflowed bool
 	nextID                           atomic.Int64
-	// LOCK ORDER: mu → childLifecycleMu → eventMu. Take them in that order or
-	// not at all; nothing in this package takes them in the reverse direction.
+	// LOCK ORDER: controlMu → mu → childLifecycleMu → eventMu. Take them
+	// in that order or not at all; nothing in this package takes them in the
+	// reverse direction. controlMu serializes history-sensitive root and child
+	// control requests and is held across their RPC waits; the read loop never
+	// takes it.
 	// The approvals registry's own lock and collabAsyncMu are LEAVES — no
 	// other Session lock may be acquired while either is held
 	// (ApprovalRegistry.Drain returns its entries so drainPendingApprovals
@@ -354,8 +357,9 @@ type Session struct {
 	// session state while the app layer runs.
 	//
 	// codexThreadID, appServerVersion, threadHistoryMode, pendingRevert,
-	// threadQueueNative, closing and nextID are atomics precisely so their
-	// readers never have to enter this order at all.
+	// revertEpoch, threadQueueNative, closing and nextID are atomics precisely
+	// so their readers never have to enter this order at all.
+	controlMu          sync.Mutex
 	mu                 sync.Mutex
 	pending            map[int64]chan json.RawMessage
 	onEvent            func(provider.ProviderEvent)
@@ -513,6 +517,11 @@ type Session struct {
 	// so this is the only thing that can tell a solicited cut from a
 	// foreign one — see session_revert.go.
 	pendingRevert atomic.Pointer[revertExpectation]
+	// revertEpoch advances after every in-place revert attempt that reached the
+	// wire. An interrupt captures it before waiting on an outer app lock; any
+	// change means the turn it intended to stop crossed a revert boundary and
+	// the stale interrupt must not hit the resulting thread runtime.
+	revertEpoch atomic.Uint64
 	// threadQueueNative freezes, at handshake time, whether this session
 	// hands mid-turn user messages to the provider's own `thread/queue/*`
 	// (codex >= 0.148) instead of AO's in-process flushqueue. Atomic for the

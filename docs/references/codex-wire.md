@@ -1437,7 +1437,7 @@ per THREAD, decided at creation.
 ```
 
 `ThreadRevertParams` / `ThreadRevertResponse` at
-`codex-rs/app-server-protocol/src/protocol/v2/thread.rs` @ rust-v0.149.0;
+`codex-rs/app-server-protocol/src/protocol/v2/thread.rs` @ rust-v0.150.1;
 handler `thread_revert_response` in
 `codex-rs/app-server/src/request_processors/thread_processor.rs`.
 `#[experimental("thread/revert")]`, so it rides the
@@ -1450,7 +1450,7 @@ Five facts that decide how a client must call it:
   `lastTurnId` is the last turn KEPT. Same boundary, opposite sides, so
   the two anchors must be resolved separately and never interchanged.
 - **Paginated threads only.** Upstream refuses a legacy-history thread
-  first thing, before touching anything, and a thread's history contract
+  before shutdown or history mutation, and a thread's history contract
   is fixed at creation (`ThreadResumeParams` has no history-mode field).
   Upstream's default is legacy, so a client that never sends
   `historyMode` gets threads that can never be reverted, which is why
@@ -1466,19 +1466,20 @@ Five facts that decide how a client must call it:
   clients at `thread/turns/list` to re-hydrate. The thread-identity echo
   is therefore the only validation available, and the load-bearing one,
   since a caller keeps its session pointed at that thread.
-- **It is NOT refused mid-turn.** The handler submits a shutdown, waits
-  up to 10s, reverts, then reloads the runtime with
-  `has_live_in_progress_turn = false`, i.e. a mid-turn revert silently
-  destroys the running turn. This is the one guard where AO inverts
-  upstream and refuses.
+- **It is NOT refused mid-turn.** The handler subscribes to shutdown events,
+  submits a shutdown, waits for both the runtime and listener to drain, reverts,
+  then reloads the runtime with
+  `has_live_in_progress_turn = false`. AO uses that whole operation for an Esc
+  un-send. It does not send a separate `turn/interrupt` or replace the
+  app-server connection around the cut.
 - **Nothing is destroyed on disk.** `revert_thread` writes a NEW immutable
   rollout referencing the retained prefix and moves only the SQLite
   rollout pointer (`codex-rs/thread-store/src/local/revert_thread.rs`),
   so the pre-revert rollout survives exactly like a fork's source does.
 
 Failure taxonomy matters here, because a client that falls back to
-`thread/fork` must know whether anything was mutated. Every refusal AO
-maps to a fallback is raised BEFORE the replacement rollout is written
+`thread/fork` must know whether durable history changed. Every refusal AO
+maps to a fallback is raised before the replacement rollout is written
 and long before the pointer CAS: the paginated gate, and the anchor
 resolution in `history_base_at_boundary` ("turn not found: …", "does not
 have persisted rollout positions", "does not have a persisted start
@@ -1488,12 +1489,12 @@ as invalid_request (-32600), because upstream folds them onto one code in
 from a later stage (the shutdown timeouts, the CAS conflict) leave a
 thread no fork should be built on.
 
-`thread/reverted` carries `{threadId}` only: it is an ACK for the client
+`thread/reverted` carries `{threadId}` only: it is an echo for the client
 that asked, not a description of what was cut.
 
 ### What `historyMode: paginated` changes
 
-Checked against rust-v0.149.0 for every consumer of thread shape:
+Checked against rust-v0.150.1 for every consumer of thread shape:
 
 - `thread/fork` still works on a paginated source (`prepare_fork` with
   `ForkBoundary::ThroughTurn`) and still returns turns, so the fork cut stays

@@ -26,9 +26,22 @@ type childInterruptTarget struct {
 // root, ancestor, or sibling. false, nil means the owned child was already
 // terminal in this live app-server process.
 func (s *Session) InterruptSubagent(ctx context.Context, launchID string) (bool, error) {
+	return s.interruptSubagentIfCurrent(ctx, launchID, s.CaptureInterruptFence())
+}
+
+func (s *Session) interruptSubagentIfCurrent(
+	ctx context.Context,
+	launchID string,
+	fence InterruptFence,
+) (bool, error) {
 	launchID = strings.TrimSpace(launchID)
 	if launchID == "" {
 		return false, errors.New("codex: interrupt subagent: launch id required")
+	}
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if s.revertEpoch.Load() != fence.revertEpoch {
+		return false, nil
 	}
 
 	s.mu.Lock()

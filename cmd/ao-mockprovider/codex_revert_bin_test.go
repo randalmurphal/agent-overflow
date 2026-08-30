@@ -84,6 +84,50 @@ func TestCodexThreadRevertCutsInPlace(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
+// TestCodexThreadRevertOwnsActiveTurnShutdown pins the live Esc-un-send wire
+// order. The active turn's terminal notification precedes the revert response,
+// and the skipped scenario tail never runs.
+func TestCodexThreadRevertOwnsActiveTurnShutdown(t *testing.T) {
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "codex-live-revert",
+		Provider: scenario.ProviderCodex,
+		Codex:    &scenario.CodexOptions{ThreadID: "th-live-revert"},
+		Turns: []scenario.Turn{{Steps: []scenario.Step{
+			{Emit: &scenario.EmitStep{Lines: []string{
+				`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
+			}}},
+			{WaitSignal: &scenario.WaitSignalStep{Name: "hold"}},
+			{Emit: &scenario.EmitStep{Lines: []string{`{"jsonrpc":"2.0","method":"must/not/run"}`}}},
+		}}},
+	}
+	p := startMock(t, []string{"app-server"}, writeScenarioFile(t, sc, ""), t.TempDir())
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	p.expectLineContaining(`"id":1`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"historyMode":"paginated"}}`)
+	p.expectLineContaining(`"id":2`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":"th-live-revert","input":[]}}`)
+	p.expectLineContaining(`"id":3`, testTimeout)
+	p.expectLineContaining(`"method":"turn/started"`, testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"thread/revert","params":{"threadId":"th-live-revert","beforeTurnId":"turn-1"}}`)
+	completed := p.expectLine(testTimeout)
+	if !strings.Contains(completed, `"method":"turn/completed"`) ||
+		!strings.Contains(completed, `"status":"interrupted"`) {
+		t.Fatalf("first live-revert frame = %q, want interrupted turn completion", completed)
+	}
+	if response := p.expectLine(testTimeout); !strings.Contains(response, `"id":4`) ||
+		!strings.Contains(response, `"result"`) {
+		t.Fatalf("thread/revert response = %q", response)
+	}
+	p.expectLineContaining(`"method":"thread/reverted"`, testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":5,"method":"thread/read","params":{}}`)
+	if got := p.expectLine(testTimeout); !strings.Contains(got, `"id":5`) || strings.Contains(got, "must/not/run") {
+		t.Fatalf("line after live revert = %q; interrupted scenario tail ran", got)
+	}
+	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
 // TestCodexThreadRevertRefusesALegacyThread pins upstream's pre-mutation
 // refusal verbatim. AO falls back to `thread/fork` on it, and that
 // fallback is only safe because the refusal happens before the handler
@@ -109,12 +153,11 @@ func TestCodexThreadRevertRefusesALegacyThread(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
 
-// TestCodexThreadHistoryModeSurvivesTheProcess is the property the harness
-// actually depends on: every rollback cuts through a THROWAWAY RESUME, a
-// second mock process that never saw thread/start. A history mode held
-// only in memory would read as legacy there and send a genuinely
-// paginated thread down the fork fallback — silently, since both cuts
-// "work".
+// TestCodexThreadHistoryModeSurvivesTheProcess is the property cold and
+// fork-fallback rollbacks depend on: the throwaway resume is a second mock
+// process that never saw thread/start. A history mode held only in memory
+// would read as legacy there and send a paginated thread down the fork
+// fallback silently, since both cuts "work".
 func TestCodexThreadHistoryModeSurvivesTheProcess(t *testing.T) {
 	home := t.TempDir()
 	env := append(writeScenarioFile(t, revertScenario("th-durable"), ""),

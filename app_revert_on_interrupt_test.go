@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -796,6 +798,217 @@ func TestInterruptAndRevertIfCleanCodexStopsSessionWithActiveTurn(t *testing.T) 
 	}
 	if !ok || draft.Content != "codex prompt" {
 		t.Fatalf("draft = %+v ok=%v, want restored codex prompt", draft, ok)
+	}
+}
+
+// TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert covers the paginated
+// live-session path. Upstream thread/revert owns interruption, persistence,
+// history replacement, and runtime reload, so AO must neither send a separate
+// turn/interrupt nor replace the app-server connection around it.
+func TestInterruptAndRevertIfCleanCodexUsesLiveThreadRevert(t *testing.T) {
+	app := newTestApp(t)
+	app.triage = triage.NewRouter(app.store, app.emit)
+	workspace := t.TempDir()
+	thread := createAppTestThread(t, app, "codex-live-interrupt-revert", "codex", workspace)
+	thread.SessionRef = "provider-codex-live-revert"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-kept")
+	insertUserItem(t, app.store, thread.ID, "u:0", 0, "kept prompt")
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind:      provider.EventTurnStart,
+		ThreadID:  thread.ID,
+		TurnID:    "turn-dropped",
+		TurnIndex: 1,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("start active turn: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "u:1", 1, "restore me")
+	var completions []triage.TurnCompletedEvent
+	var providerEvents []provider.EventKind
+	app.testEmitHook = func(name string, data any) {
+		if name != "provider:turn_completed" {
+			return
+		}
+		if event, ok := data.(triage.TurnCompletedEvent); ok {
+			completions = append(completions, event)
+		}
+	}
+
+	resumeLog := filepath.Join(t.TempDir(), "resume.log")
+	interruptLog := filepath.Join(t.TempDir(), "interrupt.log")
+	revertLog := filepath.Join(t.TempDir(), "revert.log")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID:  "provider-codex-live-revert",
+		forkedThreadID:   "unused-fork",
+		userAgent:        "codex_cli_rs/0.149.0 (Linux; x86_64)",
+		historyMode:      "paginated",
+		resumeLogPath:    resumeLog,
+		interruptLogPath: interruptLog,
+		revertLogPath:    revertLog,
+		activeTurnID:     "turn-dropped",
+	})
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        workspace,
+		ResumeThreadID: thread.SessionRef,
+	}, func(event provider.ProviderEvent) {
+		providerEvents = append(providerEvents, event.Kind)
+		if event.Kind != provider.EventTurnComplete {
+			return
+		}
+		if err := app.triage.Handle(event); err != nil {
+			t.Errorf("triage provider event: %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "codex-live-revert-token",
+		codex:    sess,
+	})
+
+	result, err := app.InterruptAndRevertIfClean(thread.ID)
+	if err != nil {
+		t.Fatalf("interrupt-and-revert: %v", err)
+	}
+	if !result.Reverted {
+		t.Fatalf("Reverted = false, reason %q", result.Reason)
+	}
+	if active, ok := app.activeCodexSession(thread.ID); !ok || active != sess {
+		t.Fatal("live Codex session was replaced around thread/revert")
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != thread.SessionRef {
+		t.Fatalf("SessionRef = %q, want %q", updated.SessionRef, thread.SessionRef)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "u:0" {
+		t.Fatalf("items after live revert = %+v, want only u:0", items)
+	}
+	if data, err := os.ReadFile(resumeLog); err != nil {
+		t.Fatalf("read resume log: %v", err)
+	} else if lines := strings.FieldsFunc(strings.TrimSpace(string(data)), func(r rune) bool { return r == '\n' }); len(lines) != 1 {
+		t.Fatalf("thread/resume requests = %d, want 1 initial resume", len(lines))
+	}
+	if data, err := os.ReadFile(interruptLog); err == nil && strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("standalone turn/interrupt was sent before thread/revert: %s", data)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read interrupt log: %v", err)
+	}
+	request := readCodexRevertRequest(t, revertLog)
+	if !strings.Contains(request, `"beforeTurnId":"turn-dropped"`) {
+		t.Fatalf("thread/revert request = %s, want dropped turn anchor", request)
+	}
+	if len(completions) != 1 || !completions[0].RevertedUserMessage {
+		t.Fatalf("turn completions = %+v from provider events %v, want one revert-owned completion", completions, providerEvents)
+	}
+}
+
+// TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert pins the other
+// control ordering. An interrupt that entered while a revert owned the app
+// thread lock names the old history generation and must not wake afterward to
+// send a startup interrupt against the reloaded thread.
+func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
+	app := newTestApp(t)
+	workspace := t.TempDir()
+	thread := createAppTestThread(t, app, "codex-stale-interrupt", "codex", workspace)
+	thread.SessionRef = "provider-codex-stale-interrupt"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+
+	interruptLog := filepath.Join(t.TempDir(), "interrupt.log")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID:  thread.SessionRef,
+		forkedThreadID:   "unused-fork",
+		userAgent:        "codex_cli_rs/0.149.0 (Linux; x86_64)",
+		historyMode:      "paginated",
+		interruptLogPath: interruptLog,
+		activeTurnID:     "turn-live",
+	})
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        workspace,
+		ResumeThreadID: thread.SessionRef,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "codex-stale-interrupt-token",
+		codex:    sess,
+	})
+
+	unlock := app.threadLocks().Lock(thread.ID)
+	interruptDone := make(chan error, 1)
+	go func() { interruptDone <- app.InterruptTurn(thread.ID) }()
+	waitForThreadLockRefs(t, app.threadLocks(), thread.ID, 2)
+	if _, err := sess.Revert(context.Background(), "turn-live"); err != nil {
+		unlock()
+		t.Fatalf("Revert: %v", err)
+	}
+	unlock()
+
+	select {
+	case err := <-interruptDone:
+		if err != nil {
+			t.Fatalf("queued InterruptTurn: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued InterruptTurn did not settle after revert")
+	}
+	if data, err := os.ReadFile(interruptLog); err == nil && strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("stale interrupt reached reloaded thread: %s", data)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read interrupt log: %v", err)
+	}
+}
+
+// TestInterruptTurnDoesNotRetargetAReplacementSession closes the wider form
+// of the same race. An interrupt belongs to the provider process visible when
+// it enters. If that process is replaced while the call waits on the thread
+// lock, the interrupt must not hit the replacement's unrelated work.
+func TestInterruptTurnDoesNotRetargetAReplacementSession(t *testing.T) {
+	app := newTestApp(t)
+	thread := createAppTestThread(t, app, "interrupt-replacement", "codex", t.TempDir())
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "old-session",
+	})
+
+	unlock := app.threadLocks().Lock(thread.ID)
+	interruptDone := make(chan error, 1)
+	go func() { interruptDone <- app.InterruptTurn(thread.ID) }()
+	waitForThreadLockRefs(t, app.threadLocks(), thread.ID, 2)
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "replacement-session",
+	})
+	unlock()
+
+	select {
+	case err := <-interruptDone:
+		if err != nil {
+			t.Fatalf("queued InterruptTurn: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued InterruptTurn did not settle after session replacement")
 	}
 }
 

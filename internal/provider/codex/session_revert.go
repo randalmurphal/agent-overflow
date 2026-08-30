@@ -25,7 +25,7 @@ import (
 //
 // Two properties of upstream's handler shape everything below
 // (codex-rs/app-server/src/request_processors/thread_processor.rs
-// `thread_revert_response`, rust-v0.149.0):
+// `thread_revert_response`, rust-v0.150.1):
 //
 //   - It is refused outright on a LEGACY-history thread ("thread/revert
 //     only supports paginated threads"), before it touches anything.
@@ -36,16 +36,12 @@ import (
 //     that — and every thread created by a pre-0.148 binary — stay legacy
 //     for life, because `thread/resume` has no history-mode field to
 //     change it with. Those keep falling back to the fork cut. The refusal
-//     is pre-mutation, which is what makes the fallback safe rather than
-//     a guess.
-//   - It does NOT refuse a running turn. It submits a shutdown, waits up
-//     to 10s for the thread runtime to stop, reverts the store, and
-//     reloads the runtime with `has_live_in_progress_turn = false`. In
-//     other words a mid-turn revert silently destroys the turn. AO
-//     refuses instead (see Revert) — the app layer already interrupts
-//     first on every path that can reach here, and a provider-level
-//     refusal is what keeps a future caller from discovering the
-//     silent-kill behavior in production.
+//     precedes shutdown and history mutation, which makes fallback safe.
+//   - It accepts a running turn. It submits shutdown, waits for the thread
+//     runtime and listener to stop, reverts the store, and reloads the runtime
+//     with `has_live_in_progress_turn = false`. AO uses that single operation
+//     for live un-send. A separate interrupt acknowledgement does not cover
+//     the later listener-drain and reload boundaries.
 //
 // What upstream does NOT destroy is the pre-revert history: the local
 // thread store writes a NEW immutable rollout referencing the retained
@@ -82,7 +78,7 @@ const (
 // one. Like ErrThreadUsageUnavailable it is a STATE answer rather than a
 // failure: the caller falls back to the fork cut, which every supported
 // codex answers. It is only ever returned for refusals upstream makes
-// BEFORE it mutates anything, so the fallback cannot land on a
+// before it changes durable history, so the fallback cannot land on a
 // half-reverted thread.
 var ErrThreadRevertUnsupported = errors.New("codex: thread/revert unavailable")
 
@@ -98,7 +94,7 @@ var ErrThreadRevertUnsupported = errors.New("codex: thread/revert unavailable")
 // forever (see cutCodexThreadHistory).
 //
 // Like ErrThreadRevertUnsupported it is only returned for refusals raised
-// BEFORE upstream mutates anything: every message below comes out of
+// before upstream changes durable history: every message below comes out of
 // `history_base_at_boundary` (codex-rs/thread-store/src/local/paginated_fork.rs
 // @ rust-v0.149.0), which runs before the replacement rollout is written and
 // long before the SQLite pointer CAS. Upstream's handler still reloads the
@@ -276,13 +272,12 @@ func (s *Session) SupportsThreadRevert() bool {
 //     would let a caller with a lost anchor believe history was cut.
 //   - Too-old app-server / non-paginated thread:
 //     ErrThreadRevertUnsupported, before any RPC.
-//   - Turn in flight: refused loudly. Upstream would kill the turn (see
-//     the file header); AO's callers all quiesce the thread first, so
-//     reaching here mid-turn is a bug, not a case to paper over.
+//   - Turn in flight: accepted. Upstream owns shutdown, persistence, history
+//     replacement and runtime reload as one operation. AO uses that contract
+//     for Esc un-send instead of separately interrupting and reconnecting.
 //   - Upstream's own "only supports paginated threads" refusal is
-//     re-classified to ErrThreadRevertUnsupported: it is raised before
-//     the handler touches the thread, so the caller may fall back to a
-//     fork on the same connection.
+//     re-classified to ErrThreadRevertUnsupported. It is raised before
+//     durable history changes, so the caller may fall back to a fork.
 //
 // A missing `thread/reverted` echo is reported (EchoConfirmed=false) and
 // logged, never failed: the response already carries upstream's answer,
@@ -308,24 +303,16 @@ func (s *Session) Revert(ctx context.Context, beforeTurnID string) (RevertedThre
 			ErrThreadRevertUnsupported, threadID, mode, paginatedThreadHistoryMode,
 		)
 	}
-	// Closed-session check MUST precede the activeTurnID read AND run under
-	// s.mu: Close zeroes s.turn, so a post-Close call would read "idle" and
-	// proceed into a request on a dead pipe (see ErrSessionClosed). Under mu
-	// it is ordered against the zeroing; before Lock it leaves a preemption
-	// window.
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	// Run the closed-session check under s.mu so it is ordered against Close's
+	// state reset before the request is written.
 	s.mu.Lock()
 	if s.closing.Load() {
 		s.mu.Unlock()
 		return RevertedThread{}, fmt.Errorf("codex: %s: %w", threadRevertMethod, ErrSessionClosed)
 	}
-	activeTurnID := s.turn.activeTurnID
 	s.mu.Unlock()
-	if activeTurnID != "" {
-		return RevertedThread{}, fmt.Errorf(
-			"codex: %s: turn %q is in flight on thread %s — interrupt it before reverting",
-			threadRevertMethod, activeTurnID, threadID,
-		)
-	}
 
 	// Armed BEFORE the write: upstream emits the notification immediately
 	// after the response, and both travel the same pipe, so an
@@ -340,6 +327,7 @@ func (s *Session) Revert(ctx context.Context, beforeTurnID string) (RevertedThre
 	if err := s.armRevertExpectation(expectation); err != nil {
 		return RevertedThread{}, err
 	}
+	defer s.revertEpoch.Add(1)
 	// Only the WAIT is exclusive; the record outlives it (see below), so
 	// the next Revert may replace a settled expectation but never a live
 	// one.
@@ -662,15 +650,14 @@ func (s *Session) dispatchThreadReverted(params json.RawMessage) {
 	)
 }
 
-// classifyThreadRevertError maps upstream's pre-mutation refusals onto
-// ErrThreadRevertUnsupported so the caller can fall back to the fork cut,
-// and leaves everything else alone (including the writer conflict, which
-// classifyThreadWriterConflict names for the user).
+// classifyThreadRevertError maps upstream's history-preserving refusals onto
+// typed fallback answers and leaves everything else alone, including the
+// writer conflict that classifyThreadWriterConflict names for the user.
 //
-// Only refusals raised BEFORE the handler mutates anything may be mapped:
-// `thread/revert` shuts the thread runtime down partway through, so an
-// error from a later stage leaves a thread whose state a fork could not
-// safely be built on.
+// The history-mode refusal happens before shutdown. Anchor resolution happens
+// after shutdown, but upstream reloads the unchanged thread before returning
+// that refusal. Both leave durable history safe to fork. Other errors can land
+// between shutdown, pointer replacement, and reload, so they stay hard errors.
 func classifyThreadRevertError(err error) error {
 	if err == nil {
 		return nil
@@ -686,7 +673,8 @@ func classifyThreadRevertError(err error) error {
 		// checks first thing in thread_revert_response.
 		case rpcErr.Code == -32600 && strings.Contains(rpcErr.Message, "only supports paginated threads"):
 			return fmt.Errorf("%w: %s", ErrThreadRevertUnsupported, rpcErr.Message)
-		// invalid_request from the anchor resolution, also pre-mutation.
+		// invalid_request from anchor resolution. Durable history is unchanged,
+		// and the handler reloads the source before answering.
 		case rpcErr.Code == -32600 && matchesThreadRevertAnchorRefusal(rpcErr.Message):
 			return fmt.Errorf("%w: %s", ErrThreadRevertAnchorUnresolvable, rpcErr.Message)
 		}

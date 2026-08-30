@@ -201,15 +201,17 @@ does on its own:
   `historyMode` it was asked for (upstream's default, `legacy`, when the
   params say nothing) and RECORDS it under `AO_HARNESS_TRANSCRIPT_HOME`;
   `thread/resume` can only report what is already there. That durability
-  is the point: every rollback cuts through a throwaway resume session, a
-  second mock process that never saw the start, and a mode held in memory
-  would read as legacy there, sending a genuinely paginated thread down
+  is the point: cold and fork-fallback rollbacks cut through a throwaway
+  resume session, a second mock process that never saw the start, and a mode
+  held in memory would read as legacy there, sending a paginated thread down
   the `thread/fork` fallback with no error anywhere. `thread/revert`
   refuses a legacy thread with upstream's own -32600 and its verbatim
   wording, which is what AO's classifier turns into
   `ErrThreadRevertUnsupported`, and answers a paginated one with the
   response plus the `thread/reverted` notification on the same
-  connection. Both cuts post a `history_cut` control report before they
+  connection. A live `thread/revert` interrupts its active turn and waits for
+  the mock's `turn/completed` before answering, matching upstream's integrated
+  shutdown boundary. Both cuts post a `history_cut` control report before they
   answer, because "which cut did the app choose" has no other observable.
 
 - **A steer echoes its own `userMessage`.** `turn/steer` reports its text on

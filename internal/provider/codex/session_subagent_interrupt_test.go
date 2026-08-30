@@ -109,6 +109,34 @@ func TestInterruptSubagentUsesStartupInterruptBeforeTurnStarted(t *testing.T) {
 	}
 }
 
+func TestInterruptSubagentDropsIntentAcrossRootRevert(t *testing.T) {
+	called := false
+	s := &Session{
+		collab: sessionCollabState{
+			childParentByThread: map[string]string{"child": "spawn"},
+			childRuntimeByThread: map[string]childRuntimeState{
+				"child": {phase: childRuntimeRunning, turnID: "child-turn", generation: 1},
+			},
+		},
+		interruptChildTurnFn: func(context.Context, string, string) error {
+			called = true
+			return nil
+		},
+	}
+	fence := s.CaptureInterruptFence()
+	s.revertEpoch.Add(1)
+	stopped, err := s.interruptSubagentIfCurrent(context.Background(), "spawn", fence)
+	if err != nil || stopped {
+		t.Fatalf("stale InterruptSubagent = (%v, %v), want (false, nil)", stopped, err)
+	}
+	if called {
+		t.Fatal("stale child interrupt reached the reloaded provider thread")
+	}
+	if runtime := s.collab.childRuntimeByThread["child"]; runtime.phase != childRuntimeRunning {
+		t.Fatalf("stale child interrupt changed runtime to %v", runtime.phase)
+	}
+}
+
 func TestInterruptSubagentTargetsNestedLaunchWithoutStoppingAncestor(t *testing.T) {
 	var targets []string
 	s := &Session{

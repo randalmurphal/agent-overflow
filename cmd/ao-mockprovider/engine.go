@@ -62,6 +62,7 @@ type pendingAdvance struct {
 
 type scenarioTurn struct {
 	abort   chan struct{}
+	done    chan struct{}
 	aborted bool
 }
 
@@ -152,7 +153,7 @@ func (e *engine) beginTurn() (int, scenario.Vars) {
 	e.mu.Lock()
 	e.turnSeq++
 	n := e.turnSeq
-	e.turns[n] = &scenarioTurn{abort: make(chan struct{})}
+	e.turns[n] = &scenarioTurn{abort: make(chan struct{}), done: make(chan struct{})}
 	e.mu.Unlock()
 	return n, e.varsForTurn(n)
 }
@@ -239,10 +240,9 @@ func (e *engine) forkedTurnIDs(lastTurnID string) ([]string, bool) {
 //
 // The began=false answer is IGNORANCE, not evidence, and the adapters have
 // to treat it that way: the mock keeps no rollout, so a thread it resumed
-// has history it cannot see. Every real rollback lands there — the app
-// stops the live session and issues its history cut through a throwaway
-// resume whose ledger starts empty (app_thread_fork_codex.go
-// `withCodexThreadSession`). See codex_revert.go#anchorIsCuttable.
+// has history it cannot see. Cold and fork-fallback rollbacks land there via
+// a throwaway resume whose ledger starts empty. See
+// codex_revert.go#revertAnchorState.
 func (e *engine) turnStatus(turnID string) (began, finished bool) {
 	if turnID == "" {
 		return false, false
@@ -356,7 +356,7 @@ func (e *engine) startTurn(n int) {
 	if e.turns[n] == nil {
 		// Unit tests may execute runTurn directly instead of going through
 		// beginTurn. Production turns always arrive through beginTurn.
-		e.turns[n] = &scenarioTurn{abort: make(chan struct{})}
+		e.turns[n] = &scenarioTurn{abort: make(chan struct{}), done: make(chan struct{})}
 	}
 	e.activeTurn = n
 	e.mu.Unlock()
@@ -367,14 +367,40 @@ func (e *engine) finishTurn(n int) {
 	if e.activeTurn == n {
 		e.activeTurn = 0
 	}
+	turn := e.turns[n]
 	delete(e.turns, n)
 	delete(e.turnVars, n)
 	// The dedupe is within-turn only, so the entry dies with the turn —
 	// a soak runs unboundedly many of them.
 	delete(e.doneTurns, n)
 	dropped := e.dropTurnAdvancesLocked(n)
+	if turn != nil {
+		close(turn.done)
+	}
 	e.mu.Unlock()
 	e.reportDroppedAdvances(n, dropped)
+}
+
+// shutdownTurn interrupts a matching live turn and waits until its adapter has
+// emitted the terminal frame. thread/revert uses this stronger boundary;
+// unlike turn/interrupt, its response is sent only after shutdown and history
+// persistence are complete upstream.
+func (e *engine) shutdownTurn(turnID string) bool {
+	e.mu.Lock()
+	var turn *scenarioTurn
+	for n := 1; n <= e.turnSeq; n++ {
+		if turnID == turnIDForNumber(n) {
+			turn = e.turns[n]
+			break
+		}
+	}
+	e.mu.Unlock()
+	if turn == nil {
+		return false
+	}
+	e.interruptTurn(turnID)
+	<-turn.done
+	return true
 }
 
 // reportDroppedAdvances says on the control channel what a turn boundary
@@ -448,7 +474,7 @@ func (e *engine) turnAbortSignal(n int) <-chan struct{} {
 	defer e.mu.Unlock()
 	turn := e.turns[n]
 	if turn == nil {
-		turn = &scenarioTurn{abort: make(chan struct{})}
+		turn = &scenarioTurn{abort: make(chan struct{}), done: make(chan struct{})}
 		e.turns[n] = turn
 	}
 	return turn.abort

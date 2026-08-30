@@ -883,6 +883,23 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
+	// Capture before waiting on the app-level thread lock. A Codex revert holds
+	// that lock across its provider and SQLite halves; an interrupt that entered
+	// before or during the cut must not wake afterward and hit the reloaded
+	// thread. The provider fence also covers direct Session callers that do not
+	// know about this lock.
+	observedSessionToken := ""
+	observedSession := false
+	var fencedCodex *codex.Session
+	var interruptFence codex.InterruptFence
+	if current, ok := a.sessionManager().get(threadID); ok {
+		observedSession = true
+		observedSessionToken = current.token
+		if current.codex != nil {
+			fencedCodex = current.codex
+			interruptFence = current.codex.CaptureInterruptFence()
+		}
+	}
 	// The whole interrupt — session capture, pre-ack Mark, ack wait,
 	// and the post-ack bookkeeping/promote/eager block — runs under the
 	// thread action lock: the same lock the session-start funnel holds
@@ -903,6 +920,12 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 	defer unlock()
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
+		return nil
+	}
+	if observedSession && sess.token != observedSessionToken {
+		// The work visible when the interrupt entered is gone. A replacement
+		// session may already be processing a later send, so the stale intent
+		// must not be retargeted onto it.
 		return nil
 	}
 
@@ -927,11 +950,27 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 		interruptedTurn = a.triage.OpenTurnIndex(threadID)
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
-	if err := providerSess.Interrupt(context.Background()); err != nil {
+	var interruptErr error
+	interruptSent := true
+	if sess.codex != nil && sess.codex == fencedCodex {
+		interruptSent, interruptErr = sess.codex.InterruptIfCurrent(context.Background(), interruptFence)
+	} else {
+		interruptErr = providerSess.Interrupt(context.Background())
+	}
+	if interruptErr != nil {
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		return err
+		return interruptErr
+	}
+	if !interruptSent {
+		// The intent entered before a same-session revert and therefore names
+		// the history that operation already discarded. Do not synthesize a
+		// second user interrupt in triage for the reloaded thread.
+		if a.triage != nil {
+			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
+		}
+		return nil
 	}
 	if a.triage != nil {
 		// The pre-ack sampled turn, not a fresh resolution: a queued echo
