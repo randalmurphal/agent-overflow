@@ -33,6 +33,24 @@ are spec §16 phase 0.
 > of what was reachable. **C remains open**, as do the `/design/`
 > hardening items (CSP/nosniff/XFO/token) that defense-in-depth still
 > wants even with the navigation path closed.
+>
+> **Re-verified 2026-08-30** against the first-party markdown
+> renderer (svelte-streamdown was adopted into `src/` since). Both
+> render paths — the component path and the compact fixed-tag HTML
+> path, a pair `markdown/AGENTS.md` flags as a silent-fork hazard —
+> agree and call the same gate. The gate now fails closed
+> structurally: `parseUrl` is `new URL()` with the upstream base
+> parameter deleted, so `/design/x`, `//host/x`, and `*` all throw
+> rather than resolve. `//`-leading is explicitly excluded from the
+> schemeless class in both paths, so it renders as a tagged blocked
+> span. What did **not** change: the click delegate's
+> no-`preventDefault` fall-through is still there (now unreachable
+> from markdown, still app-wide policy for every other anchor), the
+> bootstrap token is still in `sessionStorage` and on
+> `window.__AO_BOOTSTRAP__`, and `/design/` is untouched — its last
+> functional commit predates the audit. Two unvalidated hrefs in
+> `PRStep.svelte` remain, and are now outliers: both sibling
+> consumers of the same field validate.
 
 **A. Model-authored content can reach the full method surface.**
 The markdown renderer's `Link.svelte`
@@ -71,7 +89,8 @@ re-litigated: raw HTML disabled (`renderHtml={false}`), non-`http(s)`
 URL schemes rejected for links and images, path-link prefix carries a
 128-bit per-page-load nonce so it cannot be forged from model text,
 KaTeX runs with `trust: false`, mermaid runs `securityLevel: 'strict'`
-with DOMPurify on labels, terminal rendering uses the real xterm parser,
+and sanitizes labels with the DOMPurify copy it bundles (we no longer
+depend on DOMPurify directly), terminal rendering uses the real xterm parser,
 the non-xterm ANSI renderer escapes all five characters and builds class
 names from parsed integers, highlight spans are metadata rendered
 through the template, no `eval`/`new Function` anywhere, and no
@@ -79,6 +98,62 @@ credential in localStorage.
 
 Root cause of A and B is a single branch in a file the repo already
 patches.
+
+## Also confirmed (2026-08-30)
+
+Found by a follow-up audit of the design route, the in-app browser,
+and the full listener set. Same posture as above: verified in code,
+reachable today, fixes are spec §16 phase 0.
+
+**D. The in-app browser widened who counts as a loopback peer.**
+`Manager.Open` accepts loopback URLs — correct for the dev servers it
+exists to show, but it also lets a page reach the app's own transport
+port and the auxiliary listeners. Two consequences: an agent can read
+any thread's `/design/` workdir through `browser_open` +
+`browser_dom`, around the workspace containment `browser_open_file`
+enforces (two tools, two containment models, one routes past the
+other); and arbitrary web content becomes a loopback peer that did
+not exist a month ago. The pixels-only companion pane is *not* the
+weak point — screencast JPEGs into an `<img>`, no DOM crossing, an
+ephemeral Chrome profile with no access to the webview's
+`sessionStorage`. That part of the design is right and holds.
+
+**E. The `--connect` client stub serves the upstream credential.**
+Its loopback listener returns the injected `__AO_BOOTSTRAP__` — token
+included — on `GET /`, behind a Host guard and nothing else. Any
+loopback peer on the machine running `--connect` reads a working
+credential for the remote backend.
+
+**F. Both MCP endpoints authenticate on the path alone.** The browser
+and design MCP servers check only the method and an unguessable
+per-thread UUID in the path: no `Origin` or `Sec-Fetch-Site`
+rejection, no loopback-peer assertion, and the body is decoded
+regardless of `Content-Type`. The claudetui gateway next door already
+does the peer check. The grant behind that path is page evaluation
+and workspace file reads, so this is a larger capability than "an
+auxiliary listener with no session credential" implies (spec §13's
+rule is reworded accordingly). The path also rides the provider CLI's
+argv, readable from `/proc/<pid>/cmdline` by any process of the same
+user — same-user is already the trust boundary, but it means the
+credential is not secret from local software the way an in-memory
+token is.
+
+**G. The two Chrome launchers disagree on sandbox posture.**
+`internal/screenshot` disables the OS sandbox while rendering
+agent-authored HTML; `internal/browser` explicitly refuses the same
+flag and comments that failing to launch is the safer outcome. Same
+class of content, opposite decision, same codebase.
+
+**Not a defect, checked and cleared**: the open CORS header on the
+embedded `modern-screenshot` asset is deliberate and required — the
+capture iframe fetches it from an opaque sandbox origin, which cannot
+be named in an allow-list. Its only side effect is that the asset is
+cross-origin readable, which reveals the port to a page that probes
+for it; the port is already discoverable to anything that can probe
+loopback, so this changes nothing. It stays, declared in the
+enumeration as a static asset carrying no data. Likewise the browser
+MCP listener cannot start lazily: its URL rides provider argv at
+spawn, so it must exist before the first tool call.
 
 ## What a session credential represents
 
@@ -133,8 +208,10 @@ tamper-proof.
 | 12 | A peer backend performs bulk retrieval across every enrolled thread | Sensitive content classes withheld or redacted by default with explicit opt-in; peer reads rate-limited and audited per peer; enrollment documented as one-way disclosure. |
 | 13 | A client claims scopes it was not granted | The client capability object is UI-only; the server re-checks every RPC against the authenticated session. |
 | 14 | On-machine records are altered to hide activity | Audit is an `O_APPEND` hash-chained file with no wire mutation path, mirrored off-machine. Evident, not prevented. See the section above. |
-| 15 | A revoked or stolen device still holds its synced replica | Revocation cuts access, not past disclosure. The phone replica is encrypted at rest with a key in native secure storage; browser replicas are not, and whatever a device already synced must be assumed readable to whoever controls that device. |
-| 16 | A compromised owned backend serves a malicious phone bundle | The shell verifies every bundle against the release signing key baked into the shell; backends can only relay genuine signed releases. One compromised backend cannot reach the phone's device keys or its other backends' credentials through an update. Dev-bundle trust is an explicit per-device opt-in. |
+| 15 | A revoked or lost device still holds its synced replica | Revocation cuts access, not past disclosure. The phone replica is encrypted at rest with a key in native secure storage; browser replicas are not, and whatever a device already synced must be assumed readable to whoever controls that device. |
+| 16 | A backend under someone else's control serves a modified phone bundle | The shell verifies every bundle against the release signing key baked into the shell; backends can only relay genuine signed releases. One such backend cannot reach the phone's device keys or its other backends' credentials through an update. Dev-bundle trust is an explicit per-device opt-in. |
+| 17 | A page loaded in the in-app browser addresses the app's own loopback ports | Managed-browser navigation denies our own transport and auxiliary ports (dev-server ports are unaffected); `/design/` carries a per-thread token, so reaching the port is not reaching the content. |
+| 18 | A local process reads an auxiliary listener's path credential out of provider argv | The listener re-checks that the peer is loopback and refuses browser-originated requests, so holding the URL is not sufficient by itself. Same-user local software remains inside the trust boundary by construction (see the section above). |
 
 ## Claims we deliberately do not make
 

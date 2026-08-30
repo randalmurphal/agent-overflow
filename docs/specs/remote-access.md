@@ -395,8 +395,13 @@ bug: one spawn defect killed all endpoint advertisement).
 
 ### Stable endpoint
 
-Port becomes a setting (pick-random-once-then-persist default,
-user-fixable). Durable sessions remove re-pairing after restarts; origin
+The pick-random-once-then-persist half already shipped
+(`main_transport_port.go`: `transport-port.json` pin next to
+`client-id.json`, engages only when no explicit `--listen` port is
+given, falls back to ephemeral and re-pins if the pinned port is
+taken, `--reset-transport-port` to clear). What remains is the
+**user-fixable setting** surface: today the only controls are CLI
+flags. Durable sessions remove re-pairing after restarts; origin
 stability keeps browser storage attached.
 
 ### LAN access without a tailnet
@@ -445,6 +450,20 @@ subprocess with an owned domain. The chosen HTTPS name is the backend's
 **canonical domain**: passkey RP ID, related-origins anchor (max 5), and
 the phone app's dial target.
 
+**Termination by someone else's proxy** is the third path people will
+try regardless of what we build, so it gets a defined answer rather
+than a broken one. Two things break today. `deriveWSURL` derives the
+socket scheme from the listener, not the request, so an `https:` page
+served through a TLS-terminating proxy is handed a `ws://` URL and the
+browser refuses it as mixed content; the fix is honoring a validated
+`X-Forwarded-Proto`. And a same-host proxy makes every remote peer
+look like loopback, which is exactly the fact `LocalOnlyMethods` reads
+as "this is the machine's own window". Both are why the scope table
+replaces topology-based trust rather than extending it: with §5's
+model, forwarded-header handling is a routing detail. Until phase 3
+lands, a reverse proxy in front of the backend is documented as
+unsupported, not silently degraded.
+
 ### Dev-server preview across machines (the port gateway)
 
 The in-app browser must reach a dev server the agent started on the
@@ -461,12 +480,14 @@ when the dev server binds beyond loopback). We build the gateway:
 - **Reachable ports are an allowlist, never arbitrary**: ports the
   dev-server scanner attributed to this thread's sessions, plus ports
   the user adds explicitly. A localhost proxy that forwards anywhere
-  is a hole into host-local services; this one forwards only to
-  declared dev servers. Gateway access requires an execute-tier scope.
-- **The gateway is its own origin** (same posture as `/design/`):
-  proxied content is agent/app-authored and never shares the SPA
-  origin; the session credential is never visible to it — access
-  rides a short-lived ticket bound to the gateway origin.
+  reaches every host-local service on the box; this one forwards only
+  to declared dev servers. Gateway access requires an execute-tier scope.
+- **The gateway is its own origin**, the same posture `/design/`
+  acquires in phase 0 (today `/design/` is a route on the SPA's own
+  mux, host, and port — that is the defect, not the model): proxied
+  content is agent/app-authored and never shares the SPA origin; the
+  session credential is never visible to it — access rides a
+  short-lived ticket bound to the gateway origin.
 - Detection reuses t3code's proven shape, server-side: enumerate
   loopback listeners (`lsof`/PowerShell), publish only candidates
   whose bounded 1s probe returns HTML or a redirect, cache probe
@@ -504,9 +525,18 @@ servers and monitors — with a stop-time re-check that the thread was
 not re-engaged in the gap. The reaper's keep-alive-while-working
 choice stays (killing quiet-but-working sessions is rejected
 doctrine); what an unattended host adds is **visibility and control,
-not timeouts**: the running-background-work inventory (which thread,
-what, since when) rides the existing tray machinery over the wire,
-with per-task and per-thread stop controls from any attached client.
+not timeouts**: a running-background-work inventory (which thread,
+what, since when) with per-task and per-thread stop controls from any
+attached client. The per-item data already exists — `store.Item`
+carries thread, tool, summary, status, parent, and timestamps — but
+every entry point today is thread-scoped, so this needs one new
+cross-thread bound method. It must union the same three sources
+`ListLiveBackgroundTasks` does (the store query, live Codex subagent
+launches, and the triage layer's in-memory Codex unified-exec tasks,
+which exist in no table), because a query written against SQLite
+alone silently under-reports. The tray's 2-second completed-sibling
+retention is a live-tray tuning value, not an inventory history;
+the inventory reports what is running now.
 
 Update is a genuine availability requirement once the machine is
 unattended, and a supply-chain risk if remotely triggerable. Resolution:
@@ -625,7 +655,7 @@ Prerequisite sweep, valuable standalone:
   bundles are code, so transport trust is not enough. The shell
   verifies every bundle against the **release signing key baked into
   the shell itself**. A backend can only relay genuine signed
-  releases, never arbitrary script, so one compromised backend cannot
+  releases, never arbitrary script, so one misbehaving backend cannot
   reach the phone's device keys or its *other* backends' credentials
   through an update. Self-built/dev bundles require an explicit
   per-device "trust dev bundles from this backend" toggle. Only
@@ -659,24 +689,34 @@ Prerequisite sweep, valuable standalone:
   IndexedDB thread replica (cold opens paint locally, then
   `SyncThreadWindow` reconciles a windowed diff) is the remote story
   too: over a slow link, attach cost is a diff against the replica,
-  not a full load. Obligations it takes on: keyed by backend UUID
-  before multi-backend UI lands (§10), purged on sign-out and device
-  revocation, and the resume ladder becomes replay-ring → windowed
+  not a full load. Backend-UUID keying already shipped (one database
+  per backend, `ao-replica-<backendId>`; generation mismatch clears
+  and re-stamps). Obligations still open: purge on sign-out and
+  device revocation — today **no code path ever deletes a replica
+  database**, and a backendId change orphans the old
+  `ao-replica-<oldId>` database on the origin forever, outside the
+  per-database caps — and the resume ladder becomes replay-ring → windowed
   replica diff → full snapshot, in that order. At rest: the phone
   replica is encrypted with a key held in native secure storage
   outside the webview (biometric-gateable); browser profiles cannot
   do this. Revocation is not remote wipe. Cutting a device's access
   does not un-disclose what its replica already held (boundaries
   doc).
-- **Reconnect discipline** (two t3code patterns adopted): every
-  in-flight query/RPC derives from one canonical connection-state
-  observable — transient states (connecting, backoff) *suspend*
-  pending work so it re-runs on the next "connected", while terminal
-  states fail it with the preserved underlying cause, never a generic
-  message. And retry-on-terminal is only ever a small explicit
-  allowlist scoped to a known transient window (e.g. auth rejection
-  in the seconds after a server update restart), not a blanket
-  policy.
+- **Reconnect discipline** (two t3code patterns adopted; unbuilt
+  today, phase 1). Current behavior is the opposite of the target:
+  on socket close `wsClient` rejects every in-flight RPC with one
+  shared `DisconnectedError('socket closed')` — no suspension queue,
+  no per-call cause, and no app-layer retry wrapper anywhere, so a
+  reconnect that takes 200ms still surfaces as a failed call. Target:
+  every in-flight query/RPC derives from one canonical
+  connection-state observable — transient states (connecting,
+  backoff) *suspend* pending work so it re-runs on the next
+  "connected", while terminal states fail it with the preserved
+  underlying cause, never a generic message. And retry-on-terminal is
+  only ever a small explicit allowlist scoped to a known transient
+  window (e.g. an authentication refusal in the seconds after a
+  server update restart), not a blanket policy. On a flaky link this
+  is the difference between an app that pauses and one that throws.
 - **Ticket primitive generalizes beyond WS**: short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
@@ -706,14 +746,21 @@ Prerequisite sweep, valuable standalone:
   desktop is attached but unattended), and a deep-link scheme carrying
   backend UUID + thread id.
 - **Desktop notifications ride the same event mapping.** An attached
-  client already receives the events, so it raises native OS
+  client already receives the *thread* events, so it raises native OS
   notifications for any attached backend — remote behaves exactly as
   native on the box, no push infrastructure involved (push is the
-  phone/unattached path). Notification preferences become a general
-  device-tier setting (per event type × per backend); today's
-  workflow-only, always-on notifications fold into this and become
-  configurable. The handled-elsewhere retraction applies to local OS
-  notifications the same as to push.
+  phone/unattached path). This needs an audience change, not just a
+  preferences UI: `NotificationSend` and `NotificationActivated` are
+  loopback-only channels today, so an attached LAN browser receives
+  neither. `NotificationSend`'s retained (non-ephemeral) retention
+  stays — the Windows launcher replays it by cursor after reconnect.
+  Notification preferences become a general device-tier setting (per
+  event type × per backend); today's always-on notifications fold
+  into this and become configurable. Note there are two production
+  senders through `notifyOS`, not one: workflow items needing a human
+  or failing, and the WSL launcher's "update didn't apply" notice.
+  The handled-elsewhere retraction applies to local OS notifications
+  the same as to push.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and
@@ -876,8 +923,19 @@ Classes to enumerate:
 - **Event channels**: required scope per channel, resolved into the
   connection's precomputed visible set.
 - **Listeners**: loopback, LAN, tsnet, tunnel, plus the auxiliary
-  loopback servers (design MCP, harness control, claudetui gateway,
-  pprof) which must each declare that they carry no session credential.
+  loopback servers (browser MCP, design MCP, harness control,
+  claudetui gateway + hook relay, pprof, the `--connect` client stub)
+  and the **implicit** ones our own child processes open — chromedp
+  gives every managed Chrome a loopback DevTools port, which no
+  inventory named until this audit. Each declares what capability it
+  carries and how it authenticates, not merely that it holds no
+  session credential: the browser MCP endpoint carries page
+  evaluation and workspace file reads behind an unguessable path
+  alone, which is a larger grant than "no session credential"
+  suggests. A listener whose credential is weaker than the surface it
+  gates is the pattern the enumeration exists to make visible. The
+  starting inventory is 12 listeners across 6 packages, verified
+  2026-08-30.
 - **Content origins**: anything serving bytes an agent or user
   authored declares its origin and content-type posture; agent-authored
   bytes never execute at the SPA origin.
@@ -975,33 +1033,108 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 
 0. **Open content-isolation defects.** Independent of everything else
    and reachable today, in the desktop webview, with no remote feature
-   enabled: the markdown renderer's `Link.svelte` relative branch
-   (root-relative and protocol-relative hrefs render as live anchors,
-   bypassing `transformUrl`), an anchor-navigation guard, `/design/`
-   hardening (origin/content-type posture, response headers, symlink
-   containment via `os.OpenRoot` as `internal/safecopy` already does,
-   per-thread scoping, no directory listing), and a baseline CSP that
-   is strict in production and relaxed in dev (the Vite dev server injects
-   inline styles regardless of HMR, so the split is not an HMR
-   concession; disabling HMR is an independent preference). The boot
-   credential moves out of script reach entirely: bootstrap exchanges
-   the one-time `?t=` URL token for an HttpOnly cookie, strips the
-   token from the URL, and the WS upgrade authenticates via cookie
-   plus the §7 Origin allow-list, deleting the `sessionStorage` copy
-   and `window.__AO_BOOTSTRAP__`. This is the same channel that
-   carries session credentials from phase 2 on, not a stopgap. Also:
-   `safeExternalURL` on the two unvalidated `PRStep.svelte` hrefs, tests
-   for `/`- and `//`-leading hrefs, a correction to the false claim in
-   `frontend/CLAUDE.md`, and the §13 surface enumeration + CI gate
-   seeded with HTTP routes, listeners, and content origins (the
-   RPC-method and event-channel columns join in phase 3 when the scope
-   table generates).
+   enabled. Every item below was re-verified against this tree on
+   2026-08-30. Two entries left the list that day: the markdown
+   renderer's relative-href branch (fixed at the render layer, both
+   render paths verified) and a correction to `frontend/CLAUDE.md`
+   (the claim it was going to correct now lives in a code comment and
+   is true against current code). Two more turned out already shipped
+   and are recorded in §7 and §9 rather than here: the persisted
+   stable port and the backend-keyed replica.
+
+   - **`/design/` sits outside the authorization model.** It is a
+     route on the SPA's own mux, host, and port, with no token, no
+     per-thread check, directory listings on (so a GET of `/design/`
+     enumerates every thread id on the install), no response headers,
+     and `http.Dir`'s symlink following intact — an unauthenticated
+     read of anything the app process can read, available to any
+     loopback peer. Fix: its own origin, a per-thread capability
+     token, containment via `os.OpenRoot` (the primitive
+     `internal/safecopy` already uses), listings off, and the
+     `WriteSecurityHeaders` block the SPA route already gets.
+     Without a domain, "its own origin" means its own loopback
+     listener on its own pinned port, and every internal consumer of
+     the design URL moves with it (the screenshot capture path builds
+     that URL today). One interaction to get right, because it makes
+     the Origin allow-list load-bearing rather than defense in depth:
+     **cookies are scoped by host, not by port**, so a document on
+     the design origin still has the boot cookie attached to
+     requests it makes to the SPA origin — including a WS upgrade,
+     which CORS does not cover. The upgrade must therefore refuse
+     any `Origin` outside the allow-list, and the design origin is
+     never in it.
+   - **Anchor-navigation guard.** `handleExternalLinkClick` returns
+     *without* `preventDefault` when `safeExternalURL` yields null, so
+     a non-`http(s)` href performs its default navigation. The
+     markdown renderer can no longer emit such an anchor, but this is
+     app-wide policy that every other component inherits, and today
+     it is neither fail-closed nor documented as intentional.
+   - **`PRStep.svelte`** binds two forge-derived hrefs with no
+     `safeExternalURL`, while the two sibling consumers of the same
+     field (`PrBadge.svelte`, `GitActionsControl.svelte`) both
+     validate. Both layers of defense are absent at once here.
+   - **A baseline CSP**, strict in production and relaxed in dev.
+     There is no CSP anywhere in the product today. The Vite dev
+     server needs inline styles regardless of HMR, so the split is
+     not an HMR concession; disabling HMR is an independent
+     preference.
+   - **The boot credential moves out of script reach.** Bootstrap
+     exchanges the one-time `?t=` URL token for an HttpOnly cookie,
+     strips the token from the URL, and the WS upgrade authenticates
+     via cookie plus the §7 Origin allow-list, deleting the
+     `sessionStorage['ao:bootstrap-token']` copy and
+     `window.__AO_BOOTSTRAP__`. This is the same channel that carries
+     session credentials from phase 2 on, not a stopgap.
+   - **The `--connect` client stub hands out that same credential.**
+     Its loopback listener serves the injected `__AO_BOOTSTRAP__`,
+     upstream token included, on an unauthenticated `GET /`. Same
+     credential shape, so it is fixed in the same change.
+   - **The two MCP endpoints authenticate on an unguessable path
+     alone** — no `Origin`/`Sec-Fetch-Site` rejection and no
+     loopback-peer re-check (the claudetui gateway already does the
+     peer check; copy it). Lazy-starting these listeners is not
+     available: the URL rides provider argv at spawn, so it must
+     exist before any tool is called. The two checks are the fix.
+   - **Managed-browser navigation policy.** `Manager.Open` accepts
+     loopback URLs, which is right for dev servers and wrong for the
+     app's own ports: as written, a page in the in-app browser is a
+     loopback peer of the app, and an agent can reach any thread's
+     `/design/` workdir through it, around `browser_open_file`'s
+     workspace containment. Deny our own transport and auxiliary
+     ports; leave dev-server ports alone.
+   - **The two Chrome launchers disagree on sandbox posture.**
+     `internal/screenshot` disables the OS sandbox while rendering
+     agent-authored HTML; `internal/browser` explicitly refuses the
+     same flag and documents why failing to launch is the better
+     outcome. Same class of content, so align on the stricter
+     posture.
+   - **Tests**: a `//`-leading link href through `ChatMarkdown` (the
+     `//`-versus-schemeless discrimination exists in both render
+     paths and is pinned in neither for links), the delegate's
+     behavior on a non-`http` anchor, and a link-level differential
+     between `staticHtml.ts` and `Link.svelte` — `markdown/AGENTS.md`
+     already names that silent fork as a known hazard.
+   - **The §13 surface enumeration + CI gate**, seeded with the
+     verified inventory: 12 listeners including the implicit Chrome
+     DevTools ports, the transport's routes, and content origins. The
+     RPC-method and event-channel columns join in phase 3 when the
+     scope table generates.
+   - **Doc drift inside the classification table.**
+     `internalmethods.go` describes six categories; the map carries
+     nine and 269 entries. Anything citing "six" is stale.
 
 1. **Sync sweep + seams.** Archive-closes-session fix (§7 — a
    standing leak today, acute once hosts are unattended). Emits,
    channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
-   backend UUID, hello frame, multi-backend seams (§10).
+   backend UUID, hello frame, multi-backend seams (§10). Reconnect
+   discipline lands here (§9): it is client-transport work that every
+   later surface depends on, and today's blanket
+   fail-every-in-flight-RPC is what a flaky link would surface. So
+   does the replica's missing lifecycle — nothing deletes a replica
+   database today, and a backend-id change orphans the old one on the
+   origin permanently — and §9's forward-tolerance obligation with
+   its future-dialect fixture.
 2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
@@ -1030,8 +1163,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    native WebSocket bridge (the phone's only transport, §9) and
    bundle sync from the backend with rollback (§9); store builds
    come whenever the app ships.
-7. **Multi-backend UI.** Keying the collision-prone singletons, sidebar
-   sections.
+7. **Multi-backend UI.** Keying the collision-prone singletons; the
+   unified sidebar with project targets, composer target picker, and
+   ambient reachability (§10); the port gateway's remote wiring in
+   the in-app browser (§7).
 8. **Team sharing.** Hub-first: team-server deployment, shared
    workspaces with roles, peer sessions, hub-to-hub peering, payload
    sensitivity tiers, fork pipeline. Ingress triggers and per-workflow
