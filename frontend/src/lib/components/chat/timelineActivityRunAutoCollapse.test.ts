@@ -25,6 +25,8 @@ interface Harness {
   viewport: number;
   /** What the pane's controller reports for a spring glide in flight. */
   autoScrollInFlight: boolean;
+  /** Whether cached virtualizer geometry is safe to consume. */
+  geometryReady: boolean;
   items: Map<string, Item>;
   expandedItemIds: Set<string>;
   quietWork: ReturnType<typeof createTimelineQuietWork>;
@@ -50,6 +52,7 @@ function harness(): Harness {
     scrollTop: 0,
     viewport: 600,
     autoScrollInFlight: false,
+    geometryReady: true,
     items,
     expandedItemIds,
     pane: undefined as unknown as ThreadPane,
@@ -116,6 +119,7 @@ function harness(): Harness {
         getPane: () => self.pane,
         getListRef: () => listRef,
         getRevealedNodes: () => self.nodes,
+        geometryReady: () => self.geometryReady,
       }),
     ],
   });
@@ -221,6 +225,23 @@ describe('timelineActivityRunAutoCollapse', () => {
     expect(h.runs.openedLiveRunIds()).toEqual([run.runId]);
 
     h.autoScrollInFlight = false;
+    await h.sweep();
+    h.project();
+    expect(run.collapsed).toBe(true);
+    expect(h.runs.openedLiveRunIds()).toEqual([]);
+  });
+
+  it('keeps a held run open until post-resume geometry is fresh', async () => {
+    const h = harness();
+    const run = pinnedPastSettledRun(h);
+    h.geometryReady = false;
+
+    await h.sweep();
+    h.project();
+    expect(run.collapsed).toBe(false);
+    expect(h.runs.openedLiveRunIds()).toEqual([run.runId]);
+
+    h.geometryReady = true;
     await h.sweep();
     h.project();
     expect(run.collapsed).toBe(true);

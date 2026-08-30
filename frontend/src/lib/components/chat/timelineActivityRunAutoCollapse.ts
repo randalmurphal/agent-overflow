@@ -45,6 +45,8 @@ export interface TimelineActivityRunAutoCollapseOptions {
   getPane(): AutoCollapseHost;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getRevealedNodes(): TimelineNode[];
+  /** False while document visibility has made the virtualizer cache stale. */
+  geometryReady(): boolean;
 }
 
 /**
@@ -84,6 +86,11 @@ export function createTimelineActivityRunAutoCollapse(
     // animation the reader is watching into a snap to the bottom.
     const held = pane.activityRuns.openedLiveRunIds();
     if (held.length === 0) return false;
+    // Hidden documents can keep receiving provider/Svelte updates while rAF
+    // and ResizeObserver delivery is suspended. The cached viewport is not a
+    // proof of invisibility again until the virtualizer publishes a fresh
+    // post-resume geometry sample (timelineVisibilityGeometry.ts).
+    if (!options.geometryReady()) return false;
 
     const listRef = options.getListRef();
     if (!listRef) return false;

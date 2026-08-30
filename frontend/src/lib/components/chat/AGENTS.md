@@ -134,7 +134,11 @@ The rules that bite here:
   built and rejected, so do not bring back a softer in-view collapse. The
   gate is a `timelineQuietWork.ts` pass and must never run while
   `autoScrollInFlight()`: its bottom-pinned restore is a direct write that
-  snaps a live glide.
+  snaps a live glide. Document hiding invalidates its cached geometry too:
+  `timelineVisibilityGeometry.ts` keeps the gate closed through resume until
+  the existing virtualizer subscription publishes a new visible,
+  post-flush content-geometry sample. Do not replace that evidence with a
+  timer, DOM read, extra observer, or visibility alone.
 - Engagement is deviation-based through `pane.hasUserExpansionWithin`,
   never a rendered-height proxy: with `collapseDiffPreviews` off, diffs
   render expanded and a pixel guard would pin every run with an edit.

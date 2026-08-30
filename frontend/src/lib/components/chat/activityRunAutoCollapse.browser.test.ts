@@ -65,6 +65,28 @@ function prose(id: string, index: number, threadId: string, tall = false): Item 
   });
 }
 
+/** Shadow the readonly browser visibility accessor for one lifecycle case. */
+async function withVisibilityState(
+  run: (setVisibility: (state: DocumentVisibilityState) => void) => Promise<void>,
+): Promise<void> {
+  const ownDescriptor = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+  let state: DocumentVisibilityState = 'visible';
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => state,
+  });
+  const setVisibility = (next: DocumentVisibilityState): void => {
+    state = next;
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+  try {
+    await run(setVisibility);
+  } finally {
+    if (ownDescriptor) Object.defineProperty(document, 'visibilityState', ownDescriptor);
+    else delete (document as unknown as Record<string, unknown>).visibilityState;
+  }
+}
+
 describe('activity run — auto-collapse off-screen', () => {
   const THREAD_ID = 'thread-run-autocollapse';
 
@@ -317,6 +339,53 @@ describe('activity run — auto-collapse off-screen', () => {
       }
     }
     expect(runEl(scrollEl, runId)!.dataset.collapsed).toBe('true');
+  });
+
+  it('does not auto-collapse while hidden or before fresh resume geometry', async () => {
+    const mounted = await mountHeldOpenSettledRun();
+    const { pane, scrollEl, runId } = mounted;
+    pane.setDiffCardExpanded('a5', 'src/blocker.ts', true);
+
+    // Park the run fully above the bottom-pinned viewport and beyond the
+    // tail-distance threshold, but keep it held so visibility controls the
+    // exact release edge below.
+    const lastProse = await growTail(mounted, 6, true);
+    expect(runEl(scrollEl, runId)!.getBoundingClientRect().bottom).toBeLessThan(
+      scrollEl.getBoundingClientRect().top,
+    );
+    expect(pane.activityRuns.openedLiveRunIds()).toContain(runId);
+
+    await withVisibilityState(async (setVisibility) => {
+      setVisibility('hidden');
+      pane.setDiffCardExpanded('a5', 'src/blocker.ts', false);
+      // The cached geometry says "eligible". Hidden lifecycle state must win
+      // even after the quiet scheduler's rate bound and old recheck windows.
+      scrollEl.dispatchEvent(new Event('scroll'));
+      for (let i = 0; i < 30; i += 1) await raf();
+      expect(pane.activityRuns.openedLiveRunIds()).toContain(runId);
+      expect(runEl(scrollEl, runId)!.dataset.collapsed).toBe('false');
+
+      setVisibility('visible');
+      // Visibility alone is not geometry evidence. The run stays open until
+      // the virtualizer publishes a post-flush sample from the visible page.
+      for (let i = 0; i < 12; i += 1) await raf();
+      expect(pane.activityRuns.openedLiveRunIds()).toContain(runId);
+
+      // Grow one existing row. Its ResizeObserver delivery is the fresh
+      // visible geometry sample that clears the barrier and schedules the
+      // gate; the ordinary glide stand-down still applies until growth rests.
+      pane.applyProviderItemUpserts([{
+        ...lastProse,
+        summary: `${lastProse.summary}\n\nFresh visible geometry after resume.`,
+        updatedAt: lastProse.updatedAt + 1,
+      }]);
+      await waitForQuietBottom(scrollEl, 'post-resume geometry settle', QUIET_BOTTOM);
+      await waitFor(
+        () => !pane.activityRuns.openedLiveRunIds().includes(runId),
+        'post-resume auto-collapse release',
+      );
+      expect(runEl(scrollEl, runId)!.dataset.collapsed).toBe('true');
+    });
   });
 
   it('the restore a release leaves behind never yanks the glide that follows', async () => {

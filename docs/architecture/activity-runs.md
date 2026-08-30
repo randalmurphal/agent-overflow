@@ -393,8 +393,19 @@ construction nobody can see it happen), and its inner position is forgotten
 the same way a clicked collapse forgets it. The gate runs on the row-UI
 prune's cadence (structural changes + scroll end, one-tick debounced, never
 per scroll frame), reads only the engine's cached geometry, and pays nothing
-when no holds exist. It also stands down while a reader-visible glide is in
-flight or armed (`PaneScrollController.autoScrollInFlight`): a release
+when no holds exist. A hidden document invalidates that cache as proof of
+invisibility: provider events and Svelte flushes can continue while rAF and
+ResizeObserver delivery pause. `timelineVisibilityGeometry.ts` therefore
+closes only this pass from the hidden edge through resume, and reopens it only
+when MessageTimeline's existing virtualizer subscription publishes a new
+visible, post-flush content-geometry sample. The edge adds no timer, layout
+read, observer, or normal-streaming schedule; the sample schedules one pass
+only when it clears the barrier. No sample means deliberate over-retention —
+an old run stays open until later geometry rather than folding against an
+unproven viewport.
+
+The gate also stands down while a reader-visible glide is in flight or armed
+(`PaneScrollController.autoScrollInFlight`): a release
 routes through the bottom-held transaction, whose pinned restore is a
 direct write, and landing that mid-glide, or in the armed gap before the
 spring's first frame, would turn the animation into a snap to the bottom.
