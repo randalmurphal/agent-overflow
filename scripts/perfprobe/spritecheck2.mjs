@@ -66,9 +66,8 @@ try {
   await sleep(800);
   const b2 = await counters();
 
-  // Verify (b) actually painted: masked div should have visible green pixels
-  // only inside the mask rect. Read back via an offscreen canvas draw of the div's
-  // region is not possible for masks — instead check computed style resolved the reference.
+  // Verify (b) reached the compositor without a pixel readback. The resolved
+  // computed style is the observable contract for this resource-only probe.
   const style = await evaluate(page, `(() => {
     const el = document.getElementById('ao-sc2-el');
     const cs = getComputedStyle(el);

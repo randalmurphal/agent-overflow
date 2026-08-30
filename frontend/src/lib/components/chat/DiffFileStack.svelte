@@ -32,6 +32,7 @@
   } from '../../utils/inlineThreshold';
   import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
   import { ingestPersistedPatchSpans } from '../../utils/persistedSpans';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import DiffFileBlock from './DiffFileBlock.svelte';
@@ -123,6 +124,15 @@
     });
   });
 
+  // Paths are NOT unique across the wire's `changes[]`: triage's
+  // buildInlineDiffFromChanges appends one entry per change with no path
+  // dedupe, and a rename's Path is rewritten to the move destination — so a
+  // rename A→B plus a separate edit of B yields two entries keyed B, and a
+  // keyed `{#each}` over them throws `each_key_duplicate` (an aborted flush,
+  // utils/uniqueEachKeys.ts). Deduping would drop a distinct previewPatch,
+  // so the repair is key-side only.
+  let renderableFileKeys = $derived(uniqueEachKeys(renderableFiles, (entry) => entry.path));
+
   let legacyFilesNeedMorePayload = $derived.by(() => {
     if (!expansion.hasMore) return false;
     const files = previewFiles();
@@ -192,7 +202,7 @@
   }
 </script>
 
-{#each renderableFiles as { path, file, hasMoreDiffContent } (path)}
+{#each renderableFiles as { file, hasMoreDiffContent }, fileIndex (renderableFileKeys[fileIndex] ?? fileIndex)}
   <DiffFileBlock
     {pane}
     {file}

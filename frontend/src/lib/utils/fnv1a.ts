@@ -7,13 +7,17 @@
 const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
 const FNV_PRIME_32 = 0x01000193;
 
-export function fnv1a32(input: string): number {
-  let hash = FNV_OFFSET_BASIS_32 >>> 0;
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
+/** Continue an FNV-1a hash with an appended UTF-16 suffix. */
+export function appendFNV1a32(hash: number, suffix: string): number {
+  for (let i = 0; i < suffix.length; i += 1) {
+    hash ^= suffix.charCodeAt(i);
     hash = Math.imul(hash, FNV_PRIME_32) >>> 0;
   }
   return hash >>> 0;
+}
+
+export function fnv1a32(input: string): number {
+  return appendFNV1a32(FNV_OFFSET_BASIS_32, input);
 }
 
 /** Compact string form for cache keys: `<length>:<hash base36>`. */

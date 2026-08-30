@@ -73,7 +73,7 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		prefix = DefaultBootstrapPrefix
 	}
 
-	args := buildLaunchArgs(opts.Distro, opts.BinaryPath, opts.ExtraArgs)
+	args := buildLaunchArgsWithMemoryLimit(opts.Distro, opts.BinaryPath, opts.ExtraArgs, opts.MemoryLimitBytes)
 
 	runner := resolveCommand(opts)
 	cmd := runner(ctx, "wsl.exe", args...)
@@ -100,20 +100,27 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		return nil, nil, fmt.Errorf("wire stderr pipe: %w", err)
 	}
 
-	platform, err := newPlatformLauncher()
-	if err != nil {
-		return nil, nil, fmt.Errorf("create job object: %w", err)
+	var platform platformLauncher
+	if !opts.UseParentJob {
+		platform, err = newPlatformLauncher()
+		if err != nil {
+			return nil, nil, fmt.Errorf("create job object: %w", err)
+		}
 	}
 
 	if err := cmd.Start(); err != nil {
-		_ = platform.close()
+		if platform != nil {
+			_ = platform.close()
+		}
 		return nil, nil, fmt.Errorf("start wsl.exe: %w", err)
 	}
 
-	if err := platform.adopt(cmd); err != nil {
-		_ = cmd.Process.Kill()
-		_ = platform.close()
-		return nil, nil, fmt.Errorf("adopt child into job object: %w", err)
+	if platform != nil {
+		if err := platform.adopt(cmd); err != nil {
+			_ = cmd.Process.Kill()
+			_ = platform.close()
+			return nil, nil, fmt.Errorf("adopt child into job object: %w", err)
+		}
 	}
 
 	// Resume the suspended primary thread. ResumeThread on the main
@@ -121,7 +128,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 	// stays frozen indefinitely.
 	if err := resumePrimaryThread(cmd); err != nil {
 		_ = cmd.Process.Kill()
-		_ = platform.close()
+		if platform != nil {
+			_ = platform.close()
+		}
 		return nil, nil, fmt.Errorf("resume child thread: %w", err)
 	}
 
@@ -146,7 +155,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launcher, *Bootstrap, err
 		// launcher's lifetime.
 		_ = stdout.Close()
 		_ = cmd.Process.Kill()
-		_ = platform.close()
+		if platform != nil {
+			_ = platform.close()
+		}
 		return nil, nil, err
 	}
 

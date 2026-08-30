@@ -283,6 +283,16 @@
 
   const stickyFile = $derived(stickyFileIndex >= 0 ? (files[stickyFileIndex] ?? null) : null);
 
+  // The overlay's chevron. A script function rather than an inline closure
+  // so the sticky file is read once, under a guard: the header's other
+  // expressions carry the `collapsedPaths` prop as a second dep, and a
+  // template deref of `stickyFile` beside it can be asked to render after
+  // the sticky file cleared and before the branch tears down.
+  function toggleStickyFile(): void {
+    const file = stickyFile;
+    if (file) onToggleCollapsed(file.path);
+  }
+
   function jumpToStickyFile(): void {
     const headerRow = built.firstRowOfFile[stickyFileIndex] ?? -1;
     if (headerRow >= 0) listRef?.scrollToIndex(headerRow);
@@ -393,8 +403,8 @@
     >
       <ReviewFileHeaderRow
         file={stickyFile}
-        collapsed={collapsedPaths.has(stickyFile.path)}
-        onToggle={() => onToggleCollapsed(stickyFile.path)}
+        collapsed={collapsedPaths.has(stickyFile?.path ?? '')}
+        onToggle={toggleStickyFile}
         overlay
         onJump={jumpToStickyFile}
       />

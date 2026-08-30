@@ -170,7 +170,13 @@
     return resolveContextPane(getPaletteTargetPaneId());
   }
 
-  let paletteContext = $derived(makeAppCommandContext(currentContextPane()));
+  // The palette's context walks the active pane and command flags. Keep that
+  // dependency graph dormant while the overlay is closed. Streaming item
+  // updates replace pane state many times a second, but a hidden palette has
+  // nothing to filter or render from those replacements.
+  let paletteContext = $derived(
+    isPaletteOpen() ? makeAppCommandContext(currentContextPane()) : null,
+  );
   let messageSearchPane = $derived(resolveContextPane(getMessageSearchTargetPaneId()));
   let threadPickerPane = $derived(resolveContextPane(getThreadPickerTargetPaneId()));
 

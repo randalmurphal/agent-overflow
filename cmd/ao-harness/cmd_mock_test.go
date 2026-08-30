@@ -85,6 +85,19 @@ func TestAdvanceArgsWithNoLiveMockSaysSo(t *testing.T) {
 	}
 }
 
+func TestAdvanceNeedsAGateWhenNoneIsOpen(t *testing.T) {
+	err := validateAdvanceGate("mock-1", "", []mockRow{{MockID: "mock-1"}})
+	if err == nil || !strings.Contains(err.Error(), "no gate to advance") || !strings.Contains(err.Error(), "state: -") {
+		t.Fatalf("error = %v, want the mock state and a gate hint", err)
+	}
+}
+
+func TestAdvanceAllowsAnExplicitGateWhenNoneIsOpen(t *testing.T) {
+	if err := validateAdvanceGate("mock-1", "first-delta", []mockRow{{MockID: "mock-1"}}); err != nil {
+		t.Fatalf("explicit gate was refused: %v", err)
+	}
+}
+
 // The gate column is the only place `mock advance`'s correct argument is
 // visible: the name lives in the scenario document, and "which one is
 // open right now" is the question worth asking before releasing one.

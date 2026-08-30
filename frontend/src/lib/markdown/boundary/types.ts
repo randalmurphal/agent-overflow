@@ -8,21 +8,21 @@
 // See ./LICENSE for the incremark MIT license.
 
 export interface BlockContext {
-  inFencedCode: boolean;
-  fenceChar?: string;
-  fenceLength?: number;
-  listDepth: number;
-  blockquoteDepth: number;
-  inContainer: boolean;
-  containerMarkerLength?: number;
-  containerName?: string;
-  containerDepth: number;
-  inList: boolean;
-  listOrdered?: boolean;
-  listIndent?: number;
-  listMayEnd?: boolean;
-  inFootnote?: boolean;
-  footnoteIdentifier?: string;
+  readonly inFencedCode: boolean;
+  readonly fenceChar?: string;
+  readonly fenceLength?: number;
+  readonly listDepth: number;
+  readonly blockquoteDepth: number;
+  readonly inContainer: boolean;
+  readonly containerMarkerLength?: number;
+  readonly containerName?: string;
+  readonly containerDepth: number;
+  readonly inList: boolean;
+  readonly listOrdered?: boolean;
+  readonly listIndent?: number;
+  readonly listMayEnd?: boolean;
+  readonly inFootnote?: boolean;
+  readonly footnoteIdentifier?: string;
 }
 
 export interface ContainerConfig {

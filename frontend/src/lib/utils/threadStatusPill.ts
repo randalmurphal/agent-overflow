@@ -99,7 +99,7 @@ export function resolveEffectiveThreadStatus(
  *   8. idle + unread    → "Completed"
  *   9. idle + read      → null (no pill)
  *
- * Priority and colors match forge's `Sidebar.logic.ts`: running / completed
+ * Priority and colors: running / completed
  * states use success green, discussion uses the running-blue outline,
  * awaiting-input uses info blue, and plan-ready uses the app primary accent.
  */

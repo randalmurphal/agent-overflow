@@ -1,12 +1,12 @@
 # internal/threadtitle/
 
 Pure prompt builders, thread-context formatter, decoder, and sanitisers
-behind the thread title flow — both first-turn generation and the
+behind the thread title flow, both first-turn generation and the
 user-triggered regeneration.
 
-The App-coupled glue — workspace resolution, settings routing, image
+The App-coupled glue (workspace resolution, settings routing, image
 attachment plumbing, the store read behind the regeneration context, and
-the compare-and-swap into `store.UpdateTitleIfCurrent` — stays in
+the compare-and-swap into `store.UpdateTitleIfCurrent`) stays in
 `app_thread_title.go`. This package only knows how to assemble the
 prompt, parse the structured output, and trim the model's response into
 a well-formed title.
@@ -27,7 +27,7 @@ a well-formed title.
 | `DecodeClaude(stdout) (string, error)` | Wraps `textgen.DecodeClaudeStructuredLastLine` with the title envelope shape. |
 | `Sanitize(raw) string` | Single-line, quote-stripped, internal-whitespace-collapsed, 50-rune ellipsis-capped. Returns `Default` when the model returns nothing usable so the compare-and-swap is a no-op. |
 
-CLI-error redaction lives in `textgen.RedactError` — that package
+CLI-error redaction lives in `textgen.RedactError`. That package
 authors the `"codex CLI failed: <stderr>"` strings the rule exists for.
 
 ## FormatThreadContext
@@ -44,13 +44,13 @@ with three deliberate divergences (marked below). The rules:
   an unlabeled tail blob defeats. Too little room for the header plus
   any text drops the section entirely rather than emitting a bare label.
 - **Truncation has two sources** (divergence): the character budget, and
-  the caller's `rowsDropped` — the STORE's newest-N row window having
+  the caller's `rowsDropped`, the STORE's newest-N row window having
   excluded rows. 201 short messages fit the budget whole and are still
   an incomplete thread, and the prompt tells the model to trust the
   truncation marker.
 - **The first user message is pinned back on top** (capped at 2_000
-  characters on its own) behind an `[Earlier content truncated]` marker
-  — but ONLY when the newest-first walk did not already retain it
+  characters on its own) behind an `[Earlier content truncated]` marker,
+  but ONLY when the newest-first walk did not already retain it
   (divergence). The original ask is what keeps a long thread's subject
   from drifting to its latest finding; pinning one the walk already kept
   would render the same ask twice. A thread with no user message, or one
@@ -60,7 +60,7 @@ with three deliberate divergences (marked below). The rules:
   read that as "no subject to name" and skip the run.
 
 Budgets are byte counts (t3 counts UTF-16 units; exactness is not
-load-bearing) but every cut lands on a rune boundary — a torn UTF-8
+load-bearing) but every cut lands on a rune boundary. A torn UTF-8
 sequence in the prompt IS load-bearing. The rune-safe cuts themselves
 are `stringsx.ClipRunes` / `stringsx.TailRunes`.
 
@@ -76,7 +76,7 @@ are `stringsx.ClipRunes` / `stringsx.TailRunes`.
   explicit no-tools rule. AO runs the Claude leg under `--safe-mode`
   without `--dangerously-skip-permissions`, so a tool call would be
   denied and only waste turns. t3's "use attached images" rule is also
-  absent from the REGENERATION prompt — that path passes attachment
+  absent from the REGENERATION prompt. That path passes attachment
   names, never images.
 - The prompt constants are pinned by snapshot tests. They are the
   feature: a silent edit changes every title the app generates.

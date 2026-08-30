@@ -1,33 +1,28 @@
 // MUTATES the app: mounts a thread in a pane (ctrl+click) if needed, then sends a prompt there.
-// usage: AO_CDP_PORT=9224 probe driveburn [thread-title] [prompt]
+// usage: AO_CDP_PORT=9224 probe driveburn [thread-title] [prompt] [--mount-only]
 // Built for the soak rig's multi-pane burn leg: opening the second seeded thread beside the
 // armed one and prompting it makes BOTH panes stream the installed scenario at once.
 import { connectPage, evaluate, sleep, done } from './lib/cdp.mjs';
 
-if ((process.env.AO_CDP_PORT || '9223') === '9223' && !process.argv.includes('--allow-user-app')) {
-  console.error('driveburn: this probe clicks and types in the app. Run it against the soak rig');
-  console.error('           (AO_CDP_PORT=9224), or pass --allow-user-app to drive your own window.');
-  process.exit(2);
-}
+const args = process.argv.slice(2);
+const mountOnly = args.includes('--mount-only');
+const positional = args.filter((arg) => arg !== '--mount-only');
+const title = positional[0] || 'Soak: idle thread';
+const prompt = positional[1] || 'Run the burn here too.';
 
-const title = process.argv[2] || 'Soak: idle thread';
-const prompt = process.argv[3] || 'Run the burn here too.';
-
-// The composer textarea living in the same pane as a header carrying `title`.
-// Walks up from each textarea until the subtree contains the title text; the
-// nearest such ancestor is the pane root, so the first textarea to satisfy it
-// is that pane's composer.
+// The composer textarea living in the pane whose header carries `title`.
+// Stay inside the pane section. Climbing toward body makes the shared layout
+// match any sidebar title and silently drives the first composer instead.
 const findComposer = `(() => {
-  const areas = [...document.querySelectorAll('textarea')];
-  for (const area of areas) {
-    let el = area.parentElement;
-    while (el && el !== document.body) {
-      if (el.textContent.includes(${JSON.stringify(title)})) {
-        const r = area.getBoundingClientRect();
-        if (r.width > 0) return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-        break;
-      }
-      el = el.parentElement;
+  const panes = [...document.querySelectorAll('section[data-pane-id]')];
+  for (const pane of panes) {
+    const heading = pane.querySelector('[data-testid="chat-header-title"]');
+    if (heading?.textContent?.trim() !== ${JSON.stringify(title)}) continue;
+    const area = pane.querySelector('textarea');
+    if (!area) return null;
+    const r = area.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) {
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
     }
   }
   return null;
@@ -60,24 +55,28 @@ try {
     console.log('mounted thread in new pane');
   }
 
-  // A real click focuses the composer, then real input events carry the text.
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await page.send('Input.dispatchMouseEvent', {
-      type, x: composer.x, y: composer.y, button: 'left', clickCount: 1,
-    });
+  if (mountOnly) {
+    console.log('mount-only: composer left untouched');
+  } else {
+    // A real click focuses the composer, then real input events carry the text.
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await page.send('Input.dispatchMouseEvent', {
+        type, x: composer.x, y: composer.y, button: 'left', clickCount: 1,
+      });
+    }
+    await sleep(200);
+    await page.send('Input.insertText', { text: prompt });
+    await sleep(300);
+    for (const type of ['keyDown', 'keyUp']) {
+      await page.send('Input.dispatchKeyEvent', {
+        type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+        text: '\r', unmodifiedText: '\r',
+      });
+    }
+    await sleep(1000);
+    const rest = await evaluate(page, `document.activeElement?.value ?? ''`);
+    console.log(rest === '' ? 'prompt sent (composer cleared)' : `composer still holds: ${JSON.stringify(rest)}`);
   }
-  await sleep(200);
-  await page.send('Input.insertText', { text: prompt });
-  await sleep(300);
-  for (const type of ['keyDown', 'keyUp']) {
-    await page.send('Input.dispatchKeyEvent', {
-      type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
-      text: '\r', unmodifiedText: '\r',
-    });
-  }
-  await sleep(1000);
-  const rest = await evaluate(page, `document.activeElement?.value ?? ''`);
-  console.log(rest === '' ? 'prompt sent (composer cleared)' : `composer still holds: ${JSON.stringify(rest)}`);
 } finally {
   await done([page]);
 }

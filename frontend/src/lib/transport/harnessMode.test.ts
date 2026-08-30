@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __resetHarnessModeForTest,
+  harnessPageMarker,
+  setHarnessPageMarkerFromBootstrap,
   isHarnessSession,
   setHarnessSessionFromBootstrap,
   whenHarnessSession,
@@ -26,6 +28,14 @@ describe('harness session flag', () => {
     expect(isHarnessSession()).toBe(true);
     expect(arm).toHaveBeenCalledTimes(1);
   });
+
+	it('makes the bootstrap page marker visible before harness waiters run', () => {
+		let observed = '';
+		whenHarnessSession(() => { observed = harnessPageMarker(); });
+		setHarnessPageMarkerFromBootstrap('backend-page-marker');
+		setHarnessSessionFromBootstrap(true);
+		expect(observed).toBe('backend-page-marker');
+	});
 
   it('arms immediately when the manifest already said so', () => {
     setHarnessSessionFromBootstrap(true);

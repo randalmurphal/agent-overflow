@@ -21,6 +21,11 @@ var ErrApprovalDecisionUnavailable = errors.New("provider: approval decision is 
 type ResolvedApproval struct {
 	RequestID   string
 	ResolveKind EventKind
+	// Scope is the provider-owned execution identity that registered the
+	// request. Codex uses its provider thread id so interrupting one child can
+	// release that child's prompts without touching the root or a sibling.
+	// Other providers leave it empty.
+	Scope string
 }
 
 // Meta builds the resolved-event meta both providers emit for a released
@@ -47,6 +52,7 @@ func (r ResolvedApproval) Meta(decision string) json.RawMessage {
 // pendingApproval is one outstanding request's registry state.
 type pendingApproval struct {
 	resolveKind EventKind
+	scope       string
 	// questions is the structured user-input prompt this request carries,
 	// needed when the answer is submitted so the response can be shaped
 	// against the questions actually asked. Claude-only: Codex re-reads its
@@ -91,13 +97,25 @@ type ApprovalRegistry struct {
 // provider that re-sends a request it previously answered is asking again,
 // and refusing the new one as a duplicate would strand it.
 func (r *ApprovalRegistry) Track(requestID string, resolveKind EventKind, questions []UserInputQuestion) {
-	r.track(requestID, resolveKind, questions, nil)
+	r.TrackScoped(requestID, resolveKind, questions, "")
+}
+
+// TrackScoped registers an outstanding request under a provider-owned
+// execution scope. Scope is opaque to the registry. It only supports an
+// interrupt that must drain one child without clearing sibling prompts.
+func (r *ApprovalRegistry) TrackScoped(requestID string, resolveKind EventKind, questions []UserInputQuestion, scope string) {
+	r.track(requestID, resolveKind, questions, nil, scope)
 }
 
 // TrackApproval registers a tool approval and its optional provider-advertised
 // decision set. nil means legacy fallback. A non-nil empty slice allows no
 // response, matching the provider's authoritative empty set.
 func (r *ApprovalRegistry) TrackApproval(requestID string, resolveKind EventKind, decisions *[]json.RawMessage) {
+	r.TrackApprovalScoped(requestID, resolveKind, decisions, "")
+}
+
+// TrackApprovalScoped is TrackApproval with a provider-owned execution scope.
+func (r *ApprovalRegistry) TrackApprovalScoped(requestID string, resolveKind EventKind, decisions *[]json.RawMessage, scope string) {
 	var allowed map[string]struct{}
 	if decisions != nil {
 		allowed = make(map[string]struct{}, len(*decisions))
@@ -107,10 +125,10 @@ func (r *ApprovalRegistry) TrackApproval(requestID string, resolveKind EventKind
 			}
 		}
 	}
-	r.track(requestID, resolveKind, nil, allowed)
+	r.track(requestID, resolveKind, nil, allowed, scope)
 }
 
-func (r *ApprovalRegistry) track(requestID string, resolveKind EventKind, questions []UserInputQuestion, allowed map[string]struct{}) {
+func (r *ApprovalRegistry) track(requestID string, resolveKind EventKind, questions []UserInputQuestion, allowed map[string]struct{}, scope string) {
 	if requestID == "" {
 		return
 	}
@@ -124,6 +142,7 @@ func (r *ApprovalRegistry) track(requestID string, resolveKind EventKind, questi
 	}
 	r.pending[requestID] = &pendingApproval{
 		resolveKind:      resolveKind,
+		scope:            scope,
 		questions:        append([]UserInputQuestion(nil), questions...),
 		allowedDecisions: allowed,
 	}
@@ -222,7 +241,27 @@ func (r *ApprovalRegistry) Cancel(requestID string) (ResolvedApproval, bool) {
 	}
 	delete(r.pending, requestID)
 	r.dedup.MarkResolved(requestID)
-	return ResolvedApproval{RequestID: requestID, ResolveKind: pending.resolveKind}, true
+	return ResolvedApproval{RequestID: requestID, ResolveKind: pending.resolveKind, Scope: pending.scope}, true
+}
+
+// DrainScope takes only requests registered under scope. The registry stays
+// open and requests under every other scope remain claimable.
+func (r *ApprovalRegistry) DrainScope(scope string) []ResolvedApproval {
+	r.mu.Lock()
+	var released []ResolvedApproval
+	for requestID, pending := range r.pending {
+		if pending.scope != scope {
+			continue
+		}
+		delete(r.pending, requestID)
+		released = append(released, ResolvedApproval{
+			RequestID:   requestID,
+			ResolveKind: pending.resolveKind,
+			Scope:       pending.scope,
+		})
+	}
+	r.mu.Unlock()
+	return released
 }
 
 // Drain takes every outstanding request and returns them for the caller to
@@ -253,7 +292,7 @@ func (r *ApprovalRegistry) Drain(closeRegistry bool) []ResolvedApproval {
 	}
 	released := make([]ResolvedApproval, 0, len(pending))
 	for requestID, p := range pending {
-		released = append(released, ResolvedApproval{RequestID: requestID, ResolveKind: p.resolveKind})
+		released = append(released, ResolvedApproval{RequestID: requestID, ResolveKind: p.resolveKind, Scope: p.scope})
 	}
 	return released
 }

@@ -65,6 +65,64 @@ function urlApproval(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest 
 }
 
 describe('<McpElicitationPanel>', () => {
+  // Enum/oneOf values come from the MCP SERVER's schema; nothing upstream
+  // promises they are distinct. Keyed on the value, a repeat throws
+  // `each_key_duplicate` out of the update flush, aborting the batch and
+  // freezing the pane (incident 2026-08-29).
+  it('renders every choice when a schema enum repeats a value', () => {
+    const { getByTestId } = render(McpElicitationPanel, {
+      props: {
+        approval: formApproval({
+          elicitation: {
+            mode: 'form',
+            message: 'Fill it in',
+            serverName: 'db-mcp',
+            requestedSchema: {
+              type: 'object',
+              properties: {
+                env: { type: 'string', title: 'Env', enum: ['prod', 'prod', 'dev'] },
+              },
+              required: [],
+            },
+          },
+        }),
+        onResolve: makeResolver(),
+        onError: vi.fn(),
+      },
+    });
+    // One placeholder row plus the three the server declared.
+    expect(getByTestId('el-input-env').querySelectorAll('option')).toHaveLength(4);
+  });
+
+  it('renders every checkbox when an array enum repeats a value', () => {
+    const { getByTestId } = render(McpElicitationPanel, {
+      props: {
+        approval: formApproval({
+          elicitation: {
+            mode: 'form',
+            message: 'Fill it in',
+            serverName: 'db-mcp',
+            requestedSchema: {
+              type: 'object',
+              properties: {
+                tags: {
+                  type: 'array',
+                  title: 'Tags',
+                  items: { type: 'string', enum: ['a', 'a', 'b'] },
+                },
+              },
+              required: [],
+            },
+          },
+        }),
+        onResolve: makeResolver(),
+        onError: vi.fn(),
+      },
+    });
+    expect(getByTestId('el-input-tags').querySelectorAll('input[type="checkbox"]'))
+      .toHaveLength(3);
+  });
+
   it('renders the server + message rows for a form approval', () => {
     const { getByTestId } = render(McpElicitationPanel, {
       props: {

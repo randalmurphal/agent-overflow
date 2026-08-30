@@ -261,21 +261,14 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		return fmt.Errorf("start session: %w", err)
 	}
 
-	// Flip any persisted `is_background=running` rows for a Codex thread
-	// to errored/lost BEFORE spawning the new subprocess. Those rows
-	// point at PTYs / spawned child threads owned by a prior subprocess
-	// that is guaranteed dead (we just stopped the existing session, if
-	// any, and startup is now running against either a fresh process or
-	// an on-reopen cold state). Must land before spawnProviderSession so
-	// no replay `item/started` can race with the flip — the store is the
-	// only source of truth for this reconcile, the probe happens
-	// downstream in reconcileCodexAfterStart once the live session
-	// exists. See app_codex_reconcile.go for the rationale + warm-
-	// reconnect fallback. Claude threads are not flipped here (their
-	// `stop_task` primitive and natural completion handle the same
-	// concern on a different rail).
+	// Retire runtime state owned by the prior Codex app-server before a new
+	// subprocess can replay or emit lifecycle events. Child ownership stays
+	// persisted for resume, while old live turns and PTYs leave the tray.
 	if t.Provider == string(provider.Codex) {
-		a.flipCodexGhostBackgroundRowsOnStart(threadID)
+		if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+			a.teardownDesignThread(threadID)
+			return fmt.Errorf("start session: %w", err)
+		}
 	}
 
 	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, designCfg, credential, onEvent)
@@ -635,12 +628,17 @@ func (a *App) spawnProviderSession(
 			a.sunsetLegacyProviderQueueRows(threadID, resumed)
 		}
 		// A RESUMED thread cannot opt into raw events, so the mailbox record
-		// that closes a spawn card is invisible on its wire — the codex package
-		// recovers it by tailing the rollout file. Whether that tail is worth
-		// running is a STORE question the provider package cannot ask, so it is
-		// answered here, once, at the resume call site.
-		cfg.ResumeHasUnresolvedSubagents = cfg.ResumeThreadID != "" &&
-			a.threadHasUnresolvedCodexSubagents(threadID)
+		// that closes a spawn card is invisible on its wire. Load the compact
+		// unresolved-spawn projection once: it rebuilds provider-side child
+		// ownership without loading transcript history, and its non-emptiness
+		// also answers whether the rollout recovery tail is needed.
+		if cfg.ResumeThreadID != "" {
+			cfg.ResumeCollabLaunches, err = a.codexResumeCollabLaunches(threadID)
+			if err != nil {
+				return session{}, err
+			}
+			cfg.ResumeHasUnresolvedSubagents = len(cfg.ResumeCollabLaunches) > 0
+		}
 		sess, err := codex.NewSession(context.Background(), threadID, cfg, onEvent)
 		if err != nil {
 			return session{}, err
@@ -768,31 +766,22 @@ func (a *App) spawnProviderSession(
 	}
 }
 
-// threadHasUnresolvedCodexSubagents answers `codex.Config.
-// ResumeHasUnresolvedSubagents`: does this thread still hold a Codex spawn
-// launch whose child answer never reached the transcript?
-//
-// The predicate is "a background `collab_agent` launch with no completion
-// sibling", which is exactly what `ListIncompleteCodexSubagentLaunches` asks.
-// The narrower `ListLiveCodexSubagentLaunches` is deliberately NOT used: it
-// keys on `live_background_active`, which the child's own status signal clears
-// the moment the child goes terminal — and the whole point of the tail is the
-// window AFTER that, while the child's FINAL_ANSWER is still sitting in the
-// parent's mailbox undelivered. Gating on the live flag would switch the tail
-// off in precisely the case it exists for.
-//
-// A failed read answers TRUE. The tail is a recovery path, so its cost is a
-// 150ms poll; the cost of a wrong negative is a spawn card that never closes.
-func (a *App) threadHasUnresolvedCodexSubagents(threadID string) bool {
+func (a *App) codexResumeCollabLaunches(threadID string) ([]codex.ResumeCollabLaunch, error) {
 	if a.store == nil {
-		return false
+		return nil, nil
 	}
-	launches, err := a.store.ListIncompleteCodexSubagentLaunches(threadID)
+	items, err := a.store.ListIncompleteCodexSubagentOwnerships(threadID)
 	if err != nil {
-		log.Printf("app: codex resume subagent probe for thread %s: %v", threadID, err)
-		return true
+		return nil, fmt.Errorf("load Codex resume child ownership for thread %s: %w", threadID, err)
 	}
-	return len(launches) > 0
+	launches := make([]codex.ResumeCollabLaunch, 0, len(items))
+	for _, item := range items {
+		launches = append(launches, codex.ResumeCollabLaunch{
+			ItemID: item.ItemID,
+			Meta:   json.RawMessage(item.Meta),
+		})
+	}
+	return launches, nil
 }
 
 func (a *App) workflowSchemaForSession(thread store.Thread) (json.RawMessage, error) {
@@ -1226,6 +1215,9 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 		a.triage.CleanupThread(threadID)
 	}
 	err := a.closeProviderSession(threadID, sess)
+	if err == nil && sess.provider == string(provider.Codex) {
+		err = a.retireCodexBackgroundRuntime(threadID)
+	}
 	if sess.provider != "" {
 		a.emitProviderSessionDisconnected(threadID, sess.provider)
 	}

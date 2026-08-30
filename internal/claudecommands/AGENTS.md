@@ -11,7 +11,7 @@ spawns a process.**
 ## Why there is no merge policy
 
 `internal/claudemodels` merges because AO ships a hand-maintained model catalog
-the wire enriches. There is no AO command catalog and there cannot be one — the
+the wire enriches. There is no AO command catalog and there cannot be one. The
 list is whatever the running binary, that login, that working directory, and
 those plugins produce (52 entries on a real 2.1.219 install: built-ins, skills,
 user and project commands, plugin commands). So the wire list is the whole
@@ -26,8 +26,8 @@ That is also the wire's own contract on the other two surfaces:
 - `name` carries **no leading slash** (the CLI's zod: "Skill name (without the
   leading slash)"). Every consumer adds the `/` itself.
 - `description` carries provenance suffixes the CLI renders in its own picker
-  ("… (user)", "… (project)"). Passed through as data — parsing provenance out
-  of prose would be a guess.
+  ("… (user)", "… (project)"). Passed through as data, because parsing
+  provenance out of prose would be a guess.
 - The `initialize` list is the RICH one but is **not complete**: MCP prompt
   commands (`mcp__server__prompt`) appear only on `system/init.slash_commands`,
   which is names-only. Neither surface subsumes the other, which is why triage
@@ -36,7 +36,7 @@ That is also the wire's own contract on the other two surfaces:
 
 ## Identity
 
-`Cache` is keyed by `provider.ProbeCacheKey` — the same key the account probe
+`Cache` is keyed by `provider.ProbeCacheKey`, the same key the account probe
 memoizes under. Project-scoped commands live in the workdir and plugin commands
 under the credentialed home, so one identity's list is not another's.
 

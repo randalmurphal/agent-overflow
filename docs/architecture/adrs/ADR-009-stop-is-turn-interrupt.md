@@ -22,8 +22,8 @@ Per-tool kill is finer-grained but has nasty edge cases:
 - If the user stops one tool and the turn has more tools pending,
   which ones run? None? Only some? Undefined.
 - Assistant text generated between tool calls becomes orphaned.
-- The provider doesn't understand "stop this tool but keep going"
-  — that's not a primitive the wire protocol exposes.
+- The provider doesn't understand "stop this tool but keep going".
+  That's not a primitive the wire protocol exposes.
 
 ## Decision
 
@@ -72,7 +72,7 @@ Considered alternatives:
 - The synthetic "Stopped by user" row uses a deterministic id
   (`error:<turn_index>:<seq>`) so a resumed session that re-emits
   the turn can upsert-replace rather than duplicate the marker.
-- The interrupt queue drains on stop — deferred events after the
+- The interrupt queue drains on stop. Deferred events after the
   stop don't land as completed; they land as errored.
 - Stop drains pending approval and user-input requests for the
   interrupted turn. There is no app-side approval timeout: prompts stay

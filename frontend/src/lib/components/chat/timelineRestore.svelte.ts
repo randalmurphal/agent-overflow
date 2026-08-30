@@ -1,9 +1,9 @@
 // Per-thread scroll-snapshot save/restore session for MessageTimeline.
-// Owns the restore-session bookkeeping (`restoredThreadId`,
-// `scrollSnapshotThreadId`/`scrollSnapshotSwitchGeneration`,
-// `restoreToken`) that both the switch-edge `$effect.pre` and the
-// restore `$effect` in MessageTimeline.svelte read and write, plus the
-// snapshot save/restore/scroll-to-item flows that consume it. Modules
+// Owns the restore-session bookkeeping (`restoredThreadId`, the
+// switch-edge state machine's `RestoreEdge`, `restoreToken`) that both
+// the switch-edge `$effect.pre` and the restore `$effect` in
+// MessageTimeline.svelte read and write, plus the snapshot
+// save/restore/scroll-to-item flows that consume it. Modules
 // 2-4 (timelineSizePriors, timelinePaging, timelineWindowAnchor) read
 // the session through `restoredThreadId`/`nextRestoreToken`/
 // `isRestoreTokenCurrent` rather than owning their own copy.
@@ -16,7 +16,10 @@
 // initial-load → forceStick({reason:'restore'}) choreography — no
 // snapshot save/restore or scroll-to-item, just the switch-edge consent
 // arming and the post-load restore stick. If that sequence's contract
-// changes here, check ChannelView's mount effect too.
+// changes here, check ChannelView's `beginInitialLoad` too (its ONE
+// entry: the channel edge and the error banner's Retry both go through
+// it, because a retry that armed nothing spent a consent the failed
+// attempt had already consumed).
 
 import { tick } from 'svelte';
 import type {
@@ -61,6 +64,39 @@ export interface TimelineRestoreOptions {
   resetAutoLoadGates(): void;
 }
 
+/**
+ * What the switch-edge `$effect.pre` last observed on this surface. The
+ * classification has to be EXHAUSTIVE over transitions, which is why it
+ * is a union rather than the nullable thread id + `-1` generation
+ * sentinel it replaced: that shape could not tell a FIRST MOUNT of an
+ * ALREADY-POPULATED pane (a page refresh with a restored pane layout, or
+ * an existing thread opened in a new pane) apart from a
+ * placeholder→materialized transition. Both read as "no previous thread
+ * id", so the first mount took the optimistic branch (`skipWarmup()` +
+ * `markAtBottom()`) and never armed the restore snap — the later
+ * `forceStick({reason:'restore'})` was then correctly refused by the
+ * controller's consent gate, leaving a tail-seeded transcript rendered at
+ * scrollTop=0 under a sticky-bottom claim (production incident
+ * 2026-08-29).
+ *
+ * `unseen` is the pre-first-edge state and is never re-entered, so it is
+ * never equal to anything — the first edge always acts.
+ */
+type RestoreEdge =
+  | { kind: 'unseen' }
+  | { kind: 'placeholder'; generation: number }
+  | { kind: 'thread'; key: string; generation: number };
+
+function isSameRestoreEdge(a: RestoreEdge, b: RestoreEdge): boolean {
+  if (a.kind === 'placeholder' && b.kind === 'placeholder') {
+    return a.generation === b.generation;
+  }
+  if (a.kind === 'thread' && b.kind === 'thread') {
+    return a.key === b.key && a.generation === b.generation;
+  }
+  return false;
+}
+
 export interface TimelineRestore {
   /** Reactive — read in the restore `$effect` and the listRef-bind trace. */
   readonly restoredThreadId: string | null;
@@ -76,23 +112,19 @@ export interface TimelineRestore {
 
 export function createTimelineRestore(options: TimelineRestoreOptions): TimelineRestore {
   let restoredThreadId: string | null = $state(null);
-  // Tracks which thread we last persisted into the snapshot store via
-  // the thread-switch effect — separate from `restoredThreadId` so a
-  // thread switch can dispose the previous snapshot before the next
-  // restore completes.
-  let scrollSnapshotThreadId: string | null = $state(null);
-  // Last observed `pane.switchGeneration`. Paired with
-  // `scrollSnapshotThreadId` so the restore-effect.pre reset path fires
-  // on same-thread re-switch (a forced reload calls
-  // `pane.switchThread(currentThread)` to reload items in place; the
-  // thread id doesn't change but the generation counter bumps). Without
-  // this discriminator, revert leaves `restoredThreadId === threadId`
-  // and the restore $effect early-returns — the viewport sticks at
-  // scrollTop=0 with the "Load older messages" banner visible. The
-  // sentinel `-1` makes the first effect run a no-op for the
-  // `if (scrollSnapshotThreadId)` branch (since scrollSnapshotThreadId
-  // is null on mount, no restoredThreadId reset is needed).
-  let scrollSnapshotSwitchGeneration = -1;
+  // The last edge the switch-edge `$effect.pre` observed — the identity
+  // (thread key or placeholder) AND `pane.switchGeneration`, because a
+  // forced in-place reload calls `pane.switchThread(currentThread)` to
+  // replace items without changing the thread id; only the generation
+  // moves. Without that discriminator, revert leaves
+  // `restoredThreadId === threadId`, the restore $effect early-returns,
+  // and the viewport sticks at scrollTop=0 with the "Load older
+  // messages" banner visible.
+  //
+  // Deliberately NOT `$state`: nothing outside `handleSwitchEdgePre`
+  // reads it, and its only reader was the caller's own `$effect.pre`,
+  // which the write then re-ran for nothing.
+  let edge: RestoreEdge = { kind: 'unseen' };
   // Token bumped on every external "interrupt" — thread switch, user
   // scroll, programmatic scrollToItem — so async restore work can detect
   // staleness and bail.
@@ -166,82 +198,106 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
   // already keep the outgoing thread's snapshot fresh — the most recent
   // user scroll IS the snapshot.
   function handleSwitchEdgePre(nextThreadId: string | null, nextSwitchGeneration: number): void {
-    // Same-thread re-switch (forced in-place reload) keeps
-    // `pane.threadId` constant but bumps `pane.switchGeneration`. We
-    // need the reset path to run in that case too — otherwise
-    // `restoredThreadId` stays equal to `threadId`, the restore
-    // $effect early-returns, and the viewport sticks at scrollTop=0.
-    const threadIdChanged = scrollSnapshotThreadId !== nextThreadId;
-    const switchGenerationChanged = scrollSnapshotSwitchGeneration !== nextSwitchGeneration;
-    if (threadIdChanged || switchGenerationChanged) {
-      if (isUiRenderTraceEnabled()) {
-        const scrollEl = options.getScrollEl();
-        const pane = options.getPane();
-        recordUiTrace('timeline.restore.effectPre', {
-          oldThreadId: scrollSnapshotThreadId,
-          newThreadId: nextThreadId,
-          oldSwitchGeneration: scrollSnapshotSwitchGeneration,
-          newSwitchGeneration: nextSwitchGeneration,
-          sameThreadReswitch: !threadIdChanged && switchGenerationChanged,
-          scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
-          scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
-          clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
-          paneItems: pane.items.length,
-          paneLoading: pane.loading,
-        });
-      }
-      if (scrollSnapshotThreadId) {
-        restoredThreadId = null;
-        restoreToken += 1;
-      }
-      options.resetAutoLoadGates();
-      if (nextThreadId && scrollSnapshotThreadId) {
-        // Re-arm the warm-up gate BEFORE the DOM update flushes. The
-        // restore $effect calls forceStick() (which also arms the gate),
-        // but that runs AFTER DOM update — so without this $effect.pre
-        // reset, the first paint of the new thread would inherit the
-        // outgoing thread's settled `isWarm=true`, making
-        // hideContentForWarmup=false during the new thread's measurement
-        // cascade. attach() can't carry this load: scrollEl/contentEl
-        // don't change across switches (MessageTimeline isn't keyed on
-        // threadId), so the attach $effect early-returns. This was the
-        // flaky-fix bug: cache-miss switches off a long-settled prior
-        // thread reproduced the visible "lands wrong, jumps to correct"
-        // sequence; cache-miss switches off an unsettled prior thread
-        // (warm=false coincidentally) hid the cascade and looked fine.
-        options.armWarmupWithReset();
-        // Sets the defensive escape (freezing auto-follow against the
-        // outgoing thread's geometry) and arms the one-shot restore-snap
-        // consent for the upcoming `restoreToBottom() →
-        // stick.forceStick({reason: 'restore'})`. Any outer-scroll intent
-        // between this point and the restore $effect (extremely rare;
-        // both run inside the same flush) re-clears the arm, causing the
-        // restore to NO-OP and preserving the user's intent — the
-        // load-bearing distinguisher between "the user has explicitly
-        // escaped" and "this $effect.pre just defensively set escape=true
-        // while preparing the new thread for restore." See
-        // utils/scroll/intent.ts § Restore-snap consent.
-        options.stick.armRestoreSnap();
-      } else if (nextThreadId) {
-        // Placeholder → materialized transition: the timeline was empty
-        // so there is no measurement cascade to hide. Skip the warm-up
-        // gate so the optimistic user message renders immediately.
-        options.stick.skipWarmup();
-        options.stick.markAtBottom();
-      } else {
-        // Draft / placeholder transition (pane.threadId === null when a
-        // draft placeholder is active or the pane has no thread): the
-        // restore $effect short-circuits on `!threadId`, so the
-        // defensive escape would never be cleared and the
-        // scroll-to-bottom chip would appear over the empty "No messages
-        // yet" placeholder. There is no content to anchor against, no
-        // measurement cascade to hide, and no restore to gate — flip the
-        // controller directly back to sticky-bottom.
-        options.stick.markAtBottom();
-      }
+    const previous = edge;
+    const next: RestoreEdge =
+      nextThreadId === null
+        ? { kind: 'placeholder', generation: nextSwitchGeneration }
+        : { kind: 'thread', key: nextThreadId, generation: nextSwitchGeneration };
+    edge = next;
+    if (isSameRestoreEdge(previous, next)) return;
+
+    if (isUiRenderTraceEnabled()) {
+      const scrollEl = options.getScrollEl();
+      const pane = options.getPane();
+      recordUiTrace('timeline.restore.effectPre', {
+        oldThreadId: previous.kind === 'thread' ? previous.key : null,
+        newThreadId: nextThreadId,
+        // `-1` for the pre-first-edge state, matching the sentinel the
+        // nullable form used to carry, so trace consumers keep reading
+        // one shape.
+        oldSwitchGeneration: previous.kind === 'unseen' ? -1 : previous.generation,
+        newSwitchGeneration: nextSwitchGeneration,
+        sameThreadReswitch:
+          previous.kind === 'thread' && next.kind === 'thread' && previous.key === next.key,
+        // The transition itself — the thing the branch below keys on.
+        edgeTransition: `${previous.kind}->${next.kind}`,
+        scrollTop: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+        scrollHeight: scrollEl ? Math.round(scrollEl.scrollHeight) : null,
+        clientHeight: scrollEl ? Math.round(scrollEl.clientHeight) : null,
+        paneItems: pane.items.length,
+        paneLoading: pane.loading,
+      });
     }
-    scrollSnapshotThreadId = nextThreadId;
-    scrollSnapshotSwitchGeneration = nextSwitchGeneration;
+
+    // A thread we had already observed owns a restore session: end it
+    // before the next one starts, so a switch can dispose the previous
+    // restore before the incoming one completes. Nothing to end from
+    // `unseen` (restoredThreadId is still null) or from a placeholder
+    // (it never restored).
+    if (previous.kind === 'thread') {
+      restoredThreadId = null;
+      restoreToken += 1;
+    }
+    options.resetAutoLoadGates();
+
+    if (next.kind === 'placeholder') {
+      // → draft / placeholder (pane.threadId === null when a draft
+      // placeholder is active or the pane has no thread): the restore
+      // $effect short-circuits on `!threadId`, so the defensive escape
+      // would never be cleared and the scroll-to-bottom chip would
+      // appear over the empty "No messages yet" placeholder. There is no
+      // content to anchor against, no measurement cascade to hide, and
+      // no restore to gate — flip the controller directly back to
+      // sticky-bottom.
+      options.stick.markAtBottom();
+      return;
+    }
+
+    if (previous.kind === 'placeholder') {
+      // Placeholder → materialized transition: the timeline was empty
+      // so there is no measurement cascade to hide. Skip the warm-up
+      // gate so the optimistic user message renders immediately.
+      options.stick.skipWarmup();
+      options.stick.markAtBottom();
+      return;
+    }
+
+    // `unseen` → thread (first mount of a pane that may already be
+    // populated) and thread → thread (a switch, or the same key with a
+    // new generation: the forced in-place reload) take the same, full
+    // restore choreography. A first mount is NOT a placeholder
+    // materialization: the pane can carry a restored layout's thread
+    // with its whole cached window, which mounts an estimate→measure
+    // cascade and needs a real restore.
+    //
+    // Re-arm the warm-up gate BEFORE the DOM update flushes. The restore
+    // $effect calls forceStick() (which also arms the gate), but that
+    // runs AFTER DOM update — so without this $effect.pre reset, the
+    // first paint of the new thread would inherit the outgoing thread's
+    // settled `isWarm=true`, making hideContentForWarmup=false during
+    // the new thread's measurement cascade. attach() can't carry this
+    // load: scrollEl/contentEl don't change across switches
+    // (MessageTimeline isn't keyed on threadId), so the attach $effect
+    // early-returns. This was the flaky-fix bug: cache-miss switches off
+    // a long-settled prior thread reproduced the visible "lands wrong,
+    // jumps to correct" sequence; cache-miss switches off an unsettled
+    // prior thread (warm=false coincidentally) hid the cascade and
+    // looked fine. On a first mount the warm gate settles by
+    // markdown-absence for an empty pane, so arming it here cannot wedge
+    // one.
+    options.armWarmupWithReset();
+    // Sets the defensive escape (freezing auto-follow against the
+    // outgoing thread's geometry) and arms the one-shot restore-snap
+    // consent for the upcoming `restoreToBottom() →
+    // stick.forceStick({reason: 'restore'})`. Any outer-scroll intent
+    // between this point and the restore $effect (extremely rare;
+    // both run inside the same flush) re-clears the arm, causing the
+    // restore to NO-OP and preserving the user's intent — the
+    // load-bearing distinguisher between "the user has explicitly
+    // escaped" and "this $effect.pre just defensively set escape=true
+    // while preparing the new thread for restore." See
+    // utils/scroll/intent.ts § Restore-snap consent.
+    options.stick.armRestoreSnap();
   }
 
   function maybeRestoreAfterFlush(): void {

@@ -1,6 +1,6 @@
 // A/B/A experiment: measure Oilpan garbage with and without a CSS override, optionally while scrolling.
-// usage: probe ab --css '<css>' [--secs 30] [--scroll] [--allow-user-app]
-import { connectBrowser, connectPage, done, evaluate, sleep, PORT } from './lib/cdp.mjs';
+// usage: probe ab --css '<css>' [--secs 30] [--scroll]
+import { connectBrowser, connectPage, done, evaluate, sleep } from './lib/cdp.mjs';
 import { takeMemoryDump, allocatorMB, isRenderer, blinkClassRows } from './lib/memdump.mjs';
 import { fail } from './lib/format.mjs';
 import { CHAT_SCROLLER_SELECTOR } from './lib/dom.mjs';
@@ -12,11 +12,6 @@ const sidx = args.indexOf('--secs');
 const SECS = sidx >= 0 ? +args[sidx + 1] : 30;
 const SCROLL = args.includes('--scroll');
 if (!CSS) fail("probe: ab needs --css '<css>' (the override to test against)");
-// Same guard as the wrapper: this probe is visible to whoever is using the app.
-if (PORT === '9223' && !args.includes('--allow-user-app')) {
-  fail('probe: ab injects CSS and can drive synthetic scrolling, so it changes what the user sees on port 9223.\n'
-    + '       Run it against the soak rig (AO_CDP_PORT=9224) or pass --allow-user-app.');
-}
 
 const STYLE_ID = '__ao_perfprobe_ab';
 const b = await connectBrowser();

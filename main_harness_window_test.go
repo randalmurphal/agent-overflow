@@ -156,6 +156,10 @@ func TestIsolatedWindowTitleNamesModeAndInstance(t *testing.T) {
 	if harness == soak {
 		t.Fatal("two instances share one window title")
 	}
+	perf := isolatedWindowTitle(instanceinfo.ModePerf, "c0ffee00")
+	if perf != "Agent Overflow (perf · c0ffee00)" {
+		t.Fatalf("perf title = %q", perf)
+	}
 }
 
 func TestHarnessInstanceFileCarriesBootstrapAndIdentity(t *testing.T) {

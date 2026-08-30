@@ -47,6 +47,28 @@ func TestBuildLaunchArgs(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchArgsWithMemoryLimitWrapsLinuxBackend(t *testing.T) {
+	got := buildLaunchArgsWithMemoryLimit("Ubuntu", "/home/u/agent-overflow", nil, 64<<20)
+	sep := slices.Index(got, "--")
+	if sep < 0 || len(got) <= sep+5 {
+		t.Fatalf("launch args missing wrapped command: %v", got)
+	}
+	command := got[sep+1:]
+	wantPrefix := []string{"/bin/sh", "-c"}
+	if !slices.Equal(command[:2], wantPrefix) {
+		t.Fatalf("wrapped command prefix = %v, want %v", command[:2], wantPrefix)
+	}
+	if !strings.Contains(command[2], "ulimit -d") || !strings.Contains(command[2], "exec \"$@\"") {
+		t.Fatalf("memory wrapper does not install inherited limit: %q", command[2])
+	}
+	if command[5] != "/home/u/agent-overflow" {
+		t.Fatalf("wrapped backend = %q, want original binary", command[5])
+	}
+	if got[len(got)-4] != "--listen" || got[len(got)-3] != "127.0.0.1:0" {
+		t.Fatalf("bootstrap args moved after wrapper: %v", got)
+	}
+}
+
 func TestLaunch_ErrorsOnNonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("verified on non-Windows hosts only")

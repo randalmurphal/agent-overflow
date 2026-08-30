@@ -43,7 +43,7 @@ export interface ThreadItemSnapshot {
   subagentFolds?: SubagentFoldSnapshot | null;
   /**
    * The history stamp that described `items` at the moment they were
-   * snapshotted (docs/specs/thread-replica-sync.md §3). Paired here
+   * snapshotted (docs/architecture/thread-replica-sync.md §3). Paired here
    * rather than looked up per open, because a stamp is only safe to send
    * as `haveEpoch`/`haveRev` alongside the content it describes: a
    * `fresh` answer obliges the client to keep the rows it already holds,
@@ -90,7 +90,7 @@ export interface ThreadItemCache {
   evict(threadId: string): void;
   clear(): void;
   /**
-   * Transport-gap recovery (docs/specs/thread-replica-sync.md §3.4):
+   * Transport-gap recovery (docs/architecture/thread-replica-sync.md §3.4):
    * strip the paired stamp from every snapshot whose stamp was NOT
    * sync-attested, keeping the snapshots themselves.
    *

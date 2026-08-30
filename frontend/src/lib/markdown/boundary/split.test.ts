@@ -74,6 +74,46 @@ describe('splitAtBoundary', () => {
     expect(split.prefix + split.tail).toBe(text);
   });
 
+  it('commits a list before a non-list block that follows its blank line', () => {
+    const list = '- first item\n- second item\n\n';
+    for (const nextBlock of [
+      '| Partial table row | still growing',
+      'Ordinary paragraph still growing',
+      '> A blockquote still growing',
+      '```ts\nconst value = true;',
+      '## A heading still growing',
+    ]) {
+      const split = splitAtBoundary(list + nextBlock);
+      expect(split.prefix).toBe(list);
+      expect(split.tail).toBe(nextBlock);
+    }
+  });
+
+  it('commits a footnote before an unindented block after its blank line', () => {
+    const footnote = '[^note]: Footnote body\n\n';
+    for (const nextBlock of [
+      'Ordinary paragraph still growing',
+      '- a list still growing',
+      '```ts\nconst value = true;',
+      '## A heading still growing',
+    ]) {
+      const split = splitAtBoundary(footnote + nextBlock);
+      expect(split.prefix).toBe(footnote);
+      expect(split.tail).toBe(nextBlock);
+    }
+  });
+
+  it('keeps an indented footnote continuation together across a blank line', () => {
+    const footnote = '[^note]: Footnote body\n\n    continued body';
+    expect(splitAtBoundary(footnote)).toEqual({ prefix: '', tail: footnote });
+
+    const separator = '\n\n';
+    const nextBlock = 'Ordinary paragraph still growing';
+    const split = splitAtBoundary(footnote + separator + nextBlock);
+    expect(split.prefix).toBe(footnote + separator);
+    expect(split.tail).toBe(nextBlock);
+  });
+
   it('does not regress the committed prefix on the monotonic guard', () => {
     // Simulate a hypothetical detector that returned a shorter prefix
     // on a later call. The caller passes the previously committed

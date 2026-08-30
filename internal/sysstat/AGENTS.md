@@ -6,7 +6,7 @@ SDK directly.
 
 ## Ownership
 
-- Pure read-only sampler. No emit, no goroutine — the App owns
+- Pure read-only sampler. No emit, no goroutine. The App owns
   cadence and emission (see `app_sysstat.go`).
 - Cross-platform via `gopsutil`: Linux uses `/proc`, macOS uses Mach
   host stats, Windows uses Performance Counters. No CGo.
@@ -18,7 +18,7 @@ SDK directly.
 
 - Unit tests substitute the indirection points to exercise the shape
   mapping + error propagation. Don't reach for real gopsutil reads
-  from a test — gopsutil's first CPU read returns 0 (by design) and
+  from a test. gopsutil's first CPU read returns 0 (by design) and
   developer-machine memory is non-deterministic.
 - `firstOrZero` is a pure helper; test it directly.
 
@@ -27,8 +27,8 @@ SDK directly.
 - `Sample` returns the gopsutil-defined `MemUsedBytes` (on Linux:
   total - free - buffers - cached, matches htop). If the field ever
   feels off compared to `top`/`Activity Monitor`, the alternative is
-  `Total - Available` from the same struct — same shape on the wire,
-  just a different convention.
+  `Total - Available` from the same struct, the same shape on the wire
+  with just a different convention.
 - The CPU delta state lives inside the `gopsutil/v4/cpu` package
   (process-global). That's why we call `Prime` once at startup rather
   than holding our own previous-tick snapshot.

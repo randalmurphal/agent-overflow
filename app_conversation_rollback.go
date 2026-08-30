@@ -96,7 +96,7 @@ type rollbackConversationLockedArgs struct {
 // DeleteConversationFromItem's promoted-row predicate, which must not
 // be re-derived in UI code. The post-cut history stamp travels with
 // them, read inside the deleting transaction so the event attests
-// exactly this cut (docs/specs/thread-replica-sync.md §4) — a client
+// exactly this cut (docs/architecture/thread-replica-sync.md §4) — a client
 // that mirrors the cut keeps its replica entry instead of dropping it.
 type revertedConversationCut struct {
 	KeptAnchorTurnItemIDs []string

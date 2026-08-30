@@ -9,7 +9,7 @@
 // getResolvedTheme consumer within the same flush.
 //
 // The mode itself lives in `stores/appearance.svelte.ts` rather than in
-// settings (docs/specs/theme-system.md §6.2), so that store is what these
+// settings (docs/architecture/theme-system.md §6.2), so that store is what these
 // tests drive.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

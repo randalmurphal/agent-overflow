@@ -15,7 +15,7 @@ ground truth.
 
 1. Create a throwaway directory under `/tmp` (or `$TMPDIR`).
 2. Write the smallest possible program that exercises the behavior
-   in isolation — no agent-overflow code, no test harness, just the
+   in isolation: no agent-overflow code, no test harness, just the
    external tool.
 3. Run it against the real external process (or library). Record
    inputs and outputs.
@@ -28,8 +28,8 @@ ground truth.
 
 ## When to Spike
 
-- You can't find the answer in the reference repos (forge,
-  codex-source, CodexMonitor).
+- You can't find the answer in the reference repos (the Claude Code
+  source, codex-source, CodexMonitor).
 - The repos disagree with each other.
 - A protocol message in production doesn't match what the parser
   expects.
@@ -41,5 +41,5 @@ ground truth.
   behavior still holds in our environment.
 - Don't add retries, sleeps, or tolerance to cover for behavior you
   haven't verified.
-- Don't leave the spike code in this repo "for later" — it becomes
+- Don't leave the spike code in this repo "for later". It becomes
   dead code that future readers treat as authoritative.

@@ -301,3 +301,32 @@ func TestTerminateCodexBackgroundTerminal_RefusesBlankProcessID(t *testing.T) {
 		t.Error("a blank process id must never reach the terminate RPC")
 	}
 }
+
+func TestStopCodexSubagentForwardsOwnedLaunchUnderDeadline(t *testing.T) {
+	var called atomic.Bool
+	var sawDeadline bool
+	fake := codex.NewInterruptSubagentTestSession("spawn-1", func(ctx context.Context, childThreadID, turnID string) error {
+		called.Store(true)
+		_, sawDeadline = ctx.Deadline()
+		if childThreadID != "test-child-thread" || turnID != "" {
+			t.Fatalf("child interrupt target = %q/%q", childThreadID, turnID)
+		}
+		return nil
+	})
+	a := NewApp()
+	a.mu.Lock()
+	a.sessions["codex-thread"] = session{provider: "codex", codex: fake}
+	a.mu.Unlock()
+
+	stopped, err := a.StopCodexSubagent("codex-thread", "spawn-1")
+	if err != nil || !stopped {
+		t.Fatalf("StopCodexSubagent = (%v, %v), want (true, nil)", stopped, err)
+	}
+	if !called.Load() || !sawDeadline {
+		t.Fatalf("interrupt called=%v deadline=%v", called.Load(), sawDeadline)
+	}
+	stopped, err = a.StopCodexSubagent("codex-thread", "spawn-1")
+	if err != nil || stopped {
+		t.Fatalf("repeated StopCodexSubagent = (%v, %v), want (false, nil)", stopped, err)
+	}
+}

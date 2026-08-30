@@ -13,11 +13,12 @@ import type { BlockContext, ContainerConfig, ContainerMatch } from './types';
 const RE_FENCE_START = /^(\s*)((`{3,})|(~{3,}))/
 const RE_EMPTY_LINE = /^\s*$/
 const RE_HEADING = /^#{1,6}\s/
-const RE_THEMATIC_BREAK = /^(\*{3,}|-{3,}|_{3,})\s*$/
+const RE_THEMATIC_BREAK = /^\s*(\*{3,}|-{3,}|_{3,})\s*$/
+const RE_SETEXT_UNDERLINE = /^\s*(?:={3,}|-{3,})\s*$/
 const RE_BLOCKQUOTE = /^\s{0,3}>/
 const RE_HTML_BLOCK_1 = /^\s{0,3}<(script|pre|style|textarea|!--|!DOCTYPE|\?|!\[CDATA\[)/i
 const RE_HTML_BLOCK_2 = /^\s{0,3}<\/?[a-zA-Z][a-zA-Z0-9-]*(\s|>|$)/
-const RE_TABLE_DELIMITER = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?$/
+const RE_TABLE_DELIMITER = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/
 const RE_ESCAPE_SPECIAL = /[.*+?^${}()|[\]\\]/g
 const RE_FOOTNOTE_DEFINITION = /^\[\^([^\]]+)\]:\s/
 const RE_FOOTNOTE_CONTINUATION = /^(?:    |\t)/
@@ -77,10 +78,10 @@ export function isEmptyLine(line: string): boolean {
  * @returns 是否是 Setext 标题下划线
  */
 export function isSetextHeadingUnderline(line: string, prevLine?: string): boolean {
-  const trimmed = line.trim()
-
-  // 检查是否是 === 或 --- 形式的下划线
-  if (!/^={3,}$|^-{3,}$/.test(trimmed)) {
+  // Test the anchored shape before trimming either line. On an ordinary
+  // growing paragraph this rejects at its first non-space code unit instead
+  // of copying and scanning the entire volatile line on every reveal.
+  if (!RE_SETEXT_UNDERLINE.test(line)) {
     return false
   }
 
@@ -142,7 +143,7 @@ export function isHeading(line: string): boolean {
  * 检测是否是 thematic break（水平线）
  */
 export function isThematicBreak(line: string): boolean {
-  return RE_THEMATIC_BREAK.test(line.trim())
+  return RE_THEMATIC_BREAK.test(line)
 }
 
 /**
@@ -207,7 +208,7 @@ export function isHtmlBlock(line: string): boolean {
  * 检测表格分隔行
  */
 export function isTableDelimiter(line: string): boolean {
-  return RE_TABLE_DELIMITER.test(line.trim())
+  return RE_TABLE_DELIMITER.test(line)
 }
 
 // ============ 脚注检测 ============
@@ -359,24 +360,26 @@ interface ContextUpdater {
  */
 class CodeContextUpdater implements ContextUpdater {
   update(line: string, context: BlockContext): BlockContext | null {
-    const newContext = { ...context }
-
     if (context.inFencedCode) {
       if (detectFenceEnd(line, context)) {
-        newContext.inFencedCode = false
-        newContext.fenceChar = undefined
-        newContext.fenceLength = undefined
-        return newContext
+        return {
+          ...context,
+          inFencedCode: false,
+          fenceChar: undefined,
+          fenceLength: undefined,
+        }
       }
       return null // 在代码块内，不处理其他逻辑
     }
 
     const fence = detectFenceStart(line)
     if (fence) {
-      newContext.inFencedCode = true
-      newContext.fenceChar = fence.char
-      newContext.fenceLength = fence.length
-      return newContext
+      return {
+        ...context,
+        inFencedCode: true,
+        fenceChar: fence.char,
+        fenceLength: fence.length,
+      }
     }
 
     return null
@@ -393,40 +396,43 @@ class ContainerContextUpdater implements ContextUpdater {
       return null
     }
 
-    const newContext = { ...context }
-
     if (context.inContainer) {
       // 检查是否是容器结束
       if (detectContainerEnd(line, context, config)) {
-        newContext.containerDepth = context.containerDepth - 1
-        if (newContext.containerDepth === 0) {
-          newContext.inContainer = false
-          newContext.containerMarkerLength = undefined
-          newContext.containerName = undefined
+        const containerDepth = context.containerDepth - 1
+        if (containerDepth === 0) {
+          return {
+            ...context,
+            containerDepth,
+            inContainer: false,
+            containerMarkerLength: undefined,
+            containerName: undefined,
+          }
         }
-        return newContext
+        return { ...context, containerDepth }
       }
 
       // 检查是否是嵌套容器开始
       const nested = detectContainer(line, config)
       if (nested && !nested.isEnd) {
-        newContext.containerDepth = context.containerDepth + 1
-        return newContext
+        return { ...context, containerDepth: context.containerDepth + 1 }
       }
 
       // ⚠️ 关键：在容器内，无论是什么内容（空行、列表、段落等），都保持 inContainer = true
       // 只有容器结束标记才能改变容器状态
       // 这里不需要做任何操作，因为 newContext 已经复制了 context，inContainer 已经是 true
-      return newContext
+      return context
     } else {
       // 不在容器内，检查是否是容器开始
       const container = detectContainer(line, config)
       if (container && !container.isEnd) {
-        newContext.inContainer = true
-        newContext.containerMarkerLength = container.markerLength
-        newContext.containerName = container.name
-        newContext.containerDepth = 1
-        return newContext
+        return {
+          ...context,
+          inContainer: true,
+          containerMarkerLength: container.markerLength,
+          containerName: container.name,
+          containerDepth: 1,
+        }
       }
     }
 
@@ -440,14 +446,10 @@ class ContainerContextUpdater implements ContextUpdater {
  */
 class FootnoteContextUpdater implements ContextUpdater {
   update(line: string, context: BlockContext): BlockContext | null {
-    const newContext = { ...context }
-
     // 脚注定义开始（不在脚注中）
     if (!context.inFootnote && isFootnoteDefinitionStart(line)) {
       const identifier = line.match(RE_FOOTNOTE_DEFINITION)?.[1]
-      newContext.inFootnote = true
-      newContext.footnoteIdentifier = identifier
-      return newContext
+      return { ...context, inFootnote: true, footnoteIdentifier: identifier }
     }
 
     // 在脚注中
@@ -455,14 +457,13 @@ class FootnoteContextUpdater implements ContextUpdater {
       // 遇到新脚注定义：前一个脚注结束，新脚注开始
       if (isFootnoteDefinitionStart(line)) {
         const identifier = line.match(RE_FOOTNOTE_DEFINITION)?.[1]
-        newContext.footnoteIdentifier = identifier
-        return newContext
+        return { ...context, footnoteIdentifier: identifier }
       }
 
       // 空行：保持脚注状态（支持脚注内部的多段落）
       // 返回当前上下文，阻止责任链继续
       if (isEmptyLine(line)) {
-        return { ...context }
+        return context
       }
 
       // 列表项处理
@@ -471,31 +472,27 @@ class FootnoteContextUpdater implements ContextUpdater {
         // 无缩进列表项：脚注结束
         // 缩进列表项：脚注的延续内容（包含嵌套列表）
         if (listItem.indent === 0) {
-          newContext.inFootnote = false
-          newContext.footnoteIdentifier = undefined
+          // Let the list updater handle the line. The caller's transition
+          // guard clears footnote state before this chain runs.
         } else {
           // 缩进列表项：脚注的延续内容，返回当前上下文阻止责任链
-          return { ...context }
+          return context
         }
         return null // 让列表处理器处理无缩进情况
       }
 
       // 其他块结束脚注
       if (isHeading(line) || detectFenceStart(line) || isBlockquoteStart(line)) {
-        newContext.inFootnote = false
-        newContext.footnoteIdentifier = undefined
-        return newContext
+        return { ...context, inFootnote: false, footnoteIdentifier: undefined }
       }
 
       // 脚注延续：以4+空格开头
       if (isFootnoteContinuation(line)) {
-        return { ...context }
+        return context
       }
 
       // 其他内容（普通文本、表格等），脚注结束
-      newContext.inFootnote = false
-      newContext.footnoteIdentifier = undefined
-      return newContext
+      return { ...context, inFootnote: false, footnoteIdentifier: undefined }
     }
 
     return null
@@ -517,12 +514,11 @@ class ListContextUpdater implements ContextUpdater {
     }
 
     // 检查是否有足够的缩进
-    const contentIndent = line.match(/^(\s*)/)?.[1].length ?? 0
+    const contentIndent = line.search(/\S/)
     return contentIndent > listIndent
   }
 
   update(line: string, context: BlockContext): BlockContext | null {
-    const newContext = { ...context }
     const listItem = isListItemStart(line)
 
     if (context.inList) {
@@ -534,25 +530,30 @@ class ListContextUpdater implements ContextUpdater {
           // 检查是否是同类型列表的延续
           if (listItem.ordered === context.listOrdered && listItem.indent === context.listIndent) {
             // 同类型同级别列表项，列表继续
-            newContext.listMayEnd = false
-            return newContext
+            return { ...context, listMayEnd: false }
           }
           // 不同类型或不同级别，列表结束，新列表开始
-          newContext.listOrdered = listItem.ordered
-          newContext.listIndent = listItem.indent
-          newContext.listMayEnd = false
-          return newContext
+          return {
+            ...context,
+            listOrdered: listItem.ordered,
+            listIndent: listItem.indent,
+            listMayEnd: false,
+          }
         } else if (this.isListContinuation(line, context.listIndent ?? 0)) {
           // 缩进内容或空行，列表继续
-          newContext.listMayEnd = isEmptyLine(line)
-          return newContext
+          const listMayEnd = isEmptyLine(line)
+          return listMayEnd === context.listMayEnd
+            ? context
+            : { ...context, listMayEnd }
         } else {
           // 非列表内容，列表结束
-          newContext.inList = false
-          newContext.listOrdered = undefined
-          newContext.listIndent = undefined
-          newContext.listMayEnd = false
-          return newContext
+          return {
+            ...context,
+            inList: false,
+            listOrdered: undefined,
+            listIndent: undefined,
+            listMayEnd: false,
+          }
         }
       } else {
         // 上一行不是空行
@@ -561,29 +562,32 @@ class ListContextUpdater implements ContextUpdater {
           return null
         } else if (isEmptyLine(line)) {
           // 遇到空行，列表可能结束
-          newContext.listMayEnd = true
-          return newContext
+          return { ...context, listMayEnd: true }
         } else if (this.isListContinuation(line, context.listIndent ?? 0)) {
           // 缩进内容，列表继续
           return null
         } else {
           // 非缩进非列表内容，列表结束
-          newContext.inList = false
-          newContext.listOrdered = undefined
-          newContext.listIndent = undefined
-          newContext.listMayEnd = false
-          return newContext
+          return {
+            ...context,
+            inList: false,
+            listOrdered: undefined,
+            listIndent: undefined,
+            listMayEnd: false,
+          }
         }
       }
     } else {
       // 不在列表中
       if (listItem) {
         // 列表开始
-        newContext.inList = true
-        newContext.listOrdered = listItem.ordered
-        newContext.listIndent = listItem.indent
-        newContext.listMayEnd = false
-        return newContext
+        return {
+          ...context,
+          inList: true,
+          listOrdered: listItem.ordered,
+          listIndent: listItem.indent,
+          listMayEnd: false,
+        }
       }
     }
 
@@ -640,7 +644,7 @@ class ContextManager {
     }
 
     // 没有任何更新器处理，返回原上下文
-    return { ...context }
+    return context
   }
 }
 

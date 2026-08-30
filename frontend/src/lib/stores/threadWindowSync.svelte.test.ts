@@ -1,5 +1,5 @@
 // Pane-level coverage for the cold-open window sync
-// (docs/specs/thread-replica-sync.md §5, §6.1): what paints, what the
+// (docs/architecture/thread-replica-sync.md §5, §6.1): what paints, what the
 // attested page replaces, which stamp goes out on the next request, and
 // what may be persisted.
 //

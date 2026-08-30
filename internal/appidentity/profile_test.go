@@ -10,6 +10,8 @@ func TestNormalizeProfile(t *testing.T) {
 		" SOAK ":    ProfileSoak,
 		"harness":   ProfileHarness,
 		" HARNESS ": ProfileHarness,
+		"perf":      ProfilePerf,
+		" PERF ":    ProfilePerf,
 	}
 	for raw, want := range cases {
 		got, err := NormalizeProfile(raw)
@@ -36,6 +38,8 @@ func TestLauncherModeProfileWins(t *testing.T) {
 		{"prod", ProfileSoak, ModeSoak},
 		{"dev", ProfileHarness, ModeHarness},
 		{"prod", ProfileHarness, ModeHarness},
+		{"dev", ProfilePerf, ModePerf},
+		{"prod", ProfilePerf, ModePerf},
 	}
 	for _, tc := range cases {
 		if got := LauncherMode(tc.build, tc.profile); got != tc.want {
@@ -45,11 +49,11 @@ func TestLauncherModeProfileWins(t *testing.T) {
 }
 
 // TestIsolatedIdentitiesAreDistinct is the collision gate: every
-// per-instance name the launcher derives must differ across all four
+// per-instance name the launcher derives must differ across every
 // modes, or an isolated instance reaches into the developer's instance
-// (or into the other profile's).
+// (or into another profile's).
 func TestIsolatedIdentitiesAreDistinct(t *testing.T) {
-	modes := []string{ModeDev, ModeProd, ModeHarness, ModeSoak}
+	modes := []string{ModeDev, ModeProd, ModeHarness, ModeSoak, ModePerf}
 	seen := map[string]map[string]string{}
 	record := func(axis, mode, value string) {
 		if seen[axis] == nil {
@@ -80,6 +84,9 @@ func TestIsolatedIdentitiesAreDistinct(t *testing.T) {
 		{"launcher.log", ModeHarness, "launcher-harness.log"},
 		{"window.json", ModeHarness, "window-harness.json"},
 		{"noext", ModeHarness, "noext-harness"},
+		{"launcher.log", ModePerf, "launcher-perf.log"},
+		{"window.json", ModePerf, "window-perf.json"},
+		{"noext", ModePerf, "noext-perf"},
 	} {
 		if got := StateFileName(tc.base, tc.mode); got != tc.want {
 			t.Errorf("StateFileName(%q, %q) = %q, want %q", tc.base, tc.mode, got, tc.want)
@@ -91,11 +98,11 @@ func TestDevToolsPortsDoNotCollide(t *testing.T) {
 	if got := DevToolsPort(ModeProd); got != 0 {
 		t.Errorf("prod CDP port = %d, want 0 (the protocol is unauthenticated)", got)
 	}
-	// All three diagnostic instances can be up at once, and two WebView2s
+	// All diagnostic instances can be up at once, and two WebView2s
 	// asked for the same remote-debugging port leave whichever lost the
 	// bind unattachable with no diagnostic.
 	seen := map[int]string{}
-	for _, mode := range []string{ModeDev, ModeHarness, ModeSoak} {
+	for _, mode := range []string{ModeDev, ModeHarness, ModeSoak, ModePerf} {
 		port := DevToolsPort(mode)
 		if port == 0 {
 			t.Fatalf("%s CDP port = 0, want non-zero", mode)

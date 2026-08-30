@@ -1,7 +1,6 @@
-// Right-click menu visibility gating. Items + order match
-// /Users/randy/repos/forge/apps/web/src/components/sidebar/useSidebarInteractions.ts
-// (handleThreadContextMenu): Rename, Fork (when fork-able), Mark Unread,
-// Copy Path, Copy Thread ID, Delete (when not a child thread).
+// Right-click menu visibility gating. Items + order are pinned:
+// Rename, Fork (when fork-able), Mark Unread, Copy Path,
+// Copy Thread ID, Delete (when not a child thread).
 
 import { afterEach, describe, expect, it, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
@@ -62,7 +61,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
     clearThreadSelection();
   });
 
-  it('renders the forge item set in order when fork-able and not a child', () => {
+  it('renders the full item set in order when fork-able and not a child', () => {
     const { baseElement } = renderMenu(makeThread());
     expect(visibleLabels(baseElement)).toEqual([
       'Open in New Pane',
@@ -104,7 +103,7 @@ describe('<ThreadContextMenu> single-row menu', () => {
     expect(baseElement.querySelectorAll('[role="separator"]').length).toBe(0);
   });
 
-  it('does NOT include Pin/Unpin or Open Workspace in Editor (forge parity)', () => {
+  it('does NOT include Pin/Unpin or Open Workspace in Editor', () => {
     const { baseElement } = renderMenu(makeThread({ pinnedAt: 1 }));
     const labels = visibleLabels(baseElement);
     expect(labels).not.toContain('Pin');

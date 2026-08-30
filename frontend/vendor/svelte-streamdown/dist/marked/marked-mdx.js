@@ -1,36 +1,61 @@
-import { Lexer } from 'marked';
-const defaultLexer = new Lexer({ gfm: true });
-const defaultTokenizer = defaultLexer.options.tokenizer;
-/**
- * Parse attributes from MDX component tag
- * Supports: attribute="string", attribute={number}, attribute={boolean}, attribute={expression}
- */
+const SELF_CLOSING_MDX = /^<([A-Z][a-zA-Z0-9]*)((?:\s+\w+=(?:"[^"]*"|{[^}]*}))*)\s*\/>/;
+const OPEN_MDX = /^<([A-Z][a-zA-Z0-9]*)((?:\s+\w+=(?:"[^"]*"|{[^}]*}))*)\s*>/;
+
+const findTagEnd = (src, start) => {
+    let quote = 0;
+    let braceDepth = 0;
+    for (let index = start; index < src.length; index++) {
+        const code = src.charCodeAt(index);
+        if (quote !== 0) {
+            if (code === quote && src.charCodeAt(index - 1) !== 92)
+                quote = 0;
+            continue;
+        }
+        if (code === 34 || code === 39) {
+            quote = code;
+            continue;
+        }
+        if (code === 123) {
+            braceDepth++;
+            continue;
+        }
+        if (code === 125 && braceDepth > 0) {
+            braceDepth--;
+            continue;
+        }
+        if (code === 62 && braceDepth === 0)
+            return index;
+    }
+    return -1;
+};
+
+const tagIsSelfClosing = (src, end) => {
+    let index = end - 1;
+    while (index >= 0 && (src.charCodeAt(index) === 32 || src.charCodeAt(index) === 9))
+        index--;
+    return src.charCodeAt(index) === 47;
+};
+
 function parseAttributes(attributeString) {
     const attributes = {};
-    // Pattern: attr="value" or attr={value}
     const attrPattern = /(\w+)=(?:"([^"]*)"|{([^}]*)})/g;
     let match;
     while ((match = attrPattern.exec(attributeString)) !== null) {
         const [, name, stringValue, expressionValue] = match;
         if (stringValue !== undefined) {
-            // String attribute: attr="value"
             attributes[name] = stringValue;
         }
         else if (expressionValue !== undefined) {
-            // Expression attribute: attr={value}
             const trimmed = expressionValue.trim();
-            // Try to parse as number
             if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
                 attributes[name] = parseFloat(trimmed);
             }
-            // Parse boolean
             else if (trimmed === 'true') {
                 attributes[name] = true;
             }
             else if (trimmed === 'false') {
                 attributes[name] = false;
             }
-            // Otherwise keep as string (could be variable reference, etc.)
             else {
                 attributes[name] = trimmed;
             }
@@ -38,87 +63,100 @@ function parseAttributes(attributeString) {
     }
     return attributes;
 }
+
+/** Match one complete MDX component without building attributes or children. */
+export const parseMdxSource = (src) => {
+    const tagInitial = src.charCodeAt(1);
+    if (src.charCodeAt(0) !== 60 || tagInitial < 65 || tagInitial > 90)
+        return undefined;
+    const selfClosingMatch = SELF_CLOSING_MDX.exec(src);
+    if (selfClosingMatch) {
+        const [raw, tagName, attributeString] = selfClosingMatch;
+        return { raw, tagName, attributeString, selfClosing: true, content: '' };
+    }
+    const openTagMatch = OPEN_MDX.exec(src);
+    if (!openTagMatch)
+        return undefined;
+    const [openTag, tagName, attributeString] = openTagMatch;
+    const closingTag = `</${tagName}>`;
+    let depth = 1;
+    let searchPos = openTag.length;
+    let closingIndex = -1;
+    while (depth > 0 && searchPos < src.length) {
+        const nextTag = src.indexOf('<', searchPos);
+        if (nextTag === -1)
+            break;
+        if (src.startsWith(closingTag, nextTag)) {
+            depth--;
+            if (depth === 0)
+                closingIndex = nextTag;
+            searchPos = nextTag + closingTag.length;
+            continue;
+        }
+        if (src.startsWith(`<${tagName}`, nextTag)) {
+            const boundary = src.charCodeAt(nextTag + tagName.length + 1);
+            if (boundary === 32 || boundary === 9 || boundary === 10 || boundary === 13 ||
+                boundary === 47 || boundary === 62) {
+                const tagEnd = findTagEnd(src, nextTag + tagName.length + 1);
+                if (tagEnd === -1)
+                    break;
+                if (!tagIsSelfClosing(src, tagEnd))
+                    depth++;
+                searchPos = tagEnd + 1;
+                continue;
+            }
+        }
+        searchPos = nextTag + 1;
+    }
+    if (closingIndex === -1)
+        return undefined;
+    return {
+        raw: src.substring(0, closingIndex + closingTag.length),
+        tagName,
+        attributeString,
+        selfClosing: false,
+        content: src.substring(openTag.length, closingIndex)
+    };
+};
+
+export const markedMdxBlock = {
+    name: 'mdx',
+    level: 'block',
+    applyInBlockParsing: true,
+    tokenizer(src) {
+        const source = parseMdxSource(src);
+        return source ? { type: 'mdx', raw: source.raw } : undefined;
+    }
+};
+
 export const markedMdx = {
     name: 'mdx',
     level: 'block',
     applyInBlockParsing: true,
     tokenizer(src) {
-        // Match MDX component tags (must start with capital letter)
-        // Self-closing: <Component attr="value" />
-        // With children: <Component attr="value">content</Component>
-        // First try self-closing tag
-        const selfClosingMatch = src.match(/^<([A-Z][a-zA-Z0-9]*)((?:\s+\w+=(?:"[^"]*"|{[^}]*}))*)\s*\/>/);
-        if (selfClosingMatch) {
-            const [raw, tagName, attributeString] = selfClosingMatch;
-            const attributes = parseAttributes(attributeString);
+        const source = parseMdxSource(src);
+        if (!source)
+            return undefined;
+        const attributes = parseAttributes(source.attributeString);
+        if (source.selfClosing) {
             return {
                 type: 'mdx',
-                raw,
-                tagName,
+                raw: source.raw,
+                tagName: source.tagName,
                 attributes,
                 selfClosing: true
             };
         }
-        // Try paired tag with children
-        const openTagMatch = src.match(/^<([A-Z][a-zA-Z0-9]*)((?:\s+\w+=(?:"[^"]*"|{[^}]*}))*)\s*>/);
-        if (openTagMatch) {
-            const [openTag, tagName, attributeString] = openTagMatch;
-            const attributes = parseAttributes(attributeString);
-            // Find matching closing tag with nesting support
-            const closingTag = `</${tagName}>`;
-            // Escape special regex characters in tagName to prevent ReDoS
-            const escapedTagName = tagName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const openTagPattern = new RegExp(`<${escapedTagName}(?:\\s|>)`, 'g');
-            const closeTagPattern = new RegExp(`</${escapedTagName}>`, 'g');
-            let depth = 1;
-            let searchPos = openTag.length;
-            let closingIndex = -1;
-            while (depth > 0 && searchPos < src.length) {
-                openTagPattern.lastIndex = searchPos;
-                closeTagPattern.lastIndex = searchPos;
-                const nextOpen = openTagPattern.exec(src);
-                const nextClose = closeTagPattern.exec(src);
-                if (!nextClose)
-                    break;
-                if (nextOpen && nextOpen.index < nextClose.index) {
-                    // Verify this is not a self-closing tag by finding the full tag and checking for />
-                    const tagStart = nextOpen.index;
-                    const tagEndPos = src.indexOf('>', tagStart);
-                    if (tagEndPos !== -1) {
-                        const fullTag = src.substring(tagStart, tagEndPos + 1);
-                        const isSelfClosing = fullTag.trimEnd().endsWith('/>');
-                        if (!isSelfClosing) {
-                            depth++;
-                        }
-                    }
-                    searchPos = openTagPattern.lastIndex;
-                }
-                else {
-                    depth--;
-                    if (depth === 0) {
-                        closingIndex = nextClose.index;
-                    }
-                    searchPos = closeTagPattern.lastIndex;
-                }
-            }
-            if (closingIndex !== -1) {
-                // Extract content between tags
-                const contentStart = openTag.length;
-                const content = src.substring(contentStart, closingIndex);
-                const raw = src.substring(0, closingIndex + closingTag.length);
-                // Parse children as markdown
-                const tokens = content.trim() ? this.lexer.blockTokens(content.trim(), []) : [];
-                return {
-                    type: 'mdx',
-                    raw,
-                    tagName,
-                    attributes,
-                    selfClosing: false,
-                    tokens,
-                    text: content
-                };
-            }
-        }
-        return undefined;
+        return {
+            type: 'mdx',
+            raw: source.raw,
+            tagName: source.tagName,
+            attributes,
+            selfClosing: false,
+            tokens: source.content.trim()
+                ? this.lexer.blockTokens(source.content.trim(), [])
+                : [],
+            text: source.content
+        };
     }
 };

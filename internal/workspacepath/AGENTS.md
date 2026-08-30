@@ -7,7 +7,7 @@ callers can safely join under a workspace root.
 
 ## Surface
 
-- `NormalizeRelative(relativePath string) (string, error)` — returns
+- `NormalizeRelative(relativePath string) (string, error)` returns
   the cleaned path on success; errors carry a `workspace path` prefix
   so the calling binding can surface them verbatim.
 
@@ -24,7 +24,7 @@ callers can safely join under a workspace root.
     OS-native semantics; symlink resolution is the OS / `os.WriteFile`
     boundary's responsibility.
   - Normalising provider-supplied absolute paths back to workspace-
-    relative form — that's `internal/triage/tool_paths.go`'s job and
+    relative form. That's `internal/triage/tool_paths.go`'s job and
     its semantics differ (it accepts an absolute path + workspace and
     converts; this package validates an already-relative input).
 

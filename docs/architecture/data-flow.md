@@ -43,8 +43,8 @@ SQLite.
 
 A backgrounded command produces two timeline items:
 
-- `background_started` — lightweight marker, rendered in the tray.
-- `background_completed` — rich result card, appended at the completion
+- `background_started`: lightweight marker, rendered in the tray.
+- `background_completed`: rich result card, appended at the completion
   position.
 
 The tray is frontend state only. Background output accumulates in Go and
@@ -78,7 +78,7 @@ live provider process behind it, which is what the differences follow from:
   just wrote.
 
 Where a live session's provider process is the source of truth for the turn,
-an imported thread's source of truth is the session FILE — which keeps
+an imported thread's source of truth is the session FILE, which keeps
 growing after the import. `PlanUpdate` / `ApplyUpdate` re-read the tail from
 the cursor in `thread_import_state`, and refuse when the thread has since been
 resumed inside AO (the timeline and the file are then two different futures).

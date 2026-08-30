@@ -9,9 +9,8 @@ the provider process owns turn state.
   process; spawning happens on resume.
 - Claude Code: `claude --output-format stream-json --input-format stream-json
   --verbose`. NDJSON both directions. Authentication is via the CLI's own
-  OAuth flow — we don't see credentials.
-- Codex: `codex app-server`. JSON-RPC 2.0 over stdio. Same one-process-per-thread
-  shape that forge proved out.
+  OAuth flow. We don't see credentials.
+- Codex: `codex app-server`. JSON-RPC 2.0 over stdio. One process per thread.
 
 ## Session Identity
 
@@ -23,14 +22,14 @@ the provider process owns turn state.
   first send spawns `claude --resume <source> --fork-session`, so the
   CLI itself copies the transcript at startup. An anchored (fork-at-turn
   / fork-from-message) Claude fork slices the source JSONL up front
-  instead (`internal/provider/claude/sessionfork`) — anchors point at
+  instead (`internal/provider/claude/sessionfork`). Anchors point at
   rows already on disk, so the slice is exact.
 - Forking DURING an active turn is supported and is a snapshot "as if
   interrupted right now": the source is never interrupted and never
   mutated, and only the fork's clone is settled (running/streaming rows
   → errored with the " — interrupted" suffix, open turn rows closed with
   `stop_reason='interrupted'`). Codex issues `thread/fork` with NO
-  `lastTurnId` — with no boundary on a mid-turn source it copies
+  `lastTurnId`. With no boundary on a mid-turn source it copies
   persisted history and appends the same turn-aborted marker a real
   interrupt writes, onto the fork's copy only, and a `lastTurnId` naming
   an in-progress turn is rejected outright. Claude PINS the lazy cut:
@@ -41,24 +40,24 @@ the provider process owns turn state.
   streaming since (spike-verified 2.1.237: rows after the cursor are
   dropped from the fork copy, and source uuids are preserved verbatim, so
   no provider-id remap is needed). The UNPINNED lazy path is forbidden
-  whenever a live session is registered — it would snapshot the
+  whenever a live session is registered. It would snapshot the
   transcript at the fork's first send, minutes or turns later (2026-08-22
   incident: a fork keyed on the turn row alone deferred unpinned and its
   transcript was cut 44s after its timeline). "Live" is wider than "has
   an open turn row": the Claude CLI closes a turn on `end_turn` and then
-  self-re-invokes when a background task completes — for hours, with no
-  new turn row — so the transcript can grow whenever the session process
+  self-re-invokes when a background task completes (for hours, with no
+  new turn row), so the transcript can grow whenever the session process
   exists. At spawn time the stored pin is repaired against the CLI's
   resume deserialization filters (`claude.ResolveForkResumeCursor`; the
   CLI filters BEFORE the cursor lookup, so a dangling-tool_use pin would
   hard-fail resume pre-init) to the deepest filter-surviving row at or
-  before the pin's file position — never forward — and a pin the file has
+  before the pin's file position (never forward). A pin the file has
   not received yet (stdout-to-disk append gap) gets a bounded wait, then
   falls back to the deepest on-disk cursor. The pin is captured BEFORE
   the SQLite clone, so the transcript can never be AHEAD of the timeline:
   a fork whose rows say " — interrupted" over an answer its transcript
-  holds complete would be lying. The reverse skew — a partial block in
-  the timeline that the transcript lacks — is the honest real-interrupt
+  holds complete would be lying. The reverse skew (a partial block in
+  the timeline that the transcript lacks) is the honest real-interrupt
   shape, since an interrupted row never promised its content landed.
   Forking seconds after a send, before either provider has written
   anything, legitimately yields a fork holding just the prompt that
@@ -85,10 +84,10 @@ stays inside the provider package.
 
 Approval `kind` values that currently arrive from providers:
 
-- `user-input` — multi-question form.
-- `permission` — grant scope: `turn` or `session`.
-- `file-change`, `file-read`, `command` — Codex sandbox approvals.
-- `mcp-elicitation` — MCP server dynamic config request.
+- `user-input`: multi-question form.
+- `permission`: grant scope, `turn` or `session`.
+- `file-change`, `file-read`, `command`: Codex sandbox approvals.
+- `mcp-elicitation`: MCP server dynamic config request.
 
 The frontend must render a branch for each kind it can receive. Missing
 branches cause a silent dead-end.

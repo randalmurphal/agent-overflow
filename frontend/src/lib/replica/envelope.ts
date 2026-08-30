@@ -1,5 +1,5 @@
 // Persisted shape of one thread's cached timeline window
-// (docs/specs/thread-replica-sync.md §6) plus the validation that
+// (docs/architecture/thread-replica-sync.md §6) plus the validation that
 // decides whether a stored record may be painted.
 //
 // Two rules this file exists to enforce:

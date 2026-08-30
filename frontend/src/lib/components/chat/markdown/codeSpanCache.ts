@@ -14,8 +14,9 @@
 
 import { HighlightCode } from '../../../stores/bindings';
 import { addToast } from '../../../stores/toast.svelte';
-import { contentKey } from '../../../utils/fnv1a';
+import { appendFNV1a32, contentKey, fnv1a32 } from '../../../utils/fnv1a';
 import { ensureSyntaxClassNames, type EncodedLine } from '../../../utils/syntaxSpans';
+import { matchesProvenAppend, type ProvenAppend } from 'svelte-streamdown';
 
 /** Entry cap. Blocks are small (plain lines carry no runs); 300
  * comfortably covers every visible message's blocks plus the settle
@@ -27,6 +28,53 @@ const inFlight = new Map<string, Promise<EncodedLine[] | null>>();
 
 // Once-per-language guard for the degraded-highlight toast.
 const warnedLanguages = new Set<string>();
+
+/**
+ * Immutable source plus its already-computed content key. Streaming code hosts
+ * extend this identity from an opaque append proof, so cache lookups and
+ * throttled requests hash only the new suffix instead of the whole open fence.
+ */
+export interface CodeSourceIdentity {
+  readonly source: string;
+  readonly contentKey: string;
+  readonly hash: number;
+}
+
+const codeSourceIdentities = new WeakSet<CodeSourceIdentity>();
+
+function mintCodeSourceIdentity(source: string, hash: number): CodeSourceIdentity {
+  const identity = Object.freeze({
+    source,
+    contentKey: `${source.length}:${hash.toString(36)}`,
+    hash,
+  });
+  codeSourceIdentities.add(identity);
+  return identity;
+}
+
+export function createCodeSourceIdentity(source: string): CodeSourceIdentity {
+  return mintCodeSourceIdentity(source, fnv1a32(source));
+}
+
+export function appendCodeSourceIdentity(
+  identity: CodeSourceIdentity,
+  append: ProvenAppend,
+): CodeSourceIdentity {
+  if (
+    !codeSourceIdentities.has(identity) ||
+    !matchesProvenAppend(append, identity.source, append.next)
+  ) {
+    throw new Error('Code source identity append does not match its current source');
+  }
+  return mintCodeSourceIdentity(append.next, appendFNV1a32(identity.hash, append.delta));
+}
+
+function requireCodeSourceIdentity(identity: CodeSourceIdentity): CodeSourceIdentity {
+  if (!codeSourceIdentities.has(identity)) {
+    throw new Error('Code span cache requires an identity minted by codeSpanCache');
+  }
+  return identity;
+}
 
 // NUL separator: fence languages are arbitrary info-string text, so a
 // visible separator could collide (`a b` + key vs `a` + `b <key>`).
@@ -76,6 +124,18 @@ export function seedFinalBlockSpans(
  */
 export function getCachedBlockSpans(lang: string, source: string): EncodedLine[] | null {
   const key = keyOf(lang, source);
+  return getCachedByKey(key);
+}
+
+export function getCachedBlockSpansByIdentity(
+  lang: string,
+  identity: CodeSourceIdentity,
+): EncodedLine[] | null {
+  const source = requireCodeSourceIdentity(identity);
+  return getCachedByKey(keyFor(lang, source.contentKey));
+}
+
+function getCachedByKey(key: string): EncodedLine[] | null {
   const hit = cache.get(key);
   if (!hit) return null;
   touch(key, hit);
@@ -90,7 +150,22 @@ export function getCachedBlockSpans(lang: string, source: string): EncodedLine[]
  * language — and never caches it.
  */
 export function requestBlockSpans(lang: string, source: string): Promise<EncodedLine[] | null> {
-  const key = keyOf(lang, source);
+  return requestBlockSpansByKey(lang, source, keyOf(lang, source));
+}
+
+export function requestBlockSpansByIdentity(
+  lang: string,
+  identity: CodeSourceIdentity,
+): Promise<EncodedLine[] | null> {
+  const source = requireCodeSourceIdentity(identity);
+  return requestBlockSpansByKey(lang, source.source, keyFor(lang, source.contentKey));
+}
+
+function requestBlockSpansByKey(
+  lang: string,
+  source: string,
+  key: string,
+): Promise<EncodedLine[] | null> {
   const hit = cache.get(key);
   if (hit) {
     touch(key, hit);
@@ -142,8 +217,9 @@ export function __codeSpanCacheStatsForTest(): { entries: number } {
   return { entries: cache.size };
 }
 
-/** Diagnostic accounting (memoryReport). Key chars approximate source
- *  size; encoded span payloads scale with it. */
+/** Diagnostic accounting (memoryReport). `approxKeyChars` is only the compact
+ * content-address key storage. Source and encoded-span payloads are not
+ * retained here in a form this synchronous report can size cheaply. */
 export function codeSpanCacheStats(): { entries: number; approxKeyChars: number } {
   let approxKeyChars = 0;
   for (const key of cache.keys()) approxKeyChars += key.length;

@@ -10,7 +10,7 @@ import "strings"
 const SessionEndedSuffix = " — session ended"
 
 // GhostSummary rewrites a backgrounded tool_call's summary for the
-// on-start ghost flip. Empty summaries fall back to "Session ended" as
+// Codex runtime retirement. Empty summaries fall back to "Session ended" as
 // the standalone label (the leading em-dash would look cosmetic and
 // weird without context); non-empty summaries get SessionEndedSuffix
 // appended. Idempotent: a repeat call leaves the string unchanged, so

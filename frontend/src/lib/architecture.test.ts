@@ -143,7 +143,7 @@ const ENTITY_BINDING_ALLOWLIST: Record<string, string> = {};
 // widget — so there is no entity state to share.
 const WAILS_EVENT_ALLOWLIST: Record<string, string> = {
   'lib/components/composer/activityRailBackground.svelte.ts':
-    'background-task events are used only as debounced refetch triggers for this thread; no payload state is kept',
+    'background-task events are used only as rate-bounded refetch triggers for this thread; no payload state is kept',
   'lib/components/composer/workspace/EnvPicker.svelte':
     'turn/background activity re-fetches the OPEN popover\'s worktree rows; the subscription lives and dies with the popover',
   'lib/components/takecontrol/TakeControlPane.svelte':
@@ -182,7 +182,7 @@ const AUTHORIZED_SCROLL_PRESENTATION_STATE = [
   'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',
   'lib/components/chat/ExpandedImageDialog.svelte|Tailwind transform utility|class="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-scrim-fg/10 p-2 text-scrim-fg transition hover:bg-scrim-fg/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-scrim-fg/70"',
   'lib/components/chat/MessageNavRail.svelte|Svelte transform style directive|style:transform={tickStyleTransform(i)}',
-  'lib/components/chat/MessageNavRail.svelte|Svelte transform style directive|style:transform={`translateY(${previewAnchor.translatePercent}%)`}',
+  "lib/components/chat/MessageNavRail.svelte|Svelte transform style directive|style:transform={previewCard?.translateY ?? 'none'}",
   'lib/components/chat/MessageNavRail.svelte|Tailwind transform utility|class="absolute h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/75"',
   'lib/components/chat/ProposedPlanReviewSurface.svelte|Tailwind transform utility|class="pointer-events-none absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 -translate-y-px border-x-[6px] border-t-[6px] border-x-transparent border-t-surface-2"',
   'lib/components/chat/ProposedPlanReviewSurface.svelte|Tailwind transform utility|class="pointer-events-none absolute left-1/2 top-full h-0 w-0 -translate-x-1/2 border-x-[7px] border-t-[7px] border-x-transparent border-t-border"',
@@ -217,6 +217,34 @@ const HARNESS_BRIDGE_OWNER = 'lib/stores/harnessBridge.ts';
 // Files outside lib/harness/ that statically import from it. Empty, and it is
 // the claim that the chunk boundary is real.
 const HARNESS_STATIC_IMPORT_ALLOWLIST: Record<string, string> = {};
+
+// ---------------------------------------------------------------------------
+// Rule 5 — an event-driven refresh uses the scheduler, never a plain debounce.
+//
+// `utils/debounce` is a pure TRAILING debounce: every call clears the standing
+// timer and arms a new one. Wrapped around a refresh driven by a provider event
+// stream, that is a starvation bug and not a tuning choice — while events keep
+// arriving closer together than the delay, the refresh is postponed forever and
+// the surface shows whatever it last saw. Three modules had independently
+// hand-rolled it (activity rail background tray, workspace-change lock, env
+// picker worktree rows); in production on 2026-08-29 the Background pill read
+// 10 against a truth of 3-4, and the other two GATE WORKSPACE MUTATION, where
+// staleness is a safety defect.
+//
+// The rule is the conjunction, because neither half is wrong alone: a debounce
+// with no event source is a quiet-edge persist (`paneLayoutPersistence`, which
+// is meant to starve for the length of a drag), and an event subscription with
+// no debounce has nothing to postpone.
+const DEBOUNCE_MODULE = join(SRC_ROOT, 'lib', 'utils', 'debounce');
+const REFRESH_SCHEDULER_MODULE = 'lib/utils/refreshScheduler.ts';
+// The two ways a module takes a provider event stream. `wailsEventOn` is the
+// wire subscription (rule 2 keeps it in stores/ or on its allowlist);
+// `onItemUpsert` is the per-item fan-out, which is the higher-rate of the two
+// and the one that starved the tray.
+const EVENT_SUBSCRIPTION_IMPORTS = ['wailsEventOn', 'onItemUpsert'] as const;
+// Empty, and that is the claim: every event-driven refresh in the tree is on
+// the scheduler.
+const DEBOUNCED_EVENT_REFRESH_ALLOWLIST: Record<string, string> = {};
 
 // ---------------------------------------------------------------------------
 
@@ -423,6 +451,48 @@ describe('architecture', () => {
       HARNESS_STATIC_IMPORT_ALLOWLIST,
       'New violations.',
       `Reach the bridge through the dynamic import in ${HARNESS_BRIDGE_OWNER}; see frontend/CLAUDE.md → Layout, src/lib/harness/.`,
+    );
+  });
+
+  it('keeps event-driven refresh on the rate-bounded scheduler', () => {
+    const offenders = new Map<string, string[]>();
+    let debounceImporters = 0;
+    for (const source of sources) {
+      const debounces = source.imports.some(
+        (parsed) =>
+          resolveLocalModule(source.file, parsed.specifier) === DEBOUNCE_MODULE
+          && (parsed.wholeModule || parsed.names.includes('debounce')),
+      );
+      if (!debounces) continue;
+      debounceImporters += 1;
+      const subscriptions: string[] = [];
+      for (const parsed of source.imports) {
+        for (const name of EVENT_SUBSCRIPTION_IMPORTS) {
+          if (parsed.names.includes(name)) subscriptions.push(`${name} (from '${parsed.specifier}')`);
+        }
+      }
+      if (source.callsEventsOn) subscriptions.push('Events.On');
+      if (subscriptions.length === 0) continue;
+      offenders.set(source.path, [
+        `debounces while subscribing to ${subscriptions.join(', ')} — a trailing`
+        + ' debounce restarts its timer on every event, so a stream that never'
+        + ' pauses postpones the refresh forever',
+      ]);
+    }
+    // Without this the rule would keep passing after utils/debounce moved or
+    // was renamed — a rule scanning for a module nobody imports finds nothing
+    // and says so cheerfully.
+    expect(
+      debounceImporters,
+      `no module imports ${repoPath(DEBOUNCE_MODULE)}; this rule is scanning for nothing`,
+    ).toBeGreaterThan(0);
+    expectAllowlistExact(
+      offenders,
+      DEBOUNCED_EVENT_REFRESH_ALLOWLIST,
+      'New violations.',
+      `Drive the refresh with ${REFRESH_SCHEDULER_MODULE}, whose absolute deadline fires`
+      + ' under a stream that never goes quiet. Plain debounce stays correct only for a'
+      + ' quiet-edge persist that nothing reads mid-burst.',
     );
   });
 

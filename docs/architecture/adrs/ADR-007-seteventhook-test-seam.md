@@ -62,11 +62,11 @@ Considered alternatives:
   wire-level passthrough for typed-channel events, and tests use
   the hook instead. The header comment on `emitInline` calls this
   out.
-- Any new handler must respect the hook contract — `Handle` fires
+- Any new handler must respect the hook contract. `Handle` fires
   it after the case statement returns. Adding a handler that
   short-circuits before the hook fires breaks tests relying on
   it.
 - The hook is protected by the router's mutex so `SetEventHook`
   can be called from any goroutine; production stays lock-free on
-  the read path (the nil-check is racy, but a stale nil is fine —
-  the hook is test-only).
+  the read path (the nil-check is racy, but a stale nil is fine,
+  since the hook is test-only).

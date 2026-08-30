@@ -7,25 +7,18 @@ function here is callable without a running App or SQLite handle.
 
 The App-coupled wrappers that need persistence (`rememberChatModelProfile`,
 `seedChatModelProfile`, plus the context-settings and thread-model bindings)
-stay in `app_*.go` and
-compose this package's pieces with their store reads/writes.
+stay in `app_*.go` and compose this package's pieces with their store
+reads/writes.
 
-## Layout
-
-- `chatmodel.go` — every exported helper. Grouped by concern:
-  - Fallback constants: `FallbackProvider`, `FallbackModelForProvider`.
-  - Profile shape: `FallbackProfile`, `ProfileFromThread`, `SameProfile`,
-    `SanitizeProfile`.
-  - Context window: `ContextWindowOptions`, `ContextWindowSupported`,
-    `SanitizeContextWindow`, `DefaultContextWindow`, `IsValidContextWindow`.
-  - Capability: `SupportsStoredFastMode`, `HasCapability`.
+Every helper lives in `chatmodel.go` with a doc comment stating its
+contract; read those before adding a variant.
 
 ## Responsibility boundary
 
 - What BELONGS here:
   - Anything that can be expressed as a pure function over
     `(provider.*, store.ChatModelProfile, store.Thread)` arguments.
-  - Sanitization that needs to agree across every callsite —
+  - Sanitization that needs to agree across every callsite:
     fast-mode clamping, context-window clamping, runtime-mode
     normalization for sameness checks.
 - What does NOT belong here:
@@ -35,7 +28,7 @@ compose this package's pieces with their store reads/writes.
   - Frontend-facing wire types. The `ContextSettingsProfile`
     wrapper that the binding returns lives in
     `app_context_settings.go`.
-  - Codex's live model-catalog cache — that's its own package
+  - Codex's live model-catalog cache belongs to its own package
     (`internal/codexmodels`). This package only consults the
     static `provider.*` registry.
 

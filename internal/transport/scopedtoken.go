@@ -25,6 +25,11 @@ const (
 	ScopeKindPhase       = "phase"
 )
 
+// ErrCodeInvalidScope is returned when an authenticated token resolves to a
+// scope kind outside the closed caller-scope vocabulary. Treating an unknown
+// value as interactive would silently widen the token's authority.
+const ErrCodeInvalidScope = "invalid_scope"
+
 // CallerScope is what a scoped token resolves to. It travels on the request
 // context so a bound method reads the caller's authority instead of trusting an
 // argument the caller supplied.
@@ -55,6 +60,9 @@ func (s CallerScope) HasGrant(grant string) bool {
 
 // IsPhase reports whether the scope is a workflow phase session.
 func (s CallerScope) IsPhase() bool { return s.Kind == ScopeKindPhase }
+
+// IsInteractive reports whether the scope has the only other supported kind.
+func (s CallerScope) IsInteractive() bool { return s.Kind == ScopeKindInteractive }
 
 // ScopedTokens is the narrow app-side registry this package consults. The
 // implementation registers a token when a provider session starts and revokes
@@ -185,6 +193,12 @@ const ErrCodeGrantRequired = "grant_required"
 // AuthorizeScopedMethod decides whether a scoped token may invoke methodName.
 // A nil return authorizes the call.
 func AuthorizeScopedMethod(scope CallerScope, methodName string) *FrameError {
+	if !scope.IsPhase() && !scope.IsInteractive() {
+		return &FrameError{
+			Code:    ErrCodeInvalidScope,
+			Message: fmt.Sprintf("unknown caller scope kind %q", scope.Kind),
+		}
+	}
 	grants, listed := ScopedTokenMethods[methodName]
 	if !listed {
 		return &FrameError{Code: ErrCodeMethodNotFound, Message: "method not registered"}

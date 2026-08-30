@@ -929,6 +929,28 @@ func (r *Router) hasInFlightTurnOrRound(threadID string) bool {
 	return st.openTurnSet || st.currentRoundOpen
 }
 
+// AnyInFlightTurnOrRound reports whether ANY thread currently has an
+// open logical turn or wire round. This is the renderer-is-painting
+// signal the webview trim gate consults (app_webview_trim.go): Claude
+// sessions never emit EventTurnStart, so the App-side activeTurns
+// counter stays at zero for them and cannot answer "is a turn open" —
+// the router's wire-driven round state is the provider-agnostic truth.
+// Same predicate as hasInFlightTurnOrRound, across all threads; the
+// walk is bounded by the number of threads with live correlation state.
+func (r *Router) AnyInFlightTurnOrRound() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, st := range r.threads {
+		if st != nil && (st.openTurnSet || st.currentRoundOpen) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	r.mu.Lock()
 	st := r.state(threadID)

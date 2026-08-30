@@ -2,9 +2,8 @@
 <title>present policy repro</title>
 <style>
   html,body { margin:0; height:100%; background:#000; }
-  /* Pure green is the tell: rows are opaque, so any green pixel inside
-     the scroller rect is a tile that was not rastered when the frame
-     was presented. */
+  /* Rows are opaque and cover the scroller. The compositor trace counts
+     damaging draws and raster overlap, so no pixel readback is needed. */
   #scroller {
     position:absolute; inset:0 0 0 0; width:1200px; height:900px;
     overflow-y:auto; overflow-anchor:none; background:#00ff00;

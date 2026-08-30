@@ -1,4 +1,23 @@
-.PHONY: install dev dev-wsl launch-wsl harness-wsl soak soak-check soak-contract build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+.PHONY: help ao-harness-docs install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+
+# Print the supported build, test, harness, and smoke targets. Keep this
+# short enough to use from an unfamiliar checkout. `make e2e` is the
+# hermetic harness smoke gate. `make provider-smoke` is deliberately separate
+# because it spends real provider tokens. `make import-corpus-smoke` reads
+# only caller-supplied copies of provider homes.
+help:
+	@printf '%s\n' \
+		'Build:   make build | make check | make verify' \
+		'Tests:   make test | make test-race' \
+		'Harness: make harness | make harness-window | make harness-wsl' \
+		'Long-run: make soak | make soak-window | make soak-check' \
+		'Perf:    make perf-wsl | make soak-contract' \
+		'Smoke:   make e2e (mocked) | make provider-smoke (real tokens)' \
+		'Import:  make import-corpus-smoke AO_IMPORT_CORPUS_CLAUDE=/copy AO_IMPORT_CORPUS_CODEX=/copy' \
+		'Docs:    make ao-harness-docs'
+
+ao-harness-docs:
+	go generate ./cmd/ao-harness
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider
@@ -234,11 +253,13 @@ DEV_WSL_FWD_VARS := AGENT_OVERFLOW_DEBUG AGENT_OVERFLOW_WEBVIEW_LOG AGENT_OVERFL
 # empty is the developer's normal dev instance, `harness` is the isolated
 # mocked instance you drive (make harness-wsl), `soak` is that same
 # instance with the soak autopilot armed (make soak,
-# docs/architecture/soak-rig.md). It is forwarded verbatim to the
+# docs/architecture/soak-rig.md), and `perf` is a third isolated harness
+# reserved for destructive renderer benchmarks. It is forwarded verbatim to the
 # launcher's --profile flag, which is THE axis behind every piece of
 # per-instance state (single-instance id, window title, WebView2 profile,
 # CDP port, launcher log, window placement, backend data dir).
 LAUNCH_PROFILE ?=
+LAUNCH_WSL_BUILD_MODE ?= build:dev
 
 dev-wsl:
 	@$(MAKE) launch-wsl LAUNCH_PROFILE= UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
@@ -252,6 +273,16 @@ dev-wsl:
 # ao-mockprovider and its own ~/.agent-overflow-harness data dir.
 harness-wsl:
 	@$(MAKE) launch-wsl LAUNCH_PROFILE=harness UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
+
+# perf-wsl: a THIRD isolated Windows harness for destructive renderer A/B
+# runs. It deliberately passes the production `build` mode, so the embedded
+# assets measured by this profile are the assets shipped to users. Its data
+# root, WebView2 profile, launcher identity, window state, log,
+# forensics, and CDP endpoint differ from dev, harness, and soak. Benchmark
+# reset/interrupt/reload commands can therefore target it without touching a
+# long-running rig or the developer's real app.
+perf-wsl:
+	@$(MAKE) launch-wsl LAUNCH_PROFILE=perf LAUNCH_WSL_BUILD_MODE=build UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES)
 
 # soak: the same isolated Windows instance with ONE preset armed — the
 # soak autopilot, which seeds two threads and streams background-subagent
@@ -267,16 +298,16 @@ launch-wsl:
 		echo "ERROR: WSL_DISTRO_NAME is unset. Run this target from inside a WSL shell."; \
 		exit 1; \
 	fi
-	@case "$(LAUNCH_PROFILE)" in ""|harness|soak) ;; *) echo "ERROR: LAUNCH_PROFILE must be empty, 'harness' or 'soak', got '$(LAUNCH_PROFILE)'" >&2; exit 1;; esac
+	@case "$(LAUNCH_PROFILE)" in ""|harness|soak|perf) ;; *) echo "ERROR: LAUNCH_PROFILE must be empty, 'harness', 'soak', or 'perf', got '$(LAUNCH_PROFILE)'" >&2; exit 1;; esac
 	@set -e; \
 	DEV_VERSION=dev-$$(date +%Y%m%d%H%M%S)-$$$$; \
-	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=build:dev; \
+	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=$(LAUNCH_WSL_BUILD_MODE); \
 	if [ -n "$(LAUNCH_PROFILE)" ]; then \
 		$(MAKE) mockprovider; \
 		mkdir -p "$$HOME/.local/bin"; \
 		cp bin/ao-mockprovider "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$"; \
 		mv -f "$$HOME/.local/bin/ao-mockprovider.tmp.$$$$" "$$HOME/.local/bin/ao-mockprovider"; \
-		echo "Installed mock provider at $$HOME/.local/bin/ao-mockprovider (both isolated profiles resolve it beside the backend binary)"; \
+		echo "Installed mock provider at $$HOME/.local/bin/ao-mockprovider (all isolated profiles resolve it beside the backend binary)"; \
 	fi; \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
@@ -304,6 +335,12 @@ launch-wsl:
 		echo "Windows harness data root: $$HOME/.agent-overflow-harness"; \
 		echo "Drive it:                  bin/ao-harness list | info | health   (build: make harness-build)"; \
 		echo "Stop it:                   bin/ao-harness down   (closes the launcher window too)"; \
+		echo ""; \
+	elif [ "$(LAUNCH_PROFILE)" = "perf" ]; then \
+		echo ""; \
+		echo "Windows perf data root: $$HOME/.agent-overflow-perf"; \
+		echo "CDP:                   127.0.0.1:9226"; \
+		echo "Drive it explicitly:   bin/ao-harness --instance $$HOME/.agent-overflow-perf ..."; \
 		echo ""; \
 	fi; \
 	echo "Launching $$WIN_DEV_EXE_LINUX --distro $$WSL_DISTRO_NAME $$PROFILE_ARGS"; \
@@ -351,9 +388,10 @@ endif
 
 # ---- Agent test harness (docs/architecture/agent-harness.md) ----
 #
-# HARNESS_DATA_DIR defaults to a stable per-checkout scratch dir so a
+# HARNESS_DATA_DIR defaults to a stable per-checkout borrowed root so a
 # re-run reuses seeded state; pass HARNESS_DATA_DIR=$(mktemp -d) for a
-# throwaway. `make harness` prints the __AO_HARNESS__ bootstrap line
+# fresh throwaway. Managed `ao-harness run --plan` runs own fresh roots.
+# `make harness` prints the __AO_HARNESS__ bootstrap line
 # (URL + token + paths) on stdout — everything an agent or Playwright
 # MCP session needs to attach. The checkout-path suffix keeps two
 # worktrees from sharing a DB / generated workspaces (each boot rewrites
@@ -381,8 +419,9 @@ mockprovider:
 # two together is what makes `bin/ao-harness up` need no configuration.
 harness-build: mockprovider
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
-	go build -o bin/agent-overflow .
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow .
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
+	go build -o bin/ao-harness-e2e ./cmd/ao-harness-e2e
 
 harness: harness-build
 	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"
@@ -393,8 +432,17 @@ harness: harness-build
 # registration, webview storage under the data root. Under WSLg the
 # window lands on the Windows desktop, so this is live-testable from the
 # dev environment. Both block; Ctrl-C or closing the window ends them.
+ifeq ($(shell uname -s),Darwin)
 harness-window: harness-build
-	bin/agent-overflow --harness --window --data-dir "$(HARNESS_DATA_DIR)"
+	go build -o bin/ao-darwin-harness ./cmd/ao-darwin-harness
+	bin/ao-darwin-harness --binary "$(CURDIR)/bin/agent-overflow" --data-root "$(HARNESS_DATA_DIR)" --plist "$(CURDIR)/build/darwin/Info.dev.plist" --driver "$(CURDIR)/bin/ao-harness" -- --harness --window
+else
+harness-window: harness-build
+	@set -e; \
+	trap 'bin/ao-harness down --instance "$(HARNESS_DATA_DIR)" >/dev/null 2>&1 || true' EXIT INT TERM; \
+	bin/ao-harness up --window --data-dir "$(HARNESS_DATA_DIR)"; \
+	while bin/ao-harness info --instance "$(HARNESS_DATA_DIR)" >/dev/null 2>&1; do sleep 1; done
+endif
 
 # soak-window IS the soak preset, so it spells --autopilot explicitly:
 # --soak alone is only the launcher-shell isolated backend, and the flag
@@ -403,14 +451,23 @@ harness-window: harness-build
 # The -soak suffix mirrors the binary's own windowed-soak default
 # (instanceinfo.SoakDataRootFor): the soak autopilot refuses a data dir
 # holding threads it did not seed, so it cannot share the harness root.
+ifeq ($(shell uname -s),Darwin)
 soak-window: harness-build
-	bin/agent-overflow --soak --autopilot --window --data-dir "$(HARNESS_DATA_DIR)-soak"
+	go build -o bin/ao-darwin-harness ./cmd/ao-darwin-harness
+	bin/ao-darwin-harness --binary "$(CURDIR)/bin/agent-overflow" --data-root "$(HARNESS_DATA_DIR)-soak" --plist "$(CURDIR)/build/darwin/Info.plist" --driver "$(CURDIR)/bin/ao-harness" -- --soak --autopilot --window
+else
+soak-window: harness-build
+	@set -e; \
+	trap 'bin/ao-harness down --instance "$(HARNESS_DATA_DIR)-soak" >/dev/null 2>&1 || true' EXIT INT TERM; \
+	bin/ao-harness up --soak --autopilot --window --data-dir "$(HARNESS_DATA_DIR)-soak"; \
+	while bin/ao-harness info --instance "$(HARNESS_DATA_DIR)-soak" >/dev/null 2>&1; do sleep 1; done
+endif
 
 # e2e runs the Playwright harness suite (e2e/) against a fresh
 # harness-build. Chromium comes from `make install`'s playwright cache.
 e2e: harness-build
 	cd e2e && pnpm install --frozen-lockfile
-	cd e2e && pnpm test
+	bin/ao-harness-e2e
 
 test:
 	$(MAKE) go-test

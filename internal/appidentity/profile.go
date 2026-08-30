@@ -7,9 +7,9 @@ import (
 )
 
 // ModeDev / ModeProd are the two build-stamped launcher modes (see
-// cmd/agent-overflow-windows/main.go `launcherMode`). ModeHarness and
-// ModeSoak are RUNTIME modes: the same .exe enters one when the operator
-// passes --profile, and neither may ever be a build stamp — such a build
+// cmd/agent-overflow-windows/main.go `launcherMode`). ModeHarness, ModeSoak,
+// and ModePerf are RUNTIME modes: the same .exe enters one when the operator
+// passes --profile, and none may ever be a build stamp — such a build
 // would be indistinguishable from the dev build the developer runs their
 // real work in.
 const (
@@ -17,9 +17,10 @@ const (
 	ModeProd    = "prod"
 	ModeHarness = "harness"
 	ModeSoak    = "soak"
+	ModePerf    = "perf"
 )
 
-// The two non-default launch profiles, each a fully isolated second
+// The non-default launch profiles, each a fully isolated second
 // instance of the real app (mocked providers, own data dir):
 //
 //   - ProfileHarness is THE isolated instance an agent or a developer
@@ -30,6 +31,10 @@ const (
 //     autopilot, which seeds two threads and starts a never-ending
 //     streaming turn so a renderer/hang reproduction can be left running
 //     for hours (docs/architecture/soak-rig.md).
+//   - ProfilePerf is a driveable harness reserved for renderer A/B work.
+//     Its separate data, WebView2, CDP, logs, and process identity make a
+//     destructive benchmark command incapable of reaching the developer's
+//     harness or soak by accident.
 //
 // Every piece of per-instance state the launcher owns is named through
 // the helpers below, so neither profile can be rejected by — or reach
@@ -37,10 +42,11 @@ const (
 const (
 	ProfileHarness = "harness"
 	ProfileSoak    = "soak"
+	ProfilePerf    = "perf"
 )
 
 // NormalizeProfile validates a --profile / AGENT_OVERFLOW_PROFILE value.
-// Empty (the default, unchanged behaviour), "harness" and "soak" are the
+// Empty (the default, unchanged behaviour), "harness", "soak", and "perf" are the
 // only accepted values; anything else is an error rather than a silent
 // fallback, because a typo'd profile that quietly resolves to the
 // default would run an isolated instance against the developer's real
@@ -48,10 +54,10 @@ const (
 func NormalizeProfile(raw string) (string, error) {
 	profile := strings.ToLower(strings.TrimSpace(raw))
 	switch profile {
-	case "", ProfileHarness, ProfileSoak:
+	case "", ProfileHarness, ProfileSoak, ProfilePerf:
 		return profile, nil
 	default:
-		return "", fmt.Errorf("unknown profile %q (valid: %q, %q)", raw, ProfileHarness, ProfileSoak)
+		return "", fmt.Errorf("unknown profile %q (valid: %q, %q, %q)", raw, ProfileHarness, ProfileSoak, ProfilePerf)
 	}
 }
 
@@ -66,6 +72,8 @@ func LauncherMode(buildMode, profile string) string {
 		return ModeHarness
 	case ProfileSoak:
 		return ModeSoak
+	case ProfilePerf:
+		return ModePerf
 	}
 	if buildMode == ModeDev {
 		return ModeDev
@@ -78,7 +86,7 @@ func LauncherMode(buildMode, profile string) string {
 // helpers below branch on, so adding a profile cannot leave one of them
 // silently answering with the developer's own name.
 func isolatedMode(mode string) bool {
-	return mode == ModeHarness || mode == ModeSoak
+	return mode == ModeHarness || mode == ModeSoak || mode == ModePerf
 }
 
 // StateFileName suffixes a launcher-owned state file name for the given
@@ -101,10 +109,10 @@ func StateFileName(base, mode string) string {
 }
 
 // WebviewProfileDir names the WebView2 user-data folder (relative to the
-// app's %APPDATA% directory) for the given mode. Four separate profiles:
+// app's %APPDATA% directory) for the given mode. Separate profiles:
 // an isolated instance must not share cache, cookies, localStorage, the
 // IndexedDB thread replica, or the Crashpad/chrome_debug.log evidence
-// trail with the dev instance, the production instance, or the other
+// trail with the dev instance, the production instance, or another
 // isolated profile.
 func WebviewProfileDir(mode string) string {
 	switch mode {
@@ -114,6 +122,8 @@ func WebviewProfileDir(mode string) string {
 		return "webview2-harness"
 	case ModeSoak:
 		return "webview2-soak"
+	case ModePerf:
+		return "webview2-perf"
 	default:
 		return "webview2"
 	}
@@ -134,6 +144,8 @@ func RenderForensicsDir(mode string) string {
 		return "render-forensics-harness"
 	case ModeSoak:
 		return "render-forensics-soak"
+	case ModePerf:
+		return "render-forensics-perf"
 	default:
 		return "render-forensics"
 	}
@@ -141,8 +153,8 @@ func RenderForensicsDir(mode string) string {
 
 // DevToolsPort is the loopback CDP port the WebView2 exposes for a mode,
 // or 0 when it must not expose one at all (production — the protocol is
-// unauthenticated). Dev, harness and soak get DIFFERENT ports on
-// purpose: all three instances can be up at once, and two WebView2s
+// unauthenticated). Every diagnostic mode gets a DIFFERENT port on
+// purpose: every diagnostic instance can be up at once, and two WebView2s
 // asked for the same remote-debugging port would leave whichever lost
 // the bind unattachable with no diagnostic.
 func DevToolsPort(mode string) int {
@@ -153,6 +165,8 @@ func DevToolsPort(mode string) int {
 		return 9224
 	case ModeHarness:
 		return 9225
+	case ModePerf:
+		return 9226
 	default:
 		return 0
 	}

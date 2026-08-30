@@ -36,5 +36,5 @@ action-prefixed wrapping.
   The no-cycle guarantee is the reason this helper lives separately
   from the main package.
 - Do NOT change the timeout semantics to fire mid-loop. Callers depend
-  on "everything in or one global deadline" — partial early returns
+  on "everything in or one global deadline". Partial early returns
   would surface tasks the caller hasn't seen yet.

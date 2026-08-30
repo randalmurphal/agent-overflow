@@ -126,6 +126,59 @@ describe('buildCommandSections', () => {
     expect(names).toContain('usage');
   });
 
+  // A Claude session frame enumerates commands from several scopes at once
+  // (user, project, plugin, MCP prompt) and reports one row per scope, so one
+  // name can arrive twice. Two rows sharing a `label` is what the popover's
+  // keyed `{#each}` throws `each_key_duplicate` on, and a throw inside an
+  // update flush aborts the batch and freezes the pane (incident 2026-08-29).
+  it('emits one row when a session frame reports the same command name twice', () => {
+    const sections = buildCommandSections({
+      ...base,
+      sessionCommands: [cmd('review', 'Project scope'), cmd('review', 'User scope'), cmd('usage')],
+    });
+    const labels = flattenSections(sections).map((e) => e.label);
+    expect(labels.filter((label) => label === '/review')).toEqual(['/review']);
+    expect(new Set(labels).size).toBe(labels.length);
+    // First occurrence wins, so source order and the priority it encodes hold.
+    const review = flattenSections(sections).find((e) => e.label === '/review');
+    expect(review?.description).toBe('Project scope');
+  });
+
+  it('emits one row when the probe list alone repeats a name', () => {
+    const sections = buildCommandSections({
+      ...base,
+      probeCommands: [cmd('context'), cmd('context')],
+    });
+    const labels = flattenSections(sections).map((e) => e.label);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it('emits one row when two Codex skills share a name', () => {
+    const sections = buildCommandSections({
+      ...base,
+      provider: 'codex',
+      skills: [
+        { name: 'review-code', description: 'workspace' },
+        { name: 'review-code', description: 'global' },
+      ],
+    });
+    const labels = flattenSections(sections).map((e) => e.label);
+    expect(labels.filter((label) => label === '$review-code')).toEqual(['$review-code']);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  // Static-data tripwire: nothing stops an AO command and an intercepted one
+  // from being given the same word, and the 'ao' section renders both.
+  it('mints unique labels within every section it can build', () => {
+    for (const provider of ['claude', 'codex']) {
+      const sections = buildCommandSections({ ...base, provider });
+      for (const section of sections) {
+        const labels = section.entries.map((e) => e.label);
+        expect(new Set(labels).size, `${provider}/${section.id}`).toBe(labels.length);
+      }
+    }
+  });
+
   it('shadows a provider command whose name AO intercepts', () => {
     const sections = buildCommandSections({
       ...base,

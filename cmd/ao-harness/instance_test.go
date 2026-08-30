@@ -2,11 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/coder/websocket"
 
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
@@ -84,6 +90,30 @@ func exitCodeOf(t *testing.T, err error) int {
 func testEnv(registryDir string) (*env, *bytes.Buffer, *bytes.Buffer) {
 	var stdout, stderr bytes.Buffer
 	return &env{stdout: &stdout, stderr: &stderr, format: "text", registryDir: registryDir}, &stdout, &stderr
+}
+
+func startAttachableBackend(t *testing.T, token string) int {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != token {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server.Listener.Addr().(*net.TCPAddr).Port
 }
 
 func TestResolveTargetPrefersTheNamedInstanceID(t *testing.T) {
@@ -173,6 +203,49 @@ func TestResolveTargetFallsBackToThisWorktreesDefault(t *testing.T) {
 	}
 	if got.DataRoot != instanceinfo.DefaultDataRoot() {
 		t.Fatalf("dataRoot = %s, want the worktree default %s", got.DataRoot, instanceinfo.DefaultDataRoot())
+	}
+}
+
+func TestAttachAcceptsAuthenticatedBackendAcrossPIDNamespace(t *testing.T) {
+	const token = "t"
+	root := t.TempDir()
+	port := startAttachableBackend(t, token)
+	writeInstanceFile(t, root, deadPID(t), func(bs *harnessclient.Bootstrap) {
+		bs.Port = port
+		bs.Token = token
+	})
+
+	e, _, _ := testEnv(t.TempDir())
+	e.instance = root
+	client, target, bs, err := e.attach(context.Background())
+	if err != nil {
+		t.Fatalf("attach across PID namespace: %v", err)
+	}
+	defer client.Close()
+	if target.ID != instanceinfo.ID(root) {
+		t.Fatalf("target id = %s, want %s", target.ID, instanceinfo.ID(root))
+	}
+	if bs.PID == os.Getpid() || instanceinfo.ProcessAlive(bs.PID) {
+		t.Fatalf("test bootstrap pid %d unexpectedly resolves in this namespace", bs.PID)
+	}
+}
+
+func TestAttachRejectsRegistryBootstrapIdentityMismatch(t *testing.T) {
+	registry := t.TempDir()
+	root := t.TempDir()
+	id := seedInstance(t, registry, root, os.Getpid())
+	writeInstanceFile(t, root, os.Getpid(), func(bs *harnessclient.Bootstrap) {
+		bs.ID = id
+		bs.IdentityVersion = instanceinfo.IdentityVersion
+		bs.BootNonce = "new-boot"
+	})
+	// The registry row has no nonce, which models a stale pre-identity row.
+	// A current bootstrap must not be attached through it.
+	e, _, _ := testEnv(registry)
+	e.instance = root
+	_, _, _, err := e.attach(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("attach error = %v, want identity mismatch", err)
 	}
 }
 
@@ -308,8 +381,26 @@ func TestDownAllReportsUnconfirmableRowsWithoutSignallingThem(t *testing.T) {
 func TestDownAcceptsAPIDTheDataRootConfirms(t *testing.T) {
 	registry := t.TempDir()
 	root := t.TempDir()
-	seedInstance(t, registry, root, os.Getpid())
-	writeInstanceFile(t, root, os.Getpid())
+	process, err := instanceinfo.CaptureProcessIdentity(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := instanceinfo.Identity{
+		IdentityVersion:  instanceinfo.IdentityVersion,
+		ID:               instanceinfo.ID(root),
+		Mode:             instanceinfo.ModeHarness,
+		BootNonce:        "test-boot",
+		ProcessStartTime: process.StartTime,
+		ExecutablePath:   process.Executable,
+		PIDNamespace:     process.Namespace,
+		StartedAt:        "2026-08-26T00:00:00Z",
+	}
+	seedInstance(t, registry, root, os.Getpid(), func(row *instanceinfo.Row) {
+		row.Identity = identity
+	})
+	writeInstanceFile(t, root, os.Getpid(), func(bs *harnessclient.Bootstrap) {
+		bs.Identity = identity
+	})
 
 	e, _, _ := testEnv(registry)
 	got, err := e.resolveTarget()
@@ -322,6 +413,18 @@ func TestDownAcceptsAPIDTheDataRootConfirms(t *testing.T) {
 	}
 	if pid != os.Getpid() {
 		t.Fatalf("pid = %d, want %d", pid, os.Getpid())
+	}
+}
+
+func TestDownTreatsAuthenticatedLeaderExitAsTreeReconciliation(t *testing.T) {
+	pid := deadPID(t)
+	err := reconcileStoppedTree(context.Background(), pid, harnessclient.Bootstrap{Identity: instanceinfo.Identity{
+		ProcessStartTime: "already-exited",
+		ExecutablePath:   filepath.Join(t.TempDir(), "agent-overflow"),
+		PIDNamespace:     instanceinfo.CurrentPIDNamespace(),
+	}})
+	if err != nil {
+		t.Fatalf("reconcile stopped tree: %v", err)
 	}
 }
 
@@ -494,5 +597,23 @@ func TestLooksLikeIDPrefixIsShapeOnly(t *testing.T) {
 		if got := looksLikeIDPrefix(tc.selector); got != tc.want {
 			t.Errorf("looksLikeIDPrefix(%q) = %v, want %v", tc.selector, got, tc.want)
 		}
+	}
+}
+
+func TestValidateTargetPathsRejectsRegistryPathEscape(t *testing.T) {
+	root := t.TempDir()
+	if err := validateTargetPaths(root, filepath.Join(root, "elsewhere")); err == nil {
+		t.Fatal("accepted registry data directory outside the selected root")
+	}
+}
+
+func TestValidateTargetPathsRejectsSymlinkedRoot(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "root-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := validateTargetPaths(link, filepath.Join(link, appDataDirName)); err == nil {
+		t.Fatal("accepted registry target through a symlinked data root")
 	}
 }

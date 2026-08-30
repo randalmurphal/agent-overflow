@@ -10,7 +10,7 @@
 // published values. The upper tiers deliberately take the WIDE steps —
 // anchoring them at storm's bg (#24283b) left the whole ladder inside an
 // ~1.6× luminance band and the app read hazy (see the luminance-range rule
-// in `docs/specs/theme-system.md` §9.11); storm's bg stays as the
+// in `docs/architecture/theme-system.md` §9.11); storm's bg stays as the
 // inline-code chip ground.
 //
 // BODY TEXT (`fg-muted`) is stated explicitly instead of letting the app

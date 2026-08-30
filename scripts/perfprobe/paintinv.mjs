@@ -11,7 +11,7 @@ const b = await connectBrowser();
 const cats = ['disabled-by-default-blink.invalidation', 'devtools.timeline'];
 await b.send('Tracing.start', { traceConfig: { includedCategories: cats, excludedCategories: ['*'] }, transferMode: 'ReturnAsStream' });
 await sleep(SECS * 1000);
-const done = new Promise((res) => b.on((e) => { if (e.method === 'Tracing.tracingComplete') res(e.params); }));
+const done = b.waitFor('Tracing.tracingComplete');
 await b.send('Tracing.end');
 const complete = await done;
 const data = await readStream(b, complete.stream);

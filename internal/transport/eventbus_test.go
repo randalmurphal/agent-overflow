@@ -352,9 +352,65 @@ func TestEventBus_ChannelFilteredSubscriber(t *testing.T) {
 func TestEventBus_Subscribe_AfterClose(t *testing.T) {
 	bus := NewEventBus(10)
 	bus.Close()
+
+	sub := bus.Subscribe()
+	select {
+	case <-sub.Done():
+		// A late subscriber belongs to a closed bus and must already be done.
+	default:
+		t.Fatal("subscriber created after Close remained open")
+	}
+	if got := bus.SubscriberCount(); got != 0 {
+		t.Fatalf("closed bus retained %d late subscribers", got)
+	}
+
 	// Emit after Close is silent no-op.
-	if _, err := bus.Emit("ch1", "x"); err != nil {
+	if event, err := bus.Emit("ch1", "x"); err != nil {
 		t.Fatalf("post-close Emit returned error: %v", err)
+	} else if event.Seq != 0 {
+		t.Fatalf("post-close Emit returned sequence %d, want zero event", event.Seq)
+	}
+}
+
+type blockingJSONPayload struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (payload blockingJSONPayload) MarshalJSON() ([]byte, error) {
+	close(payload.started)
+	<-payload.release
+	return []byte(`{"value":true}`), nil
+}
+
+func TestEventBus_CloseWhileEmitMarshals_DoesNotReopenBus(t *testing.T) {
+	bus := NewEventBus(10)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan Event, 1)
+	errors := make(chan error, 1)
+
+	go func() {
+		event, err := bus.Emit("ch1", blockingJSONPayload{
+			started: started,
+			release: release,
+		})
+		result <- event
+		errors <- err
+	}()
+
+	<-started
+	bus.Close()
+	close(release)
+
+	if err := <-errors; err != nil {
+		t.Fatalf("racing Emit returned error: %v", err)
+	}
+	if event := <-result; event.Seq != 0 {
+		t.Fatalf("racing Emit returned sequence %d, want zero event", event.Seq)
+	}
+	if replay := bus.Replay(map[string]uint64{"ch1": 0}); len(replay) != 0 {
+		t.Fatalf("racing Emit recreated %d replay events after Close", len(replay))
 	}
 }
 
@@ -855,6 +911,55 @@ func TestEventBus_ConcurrentEmit_SubscriberSeqOrderedPerChannel(t *testing.T) {
 	}
 }
 
+// A provider:item_event channel has one emitter goroutine per live provider
+// session. Sequence assignment and live fanout are one ordered operation: a
+// subscriber must never observe a later session's event before an earlier
+// sequence from another session on the same channel.
+func TestEventBus_ConcurrentSameChannelEmit_PreservesLiveSequence(t *testing.T) {
+	const emitters = 16
+	const each = 2_000
+	const total = emitters * each
+
+	bus := NewEventBus(0)
+	// Keep this test about ordering rather than the subscriber's deliberate
+	// bounded-overflow behavior. Production drains concurrently; a test that
+	// waits until every emitter returns needs room for the whole burst.
+	bus.subBuf = total
+	defer bus.Close()
+
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for emitter := range emitters {
+		wg.Go(func() {
+			<-start
+			for index := range each {
+				if _, err := bus.Emit(eventchan.ProviderItemEvent, struct {
+					Emitter int `json:"emitter"`
+					Index   int `json:"index"`
+				}{Emitter: emitter, Index: index}); err != nil {
+					t.Errorf("emit %d/%d: %v", emitter, index, err)
+					return
+				}
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	got := drainEvents(t, sub, total, 5*time.Second)
+	if len(got) != total {
+		t.Fatalf("drained %d events, want %d", len(got), total)
+	}
+	for index, event := range got {
+		if want := uint64(index + 1); event.Seq != want {
+			t.Fatalf("event %d has seq %d, want %d", index, event.Seq, want)
+		}
+	}
+}
+
 // TestEventBus_SubscriberOriginFilterAtEnqueue pins that an armed
 // origin filter keeps invisible channels from ever occupying buffer
 // slots, and that the delivered set exactly matches what pump-side
@@ -907,3 +1012,170 @@ func TestEventBus_SubscriberOriginFilterAtEnqueue(t *testing.T) {
 }
 
 func ptrBool(v bool) *bool { return &v }
+
+// TestEventBus_DropStampsNextSameChannelEventWithGap: a subscriber that
+// dropped an event learns about the loss from the NEXT event that fits
+// on that channel — it arrives Gap-stamped with a re-encoded envelope —
+// even though nothing else ever exposes a seq skip. The wave after that
+// is clean again.
+func TestEventBus_DropStampsNextSameChannelEventWithGap(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	if _, err := bus.Emit("test:chA", 1); err != nil { // fills the buffer
+		t.Fatalf("emit 1: %v", err)
+	}
+	if _, err := bus.Emit("test:chA", 2); err != nil { // dropped
+		t.Fatalf("emit 2: %v", err)
+	}
+	first := drainEvents(t, sub, 1, time.Second)
+	if len(first) != 1 || first[0].Seq != 1 || first[0].Gap {
+		t.Fatalf("expected clean seq-1 event first, got %+v", first)
+	}
+
+	if _, err := bus.Emit("test:chA", 3); err != nil {
+		t.Fatalf("emit 3: %v", err)
+	}
+	stamped := drainEvents(t, sub, 1, time.Second)
+	if len(stamped) != 1 {
+		t.Fatalf("expected the stamped event, got none")
+	}
+	got := stamped[0]
+	if !got.Gap || got.Seq != 3 || got.Channel != "test:chA" {
+		t.Fatalf("expected gap-stamped seq-3 event, got %+v", got)
+	}
+	var frame ServerFrame
+	if err := json.Unmarshal(got.WireBytes, &frame); err != nil {
+		t.Fatalf("decode stamped WireBytes: %v", err)
+	}
+	if !frame.Gap || frame.Seq != 3 || string(frame.Data) != "3" {
+		t.Fatalf("stamped envelope wrong: gap=%v seq=%d data=%s", frame.Gap, frame.Seq, frame.Data)
+	}
+
+	if _, err := bus.Emit("test:chA", 4); err != nil {
+		t.Fatalf("emit 4: %v", err)
+	}
+	clean := drainEvents(t, sub, 1, time.Second)
+	if len(clean) != 1 || clean[0].Gap {
+		t.Fatalf("expected the flag cleared after the announcement, got %+v", clean)
+	}
+}
+
+// TestEventBus_DropOnOtherChannelFlushesStandaloneMarker: a loss on a
+// channel that never sees another event is announced by a standalone
+// {gap:true, data:null} marker (Replay's marker shape) enqueued ahead of
+// the next delivery on any other channel.
+func TestEventBus_DropOnOtherChannelFlushesStandaloneMarker(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 2
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	if _, err := bus.Emit("test:chA", 1); err != nil {
+		t.Fatalf("emit a1: %v", err)
+	}
+	if _, err := bus.Emit("test:chA", 2); err != nil { // buffer now full
+		t.Fatalf("emit a2: %v", err)
+	}
+	if _, err := bus.Emit("test:chB", 1); err != nil { // dropped
+		t.Fatalf("emit b1: %v", err)
+	}
+	if got := drainEvents(t, sub, 2, time.Second); len(got) != 2 {
+		t.Fatalf("expected the two buffered events, got %d", len(got))
+	}
+
+	if _, err := bus.Emit("test:chA", 3); err != nil {
+		t.Fatalf("emit a3: %v", err)
+	}
+	got := drainEvents(t, sub, 2, time.Second)
+	if len(got) != 2 {
+		t.Fatalf("expected marker + event, got %d", len(got))
+	}
+	marker, evt := got[0], got[1]
+	if !marker.Gap || marker.Channel != "test:chB" || marker.Seq != 1 || string(marker.Data) != "null" {
+		t.Fatalf("expected standalone chB gap marker first, got %+v", marker)
+	}
+	var frame ServerFrame
+	if err := json.Unmarshal(marker.WireBytes, &frame); err != nil {
+		t.Fatalf("decode marker WireBytes: %v", err)
+	}
+	if !frame.Gap || frame.Channel != "test:chB" {
+		t.Fatalf("marker envelope wrong: %+v", frame)
+	}
+	if evt.Gap || evt.Channel != "test:chA" || evt.Seq != 3 {
+		t.Fatalf("expected clean chA event after marker, got %+v", evt)
+	}
+}
+
+// TestEventBus_MarkerThatDoesNotFitSurvivesForNextDelivery: a standing
+// full buffer keeps the loss flagged rather than forgetting it.
+func TestEventBus_MarkerThatDoesNotFitSurvivesForNextDelivery(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	if _, err := bus.Emit("test:chA", 1); err != nil { // fills the buffer
+		t.Fatalf("emit a1: %v", err)
+	}
+	if _, err := bus.Emit("test:chB", 1); err != nil { // dropped
+		t.Fatalf("emit b1: %v", err)
+	}
+	// Buffer still full: the flush attempt cannot place chB's marker, and
+	// chA's event itself drops too (flagging chA as well).
+	if _, err := bus.Emit("test:chA", 2); err != nil {
+		t.Fatalf("emit a2: %v", err)
+	}
+	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("expected only the seq-1 event, got %+v", got)
+	}
+	// Room now exists: the next delivery flushes chB's marker, then the
+	// chA event rides with its own gap stamp.
+	if _, err := bus.Emit("test:chA", 3); err != nil {
+		t.Fatalf("emit a3: %v", err)
+	}
+	got := drainEvents(t, sub, 2, 2*time.Second)
+	if len(got) < 1 {
+		t.Fatalf("expected at least the chB marker, got none")
+	}
+	if !got[0].Gap || got[0].Channel != "test:chB" {
+		t.Fatalf("expected chB marker first, got %+v", got[0])
+	}
+	if len(got) > 1 && (!got[1].Gap || got[1].Channel != "test:chA") {
+		t.Fatalf("expected gap-stamped chA event second, got %+v", got[1])
+	}
+}
+
+// TestEventBus_LatestOnlyDropIsNotAnnounced: whole-state channels get no
+// gap treatment on drop — the next frame supersedes the lost one, the
+// same reasoning as Replay's latest-only carve-out.
+func TestEventBus_LatestOnlyDropIsNotAnnounced(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	channel := string(eventchan.SystemStats)
+	if _, err := bus.Emit(eventchan.SystemStats, 1); err != nil { // fills the buffer
+		t.Fatalf("emit 1: %v", err)
+	}
+	if _, err := bus.Emit(eventchan.SystemStats, 2); err != nil { // dropped, no flag
+		t.Fatalf("emit 2: %v", err)
+	}
+	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 {
+		t.Fatalf("expected the buffered frame, got %d", len(got))
+	}
+	if _, err := bus.Emit(eventchan.SystemStats, 3); err != nil {
+		t.Fatalf("emit 3: %v", err)
+	}
+	got := drainEvents(t, sub, 1, time.Second)
+	if len(got) != 1 || got[0].Gap || got[0].Channel != channel {
+		t.Fatalf("expected clean superseding frame, got %+v", got)
+	}
+}

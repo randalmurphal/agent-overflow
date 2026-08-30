@@ -1,7 +1,7 @@
 # internal/eventchan/
 
 The names of every event channel the backend pushes to the frontend, as
-typed constants. Dependency-free by construction — it imports nothing,
+typed constants. Dependency-free by construction. It imports nothing,
 not even from this repo, so every layer that emits can depend on it.
 
 ## Surface
@@ -17,7 +17,7 @@ the harness now reaches INTO the frontend rather than only watching it:
 |---|---|
 | `harness:mock` | mock-provider progress reports |
 | `harness:replay` | replay playback state |
-| `harness:ui-query` | `{id, spec}` — one request for the frontend bridge (`HarnessUIQuery`). Ephemeral: it is a directive whose waiter is gone in 10s, so replaying it to a reconnecting client is pure waste. |
+| `harness:ui-query` | `{id, spec}`, one request for the frontend bridge (`HarnessUIQuery`). Ephemeral: it is a directive whose waiter is gone in 10s, so replaying it to a reconnecting client is pure waste. |
 | `harness:perf` | one folded frontend+backend sample per tick of an armed perf run (`HarnessPerfStart`). Full ring: a sample is a point in a series, and a watcher that reconnects wants what it missed. |
 
 ## The two-edit contract
@@ -31,14 +31,14 @@ A channel exists only when BOTH halves are present:
 `internal/transport`'s `TestEveryEventChannelConstantHasAPolicyRow` and
 `TestEveryChannelPolicyRowHasAConstant` fail on either half missing. The
 constants are enumerated by AST-parsing this package's source, so there
-is no third list to keep in sync — adding a constant is enough.
+is no third list to keep in sync. Adding a constant is enough.
 
 ## Why the newtype, and what it does not do
 
 `EventBus.Emit`, `(*App).emit` / `emitEvent`, `triage.NewRouter`'s emit
 callback, `workflow/engine.Emitter`, and `screenshot.Installer.Emit` all
 take a `Channel`. A channel *variable* therefore cannot cross into an
-emit site without an explicit `eventchan.Channel(...)` conversion — which
+emit site without an explicit `eventchan.Channel(...)` conversion, which
 is exactly what the harness escape hatches spell (`HarnessEmit`,
 `harness.Replayer`). A caller-named channel that matches a registered
 name inherits that row's audience (the harness is the intended forger,
@@ -60,7 +60,7 @@ Both guards are load-bearing; neither is sufficient alone.
   channel lists are peer-chosen strings; they stay `string` and look the
   registry up directly.
 - Do NOT add a constant without its `ChannelPolicy` row (the tests will
-  say so, but the row is the part that requires a decision — who may
+  say so, but the row is the part that requires a decision: who may
   receive the frames, and how deep the replay ring is).
 - Do NOT re-spell a channel here that another package already exports as
   a cross-process string contract. `notify.ActivatedChannel`,

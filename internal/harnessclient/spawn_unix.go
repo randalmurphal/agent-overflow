@@ -25,3 +25,17 @@ func applyDetachAttrs(cmd *exec.Cmd) {
 func requestStop(proc *os.Process) error {
 	return proc.Signal(syscall.SIGTERM)
 }
+
+func requestKill(proc *os.Process) error {
+	return proc.Kill()
+}
+
+func signalOwnedGroup(pid int, force bool) error {
+	sig := syscall.SIGTERM
+	if force {
+		sig = syscall.SIGKILL
+	}
+	return syscall.Kill(-pid, sig)
+}
+
+func requestKillProcessGroup(pid int) error { return syscall.Kill(-pid, syscall.SIGKILL) }

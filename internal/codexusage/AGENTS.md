@@ -11,7 +11,7 @@ render of the overlay section would pay that.
 
 ## Layout
 
-- `codexusage.go` — `Cache` type, `New` / `NewWith` constructors,
+- `codexusage.go`: `Cache` type, `New` / `NewWith` constructors,
   `Get` / `Invalidate`, the `Fetch` callback type, and the `cloneUsage`
   / `cloneInt64` defensive-copy helpers. `DefaultTTL` (5 min) and
   `DefaultErrorTTL` (30 s) are the only exported constants.
@@ -27,7 +27,7 @@ render of the overlay section would pay that.
   - Deciding HOW to read. The App supplies a `Fetch` closure because
     only it knows whether a live session's connection can be ridden
     (`app_codex_usage.go#readCodexAccountUsage`).
-  - The wire shape and its parsing — `internal/provider/codex/account_usage.go`.
+  - The wire shape and its parsing (`internal/provider/codex/account_usage.go`).
   - `*App` state or frontend-facing types.
 
 ## Two rules that are not stylistic

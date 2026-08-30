@@ -156,7 +156,7 @@ function removeTrackedID(map: Map<string, Set<string>>, threadId: string, id: st
 }
 
 function recalculateThreadStatus(threadId: string): void {
-  // Priority mirrors forge's Sidebar.logic.ts. Blocking approvals
+  // Blocking approvals
   // outrank everything else because the provider can't advance until
   // the user acts; awaiting-input is a softer call-to-action that
   // still blocks progress but isn't protecting a destructive action.

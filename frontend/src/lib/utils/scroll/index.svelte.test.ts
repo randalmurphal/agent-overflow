@@ -817,6 +817,29 @@ describe('createUseStickToBottomController', () => {
       expect(controller.escapedFromLock).toBe(false);
     });
 
+    it('reads scroll geometry once in its scroll event for downstream sharing', () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      let reads = 0;
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        configurable: true,
+        get: () => {
+          reads++;
+          return geom.scrollTop;
+        },
+        set: (value: number) => {
+          geom.scrollTop = Math.max(
+            0,
+            Math.min(value, geom.scrollHeight - geom.clientHeight),
+          );
+        },
+      });
+
+      fireScroll(scrollEl);
+
+      expect(reads).toBe(1);
+    });
+
     it('user scroll at a previously written value after token TTL expiry is processed, not swallowed', async () => {
       // Regression guard for the deleted `ignoreScrollToTop` exact tag:
       // it had no TTL, so a write whose scroll event never fired left a
@@ -6862,6 +6885,8 @@ describe('createUseStickToBottomController — external content-geometry source'
 
   beforeEach(() => {
     resetScrollIntentModuleStateForTest();
+    setUiRenderTraceEnabled(false);
+    clearUiRenderTrace();
     MockResizeObserver.instances = [];
     originalRO = globalThis.ResizeObserver;
     (globalThis as unknown as { ResizeObserver: typeof MockResizeObserver }).ResizeObserver = MockResizeObserver;
@@ -6893,6 +6918,8 @@ describe('createUseStickToBottomController — external content-geometry source'
 
   afterEach(() => {
     controller.detach();
+    setUiRenderTraceEnabled(false);
+    clearUiRenderTrace();
     scrollEl.remove();
     if (originalRO) {
       (globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = originalRO;
@@ -6925,6 +6952,26 @@ describe('createUseStickToBottomController — external content-geometry source'
           maxFirstMeasureCorrectionPx: 0,
         }),
       ).toThrow(/externalContentGeometry/);
+    });
+
+    it('throws when delivering a sample while detached', () => {
+      // A sample delivered with no scroller is LOST — the pipeline drops
+      // it, and the virtualizer's own dedupe never offers the same tuple
+      // again, which is how a populated first mount ended up at
+      // scrollTop=0 claiming the bottom. The source must subscribe after
+      // attach (TimelineVirtualizerHandle.subscribeContentGeometry), so
+      // reaching this at all is a contract breach, not a race to
+      // tolerate: loud here (dev/test), reported-and-dropped in
+      // production, where a throw would abort the caller's update batch.
+      controller.detach();
+      expect(() =>
+        controller.deliverContentGeometry({
+          height: 800,
+          width: 800,
+          windowMeasured: false,
+          maxFirstMeasureCorrectionPx: 0,
+        }),
+      ).toThrow(/detached/);
     });
 
     it('first sample snaps scrollTop to target when sticky', () => {
@@ -7167,13 +7214,13 @@ describe('createUseStickToBottomController — external content-geometry source'
   });
 
   // The read-free delivery path: a delivery whose sample carries a
-  // stable viewportHeight decides from the controller's cached bottom
-  // geometry (the delivered height plus a learned constant offset)
-  // instead of forced-layout reads. The lying-getter tests prove WHICH
-  // path ran by making the two paths produce different targets; the
-  // read-counter tests prove the decision-only deliveries (escaped)
-  // touch no geometry at all.
-  describe('cached bottom geometry (read-free delivery path)', () => {
+  // stable content-box viewport height decides from the sample's
+  // authoritative `content height - viewport height` geometry instead
+  // of forced-layout reads. The lying-getter tests prove WHICH path ran
+  // by making the two paths produce different targets. The read-counter
+  // tests prove the decision-only deliveries (escaped) touch no DOM
+  // geometry at all.
+  describe('read-free content geometry', () => {
     function deliverWithViewport(height: number, viewportHeight?: number): void {
       controller.deliverContentGeometry({
         height,
@@ -7215,10 +7262,41 @@ describe('createUseStickToBottomController — external content-geometry source'
       return () => reads;
     }
 
-    it('stable viewport: the sync-pin target comes from cached-offset arithmetic, not a layout read', () => {
-      // First fire takes the real reads, syncs the cache and learns the
-      // height -> target offset (1000 - 600 - 800 = -400).
-      deliverWithViewport(800, 600);
+    function countLayoutRangeReads(): () => number {
+      let reads = 0;
+      for (const prop of ['scrollHeight', 'clientHeight'] as const) {
+        Object.defineProperty(scrollEl, prop, {
+          configurable: true,
+          get: () => {
+            reads++;
+            return geom[prop];
+          },
+        });
+      }
+      return () => reads;
+    }
+
+    function countScrollTopAccesses(): { reads: () => number; writes: () => number } {
+      let reads = 0;
+      let writes = 0;
+      Object.defineProperty(scrollEl, 'scrollTop', {
+        configurable: true,
+        get: () => {
+          reads++;
+          return geom.scrollTop;
+        },
+        set: (value: number) => {
+          writes++;
+          geom.scrollTop = Math.max(0, Math.min(value, geom.scrollHeight - geom.clientHeight));
+        },
+      });
+      return { reads: () => reads, writes: () => writes };
+    }
+
+    it('stable viewport: the sync-pin target comes from sample geometry, not a layout read', () => {
+      // The DOM has 200px of padding. clientHeight is the 600px padding
+      // box while the virtualizer reports the 400px content box.
+      deliverWithViewport(800, 400);
       expect(geom.scrollTop).toBe(400);
       // Content grows by 200. The true geometry (used by the scrollTop
       // clamp) moves to 1200, but the GETTER keeps reporting the stale
@@ -7226,14 +7304,13 @@ describe('createUseStickToBottomController — external content-geometry source'
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
       lieAboutScrollHeight(1000);
-      deliverWithViewport(1000, 600);
-      // Cached path: 1000 + (-400) = 600. The lie never mattered.
+      deliverWithViewport(1000, 400);
+      // The sample path computes 1000 - 400 = 600. The lie never mattered.
       expect(geom.scrollTop).toBe(600);
     });
 
     it('a real-read resync between deliveries cannot double-count the next delivery', () => {
-      // First fire pins to 400 and learns offset -400.
-      deliverWithViewport(800, 600);
+      deliverWithViewport(800, 400);
       expect(geom.scrollTop).toBe(400);
       // Content shrinks by 92 and the browser clamps scrollTop DOWN,
       // firing a scroll event BEFORE the RO delivery for the same
@@ -7242,12 +7319,12 @@ describe('createUseStickToBottomController — external content-geometry source'
       geom.contentHeight = 708;
       geom.scrollTop = 308;
       scrollEl.dispatchEvent(new Event('scroll'));
-      deliverWithViewport(708, 600);
+      deliverWithViewport(708, 400);
       // Delta arithmetic double-counted this: the resync rebased the
       // cached target to 308 (post-shrink DOM), then the delivery's
       // -92 applied AGAIN -> target 216, resting the pane 92px short
       // (2026-08-26, the subagent digest 8px short of bottom).
-      // Height-plus-offset: 708 + (-400) = 308, exact.
+      // Absolute sample geometry computes 708 - 400 = 308 exactly.
       expect(geom.scrollTop).toBe(308);
     });
 
@@ -7262,27 +7339,97 @@ describe('createUseStickToBottomController — external content-geometry source'
       expect(geom.scrollTop).toBe(400);
     });
 
-    it('a viewport height change falls back to real reads and resyncs', () => {
-      deliverWithViewport(800, 600);
-      // Viewport shrinks 600 -> 500 (composer grew, window resized...).
-      // Arithmetic from the old clientHeight would say 600; the real
-      // target is 1200 - 500 = 700.
-      geom.clientHeight = 500;
-      geom.scrollHeight = 1200;
-      geom.contentHeight = 1000;
-      deliverWithViewport(1000, 500);
-      expect(geom.scrollTop).toBe(700);
+    it('a padding-only composer resize cannot poison the next content target', () => {
+      deliverWithViewport(800, 400);
+
+      // In production the composer becomes 102px taller. Its
+      // clearance is scrollEl padding, so DOM clientHeight stays fixed,
+      // scrollHeight grows, and the virtualizer's content-box viewport
+      // shrinks. The content height itself does not move.
+      geom.scrollHeight = 1102;
+      controller.observe('composer-geometry');
+      expect(geom.scrollTop).toBe(502);
+      deliverWithViewport(800, 298);
+
+      // The next streamed row grows 38px. The target must advance from
+      // 502 to 540. A stale pre-composer offset instead computes 438,
+      // fires contentRO.overshoot, and visibly jumps backward before the
+      // spring reads the real DOM target and chases forward again.
+      geom.scrollHeight = 1140;
+      geom.contentHeight = 838;
+      deliverWithViewport(838, 298);
+      expect(geom.scrollTop).toBe(540);
+    });
+
+    it('keeps sample geometry current across escaped grow, shrink, and repeated resize transitions', () => {
+      deliverWithViewport(800, 400);
+      controller.setEscapedFromLock(true);
+
+      // Grow while escaped. The observation must not move the reader,
+      // but its zero-content-delta viewport sample must still refresh the
+      // cached scroll position used by later read-free deliveries.
+      geom.scrollHeight = 1102;
+      controller.observe('composer-geometry');
+      deliverWithViewport(800, 298);
+      geom.scrollHeight = 1140;
+      geom.contentHeight = 838;
+      deliverWithViewport(838, 298);
+      expect(geom.scrollTop).toBe(400);
+
+      // Re-enter bottom follow, then shrink back to the baseline padding.
+      // The next content delivery advances from the new target, not either
+      // of the two older viewport sizes.
+      controller.forceStick({ reason: 'user' });
+      expect(geom.scrollTop).toBe(540);
+      geom.scrollHeight = 1038;
+      controller.observe('composer-geometry');
+      expect(geom.scrollTop).toBe(438);
+      deliverWithViewport(838, 400);
+      geom.scrollHeight = 1058;
+      geom.contentHeight = 858;
+      deliverWithViewport(858, 400);
+      expect(geom.scrollTop).toBe(458);
+
+      // A second growth transition is independent of the first cycle.
+      geom.scrollHeight = 1079;
+      controller.observe('composer-geometry');
+      expect(geom.scrollTop).toBe(479);
+      deliverWithViewport(858, 379);
+      geom.scrollHeight = 1088;
+      geom.contentHeight = 867;
+      deliverWithViewport(867, 379);
+      expect(geom.scrollTop).toBe(488);
     });
 
     it('escaped + stable viewport: a delta delivery reads no geometry at all', () => {
-      deliverWithViewport(800, 600);
+      deliverWithViewport(800, 400);
       controller.setEscapedFromLock(true);
       const reads = countGeometryReads();
       geom.scrollHeight = 1200;
       geom.contentHeight = 1000;
-      deliverWithViewport(1000, 600);
+      deliverWithViewport(1000, 400);
       expect(reads()).toBe(0);
       expect(geom.scrollTop).toBe(400);
+    });
+
+    it('does not reread layout range on each external-geometry spring frame', async () => {
+      liveContent = true;
+      deliverWithViewport(800, 400);
+      await waitMs(150);
+      expect(controller.isWarm).toBe(true);
+
+      const layoutReads = countLayoutRangeReads();
+      const scrollTopAccesses = countScrollTopAccesses();
+      geom.scrollHeight = 1400;
+      geom.contentHeight = 1200;
+      deliverWithViewport(1200, 400);
+      expect(layoutReads()).toBe(0);
+
+      for (let frame = 0; frame < 6; frame++) await nextFrame();
+      expect(geom.scrollTop).toBeGreaterThan(400);
+      expect(geom.scrollTop).toBeLessThan(800);
+      expect(layoutReads()).toBe(0);
+      expect(scrollTopAccesses.reads()).toBe(scrollTopAccesses.writes());
     });
 
     it('cache synced while floored (content shorter than viewport) stays on real reads', () => {
@@ -7293,13 +7440,13 @@ describe('createUseStickToBottomController — external content-geometry source'
       geom = { scrollHeight: 600, clientHeight: 600, scrollTop: 0, contentHeight: 300 };
       stubGeometry(scrollEl, contentEl, geom);
       controller.attach(scrollEl, contentEl);
-      deliverWithViewport(300, 600);
+      deliverWithViewport(300, 400);
       expect(geom.scrollTop).toBe(0);
       controller.setEscapedFromLock(true);
       const reads = countGeometryReads();
       geom.scrollHeight = 900;
       geom.contentHeight = 700;
-      deliverWithViewport(700, 600);
+      deliverWithViewport(700, 400);
       // The floored guard forced the real-read fallback (contrast with
       // the escaped read-free case above).
       expect(reads()).toBeGreaterThan(0);

@@ -1,5 +1,5 @@
-// Scroll/follow controller for the run map (RUN-MAP.md §9, "the
-// intentionality contract").
+// Scroll/follow controller for the run map (docs/architecture/workflow-run-map.md
+// §9, "the intentionality contract").
 //
 // The doctrine is the timeline's, deliberately re-derived rather than
 // imported: `utils/scroll/` is virtualizer- and spring-shaped, and the

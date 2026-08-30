@@ -1,7 +1,7 @@
 # internal/codexmodels/
 
 TTL'd, single-flighted cache around Codex `model/list`. The catalog
-fetch spawns a Codex CLI subprocess — without coalescing, every settings
+fetch spawns a Codex CLI subprocess. Without coalescing, every settings
 render and every model picker open would fire one. The Cache keys by
 binary path, TTLs successful results for `DefaultTTL` (5 min), and
 collapses concurrent calls against the same binary into one CLI run. `Peek`
@@ -15,7 +15,7 @@ NPE-safe) and reaches into it from `GetModelsForProvider("codex")` and
 
 ## Layout
 
-- `codexmodels.go` — `Cache` type, `New` / `NewWith` constructors,
+- `codexmodels.go`: `Cache` type, `New` / `NewWith` constructors,
   `Get` / `Peek` / `Reset` methods, `Lister` test seam, and the
   shared `provider.CloneModels` defensive-copy helper. `DefaultTTL` and
   `DefaultErrorTTL` are the exported cache lifetimes.
@@ -30,7 +30,7 @@ NPE-safe) and reaches into it from `GetModelsForProvider("codex")` and
 - What does NOT belong here:
   - The provider-list of supported models (lives in
     `internal/provider/codex/models.go`).
-  - Reacting to settings changes — the App calls `Reset()` after a
+  - Reacting to settings changes. The App calls `Reset()` after a
     Codex binary path patch lands.
   - `*App` state or wire-format types.
 

@@ -2548,8 +2548,7 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  * Unlike Claude, Codex deliberately omits the unauthenticated-banner
  * hook: an empty planType is ambiguous (backend latency can produce it
  * for an authenticated user) so surfacing a banner here would create
- * false positives. See drift D3 in
- * `docs/architecture/refactor-phase-1/duplication.md`.
+ * false positives. (Drift D3 from the app-root refactor.)
  */
 export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2614227175).then(($result: any) => {
@@ -3485,6 +3484,16 @@ export function SteerMessageWithOptions(threadID: string, content: string, opts:
  */
 export function StopClaudeTask(threadID: string, taskID: string): $CancellablePromise<void> {
     return $Call.ByID(536320598, threadID, taskID);
+}
+
+/**
+ * StopCodexSubagent interrupts the live child turn owned by launchID. The
+ * session resolves that launch through Codex's typed child ownership map, so a
+ * frontend-supplied id cannot target the root or a sibling provider thread.
+ * false, nil means the child was already terminal in this session.
+ */
+export function StopCodexSubagent(threadID: string, launchID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(4232843083, threadID, launchID);
 }
 
 /**

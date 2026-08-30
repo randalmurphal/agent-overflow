@@ -36,7 +36,9 @@ type launcherFlags struct {
 	// "harness" (appidentity.ProfileHarness — the isolated mocked
 	// instance an agent or a developer drives), or "soak"
 	// (appidentity.ProfileSoak — that same instance with the soak
-	// autopilot armed; docs/architecture/soak-rig.md). It is the ONE axis
+	// autopilot armed; docs/architecture/soak-rig.md), or "perf"
+	// (appidentity.ProfilePerf — a third isolated mocked instance reserved
+	// for destructive renderer benchmarks). It is the ONE axis
 	// behind every piece of per-instance state the launcher owns:
 	// single-instance id, window title, WebView2 user-data dir, CDP port,
 	// launcher log, window placement, and the backend's own isolation
@@ -67,7 +69,7 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	profile := fs.String(
 		"profile",
 		os.Getenv(profileEnv),
-		"launch profile: empty for the normal instance, `harness` for the isolated mocked instance, or soak for that instance with the soak autopilot armed (docs/architecture/soak-rig.md)",
+		"launch profile: empty for normal, `harness` for the driveable mock instance, `soak` for its autopilot, or `perf` for isolated renderer benchmarks",
 	)
 	if err := fs.Parse(args); err != nil {
 		return launcherFlags{}, fmt.Errorf("parse flags: %w", err)

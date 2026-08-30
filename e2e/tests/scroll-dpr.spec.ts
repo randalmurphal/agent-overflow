@@ -1,53 +1,31 @@
-import { test, expect, type Browser, type Page } from '@playwright/test';
+import { test, expect, type Browser } from '@playwright/test';
+import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
 
 const DPR_VALUES = [1, 1.25, 1.5, 2] as const;
 const SCROLL_WRITES = [0, 1, 2, 3, 4] as const;
 
-interface RasterMetrics {
-  readonly total: number;
-  readonly peakRow: number;
-  readonly signature: readonly number[];
+interface GeometrySample {
+  readonly requested: number;
+  readonly scrollTop: number;
+  readonly featureTop: number;
+  readonly viewportTop: number;
+  readonly featureHeight: number;
+  readonly featureWidth: number;
+  readonly frames: number;
 }
 
-async function rasterMetrics(analyzer: Page, png: Buffer, dpr: number): Promise<RasterMetrics> {
-  return analyzer.evaluate(async ({ base64, dpr: scale }) => {
-    const image = new Image();
-    image.src = `data:image/png;base64,${base64}`;
-    await image.decode();
-    const canvas = document.createElement('canvas');
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context) throw new Error('2D canvas unavailable while reading raster probe');
-    context.drawImage(image, 0, 0);
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    const rowEnergy: number[] = [];
-    const xStart = Math.round(10 * scale);
-    const xEnd = Math.round(190 * scale);
-    for (let y = 0; y < canvas.height; y += 1) {
-      let energy = 0;
-      for (let x = xStart; x < xEnd; x += 1) {
-        energy += pixels[(y * canvas.width + x) * 4];
-      }
-      rowEnergy.push(energy);
-    }
-    const peak = Math.max(...rowEnergy);
-    return {
-      total: rowEnergy.reduce((sum, value) => sum + value, 0),
-      peakRow: rowEnergy.indexOf(peak),
-      signature: rowEnergy.filter((value) => value > 0).map((value) => value / peak),
-    };
-  }, { base64: png.toString('base64'), dpr });
+interface GeometryRun {
+  readonly measured: readonly GeometrySample[];
+  readonly compositor: ReturnType<typeof summarizeCompositorWindow>;
 }
 
-async function measureAtDpr(browser: Browser, dpr: number): Promise<readonly RasterMetrics[]> {
+async function measureAtDpr(browser: Browser, dpr: number): Promise<GeometryRun> {
   const context = await browser.newContext({
     viewport: { width: 300, height: 200 },
     deviceScaleFactor: dpr,
   });
   try {
     const page = await context.newPage();
-    const analyzer = await context.newPage();
     await page.setContent(`
       <style>
         * { box-sizing: border-box; }
@@ -76,43 +54,75 @@ async function measureAtDpr(browser: Browser, dpr: number): Promise<readonly Ras
       <div id="scroller"><div id="content"><div id="hairline"></div></div></div>
     `);
 
-    const measured: RasterMetrics[] = [];
+    const compositorTrace = await startCompositorTrace(page);
+    const startMark = `ao-scroll-dpr-${String(dpr)}-start`;
+    const endMark = `ao-scroll-dpr-${String(dpr)}-end`;
+    await page.evaluate((mark) => performance.mark(mark), startMark);
+    const measured: GeometrySample[] = [];
     for (const requested of SCROLL_WRITES) {
-      const readback = await page.locator('#scroller').evaluate((element, top) => {
+      const sample = await page.locator('#scroller').evaluate((element, top) => {
         element.scrollTop = top;
-        return element.scrollTop;
+        const scroller = element.getBoundingClientRect();
+        const feature = element.querySelector<HTMLElement>('#hairline');
+        if (!feature) throw new Error('hairline fixture is missing');
+        let frames = 0;
+        return new Promise<GeometrySample>((resolve) => {
+          const tick = () => {
+            frames += 1;
+            if (frames < 2) {
+              requestAnimationFrame(tick);
+              return;
+            }
+            const rect = feature.getBoundingClientRect();
+            resolve({
+              requested: top,
+              scrollTop: element.scrollTop,
+              featureTop: rect.top,
+              viewportTop: scroller.top,
+              featureHeight: rect.height,
+              featureWidth: rect.width,
+              frames,
+            });
+          };
+          requestAnimationFrame(tick);
+        });
       }, requested);
-      expect(readback, `scrollTop ${requested}px at DPR ${dpr}`).toBe(requested);
-      await page.evaluate(() => new Promise(requestAnimationFrame));
-      const screenshot = await page.screenshot({
-        clip: { x: 20, y: 20, width: 200, height: 100 },
-        scale: 'device',
-      });
-      measured.push(await rasterMetrics(analyzer, screenshot, dpr));
+      measured.push(sample);
     }
-    return measured;
+    await page.evaluate((mark) => performance.mark(mark), endMark);
+    const compositor = summarizeCompositorWindow(
+      await compositorTrace.stop(),
+      startMark,
+      endMark,
+    );
+    return { measured, compositor };
   } finally {
     await context.close();
   }
 }
 
-test('integer scrollTop preserves thin-feature raster energy at fractional DPR', async ({ browser }) => {
+test('integer scrollTop preserves thin-feature layout geometry at every DPR', async ({ browser }) => {
   for (const dpr of DPR_VALUES) {
-    const measured = await measureAtDpr(browser, dpr);
-    const baseline = measured[0];
-    expect(baseline.total, `non-vacuous raster at DPR ${dpr}`).toBeGreaterThan(0);
-    for (const frame of measured.slice(1)) {
-      expect(frame.total, `hairline energy at DPR ${dpr}`).toBe(baseline.total);
-      expect(frame.signature, `hairline coverage at DPR ${dpr}`).toEqual(baseline.signature);
-    }
-
-    const devicePixelSteps = measured.slice(1).map((frame, index) =>
-      Math.abs(frame.peakRow - measured[index].peakRow));
-    if (!Number.isInteger(dpr)) {
-      expect(
-        new Set(devicePixelSteps).size,
-        `fractional DPR ${dpr} must exercise alternating device-pixel displacement`,
-      ).toBeGreaterThan(1);
+    const { measured, compositor } = await measureAtDpr(browser, dpr);
+    expect(compositor.eventCount, `trace events at DPR ${dpr}`).toBeGreaterThan(0);
+    expect(compositor.renderPasses, `render passes at DPR ${dpr}`).toBeGreaterThan(0);
+    expect(compositor.prepareDraws, `compositor draws at DPR ${dpr}`).toBeGreaterThan(0);
+    expect(compositor.layerTreeSnapshots, `layer tree snapshots at DPR ${dpr}`).toBeGreaterThan(0);
+    expect(compositor.missingTileSignals, `missing tiles at DPR ${dpr}`).toBe(0);
+    expect(compositor.checkerboardSignals, `checkerboard signals at DPR ${dpr}`).toBe(0);
+    expect(compositor.blankRenderPasses, `blank render passes at DPR ${dpr}`).toBe(0);
+    expect(measured).toHaveLength(SCROLL_WRITES.length);
+    for (const [index, frame] of measured.entries()) {
+      expect(frame.scrollTop, `scrollTop ${frame.requested}px at DPR ${dpr}`).toBe(frame.requested);
+      expect(frame.frames, `rAF continuity at DPR ${dpr}`).toBeGreaterThanOrEqual(2);
+      expect(frame.featureHeight, `feature height at DPR ${dpr}`).toBe(1);
+      expect(frame.featureWidth, `feature width at DPR ${dpr}`).toBe(180);
+      expect(frame.featureTop, `feature position at DPR ${dpr}`).toBe(
+        frame.viewportTop + 60 - frame.requested,
+      );
+      if (index > 0) {
+        expect(frame.featureTop - measured[index - 1].featureTop).toBe(-1);
+      }
     }
   }
 });

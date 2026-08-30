@@ -1,17 +1,17 @@
-# Chat Rewrite — Unified Item Stream
+# Chat Rewrite: Unified Item Stream
 
-Status: spec, pre-execution. v2 — incorporates review findings from
+Status: spec, pre-execution. v2 incorporates review findings from
 t3-code deep-dive, multi-reference cross-check (Claude Code CLI, Codex
 CLI, CodexMonitor, Continue, Aider), and 25-scenario UX stress-test.
 
 > **See also.** This doc is the spec that produced today's code. For
 > the rules extracted from it, jump to:
 >
-> - [`invariants.md`](invariants.md) — the load-bearing invariants,
+> - [`invariants.md`](invariants.md): the load-bearing invariants,
 >   with rationale and tests.
-> - [`conventions.md`](conventions.md) — contributor guardrails.
-> - [`how-to.md`](how-to.md) — step-by-step extension playbooks.
-> - [`adrs/`](adrs/) — architecture decisions captured as ADRs.
+> - [`conventions.md`](conventions.md): contributor guardrails.
+> - [`how-to.md`](how-to.md): step-by-step extension playbooks.
+> - [`adrs/`](adrs/): architecture decisions captured as ADRs.
 >
 > This doc remains the historical record of the design; when it
 > drifts from the code, trust the invariants / ADRs.
@@ -31,7 +31,7 @@ listener, one list**.
 - Reframing the framework (Svelte stays).
 - Wholesale provider rewrites, sidebar, composer shell, terminal,
   design mode, discussion mode, or settings.
-- UI visual polish — that's a separate pass after the data model
+- UI visual polish. That's a separate pass after the data model
   lands.
 
 ## In-scope provider + schema changes
@@ -53,7 +53,7 @@ additive." Called out up front so scope is clear:
   `meta`, `last_token_usage`) plus two renames
   (`parent_tool_use_id` → `parent_id`,
   `completion_of_item_id` → `completion_of`) plus a wipe of
-  `items` and `payloads`. Not purely additive — scope this work
+  `items` and `payloads`. Not purely additive, so scope this work
   explicitly.
 
 ## The model
@@ -102,13 +102,13 @@ updated_at      int64 ms
 both to `parent_id` and `completion_of` in a single migration. The
 old names were Claude-centric; the new ones are provider-agnostic and
 reflect the unified item model (any kind can be a parent of any
-other — e.g., an MCP tool with child tool_calls, not just a
+other, e.g., an MCP tool with child tool_calls, not just a
 `tool_use`). The v15 migration wipes `items` and `payloads` entirely
 (see "Store changes" below), so column-value preservation doesn't
-apply — the rename is really a schema-shape change with a fresh
+apply. The rename is really a schema-shape change with a fresh
 start on data.
 
-### Kinds (closed set — 7)
+### Kinds (closed set: 7)
 
 | kind              | role      | status semantics                              | notes                                                                                  |
 |-------------------|-----------|------------------------------------------------|----------------------------------------------------------------------------------------|
@@ -118,10 +118,10 @@ start on data.
 | `tool_call`       | assistant | `running` → `completed` / `errored` / `declined` | inline tools mutate in place; backgrounded tools stay `running` and append a partner   |
 | `tool_completion` | assistant | `completed` / `errored`                        | only exists for backgrounded tool calls; carries `completion_of`, the result payload, and a summary that **restates the original command** |
 | `error`           | system    | always `completed`                             | turn-level error surfaced inline (provider crash, refusal, etc.)                        |
-| `compaction`      | system    | always `completed`                             | marker — context was compacted at this point                                           |
+| `compaction`      | system    | always `completed`                             | marker: context was compacted at this point                                           |
 
 Kinds NOT in this list: anything else. Diffs / command output / proposed
-plans are **not separate item kinds** — they are tool_call items whose
+plans are **not separate item kinds**. They are tool_call items whose
 payload renders specially (see Heavy Payloads).
 
 ### Item ID schemas
@@ -152,17 +152,17 @@ so that parallel subagents in the same turn don't collide:
 | `assistant_text`  | `text:<turn_index>:<card_id>:<segment_index>`                      |
 | `thinking`        | `think:<turn_index>:<card_id>:<block_index>`                       |
 | `tool_call`       | provider-native id (adapter scopes within card context)            |
-| `tool_completion` | `complete:<tool_call.id>` (still unique — tool_call.id is unique)  |
+| `tool_completion` | `complete:<tool_call.id>` (still unique because tool_call.id is unique)  |
 | `error`           | `error:<turn_index>:<card_id>:<error_seq>`                         |
 
 Without the card_id scope, two subagents launched in the same turn
 (parent turn_index=5, card A and card B) would both mint `text:5:0`
 for their first child text segment and collide on upsert. The
-`card_id` segment is the subagent `tool_call.id` — already unique
+`card_id` segment is the subagent `tool_call.id`, already unique
 across the thread.
 
 `turn_index` is used in id keys rather than any provider-supplied
-`turnId` string — this keeps ids stable across adapters (Claude
+`turnId` string. This keeps ids stable across adapters (Claude
 doesn't emit a stable per-turn id; Codex does). The trade: ids are
 only unique within a thread. Cross-thread id collisions are impossible
 because `thread_id` is a separate column on every query.
@@ -170,7 +170,7 @@ because `thread_id` is a separate column on every query.
 **Adapter contract for tool_call id:** the provider adapter produces a
 string that is stable across the tool's Begin/End events (so upsert
 finds the same row) AND unique across the thread (to prevent
-child-scope collisions). The field name varies per provider — the
+child-scope collisions). The field name varies per provider. The
 triage layer and frontend never need to know which.
 
 ### Invariants
@@ -190,7 +190,7 @@ don't get re-derived (or accidentally violated) in implementation.
    that queued during one streaming cycle must flush in arrival order
    so a `_End` never renders before its `_Begin` partner.
 5. **`completion_of` references a `tool_call` with `is_background=true`.**
-   Inline tool_calls mutate in place — they never produce a
+   Inline tool_calls mutate in place. They never produce a
    `tool_completion`. Only backgrounded launches do.
 6. **At most one `tool_completion` per `tool_call`.** The relationship
    is 1:1. Synthetic "stopped by user" completions use the same id
@@ -233,7 +233,7 @@ For `assistant_text` and `thinking`:
 For `tool_call`:
 - `running` from EventToolStart until EventToolComplete
 - `completed` if the provider reports success (even with non-zero
-  exit code — `grep` returning 1 for "no match" is normal; that
+  exit code: `grep` returning 1 for "no match" is normal; that
   does NOT flip to errored)
 - `errored` when the provider reports failure
 - `declined` when an approval was denied
@@ -251,7 +251,7 @@ For `tool_call`:
 
 The non-zero exit code (Bash tools) is preserved in the `summary`
 (e.g. `"Bash: grep foo  (exit 1)"`) but does NOT change status.
-This is a deliberate decoupling — many shell tools use exit codes
+This is a deliberate decoupling. Many shell tools use exit codes
 for flow control, not failure.
 
 ### Text segmentation around tool_use
@@ -268,16 +268,16 @@ reasoning order. The spec MUST preserve that order, so:
   `tool_use` boundary or at turn-complete.
 
 Without this, two text chunks bracketing a tool_call would fuse into
-one item that renders BEFORE the tool — wrong.
+one item that renders BEFORE the tool, which is wrong.
 
 **Adapter requirement**: to know when segments/blocks start, the
 Claude adapter MUST preserve `content_block_start` / `content_block_stop`
 events from the wire. The current adapter discards these and only
-emits `text_delta` / `thinking_delta` — that needs to change as part
+emits `text_delta` / `thinking_delta`. That needs to change as part
 of execution. Without block boundaries, the triage layer cannot tell
 when to bump `segmentIndexByScope` / `blockIndexByScope` for a new
 segment within the same API response (e.g., model emits `thinking →
-thinking → text` with two thinking blocks in one response — without
+thinking → text` with two thinking blocks in one response, and without
 block boundaries we'd fuse them into one).
 
 **Router state:** tracks `segmentIndexByScope[threadID][turn_index][scope]`
@@ -304,11 +304,11 @@ as a head preview. Frontend renders summary by default, expand fetches
 the full payload.
 
 This avoids the visual ejection that would happen if we promoted
-mid-stream — the user keeps reading uninterrupted; the cap only kicks
+mid-stream. The user keeps reading uninterrupted; the cap only kicks
 in once the segment settles.
 
 **Thinking signature preservation (Claude-specific):** Claude's
-`thinking` content blocks carry a `signature` field — an opaque
+`thinking` content blocks carry a `signature` field, an opaque
 server-side encrypted blob that the API requires round-tripped
 unchanged for resume / tool-use continuations within a turn. The
 client never validates it; it just stores and replays. Our Claude
@@ -316,7 +316,7 @@ adapter MUST capture the `signature` on every thinking block and
 store it alongside the content (in the item's payload or meta JSON).
 On resume, the adapter re-submits the thinking block with its
 original signature, or the API 400s. This is a payload-preservation
-concern, not an identity concern — the `think:<turn_index>:<block_index>`
+concern, not an identity concern. The `think:<turn_index>:<block_index>`
 id is what the UI tracks; the signature rides along for API replay.
 
 A subagent is any sub-session spawned by the model: Claude's `Task`
@@ -327,7 +327,7 @@ tool, Codex's `CollabAgentToolCall` (SpawnAgent). Both represent
 regardless of how many internal lifecycle events the provider emits
 for it. For Codex's case, the `SpawnAgent` call creates the card;
 later `SendInput` / `Wait` / `Close` events do NOT each produce a
-new card — they fold into the card's lifecycle (`SendInput` is
+new card. They fold into the card's lifecycle (`SendInput` is
 handled separately, see below; `Wait` is implicit in `status=running`;
 `Close` triggers the status transition).
 
@@ -343,7 +343,7 @@ what the child is doing without expanding"):
   "thinking". Denormalized into a field on the card (the triage
   handler for child events updates it as they arrive).
 
-**Card content on expand**: the child's FULL conversation in order —
+**Card content on expand**: the child's FULL conversation in order:
 assistant_text, thinking, tool_calls, everything that would show in
 the child's own timeline. Not just tool calls. Rendered using the
 exact same per-kind switch as the top-level timeline (recursive
@@ -358,7 +358,7 @@ MessageTimeline with `items.filter(i => i.parent_id == card.id)`).
   any other backgrounded tool). Timeline still has the inline card;
   tray is the running-indicator mirror.
 - Multiple concurrent subagents: each gets its own card in the
-  timeline (sequential line items, not side-by-side layout — they
+  timeline (sequential line items, not side-by-side layout, since they
   just appear in order as their spawn events arrive). User expands
   each independently.
 
@@ -380,12 +380,12 @@ MessageTimeline with `items.filter(i => i.parent_id == card.id)`).
 **Provider-specific plumbing**:
 - **Claude `Task` tool**: events already arrive with
   `parent_tool_use_id` set. Direct 1:1 map onto `parent_id`. No
-  extra subscription — Claude emits child events on the same
+  extra subscription: Claude emits child events on the same
   stream.
 - **Codex `CollabAgentToolCall`**: child runs on a separate
   Codex `thread_id` (`receiverThreadIds`). Codex emits multiple
-  `CollabAgentToolCall` items across a subagent's lifecycle —
-  SpawnAgent, SendInput, Wait, CloseAgent, ResumeAgent — each as
+  `CollabAgentToolCall` items across a subagent's lifecycle
+  (SpawnAgent, SendInput, Wait, CloseAgent, ResumeAgent), each as
   its own item with its own `tool` field. **`receiverThreadIds`
   is populated on the SpawnAgent item's COMPLETED notification,
   not STARTED** (the app-server doesn't know the thread id until
@@ -398,7 +398,7 @@ MessageTimeline with `items.filter(i => i.parent_id == card.id)`).
      subscriptions to those child threads via the session registry.
   3. Subsequent `SendInput` items are surfaced as separate line
      items in the parent timeline (see "Parent-to-child input" below).
-  4. `Wait` items are silent — their state is already reflected in
+  4. `Wait` items are silent: their state is already reflected in
      the subagent card's `status=running` until `turn/completed`
      fires on the receiver thread.
   5. `CloseAgent` / `ResumeAgent` items transition the card's
@@ -421,7 +421,7 @@ MessageTimeline with `items.filter(i => i.parent_id == card.id)`).
 
 When the parent agent sends a mid-flight message to a child (Codex
 emits a `CollabAgentToolCall` with `tool == "SendInput"`), it
-appears as a **separate line item in the parent's timeline** — a
+appears as a **separate line item in the parent's timeline**, a
 small tool_call row with `tool_name = "send_input"`, summary = the
 input content preview + target agent name ("→ Robie: please
 continue"). Not nested under the subagent card, not hidden. The
@@ -434,13 +434,13 @@ the parent agent took.
 **Claude's `Task` tool does NOT allow subagents to spawn further
 subagents** per the official Claude Agent SDK docs. So
 grandchild nesting is architecturally impossible on the Claude
-side — the depth cap does not apply.
+side, so the depth cap does not apply.
 
 **Codex CollabAgent** does support multi-agent orchestration
 that could in principle spawn further agents from a child. For v1,
 if a Codex subagent itself spawns a sub-subagent (rare but
 possible), we show the grandchild as a minimal "spawned subagent"
-marker inside the child's expansion — NOT its full conversation.
+marker inside the child's expansion, NOT its full conversation.
 Grandchild events are not subscribed to, not persisted. The marker
 shows the child name/prompt so the user knows delegation happened.
 If real usage demands deeper nesting later, this becomes a future
@@ -476,7 +476,7 @@ Backgrounded tool call:
   write head (or the latest persisted turn when no turn is open),
   deferred behind active streaming output when necessary.
 - `tool_completion.summary` **restates the original command** plus the
-  outcome — e.g. `"pnpm install → exit 0 in 12s"`. Without this the
+  outcome, e.g. `"pnpm install → exit 0 in 12s"`. Without this the
   late-arriving row is decontextualized.
 - `tool_completion.completion_of` = launch.id; `is_background=true`;
   status = `completed` / `errored`.
@@ -484,8 +484,8 @@ Backgrounded tool call:
 **Claude backgrounded tool terminal-signal flow** (adapter concern,
 load-bearing for correctness). For `run_in_background: true` Bash
 and Task tools, the immediate `user.tool_result` echo with content
-like "Command running in background…" is NOT a real completion —
-it's a backgrounded-ack.
+like "Command running in background…" is NOT a real completion.
+It's a backgrounded-ack.
 
 **Primary signal: `system/task_updated` with `patch.status ∈
 {completed, failed, killed}`.** Fires when a backgrounded task
@@ -506,7 +506,7 @@ tool to poll a backgrounded item, the result content carries
 `<status>completed|failed</status>` and richer result data (exit
 code, output file path, final agent result text) for the SINGLE
 `task_id` the model passed in. TaskOutput is 1:1 with its input
-by wire-protocol design — its serializer emits one `<task_id>`,
+by wire-protocol design: its serializer emits one `<task_id>`,
 one `<status>`, one `<output>`; it cannot fan out to multiple
 completions even if other tasks finish during its blocking wait.
 Verified by live spike: if TaskOutput polls task A and task B
@@ -562,14 +562,14 @@ needs a fallback detail source.
   can arrive out of order." Correlation MUST be by `item.id`, not
   arrival order.
 
-### Background completion ordering — streaming-phase interrupt queue
+### Background completion ordering: streaming-phase interrupt queue
 
 When `EventToolComplete` arrives for a backgrounded tool, the
 completion does NOT land at wall-clock chronological position. If a
 streaming item is active, the completion is buffered in a per-thread
 queue and drained when the streaming item settles.
 
-This is the same mechanism Codex's TUI uses — see
+This is the same mechanism Codex's TUI uses. See
 `InterruptManager` / `flush_interrupt_queue` in codex-rs's
 `chatwidget/interrupts.rs`. The trigger is simple: "a streaming cell
 in this thread is mid-commit, hold tool events until it settles."
@@ -590,10 +590,10 @@ on EventToolComplete (background):
 
 **`hasActiveStreamingItem(threadID)` predicate:** returns true if any
 item in `items` for that thread has `status == streaming` (kind is
-`assistant_text` or `thinking` — the only kinds that carry that
+`assistant_text` or `thinking`, the only kinds that carry that
 status). Drain fires only when this predicate transitions from true
 to false. If the model emits concurrent thinking + text (rare but
-possible), neither settling alone triggers drain — only when both
+possible), neither settling alone triggers drain. Only when both
 have settled does the queue flush.
 
 **FIFO drain is load-bearing.** If multiple completions land during
@@ -637,19 +637,19 @@ Stop controls split by scope:
 - **Codex background tray**: `thread/backgroundTerminals/clean`
   (thread-wide only; no per-row terminal/subagent stop upstream).
 
-**Cascade behavior — what survives a user interrupt** (verified
+**Cascade behavior: what survives a user interrupt** (verified
 against codex-source and claude-code-source-code; tables below
 reflect native CLI behavior, which we match rather than fight):
 
 | Provider | Item kind | Survives interrupt? |
 |---|---|---|
 | Codex | child subagent turn (CollabAgent card) | YES |
-| Codex | running tool_call (bash, unified_exec, etc.) | YES — unified_exec is not terminated by `turn/interrupt` |
+| Codex | running tool_call (bash, unified_exec, etc.) | YES: unified_exec is not terminated by `turn/interrupt` |
 | Codex | backgrounded tool_call (`is_background=true`) | YES |
-| Claude | sync inline Task subagent (`is_background=false`) | NO — killed via shared abort controller |
-| Claude | async Task subagent (`is_background=true`) | YES — unlinked controller |
-| Claude | running inline tool_call (non-Task) | NO — shared controller kills |
-| Claude | backgrounded Bash (`is_background=true`) | YES — listener detached, reason='interrupt' ignored |
+| Claude | sync inline Task subagent (`is_background=false`) | NO: killed via shared abort controller |
+| Claude | async Task subagent (`is_background=true`) | YES: unlinked controller |
+| Claude | running inline tool_call (non-Task) | NO: shared controller kills |
+| Claude | backgrounded Bash (`is_background=true`) | YES: listener detached, reason='interrupt' ignored |
 
 **Triage handling on interrupt** (minimal; let the wire drive
 transitions where possible):
@@ -662,14 +662,14 @@ transitions where possible):
    - Codex `turn/completed{status:"interrupted"}` fires for the
      parent turn → synthesize TurnComplete; drain interrupt queue to
      errored.
-   - Codex tool_calls that survived keep their `status=running` —
-     the wire will emit their completion events normally if/when
+   - Codex tool_calls that survived keep their `status=running`. The
+     wire will emit their completion events normally if/when
      they actually finish.
    - Claude tool_calls that died (shared controller) emit
      tool_results with abort errors → normal `EventToolComplete`
      handling flips them to errored.
    - Claude items that survived (backgrounded Bash, async Task)
-     keep their `running` status — correct.
+     keep their `running` status, which is correct.
 3. Emit a system `error` item with summary "Stopped by user" on
    the parent turn for scroll-back clarity.
 
@@ -678,7 +678,7 @@ subagent cards (and Claude async Task cards) may keep running for
 minutes or longer. This matches both CLIs' native behavior and is
 visible to the user via the still-running card + the tray. If the
 user wants to kill a specific surviving subagent, they must open
-that subagent context and interrupt it separately — per-subagent
+that subagent context and interrupt it separately. Per-subagent
 Stop is NOT in v1.
 
 **Tray rows**: show `running && is_background` with a live progress
@@ -689,13 +689,13 @@ button is the only stop affordance.
 **Per-item stop (post-v1 extension, primitives verified)**: Claude
 exposes a client-sent `stop_task` control_request with unified
 `task_id` namespace covering both `run_in_background` Bash and Task
-subagents — see
+subagents. See
 [`claude-wire.md §stop_task`](../references/claude-wire.md#stop_task).
 Codex exposes both: per-process
 `thread/backgroundTerminals/terminate {threadId, processId}` (since
-codex 0.140.0) and the thread-wide `clean` — see
+codex 0.140.0) and the thread-wide `clean`. See
 [`codex.md §Background terminals`](../references/codex.md#background-terminals).
-Codex `spawn_agent` child threads still have no client kill path —
+Codex `spawn_agent` child threads still have no client kill path.
 `close_agent` is a model tool only.
 
 **On app reopen** with a `running && is_background` launch and no
@@ -743,7 +743,7 @@ background work does not need to be loaded in the timeline window:
 - Keep a row visible for 2s after its completion lands, then remove.
 - **Cap visible rows at 3**, with a "+N more" stack collapsing older
   entries. Order newest-first.
-- Tray is a mirror — launch and completion rows ALSO render inline
+- Tray is a mirror: launch and completion rows ALSO render inline
   in the main timeline at their persisted history positions.
   Tray is a duplicate view for "what's running RIGHT NOW," NOT a
   relocation. We keep both because the inline rows preserve history;
@@ -772,7 +772,7 @@ the frontend, persisted as a `decision` field on the underlying
 - `amended`: user approved with modified input (Claude SDK supports
   this). The tool_call's summary updates to the modified input on the
   next upsert (when the tool actually starts with the new args). The
-  MODIFIED input is the permanent record — the original input is not
+  MODIFIED input is the permanent record. The original input is not
   retained separately. Intent: scroll-back shows what actually ran,
   not a prior draft. If audit of the ORIGINAL ask matters, that
   belongs to the approval request's meta (preserved in payload, not
@@ -795,7 +795,7 @@ EventApprovalResolved time:
   it on the `ApprovalRequest` struct. **Execution note**: the
   current `provider.ApprovalRequest` (`internal/provider/types.go`)
   carries `RequestID`, `ToolName`, `Input`, etc. but NO
-  `ToolUseID` field. Adding one is required — the Claude adapter
+  `ToolUseID` field. Adding one is required: the Claude adapter
   populates it from CanUseTool, Codex leaves it empty (Codex
   approvals are kind=command/file-change which always fire AFTER
   the tool's own `item/started`, so a tool_call always exists
@@ -812,7 +812,7 @@ the permanent record of what was asked and that it was rejected.
 `~ amended`, `⊘ lost`) is meaningful for
 **tool-flavored approvals** (kinds: `command`, `file-read`,
 `file-change`, `permission`). Non-tool approval kinds
-(`user-input`, `mcp-elicitation`) don't create tool_calls — they
+(`user-input`, `mcp-elicitation`) don't create tool_calls. They
 show in the composer approval panel, the user answers, and the
 answer becomes part of the conversation via a subsequent assistant
 response or follow-up message. No decision chip because there's no
@@ -821,16 +821,16 @@ on resolve.
 
 Scrolling back you can see what was approved/declined/lost when,
 without polluting the timeline with extra items. The tool_call's
-`summary` shows the input that was ultimately used — the original
+`summary` shows the input that was ultimately used: the original
 for approved/declined/lost, the modified for amended.
 
 **AskUser-style tools** (an explicit "ask the user a question" tool)
-are NORMAL `tool_call` items — the question is in the summary, the
+are NORMAL `tool_call` items: the question is in the summary, the
 answer becomes the tool result. Not an approval.
 
 **Approval lost on restart:** the `pendingApprovals` overlay is
 volatile. In practice, every provider we support (Claude Code, Codex)
-kills pending approvals when the session dies — there is no
+kills pending approvals when the session dies. There is no
 re-emission path. Don't try to resume them.
 
 On reopen, any `tool_call` with `status=running` and no matching
@@ -842,10 +842,10 @@ to do and that it never got an answer. The user can manually re-send
 the prompt if they want to retry.
 
 This applies BOTH to approvals that were mid-pending at crash AND to
-backgrounded tool_calls whose process died along with the app — same
+backgrounded tool_calls whose process died along with the app: same
 resolution, same `lost` decision.
 
-### Heavy payloads — two-stage expand
+### Heavy payloads: two-stage expand
 
 `payloads` table unchanged. Items reference payloads by `payload_id`.
 
@@ -853,26 +853,26 @@ resolution, same `lost` decision.
 has explicitly expanded it AND asked for the full load. Collapse
 releases. No client cache.
 
-**Stage 1 — Peek** (cheap, automatic on expand):
+**Stage 1: Peek** (cheap, automatic on expand):
 - Binding: `GetPayloadPreview(threadId, payloadId, maxBytes) -> {data, nextOffset, totalSize, isComplete}`
 - Default `maxBytes = 32KB`. Fetches from the head of the payload.
-- `isComplete=true` if totalSize ≤ maxBytes — that's the whole payload
+- `isComplete=true` if totalSize ≤ maxBytes. That's the whole payload
   and stage 2 is skipped.
 - Rendered as raw text through the client-side payload renderer
   (`AnsiText` for terminal-style output).
 
-**Stage 2 — Full load** (on demand, explicit):
+**Stage 2: Full load** (on demand, explicit):
 - If stage 1's `isComplete=false`, show a footer inside the dropdown:
   `Show full output (2.3 MB) ↓` (or similar, with the formatted size).
 - Click → repeated `GetPayloadChunk(threadId, payloadId, offset, maxBytes)`
   calls append raw chunks from `nextOffset` until `isComplete=true`
-  (bounded by the 4MB cap — see size limits below).
+  (bounded by the 4MB cap: see size limits below).
 - Replaces the stage 1 render with the assembled raw content. Same
   client-side renderer.
 
 **No cache:**
 - Collapsing the dropdown discards the loaded data.
-- Re-expanding re-fetches the stage 1 peek (32KB over IPC ≈ 5ms —
+- Re-expanding re-fetches the stage 1 peek (32KB over IPC ≈ 5ms,
   imperceptible).
 - If user wants the full load back, they click "Show full" again.
 - Trade: tiny re-fetch cost for guaranteed bounded memory. Accept it.
@@ -900,7 +900,7 @@ releases. No client cache.
   the dropdown header calls `SavePayloadToFile(threadId, payloadId)` which
   writes the full captured payload (up to 4MB) to a user-chosen path
   via the OS save-file dialog. For users who want to grep / diff /
-  editor-view the raw output. No larger-than-4MB recovery — what
+  editor-view the raw output. No larger-than-4MB recovery: what
   wasn't captured is gone.
 
 **For diffs with >10 files:** the file tree IS the stage-1 peek. Each
@@ -943,7 +943,7 @@ Two channels, two surfaces:
 - **In-chat errors** (`error` item): provider returned an error mid-turn,
   tool refused, model crashed mid-stream, etc. Renders as a red banner-
   style row in the timeline.
-  - If the error message exceeds 50KB (rare — usually stack traces),
+  - If the error message exceeds 50KB (rare, usually stack traces),
     apply the same promotion rule as text: write to payload, truncate
     summary to first 4KB.
 - **Persistent provider errors** (banner, NOT toast): provider binary
@@ -960,7 +960,7 @@ Two channels, two surfaces:
 `kind=compaction` item with `summary` = e.g. "Context compacted —
 older messages summarized". Renders as a horizontal divider with a
 label. Compactions usually land at turn boundaries. If one fires
-mid-turn, items before the divider are NOT marked specially — the
+mid-turn, items before the divider are NOT marked specially. The
 divider is enough indication.
 
 Provider compaction ids are preserved when present. Without one, triage
@@ -979,19 +979,19 @@ The seconds counter reflects time since the most recent
 `status=streaming` or `status=running` item appeared. Hidden when
 `isTurnActive` is false.
 
-This is NOT session status — there is no "connecting", "disconnected",
+This is NOT session status. There is no "connecting", "disconnected",
 or "retrying" UI. The working indicator is purely turn activity feedback.
 
 ### Context window meter
 
 A small circular progress indicator in the composer area (matching
-forge / t3-code's `ContextWindowMeter`). Displays:
+t3-code's `ContextWindowMeter`). Displays:
 
 - Used % as the ring fill
 - Tooltip / popover with: used tokens, max tokens, "compacts
   automatically" hint
 
-**Subscribed to its own channel** (`provider:usage`) — backend keeps
+**Subscribed to its own channel** (`provider:usage`). The backend keeps
 emitting `EventTokenUsage` and `EventCompactBoundary` events; the
 meter listens.
 
@@ -1003,8 +1003,8 @@ immediately when the user switches threads, not stay blank until the
 next token event fires. The `threads` row carries a
 `last_token_usage TEXT` column (JSON blob of the last usage event for
 that thread). Router updates it on every EventTokenUsage. On
-switchThread, the frontend reads this directly from the thread row —
-no separate binding.
+switchThread, the frontend reads this directly from the thread row,
+with no separate binding.
 
 Compaction with no context snapshot does not emit usage and does not
 clear `last_token_usage`; Codex emits a fresh token-usage update after
@@ -1014,7 +1014,7 @@ the compaction boundary, the router persists and emits that snapshot.
 
 NOT in the chat history. Pure ambient indicator.
 
-(Rate limits do NOT get UI in v1 — if relevant, surface in the same
+(Rate limits do NOT get UI in v1. If relevant, surface in the same
 popover as the context meter rather than a separate widget.)
 
 ### Removed entirely
@@ -1042,7 +1042,7 @@ unions.
 | `provider:usage`         | `UsageEvent` (discriminated, see below)    | context meter; not displayed as items                  |
 | `provider:status`        | `ProviderStatusEvent`                      | persistent provider banner                             |
 
-**`ApprovalEvent`** — discriminated union on `action`:
+**`ApprovalEvent`** is a discriminated union on `action`:
 ```go
 type ApprovalEvent struct {
     Action    string              `json:"action"`    // "request" | "resolve"
@@ -1052,7 +1052,7 @@ type ApprovalEvent struct {
 }
 ```
 
-**`UsageEvent`** — discriminated union on `action`:
+**`UsageEvent`** is a discriminated union on `action`:
 ```go
 type UsageEvent struct {
     Action                string              `json:"action"` // "usage" | "reset" | "rate_limits"
@@ -1066,7 +1066,7 @@ type UsageEvent struct {
 }
 ```
 
-**`ProviderStatusEvent`** — closed kind enum for banner behavior:
+**`ProviderStatusEvent`** is a closed kind enum for banner behavior:
 ```go
 type ProviderStatusEvent struct {
     Kind    string `json:"kind"` // one of the values below
@@ -1127,7 +1127,7 @@ The existing `persistTurnText`, `persistHeavy`, `replaceHeavy`,
 `insertHeavyItem`, `insertHeavyItemAndPayload`,
 `persistFileChangeToolResult`, `persistCommandInlineDiffToolResult`,
 `persistToolResult`, `persistToolCallLaunch`,
-`persistToolCallCompletion`, `upgradeSummaryOnlyToolResults` — all
+`persistToolCallCompletion`, `upgradeSummaryOnlyToolResults` are all
 deleted. Their work folds into per-event handlers that build an Item
 and call `persistItem`.
 
@@ -1178,7 +1178,7 @@ func (r *Router) drainInterruptQueue(threadID string) {
 }
 ```
 
-**Crash safety — provider-dependent**:
+**Crash safety (provider-dependent)**:
 - **Claude**: `--resume <session-ref>` replays the full session log
   including tool_results, so queued-but-lost completions re-fire
   after resume. The queuing re-applies cleanly. Worst case: the
@@ -1191,8 +1191,8 @@ func (r *Router) drainInterruptQueue(threadID string) {
   and the standard crash-recovery flow (`thread/read` probe + flip
   to errored if no longer live) applies. This means for Codex
   specifically, a pre-persist crash during the interrupt queue's
-  hold window can permanently lose the real completion outcome —
-  the row will end up errored with summary "Interrupted — outcome
+  hold window can permanently lose the real completion outcome.
+  The row will end up errored with summary "Interrupted — outcome
   unknown" rather than reflecting the actual completion. Accept
   this as pre-release scope; if load-bearing later, persist queue
   entries to a `pending_completions` side table before queuing.
@@ -1210,13 +1210,13 @@ stays provider-independent.
 **`turn_index` semantics**: this is a LOCAL counter on agent-overflow's
 thread, not a provider turn id. Provider turn ids (Codex's
 `turn.id`, Claude's per-cycle identifiers) are opaque strings we
-don't mint. `turn_index` counts "send cycles" on our thread — one
+don't mint. `turn_index` counts "send cycles" on our thread, one
 per `sendMessage` call. The two can diverge (e.g., Claude may
 internally loop through multiple API cycles under one of our
 turns), and that's fine: our `turn_index` is the UI unit, the
 provider's turn id is the wire unit.
 
-**TurnStart** — for Claude, emitted from `handleInit` when wire
+**TurnStart**: for Claude, emitted from `handleInit` when wire
 `system/init` matches a pending-send marker; for Codex, emitted from
 the `turn/started` wire notification after the user item has been
 persisted:
@@ -1252,7 +1252,7 @@ Rationale for the inversion: silent-disappearing-user-message
 (current behavior on send failure) is worse UX than "message
 visible + error clearly attached." The user knows what happened;
 no mystery. The "orphan" scenario the old rule avoided is not an
-orphan in the new model — it's a visible turn with a clear error
+orphan in the new model. It's a visible turn with a clear error
 item, which is exactly what the user needs.
 
 The existing router `handleTurnStart` is idempotent on
@@ -1260,12 +1260,12 @@ The existing router `handleTurnStart` is idempotent on
 logical turn (for example a Claude interrupt / re-init path), the
 duplicate is silently absorbed.
 
-**TurnComplete** — wire signal primary, with fallbacks:
+**TurnComplete**: wire signal primary, with fallbacks:
 
 | source | signal | role |
 |---|---|---|
-| Claude wire | `{type:"result"}` message | primary — the Claude adapter's `parseResult` handler already emits `EventTurnComplete` |
-| Codex wire | `turn/completed` notification (carries `turn.status: completed \| interrupted \| failed`) | primary — the Codex adapter's notification handler already emits `EventTurnComplete` |
+| Claude wire | `{type:"result"}` message | primary: the Claude adapter's `parseResult` handler already emits `EventTurnComplete` |
+| Codex wire | `turn/completed` notification (carries `turn.status: completed \| interrupted \| failed`) | primary: the Codex adapter's notification handler already emits `EventTurnComplete` |
 | Both | provider process exit while a turn is open (TurnStart seen, no TurnComplete yet) | session lifecycle handler synthesizes `EventTurnComplete` with `provider.TruncatedTurnCompleteMeta` before session teardown |
 
 Tracking "is a turn currently open" in the router: a simple
@@ -1287,7 +1287,7 @@ additionally:
    `errored` with summary suffix " — interrupted" (same rule as the
    live-crash flip below).
 6. Drains queued completions to `errored` items rather than
-   `completed` — we don't know the real outcome.
+   `completed`, since we don't know the real outcome.
 
 ### Per-event handler logic
 
@@ -1313,21 +1313,21 @@ additionally:
 | `EventModelFallback`        | persist warning notification; project session-scoped effective model; keep requested model unchanged |
 | `EventTokenUsage`           | emit `provider:usage` (for the meter)                                                                 |
 | `EventRateLimits`           | emit `provider:usage` (folded in)                                                                     |
-| `EventSessionStatus` (persistent failure) | emit `provider:status` for the banner (binary missing, auth fail). Transient — drop. |
-| `EventBackgroundStart/Delta/Complete` | dropped — superseded by tool_call lifecycle with is_background classifier                    |
-| `EventToolProgress`         | dropped — progress is just successive upserts of the tool_call's summary                              |
-| `EventPlanUpdate`           | dropped — final plan arrives via EventProposedPlan                                                    |
+| `EventSessionStatus` (persistent failure) | emit `provider:status` for the banner (binary missing, auth fail). Transient ones are dropped. |
+| `EventBackgroundStart/Delta/Complete` | dropped: superseded by tool_call lifecycle with is_background classifier                    |
+| `EventToolProgress`         | dropped: progress is just successive upserts of the tool_call's summary                              |
+| `EventPlanUpdate`           | dropped: final plan arrives via EventProposedPlan                                                    |
 
 The `provider.AllEventKinds` list shrinks accordingly.
 
 ### Live provider-crash flip
 
 Triggered by any of:
-1. **Subprocess exit** while a turn is open — session lifecycle
+1. **Subprocess exit** while a turn is open: session lifecycle
    observes the exit and calls the handler.
-2. **Stream closed unexpectedly** (stdout EOF before turn-complete) —
+2. **Stream closed unexpectedly** (stdout EOF before turn-complete):
    the reader loop detects and calls the handler.
-3. **`EventError` with `meta.fatal == true`** — the emitting adapter
+3. **`EventError` with `meta.fatal == true`**: the emitting adapter
    sets the fatal flag to signal "this error ended the turn."
    Non-fatal errors (transient tool failures,
    Codex `turn/completed{status:"failed"}` with a recoverable-ish
@@ -1359,7 +1359,7 @@ to errored. No "still-streaming text next to an error item" visual
 state.
 
 Without this, the user sees a streaming text item that never
-finishes, sitting next to the new error item — confusing. The flip
+finishes, sitting next to the new error item, which is confusing. The flip
 makes the broken state explicit on the items themselves.
 
 ### Store changes
@@ -1386,7 +1386,7 @@ upsert race-free.
 Additive columns:
 - `items.tool_name TEXT NOT NULL DEFAULT ''`
 - `items.decision TEXT NOT NULL DEFAULT ''`
-- `items.meta TEXT NOT NULL DEFAULT '{}'` — JSON blob for
+- `items.meta TEXT NOT NULL DEFAULT '{}'`: JSON blob for
   per-item provider-specific metadata that doesn't fit the
   column model. Used for: Claude thinking `signature` (for API
   replay), Claude `task_id ↔ tool_use_id` mapping (for bg
@@ -1427,7 +1427,7 @@ No index changes (new columns aren't query targets; the renamed
 columns keep their existing indexes under the new names).
 
 `InsertItem`, `AppendItem`, `AppendItemWithPayload`, the various
-narrow updaters — kept for now, but most callers migrate to
+narrow updaters are kept for now, but most callers migrate to
 `UpsertItem`. Audit at end of execution and delete unused.
 
 ## Frontend collapse
@@ -1452,15 +1452,15 @@ Everything that was a parallel state stream goes away.
 
 **No payload cache.** Expanded content lives in the dropdown's own
 component-local `$state` and is discarded on collapse. Peek re-fetch
-on re-expand is ~5ms over IPC (32KB default) — imperceptible and
-guarantees no accidental unbounded memory growth from accumulating
+on re-expand is ~5ms over IPC (32KB default), which is imperceptible
+and guarantees no accidental unbounded memory growth from accumulating
 expanded rows.
 
 **One mutation:** `upsertItem(item: Item)`. Replaces by id (preserves
 position) or inserts at sorted position. That's the only timeline
 mutation.
 
-### Sending a message — no optimistic shadow
+### Sending a message: no optimistic shadow
 
 User clicks send → `SendMessage` binding runs → app_send.go persists
 the `user_text` item and emits a `provider:item_event` upsert. The round trip
@@ -1471,7 +1471,7 @@ optimistic render needed.
 If profiling ever shows jank here, reintroduce an optimistic shadow
 AFTER measuring, not speculatively.
 
-### Multi-message queueing — no queue
+### Multi-message queueing: no queue
 
 The user cannot send while `isTurnActive === true`. The Composer's
 send button is replaced by an Interrupt button (existing behavior).
@@ -1530,9 +1530,9 @@ get isTurnActive() {
 }
 ```
 
-Note: backgrounded tool_calls do NOT count as "turn active" — they
+Note: backgrounded tool_calls do NOT count as "turn active". They
 run independently and shouldn't block sends. Pending approvals DO
-count — the turn is waiting on the user's decision, send should be
+count: the turn is waiting on the user's decision, send should be
 blocked until they respond. Codex also exposes `waitingOnApproval` /
 `waitingOnUserInput` thread states; those are reflected in
 `pendingApprovals` via the normal approval flow. Used by Composer to
@@ -1544,9 +1544,9 @@ gate sends + show interrupt button.
 
 `switchThread` keeps its initial hydration via `ListItems`. The
 context meter seeds from the thread row's `last_token_usage` column
-(read alongside the thread itself — no separate binding). After
+(read alongside the thread itself, with no separate binding). After
 hydration, the upsert + usage streams are the only mutation sources.
-Nothing to clear on switch — there is no cache.
+Nothing to clear on switch. There is no cache.
 
 ### MessageTimeline
 
@@ -1594,11 +1594,11 @@ Where:
   foreground Agent/Task tool calls.
 - **Grandchild depth cap**: a subagent card at depth 1 whose children
   include another subagent (grandchild at depth 2) renders the
-  grandchild as a minimal marker — name + spawn prompt only, not
+  grandchild as a minimal marker: name + spawn prompt only, not
   its full conversation. Grandchild's own children are not
   subscribed to. Keeps visual complexity bounded and avoids
   recursive subscription explosion for rare deep nesting.
-- **Card header while collapsed**: always shows live status — for a
+- **Card header while collapsed**: always shows live status. For a
   running subagent card: `<name> · <N items> · <elapsed> ·
   <latestActivity>`. The renderer derives all three from the card's
   fields (latestActivity is denormalized by the adapter as child
@@ -1616,16 +1616,16 @@ Stop controls follow provider capabilities. Both providers get the same
 two affordances over different primitives, resolved by one helper
 (`trayRowStopTarget`) so a row and the bulk button can never disagree:
 
-- **Claude** — per-row Stop when the launch meta carries `task_id`
+- **Claude**: per-row Stop when the launch meta carries `task_id`
   (`StopClaudeTask`); Stop-all fans the same call out per id.
-- **Codex** — per-row Stop when a yielded unified-exec PTY carries
+- **Codex**: per-row Stop when a yielded unified-exec PTY carries
   `process_id` (`TerminateCodexBackgroundTerminal` →
   `thread/backgroundTerminals/terminate`, available since codex 0.140,
   below AO's provider floor); Stop-all is the single thread-wide
   `thread/backgroundTerminals/clean`. The terminate response's
   `terminated: false` means "matched nothing" and surfaces as an info
   toast, because no `item/completed` follows to change the row.
-- **Codex subagent rows** have no stop control in either place —
+- **Codex subagent rows** have no stop control in either place:
   `close_agent` is a model tool with no client path.
 
 A not-yet-yielded Codex command is tray-visible but not stoppable: it is
@@ -1684,7 +1684,7 @@ Falls out of the design + the live-crash flip rule:
      delta-ing if available; otherwise flip to `errored` with
      "Interrupted" suffix.
 5. If `pendingApprovals` were active at crash time: approval state
-   is always lost on restart — no provider we support re-emits.
+   is always lost on restart. No provider we support re-emits.
    Affected tool_calls flip to `errored` with `decision=lost`. The
    question (tool name + input preview) is preserved in `summary`.
 
@@ -1693,13 +1693,13 @@ blocks and replays them on `--resume`, so a deferred completion
 lost-before-persist is recoverable via the resumed session. Codex's
 app-server behavior on this point is not verified; worst case is the
 completion is permanently lost. The recovery rules above handle that
-cleanly — a `running && is_background` row on reopen with no Codex
+cleanly: a `running && is_background` row on reopen with no Codex
 replay gets flipped to errored/lost. No deeper Codex-specific handling
 needed; the crash recovery semantics are identical regardless of
 whether replay works.
 
 The recovery contract: **what's in SQLite is what the user sees**.
-Provider session state may be ahead, behind, or equal — none of those
+Provider session state may be ahead, behind, or equal. None of those
 break the UI.
 
 ## Demolition list (in execution order)
@@ -1732,33 +1732,33 @@ break the UI.
 - `pane.pendingPlanUpdate`, `setPendingPlanUpdate`,
   `clearPendingPlanUpdate`
 - `pane.dismissedPlanItemId`, `setDismissedPlanItemId`
-- `pane.payloadMetas`, `addPayloadMeta`, `touchPayloadMeta` (payload previews/data held in component-local `$state`, discarded on collapse — no cache)
+- `pane.payloadMetas`, `addPayloadMeta`, `touchPayloadMeta` (payload previews/data held in component-local `$state`, discarded on collapse, no cache)
 - `pane.tokenUsage`, `setTokenUsage` (replaced by `pane.contextWindow`)
 - `pane.rateLimits`, `setRateLimits`
-- `pane.error`, `setError`, `clearError` — audit resolved: renamed to
+- `pane.error`, `setError`, `clearError`. Audit resolved: renamed to
   `pane.generalError` / `setGeneralError` / `clearGeneralError` so the
   slot's grab-bag purpose (thread-load / composer send / git action
   failures) is distinct from the wire-level `providerBanner`.
 - `pane.sessionStatus`, `setSessionStatus`
 - `pane.finalizeTurn`
 - `pane.sessionApprovedTools`, `addSessionApprovedTool`,
-  `isToolSessionApproved` — approval state is now per-tool_call via
+  `isToolSessionApproved`: approval state is now per-tool_call via
   `decision`, no per-session allowlist
-- `pane.turnGeneration` — counter only existed to guard
+- `pane.turnGeneration`: counter only existed to guard
   `finalizeTurn` async races; with finalizeTurn gone it has no callers
-- `pane.appendTextDelta` — accumulator pattern replaced by streaming
+- `pane.appendTextDelta`: accumulator pattern replaced by streaming
   item upserts
 - `frontend/src/lib/components/chat/StreamingMessage.svelte`
 - `frontend/src/lib/components/chat/ProviderStatusBanner.svelte`
   (rewrite to consume `pane.providerBanner` instead of session status)
 - `frontend/src/lib/components/chat/RateLimitsMeter.svelte`
-- `frontend/src/lib/components/chat/ChangedFilesTree.svelte` — REMOVED;
+- `frontend/src/lib/components/chat/ChangedFilesTree.svelte`: REMOVED;
   stable transcript rendering superseded inline end-of-turn diff cards.
-- `frontend/src/lib/components/chat/TurnDiffBadge.svelte` — REMOVED;
+- `frontend/src/lib/components/chat/TurnDiffBadge.svelte`: REMOVED;
   stable transcript rendering superseded inline end-of-turn diff cards.
 - `frontend/src/lib/components/chat/CommandOutput.svelte`,
   `DiffPreview.svelte`, `ProposedPlanCard.svelte`,
-  `ThinkingBlock.svelte`, `ToolResultCard.svelte` — fold into
+  `ThinkingBlock.svelte`, `ToolResultCard.svelte`: fold into
   `ToolCallCard`'s payload renderer (one component per payload kind
   surviving)
 - `frontend/src/lib/stores/events.ts`: the giant switch over `evt.kind`
@@ -1767,7 +1767,7 @@ break the UI.
 ### Frontend keeps & adds
 
 - KEEP: `BackgroundTaskTray.svelte` (filter logic stays; remove any
-  per-row stop button — stopping goes through the global Composer
+  per-row stop button, since stopping goes through the global Composer
   Stop button per the Stop control section)
 - KEEP: `ToolResultDropdown.svelte` (becomes the payload renderer
   wrapped in ToolCallCard)
@@ -1776,25 +1776,25 @@ break the UI.
   AssistantText if needed)
 - KEEP: `SubagentGroup.svelte` (becomes part of ToolCallCard recursion)
 - ADD: `ChatWorkingIndicator.svelte` (footer)
-- ADD: `ContextWindowMeter.svelte` (composer toolbar; port forge's)
+- ADD: `ContextWindowMeter.svelte` (composer toolbar)
 - ADD: `ToolCallCard.svelte` (the per-kind header + payload dispatcher
   + child recursion)
 - All composer components, sidebar, terminal drawer, design view,
-  discussion view — untouched
+  discussion view: untouched
 - UNTOUCHED (explicitly out of scope for this rewrite):
   `PlanFollowUpBanner.svelte`, `PlanSidebar.svelte`,
   `LazyContentBlock.svelte`, `ChatHeader.svelte`, `ChatView.svelte`,
   `WorkEntry.svelte`, `DiffPanelDrawer.svelte`. If any of these
   reference pane state that's being deleted (e.g.,
   `pane.pendingPlanUpdate`), they need a minimal adaptation to read
-  from the new `items` stream — adapt in place, don't rewrite. The
+  from the new `items` stream. Adapt in place, don't rewrite. The
   rewrite is about data flow, not these UI shells.
 
 ## Execution plan
 
 One sequential pass. Each step ends with green tests.
 
-1. **Schema v15** — `tool_name` and `decision` columns. Tests.
+1. **Schema v15**: `tool_name` and `decision` columns. Tests.
 2. **`store.UpsertItem`** + tests. Audit and delete unused narrow
    updaters at the end.
 3. **`router.persistItem` chokepoint** + `maybeDeferOrPersist` queue.
@@ -1821,19 +1821,19 @@ One sequential pass. Each step ends with green tests.
    pass + `drainInterruptQueue`.
 6. **Delete obsolete event kinds** from `provider.AllEventKinds` and
    provider adapters that emit them.
-7. **Frontend pane rewrite** — single PR-size chunk. Delete the state
+7. **Frontend pane rewrite**: single PR-size chunk. Delete the state
    slices listed above. Implement `upsertItem` semantics, the four
    listeners, contextWindow state, providerBanner state. Update
-   `isTurnActive`. Delete `finalizeTurn`. No payload cache — previews
+   `isTurnActive`. Delete `finalizeTurn`. No payload cache: previews
    live in component-local state, discarded on collapse.
-8. **MessageTimeline rewrite + ToolCallCard** — new switch, per-kind
+8. **MessageTimeline rewrite + ToolCallCard**: new switch, per-kind
    header dispatch, payload renderer dispatch, subagent recursion
    with depth cap, scroll invariants.
-9. **Working indicator + Context meter** — new components, wire to
+9. **Working indicator + Context meter**: new components, wire to
    pane state.
-10. **Background tray polish** — "+N more" cap and provider-specific
+10. **Background tray polish**: "+N more" cap and provider-specific
     stop controls.
-11. **Tests** — integration test for the full flow: provider events
+11. **Tests**. Integration test for the full flow: provider events
     in, single upsert stream out, frontend renders correctly with no
     shifts at turn boundary, crash recovery (kill mid-turn, reopen,
     verify items intact).
@@ -1843,7 +1843,7 @@ One sequential pass. Each step ends with green tests.
 - During a turn, every observable state change is visible in the
   timeline the moment it happens (at its post-streaming-boundary
   position). No state change is hidden or buffered until turn-complete
-  — the current bug where thinking blocks and some text only appear at
+  The current bug where thinking blocks and some text only appear at
   turn end is eliminated.
 - At turn-complete, the timeline does NOT shift, reorder, or surprise.
   Items already on screen stay where they are; new items append.
@@ -1858,7 +1858,7 @@ One sequential pass. Each step ends with green tests.
   running. Stopping a running turn uses the global Composer Stop
   button, which calls `turn/interrupt` (Codex) or the Claude adapter's
   interrupt path.
-- Stop is a targeted turn interrupt, not a whole-tree kill — it
+- Stop is a targeted turn interrupt, not a whole-tree kill. It
   matches each CLI's native semantics. After Stop: (a) parent's
   streaming text/thinking flip to errored immediately; (b) Codex
   subagent cards, Codex running exec processes, backgrounded items
@@ -1901,7 +1901,7 @@ Research against Claude Code's decompiled CLI source (available in
 structural bugs we must not regress to during execution. Each pattern
 below is something Claude Code's internal renderer does that costs it
 correctness or performance; none of them belong in the new
-implementation. These are principles, not ticket-tracked claims — if
+implementation. These are principles, not ticket-tracked claims. If
 the citations below rot (different Claude version, different line
 numbers), the principles still hold.
 
@@ -1910,15 +1910,15 @@ numbers), the principles still hold.
    tool_uses produce a DAG the linear walk drops, requiring a
    `recoverOrphanedParallelToolResults` repair sweep (~100 lines) at
    load time. Our `(turn_index, item_index)` integer ordering makes
-   the whole class of bug impossible. Stay with integer ordering —
-   never persist a chain.
+   the whole class of bug impossible. Stay with integer ordering.
+   Never persist a chain.
 
 2. **Synthetic in-memory placeholder items with random UUIDs.**
    Claude's renderer builds `syntheticStreamingToolUseMessages` on
    every frame using `randomUUID()`, then patched to `deriveUUID`
    after the unstable keys caused Ink remounts and overlapping text
    corruption. Our stream claims a stable `item_id` at stream start
-   and upserts under that id — no placeholders, no key churn.
+   and upserts under that id: no placeholders, no key churn.
 
 3. **Per-render reordering (`reorderMessagesInUI` on every paint).**
    Claude re-pairs tool_use + tool_result at every render because the
@@ -1932,14 +1932,14 @@ numbers), the principles still hold.
    `useDeferredValue`-throttled `deferredMessages` simultaneously.
    Our spec deletes all of these into one `items` list with
    in-place mutation. The "Deleted" list under Pane state must
-   stay deleted — no re-introducing parallel streams for
+   stay deleted: no re-introducing parallel streams for
    "streaming preview" performance.
 
 5. **`useDeferredValue` ping-pong to hide mid-frame tearing.**
    Fragile; relies on React batching to land two state updates in
    the same frame. Tears when batching fails. Our stable-id upsert
    makes the streaming → completed transition idempotent in a
-   single frame — no handoff to engineer around.
+   single frame, with no handoff to engineer around.
 
 6. **String-matching XML-like tags in message content** to detect
    structured output (Claude does this with `<bash-stdout>` /
@@ -1950,7 +1950,7 @@ numbers), the principles still hold.
    Claude caps non-virtualized render at a fixed window, using UUID
    anchors to slice. This has produced bugs where messages disappear
    when the anchor moves. If virtualization is needed, virtualize
-   the whole list — never count-slice.
+   the whole list. Never count-slice.
 
 8. **Unmemoized re-renders of large message arrays.** Claude's
    render path reallocates several Maps over the full message list
@@ -1962,11 +1962,11 @@ numbers), the principles still hold.
 
 ## What this does NOT cover
 
-- Visual polish toward forge's chat density. Separate pass after this
+- Visual polish toward a denser chat layout. Separate pass after this
   lands. The data model is the prerequisite.
 - The 1GB memory issue. Separate investigation; suspects are
   eager-loaded syntax highlighter languages and Wails webview baseline.
   Won't be fixed by this rewrite (or made worse).
 - Workflow / phase / gate system, remote/web access, auto-updater,
-  mid-turn correction — already-deferred items in `AGENTS.md`. This
+  mid-turn correction: already-deferred items in `AGENTS.md`. This
   rewrite doesn't touch them.

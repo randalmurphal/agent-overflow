@@ -39,7 +39,7 @@ type transportPortPin struct {
 // (the Windows WSL launcher) resolves to; both want a stable port,
 // because the embedded webview's origin is host+port and every
 // origin-scoped store the frontend owns — localStorage, the IndexedDB
-// thread replica (docs/specs/thread-replica-sync.md §6.0) — is wiped
+// thread replica (docs/architecture/thread-replica-sync.md §6.0) — is wiped
 // when it changes. An explicit non-zero port is the operator's choice
 // and is left alone, file untouched.
 //

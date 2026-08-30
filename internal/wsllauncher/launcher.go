@@ -57,10 +57,14 @@ var ErrNotSupported = errors.New("wsllauncher: only available on Windows")
 type Bootstrap struct {
 	Port  int    `json:"port"`
 	Token string `json:"token"`
+	// PID is the Linux backend pid. It is diagnostic identity evidence for
+	// profiled Windows/WSL harness launches. Older backends omit it.
+	PID int `json:"pid,omitempty"`
 	// ClientID is the backend installation's durable UI-state client
 	// identity (main.go ensureClientID). The launcher forwards it onto
 	// the webview URL as ?cid=. Optional: older backends omit it.
-	ClientID string `json:"clientId"`
+	ClientID   string `json:"clientId"`
+	PageMarker string `json:"pageMarker"`
 }
 
 // LaunchOptions configures Launch.
@@ -98,6 +102,20 @@ type LaunchOptions struct {
 	// skipped. Diagnostics like AGENT_OVERFLOW_PPROF ride this;
 	// anything load-bearing belongs in explicit launch args instead.
 	PassthroughEnv []string
+
+	// MemoryLimitBytes applies a Linux RLIMIT_DATA boundary to the WSL
+	// backend and its descendants. Windows Job Objects do not cross the
+	// WSL namespace, so profiled harness launches need both this inherited
+	// Linux limit and the launcher's Windows-side tree boundary.
+	// Zero leaves the production launcher unchanged.
+	MemoryLimitBytes uint64
+
+	// UseParentJob skips the launcher's private Windows Job Object. Harness
+	// Windows entrypoints put the launcher itself in one aggregate Job Object
+	// first, so nesting a second job around wsl.exe would leave the WebView2
+	// tree outside the same boundary and can fail on hosts without nested-job
+	// support. The parent job still owns the child process lifetime.
+	UseParentJob bool
 }
 
 // DefaultBootstrapTimeout is the default value for
@@ -194,12 +212,37 @@ func (l *Launcher) Stop() error {
 // sentinel (fd 0 here selects that stdout channel — see writeBootstrap and
 // readBootstrapLine — rather than the unreliable fd-3 path through wsl.exe).
 func buildLaunchArgs(distro, binaryPath string, extraArgs []string) []string {
+	return buildLaunchArgsWithMemoryLimit(distro, binaryPath, extraArgs, 0)
+}
+
+func buildLaunchArgsWithMemoryLimit(distro, binaryPath string, extraArgs []string, memoryLimitBytes uint64) []string {
+	command := []string{binaryPath}
+	if memoryLimitBytes > 0 {
+		// The WSL Linux kernel is a separate resource namespace from the
+		// Windows Job Object. Install the limit before exec so the backend
+		// cannot allocate outside the boundary during startup. The backend
+		// remains argv-identical after the wrapper, which preserves all of
+		// its existing bootstrap and profile parsing.
+		kib := memoryLimitBytes / 1024
+		if kib == 0 {
+			kib = 1
+		}
+		command = []string{
+			"/bin/sh", "-c",
+			`limit="$1"; shift; ulimit -d "$limit" || { printf '%s\n' 'harness containment: setrlimit(RLIMIT_DATA) failed' >&2; exit 125; }; exec "$@"`,
+			"agent-overflow-memory-limit",
+			fmt.Sprintf("%d", kib),
+			binaryPath,
+		}
+	}
 	args := []string{
 		"--cd", "~",
 		"-d", distro,
 		"--",
-		binaryPath, "--listen", "127.0.0.1:0", "--print-url-fd", "0",
+		command[0],
 	}
+	args = append(args, command[1:]...)
+	args = append(args, "--listen", "127.0.0.1:0", "--print-url-fd", "0")
 	return append(args, extraArgs...)
 }
 

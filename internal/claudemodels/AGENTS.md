@@ -6,19 +6,19 @@ Claude catalog, and holds the merged result per probe identity.
 The rows arrive free: the zero-token account probe's `initialize`
 control_response carries a `models` array, and `claude.ProbeConfig.OnModels`
 hands it here. **Nothing in this package spawns a process.** `list_models`
-exists as a separate control_request and is deliberately not used — it returns
+exists as a separate control_request and is deliberately not used: it returns
 the same array for the price of a second subprocess.
 
 ## What the wire is (and is not)
 
-Captured from claude 2.1.219 —
+Captured from claude 2.1.219 in
 `docs/references/fixtures/claude/initialize_models_20260802.json`, five rows:
 
 - It is the CLI's own **picker shortlist**: aliases (`sonnet`, `opus[1m]`), the
   `default` pointer, and canonical ids share one `value` space.
 - It carries **no context windows** and **no older models** (opus-4.x and
   sonnet-4-6 are absent on 2.1.219 and still work).
-- `displayName` names a **row**, not a model — "Default (recommended)" and
+- `displayName` names a **row**, not a model. "Default (recommended)" and
   "Opus (1M context)" are two rows for `claude-opus-5`.
 - `[1m]` is baked into id strings inconsistently: `opus[1m]` resolves to
   `claude-opus-5[1m]`, but `claude-fable-5[1m]` resolves to a marker-less
@@ -32,7 +32,7 @@ in `internal/provider/models.go`.
 In priority order (each rule earns its place from the shape above):
 
 1. **Nothing in the catalog is dropped or reordered.** Wire ABSENCE carries no
-   information — the shortlist omits still-usable models — and catalog order
+   information (the shortlist omits still-usable models), and catalog order
    decides the fallback model for new threads.
 2. **The catalog owns context windows and display names.** The wire reports no
    windows at all, and its display names name rows.
@@ -56,7 +56,7 @@ In priority order (each rule earns its place from the shape above):
 
 Every disagreement and every fallback produces a `Drift` line, logged once per
 DISTINCT report per probe identity (`Catalog.Store` returns nil for a repeat).
-It is a maintenance signal for whoever edits the catalog — none of it is
+It is a maintenance signal for whoever edits the catalog. None of it is
 actionable by the user, and none of it degrades the session they are starting,
 so it is never a toast and never blocks anything.
 
@@ -70,20 +70,20 @@ worse failure.
 The wire's per-model answer about `--permission-mode auto` is a `*bool`
 on both `claude.WireModel` and `ModelInfo.SupportsAutoMode`, never a
 `Capabilities` marker: nil means "nobody said". That third state is
-load-bearing — the 2026-08-02 capture itself omits the key on the Haiku
+load-bearing: the 2026-08-02 capture itself omits the key on the Haiku
 row, and the catalog never states it, so a two-state carrier would
 manufacture explicit denials for every unlisted model. The consumer
 contract (pinned by the frontend AccessToggle): restrict Auto ONLY on
 an explicit wire `false`; unknown behaves exactly like true, because
 mis-disabling a working mode is the worse failure. The merge copies the
-value on both the enrich path and the wire-only path; no drift line —
-the catalog deliberately has no opinion to disagree with.
+value on both the enrich path and the wire-only path, and reports no drift
+line, because the catalog deliberately has no opinion to disagree with.
 
 ## Deliberately not consumed
 
-- **`description` / `promoListPrice`** — prose and pricing for the CLI's own
+- **`description` / `promoListPrice`**: prose and pricing for the CLI's own
   picker. `ModelInfo` has no field for either, and adding one is UI work.
-- **`supportsAdaptiveThinking`** — no AO surface consumes it.
+- **`supportsAdaptiveThinking`**: no AO surface consumes it.
 
 ## CLI-version gating (t3-improvements §2.5)
 
@@ -92,7 +92,7 @@ Claude (`internal/provider/detect.go`). §2.5 proposed adding hand-maintained
 PER-MODEL minimums so an old CLI could not offer a model it would reject at
 spawn. **That is not being built, and this package is why:** the running
 binary's own model list is a better answer than a version table maintained by
-hand — a model the CLI lists is a model the CLI has.
+hand. A model the CLI lists is a model the CLI has.
 
 What that does NOT license is the inverse. Wire absence is ambiguous (older
 models are absent from a shortlist that still runs them), so the catalog keeps
@@ -101,7 +101,7 @@ Codex gate is untouched; it guards protocol features, not model availability.
 
 ## Identity
 
-`Catalog` is keyed by `provider.ProbeCacheKey` — the same key the account probe
+`Catalog` is keyed by `provider.ProbeCacheKey`, the same key the account probe
 memoizes under, so a model list can never outlive the binary, account, workdir,
 or custom environment that produced it, and one environment's answer can never
 be served to another.

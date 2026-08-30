@@ -1,5 +1,5 @@
 // Table tests for the run-map projection. Describe names track the §7 case
-// matrix of docs/specs/workflows-system-ui/RUN-MAP.md, which is binding: a row
+// matrix of docs/architecture/workflow-run-map.md, which is binding: a row
 // that is expressible at projection level has a group here, and the rows that
 // are NOT expressible (driver, static fan-out width, remote posture, motion,
 // theme, transport) say so where they would otherwise be missing.

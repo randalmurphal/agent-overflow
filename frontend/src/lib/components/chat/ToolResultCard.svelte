@@ -13,6 +13,7 @@
   import { parseDiffLines, type DiffLine } from '../../utils/diff';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+  import { uniqueEachKeys } from '../../utils/uniqueEachKeys';
   import { formatTimeOfDay } from '../../utils/format';
   import CopyFooter from './CopyFooter.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -88,6 +89,10 @@
   const hasExactPatch = $derived(meta.inlineDiff?.availability === 'exact_patch');
   const canExpandExactPatch = $derived(hasExactPatch && Boolean(payloadId));
   const inlinePreviewFiles = $derived(inlineDiffPreviewFiles(meta.inlineDiff?.files));
+  // Paths repeat across the wire's changes[] (rename A→B + separate edit of
+  // B — see DiffFileStack's renderableFileKeys comment), and a repeated key
+  // throws `each_key_duplicate` mid-flush.
+  const inlinePreviewFileKeys = $derived(uniqueEachKeys(inlinePreviewFiles, (file) => file.path));
   const inlineTotalFiles = $derived(meta.inlineDiff?.totalFiles ?? meta.inlineDiff?.files.length ?? 0);
   const inlineOmittedFiles = $derived(
     inlineDiffOmittedFiles(
@@ -171,7 +176,7 @@
       {/if}
       {#if hasInlineDiff}
         <div class="mt-2 flex flex-wrap gap-1.5" data-testid="tool-result-inline-diffs">
-          {#each inlinePreviewFiles as file (file.path)}
+          {#each inlinePreviewFiles as file, fileIndex (inlinePreviewFileKeys[fileIndex] ?? fileIndex)}
             <span class="group/chip inline-flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle px-2 py-1 text-[0.6875rem] {kindClasses(file)}">
               <span class="font-mono">{fileLabel(file)}</span>
               {#if file.insertions || file.deletions}

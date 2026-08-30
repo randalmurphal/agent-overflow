@@ -61,7 +61,7 @@ var heldHarnessLock *harnessInstanceLock
 // crashed boot leaves the next one free with no reaping at all.
 func acquireHarnessInstanceLock(dataDir, mode string) (*harnessInstanceLock, error) {
 	path := filepath.Join(dataDir, harnessLockFileName)
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, appdirs.SensitiveFilePerm)
+	file, err := openHarnessLock(path, appdirs.SensitiveFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf("open harness instance lock %s: %w", path, err)
 	}
@@ -129,6 +129,9 @@ func describeHarnessLockHolder(file *os.File) string {
 // the two share one lock — what must not double up is a BACKEND on a data
 // root, regardless of which flag started it.
 func harnessBootMode(flags cliFlags) string {
+	if flags.isolatedProfile != "" {
+		return flags.isolatedProfile
+	}
 	if flags.soak {
 		return "soak"
 	}

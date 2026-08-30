@@ -126,29 +126,53 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     shape for blockquote-nested fences; `~~~` fences were sealed with
     a mismatched ` ``` `. The close toggle is now char/length-aware
     (a bare ``` inside a ```` fence is content, matching marked), and
-    the seal drops a trailing half-streamed closer (lone `` ` ``/
-    ` `` ` line) so the close moment doesn't grow-then-shrink by a
-    line. Streaming volatile-tail only. Upstream-PR candidate.
+    the seal drops every trailing run shorter than the opener, not only
+    one/two backticks, so longer fences do not grow-then-shrink by a line
+    while their closer streams. Streaming volatile-tail only.
+    Upstream-PR candidate.
     Regression: `AssistantMessage.test.ts` (fence-seal battery).
-12. **incremental list/table lexing** (`marked/index.js`,
+12. **incremental list/table/open-fence lexing** (`marked/index.js`,
     `Block.svelte`, `index.js` exports) — the volatile tail re-lexed
     from scratch on every reveal tick, and the boundary splitter
-    cannot commit inside a list or table, so a list-shaped answer
-    made each tick O(whole block): ~27ms of lexing per tick at
-    120KB, visible as the "5fps" drain the spring couldn't hide. Two
-    layers, same unit of reuse (a completed list item / table source
-    row — append-only growth can only touch the last one). *Block
-    layer:* `incrementalLex` + a per-`Block` instance
+    cannot commit inside a list, table, or open fenced block, so each tick
+    cost O(whole block): ~27ms of lexing at 120KB, visible as the "5fps"
+    drain the spring couldn't hide. For lists and tables, both parser
+    layers reuse the same unit: a completed list item or table source row.
+    Append-only growth can touch only the last one. *Block layer:*
+    `incrementalLex` + a per-`Block` instance
     `createIncrementalLexCache`; when the block grew append-only and
     the cached tokens are one list (or one `[thead, tbody]` table),
     it re-lexes only from the last item's offset (tables: replays
     the header bytes over the volatile rows) and splices the fresh
     tail onto **reference-identical** sealed tokens, so Svelte's
-    `===` prop equality skips their subtrees entirely. *parseBlocks
-    layer:* a `trailingBlock` descent record (kind `list` | `table`)
-    lets the append path block-lex from inside the trailing block.
-    Every guard falls back to a full lex — correctness never depends
-    on the fast path (`cache.lastPath` is the test breadcrumb).
+    `===` prop equality skips their subtrees entirely. An open fenced
+    code token instead tracks only the active line's closer-candidate
+    state and appends raw/text directly. It bypasses both the whole-source
+    incomplete-markdown scan and marked until a valid closer arrives.
+    The app code host consumes that token append proof to materialize only
+    newly completed lines and to extend its FNV content identity over the
+    suffix. It does not reslice or rehash the growing fence body. Its
+    `data-code-source=""` attribute is a source-free marker; the rendered
+    `<code>` text and Copy button remain the source owners instead of retaining
+    a duplicate full-source DOM string.
+    *parseBlocks layer:* one cache-owned block array is updated in place. A
+    generation-bound append proof lets ordinary paragraphs, one-line headings,
+    blockquotes, list items, table rows, and open fences extend their raw
+    boundary directly. Other tails re-lex only the last rendered block, or a
+    two-block suffix while a marker can still merge backward. A
+    `trailingBlock` descent record (kind `list` | `table` | `fence`) lets that
+    suffix start inside a large trailing construct. The block-only pass shares
+    list/table boundary scanners with the full render lexer, but omits child
+    tokens, cell arrays, inline queues, and render metadata it never reads.
+    The table scanner maps normalized CRLF matches back to exact source
+    offsets, which fixes direct `blockTokens` calls that bypass marked's outer
+    newline normalization. Completed compact-render blocks are copied once
+    into independent strings; otherwise marked's sliced token raws retain one
+    whole historical parser input per completed block.
+    Every guard falls back to a full lex. Append lineage is carried in
+    opaque generation-bound proofs from the app's formatter/splitter to
+    Streamdown and each Block, so stale or fabricated deltas cannot enter
+    a fast path. `cache.lastPath` is the test breadcrumb.
     List looseness is monotonic under append-only growth: a
     tight→loose flip takes the full-lex fallback; an already-loose
     list gets its tail items loosened exactly as marked's
@@ -169,10 +193,53 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     replicate marked's per-line strip + lazy-continuation rules, and
     agent prose doesn't produce blockquotes at sizes where it
     matters. Regression: `markdown/incrementalLex.test.ts`
-    (byte-equivalence corpus × chunkings + perf contracts for both
-    shapes and both layers) and
+    (byte-equivalence corpus × chunkings, randomized fence differential
+    tests, transition tests, and perf contracts for all shapes/layers),
+    `markdown/parseBlocksDifferential.test.ts` (fresh-parse and full-render
+    parity across deterministic mixed-Markdown streams, source-only
+    list/table geometry, and CRLF), `markdown/parseBlocksWorkload.test.ts`
+    (real active-pane path and byte budgets),
+    `markdown/parseBlockRetention.test.ts` (V8 backing-store tripwire), and
     `chat/streamingIncrementalReuse.browser.test.ts` (DOM identity
     of sealed `<li>`s and `<tr>`s through a real timeline drain).
+    The append lexer also carries completion-mode trim bounds from the opaque
+    append proof. It slices only the new suffix instead of flattening the full
+    active block through `String#trim`. Table caches carry the stable header and
+    prior volatile source row. A table append parses only those small strings.
+    List and table merges compare tokens only inside the replaced item or row
+    because every sealed subtree was already retained by reference. The prior
+    recursive comparison walked all 660 sealed rows after each append. A CPU
+    profile attributed 79% of the table benchmark to that redundant walk.
+    The 660-row steady-append benchmark dropped from about 90ms to 5.5ms per
+    100 appends. The same tests cover whitespace trim transitions, provisional
+    rowspan carets, partial links, footnotes, and footer fallbacks.
+    Agent Overflow's `ChatMarkdown` already isolates the volatile tail at its
+    last stable block boundary. It marks that host-proven input with
+    `isolatedVolatileTail`. `Streamdown.svelte` skips the document-level
+    `parseBlocks` pass only after that parser proved one outer block and left
+    an append-stability record for a paragraph, heading/blockquote, list, or
+    an open fence whose current line can no longer become a closer. The append
+    proof must stay on that physical line. A newline, custom block extension,
+    partial fence closer, table, or multi-block result returns to the original
+    path. A one-line source alone is not proof: the simple-table grammar can
+    split a partial row after a pipe. These guards preserve per-block trimming
+    and definition/extension scope while avoiding the duplicate lex before the
+    one rendering `Block`.
+    The opt-in keeps ordinary Streamdown callers on upstream's document-split
+    semantics. The committed instance keeps `parseBlocks` for compact block
+    identity and append-only static reconciliation. That cache is idempotent
+    for a repeated source and keys only on custom extensions that participate
+    in block parsing. Svelte can re-evaluate the committed instance while only
+    its volatile sibling changes, and path-link updates replace an inline-only
+    extension. Neither event can change an outer block boundary. Treating either
+    as invalidation previously full-parsed the growing committed document on
+    nearly every reveal tick. Inline token output remains owned by each
+    `Block`'s separate `incrementalLex` cache, which still keys on the complete
+    extension array. An unchanged parse also republishes the prior state wrapper,
+    stopping before `CompactBlocks` instead of making it rescan every committed
+    record for a volatile-sibling update. Regression:
+    `markdown/streamdownSingleVolatileBlock.test.ts` plus the streamed
+    differential and sustained-workload suites listed above.
 13. **marker-line alignment isn't code** (`marked/marked-list.js`,
     `tokenizeListItemContent`; `marked/index.js` calls it from
     `loosenTailItems`) — CommonMark reads five or more columns between a
@@ -357,3 +424,182 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
     the getters read. Upstream perf bug, upstream-PR candidate.
     Regression: `markdown/streamdownThemeMemo.test.ts` (identity stable
     across reads, re-mints on theme prop change).
+21. **the active trailing literal leaf has ONE imperative owner**
+    (`Streamdown.svelte`, `Block.svelte`, `LiteralHost.svelte`,
+    `literal-host.ts`). A streaming prose update used
+    to replace the whole assistant row and run Svelte, block splitting,
+    marked, style, and layout for every revealed word. The active volatile
+    block now marks only its final text leaf when every token on that path is
+    a literal text container, including the table section/row/cell chain.
+    Agent Overflow can append safe word deltas in bounded sibling Text nodes
+    and reserve an authoritative render for punctuation or structural
+    markdown. Table pipes, row breaks, alignment markers, and rowspan carets
+    remain structural deltas. Links and unknown extension tokens are excluded.
+    The marker does not alter settled output and `display:
+    contents` adds no layout box.
+
+    **The marked leaf is rendered by a controller, never by Svelte.**
+    `LiteralHost.svelte` renders an EMPTY span and attaches
+    `literal-host.ts`'s controller, which is the single writer of that
+    element's children; the renderer publishes the parser's authoritative
+    leaf text INTO it (`publish(token, text)`) instead of rendering a Text
+    node of its own. An app-side owner may `adopt` the element and take over
+    presentation while it streams, and an authoritative update is then routed
+    through that owner rather than written behind its back. Adoption mutates
+    nothing — the owner inherits exactly what is on screen. Token identity is
+    half the update proof: equal text under a NEW token is a structural change
+    that still reconciles, and the same token with the same text is an
+    unrelated rerender that must not disturb a live revealed suffix.
+
+    This replaces the previous split ownership, and the previous claim that
+    app code "owns all appended nodes and removes them before fallback" is
+    now FALSE by design. Two writers on one visible text run was a defect,
+    not a division of labour: the app deleted its appended siblings in one
+    task and Svelte re-extended its own parser-owned node in a later one, so
+    the visible string shrank back to an older parser checkpoint and regrew.
+    A `MutationObserver` repro caught three such rollbacks in one paragraph
+    reveal (a long prefix dropping back to `The hour-long`). Chromium
+    coalesces that before the next frame; WebView2 is allowed to present it,
+    which is what the user saw as a settle flicker and an extra line of text
+    at completion. The rule both writers are now held to is ownership, not
+    timing: **the visible string only ever EXTENDS, until a genuine
+    divergence replaces it in a single mutation record.** A fallback
+    relinquishes the RUN and never deletes visible bytes; `replaceChildren`
+    is the divergence primitive because the DOM `replace all` algorithm
+    queues ONE record carrying both the removals and the addition, so no
+    reader can observe between the two halves.
+
+    The pane updates the raw canonical row in place while
+    every mounted assistant-body projection receives the same suffix. This
+    keeps imperative reads and later mounts current without waking Streamdown.
+    App-side ownership relinquishes that checkpoint on source, metadata,
+    workspace, view-only, streaming-mode, and volatile-tail changes, and
+    restores its literal suffix if another visible projection remounts. The
+    owner rejects
+    incomplete-parser leaves whose text contains a synthetic trailing byte,
+    and path-link completion scans only a bounded crossing tail. Host-specific
+    performance extension, not an upstream bug. Drop it if upstream exposes an
+    equivalent incremental trailing-leaf hook — an upstream hook must offer
+    the same single-owner guarantee, not merely an append point. Regression:
+    `ChatMarkdown.directRevealDifferential.test.ts`,
+    `ChatMarkdown.directRevealMonotonic.browser.test.ts` (mutation-level
+    monotonicity: the rollback class, red against a reintroduced
+    delete-before-write),
+    `ChatMarkdown.directRevealSelection.browser.test.ts`, and
+    `AssistantMessage.streamingReveal.test.ts`, plus
+    `markdown/streamingAssistantLiteralOwner.test.ts` and
+    `stores/streamingAssistantReveal.test.ts` for ownership transitions.
+22. **default completed blocks use one compact fixed-tag owner**
+    (`Streamdown.svelte`, `CompactBlocks.svelte`, `document-interaction.ts`,
+    `Block.svelte`, `static-html.ts`). Upstream sends each marked token through a component, a
+    full token-type branch, a `Slot` boundary, and recursive snippets. Svelte
+    retains the resulting control-flow anchors, reactions, closures, and empty
+    Text placeholders after the answer settles. A 7.3K-character rich answer
+    held more than 10K such non-element nodes in Blink, multiplied across every
+    visible pane. The completed Streamdown instance now mounts one
+    `CompactBlocks` owner over the parser cache's stable block array. It keeps
+    reference-identical prefix DOM, appends fixed-tag HTML for new blocks, and
+    rebuilds only a rewritten suffix. It mounts a real `Block` island when
+    serialization rejects a custom or component-backed token, and explicitly
+    unmounts that island when the suffix changes or the owner dies.
+    Model-authored text, attributes, and URLs pass through the same escaping
+    and URL transformation rules. A host can provide a synchronous
+    `staticRenderers` callback for a completed custom code component. A cache
+    miss mounts the real component so its async work remains authoritative.
+    A component publishes a per-record retry when its synchronous renderer is
+    ready, even if an unrelated live code request still holds Streamdown's
+    global async settle count. The global gate continues to own `onsettled`,
+    but it cannot retain every older code component for a whole long turn.
+    Retirement is coordinated across Streamdown owners and processes at most
+    one component record per owner per frame, bounding a simultaneous settle
+    without blocking ready siblings. One shared document-event
+    snapshot tracks selection ranges and focus. This keeps Blink's live
+    `Selection.isCollapsed` read, which flushes pending whole-message style,
+    out of every island retirement. Selection/focus start and clear transitions
+    both schedule a retry, so interaction postpones replacement without
+    stranding the island afterward. Volatile blocks keep reactive components, but
+    common default tokens render directly in `Block` instead of crossing the
+    generic `Element` component. This preserves streaming updates, extension
+    behavior, selection, copy text, and final DOM semantics while removing the
+    settled control-flow tree. Upstream performance direction with a
+    host-specific completed-block fast path. Regression:
+    `ChatMarkdown.compactStaticDifferential.test.ts` checks compact versus full
+    semantic DOM and input escaping, `ChatMarkdown.domBudget.test.ts` enforces
+    the control-node budget, `ChatMarkdown.compactStaticAppend.test.ts` covers
+    append/rewrite/island lifecycle and selection identity,
+    `ChatMarkdown.codeSpans.test.ts` (including sibling-pending and coordinated
+    frame scheduling) and
+    `ChatMarkdown.codeSpans.browser.test.ts` cover async code-island
+    retirement plus focus/selection transitions, and
+    `ChatMarkdown.directRevealSelection.browser.test.ts` covers selection
+    identity while the live tail changes.
+23. **backslash escapes render their literal character**
+    (`Elements/Element.svelte`, `static-html.ts`). Marked emits an `escape`
+    token for forms such as `\*`, but upstream's element branch emitted only a
+    TODO comment. Escaped punctuation therefore vanished from both settled and
+    streaming output. Both render paths now emit the token's text value.
+    Upstream bug, upstream-PR candidate. Regression: `ChatMarkdown.test.ts`
+    (backslash-escaped punctuation).
+24. **extension tokenizers reject impossible starts before calling Svelte or
+    regex grammars** (`marked/marked-{footnotes,br,citations,math,subsup}.js`).
+    Marked invokes every registered tokenizer at each candidate position.
+    The inline footnote tokenizer called `getContext` before checking for a
+    `[^` opener. Parser work runs outside component initialization, so ordinary
+    prose paid a thrown and caught Svelte lifecycle error on every inline token.
+    The other tokenizers ran anchored regexes when the first code unit could
+    not match. Character-code gates now return before either cost. This changes
+    no accepted source. The extension-heavy 20,000-parse benchmark fell from
+    1.98s to 0.46s after this fix and the Marked dispatcher patch documented in
+    `frontend/AGENTS.md`. Regression:
+    `markdown/parseBlocksDifferential.test.ts` (zero grammar calls for
+    impossible extension starts), plus the full incremental differential
+    corpus.
+25. **the rendered root publishes its final block type** (`Streamdown.svelte`).
+    The host needs the committed-to-volatile seam to match ordinary Markdown
+    spacing only when the committed prefix ends in a paragraph. A CSS `:has()`
+    query over the committed subtree answered that question, but every streamed
+    descendant insertion invalidated the ancestor selector and widened style
+    recalculation across all visible panes. Streamdown now derives the last
+    rendered token type from its existing block array and exposes it as
+    `data-streamdown-last-block`. The attribute changes only when the last block
+    type changes. It does not alter markup semantics. Host-specific performance
+    metadata, not an upstream bug. Drop it if the host no longer splits one
+    document across adjacent Streamdown roots. Regression:
+    `ChatMarkdown.boundarySpacing.test.ts` and
+    `ChatMarkdown.boundarySpacing.browser.test.ts`.
+26. **message-edge margin trimming uses explicit block markers**
+    (`Streamdown.svelte`, `context.svelte.d.ts`). Chat rows remove the first
+    block's top margin and the last block's bottom margin. Structural
+    `:first-child` / `:last-child` selectors made every nested sibling change,
+    including highlighted syntax-span replacement, schedule an invalidation
+    set over all prior `md-blk` elements. A 65K-character four-pane run reached
+    roughly 4,600 old elements and 32ms per frame-time style pass. The host now
+    states whether each Streamdown root owns the message's first or last edge.
+    Streamdown marks only the corresponding direct block with `sd-trim-*` and
+    moves that class when the edge block changes. Text and syntax descendants
+    cannot trigger the edge rule. The marker changes no margin or markup
+    semantics. It replaces the exact structural selector that owned those
+    margins. Host-specific performance metadata, not an upstream bug.
+    Regression coverage is `ChatMarkdown.boundarySpacing.test.ts`,
+    `rowMarginContainment.browser.test.ts`, and `styleInvalidation.test.ts`.
+27. **host styling predicates use parser-owned classes**
+    (`Streamdown.svelte`, `Block.svelte`, `Elements/Element.svelte`,
+    `CompactBlocks.svelte`, `static-html.ts`, `paragraph-spacing.ts`). Three
+    ordinary Markdown rules had document-wide invalidation keys. The volatile
+    seam used `p:first-child`, task items used `li:has(> input)`, and settled
+    paragraph spacing used `p + p`. Replacing a completed code island then
+    matched every old paragraph and list item in every visible pane. Streamdown
+    now marks the direct first block, task-list renderers mark the owning item,
+    and completed renderers derive paragraph adjacency after nodes enter their
+    final parent. `CompactBlocks` updates only newly appended or replaced
+    nodes. The non-compact completed path scans its root once. Volatile
+    paragraphs retain a class-keyed sibling rule because that tree contains
+    only the bounded unstable tail. These classes reproduce the same selector
+    predicates without making unrelated descendant changes candidates. A
+    five-minute four-pane trace kept the largest steady style pass to 112
+    elements after the change. Host-specific performance metadata, not an
+    upstream bug. Regression coverage is
+    `ChatMarkdown.boundarySpacing.test.ts`,
+    `ChatMarkdown.boundarySpacing.browser.test.ts`,
+    `ChatMarkdown.compactStaticAppend.test.ts`, and
+    `styleInvalidation.test.ts`.

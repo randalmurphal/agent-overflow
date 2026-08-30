@@ -1,7 +1,16 @@
 import { describe, expect, it, beforeAll } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { initSyntaxClassNames, spanSegments, type EncodedLine } from './syntaxSpans';
 
 const line = (r?: number[]): EncodedLine => ({ r }) as EncodedLine;
+const inheritedFamilies = [
+  'variable',
+  'parameter',
+  'operator',
+  'punctuation',
+  'embedded',
+];
 
 beforeAll(() => {
   initSyntaxClassNames(['none', 'keyword', 'string', 'string-special', 'comment']);
@@ -63,5 +72,33 @@ describe('spanSegments', () => {
   it('maps unknown class ids to plain', () => {
     const segments = spanSegments('xy', line([2, 99]));
     expect(segments).toEqual([{ text: 'xy', className: '' }]);
+  });
+
+  it('coalesces capture families with no visual rule into plain text', () => {
+    initSyntaxClassNames([
+      'none',
+      ...inheritedFamilies,
+      'keyword',
+    ]);
+
+    expect(spanSegments('abcdef', line([
+      1, 1,
+      1, 2,
+      1, 3,
+      1, 4,
+      1, 5,
+      1, 6,
+    ]))).toEqual([
+      { text: 'abcde', className: '' },
+      { text: 'f', className: 'syntax-keyword' },
+    ]);
+  });
+
+  it('only collapses capture families that have no visual CSS rule', () => {
+    const css = readFileSync(join(process.cwd(), 'src/styles/syntax.css'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const family of inheritedFamilies) {
+      expect(css).not.toMatch(new RegExp(`\\.syntax-${family}(?![\\w-])`));
+    }
   });
 });

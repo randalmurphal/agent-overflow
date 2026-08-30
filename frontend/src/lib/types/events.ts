@@ -407,7 +407,7 @@ export interface TurnCompletedEvent {
    */
   revertedUserMessage?: boolean;
   /**
-   * Thread history invalidation stamps (docs/specs/thread-replica-sync.md
+   * Thread history invalidation stamps (docs/architecture/thread-replica-sync.md
    * §3) read as this event was built. Adopted IN MEMORY ONLY: a writer
    * outside the emitting goroutine (the async highlight-span worker) can
    * commit a rev bump before this read while its own frame arrives later

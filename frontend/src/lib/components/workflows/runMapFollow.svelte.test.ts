@@ -1,4 +1,4 @@
-// Run-map follow controller (RUN-MAP.md §9).
+// Run-map follow controller (docs/architecture/workflow-run-map.md §9).
 //
 // happy-dom lays nothing out, so the harness below states the geometry
 // the controller reads back: a scroller box at a fixed viewport top with

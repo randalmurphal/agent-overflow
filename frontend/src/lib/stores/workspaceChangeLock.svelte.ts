@@ -46,7 +46,15 @@
 // routes nowhere and the lock reads UNLOCKED over running work, which is the
 // bug this file exists to close. A blind refresh has no such mode, and the
 // cost is bounded by the number of distinct workspaces on screen — a handful
-// — each behind its own 100ms debounce.
+// — each behind its own rate-bounded scheduler.
+//
+// That scheduler (`utils/refreshScheduler`) replaced a trailing debounce, and
+// the difference is a safety property here rather than a tuning one: a trailing
+// debounce restarts its timer on every event, so a workspace under a streaming
+// thread — precisely the workspace whose lock matters — postponed its re-check
+// indefinitely and the destructive affordances kept reading whatever the last
+// answer said. The absolute deadline is what makes "the lock is at most
+// REFRESH_MAX_WAIT_MS stale" a statement that survives a flood.
 
 import type { ThreadPane } from './thread.svelte';
 import { GetWorkspaceActivity, type WorkspaceActivity } from './bindings';
@@ -60,12 +68,16 @@ import { wailsEventOn } from './wailsEvents';
 import { getActiveTurn } from './threadStatuses.svelte';
 import { createEntityStore } from './entityStore.svelte';
 import { isMethodUnavailableError } from './transportStatus.svelte';
-import { debounce } from '../utils/debounce';
+import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
 
 // Item-stream events fire per wire round — several per second while any pane
-// streams — and every live key answers each one.
-const REFRESH_DEBOUNCE_MS = 100;
+// streams — and every live key answers each one. 100ms collapses that burst;
+// 400ms is the hard ceiling on how stale a lock gating an irreversible action
+// may be, and unlike the debounce it replaced it holds under a stream that
+// never pauses.
+const REFRESH_DELAY_MS = 100;
+const REFRESH_MAX_WAIT_MS = 400;
 
 const TURN_REASON = 'Workspace changes are unavailable while the agent is responding.';
 const TASKS_REASON = 'Workspace changes are unavailable while background tasks are running.';
@@ -87,83 +99,74 @@ function activityError(err: unknown): unknown {
 const store = createEntityStore<WorkspaceActivity, void>({
   name: 'workspaceChangeLock',
   source: async ({ key, apply, fail, signal }) => {
-    // Responses can overtake each other: the initial load and every
-    // debounced event refresh are separate RPCs on ONE entity generation,
-    // so nothing in the primitive orders them. An older IDLE answer landing
-    // after a newer BUSY one briefly unlocks `rm -rf` over a sibling
-    // thread's live agent — so each request is stamped and only the newest
-    // one may be observed, in either direction (a stale FAILURE overwriting
-    // a fresh answer is the same defect, fail-safe or not).
-    let issued = 0;
-    const request = (): (() => boolean) => {
-      const token = ++issued;
-      return () => token === issued;
-    };
-    const refresh = debounce(() => {
-      const isLatest = request();
-      void GetWorkspaceActivity(key).then(
-        (activity) => {
-          if (isLatest()) apply(activity as WorkspaceActivity);
-        },
-        // fail() is the whole recovery: the lock reads as blocked
-        // immediately and the primitive schedules a backed-off re-source.
-        // Adding an invalidate() here reset that curve on every inbound
-        // event, so a broken backend under a streaming thread never backed
-        // off — it just re-polled forever at the event rate.
-        (err: unknown) => {
-          if (isLatest()) fail(activityError(err));
-        },
-      );
-    }, REFRESH_DEBOUNCE_MS);
+    // Responses used to be able to overtake each other: the initial load and
+    // every debounced event refresh were separate RPCs on ONE entity
+    // generation, and an older IDLE answer landing after a newer BUSY one
+    // briefly unlocks `rm -rf` over a sibling thread's live agent. The
+    // scheduler removes the race rather than stamping it — runs are
+    // serialized, so two answers to this question are never in flight
+    // together — and its token still covers the remaining window (a run
+    // superseded by a teardown must not apply, in either direction: a stale
+    // FAILURE overwriting a fresh answer is the same defect, fail-safe or not).
+    const refresh = createRefreshScheduler({
+      name: `workspaceChangeLock(${key})`,
+      delayMs: REFRESH_DELAY_MS,
+      maxWaitMs: REFRESH_MAX_WAIT_MS,
+      run: async (token) => {
+        try {
+          const activity = (await GetWorkspaceActivity(key)) as WorkspaceActivity;
+          if (token.isCurrent()) apply(activity);
+        } catch (err) {
+          // fail() is the whole recovery: the lock reads as blocked
+          // immediately and the primitive schedules a backed-off re-source.
+          // Adding an invalidate() here reset that curve on every inbound
+          // event, so a broken backend under a streaming thread never backed
+          // off — it just re-polled forever at the event rate.
+          if (token.isCurrent()) fail(activityError(err));
+        }
+      },
+    });
 
     // None of these filter on the event's threadId: the busy thread may be
     // one this client has never mounted, so there is nothing to compare a
     // workspace key against. See EVENT ROUTING in the header.
     const cancels = [
       onItemUpsert((item) => {
-        if (item.isBackground || item.completionOf) refresh();
+        if (item.isBackground || item.completionOf) refresh.request();
       }),
       // A turn opening or closing in ANY thread can flip a workspace's lock:
       // the local pane's own turn is covered synchronously below, but a
       // sibling thread's is only visible through these.
-      wailsEventOn('provider:turn_started', () => refresh()),
-      wailsEventOn('provider:turn_completed', () => refresh()),
-      wailsEventOn('provider:background_tasks_changed', () => refresh()),
+      wailsEventOn('provider:turn_started', () => refresh.request()),
+      wailsEventOn('provider:turn_completed', () => refresh.request()),
+      wailsEventOn('provider:background_tasks_changed', () => refresh.request()),
       // Background-task state events fire on host-process exit
       // (state=exited) and on agent-observation drain (state=drained). Both
       // transitions can flip the lock if a backgrounded task drops out of
       // the live set.
-      wailsEventOn('provider:background_task_state', () => refresh()),
+      wailsEventOn('provider:background_task_state', () => refresh.request()),
     ];
     let released = false;
     const cleanup = (): void => {
       if (released) return;
       released = true;
-      refresh.cancel();
+      refresh.dispose();
       for (const cancel of cancels) cancel();
     };
     // The primitive has nothing to release until this run RETURNS a cleanup,
-    // so the abort hook is what frees the listeners when the entry dies while
-    // the initial fetch is still in flight — otherwise a dead run keeps
-    // issuing debounced calls beside its replacement's, forever if the RPC
-    // never answers.
+    // so the abort hook is what frees the listeners when the entry dies in
+    // that window — otherwise a dead run keeps refreshing beside its
+    // replacement's.
     signal.addEventListener('abort', cleanup);
 
-    const isLatest = request();
-    try {
-      const activity = (await GetWorkspaceActivity(key)) as WorkspaceActivity;
-      if (isLatest()) apply(activity);
-    } catch (err) {
-      // A superseded initial load is not this key's answer: a refresh
-      // issued while it was in flight has already observed (or failed)
-      // for everyone, and throwing here would tear the listeners down to
-      // re-run a call the newer one just made.
-      if (!isLatest()) return cleanup;
-      // The store has no cleanup registered for a source that throws, so
-      // release the listeners here before handing it the failure.
-      cleanup();
-      throw activityError(err);
-    }
+    // The initial check goes through the SAME scheduler as every event
+    // refresh, so it cannot race one, and the source hands back its cleanup
+    // immediately rather than parking on the first RPC. A failed initial check
+    // therefore arrives as fail() instead of as a throw — which is the better
+    // of the two here: fail() keeps the acquired listeners and gets the same
+    // backed-off re-source, where a throw had to release them first and left
+    // the retry curve as the only way back to a live subscription.
+    refresh.request({ immediate: true });
     return cleanup;
   },
 });

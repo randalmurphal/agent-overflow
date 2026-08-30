@@ -3,11 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,8 +22,8 @@ import (
 // is that a DELIBERATE `ao-harness down` — which stops the backend from
 // inside WSL — leaves a dead WebView2 window on the desktop until
 // somebody runs taskkill by hand (observed 2026-08-26). So down closes
-// it, using the launcher pid the backend publishes in its discovery
-// files.
+// it, using the immutable launcher registration the backend publishes in its
+// discovery files. A PID without that registration is never actionable.
 //
 // Everything here is best-effort and non-fatal. The backend is already
 // stopped by the time we run; failing to reach across the WSL boundary
@@ -34,8 +34,8 @@ import (
 // than constants so a test can point them at a fake and exercise the
 // match / mismatch / no-interop branches without a Windows host.
 var (
-	winTasklistExe = "/mnt/c/Windows/System32/tasklist.exe"
-	winTaskkillExe = "/mnt/c/Windows/System32/taskkill.exe"
+	winTaskkillExe   = "/mnt/c/Windows/System32/taskkill.exe"
+	winPowerShellExe = "powershell.exe"
 )
 
 // runInterop runs one Windows tool and returns its stdout. A package var
@@ -60,112 +60,125 @@ func firstLine(s string) string {
 	return strings.TrimSpace(line)
 }
 
-// launcherImagePrefix is what a tasklist image name must start with
-// before we are willing to kill the pid. Prefix rather than equality
-// because the dev launcher is timestamp-named
-// (agent-overflow-dev-20260826123456-1234.exe) while the installed one
-// is agent-overflow.exe.
-const launcherImagePrefix = "agent-overflow"
-
 // interopTimeout bounds each Windows hop. These are local process
 // queries; anything slower than this is a wedged interop layer, and the
 // operator would rather read the note than wait.
 const interopTimeout = 10 * time.Second
 
-// stopLauncherWindow closes the Windows launcher window belonging to a
-// stopped instance. It returns whether the kill was issued and, when it
-// was not, one line for the operator explaining what is still on their
-// desktop and how to close it.
-//
-// The identity check is not optional. A pid is a number Windows
-// recycles, the value arrives from a file another process wrote, and the
-// action is an unconditional /F kill — so the image name has to say
-// "agent-overflow" before anything is signalled.
-func stopLauncherWindow(pid int) (killed bool, note string) {
-	if pid <= 0 {
-		return false, ""
-	}
-	if !interopAvailable() {
-		return false, fmt.Sprintf(
-			"launcher pid %d is a Windows process and this host has no WSL interop (%s); its window is still open — close it yourself",
-			pid, winTaskkillExe)
-	}
+type launcherProcessIdentity struct {
+	Path      string `json:"path"`
+	StartTime int64  `json:"startTime"`
+	Command   string `json:"command"`
+}
 
+// queryLauncherProcess obtains the Windows-side identity immediately before
+// taskkill. tasklist's image name is not enough because Windows recycles PIDs
+// and unrelated executables can share the agent-overflow prefix.
+var queryLauncherProcess = func(ctx context.Context, pid int) (launcherProcessIdentity, error) {
+	command := fmt.Sprintf("$p=Get-CimInstance Win32_Process -Filter 'ProcessId=%d'; if ($null -eq $p) { throw 'process not found' }; $o=Get-Process -Id %d -ErrorAction Stop; [pscustomobject]@{path=$o.Path; startTime=(([DateTimeOffset]$o.StartTime).ToFileTime()-116444736000000000)*100; command=$p.CommandLine} | ConvertTo-Json -Compress", pid, pid)
+	out, err := runInterop(ctx, winPowerShellExe, "-NoProfile", "-NonInteractive", "-Command", command)
+	if err != nil {
+		return launcherProcessIdentity{}, err
+	}
+	var identity launcherProcessIdentity
+	if err := json.Unmarshal(out, &identity); err != nil {
+		return launcherProcessIdentity{}, fmt.Errorf("parse process identity: %w", err)
+	}
+	if identity.Path == "" || identity.StartTime == 0 {
+		return launcherProcessIdentity{}, errors.New("process identity is incomplete")
+	}
+	return identity, nil
+}
+
+func stopLauncherWindowVerified(reg launcherRegistration) (bool, string) {
+	if !reg.valid() {
+		return false, "launcher identity is incomplete; refusing to kill a launcher by PID"
+	}
+	if reg.Namespace != "windows" {
+		return false, fmt.Sprintf("launcher pid %d has unsupported namespace %q; refusing to kill it", reg.PID, reg.Namespace)
+	}
+	if reg.PID <= 0 {
+		return false, fmt.Sprintf("launcher pid %d is invalid; refusing to kill it", reg.PID)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), interopTimeout)
 	defer cancel()
-
-	name, err := launcherImageName(ctx, pid)
-	switch {
-	case err != nil:
-		return false, fmt.Sprintf(
-			"could not identify Windows pid %d (%v); if the launcher window is still open, close it or run: taskkill.exe /PID %d /F",
-			pid, err, pid)
-	case name == "":
-		// tasklist answers with a header line and no rows for a pid that
-		// is gone. The launcher exiting on its own is the ordinary case.
-		return false, ""
-	case !strings.HasPrefix(strings.ToLower(name), launcherImagePrefix):
-		return false, fmt.Sprintf(
-			"Windows pid %d is %q, not an %s launcher; refusing to kill it — if a launcher window is still open, close it yourself",
-			pid, name, launcherImagePrefix)
+	identity, err := queryLauncherProcess(ctx, reg.PID)
+	if err != nil {
+		return false, fmt.Sprintf("could not identify Windows pid %d (%v); refusing to kill it", reg.PID, err)
 	}
-
-	if _, err := runInterop(ctx, winTaskkillExe, "/PID", strconv.Itoa(pid), "/F"); err != nil {
-		return false, fmt.Sprintf(
-			"taskkill on launcher pid %d failed (%v); its window is still open — close it or run: taskkill.exe /PID %d /F",
-			pid, err, pid)
+	if identity.StartTime != parseStartTime(reg.StartTime) || !sameWindowsPath(identity.Path, reg.Executable) {
+		return false, fmt.Sprintf("Windows pid %d identity changed; refusing to kill it", reg.PID)
+	}
+	if present, matches := windowsArgumentMatches(identity.Command, "--profile", reg.Profile); present && !matches {
+		return false, fmt.Sprintf("Windows pid %d profile identity changed; refusing to kill it", reg.PID)
+	}
+	if present, matches := windowsArgumentMatchesAny(identity.Command, []string{"--user-data-dir", "--webview-user-data-dir"}, reg.WebviewProfile); present && !matches {
+		return false, fmt.Sprintf("Windows pid %d WebView profile identity changed; refusing to kill it", reg.PID)
+	}
+	if _, err := runInterop(ctx, winTaskkillExe, "/PID", strconv.Itoa(reg.PID), "/T", "/F"); err != nil {
+		return false, fmt.Sprintf("taskkill on launcher pid %d failed (%v); its window is still open", reg.PID, err)
 	}
 	return true, ""
 }
 
-// interopAvailable reports whether both Windows tools are reachable.
-// Both, because identifying without being able to kill is useless and
-// killing without identifying is what this refuses to do.
-func interopAvailable() bool {
-	for _, exe := range []string{winTasklistExe, winTaskkillExe} {
-		if _, err := os.Stat(exe); err != nil {
-			return false
-		}
+func parseStartTime(raw string) int64 {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0
 	}
-	return true
+	return value
 }
 
-// tasklistNoTasksPrefix is the notice tasklist prints instead of CSV
-// when its filter matches nothing. Recognizing it BY NAME is what lets
-// everything else that fails to parse be an error rather than a silent
-// "the process is gone" — the two used to collapse into one answer, so a
-// tasklist whose output format changed (a locale, a newer Windows, a
-// truncated pipe) reported a live launcher as already exited and left
-// the window on the desktop with nothing said.
-const tasklistNoTasksPrefix = "INFO: No tasks"
+func sameWindowsPath(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(strings.ReplaceAll(a, `\`, `/`)), filepath.Clean(strings.ReplaceAll(b, `\`, `/`)))
+}
 
-// launcherImageName asks tasklist for one pid's image name, "" when no
-// process carries that pid, and an error when the answer is neither.
-//
-// /FO CSV /NH is the machine-readable shape: no header, one quoted
-// record per process, image name first. It is parsed with encoding/csv
-// rather than split on commas because the other columns contain them
-// ("123,456 K").
-func launcherImageName(ctx context.Context, pid int) (string, error) {
-	out, err := runInterop(ctx, winTasklistExe, "/FI", "PID eq "+strconv.Itoa(pid), "/FO", "CSV", "/NH")
-	if err != nil {
-		return "", err
+// windowsArgumentMatches checks an argument only when the launcher exposes
+// it in its command line. The WebView2 profile is configured through Wails,
+// not argv, so absence is valid. When present, compare the parsed argument
+// value exactly rather than accepting a substring such as "perf-other".
+func windowsArgumentMatches(command, name, expected string) (present, matches bool) {
+	return windowsArgumentMatchesAny(command, []string{name}, expected)
+}
+
+func windowsArgumentMatchesAny(command string, names []string, expected string) (present, matches bool) {
+	args := splitWindowsCommandLine(command)
+	for i, arg := range args {
+		for _, name := range names {
+			if arg == name {
+				if i+1 >= len(args) {
+					return true, false
+				}
+				return true, sameWindowsPath(args[i+1], expected)
+			}
+			prefix := name + "="
+			if strings.HasPrefix(strings.ToLower(arg), strings.ToLower(prefix)) {
+				return true, sameWindowsPath(arg[len(prefix):], expected)
+			}
+		}
 	}
-	trimmed := strings.TrimSpace(string(out))
-	// The two shapes that legitimately mean "no such process": the notice,
-	// and nothing at all.
-	if trimmed == "" || strings.HasPrefix(trimmed, tasklistNoTasksPrefix) {
-		return "", nil
+	return false, true
+}
+
+func splitWindowsCommandLine(command string) []string {
+	var args []string
+	var current strings.Builder
+	inQuotes := false
+	for _, r := range command {
+		switch {
+		case r == '"':
+			inQuotes = !inQuotes
+		case (r == ' ' || r == '\t') && !inQuotes:
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
 	}
-	reader := csv.NewReader(strings.NewReader(trimmed))
-	reader.FieldsPerRecord = -1
-	record, err := reader.Read()
-	if err != nil {
-		return "", fmt.Errorf("tasklist output is not CSV (%v): %s", err, truncate(firstLine(trimmed), 120))
+	if current.Len() > 0 {
+		args = append(args, current.String())
 	}
-	if len(record) < 2 {
-		return "", fmt.Errorf("tasklist answered with a %d-field record, want the 5-column CSV form: %s",
-			len(record), truncate(firstLine(trimmed), 120))
-	}
-	return strings.TrimSpace(record[0]), nil
+	return args
 }

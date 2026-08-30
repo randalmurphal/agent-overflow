@@ -1,5 +1,5 @@
 // Per-thread history invalidation stamps
-// (docs/specs/thread-replica-sync.md §3): the `(epoch, rev)` pair the
+// (docs/architecture/thread-replica-sync.md §3): the `(epoch, rev)` pair the
 // backend advances on every persisted mutation of a thread's items, and
 // the `attested` provenance flag that grades it.
 //

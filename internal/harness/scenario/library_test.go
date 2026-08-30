@@ -77,6 +77,138 @@ func TestLibraryIntegrity(t *testing.T) {
 	}
 }
 
+// TestBenchActiveStreamHasARealFiniteLeadAndUnboundedRichTail pins both halves
+// of the active workload. The finite lead must use Claude's normal
+// partial-stream plus assistant-snapshot dedupe path. The long tail must stay
+// inside one open assistant message and repeat paced rich Markdown forever,
+// so the benchmark runner rather than a ten-second fixture decides how long
+// the active turn lasts.
+func TestBenchActiveStreamHasARealFiniteLeadAndUnboundedRichTail(t *testing.T) {
+	_, s, err := LoadLibrary("bench-active-stream")
+	if err != nil {
+		t.Fatalf("LoadLibrary: %v", err)
+	}
+
+	var currentID string
+	deltas := map[string]string{}
+	matchedSnapshots := 0
+	finiteDeltas := 0
+	tailDeltas := 0
+	sawToolUse := false
+	sawToolResult := false
+	sawResult := false
+	sawUnboundedRepeat := false
+	var finiteStream strings.Builder
+	var tailStream strings.Builder
+
+	var walk func([]Step, bool)
+	walk = func(steps []Step, inRepeat bool) {
+		for _, step := range steps {
+			if step.Repeat != nil {
+				if step.Repeat.Count != 0 {
+					t.Errorf("active tail repeat count = %d, want 0 (runner-controlled duration)", step.Repeat.Count)
+				}
+				sawUnboundedRepeat = true
+				walk(step.Repeat.Steps, true)
+			}
+			if step.Emit == nil {
+				continue
+			}
+			for _, raw := range step.Emit.Lines {
+				line := TestVars.Substitute(raw)
+				var frame struct {
+					Type  string `json:"type"`
+					Event string `json:"event"`
+					Data  struct {
+						Message struct {
+							ID string `json:"id"`
+						} `json:"message"`
+						Delta struct {
+							Type string `json:"type"`
+							Text string `json:"text"`
+						} `json:"delta"`
+					} `json:"data"`
+					Message struct {
+						ID      string `json:"id"`
+						Content []struct {
+							Type string `json:"type"`
+							Text string `json:"text"`
+						} `json:"content"`
+					} `json:"message"`
+				}
+				if err := json.Unmarshal([]byte(line), &frame); err != nil {
+					t.Fatalf("decode line: %v", err)
+				}
+				switch {
+				case frame.Type == "stream_event" && frame.Event == "message_start":
+					currentID = frame.Data.Message.ID
+					deltas[currentID] = ""
+				case frame.Type == "stream_event" && frame.Event == "content_block_delta" && frame.Data.Delta.Type == "text_delta":
+					if currentID == "" {
+						t.Fatal("text delta arrived before message_start")
+					}
+					deltas[currentID] += frame.Data.Delta.Text
+					if inRepeat {
+						tailStream.WriteString(frame.Data.Delta.Text)
+						tailDeltas++
+					} else {
+						finiteStream.WriteString(frame.Data.Delta.Text)
+						finiteDeltas++
+					}
+				case frame.Type == "assistant":
+					for _, block := range frame.Message.Content {
+						switch block.Type {
+						case "text":
+							want, ok := deltas[frame.Message.ID]
+							if !ok {
+								t.Fatalf("assistant text %q has no matching partial stream", frame.Message.ID)
+							}
+							if block.Text != want {
+								t.Errorf("assistant text %q differs from its deltas\nwant: %q\n got: %q", frame.Message.ID, want, block.Text)
+							}
+							matchedSnapshots++
+						case "tool_use":
+							sawToolUse = true
+						}
+					}
+				case frame.Type == "user":
+					for _, block := range frame.Message.Content {
+						if block.Type == "tool_result" {
+							sawToolResult = true
+						}
+					}
+				case frame.Type == "result":
+					sawResult = true
+				}
+			}
+		}
+	}
+	walk(s.Turns[0].Steps, false)
+
+	if finiteDeltas < 25 || matchedSnapshots != 1 {
+		t.Errorf("finite lead = %d deltas and %d matching snapshots, want at least 25 and exactly 1", finiteDeltas, matchedSnapshots)
+	}
+	if !sawToolUse || !sawToolResult {
+		t.Errorf("agentic lead missing: tool_use=%t tool_result=%t", sawToolUse, sawToolResult)
+	}
+	if !sawUnboundedRepeat || tailDeltas < 8 {
+		t.Errorf("long tail = unbounded %t with %d deltas, want true and at least 8", sawUnboundedRepeat, tailDeltas)
+	}
+	if sawResult {
+		t.Error("active scenario emitted a terminal result; the runner must own the stop time")
+	}
+	for _, marker := range []string{"**streamed Markdown**", "| Surface | State |", "```ts\n", "東京"} {
+		if !strings.Contains(finiteStream.String(), marker) {
+			t.Errorf("finite streamed Markdown omits %q", marker)
+		}
+	}
+	for _, marker := range []string{"### Working set 1", "| Iteration | Parser | Scroll |", "```ts\n", "東京", "Visible progress marker 1"} {
+		if !strings.Contains(tailStream.String(), marker) {
+			t.Errorf("repeated streamed Markdown omits %q", marker)
+		}
+	}
+}
+
 func checkStepLines(t *testing.T, name string, step Step, vars Vars) {
 	t.Helper()
 	var lines []string

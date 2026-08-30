@@ -276,6 +276,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "StartTerminal", ID: 3009548683},                        // main.App.StartTerminal
 	{Name: "SteerMessageWithOptions", ID: 1698485705},              // main.App.SteerMessageWithOptions
 	{Name: "StopClaudeTask", ID: 536320598},                        // main.App.StopClaudeTask
+	{Name: "StopCodexSubagent", ID: 4232843083},                    // main.App.StopCodexSubagent
 	{Name: "StopSession", ID: 3838500111},                          // main.App.StopSession
 	{Name: "SubmitPRReview", ID: 2692607191},                       // main.App.SubmitPRReview
 	{Name: "SubscribePRUpdates", ID: 3272491649},                   // main.App.SubscribePRUpdates

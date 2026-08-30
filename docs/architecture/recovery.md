@@ -15,7 +15,7 @@ to hand back.
 |---|---|
 | `session_ref` | The provider-side session ID. For Claude it's the session file basename; for Codex it's the thread id. |
 | `pending_fork_session_ref` | Set on a freshly-forked thread to point at the *source* session. Cleared the first time we start under it. |
-| `pending_fork_resume_at` | The PIN for a lazy Claude fork taken off a LIVE source (migration v69): the source leaf uuid captured when Fork was clicked. Consumed with `pending_fork_session_ref` — both session-ref writers clear the pair. Empty on an idle-source fork, whose tail IS the cut. |
+| `pending_fork_resume_at` | The PIN for a lazy Claude fork taken off a LIVE source (migration v69): the source leaf uuid captured when Fork was clicked. Consumed with `pending_fork_session_ref`. Both session-ref writers clear the pair. Empty on an idle-source fork, whose tail IS the cut. |
 
 `Router.handleInit` writes `session_ref` via
 `store.UpdateSessionRef` on every `EventInit`. The store-level update
@@ -23,26 +23,26 @@ also clears `pending_fork_session_ref` and `pending_fork_resume_at` in
 the same statement (`Store.UpdateSessionRef` in
 `internal/store/threads.go`, mirrored by
 `UpdateSessionRefAndRemapProviderIDs`) so a pre-committed fork cannot
-get re-forked — or re-pinned — on the next restart.
+get re-forked (or re-pinned) on the next restart.
 
 ## Start, Resume, Fork
 
 `App.startSessionNow` picks the right cursor per provider:
 
-- **Claude** — passes `--resume <session_ref>` via `buildArgs` in
+- **Claude**: passes `--resume <session_ref>` via `buildArgs` in
   `internal/provider/claude/session_spawn.go`. If `PendingForkRef` is
   populated it replaces `Resume` and the `ForkSession` flag is set,
   producing `--fork-session --resume <source-ref>` so the CLI replays
   from the source into a fresh session id. If `PendingForkResumeAt` is
   also populated (a live-source tail fork), `startSessionNow` first
-  resolves the pin through `resolveClaudeForkResumeAt` — a bounded wait
-  for a pin still in the stdout-to-disk append gap, then
-  `claude.ResolveForkResumeCursor`, which repairs a filter-dropped pin
-  to the deepest surviving row at or before it (never forward) — and
-  passes the result as `--resume-session-at <cursor>`, so the CLI cuts
-  its fork copy at the pinned moment rather than the source's current
-  tail.
-- **Codex** — passes `ResumeThreadID = t.SessionRef`. The session
+  resolves the pin through `resolveClaudeForkResumeAt`, then passes the
+  result as `--resume-session-at <cursor>`, so the CLI cuts its fork
+  copy at the pinned moment rather than the source's current tail.
+  Resolving is a bounded wait for a pin still in the stdout-to-disk
+  append gap, followed by `claude.ResolveForkResumeCursor`, which
+  repairs a filter-dropped pin to the deepest surviving row at or
+  before it (never forward).
+- **Codex**: passes `ResumeThreadID = t.SessionRef`. The session
   selects `thread/resume` over `thread/start` when the ID is non-empty
   (see the method-dispatch switch in `Session.start` in
   `internal/provider/codex/session.go`). Codex has a native
@@ -67,7 +67,7 @@ captured before the clone runs, so it and the cloned timeline describe
 one moment. Codex forks with no `lastTurnId` and gets back a
 thread whose copy already carries the turn-aborted marker. When
 nothing has been written yet, both refs stay empty and the fork's
-first start is an ordinary `thread/start` / fresh Claude session —
+first start is an ordinary `thread/start` / fresh Claude session,
 but only for genuinely-early shapes (no session ref, no file yet, or
 a transcript that parses and holds no settled leaf). A stat/open/size
 failure reading the transcript fails the fork instead, so a fork can
@@ -75,7 +75,7 @@ never silently arrive with a full timeline and no history behind it.
 The
 fork's cloned rows are settled by
 `store.SettleForkedThreadAsInterrupted`, which shares its item flip
-and its `stop_reason='interrupted'` with `RecoverCrashedTurns` — the
+and its `stop_reason='interrupted'` with `RecoverCrashedTurns`. The
 fork is in the same position a crash leftover is, holding rows no
 process will ever finish.
 
@@ -105,13 +105,13 @@ triage with `content = "auto-resume failed: ..."` (the goroutine in
 ## Disconnects and Manual Reconnect
 
 When Claude's subprocess exits (idle-watchdog fires, crash, or manual
-close) the session emits `EventSessionStatus{Content: "disconnected"}`
-— see `TestReadLoopEmitsDisconnectedOnExit` and
+close) the session emits `EventSessionStatus{Content: "disconnected"}`.
+See `TestReadLoopEmitsDisconnectedOnExit` and
 `TestCloseWaitsForDisconnectedHandler` in
 `internal/provider/claude/session_test.go`. The frontend's
 `ProviderStatusBanner.svelte` renders a "Session disconnected" banner
 with a Reconnect button that calls `App.ReconnectSession` (in
-`app_session_bindings.go` — stop then `startSession`). The stored
+`app_session_bindings.go`: stop then `startSession`). The stored
 `session_ref` drives the resume; no extra state is needed from the
 frontend.
 

@@ -23,6 +23,7 @@
 
 interface InjectedBootstrap {
   harness?: unknown;
+  pageMarker?: unknown;
 }
 
 function detectHarness(): boolean {
@@ -32,11 +33,20 @@ function detectHarness(): boolean {
 }
 
 let harness = detectHarness();
+let pageMarker = (() => {
+  if (typeof globalThis === 'undefined') return '';
+  const value = (globalThis as { __AO_BOOTSTRAP__?: InjectedBootstrap }).__AO_BOOTSTRAP__?.pageMarker;
+  return typeof value === 'string' ? value : '';
+})();
 const waiting = new Set<() => void>();
 
 /** Whether this session is attached to a --harness / --soak backend. */
 export function isHarnessSession(): boolean {
   return harness;
+}
+
+export function harnessPageMarker(): string {
+  return pageMarker;
 }
 
 // Called only by bootstrap.ts once a manifest has been validated, the same
@@ -51,6 +61,11 @@ export function setHarnessSessionFromBootstrap(value: boolean): void {
     waiting.delete(waiter);
     waiter();
   }
+}
+
+
+export function setHarnessPageMarkerFromBootstrap(value: unknown): void {
+  if (typeof value === 'string' && value !== '') pageMarker = value;
 }
 
 /**
@@ -72,6 +87,11 @@ export function whenHarnessSession(arm: () => void): () => void {
 
 /** Test-only: forget the latch and any pending waiters. */
 export function __resetHarnessModeForTest(): void {
-  harness = detectHarness();
+	harness = detectHarness();
+	pageMarker = (() => {
+		if (typeof globalThis === 'undefined') return '';
+		const value = (globalThis as { __AO_BOOTSTRAP__?: InjectedBootstrap }).__AO_BOOTSTRAP__?.pageMarker;
+		return typeof value === 'string' ? value : '';
+	})();
   waiting.clear();
 }

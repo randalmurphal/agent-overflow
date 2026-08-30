@@ -87,14 +87,48 @@ func (a *App) RequestWebviewMemoryTrim(inputSinceLastTrim bool) (string, error) 
 	return "requested", nil
 }
 
-// hasActiveProviderTurn reports whether any live session holds an open turn.
-// A streaming turn means the renderer is painting; a forced GC there would
-// be a visible hitch, so the trim waits for the next idle report.
+// webviewTrimRecentWireWindow is the "wire just spoke" horizon of the
+// active-turn gate. It exists for the streams no turn-state predicate
+// covers: a backgrounded subagent's sidechain keeps painting after the
+// parent round soft-closes, and every wire event bumps the session's
+// lastActivity stamp. Sized under the frontend's 10s input-quiet
+// threshold so the between-turns fire path (~10s after the last turn
+// completes) stays open.
+const webviewTrimRecentWireWindow = 5 * time.Second
+
+// hasActiveProviderTurn reports whether any live session is mid-turn or
+// still streaming. A streaming turn means the renderer is painting; a
+// forced GC there would be a visible hitch, so the trim waits for the
+// next idle report. Three arms, most precise first:
+//
+//  1. triage's open logical-turn / wire-round state — the wire-driven,
+//     provider-agnostic truth. Load-bearing for Claude: its sessions
+//     never emit EventTurnStart (app_provider_events.go), so arm 2's
+//     counter is permanently zero for them, and until this arm existed
+//     every idle trim could land mid-Claude-turn as a 60-130ms stall
+//     (found live 2026-08-27: six replay trims, every one with items
+//     streaming within ±5s).
+//  2. the per-session activeTurns counter (Codex's EventTurnStart /
+//     EventTurnComplete pair).
+//  3. wire activity within webviewTrimRecentWireWindow — covers
+//     post-round sidechain streaming and any future provider whose turn
+//     events are asymmetric, so the gate no longer depends on per-
+//     provider event symmetry to fail safe.
 func (a *App) hasActiveProviderTurn() bool {
+	if a.triage.AnyInFlightTurnOrRound() {
+		return true
+	}
+	cutoff := time.Now().Add(-webviewTrimRecentWireWindow).UnixNano()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, sess := range a.sessions {
-		if sess.liveness != nil && sess.liveness.activeTurns.Load() > 0 {
+		if sess.liveness == nil {
+			continue
+		}
+		if sess.liveness.activeTurns.Load() > 0 {
+			return true
+		}
+		if sess.liveness.lastActivityUnixNano.Load() > cutoff {
 			return true
 		}
 	}

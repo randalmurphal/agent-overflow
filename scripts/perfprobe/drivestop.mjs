@@ -2,12 +2,6 @@
 // usage: AO_CDP_PORT=9224 probe drivestop
 import { connectPage, evaluate, sleep, done } from './lib/cdp.mjs';
 
-if ((process.env.AO_CDP_PORT || '9223') === '9223' && !process.argv.includes('--allow-user-app')) {
-  console.error('drivestop: this probe clicks in the app. Run it against the soak rig (AO_CDP_PORT=9224),');
-  console.error('           or pass --allow-user-app to drive your own window.');
-  process.exit(2);
-}
-
 const page = await connectPage();
 try {
   for (let round = 0; round < 4; round += 1) {

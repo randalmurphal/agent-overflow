@@ -55,6 +55,8 @@ tasks:
       payload is a real ELF before shipping the launcher.
     cmds:
       - task: build:wsl:linux-payload
+        vars:
+          ARCH: '{{.ARCH | default "amd64"}}'
       - task: build:wsl:windows-launcher
         vars:
           ARCH: '{{.ARCH | default "amd64"}}'
@@ -102,7 +104,7 @@ tasks:
       # the prior build, and `go build -o` refuses to overwrite a file
       # that isn't a recognized Go binary.
       - rm -f cmd/agent-overflow-windows/payload/agent-overflow-linux
-      - GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build -tags production,nogui -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
+      - GOOS=linux GOARCH={{.ARCH | default "amd64"}} CGO_ENABLED=1 go build -tags production,nogui -trimpath -buildvcs=false -ldflags="-w -s -X main.version={{.VERSION | default "dev"}}" -o cmd/agent-overflow-windows/payload/agent-overflow-linux ./
       # Stash a copy in bin/ (gitignored) so package:wsl:zip and any
       # follow-on consumer can read the real ELF after the build:wsl
       # task restores the embed-dir placeholder.
@@ -145,6 +147,8 @@ tasks:
     internal: true
     deps:
       - task: build:wsl:linux-payload
+        vars:
+          ARCH: '{{.ARCH}}'
       - task: common:generate:icons
     cmds:
       - task: validate:wsl-launcher-arch

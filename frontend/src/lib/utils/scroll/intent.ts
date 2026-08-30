@@ -21,6 +21,7 @@ import { nowMs } from './time';
 import { trace } from './trace';
 import { isUiRenderTraceEnabled } from '../uiRenderTrace';
 import { touchDragConsumedBelow, wheelConsumedBelow } from './wheelAttribution';
+import { recordScrollEventObservation } from './eventObservation';
 
 const RECENT_DOWN_INTENT_WINDOW_MS = 250;
 const SCROLLBAR_DRAG_SESSION_FAILSAFE_MS = 30_000;
@@ -146,7 +147,14 @@ export interface ScrollIntent {
 export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   installModuleSelectionListeners();
 
-  let pendingProgrammaticScrollEventTokens: { top: number; expiresAt: number; remaining: number }[] = [];
+  // Fixed-cap parallel storage avoids allocating one token object for every
+  // spring frame. At 165 Hz across four panes that object churn was visible in
+  // the allocation profile even though the ring itself stays below its 500 ms
+  // lifetime bound. Compaction below preserves the prior FIFO semantics.
+  const programmaticTokenTops = new Float64Array(MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS);
+  const programmaticTokenExpirations = new Float64Array(MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS);
+  const programmaticTokenRemaining = new Uint8Array(MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS);
+  let programmaticTokenCount = 0;
 
   let recentDownIntentUntil = 0;
   let recentDownIntentVersion = 0;
@@ -275,39 +283,41 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function recordProgrammaticScrollEventToken(top: number): void {
     const now = nowMs();
-    pendingProgrammaticScrollEventTokens.push({
-      top,
-      expiresAt: now + PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS,
-      remaining: PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET,
-    });
-    if (pendingProgrammaticScrollEventTokens.length > MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS) {
-      pendingProgrammaticScrollEventTokens.splice(
-        0,
-        pendingProgrammaticScrollEventTokens.length - MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS,
-      );
+    if (programmaticTokenCount === MAX_PROGRAMMATIC_SCROLL_EVENT_TOKENS) {
+      programmaticTokenTops.copyWithin(0, 1);
+      programmaticTokenExpirations.copyWithin(0, 1);
+      programmaticTokenRemaining.copyWithin(0, 1);
+      programmaticTokenCount -= 1;
     }
+    programmaticTokenTops[programmaticTokenCount] = top;
+    programmaticTokenExpirations[programmaticTokenCount] =
+      now + PROGRAMMATIC_SCROLL_EVENT_TOKEN_TTL_MS;
+    programmaticTokenRemaining[programmaticTokenCount] =
+      PROGRAMMATIC_SCROLL_EVENT_DUPLICATE_BUDGET;
+    programmaticTokenCount += 1;
   }
 
   function consumeProgrammaticScrollEventToken(top: number): boolean {
-    if (pendingProgrammaticScrollEventTokens.length === 0) return false;
+    if (programmaticTokenCount === 0) return false;
     const now = nowMs();
     let consumed = false;
     let writeIndex = 0;
-    for (const token of pendingProgrammaticScrollEventTokens) {
-      if (token.expiresAt < now) continue;
-      if (!consumed && token.top === top) {
+    for (let readIndex = 0; readIndex < programmaticTokenCount; readIndex += 1) {
+      const expiresAt = programmaticTokenExpirations[readIndex];
+      if (expiresAt < now) continue;
+      const tokenTop = programmaticTokenTops[readIndex];
+      let remaining = programmaticTokenRemaining[readIndex];
+      if (!consumed && tokenTop === top) {
         consumed = true;
-        token.remaining -= 1;
-        if (token.remaining > 0) {
-          pendingProgrammaticScrollEventTokens[writeIndex] = token;
-          writeIndex += 1;
-        }
-        continue;
+        remaining -= 1;
+        if (remaining === 0) continue;
       }
-      pendingProgrammaticScrollEventTokens[writeIndex] = token;
+      programmaticTokenTops[writeIndex] = tokenTop;
+      programmaticTokenExpirations[writeIndex] = expiresAt;
+      programmaticTokenRemaining[writeIndex] = remaining;
       writeIndex += 1;
     }
-    pendingProgrammaticScrollEventTokens.length = writeIndex;
+    programmaticTokenCount = writeIndex;
     return consumed;
   }
 
@@ -315,7 +325,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
   // window. Internal-only: every caller is an intent transition (escape,
   // fresh down-intent, detach).
   function clearProgrammaticScrollState(): void {
-    pendingProgrammaticScrollEventTokens = [];
+    programmaticTokenCount = 0;
     deps.spring.clearStructuralAppend();
   }
 
@@ -417,7 +427,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // THIS scroller changed. At the nested box's own edge the event
     // attributes outward and lands here normally.
     if (wheelConsumedBelow(e, scrollEl)) return;
-
     if (e.deltaY < 0) {
       escapeFromUserInput('wheel');
       return;
@@ -431,7 +440,6 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     if (!scrollEl) return;
     if (scrollEl.scrollHeight <= scrollEl.clientHeight) return;
     if (!targetIsInsideScrollEl(e)) return;
-
     if (e.button === 1) {
       escapeFromUserInput('pointer');
       return;
@@ -459,7 +467,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     armScrollbarDragSession();
   }
 
-  function handleScroll(): void {
+  function handleScroll(event: Event): void {
     const scrollEl = deps.getScrollEl();
     if (!scrollEl) return;
     const scrollTopAtEvent = scrollEl.scrollTop;
@@ -477,6 +485,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     // per-token duplicate budget absorbs browser-coalesced event
     // duplicates for the same write.
     const tagged = consumeProgrammaticScrollEventToken(scrollTopAtEvent);
+    recordScrollEventObservation(event, scrollTopAtEvent);
     // Tagged programmatic write — bail synchronously without scheduling
     // the deferral timer. Steady-state streaming fires a sync-pin write
     // on every contentRO positive delta; allocating a closure + timer
@@ -625,7 +634,9 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
 
   function attach(el: HTMLElement): void {
     el.addEventListener('wheel', handleWheel, { passive: true });
-    el.addEventListener('scroll', handleScroll, { passive: true });
+    // Capture on the target runs before the virtualizer's ordinary listener.
+    // That lets both owners share this machine's one scrollTop observation.
+    el.addEventListener('scroll', handleScroll, { passive: true, capture: true });
     el.addEventListener('pointerdown', handlePointerDown, { passive: true });
     el.addEventListener('keydown', handleKeydown);
     el.addEventListener('touchstart', handleTouchStart, { passive: true });
@@ -634,7 +645,7 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     el.addEventListener('touchcancel', handleTouchEnd, { passive: true });
     detachListeners = () => {
       el.removeEventListener('wheel', handleWheel);
-      el.removeEventListener('scroll', handleScroll);
+      el.removeEventListener('scroll', handleScroll, { capture: true });
       el.removeEventListener('pointerdown', handlePointerDown);
       el.removeEventListener('keydown', handleKeydown);
       el.removeEventListener('touchstart', handleTouchStart);

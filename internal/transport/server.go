@@ -32,9 +32,13 @@ type Bootstrap struct {
 	// binary can serve a harness without a frontend rebuild. Never a
 	// capability: it announces a mode, it does not grant one.
 	Harness bool `json:"harness,omitempty"`
+	// PageMarker is a per-instance marker carried by the harness page URL.
+	// CDP consumers require it in addition to the origin, so another page on
+	// the same debugger endpoint cannot be mistaken for this instance.
+	PageMarker string `json:"pageMarker,omitempty"`
 	// BackendID and ReplicaGeneration identify the backend's history
 	// store for the client-side thread replica
-	// (docs/specs/thread-replica-sync.md §3.3): the first keys the
+	// (docs/architecture/thread-replica-sync.md §3.3): the first keys the
 	// client's replica database per backend, the second invalidates it
 	// wholesale when the backend's history counters lose continuity (a
 	// database restore). Both are empty when the store is not open yet —
@@ -186,6 +190,9 @@ type Config struct {
 	// exist on this wire" can never disagree. It is a mode announcement,
 	// not an authorization: the receiver stays LocalOnly regardless.
 	Harness bool
+	// PageMarker authenticates the harness page identity. Empty is valid for
+	// ordinary boots, which do not expose the harness bridge.
+	PageMarker string
 
 	// CrossOriginIsolate makes every asset and design response carry
 	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
@@ -670,6 +677,11 @@ func (s *Server) Addr() string {
 // Token returns the auth token in use.
 func (s *Server) Token() string { return s.token }
 
+// PageMarker returns the authenticated harness-page marker, if this server
+// is serving a harness. It is intentionally read-only and immutable after
+// construction so page URLs and bootstrap manifests cannot drift.
+func (s *Server) PageMarker() string { return s.cfg.PageMarker }
+
 // HasRemoteClient reports whether at least one non-loopback WebSocket
 // connection is currently attached. Producers of remote-only event
 // channels (see event_visibility.go) consult this to skip the work
@@ -783,6 +795,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		// the client posture cannot disagree with LocalOnly enforcement.
 		Remote:            !remoteAddrIsLoopback(r.RemoteAddr),
 		Harness:           s.cfg.Harness,
+		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
 		ReplicaGeneration: replicaGeneration,
 	})

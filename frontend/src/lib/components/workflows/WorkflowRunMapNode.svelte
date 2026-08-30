@@ -109,7 +109,7 @@
 {/snippet}
 
 <li
-  class="run-map-spine"
+  class="run-map-node run-map-spine"
   data-testid="workflow-map-node"
   data-phase-id={node.phaseId}
   data-node-kind={node.kind}

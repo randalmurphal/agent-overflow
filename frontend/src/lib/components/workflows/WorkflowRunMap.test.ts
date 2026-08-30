@@ -237,6 +237,11 @@ describe('WorkflowRunMap — the surface', () => {
     expect(view.getAllByTestId('workflow-map-node').length).toBeGreaterThan(0);
     expect(view.getAllByTestId('workflow-map-node').every((node) => node.closest('[data-wave-expanded="true"]') !== null))
       .toBe(true);
+    for (const spine of view.container.querySelectorAll('.run-map-spine')) {
+      expect(
+        Array.from(spine.children).every((child) => child.classList.contains('run-map-node')),
+      ).toBe(true);
+    }
   });
 
   // A THROWN error is transient — the store answers it with a retry ladder —

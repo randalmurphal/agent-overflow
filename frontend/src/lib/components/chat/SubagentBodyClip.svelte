@@ -5,6 +5,7 @@
   import { createRowEstimate } from '../../utils/virtual/priors';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
@@ -24,9 +25,11 @@
   const IS_HAPPY_DOM =
     import.meta.env.MODE === 'test' && typeof window !== 'undefined' && 'happyDOM' in window;
   const estimate = createRowEstimate({ defaultSize: 36 });
+  const scrollbarGeometry = createContentGeometryNotifier();
   const stick = createUseStickToBottomController({
     liveContentActive: () => live,
     externalContentGeometry: true,
+    onContentGeometryProcessed: scrollbarGeometry.notify,
     onScrollTopWritten: (top) => listRef?.noteScrollTopWritten(top),
   });
 
@@ -38,18 +41,29 @@
   $effect(() => {
     const scroll = scrollEl;
     const content = contentEl;
-    if (!scroll || !content) return;
-    untrack(() => {
+    const list = listRef;
+    if (!scroll || !content || !list) return;
+    // Geometry is a subscription taken AFTER attach — never a
+    // fire-and-forget wire — so a sample the virtualizer published
+    // before this effect ran replays into an attached controller
+    // instead of being dropped and deduped away (the 2026-08-29
+    // populated-first-mount class; deliverContentGeometry throws on a
+    // detached delivery in dev).
+    const unsubscribe = untrack(() => {
       stick.attach(scroll, content);
       // A newly expanded digest starts at its newest activity. Claiming the
       // bottom before rows finish measuring also makes later live growth use
       // the same spring as the main timeline.
       stick.forceStick();
+      return list.subscribeContentGeometry(stick.deliverContentGeometry);
     });
     void tick().then(() => {
       if (scrollEl === scroll) stick.observe('content');
     });
-    return () => stick.detach();
+    return () => {
+      unsubscribe();
+      stick.detach();
+    };
   });
 
   function handleScroll(offset: number): void {
@@ -60,7 +74,7 @@
 <div class="relative" data-testid="subagent-group-scroll-host">
   <div
     bind:this={scrollEl}
-    class="activity-run-clip pane-scroll-surface max-h-[min(50vh,20rem)] overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+    class="activity-run-clip pane-scroll-surface overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
     use:nestedScroll
     data-testid="subagent-group-scroll"
     data-scroll-owner="controller"
@@ -69,6 +83,7 @@
       bind:this={listRef}
       bind:renderPlane={contentEl}
       scrollRef={scrollEl}
+      intrinsicViewportMaxHeight="min(50vh, 20rem)"
       data={nodes}
       getKey={(node) => timelineNodeKey(node)}
       {estimate}
@@ -78,7 +93,6 @@
       onCompensation={stick.applyEngineCompensation}
       applyScrollTarget={stick.applyScrollTarget}
       trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
-      onContentGeometry={stick.deliverContentGeometry}
     >
       {#snippet children(node)}
         {@render renderNode(node, depth)}
@@ -94,9 +108,9 @@
   ></div>
   <OverlayScrollbar
     target={scrollEl}
-    content={contentEl}
+    contentGeometry={scrollbarGeometry}
     ariaLabel="Scroll agent activity"
-    ownerDrivenPosition={() => !stick.escapedFromLock}
+    ownerDrivenPosition={() => stick.positionOwnerDriven}
     onUserScrollStart={() => stick.setEscapedFromLock(true)}
     onUserScrollEnd={(atBottom) => {
       if (atBottom) stick.markAtBottom();

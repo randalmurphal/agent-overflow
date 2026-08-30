@@ -1,7 +1,7 @@
 # internal/workflow/memory/
 
 Campaign memory: what a run TREE learned, so later waves stop relearning it.
-This package owns the pure half — what one note is, where the log lives, how a
+This package owns the pure half: what one note is, where the log lives, how a
 line is appended and read back, and how the injected digest renders. It is
 stdlib plus `internal/untrustedtext` (the one quoting rule; notes are
 model-authored text entering another model's prompt).
@@ -16,8 +16,8 @@ A campaign is the run TREE, not the run. The live case this came out of is a
 recursive spine that calls itself for the next wave and fans out to lanes that
 each call a child workflow; keying memory by the writing run would give every
 lane its own log that nothing else ever reads, which is precisely the failure
-being fixed. `wave` is the writing run's `call_depth` — the engine's own
-counter, read off the row — so a note says how far down the call chain it was
+being fixed. `wave` is the writing run's `call_depth` (the engine's own
+counter, read off the row), so a note says how far down the call chain it was
 written without this package or the app maintaining a parallel one.
 
 Storage is `<configDir>/workflow-memory/<root-run-id>/notes.ndjson`. It is
@@ -27,8 +27,8 @@ merge carry it and every discard delete it.
 
 ## The kind vocabulary is closed
 
-`pattern | warning | learning | handoff`. A bad kind is refused loudly — a CLI
-usage error before the round trip, an envelope validation finding after it —
+`pattern | warning | learning | handoff`. A bad kind is refused loudly (a CLI
+usage error before the round trip, an envelope validation finding after it),
 exactly as a bad envelope status is. The closed set is what keeps the log
 greppable and the digest groupable; a kind nobody can group by is a note nobody
 reads.
@@ -51,7 +51,7 @@ forged one in:
 - the CLI wire (`WorkflowAgentMemoryInput`) has no provenance field at all;
 - the envelope's `memory` entries are closed objects, and post-validation
   reports `provenance` / `at` / `wave` as `property is not allowed` rather than
-  ignoring them — an element told a field is merely ignored keeps sending it.
+  ignoring them. An element told a field is merely ignored keeps sending it.
 
 ## Bounds
 
@@ -62,7 +62,7 @@ forged one in:
 | `def.MaxEnvelopeMemoryNotes` | 20 | Per ENVELOPE, not per tree. |
 | `DefaultInjectionBytes` | 8 KiB | The whole rendered block. |
 | `DigestEntryRunes` / `DigestEntryFiles` | 320 / 5 | One digest entry. ~20 notes fit the budget. |
-| `MaxLineBytes` | 64 KiB | A line past this stops the scanner, which would silently lose the rest of the log — so it is a read FAILURE, not a skip. |
+| `MaxLineBytes` | 64 KiB | A line past this stops the scanner, which would silently lose the rest of the log, so it is a read FAILURE, not a skip. |
 
 **There is no per-tree total.** A campaign legitimately accrues hundreds of
 notes and the log is the record; what is bounded is the INJECTION.
@@ -87,7 +87,7 @@ Entries fall off **whole**. A digest ending mid-note is a lesson half-learned,
 which is worse than one never seen. The header states what it holds (`12 of 117
 notes`) and names the log on every render, including when it holds everything:
 an element that needs depth on one note should open the log rather than ask for
-a bigger budget. An EMPTY campaign still gets a block naming the path — an
+a bigger budget. An EMPTY campaign still gets a block naming the path. An
 element on wave one has to learn the mechanism exists before it writes the first
 note.
 
@@ -105,8 +105,8 @@ every note into a read-modify-write over a file that grows all campaign.
 
 A crash can therefore leave a torn FINAL line, and two things follow:
 
-- `ReadNotes` skips it and REPORTS it (`Skipped{Line, Reason}`), never fatal —
-  the accumulated memory of a whole campaign must survive the crash that
+- `ReadNotes` skips it and REPORTS it (`Skipped{Line, Reason}`), never fatal.
+  The accumulated memory of a whole campaign must survive the crash that
   truncated one note. The reason never carries the line's content, which may be
   arbitrary bytes. Callers log the skip and `memory list` counts it in its
   header; nothing about it is silent.

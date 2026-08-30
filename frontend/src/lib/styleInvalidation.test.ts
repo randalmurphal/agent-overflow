@@ -1,11 +1,14 @@
 // Style-invalidation tripwire for the global stylesheets.
 //
 // Blink builds invalidation sets from selector FEATURES (classes, ids, tags,
-// attributes). A compound that has none — a bare structural pseudo like
-// `:last-child`, or `*` on the right side of a sibling combinator — lands in
+// attributes). A compound that has none, such as a bare structural pseudo like
+// `:last-child` or `*` on the right side of a sibling combinator, lands in
 // the UNIVERSAL sets, and from then on every matching DOM mutation anywhere
 // in the document schedules that rule's invalidation, with
 // `allDescendantsMightBeInvalid` when the rightmost compound is featureless.
+// Relational `:has()` and tag-keyed sibling compounds can still make every old
+// element of that tag a candidate. Global styles therefore require narrow
+// class or attribute keys for those shapes too.
 //
 // Measured 2026-08-25 during two-pane streaming (soak rig, frames probe +
 // invalidationTracking): `.markdown-body > :first-child > :first-child` and
@@ -13,8 +16,9 @@
 // per 15s — 1,091-element document-wide style recalc passes every streaming
 // beat, firing on sidebar nodes that have nothing to do with markdown, and
 // the run-map rule taxed the app with its overlay CLOSED. Both were
-// rewritten to carry features in every compound (`.md-blk`, `li`,
-// `.run-map-node`); this test keeps the shape from coming back.
+// rewritten to carry narrow classes in every compound (`.md-blk`,
+// `.run-map-node`, and parser-owned Markdown markers). This test keeps the
+// shape from coming back.
 //
 // Scope: the global stylesheets only. Svelte component styles are scoped
 // with a generated class per compound, so they cannot produce featureless
@@ -100,6 +104,13 @@ describe('global stylesheets avoid universal invalidation sets', () => {
         for (const sel of prelude.split(',')) {
           const trimmed = sel.trim();
           if (trimmed.length === 0) continue;
+          // Blink's relational invalidation is descendant-wide even when the
+          // :has() compound carries a tag/class feature. A task-list selector
+          // matching `li:has(> input)` made every code-island retirement
+          // restyle every prior list item in every visible Markdown pane.
+          if (trimmed.includes(':has(')) {
+            offenders.push(`${sheet}: "${trimmed}" — relational :has()`);
+          }
           // (a) structural pseudo in a featureless compound
           for (const compound of compoundsOf(trimmed)) {
             if (STRUCTURAL_PSEUDO.test(compound) && !hasFeature(compound)) {
@@ -110,9 +121,31 @@ describe('global stylesheets avoid universal invalidation sets', () => {
           if (/[+~]\s*\*/.test(trimmed)) {
             offenders.push(`${sheet}: "${trimmed}" — universal sibling`);
           }
+          // A tag is a feature, but still a document-wide one. Blink matched
+          // every Markdown `li` for a workflow-only `li + li` rule and every
+          // Markdown `p` for `p + p` during completed code retirement.
+          if (/[+~]\s*[a-zA-Z][a-zA-Z0-9-]*/.test(trimmed)) {
+            offenders.push(`${sheet}: "${trimmed}" — tag-keyed sibling`);
+          }
         }
       }
       expect(offenders).toEqual([]);
     });
   }
+
+  it('uses explicit Markdown edge markers instead of structural pseudos', () => {
+    const css = readFileSync(join(SRC_ROOT, 'app.css'), 'utf8');
+    const selectors = selectorPreludes(css).join('\n');
+    expect(selectors).not.toMatch(/\.md-blk:(?:first|last)-child/);
+    expect(selectors).not.toContain('> p:first-child');
+    expect(selectors).not.toContain('li:has(> input[type="checkbox"])');
+    expect(selectors).not.toContain('.markdown-body p + p');
+    expect(selectors).not.toContain('.run-map-spine > li + li');
+    expect(css).toContain('.sd-trim-first-block');
+    expect(css).toContain('.sd-trim-last-block');
+    expect(css).toContain('> p.sd-first-block');
+    expect(css).toContain('li.md-task-list-item');
+    expect(css).toContain('.sd-paragraph-gap');
+    expect(css).toContain('.run-map-node + .run-map-node');
+  });
 });

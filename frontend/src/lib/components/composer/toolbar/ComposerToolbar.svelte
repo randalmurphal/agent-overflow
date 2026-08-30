@@ -152,10 +152,12 @@
     const el = toolbarEl;
     if (!el) return;
     scheduleToolbarDensityMeasure();
-    // Re-measure at ResizeObserver timing, and only when a width can have
-    // moved. RO callbacks run post-layout pre-paint, so the probe's reads
-    // are free and its data-compact toggle relayouts a clean toolbar
-    // subtree instead of forcing a whole-document pass mid-flush. The
+    // Re-measure only when a width can have moved. Queue the read and the
+    // data-compact write for the next frame rather than mutating layout from
+    // inside the ResizeObserver delivery. A three-to-four-pane transition
+    // otherwise changes the toolbar height while ancestor observers are
+    // being delivered and WebView2 drops the remaining notifications as a
+    // ResizeObserver loop. The
     // toolbar's own box covers pane resizes; one observed entry per
     // direct child covers every control whose rendered width moves (the
     // context meter growing a digit, the send label flipping) — a text
@@ -165,7 +167,7 @@
     // whether or not any width changed — and rAF runs BEFORE layout, so
     // each measure forced a full pass against the flush-dirty tree
     // (19-21 forced passes per 3-pane storm run, 2026-08-26).
-    const sizes = new ResizeObserver(() => measureToolbarDensity());
+    const sizes = new ResizeObserver(() => scheduleToolbarDensityMeasure());
     const observeChildren = () => {
       sizes.observe(el);
       for (const child of el.children) sizes.observe(child);

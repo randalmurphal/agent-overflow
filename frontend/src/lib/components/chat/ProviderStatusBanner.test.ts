@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import ProviderStatusBanner from './ProviderStatusBanner.svelte';
 import {
   resetForTest as resetProviderStatuses,
@@ -179,5 +180,35 @@ describe('<ProviderStatusBanner>', () => {
     await waitFor(() => {
       expect(queryByTestId('provider-status-banner')).toBeNull();
     });
+  });
+
+  // `{#if providerStatus?.actionable && primaryActionLabel}` sits inside
+  // `{#if providerStatus && pane.thread}`, and its deref is the FIRST operand
+  // of a two-dep condition. Nulling the status in the same flush that moves
+  // the action label's inputs is the shape that crashed MessageNavRail on
+  // 2026-08-29; the condition has to answer false rather than throw.
+  // (Ordinary Svelte flushes are parent-first, so this pins the outcome
+  // rather than staging the tree-order violation — `nullableGuardTotality`
+  // is what holds the shape.)
+  it('survives the status clearing in the same flush that moves the action label', async () => {
+    const pane = await buildPane(makeThread({ provider: 'claude' }));
+    emitWailsEvent(
+      'provider:status',
+      statusEvent({ provider: 'claude', status: 'unauthenticated', actionUrl: '' }),
+    );
+
+    const { getByTestId, queryByTestId } = render(ProviderStatusBanner, { props: { pane } });
+    expect(getByTestId('provider-status-action')).toBeInTheDocument();
+
+    // One task, so both writes land in one flush: `ready` nulls
+    // providerStatus while a second, unrelated write re-renders the rest of
+    // the overlay around the dying branch.
+    emitWailsEvent('provider:status', statusEvent({ provider: 'claude', status: 'ready' }));
+    pane.setGeneralError('unrelated failure');
+    await tick();
+    // The banner fades out, so its removal lands a flush after the branch
+    // condition answered false. What this pins is the condition itself.
+    await waitFor(() => expect(queryByTestId('provider-status-action')).toBeNull());
+    expect(queryByTestId('provider-status-banner')).toBeNull();
   });
 });

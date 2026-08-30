@@ -5,11 +5,6 @@ Pure projectors backing the per-thread flush queue: the wire-side
 `triage.QueuedFlushItem → QueuedItem` projection, and the
 `queue:<uuid>` id allocator.
 
-## Layout
-
-- `queue.go` — `QueuedItem`, `Payload`, `ItemFromTriage(threadID,
-  item)`, `NewItemID()`.
-
 ## Responsibility boundary
 
 - What BELONGS here:
@@ -18,10 +13,10 @@ Pure projectors backing the per-thread flush queue: the wire-side
     `Payload` opaque to triage) into the rendered wire `QueuedItem`.
   - The queue-item id allocator.
 - What does NOT belong here:
-  - The App-bound `RegisterQueueItem` / `GetQueueState` sagas — they stay in
+  - The App-bound `RegisterQueueItem` / `GetQueueState` sagas. They stay in
     `app_flush_queue.go` where
     attachment / plan / triage coordination already lives.
-  - Provider dispatch — `dispatchFlush` in `app_flush_queue.go`.
+  - Provider dispatch (`dispatchFlush` in `app_flush_queue.go`).
 
 ## Anti-patterns
 
@@ -29,14 +24,14 @@ Pure projectors backing the per-thread flush queue: the wire-side
   to wire-shape + projection.
 - Do NOT log-and-swallow inside the projector. A corrupt payload
   intentionally returns a partially-populated wire item (message text
-  preserved, attachment refs nil) so the frontend can render the row —
-  see the doc comment on `ItemFromTriage`.
+  preserved, attachment refs nil) so the frontend can render the row.
+  See the doc comment on `ItemFromTriage`.
 
 ## Anti-pattern carve-out: drift guard test
 
 `app_flush_queue_test.go` keeps a compile-only
 `guardCompileEnsureSendMessageOptionsCompatible` referencing the
 `flushQueuePayload` alias the main package keeps for
-`flushqueue.Payload`. The alias is intentional — removing it would
+`flushqueue.Payload`. The alias is intentional. Removing it would
 require either churning that drift guard or moving it across the
 package boundary, and the local name is cheap.

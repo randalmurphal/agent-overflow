@@ -2,10 +2,44 @@ package harnessclient
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/harness/instanceinfo"
 )
+
+func TestTerminateOwnedRechecksIdentityBeforeGroupKill(t *testing.T) {
+	launched, err := Launch(context.Background(), fakeBackendOpts(t, "linger", t.TempDir()))
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	restoreProbe := processAlive
+	restoreVerify := verifyProcessIdentity
+	processAlive = func(int) bool { return true }
+	checks := 0
+	verifyProcessIdentity = func(int, instanceinfo.ProcessIdentity) error {
+		checks++
+		if checks > 1 {
+			return errors.New("pid was recycled")
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		processAlive = restoreProbe
+		verifyProcessIdentity = restoreVerify
+		_ = launched.Terminate(context.Background())
+	})
+
+	err = launched.Terminate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "before signal") {
+		t.Fatalf("Terminate error = %v, want identity refusal before signal", err)
+	}
+	if checks != 2 {
+		t.Fatalf("identity checks = %d, want initial and pre-kill checks", checks)
+	}
+}
 
 func TestTerminateRefusesANonPID(t *testing.T) {
 	if err := TerminateProcess(context.Background(), 0, time.Second); err == nil {

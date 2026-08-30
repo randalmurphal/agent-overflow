@@ -30,10 +30,14 @@
     estimate?: RowEstimate;
     renderAll?: boolean;
     viewportPx?: number;
+    intrinsicViewportMaxHeight?: string;
     headerSize?: number;
     onscroll?: (offset: number) => void;
     onscrollend?: () => void;
     onCompensation?: (compensation: EngineCompensation) => void;
+    /** Wired through the handle's `subscribeContentGeometry` (the
+     * production component no longer has a geometry prop); the fixture
+     * keeps the prop shape so suites stay declarative. */
     onContentGeometry?: (sample: ContentGeometrySample) => void;
     trackReadingAnchor?: () => boolean;
     /** Called from a template expression inside the row snippet, so it
@@ -49,6 +53,7 @@
     estimate,
     renderAll = false,
     viewportPx = 600,
+    intrinsicViewportMaxHeight,
     headerSize = 0,
     onscroll,
     onscrollend,
@@ -65,6 +70,8 @@
   let listRef: TimelineVirtualizerHandle | undefined = $state();
   // svelte-ignore state_referenced_locally -- fixture-owned after mount.
   let currentHeaderSize = $state(headerSize);
+  // svelte-ignore state_referenced_locally -- fixture-owned after mount.
+  let currentIntrinsicViewportMaxHeight = $state(intrinsicViewportMaxHeight);
 
   /** Replace the keyed data array; the virtualizer derives the mutation. */
   export function setRows(next: HarnessRow[]): void {
@@ -103,6 +110,10 @@
     currentHeaderSize = next;
   }
 
+  export function setIntrinsicViewportMaxHeight(next: string | undefined): void {
+    currentIntrinsicViewportMaxHeight = next;
+  }
+
   // The suites exercise the adapter without a scroll controller, so the
   // harness is the "chokepoint" for the required applyScrollTarget prop
   // and writes directly.
@@ -116,6 +127,13 @@
     onRowRender?.(id);
     return '';
   }
+
+  $effect(() => {
+    const cb = onContentGeometry;
+    const list = listRef;
+    if (!cb || !list) return;
+    return list.subscribeContentGeometry(cb);
+  });
 </script>
 
 <!-- The fixed viewport lives on the HOST, not the scroller: a
@@ -128,20 +146,21 @@
 <div
   bind:this={scrollEl}
   data-testid="virt-scroll"
-  style="height: 100%; overflow-y: auto; overflow-anchor: none;"
+  style:height={currentIntrinsicViewportMaxHeight === undefined ? '100%' : 'auto'}
+  style="box-sizing: border-box; overflow-y: auto; overflow-anchor: none;"
 >
   <TimelineVirtualizer
     bind:this={listRef}
     data={rows}
     getKey={(row) => row.id}
     scrollRef={scrollEl}
+    intrinsicViewportMaxHeight={currentIntrinsicViewportMaxHeight}
     {bufferSize}
     {estimate}
     {renderAll}
     {onscroll}
     {onscrollend}
     {onCompensation}
-    {onContentGeometry}
     {trackReadingAnchor}
     {applyScrollTarget}
     headerSize={currentHeaderSize}

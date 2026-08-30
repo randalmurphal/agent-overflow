@@ -83,7 +83,7 @@ func newPerfHarness(t *testing.T) (*Harness, *perfBridge) {
 			}
 			// Replying inline is safe: the waiter is registered before the
 			// emit and its channel is buffered, so nothing blocks.
-			if err := h.HarnessUIQueryReply(event.ID, json.RawMessage(body)); err != nil {
+			if err := h.HarnessUIQueryReply("", event.ID, json.RawMessage(body)); err != nil {
 				t.Errorf("stand-in bridge reply: %v", err)
 			}
 		case string(eventchan.HarnessPerf):
@@ -103,7 +103,7 @@ func TestHarnessPerfRunFoldsBothHalvesAndSummarises(t *testing.T) {
 	h, bridge := newPerfHarness(t)
 	captured := bridge.samplesSeen
 
-	status, err := h.HarnessPerfStart(HarnessPerfSpec{SampleMs: 1}) // clamped to the floor
+	status, err := h.HarnessPerfStart(HarnessPerfSpec{SampleMs: 1, PageID: "page-1"}) // clamped to the floor
 	if err != nil {
 		t.Fatalf("HarnessPerfStart: %v", err)
 	}
@@ -174,6 +174,9 @@ func TestHarnessPerfRunFoldsBothHalvesAndSummarises(t *testing.T) {
 	for _, spec := range specs {
 		if spec["runId"] != status.RunID {
 			t.Errorf("spec %v carries runId %v, want %q", spec["op"], spec["runId"], status.RunID)
+		}
+		if spec["pageId"] != "page-1" {
+			t.Errorf("spec %v carries pageId %v, want page-1", spec["op"], spec["pageId"])
 		}
 	}
 }
@@ -337,6 +340,22 @@ func TestHarnessPerfDefaultsTheDurationCeiling(t *testing.T) {
 	}
 }
 
+func TestHarnessPerfRefusesDurationOverflowBeforeArming(t *testing.T) {
+	h, _ := newPerfHarness(t)
+	if _, err := h.HarnessPerfStart(HarnessPerfSpec{MaxDurationMs: maxHarnessPerfDurationMs + 1}); err == nil {
+		t.Fatal("duration multiplication overflow must be refused")
+	} else if !strings.Contains(err.Error(), "overflows a duration") {
+		t.Fatalf("error = %v, want overflow refusal", err)
+	}
+	status, err := h.HarnessPerfStatus()
+	if err != nil {
+		t.Fatalf("HarnessPerfStatus: %v", err)
+	}
+	if status.Active {
+		t.Fatal("overflow refusal must not arm a run")
+	}
+}
+
 // waitFor blocks until cond holds, failing the test rather than hanging.
 // The perf sampler's clock is a real timer, so a condition it drives can
 // only be observed by looking.
@@ -399,4 +418,17 @@ func TestStopPerfRunForResetDropsAnArmedRun(t *testing.T) {
 		t.Fatal("HarnessReset must leave no perf run armed")
 	}
 	h.stopPerfRunForReset() // idempotent
+}
+
+func TestEmptyMeterRunDoesNotQueryOrArmThePage(t *testing.T) {
+	h, bridge := newPerfHarness(t)
+	if _, err := h.HarnessPerfStart(HarnessPerfSpec{Meters: []string{}, SampleMs: harnessPerfMinSampleMs}); err != nil {
+		t.Fatalf("HarnessPerfStart: %v", err)
+	}
+	if _, err := h.HarnessPerfStop(); err != nil {
+		t.Fatalf("HarnessPerfStop: %v", err)
+	}
+	if got := bridge.specsSeen(); len(got) != 0 {
+		t.Fatalf("clean run sent page queries: %+v", got)
+	}
 }

@@ -29,6 +29,7 @@ const merged: MergedNavTicks = {
 
 describe('messageNavRailSync single position claim', () => {
   let frames: FrameRequestCallback[];
+  let scheduledCallbacks: FrameRequestCallback[];
   let scrollOffset: number;
   let visibleCenterY: number;
   let sync: NavRailViewportSync;
@@ -77,8 +78,10 @@ describe('messageNavRailSync single position claim', () => {
 
   beforeEach(() => {
     frames = [];
+    scheduledCallbacks = [];
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
       frames.push(cb);
+      scheduledCallbacks.push(cb);
       return frames.length;
     });
     vi.stubGlobal('cancelAnimationFrame', () => {
@@ -488,6 +491,56 @@ describe('messageNavRailSync single position claim', () => {
     drainFrames();
     expect(onClipChange).toHaveBeenCalledTimes(2);
     watched.cancel();
+  });
+
+  it('reuses one scheduled callback across viewport frames', () => {
+    for (const offset of [100, 450, 600]) {
+      scrollOffset = offset;
+      sync.schedule();
+      drainFrames();
+    }
+    expect(scheduledCallbacks).toHaveLength(3);
+    expect(new Set(scheduledCallbacks).size).toBe(1);
+  });
+
+  it('shares one browser frame across rails and cancellation removes only its owner', () => {
+    availableHeight = 6;
+    const onClipChange = vi.fn();
+    const list = {
+      getScrollOffset: () => scrollOffset,
+      getViewportSize: () => 300,
+      findItemIndex: (offset: number) => Math.floor(offset / 100),
+      getItemOffset: (nodeIndex: number) => nodeIndex * 100,
+      sizeAt: () => 100,
+      getTotalSize: () => 1100,
+    } as unknown as TimelineVirtualizerHandle;
+    const other = createNavRailViewportSync(ctxFor(list, merged, onClipChange));
+    tickEls.forEach((el, index) => other.registerTick(el, index));
+    scrollOffset = 100;
+
+    sync.schedule();
+    other.schedule();
+    expect(frames).toHaveLength(1);
+
+    sync.cancel();
+    drainFrames();
+    expect(onClipChange).toHaveBeenCalledTimes(1);
+    other.cancel();
+  });
+
+  it('can re-arm after the browser rejects a frame request', () => {
+    let attempts = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      attempts++;
+      if (attempts === 1) throw new Error('frame request rejected');
+      frames.push(callback);
+      return attempts;
+    });
+
+    expect(() => sync.schedule()).toThrow('frame request rejected');
+    expect(() => sync.schedule()).not.toThrow();
+    drainFrames();
+    expect(attempts).toBe(2);
   });
 
   it('an overflowing strip slides with the position claim and each arrow tracks its clipped end', () => {

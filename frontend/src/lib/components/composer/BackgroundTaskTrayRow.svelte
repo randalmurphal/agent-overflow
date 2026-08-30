@@ -26,10 +26,10 @@
     task: TrayTask;
     /** The id this row's Stop button targets, already resolved by the
      * parent (`trayRowStopTarget`) — a Claude task_id or a Codex PTY
-     * process id depending on the thread's provider. Null when the row
-     * has no stop primitive at all: a non-running row, a spawned Codex
-     * collab-agent child, a not-yet-yielded command, or a launch whose
-     * meta carries no id. This component treats it as opaque and hands
+     * process id or Codex subagent launch id depending on the row. Null
+     * when the row has no stop primitive at all: a non-running row, a
+     * not-yet-yielded command, or a terminal whose meta carries no process
+     * id. This component treats it as opaque and hands
      * it straight back to `onStop`; the parent owns which RPC it means. */
     stopTarget: string | null;
     /** True while an outstanding stop RPC is in flight for this row —

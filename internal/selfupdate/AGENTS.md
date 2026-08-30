@@ -21,16 +21,15 @@ machinery instead of reimplementing it.
   atomic), `SweepStagingDir`, `StagingDirName`.
 - The `Marker` the backend writes before the install and reads on the next boot
   to detect a swap that never applied.
-- `StagedFileProvider` — the `updater.Provider` adapter over one local file.
-- `LinuxUpdaterBlocked` — the native-Linux preflight (`linuxgate.go`): an
+- `StagedFileProvider` is the `updater.Provider` adapter over one local file.
+- `LinuxUpdaterBlocked` is the native-Linux preflight (`linuxgate.go`): an
   AppImage's read-only squashfs mount and a non-writable install directory
   both refuse the in-place swap, and both are decided BEFORE the updater is
   wired up so the feature reports unsupported instead of failing after a
   tens-of-MB download.
 
-Pure and tag-free: no network, no `exec`, no Wails application package. The one
-non-stdlib import is `wails/v3/pkg/updater` (stdlib-only itself) for the
-`Provider` / `Release` types, plus `internal/atomicfile` for the marker.
+Pure and tag-free: no network, no `exec`, no Wails application package. That is
+what lets the `nogui` WSL backend and the GUI Windows launcher both import it.
 
 ## What does NOT belong here
 
@@ -45,7 +44,7 @@ non-stdlib import is `wails/v3/pkg/updater` (stdlib-only itself) for the
 
 ## Trust notes
 
-- `InstallDirective.Filename` is a **bare** name by construction — `Validate`
+- `InstallDirective.Filename` is a **bare** name by construction. `Validate`
   rejects separators, `..`, and anything that is not a plain `.exe`. The
   launcher must resolve it under its own staging dir and never accept a path.
 - `StageCopy` verifies the streamed bytes before the rename, so the destination

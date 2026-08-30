@@ -13,7 +13,7 @@
 // #17172e → #222240. The steps are tiny in absolute luminance and clearly
 // separable perceptually (1.09–1.14:1 per step); the wide overall range is
 // what keeps the fluorescent hues reading as glow rather than haze (the
-// luminance-range rule, `docs/specs/theme-system.md` §9.11).
+// luminance-range rule, `docs/architecture/theme-system.md` §9.11).
 //
 // FOREGROUND TIERS are stated rather than derived — the derived fades over
 // #f5f5ff would drift grey, and the stated tiers keep the violet cast all the

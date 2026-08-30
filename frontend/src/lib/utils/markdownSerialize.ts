@@ -359,12 +359,24 @@ function serializePre(el: HTMLElement): string {
   // Code block (Shiki-highlighted or plain). The <code> textContent
   // is the raw program source either way; Shiki wraps in token spans
   // but textContent walks through them.
-  const code = el.querySelector(':scope > code');
+  const code = el.querySelector<HTMLElement>(':scope > code');
   if (code) {
-    return fencedBlock(languageFromCodeClass(code.className), code.textContent ?? '');
+    return fencedBlock(languageFromCodeElement(code), code.textContent ?? '');
   }
   // No <code> child — emit the pre's text under an unlabelled fence.
   return fencedBlock('', el.textContent ?? '');
+}
+
+function languageFromCodeElement(code: HTMLElement): string {
+  // The production code host keeps the complete Marked info string on its
+  // source-free wrapper. The <code> itself has theme classes only, so relying
+  // on `language-*` silently dropped the fence language when copying rendered
+  // chat. A backtick or line break cannot be emitted safely after a backtick
+  // fence opener. Fall back to the restrictive class parser for malformed or
+  // foreign DOM instead of placing structural bytes in clipboard Markdown.
+  const info = code.closest<HTMLElement>('[data-code-lang]')?.dataset.codeLang?.trim();
+  if (info && !/[\r\n`]/.test(info)) return info;
+  return languageFromCodeClass(code.className);
 }
 
 function fencedBlock(lang: string, text: string): string {

@@ -9,7 +9,7 @@
 // #2c313a for list hover/selection and #404754 for buttons. Used verbatim
 // that ladder compresses into an ~11:1 luminance range and the whole app
 // reads hazy beside the default theme (~17:1); see the luminance-range rule
-// in `docs/specs/theme-system.md` §9.11. So the app ground extends the ramp
+// in `docs/architecture/theme-system.md` §9.11. So the app ground extends the ramp
 // DOWN by its own
 // step (#16191d — not a published One Dark value, same hue and chroma
 // direction as #1e2227 → #23272e continued), the published grounds shift up

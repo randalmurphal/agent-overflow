@@ -4,7 +4,7 @@ The caller-facing shape of a Codex skill, and a TTL'd, single-flighted
 cache in front of the `skills/list` read that produces it.
 
 Skills are Codex's user-invokable prompt units and the **replacement for
-custom prompts**, which upstream removed in 0.118 — there is no legacy
+custom prompts**, which upstream removed in 0.118. There is no legacy
 method to fall back to. The read is never free: it either rides a live
 session's connection or costs a whole short-lived `codex app-server`
 process, and either way it re-scans the filesystem for every requested
@@ -12,7 +12,7 @@ directory. Without coalescing, every composer-menu render would pay that.
 
 ## Layout
 
-- `codexskills.go` — the `Skill` / `CwdSkills` / `LoadError` types, the
+- `codexskills.go`: the `Skill` / `CwdSkills` / `LoadError` types, the
   `Key` constructor, the `Fetch` callback type, and the `Cache`
   (`New` / `NewWith`, `Get` / `Refresh` / `Invalidate` / `Reset`).
   `DefaultTTL` (5 min), `DefaultErrorTTL` (30 s) and the `Scope*` wire
@@ -23,7 +23,7 @@ directory. Without coalescing, every composer-menu render would pay that.
 - What BELONGS here:
   - The caller-facing skill shape. `internal/provider/codex` imports this
     package and projects onto it, the same way it projects onto
-    `internal/mcpstatus.ServerStatus` — which is what keeps the raw wire
+    `internal/mcpstatus.ServerStatus`, which is what keeps the raw wire
     types inside the provider package without inventing a second
     near-identical struct.
   - TTL + single-flight bookkeeping and defensive cloning.
@@ -32,7 +32,7 @@ directory. Without coalescing, every composer-menu render would pay that.
   - Deciding HOW to read. The App supplies a `Fetch` closure because only
     it knows whether a live session's connection can be ridden
     (`app_codex_skills.go#readCodexSkills`).
-  - The wire shape and its parsing — `internal/provider/codex/skills.go`.
+  - The wire shape and its parsing (`internal/provider/codex/skills.go`).
   - Importing `internal/provider/codex`. That direction is what would make
     the import cycle; the App is the seam.
 
@@ -42,7 +42,7 @@ directory. Without coalescing, every composer-menu render would pay that.
   directory-scoped: the `repo` tier comes from the workspace itself, so
   two workspaces genuinely have different answers and a cwd-less key would
   serve one project's skills to another. The binary is the other dimension
-  for the same reason `internal/codexmodels` keys on it — a different
+  for the same reason `internal/codexmodels` keys on it. A different
   codex build has a different bundled set.
 - **The active account is deliberately NOT a dimension.** This is the
   difference from `internal/codexusage`. Skills resolve from the canonical
@@ -58,7 +58,7 @@ directory. Without coalescing, every composer-menu render would pay that.
 ## Anti-patterns
 
 - Do NOT narrow a `skills/changed` invalidation to a key. The notification
-  is an empty struct — no cwd, no scope, no skill name — so there is
+  is an empty struct (no cwd, no scope, no skill name), so there is
   nothing to narrow to, and a skill file that moved between two watched
   roots would leave a stale entry behind under the key it left. `Reset` is
   the only correct response.

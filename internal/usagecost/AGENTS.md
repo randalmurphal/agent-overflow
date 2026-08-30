@@ -10,7 +10,7 @@ Claude reports cost CLI-side (`result.modelUsage[model].costUSD`), so
 Claude's `usage_ledger.cost_usd` is real and is never touched here.
 Codex has no cost anywhere on its wire; claudetui's synthesized results
 carry none either. Those rows persist tokens only
-(`cost_source='none'`). Pricing them requires a rate table — but a
+(`cost_source='none'`). Pricing them requires a rate table, but a
 persisted estimate would go stale the moment rates change and there
 would be no way to reprice history. Instead, `Price` is called fresh on
 every query and the result is never written back. An app update with new
@@ -21,7 +21,7 @@ rates reprices all history the next time someone looks.
 `internal/usageledger` is the **only** caller: `usageledger.Spend`
 folds a `store.UsageDetailRow` group into `{WireUSD, EstimatedUSD,
 UnpricedRows}`, and `usageledger.PriceGroups` is what every dollar-reporting surface
-composes through — the usage dashboard (`GetUsageStats`), a workflow run's
+composes through: the usage dashboard (`GetUsageStats`), a workflow run's
 overlay cost (`WorkflowGetItem`, `WorkflowListItemCosts`), and the workflow
 engine's per-tree budget enforcement (`workflowSpendSource.TreeSpend`).
 
@@ -32,8 +32,8 @@ budget must be judged against the same number its overlay shows, so the fold is
 shared rather than duplicated.
 
 It lives in package `main` and not here because the fold is over
-`store.UsageDetailRow`, and this package's boundary — stdlib-only, no store or
-provider imports — is what lets the App layer import it at all. Every consumer
+`store.UsageDetailRow`, and this package's boundary (stdlib-only, no store or
+provider imports) is what lets the App layer import it at all. Every consumer
 is already in `main`, so the shared fold costs nothing by sitting there.
 
 ## Surface
@@ -41,14 +41,14 @@ is already in `main`, so the shared fold costs nothing by sitting there.
 | Symbol | Purpose |
 |---|---|
 | `Rate` | Per-million-token pricing: `Input`, `Output`, `CacheRead`, `CacheWrite`. |
-| `Price(model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int64) (costUSD float64, ok bool)` | Prices one model's token usage. `ok=false` means the model has no known pricing family — callers must count those tokens as unpriced, not silently treat 0 as a real price. |
+| `Price(model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int64) (costUSD float64, ok bool)` | Prices one model's token usage. `ok=false` means the model has no known pricing family. Callers must count those tokens as unpriced, not silently treat 0 as a real price. |
 
 ## Rate table
 
 `knownRates` in `pricing.go` maps model slug prefixes to `Rate`.
 Matching is exact-first, then progressive suffix trim (drop the
-trailing `-` or `.` segment each round) until a family prefix matches
-— the same algorithm the removed `internal/provider/cost.go` used. See
+trailing `-` or `.` segment each round) until a family prefix matches,
+the same algorithm the removed `internal/provider/cost.go` used. See
 the doc comment on `knownRates` for the pricing decisions baked into
 the numbers: Claude cache-write uses the 1h-TTL rate (not 5m) because
 Claude Code pins 1h cache in practice and the ledger can't distinguish
@@ -59,7 +59,7 @@ does.
 
 The trim algorithm has a real gap: a future dotted Codex version
 without its own entry (e.g. `gpt-5.3-codex`) does NOT fall back to
-`gpt-5-codex` — it trims to `gpt-5.3` then `gpt-5`, landing on the
+`gpt-5-codex`. It trims to `gpt-5.3` then `gpt-5`, landing on the
 plain non-codex family rate. `TestPrice_DottedCodexVersionMissesFamilyFallback`
 regression-guards this; a new dotted `-codex` version needs its own
 explicit table entry the day it ships, not an assumption that the
@@ -74,7 +74,7 @@ explicit table entry the day it ships, not an assumption that the
     `internal/usageledger`).
   - Deciding what an unpriced row MEANS. `Price` reports `ok=false` and
     stops there; whether that is tolerable is the consumer's call and
-    depends on the question being asked — a token ceiling is exact
+    depends on the question being asked: a token ceiling is exact
     regardless, a dollar ceiling the tree has not obviously crossed
     cannot be judged at all (`engine.ResolveBudget`), and a display
     surface reports the priced lower bound and says it is one.
@@ -90,15 +90,15 @@ explicit table entry the day it ships, not an assumption that the
   any other column. That would defeat the "rate updates reprice
   history" property this package exists for.
 - Do NOT add a rate entry without a `Price` test that hand-computes the
-  expected dollar amount — see `pricing_test.go`.
+  expected dollar amount. See `pricing_test.go`.
 
 ## References
 
-- `internal/store/usage_ledger.go` — the ledger schema and
+- `internal/store/usage_ledger.go` holds the ledger schema and
   `QueryUsage` / `QueryUsageDetail` this package's output feeds.
-- `internal/usageledger` — the only caller; `usageledger.Spend` /
+- `internal/usageledger` is the only caller; `usageledger.Spend` /
   `usageledger.PriceGroups` merge wire cost and `Price` estimates for
   every surface that reports dollars.
 - `docs/architecture/adrs/ADR-008-cost-computation-in-provider-adapters.md`
-  — history of the wire-cost-only decision and why read-time estimation
-  was added on top of it instead of reverting it.
+  has the history of the wire-cost-only decision and why read-time
+  estimation was added on top of it instead of reverting it.

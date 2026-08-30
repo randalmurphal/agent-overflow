@@ -17,6 +17,7 @@ import {
 } from './intent';
 import { AUTO_FOLLOW_BOTTOM_EPSILON_PX } from './resolver';
 import { registerNestedScroller } from './wheelAttribution';
+import { observedScrollTopFromEvent } from './eventObservation';
 
 // The deferred scroll-intent pass runs behind a 1ms timer so a concurrent
 // RO callback can stamp its resize classification first. Real timers plus a
@@ -474,6 +475,78 @@ describe('pointer', () => {
 });
 
 describe('programmatic write tagging', () => {
+  it('reads the event position once and shares the tagged observation', () => {
+    const h = build();
+    let top = 600;
+    let reads = 0;
+    Object.defineProperty(h.scrollEl, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        reads++;
+        return top;
+      },
+      set: (next: number) => {
+        top = next;
+      },
+    });
+    h.intent.noteProgrammaticWrite(top);
+    const event = new Event('scroll');
+
+    h.scrollEl.dispatchEvent(event);
+
+    expect(reads).toBe(1);
+    expect(observedScrollTopFromEvent(event)).toBe(600);
+  });
+
+  it('invalidates programmatic attribution before reader input moves the surface', () => {
+    const h = build();
+    let top = 600;
+    let reads = 0;
+    Object.defineProperty(h.scrollEl, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        reads++;
+        return top;
+      },
+      set: (next: number) => {
+        top = next;
+      },
+    });
+    h.intent.noteProgrammaticWrite(top);
+    wheel(h.scrollEl, { deltaY: 10 });
+    top = 640;
+    const event = new Event('scroll');
+
+    h.scrollEl.dispatchEvent(event);
+
+    expect(reads).toBe(1);
+    expect(observedScrollTopFromEvent(event)).toBe(640);
+  });
+
+  it('does not substitute an authored offset for an external scroll that raced its event', () => {
+    const h = build();
+    let top = 600;
+    Object.defineProperty(h.scrollEl, 'scrollTop', {
+      configurable: true,
+      get: () => top,
+      set: (next: number) => {
+        top = next;
+      },
+    });
+    h.intent.noteProgrammaticWrite(top);
+
+    // Native find-in-page, focus scrolling, and browser clamps can move a
+    // scroller without first delivering one of our wheel/key/pointer events.
+    // Scroll events may coalesce, so that move can land before the event for
+    // the authored write above.
+    top = 240;
+    const event = new Event('scroll');
+    h.scrollEl.dispatchEvent(event);
+
+    expect(observedScrollTopFromEvent(event)).toBe(240);
+    expect(h.refreshIsNearBottom).toHaveBeenCalledOnce();
+  });
+
   it('a scroll matching a recorded write is not interpreted as intent', () => {
     const h = build();
     h.intent.noteProgrammaticWrite(600);
@@ -518,6 +591,18 @@ describe('programmatic write tagging', () => {
     const h = build();
     h.intent.noteProgrammaticWrite(600);
     h.scrollEl.scrollTop = 601;
+
+    h.scrollEl.dispatchEvent(new Event('scroll'));
+
+    expect(h.refreshIsNearBottom).toHaveBeenCalled();
+  });
+
+  it('evicts the oldest write when the fixed token ring reaches its cap', () => {
+    const h = build();
+    for (let top = 0; top <= 128; top += 1) {
+      h.intent.noteProgrammaticWrite(top);
+    }
+    h.scrollEl.scrollTop = 0;
 
     h.scrollEl.dispatchEvent(new Event('scroll'));
 

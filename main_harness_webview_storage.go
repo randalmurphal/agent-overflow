@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -61,34 +62,36 @@ func webviewStorageEnv(dataRoot string) []xdgVar {
 // what the harness may READ from the developer's provider homes; webview
 // storage is never shared, in either direction.
 //
-// Failures are loud, not fatal: an instance whose webview storage fell
-// back to the user's XDG dirs still runs, and the log line is what tells
-// an operator why two instances started fighting over localStorage.
-func isolateWebviewStorage(dataRoot string) {
+// Failures are fatal: falling back to the user's XDG dirs would let a
+// windowed harness share cookies, localStorage, or IndexedDB with the real
+// app and invalidate every isolation guarantee.
+func isolateWebviewStorage(dataRoot string) error {
 	switch runtime.GOOS {
 	case "linux":
 	case "darwin":
-		// WKWebView's default data store is keyed by bundle identity, not
-		// by $HOME, so a dev binary shares storage across instances no
-		// matter what we set here. Naming it beats a silent no-op: the
-		// symptom (two windowed harnesses sharing localStorage) is
-		// otherwise indistinguishable from a bug in the app.
-		log.Printf("harness: macOS webview storage is bundle-keyed (WKWebView default data store); windowed instances on this host share cookies/localStorage/IndexedDB. See docs/specs/testing-harness.md §1.")
-		return
+		// macOS WebKit storage is isolated by the unique CFBundleIdentifier
+		// verified in main before this function runs. XDG variables do not
+		// control WKWebView's bundle-keyed default store.
+		return nil
 	default:
 		// Windows hosts its windowed instances through the launcher,
 		// which already gives each profile its own WebView2 user-data dir.
-		return
+		return nil
 	}
 	for _, v := range webviewStorageEnv(dataRoot) {
+		if err := refuseSymlink(v.Dir); err != nil {
+			return fmt.Errorf("harness: isolated webview storage %s: %w", v.Name, err)
+		}
 		if err := os.MkdirAll(v.Dir, 0o700); err != nil {
-			log.Printf("harness: create %s at %s: %v (webview storage stays on the user's XDG dirs)", v.Name, v.Dir, err)
-			continue
+			return fmt.Errorf("harness: create isolated webview storage %s at %s: %w", v.Name, v.Dir, err)
+		}
+		if err := refuseUnsafeHarnessDir(v.Dir); err != nil {
+			return fmt.Errorf("harness: isolated webview storage %s at %s is unsafe: %w", v.Name, v.Dir, err)
 		}
 		if err := os.Setenv(v.Name, v.Dir); err != nil {
-			log.Printf("harness: set %s: %v (webview storage stays on the user's XDG dirs)", v.Name, err)
-			continue
+			return fmt.Errorf("harness: set isolated webview storage %s: %w", v.Name, err)
 		}
 		log.Printf("harness: %s=%s", v.Name, v.Dir)
 	}
+	return nil
 }

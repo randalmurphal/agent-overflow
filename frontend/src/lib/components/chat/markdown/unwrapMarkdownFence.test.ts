@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { unwrapMarkdownFence } from './unwrapMarkdownFence';
+import { describe, expect, it, vi } from 'vitest';
+import { createProvenAppend } from 'svelte-streamdown';
+import { MarkdownFenceUnwrapper, unwrapMarkdownFence } from './unwrapMarkdownFence';
 
 describe('unwrapMarkdownFence', () => {
   it('unwraps a ```markdown fence with inner ```go blocks', () => {
@@ -114,6 +115,125 @@ describe('unwrapMarkdownFence', () => {
   it('returns input unchanged when source is plain text', () => {
     const input = 'Hello world.\n\nSome more text.';
     expect(unwrapMarkdownFence(input)).toBe(input);
+  });
+
+  it('does not rescan a growing source after its opener is ruled out', () => {
+    const unwrapper = new MarkdownFenceUnwrapper();
+    expect(unwrapper.render('Ordinary prose ', true)).toBe('Ordinary prose ');
+
+    const indexOf = vi.spyOn(String.prototype, 'indexOf')
+      .mockImplementation(() => {
+        throw new Error('ruled-out source was rescanned');
+      });
+    let output = '';
+    try {
+      const append = createProvenAppend('Ordinary prose ', 'continues ');
+      output = unwrapper.render(append.next, true, append);
+    } finally {
+      indexOf.mockRestore();
+    }
+    expect(output).toBe('Ordinary prose continues ');
+  });
+
+  it('reconsiders a ruled-out source after an authoritative rewrite', () => {
+    const unwrapper = new MarkdownFenceUnwrapper();
+    unwrapper.render('Ordinary prose', true);
+    const wrapper = ['```markdown', '# Title', '```go', 'code', '```', '```'].join('\n');
+    expect(unwrapper.render(wrapper, false)).toBe(
+      ['# Title', '```go', 'code', '```'].join('\n'),
+    );
+  });
+
+  it('clears append lineage when the same source is rendered authoritatively', () => {
+    const unwrapper = new MarkdownFenceUnwrapper();
+    const first = createProvenAppend('', 'Plain prose');
+    expect(unwrapper.render(first.next, true, first)).toBe('Plain prose');
+    expect(unwrapper.outputAppend?.delta).toBe('Plain prose');
+
+    expect(unwrapper.render('Plain prose', true)).toBe('Plain prose');
+    expect(unwrapper.outputAppend).toBeUndefined();
+
+    const second = createProvenAppend('Plain prose', ' continues');
+    expect(unwrapper.render(second.next, true, second)).toBe(
+      'Plain prose continues',
+    );
+    expect(unwrapper.outputAppend?.delta).toBe(' continues');
+  });
+
+  it('keeps a streamed wrapper unwrapped after its inner fence closes', () => {
+    const source = [
+      '```markdown',
+      '# Title',
+      '```go',
+      'code',
+      '```',
+      'Prose after the inner fence.',
+      '```',
+    ].join('\n');
+    const unwrapper = new MarkdownFenceUnwrapper();
+    let previous = '';
+    let unwrapped = false;
+    for (let length = 1; length <= source.length; length++) {
+      const prefix = source.slice(0, length);
+      const append = createProvenAppend(previous, source[length - 1]);
+      const output = unwrapper.render(prefix, true, append);
+      if (output !== prefix) unwrapped = true;
+      if (unwrapped) {
+        expect(output, `prefix length ${length}`).not.toMatch(/^```markdown/);
+      }
+      previous = prefix;
+    }
+    expect(unwrapped).toBe(true);
+    expect(unwrapper.render(source, false)).toBe(
+      [
+        '# Title',
+        '```go',
+        'code',
+        '```',
+        'Prose after the inner fence.',
+      ].join('\n'),
+    );
+  });
+
+  it('withholds partial outer closers without shrinking an active body', () => {
+    const unwrapper = new MarkdownFenceUnwrapper();
+    const chunks = [
+      '````markdown\n\n# Title\n\n```go\ncode\n```\n\n',
+      'More prose.\n\n',
+      '`',
+      '``',
+      '`',
+      '   ',
+    ];
+    let source = '';
+    let previousOutput = '';
+    let activated = false;
+    for (const chunk of chunks) {
+      const append = createProvenAppend(source, chunk);
+      source = append.next;
+      const output = unwrapper.render(source, true, append);
+      const wasActivated = activated;
+      if (output !== source) activated = true;
+      if (wasActivated && previousOutput) {
+        expect(output.startsWith(previousOutput)).toBe(true);
+      }
+      previousOutput = output;
+    }
+    expect(activated).toBe(true);
+    expect(unwrapper.render(source, false)).toBe(
+      ['# Title', '', '```go', 'code', '```', '', 'More prose.'].join('\n'),
+    );
+  });
+
+  it('keeps the sticky interpretation without an append proof', () => {
+    const unwrapper = new MarkdownFenceUnwrapper();
+    const innerClosed = ['```markdown', '# Title', '```go', 'code', '```'].join('\n');
+    expect(unwrapper.render(innerClosed, true)).toBe(
+      ['# Title', '```go', 'code'].join('\n'),
+    );
+    expect(unwrapper.render(`${innerClosed}\nMore prose.`, true)).toBe(
+      ['# Title', '```go', 'code', '```', 'More prose.'].join('\n'),
+    );
   });
 
   // Fast-path equivalence: sources admitted by the "backtick within the

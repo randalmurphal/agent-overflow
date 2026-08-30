@@ -156,3 +156,24 @@ func TestApprovalRegistryAbsentDecisionSetKeepsLegacyCompatibility(t *testing.T)
 		t.Fatalf("legacy decision rejected: %v", err)
 	}
 }
+
+func TestApprovalRegistryDrainScopeLeavesSiblingRequestsPending(t *testing.T) {
+	var r ApprovalRegistry
+	r.TrackScoped("root", EventApprovalResolved, nil, "root-thread")
+	r.TrackScoped("child-a", EventUserInputResolved, nil, "child-thread-a")
+	r.TrackScoped("child-b", EventApprovalResolved, nil, "child-thread-b")
+
+	released := r.DrainScope("child-thread-a")
+	if len(released) != 1 || released[0].RequestID != "child-a" || released[0].Scope != "child-thread-a" {
+		t.Fatalf("scoped drain released %+v, want only child-a", released)
+	}
+	if !r.Claim("root", EventApprovalResolved) {
+		t.Fatal("scoped child drain removed the root approval")
+	}
+	if !r.Claim("child-b", EventApprovalResolved) {
+		t.Fatal("scoped child drain removed a sibling approval")
+	}
+	if r.Claim("child-a", EventUserInputResolved) {
+		t.Fatal("scoped drain left its target request pending")
+	}
+}

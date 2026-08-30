@@ -22,7 +22,7 @@ is per-device by design; prefer over-doing it to under-doing it.
   under backend sections.
 - An always-on personal machine (home server) is a first-class case:
   every other device pairs once over LAN and attaches automatically
-  thereafter — no tailnet required; tailnet/tunnel exist for
+  thereafter. No tailnet is required; tailnet/tunnel exist for
   off-network reach only.
 - Teammates' *backends* peer with ours (federation) holding read-only
   scoped sessions over shared workspaces, and can fork enrolled threads
@@ -42,9 +42,9 @@ token **and** a loopback origin. Scopes alone would collapse that to
 one, so every own-device session would carry full host capability from
 anywhere. Authorization is therefore a product of three axes:
 
-1. **Scope** — what the principal may ask for (§4).
-2. **Binding class** — how strongly the credential is tied to a device.
-3. **Step-up** — per-call fresh proof for a small catastrophic set.
+1. **Scope**: what the principal may ask for (§4).
+2. **Binding class**: how strongly the credential is tied to a device.
+3. **Step-up**: per-call fresh proof for a small catastrophic set.
 
 ### Binding classes
 
@@ -71,7 +71,7 @@ Who the credential belongs to sets a hard ceiling no grant can exceed:
 
 | Tier | Principal | Ceiling |
 |---|---|---|
-| `host` | embedded webview, local CLI — same process tree | everything, including `scope: host` |
+| `host` | embedded webview, local CLI (same process tree) | everything, including `scope: host` |
 | `owner-device` | the owner's paired devices (desktop, browser, phone) | everything except `scope: host` |
 | `automation` | `ao` CLI scoped tokens, workflow phases | the existing frozen grant table, unchanged |
 | `peer` | a teammate's backend | observe tier only, restricted to enrolled shared workspaces |
@@ -85,8 +85,8 @@ device is not equally privileged everywhere:
 | Path | Ceiling |
 |---|---|
 | loopback / same host | full (subject to tier) |
-| private network — LAN with TLS, tailnet | full (subject to tier) |
-| public — Funnel, Cloudflare tunnel | full **minus the step-up set**, and `public` binding required |
+| private network: LAN with TLS, tailnet | full (subject to tier) |
+| public: Funnel, Cloudflare tunnel | full **minus the step-up set**, and `public` binding required |
 
 ### Effective scopes
 
@@ -95,8 +95,8 @@ effective = granted(device) ∩ ceiling(principal tier) ∩ ceiling(network path
 ```
 
 Resolved **once**, at session establishment, into a precomputed set
-carried on the connection. Every surface — WS RPC, HTTP RPC, event
-push, attachments, snapshots, design files — authorizes from that one
+carried on the connection. Every surface (WS RPC, HTTP RPC, event
+push, attachments, snapshots, design files) authorizes from that one
 set (§13). There is no second code path that decides access, so there is
 no surface that can drift out of policy.
 
@@ -112,26 +112,26 @@ same user, as the provider processes a session can start. Anything that
 reaches execute-tier capability locally can mint its own credentials and
 rewrite any on-machine record. This system's value is therefore
 **gating what happens before that point, plus off-machine
-accountability** — not constraining capability the machine already
+accountability**, not constraining capability the machine already
 granted. Design effort goes to the gate; the boundaries doc lists what
 is deliberately out of scope.
 
 ## 3. Identity model
 
-Entities in SQLite (authoritative data, not cache — see §12):
+Entities in SQLite are authoritative data, not cache (see §12):
 
-- **Backend** — one row, minted at first boot: stable UUID + display
+- **Backend**. One row, minted at first boot: stable UUID + display
   name. Required by deep links, push routing, multi-backend store
   keying, and fork provenance. Mint in phase 1.
-- **User** — an account; first boot creates the owner. Multi-user
+- **User**. An account; first boot creates the owner. Multi-user
   arrives with team sharing; schema assumes plurality from the start.
-- **Device** — one client instance (this desktop, this browser profile,
+- **Device**. One client instance (this desktop, this browser profile,
   this phone, a peer backend). Label, class
   (`desktop | browser | phone | cli | backend-peer`), platform,
   created/last-seen, key thumbprint and/or passkey credential.
-- **Session** — device → user binding with a scope set, binding class,
+- **Session**. Device → user binding with a scope set, binding class,
   HMAC-signed claims **and** a DB row; both required to verify.
-- **Recovery codes** — minted at owner creation, single-use, offline.
+- **Recovery codes**. Minted at owner creation, single-use, offline.
   Cover "new phone, dead laptop, away from home". SSH-to-host CLI mint
   is the last-resort path; document both.
 
@@ -157,18 +157,18 @@ remain a separate, narrower credential class, unchanged.
    invitations).
 6. Native clients receive the backend's cert fingerprint inside the
    pairing payload (§7) and run the redemption exchange over that
-   pinned TLS channel from the first byte — required whenever the
-   payload form can carry it (QR, link). The **typed-code path** (a
+   pinned TLS channel from the first byte. This is required whenever
+   the payload form can carry it (QR, link). The **typed-code path** (a
    laptop with no camera enters the short code by hand) cannot carry
    a fingerprint, so its redemption is trust-on-first-use: safe for
-   the same reason browser redemptions are — proof-of-possession plus
-   the verification number, never channel secrecy — and the
+   the same reason browser redemptions are (proof-of-possession plus
+   the verification number, never channel secrecy), and the
    redemption response returns the fingerprint over the
    now-authenticated channel, pinned from then on.
 7. First-ever pairing needs an address before anything is saved: the
    LAN listener may advertise via mDNS (opt-in, off with the listener)
    so a new device picks "found *home-server*" instead of typing an
-   IP. Discovery is convenience only — it grants nothing and changes
+   IP. Discovery is convenience only. It grants nothing and changes
    no trust step.
 
 ### Sessions
@@ -180,7 +180,7 @@ remain a separate, narrower credential class, unchanged.
   refresh forks the family, **auto-revokes the whole family**, and
   alerts the owner. This is how a leaked credential is detected; a copy
   cannot renew indefinitely alongside the real device.
-- Refresh binds to the device key on every listener — a bare bearer
+- Refresh binds to the device key on every listener. A bare bearer
   token on its own cannot self-renew.
 - Browser class: short TTL, non-renewable without passkey re-auth where
   passkeys are available.
@@ -213,8 +213,8 @@ Fallback is always pairing.
 
 ### Step-up (mandatory, not optional)
 
-A per-call fresh passkey (or host-presence) proof — never an ambient
-standing scope — is required for: minting pairing links, network bind /
+A per-call fresh passkey (or host-presence) proof, never an ambient
+standing scope, is required for: minting pairing links, network bind /
 exposure changes, provider custom-env writes, MCP config writes, WSL
 distro preference, and remote update triggering (§7). Optional step-up
 is theater; these are the calls that re-key the system or re-route every
@@ -225,7 +225,7 @@ prompt.
 The embedded webview drops `?t=`: at boot the backend mints an implicit
 `loopback-only` device session delivered over the existing fd/stdout
 bootstrap. The WSL launcher **forwards that credential** rather than
-relying on apparent loopback origin — with topology no longer
+relying on apparent loopback origin. With topology no longer
 authorizing by itself, "looks like loopback" must stop being a trust
 basis (a same-host relay can otherwise launder remote peers).
 
@@ -250,7 +250,7 @@ Scope names are the audit vocabulary; the enforced boundary is
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
 
 Rationale for the splits: answering an approval authorizes host command
-execution, and a thread in `full-access` mode needs no approval at all —
+execution, and a thread in `full-access` mode needs no approval at all,
 so approval-answering and autonomy changes carry exactly the same weight
 as `terminal:operate` and should not share a scope with "send a
 message". Provider custom-env re-points every turn's traffic, and MCP
@@ -258,19 +258,19 @@ config registers a binary the provider will run; neither is an ordinary
 settings write.
 
 The scopes are separate *names* because peers, viewers, and the audit
-log need to distinguish them — **not** because the owner's own devices
+log need to distinguish them, **not** because the owner's own devices
 should be gated against each other.
 
 Default profiles:
 
-- **Owner devices — every scope except `scope: host`, on every device
+- **Owner devices: every scope except `scope: host`, on every device
   class.** Approvals are one-tap everywhere: gating them while leaving
   message-send open protects nothing (injected script that can send a
   message can simply instruct the agent), so the gate would cost daily
   friction for no security. Terminal access from a key-bound native
   client is comparable to an SSH session from a phone and is not
-  withheld. The meaningful distinction is **native vs browser** — only
-  browsers have a script-execution surface — so narrowing is offered
+  withheld. The meaningful distinction is **native vs browser**: only
+  browsers have a script-execution surface. So narrowing is offered
   per-device (useful for a browser on a shared machine) and never
   imposed by device size.
 - **Peer backend**: `threads:read` plus the shared-workspace surface;
@@ -283,12 +283,12 @@ Default profiles:
 The four overlapping classifications collapse to one. Bound methods
 carry a source annotation (`//ao:scope threads:read`, same mechanism as
 `//wails:ignore`); `methodgen` emits a single `MethodMeta{Name, ID,
-Scope, StepUp}` table, and **fails the build on an unannotated method** —
+Scope, StepUp}` table, and **fails the build on an unannotated method**,
 replacing the test-only `wireSafeMethods` completeness gate. `host`
 becomes a scope *value*, so the "host-only residue" is just
 `scope: host`, not a parallel map. `InternalServiceMethods` stays (never
-registered). `ScopedTokenMethods` stays — grants are a genuinely
-different axis — with a CI cross-check that every entry exists in the
+registered). `ScopedTokenMethods` stays (grants are a genuinely
+different axis), with a CI cross-check that every entry exists in the
 generated table.
 
 `LocalOnlyMethods` becomes **derived** from the scope table on day one
@@ -319,7 +319,7 @@ Loopback-vs-remote survives only as a transport optimization signal.
 capability object; the ~15 gating files key off the capability they
 need. Scope-refusal errors are structured and name the required scope,
 so disabled-state tooltips are self-describing. **The server never
-trusts the client's capability object** — every RPC re-checks
+trusts the client's capability object**. Every RPC re-checks
 server-side; hello-frame flags are compat hints, never authorization.
 
 ## 6. Per-device and per-user state
@@ -327,7 +327,7 @@ server-side; hello-frame flags are compat hints, never authorization.
 ### Fix the identity hole
 
 `GetUIState`/`SetUIState`/`DeleteUIState` currently take a
-caller-supplied `clientID` — a spoofable bearer string. They stop taking
+caller-supplied `clientID`, a spoofable bearer string. They stop taking
 it; the backend derives scope from the authenticated session's device.
 
 ### One mechanism, three tiers
@@ -341,7 +341,7 @@ it; the backend derives scope from the authenticated session's device.
   exists for exactly this shape (and already migrated pane layout out of
   settings). User tier = `user:<id>` scope; device tier = `device:<id>`
   scope, with typed validation over the same store. Device rows cascade
-  on device deletion — revoking a device drops its state for free.
+  on device deletion. Revoking a device drops its state for free.
 - Device tier (defaults per device class; phone ships `lowPowerMode`
   on): `lowPowerMode`, theme, fonts + `fontSize`, `paneDensity`,
   `activityRunWindowRows`, `activityRunDefault`, `streamingEnabled`,
@@ -365,7 +365,7 @@ is then pure storage migration with no scope churn.
 
 Loopback (webview, CLI), optional LAN bind, optional tsnet listener,
 optional tunnel-fronted. Sessions are valid across listeners **subject
-to their binding class** (§2) — local clients never hairpin through the
+to their binding class** (§2). Local clients never hairpin through the
 tailnet, and a soft listener cannot launder a strong credential into a
 weaker presentation.
 
@@ -384,34 +384,35 @@ stability keeps browser storage attached.
 The always-on home machine is a first-class case, not a degraded one:
 enable the LAN listener, pair each device once (QR/code), and durable
 rotating sessions plus the stable endpoint make every later attach
-automatic — laptop, phone app, and the machine's own window connect
+automatic. Laptop, phone app, and the machine's own window connect
 the same way, no tailnet involved. Tailscale/Funnel are for
 *off-network* reach only, never a LAN prerequisite. The one
 platform-imposed limit (constraint 6): plain-HTTP LAN **browsers** are
-bearer-only — no passkeys, no service workers. The desktop app, CLI,
+bearer-only: no passkeys, no service workers. The desktop app, CLI,
 and native phone app are unaffected; they hold device keys, are not
 subject to browser secure-context rules, and get encrypted TLS with no
 domain at all via cert pinning anchored in the pairing payload (see
 TLS below). Wanting passkeys in a LAN browser is the one thing that
 requires the DNS-01 owned-domain path: real HTTPS on a private
-address, still no tunnel — an optional upgrade, never a dependency.
+address, still no tunnel. It is an optional upgrade, never a
+dependency.
 
 ### TLS (in-app termination)
 
 Two supported paths; others are documented escape hatches, not built:
 
-1. **Owned domain + DNS-01** — DNS record → LAN IP (public DNS may hold
+1. **Owned domain + DNS-01**. DNS record → LAN IP (public DNS may hold
    private addresses), Let's Encrypt via DNS-01, backend renews. Real
    HTTPS on a LAN-only path, valid passkey RP ID, no tunnel.
-2. **tsnet cert** — LE cert for the node's `*.ts.net` name, MagicDNS
+2. **tsnet cert**. LE cert for the node's `*.ts.net` name, MagicDNS
    resolution, direct peer connections.
 
 **Domainless TLS for Go-native clients (pinning via pairing).** The
 backend always mints a self-signed cert, and the pairing payload (QR /
 code exchange) carries its fingerprint; the desktop attach client and
-CLI — Go processes that own their TLS config — pin that exact cert.
+CLI (Go processes that own their TLS config) pin that exact cert.
 Result: encrypted, authenticated TLS on the LAN with no domain, no CA,
-and no trust prompts — the pairing ceremony that already establishes
+and no trust prompts. The pairing ceremony that already establishes
 trust also anchors the channel. Rotation rides the session: a paired
 client that holds a valid session accepts a signed successor-cert
 announcement. The Capacitor phone shell pins too, through its native
@@ -438,7 +439,7 @@ address; derive real client IP from our own validated forwarded header).
 
 `agent-overflow serve` runs windowless; the desktop app attaches.
 Service install (systemd user unit / launchd / Windows via the WSL
-launcher) with a stated headless credential-storage posture — keychains
+launcher) with a stated headless credential-storage posture. Keychains
 frequently cannot unlock without a login session, so the signing key,
 provider credentials, and tsnet state need a defined at-rest strategy
 for unattended boot.
@@ -453,12 +454,12 @@ out of a machine they cannot physically reach.
 
 ### Provider re-authentication while remote
 
-Provider OAuth redirects to `localhost` **on the host** — unreachable
-from a phone — yet provider logins die at inconvenient times (see the
+Provider OAuth redirects to `localhost` **on the host**, unreachable
+from a phone, yet provider logins die at inconvenient times (see the
 2026-08-03 credential-death incident chain). Without a remote path, one
 token rotation bricks the backend until the owner is physically present.
 Required: provider auth state is a first-class remote-visible signal
-with a push event, and re-auth is completable remotely — the backend
+with a push event, and re-auth is completable remotely: the backend
 surfaces the authorize URL to the authenticated remote client and
 proxies its own loopback callback (or relays the paste-code/setup-token
 flow). If any provider makes this impossible, that limitation is
@@ -480,8 +481,8 @@ Prerequisite sweep, valuable standalone:
 - Races: backend is single-writer; losers get typed already-handled
   responses; state-change events flip other devices to "answered on
   <device>" live.
-- **Device attribution** on persisted mutations (which device did it) —
-  a trivial column now, required later for audit and shared-thread
+- **Device attribution** on persisted mutations (which device did it).
+  A trivial column now, required later for audit and shared-thread
   provenance.
 - Gap-recovery switch gains an entry per new channel.
 - Threads begin recording **branch / remote / head** so future forks are
@@ -496,43 +497,43 @@ Prerequisite sweep, valuable standalone:
   `/healthz`-with-version endpoint doubles as the update watchdog probe
   and the pre-WS compatibility check.
 - **Compatibility policy** (what the hello frame enforces): features
-  gate on capability flags, never version comparison — a client asks
+  gate on capability flags, never version comparison. A client asks
   "does the server have X", so mismatched pairs degrade instead of
   guessing. Frames and channels evolve additively. With bundle sync
   (below), the six-month support window is *not* a promise to lagging
-  everyday clients — they self-update. Its real consumers are old
+  everyday clients. They self-update. Its real consumers are old
   native shells pinning old bundles, and federation peers: backends
   on other people's machines, updating on other people's schedules,
   where nobody can push code. Below the window a client gets a typed
   `update-required` refusal at hello, not undefined behavior. The
-  swap window itself — an old bundle live against a just-updated
-  backend for minutes — requires one-step wire tolerance by
+  swap window itself (an old bundle live against a just-updated
+  backend for minutes) requires one-step wire tolerance by
   construction; the shared client is made and kept forward-tolerant
   (unknown events, fields, and frame types ignored), tested with a
   future-dialect fixture.
 - **The phone app is the same app.** Capacitor shell around the
   existing SPA: same Svelte code, same TS transport client and
-  generated bindings, same IndexedDB replica — no Swift/Kotlin
+  generated bindings, same IndexedDB replica. No Swift/Kotlin
   reimplementation and no second wire schema to drift (native plugins
   cover push, QR pairing scan, secure storage, biometrics).
   Consequences owned now: `CapacitorHttp` request interception stays
   disabled for the transport (it breaks WebSocket paths), and on the
   phone the device key lives in native secure storage
   (Keychain/Keystore, biometric-gateable) with signing done on the
-  native side next to the WS bridge — not in webview WebCrypto, which
+  native side next to the WS bridge, not in webview WebCrypto, which
   remains the browser-class mechanism.
 - **Bundle sync: the backend is the phone's update server.** The
   backend already embeds its exactly-matching frontend bundle; the
   shell self-updates its web bundle from the attached backend over the
   authenticated channel (the established live-update pattern,
-  self-hosted — no update SaaS). Semantics: never blocking — attach
+  self-hosted, with no update SaaS). Semantics: never blocking. Attach
   runs on the current bundle, the new one downloads in the background
   and swaps when ready or at next launch, so an urgent approval is
   never stuck behind a download. Bundles declare a minimum shell
   version (a too-old native shell is the one case that gates on a
   store update); last-known-good is kept with first-boot healthcheck
   and auto-rollback, mirroring the remote-update posture. Trust line:
-  bundles are code, so transport trust is not enough — the shell
+  bundles are code, so transport trust is not enough. The shell
   verifies every bundle against the **release signing key baked into
   the shell itself**. A backend can only relay genuine signed
   releases, never arbitrary script, so one compromised backend cannot
@@ -547,7 +548,7 @@ Prerequisite sweep, valuable standalone:
   ones).
 - **Code trust per client class, stated plainly.** Browsers and the
   desktop attach client load the SPA *from* the backend they connect
-  to — a member using a browser against a team hub executes
+  to. A member using a browser against a team hub executes
   hub-served code, ordinary web trust, and no trust line pretends
   otherwise. The phone shell is the only code-isolated client: its
   bundle comes solely from signed releases via owner-tier backends,
@@ -555,7 +556,7 @@ Prerequisite sweep, valuable standalone:
   only.
 - **Phone transport security.** WKWebView cannot accept a self-signed
   cert for WebSocket at all (the auth-challenge hook covers HTTPS
-  only; ATS exceptions are ignored for WS) — so the webview never
+  only; ATS exceptions are ignored for WS), so the webview never
   touches the socket. The shell ships a **native WebSocket bridge**
   (StarScream on iOS / OkHttp on Android) that owns the connection,
   pins the pairing-payload cert fingerprint exactly as the Go clients
@@ -575,10 +576,10 @@ Prerequisite sweep, valuable standalone:
   replica diff → full snapshot, in that order. At rest: the phone
   replica is encrypted with a key held in native secure storage
   outside the webview (biometric-gateable); browser profiles cannot
-  do this. Revocation is not remote wipe — cutting a device's access
+  do this. Revocation is not remote wipe. Cutting a device's access
   does not un-disclose what its replica already held (boundaries
   doc).
-- **Ticket primitive generalizes beyond WS** — short-lived signed URLs
+- **Ticket primitive generalizes beyond WS**: short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
   HTTP (resumable, ranged, size-capped, client-side image downscaling
@@ -590,10 +591,10 @@ Prerequisite sweep, valuable standalone:
 - **Phone-era efficiency**: per-thread subscription narrowing (the
   `subscribe` frame exists, unused by the SPA), server-buffered
   assistant deltas, background scope leases (client reports visibility +
-  interested scopes with TTL; backend skips unleased work — generalizes
+  interested scopes with TTL; backend skips unleased work, generalizing
   `HasRemoteClient`), `afterSeq`-with-snapshot-fallback resume.
 - **Push**: senders run in the backend, outbound-only. Constraint to
-  resolve before shipping to anyone but the owner — APNs/FCM require the
+  resolve before shipping to anyone but the owner: APNs/FCM require the
   *app vendor's* signing key, which cannot ship inside distributed
   self-hosted binaries. Personal builds can send directly; distribution
   requires either a blind relay (payload encrypted end-to-end, gateway
@@ -601,7 +602,7 @@ Prerequisite sweep, valuable standalone:
   genuinely per-backend). Decide before the phone app ships publicly.
 - **Notification semantics**: event→push mapping (turn complete,
   approval needed, error, provider signed out), redaction policy
-  (payloads transit Apple/Google — titles and command text are
+  (payloads transit Apple/Google, and titles and command text are
   sensitive), collapse/retract on handled-elsewhere (retraction rather
   than presence-guessing: presence heuristics are wrong whenever the
   desktop is attached but unattended), and a deep-link scheme carrying
@@ -639,28 +640,28 @@ one revocable peer principal per teammate is the better boundary and is
 what the owner wants.
 
 **Hub deployment.** A team server is the same binary in `serve` mode on
-shared infrastructure — nobody's personal machine. It is the preferred
-team topology: enrollment publishes to the hub, members read from the
-hub, forks download from the hub, and the author's laptop can sleep
-(resolving constraint 7 for the team case). Cross-team access is
+shared infrastructure, never on anybody's personal machine. It is the
+preferred team topology: enrollment publishes to the hub, members read
+from the hub, forks download from the hub, and the author's laptop can
+sleep (resolving constraint 7 for the team case). Cross-team access is
 hub-to-hub peering; because peering is backend-to-backend and
 symmetric, laptop↔hub and hub↔hub are one code path. Dispatch-style
 automation on the hub (ticket refinement, reports, sprint prep,
 context gathered over time) is workflows + MCP servers + external
 triggers, specced in the workflows system when built; what it demands
 *here* is N-user identity (§3), attributable audit, ingress routes
-entering the §13 inventory, and scope-capped workflow grants — an
+entering the §13 inventory, and scope-capped workflow grants. An
 externally-authored ticket body is untrusted input reaching an agent
 that holds write credentials, so ingress-fed workflows declare bounded
 write scopes. Report/context outputs are workflow artifacts committed
-to a hub-side git repo plus their threads — versioned and forkable,
+to a hub-side git repo plus their threads: versioned and forkable,
 no new store.
 
 - **Shared workspace** is the ACL unit; enrollment is the grant.
 - **Read-only + fork** on personal backends, unconditionally. No
   forwarded operations, no approval proxying, no peer-triggered
   spawns. Whether *hub* threads are operable by members via workspace
-  roles — and who may answer approvals there — is open (§18): the
+  roles, and who may answer approvals there, is open (§18): the
   "approvals one-tap everywhere" decision was scoped to the owner's
   own devices and does not transfer to shared infrastructure.
 - **Payload contents need classification.** Thread payloads routinely
@@ -670,7 +671,7 @@ no new store.
   terminal-frame and file-content payloads are withheld or redacted by
   default with explicit opt-in to full fidelity; peer bulk reads are
   rate-limited and audited with per-peer attribution; the UI states
-  plainly that enrollment is a **one-way disclosure** — un-enrolling
+  plainly that enrollment is a **one-way disclosure**: un-enrolling
   does not un-share what was already pulled.
 - **Fork** (designed at team-time, prepared now): the transfer is
   session file(s) + our thread data + git state (a bundle, since thread
@@ -678,8 +679,8 @@ no new store.
   state is uncommitted). Guaranteed layer is context-seeded continuation
   that works regardless of provider version; native resume from
   transferred provider session files is the enhancement when versions
-  match. Deliberately *not* synthesizing resume files from SQLite rows —
-  that would require the store to become a full-fidelity event store
+  match. Deliberately *not* synthesizing resume files from SQLite rows.
+  That would require the store to become a full-fidelity event store
   (violating principle 3) and is untestable under the no-real-provider
   invariant.
 - Reachability: Tailscale node sharing (cross-tailnet, no merge),
@@ -688,7 +689,7 @@ no new store.
 ## 12. Consequences for existing principles
 
 - **SQLite stops being purely a cache.** Identity (users, devices,
-  sessions, audit) is authoritative — losing the DB costs identity, not
+  sessions, audit) is authoritative. Losing the DB costs identity, not
   just history. Recovery = re-pairing from a host-local admin surface or
   recovery codes. Thread history remains a cache; fork explicitly does
   not change that.
@@ -704,31 +705,31 @@ no new store.
 Complete coverage has to be structural, not a promise. The current
 counter-example: `/design/` serves agent-written files from the SPA
 origin with **no token, no response headers, no per-thread check, and
-symlinks unresolved** — an entire HTTP surface sitting outside the
-authorization model, found only because it was audited (see the
+symlinks unresolved**. That is an entire HTTP surface sitting outside
+the authorization model, found only because it was audited (see the
 boundaries doc's findings, and §16 phase 0).
 
 Every externally-reachable surface is enumerated in one place with four
 declared properties: **listener** (which port/origin), **principal tiers
 admitted**, **required scope**, **content-type posture**. The
 enumeration is code, not prose, and a CI gate fails the build when a
-route, event channel, or listener exists without an entry — the same
-fail-closed pattern the method table uses. The enumeration and gate
+route, event channel, or listener exists without an entry. This is the
+same fail-closed pattern the method table uses. The enumeration and gate
 land with phase 0 covering HTTP routes, listeners, and content origins,
 so every later phase builds against the gate; the RPC-method and
 event-channel classes join in phase 3 when the scope table generates.
 
 Classes to enumerate:
 
-- **RPC methods** — generated from `//ao:scope` annotations (§5).
-- **HTTP routes** — bootstrap, WS upgrade, scoped RPC, auth/token,
+- **RPC methods**: generated from `//ao:scope` annotations (§5).
+- **HTTP routes**: bootstrap, WS upgrade, scoped RPC, auth/token,
   tickets, attachments, snapshots, design files, health/version.
-- **Event channels** — required scope per channel, resolved into the
+- **Event channels**: required scope per channel, resolved into the
   connection's precomputed visible set.
-- **Listeners** — loopback, LAN, tsnet, tunnel, plus the auxiliary
+- **Listeners**: loopback, LAN, tsnet, tunnel, plus the auxiliary
   loopback servers (design MCP, harness control, claudetui gateway,
   pprof) which must each declare that they carry no session credential.
-- **Content origins** — anything serving bytes an agent or user
+- **Content origins**: anything serving bytes an agent or user
   authored declares its origin and content-type posture; agent-authored
   bytes never execute at the SPA origin.
 
@@ -749,20 +750,20 @@ frame.**
   per-event map lookup against the loopback-only table. Streaming is the
   hottest path in the app and must not gain work.
 - **Per-RPC cost is one map lookup** on the generated scope table plus
-  one in-memory session-table lookup. **No SQLite query per RPC** — the
+  one in-memory session-table lookup. **No SQLite query per RPC**. The
   in-memory table is authoritative for live checks, SQLite is durable
   backing, and revocation writes both synchronously (§4).
 - **Signature work is bounded to establishment.** ES256 DPoP
   verification (~tens of µs) happens per HTTP request and per WS
-  upgrade — never per frame. Per-frame proofs are explicitly rejected.
+  upgrade, never per frame. Per-frame proofs are explicitly rejected.
 - **The DPoP replay guard is an in-memory TTL map** bounded by the
-  proof freshness window with a hard size cap — not a file per proof
+  proof freshness window with a hard size cap, not a file per proof
   (which would burn an inode and a syscall per request and need its own
   GC). Restart clears it; the window is short enough that this is
   acceptable and is documented rather than papered over.
 - **Audit records privileged and auth events, not reads.** Auditing
   every RPC would write thousands of entries during streaming. Appends
-  are buffered with periodic fsync and bounded rotation — never
+  are buffered with periodic fsync and bounded rotation, never
   fsync-per-entry.
 - **Draft sync is gated on there being another client.** With a single
   attached client, debounced draft events are pure waste; the existing
@@ -773,7 +774,7 @@ frame.**
   who never enables remote access must not pay for it. Same for the
   tunnel subprocess and the TLS listener.
 - **CSP and security headers are constant strings** set from a
-  prebuilt header block — no per-request construction.
+  prebuilt header block, with no per-request construction.
 - **Symlink-safe file serving** costs a few extra syscalls per *open*
   (not per byte), on a path served rarely.
 - **Snapshot and attachment transfers ride HTTP**, not the WS, so large
@@ -784,11 +785,11 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 
 ## 15. Hard constraints
 
-1. WebAuthn RP ID must be a registrable domain — no IPs, no `.local`;
-   secure context required (localhost is dev-only). Pairing codes are
-   the universal fallback.
+1. WebAuthn RP ID must be a registrable domain, with no IPs and no
+   `.local`; secure context required (localhost is dev-only). Pairing
+   codes are the universal fallback.
 2. One passkey ↔ one RP ID; related origins capped at 5.
-3. iOS associated domains are baked at build/sign time — native-app
+3. iOS associated domains are baked at build/sign time: native-app
    passkeys only under a vendor-controlled (wildcardable) domain.
 4. APNs requires the Apple Developer Program ($99/yr); FCM requires a
    free Firebase project; iOS Web Push requires home-screen install and
@@ -796,13 +797,13 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    self-hosted binaries (§9).
 5. cloudflared is subprocess-only; tsnet needs a control plane
    (Tailscale account or self-hosted Headscale).
-6. Plain-HTTP LAN browsers lose WebAuthn, service workers, clipboard —
+6. Plain-HTTP LAN browsers lose WebAuthn, service workers, clipboard,
    **and non-extractable WebCrypto**, so they are bearer-only. There is
    no LAN-HTTP DPoP path.
 7. A sleeping machine is unreachable; wake-on-LAN is out of scope. The
    app may offer a keep-awake-while-sessions-live inhibitor.
 8. WKWebView cannot validate self-signed certificates for WebSocket
-   connections (HTTPS-only hook; ATS exceptions ignored for WS) —
+   connections (HTTPS-only hook; ATS exceptions ignored for WS). So
    in-webview transport never gets domainless TLS. This is why the
    phone shell's socket lives in the native WS bridge (§9); plain
    browsers remain unpinnable.
@@ -816,14 +817,14 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    bypassing `transformUrl`), an anchor-navigation guard, `/design/`
    hardening (origin/content-type posture, response headers, symlink
    containment via `os.OpenRoot` as `internal/safecopy` already does,
-   per-thread scoping, no directory listing), and a baseline CSP —
-   strict in production, relaxed in dev (the Vite dev server injects
+   per-thread scoping, no directory listing), and a baseline CSP that
+   is strict in production and relaxed in dev (the Vite dev server injects
    inline styles regardless of HMR, so the split is not an HMR
    concession; disabling HMR is an independent preference). The boot
    credential moves out of script reach entirely: bootstrap exchanges
    the one-time `?t=` URL token for an HttpOnly cookie, strips the
    token from the URL, and the WS upgrade authenticates via cookie
-   plus the §7 Origin allow-list — deleting the `sessionStorage` copy
+   plus the §7 Origin allow-list, deleting the `sessionStorage` copy
    and `window.__AO_BOOTSTRAP__`. This is the same channel that
    carries session credentials from phase 2 on, not a stopgap. Also:
    `safeExternalURL` on the two unvalidated `PRStep.svelte` hrefs, tests
@@ -836,7 +837,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 1. **Sync sweep + seams.** Emits, channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
    backend UUID, hello frame, multi-backend seams (§10).
-2. **Identity core.** Genuinely N-user from the start — no implicit
+2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
    (users/devices/sessions/audit), pairing
@@ -855,7 +856,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    rollback, provider remote re-auth.** DPoP mandatory here (the token
    endpoint accepts thumbprints from phase 2 so nothing reworks).
    Includes a headless build target that does not link the webview/GTK
-   stack, and the unattended credential-storage posture (§7) — both
+   stack, and the unattended credential-storage posture (§7), both
    prerequisites for server deployments.
 6. **Phone preparation.** Subscription narrowing, buffered deltas, scope
    leases, reduced snapshots, attachment flows, push senders +
@@ -884,8 +885,8 @@ Each phase leaves `make check` green.
   step-up requirement, rate-limit keying.
 - **Harness**: multi-client fixtures (two WS clients, fan-out,
   scope-refused calls, reconnect-with-replay, draft echo suppression),
-  scope-lease transitions (off→on, TTL lapse mid-turn, visibility flap
-  — transitions, not just states), later a two-backend fixture.
+  scope-lease transitions, not just states (off→on, TTL lapse mid-turn,
+  visibility flap), later a two-backend fixture.
 - **Playwright**: pairing UX end-to-end, second browser context as a
   second device, capability-gated UI.
 - Every refusal path gets a test.
@@ -894,19 +895,19 @@ Each phase leaves `make check` green.
 
 1. Whether `access:admin` exists as a standing remote scope at all, or
    whether every admin action requires step-up.
-2. Push distribution posture (§9) — direct for personal builds is fine;
+2. Push distribution posture (§9). Direct for personal builds is fine;
    the distributed answer must be chosen before public release.
 3. How much of the payload-sensitivity machinery (§11) is built at
    team-time vs. designed-only now.
 4. Whether draft "edited on <device>" and presence-aware routing survive
    at all (marked cuttable).
 5. Whether the public-path ceiling (§2) should exclude anything beyond
-   the step-up set — e.g. whether `terminal:operate` over a public
+   the step-up set, e.g. whether `terminal:operate` over a public
    tunnel is acceptable given it is already key-bound and TLS-wrapped.
 6. Hub-thread operability (§11): whether shared-workspace threads on a
    team server are operable by members via workspace roles (personal
    backends stay read-only + fork regardless), and who may answer
-   approvals on a hub thread — any member holding the scope, the
+   approvals on a hub thread: any member holding the scope, the
    thread starter, or a role gate.
 
 Settled in review: approvals are never gated on the owner's own devices;

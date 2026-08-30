@@ -18,6 +18,12 @@ import {
   THINKING_PAYLOAD_EXPANSION_STATE_KEY,
   thinkingPayloadVersionForItem,
 } from '../utils/payloadVersion';
+import {
+  type StreamingAssistantRenderContext,
+  type StreamingAssistantRevealSink,
+} from './streamingAssistantReveal';
+import { createThreadAssistantReveal } from './threadAssistantReveal.svelte';
+import type { ProvenAppend } from 'svelte-streamdown';
 
 export interface ThreadStreamingRevealOptions {
   /** Current item for an id, or undefined when not loaded. */
@@ -28,17 +34,22 @@ export interface ThreadStreamingRevealOptions {
   getItems(): Item[];
   /** Reactive write-through of one row (pane does `items[index] = item`). */
   setItemAt(index: number, item: Item): void;
+  /**
+   * Commit a literal suffix that the reveal router already constructed and
+   * preflighted. This mutates the raw row without waking Svelte because every
+   * mounted representation receives the same suffix through its direct sink.
+   */
+  appendDirectAssistantLiteral(
+    index: number,
+    itemId: string,
+    append: ProvenAppend,
+    updatedAt: number,
+  ): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
   stampLiveContent(): void;
   /** Arm the structural-append spring and stamp the live-content latch
    *  (pane's armLiveContentAppendSpring — pane owns all its gates). */
   armStructuralSpring(): void;
-  /**
-   * Diagnostic hook: the gate has just been brought back in sync with
-   * `items` — either recomputed or dropped wholesale. Observation only
-   * (`revealGateTripwire.ts`); it must never move the gate.
-   */
-  noteRevealSynced?(): void;
   /** rowUiState.appendLivePayloadDeltaForItem — live reasoning-tail payload append. */
   appendLivePayloadDeltaForItem(
     itemId: string,
@@ -66,11 +77,30 @@ export interface ThreadStreamingReveal {
   applyPatch(itemId: string, patch: ItemPatchEvent['patch']): void;
   /** True while a smoother owns the row's summary writes (pane's `stillSmoothing` check). */
   isSmoothing(itemId: string): boolean;
-  /** upsertItemsBatch's reconcile block. Does NOT recompute — the batch caller
-   *  recomputes once at the end, preserving current per-batch semantics. */
-  reconcileUpsertedItems(changedItems: readonly Item[]): void;
+  /** Bumped whenever pane-wide disposal clears every mounted DOM sink. */
+  readonly assistantRevealRegistrationGeneration: number;
+  registerAssistantRevealSink(
+    itemId: string,
+    sink: StreamingAssistantRevealSink,
+  ): () => void;
+  assistantParserSource(
+    itemId: string,
+    canonicalSource: string,
+    renderContext: StreamingAssistantRenderContext,
+  ): string;
+  /** Opaque lineage proof for the append that produced this exact source. */
+  assistantSourceAppend(itemId: string, source: string): ProvenAppend | undefined;
+  reconcileItemWrite(previous: Item, next: Item): void;
+  /**
+   * Prepare rows that are about to replace loaded rows. A full-row echo or
+   * snapshot may contain more of a streaming item than the readable reveal has
+   * reached. Keep the visible summary at the smoother cursor and absorb any
+   * new suffix into the smoother before the replacement becomes observable.
+   */
+  prepareItemReplacements(incoming: readonly Item[]): Item[];
   recomputeReveal(): void;
   disposeSmootherFor(itemId: string): void;
+  disposeSmoothersForItems(items: readonly { id: string }[]): void;
   disposeAll(): void;
   /** visibilitychange snap (body of pane's snapSmoothersToReceived, incl. its recomputeReveal). */
   snapAllToReceived(): void;
@@ -138,6 +168,12 @@ export function createThreadStreamingReveal(
   // LIFECYCLE (create/dispose), never per reveal frame, so the
   // reactive wrapper costs nothing on the hot path.
   const itemSmoothers: SvelteMap<string, ItemSmoothing> = new SvelteMap();
+  const assistantReveal = createThreadAssistantReveal({
+    getItemIndex: options.getItemIndex,
+    getItems: options.getItems,
+    setItemAt: options.setItemAt,
+    hasSmoother: (itemId) => itemSmoothers.has(itemId),
+  });
   // Live full revealed text for streaming thinking rows, keyed by item
   // id. Written from every onReveal. Decouples the collapsed
   // ThinkingBlock render from `items[].summary` (which is trimmed to
@@ -194,18 +230,12 @@ export function createThreadStreamingReveal(
   // parallel subagent branches are never serialized behind one another.
   let revealBoundary: RevealBoundary | null = $state(null);
 
-  // Reveal-gate invariant: any wholesale `items` replacement that can
-  // change which top-level rows exist relative to a live smoother must
-  // pair with `recomputeReveal()` (or `disposeAll()`, which clears the
-  // boundary). Current callers all hold this: switchThread / clear →
-  // disposeAll; removeItem / removeItemsForTurns → recomputeReveal. The
-  // `loadOlder` merge is the deliberate exception — it only prepends
-  // OLDER rows (before any streaming frontier by (turnIndex, itemIndex)),
-  // which can be neither the frontier nor a gated successor, so the
-  // boundary is unaffected and no recompute is needed. A new mutation
-  // path that can append rows during a turn MUST call recomputeReveal —
-  // there is no reactive backstop (a parallel $effect over the timeline
-  // is forbidden; see frontend/AGENTS.md).
+  // Reveal-gate invariant: the pane's two item-window commit chokepoints
+  // recompute after their full transaction, so a caller cannot publish a new
+  // window while this boundary still describes the old one. Single-row wire
+  // paths recompute inside their streaming-reveal operations. Thread switch
+  // and clear dispose every outgoing smoother before installing an unrelated
+  // window. There is no parallel reactive watcher over the timeline.
 
   // Dispose a smoother and DROP the row's live tail. Correct for every
   // removal/overwrite caller: the row is gone, or its summary no longer
@@ -213,13 +243,31 @@ export function createThreadStreamingReveal(
   // BEFORE the missing-smoother early return — a settled row's retained
   // tail (settleSmootherRetainingTail below) has no smoother left, and a
   // removal arriving after that settle must still clear it.
-  function disposeSmootherFor(itemId: string): void {
+  function disposeSmootherState(itemId: string): void {
+    const errors: unknown[] = [];
+    try {
+      assistantReveal.discardItem(itemId);
+    } catch (error) {
+      errors.push(error);
+    }
     itemLiveThinkingTail.delete(itemId);
     settledTailSummaries.delete(itemId);
     const entry = itemSmoothers.get(itemId);
-    if (!entry) return;
-    entry.smoother.dispose();
-    itemSmoothers.delete(itemId);
+    if (entry) {
+      try {
+        entry.smoother.dispose();
+      } catch (error) {
+        errors.push(error);
+      } finally {
+        itemSmoothers.delete(itemId);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        `streaming reveal smoother disposal failed for ${itemId}`,
+      );
+    }
   }
 
   // Store-side bound on settled-tail retention, independent of any
@@ -262,24 +310,53 @@ export function createThreadStreamingReveal(
   function settleSmootherRetainingTail(itemId: string): void {
     const entry = itemSmoothers.get(itemId);
     if (!entry) return;
-    entry.smoother.dispose();
-    itemSmoothers.delete(itemId);
+    const errors: unknown[] = [];
+    try {
+      assistantReveal.clearPresentation(itemId);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      entry.smoother.dispose();
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      itemSmoothers.delete(itemId);
+    }
     const tail = itemLiveThinkingTail.get(itemId);
     if (tail !== undefined) {
       settledTailSummaries.set(itemId, trimToTailRunes(tail, THINKING_TAIL_RUNES));
       evictSettledTailsOverBudget();
     }
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        `streaming reveal smoother settle failed for ${itemId}`,
+      );
+    }
   }
 
   function disposeAll(): void {
-    for (const entry of itemSmoothers.values()) entry.smoother.dispose();
+    const errors: unknown[] = [];
+    for (const entry of itemSmoothers.values()) {
+      try {
+        entry.smoother.dispose();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
     itemSmoothers.clear();
     itemLiveThinkingTail.clear();
     settledTailSummaries.clear();
+    try {
+      assistantReveal.disposeAll();
+    } catch (error) {
+      errors.push(error);
+    }
     revealBoundary = null;
-    // Dropping the boundary answers a pending items commit as completely
-    // as a recompute would — nothing is withheld any more. Diagnostic only.
-    options.noteRevealSynced?.();
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'streaming reveal disposal failed');
+    }
   }
 
   // Two reveal boundaries are equal when both are null or share a position.
@@ -382,10 +459,91 @@ export function createThreadStreamingReveal(
     recomputeRevealPass,
   );
 
+  /**
+   * A smoother mutation and its gate derivation are one operation. Cleanup
+   * errors must not strand a boundary that still names the removed smoother.
+   * Preserve a lone original error for callers that match its diagnostic;
+   * report both failures when the cleanup and the derivation fail.
+   */
+  function mutateSmoothersAndRecompute(
+    context: string,
+    mutate: () => void,
+  ): void {
+    const errors: unknown[] = [];
+    try {
+      mutate();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      recomputeReveal();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) {
+      throw new AggregateError(errors, `${context} and reveal recompute failed`);
+    }
+  }
+
+  function throwCollectedErrors(errors: readonly unknown[], context: string): void {
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, context);
+  }
+
+  function runRevealTransaction(itemId: string, reveal: () => void): void {
+    try {
+      reveal();
+      return;
+    } catch (failure) {
+      // PerItemSmoother advances its cursor before invoking this callback. A
+      // failed row write, payload update, or sink transition cannot be retried
+      // on another frame. Drop the now-unusable smoother and re-derive the
+      // gate before surfacing the failure, or one bad row permanently
+      // withholds every successor behind its stale frontier.
+      const errors: unknown[] = [failure];
+      if (itemSmoothers.has(itemId)) {
+        try {
+          disposeSmootherState(itemId);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      try {
+        recomputeReveal();
+      } catch (error) {
+        errors.push(error);
+      }
+      throwCollectedErrors(
+        errors,
+        `streaming reveal callback recovery failed for ${itemId}`,
+      );
+    }
+  }
+
+  function disposeSmootherFor(itemId: string): void {
+    mutateSmoothersAndRecompute(
+      `streaming reveal smoother disposal for ${itemId}`,
+      () => disposeSmootherState(itemId),
+    );
+  }
+
+  function disposeSmoothersForItems(items: readonly { id: string }[]): void {
+    if (items.length === 0) return;
+    mutateSmoothersAndRecompute('streaming reveal item disposal', () => {
+      const errors: unknown[] = [];
+      for (const item of items) {
+        try {
+          disposeSmootherState(item.id);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      throwCollectedErrors(errors, 'streaming reveal item disposal failed');
+    });
+  }
+
   function recomputeRevealPass(): void {
-    // The gate is being re-derived from the current window — whatever an
-    // items commit armed is answered by this pass. Diagnostic only.
-    options.noteRevealSynced?.();
     let frontier: Item | null = null;
     for (const [id, entry] of itemSmoothers) {
       const item = options.getItemById(id);
@@ -480,9 +638,10 @@ export function createThreadStreamingReveal(
     // and read inside `onReveal` so the row's `updatedAt` stays close
     // to wire time even as the smoother lags.
     let latestUpdatedAt = 0;
-    // Previous revealed text — passed as `previousLiveTail` when a
-    // thinking row's live-payload expansion is active so the live tail
-    // stays in sync with the smoothed cursor.
+    // Full previous revealed text. Appending each emitted delta here keeps a
+    // canonical cons string without asking the smoother to join its whole
+    // received buffer. Reasoning also passes the previous value into its live
+    // payload expansion so that view stays on the same cursor.
     let previousRevealed = initialReceived;
 
     const smoother = new PerItemSmoother({
@@ -509,7 +668,7 @@ export function createThreadStreamingReveal(
       revealImmediately: () =>
         getSettings().lowPowerMode || !getSettings().streamingEnabled,
       clock: getSmoothingClockForTest(),
-      onReveal: (revealed, delta) => {
+      onReveal: (delta, _revealedEnd, previousCodeUnit) => runRevealTransaction(itemId, () => {
         const idx = options.getItemIndex(itemId);
         if (idx === undefined) {
           disposeSmootherFor(itemId);
@@ -523,34 +682,96 @@ export function createThreadStreamingReveal(
         options.stampLiveContent();
         const current = options.getItems()[idx];
         const prevRevealed = previousRevealed;
-        previousRevealed = revealed;
         // Reasoning-tail rows (thinking + compaction_reasoning) keep the
         // summary tail-trimmed for memory; assistant_text keeps the full
         // revealed text.
         const isReasoningTail = isReasoningTailKind(current.kind);
-        const nextSummary = isReasoningTail
-          ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
-          : revealed;
-        // Keep the row's `updatedAt` monotonic. A status-only patch
-        // (e.g. bare `{status: 'completed', updatedAt: T}`) can land
-        // between deltas and bump `current.updatedAt` past the
-        // smoother's last-known wire delta; the older value must not
-        // overwrite it when the next rAF reveal lands.
-        const nextItem = {
-          ...current,
-          summary: nextSummary,
-          updatedAt: Math.max(latestUpdatedAt, current.updatedAt),
-        };
-        options.setItemAt(idx, nextItem);
-        if (isReasoningTail) {
-          itemLiveThinkingTail.set(itemId, revealed);
-          options.appendLivePayloadDeltaForItem(
-            nextItem.id,
-            reasoningExpansionStateKey(nextItem.kind),
-            delta,
-            thinkingPayloadVersionForItem(nextItem),
+        const settling = current.status !== 'streaming' && smoother.isCaughtUp();
+        const routedThroughAssistantReveal = !isReasoningTail &&
+          !settling &&
+          current.summary === prevRevealed;
+        if (routedThroughAssistantReveal) {
+          assistantReveal.publish(
+            itemId,
+            previousCodeUnit,
             prevRevealed,
+            delta,
+            (nextSummary, mode, append) => {
+              // Keep the smoother cursor and canonical row on the exact same
+              // string. Building `prevRevealed + delta` independently here
+              // created two growing cons trees per reveal and retained both
+              // for the lifetime of the turn.
+              const updatedAt = Math.max(latestUpdatedAt, current.updatedAt);
+              switch (mode) {
+                case 'direct':
+                  options.appendDirectAssistantLiteral(
+                    idx,
+                    itemId,
+                    append,
+                    updatedAt,
+                  );
+                  break;
+                case 'authoritative':
+                  options.setItemAt(idx, {
+                    ...current,
+                    summary: nextSummary,
+                    updatedAt,
+                  });
+                  break;
+                default:
+                  mode satisfies never;
+              }
+              previousRevealed = nextSummary;
+            },
           );
+        } else {
+          // Keep the row's `updatedAt` monotonic. A status-only patch
+          // (e.g. bare `{status: 'completed', updatedAt: T}`) can land
+          // between deltas and bump `current.updatedAt` past the
+          // smoother's last-known wire delta; the older value must not
+          // overwrite it when the next rAF reveal lands.
+          const updatedAt = Math.max(latestUpdatedAt, current.updatedAt);
+          if (!isReasoningTail && current.summary === prevRevealed) {
+            // Publish before the reactive write. Its reconciliation hook can
+            // then preserve the complete pending direct suffix instead of
+            // claiming only this last delta after an equal-length rewrite.
+            assistantReveal.commitAuthoritativeAppend(
+              itemId,
+              prevRevealed,
+              delta,
+              (revealed) => {
+                previousRevealed = revealed;
+                options.setItemAt(idx, {
+                  ...current,
+                  summary: revealed,
+                  updatedAt,
+                });
+              },
+            );
+          } else {
+            const revealed = prevRevealed + delta;
+            previousRevealed = revealed;
+            if (!isReasoningTail) assistantReveal.discardItem(itemId);
+            const nextSummary = isReasoningTail
+              ? trimToTailRunes(revealed, THINKING_TAIL_RUNES)
+              : revealed;
+            const nextItem = {
+              ...current,
+              summary: nextSummary,
+              updatedAt,
+            };
+            options.setItemAt(idx, nextItem);
+            if (isReasoningTail) {
+              itemLiveThinkingTail.set(itemId, revealed);
+              options.appendLivePayloadDeltaForItem(
+                nextItem.id,
+                reasoningExpansionStateKey(nextItem.kind),
+                delta,
+                thinkingPayloadVersionForItem(nextItem),
+                prevRevealed,
+              );
+            }
+          }
         }
         // Auto-cleanup once the stream has settled AND the smoother has
         // caught up. After that point no more deltas will arrive and
@@ -561,14 +782,21 @@ export function createThreadStreamingReveal(
         // never tramples an authoritative summary. The live tail is
         // retained — this reveal just wrote the summary as the trimmed
         // view of it, the definition of a content-consistent settle.
-        if (current.status !== 'streaming' && smoother.isCaughtUp()) {
-          settleSmootherRetainingTail(itemId);
+        if (smoother.isCaughtUp()) {
+          // Advance the reveal gate even when terminal sink cleanup fails.
+          // The smoother has already moved its cursor before this callback,
+          // so returning with the old frontier would withhold every successor
+          // despite there being no remaining reveal work.
+          mutateSmoothersAndRecompute(
+            `streaming reveal settle for ${itemId}`,
+            () => {
+              if (current.status !== 'streaming') {
+                settleSmootherRetainingTail(itemId);
+              }
+            },
+          );
         }
-        // Advance the reveal gate the moment the frontier catches up so the
-        // withheld successor reveals in the same frame, without waiting on an
-        // unrelated wire event.
-        if (smoother.isCaughtUp()) recomputeReveal();
-      },
+      }),
     });
 
     const entry: ItemSmoothing = {
@@ -600,7 +828,26 @@ export function createThreadStreamingReveal(
   /** applyItemPatch's smoother decision tree (snap statuses, extend-vs-overwrite,
    *  caught-up terminal dispose, bare-status dispose) followed by an UNCONDITIONAL
    *  recomputeReveal — even when no smoother exists for the id. */
-  function applyPatch(itemId: string, patch: ItemPatchEvent['patch']): void {
+  function snapAndDisposeSmoother(itemId: string, smoothing: ItemSmoothing): void {
+    const errors: unknown[] = [];
+    try {
+      smoothing.smoother.snap();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      disposeSmootherState(itemId);
+    } catch (error) {
+      errors.push(error);
+    }
+    throwCollectedErrors(errors, `streaming reveal snap disposal failed for ${itemId}`);
+  }
+
+  function isSnapStatus(status: Item['status'] | undefined): boolean {
+    return status === 'errored' || status === 'killed' || status === 'declined';
+  }
+
+  function applyPatchState(itemId: string, patch: ItemPatchEvent['patch']): void {
     const smoothing = itemSmoothers.get(itemId);
     const nextStatus = patch.status;
     // `errored`, `killed`, and `declined` all represent terminal
@@ -609,19 +856,13 @@ export function createThreadStreamingReveal(
     // already-streamed text to be fully visible before the patch's
     // summary (which may include an "[interrupted] " prefix or
     // similar) takes over — so snap synchronously and dispose.
-    const isSnapStatus =
-      nextStatus === 'errored' ||
-      nextStatus === 'killed' ||
-      nextStatus === 'declined';
-
     // Cancel / interrupt / error: synchronously reveal everything in
     // the smoother before applying the patch, then dispose. The
     // patch's own summary (e.g. "[interrupted] …") then lands as
     // the final visible text without being overwritten by a trailing
     // rAF tick.
-    if (smoothing && isSnapStatus) {
-      smoothing.smoother.snap();
-      disposeSmootherFor(itemId);
+    if (smoothing && isSnapStatus(nextStatus)) {
+      snapAndDisposeSmoother(itemId, smoothing);
     } else if (smoothing && patch.summary !== undefined) {
       // Status flipping to completed (or any non-snap patch) may
       // carry a final summary. If it extends what the smoother has
@@ -642,12 +883,7 @@ export function createThreadStreamingReveal(
       // wholesale (the Codex thinking completion shape, and the
       // completion patch from persistCompletedBlockEmitStreaming).
       const item = options.getItemById(itemId);
-      const summaryMatchesReceived =
-        patchSummary === received ||
-        (item !== undefined &&
-          isReasoningTailKind(item.kind) &&
-          patchSummary === trimToTailRunes(received, THINKING_TAIL_RUNES));
-      if (summaryMatchesReceived) {
+      if (summaryRepresentsReceived(item?.kind, patchSummary, received)) {
         if (
           nextStatus !== undefined &&
           nextStatus !== 'streaming' &&
@@ -668,14 +904,14 @@ export function createThreadStreamingReveal(
           // direct summary write while it lives).
           settleSmootherRetainingTail(itemId);
         }
-      } else if (patchSummary.startsWith(received)) {
-        if (patch.updatedAt !== undefined) {
-          smoothing.setLatestUpdatedAt(patch.updatedAt);
-        }
-        smoothing.smoother.appendDelta(patchSummary.slice(received.length));
       } else {
-        smoothing.smoother.snap();
-        disposeSmootherFor(itemId);
+        const absorbed = absorbReceivedSuffix(
+          smoothing,
+          patchSummary,
+          received,
+          patch.updatedAt,
+        );
+        if (!absorbed) snapAndDisposeSmoother(itemId, smoothing);
       }
     } else if (
       smoothing &&
@@ -695,56 +931,174 @@ export function createThreadStreamingReveal(
       settleSmootherRetainingTail(itemId);
     }
 
-    // Snap/dispose above may have cleared the frontier (interrupt, error,
-    // completion); recompute so the gate drops and any withheld tail rows
-    // reveal. Runs before the early `itemsAreEqual` return in applyItemPatch.
-    recomputeReveal();
+  }
+
+  function applyPatch(itemId: string, patch: ItemPatchEvent['patch']): void {
+    // Snap/dispose above may clear the frontier (interrupt, error,
+    // completion). Derive the gate even when sink cleanup reports an error so
+    // a failed reset cannot leave successor rows withheld indefinitely. This
+    // still runs before applyItemPatch's early `itemsAreEqual` return.
+    mutateSmoothersAndRecompute(
+      `streaming reveal patch for ${itemId}`,
+      () => applyPatchState(itemId, patch),
+    );
   }
 
   function isSmoothing(itemId: string): boolean {
     return itemSmoothers.has(itemId);
   }
 
-  /** upsertItemsBatch's reconcile block. Does NOT recompute — the batch caller
-   *  recomputes once at the end, preserving current per-batch semantics. */
-  function reconcileUpsertedItems(changedItems: readonly Item[]): void {
-    // Reconcile per-item smoothers with the upsert state. A completion /
-    // failure upsert replaces items[index] entirely, so a still-running
-    // smoother would write stale partial reveals back over the new
-    // summary on its next tick. Dispose on any terminal-status upsert.
-    // For streaming upserts whose summary extends what the smoother has
-    // already received, append the suffix so the smoother continues
-    // toward the new target; on a non-extending mismatch, dispose so
-    // the next delta seeds a fresh smoother from the new summary.
-    if (itemSmoothers.size === 0) return;
-    for (const it of changedItems) {
-      const entry = itemSmoothers.get(it.id);
-      if (!entry) continue;
-      if (it.status !== 'streaming') {
-        // Terminal upsert replaces the row wholesale, with its own
-        // summary. A caught-up reveal settles normally — whether the
-        // upsert's summary matches the retained tail is not decided
-        // here: `liveThinkingTailFor` validates the recorded settle
-        // summary against the row's current summary on every read, so
-        // a divergent upsert simply renders its own summary. A mid-
-        // drain smoother's tail is partial and can never match a
-        // terminal summary — drop it with the smoother.
-        if (entry.smoother.isCaughtUp()) settleSmootherRetainingTail(it.id);
-        else disposeSmootherFor(it.id);
-        continue;
-      }
-      if (!isSmoothLiveContentKind(it.kind)) continue;
-      const received = entry.smoother.getReceived();
-      if (it.summary === received) continue;
-      if (
-        it.summary.length > received.length &&
-        it.summary.startsWith(received)
-      ) {
-        entry.smoother.appendDelta(it.summary.slice(received.length));
-      } else {
-        disposeSmootherFor(it.id);
+  function registerAssistantRevealSink(
+    itemId: string,
+    sink: StreamingAssistantRevealSink,
+  ): () => void {
+    return assistantReveal.register(itemId, sink);
+  }
+
+  function assistantParserSource(
+    itemId: string,
+    canonicalSource: string,
+    renderContext: StreamingAssistantRenderContext,
+  ): string {
+    return assistantReveal.parserSource(itemId, canonicalSource, renderContext);
+  }
+
+  function assistantSourceAppend(
+    itemId: string,
+    source: string,
+  ): ProvenAppend | undefined {
+    return assistantReveal.sourceAppend(itemId, source);
+  }
+
+  function reconcileItemWrite(previous: Item, next: Item): void {
+    assistantReveal.reconcileItemWrite(previous, next);
+  }
+
+  function summaryRepresentsReceived(
+    kind: ItemKind | string | undefined,
+    summary: string,
+    received: string,
+  ): boolean {
+    return summary === received ||
+      (kind !== undefined &&
+        isReasoningTailKind(kind) &&
+        summary === trimToTailRunes(received, THINKING_TAIL_RUNES));
+  }
+
+  function absorbReceivedSuffix(
+    entry: ItemSmoothing,
+    summary: string,
+    received: string,
+    updatedAt: number | undefined,
+  ): boolean {
+    if (summary.length <= received.length || !summary.startsWith(received)) {
+      return false;
+    }
+    if (updatedAt !== undefined) entry.setLatestUpdatedAt(updatedAt);
+    entry.smoother.appendDelta(summary.slice(received.length));
+    return true;
+  }
+
+  function prepareItemReplacement(incoming: Item): Item {
+    const entry = itemSmoothers.get(incoming.id);
+    if (!entry) return incoming;
+    const current = options.getItemById(incoming.id);
+    if (!current) {
+      disposeSmootherState(incoming.id);
+      return incoming;
+    }
+    if (isSnapStatus(incoming.status)) {
+      snapAndDisposeSmoother(incoming.id, entry);
+      return incoming;
+    }
+
+    if (
+      !isSmoothLiveContentKind(incoming.kind) ||
+      incoming.kind !== current.kind
+    ) {
+      disposeSmootherState(incoming.id);
+      return incoming;
+    }
+
+    const received = entry.smoother.getReceived();
+    const incomingSummary = incoming.summary;
+    let belongsToCurrentStream = summaryRepresentsReceived(
+      incoming.kind,
+      incomingSummary,
+      received,
+    ) || absorbReceivedSuffix(
+      entry,
+      incomingSummary,
+      received,
+      incoming.updatedAt,
+    );
+    if (
+      !belongsToCurrentStream &&
+      incoming.status === 'streaming' &&
+      incomingSummary.length < received.length &&
+      received.startsWith(incomingSummary)
+    ) {
+      // SQLite and replica snapshots can trail the wire-visible delta stream.
+      // The smoother already owns every byte after this prefix.
+      belongsToCurrentStream = true;
+    }
+
+    if (!belongsToCurrentStream) {
+      disposeSmootherState(incoming.id);
+      return incoming;
+    }
+
+    entry.setLatestUpdatedAt(Math.max(incoming.updatedAt, current.updatedAt));
+    // A terminal echo is authoritative about lifecycle, but not a reason to
+    // bypass the readable cursor when its summary is the same append-only
+    // stream. Keep the terminal status while the smoother drains the unseen
+    // suffix. Mismatches and snap statuses took their authoritative paths
+    // above.
+    if (incoming.status !== 'streaming' && entry.smoother.isCaughtUp()) {
+      settleSmootherRetainingTail(incoming.id);
+      return incoming;
+    }
+    if (
+      incoming.summary === current.summary &&
+      incoming.updatedAt >= current.updatedAt
+    ) return incoming;
+    return {
+      ...incoming,
+      summary: current.summary,
+      updatedAt: Math.max(incoming.updatedAt, current.updatedAt),
+    };
+  }
+
+  function prepareItemReplacements(incoming: readonly Item[]): Item[] {
+    if (incoming.length === 0 || itemSmoothers.size === 0) return incoming as Item[];
+    let prepared: Item[] | null = null;
+    const errors: unknown[] = [];
+    for (let index = 0; index < incoming.length; index++) {
+      const item = incoming[index];
+      try {
+        const next = prepareItemReplacement(item);
+        if (next !== item) {
+          prepared ??= incoming.slice() as Item[];
+          prepared[index] = next;
+        }
+      } catch (error) {
+        errors.push(error);
       }
     }
+    // Preparation mutates smoother ownership before the caller installs the
+    // incoming window. A sink-reset failure can therefore abort the commit
+    // after its smoother was already removed. Re-derive against the still-
+    // current window before the error escapes so the old row is never left
+    // behind a boundary whose owner no longer exists.
+    if (errors.length > 0) {
+      try {
+        recomputeReveal();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    throwCollectedErrors(errors, 'streaming reveal item replacement preparation failed');
+    return prepared ?? incoming as Item[];
   }
 
   /**
@@ -770,10 +1124,39 @@ export function createThreadStreamingReveal(
    */
   function snapAllToReceived(): void {
     if (itemSmoothers.size === 0) return;
-    // snap() → onReveal can dispose+delete entries (terminal rows), so
-    // iterate a snapshot rather than the live map.
-    for (const entry of [...itemSmoothers.values()]) entry.smoother.snap();
-    recomputeReveal();
+    mutateSmoothersAndRecompute('streaming reveal visibility snap', () => {
+      const errors: unknown[] = [];
+      // snap() → onReveal can dispose+delete entries (terminal rows), so
+      // iterate a snapshot rather than the live map. One broken mounted
+      // representation must not prevent the other panes' rows from catching
+      // up after a hidden interval.
+      for (const [id, entry] of [...itemSmoothers]) {
+        try {
+          entry.smoother.snap();
+        } catch (error) {
+          errors.push(error);
+        }
+        const current = options.getItemById(id);
+        if (itemSmoothers.has(id) && current === undefined) {
+          try {
+            disposeSmootherState(id);
+          } catch (error) {
+            errors.push(error);
+          }
+        } else if (
+          itemSmoothers.has(id) &&
+          current?.status !== 'streaming' &&
+          entry.smoother.isCaughtUp()
+        ) {
+          try {
+            settleSmootherRetainingTail(id);
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
+      throwCollectedErrors(errors, 'streaming reveal visibility snap failed');
+    });
   }
 
   function liveThinkingTailFor(itemId: string): string | null {
@@ -817,6 +1200,7 @@ export function createThreadStreamingReveal(
       itemLiveThinkingTail.delete(itemId);
       settledTailSummaries.delete(itemId);
     }
+    assistantReveal.pruneRecords(retainedItemIds);
   }
 
   function smootherCount(): number {
@@ -853,12 +1237,26 @@ export function createThreadStreamingReveal(
    * production surface.
    */
   function __flushForTest(): void {
-    // snap() → onReveal can settle+delete entries (terminal rows), so
-    // iterate a snapshot rather than the live map.
-    for (const [id, entry] of [...itemSmoothers]) {
-      entry.smoother.snap();
-      if (itemSmoothers.has(id)) settleSmootherRetainingTail(id);
-    }
+    mutateSmoothersAndRecompute('streaming reveal test flush', () => {
+      const errors: unknown[] = [];
+      // snap() → onReveal can settle+delete entries (terminal rows), so
+      // iterate a snapshot rather than the live map.
+      for (const [id, entry] of [...itemSmoothers]) {
+        try {
+          entry.smoother.snap();
+        } catch (error) {
+          errors.push(error);
+        }
+        if (itemSmoothers.has(id)) {
+          try {
+            settleSmootherRetainingTail(id);
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
+      throwCollectedErrors(errors, 'streaming reveal test flush failed');
+    });
   }
 
   function __smootherCountForTest(): number {
@@ -872,9 +1270,17 @@ export function createThreadStreamingReveal(
     appendStreamingDelta,
     applyPatch,
     isSmoothing,
-    reconcileUpsertedItems,
+    get assistantRevealRegistrationGeneration() {
+      return assistantReveal.registrationGeneration;
+    },
+    registerAssistantRevealSink,
+    assistantParserSource,
+    assistantSourceAppend,
+    reconcileItemWrite,
+    prepareItemReplacements,
     recomputeReveal,
     disposeSmootherFor,
+    disposeSmoothersForItems,
     disposeAll,
     snapAllToReceived,
     liveThinkingTailFor,

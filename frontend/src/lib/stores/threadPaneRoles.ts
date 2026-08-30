@@ -45,6 +45,10 @@
 
 import type { Item, Thread } from '../types/models';
 import type {
+  StreamingAssistantRenderContext,
+  StreamingAssistantRevealSink,
+} from './streamingAssistantReveal';
+import type {
   ApprovalRequest,
   ContextWindow,
   ItemDeltaEvent,
@@ -75,6 +79,7 @@ import type {
 } from './threadRowUiState.svelte';
 import type { SettledTurn, TimelineTurnFacet } from './threadTurnProjection';
 import type { ThreadPane } from './thread.svelte';
+import type { ProvenAppend } from 'svelte-streamdown';
 
 /**
  * Pane identity, the thread it is holding, and the switch-load
@@ -263,6 +268,22 @@ export interface RevealRead {
   readonly revealBoundary: RevealBoundary | null;
   readonly liveThinkingTailForItem: (itemId: string) => string | null;
   readonly isItemSmoothing: (itemId: string) => boolean;
+  /** Changes after pane-wide reveal disposal so mounted rows re-register. */
+  readonly assistantRevealRegistrationGeneration: number;
+  readonly registerAssistantRevealSink: (
+    itemId: string,
+    sink: StreamingAssistantRevealSink,
+  ) => () => void;
+  readonly assistantMarkdownParserSource: (
+    itemId: string,
+    canonicalSource: string,
+    renderContext: StreamingAssistantRenderContext,
+  ) => string;
+  /** Opaque lineage proof for the append that produced this exact parser source. */
+  readonly assistantMarkdownSourceAppend: (
+    itemId: string,
+    parserSource: string,
+  ) => ProvenAppend | undefined;
   readonly snapSmoothersToReceived: () => void;
   readonly lastLiveContentAt: number;
 }

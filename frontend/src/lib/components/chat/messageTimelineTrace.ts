@@ -43,6 +43,67 @@ const mutationTargetIsInsideRow = (target: Node): boolean => {
   return target.parentElement?.closest(ROW_SELECTOR) !== null;
 };
 
+function visitRows(node: Node, visit: (row: Element) => void): void {
+  if (!(node instanceof Element)) return;
+  if (node.matches(ROW_SELECTOR)) visit(node);
+  node.querySelectorAll(ROW_SELECTOR).forEach(visit);
+}
+
+/**
+ * Delay only a diagnostic observer's mandatory first delivery. Rows can mount
+ * inside the virtualizer's own ResizeObserver callback. Observing them from
+ * the MutationObserver microtask in that same rendering update gives Chromium
+ * a new shallower notification after its depth pass, which emits a loop error.
+ * These probes use the first delivery only as a baseline, so next-frame
+ * registration loses no diagnostic event. WeakRefs preserve the probe rule
+ * that a missed removal must never retain detached row DOM.
+ */
+function createDeferredRowTracker(
+  root: Element,
+  track: (row: Element) => void,
+  untrack: (row: Element) => void,
+): {
+  added(node: Node): void;
+  removed(node: Node): void;
+  dispose(): void;
+} {
+  let pending: WeakRef<Element>[] = [];
+  const queued = new WeakSet<Element>();
+  let frame: number | undefined;
+
+  const queue = (row: Element) => {
+    if (queued.has(row)) return;
+    queued.add(row);
+    pending.push(new WeakRef(row));
+    frame ??= requestAnimationFrame(() => {
+      frame = undefined;
+      const current = pending;
+      pending = [];
+      for (const ref of current) {
+        const candidate = ref.deref();
+        if (!candidate || !queued.has(candidate)) continue;
+        queued.delete(candidate);
+        if (candidate.isConnected && root.contains(candidate)) track(candidate);
+      }
+    });
+  };
+
+  const remove = (row: Element) => {
+    queued.delete(row);
+    untrack(row);
+  };
+
+  return {
+    added: (node) => visitRows(node, queue),
+    removed: (node) => visitRows(node, remove),
+    dispose() {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = undefined;
+      pending = [];
+    },
+  };
+}
+
 export function recordTimelineRenderTrace(
   pane: TimelineSource,
   groupedNodes: readonly TimelineNode[],
@@ -184,24 +245,13 @@ export function startTimelineRowResizeTrace(root: Element): () => void {
   };
 
   root.querySelectorAll(ROW_SELECTOR).forEach(trackElement);
+  const deferredRows = createDeferredRowTracker(root, trackElement, untrackElement);
 
   const mo = new MutationObserver((mutations) => {
     for (const m of mutations) {
       if (mutationTargetIsInsideRow(m.target)) continue;
-      m.addedNodes.forEach((n) => {
-        if (!(n instanceof Element)) return;
-        if (n.matches(ROW_SELECTOR)) {
-          trackElement(n);
-        }
-        n.querySelectorAll?.(ROW_SELECTOR).forEach((el) => {
-          trackElement(el);
-        });
-      });
-      m.removedNodes.forEach((n) => {
-        if (!(n instanceof Element)) return;
-        if (n.matches(ROW_SELECTOR)) untrackElement(n);
-        n.querySelectorAll?.(ROW_SELECTOR).forEach(untrackElement);
-      });
+      m.addedNodes.forEach(deferredRows.added);
+      m.removedNodes.forEach(deferredRows.removed);
     }
   });
   mo.observe(root, {
@@ -211,6 +261,7 @@ export function startTimelineRowResizeTrace(root: Element): () => void {
 
   return () => {
     mo.disconnect();
+    deferredRows.dispose();
     resizeObserver.disconnect();
   };
 }
@@ -339,26 +390,20 @@ export function startRowMarginDivergenceTrace(root: Element): () => void {
   };
 
   root.querySelectorAll(ROW_SELECTOR).forEach(track);
+  const deferredRows = createDeferredRowTracker(root, track, untrack);
 
   const mo = new MutationObserver((mutations) => {
     for (const m of mutations) {
       if (mutationTargetIsInsideRow(m.target)) continue;
-      m.addedNodes.forEach((n) => {
-        if (!(n instanceof Element)) return;
-        if (n.matches(ROW_SELECTOR)) track(n);
-        n.querySelectorAll?.(ROW_SELECTOR).forEach(track);
-      });
-      m.removedNodes.forEach((n) => {
-        if (!(n instanceof Element)) return;
-        if (n.matches(ROW_SELECTOR)) untrack(n);
-        n.querySelectorAll?.(ROW_SELECTOR).forEach(untrack);
-      });
+      m.addedNodes.forEach(deferredRows.added);
+      m.removedNodes.forEach(deferredRows.removed);
     }
   });
   mo.observe(root, { childList: true, subtree: true });
 
   return () => {
     mo.disconnect();
+    deferredRows.dispose();
     ro.disconnect();
   };
 }

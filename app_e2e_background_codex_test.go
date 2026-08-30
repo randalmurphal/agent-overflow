@@ -561,7 +561,7 @@ func TestE2E_Codex_PerRowStop_TerminateRPC(t *testing.T) {
 // PTYs in a fresh subprocess, so the row must reflect that before the
 // user sends the next turn.
 //
-// The test exercises the on-start flip directly (flipCodexGhostBackgroundRowsOnStart)
+// The test exercises the on-start retirement directly (retireCodexBackgroundRuntime)
 // — that's the same helper startSessionNow calls BEFORE spawning the
 // new subprocess. The rest of the reconcile path has unit coverage in
 // app_codex_reconcile_test.go; this test pins the end-to-end visible
@@ -607,7 +607,9 @@ func TestE2E_Codex_AppRestart_GhostRowsFlipped(t *testing.T) {
 	// Fire the pre-spawn flip — the same helper startSessionNow calls
 	// on every Codex session start. It's intentionally unconditional
 	// (see app_codex_reconcile.go rationale).
-	app.flipCodexGhostBackgroundRowsOnStart(thread.ID)
+	if err := app.retireCodexBackgroundRuntime(thread.ID); err != nil {
+		t.Fatalf("retire Codex background runtime: %v", err)
+	}
 
 	// The ghost row must now be errored/lost with the " — session
 	// ended" summary suffix.

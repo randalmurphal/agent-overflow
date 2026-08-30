@@ -41,6 +41,7 @@ export interface ThreadTimelineWindowOptions {
     options?: {
       disposeDropped?: boolean;
       exhaustedScope?: ReadonlySet<string>;
+      afterCommit?: () => void;
     },
   ): boolean;
   /**
@@ -52,13 +53,12 @@ export interface ThreadTimelineWindowOptions {
     options?: {
       disposeDropped?: boolean;
       exhaustedScope?: ReadonlySet<string>;
+      afterCommit?: () => void;
     },
   ): boolean;
   getThread(): Thread | null;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
-  /** streamingReveal.recomputeReveal — commitWindow calls it after every window swap. */
-  recomputeReveal(): void;
   /** Registered pane scroll controller (or null). applyPrunedWindow queries its retention guard. */
   getScrollController(): PaneScrollController | null;
   /** Pane-owned subagent transcript hydration — loadUntilItem's subtree hydration. */
@@ -458,9 +458,9 @@ export function createThreadTimelineWindow(
     recentWindowPrunePending = false;
   }
 
-  // Shared window swap used by both prune paths: replace items + cursors +
-  // history flags, then recompute reveal. Funnelling the mutation through one
-  // place keeps the paged and preserve paths from drifting.
+  // Shared window swap used by both prune paths: replace items, cursors, and
+  // history flags. The pane's replacement chokepoint synchronizes the reveal
+  // gate as part of the commit, so callers cannot omit it.
   function commitWindow(
     next: PrunedWindow,
     flags: {
@@ -468,15 +468,18 @@ export function createThreadTimelineWindow(
       hasMoreNewerAfterPrune?: boolean;
     },
   ): void {
-    options.replaceTimelineItems(next.items, { disposeDropped: true });
-    setLoadedCursors(next.oldestCursor, next.newestCursor);
-    if (flags.hasMoreHistoryAfterPrune !== undefined) {
-      hasMoreHistory = flags.hasMoreHistoryAfterPrune;
-    }
-    if (flags.hasMoreNewerAfterPrune !== undefined) {
-      hasMoreNewer = flags.hasMoreNewerAfterPrune;
-    }
-    options.recomputeReveal();
+    options.replaceTimelineItems(next.items, {
+      disposeDropped: true,
+      afterCommit: () => {
+        setLoadedCursors(next.oldestCursor, next.newestCursor);
+        if (flags.hasMoreHistoryAfterPrune !== undefined) {
+          hasMoreHistory = flags.hasMoreHistoryAfterPrune;
+        }
+        if (flags.hasMoreNewerAfterPrune !== undefined) {
+          hasMoreNewer = flags.hasMoreNewerAfterPrune;
+        }
+      },
+    });
   }
 
   // Paging prune (loadOlder tail-drop / loadNewer head-drop). The dropped end
@@ -527,8 +530,10 @@ export function createThreadTimelineWindow(
   function applyInitialSlice(paged: PagedItems, threadID: string): void {
     const incoming = itemsForThread((paged.items ?? []) as Item[], threadID);
     const nextItems = mergeMissingItemsById(incoming, options.getItems());
-    options.installTimelineItems(nextItems, { disposeDropped: true });
-    applyWindowMetadataFromPaged(paged);
+    options.installTimelineItems(nextItems, {
+      disposeDropped: true,
+      afterCommit: () => applyWindowMetadataFromPaged(paged),
+    });
   }
 
   /**
@@ -687,23 +692,25 @@ export function createThreadTimelineWindow(
                 compareItemsByTimelinePosition(item, currentFirst) < 0,
             );
       const next = mergeItemsById(prepend, options.getItems());
-      options.replaceTimelineItems(next, { disposeDropped: true });
       const nextFloor = pagedOldestCursor(paged, prepend) ?? floor;
-      setLoadedCursors(
-        nextFloor,
-        previousNewest ?? newestCursorFromItems(options.getItems()),
-      );
+      const nextNewest = previousNewest ?? newestCursorFromItems(next);
       // Progress guard. If the backend returned no items AND the floor
       // didn't decrease, another click would fire the same query for
       // the same range. Force hasMore=false so the UI stops offering a
       // button that can't actually load anything. A later in-flight
       // upsert that lands an older item will re-enable paging through
       // the normal streaming path.
-      if (prepend.length === 0 && compareCursors(nextFloor, floor) >= 0) {
-        hasMoreHistory = false;
-      } else {
-        hasMoreHistory = pagedHasMoreOlder(paged);
-      }
+      const nextHasMoreHistory =
+        prepend.length === 0 && compareCursors(nextFloor, floor) >= 0
+          ? false
+          : pagedHasMoreOlder(paged);
+      options.replaceTimelineItems(next, {
+        disposeDropped: true,
+        afterCommit: () => {
+          setLoadedCursors(nextFloor, nextNewest);
+          hasMoreHistory = nextHasMoreHistory;
+        },
+      });
       // The keyed virtualizer derives the combined prepend + tail prune,
       // carries measurements with surviving rows, and emits the exact
       // compensation in one flush.
@@ -835,8 +842,10 @@ export function createThreadTimelineWindow(
         itemsForThread((paged.items ?? []) as Item[], currentThread.id),
         options.getItems(),
       );
-      options.replaceTimelineItems(next, { disposeDropped: true });
-      applyWindowMetadataFromPaged(paged);
+      options.replaceTimelineItems(next, {
+        disposeDropped: true,
+        afterCommit: () => applyWindowMetadataFromPaged(paged),
+      });
       if (subagentRootID) {
         await options.hydrateSubagentChildren(subagentRootID);
         if (
@@ -899,17 +908,19 @@ export function createThreadTimelineWindow(
                 compareItemsByTimelinePosition(item, currentLast) > 0,
             );
       const next = mergeItemsById(append, options.getItems());
-      options.replaceTimelineItems(next, { disposeDropped: true });
       const nextCeiling = pagedNewestCursor(paged, append) ?? ceiling;
-      setLoadedCursors(
-        previousOldest ?? oldestCursorFromItems(options.getItems()),
-        nextCeiling,
-      );
+      const nextOldest = previousOldest ?? oldestCursorFromItems(next);
       const nextHasMoreNewer =
         append.length === 0 && compareCursors(nextCeiling, ceiling) <= 0
           ? false
           : pagedHasMoreNewer(paged);
-      hasMoreNewer = nextHasMoreNewer;
+      options.replaceTimelineItems(next, {
+        disposeDropped: true,
+        afterCommit: () => {
+          setLoadedCursors(nextOldest, nextCeiling);
+          hasMoreNewer = nextHasMoreNewer;
+        },
+      });
       // The keyed virtualizer derives the combined tail grow + head prune
       // and preserves the reading coordinate in one flush.
       prunePagedRecentWindowIfNeeded(nextHasMoreNewer);
@@ -950,8 +961,10 @@ export function createThreadTimelineWindow(
         itemsForThread((paged.items ?? []) as Item[], currentThread.id),
         options.getItems(),
       );
-      options.replaceTimelineItems(next, { disposeDropped: true });
-      applyWindowMetadataFromPaged(paged);
+      options.replaceTimelineItems(next, {
+        disposeDropped: true,
+        afterCommit: () => applyWindowMetadataFromPaged(paged),
+      });
       return true;
     } catch (err) {
       if (

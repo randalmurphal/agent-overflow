@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/harness/governor"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessclient"
 )
@@ -30,13 +31,14 @@ const (
 func runUp(e *env, args []string) error {
 	flags := e.newFlagSet("up")
 	window := flags.Bool("window", false, "open the real webview window instead of running headless (GUI builds only)")
-	soak := flags.Bool("soak", false, "boot the launcher shell (the ordinary {port,token} bootstrap) instead of the harness shell")
+	soak := flags.Bool("soak", false, "boot soak backend mode for a launcher or windowed shell instead of harness mode")
 	autopilot := flags.Bool("autopilot", false, "with --soak: arm the soak preset (seeded threads plus a turn that streams forever)")
 	dataDir := flags.String("data-dir", "", "data root to boot on (default: this worktree's per-checkout root)")
 	binary := flags.String("binary", "", "agent-overflow binary to run (default: $AO_HARNESS_BIN, else bin/agent-overflow beside this CLI)")
 	mockProvider := flags.String("mock-provider", "", "ao-mockprovider path (default: the backend resolves it beside itself)")
 	devAssets := flags.String("dev-assets", "", "serve the frontend from this Vite dev server URL instead of the embedded build")
-	keepHome := flags.Bool("keep-home", false, "leave $HOME real so the instance can READ your provider session files (credentials stay isolated)")
+	keepHome := flags.Bool("keep-home", false, "leave $HOME real for child processes; backend provider state stays isolated")
+	memoryLimit := flags.Uint64("memory-limit-bytes", governor.DefaultCeilingBytes, "hard per-instance memory limit covering the backend and descendants (default 600 MiB)")
 	timeout := flags.Duration("timeout", harnessclient.DefaultLaunchTimeout, "how long to wait for the bootstrap line")
 	rest, err := e.parse(flags, args)
 	if err != nil {
@@ -44,6 +46,9 @@ func runUp(e *env, args []string) error {
 	}
 	if len(rest) != 0 {
 		return usagef("up takes no positional arguments (got %v)", rest)
+	}
+	if *memoryLimit == 0 {
+		return usagef("--memory-limit-bytes must be positive")
 	}
 
 	if *autopilot && !*soak {
@@ -61,6 +66,10 @@ func runUp(e *env, args []string) error {
 	if err := refuseUnsafeDataRoot(dataRoot); err != nil {
 		return err
 	}
+	dataRoot, err = instanceinfo.CanonicalPath(dataRoot)
+	if err != nil {
+		return fmt.Errorf("canonicalize --data-dir: %w", err)
+	}
 	if err := refuseSecondInstance(e, dataRoot); err != nil {
 		return err
 	}
@@ -72,31 +81,71 @@ func runUp(e *env, args []string) error {
 
 	appDataDir := filepath.Join(dataRoot, "agent-overflow")
 	logDir := filepath.Join(appDataDir, logDirName)
+	if err := refuseSymlinkedPath(logDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", logDir, err)
+	}
+	if err := refuseSymlinkedPath(logDir); err != nil {
+		return err
 	}
 	stderrPath := filepath.Join(logDir, backendStderrLog)
 
 	launched, err := harnessclient.Launch(context.Background(), harnessclient.LaunchOptions{
-		Binary:       bin,
-		DataRoot:     dataRoot,
-		MockProvider: *mockProvider,
-		Soak:         *soak,
-		Autopilot:    *autopilot,
-		Window:       *window,
-		DevAssetsURL: *devAssets,
-		KeepHome:     *keepHome,
-		Timeout:      *timeout,
-		Detach:       true,
-		StdoutPath:   filepath.Join(logDir, backendStdoutLog),
-		StderrPath:   stderrPath,
+		Binary:           bin,
+		DataRoot:         dataRoot,
+		MockProvider:     *mockProvider,
+		Soak:             *soak,
+		Autopilot:        *autopilot,
+		Window:           *window,
+		DevAssetsURL:     *devAssets,
+		KeepHome:         *keepHome,
+		Timeout:          *timeout,
+		Detach:           true,
+		StdoutPath:       filepath.Join(logDir, backendStdoutLog),
+		StderrPath:       stderrPath,
+		MemoryLimitBytes: *memoryLimit,
 	})
 	if err != nil {
+		if launched != nil {
+			if cleanupErr := launchedCleanup(launched)(context.Background()); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("clean up backend after launch failure: %w", cleanupErr))
+			}
+		}
 		return err
 	}
 
 	bs := launched.Bootstrap
 	id := instanceinfo.ID(dataRoot)
+	lease, err := reserveDetachedHarness(dataRoot, bs, *memoryLimit)
+	if err != nil {
+		cleanupErr := launchedCleanup(launched)(context.Background())
+		if cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("clean up backend after memory reservation failure: %w", cleanupErr))
+		}
+		return err
+	}
+	if err := launchDetachedWatchdog(dataRoot, stderrPath, lease); err != nil {
+		if releaseErr := releaseDetachedHarnessLeaseByID(lease); releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("release memory reservation after watchdog failure: %w", releaseErr))
+		}
+		cleanupErr := launchedCleanup(launched)(context.Background())
+		if cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("clean up backend after watchdog failure: %w", cleanupErr))
+		}
+		return err
+	}
+	if err := writeDetachedWatchdogState(dataRoot, bs, *memoryLimit); err != nil {
+		if releaseErr := releaseDetachedHarnessLeaseByID(lease); releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("release memory reservation after watchdog state failure: %w", releaseErr))
+		}
+		cleanupErr := launchedCleanup(launched)(context.Background())
+		if cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("clean up backend after watchdog state failure: %w", cleanupErr))
+		}
+		return err
+	}
 	// Mode follows the AUTOPILOT, not the shell: that is what the instance
 	// itself stamps on its registry row, and a listing that disagreed with
 	// the row would send a reader looking for the wrong instance.
@@ -203,12 +252,12 @@ func refuseSymlinkedPath(path string) error {
 // back to a lexical comparison for a path that does not exist yet —
 // which is what a fresh data root is.
 func sameResolvedPath(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
+	ra, errA := instanceinfo.CanonicalPath(a)
+	rb, errB := instanceinfo.CanonicalPath(b)
 	if errA != nil || errB != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
+		return false
 	}
-	return ra == rb
+	return filepath.Clean(ra) == filepath.Clean(rb)
 }
 
 // refuseSecondInstance stops a boot onto a data root something is
@@ -222,7 +271,12 @@ func sameResolvedPath(a, b string) bool {
 func refuseSecondInstance(e *env, dataRoot string) error {
 	dataDir := filepath.Join(dataRoot, "agent-overflow")
 	bs, err := harnessclient.ReadInstanceFile(dataDir)
-	if err == nil && instanceinfo.ProcessAlive(bs.PID) {
+	if err == nil {
+		if validateErr := bs.ValidateFor(dataRoot, dataDir); validateErr != nil {
+			return fmt.Errorf("refusing to inspect an instance with mismatched bootstrap identity: %w", validateErr)
+		}
+	}
+	if err == nil && instanceinfo.ProcessAliveInNamespace(bs.PID, bs.PIDNamespace) {
 		return fmt.Errorf(
 			"instance %s is already running on %s (pid %d, %s); stop it with `ao-harness down --instance %s`",
 			instanceinfo.ID(dataRoot), dataRoot, bs.PID, bs.URL, instanceinfo.ID(dataRoot))

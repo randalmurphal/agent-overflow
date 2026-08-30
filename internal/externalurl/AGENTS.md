@@ -25,9 +25,9 @@ Every UI path that opens a URL goes through `utils/externalLinks.ts`
 `window.open` by run mode. There is no second wrapper. Current callers:
 
 - the document-level anchor click delegate (`installExternalLinkDelegate`),
-- the terminal's xterm link provider — `WebLinksAddon` is constructed WITH a
+- the terminal's xterm link provider (`WebLinksAddon` is constructed WITH a
   handler in `components/terminal/terminalXterm.ts`; its default handler
-  calls `window.open` directly and would bypass the WSL → Windows bridge,
+  calls `window.open` directly and would bypass the WSL → Windows bridge),
 - `components/chat/DevServerChip.svelte`, the "open in browser" chip on a
   command row that announced a loopback dev server.
 

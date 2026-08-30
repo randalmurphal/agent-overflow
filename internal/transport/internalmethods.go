@@ -434,6 +434,7 @@ var LocalOnlyMethods = map[string]bool{
 	"StopClaudeTask":                   true,
 	"CleanCodexBackgroundTerminals":    true,
 	"TerminateCodexBackgroundTerminal": true,
+	"StopCodexSubagent":                true,
 	// BackgroundClaudeTask drives the same live Claude stdio control
 	// channel in the opposite direction: it detaches a running subagent /
 	// Bash from the foreground turn rather than killing it. Session

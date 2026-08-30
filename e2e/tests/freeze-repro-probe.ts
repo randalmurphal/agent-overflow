@@ -3,8 +3,8 @@
 //
 // The thing being detected is a wedged renderer MAIN THREAD, which is exactly
 // the condition that makes ordinary Playwright assertions useless: every
-// locator, every evaluate, every screenshot queues behind the same blocked
-// thread. So liveness is measured OUT OF BAND — probes are fired on a Node
+// locator and every evaluate queues behind the same blocked thread. So
+// liveness is measured OUT OF BAND — probes are fired on a Node
 // timer and never awaited in sequence, and a separate watchdog decides the
 // renderer is wedged when no probe has come back for long enough.
 //

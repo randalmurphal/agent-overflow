@@ -1250,6 +1250,10 @@ export class WSClient {
       console.warn(
         `wsClient: event gap on ${clampString(evt.channel)} (seq ${evt.seq})`,
       );
+      this.diagnosticsSink?.(
+        'transport: event gap marker received',
+        `${clampString(evt.channel)} seq ${evt.seq}`,
+      );
       this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, {
         channel: evt.channel,
         seq: evt.seq,
@@ -1278,6 +1282,10 @@ export class WSClient {
       console.warn(
         `wsClient: dropped ${evt.seq - cursor.seq - 1} event(s) on `
           + `${clampString(evt.channel)} (seq ${cursor.seq} -> ${evt.seq})`,
+      );
+      this.diagnosticsSink?.(
+        'transport: dropped events detected by seq skip',
+        `${clampString(evt.channel)} seq ${cursor.seq} -> ${evt.seq}`,
       );
       this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, {
         channel: evt.channel,

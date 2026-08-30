@@ -189,7 +189,12 @@ export function createUseStickToBottomController(
     // Subtracting -1 here just left the user 1 px above the actual
     // bottom; the scrollbar showed a one-tick gap and the snap felt
     // incomplete.
-    return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const target = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    if (options.externalContentGeometry === true) {
+      cachedBottomTarget = target;
+      cachedBottomTargetValid = true;
+    }
+    return target;
   }
 
   function scrollTopIsAtTarget(target: number): boolean {
@@ -201,53 +206,80 @@ export function createUseStickToBottomController(
     return scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
   }
 
-  // ===== Cached bottom geometry (the read-free delivery path) =====
+  // ===== Read-free content geometry =====
   // scrollHeight/scrollTop/clientHeight are layout-dependent reads: the
   // first one after a style write forces a synchronous layout pass, and
   // the content-delivery path used to pay one per delivery — interleaved
   // with other panes' flush writes, up to four forced passes landed in a
   // single 3-pane streaming frame (storm capture 2026-08-26). But a
-  // delivery already KNOWS the geometry: the sample carries the content
-  // height, and the bottom target is that height plus a CONSTANT offset
-  // (scroller padding/header — everything in scrollHeight that is not
-  // the delivered content, minus clientHeight). The offset is learned on
-  // every read-path delivery and the hot path computes the target by
-  // absolute arithmetic, reading nothing.
+  // delivery already has the geometry. The virtualizer sample carries
+  // both the total content height and the scroller's content-box viewport
+  // height, so its bottom target is `height - viewportHeight`. Padding is
+  // present in both DOM scrollHeight and clientHeight and cancels from
+  // their difference. The hot path therefore needs no learned target and
+  // reads no layout.
   //
-  // ABSOLUTE height, deliberately not a running delta. The first cut of
-  // this cache advanced a resync-rebased target by per-delivery deltas,
-  // and the two bookkeepings double-counted: a real-read resync (the
-  // browser's clamp scroll event, a chokepoint write's readback, a
-  // spring tick) rebases to CURRENT DOM, which already contains the
-  // content change the next delivery is about to report — so its delta
-  // applied twice, and every rebase between deliveries walked the
-  // target further from the truth (2026-08-26: the subagent digest
-  // rested 8px short of bottom, pinned by
-  // subagentBodyClip.browser.test.ts). Height-plus-offset has no
-  // between-delivery state to corrupt: resyncs maintain only scrollTop,
-  // which they DO know.
+  // Cached scrollTop and the external source's absolute bottom target are
+  // separate facts. Every path that moves scrollTop resyncs the first. Every
+  // virtualizer sample publishes `height - viewportHeight` as the second.
+  // Ordinary spring frames can then advance using scrollTop readback plus the
+  // published target without re-reading scrollHeight/clientHeight at display
+  // rate. Sentinel clamp detection and write-refusal probes force the real
+  // target read. A viewport change or width reflow still takes the read path
+  // once so a browser clamp that raced the delivery cannot leave cached
+  // scrollTop stale. RO-sourced pipelines such as ChannelView have no
+  // viewport sample and always take the real-read path.
   //
-  // The offset is invalid until a read-path delivery learns it, and the
-  // gates that force the read path are exactly the events that move it:
-  // a viewportHeight change on the sample (composer padding resize
-  // shrinks the scroller RO's content box), a width reflow, an
-  // RO-sourced pipeline (ChannelView, which never ships viewportHeight).
-  // A resync taken while FLOORED (scrollHeight clamped to clientHeight
-  // hides how far below the viewport content really is) invalidates the
-  // scrollTop side until a real read finds scrollable content again —
-  // short threads therefore keep real reads; those are the panes where
+  // A resync taken while FLOORED (scrollHeight clamped to clientHeight)
+  // cannot prove whether a browser clamp raced it, so short threads keep
+  // real reads until scrollable content returns. Those are the panes where
   // the read is cheap.
-  //
-  // Drift: real reads return browser-rounded ints while engine heights
-  // are fractional, so the computed target can sit sub-pixel off until
-  // the next read-path delivery re-learns the offset. Pinned panes
-  // resync on every delivery's own write; escaped panes only feed the
-  // 70px near-bottom band with it.
   let cachedScrollTop = 0;
   let cachedGeometryValid = false;
   let cachedGeometryFloored = false;
-  let cachedTargetOffset = 0;
-  let cachedTargetOffsetValid = false;
+  let cachedBottomTarget = 0;
+  let cachedBottomTargetValid = false;
+
+  function setIsNearBottomFromDistance(dist: number): void {
+    const next = dist <= STICK_TO_BOTTOM_OFFSET_PX;
+    if (next !== isNearBottomState) isNearBottomState = next;
+  }
+
+  function cacheExternalBottomTarget(height: number, viewportHeight: number): void {
+    const target = height - viewportHeight;
+    if (!Number.isFinite(target)) {
+      cachedBottomTargetValid = false;
+      return;
+    }
+    cachedBottomTarget = Math.max(0, target);
+    cachedBottomTargetValid = true;
+  }
+
+  function springTargetScrollTop(forceLayoutRead = false): number {
+    if (
+      !forceLayoutRead
+      && options.externalContentGeometry === true
+      && cachedBottomTargetValid
+    ) {
+      return cachedBottomTarget;
+    }
+    return targetScrollTop();
+  }
+
+  function springCurrentScrollTop(forceLayoutRead = false): number {
+    if (!scrollEl) return 0;
+    if (
+      !forceLayoutRead
+      && options.externalContentGeometry === true
+      && cachedGeometryValid
+    ) {
+      return cachedScrollTop;
+    }
+    const scrollTop = scrollEl.scrollTop;
+    cachedScrollTop = scrollTop;
+    cachedGeometryValid = true;
+    return scrollTop;
+  }
 
   function refreshIsNearBottom(): number {
     let dist = 0;
@@ -262,41 +294,42 @@ export function createUseStickToBottomController(
     }
     // No scrollEl (empty timeline) still refreshes the band from dist 0
     // — markAtBottom's empty-thread branch relies on it.
-    const next = dist <= STICK_TO_BOTTOM_OFFSET_PX;
-    if (next !== isNearBottomState) isNearBottomState = next;
+    setIsNearBottomFromDistance(dist);
     return dist;
   }
 
-  /**
-   * Learn the content-height → bottom-target offset from a read-path
-   * delivery. Called AFTER the delivery's real reads, so the extra
-   * scrollHeight/clientHeight reads here hit already-forced layout. A
-   * floored read teaches nothing — the clamp hides the true offset.
-   */
-  function learnContentTargetOffset(height: number): void {
-    if (!scrollEl) return;
-    const scrollHeight = scrollEl.scrollHeight;
-    const clientHeight = scrollEl.clientHeight;
-    if (scrollHeight <= clientHeight) {
-      cachedTargetOffsetValid = false;
-      return;
+  function refreshIsNearBottomAfterWrite(
+    caller: ScrollWriteCaller,
+    scrollTop: number,
+  ): number {
+    if (
+      options.externalContentGeometry === true
+      && cachedBottomTargetValid
+      && caller.startsWith('spring.')
+    ) {
+      cachedScrollTop = scrollTop;
+      cachedGeometryValid = true;
+      const dist = cachedBottomTarget - scrollTop;
+      setIsNearBottomFromDistance(dist);
+      return dist;
     }
-    cachedTargetOffset = scrollHeight - clientHeight - height;
-    cachedTargetOffsetValid = true;
+    return refreshIsNearBottom();
   }
 
   /**
-   * Read-free decision inputs for a delivery of `height`, or null when
-   * the cache cannot answer (offset never learned, scrollTop synced
-   * while floored, or detached) — the caller then takes the real-read
-   * path, which resyncs both halves. Also refreshes the near-bottom
-   * band from the same arithmetic, mirroring refreshIsNearBottom.
+   * Read-free decision inputs for an authoritative virtualizer sample,
+   * or null when cached scrollTop cannot be trusted. The caller then
+   * takes the real-read path. Also refreshes the near-bottom band from
+   * the same arithmetic, mirroring refreshIsNearBottom.
    */
-  function contentGeometryForHeight(height: number): { target: number; scrollTop: number } | null {
-    if (!scrollEl || !cachedGeometryValid || cachedGeometryFloored || !cachedTargetOffsetValid) {
+  function contentGeometryForSample(
+    height: number,
+    viewportHeight: number,
+  ): { target: number; scrollTop: number } | null {
+    if (!scrollEl || !cachedGeometryValid || cachedGeometryFloored) {
       return null;
     }
-    const target = Math.max(0, height + cachedTargetOffset);
+    const target = Math.max(0, height - viewportHeight);
     const next = target - cachedScrollTop <= STICK_TO_BOTTOM_OFFSET_PX;
     if (next !== isNearBottomState) isNearBottomState = next;
     return { target, scrollTop: cachedScrollTop };
@@ -311,7 +344,7 @@ export function createUseStickToBottomController(
   const chokepoint = createWriteChokepoint({
     getScrollEl: () => scrollEl,
     scrollTopIsAtTarget,
-    refreshIsNearBottom,
+    refreshIsNearBottom: refreshIsNearBottomAfterWrite,
     noteProgrammaticWrite: (top) => {
       intent.noteProgrammaticWrite(top);
       options.onScrollTopWritten?.(top);
@@ -448,7 +481,8 @@ export function createUseStickToBottomController(
     isAtBottom: () => isAtBottomState,
     isEscaped: () => escapedFromLockState,
     selectionActive: () => (scrollEl ? isSelectingInside(scrollEl) : false),
-    targetScrollTop,
+    targetScrollTop: springTargetScrollTop,
+    currentScrollTop: springCurrentScrollTop,
     scrollTopIsAtTarget,
     arrival: arrivalReadback,
     writeScrollTop,
@@ -488,11 +522,13 @@ export function createUseStickToBottomController(
     isNearBottom: () => isNearBottomState,
     targetScrollTop,
     refreshIsNearBottom,
-    learnContentTargetOffset,
-    contentGeometryForHeight,
+    cacheExternalBottomTarget,
+    contentGeometryForSample,
     writeScrollTop,
     resolverStateSnapshot,
     prefersReducedMotion: motionReduced,
+    contentGeometryProcessed: (scrollable) =>
+      options.onContentGeometryProcessed?.(scrollable),
     spring,
   });
 
@@ -860,8 +896,9 @@ export function createUseStickToBottomController(
     const gate = readNotifyContentGate();
     // Liveness IS load-bearing here, unlike the growth-delta path. This
     // path also carries VIEWPORT changes ('composer-geometry'): the
-    // composer growing shortens clientHeight and moves the bottom target
-    // without any content arriving. While output is flowing that should
+    // composer grows the scroller's bottom padding, which shortens its
+    // content-box viewport while DOM clientHeight stays fixed. That moves
+    // the bottom target without any content arriving. While output is flowing that should
     // ride the in-flight glide rather than snap through it; while idle
     // (the user typing a multi-line draft) the transcript must stay
     // pinned as the box grows, not glide behind it. A structural-append
@@ -1089,7 +1126,7 @@ export function createUseStickToBottomController(
     scrollEl = undefined;
     contentEl = undefined;
     cachedGeometryValid = false;
-    cachedTargetOffsetValid = false;
+    cachedBottomTargetValid = false;
   }
 
   return {
@@ -1101,6 +1138,11 @@ export function createUseStickToBottomController(
     },
     get escapedFromLock() {
       return escapedFromLockState;
+    },
+    // Scroll-event ATTRIBUTION, not follow gating — see the interface doc
+    // for why this must not fold in pauseDepth the way isSticky does.
+    get positionOwnerDriven() {
+      return !escapedFromLockState;
     },
     get isWarm() {
       return warm;

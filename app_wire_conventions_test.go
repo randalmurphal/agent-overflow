@@ -25,7 +25,7 @@ import (
 // per-caller lease, not an address. So the rule is about the wire NAME:
 // nothing that gets serialized may be called "subscriptionId".
 //
-// Doctrine: internal/transport/AGENTS.md → "Events Are Entity-Keyed";
+// Doctrine: internal/transport/AGENTS.md → "Events are entity-keyed";
 // frontend/CLAUDE.md → "State Boundaries".
 
 // goSourceRoots mirrors GO_PACKAGE_ROOTS in the Makefile: the root package,

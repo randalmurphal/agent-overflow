@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 // LiveStateSnapshot is triage's in-memory live projection for one thread.
@@ -14,10 +15,18 @@ import (
 // does NOT live here: it is durable thread state (threads.live_todo,
 // migration v65) that GetThreadLiveState reads straight from the store.
 type LiveStateSnapshot struct {
-	ActiveTurn             *ActiveTurnSnapshot
-	QueueItems             []QueuedFlushItem
-	FlushedItems           []PendingFlushItemSnapshot
-	Interactive            provider.PendingInteractiveRequests
+	ActiveTurn   *ActiveTurnSnapshot
+	QueueItems   []QueuedFlushItem
+	FlushedItems []PendingFlushItemSnapshot
+	// DeferredItems are the timeline rows of every pending send whose
+	// row is NOT in SQLite yet (a pending send persists on its wire
+	// echo — see AGENTS.md § Pending sends). A frontend reconciling
+	// against a SQLite slice merges these in, because the slice is
+	// structurally blind to them: without this, a transport-gap refresh
+	// mid-send drops the user's own message from the timeline until the
+	// echo lands (incident 2026-08-29). FIFO order, all send shapes.
+	DeferredItems []store.Item
+	Interactive   provider.PendingInteractiveRequests
 	EffectiveModel         string
 	EffectiveModelRevision uint64
 	// CompactingSinceUnixMs is the open compacting window's start (epoch
@@ -68,7 +77,11 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	}
 
 	for _, pending := range st.pendingSends {
-		if pending.DeferredItem == nil || pending.Shape != sendShapeFlush {
+		if pending.DeferredItem == nil {
+			continue
+		}
+		snapshot.DeferredItems = append(snapshot.DeferredItems, *pending.DeferredItem)
+		if pending.Shape != sendShapeFlush {
 			continue
 		}
 		queueItemID := pending.QueueItemID

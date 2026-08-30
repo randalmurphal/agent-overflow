@@ -67,6 +67,27 @@ export const NAV_TICK_SPACING_PX = 8;
 export const NAV_RAIL_MIN_TICKS = 2;
 
 /**
+ * Horizontal interaction geometry. The pointer-only strip must end before
+ * selectable transcript text begins. Keep the expanded tick inside that
+ * strip, then reserve a real dead gutter before the row column.
+ *
+ * The row shell grows from its historical 61rem asymmetric box to the old
+ * 62rem box with 40px/32px padding. That preserves its 920px wide-pane
+ * content width and exact wide-pane content bounds, while narrow panes spend
+ * only 8px more on each side.
+ */
+export const NAV_RAIL_HIT_WIDTH_PX = 32;
+export const NAV_RAIL_TICK_LEFT_PX = 8;
+export const NAV_RAIL_TEXT_GAP_PX = 8;
+export const NAV_RAIL_ROW_LEFT_PADDING_PX = NAV_RAIL_HIT_WIDTH_PX + NAV_RAIL_TEXT_GAP_PX;
+export const NAV_RAIL_ROW_RIGHT_PADDING_PX = 32;
+export const NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX = 920;
+export const NAV_RAIL_ROW_MAX_WIDTH_PX =
+  NAV_RAIL_ROW_LEFT_PADDING_PX
+  + NAV_RAIL_ROW_CONTENT_MAX_WIDTH_PX
+  + NAV_RAIL_ROW_RIGHT_PADDING_PX;
+
+/**
  * User messages are always TOP-LEVEL leaves: the projection never wraps
  * them into activity runs (a run cannot straddle a user message) and the
  * group kinds anchor on launch/wait/read rows. What counts as a real
@@ -121,9 +142,17 @@ export function mergeNavTicks(
 ): MergedNavTicks {
   const ticks: NavTick[] = [];
   const asUnloaded = (t: BaselineTick): NavTick => ({ ...t, nodeIndex: null });
+  // Belt and braces on top of the position bounds: the baseline is a
+  // point-in-time RPC snapshot, so an id the window has since loaded can
+  // sit at a stale position OUTSIDE the bounds (an edit-and-resend moved
+  // it). The rail keys its `{#each}` by tick id, and a repeated key
+  // throws `each_key_duplicate` mid-flush — one stale snapshot must
+  // never cost the pane its update batch.
+  const loadedIds = new Set(loaded.map((t) => t.id));
   if (hasMoreHistory && windowFirst) {
     for (const t of baseline) {
       if (comparePosition(t, windowFirst) >= 0) break;
+      if (loadedIds.has(t.id)) continue;
       ticks.push(asUnloaded(t));
     }
   }
@@ -133,6 +162,7 @@ export function mergeNavTicks(
   if (hasMoreNewer && windowLast) {
     for (const t of baseline) {
       if (comparePosition(t, windowLast) <= 0) continue;
+      if (loadedIds.has(t.id)) continue;
       ticks.push(asUnloaded(t));
     }
   }
@@ -297,13 +327,12 @@ export function tickRangeInView(
 ): [number, number] | null {
   const { ticks, loadedStart, loadedEnd } = merged;
   if (loadedStart < 0 || lastNodeInView < firstNodeInView) return null;
-  const nodeAt = (i: number): number => ticks[i].nodeIndex ?? 0;
   // First loaded tick with nodeIndex >= firstNodeInView.
   let lo = loadedStart;
   let hi = loadedEnd + 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (nodeAt(mid) < firstNodeInView) lo = mid + 1;
+    if ((ticks[mid].nodeIndex ?? 0) < firstNodeInView) lo = mid + 1;
     else hi = mid;
   }
   const first = lo;
@@ -312,7 +341,7 @@ export function tickRangeInView(
   hi = loadedEnd;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (nodeAt(mid) > lastNodeInView) hi = mid - 1;
+    if ((ticks[mid].nodeIndex ?? 0) > lastNodeInView) hi = mid - 1;
     else lo = mid;
   }
   const last = lo;
@@ -332,15 +361,14 @@ export function tickNearestCenter(
   merged: MergedNavTicks,
   range: [number, number],
   centerOffset: number,
-  offsetForNode: (nodeIndex: number) => number,
-  sizeForNode: (nodeIndex: number) => number,
+  geometry: Pick<TimelineNavGeometry, 'getItemOffset' | 'sizeAt'>,
 ): number {
   const { ticks } = merged;
   let best = range[0];
   let bestDist = Infinity;
   for (let i = range[0]; i <= range[1]; i++) {
     const node = ticks[i].nodeIndex ?? 0;
-    const rowCenter = offsetForNode(node) + sizeForNode(node) / 2;
+    const rowCenter = geometry.getItemOffset(node) + geometry.sizeAt(node) / 2;
     const dist = Math.abs(rowCenter - centerOffset);
     if (dist < bestDist) {
       bestDist = dist;
@@ -348,6 +376,11 @@ export function tickNearestCenter(
     }
   }
   return best;
+}
+
+export interface TimelineNavGeometry {
+  getItemOffset(nodeIndex: number): number;
+  sizeAt(nodeIndex: number): number;
 }
 
 /**
@@ -370,18 +403,17 @@ export function tickNearestCenter(
 export function railGapLow(
   merged: MergedNavTicks,
   viewportCenterOffset: number,
-  offsetForNode: (nodeIndex: number) => number,
+  geometry: Pick<TimelineNavGeometry, 'getItemOffset'>,
 ): number | null {
   const { ticks, loadedStart, loadedEnd } = merged;
   if (ticks.length < 2 || loadedStart < 0) return null;
-  const nodeAt = (i: number): number => ticks[i].nodeIndex ?? 0;
   // Largest loaded k with offset(ticks[k]) <= center. Binary search
   // keeps the per-frame engine lookups at O(log n).
   let lo = loadedStart - 1;
   let hi = loadedEnd;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (offsetForNode(nodeAt(mid)) <= viewportCenterOffset) lo = mid;
+    if (geometry.getItemOffset(ticks[mid].nodeIndex ?? 0) <= viewportCenterOffset) lo = mid;
     else hi = mid - 1;
   }
   // Above the first loaded tick: between unloaded history and it.

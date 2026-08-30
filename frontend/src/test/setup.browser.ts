@@ -20,29 +20,6 @@ import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnap
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 
-// Chromium emits this when a ResizeObserver callback itself changes layout so
-// notifications remain for the next frame — the scroll controller's sync-pin
-// does exactly that by design, and the browser simply re-delivers next frame.
-// It is a warning-grade engine notice (observer loop LIMIT errors are the
-// real bug) whose ErrorEvent carries `.error === null`, so vitest's browser
-// error-catcher never fails a test on it — but the catcher DOES re-log every
-// occurrence via console.error, which buries a streaming test's output under
-// dozens of identical lines. Drop exactly that message; everything else
-// passes through untouched.
-//
-// Deliberately NOT a window 'error' listener: vitest counts user-registered
-// error listeners and, when any exist, downgrades ALL unhandled window
-// errors to console noise instead of failing the test — a listener here
-// would weaken the safety net for the whole browser suite.
-const RO_LOOP_NOTICE = 'ResizeObserver loop completed with undelivered notifications';
-const originalConsoleError = console.error.bind(console);
-console.error = (...args: unknown[]) => {
-  const [first] = args;
-  const message = first instanceof Error ? first.message : typeof first === 'string' ? first : '';
-  if (message.includes(RO_LOOP_NOTICE)) return;
-  originalConsoleError(...args);
-};
-
 function installBrowserTraceSinks(): void {
   // uiRenderTrace is compiled in under MODE==='test' and flushes on a real
   // 500ms timer, which browser tests actually reach (unit tests finish before

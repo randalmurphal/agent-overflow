@@ -1,4 +1,4 @@
-import type { Lexer } from 'marked';
+import type { Lexer, MarkedOptions } from 'marked';
 import type { Extension, GenericToken } from './index.js';
 export declare function letterToInt(letter: string): number;
 export declare function romanToInt(roman: string): number;
@@ -13,6 +13,14 @@ export declare const rule = "^( {0,3}(?:[*+-]|(?:\\d{1,9}|[a-zA-Z]|(?:C|XC|L?X{0
  * source comment for the exact scope.
  */
 export declare function tokenizeListItemContent(lexer: Lexer, item: ListItemToken, top: boolean): void;
+export interface ListBoundaryToken {
+    type: 'list';
+    raw: string;
+    sealedLen: number;
+}
+export declare function parseListSource(src: string, options: MarkedOptions, sourceOnly: true): ListBoundaryToken | undefined;
+export declare function parseListSource(src: string, options: MarkedOptions, sourceOnly?: false): ListToken | undefined;
+export declare const markedListBlock: Extension;
 export declare const markedList: Extension;
 export interface ListToken {
     type: 'list';

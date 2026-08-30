@@ -1,5 +1,7 @@
 import type { Extension, GenericToken } from './index.js';
 export declare const markedDl: Extension;
+export declare const markedDlBlock: Extension;
+export declare const descriptionListSource: (src: string) => string | undefined;
 export type DescriptionListToken = {
     type: 'descriptionList';
     raw: string;

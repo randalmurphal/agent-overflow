@@ -1,4 +1,4 @@
-# Workflows System — UI Specification (rev 2)
+# Workflows System: UI Specification (rev 2)
 
 > Implementation-facing spec for the workflows surface, bound by
 > `../workflows-system.md` **rev 2** and `../workflows-system-decisions.md`
@@ -9,7 +9,7 @@
 > are **deleted**, not restyled. Rev 1's run-state grammar, evidence blocks,
 > sweep, and keyboard vocabulary survive and are restated here where they
 > still bind. The `synthesis.html` mockup remains direction for row/receipt
-> tone only — its pane frame is superseded.
+> tone only. Its pane frame is superseded.
 
 Vocabulary (code/spec): **workflow** = definition, **run** = execution
 (`work_items` row), **phase** = a step of a run, **unit** = one fan-out member
@@ -21,27 +21,27 @@ plain ("Runs", "History", "Needs you"); the surface is always called
 
 ## 1. Normative rules (every surface)
 
-- **R1 — Two-hue attention.** Amber (`--warning`) ONLY for states a human must
-  unblock (`needs-human` in all its typed reasons — gate, question, stuck,
-  paused, interrupted, unit-failed, disposition — and their roll-ups). Red
+- **R1: Two-hue attention.** Amber (`--warning`) ONLY for states a human must
+  unblock: `needs-human` in all its typed reasons (gate, question, stuck,
+  paused, interrupted, unit-failed, disposition) and their roll-ups. Red
   (`--error`) ONLY for `failed`. Everything else (running, done, cancelled,
-  scheduled) is typographic — no colored dot, no badge.
+  scheduled) is typographic: no colored dot, no badge.
   Done-awaiting-disposition counts neutrally, MUST NOT turn amber, and has no
   time-based escalation. A row shows at most one signal (dot + label); amber
   rows reuse the existing `status-glow-warning` ring + pulse conventions
   (`threadStatusPill.ts` / `app.css`).
-- **R2 — No internals.** Variables, envelopes, JSON, schemas, gate traces
+- **R2: No internals.** Variables, envelopes, JSON, schemas, gate traces
   never render on any human surface. Human evidence = narrative digest, diff,
-  checks, cost. The word "variables" MUST NOT appear in UI copy — typed seeds
+  checks, cost. The word "variables" MUST NOT appear in UI copy. Typed seeds
   render as plain form fields.
-- **R3 — Only threads break out, and the surface never creates one.** The
+- **R3: Only threads break out, and the surface never creates one.** The
   overlay owns all workflow navigation internally; a thread the run already has
   (phase, unit, the thread it is bound to) opens as a **normal thread pane**,
   never inside the overlay. Opening a thread **closes the overlay** (the pane
   tree underneath was never unmounted, so this is instant); reopening the
   overlay restores its stack. No affordance on this surface *starts* a
-  conversation — every thread-spawning button was removed (D32).
-- **R4 — Copy tone.** Terse, human, past-tense receipts ("Merged to main —
+  conversation. Every thread-spawning button was removed (D32).
+- **R4: Copy tone.** Terse, human, past-tense receipts ("Merged to main —
   fast-forward 3af92c1 · worktree cleaned"); metadata as `·`-separated
   fragments ("parked 7h", "2/5 · 14m · $1.84"). No exclamations, no emoji.
 
@@ -51,10 +51,10 @@ plain ("Runs", "History", "Needs you"); the surface is always called
 
 ### 2.1 Frame + lifecycle
 
-- Rendered in `App.svelte` as a **sibling of `<PaneHost>`**, layered above it
-  — never passed into PaneHost, never a pane kind.
+- Rendered in `App.svelte` as a **sibling of `<PaneHost>`**, layered above
+  it, never passed into PaneHost, never a pane kind.
   **The pane tree stays mounted and untouched while the overlay is open**;
-  closing is a pure unmount of the overlay layer — zero pane rebuild, zero
+  closing is a pure unmount of the overlay layer: zero pane rebuild, zero
   virtualizer resync. Settings has since been converted to the same pattern
   and shares the frame (`primitives/OverlayShell.svelte`); the two overlays
   are mutually exclusive, so at most one focus trap is ever up.
@@ -75,7 +75,7 @@ plain ("Runs", "History", "Needs you"); the surface is always called
 
 Two levels: **home** › **run detail** (plus the terminal **all-clear** level
 reachable only by finishing the sweep, §4.4). Rev 1's intermediate
-workflow-detail level is folded into home — a workflow's runs and history
+workflow-detail level is folded into home. A workflow's runs and history
 expand in place; there is no third navigation depth.
 
 - **Header chrome.** Home: title "Workflows" + header controls (§3.1). Run
@@ -89,7 +89,7 @@ expand in place; there is no third navigation depth.
 
 ---
 
-## 3. Home — projects, workflows, runs
+## 3. Home: projects, workflows, runs
 
 Project-grouped, single column at every width. Groups ordered by project
 name; a project renders only if it has workflow definitions, runs, or
@@ -99,7 +99,7 @@ automations.
 
 | Control | Behavior |
 |---|---|
-| Pause all | The §6 global kill switch: `❚❚` / `▶`. Tooltip "Pause stops new phase starts everywhere; in-flight turns finish". Toast on toggle. Not a queue — no ordering, no counts. |
+| Pause all | The §6 global kill switch: `❚❚` / `▶`. Tooltip "Pause stops new phase starts everywhere; in-flight turns finish". Toast on toggle. Not a queue: no ordering, no counts. |
 | Project filter | All projects → each project. Filters groups and the sweep set. |
 | `+ New run` | Opens intake (§7). |
 
@@ -114,29 +114,29 @@ truncates end-first.
 
 Within a group, in order:
 
-1. **Needs attention** — parked runs (amber, oldest first), then failed
+1. **Needs attention** lists parked runs (amber, oldest first), then failed
    (red). Row: signal dot + "Needs you"/"Failed" + title + right meta
    (`review gate · parked 7h`, `unit 3/5 failed · 2h`, `paused · yesterday`,
    `interrupted · app restarted`). Click → run detail (§4), landing inside
    the sweep.
-2. **Running** — live runs: title + right meta `phase 3/5 · port-sections
+2. **Running** lists live runs: title + right meta `phase 3/5 · port-sections
    4 running · 2 waiting on provider:codex · 14m · $1.84`; the waiting-on
    fragment renders only when a phase/unit is blocked on capacity (§6 of the
    WHAT-spec). Live-activity line below in italic hint tone. Hover cancel
    `✕` arms to `stop this run?`; second click cancels; Esc disarms.
-3. **Workflows** — the project's definitions (and shared ones, marked
+3. **Workflows** lists the project's definitions (and shared ones, marked
    `shared`): name + chain summary (`plan → port ⇉ merge → validate ↺`).
-   Read-only — editing a definition is file work, not a row action (D32).
+   Read-only. Editing a definition is file work, not a row action (D32).
    Automations render inline on their workflow row: `every 6h · next in
    3h 40m · 2 skipped` + enable/disable + **Run now**. A definition failing
    dry-run validation renders its first error inline, hint-toned.
-4. **Recent** — collapsed by default (`▶ Recent · 12`): terminal runs, most
+4. **Recent** is collapsed by default (`▶ Recent · 12`): terminal runs, most
    recent first, receipt meta (`merged · 2d · $1.75`, `cancelled · worktree
    kept`, `discarded — branch dropped, record kept`). Rows open historical
    run detail (§4.6).
 
 **Continuity notes** (jobs that declare them): one collapsed line on the
-workflow row, expanding to the editable markdown block — unchanged from
+workflow row, expanding to the editable markdown block, unchanged from
 rev 1.
 
 ---
@@ -144,7 +144,7 @@ rev 1.
 ## 4. Run detail
 
 The resolution surface. Everything from rev 1's run detail survives except
-queue rows; the phase list becomes the **run map** (§4.2) — one vertical line
+queue rows; the phase list becomes the **run map** (§4.2), one vertical line
 where position is progress, not an expandable tree of rows.
 
 ### 4.1 Header block
@@ -154,7 +154,7 @@ where position is progress, not an expandable tree of rows.
   "Failed"; neutral "Done" / "Running" / "Cancelled") · sweep counter when
   parked (§4.4).
 - Row 2: run title. Row 3 (hint): `workflow · wave 3 · implement · parked 7h ·
-  $3.10` — the position comes off the run map's frontier whenever the map view
+  $3.10`. The position comes off the run map's frontier whenever the map view
   is loaded, and falls back to the frozen `phase N/M` counter only when it is
   not (the SQL ordinal lies for retried, looped and campaign runs). Cost is the
   **root-tree total** (children included); automation runs add `spawned by
@@ -163,8 +163,8 @@ where position is progress, not an expandable tree of rows.
 
 ### 4.2 The run map
 
-Spec of record: [`RUN-MAP.md`](RUN-MAP.md). The recursive expandable tree that
-used to live here is deleted — no toggle, no fallback.
+Spec of record: [`workflow-run-map.md`](../../architecture/workflow-run-map.md). The recursive expandable tree that
+used to live here is deleted: no toggle, no fallback.
 
 A run renders as one vertical line, and the reading rule is the whole UI:
 **position = progress, solid = happened, marked node = now, dashed = not yet.**
@@ -174,7 +174,7 @@ parallel branch columns that split and rejoin, a non-tail call as a chain inside
 its caller's node. Everything the frozen definition says will still happen is
 pre-rendered as dashed ghosts below the action, ending in the loop decision
 ("issues → wave N+1" / "clean → done") when the definition tail-self-calls. A
-workflow with no self-call is one segment with no loop foot — the base case, not
+workflow with no self-call is one segment with no loop foot, the base case, not
 a special case. Retried phases render one node per attempt (`audit`, `fix`,
 `audit ·2`) and historical attempts stay openable (§4.6). Any node with a thread
 opens it (R3); a folded wave row expands inline from the model already built.
@@ -193,7 +193,7 @@ is the standing spinner plus weight. The `now ▸` marker is the surface's one
 | `WorkflowRunMapFold.svelte` | the `grid-template-rows` 0fr⇄1fr reveal both folds use |
 | `runMapFollow.svelte.ts` | the scroll/follow controller and its one write chokepoint (§9 of RUN-MAP) |
 | `stores/workflowRunMap.svelte.ts` (+ `workflowRunMapPatch.ts`) | the entity store: `WorkflowGetRunMap`, event patching, invalidate fallback, gap/reconnect |
-| `utils/workflowRunMap*.ts` | the pure projection — model, index, frontier, types, styles |
+| `utils/workflowRunMap*.ts` | the pure projection: model, index, frontier, types, styles |
 
 ### 4.3 Per-state digest, evidence, actions
 
@@ -202,27 +202,27 @@ Action row is a fixed footer, primary first; keys per §8.
 
 | State | Evidence | Action row |
 |---|---|---|
-| **gate** | Checks row; diff file list expanding hunks in place; full review → the real ReviewPane (§4.7). | `Approve → <next>` (a, primary) · `Request changes` (r — inline optional note, Enter commits; rides as loop feedback) |
-| **question** | Question quote block; suggested answers as digit-hinted buttons; answer input ("Answer — the phase resumes where it yielded") + Send. | None — the answer input IS the affordance. Digits pick + send; `a` focuses input; Enter sends. |
-| **failed** (`check-failed-genuine`, `child-failed`) | Failing check line; latest diagnosis quote. | `Rerun with guidance` (a, primary — new attempt seeded with the diagnosis as feedback) · `Discard` (r, danger, §4.5) |
-| **blocked** (every other `needs-human` reason: stuck, agent-error, wiring-error, setup-failed, budget-exhausted, stalled, loop-limit-exhausted) | Same evidence as **failed** — a run that could not finish asks the same question whichever state it stopped in. A spent loop explicitly points to an earlier phase, which is the entry that refills its bound. | `Resume` (a, primary — re-enters the phase with a fresh attempt, after the human clears whatever blocked it) · `Discard` (r, danger, §4.5) |
-| **paused / interrupted / provider-retries-exhausted** | Receipt line (`paused by you · yesterday` / `interrupted — the app was restarted` / `provider retries exhausted — resume continues where it stopped`); partial-envelope digest if one was captured. Legacy `retries-exhausted` rows stay here without guessing which old cause produced them. | `Resume` (a, primary — next attempt, same provider thread, continue message) · `Discard` (r, danger, §4.5) |
-| **checkpoint** | Same shape as **paused**, in its own words: `stopped at your checkpoint · 3m ago`, plus the partial outputs of the wave that finished. This is the one park that is not a fault — the run did what it was asked. | `Continue the run` (a, primary — takes the call the stop skipped) · `Discard` (r, danger, §4.5) |
-| **unit-failed** | The failed unit is a red branch column in its phase's fan, beside the branches that survived (RUN-MAP §6) — no separate highlight; its failing check/diagnosis renders inline below the map. | `Retry unit` (a, primary) · `Retry all failed units` (u — repairs every failed unit of the attempt in one action, D33) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t — detaches the unit and opens the thread it is ALREADY running in) · `Discard` (r, danger, §4.5) |
-| **taken-over** | The steered phase thread's state; the run is under human control. | `Finish takeover` (a, primary — one finalize turn re-attaches the schema) · `Discard` (r, danger, §4.5) |
-| **done** | Checks row; disposition block (manual: merge / PR / discard; auto-merge projects show the receipt + policy + undo line). After Create PR: the PR block with `Review comments (N)` + `Discuss this PR` riding the linked thread (§4.7). Outputs block (§4.8). | Manual: `Merge to main` (a, primary) · `Create PR` · `Discard` (r, danger, §4.5). Any run adds `Bind to thread…` in the `⋯` menu — it binds an EXISTING thread and never creates one. |
-| **running** | The run map, live: the marked node is where the run is, everything the frozen definition still promises is drawn below it as ghosts, and follow keeps the frontier in view until the reader scrolls away (RUN-MAP §9). | `Pause` (interrupt in-flight turns → park paused) · `Stop after this wave` / `Stopping after this wave — undo` (D36, root runs with a call phase only — see below) · `Open phase thread` · `Stop this run` (danger, teardown → cancelled) |
+| **gate** | Checks row; diff file list expanding hunks in place; full review → the real ReviewPane (§4.7). | `Approve → <next>` (a, primary) · `Request changes` (r: inline optional note, Enter commits; rides as loop feedback) |
+| **question** | Question quote block; suggested answers as digit-hinted buttons; answer input ("Answer — the phase resumes where it yielded") + Send. | None. The answer input IS the affordance. Digits pick + send; `a` focuses input; Enter sends. |
+| **failed** (`check-failed-genuine`, `child-failed`) | Failing check line; latest diagnosis quote. | `Rerun with guidance` (a, primary: a new attempt seeded with the diagnosis as feedback) · `Discard` (r, danger, §4.5) |
+| **blocked** (every other `needs-human` reason: stuck, agent-error, wiring-error, setup-failed, budget-exhausted, stalled, loop-limit-exhausted) | Same evidence as **failed**. A run that could not finish asks the same question whichever state it stopped in. A spent loop explicitly points to an earlier phase, which is the entry that refills its bound. | `Resume` (a, primary: re-enters the phase with a fresh attempt, after the human clears whatever blocked it) · `Discard` (r, danger, §4.5) |
+| **paused / interrupted / provider-retries-exhausted** | Receipt line (`paused by you · yesterday` / `interrupted — the app was restarted` / `provider retries exhausted — resume continues where it stopped`); partial-envelope digest if one was captured. Legacy `retries-exhausted` rows stay here without guessing which old cause produced them. | `Resume` (a, primary: next attempt, same provider thread, continue message) · `Discard` (r, danger, §4.5) |
+| **checkpoint** | Same shape as **paused**, in its own words: `stopped at your checkpoint · 3m ago`, plus the partial outputs of the wave that finished. This is the one park that is not a fault. The run did what it was asked. | `Continue the run` (a, primary: takes the call the stop skipped) · `Discard` (r, danger, §4.5) |
+| **unit-failed** | The failed unit is a red branch column in its phase's fan, beside the branches that survived (RUN-MAP §6), with no separate highlight; its failing check/diagnosis renders inline below the map. | `Retry unit` (a, primary) · `Retry all failed units` (u: repairs every failed unit of the attempt in one action, D33) · `Drop unit — join proceeds without it` (recorded in the gate trace) · `Take over unit` (t: detaches the unit and opens the thread it is ALREADY running in) · `Discard` (r, danger, §4.5) |
+| **taken-over** | The steered phase thread's state; the run is under human control. | `Finish takeover` (a, primary: one finalize turn re-attaches the schema) · `Discard` (r, danger, §4.5) |
+| **done** | Checks row; disposition block (manual: merge / PR / discard; auto-merge projects show the receipt + policy + undo line). After Create PR: the PR block with `Review comments (N)` + `Discuss this PR` riding the linked thread (§4.7). Outputs block (§4.8). | Manual: `Merge to main` (a, primary) · `Create PR` · `Discard` (r, danger, §4.5). Any run adds `Bind to thread…` in the `⋯` menu. It binds an EXISTING thread and never creates one. |
+| **running** | The run map, live: the marked node is where the run is, everything the frozen definition still promises is drawn below it as ghosts, and follow keeps the frontier in view until the reader scrolls away (RUN-MAP §9). | `Pause` (interrupt in-flight turns → park paused) · `Stop after this wave` / `Stopping after this wave — undo` (D36, root runs with a call phase only, see below) · `Open phase thread` · `Stop this run` (danger, teardown → cancelled) |
 | **cancelled** | Receipt `cancelled · worktree kept`. | `Discard` (danger, §4.5) · `Back` |
 | **resolved (this session)** | Digest + green receipt ("Approved — routing to docs", "Resumed — the phase continues its session", "Unit dropped — join proceeds over 4 of 5"). | `Back` (esc) |
 
-Merge MUST refuse on conflict/dirty base and park `needs-human(disposition)`
-— never forced, never silent.
+Merge MUST refuse on conflict/dirty base and park `needs-human(disposition)`,
+never forced, never silent.
 
 **The soft stop sits next to Pause because it answers the same question at a
 different cost (D36).** Pause stops the run now and interrupts the turn in
 flight; `Stop after this wave` stops it at the next call boundary and
-interrupts nothing. It binds **no §8 key** — the letter row is for resolving a
-parked run, and this is a request against one that is still going — and it
+interrupts nothing. It binds **no §8 key** (the letter row is for resolving a
+parked run, and this is a request against one that is still going) and it
 **arms no confirm**, because neither direction destroys anything. The armed
 label is the only place a human sees that a stop is pending, which is why it
 reads as a state (`Stopping after this wave — undo`) rather than as a second
@@ -236,12 +236,12 @@ because nothing about the run's *state* changed.
 its node on the map and type: the send path interrupts the in-flight turn, detaches the
 attempt from engine control, and parks the run `needs-human(taken-over)`, from
 where `Finish takeover` hands it back. No row here spawns a thread to take a
-run over in — the thread the phase is already running in is the one to steer.
+run over in. The thread the phase is already running in is the one to steer.
 
 ### 4.4 Needs-attention sweep (j/k)
 
-Unchanged from rev 1 except the set: all parked runs — every `needs-human`
-reason including paused/interrupted/unit-failed — **plus
+Unchanged from rev 1 except the set: all parked runs (every `needs-human`
+reason including paused/interrupted/unit-failed) **plus
 done-awaiting-disposition**, app-wide (respecting the project filter),
 oldest-parked first, wrapping. `j`/`k` step; acting shows the receipt then
 auto-advances (~650ms); exhaustion pushes **all-clear** (centered ✓,
@@ -249,12 +249,12 @@ auto-advances (~650ms); exhaustion pushes **all-clear** (centered ✓,
 as their **root** run (one sweep stop per tree); the map opens at the
 parked node.
 
-### 4.5 Discard — preview is consent (D23)
+### 4.5 Discard: preview is consent (D23)
 
 Discard on any resting run opens a **loss preview** dialog before anything
 is destroyed: one row per worktree in the run's tree (primary,
-sub-worktrees, child worktrees) — `branch · N dirty files · M unmerged
-commits` — and the artifact note ("artifacts already captured survive").
+sub-worktrees, child worktrees) reading `branch · N dirty files · M unmerged
+commits`, and the artifact note ("artifacts already captured survive").
 Confirm tears the tree down through the teardown contract and drops
 run-created branches whose commits never landed; the run record is kept.
 Toast: "Discarded — 3 worktrees removed, record kept". There is no
@@ -280,7 +280,7 @@ closes, R3). No parallel diff renderer.
 
 Runs whose workflow declares outputs render an **Outputs** block above the
 action row on terminal states: named values as kv rows; artifact files open
-on click — markdown/HTML in the app preview, else the system opener. A call
+on click: markdown/HTML in the app preview, else the system opener. A call
 phase's outputs render on the child; the root's declared outputs are the
 run's deliverables. Artifacts survive worktree discard.
 
@@ -293,19 +293,19 @@ run's deliverables. Artifacts survive worktree discard.
 Modal-primitive dialog, unchanged fields except the footer: Project · Goal ·
 Workflow picker (invalid definitions greyed with first error) · Base branch ·
 typed seed inputs as plain fields · step-mode checkbox. Footer: primary
-**`Start`** (the run starts immediately — no position, no prediction) ·
+**`Start`** (the run starts immediately: no position, no prediction) ·
 `Cancel`. Toast: "Started — <workflow> on <project>".
 
-### 5.2 From chat — the `/workflow` command
+### 5.2 From chat: the `/workflow` command
 
 Rev 1's proposal confirm card (§7.2) and its MCP plumbing are **removed**.
 Agents start runs through the `agent-overflow` CLI under normal bash approval
 (D17, D30). The only run-shaped UI in a chat timeline is the **wake message** a
-bound run delivers, which is an ordinary user-role message — no custom card.
+bound run delivers, which is an ordinary user-role message, with no custom card.
 
 **`/workflow` is a composer slash command (D31), not a palette action.** Typing
 `/` at the start of any **word** in a draft opens a completion menu of
-registered commands — the same popover family as the `@`-mention completion,
+registered commands, the same popover family as the `@`-mention completion,
 and the same word-boundary rule, filtering as the user types, arrow / Enter /
 Tab / click to select, Escape to dismiss. Selecting one completes the **word**
 in place and nothing else. There is no token, no chip, and no inserted block. A
@@ -313,14 +313,14 @@ in place and nothing else. There is no token, no chip, and no inserted block. A
 
 Every word in the draft matching a registered command renders in the accent
 colour, in the composer and in the sent message in chat history. That is the
-whole visual vocabulary — and it is also the notice that a mid-sentence mention
+whole visual vocabulary. It is also the notice that a mid-sentence mention
 of `/workflow` is a real invocation, which is the accepted consequence of
 matching at any word position.
 
 **Expansion happens at send time, on the backend.** When a sent message names a
 registered command anywhere in it, the send path appends the command's block to
-the payload the PROVIDER receives — typed text first (it is the instruction),
-block second (it is context) — and stores the user row with exactly what was
+the payload the PROVIDER receives, typed text first (it is the instruction)
+and block second (it is context), and stores the user row with exactly what was
 typed plus a meta marker naming the command that expanded. Naming the same
 command more than once expands it once. History colours the word from that
 marker, never from a live registry match, so a row stays truthful about what
@@ -336,35 +336,35 @@ turn to serve one message.
 `SettingsFooter.svelte`: icon + "Workflows" + the single global
 needs-attention count (amber, only when > 0). Click toggles the overlay.
 Rev 1's per-project sidebar section (`WorkflowsSection.svelte`) is
-**deleted** — runs are not sidebar citizens.
+**deleted**. Runs are not sidebar citizens.
 
 **Thread-list exclusion stands**: phase/unit (`workflow`), studio
 (`workflow-studio`), and triage (`workflow-triage`) threads carry their
 `threads.mode` values and MUST NEVER appear in normal thread lists, search,
-or pickers — excluded by mode in `utils/sidebarTree.ts` /
+or pickers, excluded by mode in `utils/sidebarTree.ts` /
 `ProjectThreadList.svelte` / `UnifiedThreadPicker.svelte`, never by title.
 The exclusion covers three modes but only two are still minted: D32 removed
 the studio spawner, and `workflow-triage` is now written only by the PR
 follow-up surfaces (§4.7), which reuse the run's one linked thread. Existing
-rows in either mode stay hidden — the mode plumbing is data compatibility, not
+rows in either mode stay hidden. The mode plumbing is data compatibility, not
 a live affordance.
 Once opened (from the overlay or a wake message reference) they behave as
 completely normal thread panes. **Exception by design**: a thread a run is
-*bound to* (§4.1) is a normal user thread that was never mode-excluded —
-binding never hides a thread.
+*bound to* (§4.1) is a normal user thread that was never mode-excluded.
+Binding never hides a thread.
 
 ---
 
 ## 7. OS notifications + deep links
 
 - A run entering **`needs-human`** (any typed reason) or **`failed`** fires
-  one OS notification — title = run title, body = the one-line "what it
+  one OS notification: title = run title, body = the one-line "what it
   needs". Click → app foreground, overlay at that run's detail, inside the
   sweep. Thread-bound runs also wake their thread (D17); the notification
   still fires and the badge stays authoritative.
 - `done` / `running` never notify. Rev 1's coalesced drain summary is
   **deleted** with the queue.
-- Child runs never notify (D18) — the root run carries the tree's attention.
+- Child runs never notify (D18). The root run carries the tree's attention.
 - Provider usage-limit parks are the one cross-run exception to per-run OS
   attention (D75): bound runs for the same provider account and watching
   thread notify and inject once until somebody starts or resumes work. Mixed
@@ -385,8 +385,8 @@ open overlay; suppressed while a text field has focus.
 | `j`/`→`/`↓` · `k`/`←`/`↑` | run detail, parked set | next / previous needs-attention run (wraps) |
 | `a` | gate / question / failed / blocked / paused (including provider-usage-limited) / unit-failed / taken-over / done | primary action (approve / focus answer / rerun / resume / retry unit / finish takeover / merge) |
 | `r` | gate / failed / blocked / paused / unit-failed / taken-over / done / cancelled | request changes / discard (opens the §4.5 preview) |
-| `t` | unit-failed | take over the failed unit — the only `t` binding left (D32) |
-| `u` | unit-failed | retry every failed unit of the attempt at once (D33) — the usage-limit recovery, where pressing `a` once per unit is the same repair typed N times |
+| `t` | unit-failed | take over the failed unit, the only `t` binding left (D32) |
+| `u` | unit-failed | retry every failed unit of the attempt at once (D33), the usage-limit recovery, where pressing `a` once per unit is the same repair typed N times |
 | `1`–`9` | question | pick + send the nth suggested answer |
 | `Enter` | gate / question input | toggle first diff file / send answer |
 
@@ -399,7 +399,7 @@ open overlay; suppressed while a text field has focus.
   definitions but no runs → its Workflows list only. No parked runs → footer
   badge shows no count; sweep entered empty → all-clear directly.
 - The normal-view test stands: **workflows are invisible until they have a
-  reason not to be** — a quiet system is one footer row.
+  reason not to be**. A quiet system is one footer row.
 
 ---
 
@@ -417,16 +417,16 @@ out.
 ## 11. Non-goals (normative)
 
 - NO variables / envelope / JSON / schema / gate-trace rendering on any
-  human surface — those exist for agents through the `agent-overflow` CLI.
+  human surface. Those exist for agents through the `agent-overflow` CLI.
 - NO affordance that spawns a chat thread (D32): no "Continue with agent",
   no "Open in thread" seed+bind, no triage-agent shell, no studio thread.
   Opening a thread the run ALREADY has (phase, unit, bound) stays.
 - NO queue surfaces: no toggle, no Queues section, no drag priority, no
   position predictions, no drain summaries.
 - NO workflows pane, NO per-project sidebar section, NO pane-kind or
-  pane-persistence integration — the overlay is the only surface and panes
+  pane-persistence integration. The overlay is the only surface and panes
   never unmount beneath it.
-- NO chat proposal cards — agents use the CLI; the wake message is a plain
+- NO chat proposal cards. Agents use the CLI; the wake message is a plain
   message.
 - NO kanban / global work board; NO inspection modal; NO workflow-settings
   forms beyond enable/disable + Run now + notes (everything richer is studio
@@ -443,8 +443,8 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 | Concern | Where |
 |---|---|
 | Overlay frame (§2.1) | `components/workflows/WorkflowsOverlay.svelte`, mounted in `App.svelte` through `primitives/LazyOverlay.svelte` as a sibling of `<PaneHost>` (never a pane kind), framed by `primitives/OverlayShell.svelte` |
-| Navigation (§2.2) | `stores/workflowsOverlay.svelte.ts` — stack, project filter, sweep cursor, armed confirm, dialog; restart persistence via `stores/appStorage.ts` |
-| Data cache | `stores/workflowRuns.svelte.ts` (runs, catalogs, automations, costs, the FOCUSED run's detail only, session receipts) + the pure projections in `stores/workflowData.ts`. A run's tree/shape is not here — that is the run-map entity store's |
+| Navigation (§2.2) | `stores/workflowsOverlay.svelte.ts`: stack, project filter, sweep cursor, armed confirm, dialog; restart persistence via `stores/appStorage.ts` |
+| Data cache | `stores/workflowRuns.svelte.ts` (runs, catalogs, automations, costs, the FOCUSED run's detail only, session receipts) + the pure projections in `stores/workflowData.ts`. A run's tree/shape is not here. That is the run-map entity store's |
 | Events / RPC | `stores/eventsWorkflow.ts` via `events.ts`; `stores/bindings.ts`; typed `workflow:*` channel |
 | Home (§3) | `WorkflowsHome.svelte`, `WorkflowsHomeControls.svelte`, `WorkflowProjectGroup.svelte`, `WorkflowRunRow.svelte`, `WorkflowDefinitionRow.svelte` |
 | Run detail (§4.1) | `WorkflowRunDetail.svelte` (coordinator), `WorkflowRunHeader.svelte` (position read off the map's frontier, `utils/workflowActionRows.ts` for the failed-unit lookup) |
@@ -453,20 +453,20 @@ As shipped. Paths under `frontend/src/lib/` unless noted.
 | Action row (§4.3) | `WorkflowActionRow.svelte` over the pure table in `utils/workflowActionRows.ts`; dispatch in `stores/workflowActions.ts`; receipts/toasts/auto-advance in `stores/workflowResolve.ts` |
 | Soft stop (§4.3, D36) | `WorkflowRequestSoftStop` binding; row entry in `utils/workflowActionRows.ts` (`softStop` input), dispatch case in `stores/workflowActions.ts`, live update via the `workflow:soft-stop` channel through `stores/eventsWorkflow.ts` → `patchWorkflowSoftStop` |
 | Sweep (§4.4) | `stores/workflowSweep.ts` over `workflowData`'s sweep helpers; `WorkflowAllClear.svelte` |
-| Discard (§4.5) | `WorkflowDiscardDialog.svelte` — loss preview is consent, and it resolves through the same `stores/workflowResolve.ts` |
+| Discard (§4.5) | `WorkflowDiscardDialog.svelte`: loss preview is consent, and it resolves through the same `stores/workflowResolve.ts` |
 | Intake (§5.1) | `WorkflowIntakeDialog.svelte` + `WorkflowSeedFields.svelte` over `utils/workflowIntake.ts`, on the `components/primitives/Modal.svelte` shell |
 | Footer button (§6) | `components/sidebar/WorkflowsFooter.svelte` in `Sidebar.svelte`, above `SettingsFooter.svelte` |
 | Deep links (§7) | `stores/notificationActivationQueue.ts` → `openWorkflowRunInOverlay` |
 | Keyboard (§8) | commands in `stores/workflowCommands.svelte.ts`, flags in `stores/builtinCommands.svelte.ts`, chords in `internal/keybindings/keybindings.go` |
-| Signals (R1) | `utils/workflowRunSignal.ts` — the one place a state maps to a hue |
-| Thread opens (R3) | `stores/workflowThreads.ts` — opens existing threads only, never creates one; thread exclusion by mode in `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
+| Signals (R1) | `utils/workflowRunSignal.ts`: the one place a state maps to a hue |
+| Thread opens (R3) | `stores/workflowThreads.ts`: opens existing threads only, never creates one; thread exclusion by mode in `utils/sidebarTree.ts`, `ProjectThreadList.svelte`, `UnifiedThreadPicker.svelte` |
 | PR review | `stores/reviewPane.svelte.ts` companion flow (overlay closes; ReviewPane opens as a pane) |
 | `/workflow` command (§5.2) | registry + trigger rules in `components/composer/slashCommands.ts`, menu state in `composerSlash.svelte.ts`, popover `ComposerSlashPopover.svelte`, accent word `ComposerCommandHighlight.svelte` (composer) and `chat/UserMessage.svelte` (history, from `utils/userMessageMeta.ts`); send-time expansion in `app_composer_commands.go` over the block `app_workflow_composer.go` resolves |
 | Toasts | `stores/toast.svelte.ts` |
 | e2e | `e2e/tests/workflows-overlay.spec.ts` |
 
 Drift from the pre-build plan, deliberately: the reactive cache is
-`stores/workflowRuns.svelte.ts` (rev 1 had no equivalent — `workflowData.ts`
+`stores/workflowRuns.svelte.ts` (rev 1 had no equivalent: `workflowData.ts`
 stays pure so it is unit-testable without a Svelte runtime), and the run
 detail is a coordinator over per-section components rather than one file.
 

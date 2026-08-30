@@ -5,9 +5,48 @@ package main
 import (
 	"errors"
 	"os"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+type harnessFileAttributeTagInfo struct {
+	Attributes uint32
+	ReparseTag uint32
+}
+
+func openHarnessLock(path string, mode os.FileMode) (*os.File, error) {
+	_ = mode
+	name, err := windows.UTF16FromString(path)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateFile(
+		&name[0], windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil, windows.OPEN_ALWAYS,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var info harnessFileAttributeTagInfo
+	if err := windows.GetFileInformationByHandleEx(handle, windows.FileAttributeTagInfo, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, err
+	}
+	if info.Attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		_ = windows.CloseHandle(handle)
+		return nil, errors.New("harness instance lock is a reparse point")
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if file == nil {
+		_ = windows.CloseHandle(handle)
+		return nil, errors.New("create lock file descriptor")
+	}
+	return file, nil
+}
 
 // lockFileExclusiveNonBlocking takes an exclusive LockFileEx byte-range
 // lock over the whole file. Reports (false, nil) when another process

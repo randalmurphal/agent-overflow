@@ -13,7 +13,7 @@
  * pinning hundreds of near-empty 128KB Oilpan pages (committed 153→240MB
  * over 80min at ~20MB live — the renderer floor ratchet). A same-document
  * `mask: url(#id)` reference needs no document at all and paints
- * pixel-identically (spritecheck3/4 probes, soak rig).
+ * with matching layout and compositor geometry (soak rig probes).
  *
  * Mechanics: masks are `mask-type: alpha` (same semantics the data URIs had
  * under mask-mode: match-source), with maskUnits + maskContentUnits both

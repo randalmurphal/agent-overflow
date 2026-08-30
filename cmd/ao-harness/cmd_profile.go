@@ -45,6 +45,10 @@ const (
 )
 
 func runProfile(e *env, args []string) error {
+	return runProfileContext(context.Background(), e, args)
+}
+
+func runProfileContext(ctx context.Context, e *env, args []string) error {
 	flags := e.newFlagSet("profile --thread <id|#N|last|title-prefix> --scenario <name> [message]")
 	thread := flags.String("thread", "", "thread selector: id, #N from `threads`, `last`, or a unique title prefix")
 	// No backquotes in this string: flag.PrintDefaults reads the first
@@ -87,10 +91,18 @@ func runProfile(e *env, args []string) error {
 		return err
 	}
 
-	ctx := context.Background()
 	var rollup profileRollup
 	var path string
 	err = e.withClient(ctx, func(client *harnessclient.Client, t target, bs harnessclient.Bootstrap) error {
+		if err := requireActiveHarnessBoundary(t, bs); err != nil {
+			return fmt.Errorf("profile requires an active memory watchdog: %w", err)
+		}
+		if err := requireHarnessProtocol(client, capabilityRequirements{
+			Methods: []string{"HarnessSetScenario", "HarnessUIQuery", "HarnessEmit", "SendMessage"},
+			Queries: []string{"element", "globals", "viewport"},
+		}); err != nil {
+			return err
+		}
 		// Both preconditions before anything is armed: a caller who typed a
 		// bad selector or forgot the window should not learn it from a
 		// half-finished profile.
@@ -102,7 +114,7 @@ func runProfile(e *env, args []string) error {
 			return err
 		}
 
-		conn, page, err := attachCDP(ctx, endpoint, t, bs)
+		conn, page, err := attachCDP(ctx, endpoint, t, bs, e.pageID)
 		if err != nil {
 			return err
 		}
@@ -217,8 +229,8 @@ func profileOneTurn(
 	// is the WIRE finishing; the reveal queue then hands the result to the
 	// reader over several more seconds, and that tail is main-thread work
 	// like any other — a profile that stopped at turn completion attributed
-	// none of it. Degradations (an older page, a drain past the bound) are
-	// a note, never a failed profile: the samples already taken are good.
+	// none of it. A missing drain signal or a drain past the bound fails the
+	// profile because the captured window would not cover what it claims.
 	if err := waitForRevealDrain(ctx, e, client, benchDrainTimeout); err != nil {
 		_, _ = stop()
 		return nil, err

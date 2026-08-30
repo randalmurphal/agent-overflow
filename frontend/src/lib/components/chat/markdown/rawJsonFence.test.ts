@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createProvenAppend } from 'svelte-streamdown';
 import { RawJsonFenceFormatter, isRawJsonSource } from './rawJsonFence';
 
 // A workflow-envelope-shaped document on ONE line: nested objects and
@@ -50,6 +51,52 @@ const ENVELOPE_PRETTY = [
   '  }',
   '}',
 ].join('\n');
+
+function randomJsonRoots(seed: number, count: number): unknown[] {
+  let state = seed >>> 0;
+  const random = (): number => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state;
+  };
+  const scalar = (): null | boolean | number | string => {
+    switch (random() % 4) {
+      case 0: return null;
+      case 1: return (random() & 1) === 1;
+      case 2: return ((random() % 2_000_001) - 1_000_000) / 100;
+      default: return [
+        'plain', 'quote " slash \\', 'line\nfeed', 'café 漢字 😀',
+        '{}[],:`_*', '', 'tabs\tand\rreturns',
+      ][random() % 7];
+    }
+  };
+  const value = (depth: number): unknown => {
+    if (depth === 0 || random() % 3 === 0) return scalar();
+    if ((random() & 1) === 0) {
+      return Array.from({ length: random() % 5 }, () => value(depth - 1));
+    }
+    const object: Record<string, unknown> = {};
+    const keys = ['alpha', 'b"eta', 'slash\\key', 'unicode-漢', 'empty'];
+    for (let index = 0, length = random() % 5; index < length; index++) {
+      object[`${keys[random() % keys.length]}-${index}`] = value(depth - 1);
+    }
+    return object;
+  };
+
+  const roots: unknown[] = [];
+  for (let index = 0; index < count; index++) {
+    // Object roots are always classified. Array roots start with a string,
+    // object, array, or are empty, matching the intentional citation guard.
+    if ((random() & 1) === 0) {
+      roots.push({ root: value(4), index });
+    } else {
+      const first = [String(index), { index }, [index]][random() % 3];
+      roots.push(random() % 5 === 0
+        ? []
+        : [first, ...Array.from({ length: random() % 5 }, () => value(3))]);
+    }
+  }
+  return roots;
+}
 
 function settled(source: string): string {
   return new RawJsonFenceFormatter().render(source, false);
@@ -114,6 +161,11 @@ describe('RawJsonFenceFormatter', () => {
     expect(f.render('{"a":1}\n\nAll **done**.', false)).toBe(
       '```json\n{\n  "a": 1\n}\n```\n\nAll **done**.',
     );
+
+    const inlineTail = new RawJsonFenceFormatter();
+    expect(inlineTail.render('{"a":1} All **done**.', true)).toBe(
+      '```json\n{\n  "a": 1\n}\n```\n All **done**.',
+    );
   });
 
   it('is prefix-stable over every prefix of the document, fresh and incremental', () => {
@@ -126,6 +178,170 @@ describe('RawJsonFenceFormatter', () => {
       expect(incremental.render(prefix, true), `incremental prefix ${n}`).toBe(fresh);
     }
     expect(incremental.render(ENVELOPE, false)).toBe(full);
+  });
+
+  it('consumes proven append deltas without scanning the growing source', () => {
+    const expected = settled(ENVELOPE);
+    const incremental = new RawJsonFenceFormatter();
+    const startsWith = vi.spyOn(String.prototype, 'startsWith')
+      .mockImplementation(() => {
+        throw new Error('append proof fell back to a prefix scan');
+      });
+    let source = '';
+    try {
+      for (const delta of ENVELOPE) {
+        const append = createProvenAppend(source, delta);
+        source = append.next;
+        incremental.render(source, true, append);
+      }
+      expect(incremental.sourceIsRawJson).toBe(true);
+      expect(incremental.render(source, false)).toBe(expected);
+    } finally {
+      startsWith.mockRestore();
+    }
+  });
+
+  it('rejects stale and fabricated append proofs and rebuilds from the source', () => {
+    const formatter = new RawJsonFenceFormatter();
+    const initial = createProvenAppend('', '{"a"');
+    expect(formatter.render(initial.next, true, initial)).toBe(
+      '```json\n{\n  "a"',
+    );
+
+    const startsWith = vi.spyOn(String.prototype, 'startsWith');
+    try {
+      const stale = createProvenAppend('{"other"', ':1}');
+      const next = '{"a":1';
+      expect(formatter.render(next, true, stale)).toBe(
+        '```json\n{\n  "a": 1',
+      );
+      expect(startsWith).toHaveBeenCalled();
+
+      startsWith.mockClear();
+      const fabricated = {
+        previous: next,
+        delta: '}',
+        next: `${next}}`,
+      } as unknown as ReturnType<typeof createProvenAppend>;
+      expect(formatter.render(fabricated.next, true, fabricated)).toBe(
+        '```json\n{\n  "a": 1\n}\n```',
+      );
+      expect(startsWith).toHaveBeenCalled();
+    } finally {
+      startsWith.mockRestore();
+    }
+  });
+
+  it('does not carry append output lineage across an authoritative rewrite', () => {
+    const formatter = new RawJsonFenceFormatter();
+    const first = createProvenAppend('', '{"a":1}');
+    formatter.render(first.next, true, first);
+    expect(formatter.outputAppend?.next).toBe('```json\n{\n  "a": 1\n}\n```');
+
+    const rewritten = '{"replacement":[true,false]}';
+    expect(formatter.render(rewritten, true)).toBe(
+      '```json\n{\n  "replacement": [\n    true,\n    false\n  ]\n}\n```',
+    );
+    expect(formatter.outputAppend).toBeUndefined();
+
+    const append = createProvenAppend(rewritten, '\n\nDone.');
+    expect(formatter.render(append.next, true, append)).toBe(
+      '```json\n{\n  "replacement": [\n    true,\n    false\n  ]\n}\n```\n\nDone.',
+    );
+    expect(formatter.outputAppend?.delta).toBe('\n\nDone.');
+  });
+
+  it('classifies prose once and can reject a tentative JSON opener by delta', () => {
+    const prose = new RawJsonFenceFormatter();
+    const firstProse = createProvenAppend('', 'J');
+    expect(prose.render(firstProse.next, true, firstProse)).toBe('J');
+    expect(prose.outputAppend?.delta).toBe('J');
+    const restOfProse = createProvenAppend('J', 'ust prose');
+    expect(prose.render(restOfProse.next, true, restOfProse)).toBe('Just prose');
+    expect(prose.outputAppend?.delta).toBe('ust prose');
+    expect(prose.sourceIsRawJson).toBe(false);
+
+    const tentative = new RawJsonFenceFormatter();
+    const tentativeOpen = createProvenAppend('', '{');
+    expect(tentative.render(tentativeOpen.next, true, tentativeOpen)).toBe('```json\n{');
+    expect(tentative.sourceIsRawJson).toBe(true);
+    const tentativeReject = createProvenAppend('{', 'a');
+    expect(tentative.render(tentativeReject.next, true, tentativeReject)).toBe('{a');
+    expect(tentative.sourceIsRawJson).toBe(false);
+    expect(tentative.outputAppend).toBeUndefined();
+  });
+
+  it('emits the exact formatted suffix for every proven JSON append', () => {
+    const formatter = new RawJsonFenceFormatter();
+    const source = '{"a":[1,2],"b":{}}';
+    let input = '';
+    let output = '';
+    for (const delta of source) {
+      const sourceAppend = createProvenAppend(input, delta);
+      input = sourceAppend.next;
+      const rendered = formatter.render(input, true, sourceAppend);
+      const append = formatter.outputAppend;
+      expect(append?.previous).toBe(output);
+      expect(append?.next).toBe(rendered);
+      output += append?.delta ?? '';
+      expect(output).toBe(rendered);
+    }
+  });
+
+  it('withholds append proof when an open JSON fence changes streaming mode', () => {
+    const formatter = new RawJsonFenceFormatter();
+    let sourceAppend = createProvenAppend('', '{');
+    let source = sourceAppend.next;
+    let rendered = formatter.render(source, false, sourceAppend);
+    expect(formatter.outputAppend?.next).toBe(rendered);
+    expect(rendered.endsWith('\n```')).toBe(true);
+
+    sourceAppend = createProvenAppend(source, '"a"');
+    source = sourceAppend.next;
+    rendered = formatter.render(source, false, sourceAppend);
+    expect(formatter.outputAppend).toBeUndefined();
+    expect(rendered.endsWith('\n```')).toBe(true);
+
+    rendered = formatter.render(source, true);
+    expect(formatter.outputAppend).toBeUndefined();
+    expect(rendered.endsWith('\n```')).toBe(false);
+
+    const previous = rendered;
+    sourceAppend = createProvenAppend(source, ':1');
+    source = sourceAppend.next;
+    rendered = formatter.render(source, true, sourceAppend);
+    expect(formatter.outputAppend?.previous).toBe(previous);
+    expect(formatter.outputAppend?.next).toBe(rendered);
+
+    rendered = formatter.render(source, false);
+    expect(formatter.outputAppend).toBeUndefined();
+    expect(rendered.endsWith('\n```')).toBe(true);
+  });
+
+  it('round-trips randomized nested JSON across irregular proven appends', () => {
+    for (const [rootIndex, root] of randomJsonRoots(0x5eedc0de, 96).entries()) {
+      const source = JSON.stringify(root);
+      const final = settled(source);
+      const formatter = new RawJsonFenceFormatter();
+      let input = '';
+      let offset = 0;
+      let chunkState = (rootIndex + 1) * 0x9e3779b1;
+      while (offset < source.length) {
+        chunkState = (Math.imul(chunkState, 1_103_515_245) + 12_345) >>> 0;
+        const end = Math.min(source.length, offset + 1 + (chunkState % 17));
+        const delta = source.slice(offset, end);
+        const append = createProvenAppend(input, delta);
+        input = append.next;
+        const streaming = formatter.render(input, true, append);
+        expect(formatter.outputAppend?.next).toBe(streaming);
+        expect(final.startsWith(streaming), `root ${rootIndex}, byte ${end}`).toBe(true);
+        offset = end;
+      }
+      const rendered = formatter.render(input, false);
+      expect(rendered).toBe(final);
+      const body = rendered.slice('```json\n'.length, -'\n```'.length);
+      expect(JSON.parse(body)).toEqual(root);
+    }
   });
 
   it('is prefix-stable across trailing prose too', () => {
@@ -160,6 +376,6 @@ describe('RawJsonFenceFormatter', () => {
     }
     // Extra closers after the root are trailing text, not JSON: they
     // pass through after the closed fence like any other tail.
-    expect(settled('{"a":1}}}')).toBe('```json\n{\n  "a": 1\n}\n```}}');
+    expect(settled('{"a":1}}}')).toBe('```json\n{\n  "a": 1\n}\n```\n}}');
   });
 });

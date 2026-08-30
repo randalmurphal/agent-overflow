@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
 import OverlayScrollbar from './OverlayScrollbar.svelte';
 
 // happy-dom reports zero geometry for everything, so the scroller under
@@ -106,40 +107,40 @@ function wheelOverTrack(
   return { defaultPrevented: event.defaultPrevented, reachedOuter };
 }
 
-/**
- * happy-dom's stub ResizeObserver never delivers, and the streaming redraw
- * depends on the CONTENT element's growth: a scroller keeps its own size while
- * content grows inside it, so observing only the scroller misses every
- * streamed row. Capture what was observed and deliver by hand.
- */
-function captureResizeObservers(): {
+function captureResizeObserverFallback(): {
   observed: Element[];
+  disconnects: () => number;
   deliver: () => void;
   restore: () => void;
 } {
-  const real = globalThis.ResizeObserver;
+  const NativeResizeObserver = globalThis.ResizeObserver;
   const observed: Element[] = [];
   const callbacks: ResizeObserverCallback[] = [];
-  class Capturing {
+  let disconnectCount = 0;
+  class CapturingResizeObserver {
     constructor(callback: ResizeObserverCallback) {
       callbacks.push(callback);
     }
-    observe(el: Element): void {
-      observed.push(el);
+    observe(target: Element): void {
+      observed.push(target);
     }
     unobserve(): void {}
-    disconnect(): void {}
+    disconnect(): void {
+      disconnectCount += 1;
+    }
   }
-  globalThis.ResizeObserver = Capturing as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver = CapturingResizeObserver as unknown as typeof ResizeObserver;
   return {
     observed,
-    deliver: () => {
-      for (const callback of callbacks) {
-        callback([], {} as ResizeObserver);
+    disconnects: () => disconnectCount,
+    deliver() {
+      if (callbacks.length !== 1) {
+        throw new Error(`expected one mount fallback observer, found ${callbacks.length}`);
       }
+      callbacks[0]([], {} as ResizeObserver);
     },
-    restore: () => {
-      globalThis.ResizeObserver = real;
+    restore() {
+      globalThis.ResizeObserver = NativeResizeObserver;
     },
   };
 }
@@ -161,10 +162,11 @@ async function mount(options: {
   // while the scroller's own box stays capped.
   const content = document.createElement('div');
   target.appendChild(content);
+  const contentGeometry = createContentGeometryNotifier();
   const view = render(OverlayScrollbar, {
     props: {
       target,
-      content,
+      contentGeometry,
       ariaLabel: 'Scroll activity run',
       ownerDrivenPosition: options.ownerDrivenPosition,
       onUserScrollStart: options.onUserScrollStart,
@@ -176,10 +178,37 @@ async function mount(options: {
   // Re-sample now that the track has a height: the mount pass measured 0.
   target.scrollTop = 0;
   await tick();
-  return { ...view, target, content, track };
+  return { ...view, target, content, contentGeometry, track };
 }
 
 describe('<OverlayScrollbar>', () => {
+  it('takes a post-layout mount sample when the owner already delivered', async () => {
+    const resizeObserver = captureResizeObserverFallback();
+    try {
+      const target = makeScroller(100, 400);
+      const contentGeometry = createContentGeometryNotifier();
+      const view = render(OverlayScrollbar, {
+        props: {
+          target,
+          contentGeometry,
+          ariaLabel: 'Scroll activity run',
+        },
+      });
+      const track = view.getByTestId('overlay-scrollbar');
+      stubTrackHeight(track, 200);
+
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      expect(resizeObserver.observed).toEqual([track]);
+      resizeObserver.deliver();
+      await tick();
+
+      expect(resizeObserver.disconnects()).toBe(1);
+      expect(view.getByTestId('overlay-scrollbar-thumb').style.height).toBe('50px');
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
   it('shows a thumb sized to the visible fraction', async () => {
     const { getByTestId } = await mount();
 
@@ -241,6 +270,76 @@ describe('<OverlayScrollbar>', () => {
     expect(captured.has(POINTER_ID)).toBe(false);
   });
 
+  it('rolls back the drag when the owner start callback fails', async () => {
+    const seen: string[] = [];
+    const { track, target } = await mount({
+      onUserScrollStart: () => {
+        seen.push('start');
+        throw new Error('owner start failed');
+      },
+      onUserScrollEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+    });
+    const captured = stubPointerCapture(track);
+
+    await expect(down(track, 25)).rejects.toThrow('owner start failed');
+    await tick();
+
+    expect(seen).toEqual(['start', 'end:free']);
+    expect(captured.has(POINTER_ID)).toBe(false);
+    expect(track.dataset.dragging).toBe('false');
+
+    await move(track, 175);
+    await tick();
+    expect(target.scrollTop).toBe(0);
+  });
+
+  it('clears the drag without notifying an owner when pointer capture fails', async () => {
+    const seen: string[] = [];
+    const { track, target } = await mount({
+      onUserScrollStart: () => seen.push('start'),
+      onUserScrollEnd: () => seen.push('end'),
+    });
+    const captureTarget = track as unknown as Record<string, unknown>;
+    captureTarget.setPointerCapture = () => {
+      throw new Error('pointer capture failed');
+    };
+    captureTarget.hasPointerCapture = () => false;
+    captureTarget.releasePointerCapture = () => {
+      throw new Error('unexpected release');
+    };
+
+    await expect(down(track, 25)).rejects.toThrow('pointer capture failed');
+    await tick();
+
+    expect(seen).toEqual([]);
+    expect(track.dataset.dragging).toBe('false');
+    await move(track, 175);
+    expect(target.scrollTop).toBe(0);
+  });
+
+  it('clears the drag and reports a free position when final geometry fails', async () => {
+    const seen: string[] = [];
+    const { track, target } = await mount({
+      onUserScrollStart: () => seen.push('start'),
+      onUserScrollEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+    });
+    const captured = stubPointerCapture(track);
+    await down(track, 25);
+    Object.defineProperty(target, 'scrollHeight', {
+      get: () => {
+        throw new Error('final geometry failed');
+      },
+      configurable: true,
+    });
+
+    await expect(up(track, 25)).rejects.toThrow('final geometry failed');
+    await tick();
+
+    expect(seen).toEqual(['start', 'end:free']);
+    expect(captured.has(POINTER_ID)).toBe(false);
+    expect(track.dataset.dragging).toBe('false');
+  });
+
   it('ends the drag when the capture is taken away, not only on pointerup', async () => {
     const seen: string[] = [];
     const { track, target } = await mount({
@@ -268,6 +367,110 @@ describe('<OverlayScrollbar>', () => {
     expect(target.scrollTop).toBe(40);
   });
 
+  it('ends the old gesture before the controlled target changes', async () => {
+    const seen: string[] = [];
+    const mounted = await mount({
+      onUserScrollStart: () => seen.push('first:start'),
+      onUserScrollEnd: (atBottom) =>
+        seen.push(atBottom ? 'first:end:bottom' : 'first:end:free'),
+    });
+    const { track, target: firstTarget, contentGeometry, rerender } = mounted;
+    const captured = stubPointerCapture(track);
+
+    await down(track, 25);
+    await move(track, 45);
+    await tick();
+    expect(firstTarget.scrollTop).toBe(40);
+    expect(captured.has(POINTER_ID)).toBe(true);
+
+    const secondTarget = makeScroller(100, 400);
+    await rerender({
+      target: secondTarget,
+      contentGeometry,
+      ariaLabel: 'Scroll activity run',
+      onUserScrollStart: () => seen.push('second:start'),
+      onUserScrollEnd: (atBottom: boolean) =>
+        seen.push(atBottom ? 'second:end:bottom' : 'second:end:free'),
+    });
+    await tick();
+
+    // The first target's owner heard a balanced gesture, and no captured
+    // pointer or drag origin crossed the ownership transition.
+    expect(seen).toEqual(['first:start', 'first:end:free']);
+    expect(captured.has(POINTER_ID)).toBe(false);
+    expect(track.getAttribute('data-dragging')).toBe('false');
+
+    await move(track, 175);
+    await tick();
+    expect(firstTarget.scrollTop).toBe(40);
+    expect(secondTarget.scrollTop).toBe(0);
+
+    // The same control can start cleanly against the replacement target.
+    await down(track, 25);
+    await move(track, 45);
+    await up(track, 45);
+    await tick();
+    expect(secondTarget.scrollTop).toBe(40);
+    expect(seen).toEqual([
+      'first:start',
+      'first:end:free',
+      'second:start',
+      'second:end:free',
+    ]);
+  });
+
+  it('does not expose the old thumb while replacement geometry is pending', async () => {
+    const mounted = await mount();
+    const { contentGeometry, getByTestId, queryByTestId, rerender } = mounted;
+    contentGeometry.notify(true);
+    await tick();
+    expect(getByTestId('overlay-scrollbar-thumb')).toBeTruthy();
+
+    const replacement = makeScroller(400, 400);
+    await rerender({
+      target: replacement,
+      contentGeometry,
+      ariaLabel: 'Scroll activity run',
+    });
+    await tick();
+
+    expect(queryByTestId('overlay-scrollbar-thumb')).toBeNull();
+    expect(getByTestId('overlay-scrollbar').dataset.visible).toBe('false');
+  });
+
+  it('attaches the replacement target after old drag finalization fails', async () => {
+    const mounted = await mount({
+      onUserScrollStart: () => {},
+      onUserScrollEnd: () => { throw new Error('old owner end failed'); },
+    });
+    const { contentGeometry, rerender, track } = mounted;
+    stubPointerCapture(track);
+    await down(track, 25);
+
+    const replacement = makeScroller(100, 400);
+    const secondEnd = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(rerender({
+      target: replacement,
+      contentGeometry,
+      ariaLabel: 'Scroll activity run',
+      onUserScrollStart: () => {},
+      onUserScrollEnd: secondEnd,
+    })).resolves.toBeUndefined();
+    await tick();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('target cleanup failed'),
+      expect.stringContaining('old owner end failed'),
+    );
+    warn.mockRestore();
+
+    contentGeometry.notify(true);
+    await tick();
+    await down(track, 25);
+    await up(track, 25);
+    expect(secondEnd).toHaveBeenCalledOnce();
+  });
+
   it('pages on a track click, and says so, so the owner stops following', async () => {
     const seen: string[] = [];
     const { track, target } = await mount({
@@ -284,6 +487,23 @@ describe('<OverlayScrollbar>', () => {
 
     expect(target.scrollTop).toBeGreaterThan(0);
     expect(seen).toEqual(['start', 'end:free']);
+    expect(track.dataset.dragging).toBe('false');
+  });
+
+  it('balances a track-click gesture when the owner start callback fails', async () => {
+    const seen: string[] = [];
+    const { track, target } = await mount({
+      onUserScrollStart: () => {
+        seen.push('start');
+        throw new Error('track owner start failed');
+      },
+      onUserScrollEnd: (atBottom) => seen.push(atBottom ? 'end:bottom' : 'end:free'),
+    });
+
+    await expect(down(track, 120)).rejects.toThrow('track owner start failed');
+
+    expect(seen).toEqual(['start', 'end:free']);
+    expect(target.scrollTop).toBe(0);
     expect(track.dataset.dragging).toBe('false');
   });
 
@@ -466,55 +686,65 @@ describe('<OverlayScrollbar>', () => {
     }
   });
 
-  it('redraws when the content grows inside a scroller that did not', async () => {
-    const ro = captureResizeObservers();
-    try {
-      const { getByTestId, target, content } = await mount();
-      // Burn the initial delivery — that one is the mount sample, and this
-      // test pins the GATED growth path behind it.
-      ro.deliver();
+  it('redraws from the owner geometry source when content grows inside a fixed scroller', async () => {
+    const { getByTestId, target, contentGeometry } = await mount();
+    // Burn the initial delivery. That one is the mount sample, and this
+    // test pins the GATED growth path behind it.
+    contentGeometry.notify(true);
+    expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('50px');
 
-      // The capped case: the clip's own box stops growing at its max-height,
-      // so only the content element reports a streamed row.
-      expect(ro.observed).toContain(content);
-      expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('50px');
+    Object.defineProperty(target, 'scrollHeight', { get: () => 800, configurable: true });
+    contentGeometry.notify(true);
+    await tick();
 
-      Object.defineProperty(target, 'scrollHeight', { get: () => 800, configurable: true });
-      ro.deliver();
-      await tick();
-
-      expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('25px');
-    } finally {
-      ro.restore();
-    }
+    expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('25px');
   });
 
-  it('takes its mount sample from the first ResizeObserver delivery, not a layout-forcing read', async () => {
+  it('becomes interactive when an idle owner grows from no overflow to overflow', async () => {
+    const { getByTestId, queryByTestId, target, contentGeometry } = await mount({
+      clientHeight: 400,
+      scrollHeight: 400,
+      ownerDrivenPosition: () => true,
+    });
+    contentGeometry.notify(false);
+    await tick();
+    expect(queryByTestId('overlay-scrollbar-thumb')).toBeNull();
+
+    Object.defineProperty(target, 'scrollHeight', {
+      get: () => 800,
+      configurable: true,
+    });
+    contentGeometry.notify(true);
+    await tick();
+
+    expect(getByTestId('overlay-scrollbar-thumb').style.height).toBe('100px');
+    expect(getByTestId('overlay-scrollbar').className).not.toContain(
+      'pointer-events-none',
+    );
+  });
+
+  it('takes its mount sample from the first owner geometry delivery, not a layout-forcing read', async () => {
     // Tripwire for the coldload forced-layout class (2026-08-26): the mount
     // pass must not read scroll geometry synchronously — dozens of bars
     // mount during a cold thread switch, and each sync read forced a layout
-    // flush. The first RO delivery runs post-layout and carries the sample.
-    const ro = captureResizeObservers();
-    try {
-      const target = makeScroller(100, 400);
-      const view = render(OverlayScrollbar, {
-        props: { target, ariaLabel: 'Scroll activity run' },
-      });
-      const track = view.getByTestId('overlay-scrollbar');
-      stubTrackHeight(track, 200);
+    // flush. The owner's first post-layout delivery carries the sample.
+    const target = makeScroller(100, 400);
+    const contentGeometry = createContentGeometryNotifier();
+    const view = render(OverlayScrollbar, {
+      props: { target, contentGeometry, ariaLabel: 'Scroll activity run' },
+    });
+    const track = view.getByTestId('overlay-scrollbar');
+    stubTrackHeight(track, 200);
 
-      // No scroll, no interaction: the bar knows nothing yet.
-      expect(track.getAttribute('data-visible')).toBe('false');
+    // No scroll, no interaction: the bar knows nothing yet.
+    expect(track.getAttribute('data-visible')).toBe('false');
 
-      ro.deliver();
-      await tick();
+    contentGeometry.notify(true);
+    await tick();
 
-      // The initial delivery sampled even though the bar is hidden and idle.
-      expect(track.getAttribute('data-visible')).toBe('true');
-      expect(view.getByTestId('overlay-scrollbar-thumb').style.height).toBe('50px');
-    } finally {
-      ro.restore();
-    }
+    // The initial delivery sampled even though the bar is hidden and idle.
+    expect(track.getAttribute('data-visible')).toBe('true');
+    expect(view.getByTestId('overlay-scrollbar-thumb').style.height).toBe('50px');
   });
 
   it('ignores a move that never started with a grab', async () => {

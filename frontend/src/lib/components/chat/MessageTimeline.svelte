@@ -5,6 +5,12 @@
     ThreadPane,
   } from '../../stores/thread.svelte';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
+  import { getSettings } from '../../stores/settings.svelte';
+  import {
+    createUserMessageOverflowCoordinator,
+    USER_MESSAGE_OVERFLOW_COORDINATOR_CONTEXT,
+  } from './userMessageOverflowMeasurement';
   import { isLiveContentActive, LIVE_CONTENT_ACTIVE_HOLD_MS } from '../../utils/liveContentActivity';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
@@ -21,6 +27,11 @@
   import { getActiveTurn } from '../../stores/threadStatuses.svelte';
   import Button from '../primitives/Button.svelte';
   import MessageNavRail from './MessageNavRail.svelte';
+  import {
+    NAV_RAIL_ROW_LEFT_PADDING_PX,
+    NAV_RAIL_ROW_MAX_WIDTH_PX,
+    NAV_RAIL_ROW_RIGHT_PADDING_PX,
+  } from './messageNavRail';
   import ReadGroupRow from './ReadGroupRow.svelte';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
@@ -155,10 +166,40 @@
   // Wrapper around <TimelineVirtualizer>: the warm-up visibility gate's
   // hide target, and the controller's registered content element. The
   // controller does NOT observe it (`externalContentGeometry`) — content
-  // geometry arrives engine-sourced through the virtualizer's
-  // `onContentGeometry` samples, post-flush and before the paint that
-  // displays the change.
+  // geometry arrives engine-sourced through the virtualizer's geometry
+  // subscription, post-flush and before the paint that displays the
+  // change.
   let contentEl: HTMLDivElement | undefined = $state(undefined);
+  const scrollbarGeometry = createContentGeometryNotifier();
+  const userMessageOverflow = createUserMessageOverflowCoordinator();
+  setContext(USER_MESSAGE_OVERFLOW_COORDINATOR_CONTEXT, userMessageOverflow);
+
+  // Width is not the only input to line wrapping. Root font scale and the UI
+  // typeface are live settings, and a newly loaded webfont can change metrics
+  // again after the setting write. Queue one pre-paint batch for either edge;
+  // row-local observers are intentionally absent because inserting a toggle
+  // from a descendant RO callback changes its already-delivered row ancestor.
+  $effect(() => {
+    const settings = getSettings();
+    void settings.fontSize;
+    void settings.sansFont;
+    userMessageOverflow.requestAll();
+  });
+
+  $effect(() => {
+    // FontFaceSet is available in WebView2, but not in every supported test
+    // or remote-browser DOM. Settings changes still remeasure above; only the
+    // later font-load correction depends on this optional platform API.
+    const fonts = document.fonts;
+    if (!fonts) return;
+    const remeasure = (): void => userMessageOverflow.requestAll();
+    fonts.addEventListener('loadingdone', remeasure);
+    fonts.addEventListener('loadingerror', remeasure);
+    return () => {
+      fonts.removeEventListener('loadingdone', remeasure);
+      fonts.removeEventListener('loadingerror', remeasure);
+    };
+  });
   // Imperative handle into the virtualizer. Set once it mounts.
   let listRef: TimelineVirtualizerHandle | undefined = $state(undefined);
   let scrollSurfaceContentWidth = $state(0);
@@ -243,8 +284,11 @@
     quietContextSignal: () => anyMarkdownSettledSinceArm || mountedMarkdownCount === 0,
     // The virtualizer is the content-geometry source (its spacer height
     // IS the content height) — the controller creates no contentEl RO;
-    // samples arrive through `onContentGeometry` below.
+    // samples arrive through the geometry subscription below, which is
+    // taken after `attach` so the first one cannot be delivered (and
+    // lost) while this controller is still detached.
     externalContentGeometry: true,
+    onContentGeometryProcessed: scrollbarGeometry.notify,
     // ... and learns every controller write the moment it lands, so the
     // offset its compensations are computed from never trails a glide
     // by a frame (see VirtualEngine.noteScrollOffset).
@@ -386,12 +430,18 @@
   // flash overlay. Routes through the restore session's scrollToItem, so
   // load-until-item, run reveal, and escape semantics stay in one place.
   // Row column shell, shared by every row-aligned surface (rows, the
-  // load-older/newer chips, the landing flash): 61rem + pl-8/pr-6
-  // versus the composer's 62rem + px-6 — a deliberate 8px-per-side
-  // inset (approved 2026-08-19) so the nav rail's fully grown tick
-  // clears the text at every pane width. One definition so the copies
-  // cannot drift.
-  const ROW_SHELL_CLASSES = 'mx-auto w-full max-w-[61rem] pl-8 pr-6';
+  // load-older/newer chips, and the landing flash). Its left padding is
+  // derived from the nav rail's hit width plus an 8px dead gutter, so an
+  // invisible jump target can never overlap selectable transcript text.
+  // The 62rem outer cap and asymmetric padding preserve the previous 920px
+  // wide-pane content bounds exactly while giving narrow panes 8px more
+  // clearance on each side. One style definition keeps every copy aligned.
+  const ROW_SHELL_CLASSES = 'mx-auto w-full';
+  const ROW_SHELL_STYLE = [
+    `max-width: ${NAV_RAIL_ROW_MAX_WIDTH_PX}px`,
+    `padding-left: ${NAV_RAIL_ROW_LEFT_PADDING_PX}px`,
+    `padding-right: ${NAV_RAIL_ROW_RIGHT_PADDING_PX}px`,
+  ].join('; ');
 
   const jump = createTimelineJump({
     getPane: () => pane,
@@ -531,6 +581,34 @@
     };
   });
 
+  // Content geometry: the virtualizer IS the source (see the template
+  // comment on contentEl), and this is the ONLY consumer of it here.
+  //
+  // Subscription (the virtualizer has no geometry prop), declared AFTER
+  // the attach effect above so it runs after it: a prop-delivered sample
+  // that lands before `stick.attach` has an element is dropped by the
+  // controller and then suppressed forever by the virtualizer's
+  // field-by-field dedupe, because the tuple never changes again — a
+  // populated first mount then sat at scrollTop=0 claiming the bottom.
+  // The subscription replays this instance's current sample on
+  // subscribe, so ordering is a contract instead of a race. The
+  // `{#key pane.threadId}` remount makes each virtualizer a fresh
+  // source; the teardown unsubscribes the old instance before the new
+  // one is subscribed, and instance identity is what lets an identical
+  // tuple from the new virtualizer through.
+  $effect(() => {
+    const list = listRef;
+    if (!list) return;
+    return list.subscribeContentGeometry((sample) => {
+      stick.deliverContentGeometry(sample);
+      // Streaming growth and remeasure shift row offsets without a
+      // scroll event; keep the rail's marker + in-view fill honest.
+      // rAF-coalesced inside the rail, so bursts cost one recompute
+      // per frame.
+      navRail?.scheduleViewportSync();
+    });
+  });
+
   // The scroll surface's CONTENT-box width, sourced ONLY from the async
   // ResizeObserver inside observeScrollSurfaceContentWidth. It feeds the
   // size-priors width dimension (timelineSizePriors.svelte.ts's capture
@@ -559,6 +637,12 @@
       return;
     }
     return observeScrollSurfaceContentWidth(surface, (width) => {
+      // This observer targets the scroll surface, above every virtual row.
+      // Resolve descendant user-message overflow here before row observers
+      // process the same width reflow. A child observer that inserted its
+      // toggle after the row delivery changed an already-delivered ancestor,
+      // which Chromium reported as an undelivered ResizeObserver loop.
+      userMessageOverflow.measureAll();
       scrollSurfaceContentWidth = width;
     });
   });
@@ -807,7 +891,7 @@
     {:else if pane.items.length === 0 && getActiveTurn(pane.threadId)}
       <!-- Active turn but no items yet. The working/todo UI lives in the
            ChatView bottom overlay, outside the virtualized history. -->
-      <div class={`${ROW_SHELL_CLASSES} pt-8`}></div>
+      <div class={`${ROW_SHELL_CLASSES} pt-8`} style={ROW_SHELL_STYLE}></div>
     {:else}
       {#snippet renderNode(node: TimelineNode, depth: number)}
         {#if node.kind === 'leaf'}
@@ -848,9 +932,10 @@
            the virtualizer's stable mounted-row plane and the controller's
            registered geometry target (geometry itself is
            engine-sourced: the virtualizer's container has `contain:
-           size; height: totalSize+'px'`, so its `onContentGeometry`
-           samples report the content height the controller would
-           otherwise have had to re-observe). {#key pane.threadId} forces the
+           size; height: totalSize+'px'`, so the samples it publishes
+           through the geometry subscription above report the content
+           height the controller would otherwise have had to
+           re-observe). {#key pane.threadId} forces the
            <TimelineVirtualizer> to remount on every thread switch so its
            engine resets with the timeline. `estimate` replays the
            previous visit's measured sizes when the priors validity key
@@ -877,20 +962,12 @@
           onCompensation={stick.applyEngineCompensation}
           applyScrollTarget={stick.applyScrollTarget}
           trackReadingAnchor={() => !stick.isAtBottom || stick.escapedFromLock}
-          onContentGeometry={(sample) => {
-            stick.deliverContentGeometry(sample);
-            // Streaming growth and remeasure shift row offsets without a
-            // scroll event; keep the rail's marker + in-view fill honest.
-            // rAF-coalesced inside the rail, so bursts cost one recompute
-            // per frame.
-            navRail?.scheduleViewportSync();
-          }}
         >
           {#snippet header()}
             <!-- The timeline header has stable identity and exact geometry.
                  Keeping it outside transcript rows prevents a prepend from
                  removing 60px from the retained former-first row. -->
-            <div class={`h-full pt-6 ${ROW_SHELL_CLASSES}`}>
+            <div class={`h-full pt-6 ${ROW_SHELL_CLASSES}`} style={ROW_SHELL_STYLE}>
               {#if pane.hasMoreHistory}
                 <div class="mb-3 flex justify-center">
                   <Button
@@ -950,9 +1027,9 @@
                    comment in app.css and
                    docs/architecture/settle-flicker-analysis.md. -->
               <div data-row-geometry-content>
-                <!-- Row column: see ROW_SHELL_CLASSES for the deliberate
-                     inset versus the composer's 62rem + px-6. -->
-                <div class={ROW_SHELL_CLASSES}>
+                <!-- Row column: see ROW_SHELL_STYLE for the rail clearance
+                     contract shared by every row-aligned surface. -->
+                <div class={ROW_SHELL_CLASSES} style={ROW_SHELL_STYLE}>
                   {#if rows.rowDecorations.responseDividerIndexes.has(index)}
                     {@const showResponsePill = rows.rowDecorations.responsePillIndexes.has(index)}
                     {@const responseDuration = rows.responsePillDuration(node)}
@@ -994,7 +1071,10 @@
           {/snippet}
         </TimelineVirtualizer>
         {#if pane.hasMoreNewer}
-          <div class={`${ROW_SHELL_CLASSES} flex justify-center pb-6 pt-2`}>
+          <div
+            class={`${ROW_SHELL_CLASSES} flex justify-center pb-6 pt-2`}
+            style={ROW_SHELL_STYLE}
+          >
             <div class="flex items-center gap-2 rounded-[var(--radius-control)] border border-border-subtle bg-surface-0/80 px-2 py-1.5 shadow-sheet">
               <Button
                 variant="secondary"
@@ -1043,14 +1123,16 @@
        native-gutter hit test used to arm: a drag/track-click/strip-wheel
        escapes bottom-follow (which also bails any in-flight spring), and
        releasing at the bottom re-sticks exactly like the jump chip. Owner
-       writes (the follow spring pinning per streamed chunk) keep the bar
-       faded via ownerDrivenPosition. -->
+       writes — the follow spring pinning per streamed chunk, and every
+       preserveViewportBottom transaction's shrink-clamp + restore (those
+       run under a pause lease, so isSticky is false exactly then) — keep
+       the bar faded via positionOwnerDriven. -->
   <OverlayScrollbar
     target={scrollEl}
-    content={contentEl}
+    contentGeometry={scrollbarGeometry}
     ariaLabel="Scroll message history"
     placement="inset-y-0 right-0.5 w-1.5"
-    ownerDrivenPosition={() => stick.isSticky}
+    ownerDrivenPosition={() => stick.positionOwnerDriven}
     onUserScrollStart={() => stick.setEscapedFromLock(true)}
     onUserScrollEnd={(atBottom) => {
       if (atBottom) stick.forceStick();
@@ -1074,7 +1156,7 @@
         style:height={`${jump.flash.height}px`}
         data-testid="timeline-jump-flash"
       >
-        <div class={`${ROW_SHELL_CLASSES} h-full`}>
+        <div class={`${ROW_SHELL_CLASSES} h-full`} style={ROW_SHELL_STYLE}>
           <div
             class="nav-jump-flash h-full w-full rounded-lg bg-accent/10"
             style:animation-duration={`${JUMP_FLASH_DURATION_MS}ms`}
@@ -1086,9 +1168,8 @@
 
   <!-- Message navigation rail: tick pills in the left row padding, one
        per user message. Sibling of the scroller for the same C24 reason
-       as the chip below; the row column's 61rem cap + pl-8 (vs the
-       composer's 62rem + px-6) is what guarantees the fisheye's grown
-       ticks clear the text at every pane width. -->
+       as the chip below; ROW_SHELL_STYLE derives its left edge from the
+       rail's hit width plus a real dead gutter. -->
   <MessageNavRail
     bind:this={navRail}
     {pane}

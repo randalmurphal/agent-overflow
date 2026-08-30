@@ -1,7 +1,7 @@
 # Conventions
 
-Read this before any change. These are the "keep it clean" guardrails —
-each one exists because we've either paid for violating it or because the
+Read this before any change. These are the "keep it clean" guardrails.
+Each one exists because we've either paid for violating it or because the
 top-level principles demand it.
 
 If you're looking for step-by-step recipes rather than rules, see
@@ -16,7 +16,7 @@ see [`invariants.md`](invariants.md).
 | Svelte component | ≤ 300 lines | 500 |
 | Function / method | ≤ 80 lines | 150 |
 
-When you cross a target, split — don't stretch. The triage router is the
+When you cross a target, split. Don't stretch. The triage router is the
 live example: `internal/triage/router.go` is the dispatch spine, and every
 concern (tool lifecycle, turn lifecycle, stream state, approvals, payload
 items) lives in a sibling file with a single owner. See the "Layout"
@@ -31,17 +31,17 @@ honoring:
 
 | Prefix | Meaning | Example |
 |---|---|---|
-| `handleFoo` | Triage event handler — consumes one `ProviderEvent`, emits zero or more routing decisions. | `Router.handleTurnStart`, `Router.handleToolComplete` |
+| `handleFoo` | Triage event handler: consumes one `ProviderEvent`, emits zero or more routing decisions. | `Router.handleTurnStart`, `Router.handleToolComplete` |
 | `persistFoo` | Store write + event emission. Single chokepoint for persisted timeline rows. | `Router.persistItem` |
-| `parseFoo` | Wire-format parsing — turns bytes / JSON into a typed value. Never writes state. | `Parser.ParseLine`, `appendToolUseEvent` |
+| `parseFoo` | Wire-format parsing: turns bytes / JSON into a typed value. Never writes state. | `Parser.ParseLine`, `appendToolUseEvent` |
 | `emitFoo` | `app.Event.Emit` wrapper or frontend channel publish. | `Router.emitItemUpsert`, `App.emitErrorToThread` |
-| `buildFoo` | Pure construction — takes inputs, returns a value. No I/O, no side effects. | `buildDiscussionParticipantPlans`, `buildRevertAffectedFiles` |
+| `buildFoo` | Pure construction: takes inputs, returns a value. No I/O, no side effects. | `buildDiscussionParticipantPlans`, `buildRevertAffectedFiles` |
 
 Svelte file suffix rules:
 
-- `.svelte.ts` — reactive state owner (`$state`, `$derived`, `$effect`).
+- `.svelte.ts`: reactive state owner (`$state`, `$derived`, `$effect`).
   Example: `stores/thread.svelte.ts`, `stores/threads.svelte.ts`.
-- Plain `.ts` — pure helpers, no runes. Example: `utils/patchFiles.ts`,
+- Plain `.ts`: pure helpers, no runes. Example: `utils/patchFiles.ts`,
   `utils/subagentGrouping.ts`.
 
 If you're unsure which suffix to use, ask: "does this file need to be
@@ -58,14 +58,14 @@ reactive on its own?" If no, plain `.ts`.
 - **Never** `_ = err` without a comment explaining why the error is
   provably ignorable at this point.
 - **No silent swallow.** At minimum log with enough context to reproduce.
-  Parser errors in Claude's read loop are the canonical example — they
+  Parser errors in Claude's read loop are the canonical example. They
   log and keep reading so one bad line doesn't kill the session.
 - **No panics in production code paths.** Panics are for programmer error
   (e.g., "invariant violated"), not for user data or wire input. Tests may
   use `t.Fatal` freely; production code returns errors.
 - Errors the user should see are user-facing state, not log lines
-  (core principle 5). If a failure matters to the user, surface it —
-  toast, status banner, error row — don't bury it in a log file.
+  (core principle 5). If a failure matters to the user, surface it as a
+  toast, status banner, or error row. Don't bury it in a log file.
 
 ## Magic Numbers
 
@@ -74,12 +74,12 @@ lives in the package that owns the behavior it encodes.
 
 Canonical examples:
 
-- `defaultQueueSize = 4096` (`internal/observability/replay/manager.go`) —
+- `defaultQueueSize = 4096` (`internal/observability/replay/manager.go`):
   the replay queue capacity. Tests reference the same constant rather
   than hardcoding `4096`.
-- `defaultIdleTimeout = 5 * time.Minute` (replay manager) — idle reaper
+- `defaultIdleTimeout = 5 * time.Minute` (replay manager): idle reaper
   threshold.
-- `defaultMaxBytes = 100 * 1024 * 1024` (replay writer) — rotation size.
+- `defaultMaxBytes = 100 * 1024 * 1024` (replay writer): rotation size.
 
 If a number lives in more than one file, either the constant is in the
 wrong place or a helper should own the logic that uses it. Don't grep-fix.
@@ -89,7 +89,7 @@ wrong place or a helper should own the logic that uses it. Don't grep-fix.
 - **No `time.Sleep` in tests.** None. If the code needs to coordinate
   something asynchronous, expose a seam the test can deterministically
   synchronize on. The triage router's `SetEventHook` (see `router.go`)
-  is the pattern — production leaves the hook nil, tests install one
+  is the pattern: production leaves the hook nil, tests install one
   and block on the channel it fires.
 - **No real `setTimeout` in Vitest tests without fake timers.** Real
   timers make tests flaky and slow. Use `vi.useFakeTimers()` and
@@ -100,7 +100,7 @@ wrong place or a helper should own the logic that uses it. Don't grep-fix.
 - **Test seams go in production code, not test files**, but they stay
   nil / no-op in production paths. `SetEventHook` is the reference.
 - Tests must be deterministic. If a test needs timing, use
-  `t.Setenv("TMPDIR", t.TempDir())` or per-test fixtures — never scan
+  `t.Setenv("TMPDIR", t.TempDir())` or per-test fixtures. Never scan
   shared system state. Past flakes that violated this are documented in
   the test-flake history.
 
@@ -111,11 +111,11 @@ wrong place or a helper should own the logic that uses it. Don't grep-fix.
   keep it that way.
 - **Index every column used in a `WHERE`.** SQLite will table-scan
   otherwise. Partial indexes (`WHERE col <> ''`) keep the index small on
-  sparse columns — see `idx_items_parent`, `idx_items_completion_of`,
+  sparse columns. See `idx_items_parent`, `idx_items_completion_of`,
   `idx_items_payload_id`, `idx_items_meta_task_id` in
   `internal/store/migrate.go`.
 - **Narrow SELECT projections.** Prefer `SELECT id, kind, summary`
-  over `SELECT *`. The payload `data` BLOB is the reason — pulling it
+  over `SELECT *`. The payload `data` BLOB is the reason: pulling it
   implicitly on every item list would defeat the on-demand model.
 - **Every migration has a test.** Every new column, index, or CHECK
   constraint. `internal/store/migrate_test.go` is where they live; the
@@ -170,19 +170,20 @@ happens through stable sibling ids in triage.
 
 - **Runes only.** `$state`, `$derived`, `$effect`, `$props`. No
   `export let`, no `$:` reactive labels, no legacy stores.
-- **Components stay small** — extract before stretching. See the
+- **Components stay small.** Extract before stretching. See the
   file-size targets above.
 - **Reactive state files end in `.svelte.ts`.** Pure helpers are plain
   `.ts`.
 - **No business logic in templates.** Derive in `<script>`, render in
   the template. Templates should read like HTML with variable
-  substitution — nothing more.
+  substitution, nothing more.
 - **Typed bindings.** Import from `stores/bindings.ts`. Never call
   `window.runtime` directly; never edit `frontend/bindings/` by hand.
-  Regenerate with `wails3 task common:generate:bindings`, which passes
-  `-ts` so Wails emits TypeScript bindings.
-- **Heavy content on demand.** Diffs, command output, thinking — fetch
-  via a Wails binding when the user expands, don't preload. The `items`
+  Regenerate with `wails3 generate bindings -ts`. Always pass `-ts` so
+  Wails emits TypeScript rather than JS bindings. `build/Taskfile.yml`'s
+  `generate:bindings` target runs it with `-clean=true` and the build flags.
+- **Heavy content on demand.** Fetch diffs, command output, and thinking
+  via a Wails binding when the user expands. Don't preload. The `items`
   list the frontend receives already omits `payload.data`; fetching it
   is the explicit action.
 
@@ -193,8 +194,8 @@ happens through stable sibling ids in triage.
   variable or extract the operation.
 - **WHY-comments are the only kind worth writing.** Why is this guard
   here? Why this order of operations? Why does this handler defer the
-  index assignment? The router's `handleTurnComplete` is full of these
-  — each paragraph explains a subtle ordering constraint that would
+  index assignment? The router's `handleTurnComplete` is full of these.
+  Each paragraph explains a subtle ordering constraint that would
   otherwise be reintroduced as a bug.
 - **Never reference PRs or tickets in comments.** Git history is the
   record; comments are for future readers who don't have that context
@@ -202,6 +203,43 @@ happens through stable sibling ids in triage.
 - **Comments are maintained with the code.** If you change behavior,
   update the comment in the same commit. A stale comment is worse than
   no comment.
+
+## Maintaining the Guides
+
+The `AGENTS.md` files and the `docs/` tree are a cache over the code:
+useful exactly as long as they are true. Four rules keep them true.
+
+- **Route a new fact to where a future reader looks first, once.** A
+  rule agents must obey in one area → that area's `AGENTS.md`. A
+  cross-cutting mechanism → `docs/architecture/`. Rationale for a
+  choice → the commit message, or an ADR when it is load-bearing. A
+  coined term → `docs/GLOSSARY.md`. A code-local subtlety → a
+  WHY-comment. If the environment already answers it (a Makefile
+  target, `--help`, a config file), leave it there: a doc restating a
+  lookup goes stale, the lookup cannot.
+- **Sweep for falsified claims before reporting a change done.** A
+  behavior change can invalidate doc prose far from the edited files,
+  so `rg` the changed symbols and the behavior phrases they implement
+  across `**/AGENTS.md` and `docs/`, read each hit, and fix every
+  claim the change made false, in the same commit. Done means every
+  doc claim about the touched behavior is verified true or updated.
+  The class this closes: the 2026-08-29 eventbus change made "no later
+  frame announces a drop" false in two documents at once.
+- **Retire prose that enforcement replaced.** When a rule gains a
+  tripwire test, lint, or type shape, shrink its guide bullet to the
+  claim plus a pointer at the enforcement; the test carries the weight
+  from then on. Delete a doc nothing cites (the spec-graduation rule
+  in `docs/README.md`, generalized to the whole tree); git history
+  keeps it. Guides earn their load by staying short enough to read.
+- **Keep the indexes in step.** Adding, renaming, or deleting a doc
+  updates its `docs/README.md` row in the same commit. A new package
+  updates the `internal/AGENTS.md` table and ships the `CLAUDE.md`
+  symlink (§ Adding a package there).
+
+When writing the entry itself: cache what the code cannot say — the
+unwritten convention, the reason, the gotcha. One meaning lives in one
+place; elsewhere, point. An incident citation is one sentence, the date
+and the mechanism.
 
 ## Before You Commit
 
@@ -212,6 +250,9 @@ Every task leaves these passing:
 - `cd frontend && pnpm run check`
 - `cd frontend && pnpm run build`
 
+Plus the falsified-claim sweep above: every doc claim about the
+behavior you changed is verified true or updated.
+
 If any are broken, fix them before the commit lands. "Out of scope" is
-not a valid reason to leave a check red — see the Ownership section of
-the root `CLAUDE.md` / `AGENTS.md`.
+not a valid reason to leave a check red. See the Ownership section of
+the root `AGENTS.md`.

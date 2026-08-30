@@ -8,7 +8,7 @@ export interface MentionTrigger {
  * Detects an active "@query" mention in the textarea up to the caret.
  * Returns null when the caret is not inside a mention context.
  *
- * Rules (matches forge's behaviour):
+ * Rules:
  * - The "@" must be at start-of-string or preceded by whitespace.
  * - The query is everything after "@" up to caret, excluding whitespace.
  * - An @ with no trailing query still counts as open (to show the popover).

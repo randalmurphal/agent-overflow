@@ -4,6 +4,10 @@ package main
 
 import "os"
 
+func openHarnessLock(path string, mode os.FileMode) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, mode)
+}
+
 // lockFileExclusiveNonBlocking has no implementation off unix and
 // Windows, so the single-instance guard degrades to "always allowed"
 // there. Documented rather than faked: a lock that silently does nothing

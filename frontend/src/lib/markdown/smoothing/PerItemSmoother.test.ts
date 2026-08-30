@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   PerItemSmoother,
   computeAdvanceEnd,
@@ -15,6 +15,7 @@ class FakeClock implements SmoothingClock {
   private current = 0;
   private nextHandle = 1;
   private pending = new Map<number, () => void>();
+  private callbacks = new Set<() => void>();
 
   now(): number {
     return this.current;
@@ -22,6 +23,7 @@ class FakeClock implements SmoothingClock {
   schedule(cb: () => void): number {
     const handle = this.nextHandle++;
     this.pending.set(handle, cb);
+    this.callbacks.add(cb);
     return handle;
   }
   cancel(handle: number): void {
@@ -39,6 +41,9 @@ class FakeClock implements SmoothingClock {
   pendingCount(): number {
     return this.pending.size;
   }
+  scheduledCallbackCount(): number {
+    return this.callbacks.size;
+  }
 }
 
 interface RevealEntry {
@@ -51,7 +56,11 @@ function makeSmoother(initial = '') {
   const reveals: RevealEntry[] = [];
   const smoother = new PerItemSmoother({
     initialReceived: initial,
-    onReveal: (revealed, delta) => reveals.push({ revealed, delta }),
+    onReveal: (delta) =>
+      reveals.push({
+        revealed: (reveals.at(-1)?.revealed ?? initial) + delta,
+        delta,
+      }),
     clock,
   });
   return { clock, reveals, smoother };
@@ -69,6 +78,11 @@ function drain(clock: FakeClock, smoother: PerItemSmoother, maxFrames = 2000) {
 function concatDeltas(reveals: RevealEntry[]): string {
   return reveals.map((r) => r.delta).join('');
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe('computeAdvanceEnd', () => {
   it('returns the from offset when from is at end', () => {
@@ -151,6 +165,32 @@ describe('PerItemSmoother', () => {
     expect(smoother.isCaughtUp()).toBe(true);
     expect(clock.pendingCount()).toBe(0);
     expect(reveals).toEqual([]);
+  });
+
+  it('reuses one scheduled callback across reveal frames', () => {
+    const { clock, smoother } = makeSmoother();
+    smoother.appendDelta('word '.repeat(80));
+    for (let frame = 0; frame < 20; frame += 1) clock.tickFrame(16);
+
+    expect(clock.scheduledCallbackCount()).toBe(1);
+  });
+
+  it('batches default-clock smoothers into one native animation frame', () => {
+    const nativeCallbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      nativeCallbacks.push(callback);
+      return nativeCallbacks.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const a = new PerItemSmoother({ onReveal: () => {} });
+    const b = new PerItemSmoother({ onReveal: () => {} });
+
+    a.appendDelta('first pane keeps revealing words');
+    b.appendDelta('second pane keeps revealing words');
+    expect(nativeCallbacks).toHaveLength(1);
+
+    a.dispose();
+    b.dispose();
   });
 
   it('seeds revealed = received on mid-flight start (no jump, no callback)', () => {
@@ -647,6 +687,142 @@ describe('PerItemSmoother — never skips (the queue is self-correcting)', () =>
       expect(r.revealed).toBe(running);
     }
   });
+
+  it('extends an unrevealed word unit across provider chunk boundaries', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.appendDelta('hel');
+    smoother.appendDelta('lo ');
+
+    clock.tickFrame(100);
+
+    expect(reveals.map((entry) => entry.delta)).toEqual(['hello ']);
+    expect(smoother.getRevealed()).toBe('hello ');
+  });
+
+  it('starts a new unit when a provider continues a word after its prefix was revealed', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.appendDelta('hel');
+    clock.tickFrame(100);
+    expect(smoother.getRevealed()).toBe('hel');
+
+    smoother.appendDelta('lo ');
+    clock.tickFrame(100);
+
+    expect(reveals.map((entry) => entry.delta)).toEqual(['hel', 'lo ']);
+    expect(smoother.getRevealed()).toBe('hello ');
+  });
+
+  it('keeps a leading-whitespace unit intact across provider chunks', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.appendDelta('  ');
+    smoother.appendDelta('hello');
+    smoother.appendDelta(' ');
+
+    clock.tickFrame(100);
+
+    expect(reveals.map((entry) => entry.delta)).toEqual(['  hello ']);
+  });
+
+  it('preserves source and reveal order across source-part compaction', () => {
+    const { clock, reveals, smoother } = makeSmoother();
+    smoother.pause();
+    const chunks = Array.from({ length: 600 }, (_, index) => `${index} `);
+    for (const chunk of chunks) smoother.appendDelta(chunk);
+    const source = chunks.join('');
+
+    expect(smoother.getReceived()).toBe(source);
+    smoother.resume();
+    drain(clock, smoother, 20_000);
+
+    expect(smoother.getRevealed()).toBe(source);
+    expect(concatDeltas(reveals)).toBe(source);
+  });
+
+  it('preserves every cursor invariant across randomized call sequences', () => {
+    const atoms = [
+      'word', ' ', '  ', '\n', '\r\n', '\t', 'punctuation, ',
+      '**markdown** ', 'café ', '漢字', 'e\u0301 ', 'https://example.test/a_b',
+    ];
+    for (let seed = 1; seed <= 24; seed++) {
+      let state = seed >>> 0;
+      const random = () => {
+        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+        return state;
+      };
+      const initial = seed % 2 === 0 ? 'seed ' : '';
+      const clock = new FakeClock();
+      let immediate = false;
+      let expectedReceived = initial;
+      let expectedRevealed = initial;
+      const smoother = new PerItemSmoother({
+        initialReceived: initial,
+        revealImmediately: () => immediate,
+        clock,
+        onReveal: (delta, revealedEnd, previousCodeUnit) => {
+          expect(delta.length).toBeGreaterThan(0);
+          expect(previousCodeUnit).toBe(
+            expectedRevealed.length === 0
+              ? -1
+              : expectedRevealed.charCodeAt(expectedRevealed.length - 1),
+          );
+          expectedRevealed += delta;
+          expect(revealedEnd).toBe(expectedRevealed.length);
+          expect(expectedReceived.startsWith(expectedRevealed)).toBe(true);
+        },
+      });
+
+      for (let step = 0; step < 800; step++) {
+        switch (random() % 8) {
+          case 0:
+          case 1:
+          case 2: {
+            const delta = atoms[random() % atoms.length];
+            expectedReceived += delta;
+            smoother.appendDelta(delta);
+            break;
+          }
+          case 3:
+            clock.tickFrame(1 + (random() % 100));
+            break;
+          case 4:
+            smoother.pause();
+            break;
+          case 5:
+            smoother.resume();
+            break;
+          case 6:
+            smoother.snap();
+            break;
+          case 7:
+            immediate = !immediate;
+            break;
+        }
+        expect(smoother.getLag()).toBe(
+          expectedReceived.length - expectedRevealed.length,
+        );
+        expect(smoother.isCaughtUp()).toBe(
+          expectedReceived.length === expectedRevealed.length,
+        );
+        if (step % 23 === 0) {
+          expect(smoother.getReceived()).toBe(expectedReceived);
+          expect(smoother.getRevealed()).toBe(expectedRevealed);
+        }
+      }
+
+      smoother.resume();
+      smoother.snap();
+      expect(smoother.getReceived()).toBe(expectedReceived);
+      expect(smoother.getRevealed()).toBe(expectedReceived);
+      expect(expectedRevealed).toBe(expectedReceived);
+
+      smoother.dispose();
+      smoother.appendDelta('ignored');
+      smoother.snap();
+      clock.tickFrame(100);
+      expect(smoother.getReceived()).toBe(expectedReceived);
+      expect(smoother.getRevealed()).toBe(expectedReceived);
+    }
+  });
 });
 
 describe('PerItemSmoother — revealImmediately (low power)', () => {
@@ -654,7 +830,11 @@ describe('PerItemSmoother — revealImmediately (low power)', () => {
     const clock = new FakeClock();
     const reveals: RevealEntry[] = [];
     const smoother = new PerItemSmoother({
-      onReveal: (revealed, delta) => reveals.push({ revealed, delta }),
+      onReveal: (delta) =>
+        reveals.push({
+          revealed: (reveals.at(-1)?.revealed ?? '') + delta,
+          delta,
+        }),
       revealImmediately: () => active.value,
       clock,
     });

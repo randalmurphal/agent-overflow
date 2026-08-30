@@ -10,7 +10,7 @@ events for a single subagent: `SpawnAgent`, `SendInput`, `Wait`,
 `CloseAgent`, `ResumeAgent`. Each arrives as its own item on the
 wire, each with its own `tool` field discriminator.
 
-Claude's `Task` tool is simpler — one launch event, one completion.
+Claude's `Task` tool is simpler: one launch event, one completion.
 
 The question: how many `tool_call` cards does the parent timeline
 render for a subagent?
@@ -34,7 +34,7 @@ subagent card. It's a distinct action the parent agent took.
 
 ## Rationale
 
-- **UX coherence.** A subagent is one conceptual unit — the user
+- **UX coherence.** A subagent is one conceptual unit. The user
   clicks the card to see its conversation. Fragmenting the unit
   across multiple cards makes the timeline incoherent.
 - **Matches Claude.** Claude Task emits one launch + one
@@ -45,7 +45,7 @@ subagent card. It's a distinct action the parent agent took.
   `CloseAgent` → `completed` or `errored`; `ResumeAgent` →
   `running` again. A single row with a mutating status is simpler
   than a row-per-event timeline.
-- **SendInput is different.** It's not a lifecycle event — it's
+- **SendInput is different.** It's not a lifecycle event. It's
   the parent AGENT sending a message to the child. That's
   semantically a distinct action the user wants to see inline in
   the parent's timeline. Folding it into the card would hide it.
@@ -65,13 +65,13 @@ Considered alternatives:
   `Resume` are dispatched on the `tool` field of a
   `CollabAgentToolCall`; only SpawnAgent creates a new item.
 - The card's meta carries `receiverThreadId` (populated on
-  SpawnAgent's `item/completed`, not `item/started` —
+  SpawnAgent's `item/completed`, not `item/started`, because
   `receiverThreadIds` doesn't exist until spawn completes). This
   is invariant-adjacent: reconnect recovery needs the
   `receiverThreadId` to resubscribe.
 - Live activity (last child event summary, live count) updates on
   the card's meta/summary as child events flow in. This is a
-  denormalized projection — the triage handler for child events
+  denormalized projection: the triage handler for child events
   updates the card as part of persisting the child item.
 - Nesting cap applies here: if a Codex subagent spawns a
   sub-subagent, the grandchild is represented as a minimal marker
