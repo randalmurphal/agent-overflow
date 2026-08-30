@@ -50,7 +50,7 @@ Facts established by auditing every history-mutating path in
 - **Rows change without moving.** Streaming finalize
   (`ReplacePayloadData`), tool-call completion (`UpsertItem` update
   branch), interrupt force-close (`ForceCloseRunningToolCallsInTurn`),
-  Codex ghost flips (`FlipGhostBackgroundRowsOnStart`), crash recovery
+  Codex runtime retirement (`RecoverCodexBackgroundRuntime`), crash recovery
   (`RecoverCrashedTurns`), and meta merges all rewrite existing rows in
   place. Some (`UpdateItemMeta`, the fork uuid remap) skip `updated_at`
   *by design*.

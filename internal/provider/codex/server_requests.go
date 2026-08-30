@@ -61,7 +61,11 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 	}
 
 	turnID, itemID := readRouteFields(params)
-	parentToolUseID := s.parentToolUseForProviderThread(providerThreadIDFromParams(params))
+	providerThreadID := providerThreadIDFromParams(params)
+	if providerThreadID == "" {
+		providerThreadID = s.rootThreadID()
+	}
+	parentToolUseID := s.parentToolUseForProviderThread(providerThreadID)
 	if parentToolUseID == "" {
 		parentToolUseID = s.reviewScopeForTurn(turnID)
 	}
@@ -81,12 +85,12 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 
 		approval := buildApprovalRequest(s.threadID, turnID, method, rpcID, params)
 		meta, _ := json.Marshal(approval)
-		s.trackPendingApproval(rpcID, provider.EventApprovalResolved, approval.AvailableDecisions)
+		s.trackPendingApprovalScoped(rpcID, provider.EventApprovalResolved, providerThreadID, approval.AvailableDecisions)
 		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "mcpServer/elicitation/request":
 		meta := buildElicitationMeta(s.threadID, turnID, rpcID, params)
-		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
+		s.trackPendingApprovalScoped(rpcID, provider.EventApprovalResolved, providerThreadID)
 		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	case "item/tool/call", "dynamicToolCall":
@@ -123,7 +127,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 			)
 		}
 		meta := buildUserInputMetaFromQuestions(s.threadID, turnID, itemID, rpcID, questions)
-		s.trackPendingApproval(rpcID, provider.EventUserInputResolved)
+		s.trackPendingApprovalScoped(rpcID, provider.EventUserInputResolved, providerThreadID)
 		if itemID != "" {
 			emit(buildUserInputToolStartEvent(s.threadID, turnID, itemID, questions, line))
 		}
@@ -131,7 +135,7 @@ func (s *Session) handleServerRequest(method string, id *json.Number, params jso
 
 	case "item/permissions/requestApproval":
 		meta := buildPermissionMeta(s.threadID, turnID, rpcID, params)
-		s.trackPendingApproval(rpcID, provider.EventApprovalResolved)
+		s.trackPendingApprovalScoped(rpcID, provider.EventApprovalResolved, providerThreadID)
 		emit(buildApprovalEvent(s.threadID, turnID, itemID, meta, line))
 
 	default:

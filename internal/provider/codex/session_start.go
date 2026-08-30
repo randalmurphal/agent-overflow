@@ -76,6 +76,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 			agentPathByThread:         make(map[string]string),
 			agentMetaByThread:         make(map[string]collabReceiverMeta),
 			subagentNotificationDedup: make(map[subagentNotificationDedupKey]struct{}),
+			childRuntimeByThread:      make(map[string]childRuntimeState),
 		},
 		collabMetadataReads: make(chan struct{}, 4),
 		rawCalls: sessionRawToolCallState{

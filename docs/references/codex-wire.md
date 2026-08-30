@@ -414,6 +414,28 @@ and normalizes them before triage:
 | wait | `collabAgentToolCall`, `tool:"wait"`, receivers/statuses | `collabAgentToolCall`, `tool:"wait"`, empty receiver/status maps |
 | list | model-facing raw function call only (no item) | model-facing raw function call only (no item) |
 
+### Client-side child stop
+
+Verified against `rust-v0.150.1`. App-server has no client `close_agent` or
+`interrupt_agent` RPC. Those names are model collaboration tools. A client
+stops live child work with the existing `turn/interrupt` request:
+
+```json
+{"threadId":"<child provider thread id>","turnId":"<active child turn id>"}
+```
+
+An empty `turnId` is the typed startup-interrupt form. App-server submits the
+same core interrupt but responds immediately because no `TurnAborted` event
+exists to await before startup finishes. Agent Overflow therefore records the
+active child turn id from child-scoped `turn/started`, resolves the UI launch
+id through typed ownership, and emits an interrupted child status after a
+successful request. It never accepts a provider thread id from the UI.
+
+Closing the app-server aborts its active tasks, including child tasks. The
+child thread identity and persisted history remain resumable. A client restart
+must clear the old live-work projection without deleting spawn ownership or
+fabricating a child completion result.
+
 ⚠ **V2's two messaging verbs are indistinguishable on the typed wire.**
 `send_message` (QueueOnly: queues into the child's mailbox, starts no turn) and
 `followup_task` (TriggerTurn: starts a new child turn) share one handler path

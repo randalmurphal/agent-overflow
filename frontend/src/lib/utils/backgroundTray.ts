@@ -68,11 +68,9 @@ export function completionStatusFor(completion: Item): TrayTask['status'] {
 }
 
 /**
- * Codex subagent rows are detected from the normalized spawn-agent
- * launch metadata. They represent child threads with no client-side kill
- * path. The Stop-all button must hide when the tray only contains these,
- * because neither StopClaudeTask nor CleanCodexBackgroundTerminals can
- * touch them.
+ * Codex subagent rows are detected from the normalized spawn-agent launch
+ * metadata. Their stop target is the launch row id, which the backend resolves
+ * to owned child provider threads before issuing turn/interrupt.
  */
 export function isCodexSubagentTask(task: TrayTask): boolean {
   const item = task.launch ?? task.completion;
@@ -80,15 +78,12 @@ export function isCodexSubagentTask(task: TrayTask): boolean {
 }
 
 /**
- * Codex's stop primitives (per-row `TerminateCodexBackgroundTerminal`
- * and thread-wide `CleanCodexBackgroundTerminals`) both act only on
- * yielded unifiedExec PTYs. Pending foreground commands are visible in
- * the same running tray, but they are not background terminals yet, so
- * offering a stop for them would promise a kill primitive the backend
- * does not have.
+ * Codex can stop active subagents and yielded unifiedExec PTYs. Pending
+ * foreground commands are visible in the same running tray, but neither
+ * primitive targets them yet.
  */
 export function isCodexStoppableTask(task: TrayTask): boolean {
-  if (isCodexSubagentTask(task)) return false;
+  if (isCodexSubagentTask(task)) return task.launch !== null;
   return task.launch?.isBackground === true;
 }
 
@@ -112,11 +107,8 @@ export function trayRowStopTarget(
     case 'claude-task':
       return extractClaudeTaskID(task.launch);
     case 'codex-background-terminals':
-      // Same gate as Stop-all, plus the id: a spawned collab-agent child
-      // and a not-yet-yielded foreground command are both untouchable by
-      // the terminate RPC, and the wire may not have named the process
-      // yet on a row that just started.
-      return isCodexStoppableTask(task) ? extractCodexProcessID(task.launch) : null;
+      if (!isCodexStoppableTask(task)) return null;
+      return isCodexSubagentTask(task) ? task.launch.id : extractCodexProcessID(task.launch);
     case 'none':
       return null;
   }

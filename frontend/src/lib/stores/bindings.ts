@@ -53,6 +53,7 @@ export {
   // drive different provider RPCs, so callers branch on provider.
   StopClaudeTask,
   TerminateCodexBackgroundTerminal,
+  StopCodexSubagent,
   CleanCodexBackgroundTerminals,
   // The opposite direction, Claude only: detach a running foreground
   // subagent / Bash from the turn instead of killing it. Keyed by

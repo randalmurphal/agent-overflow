@@ -137,6 +137,7 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 		// notification, rather than derived from the deliveries themselves —
 		// which would be circular. See subagentNotificationDedupKey.
 		s.advanceChildTurnGeneration(providerThreadID)
+		s.recordChildTurnStarted(providerThreadID, readNestedString(params, "turn", "id"))
 		event := s.childStatusEvent(providerThreadID, parentToolUseID, "running")
 		if event == nil {
 			return nil
@@ -147,6 +148,7 @@ func (s *Session) childLifecycleEvents(method string, params json.RawMessage, pa
 		return nil
 	}
 	completed := decodeTurnCompletedParams(params)
+	s.recordChildTurnCompleted(providerThreadID, completed.Turn.ID)
 	status := codexSubagentStatusFromTurnCompleted(params)
 	if status == "" {
 		return nil
@@ -558,6 +560,16 @@ func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID
 		}
 	}
 	s.collab.childParentByThread[childThreadID] = parentToolUseID
+	if s.collab.childRuntimeByThread == nil {
+		s.collab.childRuntimeByThread = make(map[string]childRuntimeState)
+	}
+	if runtime, exists := s.collab.childRuntimeByThread[childThreadID]; !exists || (!fromHistory && runtime.phase != childRuntimeRunning && runtime.phase != childRuntimeStopping) {
+		phase := childRuntimeInactive
+		if !fromHistory {
+			phase = childRuntimePending
+		}
+		s.collab.childRuntimeByThread[childThreadID] = childRuntimeState{phase: phase}
+	}
 	if agentPath != "" {
 		s.collab.agentPathByThread[childThreadID] = agentPath
 		currentThreadID := s.collab.childThreadByAgentPath[agentPath]
@@ -672,6 +684,7 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 		delete(s.collab.agentPathByThread, providerThreadID)
 	}
 	delete(s.collab.childParentByThread, providerThreadID)
+	delete(s.collab.childRuntimeByThread, providerThreadID)
 	delete(s.collab.agentMetaByThread, providerThreadID)
 	// The generation counter goes with the ownership it counted. Zero — what a
 	// later delivery for this child would now read — is already the documented

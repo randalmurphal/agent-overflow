@@ -9,60 +9,57 @@ import (
 	"agent-overflow/internal/codexghost"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider/codex"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
 
-// flipCodexGhostBackgroundRowsOnStart runs unconditionally on every
-// Codex session start (new OR resume) to flip every persisted
-// `is_background=1 AND status='running' AND kind='tool_call'` row for
-// threadID to `status='errored'`, `decision='lost'`, with " — session
-// ended" suffixed on the summary.
+// retireCodexBackgroundRuntime runs before every Codex session start. The old
+// app-server is gone at this point, so its running terminals become
+// errored/lost and its completed spawn cards become inactive while retaining
+// the child ownership needed for history recovery.
 //
-// Rationale: Phase 2's projector stamps `is_background=true` on
-// unifiedExec startups and spawn_agent rows that outlive their launching
-// turn. When the Codex subprocess dies between app sessions, its PTYs
-// and spawned child threads die with it — a fresh subprocess cannot
-// reach any of them. The persisted row is therefore a ghost from the
-// app's perspective; flipping it on the next session start gives the
-// timeline a clean, accurate state before the user sends the next turn.
+// A child thread's identity and history can be resumed by a later app-server.
+// Its active task cannot. Keeping the ownership while clearing only live
+// runtime state lets resume recover a missed terminal result without claiming
+// that the prior task is still running.
 //
-// Distinction from ReconcileCodexOnReopen: the probe-based reconciler
-// runs after the session spawns and is gated on status verdicts
-// (notLoaded → resume, systemError → flip re-resurrected rows). That
-// path is too narrow for the common case — a subprocess that crashed
-// cleanly between app sessions never reports systemError from a new
-// spawn, yet its PTYs are still dead. Phase 4 runs before the probe
-// ever fires, with no status condition — the subprocess-identity
-// change alone is the signal.
+// The post-spawn probe handles a later systemError through the same store
+// transition. It cannot replace this pre-spawn path because a clean prior
+// process exit does not make the replacement process report systemError.
 //
-// Ordering: this MUST run BEFORE the Codex subprocess is spawned
-// (before spawnProviderSession) so the flip lands before any replay
-// events can re-upsert the same rows. The store flip is DB-only, no
-// session needed. On the warm-reconnect case (a surviving subprocess
-// re-emitting `item/started` for a still-running item), the existing
-// parser dedup + triage UpsertItem path will re-upsert those rows back
-// to `status='running'` — the correct behaviour for an item that
-// actually is still running.
-//
-// Best-effort: a store error is logged because session startup must not
-// block on cleanup noise. The session still starts; any remaining
-// ghost rows get retried on the next restart.
+// Ordering: this runs before a replacement process starts. A later typed child
+// turn/started event reactivates the spawn and removes the session-end reason.
 //
 // Claude does NOT use this path: its `stop_task` primitive and natural
 // completion events settle backgrounded items; a Claude subprocess dying
 // is handled by the existing error-stream plumbing. This method is
 // Codex-only by caller scope.
-func (a *App) flipCodexGhostBackgroundRowsOnStart(threadID string) {
+func (a *App) retireCodexBackgroundRuntime(threadID string) error {
+	if a.store == nil {
+		return nil
+	}
+	retired, err := a.store.RetireCodexBackgroundRuntime(threadID, codexghost.GhostSummary, time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("retire Codex background runtime for %s: %w", threadID, err)
+	}
+	for _, item := range retired {
+		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
+	}
+	return nil
+}
+
+func (a *App) recoverCodexBackgroundRuntimeOnStartup() {
 	if a.store == nil {
 		return
 	}
-	flipped, err := a.store.FlipGhostBackgroundRowsOnStart(threadID, codexghost.GhostSummary, time.Now().UnixMilli())
+	retired, err := a.store.RecoverCodexBackgroundRuntime(codexghost.GhostSummary, time.Now().UnixMilli())
 	if err != nil {
-		log.Printf("app: flip codex ghost rows for %s: %v", threadID, err)
+		log.Printf("app: recover Codex background runtime: %v", err)
 		return
 	}
-	for _, item := range flipped {
+	if len(retired) > 0 {
+		log.Printf("app: retired %d Codex background items from the prior app instance", len(retired))
+	}
+	for _, item := range retired {
 		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
 	}
 }
@@ -71,20 +68,12 @@ func (a *App) flipCodexGhostBackgroundRowsOnStart(threadID string) {
 // `thread/read` after the session has spawned and returns a classified
 // result the caller uses to sequence follow-up work:
 //
-//   - idle / active   → session is alive. No flip needed here — Phase 4's
-//     pre-spawn ghost flip already handled any dead-
-//     subprocess rows, and live completions will
-//     arrive over the wire.
+//   - idle / active   → session is alive. Pre-spawn retirement already handled
+//     prior-process runtime state, and live completions will arrive over wire.
 //   - notLoaded       → call `thread/resume` to rehydrate. We return a
 //     NeedsResume hint so the caller can sequence it.
-//   - systemError     → the warm-reconnect rarity: Phase 4 flipped
-//     ghost rows before spawn, then the replay
-//     re-upserted some back to running (warm
-//     reconnect), and the subprocess has since died.
-//     Flip those re-resurrected rows via the same
-//     helper Phase 4 uses so the summary suffix stays
-//     idempotent. The vast majority of reopens see
-//     zero rows here.
+//   - systemError     → retire any runtime state emitted after the pre-spawn
+//     transition. This covers a process that fails during resume/replay.
 //   - unknown kind    → log and fall back to systemError behaviour so a
 //     new enum value doesn't silently mask lost work.
 //
@@ -140,14 +129,12 @@ func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (Reco
 		return result, nil
 
 	case codex.ThreadStatusSystemError:
-		// Session reports terminal failure. Phase 4's pre-spawn flip
-		// already covered most ghost rows; anything still in
+		// Pre-spawn retirement covered the prior process. Anything still in
 		// `runningBg` here is either a warm-reconnect resurrection that
 		// the subprocess has since failed on, or a row inserted
 		// post-spawn that immediately became unreachable. Either way,
-		// flip via the shared helper so the summary-suffix stays
-		// idempotent.
-		flipped, flipErr := a.flipRunningBgRowsAsSessionEnded(runningBg)
+		// use the same transition so the summary suffix stays idempotent.
+		flipped, flipErr := a.retireCodexBackgroundRuntimeForReconcile(threadID)
 		if flipErr != nil {
 			return result, flipErr
 		}
@@ -156,7 +143,7 @@ func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (Reco
 
 	default:
 		log.Printf("app: reconcile codex: unknown thread status %q; treating as systemError", probe.Status)
-		flipped, flipErr := a.flipRunningBgRowsAsSessionEnded(runningBg)
+		flipped, flipErr := a.retireCodexBackgroundRuntimeForReconcile(threadID)
 		if flipErr != nil {
 			return result, flipErr
 		}
@@ -165,27 +152,17 @@ func (a *App) ReconcileCodexOnReopen(ctx context.Context, threadID string) (Reco
 	}
 }
 
-// flipRunningBgRowsAsSessionEnded updates the supplied rows in place,
-// applying the same status / decision / summary as Phase 4's pre-spawn
-// ghost flip. Shared between the Phase 4 entry path (the store-level
-// bulk flip) and ReconcileCodexOnReopen's post-probe systemError branch
-// so the suffix convention stays idempotent across both.
-//
-// Returns the count of rows actually mutated (non-zero only on the rare
-// warm-reconnect+systemError branch, since Phase 4's pre-spawn flip has
-// already converted every ghost row on the common path).
-func (a *App) flipRunningBgRowsAsSessionEnded(items []store.Item) (int, error) {
-	now := time.Now().UnixMilli()
-	var flipped int
-	for _, item := range items {
-		item.Status = "errored"
-		item.Summary = codexghost.GhostSummary(item.Summary)
-		item.Decision = "lost"
-		item.UpdatedAt = now
-		if _, err := a.store.UpsertItem(item, nil); err != nil {
-			return flipped, fmt.Errorf("app: reconcile codex flip %s: %w", item.ID, err)
+func (a *App) retireCodexBackgroundRuntimeForReconcile(threadID string) (int, error) {
+	retired, err := a.store.RetireCodexBackgroundRuntime(threadID, codexghost.GhostSummary, time.Now().UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("app: reconcile Codex runtime retirement: %w", err)
+	}
+	flipped := 0
+	for _, item := range retired {
+		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(item))
+		if item.Status == "errored" {
+			flipped++
 		}
-		flipped++
 	}
 	return flipped, nil
 }

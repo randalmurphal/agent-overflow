@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1989,13 +1990,13 @@ func TestForceCloseRunningToolCallsInTurnEmptyNoOp(t *testing.T) {
 	}
 }
 
-// TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls
-// pins the narrow scope of the Phase-4 store-level flip: a row flips
+// TestRetireCodexBackgroundRuntimeFlipsOnlyRunningBackgroundToolCalls pins the
+// narrow scope of thread retirement: a non-spawn row flips
 // iff (kind=tool_call, status=running, is_background=1). Anything else
 // stays untouched. The filter pushes into SQLite so a thread with deep
 // history doesn't pay deserialization cost for rows the flip can't
 // touch.
-func TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls(t *testing.T) {
+func TestRetireCodexBackgroundRuntimeFlipsOnlyRunningBackgroundToolCalls(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
@@ -2044,9 +2045,9 @@ func TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls(t *te
 	summariser := func(prior string) string {
 		return strings.TrimSpace(prior) + " — session ended"
 	}
-	flipped, err := s.FlipGhostBackgroundRowsOnStart("t-ghost", summariser, updatedAt)
+	flipped, err := s.RetireCodexBackgroundRuntime("t-ghost", summariser, updatedAt)
 	if err != nil {
-		t.Fatalf("FlipGhostBackgroundRowsOnStart: %v", err)
+		t.Fatalf("RetireCodexBackgroundRuntime: %v", err)
 	}
 	if len(flipped) != 1 {
 		t.Fatalf("flipped=%d, want 1 (ghost-match only)", len(flipped))
@@ -2097,10 +2098,10 @@ func TestFlipGhostBackgroundRowsOnStartFlipsOnlyRunningBackgroundToolCalls(t *te
 	}
 }
 
-// TestFlipGhostBackgroundRowsOnStartEmptyThreadNoOp pins the zero-
-// ghost-rows fast path: the TX commits cleanly, no thread-touch
+// TestRetireCodexBackgroundRuntimeEmptyThreadNoOp pins the zero-row fast path:
+// the transaction commits cleanly, no thread touch
 // runs, no rows returned.
-func TestFlipGhostBackgroundRowsOnStartEmptyThreadNoOp(t *testing.T) {
+func TestRetireCodexBackgroundRuntimeEmptyThreadNoOp(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
@@ -2115,7 +2116,7 @@ func TestFlipGhostBackgroundRowsOnStartEmptyThreadNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread before: %v", err)
 	}
-	flipped, err := s.FlipGhostBackgroundRowsOnStart("t-ghost-empty", func(s string) string { return s }, now+1)
+	flipped, err := s.RetireCodexBackgroundRuntime("t-ghost-empty", func(s string) string { return s }, now+1)
 	if err != nil {
 		t.Fatalf("empty ghost-flip: %v", err)
 	}
@@ -2131,11 +2132,11 @@ func TestFlipGhostBackgroundRowsOnStartEmptyThreadNoOp(t *testing.T) {
 	}
 }
 
-// TestFlipGhostBackgroundRowsOnStartScopedPerThread pins cross-thread
-// isolation: a flip on thread A must not touch thread B, even when B
+// TestRetireCodexBackgroundRuntimeScopedPerThread pins cross-thread isolation:
+// retirement on thread A must not touch thread B, even when B
 // has an identical running+background row. Matters for the restart
 // case where multiple Codex threads share the same store.
-func TestFlipGhostBackgroundRowsOnStartScopedPerThread(t *testing.T) {
+func TestRetireCodexBackgroundRuntimeScopedPerThread(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	for _, id := range []string{"t-ghost-a", "t-ghost-b"} {
@@ -2154,7 +2155,7 @@ func TestFlipGhostBackgroundRowsOnStartScopedPerThread(t *testing.T) {
 		}
 	}
 
-	_, err := s.FlipGhostBackgroundRowsOnStart("t-ghost-a",
+	_, err := s.RetireCodexBackgroundRuntime("t-ghost-a",
 		func(p string) string { return p + " — session ended" }, now+1)
 	if err != nil {
 		t.Fatalf("flip a: %v", err)
@@ -2178,6 +2179,92 @@ func TestFlipGhostBackgroundRowsOnStartScopedPerThread(t *testing.T) {
 	if bRow.Decision != "" {
 		t.Errorf("t-ghost-b row picked up decision: %q", bRow.Decision)
 	}
+}
+
+func TestRecoverCodexBackgroundRuntimeRetiresCompletedSpawnWithoutLosingOwnership(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("codex-runtime", "codex")); err != nil {
+		t.Fatalf("create Codex thread: %v", err)
+	}
+	if err := s.CreateThread(makeThread("claude-runtime", "claude")); err != nil {
+		t.Fatalf("create Claude thread: %v", err)
+	}
+	for _, item := range []Item{
+		{ID: "spawn-root", ThreadID: "codex-runtime", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "spawn_agent", IsBackground: true, ToolName: "collab_agent", Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]},"live_background_active":true}`, CreatedAt: 1000},
+		{ID: "spawn-nested", ThreadID: "codex-runtime", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "spawn_agent", IsBackground: true, ToolName: "collab_agent", ParentID: "spawn-root", Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-2"]}}`, CreatedAt: 1001},
+		{ID: "terminal", ThreadID: "codex-runtime", TurnIndex: 0, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Bash", IsBackground: true, ToolName: "command_execution", Meta: `{"process_id":"42"}`, CreatedAt: 1002},
+		{ID: "claude-task", ThreadID: "claude-runtime", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Claude task", IsBackground: true, ToolName: "task", Meta: `{}`, CreatedAt: 1003},
+	} {
+		if err := s.InsertItem(item); err != nil {
+			t.Fatalf("seed %s: %v", item.ID, err)
+		}
+	}
+
+	recovered, err := s.RecoverCodexBackgroundRuntime(func(summary string) string { return summary + " session ended" }, 2000)
+	if err != nil {
+		t.Fatalf("RecoverCodexBackgroundRuntime: %v", err)
+	}
+	if got := collectIDs(recovered); !equalStringSlice(got, []string{"spawn-root", "spawn-nested", "terminal"}) {
+		t.Fatalf("recovered ids = %v", got)
+	}
+	for _, id := range []string{"spawn-root", "spawn-nested"} {
+		item, found, err := s.GetThreadItem("codex-runtime", id)
+		if err != nil || !found {
+			t.Fatalf("reload %s: found=%v err=%v", id, found, err)
+		}
+		if item.Status != "completed" {
+			t.Fatalf("%s status = %q, want completed", id, item.Status)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+			t.Fatalf("decode %s meta: %v", id, err)
+		}
+		if meta["live_background_active"] != false || meta["codex_background_end_reason"] != "session_ended" {
+			t.Fatalf("%s runtime meta = %v", id, meta)
+		}
+	}
+	if live, err := s.ListLiveCodexSubagentLaunches("codex-runtime"); err != nil || len(live) != 0 {
+		t.Fatalf("live launches after recovery = %v, err=%v", collectIDs(live), err)
+	}
+	if ownerships, err := s.ListIncompleteCodexSubagentOwnerships("codex-runtime"); err != nil || len(ownerships) != 2 {
+		t.Fatalf("ownerships after recovery = %+v, err=%v", ownerships, err)
+	}
+	terminal, _, _ := s.GetThreadItem("codex-runtime", "terminal")
+	if terminal.Status != "errored" || terminal.Decision != "lost" {
+		t.Fatalf("terminal after recovery = %+v", terminal)
+	}
+	claude, _, _ := s.GetThreadItem("claude-runtime", "claude-task")
+	if claude.Status != "running" {
+		t.Fatalf("Claude row changed during Codex recovery: %+v", claude)
+	}
+	if again, err := s.RecoverCodexBackgroundRuntime(func(summary string) string { return summary + " session ended" }, 3000); err != nil || len(again) != 0 {
+		t.Fatalf("second recovery = %v, err=%v", collectIDs(again), err)
+	}
+}
+
+func TestCodexBackgroundRuntimeRecoveryUsesPartialIndexes(t *testing.T) {
+	s := newTestStore(t)
+	assertPlanUses(t, s.db, "idx_items_running_bg_tool_calls",
+		`EXPLAIN QUERY PLAN SELECT `+itemColumnsSansPayload+`
+		   FROM items INDEXED BY idx_items_running_bg_tool_calls
+		   JOIN threads ON threads.id = items.thread_id
+		  WHERE threads.provider = 'codex'
+		    AND items.kind = 'tool_call'
+		    AND items.status = 'running'
+		    AND items.is_background = 1
+		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0`)
+	assertPlanUses(t, s.db, "idx_items_live_codex_subagent",
+		`EXPLAIN QUERY PLAN SELECT `+itemColumnsSansPayload+`
+		   FROM items INDEXED BY idx_items_live_codex_subagent
+		   JOIN threads ON threads.id = items.thread_id
+		  WHERE threads.provider = 'codex'
+		    AND items.kind = 'tool_call'
+		    AND items.status = 'completed'
+		    AND items.tool_name = 'collab_agent'
+		    AND items.is_background = 1
+		    AND COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		    AND json_extract(items.meta, '$.input.tool') IN ('spawn_agent', 'spawnAgent')
+		    AND (`+noCompletionSiblingSQL+` OR json_extract(items.meta, '$.live_background_active') = 1)`)
 }
 
 // seedStreamingItemWithPayload creates thread "t" plus a streaming item

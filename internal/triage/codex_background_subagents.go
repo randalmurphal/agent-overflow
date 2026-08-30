@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -350,6 +351,10 @@ func (r *Router) reactivateCodexSpawnChild(threadID, launchID, childID string) e
 		return err
 	}
 	launch.item.Meta = mergeItemMetaJSON(launch.item.Meta, extra)
+	launch.item.Meta, err = itemmeta.MarkCodexBackgroundRuntimeActive(launch.item.Meta)
+	if err != nil {
+		return fmt.Errorf("reactivate Codex spawn %s: %w", launch.item.ID, err)
+	}
 	launch.item.UpdatedAt = time.Now().UnixMilli()
 	if err := r.persistItem(launch.item, nil); err != nil {
 		return err

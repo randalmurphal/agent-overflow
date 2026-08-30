@@ -96,3 +96,23 @@ func (a *App) TerminateCodexBackgroundTerminal(threadID, processID string) (bool
 	defer cancel()
 	return sess.codex.TerminateBackgroundTerminal(ctx, processID)
 }
+
+// StopCodexSubagent interrupts the live child turn owned by launchID. The
+// session resolves that launch through Codex's typed child ownership map, so a
+// frontend-supplied id cannot target the root or a sibling provider thread.
+// false, nil means the child was already terminal in this session.
+func (a *App) StopCodexSubagent(threadID, launchID string) (bool, error) {
+	if a.shuttingDown.Load() {
+		return false, ErrShuttingDown
+	}
+	sess, ok := a.sessionManager().get(threadID)
+	if !ok {
+		return false, fmt.Errorf("app: stop Codex subagent: no active session for thread %s", threadID)
+	}
+	if sess.codex == nil {
+		return false, fmt.Errorf("app: stop Codex subagent: thread %s is not a Codex thread", threadID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), codexBackgroundTerminalStopTimeout)
+	defer cancel()
+	return sess.codex.InterruptSubagent(ctx, launchID)
+}

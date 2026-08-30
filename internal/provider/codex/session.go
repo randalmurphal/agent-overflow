@@ -220,6 +220,27 @@ type sessionCollabState struct {
 	childTurnGenerations      map[string]uint64
 	agentMetaByThread         map[string]collabReceiverMeta
 	subagentNotificationDedup map[subagentNotificationDedupKey]struct{}
+	// childRuntimeByThread is the live-process turn state needed to target
+	// turn/interrupt at a child. Persisted ownership is intentionally separate:
+	// a historical child identity can survive an app-server restart while its
+	// work cannot.
+	childRuntimeByThread map[string]childRuntimeState
+}
+
+type childRuntimePhase uint8
+
+const (
+	childRuntimeInactive childRuntimePhase = iota
+	childRuntimePending
+	childRuntimeRunning
+	childRuntimeStopping
+	childRuntimeStopped
+)
+
+type childRuntimeState struct {
+	phase      childRuntimePhase
+	turnID     string
+	generation uint64
 }
 
 // sessionChildRoutingState quarantines notifications and server requests from
@@ -429,6 +450,9 @@ type Session struct {
 	// never sets it; the wire shape itself is pinned by the in-package tests
 	// in session_background_terminals_test.go.
 	terminateBackgroundTerminalFn func(ctx context.Context, processID string) (bool, error)
+	// interruptChildTurnFn replaces only the turn/interrupt wire write in
+	// app-layer tests. Ownership and runtime-state validation still run.
+	interruptChildTurnFn func(ctx context.Context, childThreadID, turnID string) error
 	// mcpOAuthCompletedHandler fires when Codex emits an
 	// `mcpServer/oauthLogin/completed` notification after the user
 	// finishes the browser hop on a previously-issued

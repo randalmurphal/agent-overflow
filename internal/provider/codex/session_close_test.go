@@ -136,6 +136,7 @@ var sessionCloseFieldDispositions = map[string]string{
 	"resumeFn":                      "test seam",
 	"cleanBackgroundTerminalsFn":    "test seam",
 	"terminateBackgroundTerminalFn": "test seam",
+	"interruptChildTurnFn":          "test seam",
 	"mcpOAuthCompletedHandler":      "construction-time handler",
 	"mcpStartupUpdateHandler":       "construction-time handler",
 	"skillsChangedHandler":          "construction-time handler",

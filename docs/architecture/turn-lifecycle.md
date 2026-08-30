@@ -366,11 +366,16 @@ matters for `claude-tui`: the interactive provider reconstructs
 Requiring one is exactly what left them rendering "running" forever
 after a restart.
 
-Codex background projections use a different lifecycle. Inactive Codex
-rows can remain `status='running'` with
-`live_background_active=false`; they are hidden from live-background
-queries and are owned by the Codex ghost-flip/reconcile path, not this
-Claude task recovery sweep.
+Codex background projections use a different lifecycle. On startup, before a
+provider can spawn, `Store.RecoverCodexBackgroundRuntime` retires every live
+projection owned by the prior app-server. Running background terminals become
+`errored/lost`. Completed spawn cards keep `status='completed'`, receiver ids,
+and incomplete ownership, but receive `live_background_active=false` and
+`codex_background_end_reason="session_ended"`. No completion sibling is
+invented because AO cannot know whether the child completed just before the
+disconnect. A later typed child `turn/started` sets the launch live again and
+removes the end reason. The same scoped retirement runs when a Codex session
+ends inside a live app process.
 
 ### Output
 

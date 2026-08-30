@@ -15,12 +15,16 @@ import (
 // both use the same key — and so writeDrainResponse can parse it back into
 // the id the JSON-RPC reply has to carry.
 func (s *Session) trackPendingApproval(rpcID int64, resolveKind provider.EventKind, decisions ...*[]json.RawMessage) {
+	s.trackPendingApprovalScoped(rpcID, resolveKind, s.rootThreadID(), decisions...)
+}
+
+func (s *Session) trackPendingApprovalScoped(rpcID int64, resolveKind provider.EventKind, scope string, decisions ...*[]json.RawMessage) {
 	requestID := strconv.FormatInt(rpcID, 10)
 	if resolveKind == provider.EventApprovalResolved && len(decisions) > 0 {
-		s.approvals.TrackApproval(requestID, resolveKind, decisions[0])
+		s.approvals.TrackApprovalScoped(requestID, resolveKind, decisions[0], scope)
 		return
 	}
-	s.approvals.Track(requestID, resolveKind, nil)
+	s.approvals.TrackScoped(requestID, resolveKind, nil, scope)
 }
 
 // clearPendingApprovals is the Close-path drain. Latches the registry shut so
@@ -51,17 +55,31 @@ func (s *Session) clearPendingApprovals() {
 // and may receive new approval requests.
 func (s *Session) drainPendingApprovals(decisionWord string, closeSession bool, writeResponse bool) {
 	for _, released := range s.approvals.Drain(closeSession) {
-		if writeResponse {
-			s.writeDrainResponse(released, decisionWord)
-		}
-		s.emitEvent(provider.ProviderEvent{
-			Kind:      released.ResolveKind,
-			ThreadID:  s.threadID,
-			ItemID:    released.RequestID,
-			Meta:      released.Meta(decisionWord),
-			Timestamp: time.Now(),
-		})
+		s.resolveDrainedApproval(released, decisionWord, writeResponse)
 	}
+}
+
+func (s *Session) drainPendingApprovalsForScope(scope, decisionWord string, writeResponse bool) {
+	for _, released := range s.approvals.DrainScope(scope) {
+		s.resolveDrainedApproval(released, decisionWord, writeResponse)
+	}
+}
+
+func (s *Session) resolveDrainedApproval(released provider.ResolvedApproval, decisionWord string, writeResponse bool) {
+	if writeResponse {
+		s.writeDrainResponse(released, decisionWord)
+	}
+	event := provider.ProviderEvent{
+		Kind:      released.ResolveKind,
+		ThreadID:  s.threadID,
+		ItemID:    released.RequestID,
+		Meta:      released.Meta(decisionWord),
+		Timestamp: time.Now(),
+	}
+	if released.Scope != "" && released.Scope != s.rootThreadID() {
+		event.ParentToolUseID = s.parentToolUseForProviderThread(released.Scope)
+	}
+	s.emitEvent(event)
 }
 
 // writeDrainResponse releases Codex from a pending server request by

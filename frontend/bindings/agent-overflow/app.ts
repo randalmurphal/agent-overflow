@@ -3487,6 +3487,16 @@ export function StopClaudeTask(threadID: string, taskID: string): $CancellablePr
 }
 
 /**
+ * StopCodexSubagent interrupts the live child turn owned by launchID. The
+ * session resolves that launch through Codex's typed child ownership map, so a
+ * frontend-supplied id cannot target the root or a sibling provider thread.
+ * false, nil means the child was already terminal in this session.
+ */
+export function StopCodexSubagent(threadID: string, launchID: string): $CancellablePromise<boolean> {
+    return $Call.ByID(4232843083, threadID, launchID);
+}
+
+/**
  * StopSession tears down the thread's provider session. Idempotent: a
  * thread with no active session still runs the design teardown +
  * triage cleanup so stale per-thread state doesn't leak.

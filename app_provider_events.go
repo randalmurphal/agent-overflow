@@ -417,6 +417,11 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	if ps := removed.providerSession(); ps != nil {
 		a.releaseSessionProcess(ps.PID())
 	}
+	if removed.provider == string(provider.Codex) {
+		if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+			log.Printf("app: retire Codex runtime after provider exit on %s: %v", threadID, err)
+		}
+	}
 	if a.triage != nil {
 		a.triage.ClearEffectiveModel(threadID)
 	}

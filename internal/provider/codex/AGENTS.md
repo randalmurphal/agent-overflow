@@ -233,6 +233,13 @@ sequence, V1 and V2 shapes, quarantine contract and delivery envelope:
   ARMED: only `Config.ResumeHasUnresolvedSubagents` or the first live
   `registerChildOwnership` starts it. Root resume itself rehydrates children
   from AO's own compact spawn metadata, never from provider history.
+- **Client stop uses child `turn/interrupt`, not `close_agent`.** Codex 0.150.1
+  exposes no client `close_agent` or `interrupt_agent` RPC. Resolve the launch
+  item through `childParentByThread`, send `turn/interrupt` with the owned child
+  thread and active child turn, and use an empty turn id only for the upstream
+  startup-interrupt case. Scope approval drains to that provider thread so a
+  child stop cannot dismiss root or sibling prompts. App-server shutdown ends
+  live child work but does not erase the resumable child thread identity.
 
 ## Background terminals
 

@@ -538,6 +538,13 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 		log.Printf("app: settled %d crashed in-flight turns as interrupted", settled)
 	}
 	logBootPhase("app.recover_crashed_turns", sweepStarted)
+	// Codex child identities are resumable, but live turns and background PTYs
+	// belong to the app-server process. Retire that runtime state before any
+	// provider session can start so the tray never presents prior-process work
+	// as still running.
+	codexRuntimeSweepStarted := time.Now()
+	a.recoverCodexBackgroundRuntimeOnStartup()
+	logBootPhase("app.recover_codex_background_runtime", codexRuntimeSweepStarted)
 	// Synthesize session_died terminals for backgrounded launches whose
 	// owning Claude session did not survive the previous app instance.
 	// Without this sweep the launches would render as "running" forever

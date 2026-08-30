@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -486,7 +487,9 @@ func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
 		}
 	}
 
-	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+	if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+		t.Fatalf("retire runtime: %v", err)
+	}
 
 	running := getItem(t, st, runningID)
 	if running.Status != "errored" {
@@ -510,6 +513,41 @@ func TestReconcileCodexOnStart_FlipsGhostBackgroundRows(t *testing.T) {
 	}
 }
 
+func TestStartupRecoveryRetiresLiveCompletedCodexSpawn(t *testing.T) {
+	st := storetest.Clone(t)
+	a := newAppWithStore(t, st)
+	threadID := seedCodexThread(t, st, "thread-restart-spawn")
+	spawn := store.Item{
+		ID: "spawn-restart", ThreadID: threadID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "completed",
+		Summary: "spawn_agent", ToolName: "collab_agent", IsBackground: true,
+		Meta:      `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-restart"]},"live_background_active":true}`,
+		CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli(),
+	}
+	if err := st.InsertItem(spawn); err != nil {
+		t.Fatalf("seed completed spawn: %v", err)
+	}
+
+	a.recoverCodexBackgroundRuntimeOnStartup()
+	stored, found, err := st.GetThreadItem(threadID, spawn.ID)
+	if err != nil || !found {
+		t.Fatalf("reload spawn: found=%v err=%v", found, err)
+	}
+	if stored.Status != "completed" {
+		t.Fatalf("spawn status = %q, want completed", stored.Status)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(stored.Meta), &meta); err != nil {
+		t.Fatalf("decode spawn meta: %v", err)
+	}
+	if meta["live_background_active"] != false || meta["codex_background_end_reason"] != "session_ended" {
+		t.Fatalf("spawn runtime meta = %v", meta)
+	}
+	if ownerships, err := st.ListIncompleteCodexSubagentOwnerships(threadID); err != nil || len(ownerships) != 1 {
+		t.Fatalf("spawn ownership after restart = %+v, err=%v", ownerships, err)
+	}
+}
+
 // TestReconcileCodexOnStart_LeavesForegroundRunningRowsAlone pins the
 // scope of the Phase-4 ghost flip: it MUST NOT touch non-background
 // running rows. Those are the existing reconciler's concern (the
@@ -525,7 +563,9 @@ func TestReconcileCodexOnStart_LeavesForegroundRunningRowsAlone(t *testing.T) {
 	inlineID := seedRunningInlineTool(t, st, threadID, "tool-inline-fg-run")
 	completedBgID := seedCompletedBackgroundTool(t, st, threadID, "tool-bg-fg-done")
 
-	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+	if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+		t.Fatalf("retire runtime: %v", err)
+	}
 
 	inline := getItem(t, st, inlineID)
 	if inline.Status != "running" {
@@ -583,7 +623,9 @@ func TestReconcileCodexOnStart_ClaudeThreadsUntouched(t *testing.T) {
 	// row is untouched; if the scope were broadened to "all rows in all
 	// threads", the Claude row would flip.
 	otherCodex := seedCodexThread(t, st, "thread-ghost-flip-scoping-codex")
-	a.flipCodexGhostBackgroundRowsOnStart(otherCodex)
+	if err := a.retireCodexBackgroundRuntime(otherCodex); err != nil {
+		t.Fatalf("retire runtime: %v", err)
+	}
 
 	claudeRunning := getItem(t, st, claudeBgID)
 	if claudeRunning.Status != "running" {
@@ -606,7 +648,9 @@ func TestReconcileCodexOnStart_IdempotentAcrossRepeatedStarts(t *testing.T) {
 	threadID := seedCodexThread(t, st, "thread-ghost-flip-idempotent")
 	runningID := seedRunningBackgroundTool(t, st, threadID, "tool-bg-idempotent")
 
-	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+	if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+		t.Fatalf("retire runtime: %v", err)
+	}
 
 	// Simulate the warm-reconnect re-upsert by putting the row back to
 	// running with the already-suffixed summary (the real path uses
@@ -620,7 +664,9 @@ func TestReconcileCodexOnStart_IdempotentAcrossRepeatedStarts(t *testing.T) {
 		t.Fatalf("re-upsert to running: %v", err)
 	}
 
-	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+	if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+		t.Fatalf("retire runtime: %v", err)
+	}
 
 	final := getItem(t, st, runningID)
 	// The summary must contain the suffix exactly once.
@@ -655,7 +701,9 @@ func TestReconcileCodexOnStart_EmptyThreadNoOp(t *testing.T) {
 	}
 	beforeTouch := thread.UpdatedAt
 
-	a.flipCodexGhostBackgroundRowsOnStart(threadID)
+	if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
+		t.Fatalf("retire runtime: %v", err)
+	}
 
 	if len(emitted) != 0 {
 		t.Fatalf("empty-thread flip emitted %d events, want 0", len(emitted))
