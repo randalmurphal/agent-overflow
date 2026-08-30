@@ -136,8 +136,8 @@ The rules that bite here:
   `autoScrollInFlight()`: its bottom-pinned restore is a direct write that
   snaps a live glide.
 - Engagement is deviation-based through `pane.hasUserExpansionWithin`,
-  never a rendered-height proxy, since `collapseDiffPreviews` defaults
-  diffs to expanded and a pixel guard would pin every run with an edit.
+  never a rendered-height proxy: with `collapseDiffPreviews` off, diffs
+  render expanded and a pixel guard would pin every run with an edit.
 - Every collapse and expand runs inside `withViewportBottomHeld`, and the
   hold lives INSIDE the registry mutators, so callers just call the
   mutator. The one hold-free expand is `expandForReveal`, whose missing

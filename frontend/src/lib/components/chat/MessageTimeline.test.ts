@@ -4,6 +4,7 @@ import { tick } from 'svelte';
 import { loadSettings } from '../../stores/settings.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
+import { makeSettings } from '../../../test/helpers/settings';
 import { __setSmoothingClockForTest, createThreadPane } from '../../stores/thread.svelte';
 import type { SmoothingClock } from '../../markdown/smoothing/PerItemSmoother';
 import {
@@ -566,6 +567,10 @@ describe('<MessageTimeline>', () => {
     // of its own and breaks the run. `data-rail` is the behavior
     // contract; the `border-l ...` class is the implementation, so both
     // are pinned — a class rename must not silently drop the visual.
+    // The rail border is drawn by the clip, so the run has to be open:
+    // the shipped default collapses.
+    setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
+    await loadSettings();
     const pane = await buildPane(undefined, [
       makeItem({ id: 'u:0', kind: 'user_text', role: 'user', summary: 'hi' }),
       makeItem({

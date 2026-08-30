@@ -517,7 +517,7 @@ var DefaultSettings = Settings{
 	MonoFont:             "geist",
 	FontSize:             13,
 	DiffWordWrap:         false,
-	CollapseDiffPreviews: false,
+	CollapseDiffPreviews: true,
 	StreamingEnabled:     true,
 	LowPowerMode:         false,
 	ConfirmArchive:       true,
@@ -529,9 +529,9 @@ var DefaultSettings = Settings{
 	DefaultThreadEnvMode: "local",
 	WorktreeBranchPrefix: "ao-",
 	PaneDensity:          "compact",
-	// Expanded preserves today's visibility semantics: nothing a user can
-	// currently see becomes hidden by upgrading.
-	ActivityRunDefault:    "expanded",
+	// Collapsed keeps long tool/thinking runs out of the way until the
+	// user opens them (default flipped 2026-08-30).
+	ActivityRunDefault:    "collapsed",
 	ActivityRunWindowRows: 30,
 	// Text-generation defaults: Codex is cheap + fast for short JSON
 	// responses, so it's the sensible default. The model stays empty

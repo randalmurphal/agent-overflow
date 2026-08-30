@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeItem } from '../../../test/helpers/chat';
+import { makeSettings } from '../../../test/helpers/settings';
+import { loadSettings, resetSettingsForTest } from '../../stores/settings.svelte';
 import type { ToolResultMeta } from '../../types/models';
 import { resetCodeSpanCacheForTest } from './markdown/codeSpanCache';
 import { resetDiffSpanCacheForTest } from '../../utils/diffSpanCache.svelte';
@@ -89,12 +91,17 @@ async function warmTables(): Promise<void> {
   await ensureSyntaxClassNames();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetCodeSpanCacheForTest();
   resetDiffSpanCacheForTest();
   resetSyntaxClassNamesForTest();
   setBindingMock('HighlightSchemaVersion', async () => HV);
   setBindingMock('HighlightClassNames', async () => ['none', 'keyword']);
+  // The diff case asserts on painted body spans, so the stack has to be
+  // expanded: collapseDiffPreviews defaults on and would render header-only.
+  resetSettingsForTest();
+  setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: false }));
+  await loadSettings();
 });
 
 describe('cold mount with persisted spans', () => {

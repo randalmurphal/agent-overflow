@@ -414,8 +414,8 @@ registry) answers "did the reader explicitly expand anything in these items":
 diff cards overridden to expanded, subagent / wait / read groups, payload
 bodies whose default is collapsed. It shares `expansionSignature`'s "user
 deviations from default" contract, which is what makes it safe where raw
-`expandedPx` was not: `collapseDiffPreviews` defaults diffs to expanded, so
-a pixel-based guard would have pinned every run holding an edit forever,
+`expandedPx` was not: with `collapseDiffPreviews` off, diffs render expanded,
+so a pixel-based guard would have pinned every run holding an edit forever,
 while a deviation-based one counts only what the reader opened. The same
 rule reaches expansion entries through `autoExpands`: an entry created with
 `loadOnMount` (auto-loaded diff bodies, plan cards) flips expanded with no
@@ -960,8 +960,8 @@ of N estimated ones.
 
 ## Settings
 
-- `activityRunDefault`: `expanded` | `collapsed`, default `expanded`
-  (preserves prior visibility). Applies to the tail run too, which is where the
+- `activityRunDefault`: `expanded` | `collapsed`, default `collapsed`
+  (flipped 2026-08-30). Applies to the tail run too, which is where the
   collapsed-but-open state comes from: with `collapsed`, a streaming run shows
   its header AND its work, keeps showing it after it settles, and collapses
   only once the reader is provably past it (the auto-collapse gate). This is
@@ -971,10 +971,13 @@ of N estimated ones.
 - `activityRunWindowRows`: default 30, clamped `[10, 200]`, validated
   strictly on update and clamped leniently on load.
 
-Six mirrors move together: the Go struct, Go `DefaultSettings`, `validate.go`
-(allow-list + strict update + lenient load), `types/settings.ts`,
-`DEFAULT_SETTINGS`, and `test/helpers/settings.ts`. The frontend reads them
-through `stores/activityRunPrefs.svelte.ts`; the UI is
+Three hand-written places move together: the Go struct, Go `DefaultSettings`,
+and `validate.go` (allow-list + strict update + lenient load), plus
+`types/settings.ts` for the TS shape. The frontend's DEFAULT VALUES are not a
+fourth mirror — `lib/generated/settingsDefaults.ts` is generated from
+`DefaultSettings` (`go generate ./internal/settings`) and is what the store,
+`activityRunPrefs` and `test/helpers/settings.ts` all read. The frontend reads
+them through `stores/activityRunPrefs.svelte.ts`; the UI is
 `components/settings/ActivityRunSection.svelte`.
 
 ## Verification

@@ -1,6 +1,6 @@
 // DiffFileBlock is the unified per-file inline diff renderer used by
 // both Claude (single-file tool calls) and Codex (multi-file
-// apply_patch). Tests cover the header contract, the default-expanded
+// apply_patch). Tests cover the header contract, the expanded
 // body render, the collapseDiffPreviews default + per-card disclosure
 // toggle, the capped-file preview fallback, and the review promote
 // affordances.
@@ -134,9 +134,15 @@ function expectBefore(left: Element, right: Element) {
 }
 
 describe('<DiffFileBlock>', () => {
-  beforeEach(() => {
+  // The body-render cases are about what an EXPANDED card draws, so they
+  // seed collapseDiffPreviews off rather than riding the shipped default
+  // (which collapses). The collapse cases below seed it on for themselves.
+  beforeEach(async () => {
     vi.restoreAllMocks();
     vi.mocked(openReviewCompanion).mockClear();
+    resetSettingsForTest();
+    setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: false }));
+    await loadSettings();
   });
 
   it('renders lowercase tool label, path, and +/- counts in the header', () => {
@@ -160,7 +166,7 @@ describe('<DiffFileBlock>', () => {
     expect(getByTestId('diff-file-label').textContent).toBe('diff');
   });
 
-  it('renders the diff body inline by default (no expand needed)', () => {
+  it('renders the diff body inline with the setting off (no expand needed)', () => {
     const file = makePatchFile();
     const { getByTestId } = render(DiffFileBlock, {
       props: { file, threadId: 'thread-1' },

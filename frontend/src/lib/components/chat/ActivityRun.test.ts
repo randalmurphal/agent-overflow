@@ -76,7 +76,9 @@ describe('<ActivityRun>', () => {
   beforeEach(async () => {
     resetBindingMocks();
     clearThreadScrollSnapshotsForTest();
-    setBindingMock('GetSettings', async () => null);
+    // This suite's baseline is an EXPANDED run: the shipped default now
+    // collapses, and the cases about that seed 'collapsed' themselves.
+    setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
     setBindingMock('UpdateSettings', async (patch: unknown) =>
       makeSettings(patch as Parameters<typeof makeSettings>[0]));
     await loadSettings();

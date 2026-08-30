@@ -648,10 +648,10 @@ func TestUpdateDefaultsBlankBinaryPaths(t *testing.T) {
 	}
 }
 
-func TestActivityRunDefaultsAreExpandedAndThirty(t *testing.T) {
+func TestActivityRunDefaultsAreCollapsedAndThirty(t *testing.T) {
 	got := NewService(t.TempDir()).Get()
-	if got.ActivityRunDefault != "expanded" {
-		t.Fatalf("ActivityRunDefault default = %q, want %q", got.ActivityRunDefault, "expanded")
+	if got.ActivityRunDefault != "collapsed" {
+		t.Fatalf("ActivityRunDefault default = %q, want %q", got.ActivityRunDefault, "collapsed")
 	}
 	if got.ActivityRunWindowRows != 30 {
 		t.Fatalf("ActivityRunWindowRows default = %d, want 30", got.ActivityRunWindowRows)
@@ -661,12 +661,12 @@ func TestActivityRunDefaultsAreExpandedAndThirty(t *testing.T) {
 func TestActivityRunSettingsRoundTrip(t *testing.T) {
 	svc := NewService(t.TempDir())
 
-	got, err := svc.Update(map[string]any{"activityRunDefault": "collapsed"})
+	got, err := svc.Update(map[string]any{"activityRunDefault": "expanded"})
 	if err != nil {
-		t.Fatalf("activityRunDefault=collapsed: %v", err)
+		t.Fatalf("activityRunDefault=expanded: %v", err)
 	}
-	if got.ActivityRunDefault != "collapsed" {
-		t.Fatalf("ActivityRunDefault = %q, want %q", got.ActivityRunDefault, "collapsed")
+	if got.ActivityRunDefault != "expanded" {
+		t.Fatalf("ActivityRunDefault = %q, want %q", got.ActivityRunDefault, "expanded")
 	}
 
 	for _, rows := range []int{MinActivityRunWindowRows, 55, MaxActivityRunWindowRows} {
