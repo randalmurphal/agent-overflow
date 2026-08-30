@@ -212,6 +212,13 @@ changes get a component test. Scroll behavior is covered in
 and the frame-level `scrollInterleavings.test.ts`) plus
 `components/chat/scroll.test.ts`.
 
+A stateful door gets a transition test, not just an on-state assertion.
+`test/helpers/transitions.ts` drives on→off→on, teardown twice, a second
+engagement, and teardown-mid-flight, comparing the state you name after
+every lap. The leaks the 2026-08 perf session found by hand all lived in
+the SECOND lap — a re-register that duplicated a sink, a toggle that kept
+a stale checkpoint, a cache that carried the previous mode.
+
 `vi.mock` a shared store with an `importOriginal` spread, never a
 whole-module factory. A factory listing only the exports one test drives
 turns every LATER export of that module into `undefined` for it, and the

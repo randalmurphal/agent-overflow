@@ -21,6 +21,7 @@
 // string in isolation) — that pre-existing upstream property is out of
 // scope here.
 import { describe, expect, it, vi } from 'vitest';
+import { expectCleanTransitions } from '../../test/helpers/transitions';
 import {
   createIncrementalLexCache,
   createMaterializedProvenAppend,
@@ -231,6 +232,45 @@ function* prefixes(text: string, sizes: number[]): Generator<string> {
 
 const fullReference = (prefix: string, complete: boolean) =>
   lex(complete ? parseIncompleteMarkdown(prefix.trim()) : prefix);
+
+describe('incrementalLex completion-mode cache transitions', () => {
+  // One cache serves both modes: the live tail lexes through
+  // `parseIncompleteMarkdown`, a sealed block lexes raw. `cache.completeKey`
+  // is what keeps the two apart, and the failure mode is silent — a stale
+  // key reuses tokens completed under the other mode. Drive the flips.
+  it('carries no state across a completion-mode flip', () => {
+    const source = '- alpha item one\n- bravo item two\n- charlie **bold** and `code';
+    const cache = createIncrementalLexCache();
+    const raw = () => incrementalLex(source, [], cache, null);
+    const completing = () => incrementalLex(source, [], cache, parseIncompleteMarkdown);
+
+    // Enter disengaged: raw is the resting mode this subject returns to.
+    raw();
+
+    expectCleanTransitions('incrementalLex completion mode', {
+      on: () => { completing(); },
+      off: () => { raw(); },
+      whileOn: () => {
+        expect(cache.completeKey).not.toBeNull();
+        expect(incrementalLex(source, [], cache, parseIncompleteMarkdown))
+          .toEqual(fullReference(source, true));
+      },
+      onAgain: () => { completing(); },
+      inFlight: () => {
+        // A longer prefix arriving while completion is engaged, so the
+        // flip back lands on a cache holding tail state from the other mode.
+        incrementalLex(`${source} tail`, [], cache, parseIncompleteMarkdown);
+      },
+      read: () => ({
+        completeKey: cache.completeKey,
+        tokens: incrementalLex(source, [], cache, null),
+        reference: fullReference(source, false),
+      }),
+    });
+
+    expect(raw()).toEqual(fullReference(source, false));
+  });
+});
 
 describe('incrementalLex streamed equivalence', () => {
   it('reports only calls that perform parser work', () => {
