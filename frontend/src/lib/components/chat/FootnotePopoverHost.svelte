@@ -93,17 +93,20 @@
       }
       return;
     }
-    const definition = resolveFootnoteBody(chip);
-    // No definition for this label: the chip stays the inert marker it
-    // has always been rather than opening an empty popup.
-    if (!definition) return;
     // A second click on the open chip closes it. Popover's outside-
     // mousedown handler deliberately ignores clicks inside the anchor,
-    // so the toggle has to live here.
+    // so the toggle has to live here — and BEFORE the resolve, or a
+    // source rewrite that removed the open popup's definition would
+    // leave the second click resolving null and the dialog unclosable
+    // from its own chip.
     if (anchor === chip) {
       close();
       return;
     }
+    const definition = resolveFootnoteBody(chip);
+    // No definition for this label: the chip stays the inert marker it
+    // has always been rather than opening an empty popup.
+    if (!definition) return;
     // Opening a second chip while one is open: the first chip's own
     // `aria-expanded` has to come off, and `close()` is where that lives.
     if (anchor !== undefined) close();

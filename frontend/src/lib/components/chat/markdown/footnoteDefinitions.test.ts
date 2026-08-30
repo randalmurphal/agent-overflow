@@ -124,4 +124,23 @@ describe('resolveFootnoteBody', () => {
     source = 'A claim[^note].\n\n[^note]: Arrived later.';
     expect(resolveFootnoteBody(chip)).toBe('Arrived later.');
   });
+
+  it('keeps the live registration when a stale disposer runs after re-registering the same reader', () => {
+    const root = document.createElement('div');
+    root.className = 'markdown-body';
+    const chip = document.createElement('button');
+    chip.dataset.footnoteLabel = 'note';
+    root.appendChild(chip);
+    document.body.appendChild(root);
+
+    // One stable reader function, registered twice — the shape a component
+    // re-running its attach produces. The FIRST disposer firing after the
+    // second registration must not delete the live entry.
+    const read = () => 'A claim[^note].\n\n[^note]: The body.';
+    const releaseFirst = registerFootnoteSource(root, read);
+    registerFootnoteSource(root, read);
+
+    releaseFirst();
+    expect(resolveFootnoteBody(chip)).toBe('The body.');
+  });
 });

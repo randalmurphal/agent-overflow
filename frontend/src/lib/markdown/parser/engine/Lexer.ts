@@ -111,10 +111,22 @@ export class Lexer {
     this.tokenizer.rules = rules;
   }
 
+  /** Guards the one-shot contract below. */
+  private lexed = false;
+
   /**
-   * Preprocessing
+   * Preprocessing. One-shot: a Lexer is a per-document object (every
+   * caller in this tree constructs a fresh one), and none of the
+   * constructor-created state — `tokens`, the links table, `state` —
+   * is reset here, so a second call would append the second document
+   * into the first's token list and let its reference definitions
+   * resolve across documents. Refused instead of documented.
    */
   lex(src: string) {
+    if (this.lexed) {
+      throw new Error('Lexer.lex is one-shot: construct a new Lexer per document');
+    }
+    this.lexed = true;
     src = src.replace(other.carriageReturn, '\n');
 
     this.blockTokens(src, this.tokens);

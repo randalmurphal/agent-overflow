@@ -92,7 +92,16 @@ const parseExtensions = (...extensions: Extension[]): LexerOptions => {
             }
         }
     });
-    return options;
+    // Every bag this returns is shared across Lexer instances via the caches
+    // below, and `lexer.options` is a public field — freeze so a write
+    // through one instance throws instead of silently reconfiguring every
+    // later Lexer built from the same cache entry.
+    Object.freeze(options.extensions.block);
+    Object.freeze(options.extensions.inline);
+    Object.freeze(options.extensions.startBlock);
+    Object.freeze(options.extensions.startInline);
+    Object.freeze(options.extensions);
+    return Object.freeze(options);
 };
 // Options objects are stateless and reusable across Lexer instances; cache them
 // per user-extension array (props are referentially stable across chunks) so the
@@ -177,8 +186,13 @@ export const lexFootnoteDefinitions = (
     extensions: Extension[] = []
 ): Map<string, Footnote> | null => {
     const lexer = new Lexer(getLexOptions(extensions));
+    // Seed BEFORE the run: the footnote extension prefers a seeded lexer's
+    // maps over ambient Svelte context, which is what keeps this
+    // whole-document lex isolated when it runs during a component's init
+    // under some other Streamdown surface.
+    lexer.footnotes = { refs: new Map(), footnotes: new Map() };
     lexer.lex(markdown);
-    return lexer.footnotes?.footnotes ?? null;
+    return lexer.footnotes.footnotes.size > 0 ? lexer.footnotes.footnotes : null;
 };
 // A token the render list keeps: marked's blank-line `space` tokens and
 // footnote definitions own source bytes but produce no rendered block.

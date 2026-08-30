@@ -19,8 +19,14 @@
 
 import { lexFootnoteDefinitions, type Footnote } from '../../../markdown';
 
-/** The rendered root → the markdown it was rendered from. */
-const sources = new WeakMap<HTMLElement, () => string>();
+/**
+ * The rendered root → the markdown it was rendered from. The reader is
+ * boxed per REGISTRATION, not stored bare: a component re-registering the
+ * same stable reader function would otherwise let the first registration's
+ * late-running disposer pass the identity check and delete the live
+ * second entry.
+ */
+const sources = new WeakMap<HTMLElement, { read: () => string }>();
 
 /**
  * Publish a rendered markdown root's source. Returns the unregister
@@ -31,9 +37,10 @@ export function registerFootnoteSource(
   root: HTMLElement,
   read: () => string,
 ): () => void {
-  sources.set(root, read);
+  const entry = { read };
+  sources.set(root, entry);
   return () => {
-    if (sources.get(root) === read) sources.delete(root);
+    if (sources.get(root) === entry) sources.delete(root);
   };
 }
 
@@ -90,8 +97,8 @@ export function resolveFootnoteBodyAt(
   root: HTMLElement,
   label: string,
 ): string | null {
-  const read = sources.get(root);
-  if (!read) return null;
-  const body = definitionsFor(read())?.get(label)?.lines.join('\n').trim();
+  const entry = sources.get(root);
+  if (!entry) return null;
+  const body = definitionsFor(entry.read())?.get(label)?.lines.join('\n').trim();
   return body ? body : null;
 }

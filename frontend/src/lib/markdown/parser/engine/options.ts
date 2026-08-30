@@ -59,4 +59,11 @@ export function getDefaultOptions(): LexerOptions {
   };
 }
 
-export const defaultOptions: LexerOptions = getDefaultOptions();
+/**
+ * Shared across every Lexer constructed without options, so it is frozen:
+ * `lexer.options` is a public field, and a write through one instance
+ * would silently reconfigure every later default Lexer. Frozen, the write
+ * throws (ESM strict mode) instead. The cached bags in `parser/lexer.ts`
+ * are frozen for the same reason.
+ */
+export const defaultOptions: LexerOptions = Object.freeze(getDefaultOptions());

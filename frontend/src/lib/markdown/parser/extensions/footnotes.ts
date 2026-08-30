@@ -25,18 +25,24 @@ export const markedFootnoteBlock: Extension = {
 };
 export function markedFootnote(): Extension[] {
     const ensureMaps = (tokenizer: TokenizerThis): FootnoteMaps => {
+        // A pre-seeded Lexer owns its maps unconditionally.
+        // `lexFootnoteDefinitions` and `lexCapture` seed `lexer.footnotes`
+        // BEFORE the run precisely so a whole-document lex stays isolated
+        // from any ambient Streamdown context it happens to execute under:
+        // a context hit here would write this document's definitions into
+        // that surface's maps and leave the caller's lexer empty.
+        const lexer = tokenizer.lexer;
+        if (lexer.footnotes)
+            return lexer.footnotes;
         const streamdown = safeGetContext();
         if (!streamdown) {
-            const lexer = tokenizer.lexer;
-            lexer.footnotes ??= {
+            lexer.footnotes = {
                 refs: new Map(),
                 footnotes: new Map()
             };
             return lexer.footnotes;
         }
-        else {
-            return streamdown.footnotes;
-        }
+        return streamdown.footnotes;
     };
     return [
         {
