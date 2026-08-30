@@ -27,6 +27,9 @@ func TestGetReturnsDefaultsOnMissingFile(t *testing.T) {
 	if got.CodexEnabled != true {
 		t.Error("CodexEnabled = false, want true")
 	}
+	if got.AutoPinNewThreads != true {
+		t.Error("AutoPinNewThreads = false, want true")
+	}
 	if !got.BrowserEnabled || !got.BrowserPersistSiteData {
 		t.Errorf("browser defaults = enabled:%v persistence:%v, want both true", got.BrowserEnabled, got.BrowserPersistSiteData)
 	}

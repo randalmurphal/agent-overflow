@@ -112,6 +112,7 @@ type Settings struct {
 	BrowserAllowOutsideWorkspace bool   `json:"browserAllowOutsideWorkspace,omitempty"`
 	ConfirmArchive               bool   `json:"confirmArchive"`
 	ConfirmDelete                bool   `json:"confirmDelete"`
+	AutoPinNewThreads            bool   `json:"autoPinNewThreads"`
 	ClaudeBinaryPath             string `json:"claudeBinaryPath"`
 	CodexBinaryPath              string `json:"codexBinaryPath"`
 	ClaudeEnabled                bool   `json:"claudeEnabled"`
@@ -532,6 +533,7 @@ var DefaultSettings = Settings{
 	BrowserPersistSiteData: true,
 	ConfirmArchive:         true,
 	ConfirmDelete:          true,
+	AutoPinNewThreads:      true,
 	ClaudeBinaryPath:       "claude",
 	CodexBinaryPath:        "codex",
 	ClaudeEnabled:          true,

@@ -22,6 +22,7 @@
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { autoPinNewThread } from '../../stores/threadAutoPin';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
   import { hasWorktreeSetupSurface } from '../../stores/worktreeSetup.svelte';
@@ -393,7 +394,8 @@
     if (!thread || forkingMessageItemId) return;
     forkingMessageItemId = item.id;
     try {
-      const forked = (await ForkThreadFromMessage(thread.id, item.id)) as Thread;
+      const created = (await ForkThreadFromMessage(thread.id, item.id)) as Thread;
+      const forked = await autoPinNewThread(created);
       if (pane.thread?.id !== thread.id) return;
       prependThread(forked);
       if (forked.projectId) expandProject(forked.projectId);

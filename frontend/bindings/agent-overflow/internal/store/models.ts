@@ -972,11 +972,18 @@ export class Thread {
 
     /**
      * PinnedAt is the Unix-ms timestamp of when the user pinned the
-     * thread. NULL (nil) = unpinned. Pinned threads sort into a
-     * dedicated tier above needs-attention in the sidebar. Set by
+     * thread. NULL (nil) = unpinned. Pinned threads sort into two manual
+     * attention groups above needs-attention in the sidebar. Set by
      * PinThread; cleared by UnpinThread.
      */
     "pinnedAt"?: number | null;
+
+    /**
+     * PinGroup is PinGroupFront or PinGroupBack while pinned. NULL keeps
+     * pre-v71 pinned rows in the front-burner group without a backfill;
+     * unpinned rows always store NULL. Owned by the narrow pin mutators.
+     */
+    "pinGroup"?: number | null;
 
     /**
      * WorktreeSetupState is the durable half of the per-project worktree

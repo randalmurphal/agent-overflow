@@ -3,7 +3,8 @@
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 //
 // Sort order (highest first):
-//   1. Pinned tier (Thread.pinnedAt set) — within tier: pinnedAt desc.
+//   1. Pinned front-burner block, then pinned back-burner block.
+//      Within each block: the normal status/activity/id comparator below.
 //   2. needs-attention (error / pending-approval / awaiting-input / plan-ready / interrupted).
 //   3. running (any mode — Working / Planning / Designing / Discussing)
 //      and completed (idle + unread).
@@ -41,6 +42,9 @@ export type ThreadStatusSortGroup =
   | 'paused'
   | 'completed'
   | 'idle';
+
+export type NormalThreadStatusSortGroup = Exclude<ThreadStatusSortGroup, 'pinned'>;
+export type SidebarPinGroup = 'front' | 'back' | null;
 
 // Running and completed rows share the non-blocking activity tier so
 // their relative order stays activity-driven. Plain idle/read rows sit
@@ -92,6 +96,8 @@ export interface SidebarTreeNode {
    */
   displayStatus: ThreadStatusPill | null;
   sortGroup: ThreadStatusSortGroup;
+  /** Status tier without the pin override; orders rows inside a pin block. */
+  normalSortGroup: NormalThreadStatusSortGroup;
   /** Max(thread.updatedAt, max(child.latestActivityAt)). Unix ms. */
   latestActivityAt: number;
 }
@@ -99,6 +105,8 @@ export interface SidebarTreeNode {
 export interface SidebarTreeVisibleNode extends SidebarTreeNode {
   isExpanded: boolean;
   isExpandable: boolean;
+  /** True only on the first top-level back-burner row when both blocks exist. */
+  startsBackBurnerBlock: boolean;
 }
 
 export interface BuildSidebarThreadTreeInput {
@@ -128,12 +136,10 @@ function statusPriority(status: ThreadLiveStatus): number {
   return STATUS_PRIORITY[status] ?? 0;
 }
 
-function getStatusSortGroup(
-  thread: Thread,
+function getNormalStatusSortGroup(
   liveStatus: ThreadLiveStatus,
   status: ThreadStatusPill | null,
-): ThreadStatusSortGroup {
-  if (thread.pinnedAt != null) return 'pinned';
+): NormalThreadStatusSortGroup {
   switch (liveStatus) {
     case 'error':
     case 'pending-approval':
@@ -152,6 +158,20 @@ function getStatusSortGroup(
       // it visible without claiming attention it hasn't earned.
       return 'idle';
   }
+}
+
+function getStatusSortGroup(
+  thread: Thread,
+  liveStatus: ThreadLiveStatus,
+  status: ThreadStatusPill | null,
+): ThreadStatusSortGroup {
+  if (thread.pinnedAt != null) return 'pinned';
+  return getNormalStatusSortGroup(liveStatus, status);
+}
+
+export function sidebarPinGroup(thread: Thread): SidebarPinGroup {
+  if (thread.pinnedAt == null) return null;
+  return thread.pinGroup === 1 ? 'back' : 'front';
 }
 
 function resolveLatestActivityAt(
@@ -212,8 +232,8 @@ function resolveDisplay(
 
 /**
  * compareTreeNodes — drafts pinned to the very top (newest createdAt
- * first), then pinned-tier (with within-tier pinnedAt-desc tiebreak),
- * then sort group, then activity desc, then id for stability. Drafts
+ * first), then front/back pin blocks (normal comparator within each),
+ * then sort group, activity desc, and id for stability. Drafts
  * outrank pinned because the user is actively composing them and needs
  * them surfaced regardless of pin state.
  */
@@ -229,14 +249,17 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
     return left.thread.id < right.thread.id ? 1 : -1;
   }
 
-  const leftPinned = left.thread.pinnedAt ?? 0;
-  const rightPinned = right.thread.pinnedAt ?? 0;
-  if (leftPinned !== rightPinned) {
-    if (leftPinned > 0 && rightPinned > 0) return rightPinned - leftPinned;
-    return rightPinned > 0 ? 1 : -1;
+  const leftPinGroup = sidebarPinGroup(left.thread);
+  const rightPinGroup = sidebarPinGroup(right.thread);
+  if (leftPinGroup !== rightPinGroup) {
+    if (leftPinGroup === null) return 1;
+    if (rightPinGroup === null) return -1;
+    return leftPinGroup === 'front' ? -1 : 1;
   }
 
-  const groupCmp = SORT_GROUP_PRIORITY[right.sortGroup] - SORT_GROUP_PRIORITY[left.sortGroup];
+  const leftSortGroup = leftPinGroup === null ? left.sortGroup : left.normalSortGroup;
+  const rightSortGroup = rightPinGroup === null ? right.sortGroup : right.normalSortGroup;
+  const groupCmp = SORT_GROUP_PRIORITY[rightSortGroup] - SORT_GROUP_PRIORITY[leftSortGroup];
   if (groupCmp !== 0) return groupCmp;
 
   if (right.latestActivityAt !== left.latestActivityAt) {
@@ -303,6 +326,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       displayLiveStatus: display.displayLiveStatus,
       displayStatus: display.displayStatus,
       sortGroup: getStatusSortGroup(thread, display.displayLiveStatus, display.displayStatus),
+      normalSortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
       latestActivityAt,
     };
   };
@@ -326,15 +350,25 @@ export function flattenSidebarThreadTree(
 ): SidebarTreeVisibleNode[] {
   const visibleNodes: SidebarTreeVisibleNode[] = [];
 
-  const visit = (node: SidebarTreeNode) => {
+  const visit = (node: SidebarTreeNode, startsBackBurnerBlock = false) => {
     const isExpandable = node.children.length > 0;
     const isExpanded = isExpandable && input.expandedThreadIds.has(node.thread.id);
-    visibleNodes.push({ ...node, isExpanded, isExpandable });
+    visibleNodes.push({ ...node, isExpanded, isExpandable, startsBackBurnerBlock });
     if (!isExpanded) return;
     for (const child of node.children) visit(child);
   };
 
-  for (const node of input.nodes) visit(node);
+  const hasFrontBurner = input.nodes.some((node) => sidebarPinGroup(node.thread) === 'front');
+  const hasBackBurner = input.nodes.some((node) => sidebarPinGroup(node.thread) === 'back');
+  let markedBackBurner = false;
+  for (const node of input.nodes) {
+    const startsBackBurnerBlock = hasFrontBurner
+      && hasBackBurner
+      && !markedBackBurner
+      && sidebarPinGroup(node.thread) === 'back';
+    if (startsBackBurnerBlock) markedBackBurner = true;
+    visit(node, startsBackBurnerBlock);
+  }
   return visibleNodes;
 }
 
@@ -378,6 +412,7 @@ export function sameSidebarVisibleNodes(
     if (x.thread !== y.thread) return false;
     if (x.depth !== y.depth) return false;
     if (x.isExpanded !== y.isExpanded || x.isExpandable !== y.isExpandable) return false;
+    if (x.startsBackBurnerBlock !== y.startsBackBurnerBlock) return false;
     if (x.ownLiveStatus !== y.ownLiveStatus || x.displayLiveStatus !== y.displayLiveStatus) return false;
     if (!sameThreadStatusPill(x.ownStatus, y.ownStatus)) return false;
     if (!sameThreadStatusPill(x.displayStatus, y.displayStatus)) return false;

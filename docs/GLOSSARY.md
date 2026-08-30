@@ -121,6 +121,8 @@ Source: `frontend/AGENTS.md`.
 | **replica** | IndexedDB copy of recently-viewed thread windows that paints before the sync RPC returns, validated by a per-thread `rev`/`epoch` stamp pair. A paint accelerator, not a source of truth (`docs/architecture/thread-replica-sync.md`). |
 | **companion pane** | A secondary pane (review / plan / design-preview) opened beside a chat pane. |
 | **overlay** | A sibling of `<PaneHost>` (workflows, settings): never a pane kind, never replaces the pane strip. |
+| **front burner** | The first manual sidebar pin block. `pin_group` NULL/0 maps here; it keeps the accent pin and sorts by the normal status/activity/id comparator within the block. |
+| **back burner** | The second manual sidebar pin block. `pin_group = 1`; it uses the muted pin token and the same normal comparator, separated from front burner only when both blocks exist. |
 
 ## Providers, accounts, triage
 

@@ -231,6 +231,11 @@ describe('<ChatView>', () => {
       [forked.id, userItem.summary],
     ]));
     const fork = setBindingMock('ForkThreadFromMessage', async () => forked);
+    const pin = setBindingMock('PinThread', async () => ({
+      ...forked,
+      pinnedAt: 10,
+      pinGroup: 0,
+    }));
     setBindingMock('SwitchThread', async () => forked);
 
     const { getByLabelText } = render(ChatView, { props: { pane } });
@@ -238,6 +243,7 @@ describe('<ChatView>', () => {
 
     await waitFor(() => {
       expect(fork).toHaveBeenCalledWith(thread.id, userItem.id);
+      expect(pin).toHaveBeenCalledWith('fork-1');
       expect(pane.thread?.id).toBe('fork-1');
       expect(getByLabelText('Message Input')).toHaveValue(userItem.summary);
     });

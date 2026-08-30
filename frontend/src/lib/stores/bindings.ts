@@ -18,6 +18,7 @@ export {
   MarkThreadRead,
   MarkThreadUnread,
   PinThread,
+  SetThreadPinGroup,
   UnpinThread,
   RenameThread,
   RegenerateThreadTitle,

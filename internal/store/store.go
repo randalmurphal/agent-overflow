@@ -405,10 +405,14 @@ type Thread struct {
 	// thread.
 	LastReadAt *int64 `json:"lastReadAt,omitempty"`
 	// PinnedAt is the Unix-ms timestamp of when the user pinned the
-	// thread. NULL (nil) = unpinned. Pinned threads sort into a
-	// dedicated tier above needs-attention in the sidebar. Set by
+	// thread. NULL (nil) = unpinned. Pinned threads sort into two manual
+	// attention groups above needs-attention in the sidebar. Set by
 	// PinThread; cleared by UnpinThread.
 	PinnedAt *int64 `json:"pinnedAt,omitempty"`
+	// PinGroup is PinGroupFront or PinGroupBack while pinned. NULL keeps
+	// pre-v71 pinned rows in the front-burner group without a backfill;
+	// unpinned rows always store NULL. Owned by the narrow pin mutators.
+	PinGroup *int `json:"pinGroup,omitempty"`
 	// WorktreeSetupState is the durable half of the per-project worktree
 	// setup run this thread's worktree was cut with (migration v47):
 	// "running", "failed", or "" for nothing to say — never ran, succeeded,

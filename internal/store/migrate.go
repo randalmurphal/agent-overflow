@@ -1353,6 +1353,15 @@ CREATE TABLE provider_thread_cost (
 		// active rows from a metadata-only child thread/resume response.
 		Fix: trimUnverifiedCodexV2ProfilesFixup,
 	},
+	{
+		Version: 71,
+		Name:    "thread_pin_groups",
+		// NULL keeps every existing pinned row on the front burner without a
+		// data rewrite. A non-NULL group requires an active pin, which makes
+		// latent group state on an unpinned row structurally impossible.
+		SQL: `ALTER TABLE threads ADD COLUMN pin_group INTEGER
+    CHECK(pin_group IS NULL OR (pinned_at IS NOT NULL AND pin_group IN (0, 1)));`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

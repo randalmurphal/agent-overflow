@@ -86,11 +86,16 @@ export interface Thread {
   lastReadAt?: number;
   /**
    * Unix-ms timestamp of when the user pinned the thread. Undefined /
-   * null means unpinned. Pinned threads sort into a dedicated tier above
-   * needs-attention so the user can keep a reference thread visible.
+   * null means unpinned. Pinned threads sort into front/back blocks above
+   * needs-attention; the timestamp is metadata, not an ordering key.
    * Set by PinThread / cleared by UnpinThread.
    */
   pinnedAt?: number;
+  /**
+   * Manual pinned attention group. Undefined / null and 0 are front burner;
+   * 1 is back burner. Unpinned rows never carry a group.
+   */
+  pinGroup?: number;
   /**
    * Derived by ListThreads from the latest assistant proposed plan. True when
    * the latest plan is completed and has not been implemented yet, so sidebar

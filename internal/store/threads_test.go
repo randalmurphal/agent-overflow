@@ -2547,8 +2547,9 @@ func TestSetThreadLastReadDoesNotBumpUpdatedAt(t *testing.T) {
 	}
 }
 
-// TestPinUnpinLifecycle covers the full pin → re-pin → unpin → unpin
-// (no-op semantics) walk.
+// TestPinUnpinLifecycle covers front pin → back group → re-pin → unpin.
+// Re-pinning deliberately returns the row to the front burner; unpin clears
+// every piece of pin state.
 func TestPinUnpinLifecycle(t *testing.T) {
 	s := newTestStore(t)
 
@@ -2567,12 +2568,20 @@ func TestPinUnpinLifecycle(t *testing.T) {
 	if pinned.PinnedAt == nil {
 		t.Fatalf("PinnedAt = nil after PinThread")
 	}
-	first := *pinned.PinnedAt
+	if pinned.PinGroup == nil || *pinned.PinGroup != PinGroupFront {
+		t.Fatalf("PinGroup = %v after PinThread, want front", pinned.PinGroup)
+	}
+	if err := s.SetThreadPinGroup(thr.ID, PinGroupBack); err != nil {
+		t.Fatalf("SetThreadPinGroup(back): %v", err)
+	}
+	back, err := s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after back-burner move: %v", err)
+	}
+	if back.PinGroup == nil || *back.PinGroup != PinGroupBack {
+		t.Fatalf("PinGroup = %v after back-burner move, want back", back.PinGroup)
+	}
 
-	// Re-pinning bumps the timestamp so the row floats inside the
-	// pinned tier. We wait at least 1ms so PinThread's nowMillis is
-	// distinguishable from the first call's value.
-	time.Sleep(2 * time.Millisecond)
 	if err := s.PinThread(thr.ID); err != nil {
 		t.Fatalf("PinThread (repeat): %v", err)
 	}
@@ -2580,8 +2589,11 @@ func TestPinUnpinLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread after re-pin: %v", err)
 	}
-	if repinned.PinnedAt == nil || *repinned.PinnedAt <= first {
-		t.Fatalf("re-pin did not bump pinnedAt: first=%d second=%v", first, repinned.PinnedAt)
+	if repinned.PinnedAt == nil {
+		t.Fatal("PinnedAt = nil after repeat PinThread")
+	}
+	if repinned.PinGroup == nil || *repinned.PinGroup != PinGroupFront {
+		t.Fatalf("re-pin left PinGroup = %v, want front", repinned.PinGroup)
 	}
 
 	if err := s.UnpinThread(thr.ID); err != nil {
@@ -2593,6 +2605,15 @@ func TestPinUnpinLifecycle(t *testing.T) {
 	}
 	if unpinned.PinnedAt != nil {
 		t.Fatalf("PinnedAt = %v after UnpinThread, want nil", *unpinned.PinnedAt)
+	}
+	if unpinned.PinGroup != nil {
+		t.Fatalf("PinGroup = %v after UnpinThread, want nil", *unpinned.PinGroup)
+	}
+	if err := s.SetThreadPinGroup(thr.ID, PinGroupBack); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("SetThreadPinGroup on unpinned row error = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.SetThreadPinGroup(thr.ID, 2); !errors.Is(err, ErrInvalidPinGroup) {
+		t.Fatalf("SetThreadPinGroup(invalid) error = %v, want ErrInvalidPinGroup", err)
 	}
 }
 
@@ -2634,10 +2655,10 @@ func TestPinDoesNotBumpUpdatedAt(t *testing.T) {
 	}
 }
 
-// TestUpdateThreadPreservesPinnedAt mirrors the LastReadAt guard above:
+// TestUpdateThreadPreservesPinState mirrors the LastReadAt guard above:
 // a future UpdateThread refactor that writes every struct field would
 // silently nuke the user's pin state on every rename / mode toggle.
-func TestUpdateThreadPreservesPinnedAt(t *testing.T) {
+func TestUpdateThreadPreservesPinState(t *testing.T) {
 	s := newTestStore(t)
 
 	thr := makeThread("thread-pin-preserve", "claude")
@@ -2655,6 +2676,13 @@ func TestUpdateThreadPreservesPinnedAt(t *testing.T) {
 	if got.PinnedAt == nil {
 		t.Fatalf("expected pinnedAt set after PinThread")
 	}
+	if err := s.SetThreadPinGroup(thr.ID, PinGroupBack); err != nil {
+		t.Fatalf("SetThreadPinGroup: %v", err)
+	}
+	got, err = s.GetThread(thr.ID)
+	if err != nil {
+		t.Fatalf("GetThread after SetThreadPinGroup: %v", err)
+	}
 	pinnedTs := *got.PinnedAt
 
 	// Mutate an unrelated field AND nuke PinnedAt on the struct so a
@@ -2662,6 +2690,7 @@ func TestUpdateThreadPreservesPinnedAt(t *testing.T) {
 	// clear the DB value.
 	got.Title = "Renamed"
 	got.PinnedAt = nil
+	got.PinGroup = nil
 	if err := s.UpdateThread(got); err != nil {
 		t.Fatalf("UpdateThread: %v", err)
 	}
@@ -2672,6 +2701,9 @@ func TestUpdateThreadPreservesPinnedAt(t *testing.T) {
 	}
 	if after.PinnedAt == nil || *after.PinnedAt != pinnedTs {
 		t.Fatalf("UpdateThread clobbered pinned_at: got %v, want %d", after.PinnedAt, pinnedTs)
+	}
+	if after.PinGroup == nil || *after.PinGroup != PinGroupBack {
+		t.Fatalf("UpdateThread clobbered pin_group: got %v, want back", after.PinGroup)
 	}
 	if after.Title != "Renamed" {
 		t.Fatalf("UpdateThread failed to write title: got %q", after.Title)
@@ -2816,6 +2848,7 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"updated_at":               "the sidebar's activity clock, advanced only by writes that mean the user did something (TouchThread, archive/unarchive)",
 	"last_read_at":             "per-thread read state, owned by MarkThreadRead / MarkThreadUnread",
 	"pinned_at":                "sidebar pin state, owned by PinThread / UnpinThread",
+	"pin_group":                "manual front/back pin group, owned by PinThread / SetThreadPinGroup / UnpinThread",
 	"worktree_setup_state":     "owned by SetThreadWorktreeSetupState (v47); a workspace switch must not clobber a setup run that is still in flight",
 	"pending_fork_session_ref": "half of the one-shot lazy-fork pin, owned by SetThreadForkResume and consumed by the two session-ref writers; a stale snapshot must not resurrect a pin a session start already cleared",
 	"pending_fork_resume_at":   "the other half of that pin (v69); it clears with the ref it belongs to and is written by the same narrow writer",

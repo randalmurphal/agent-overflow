@@ -272,6 +272,7 @@ export interface Settings {
   spinnerCompactionAnimation: string;
   confirmArchive: boolean;
   confirmDelete: boolean;
+  autoPinNewThreads: boolean;
   claudeBinaryPath: string;
   codexBinaryPath: string;
   claudeEnabled: boolean;

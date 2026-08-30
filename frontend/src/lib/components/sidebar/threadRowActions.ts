@@ -1,8 +1,8 @@
 // Thread-row action handlers.
 //
 // Extracted from ThreadRow.svelte so the component markup + top-level
-// state stays inside the 300-line guideline. Each function is a direct
-// port of its inline counterpart; no behaviour change.
+// state stays inside the 300-line guideline. It also owns the manual pin
+// actions shared by the row button and context menu.
 //
 // These functions take the minimum they need: the thread id, the thread
 // title / worktree flag where relevant, and a shared `ThreadActionCtx`
@@ -20,6 +20,7 @@ import {
   MarkThreadUnread,
   PinThread,
   RenameThread,
+  SetThreadPinGroup,
   StopSession,
   UnpinThread,
 } from '../../stores/bindings';
@@ -27,7 +28,7 @@ import {
   prependThread,
   removeThread,
   updateThreadLastRead,
-  updateThreadPinnedAt,
+  updateThreadPinState,
   updateThreadTitle,
 } from '../../stores/threads.svelte';
 import { closePanesShowingThread } from '../../stores/panes.svelte';
@@ -36,6 +37,10 @@ import { addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
 import type { Thread } from '../../types/models';
+import { autoPinNewThread } from '../../stores/threadAutoPin';
+
+export const PIN_GROUP_FRONT = 0;
+export const PIN_GROUP_BACK = 1;
 
 export interface ThreadActionCtx {
   thread: Thread;
@@ -100,7 +105,8 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
  */
 export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    const forked = (await ForkThread(ctx.thread.id, null)) as Thread;
+    const created = (await ForkThread(ctx.thread.id, null)) as Thread;
+    const forked = await autoPinNewThread(created);
     prependThread(forked);
     if (forked.projectId) expandProject(forked.projectId);
     await ctx.switchPane(forked);
@@ -154,9 +160,7 @@ export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {
 export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
     const updated = await PinThread(ctx.thread.id);
-    // Wails surfaces a nullable Go pointer as `number | null | undefined`;
-    // the local store uses `number | undefined` (undefined = unpinned).
-    updateThreadPinnedAt(ctx.thread.id, updated.pinnedAt ?? undefined);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
   } catch (err) {
     console.error('Failed to pin thread:', err);
     addToast('error', userFacingError(err));
@@ -165,10 +169,23 @@ export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function unpinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    await UnpinThread(ctx.thread.id);
-    updateThreadPinnedAt(ctx.thread.id, undefined);
+    const updated = await UnpinThread(ctx.thread.id);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
   } catch (err) {
     console.error('Failed to unpin thread:', err);
+    addToast('error', userFacingError(err));
+  }
+}
+
+export async function setThreadPinGroupAction(
+  ctx: ThreadActionCtx,
+  group: typeof PIN_GROUP_FRONT | typeof PIN_GROUP_BACK,
+): Promise<void> {
+  try {
+    const updated = await SetThreadPinGroup(ctx.thread.id, group);
+    updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined);
+  } catch (err) {
+    console.error('Failed to move pinned thread:', err);
     addToast('error', userFacingError(err));
   }
 }

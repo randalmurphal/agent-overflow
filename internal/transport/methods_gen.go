@@ -272,6 +272,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "SetProjectWorktreeSetup", ID: 322092470},               // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465},              // main.App.SetProviderCustomEnvVar
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811},            // main.App.SetThreadMcpServerEnabled
+	{Name: "SetThreadPinGroup", ID: 3112222989},                    // main.App.SetThreadPinGroup
 	{Name: "SetUIState", ID: 1514250938},                           // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241},               // main.App.SetWSLDistroPreference
 	{Name: "SetWindowBackgroundColor", ID: 3648660014},             // main.App.SetWindowBackgroundColor

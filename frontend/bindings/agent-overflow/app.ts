@@ -2484,11 +2484,9 @@ export function OpenTerminal(threadID: string, opts: $models.TerminalOpenOptions
 }
 
 /**
- * PinThread marks the thread as pinned. Pinned threads sort into a
- * dedicated tier above needs-attention so the user can keep a reference
- * thread permanently visible without status churn shuffling it.
- * Re-pinning an already-pinned thread bumps its pinnedAt, which moves
- * it within the pinned tier.
+ * PinThread marks the thread as front-burner pinned. Pinned threads sort into
+ * two manual attention groups above needs-attention; normal status/activity
+ * ordering applies within each group.
  */
 export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(1748405812, id).then(($result: any) => {
@@ -3342,6 +3340,16 @@ export function SetThreadMcpServerEnabled(threadID: string, name: string, enable
 }
 
 /**
+ * SetThreadPinGroup moves an already-pinned thread between the front and back
+ * burners and returns the refreshed row for frontend reconciliation.
+ */
+export function SetThreadPinGroup(id: string, group: number): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(3112222989, id, group).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
  * SetUIState batch-upserts entries into the calling client's bucket.
  */
 export function SetUIState(clientID: string, entries: { [_ in string]?: string }): $CancellablePromise<void> {
@@ -3719,8 +3727,8 @@ export function UnarchiveThread(id: string): $CancellablePromise<store$0.Thread>
 }
 
 /**
- * UnpinThread clears the thread's pinned_at and returns the refreshed
- * row so the frontend can reconcile its store without a list refetch.
+ * UnpinThread clears the thread's pinned_at and pin_group and returns the
+ * refreshed row so the frontend can reconcile its store without a list refetch.
  */
 export function UnpinThread(id: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(3175043037, id).then(($result: any) => {

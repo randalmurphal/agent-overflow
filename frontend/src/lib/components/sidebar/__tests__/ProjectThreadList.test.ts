@@ -104,6 +104,35 @@ describe('<ProjectThreadList>', () => {
     expect(queryByTestId('project-thread-list-empty')).toBeNull();
   });
 
+  it('renders one thin divider only when both pin blocks are present', async () => {
+    const pane = createThreadPane();
+    const { getByTestId, rerender } = render(ProjectThreadList, {
+      props: {
+        projectId: 'p1',
+        threads: [
+          mkThread('front', { pinnedAt: 1, pinGroup: 0 }),
+          mkThread('back', { pinnedAt: 2, pinGroup: 1 }),
+        ],
+        pane,
+      },
+    });
+    const list = getByTestId('project-thread-list');
+    expect(list.querySelectorAll('[data-testid="thread-pin-group-divider"]')).toHaveLength(1);
+    expect(list.querySelector('[data-testid="thread-pin-group-divider"]')?.className).toContain(
+      'border-border-subtle',
+    );
+
+    await rerender({
+      projectId: 'p1',
+      threads: [
+        mkThread('front-a', { pinnedAt: 1, pinGroup: 0 }),
+        mkThread('front-b', { pinnedAt: 2, pinGroup: 0 }),
+      ],
+      pane,
+    });
+    expect(list.querySelectorAll('[data-testid="thread-pin-group-divider"]')).toHaveLength(0);
+  });
+
   it('renders a child durable Interrupted status on the collapsed parent row', () => {
     const pane = createThreadPane();
     const parent = mkThread('parent', { title: 'Parent' });

@@ -15,10 +15,11 @@ import (
 // Go struct has a clean empty-string value for unset optional fields.
 // project_id is coalesced because v5 made it nullable: a standalone "home"
 // terminal thread has no project, and scanThread reads it into a plain
-// string. last_read_at and pinned_at are deliberately NOT coalesced —
+// string. last_read_at, pinned_at, and pin_group are deliberately NOT coalesced —
 // scanThread keeps the NULL / non-NULL distinction via *int64 pointers so
 // the frontend can tell "never tracked" / "unpinned" apart from a zero
-// timestamp. The two boolean tail columns are derived sidebar state:
+// timestamp and distinguish migrated front-burner pins from explicit groups.
+// The two boolean tail columns are derived sidebar state:
 // they are cheap scalar probes over indexed tables, not threads columns.
 const threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
@@ -34,7 +35,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
     created_at, updated_at,
     (SELECT MAX(completed_at) FROM turns
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
-    archived, last_read_at, pinned_at,
+    archived, last_read_at, pinned_at, pin_group,
     worktree_setup_state, import_source,
 	EXISTS (
       SELECT 1
@@ -102,6 +103,14 @@ var (
 	// ErrInvalidImportSource is returned for an import provenance outside
 	// the migration v50 enum ("", "claude", "codex").
 	ErrInvalidImportSource = errors.New("store: invalid import source")
+	// ErrInvalidPinGroup is returned for a pin group outside the exact
+	// front/back pair. The database repeats the constraint for direct writes.
+	ErrInvalidPinGroup = errors.New("store: invalid pin group")
+)
+
+const (
+	PinGroupFront = 0
+	PinGroupBack  = 1
 )
 
 var legalEfforts = map[string]struct{}{
@@ -168,7 +177,7 @@ func validAutoCompactPercent(percent int) bool {
 func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	var t Thread
 	var archived, fastMode, hasActionableProposedPlan, hasIncompleteTurn, isDraft int
-	var latestTurnCompletedAt, lastReadAt, pinnedAt sql.NullInt64
+	var latestTurnCompletedAt, lastReadAt, pinnedAt, pinGroup sql.NullInt64
 	if err := scanner.Scan(
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch, &t.PRRef,
@@ -177,7 +186,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
-		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt,
+		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
 		&t.WorktreeSetupState, &t.ImportSource,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
@@ -199,6 +208,10 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 	if pinnedAt.Valid {
 		v := pinnedAt.Int64
 		t.PinnedAt = &v
+	}
+	if pinGroup.Valid {
+		v := int(pinGroup.Int64)
+		t.PinGroup = &v
 	}
 	return t, nil
 }
@@ -1074,37 +1087,61 @@ func (s *Store) setThreadLastRead(id string, ts *int64) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update last_read_at for %s", id))
 }
 
-// PinThread stamps pinned_at with the current unix-ms. Idempotent — the
-// caller can re-pin to bump the position within the pinned tier without
-// special-casing.
+// PinThread places the thread on the front burner and preserves the existing
+// API contract of stamping pinned_at on every call. The timestamp remains
+// metadata only; it no longer controls ordering within a pin group.
 func (s *Store) PinThread(id string) error {
 	now := nowMillis()
 	return s.setThreadPinnedAt(id, &now)
 }
 
-// UnpinThread clears pinned_at, returning the thread to the regular
-// status-aware sort order.
+// UnpinThread clears both pin fields, returning the thread to the regular
+// status-aware sort order. An unpinned row never retains a latent group.
 func (s *Store) UnpinThread(id string) error {
 	return s.setThreadPinnedAt(id, nil)
 }
 
-// setThreadPinnedAt is the shared primitive. We deliberately do NOT
+// SetThreadPinGroup moves an already-pinned thread between the exact two
+// manual attention groups. The WHERE clause makes assigning a group to an
+// unpinned row impossible even for a future caller that skips prevalidation.
+func (s *Store) SetThreadPinGroup(id string, group int) error {
+	if group != PinGroupFront && group != PinGroupBack {
+		return fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
+	}
+	result, err := s.db.Exec(
+		`UPDATE threads SET pin_group = ? WHERE id = ? AND pinned_at IS NOT NULL`,
+		group, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update pin_group for %s: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: update pin_group for pinned thread %s", id))
+}
+
+// setThreadPinnedAt is the shared pin/unpin primitive. We deliberately do NOT
 // touch updated_at here: pinning is a sidebar-presentation tweak, not
 // thread activity, and bumping updated_at would shuffle the project's
 // `lastActivity` ordering.
 func (s *Store) setThreadPinnedAt(id string, ts *int64) error {
-	var arg any
-	if ts != nil {
-		arg = *ts
+	var result sql.Result
+	var err error
+	if ts == nil {
+		result, err = s.db.Exec(
+			`UPDATE threads SET pinned_at = NULL, pin_group = NULL WHERE id = ?`,
+			id,
+		)
+	} else {
+		result, err = s.db.Exec(
+			`UPDATE threads
+		        SET pinned_at = ?, pin_group = ?
+		      WHERE id = ?`,
+			*ts, PinGroupFront, id,
+		)
 	}
-	result, err := s.db.Exec(
-		`UPDATE threads SET pinned_at = ? WHERE id = ?`,
-		arg, id,
-	)
 	if err != nil {
-		return fmt.Errorf("store: update pinned_at for %s: %w", id, err)
+		return fmt.Errorf("store: update pin state for %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update pinned_at for %s", id))
+	return requireRowsAffected(result, fmt.Sprintf("store: update pin state for %s", id))
 }
 
 // UpdateSessionRef records the provider resume cursor without touching

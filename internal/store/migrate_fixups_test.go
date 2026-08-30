@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -335,6 +336,44 @@ func TestV70TrimsUnverifiedCodexV2Profiles(t *testing.T) {
 	clean := readInput("v2-clean")
 	if string(clean["agentPath"]) != `"/root/worker"` {
 		t.Fatalf("v70 changed an already-clean V2 row: %#v", clean)
+	}
+}
+
+func TestV71AddsTwoTierPinStateWithoutMovingExistingPins(t *testing.T) {
+	db := migrateThrough(t, 70)
+
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v71', '/v71', 'v71', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		pinned_at, created_at, updated_at, archived, mode)
+		VALUES ('t-v71-pinned', 'p-v71', 'Pinned', 'claude', '/tmp', '', 123, 1, 1, 0, 'chat')`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v71-plain', 'p-v71', 'Plain', 'claude', '/tmp', '', 1, 1, 0, 'chat')`)
+
+	if err := applyMigration(db, migrationByVersion(t, 71)); err != nil {
+		t.Fatalf("apply v71: %v", err)
+	}
+
+	var pinnedAt int64
+	var pinGroup sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT pinned_at, pin_group FROM threads WHERE id = 't-v71-pinned'`,
+	).Scan(&pinnedAt, &pinGroup); err != nil {
+		t.Fatalf("read migrated pinned row: %v", err)
+	}
+	if pinnedAt != 123 || pinGroup.Valid {
+		t.Fatalf("migrated pin = (at=%d, group=%v), want (123, NULL/front)", pinnedAt, pinGroup)
+	}
+	if _, err := db.Exec(
+		`UPDATE threads SET pin_group = 1 WHERE id = 't-v71-plain'`,
+	); err == nil {
+		t.Fatal("v71 allowed an unpinned row to retain a pin group")
+	}
+	if _, err := db.Exec(
+		`UPDATE threads SET pin_group = 2 WHERE id = 't-v71-pinned'`,
+	); err == nil {
+		t.Fatal("v71 allowed a third pin group")
 	}
 }
 

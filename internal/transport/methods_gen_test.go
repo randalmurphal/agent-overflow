@@ -64,6 +64,7 @@ var wireSafeMethods = map[string]bool{
 	"ListArchivedThreads":  true,
 	"ListThreads":          true,
 	"PinThread":            true,
+	"SetThreadPinGroup":    true,
 	"UnpinThread":          true,
 	"MarkThreadRead":       true,
 	"MarkThreadUnread":     true,

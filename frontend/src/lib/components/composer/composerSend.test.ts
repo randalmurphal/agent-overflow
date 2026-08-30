@@ -1,12 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchSend } from './composerSend';
-import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import type { SourceProposedPlan, Thread } from '../../types/models';
 import { resetForTest as resetWorktreeIntent } from '../../stores/worktreeIntent.svelte';
+import { replaceAllThreads } from '../../stores/threads.svelte';
+import { loadSettings } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
+
+function makeThread(overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: 'thread-1',
+    title: 'Thread',
+    provider: 'claude',
+    workspacePath: '/tmp/workspace',
+    projectPath: '/tmp/workspace',
+    model: 'claude-sonnet-4-6',
+    createdAt: 1,
+    updatedAt: 1,
+    archived: false,
+    ...overrides,
+  };
+}
+
+function sendOptions(threadId = 'thread-1') {
+  return {
+    threadId,
+    message: 'Start work',
+    attachmentIds: [],
+    snapshot: { content: 'Start work', attachments: [], terminalChips: [] },
+    restoreDraft: vi.fn(),
+    draftThreadId: () => threadId,
+    reportError: vi.fn(),
+  };
+}
 
 describe('dispatchSend', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    resetBindingMocks();
     resetWorktreeIntent();
+    replaceAllThreads([]);
+    setBindingMock('GetSettings', async () => makeSettings());
+    await loadSettings();
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -74,5 +108,68 @@ describe('dispatchSend', () => {
       'Failed to send message: Branch "BLITZ-187" already exists.',
     );
     expect(consoleErr).toHaveBeenCalled();
+  });
+
+  it('auto-pins an eligible in-app draft only after its first send succeeds', async () => {
+    const draft = makeThread({ isDraft: true });
+    const started = makeThread({ isDraft: false, updatedAt: 2 });
+    replaceAllThreads([draft]);
+    setBindingMock('SendMessageWithOptions', async () => started);
+    const pin = setBindingMock('PinThread', vi.fn(async () => ({
+      ...started,
+      pinnedAt: 10,
+      pinGroup: 0,
+    })));
+
+    expect(await dispatchSend(sendOptions())).toBe(true);
+    expect(pin).toHaveBeenCalledWith('thread-1');
+  });
+
+  it('does not auto-pin when the setting is disabled', async () => {
+    setBindingMock('GetSettings', async () => makeSettings({ autoPinNewThreads: false }));
+    await loadSettings();
+    const draft = makeThread({ isDraft: true });
+    replaceAllThreads([draft]);
+    setBindingMock('SendMessageWithOptions', async () => makeThread({ isDraft: false }));
+    const pin = setBindingMock('PinThread', vi.fn());
+
+    expect(await dispatchSend(sendOptions())).toBe(true);
+    expect(pin).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-pin imported drafts', async () => {
+    const draft = makeThread({ isDraft: true, importSource: '/tmp/provider-session' });
+    replaceAllThreads([draft]);
+    setBindingMock('SendMessageWithOptions', async () => makeThread({
+      isDraft: false,
+      importSource: draft.importSource,
+    }));
+    const pin = setBindingMock('PinThread', vi.fn());
+
+    expect(await dispatchSend(sendOptions())).toBe(true);
+    expect(pin).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-pin provider-spawned child drafts', async () => {
+    const draft = makeThread({ isDraft: true, parentThreadId: 'parent-thread' });
+    replaceAllThreads([draft]);
+    setBindingMock('SendMessageWithOptions', async () => makeThread({
+      isDraft: false,
+      parentThreadId: draft.parentThreadId,
+    }));
+    const pin = setBindingMock('PinThread', vi.fn());
+
+    expect(await dispatchSend(sendOptions())).toBe(true);
+    expect(pin).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-pin a later send on an already-started thread', async () => {
+    const started = makeThread({ isDraft: false, sessionRef: 'session-1' });
+    replaceAllThreads([started]);
+    setBindingMock('SendMessageWithOptions', async () => ({ ...started, updatedAt: 2 }));
+    const pin = setBindingMock('PinThread', vi.fn());
+
+    expect(await dispatchSend(sendOptions())).toBe(true);
+    expect(pin).not.toHaveBeenCalled();
   });
 });

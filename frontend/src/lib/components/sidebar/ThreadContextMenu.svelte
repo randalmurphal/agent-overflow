@@ -28,6 +28,11 @@
     deleteThreadAction,
     forkThreadAction,
     markThreadUnreadAction,
+    PIN_GROUP_BACK,
+    PIN_GROUP_FRONT,
+    pinThreadAction,
+    setThreadPinGroupAction,
+    unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
   import {
@@ -142,6 +147,8 @@
   // deleted in isolation — the parent thread owns the subtree's
   // lifecycle.
   let canDelete = $derived(!thread.parentThreadId);
+  let isPinned = $derived(thread.pinnedAt != null);
+  let isBackBurner = $derived(isPinned && thread.pinGroup === PIN_GROUP_BACK);
   let selectedThreads = $derived.by(() => {
     if (!inBulkContext) return [] as Thread[];
     const out: Thread[] = [];
@@ -310,6 +317,33 @@
               void markThreadUnreadAction(ctx());
             }}
           />
+          {#if isPinned}
+            <MenuItem
+              label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
+              onSelect={() => {
+                onClose();
+                void setThreadPinGroupAction(
+                  ctx(),
+                  isBackBurner ? PIN_GROUP_FRONT : PIN_GROUP_BACK,
+                );
+              }}
+            />
+            <MenuItem
+              label="Unpin Thread"
+              onSelect={() => {
+                onClose();
+                void unpinThreadAction(ctx());
+              }}
+            />
+          {:else}
+            <MenuItem
+              label="Pin Thread"
+              onSelect={() => {
+                onClose();
+                void pinThreadAction(ctx());
+              }}
+            />
+          {/if}
           <MenuItem
             label="Copy Path"
             onSelect={() => {

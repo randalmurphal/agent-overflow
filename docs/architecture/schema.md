@@ -43,6 +43,12 @@ it disagrees with the migrations, the migrations win.
 | `automation_cursors` | Per-automation source watermarks keyed by `(automation_id, source_key)`. Cursors cascade with their owning automation; they are scheduler state, not run history. |
 | `store_meta` | The store's own identity, exactly one row (`CHECK(id = 1)`, migration v55). `backend_id` names this database and never changes. A client keys its on-disk thread replica by it, so re-minting would orphan every cached window. `replica_generation` names the current history LINEAGE and IS re-minted, inside the transaction, by `RestoreFrom`: a restore rewinds every thread's counters, so stamps a client holds from the replaced future would compare as "ahead" and read as fresh forever. Both are UUIDs minted by the migration's `Fix`. Read by `Store.Identity`, published in the transport bootstrap manifest and on every `SyncThreadWindow` answer. |
 
+Schema amendment (v71): `threads.pin_group` is the nullable two-tier companion
+to `pinned_at`. A pinned NULL/0 row is front burner and a pinned 1 row is back
+burner. The column CHECK rejects every other value and rejects a group on an
+unpinned row; existing pins remain NULL and therefore stay front burner
+without a backfill.
+
 Schema amendment (v57, superseding v54's earlier automatic-quota use):
 `provider-usage-limited` is a continuable `work_items.reason`; the resting
 `work_item_phases` or `work_item_units` row carries a
