@@ -41,6 +41,15 @@ kill path here.
   the signal protecting every worktree on the host.
 - **Events are edge-triggered per reason**, one per crossing episode, not
   one per sample. Treat them as a level and one episode acts repeatedly.
+- **A tree MEMBER that exits mid-sample contributes zero bytes, never an
+  error.** Process trees are racy by nature: WebView2 and WebKit recycle
+  helper processes constantly, so a pid vanishing between the tree
+  snapshot and its memory query is routine operation. Only the OWNER's
+  death or identity change ends the monitor (and the monitor's own
+  owner rechecks catch that). All three platform samplers follow this;
+  Windows treating the gap as an error let the reservation layer read
+  helper churn as a safety failure and tear down a healthy instance
+  (incident 2026-08-30).
 
 ## Defaults and callers
 
