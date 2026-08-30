@@ -185,6 +185,14 @@ remain a separate, narrower credential class, unchanged.
 - Browser class: short TTL, non-renewable without passkey re-auth where
   passkeys are available.
 
+Every authentication failure carries a **closed, typed reason code**
+end-to-end (missing/malformed proof, key mismatch, time window,
+invalid signature, …), with signature checked *before* the time
+window so a forged proof is never misreported as clock skew, and one
+client-side presentation module mapping codes to actionable hints
+("check automatic date & time on both devices" for skew — the
+dominant real cause). Adapted from t3code's DPoP-failure rework.
+
 ### WebSocket tickets
 
 The session credential never rides a WS URL. Client POSTs for a ticket
@@ -379,6 +387,12 @@ Cross-origin defense is explicit: strict Host allow-list (canonical
 domain + known loopback names), Origin / `Sec-Fetch-Site` checks on
 `/ws` and every auth endpoint, DNS-rebinding rejection.
 
+Listener and endpoint-advertisement init is **per-listener isolated**:
+one integration failing to start (a broken `tailscale` binary on
+PATH, a dead tunnel) degrades that listener only and surfaces its
+error — it never takes down the others (t3code shipped exactly this
+bug: one spawn defect killed all endpoint advertisement).
+
 ### Stable endpoint
 
 Port becomes a setting (pick-random-once-then-persist default,
@@ -431,6 +445,34 @@ subprocess with an owned domain. The chosen HTTPS name is the backend's
 **canonical domain**: passkey RP ID, related-origins anchor (max 5), and
 the phone app's dial target.
 
+### Dev-server preview across machines (the port gateway)
+
+The in-app browser must reach a dev server the agent started on the
+thread's host — from any attached UI, over any path. t3code never
+built this (its relay case errors with "needs the planned
+authenticated preview gateway"; only tailnet-direct works, and only
+when the dev server binds beyond loopback). We build the gateway:
+
+- The backend proxies HTTP **and WebSocket upgrades** (HMR) to
+  `localhost:<port>` on its own machine; the in-app browser points at
+  the gateway when the thread's host is not the local machine. Works
+  over LAN, tailnet, and tunnel alike; the dev server needs no
+  `--host` flag and never binds beyond loopback.
+- **Reachable ports are an allowlist, never arbitrary**: ports the
+  dev-server scanner attributed to this thread's sessions, plus ports
+  the user adds explicitly. A localhost proxy that forwards anywhere
+  is a hole into host-local services; this one forwards only to
+  declared dev servers. Gateway access requires an execute-tier scope.
+- **The gateway is its own origin** (same posture as `/design/`):
+  proxied content is agent/app-authored and never shares the SPA
+  origin; the session credential is never visible to it — access
+  rides a short-lived ticket bound to the gateway origin.
+- Detection reuses t3code's proven shape, server-side: enumerate
+  loopback listeners (`lsof`/PowerShell), publish only candidates
+  whose bounded 1s probe returns HTML or a redirect, cache probe
+  results (~15s), poll (~3s) only while something subscribes,
+  attribute PIDs to the owning thread's sessions.
+
 ### Anywhere access
 
 tsnet embedded (BSD-3, userspace, works in WSL2 without TUN) with
@@ -457,6 +499,23 @@ requires step-up **plus** artifact signature verification, and runs
 behind a healthcheck-and-auto-rollback watchdog that preserves listener
 config and the session store. A bad update must never lock the owner
 out of a machine they cannot physically reach.
+
+The watchdog adopts t3code's proven architecture (its
+`server-updates` internals doc), which is concrete where "watchdog"
+is vague: a separate, stable **supervisor** process owns the launch
+state — the running server never mutates its own launch config; the
+new version installs into an immutable staged dir and its
+compatibility with the installed supervisor is checked *before*
+anything is touched; the store is **snapshotted while quiescent**
+before migrations; the new version boots fully as a trial — runs
+migrations, binds listeners, starts everything — but parks at an
+activation gate until it reports prepared within a hard time budget;
+only then does the supervisor durably commit. Failure or timeout
+restores the snapshot and restarts the old version, with a durable
+restore marker so a supervisor crash mid-rollback resumes correctly.
+The update carries an id the client correlates through its reconnect,
+so "update succeeded" means the new version answered, not that the
+old one stopped.
 
 ### Provider accounts and remote login
 
@@ -593,6 +652,15 @@ Prerequisite sweep, valuable standalone:
   do this. Revocation is not remote wipe. Cutting a device's access
   does not un-disclose what its replica already held (boundaries
   doc).
+- **Reconnect discipline** (two t3code patterns adopted): every
+  in-flight query/RPC derives from one canonical connection-state
+  observable — transient states (connecting, backoff) *suspend*
+  pending work so it re-runs on the next "connected", while terminal
+  states fail it with the preserved underlying cause, never a generic
+  message. And retry-on-terminal is only ever a small explicit
+  allowlist scoped to a known transient window (e.g. auth rejection
+  in the seconds after a server update restart), not a blanket
+  policy.
 - **Ticket primitive generalizes beyond WS**: short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
@@ -686,7 +754,13 @@ secondary. The recommended posture for real remote editing is the
 editor's own remote mode over the tailnet (VS Code Remote-SSH against
 the host's tailnet name and the like): a per-machine editor command
 template lets the local UI open the *local* editor pointed at the
-remote checkout. We do not build a file-open protocol.
+remote checkout (`vscode://vscode-remote/ssh-remote+<host><path>`
+deep links — the editor's own SSH does the work). The backend
+self-probes before advertising remote-open targets: no `sshd`
+listening means no link offered (a clear "no SSH route" beats a
+hanging deep link), and offered hosts are ordered
+most-reachable-first (tailnet name, then mDNS `.local`). We do not
+build a file-open protocol.
 
 ## 11. Team sharing (federation)
 
