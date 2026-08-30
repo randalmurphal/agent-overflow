@@ -205,8 +205,15 @@ func (l *Launcher) Stop() error {
 // instruction and covers the shell-env probe that runs before that
 // correction.
 //
-// Order matters: wsl.exe options (--cd, -d) must precede the `--`
-// separator, after which everything is the Linux command line. After it,
+// Order matters: wsl.exe options (--cd, -d) must precede `--exec`, after
+// which everything is the Linux argv, passed VERBATIM to the executable.
+// `--exec` rather than `--` is load-bearing: the `--` form joins the argv
+// with spaces and re-parses it through the user's LOGIN shell, which
+// destroys quoting and pre-expands `$` references in the memory-limit
+// wrapper's script (a zsh login shell turned `exec "$@"` into `exec ""` —
+// incident 2026-08-30, first Windows launch after the wrapper landed).
+// The backend never needed the login shell: it probes login-shell PATH
+// itself via internal/shellenv. After the command,
 // `--listen 127.0.0.1:0 --print-url-fd 0` puts the backend in headless mode
 // and tells it to hand its {port, token} back over the stdout bootstrap
 // sentinel (fd 0 here selects that stdout channel — see writeBootstrap and
@@ -238,7 +245,7 @@ func buildLaunchArgsWithMemoryLimit(distro, binaryPath string, extraArgs []strin
 	args := []string{
 		"--cd", "~",
 		"-d", distro,
-		"--",
+		"--exec",
 		command[0],
 	}
 	args = append(args, command[1:]...)

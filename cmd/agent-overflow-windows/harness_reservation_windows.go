@@ -221,7 +221,10 @@ func writeWSLContainmentEvidence(ctx context.Context, distro, binPath string, bs
 		return fmt.Errorf("marshal WSL containment evidence: %w", err)
 	}
 	evidence := string(evidenceBytes)
-	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--", "/bin/sh", "-c", wslContainmentEvidenceScript, "agent-overflow-containment-evidence", dataRoot, evidence)
+	// --exec, never --: the -- form re-parses the joined argv through the
+	// user's login shell, which shreds the JSON evidence argument and the
+	// script's positional args (wsllauncher.buildLaunchArgs incident note).
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "/bin/sh", "-c", wslContainmentEvidenceScript, "agent-overflow-containment-evidence", dataRoot, evidence)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("write WSL containment evidence: %w (%s)", err, strings.TrimSpace(string(output)))

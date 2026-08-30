@@ -193,7 +193,11 @@ func runWSLMemoryProbeCommand(ctx context.Context, distro string, pid int, execu
 	if strings.TrimSpace(distro) == "" || pid <= 0 || strings.TrimSpace(executable) == "" {
 		return wslBackendSample{}, errors.New("invalid WSL memory probe target")
 	}
-	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--", "/bin/sh", "-c", wslMemoryProbeScript, "agent-overflow-memory-watchdog", strconv.Itoa(pid), executable)
+	// --exec, never --: the -- form re-parses the joined argv through the
+	// user's login shell, destroying the script's quoting and positional
+	// args (wsllauncher.buildLaunchArgs has the incident note). A mangled
+	// probe reads as a failed probe, and a failed probe stops the backend.
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "--exec", "/bin/sh", "-c", wslMemoryProbeScript, "agent-overflow-memory-watchdog", strconv.Itoa(pid), executable)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	var output cappedProbeOutput
 	output.limit = wslMemoryMaxOutput

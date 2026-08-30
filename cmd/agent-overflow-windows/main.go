@@ -629,7 +629,13 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		var httpErr bootstrapHTTPError
 		switch {
 		case errors.Is(err, errLaunchFailed):
-			w.SetURL("/picker")
+			// The spawn itself died (child exited before the bootstrap
+			// line). The distro choice is fine — re-showing the picker
+			// reads as "pick again" and hides that anything failed
+			// (observed 2026-08-30: a broken backend spawn presented as
+			// the first-run distro picker). The actionable artifact is
+			// launcher.log, which is what /startup-error points at.
+			w.SetURL("/startup-error")
 			return err
 		case errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusInternalServerError:
 			w.SetURL("/startup-error")
