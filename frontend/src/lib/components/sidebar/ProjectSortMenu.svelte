@@ -4,7 +4,7 @@
   // Manual. Selecting "Manual" enables drag reordering on each row.
   //
   // Keeps the dropdown self-contained so ProjectsSection's header stays
-  // a thin shell. Mirrors forge's sort-menu shape, sized and styled to
+  // a thin shell. Sized and styled to
   // sit alongside the "Add project" icon button.
 
   import {

@@ -481,7 +481,7 @@ export class Settings {
 
     /**
      * NOTE: "theme" used to live here and is RETIRED (see
-     * retiredSettingsFieldNames and docs/specs/theme-system.md §6.2). The
+     * retiredSettingsFieldNames and docs/architecture/theme-system.md §6.2). The
      * light/dark mode is a property of the CLIENT MACHINE, not of a backend,
      * so it moved to <configDir>/themes/appearance.json. The old value is
      * CONSUMED ONCE at boot (initThemeDirectory reads it raw via

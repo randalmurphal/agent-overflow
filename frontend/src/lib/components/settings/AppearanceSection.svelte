@@ -2,7 +2,7 @@
   // Settings → General → Appearance: the mode plus one theme per axis.
   //
   // Three controls, and the shape of the third is the whole design: the UI
-  // axis and the code axis are INDEPENDENT (docs/specs/theme-system.md §6.1),
+  // axis and the code axis are INDEPENDENT (docs/architecture/theme-system.md §6.1),
   // so a user can put a Monokai code palette on the default chrome without
   // either choice implying the other. The lists come from the store's parsed
   // files layered over the built-ins, so a file whose stem shadows a reserved

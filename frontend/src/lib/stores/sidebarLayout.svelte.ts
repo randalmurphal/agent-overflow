@@ -31,7 +31,7 @@ export const SIDEBAR_MIN_WIDTH = 200;
  *  collapsed, so it is not resizable and has no independent bounds. */
 export const SIDEBAR_RAIL_WIDTH = 36;
 /** Main pane reserve — keeps the composer + chat legible no matter how
- *  the user drags. Mirrors forge's 640px reserve scaled down a bit. */
+ *  the user drags. */
 const MAIN_RESERVE = 560;
 
 function clamp(px: number): number {

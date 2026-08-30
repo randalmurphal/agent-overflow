@@ -3,8 +3,7 @@
 Status: design, signed off 2026-08-23. Nothing implemented yet. Decisions
 were settled in a brainstorm session and a codex consult; the
 `(Qn)`/`(Dn)`/`(An)` tags are those sessions' ids and carry no other
-meaning. The consult's full text is
-[code-review-consult-2026-08-23.md](code-review-consult-2026-08-23.md).
+meaning.
 
 ## Goal
 
@@ -79,7 +78,7 @@ named output). No phase in this feature consumes it.
 ### `harness:` on phases and units (Q6, D5, D20, A31, A32)
 
 `harness: <profile-name>` selects a named harness profile (see
-[Harness profiles](#harness-profiles)). The profile body for the phase's
+[Harness profiles](#harness-profiles-q6-d20-a31a34)). The profile body for the phase's
 provider is resolved once at run creation, snapshotted with a digest
 into the run, and applied at every spawn in that run. A missing or
 unsupported provider body fails before fan-out. The inert
@@ -432,7 +431,7 @@ summary. All of it is run state in the workflows UI, not log lines.
 |-----|-----|--------|
 | `Phase.Capabilities`, `Phase.MCP`, `Phase.Commands` | `harness:`, `builtin:` | DELETE |
 | `poll-jira-and-start` `capabilities:` line | `grants: [start-run, update-notes]` | MIGRATE |
-| workflows-system.md "External sources — no webhooks" | webhook trigger section | MIGRATE |
+| workflows-system.md "External sources: poll with authenticated CLIs, no webhooks" | webhook trigger section | MIGRATE |
 | prompt-tool-overrides.md "per-thread overrides: non-goal" | harness profiles | MIGRATE |
 
 ## Success criteria

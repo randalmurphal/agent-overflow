@@ -6,7 +6,7 @@ the alternatives, and what we gave up.
 
 ADRs are how the codebase remembers decisions that aren't obvious from
 the code itself. If you find yourself asking "why did we do it this
-way?" — that's an ADR moment. Write one.
+way?", that's an ADR moment. Write one.
 
 ## Index
 
@@ -39,7 +39,7 @@ What problem we faced. What constraints shaped the decision.
 
 ## Decision
 
-What we chose. Be specific — name functions, files, or invariants.
+What we chose. Be specific: name functions, files, or invariants.
 
 ## Rationale
 
@@ -77,8 +77,8 @@ When a later decision replaces an earlier one:
 
 ## See Also
 
-- [`../invariants.md`](../invariants.md) — the load-bearing rules
+- [`../invariants.md`](../invariants.md): the load-bearing rules
   these ADRs established.
-- [`../conventions.md`](../conventions.md) — contributor guardrails.
-- [`../how-to.md`](../how-to.md) — extension playbooks for common
+- [`../conventions.md`](../conventions.md): contributor guardrails.
+- [`../how-to.md`](../how-to.md): extension playbooks for common
   changes.

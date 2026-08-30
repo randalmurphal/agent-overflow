@@ -17,7 +17,7 @@ the child's conversation:
   `tool_call` card. The child's conversation renders inside an
   expandable card on the parent timeline.
 
-Claude's `Task` tool already uses the flatten model —
+Claude's `Task` tool already uses the flatten model:
 `parent_tool_use_id` correlates child events with the parent launch,
 and the child never becomes its own thread. For Codex we had the
 choice.
@@ -50,7 +50,7 @@ Considered alternatives:
   sidebar would grow every time an agent spawned a subagent, which
   on long sessions is dozens of entries.
 - **Hybrid (show in sidebar, also render inline).** Rejected:
-  duplicates state and adds confusion — which is the "real" view?
+  duplicates state and adds confusion. Which is the "real" view?
 
 ## Consequences
 
@@ -61,7 +61,7 @@ Considered alternatives:
 - Invariant #9 (scoped `segmentIndexByScope` / `blockIndexByScope`)
   exists because parallel subagents in the same turn would collide
   on id generation without per-card scope counters.
-- The Codex adapter is more complex than it would be otherwise — it
+- The Codex adapter is more complex than it would be otherwise. It
   opens child-thread subscriptions and re-emits onto the parent. The
   complexity lives in `internal/provider/codex/session.go`.
 - Nesting cap: Codex subagents spawning sub-subagents render as a

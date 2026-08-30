@@ -29,7 +29,7 @@ import (
 // append-only delivery channel, not proof that its final batch arrived.
 //
 // Why the events are replayed rather than written as rows: see
-// internal/triage/AGENTS.md §task_notification path. Short version — a
+// internal/triage/AGENTS.md §Subagent transcript backfill. Short version — a
 // subagent-scoped row's id is allocated from the Router's live per-scope
 // counter, so only the live path can mint an id a later live lookup will
 // find.

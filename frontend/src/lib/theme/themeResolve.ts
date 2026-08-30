@@ -5,7 +5,7 @@
 // declarations through the checks that need a browser, runs the survivors back
 // through `serializeThemeCss`, and writes the result into the single
 // `<style id="user-theme">` element (one style invalidation per change — see
-// docs/specs/theme-system.md §1.4, and the measured cost of the N-setProperty
+// docs/architecture/theme-system.md §1.4, and the measured cost of the N-setProperty
 // alternative); `windowBackground` it normalizes through
 // `utils/cssColorProbe.ts`.
 //

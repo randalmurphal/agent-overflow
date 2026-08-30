@@ -11,7 +11,7 @@
 // Full guide: cmd/ao-harness/AGENTS.md.
 // Contract: docs/specs/testing-harness.md §3.
 //
-//go:generate go run . --generate-docs ../../docs/reference/ao-harness.md
+//go:generate go run . --generate-docs ../../docs/references/ao-harness.md
 package main
 
 import (

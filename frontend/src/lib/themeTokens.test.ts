@@ -3,7 +3,7 @@
 // The app already has a full semantic token vocabulary (`app.css` `:root` +
 // `html.light`, `styles/tokens.css`, `styles/syntax.css`); theming is not an
 // extraction job, it is keeping the vocabulary total. Phase 1 of
-// `docs/specs/theme-system.md` closed ~35 leak sites where app chrome bypassed
+// `docs/architecture/theme-system.md` closed ~35 leak sites where app chrome bypassed
 // it — raw Tailwind palette classes, black/white utilities, default Tailwind
 // shadows, hex literals. Those leaks are individually invisible in review and
 // collectively fatal to a user-editable theme: a user-picked accent or a
@@ -367,7 +367,7 @@ describe('theme tokens', () => {
       scanned.rawClasses,
       RAW_CLASS_ALLOWLIST,
       'New theme-token leaks.',
-      'Use a semantic token utility (the surface / fg / border / info-success-warning-error roles, and the sheet-menu-modal shadow scale). A utility naming a token that does not exist compiles to nothing at all. If the role does not exist yet, add the token — see docs/specs/theme-system.md §4.',
+      'Use a semantic token utility (the surface / fg / border / info-success-warning-error roles, and the sheet-menu-modal shadow scale). A utility naming a token that does not exist compiles to nothing at all. If the role does not exist yet, add the token — see docs/architecture/theme-system.md §4.',
     );
   });
 

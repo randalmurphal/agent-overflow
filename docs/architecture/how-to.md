@@ -20,7 +20,7 @@ chat rewrite.
 1. **Provider adapter.** In `internal/provider/{claude,codex}/parser.go`
    (or a sibling `parse_*.go`), parse the wire message into a typed value
    and emit a `provider.ProviderEvent` with the new `Kind`. No store
-   access, no `app.Event.Emit` — the adapter only produces events.
+   access, no `app.Event.Emit`. The adapter only produces events.
 2. **`EventKind` constant.** Add the new kind to the `const` block in
    `internal/provider/types.go`, then append it to
    `provider.AllEventKinds` in the same file. The roundtrip test
@@ -38,7 +38,7 @@ chat rewrite.
    `frontend/src/lib/stores/events.ts` via `wailsEventOn`. The
    frontend branches on routing channel (`provider:item_event`,
    `provider:approval`, `provider:usage`, `provider:status`) rather
-   than on individual EventKinds — if your new kind's payload fits
+   than on individual EventKinds. If your new kind's payload fits
    an existing channel, no new subscription is needed. A new
    channel is a bigger decision; see "Add a New Routing Channel"
    below.
@@ -57,7 +57,7 @@ guard).
 
 ## Add a New Item Kind
 
-Use when a new class of timeline entity needs to exist — not a new
+Use when a new class of timeline entity needs to exist: not a new
 tool variant, not a new payload shape, but a fundamentally new
 top-level kind distinct from the 7 we have (user_text, assistant_text,
 thinking, tool_call, tool_completion, error, compaction).
@@ -73,7 +73,7 @@ first.
    can't be ALTERed in SQLite; you either rebuild the `items` table
    (like v15's wipe) or add a new migration that creates a
    replacement `items` table and copies forward. Prefer the copy-forward
-   path — wipes are reserved for shape breaks.
+   path. Wipes are reserved for shape breaks.
 2. **Upsert path.** Update `store.UpsertItem` in
    `internal/store/items.go` if the new kind needs special handling
    (e.g., a new required column, a deterministic id format). Most
@@ -103,7 +103,7 @@ Live example: the Bash / Edit / Read / Write / Grep / Task renderers in
 1. **Classification.** Add a case to `classifyToolName` in
    `frontend/src/lib/components/chat/toolCardHeader.ts`. This returns
    a `ToolKindVisual` with the icon identifier and any header
-   metadata flags. Pure function — no side effects.
+   metadata flags. Pure function, no side effects.
 2. **Icon.** If the tool needs a new icon, add it to `ToolKindIcon.svelte`
    in the same directory. Prefer reusing one of the existing
    `ToolKindIcon` cases if the tool's semantics match an existing
@@ -111,12 +111,12 @@ Live example: the Bash / Edit / Read / Write / Grep / Task renderers in
 3. **Header component (only if substantially different).** If the tool
    needs a dedicated header beyond what `ToolCallCard.svelte`'s
    generic path renders, extract a sibling component and dispatch from
-   `ToolCallCard.svelte`. Keep it small — see the file-size targets in
+   `ToolCallCard.svelte`. Keep it small. See the file-size targets in
    [`conventions.md`](conventions.md).
 4. **Test.** Add a case to `ToolCallCard.test.ts` that renders the new
    tool and asserts the header / icon appear.
 
-The adapter side usually needs no change — the new tool name flows
+The adapter side usually needs no change. The new tool name flows
 through `tool_name` on the item as-is.
 
 ---
@@ -133,12 +133,12 @@ Live example: migration v13 (`turns` inflight partial index), v22
    new entry to the `migrations = []Migration{...}` slice. The
    `Version` is the next contiguous integer; `Name` is short
    snake_case; `SQL` is the migration body. Never edit an existing
-   entry — migrations are forward-only and append-only (invariant
+   entry. Migrations are forward-only and append-only (invariant
    #20).
 2. **Write the migration body.** Prefer narrow changes:
    - New column: `ALTER TABLE foo ADD COLUMN bar TEXT NOT NULL DEFAULT '';`
    - New index: `CREATE INDEX idx_foo_bar ON foo(bar);` (use
-     `WHERE bar <> ''` for sparse columns — see the partial indexes
+     `WHERE bar <> ''` for sparse columns, like the partial indexes
      in v15).
    - Enum change: rebuild the table (`DROP` + `CREATE` + copy) rather
      than try to edit a CHECK constraint in place.
@@ -163,7 +163,7 @@ Live example: migration v13 (`turns` inflight partial index), v22
 ## Add a New Provider Adapter
 
 Use when adding a third provider (e.g., Gemini, OpenAI Responses).
-This is substantial — expect hundreds of lines of parser and a session
+This is substantial. Expect hundreds of lines of parser and a session
 lifecycle implementation.
 
 Templates: `internal/provider/claude/` and `internal/provider/codex/`.
@@ -176,7 +176,7 @@ whichever is closer to the new provider's wire format.
 2. **Parser.** `parser.go` owns `Parser` + `ParseLine` dispatch.
    Split wire envelopes per file (`parse_system.go`, `parse_assistant.go`,
    etc.) the way Claude does. Every message either handled or
-   explicitly logged as "unknown type — ignored." Never silently drop.
+   explicitly logged as "unknown type, ignored." Never silently drop.
 3. **Session lifecycle.** `NewSession` spawns and `Close` tears down
    (`session.go`); the stdout pump is `readLoop` (`session_readloop.go`).
    Input methods (`Send`, `Interrupt`, `RespondToApproval`) are methods
@@ -215,14 +215,14 @@ Live examples: `user-input`, `permission`, `file-change`, `file-read`,
    `ApprovalRequest` (see `internal/provider/claude/approvals.go` /
    `internal/provider/codex/approval.go`).
 2. **Per-kind panel component.** Add a component under
-   `frontend/src/lib/components/` that renders the new kind's UI —
+   `frontend/src/lib/components/` that renders the new kind's UI:
    question form, permission grant toggle, diff preview, etc. Compose
    the shared `primitives/` shells (Menu, Modal, Popover) rather than
    rolling positioning / focus-trap yourself.
 3. **Dispatch.** Add a branch in the approval-rendering component
    (whichever component currently dispatches on
-   `ApprovalRequest.kind`). Use a `never`-style default branch —
-   an unhandled kind is a silent dead-end; TypeScript's
+   `ApprovalRequest.kind`). Use a `never`-style default branch.
+   An unhandled kind is a silent dead-end; TypeScript's
    exhaustiveness check is the only compile-time guard we have
    against shipping with a missing branch.
 4. **Decision chip.** If the approval is tool-flavored (affects a
@@ -268,8 +268,8 @@ split into `tool_lifecycle.go`, `turn_lifecycle.go`, `stream_items.go`,
    isn't listed there defeats the split.
 5. **Keep the old file as the entry point.** If the parent file was
    `router.go`, `router.go` keeps `Router`, `Handle`, and the
-   dispatch switch — the siblings own narrow concerns. Don't create a
-   file called `router_misc.go` — every split file earns its name.
+   dispatch switch, and the siblings own narrow concerns. Don't create
+   a file called `router_misc.go`. Every split file earns its name.
 6. **Test.** Tests usually don't need to move; they keep testing the
    package surface. If a test was scoped to one sub-concern, move it
    to a sibling test file so it's easier to find.
@@ -303,7 +303,7 @@ Only add a new channel when:
    in `frontend/src/lib/stores/events.ts`. Route to the appropriate
    per-pane handler.
 5. **Test.** Router test for the emit path + frontend test for the
-   listener. The replay log should also record the new channel —
+   listener. The replay log should also record the new channel, so
    verify the replay hook picks it up.
 
 ---
@@ -311,7 +311,7 @@ Only add a new channel when:
 ## Add a New `AGENTS.md`
 
 Use when adding a new package under `internal/` or a new top-level
-area. Don't add one for every directory — they should provide
+area. Don't add one for every directory. They should provide
 direction the file layout itself doesn't.
 
 1. **File.** Create `AGENTS.md` at the package root.
@@ -322,17 +322,17 @@ direction the file layout itself doesn't.
 4. **Cross-link.** Add the new area to the package map in
    `internal/AGENTS.md` (or the root `AGENTS.md` for top-level areas).
 5. **Tone.** Short, action-oriented. The root `AGENTS.md` sets the
-   voice — match it.
+   voice. Match it.
 
 ---
 
 ## See Also
 
-- [`invariants.md`](invariants.md) — the load-bearing rules each recipe
+- [`invariants.md`](invariants.md): the load-bearing rules each recipe
   must preserve.
-- [`conventions.md`](conventions.md) — contributor guardrails
+- [`conventions.md`](conventions.md): contributor guardrails
   (file sizes, naming, tests).
-- [`chat-rewrite.md`](chat-rewrite.md) — the full item-model spec that
+- [`chat-rewrite.md`](chat-rewrite.md): the full item-model spec that
   these recipes operate inside.
-- [`adrs/`](adrs/) — architecture decisions that constrain how these
+- [`adrs/`](adrs/): architecture decisions that constrain how these
   playbooks can evolve.

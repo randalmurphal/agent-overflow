@@ -6,17 +6,18 @@ the test that needs them.
 
 ## Layout
 
-- `app.go` — mock provider-binary writers. Emits NDJSON (Claude) or
-  JSON-RPC (Codex) frames from a shell script so tests can exercise
-  the full provider + triage + store pipeline without a real CLI.
-- `git.go` — `InitGitRepo` / `RunGit` / `CanonicalPath`. Spins up a
+- `app.go` holds the mock provider-binary writers. Emits NDJSON
+  (Claude) or JSON-RPC (Codex) frames from a shell script so tests can
+  exercise the full provider + triage + store pipeline without a real
+  CLI.
+- `git.go` holds `InitGitRepo` / `RunGit` / `CanonicalPath`. Spins up a
   temp repo with an initial commit on `main`. `InitGitRepoWithOrigin`
   adds a local bare "origin" with `main` pushed and tracking, and
   `AdvanceOriginMain` pushes a commit to it through a throwaway sibling
-  clone — together they stage "the remote moved and we don't know yet",
+  clone. Together they stage "the remote moved and we don't know yet",
   the fixture behind fetch / ahead-behind tests. Local paths only: no
   test here reaches a network.
-- `store.go` — `EnsureProject` helper (threads require a
+- `store.go` holds the `EnsureProject` helper (threads require a
   `project_id` FK; this idempotently inserts a project row per path).
 
 ## Responsibility boundary
@@ -28,7 +29,7 @@ the test that needs them.
   - App-level test helpers that construct `*App`. `App` is in `main`
     and can't be imported here; those helpers live next to the
     integration test files under package `main`.
-  - Behavior under test. Helpers stage fixtures — they don't assert.
+  - Behavior under test. Helpers stage fixtures. They don't assert.
 
 ## Notes
 

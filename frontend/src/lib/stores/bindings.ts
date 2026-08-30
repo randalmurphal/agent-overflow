@@ -742,7 +742,7 @@ export function StartCodexReview(
 // instance and every call site wants to hand a literal. The response is
 // re-typed with a narrowed `status` so callers must handle the four
 // answers the store defines rather than an open string
-// (docs/specs/thread-replica-sync.md §5).
+// (docs/architecture/thread-replica-sync.md §5).
 import {
   SyncThreadWindow as SyncThreadWindowRaw,
 } from '../../../bindings/agent-overflow/app.js';

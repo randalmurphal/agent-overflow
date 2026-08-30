@@ -3237,7 +3237,7 @@ export class SubmitPRReviewResult {
 /**
  * SyncThreadWindowRequest is the client's cold-open question: "here is
  * the window I have cached and the stamps I believe describe it — is it
- * still current?" (docs/specs/thread-replica-sync.md §5).
+ * still current?" (docs/architecture/thread-replica-sync.md §5).
  * 
  * HaveEpoch / HaveRev are -1 when the caller holds no replica or does not
  * trust its stamp. -1 can never equal a real stamp, so the answer is

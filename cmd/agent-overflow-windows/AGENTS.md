@@ -1,206 +1,200 @@
 # cmd/agent-overflow-windows/
 
-Windows entry point for the WSL-backed build of Agent Overflow. The
-desktop `.exe` shown in Start menu — its job is to pick a WSL distro,
-drop the Linux backend into it, spawn it, and point a Wails WebView2
-window at the resulting `http://localhost:<port>` URL.
+Windows entry point for the WSL-backed build. The desktop `.exe` in the
+Start menu picks a WSL distro, drops the Linux backend into it, spawns it,
+and points a Wails WebView2 window at the resulting
+`http://localhost:<port>` URL.
 
-## When to edit here
+Launcher orchestration and the plain-HTML picker / loading / error pages
+(`picker.html` ships before the backend exists) are here. Everything about
+WSL itself stays in `internal/wsllauncher` so it is testable off-Windows:
+discovery, spawn, Job Object lifetime, bootstrap-line parsing, and the
+reconnecting backend WS client this binary's notification handlers hang
+off. The backend is not a separate program; it is the same root `main.go`
+binary running headless inside the distro (`--listen` / `--print-url-fd`),
+and the chat UI is the embedded SPA under `frontend/`.
 
-- The launcher orchestration (distro detection, picker, payload install,
-  WebView lifecycle, connectivity-error page).
-- The picker / loading / error HTML in `picker.html` (plain HTML, not
-  Svelte — it ships before the backend exists).
-- Persisted picker config (`%APPDATA%\agent-overflow\wsl.json`) in
-  `config.go`.
-- Native Windows notification authorization/presentation in
-  `notifications.go`; the reconnecting backend WS client lives in
-  `internal/wsllauncher/notification_client.go` so it is testable off-Windows.
-- Acting on a self-update install directive in `update.go` (below).
-
-## When to edit elsewhere instead
-
-- WSL discovery, spawn, Job Object lifetime, bootstrap-line parsing
-  → `internal/wsllauncher/`.
-- The actual backend run inside WSL — that's the same root `main.go`
-  binary running in headless mode (`--listen` / `--print-url-fd`).
-- Anything UI inside the chat itself — that's the embedded SPA loaded
-  in the WebView, source under `frontend/`.
-
-## Build
-
-The Windows build cross-compiles the Linux ELF backend first, embeds
-it as a payload, then builds this `main` package against `windows/amd64`.
-See `Taskfile.yml` for the orchestration. Job Object teardown means
-killing the `.exe` always tears down the WSL-side child too.
+The build cross-compiles the Linux ELF backend first, embeds it as a payload,
+then builds this `main` package against `windows/amd64` (`Taskfile.yml`). Job
+Object teardown means killing the `.exe` always tears down the WSL-side child
+too.
 
 ## CLI flags
 
-The launcher is GUI-only in production (Start Menu / Desktop double-click).
-The user-facing flags are for the dev path:
+The launcher is GUI-only in production; the user-facing flags are for the dev
+path. `parseLauncherFlags` (`flags.go`) is the single source of truth for the
+CLI shape and `resolveChosenDistro` (`main.go`) owns the override-vs-saved
+precedence, both unit-tested.
 
-- `--distro <name>` — skip the picker and launch directly in this WSL
-  distro. Used by `make dev-wsl` from inside a WSL shell, where
-  `$WSL_DISTRO_NAME` already names the distro the developer is shelled
-  into. The override is **transient** — successful launches do NOT
-  write to `wsl.json`, so a dev invocation cannot overwrite the user's
-  saved pick from a prior production launch. An invalid `--distro`
-  value (typo, distro uninstalled since the env var was set) logs a
-  warning to `launcher.log` and falls through to the picker; we
-  deliberately do not fall back to saved config so the dev mismatch is
-  surfaced rather than silently masked.
-- `--profile harness|soak|perf` (or `AGENT_OVERFLOW_PROFILE=...`) — run as an
-  isolated instance beside the developer's own. This one flag is THE
-  axis behind every piece of per-instance state — single-instance id,
-  window title, WebView2 user-data dir, CDP port (harness 9225, soak
-  9224, perf 9226), `launcher-<profile>.log`, `window-<profile>.json`, debug-level
-  Wails logging, a refusal to persist `wsl.json`, and the WSL backend's
-  argv (`profileBackendArgs`). Everything folds through
-  `launcherRuntimeMode()` → `internal/appidentity`, so an isolated
-  instance launched from the dev build is its profile name, never `dev`.
-  An unknown profile string is an error, never a silent fall-back to the
-  default instance: that would point it at the developer's own log,
-  profile, and window.
-  - **harness** (`make harness-wsl`) is the Windows agent test harness:
-    normal window, waits to be driven by `bin/ao-harness`. See
-    [agent-harness.md](../../docs/architecture/agent-harness.md).
-  - **soak** (`make soak`) is the same instance with the soak preset
-    armed (`--autopilot` on the backend argv: seeded threads plus a
-    never-ending streaming turn) and a small 800x600 window, built to
-    sit on a monitor for hours. See
-    [soak-rig.md](../../docs/architecture/soak-rig.md).
-  - **perf** (`make perf-wsl`) is a third driveable harness for renderer
-    A/B runs. It owns `~/.agent-overflow-perf` and CDP 9226. Destructive
-    reset, reload, and interrupt commands must name that root explicitly.
-  - All pass `--launcher-pid <own pid>` so `ao-harness down` can close
-    the launcher window; the launcher still outlives a crashed child on
-    purpose (evidence preservation).
+- `--distro <name>` skips the picker and launches in that WSL distro, used by
+  `make dev-wsl`. The override is TRANSIENT: a successful launch does not
+  write `wsl.json`, so a dev invocation cannot overwrite the user's saved
+  pick. An invalid value warns to `launcher.log` and falls through to the
+  picker rather than to saved config, so the mismatch surfaces.
+- `--profile harness|soak|perf` (or `AGENT_OVERFLOW_PROFILE=...`) runs an
+  isolated instance beside the developer's own. This one flag is THE axis
+  behind every piece of per-instance state: single-instance id, window title,
+  WebView2 user-data dir, CDP port, `launcher-<profile>.log`,
+  `window-<profile>.json`, debug-level Wails logging, a refusal to persist
+  `wsl.json`, the backend's argv (`profileBackendArgs`), and the containment
+  below. It folds through `launcherRuntimeMode()` into
+  `internal/appidentity`, which owns the naming rules and the "unknown
+  profile is an error, never a fallback" invariant.
+  - harness waits to be driven by `bin/ao-harness`
+    ([agent-harness.md](../../docs/architecture/agent-harness.md)). soak is
+    that instance with `--autopilot` armed in an 800x600 window built to sit
+    on a monitor for hours
+    ([soak-rig.md](../../docs/architecture/soak-rig.md)). perf is a third
+    driveable harness for renderer A/B runs owning `~/.agent-overflow-perf`,
+    so a destructive reset or interrupt command must name that root.
+  - All three pass `--launcher-pid <own pid>` so `ao-harness down` can close
+    the launcher window. The launcher still outlives a crashed child on
+    purpose, to preserve the evidence.
 
-`parseLauncherFlags` (in `flags.go`) is the single source of truth for
-the CLI shape; `resolveChosenDistro` in `main.go` is where the
-override-vs-saved precedence lives. Both are unit-tested in
-`flags_test.go` / `main_test.go`.
-
-Windows may also launch the registered toast activation executable with the
-internal `-Embedding` COM-server switch. The parser accepts it so a click can
-cold-start the launcher and register the notification callback; it is not a
-user-facing option and does not alter distro selection.
+The parser also accepts Windows' internal `-Embedding` COM-server switch, so
+a toast click can cold-start the launcher and register the notification
+callback. It is not user-facing and does not alter distro selection.
 
 ## Connectivity probe and the one fresh-port retry
 
-`launchAndProbe` owns the post-`Launch` sequence: probe
-`/bootstrap.json` over Windows localhost, and on the **unreachable**
-class only (`errBackendUnreachable` — the probe never got a single HTTP
-response inside its deadline) stop that backend and relaunch it ONCE
-with `--reset-transport-port` (`wsllauncher.ResetTransportPortFlag`).
+`launchAndProbe` probes `/bootstrap.json` over Windows localhost, and on the
+UNREACHABLE class only (`errBackendUnreachable`: no HTTP response at all
+inside `bootstrapProbeDeadline`) stops that backend and relaunches it ONCE
+with `--reset-transport-port` (`wsllauncher.ResetTransportPortFlag`). Stop
+the old backend first: it is healthy inside the distro and holds the SQLite
+store.
 
 The retry exists because the backend pins its listen port per install
-(`internal/transport/AGENTS.md` § the listen port is pinned) and adopts
-it from the ephemeral range — the same range Hyper-V/WSL2 excluded port
-ranges cover, and those are re-seeded on every Windows reboot. The WSL
-side sees a successful bind, so nothing there can clear the pin; without
-the retry the user gets `/connectivity-error` identically on every
-launch. The old backend is stopped first: it is healthy inside the
-distro and holds the SQLite store.
+(`internal/transport/AGENTS.md` § the listen port is pinned) from the
+ephemeral range, the same range Hyper-V/WSL2 excluded port ranges cover and
+Windows re-seeds every reboot. The WSL side sees a successful bind, so
+nothing there can clear the pin, and the user would get
+`/connectivity-error` identically on every launch.
 
-Anything the backend ANSWERED (500 → `/startup-error`, 404, a never-ready
-503) is not retried — the port is demonstrably reachable, and a fresh one
-would churn the webview origin, wiping localStorage and the IndexedDB
-thread replica, for nothing.
+Anything the backend ANSWERED (500 to `/startup-error`, 404, a never-ready
+503) is not retried. The port is demonstrably reachable, and a fresh one
+would churn the webview origin, wiping localStorage and the IndexedDB thread
+replica, for nothing.
 
 ## Self-update: acting on an install directive
 
-The WSL backend downloads and digest-verifies the new launcher `.exe` and
-stages it into `%APPDATA%\agent-overflow\update` through `/mnt/c`. It cannot
-replace a running Windows executable, so it emits an `InstallDirective` on
-`updater:install`; `update.go` is the half that swaps.
+The WSL backend downloads and digest-verifies the new launcher `.exe`, stages
+it into `%APPDATA%\agent-overflow\update` through `/mnt/c`, then emits an
+`InstallDirective` on `updater:install` because it cannot replace a running
+Windows executable. `update.go` is the half that swaps.
 
-- `handleUpdateInstall` is wired into the notification client
-  (`HandleUpdateInstall`) in `startNotificationBridge`. One install runs at a
-  time — a directive arriving during one is logged and dropped, not reported as
-  a failure of the install that is already proceeding.
-- The staged path is `<%APPDATA%\agent-overflow>\update\<directive.Filename>`.
-  `InstallDirective.Validate` (in `internal/selfupdate`) guarantees a bare file
-  name; the join is what makes "the wire can never name a path" structural.
-- The swap runs a **fresh** `updater.New` per directive — `Init` is one-shot,
-  and directives repeat after a failure — over a `selfupdate.StagedFileProvider`
-  with `updater.WindowNone`. `CheckAndInstall`'s streaming hash re-verifies the
-  staged bytes against the release digest; that is the launcher-side integrity
-  gate, so there is no separate pre-hash.
-- `ReportUpdateInstallStatus` acknowledges (`proceeding`) before the work and
-  reports `failed` with a reason on any error before `Restart` succeeds. The
-  acknowledgement's result decides whether the swap happens at all, via
-  `wsllauncher.ClassifyInstallAck`: **refused** (the backend answered and
-  rejected it — its ACK deadline already unwound the install and showed the user
-  an error) aborts without a `failed` report, since swapping would contradict
-  what the user is looking at; **undelivered** (timeout / disconnect) proceeds,
-  since an unanswered report may have landed with only its response lost.
+- `handleUpdateInstall` is wired in as `HandleUpdateInstall` by
+  `startNotificationBridge`. One install runs at a time; a directive
+  arriving during one is logged and dropped, not reported as a failure of
+  the install already proceeding.
+- The staged path is `<staging dir>\<directive.Filename>`.
+  `selfupdate.InstallDirective.Validate` guarantees a bare file name, which
+  is what makes "the wire can never name a path" structural.
+- The swap runs a FRESH `updater.New` per directive (`Init` is one-shot and
+  directives repeat after a failure) over a `selfupdate.StagedFileProvider`
+  with `updater.WindowNone`. `CheckAndInstall`'s streaming hash re-verifies
+  the staged bytes, so there is no separate pre-hash.
+- `ReportUpdateInstallStatus` acknowledges (`proceeding`) first, and its
+  result decides whether the swap happens at all via
+  `wsllauncher.ClassifyInstallAck`: REFUSED aborts without a `failed`
+  report, because the backend already unwound the install and showed the
+  user an error. UNDELIVERED (timeout or disconnect) proceeds, because an
+  unanswered report may have landed with only its response lost. Any error
+  before `Restart` succeeds reports `failed` with a reason.
 - `armUpdateExitWatchdog` force-exits 25s after `Restart`, under the swap
-  helper's 30s parent-exit abort, so a wedged graceful shutdown can never
-  silently cancel the swap. Disarmed only when the helper spawn itself fails.
+  helper's 30s parent-exit abort, so a wedged graceful shutdown cannot
+  silently cancel the swap. Disarmed only when the helper spawn fails.
 
-`updater.HandleHelperMode()` is therefore the **first statement of `main()`**,
-before flags, config, and logging. The helper child is this same binary; Wails'
-own call inside `application.New` would first run distro detection, the picker,
-the payload install, and the single-instance machinery against the app it is
-trying to replace.
+`updater.HandleHelperMode()` is therefore the FIRST statement of `main()`,
+before flags, config, and logging. The helper child is this same binary, and
+Wails' own call inside `application.New` would run distro detection, the
+picker, the payload install, and the single-instance machinery against the
+app it is trying to replace.
 
-The wire half — subscription, decode, validation, status RPCs — lives in
-`internal/wsllauncher` so it is covered by ordinary Linux unit tests.
+## Keep-awake: acting on a power directive
+
+The backend owns the keep-awake SETTING but runs inside the distro and cannot
+make the Win32 call, so it emits a mode (`off` / `system` / `display`) on
+`eventchan.PowerKeepAwake`. `applyKeepAwakeDirective` (`keepawake.go`) is the
+`NotificationClientConfig.HandleKeepAwake` callback that asserts it through
+`internal/power`, the same holder the native Windows build uses: do not
+reimplement it here, because `SetThreadExecutionState` needs a goroutine
+parked on a locked OS thread for the process lifetime. An unrecognized mode
+is dropped, never defaulted, since guessing `display` pins the machine awake
+on a garbled frame and guessing `off` drops an inhibit the user asked for.
+
+## Isolated-profile containment
+
+Three layers, all gated on `activeProfile != ""` so a production launch keeps
+its existing lifetime and memory behaviour, sharing one ceiling
+(`governor.DefaultCeilingBytes`).
+
+- **Windows Job Object.** `installHarnessBoundary` puts the launcher in a
+  job carrying `JOB_OBJECT_LIMIT_JOB_MEMORY`, `KILL_ON_JOB_CLOSE`, and
+  `SILENT_BREAKAWAY_OK`, before Wails creates WebView2. A harness profile
+  that cannot install it fails closed, and the handle is deliberately never
+  closed during shutdown: `KILL_ON_JOB_CLOSE` is the final descendant
+  backstop.
+- **WSL memory watchdog.** A Windows job cannot account for guest memory,
+  so `startWSLMemoryWatchdog` polls the Linux process tree through
+  `wsl.exe` every `wslMemoryWatchInterval` (100ms), summing
+  `/proc/<pid>/stat` RSS. Every sample rechecks pid, `/proc` start time,
+  and `/proc/<pid>/exe` before accepting the number, so a recycled pid can
+  never be read as the backend. A failed probe, a changed identity, or an
+  over-limit sample stops the backend and quits the launcher.
+- **Host-global reservation.** `acquireHarnessReservation` claims the
+  COMBINED launcher plus WSL budget once in `internal/harness/governor`, so
+  concurrent worktrees cannot each assume they own the whole budget. The
+  lease renews on a TTL/3 ticker, and a governor event (host
+  available-memory floor or safety ceiling) quits the instance. Release
+  happens only after both sides are confirmed stopped: an uncertain teardown
+  leaves the lease visible for dead-owner pruning rather than freeing
+  capacity early. `writeWSLContainmentEvidence` records what was enforced as
+  `harness-containment.json` under the profile's WSL data root.
 
 ## Minimised-window memory trim
 
-`webviewtrim.go` suspends the WebView2 (via the pinned wails fork's
-`SuspendWebview` / `ResumeWebview`, branch `ao-webview2-memory-trim`)
-after the window has been minimised for 30s, and resumes it on
-un-minimise. A parked 4-pane session holds ~500MB of renderer + GPU
-working set that suspension releases; nothing user-observable runs
-while minimised (no OS notifications, no taskbar-title mutation), and
-the transport's replay ring + seq-gap refetch reconstruct anything
-missed on restore. The suspend side re-checks the minimised state on
-the main thread, so a timer racing an un-minimise can never hide the
-webview under a visible window.
+`webviewtrim.go` suspends the WebView2 (the pinned wails fork's
+`SuspendWebview` / `ResumeWebview`) after `suspendAfterMinimiseDelay` (30s)
+minimised and resumes on un-minimise, releasing the ~500MB of renderer and
+GPU working set a parked 4-pane session holds. Nothing user-observable runs
+while minimised, and the transport's replay ring plus seq-gap refetch
+reconstruct anything missed. The suspend side re-checks the minimised state
+on the main thread, so a timer racing an un-minimise cannot hide the webview
+under a visible window.
 
 ## Diagnostics: where the logs are
 
-Nothing from the Windows side reaches the dev terminal — the launcher
-is a GUI-subsystem exe. When debugging, look here (all under
-`%APPDATA%\agent-overflow\`):
+Nothing from the Windows side reaches the dev terminal; the launcher is a
+GUI-subsystem exe. Everything below is under `%APPDATA%\agent-overflow\`.
 
-- **`launcher.log`** — the primary log. Carries the launcher's own
-  `log` output, Wails' internal slog (wired via `application.Options.Logger`;
-  info-level in dev, warn+ in prod — without this wiring Wails logs go
-  to a discarded GUI stderr), and the **entire WSL backend's stderr**,
-  which `wsllauncher` pipes in line-by-line.
-- **`webview2-dev\EBWebView\chrome_debug.log`** (prod profile:
-  `webview2\`) — Chromium's own log: GPU/compositor errors, process
-  deaths, and renderer `CONSOLE(n)` lines (frontend `console.*`).
-  **Opt-in**: run `AGENT_OVERFLOW_WEBVIEW_LOG=1 make dev-wsl` (dev-wsl
-  whitelists the var across the WSL→Windows hop via WSLENV; the gate
-  works in prod builds too). Not on by default because WebView2 opens
-  a visible console window whenever Chromium logging is enabled — even
-  file-only destinations; WebView2Feedback #3192, no workaround — and
-  closing that console CTRL_CLOSE-kills the whole app. While enabled,
-  Chromium truncates the log at every browser start, so
-  `rotateChromeDebugLog` preserves the prior session as
-  `chrome_debug.previous.log` — after a webview crash, the autopsy is
-  in `previous.log`, not the live file.
-- **DevTools** — dev builds bind F12 to the WebView2 devtools window
-  (`uikeys.WithDevTools`, gated on `launcherMode == "dev"` because dev
-  and prod ship the same .exe) and expose remote debugging on
-  `127.0.0.1:9223`. WebView2's own F12 accelerator is dead in all
-  builds — Wails sets `PutAreBrowserAcceleratorKeysEnabled(false)`.
+- **`launcher.log`** is the primary log: the launcher's own `log` output,
+  Wails' internal slog (wired via `application.Options.Logger`, info-level
+  in dev and warn+ in prod; without that wiring Wails logs go to a
+  discarded GUI stderr), and the ENTIRE WSL backend's stderr, piped in line
+  by line.
+- **`webview2-dev\EBWebView\chrome_debug.log`** (prod: `webview2\`) is
+  Chromium's own log: GPU and compositor errors, process deaths, and
+  renderer `CONSOLE(n)` lines. OPT-IN via
+  `AGENT_OVERFLOW_WEBVIEW_LOG=1 make dev-wsl`, which whitelists the var across
+  the WSL to Windows hop through WSLENV (the gate works in prod builds too).
+  Off by default because enabling Chromium logging opens a visible console
+  window even for file-only destinations (WebView2Feedback #3192, no
+  workaround), and closing that console CTRL_CLOSE-kills the whole app.
+  Chromium truncates at every browser start, so `rotateChromeDebugLog` keeps
+  the prior session as `chrome_debug.previous.log`: after a webview crash the
+  autopsy is there, not in the live file.
+- **DevTools.** Dev builds bind F12 to the WebView2 devtools window
+  (`uikeys.WithDevTools`, gated on `launcherMode == "dev"` because dev and
+  prod ship the same .exe) and expose CDP on `127.0.0.1:9223`. WebView2's own
+  F12 accelerator is dead in all builds: Wails sets
+  `PutAreBrowserAcceleratorKeysEnabled(false)`.
 
-The WebView2 user-data dirs are pinned via `WebviewUserDataPath`
-(`webviewDataDir`) because the default derives from the exe name and
-dev exes are timestamp-named — every run would mint a throwaway
-profile.
+WebView2 storage paths are pinned via `WebviewUserDataPath`
+(`webviewDataDir`): the default derives from the exe name, and dev exes are
+timestamp-named, so every run would mint a throwaway profile.
+`prepareWebviewStorage` creates the profile and forensics directories before
+Wails boots, refusing symlinked or reparse-point components (a junction is a
+reparse point even when `os.Lstat` does not call it one, so both checks run).
 
-Case study for all of the above: the mixed-DPI monitor-cross crash
-(wails #5732/#5733, fixed by the pinned wails fork — see the `replace`
-in `go.mod`) was root-caused entirely from `chrome_debug.previous.log`.
-
-## References
-
-- `internal/wsllauncher/AGENTS.md` — the package this binary drives.
-- `main.go` package doc — step-by-step launcher flow.
+The `main.go` package doc has the step-by-step launcher flow.

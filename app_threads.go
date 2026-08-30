@@ -534,12 +534,12 @@ func (a *App) UnpinThread(id string) (store.Thread, error) {
 // thread has an active turn or running background tasks (see
 // app_session_config.go).
 //
-// `mcpServers` deliberately does NOT live here. Per-thread MCP
-// disabled state is stored in SQLite (disabled_mcp_servers column)
-// and applied via the provider's live-reconcile API (mcp_set_servers
-// for Claude, config.mcp_servers at start for Codex). Composer
-// toggles dual-write to both SQLite (per-thread) and the provider
-// config file (new-thread default). No provider-session restart is
+// `mcpServers` deliberately does NOT live here. MCP disabled state
+// lives in the provider's own config (Claude: the workspace project's
+// `disabledMcpServers`, written via internal/claudeconfig; Codex:
+// config.toml), applied via the provider's live-reconcile API
+// (mcp_set_servers for Claude, config.mcp_servers at start for
+// Codex). See app_mcp_thread.go. No provider-session restart is
 // needed for MCP changes.
 var sessionAffectingFields = map[string]struct{}{
 	"provider":        {},

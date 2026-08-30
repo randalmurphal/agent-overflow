@@ -10,7 +10,7 @@ import (
 
 // Identity is the one-row `store_meta` table (migration v55): who this
 // backend is, and which generation of its history counters a client may
-// trust. See docs/specs/thread-replica-sync.md §3.3.
+// trust. See docs/architecture/thread-replica-sync.md §3.3.
 //
 // BackendID is minted once per store and never rewritten. It keys the
 // client's replica database, so two backends on one machine never share

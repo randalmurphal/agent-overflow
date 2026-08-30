@@ -96,7 +96,7 @@ export interface Bootstrap {
   /**
    * Stable per-store UUID keying the client-side thread replica, plus
    * the generation that is re-minted whenever the backend's history
-   * counters lose continuity (docs/specs/thread-replica-sync.md §3.3).
+   * counters lose continuity (docs/architecture/thread-replica-sync.md §3.3).
    * Absent from the `--connect` stub's injected manifest — absence
    * disables the replica rather than sharing another backend's database.
    */

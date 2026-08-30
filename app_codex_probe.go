@@ -67,8 +67,7 @@ func resetCodexProbeCacheForTest() {
 // Unlike Claude, Codex deliberately omits the unauthenticated-banner
 // hook: an empty planType is ambiguous (backend latency can produce it
 // for an authenticated user) so surfacing a banner here would create
-// false positives. See drift D3 in
-// `docs/architecture/refactor-phase-1/duplication.md`.
+// false positives. (Drift D3 from the app-root refactor.)
 func (a *App) ProbeCodexAccount() (provider.AccountInfo, error) {
 	binary := a.providerBinaryPath(string(provider.Codex))
 	selection := a.captureProviderAccountSelection(string(provider.Codex))

@@ -247,7 +247,7 @@ const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
  * the cache-or-replica paint, the single `SyncThreadWindow` convergence,
  * the parallel hydration fan-out, and the post-gap `refreshFromBackend`
  * re-pull. It also owns the state that only this pipeline touches — the
- * window attestation (docs/specs/thread-replica-sync.md §3.4), the
+ * window attestation (docs/architecture/thread-replica-sync.md §3.4), the
  * replica write-back timer, the in-flight live-arrival ledger, and the
  * spinner-flash gate.
  *
@@ -321,7 +321,7 @@ export function createThreadSwitchLoad(
   let refreshGeneration = 0;
   /**
    * The attestation for the window THIS PANE currently holds
-   * (docs/specs/thread-replica-sync.md §3.4). Attestation is a property
+   * (docs/architecture/thread-replica-sync.md §3.4). Attestation is a property
    * of a window, not of a thread id: a globally-looked-up attested stamp
    * can describe a page this pane never received (its write-back never
    * fired, the pane later repainted from an older replica envelope, and
@@ -470,7 +470,7 @@ export function createThreadSwitchLoad(
    * IT (see `windowAttestation`). No attestation, no write: an
    * event-carried stamp can name a rev whose content never reached this
    * client, and persisted that would be a permanent false `fresh`
-   * (docs/specs/thread-replica-sync.md §3.4).
+   * (docs/architecture/thread-replica-sync.md §3.4).
    *
    * Live events that landed after the attestation only make the rows
    * NEWER than the stamp, which is the safe direction — the next open
@@ -947,7 +947,7 @@ export function createThreadSwitchLoad(
   /**
    * The cold-open item leg: paint whatever durable copy exists, then
    * converge it against the backend with one `SyncThreadWindow` call
-   * (docs/specs/thread-replica-sync.md §6.1).
+   * (docs/architecture/thread-replica-sync.md §6.1).
    *
    * Ordering, and why it is not a race:
    *

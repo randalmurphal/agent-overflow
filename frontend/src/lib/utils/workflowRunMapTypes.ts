@@ -1,4 +1,4 @@
-// The run map's rendered shape (spec: docs/specs/workflows-system-ui/RUN-MAP.md
+// The run map's rendered shape (spec: docs/architecture/workflow-run-map.md
 // §5). Types only, no logic: `workflowRunMap.ts` re-exports every name here, so
 // a consumer imports one module and this file stays the single place the shape
 // is stated.

@@ -19,7 +19,7 @@ var ErrProposedPlanAlreadyImplemented = errors.New("store: proposed plan already
 // version, implemented stamp, or comment counts changed IS a changed
 // window read, and a client comparing stamps would otherwise be told its
 // stale copy is fresh. See internal/store/AGENTS.md
-// "History invalidation contract" and docs/specs/thread-replica-sync.md
+// "History invalidation contract" and docs/architecture/thread-replica-sync.md
 // §3.2. The thread id each mutator already carries is the enforcement —
 // both tables reference `threads(id)` directly, so it is always the
 // PLAN's thread, never the implementing one.

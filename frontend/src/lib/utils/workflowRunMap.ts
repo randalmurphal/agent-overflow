@@ -1,4 +1,4 @@
-// Run-map projection (spec: docs/specs/workflows-system-ui/RUN-MAP.md §5) — the
+// Run-map projection (spec: docs/architecture/workflow-run-map.md §5) — the
 // public entry points, and the node builders behind them.
 //
 // A run tree arrives as one flat, parent-linked list of runs, each carrying its

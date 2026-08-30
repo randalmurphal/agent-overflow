@@ -237,7 +237,7 @@ type App struct {
 	// eventBus: the manifest handler can be serving before initStores
 	// has run (a webview that connects during ServiceStartup), and an
 	// empty identity there is a correct "not yet known" rather than a
-	// race. See docs/specs/thread-replica-sync.md §3.3.
+	// race. See docs/architecture/thread-replica-sync.md §3.3.
 	storeIdentity atomic.Pointer[store.Identity]
 	// updater is the whole in-app self-update concern (app_updater*.go). Its
 	// own mutex travels with it; nothing outside that cluster reads it.

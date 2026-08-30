@@ -354,7 +354,7 @@ func (h *Harness) HarnessReplayBundle(name string, opts harness.ReplayOptions) (
 	// Re-publish immediately: the bootstrap manifest and every sync
 	// response serve from this cache, and a client that keeps seeing the
 	// pre-restore generation never drops the replica the restore just
-	// invalidated (docs/specs/thread-replica-sync.md §3.3).
+	// invalidated (docs/architecture/thread-replica-sync.md §3.3).
 	h.app.storeIdentity.Store(&identity)
 	return h.replayerEngine().Start(eventsPath, opts)
 }

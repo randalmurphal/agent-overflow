@@ -3,8 +3,8 @@
 Pure prompt builder, decoder, and sanitisers behind the
 `GenerateCommitMessage` App method.
 
-The App-coupled glue — workspace resolution, settings routing, CLI
-spec construction — stays in `app_commit_message.go`. This package
+The App-coupled glue (workspace resolution, settings routing, CLI
+spec construction) stays in `app_commit_message.go`. This package
 only knows how to assemble the prompt, parse the structured output,
 and trim the model's response into a well-formed subject + body.
 
@@ -28,7 +28,7 @@ and trim the model's response into a well-formed subject + body.
   structured-output helpers) and stdlib. No store, no provider, no
   App.
 - `BuildPrompt`'s base rules are intentionally identical to t3-code's
-  prompt text — keeping the two apps interchangeable from the user's
+  prompt text. Keeping the two apps interchangeable from the user's
   perspective means a tester can compare outputs without controlling
   for prompt drift. The style rule is the one deliberate addition, and
   it mirrors t3-code's own writing-style configuration.

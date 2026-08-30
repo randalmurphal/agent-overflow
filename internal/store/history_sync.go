@@ -8,7 +8,7 @@ import (
 )
 
 // HistoryStamp is a thread's history invalidation contract
-// (docs/specs/thread-replica-sync.md §3): the pair a client compares
+// (docs/architecture/thread-replica-sync.md §3): the pair a client compares
 // against its cached window to learn whether the window is still what a
 // fresh read would return.
 //
@@ -70,7 +70,7 @@ type ThreadWindowSync struct {
 }
 
 // historyRevTriggersSQL is the latest DDL for the three AFTER triggers on
-// `items` that maintain the contract (docs/specs/thread-replica-sync.md
+// `items` that maintain the contract (docs/architecture/thread-replica-sync.md
 // §3.1). It is a const rather than inline migration text because it has
 // two installers: migration v59 concatenates it into its SQL, and RestoreFrom
 // recreates the triggers after dropping them for the row copy. Migrations v55
@@ -207,7 +207,7 @@ func (s *Store) ThreadHistoryStamp(threadID string) (HistoryStamp, bool, error) 
 
 // SyncThreadWindow answers "is my cached window for this thread still
 // current, and if not, here is the window" in one read-pool transaction
-// (docs/specs/thread-replica-sync.md §5).
+// (docs/architecture/thread-replica-sync.md §5).
 //
 // The single transaction is the load-bearing part: under WAL the whole
 // call sees one snapshot, so the stamps returned attest EXACTLY the rows

@@ -8,9 +8,9 @@ net.
 
 ## The rule
 
-**Any fixture, in any package, that constructs a session-capable `App` —
+**Any fixture, in any package, that constructs a session-capable `App`,
 or that adds a new spawn path (provider probes, catalogs, textgen-style
-side effects) — MUST install this package's isolation and register with
+side effects), MUST install this package's isolation and register with
 the same tripwire.** Mocking is mandatory-by-default, never opt-in per
 test. Poisoning one provider but not the other, detaching HOME but
 skipping the poison, or stubbing only the seam you happen to be testing
@@ -20,14 +20,14 @@ Why it is not negotiable: `make go-test` runs on machines whose
 `~/.claude` / `~/.codex` hold live logins. A test that spawns the real
 CLI and then kills it (every fixture teardown does) can consume the
 single-use refresh token without persisting the rotation, which destroys
-the developer's login hours later — and every leaked session burns real,
+the developer's login hours later, and every leaked session burns real,
 billed tokens. Incident 2026-08-03: workflow wake delivery spawned 143
 real Claude sessions over nine days and killed the active account's OAuth
 grant. Root `AGENTS.md` §Permanent invariants carries the full history.
 
 ## Layout
 
-- `isolate.go` — `IsolateSpawns` (detached HOME + poisoned binary +
+- `isolate.go`: `IsolateSpawns` (detached HOME + poisoned binary +
   tripwire, the one call a new fixture wants), its two halves
   `DetachHome` / `PoisonProviderBinary`, the `ProviderBinarySettings`
   patch so no caller poisons Claude and forgets Codex, and the two
@@ -42,14 +42,14 @@ failure fires with the recorded argv).
 
 1. **Poisoned binary.** Both provider binary settings point at a script
    that appends its argv to a sentinel and exits 127. A cleanup
-   registered at poison time — before the caller's session teardown, so
-   LIFO runs it after every session is closed — fails the test if the
+   registered at poison time (before the caller's session teardown, so
+   LIFO runs it after every session is closed) fails the test if the
    sentinel exists, naming the spawn. A test that needs a live session
    installs a mock (`testutil.WriteMockClaudeScript` /
    `WriteMockCodexSession`) over the poison.
 2. **Detached home.** `HOME`/`USERPROFILE` point at an empty temp dir, so
-   anything that still reaches a real binary — or reads a provider home
-   directly — finds no credentials and no session history.
+   anything that still reaches a real binary (or reads a provider home
+   directly) finds no credentials and no session history.
 
 A miss in one layer is caught by the other. Do not install only one.
 

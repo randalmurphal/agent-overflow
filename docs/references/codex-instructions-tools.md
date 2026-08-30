@@ -1,4 +1,4 @@
-# Codex — base instructions + tool exposure (verified against rust-v0.147.0)
+# Codex base instructions + tool exposure (verified against rust-v0.147.0)
 
 Source-verified in the codex repo (`/home/rmurphy/repos/codex`); file:line
 refs are into `codex-rs/`. Companion to [codex.md](codex.md). Motivation:
@@ -11,7 +11,7 @@ AO's system-prompt override + tool-toggle feature
 
 `baseInstructions: string | null` exists on `thread/start`
 (`app-server-protocol/src/protocol/v2/thread.rs:99`), `thread/resume`
-(`:383`), and `thread/fork` (`:571`) — NOT on `turn/start` or
+(`:383`), and `thread/fork` (`:571`), but NOT on `turn/start` or
 `thread/settings/update`. Not `#[experimental]`; no opt-in needed.
 A sibling `developerInstructions` rides the same three methods.
 
@@ -23,7 +23,7 @@ Resolution priority (`core/src/session/mod.rs:633-657`):
 
 1. `ConfigOverrides.base_instructions` (the API param / config override)
 2. rollout `session_meta.base_instructions` (what the thread was started with)
-3. `model_info.get_model_instructions(personality)` — the catalog template
+3. `model_info.get_model_instructions(personality)`: the catalog template
 
 ⚠ (2) means a cold `thread/resume` **without** the param inherits whatever
 the thread was first started with. Send the override on start *and* resume
@@ -38,7 +38,7 @@ one-app-server-per-session model dodges this; a shared app-server would not.
 
 The live default is the **model-catalog `instructions_template`**, per
 slug, `{{ personality }}`-substituted (`protocol/src/openai_models.rs:485-503`).
-Bundled catalog: `models-manager/models.json` — gpt-5.6-sol/terra/luna
+Bundled catalog (`models-manager/models.json`): gpt-5.6-sol/terra/luna
 share one ~17.7k-char template; gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.2
 each differ. The remote catalog can replace these at runtime. The repo
 file `protocol/src/prompts/base_instructions/default.md` is a fallback
@@ -56,19 +56,19 @@ in 0.147.
 
 ### What replacement does and does not break
 
-Three separate channels — replacing base instructions touches only the first:
+Three separate channels, and replacing base instructions touches only the first:
 
 - **Base instructions** → `instructions` field. Replaced wholesale.
 - **AGENTS.md** ("user instructions") → separate user-role fragment
   (`core/src/context/world_state/agents_md.rs:26-31`); still delivered.
   But the default prompt's `# AGENTS.md spec` (the *interpretation
-  contract*) is part of what you replaced — carry your own if you care.
+  contract*) is part of what you replaced. Carry your own if you care.
 - **World-state context** (permissions block, environment context,
   collaboration mode, personality, model-switch) → independent
   developer/user fragments (`core/src/session/world_state.rs:30-230`),
   each with its own `include_*` gate. Notably `include_environment_context`
-  (default true, `config_toml.rs:230`) keeps cwd/env context flowing —
-  a Codex replacement prompt does NOT need to re-template environment
+  (default true, `config_toml.rs:230`) keeps cwd/env context flowing.
+  A Codex replacement prompt does NOT need to re-template environment
   facts the way a Claude one does.
 
 Also lost with the stock prompt: `apply_patch` usage guidance and the
@@ -84,7 +84,7 @@ session's base instructions (`core/src/compact.rs:274`).
 Tool specs are assembled in `core/src/tools/spec_plan.rs`. Everything
 below **removes the schema from the request** (not just polices use),
 and every key is settable **per-conversation** via the `config` map on
-`thread/start`/`resume`/`fork` — dotted keys expand into nested TOML
+`thread/start`/`resume`/`fork`. Dotted keys expand into nested TOML
 (`config/src/overrides.rs:9-30`; request overrides merge into the CLI
 override layer, `app-server/src/config_manager.rs:236-244`). AO already
 uses that map for `mcp_servers` / `model_reasoning_effort`.
@@ -101,8 +101,8 @@ uses that map for `mcp_servers` / `model_reasoning_effort`.
 | V1 collab only | `features.multi_agent = false` | true |
 | `image_generation` | `features.image_generation = false` | true |
 | plugin-suggest | `features.tool_suggest = false` | true |
-| MCP tools + resource tools | `mcp_servers = {}` (resource tools follow) | — |
-| `apply_patch` | **no key** — catalog `apply_patch_tool_type`; only removable via startup-only `model_catalog_json` | on |
+| MCP tools + resource tools | `mcp_servers = {}` (resource tools follow) | - |
+| `apply_patch` | **no key**: catalog `apply_patch_tool_type`; only removable via startup-only `model_catalog_json` | on |
 
 Instruction-*block* toggles (strip injected context, not tool schemas):
 `include_permissions_instructions`, `include_apps_instructions`,
@@ -113,15 +113,15 @@ AGENTS.md lever, `config_toml.rs:287`).
 
 Process-only exceptions: `model_catalog_json` (per-thread no-op by its own
 doc) and `-c` spawn flags. Ignore the `experimentalFeature/enablement/set`
-RPC — process-wide and lower precedence than the config map.
+RPC. It is process-wide and lower precedence than the config map.
 
 ## Version notes
 
 - `baseInstructions`/`developerInstructions` present since ~0.130.0,
   unchanged through rust-v0.148.0-alpha.20. AO's floor (0.143) is above.
 - The tool/feature keys above are byte-identical 0.147.0 → 0.148.0-alpha.20,
-  and the relevant feature stages are all `Stable` — documented as "kept
+  and the relevant feature stages are all `Stable`, documented as "kept
   for ad-hoc enabling/disabling", so disabling is supported, not a hack.
 - Enterprise/managed installs can veto some of these (`web_search_mode`
-  is `Constrained`; `feature_requirements` entries become protected keys)
-  — an override can be refused on a managed machine.
+  is `Constrained`; `feature_requirements` entries become protected
+  keys). An override can be refused on a managed machine.

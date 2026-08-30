@@ -6,16 +6,16 @@ share a watcher per canonical cwd via refcount.
 
 ## Layout
 
-- `doc.go` — package comment.
-- `manager.go` — `Manager` type + `Subscribe` / `Close` API and
+- `doc.go`: package comment.
+- `manager.go`: `Manager` type + `Subscribe` / `Close` API and
   refcount bookkeeping.
-- `watcher.go` — per-cwd `workspaceWatcher` + `Subscription`. Owns the
+- `watcher.go`: per-cwd `workspaceWatcher` + `Subscription`. Owns the
   debounce timer, polling fallback, and subscriber fan-out.
-- `watcher_rebuild.go` — watch-root staleness: per-event rebuild
+- `watcher_rebuild.go` covers watch-root staleness: per-event rebuild
   triggers (`inspectEvent`) and the refresh-edge recompute/reinstall
   (`maybeRebuildWatches`), including the forced reinstall that re-arms
   dead watchpoints after a root dir is deleted and recreated.
-- `paths.go` — path canonicalization and watch-root normalization so
+- `paths.go`: path canonicalization and watch-root normalization so
   `/tmp` symlinks don't spawn duplicate watchers on macOS, and nested
   git metadata roots are pruned before watcher installation.
 
@@ -45,7 +45,7 @@ share a watcher per canonical cwd via refcount.
    directory directly under a `KindAncestor` / `KindGitMeta` root (a
    new sibling dir there is covered by no root). At the next refresh
    edge it recomputes roots via the manager's pipeline and reinstalls
-   only when they differ — EXCEPT when a current root's directory was
+   only when they differ, EXCEPT when a current root's directory was
    recreated or the event queue hit capacity (drops possible): those
    force a reinstall even with identical roots, because a deleted
    root's notify watchpoint dies permanently and only a fresh install
@@ -57,11 +57,11 @@ share a watcher per canonical cwd via refcount.
    race. run()'s deferred unregister (before `done` closes) guarantees
    `stop()` never races a rebuild's reinstall into leaked watches.
    Event-driven dead-watchpoint recovery needs the recreate event to
-   arrive via a watched parent — a root whose parent is unwatched
+   arrive via a watched parent. A root whose parent is unwatched
    (the global-ignore dir, a linked worktree's private gitdir, cwd
    itself) stays event-dead after delete+recreate; the silent-death
    layer (item 8) is what bounds that and every other deaf-watch mode.
-5. `lastStatus` is compared with `GitStatus.Equal` — unchanged status
+5. `lastStatus` is compared with `GitStatus.Equal`. Unchanged status
    does not emit, keeping the wire quiet during heavy fs activity that
    doesn't affect the working tree (build outputs, ignored files).
 6. If `notify.Watch` fails at install time (most commonly Linux
@@ -72,17 +72,17 @@ share a watcher per canonical cwd via refcount.
    newest status supersedes the older one (the run loop drains the
    pending value before sending).
 8. **Silent-death recovery.** An fs-watch install can "succeed" and
-   then never deliver — observed 2026-08-01 on macOS: FSEvents streams
+   then never deliver. Observed 2026-08-01 on macOS: FSEvents streams
    installed during a dark-wake died when the machine re-slept,
-   freezing the header diff badge for a whole session — and every
+   freezing the header diff badge for a whole session. Every
    rebuild trigger above rides on fs events, so a fully deaf watcher
    cannot heal itself. Two layers close the loop, both keyed on "the
    event stream has been quiet" so they cost nothing while events flow:
    - A `requestRefresh` (subscriber attach, post-action refresh) whose
      refresh observes a **non-PR** status change with no fs event
      inside `livenessQuietAfterEvent` proves the watches missed it:
-     the watcher force-reinstalls. PR-field-only deltas are excluded —
-     the attach hook exists to warm the PR cache, and a remote PR
+     the watcher force-reinstalls. PR-field-only deltas are excluded.
+     The attach hook exists to warm the PR cache, and a remote PR
      appearing says nothing about local watchpoints.
    - A `watchLivenessInterval` (60s) ticker probes with the fast
      (network-free) status fn, comparing ignoring PR fields. Ticks are

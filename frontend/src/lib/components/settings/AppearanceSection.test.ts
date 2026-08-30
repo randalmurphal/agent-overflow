@@ -53,7 +53,7 @@ describe('<AppearanceSection> — controls', () => {
     expect(mode.value).toBe('system');
 
     // The two axes are independent: a code palette must be selectable without
-    // implying a chrome choice (docs/specs/theme-system.md §6.1).
+    // implying a chrome choice (docs/architecture/theme-system.md §6.1).
     expect(optionIds(getByTestId('settings-ui-theme'))).toContain(BUILTIN_UI_THEME_ID);
     expect(optionIds(getByTestId('settings-code-theme'))).toContain(BUILTIN_CODE_THEME_ID);
   });

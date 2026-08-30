@@ -16,7 +16,7 @@
 // the same amount the published pair steps by. The dark ladder ENTERS on a
 // continuation below base03 — anchored at base03 the app compressed into a
 // ~6:1 luminance range, by far the haziest of the curated set (see the
-// luminance-range rule in `docs/specs/theme-system.md` §9.11). The invented
+// luminance-range rule in `docs/architecture/theme-system.md` §9.11). The invented
 // steps are chrome only — no accent, text tone or syntax color is anything
 // but Schoonover's.
 //

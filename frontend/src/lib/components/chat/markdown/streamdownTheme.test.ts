@@ -41,7 +41,7 @@ const UNREACHABLE_KEYS: Record<string, string> = {
   // the pre/code DOM itself from backend highlight spans, and the vendored
   // shiki `Code.svelte` is replaced wholesale. Chat code blocks are
   // zero-chrome — the host's hover-revealed copy button is the only
-  // affordance. See docs/specs/theme-system.md §4.3.
+  // affordance. See docs/architecture/theme-system.md §4.3.
   'code.header': 'replaced by StreamdownCodeHost; the vendor header never renders',
   'code.skeleton': 'replaced by StreamdownCodeHost; there is no vendor loading skeleton',
   'code.buttons': 'replaced by StreamdownCodeHost; the host owns its own button row',

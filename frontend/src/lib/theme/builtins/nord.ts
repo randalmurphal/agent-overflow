@@ -5,7 +5,7 @@
 // deepest chrome (no palette number, same standing as #616e88 below). Polar
 // Night verbatim compressed the app into an ~11:1 luminance range and read
 // hazy beside the default theme (~17:1); see the luminance-range rule in
-// `docs/specs/theme-system.md` §9.11.
+// `docs/architecture/theme-system.md` §9.11.
 //
 //   Polar Night   nord0 #2e3440  nord1 #3b4252  nord2 #434c5e  nord3 #4c566a
 //   Snow Storm    nord4 #d8dee9  nord5 #e5e9f0  nord6 #eceff4

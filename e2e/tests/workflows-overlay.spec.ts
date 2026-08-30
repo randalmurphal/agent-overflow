@@ -13,7 +13,7 @@
 // got.
 //
 // The run detail's structure surface is the RUN MAP
-// (docs/specs/workflows-system-ui/RUN-MAP.md): waves and nodes, position =
+// (docs/architecture/workflow-run-map.md): waves and nodes, position =
 // progress, solid = happened, marked = now, dashed = not yet. There is no
 // expandable child-row tree any more, so nothing below clicks to reveal what a
 // run is doing — it reads it off the spine.

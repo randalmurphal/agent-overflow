@@ -7,7 +7,7 @@ Date: 2026-04-18
 > `internal/provider/cost.go`) was removed on 2026-07-03: provider
 > adapters attach **wire-reported cost only**. Claude computes cost
 > CLI-side and reports it on `result.modelUsage[model].costUSD` /
-> `total_cost_usd` (both session-cumulative — the adapter
+> `total_cost_usd` (both are session-cumulative, and the adapter
 > snapshot-deltas them per turn; see
 > `internal/provider/claude/usage_accounting.go`). Codex reports no
 > USD anywhere on its wire, so Codex (and claudetui) rows carry tokens
@@ -18,12 +18,12 @@ Date: 2026-04-18
 > rate table, and `GetUsageStats` (`app_usage.go`) calls it to price
 > `cost_source='none'` rows when it aggregates the ledger for display.
 > The estimate is computed fresh on every query and never written back
-> to `usage_ledger.cost_usd` — a rate-table update reprices all history
+> to `usage_ledger.cost_usd`. A rate-table update reprices all history
 > the next time someone looks at usage stats, and Claude's wire cost is
 > never touched by this path. The parts of this ADR that survive:
 > usage/cost accounting is still attached in the provider adapter (not
 > triage), what lands in `usage_ledger.cost_usd` is still wire-reported
-> only, and the frontend still never recomputes cost itself — dollar
+> only, and the frontend still never recomputes cost itself. The dollar
 > totals it renders come from `GetUsageStats`, wire and estimate
 > already merged.
 
@@ -32,8 +32,8 @@ Date: 2026-04-18
 Provider turn-complete events can carry token usage
 (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
 `cache_read_input_tokens`) but not USD cost. Cost is computed from a
-per-model pricing table — different for each provider, each model, and
-sometimes each pricing tier.
+per-model pricing table, which differs for each provider, each model,
+and sometimes each pricing tier.
 
 The question: where does `CalculateCost` get called?
 
@@ -85,7 +85,7 @@ Considered alternatives:
   `cost.go` (or a provider-specific sibling). The table is the
   provider's responsibility.
 - Adding a new model to an existing provider requires updating the
-  pricing table. `cost_test.go` covers the table with fixtures —
-  add a case when the table changes.
+  pricing table. `cost_test.go` covers the table with fixtures.
+  Add a case when the table changes.
 - Turn usage/cost metadata flows through triage and the replay log
   unchanged, making it stable for historical analysis.

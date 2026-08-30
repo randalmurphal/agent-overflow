@@ -1069,9 +1069,7 @@ func (r *Router) emitInline(evt provider.ProviderEvent) error {
 // raw notification is not forwarded to the frontend — the sibling row
 // upsert is the only UI-visible consequence.
 //
-// See docs/architecture/turn-lifecycle.md and
-// docs/archive/turn-lifecycle-refactor-plan.md WT-codex-parser for the
-// emission-side plan.
+// See docs/architecture/turn-lifecycle.md.
 func (r *Router) handleSubagentNotification(evt provider.ProviderEvent) error {
 	return r.observeCodexSubagentNotification(evt)
 }

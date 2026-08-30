@@ -2,15 +2,15 @@
 
 Extracts file-path references from agent prose and validates them
 against a workspace filesystem. Output feeds the chat surface's
-auto-linkifier as an allowlist the frontend can trust — replacing the
+auto-linkifier as an allowlist the frontend can trust, replacing the
 old client-side regex that produced false positives for any
 `prefix/word.word` shape.
 
 ## Layout
 
-- `pathlinks.go` — `ExtractAndValidate(workspacePath, text) []PathRef`
+- `pathlinks.go`: `ExtractAndValidate(workspacePath, text) []PathRef`
   plus the regex / heuristic / stat pipeline.
-- `pathlinks_test.go` — table tests covering the full TS-side test
+- `pathlinks_test.go`: table tests covering the full TS-side test
   matrix (URLs, scoped npm, emails, version strings, parens, quotes,
   backticks, leading `./` and `../`) plus new fs-existence and dedup
   cases.
@@ -25,7 +25,7 @@ old client-side regex that produced false positives for any
   - `os.Stat` validation, with workspace-relative joining for
     non-absolute paths.
   - Per-occurrence `PathRef` output so the frontend can wrap every
-    instance — with a single stat per unique path.
+    instance, with a single stat per unique path.
 - What does NOT belong here:
   - DOM manipulation. The frontend wraps text nodes; this package
     only emits the allowlist.
@@ -52,7 +52,7 @@ old client-side regex that produced false positives for any
   the click handler operates on the real path.
 - Workspace-boundary check is the safety floor. Both `..`-traversal
   out of the workspace and absolute paths outside it are rejected at
-  validation time — agent prose is untrusted, and without this guard
+  validation time. Agent prose is untrusted, and without this guard
   `os.Stat` would expose an existence oracle for arbitrary host
   paths. Deliberately STRICTER than click-time
   `internal/editor.ResolvePath` (which opens existing regular files
@@ -65,24 +65,11 @@ old client-side regex that produced false positives for any
 - Candidate count is capped (`maxCandidates`) to bound worst-case
   syscalls under a hostile message body.
 
-## Performance
-
-A throwaway spike (validated outside the repo before the refactor)
-measured:
-
-- Typical 2–5 paths in 1.5KB message: ~60–100µs total.
-- Heavy 25 paths in 8KB: ~500µs.
-- Pathological 200 paths in 50KB: ~3ms.
-
-Regex dominates; stat is microseconds warm. Cold-cache scenarios
-(WSL2 + Windows mount, NFS) can multiply stat by 5–10×, but stays
-sub-frame at message-complete boundary.
-
 ## Testing
 
 - Table-driven `Test*` functions using `t.TempDir()` workspaces.
 - `extractAndValidate(workspacePath, text, statFunc)` is the
-  unexported test seam — pass a counting stat to assert call shape
+  unexported test seam. Pass a counting stat to assert call shape
   (one stat per unique path) or to enforce the candidate cap.
 
 ## References
@@ -90,5 +77,5 @@ sub-frame at message-complete boundary.
 - Frontend allowlist consumer: `frontend/src/lib/utils/markdownEnhance.ts`.
 - Triage integration point:
   `internal/triage/stream_state.go` `doSettleStreamingText`.
-- Click-time gate (deliberately looser than this package — see the
+- Click-time gate (deliberately looser than this package, per the
   safety-floor note above): `internal/editor.ResolvePath`.

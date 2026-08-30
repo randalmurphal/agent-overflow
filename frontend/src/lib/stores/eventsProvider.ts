@@ -370,7 +370,7 @@ export function applyTurnCompleted(evt: TurnCompletedEvent): void {
   // the composer chip is thread-scoped and only reacts to its own
   // thread's bump; see usageRefresh.svelte.ts.
   bumpUsageRefresh(evt.threadId);
-  // In-memory only (docs/specs/thread-replica-sync.md §3.4): the pair
+  // In-memory only (docs/architecture/thread-replica-sync.md §3.4): the pair
   // lets a thread the user watched stream and then re-opened get a
   // `fresh` window sync instead of paying a convergence fetch, but it
   // never reaches the durable replica.

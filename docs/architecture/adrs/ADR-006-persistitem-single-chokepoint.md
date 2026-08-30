@@ -41,7 +41,7 @@ directly. New code reviews enforce this.
   emitted; a row that's emitted is a row that's persisted. The two
   happen in one function call or not at all.
 - **Single place for cross-cutting concerns.** The parent_id guard,
-  the metric bumps, future observability hooks — all land in
+  the metric bumps, and future observability hooks all land in
   `persistItem` rather than being repeated at every caller.
 - **Makes the shape of the system visible.** Grepping for
   `persistItem` shows every writer; you don't have to chase
@@ -61,7 +61,7 @@ Considered alternatives:
 - Invariant #12 ("`persistItem` is the single write+emit
   chokepoint") is this ADR promoted to invariant.
 - Provider adapters don't call `persistItem` (they have no store
-  reference — invariant #13). They produce events; triage calls
+  reference, per invariant #13). They produce events; triage calls
   `persistItem`.
 - Tests that want to synchronize on persistence use
   `SetEventHook` (see ADR-007) rather than post-hoc SQLite reads.

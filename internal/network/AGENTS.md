@@ -9,11 +9,13 @@ touch `*App.settings` directly.
 
 ## Layout
 
-- `network.go` — `Settings`, `BindHost`, `OriginPatterns`,
-  `AppURL` / `AppURLWithLAN`, `FromServer` / `FromServerWithLAN`,
+- `network.go`: `Settings`, `BindHost`, `OriginPatterns`,
+  `AppURLWithLAN`, `FromServer` / `FromServerWithLAN`,
   `DiscoverLocalLANIP`. `Interfaces` and `InterfaceAddrs` are
   exported `var` hooks so tests can stub the iface enumeration
   without depending on the host's real network configuration.
+  `AppURL` is NOT defined here: it is a method on `*transport.Server`
+  that `AppURLWithLAN` calls for the loopback answer and every fallback.
 
 ## Responsibility boundary
 
@@ -30,14 +32,14 @@ touch `*App.settings` directly.
 ## Anti-patterns
 
 - Do NOT return a public IPv4 from `DiscoverLocalLANIP`. A cloud VM
-  flipping LAN-bind shouldn't auto-publish its public address —
-  without TLS, that invites a user to share a token over an open
+  flipping LAN-bind shouldn't auto-publish its public address.
+  Without TLS, that invites a user to share a token over an open
   port. RFC1918 / link-local / Tailscale CGNAT only.
 - Do NOT call `DiscoverLocalLANIP` more than once per Set flow. The
   origin allow-list and the URL must use the *same* discovered IP
   or the user can see a URL their browser can't reach without an
-  origin failure — use `OriginPatterns(bindAll, lanIP)` +
+  origin failure. Use `OriginPatterns(bindAll, lanIP)` +
   `AppURLWithLAN(srv, bindAll, lanIP)`.
 - Do NOT change the JSON tags on `Settings` without a coordinated
-  frontend change — the SPA's hand-maintained TS mirror plus the
+  frontend change. The SPA's hand-maintained TS mirror plus the
   Wails-generated bindings both rely on the shape.

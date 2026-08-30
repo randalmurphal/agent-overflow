@@ -2,8 +2,8 @@
 
 One harness, many shells. This spec grows the existing agent test harness
 (docs/architecture/agent-harness.md) into the project's general testing
-rig: the place agents validate their own changes — functional, visual,
-and performance — against the real app with mocked providers, on any
+rig: the place agents validate their own changes (functional, visual,
+and performance) against the real app with mocked providers, on any
 platform, from any worktree, without screenshots and without a real LLM.
 
 Status: implemented contract and design rationale. All implementation waves
@@ -14,7 +14,7 @@ changes.
 ## What already exists (do not rebuild)
 
 - **Isolation core**: `prepareHarness` + `newIsolatedProviderApp`
-  (main_harness.go) — data-dir refusals, HOME redirect, the four provider
+  (main_harness.go): data-dir refusals, HOME redirect, the four provider
   pins, settings seed. Enforced by `TestMockedBootModesShareOneIsolationHelper`.
 - **Harness RPC receiver** (app_harness*.go): info, seed, reset,
   scenarios, mock drive, record/replay, thread-row escape hatch.
@@ -41,7 +41,7 @@ Every addition below wraps these; nothing forks them.
 2. **Transport boundary stays clean.** All new control and inspection
    flows are Harness RPCs + event channels on the existing wire. The
    frontend bridge answers over the same WS; no side channel.
-3. **The harness never fabricates app state through side doors** —
+3. **The harness never fabricates app state through side doors**,
    unchanged from agent-harness.md. New capabilities wrap production
    paths.
 4. **Evidence is text.** Semantic snapshots, metric series, JSONL logs.
@@ -56,8 +56,8 @@ Every addition below wraps these; nothing forks them.
 New flag `--window`, valid only with `--harness` or `--soak`, only in a
 GUI (`!nogui`) build (`nogui` build: fatal with a message naming
 `make harness-build`). It boots the harness/soak backend exactly as
-today — same `prepareHarness`, same Harness receiver, same bootstrap
-line on stdout — then opens the real Wails webview window pointed at
+today (same `prepareHarness`, same Harness receiver, same bootstrap
+line on stdout), then opens the real Wails webview window pointed at
 `srv.AppURL()` (plus `&cid=`), the same shell `runDesktop` builds.
 
 Windowed-harness specifics, versus `runDesktop`:
@@ -75,7 +75,7 @@ Windowed-harness specifics, versus `runDesktop`:
   localStorage / IndexedDB / shader caches entirely under the data root.
   Set AFTER `prepareHarness` (its refusals must compare against the real
   config root) and before any GLib call. `AO_HARNESS_KEEP_HOME` does not
-  opt out of this — webview storage is never shared.
+  opt out of this. Webview storage is never shared.
 - **Webview storage isolation (macOS)**: WKWebView's default data store
   is keyed by bundle identity, not `$HOME`; a dev binary shares
   storage across instances. Needs verification on a mac; until then the
@@ -88,7 +88,7 @@ Windowed-harness specifics, versus `runDesktop`:
   data-dir override already routes this correctly).
 - Soak's autopilot (`armSoakSteadyState`) runs identically under
   `--soak --window`; `soakDefaultDataRoot()` stays the default only for
-  the launcher-driven Windows path — a native `--soak --window` without
+  the launcher-driven Windows path. A native `--soak --window` without
   `--data-dir` derives the per-worktree default (§2) instead, so two
   native soaks never collide.
 
@@ -123,11 +123,11 @@ value in Go so both agree.
 
 `registryDir` = `os.UserCacheDir()/agent-overflow/harness-instances`
 (created 0700). The token is deliberately NOT in the registry; it lives
-in `<dataDir>/harness-instance.json` (0600) — the full bootstrap payload
+in `<dataDir>/harness-instance.json` (0600), the full bootstrap payload
 written at the same moment, which is also what lets any tool attach to a
 running instance without having parsed its stdout. Both files are
 removed on graceful shutdown; readers treat a dead `pid` as stale and
-delete the entry. Registry rows are discovery only — attaching always
+delete the entry. Registry rows are discovery only. Attaching always
 reads the token from the data dir, so a foreign registry row can at
 worst point at a path the reader must be able to open.
 
@@ -136,15 +136,15 @@ worst point at a path the reader must be able to open.
 A standalone Go binary (built by `harness-build`, landing in `bin/`)
 that gives agents a first-class Bash surface over everything the TS
 client does and more. It is a pure WS/HTTP client plus process
-supervisor — it links no App code.
+supervisor. It links no App code.
 
 Instance selection for every command: `--instance <id|idPrefix|dataRoot>`, else
 exactly one running instance, else the current worktree's default data
 root. Ambiguity is an error listing candidates, never a guess.
 
-Command sheet (design intent; `-o json` on every read command — the
+Command sheet (design intent; `-o json` on every read command). The
 shipped surface of record is `ao-harness --help` and
-`cmd/ao-harness/AGENTS.md`, which carry flags this sheet omits):
+`cmd/ao-harness/AGENTS.md`, which carry flags this sheet omits:
 
 | Command | Behavior |
 |---|---|
@@ -161,7 +161,7 @@ shipped surface of record is `ao-harness --help` and
 | `events tail [--channel C…]` / `events await --channel C [--where path=value] [--timeout 15s]` / `events count` | Live WS subscribe with ring replay; await consumes matches exactly like the TS client so two awaits see two occurrences. Tail defaults to 1,000 records on stdout. `--file` captures without an event-count cap, bounded by `--max-bytes` or `--timeout`, and reports when the capture is incomplete. |
 | `record start\|stop`, `bundles`, `replay bundle\|file\|pause\|resume\|step\|stop\|status` | Bundle workflow. |
 | `logs backend\|frontend-errors\|ui-trace [-f] [-n N]` | Tails the evidence files `HarnessInfo` names (backend = the stderr capture from `up`). |
-| `db <SELECT…>` | Read-only SQL against the instance DB (`mode=ro` open of the DB file; statement must be a single SELECT/PRAGMA — anything else refused). The ad-hoc assertion escape hatch. |
+| `db <SELECT…>` | Read-only SQL against the instance DB (`mode=ro` open of the DB file; statement must be a single SELECT/PRAGMA, and anything else is refused). The ad-hoc assertion escape hatch. |
 | `ui snapshot [--pane P]` / `ui diff` / `ui query <selector>` / `ui state <name>` | Frontend bridge (§4). `diff` compares against the previous snapshot taken by this CLI for the instance. `--json` is an alias for `-o json`; query output is bounded unless `--full` or `--file` is supplied. |
 | `perf start\|stop\|status [--json]` / `perf watch [--json]` | Perf meters (§5). `--json` is an alias for `-o json`; watch emits NDJSON. |
 | `bench <workload> [--repeat N] [--duration D] [--baseline file] [--json]` | Attach to the selected borrowed instance's open frontend, reset it, seed + run a bench workload, collect a perf report, print/compare (§5). `--duration` applies to sustained workloads. A headless instance is refused before reset. Use `run --plan` for fresh ownership. |
@@ -244,8 +244,8 @@ data-root path even though Windows cannot validate the Linux PID. Lifecycle
 commands that signal a process keep same-namespace PID validation.
 
 The CLI's WS client implements the full frame contract
-(rpc/event/batch/replay/subscribe/ping) per internal/transport/AGENTS.md
-— the Go twin of `e2e/src/harness.ts`, kept in `internal/harnessclient`
+(rpc/event/batch/replay/subscribe/ping) per internal/transport/AGENTS.md.
+It is the Go twin of `e2e/src/harness.ts`, kept in `internal/harnessclient`
 so future Go tests can reuse it.
 
 ## 4. Frontend bridge: seeing without screenshots
@@ -255,33 +255,33 @@ set, the SPA dynamically imports `lib/harness/bridge.ts` (zero cost in
 ordinary boots; ships in every bundle so a production-embedded harness
 build needs no frontend rebuild).
 
-Protocol — request/reply over the existing wire:
+Protocol (request/reply over the existing wire):
 
 1. Backend `HarnessUIQuery(spec)` (Harness receiver, LocalOnly) assigns
-   an id, emits `harness:ui-query {id, spec}`, and waits (10s timeout —
-   the error names "no frontend attached or bridge inactive").
+   an id, emits `harness:ui-query {id, spec}`, and waits (10s timeout,
+   with the error naming "no frontend attached or bridge inactive").
 2. The bridge computes the answer and calls `HarnessUIQueryReply(id,
-   result)` — also a Harness method, so the reply path exists only where
+   result)`, also a Harness method, so the reply path exists only where
    the query path does.
 3. Multiple attached frontends: first reply wins; the backend drops
    late replies by id.
 
 Query kinds (the spec is a tagged union, versioned `v:1`):
 
-- `viewport` — the **semantic snapshot**: for each visible pane, the
+- `viewport` is the **semantic snapshot**: for each visible pane, the
   ordered visible timeline rows with `{itemId, kind, role, streaming,
   rect, textHead (first ~120 chars), spinner/badge state}`, plus scroll
   position, sticky state, open overlays/popups (name + rect), active
   thread id, and a `settled` bool (no rAF-observed mutation in the last
-  300ms). Stable field order, text-first — built to be diffed and read
+  300ms). Stable field order, text-first, built to be diffed and read
   in a terminal, not parsed from pixels.
-- `element` — CSS selector → `{count, first: {rect, visible, clipped,
+- `element`: CSS selector → `{count, first: {rect, visible, clipped,
   textContent (capped), aria}}`.
-- `globals` — whitelisted read of the existing diagnostic globals
+- `globals`: whitelisted read of the existing diagnostic globals
   (`__aoMemoryReport`, `__paneGeometry`, `__agentOverflowTimelineMemoryStats`,
   `__stickState`, ui-trace `recent(n)`). The whitelist lives in the
   bridge; unknown names error.
-- `perf` — meter control (§5).
+- `perf`: meter control (§5).
 
 The bridge is also the place future inspection kinds land (a11y tree
 walk, computed-style probes); one union, one version field.
@@ -295,11 +295,11 @@ walk, computed-style probes); one union, one version field.
 - Main-thread busy time: rAF-callback entry → a task posted on one reused
   MessageChannel → busy histogram (p50/p95/max/mean) plus the share of
   ticks fitting each of `budgetsMs` (default 6/8/16). The frame cadence
-  above cannot answer a budget question — a vsync-locked compositor reads
-  ~16.7ms for a 3ms tick and a 9ms one alike — and LoAF only reports past
+  above cannot answer a budget question (a vsync-locked compositor reads
+  ~16.7ms for a 3ms tick and a 9ms one alike), and LoAF only reports past
   50ms.
 - `PerformanceObserver`: `longtask` + `long-animation-frame` (where
-  supported — Chromium; WebKit degrades to longtask/rAF), `layout-shift`,
+  supported: Chromium; WebKit degrades to longtask/rAF), `layout-shift`,
   `event` (input latency).
 - Memory/DOM: JS heap (`performance.memory` where present), DOM node
   count, listener-ish proxies (row count per pane, detached-pane stats
@@ -309,7 +309,7 @@ walk, computed-style probes); one union, one version field.
 `harness:perf`; `HarnessPerfStop()` returns the summary document.
 **Backend-side samples** ride the same report: Go runtime heap/goroutine
 counts, and on linux the RSS of the backend + webview child processes
-(`/proc` walk from the window process tree) — the WebKitWebProcess RSS
+(`/proc` walk from the window process tree). The WebKitWebProcess RSS
 is the number Task-Manager-style questions are actually about.
 
 **Bench workloads** are ordinary scenario-library entries plus seed
@@ -321,7 +321,7 @@ chunk-stress pacing), `bench-giant-turn` (one turn, thousands of items),
 boots-or-attaches, seeds, arms meters, runs the workload to its
 completion signal, and writes `<dataDir>/bench/<workload>-<ts>.json` +
 a terminal summary. `--baseline` compares against a checked-in or local
-JSON with per-metric tolerances — reports drift, never a hard gate by
+JSON with per-metric tolerances. It reports drift, never a hard gate by
 default (machine variance is real; a gate is a per-repo choice later).
 
 **CDP stays the deep path** where Chromium exists (headless e2e,
@@ -335,7 +335,7 @@ baseline; perfprobe is the allocator-level microscope.
 frontend-errors.jsonl count (new-since-last-check), oracle triggers in
 the ui trace, backend-stderr error/warn scan, RSS of the process tree,
 DB size, mock liveness (`HarnessListMocks` vs control reports), replay
-state, and — when meters are armed — the live fps/long-frame counters.
+state, and, when meters are armed, the live fps/long-frame counters.
 `--watch` re-renders on an interval; exit code reflects "anything red".
 On Windows, launcher-log concerns (watchdog episodes) remain
 `make soak-check`'s job; `health` covers everything visible from the
@@ -359,7 +359,7 @@ backend side. `kill -USR1` (goroutine dump) and the pprof listener
   the state.
 - **Per-session scenario scoping**: `HarnessSetScenario` gains an
   optional `sessionRef` scope matched against the mock registration's
-  `ResumeRef` — two threads in one workspace can run different scripts.
+  `ResumeRef`. Two threads in one workspace can run different scripts.
   Specificity order: sessionRef > cwd > provider-wide.
 - **Claude probe account models**: the mock probe's account payload
   gains a `models` array so the catalog-merge path runs against real
@@ -391,19 +391,19 @@ backend side. `kill -USR1` (goroutine dump) and the pprof listener
 
 ## Implementation waves
 
-- **W1 — windowed mode + instances**: `--window`, XDG isolation, title,
+- **W1 (windowed mode + instances)**: `--window`, XDG isolation, title,
   no-single-instance, native soak default data root, registry +
   `harness-instance.json`, `/bootstrap.json` harness flag, Make targets.
-- **W2 — CLI**: `internal/harnessclient` + `cmd/ao-harness` (everything
+- **W2 (CLI)**: `internal/harnessclient` + `cmd/ao-harness` (everything
   in §3 except ui/perf/bench/health verbs), Go tests.
-- **W3 — bridge + perf**: `lib/harness/bridge.ts`, `HarnessUIQuery`/
+- **W3 (bridge + perf)**: `lib/harness/bridge.ts`, `HarnessUIQuery`/
   `Reply`, `HarnessPerf*`, `harness:ui-query`/`harness:perf` channels,
   CLI ui/perf verbs, e2e specs.
-- **W4 — mock growth**: textgen one-shot, usage-limit scenarios,
+- **W4 (mock growth)**: textgen one-shot, usage-limit scenarios,
   per-session scoping, probe models, e2e specs.
-- **W5 — bench + health**: bench workloads + runner + reports, health
+- **W5 (bench + health)**: bench workloads + runner + reports, health
   rollup, CLI verbs, e2e/unit coverage.
-- **W6 — docs**: agent-harness.md absorbs this surface, soak-rig.md
+- **W6 (docs)**: agent-harness.md absorbs this surface, soak-rig.md
   narrows to the Windows launcher shell, AGENTS.md pointers, glossary.
 
 All waves landed 2026-08-26 (W1+W4 `da4f3002`, W2+W3 `bfb6f1f1`,

@@ -10,19 +10,19 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
 - `MessageTimeline.svelte` owns the outer chat scroll container.
 - `components/virtual/TimelineVirtualizer.svelte` + `utils/virtual/` own
   virtual row geometry. The split inside:
-  - `utils/virtual/` — the bespoke windowing engine, pure data + math
+  - `utils/virtual/` is the bespoke windowing engine, pure data + math
     with no DOM and no Svelte: `sizes.ts` (the size store: measured px
     or estimate per row, memoized offsets), `window.ts` (visible-range
     math), `engine.ts` (the reducer: scroll/resize/measurement/length
     inputs in → mount window + totalSize + at most one compensation
     observation out), `priors.ts` (per-thread, per-row measured-size
-    persistence and the estimate resolver — DOM-free; see its header for
+    persistence and the estimate resolver, DOM-free; see its header for
     the per-row signature model and the storage-adapter seam),
     `priorsStorage.ts` (the localStorage-backed adapter that makes
     priors survive an app restart, not just a same-session thread
     switch), `types.ts` (the shared shapes). Design doc:
     [`virtualizer-replacement-plan.md`](virtualizer-replacement-plan.md).
-  - `TimelineVirtualizer.svelte` — the adapter binding the engine to the
+  - `TimelineVirtualizer.svelte` is the adapter binding the engine to the
     DOM: one lazy ResizeObserver for the scroller and every mounted row,
     scroll-event feed, spacer + absolute row positioning (`VirtualRow`),
     scrollend synthesis, and the imperative handle
@@ -31,7 +31,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     height it writes IS the content height, so it delivers
     `ContentGeometrySample`s (`onContentGeometry` →
     `stick.deliverContentGeometry`) post-flush instead of the controller
-    re-observing the same element with a second ResizeObserver — same
+    re-observing the same element with a second ResizeObserver. Same
     observation shape, one frame earlier, no duplicate layout read on
     the streaming hot path. Each sample also carries the scroller's
     content-box viewport height. While that viewport is stable, the
@@ -60,16 +60,16 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     frame behind the glide and land the viewport that far back.
 - `utils/scroll/` owns user scroll intent and **every** programmatic
   `scrollTop` write. Inside the package:
-  - `resolver.ts` — the pure per-delivery reducer. Every contentRO
+  - `resolver.ts` is the pure per-delivery reducer. Every contentRO
     delivery and every engine compensation observation becomes an
     observation; **the resolver's decision is the only authority on
     what, if anything, gets written**. Adding a scroll behavior means
     adding a decision branch here, not a write site somewhere else.
-  - `index.svelte.ts` — the controller: the reactive flags templates
+  - `index.svelte.ts` is the controller: the reactive flags templates
     subscribe to, geometry reads, wiring for the machines below, and
     the public API. `types.ts` holds the consumer contract; consumers
     import from `utils/scroll/index.svelte`.
-  - `chokepoint.ts` — the single `writeScrollTop` chokepoint every
+  - `chokepoint.ts` is the single `writeScrollTop` chokepoint every
     programmatic write routes through, plus its satellites: the
     provenance ledger, arrival-readback acceptance, and spring-tick
     trace sampling. It records the requested-to-readback quantization
@@ -88,7 +88,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     turns equal CSS-space steps into alternating device-pixel displacement.
     The soak rig's `make soak-contract` probe checks quantization and
     compositor ownership in WebView2.
-  - `intent.ts` — the event-sourced intent machine: wheel/scroll/pointer/
+  - `intent.ts` is the event-sourced intent machine: wheel/scroll/pointer/
     key/touch listeners, escape and re-stick, restore-snap consent, and
     programmatic-write tagging. Intent is never geometry-inferred. Its
     target-capture scroll listener reads the event-time `scrollTop` once and
@@ -104,7 +104,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     (below all three, the spring's own decay governs): the
     **acceleration slew** (a geometric onset ramp, ×1.10 per 60Hz frame
     over max(ramp base, current speed toward the target), the base a
-    refresh-independent CSS-space 1.0 px/frame floored by the motion floor — a
+    refresh-independent CSS-space 1.0 px/frame floored by the motion floor: a
     standstill quantum eases in instead of jumping to its peak, and
     glides stretch into the next quantum's arrival instead of
     stop-starting per line), the **deceleration envelope** (0.09 ×
@@ -125,7 +125,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     resume snap: after an observed rAF discontinuity (tick gap
     ≥1s, or document visibility resumed ≤2s ago) a chase more than one
     viewport behind snaps fully to the target (`spring.catchupSnap`
-    write) — the backlog accrued while frames weren't painting was
+    write). The backlog accrued while frames weren't painting was
     never going to be watched, and the residual one-viewport glide the
     old clamp left is exactly the workspace-return animation the user
     ruled out (2026-08-22). Distance alone never snaps; growth arriving
@@ -139,7 +139,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     next frame, and cancellation remains per callback. Do not replace this
     with one native rAF loop per pane or reorder the phases without a traced
     active multi-pane A/B and the Chromium phase-order test.
-  - `observers.ts` — the content-geometry delivery pipeline, the warm-up
+  - `observers.ts` is the content-geometry delivery pipeline, the warm-up
     (quiescence) gate, and resize classification. Two sources feed the
     one pipeline: engine-sourced samples in chat
     (`externalContentGeometry`), a contentEl ResizeObserver everywhere
@@ -149,25 +149,25 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
 - The MessageTimeline scroll-session modules (extracted siblings in
   `components/chat/`; MessageTimeline keeps the thin `$effect` bodies
   that call into them):
-  - `timelineRestore.svelte.ts` — thread-switch restore sessions:
+  - `timelineRestore.svelte.ts` owns thread-switch restore sessions:
     switch-edge bookkeeping, scroll-snapshot save/restore, and the
     scroll-to-item flow.
-  - `timelineSizePriors.svelte.ts` — per-thread, per-row size priors,
+  - `timelineSizePriors.svelte.ts` owns per-thread, per-row size priors,
     including the `ROW_KIND_ESTIMATE_PX` floor-biased kind estimates,
     the priors capture/persist cadence, and the lazy-once
     width/expansion validity check. Installs the localStorage
     persistence adapter (`utils/virtual/priorsStorage.ts`) at module
     scope.
-  - `timelinePaging.ts` — load-older/load-newer gates and handlers.
-  - `timelineWindowAnchor.svelte.ts` — prune-shift anchoring when the
+  - `timelinePaging.ts` owns load-older/load-newer gates and handlers.
+  - `timelineWindowAnchor.svelte.ts` owns prune-shift anchoring when the
     live window drops rows off the top.
-  - `timelineRowProjection.svelte.ts` — the node-derivation pipeline:
+  - `timelineRowProjection.svelte.ts` owns the node-derivation pipeline:
     structural grouping (subagent/wait/read groups), the reveal gate
     (`revealedNodes`), rail classification, and response-pill duration.
-  - `timelineDiagnostics.ts` — render/state tracing and the dev-only
+  - `timelineDiagnostics.ts` owns render/state tracing and the dev-only
     memory-stats, pane-geometry, row-resize, margin-divergence, and
     reasoning-tail-jump probes.
-  - `timelineQuietWork.ts` — the quiet scheduler: one cadence
+  - `timelineQuietWork.ts` owns the quiet scheduler: one cadence
     (structural changes + scroll end, debounced, with a recheck timer
     bridging the sentinel outliving the last scrollend) for the
     timeline's deferred structural work. Its passes: the recent-window
@@ -175,14 +175,14 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
     row-UI prune. Geometry-mutating passes run only while no glide is
     running or armed, at most one per callback. Design rationale:
     [`scroll-arbitration-plan.md`](scroll-arbitration-plan.md).
-  - `timelineRowUiPrune.ts` — bounds per-row expansion-handle retention
+  - `timelineRowUiPrune.ts` bounds per-row expansion-handle retention
     to a buffer around the visible range plus the tail (a quiet-work
-    pass on the 'always' rung — it mutates no visible geometry and must
+    pass on the 'always' rung: it mutates no visible geometry and must
     keep bounding memory mid-stream).
 - `components/chat/ActivityRun.svelte` owns the one nested scroller that runs
   the same physics as the pane: a height-capped clip over a stretch of
   activity rows, with a second controller instance on the tail run only
-  (the newest REVEALED run, `node.atTail` — not `live`, which ends
+  (the newest REVEALED run, `node.atTail`, and not `live`, which ends
   mid-stream when closing prose arrives behind the reveal gate).
   Geometry and window math live in `utils/activityRun{Clip,Window}.ts`,
   per-run state in `stores/threadActivityRuns.svelte.ts`. Full architecture:
@@ -190,7 +190,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
 - `ThreadPane` owns the scroll-controller registration slot so shared
   surfaces can pause or notify scrolling without reaching into component
   internals. It is **single-occupancy and belongs to the surface that owns
-  the pane's scroll container** — `MessageTimeline`, or `ChannelView` on a
+  the pane's scroll container**: `MessageTimeline`, or `ChannelView` on a
   discussion pane, whichever is mounted. A controller *nested inside* one
   of those (the activity run's) never registers.
 
@@ -198,7 +198,7 @@ the timeline virtualizer, or the scroll controller (`utils/scroll/`).
   micro-optimization: `detachScrollController` decides whether a teardown
   is stale by comparing the incoming controller against the registered one,
   and a plain `$state` proxies the object on assignment, so the comparison
-  is false even for the same controller. It never cleared — a torn-down
+  is false even for the same controller. It never cleared. A torn-down
   controller, and through it the detached scroll subtree, stayed reachable
   from the pane for the pane's whole life. A controller is a handle: no
   consumer reads data through it, they all re-read the slot.
@@ -216,9 +216,9 @@ restores a bounded cache snapshot when present, and otherwise fetches a
 viewport-sized slice with `App.ListThreadSliceAround(threadID,
 anchorItemID, SLICE_AROUND_ITEM_BUDGET)`.
 
-The pipeline itself — `snapshotOutgoingPane`,
+The pipeline itself (`snapshotOutgoingPane`,
 `installCacheOrFreshState`, `paintReplicaWindow`, `runItemWindowSync`,
-`applySyncResponse`, `runParallelLoad` and `refreshFromBackend` — lives
+`applySyncResponse`, `runParallelLoad` and `refreshFromBackend`) lives
 in `frontend/src/lib/stores/threadSwitchLoad.svelte.ts`;
 `thread.svelte.ts` keeps the pane state it writes through and exposes
 the two methods as one-line delegations.
@@ -227,9 +227,9 @@ The switch edge is not the only cache writer: pane close is the other
 (`pane.snapshotForClose` → `snapshotPaneForClose`, called by
 `destroyPane` before `clear()` empties the items, and by
 `startDraftPlaceholder` when "+ New" replaces a mounted thread). Both
-edges share `cacheOutgoingWindow` — size priors, write-back timer
+edges share `cacheOutgoingWindow` (size priors, write-back timer
 retirement, optimistic-row stripping, the L1 snapshot + durable
-replica — so a reopened thread restores warm instead of cold-fetching
+replica), so a reopened thread restores warm instead of cold-fetching
 and paying the estimate→measure cascade as a visible spring
 (bug-report-20260822T020840Z: every reopen in the trace was
 `source: "fetch"`). The close path skips a thread the store no longer
@@ -247,10 +247,10 @@ tail (`hasMoreNewer`), scrolling near the bottom pages forward through
 fallback.
 
 Both auto-load triggers share one direction-agnostic gate
-(`createAutoLoadGate` in `timelineScroll.ts`). It is gesture-armed —
+(`createAutoLoadGate` in `timelineScroll.ts`). It is gesture-armed:
 `disarm()` after every load, re-armed only by a real wheel/touchmove/
 keydown (the post-load `shift` compensation is a programmatic scroll and
-must not re-arm) plus a 350ms cooldown fallback — and its progress guard
+must not re-arm) plus a 350ms cooldown fallback. Its progress guard
 compares the **full** floor cursor
 (`oldestLoadedCursor` / `newestLoadedCursor`), turnIndex **and** itemIndex.
 Keying the guard on turnIndex alone latched auto-load off on long
@@ -281,15 +281,15 @@ repositioned to the turn tail on interrupt) re-sorts `items` at the
 same length. The virtualizer compares row keys every beat
 (`utils/virtual/keys.ts`); a change that isn't a pure head/tail splice
 remaps measured sizes by row identity (`engine.applyKeyedReorder`)
-instead of leaving them position-keyed. The remap — not an
-invalidation — matters because a moved row keeps its DOM size, so no
+instead of leaving them position-keyed. The remap (not an
+invalidation) matters because a moved row keeps its DOM size, so no
 ResizeObserver delivery follows the move; a stale position-keyed entry
 would never self-correct and rows below the move point would render at
 wrong offsets (overlap) until an unrelated resize. The reorder's
 compensation is anchor-based: the row under the viewport top (or the
 nearest surviving row after it, when a mid-list splice removed it) is
-held stationary — exact for length-changing keyed splices such as the
-review pane's collapse/expand, not just same-length reorders.
+held stationary. That is exact for length-changing keyed splices such as
+the review pane's collapse/expand, not just same-length reorders.
 
 ## Load Paging (keyed mutation inference)
 
@@ -339,9 +339,9 @@ jump, but it does not pass through an empty intermediate frame.
 
 Wire settle is not the end of the visible
 stream: the reveal smoother keeps draining the tail for seconds after
-the turn completes, so a settle-time prune landed its flush — the most
+the turn completes, so a settle-time prune landed its flush, the most
 expensive in the app (78–186ms in the bug-report-20260801T214455Z
-traces) — inside the glide the reader was watching. `settleTurn`
+traces), inside the glide the reader was watching. `settleTurn`
 therefore only *records* the prune as pending
 (`settleRecentWindowPrune`) when a mounted timeline is behind the pane;
 the quiet scheduler (`timelineQuietWork.ts`) runs
@@ -365,12 +365,12 @@ it is independent of provider turn state.
 
 Subagent child rows get a tighter bound than the window cap. Streaming
 children must live in `pane.items` (the delta pipeline applies only to
-loaded rows), but once a child settles and nothing can render it —
-collapsed inline card, backgrounded launch, Codex spawn — the pane evicts
+loaded rows), but once a child settles and nothing can render it
+(collapsed inline card, backgrounded launch, Codex spawn), the pane evicts
 the row and folds its count/preview into a per-anchor registry
 (`utils/subagentFold.ts`). Collapsing an expanded card evicts its settled
 subtree the same way. Card expansion re-hydrates from SQLite via
-`ListSubagentDescendants` and reclaims the folded ids — an id is folded
+`ListSubagentDescendants` and reclaims the folded ids. An id is folded
 XOR loaded, never both. Folds ride the thread-switch snapshot cache with
 the window they describe, and a folded id arriving again over the wire
 (reconnect replay) is dropped, not re-inserted. Net effect: per-pane
@@ -385,34 +385,34 @@ the same module as the prune transaction, reached via
 `withViewportBottomHeld`). Today that is every activity-run collapse or
 expand: the ones the reader asked for (a toggle, the header's collapse-all)
 and the auto-collapse gate's batched off-screen releases. The hold is not a
-call-site convention — it lives inside the registry's own mutators
+call-site convention. It lives inside the registry's own mutators
 (`ThreadActivityRuns.setCollapsed` / `setAllCollapsed` /
 `releaseOpenedLive`), so a new caller cannot forget it and must not wrap a
 hold of its own. The one hold-free write is `expandForReveal`, reachable
 only through `revealActivityRunItem`, and the missing hold is load-bearing:
 `scrollToItem` guards its post-reveal resume on a restore token, and a hold
-issues one (`nextRestoreToken`) — held, the jump would abort at its own
+issues one (`nextRestoreToken`). Held, the jump would abort at its own
 guard before scrolling anywhere. A bottom restore racing the jump's
 destination is the second reason. The verb can only expand, so the
 hold-free path cannot be borrowed for a collapse. The releases are
-not reader-requested — the gate fires precisely because the reader is
-provably elsewhere — but they ride the same transaction: the runs they
+not reader-requested (the gate fires precisely because the reader is
+provably elsewhere), but they ride the same transaction: the runs they
 change are out of sight by construction, and the anchor restore is what
 makes that a guarantee for a mid-list reader rather than a property of
 engine estimate compensation. One caveat follows from being unasked: the
 gate runs as a 'quiet' pass of the quiet scheduler (`timelineQuietWork.ts`),
 so it never fires while `autoScrollInFlight()` reports a glide running or
-armed — the transaction's bottom-pinned restore is a direct write and would
+armed. The transaction's bottom-pinned restore is a direct write and would
 snap an animation the reader is watching; explicit clicks keep their
-instant behavior — for them the snap IS the intent. The stand-down can only
+instant behavior, because for them the snap IS the intent. The stand-down can only
 see motion that exists when the pass runs, so the gate's transaction also
 restores with takeover `'yield'` (reader-asked toggles keep the default
 `'claim'`): a wire append landing between the release and its restore arms
 the structural one-shot, and the yielded `requestBottom` hands the trip to
 the armed spring instead of writing a bottom that already contains the new
-row. The transaction shares the prune's shape —
-capture intent, pause the spring, run the change, restore after the flush —
-and differs in which edge it holds:
+row. The transaction shares the prune's shape (capture intent, pause the
+spring, run the change, restore after the flush) and differs in which edge
+it holds:
 
 - **The prune holds the TOP.** Rows vanish from an edge nobody is looking at,
   so the first visible row keeps its offset and the change is absorbed below.
@@ -425,7 +425,7 @@ and differs in which edge it holds:
 
 The `pauseAutoScroll` half is not incidental. Without it an expand while
 bottom-pinned reaches the controller as content growth and springs across the
-whole delta — for a collapse-all, most of the conversation, animated. Under the
+whole delta, which for a collapse-all is most of the conversation, animated. Under the
 transaction the sticky branch instantly re-pins the new bottom, so there is
 nothing left to animate.
 
@@ -435,8 +435,8 @@ have not been measured yet. The pending navigation outlives the transaction by
 settle windows of real time, so it carries a takeover guard: a pass only
 continues while the viewport still sits where the navigation's own writes (and
 compensations delivered on its behalf, and the browser's clamp when the
-content under it shrinks) left it. Anything else moving the viewport — a
-reader gesture, the spring's next glide — cancels it, because a stale
+content under it shrinks) left it. Anything else moving the viewport (a
+reader gesture, the spring's next glide) cancels it, because a stale
 absolute target re-fired over new motion is a visible yank (the
 release-then-glide "snaps mid-animation" bug; regression:
 `timelineVirtualizer.browser.test.ts` takeover tests,
@@ -444,7 +444,7 @@ release-then-glide "snaps mid-animation" bug; regression:
 guard cannot see growth the navigation itself keeps chasing, so align-end
 convergence also excludes the DESTINATION row's own growth: once a pass has
 written against a measured destination, size gained past that baseline is
-subtracted from later targets — an align-end target decomposes as
+subtracted from later targets. An align-end target decomposes as
 offset + size − viewport, and only the offset half (a fold's RO landing
 above, an estimate correcting) is the navigation's to hold. The size half
 growing is live content; chasing it re-fired the navigation as instant
@@ -453,7 +453,7 @@ bottom restore (bug-report-20260731T211929Z; regression:
 `appendAfterQuiet.browser.test.ts`, the settle-window test).
 
 **Bounded by the scrollback that exists.** Opening upward spends `scrollTop`,
-and a run near the top of a thread may not have enough — the write clamps at 0
+and a run near the top of a thread may not have enough. The write clamps at 0
 and the remainder falls downward. Inherent (nothing scrolls above the first
 row), not a fallback path.
 
@@ -476,14 +476,15 @@ itself gated on **geometry stability**: `quietContextSignal` is blind to
 the engine's estimate→measure cascade, which grows `scrollHeight` over a
 series of contentRO fires spaced wider than `SETTLED_QUIET_MS`. Revealing
 on the short window mid-cascade shows the surface land right, flicker as
-the cascade finishes, then land right again — the idle-thread flicker. So
+the cascade finishes, then land right again. That is the idle-thread
+flicker. So
 the controller only takes the short window when the latest contentRO
 height delta is `≤ WARMUP_SETTLE_EPSILON_PX`; a larger delta (or the
 first fire, which has no baseline) holds the conservative `QUIET_MS`
 window, which each cascade fire resets so it closes only once the cascade
 goes quiet. A height delta of exactly `0` (a width-only / padding-var
 reflow) carries no new height information, so the gate keeps the prior
-magnitude rather than reading it as "settled" — otherwise a reflow firing
+magnitude rather than reading it as "settled". Otherwise a reflow firing
 in the gap between two cascade steps would trip the short window early
 (the cold-boot residual, where steps are far apart and font/layout
 reflows fire in the gaps). Reveal tracks `scrollHeight` stability, never a
@@ -493,27 +494,28 @@ minimum needed; `FAILSAFE_MS` still caps the worst case.
 
 The signal MessageTimeline supplies is composed:
 `anyMarkdownSettledSinceArm || mountedMarkdownCount === 0`. The second
-term is **settled-by-absence** — a mounted window containing zero
+term is **settled-by-absence**: a mounted window containing zero
 `ChatMarkdown` rows (all tool output / terminals / images) has no async
 typesetting coming, so it must not sit behind the conservative window
 until the failsafe. Presence is a live count registered through
 `CHAT_MARKDOWN_PRESENCE_CONTEXT`, which makes the signal *withdrawable*:
 a markdown row mounting after the quiet timer armed flips the signal
 back to falsy, and `notifyQuietContextSignalChanged` then DISARMS the
-armed timer — the settled-by-absence license is gone, and only an earned
+armed timer. The settled-by-absence license is gone, and only an earned
 settle (or the failsafe) may open the gate.
 
-The geometry gate only ever masks the cascade — it cannot prevent it,
+The geometry gate only ever masks the cascade. It cannot prevent it,
 because the cascade settles in bursts spaced wider than any safe quiet
 window (trace `bug-report-20260622T225817Z`: a final +200–500px burst
 landed ~160ms after reveal, longer than even `QUIET_MS`). For a
 **revisited** thread the cascade is instead *eliminated*: the engine's
 row estimate resolves each unmeasured row from the previous visit's
-persisted measurement (the priors replay — see "Row And Payload State"
-below), so the surface mounts at its final height. Chat's engine-sourced
-geometry samples carry the per-row settle evidence that proves it —
-every mounted row measured, all within `WARMUP_SETTLE_EPSILON_PX` of
-their estimates — and the warm gate then reveals **immediately**
+persisted measurement (the priors replay, described in "Row And Payload
+State" below), so the surface mounts at its final height. Chat's
+engine-sourced geometry samples carry the per-row settle evidence that
+proves it (every mounted row measured, all within
+`WARMUP_SETTLE_EPSILON_PX` of their estimates), and the warm gate then
+reveals **immediately**
 (`markWarm('settled')`), skipping the quiet wait entirely, once the
 markdown-settled signal also confirms no late typesetting wave is
 coming. A cold mount's corrections are tens-to-hundreds of px, so it can
@@ -521,14 +523,14 @@ never fast-path; late async growth (mermaid, images) lands as a
 correction and holds the gate exactly as before. Priors are per-row and
 persist past a restart (`utils/virtual/priorsStorage.ts`), so the
 "revisited" case above now also covers a thread reopened after a fresh
-app boot, not just a same-session thread switch — the boot window only
+app boot, not just a same-session thread switch. The boot window only
 needs to be a suffix of a previously-captured, possibly much larger,
 window (see priors.ts's header for why the per-row key makes that
 robust to window-composition changes). The geometry gate therefore
 guards only a **genuine first-ever** visit to a thread, or rows whose
-content changed since their last capture (a per-row signature miss) —
-where no valid prior exists and the estimate→measure cascade is
-unavoidable — and is best-effort there. Both defenses coexist: priors
+content changed since their last capture (a per-row signature miss).
+Those are the cases where no valid prior exists and the estimate→measure
+cascade is unavoidable, and the gate is best-effort there. Both defenses coexist: priors
 remove the cascade when they can, the gate hides it when they can't.
 
 On thread switch, `MessageTimeline` must call `stick.armWarmup()` from
@@ -539,7 +541,7 @@ measurement, or Streamdown layout changes. The rAF pass is escape-aware.
 
 **That arm does not survive a fetch.** On the cache-miss path the pane
 sits EMPTY for the whole `ListThreadSliceAround` round trip, and an empty
-mount window is still a content-geometry delivery — the virtualizer
+mount window is still a content-geometry delivery. The virtualizer
 reports `totalSize` 0, which arms the quiet timer exactly as a real
 cascade fire would, and the gate opens ~`QUIET_MS` in, against nothing.
 (The gate's own "arm the quiet timer only on geometry evidence" rule
@@ -550,9 +552,9 @@ run their estimate cascade in front of the reader.
 
 The **initial-slice re-arm** closes it again: `applyInitialSlice`'s call
 site in `thread.svelte.ts` (`armInitialSliceWarmup`) calls
-`PaneScrollController.armWarmup` synchronously with the item mutation —
-strictly before the flush that mounts those rows, the same ordering
-contract `markStructuralContentPending` carries — so the hide covers the
+`PaneScrollController.armWarmup` synchronously with the item mutation
+(strictly before the flush that mounts those rows, the same ordering
+contract `markStructuralContentPending` carries), so the hide covers the
 mount from its first paint to the quiet edge, and `FAILSAFE_MS` still
 bounds it. Scope is exact, and each exclusion is a blank flash avoided
 rather than a missing case:
@@ -569,10 +571,10 @@ rather than a missing case:
   over an unrelated surface (the same stand-down `armStructuralSpring`
   makes).
 - **First content mount only.** With the IndexedDB replica
-  (`docs/specs/thread-replica-sync.md` §6.1) a cold open can mount rows
+  (`docs/architecture/thread-replica-sync.md` §6.1) a cold open can mount rows
   twice: the durable paint, then the `SyncThreadWindow` page that
-  replaces it. The paint re-arms — it is an initial slice in every way
-  that matters to the gate — and the page does NOT, because by then the
+  replaces it. The paint re-arms (it is an initial slice in every way
+  that matters to the gate), and the page does NOT, because by then the
   reader may already be looking at those rows and re-closing the gate
   would blank content that is on screen. `runItemWindowSync`'s
   `paintSource` is the discriminator, and it rides the cold-load trace
@@ -581,13 +583,13 @@ rather than a missing case:
 One deliberate behavior change rides the sync-based cold open: a warm
 re-entry to a thread the user had deep-paged (say 800 rows in the L1
 snapshot) collapses back to the slice budget (~200 around the anchor)
-whenever the sync answer is not `fresh` — the page replaces the painted
+whenever the sync answer is not `fresh`. The page replaces the painted
 window, and rows outside it are re-fetched lazily on scroll like any
 cold open. Keeping them would merge rows from an older attestation
 under a newer stamp, the one composition the replica's understate rule
-forbids (`docs/specs/thread-replica-sync.md` §6.1 step 4), and it
+forbids (`docs/architecture/thread-replica-sync.md` §6.1 step 4), and it
 matches what the transport-gap `refreshFromBackend` path already does.
-A `fresh` answer — the common case for an unchanged thread — keeps the
+A `fresh` answer, the common case for an unchanged thread, keeps the
 full painted window.
 
 The chat adapter maps it to `armWarmupWithReset`, not the bare controller
@@ -599,7 +601,7 @@ Same-thread reloads must watch `pane.switchGeneration`, not just
 `pane.threadId`, because revert/reload can replace items without changing
 the thread id.
 
-The controller also exposes `warmReason` alongside `isWarm` — which of
+The controller also exposes `warmReason` alongside `isWarm`: which of
 `'quiet'` / `'failsafe'` / `'settled'` / `'skip'` last opened the gate, or
 `null` before it has opened for the current cycle. It is reporting-only
 (see "Cold-load trace" under Diagnostics); no consumer should branch
@@ -628,17 +630,17 @@ Programmatic scrolls go through the controller:
   the bottom" placement: transaction restores
   (`timelineWindowAnchor.svelte.ts`), the pause-release re-pin, and the
   host-layout re-pin. The takeover is the arbitration rule that replaced
-  those callers' pairwise stand-down guards: `'claim'` (the reader asked
-  — a disclosure click) cancels any bottom-follow program and places
+  those callers' pairwise stand-down guards: `'claim'` (the reader asked,
+  as in a disclosure click) cancels any bottom-follow program and places
   instantly, because user intent always may retarget the viewport;
-  `'yield'` (the system asked) hands the trip to an engaged program — a
+  `'yield'` (the system asked) hands the trip to an engaged program (a
   glide running or a structural-append arm holding one ready, exactly
-  `autoScrollInFlight()` — and writes nothing, because a one-shot
+  `autoScrollInFlight()`) and writes nothing, because a one-shot
   absolute write landing mid-glide collapses an animation the reader is
   watching into a snap. The escape rule lives inside the API, not in
   caller discipline: a `'yield'` while `escapedFromLock` writes nothing
   at all, and a `'claim'` ends the escape (user intent re-establishing
-  bottom follow, with `markAtBottom`'s intent-state sweep —
+  bottom follow, with `markAtBottom`'s intent-state sweep.
   `forceStick` routes its own cancel-and-place through this same claim
   path). Virtualized surfaces pass a `write` callback
   (`scrollToIndex(last, {align:'end'})` + `markAtBottom()`) so
@@ -653,30 +655,31 @@ The virtualizer's own imperative scrolls route through the same
 chokepoint: `listRef.scrollToIndex(...)` computes the target in the
 engine and performs the write via the controller's `applyScrollTarget`
 (wired as a `<TimelineVirtualizer>` prop), so index scrolls are tagged
-and attributed like every other controller write — no wrapper call at the
-call site. Engine compensation observations arrive through
+and attributed like every other controller write, with no wrapper call at
+the call site. Engine compensation observations arrive through
 `applyEngineCompensation` (see **Engine Compensation Routing**).
 
 Because every programmatic write flows through the chokepoint and every
 user gesture is classified by the intent machine, the controller keeps a
 one-field **provenance ledger**: the last explained `scrollTop` (the
 chokepoint's browser-rounded readback, or the position of the last
-user-classified scroll event — resize-correlated events deliberately
+user-classified scroll event, with resize-correlated events deliberately
 excluded, since a clamp's own scroll event is one). During a spring
 sentinel the only mover the ledger cannot account for is the browser's
 max-scroll clamp, so "live scrollTop differs from the ledger" is
 witnessed clamp EVIDENCE. Both stranded-oscillation recoveries (the
 resolver's `isSentinelOscillationStranded` and the spring tick's guard)
-require that evidence in addition to the sentinel-entry baseline match —
-latched per sentinel session, so an authored write ratifying the clamped
-position cannot launder a strand. An authored displacement with the same
+require that evidence in addition to the sentinel-entry baseline match.
+That match is latched per sentinel session, so an authored write
+ratifying the clamped position cannot launder a strand. An authored
+displacement with the same
 numeric shape (a head-splice compensation's anchor hold) updates the
 ledger and therefore glides its hidden growth in instead of snapping
 (bug-report-20260801T213259Z).
 
 Never write `scrollTop` directly from feature code. The virtualizer's
-`scrollToIndex` is instant-only by design — native smooth scrolling emits
-asynchronous scroll events that race the controller's tagging; do not add
+`scrollToIndex` is instant-only by design, because native smooth scrolling
+emits asynchronous scroll events that race the controller's tagging; do not add
 a smooth option, and never call `scrollIntoView()` on a virtualized row.
 
 `prefers-reduced-motion: reduce` forces sync-pin behavior regardless of
@@ -692,9 +695,9 @@ activity shimmer.
 ## Engine Compensation Routing
 
 The engine compensates for geometry changes that move content above the
-viewport — above-viewport row remeasures (`remeasure-above`) and load-page
-head splices (`head-splice`) — by **reporting** an absolute scroll target
-instead of writing `scrollTop` itself. `TimelineVirtualizer` forwards each
+viewport: above-viewport row remeasures (`remeasure-above`) and load-page
+head splices (`head-splice`). It does so by **reporting** an absolute
+scroll target instead of writing `scrollTop` itself. `TimelineVirtualizer` forwards each
 `EngineCompensation` to the controller's `applyEngineCompensation`, which
 delegates the decision to the pure `resolveEngineCompensation`
 (`utils/scroll/resolver.ts`) and applies at most one write through the
@@ -702,8 +705,8 @@ controller's chokepoint. The controller is the single `scrollTop` writer
 during follow by construction (browser clamps are native and untagged).
 
 Delivery timing is load-bearing: the virtualizer queues the compensation
-and delivers it from a post-flush `$effect` — after the spacer height and
-row offsets reflect the new geometry, still before paint — so the
+and delivers it from a post-flush `$effect` (after the spacer height and
+row offsets reflect the new geometry, still before paint), so the
 resolver samples live `scrollHeight`, and a target beyond the old maximum
 cannot clamp. The rationale lives in `TimelineVirtualizer.svelte`
 ("Post-flush write timing"); the regression test is the "write timing"
@@ -713,7 +716,7 @@ describe in `timelineVirtualizer.browser.test.ts`.
 
 Rows entirely above the top compensate by their exact size delta; rows at
 or below it need nothing. The at-most-one row **straddling** the top is
-neither — growth in its off-screen-above part shifts everything visible
+neither: growth in its off-screen-above part shifts everything visible
 down, growth below the top is ordinary reflow, and whole-row
 `[index, height]` cannot say which happened. It historically compensated
 nothing, leaving up to one row's worth of uncompensated shift whenever a
@@ -726,17 +729,17 @@ the top of its own row**. Row-relative is the whole trick: rows are
 absolutely positioned at engine offsets, so a row's own position is a pure
 function of the above-rows arithmetic that is already exact. Anything that
 moves the anchor *within* its row is intra-row growth above the reading
-position and nothing else — so the two corrections compose without any
+position and nothing else, so the two corrections compose without any
 chance of double-counting.
 
 The engine stays DOM-free: `applyMeasurements` takes an optional measurer
 and calls it only for the straddling row, only when that row's height
 actually moved. `boundStraddleShift` then clamps the answer to the row's
-own delta (same sign, no greater magnitude) — a physical bound, since the
+own delta (same sign, no greater magnitude), a physical bound, since the
 part above the reading position is a *part* of the whole. That is what
 keeps the DOM measurement non-load-bearing: a stale anchor, a re-rendered
-subtree, or a NaN can only pull the correction back toward zero — toward
-the historical behavior — never past it into an over-correction.
+subtree, or a NaN can only pull the correction back toward zero (toward
+the historical behavior), never past it into an over-correction.
 
 Tracking is gated on `trackReadingAnchor`, which chat wires to "the
 controller does *not* hold bottom-follow intent". While pinned, the
@@ -754,66 +757,66 @@ measurement, and `engine.test.ts` for the attribution and its bound.
 The resolver's decision order (each tier's regression provenance is
 documented at the function):
 
-- **head-splice pass** — head mutations (load-older prepend, paged
-  head-drop prune, a tail-following run clip's window advance) apply
+- **head-splice pass** applies head mutations (load-older prepend, paged
+  head-drop prune, a tail-following run clip's window advance)
   verbatim: the engine's offset math is exact and the anchor must hold.
-  A head splice displaces `scrollTop` with the content height — and so
-  the bottom target — unchanged, which is byte-for-byte the shape of a
+  A head splice displaces `scrollTop` while the content height, and so
+  the bottom target, stays unchanged, which is byte-for-byte the shape of a
   browser clamp after a content dip-and-restore; the provenance ledger
   is what keeps the sentinel's oscillation guards from snapping the
   splice's stated growth in instead of gliding it
-  (bug-report-20260801T213259Z — think → bash inside a run clip). The
+  (bug-report-20260801T213259Z, think → bash inside a run clip). The
   splice's write goes through the chokepoint, so the ledger explains
-  the displaced position and the guards find no clamp evidence — no
+  the displaced position and the guards find no clamp evidence. No
   special-casing at this tier.
-- **reading pass** — not warm, not at bottom, escaped, or paused: the
+- **reading pass** (not warm, not at bottom, escaped, or paused): the
   compensation lands unchanged (mount cascades, mid-thread reading).
   Above-viewport visual stability is the whole point; suppressing these
   visibly shifts the reading anchor.
-- **anchor-redirect** — the compensation requests a target meaningfully
-  *above* the bottom target while intent is pinned and either (a) the
-  DOM is already at true bottom (within
+- **anchor-redirect** applies when the compensation requests a target
+  meaningfully *above* the bottom target while intent is pinned and
+  either (a) the DOM is already at true bottom (within
   `AUTO_FOLLOW_BOTTOM_EPSILON_PX`) or (b) no spring chase is in flight
-  (`!springActive` — the idle displaced case): the write is rewritten to
+  (`!springActive`, the idle displaced case): the write is rewritten to
   `targetScrollTop()`. The engine's `delta` only compensates
   above-viewport remeasures, not the at/below-fold growth that pushed
   the bottom down, so letting the requested value land paints short of
-  bottom — the cold thread-switch flicker for (a); for (b), a post-warm
+  bottom. That is the cold thread-switch flicker for (a); for (b), a post-warm
   remeasure burst that grows the total in the same delivery defeats the
   pinned-DOM check and strands the viewport viewports above the bottom,
   displacement the next growth's spring then pays off as a multi-second
   visible glide (bug-report-20260822T020840Z, seq 64892: an idle
   reopen's `remeasure-above` left an 8118px gap). Only an in-flight
-  chase keeps verbatim relocation — the spring re-reads `el.scrollTop`
-  per tick, so relocating it is loss-free.
+  chase keeps verbatim relocation, because the spring re-reads
+  `el.scrollTop` per tick, so relocating it is loss-free.
   A redirect that actually moved the viewport (landed more than the
   epsilon from where it was) also opens the observers' 250ms
   **pinned-remeasure settle window**: contentRO deltas inside it carry
   `pinnedRemeasureActive` and sync-pin instead of gliding, because they
   are the same correction wave still landing, not the bottom advancing.
-  The window is fixed — deliberately not refreshed by the deltas it
-  classifies — so a streaming turn that starts inside it cannot be
+  The window is fixed, deliberately not refreshed by the deltas it
+  classifies, so a streaming turn that starts inside it cannot be
   converted into indefinite sync-pins.
   The **cold-load settle window** is the second announcer of the same
   fact, with a different lifecycle: every warm-up arm (attach, restore
   forceStick, the slice application's `armWarmup`) opens it, and while
-  it is open post-warm growth sync-pins too — the warm gate opens on
+  it is open post-warm growth sync-pins too. The warm gate opens on
   ~100ms of RO quiet, but the estimate→measure cascade and the window
   sync land bursts seconds later (2026-08-22 boot restart: 8.5kpx of
   measurement growth glided for ~2s, then an unrelated bottom-held
   transaction snapped it). It ends for good at the first delivery that
-  observes live content or an armed structural append — from then on
-  glides own the pane — with an 8s cap as the failsafe for a pane that
+  observes live content or an armed structural append (from then on
+  glides own the pane), with an 8s cap as the failsafe for a pane that
   never streams; `skipWarmup` (placeholder materialization) clears it.
   Both signals feed the one `pinnedRemeasureActive` resolver input; the
   trace records them separately (`coldLoadSettleActive`).
-- **pass** — anything else applies verbatim, mid-chase included. The
+- **pass**: anything else applies verbatim, mid-chase included. The
   compensation is an exact coordinate shift: layout moved the content
   under the viewport by `delta`, and the write moves the viewport by the
   same `delta` before paint, holding the visual field stationary. The
   spring re-reads `el.scrollTop` every tick, so an applied write
-  mid-chase just relocates the chase — the remaining gap is unchanged
-  and the glide continues seamlessly.
+  mid-chase just relocates the chase. The remaining gap is unchanged
+  and the glide continues.
 
 There is deliberately no **mid-chase decline** tier. The virtua-era gate
 declined sub-viewport compensations while a spring chase was in flight,
@@ -823,7 +826,7 @@ shifted the content under a stationary viewport by the row's height
 delta, then the spring re-chased the same distance (2026-07-21). Nor is
 there an animation tier: the resolver's engaged tiers key on observed
 geometry (`pinned` + `moves-away`), which makes spring-lifecycle timing
-irrelevant to compensation handling — what retired the cross-file
+irrelevant to compensation handling. That is what retired the cross-file
 invariant that the animation-mode hold outlast
 `RETAIN_ANIMATION_DURATION_MS` (and, later, the mode latch itself).
 
@@ -841,16 +844,16 @@ adapter seam (delivery timing, windowing, measurement) in
 Autonomous content growth while pinned at the bottom has **one**
 behavior: the chase glides. There is no per-delivery animation mode and
 no "was this real content?" classifier in the physics path. The resolver
-asks only whether springing is *allowed* right now —
-`springGateIsOpen({springStopRequested, paused, isAtBottom, escaped,
-prefersReducedMotion})` — every input being an explicit signal about
+asks only whether springing is *allowed* right now
+(`springGateIsOpen({springStopRequested, paused, isAtBottom, escaped,
+prefersReducedMotion})`), every input being an explicit signal about
 scroll state or user preference, never a guess about what produced the
 pixels.
 
 This is deliberate. The controller cannot distinguish "content arrived"
 from "layout got corrected": a shiki highlight resolving, KaTeX
 typesetting, a mermaid diagram sizing, an image decoding, and a text
-chunk landing all reach it as the same thing — the content box got
+chunk landing all reach it as the same thing: the content box got
 taller under a pinned viewport. The retired `animationMode` latch
 guessed, keyed on a 500ms window after the last *stamped* content
 advance, and every growth that landed outside a stamp window teleported
@@ -871,8 +874,8 @@ correct semantic for it.
 `lastLiveContentAt` still exists, and `ThreadPane` still stamps it
 whenever live timeline content advances: assistant prose, thinking,
 compaction reasoning, direct text patches, visible-field updates to
-already mounted rows — a running tool row growing its output preview per
-flush window, or running→completed result chrome landing — and wire
+already mounted rows (a running tool row growing its output preview per
+flush window, or running→completed result chrome landing), and wire
 appends / reveal-gate releases entering the loaded tail (via
 `armLiveContentAppendSpring`, below). `MessageTimeline` and `ChannelView`
 turn it into a boolean with `isLiveContentActive(now, lastLiveContentAt,
@@ -885,22 +888,22 @@ Two consumers, neither of them the physics choice:
 1. **The spring sentinel** (`spring.ts`). When a chase arrives and no
    target change has landed within `RETAIN_ANIMATION_DURATION_MS`, an
    active liveness reading keeps the sentinel alive across the gap
-   instead of cancelling — that is what holds `springActive` true for
+   instead of cancelling. That is what holds `springActive` true for
    the springActive-keyed resolver carve-outs (negative-delta,
    overshoot, idle deadband) through an inter-chunk pause. Without the
    distinction the sentinel would be immortal: a permanent 60Hz rAF per
    pane, since growth alone would always want a spring.
 2. **The viewport path** (`notifyLiveContentMaybeGrew`). That entry
-   point also carries *viewport* changes — the composer growing under a
-   multi-line draft — where an instant pin is correct while the thread
+   point also carries *viewport* changes (the composer growing under a
+   multi-line draft), where an instant pin is correct while the thread
    is idle. Liveness (or a pending structural append) is what
-   distinguishes the two there — but only from rest. A chase already in
+   distinguishes the two there, but only from rest. A chase already in
    flight absorbs the observation regardless of liveness
    (`absorbedByActiveSpring`, shared with the plain content path): both
    clocks are short (500ms hold / 250ms one-shot) and mid-chase
    retargets deliberately refresh neither, so a glide extended by async
    row settling (payload previews, highlight spans) outlives them while
-   still animating — the tool-call boundary where a composer-rail
+   still animating. That is the tool-call boundary where a composer-rail
    resize used to land as an instant write over the running animation.
    Only a large overshoot (content collapsed out from under the
    viewport) still snaps through, matching the resolver's mid-spring
@@ -922,8 +925,8 @@ settles.
 The pane data layer is the sole owner of the arm, with two arm shapes in
 `thread.svelte.ts`: `armLiveContentAppendSpring` (arm + liveness stamp)
 for `applyProviderItemUpserts` (a wire append to the loaded tail) and
-`recomputeRevealPass` (the reveal gate releasing withheld rows — rows
-already in `pane.items` mount without any upsert in that flush), and bare
+`recomputeRevealPass` (the reveal gate releasing withheld rows, which are
+already in `pane.items` and mount without any upsert in that flush), and bare
 `armStructuralSpring` (arm only, no stamp) for the composer's optimistic
 user-send. All arm sites run
 synchronously with the data change, strictly before the Svelte flush in
@@ -945,9 +948,9 @@ re-check; a monotonic token cancels superseded nudges and a
 
 Restore safety is layered: `armStructuralSpring` itself gates on
 `pane.loading` (the whole switch+load settle is a restore, not an
-in-turn append — bug-report-20260622T041049Z), the reveal arm
+in-turn append, per bug-report-20260622T041049Z), the reveal arm
 additionally requires that the boundary change actually releases rows
-that still exist (`boundaryChangeReleasesRows` — a gate dropping because
+that still exist (`boundaryChangeReleasesRows`: a gate dropping because
 the lone streaming row drained, or because a revert removed the tail,
 mounts nothing) and never fires across a switch because
 `disposeAllSmoothers` nulls the boundary first, and the controller's
@@ -960,8 +963,8 @@ channel-message growth.
 `spring` is an eligibility signal, not an unconditional animation. If
 `contentRO` observes a content-width change, the controller opens a short
 width-reflow settle window and sync-pins paired height corrections. This
-keeps pane, sidebar, and window reflows — including Mermaid `useMaxWidth`
-height changes in the rendered window — from producing a visible
+keeps pane, sidebar, and window reflows (including Mermaid `useMaxWidth`
+height changes in the rendered window) from producing a visible
 half-viewport spring chase just because live content advanced recently.
 During that window, the compensation resolver passes the engine's
 anchor-preserving writes for the same reason.
@@ -972,23 +975,23 @@ the spring so estimate/correct row measurement pairs do not snap the
 viewport. Width-driven shrink corrections and large overshoots still
 snap immediately.
 
-At idle — spring settled (`springToken === 0`) and pinned at the bottom —
-the content box height can flip ±1-2px every ResizeObserver delivery when
+At idle, with the spring settled (`springToken === 0`) and pinned at the
+bottom, the content box height can flip ±1-2px every ResizeObserver delivery when
 the fractional sub-pixel total lands on an X.5 boundary under a fractional
 device-pixel-ratio (WSLg / HiDPI). The bottom target
 (`scrollHeight - clientHeight`) flips with it, and the `contentRO`
 positive/negative-delta sync-pins re-pin `scrollTop` to that moving target
-on every wobble frame — a self-sustaining ±2px limit cycle (the whole idle
+on every wobble frame, a self-sustaining ±2px limit cycle (the whole idle
 viewport visibly vibrates). The **idle re-pin deadband** breaks it: when no
 spring is in flight and `scrollTop` is already within
 `IDLE_REPIN_DEADBAND_PX` of the target, the re-pin is skipped
-(`idlePinWithinDeadband`, folded into both pin predicates — since the
+(`idlePinWithinDeadband`, folded into both pin predicates, and since the
 Stage-2 extraction this decision lives in `utils/scroll/resolver.ts`,
 the controller's pure decision core). It keys on distance-from-target,
 not delta magnitude,
 so genuine growth moves the target ≥ a line height (gap ≫ deadband) and
 pins normally; the `springToken === 0` gate makes it idle-scoped by
-construction — during streaming the spring holds its token across
+construction. During streaming the spring holds its token across
 inter-chunk gaps, so an active chase is never touched. Full mechanism + the
 capture it was root-caused from:
 [`settle-flicker-analysis.md`](settle-flicker-analysis.md). Coverage: the
@@ -1002,15 +1005,15 @@ things that move are the page under the reader and the text still being
 written. Concretely, exactly two motion owners exist inside the timeline
 scroller:
 
-1. **The scroll controller's glide** (`utils/scroll/`) — animation of the
+1. **The scroll controller's glide** (`utils/scroll/`) animates the
    scroll offset only. Rows never move relative to the content; the
    viewport moves over them.
 2. **The streaming line-slide** (`TailClampedText`'s FLIP via
-   `Element.animate()`) — the one in-content animation, on the one region
+   `Element.animate()`) is the one in-content animation, on the one region
    that is genuinely in motion: the line being streamed.
 
 Everything else is still ink. No CSS transitions (the app.css timeline
-kill rule zeroes them — see `components/chat/AGENTS.md` §Row Contract),
+kill rule zeroes them, per `components/chat/AGENTS.md` §Row Contract),
 no Svelte `transition:`/`in:`/`out:`/`animate:` directives
 (`timelineAnimationDirectives.test.ts`), and no keyframe animation on
 row content that moves anything but light
@@ -1028,7 +1031,7 @@ is the doctrine's own rule: a row may fade, never move. `opacity` adds no
 second motion owner and no geometry for the controller's compensation to
 fight, so it is the one property allowed, and the guard reads the
 `@keyframes` bodies in `app.css` to enforce it. A transform, a size, an
-inset — each is a third motion owner and fails the build.
+inset: each is a third motion owner and fails the build.
 
 The ambient indicators are all CSS animations on compositable
 properties, phase-locked to wall clock by `utils/ambientPhase.ts`:
@@ -1036,7 +1039,7 @@ properties, phase-locked to wall clock by `utils/ambientPhase.ts`:
 All four are stepped, which is a separate rule with its own incident
 (2026-07-04: one smoothly pulsing 6px dot was a standing 165
 presents/sec client that stuttered *other applications*) and its own
-check in the same file — run over `app.css` rather than over this
+check in the same file, run over `app.css` rather than over this
 directory, because that hazard is document-wide.
 
 One in-scroller-adjacent animation is allowlisted rather than removed:
@@ -1050,20 +1053,20 @@ walks cover `components/chat/` and the hazard is the scroller's DOM
 subtree. Known in-scroller animations outside them, kept deliberately
 pending a product call: the `animate-spin` loading ring on
 `primitives/Button` (load-older/newer, the message editor's working
-state, plan-card expansion — a *transform* animation, so a straight
+state, plan-card expansion: a *transform* animation, so a straight
 violation of the fade-never-move rule, and live during exactly the
 head-splice compensation commits load paging performs), and the vendored
 streamdown popovers' `transition:scale|global` dialogs (click-gated,
 outside the directive tripwire's `components/chat` walk). Removing or
 converting these (e.g. to the ticker-driven `SteppedSpinner`) changes
 visible behavior, so they are a decision, not a cleanup. (A third exception, the
-user-message jump-target glow, turned out to be dead code — its only
-producer died with `DiffPanelDrawer` in the review-pane redesign — and
+user-message jump-target glow, turned out to be dead code. Its only
+producer died with `DiffPanelDrawer` in the review-pane redesign, and
 the whole flash mechanism was removed rather than left dormant.)
 
 This is not an aesthetic preference. Two motion owners on the same
 pixels fight, and the compositor makes the fight visible: the browser
-has no reason to draw until raster lands — *unless an animation is
+has no reason to draw until raster lands, *unless an animation is
 active*, which drives a begin-frame every vsync, so it draws on the
 frame deadline whether or not the tiles are ready.
 
@@ -1086,12 +1089,12 @@ Two properties of the real mechanism do not match how a
   buys nothing.
 - **It is document-wide, not scroller-scoped.** An animation outside the
   scroller scores the same as one inside (18 vs 23). "It mounts outside
-  the scroller" is therefore not, on its own, a safety argument — though
+  the scroller" is therefore not, on its own, a safety argument, though
   it remains a correct statement about where a component renders.
 
 Zero is unreachable here and that settles it. The working sprite, the
 LED chase and the stepped spinner run through every working turn, and
-`TailClampedText`'s line-slide runs continuously through streaming — all
+`TailClampedText`'s line-slide runs continuously through streaming. All
 four are wanted, and the last is one of the two permitted owners. So the
 counting rule was chasing a state the app never enters, which is why the
 guard now enforces the motion rule instead. What still narrows the
@@ -1119,7 +1122,7 @@ the reveal queue's paced drain, the idle re-pin deadband) exists to make
 discrete content changes land as either *zero visible motion* or *one
 controller-owned glide*. When adding polish to a row, the question is
 never "does this animation look nice" but "which of the two owners does
-this motion belong to" — and if the answer is neither, it renders as
+this motion belong to". If the answer is neither, it renders as
 print: instant, settled, already there.
 
 ## Layout Rules
@@ -1133,9 +1136,9 @@ The composer ResizeObserver writes `--composer-height` directly before
 observing `'composer-geometry'` on the scroll controller. Waiting for
 Svelte's microtask flush would pin against stale layout. Idle composer
 geometry resolves to the same same-paint pin as a `'content'`
-observation; when live content is inside the spring hold window — or a
-chase is already in flight, however stale the hold
-(`absorbedByActiveSpring`) — the live-capable path keeps following the
+observation; when live content is inside the spring hold window, or a
+chase is already in flight however stale the hold
+(`absorbedByActiveSpring`), the live-capable path keeps following the
 moving bottom instead of sync-pinning mid-chase.
 
 `overflow-anchor: none` belongs on the outer scroll container (and is
@@ -1145,7 +1148,7 @@ fights the engine's compensation targets and the controller's sync-pin.
 The pane scroll surfaces (chat timeline, discussion channel) draw no
 native bar: `.pane-scroll-surface` (app.css) suppresses it and applies
 `will-change: scroll-position`, and an `<OverlayScrollbar>` sibling is
-the surface's scrollbar — zero layout width in every state, so an
+the surface's scrollbar with zero layout width in every state, so an
 overflow transition can never re-wrap the transcript, and gestures on
 the strip state intent through `onUserScrollStart` / `onUserScrollEnd`
 (the intent machine's geometric gutter hit test reads
@@ -1162,7 +1165,7 @@ bar's appearance; with no bar it would inset the column for nothing).
 A gutter never transferred to a scroller *inside* the centered column
 either: it would inset that box's content relative to the prose above
 and below. The activity-run clip suppresses its native bar the same way
-and renders the same overlay thumb — see
+and renders the same overlay thumb. See
 [Nested scrollers](#the-activity-run-a-nested-scroller-with-the-panes-physics).
 
 Status banners are absolute overlays, not reserved layout slots. They
@@ -1173,7 +1176,7 @@ must not change the scroll surface height on mount/unmount.
 Rows may own scrollable bodies (command output, subagent children,
 wait-group children, tool-result patches, payload bodies). Wheel and
 touch events bubble, so without help the outer intent machine cannot
-tell a gesture aimed at the pane from one a nested box just absorbed —
+tell a gesture aimed at the pane from one a nested box just absorbed,
 and treating the latter as "the user left the bottom" broke follow while
 the outer pane had not moved at all.
 
@@ -1183,14 +1186,14 @@ walks `event.target` up to its own scroll element, and the first
 registered scroller that can still move in that direction owns the
 event; the machine then ignores it. Nothing registered can consume it →
 the gesture belongs to the boundary, and native scroll chaining takes it
-there. That chaining is deliberate — browsing up out of a nested box has
-to reach the pane — which is why nested boxes keep the default
+there. That chaining is deliberate, because browsing up out of a nested
+box has to reach the pane, which is why nested boxes keep the default
 `overscroll-behavior` rather than `contain`.
 
 A registry, not a computed-style probe: wheel handling runs while layout
 is dirty mid-stream, so `getComputedStyle` over every ancestor of every
 wheel event would force reflows at gesture rate. Geometry reads stay
-confined to explicitly marked elements — usually zero or one per gesture.
+confined to explicitly marked elements, usually zero or one per gesture.
 
 The same helper serves nested controllers: an inner controller passes its
 own clip as the boundary, so a command-output box inside an activity run
@@ -1207,29 +1210,29 @@ spring as the pane, so streaming activity chases inside
 the cap while the prose above it stays put. Rules that matter from the outer
 side ([`activity-runs.md`](activity-runs.md) has the rest):
 
-- **Only the tail run** — the newest REVEALED run (`node.atTail`), not the
+- **Only the tail run**, the newest REVEALED run (`node.atTail`), not the
   `live` one: `live` ends the moment closing prose arrives behind the reveal
   gate, and keying the controller there cancelled a glide the reader was
   watching (the 2026-08-19 in-run jump). Historical runs are plain
   `overflow-y: auto` with a restored `scrollTop`; a controller per run in the
   buffer would be a spring, an observer set, and intent listeners each for
   physics one of them can use.
-- **The clip's outer height changes only on explicit events** — growth toward
-  the cap, item expansion, a collapse toggle — never from inner streaming.
+- **The clip's outer height changes only on explicit events** (growth toward
+  the cap, item expansion, a collapse toggle), never from inner streaming.
   That is what keeps the outer engine quiet, and it keeps `rowDelta === 0` for
   the straddling row during inner scrolling, so the reading-anchor measurer
   never sees inner movement.
 - **The nested controller leaves `externalContentGeometry` unset** (no
   virtualizer inside a run, so its own contentEl ResizeObserver is the right
-  source — the `ChannelView` precedent) and never touches
+  source, following the `ChannelView` precedent) and never touches
   `pane.attachScrollController`.
 - **Inner scroll position lives in the per-pane registry**, keyed by the
   registry-assigned `runId`, so a run the reader scrolled inside does not snap
   back to its tail every time the virtualizer evicts its row.
 - **The clip's native scrollbar is suppressed to zero width** and the
   affordance is a `components/shared/OverlayScrollbar.svelte` in the column's
-  padding. A gutter cannot be used inside the centered column — it would inset
-  the run's rows off the rail the run draws — and a bar that takes width would
+  padding. A gutter cannot be used inside the centered column, because it would
+  inset the run's rows off the rail the run draws, and a bar that takes width would
   re-wrap the run's text every time it appeared. The consequence for this
   package: `offsetWidth - clientWidth === 0`, so `intent.ts`'s geometric
   scrollbar-drag test can never fire for the clip, and the overlay thumb
@@ -1243,12 +1246,13 @@ survive remount lives on `ThreadPane` registries keyed by item id,
 payload id, or subagent group key. Loaded payload bytes live in the
 byte-bounded module cache in `payloadDataCache.ts`.
 
-Measured row heights ARE replayed across thread switches — and across an
-app restart — under a per-row validity model (`utils/virtual/priors.ts`).
+Measured row heights ARE replayed across thread switches, and across an
+app restart, under a per-row validity model (`utils/virtual/priors.ts`).
 The `{#key pane.threadId}` block remounts the `<TimelineVirtualizer>` on
 every switch, so without a replay it re-runs the full estimate→measure
-cascade — the thread-switch flicker, identical for cached and uncached
-threads because the item cache avoids the *fetch*, not the *remeasure*.
+cascade. That is the thread-switch flicker, identical for cached and
+uncached threads because the item cache avoids the *fetch*, not the
+*remeasure*.
 The priors replay makes the mount start at the already-measured total:
 the engine's `RowEstimate` resolves each unmeasured row from the previous
 visit's persisted measurement (falling back per-row to the kind-height
@@ -1257,26 +1261,26 @@ delivery matches the estimated size, so `applyMeasurements` no-ops it.
 Zero re-render, zero scroll jump.
 
 Priors are keyed by a **per-row content signature** (`nodeSignature` in
-`utils/timelineStructureSignature.ts` — id, status, `summary.length`,
+`utils/timelineStructureSignature.ts`: id, status, `summary.length`,
 `updatedAt` for a leaf; key + member count for a group), not by
 position. Each thread's `SizePriorsEntry` is `{ width, expansionSig,
 rows: Map<signature, measuredPx> }`: **width** (the wrap point) and
 **expansionSig** (`pane.expansionSignature()`, non-default subagent/diff/
-payload expansion) gate the whole entry — a mismatch on either refuses
+payload expansion) gate the whole entry. A mismatch on either refuses
 every row in it, degrading the mount to the kind/flat estimate chain,
 same as a cold first visit. The per-row signature gates each row
 independently within a valid entry: a row whose content changed simply
 misses on its own map key, without invalidating its still-valid
 siblings. This replaced an earlier design that keyed ONE positional
 `sizes: number[]` snapshot against a **whole-window** structure
-signature (the newline-join of every loaded row's signature) — a key
+signature (the newline-join of every loaded row's signature), a key
 that a fresh app boot's small initial window essentially never matched
 against a full session window of hundreds of streamed/paged rows, so
 restart replay was effectively dead. The per-row map fixes that: a boot
 window's rows are a *suffix* of a larger captured window, and each one
 resolves independently. A handful of global display settings (`fontSize`,
 the sans/mono fonts, `collapseDiffPreviews`) also change row height but
-are deliberately **not** keyed — a documented, benign residual: toggling
+are deliberately **not** keyed, a documented, benign residual: toggling
 one mid-session then revisiting a thread replays stale heights, which the
 warm-up gate masks as a cold first visit (the estimate→measure cascade
 re-runs and corrects them), never a crash or stuck viewport. Keying them
@@ -1284,21 +1288,21 @@ would make the residual airtight but buys no visible change (same masked
 cascade either way) at the cost of a drift-prone signature; the choice is
 recorded in `priors.ts`. Row-UI state is reset to default on every switch
 (`rowUiState.clear()`), so at restore time the expansion signature is the
-default one — which is exactly why a thread that was idle-at-default
+default one, which is exactly why a thread that was idle-at-default
 replays cleanly and a thread that had something expanded (taller rows) is
 correctly refused.
 
 The width/expansion validity check is deliberately **lazy-once**, not
 eager: `resolveRowEstimateOnThreadEdge` (`timelineSizePriors.svelte.ts`)
 runs in `$effect.pre` before the virtualizer remounts, and on a fresh app
-boot the scroll surface has not been laid out yet — an eager check would
+boot the scroll surface has not been laid out yet. An eager check would
 read width 0 and spuriously refuse every restart replay. The check
 instead runs on the first `RowEstimate.at()` call and is memoized for
 the rest of that mount. Even at first use the width can still
 legitimately read 0: the width signal is RO-only (async by the
 one-source rule in `scrollSurfaceWidth.ts`), while the engine's first
-`at()` calls run synchronously when the virtualizer mounts with data —
-on boot, whichever lands first is a machine-speed race. Width 0
+`at()` calls run synchronously when the virtualizer mounts with data.
+On boot, whichever lands first is a machine-speed race. Width 0
 therefore means "layout hasn't reported yet", not a real wrap point,
 and the check **trusts the entry's captured width** in that case
 (latched, so every row in the mount resolves consistently): window
@@ -1317,34 +1321,34 @@ Captures must store the **settled** sizes or the replay restores a
 mid-cascade height. They ride two triggers, both routed through one
 size-gated persist (gated on `getScrollSize()` so a 60Hz spring does not
 re-slice the array): the scroll-position snapshot (`saveScrollSnapshot`),
-and the rising edge of `stick.isWarm` — the controller's
-"measurement-cascade-settled" signal — which guarantees a final-height
+and the rising edge of `stick.isWarm`, the controller's
+"measurement-cascade-settled" signal, which guarantees a final-height
 capture for a thread the user views but never scrolls.
 
 The in-memory store is a bounded LRU (memory: ~one float per loaded row
-per recent thread) — a WORKING SET over a persistent backing store, not
+per recent thread), a WORKING SET over a persistent backing store, not
 the store itself. `utils/virtual/priorsStorage.ts` is a
 localStorage-backed adapter (installed at module scope of
 `timelineSizePriors.svelte.ts`, so it is active before any pane mounts)
 that makes priors survive an app restart: writes are debounced (~1s,
 coalesced per thread) and flushed early on `pagehide`/hidden
 `visibilitychange`; reads lazily hydrate a memory miss. A 50-thread
-storage cap and 50-thread in-memory cap both evict LRU-oldest — a memory
+storage cap and 50-thread in-memory cap both evict LRU-oldest. A memory
 eviction never touches the persistent store (the thread's priors are
 still on disk and rehydrate on its next visit); only an explicit
 `clearThreadSizePriors` (thread deletion, item mutation, same-thread
-reswitch — `threadSwitchLoad.svelte.ts`'s `dropCachedWindow`,
+reswitch, via `threadSwitchLoad.svelte.ts`'s `dropCachedWindow` and
 `threads.svelte.ts removeThread`) deletes
 from storage too. Storage failures (quota, corrupt JSON from a stale
 schema version or a hand-edited profile) warn once and degrade to
 "priors don't persist this session" rather than throwing. None of this
-violates the visible-thread memory budget or touches SQLite — it is
+violates the visible-thread memory budget or touches SQLite. It is
 still a session-scoped cache in memory, just one that can rehydrate
 itself from disk. Kind estimates for priors-miss rows are **floors, not
 averages** (`ROW_KIND_ESTIMATE_PX` in
 `components/chat/timelineSizePriors.svelte.ts`): an estimate above a
-row's real height shrinks `totalSize` on first measurement — a scrollbar
-dip plus a synchronous browser `scrollTop` clamp at exact bottom — while
+row's real height shrinks `totalSize` on first measurement (a scrollbar
+dip plus a synchronous browser `scrollTop` clamp at exact bottom), while
 an undershoot only grows `totalSize`, absorbed invisibly by
 remeasure-above compensation at the cost of a few extra transiently
 mounted rows on a cold switch.
@@ -1356,7 +1360,7 @@ a capture experiment on the scroll-away/return remount path (run in the
 virtua era, with its manual-scroll marking patch and fractional height
 caching in place) showed floors-OFF outcome-identical to floors-ON (zero
 scrollHeight dips, zero scrollTop reversals, identical unmount batches,
-clean bottom landings) — see
+clean bottom landings). See
 [`scroll-rearchitecture-plan.md`](scroll-rearchitecture-plan.md) §3.
 Async-short remount content is bridged at the content layer (streamdown
 mermaid/math rendered-height caches, the attachment blob cache), and
@@ -1365,13 +1369,13 @@ deletion:
 
 - The scroll surface width signal: the **content-box** width, observed
   asynchronously through `observeScrollSurfaceContentWidth`
-  (`scrollSurfaceWidth.ts`), feeds the priors validity key —
+  (`scrollSurfaceWidth.ts`), feeds the priors validity key, and is
   never a synchronous or border-box read (`getBoundingClientRect`,
   `clientWidth`). A second, disagreeing width source turns the width signal
   into a self-sustaining oscillation that re-renders every row at idle
   (CPU/heap-churn incident 2026-06-26, commit `a5a5d032`).
 - Margin containment: the `[data-row-geometry-content]` row wrapper and the
-  app.css `display: flow-root` rule (commit `4b3759a1`) — independent of the
+  app.css `display: flow-root` rule (commit `4b3759a1`), independent of the
   floors; see [`settle-flicker-analysis.md`](settle-flicker-analysis.md).
   The virtualizer's per-row ResizeObserver measures content-box height, so
   the contract is what keeps measured height and visual extent in
@@ -1389,7 +1393,7 @@ rows and is not a complete search surface.
 
 A search hit calls `pane.requestScrollToItem(itemId)`. `MessageTimeline`
 loads older rows until the item is present, then scrolls through
-`listRef.scrollToIndex(index, { align: 'center' })` — an escaped,
+`listRef.scrollToIndex(index, { align: 'center' })`, an escaped,
 controller-routed write (the virtualizer performs it through
 `applyScrollTarget`).
 
@@ -1414,7 +1418,7 @@ pane's discussion data layer, surfaced through `ThreadPane`'s
 `channel*` getters), and `ChannelView` renders whatever that state holds.
 Initial load and transport-gap recovery share one resync helper
 (`eventsDiscussion.ts`'s `refreshDiscussionChannel`) that fetches with
-`afterSeq = -1` — the exclusive "everything" cursor, since message
+`afterSeq = -1`, the exclusive "everything" cursor, since message
 sequences are zero-based and a `0` cursor would silently drop the
 channel's first message.
 
@@ -1426,7 +1430,7 @@ side-channel registry (`discussionLiveTail.ts`) into the channel state's
 `ChannelView` renders that tail as a streaming card and lets it fall
 away once the matching agent message lands.
 
-Growth animates exactly as it does in chat — unconditionally, subject
+Growth animates exactly as it does in chat: unconditionally, subject
 only to the signal-based spring gate (see Live Content Animation above).
 The channel keeps its own liveness stamp for the sentinel and viewport
 paths: the channel state stamps `lastLiveContentAt` on every
@@ -1434,7 +1438,7 @@ genuinely-new message and on live-tail growth, and `ChannelView` calls
 `isLiveContentActive(now, pane.channelLastLiveContentAt,
 LIVE_CONTENT_ACTIVE_HOLD_MS)` for the controller's `liveContentActive`
 option. This is the channel's own stamp, independent of the chat
-timeline's `lastLiveContentAt` — the two
+timeline's `lastLiveContentAt`. The two
 surfaces never mount at once, but each pane tracks both so switching a
 pane between chat and discussion mode never reads a stale latch.
 
@@ -1446,12 +1450,12 @@ flags, row measurement, and browser layout. Reproduce with
 `.filePath()`.
 
 The trace surface has two tiers (Makefile: `UI_TRACE`, `UI_ORACLES`;
-`DEBUG=1` enables both). `UI_TRACE=1` alone is the light tier — event
-traces plus the spring chase telemetry below — cheap enough to measure
+`DEBUG=1` enables both). `UI_TRACE=1` alone is the light tier (event
+traces plus the spring chase telemetry below), cheap enough to measure
 production-representative frame cadence (`make build-wsl UI_TRACE=1`
 builds the minified bundle with only this tier). `UI_ORACLES=1` adds the
 standing regression oracles (`timeline.row.resize`,
-`timeline.margin.diverge`, `timeline.reasoning.tailJump` — each an extra
+`timeline.margin.diverge`, `timeline.reasoning.tailJump`, each an extra
 per-row ResizeObserver plus a subtree MutationObserver) and the
 throttled DOM snapshot walks (`timeline.dom` / `chat.dom` /
 `plan-sidebar.dom`), which are the expensive part of the surface during
@@ -1459,12 +1463,12 @@ streaming.
 
 Useful trace records:
 
-- `scroll.spring.chase` — one summary per spring chase (emitted at
+- `scroll.spring.chase` is one summary per spring chase (emitted at
   cancel; chases under 3 ticks are skipped): tick counts (write /
   sentinel), a frame-gap histogram (`gapBuckets`, bounds
-  `[<9, 9–13, 13–18, 18–26, 26–42, >42]` ms — see
+  `[<9, 9–13, 13–18, 18–26, 26–42, >42]` ms, per
   `CHASE_GAP_BUCKET_BOUNDS_MS`), `maxGapMs`, catch-up clamp count
-  (`catchupClamps`), chase-distance snaps (`distanceJumps` — the field
+  (`catchupClamps`), chase-distance snaps (`distanceJumps`, whose field
   name predates the rename; it now counts the `spring.catchupSnap`
   write that, after an observed rAF discontinuity, snaps fully to the
   target instead of animating any of the frozen-tab
@@ -1472,31 +1476,31 @@ Useful trace records:
   (stop/restart cycles), long-task count/duration during the chase
   (Chromium `longtask` observer; absent under WebKit), and
   `refusedWrites` (write attempts the element swallowed outright, a
-  subset of `writeTicks` — nonzero means the write-refusal guard below
-  was in play). This — not the 1-in-12 sampled `spring.tick` spacing —
-  is how to judge whether a chase actually dropped frames; see the
+  subset of `writeTicks`, where nonzero means the write-refusal guard
+  below was in play). This, not the 1-in-12 sampled `spring.tick`
+  spacing, is how to judge whether a chase actually dropped frames; see the
   telemetry footgun note in
   [`settle-flicker-analysis.md`](settle-flicker-analysis.md).
-- `scroll.writeRefusal` — the spring's write-refusal guard latched,
-  healed, or was abandoned (`phase` — 'abandoned' means the chase was
-  cancelled while still latched, so no heal was ever observed), with
+- `scroll.writeRefusal` records that the spring's write-refusal guard
+  latched, healed, or was abandoned (`phase`, where 'abandoned' means the
+  chase was cancelled while still latched, so no heal was ever observed), with
   element forensics (computed `overflowY` / `scrollBehavior` /
   `display` / `position`, `connected`, `surface`, geometry) and the
   wedge's shape (`consecutiveRefusals`, `wedgeMs`). Background
   (bug-report-20260818T003129Z): an ActivityRun clip spent 227s as a
-  non-scroll-container — real geometry, every scrollTop write read back
-  0 — while its content streamed; the spring's simulated position
+  non-scroll-container (real geometry, every scrollTop write read back
+  0) while its content streamed; the spring's simulated position
   coasted to the target, so it busy-wrote the FULL target at display
   rate for 37k ticks and the first accepted write after the element
   healed teleported the clip 940px. The guard (spring.ts, "Write-refusal
   guard") classifies every write three ways from a same-tick
   write+readback: MOVED (heals a latch), REFUSED (no motion on a ≥1.5px
-  request — re-anchors the model to the element's true position, so a
+  request, which re-anchors the model to the element's true position, so a
   heal can only be a bounded glide, never a teleport), and INCONCLUSIVE
-  (no motion, sub-threshold — evidence of nothing; deliberately does
+  (no motion, sub-threshold, evidence of nothing; deliberately does
   NOT heal, so a still-wedged sliver can't silently unlatch). Five
-  consecutive refusals latch the whole tick body — forced-layout reads
-  included — to ~4Hz probes with a parked-style velocity decay. The
+  consecutive refusals latch the whole tick body, forced-layout reads
+  included, to ~4Hz probes with a parked-style velocity decay. The
   guard covers spring writes only, deliberately: one-shot placement
   writers fail once and bounded during a wedge, and any sustained wedge
   during bottom-follow reaches the spring, the only writer that can
@@ -1504,37 +1508,37 @@ Useful trace records:
   diagnostic that persists in production, rate-limited to the first
   latch per 10s window and its matching bookend (per controller). The
   trigger for the wedge itself sits below the app (renderer state;
-  nothing in the codebase mutates overflow) — if it recurs, this
+  nothing in the codebase mutates overflow). If it recurs, this
   record's forensics are the root-cause capture the original incident
   lacked.
-- `scroll.contentRO` — content-geometry delta, width-reflow state, and pin
+- `scroll.contentRO`: content-geometry delta, width-reflow state, and pin
   decisions (in chat the delivery is engine-sourced, not an RO fire; the
   record name stays for trace continuity, and `settleEvidence` reports
   the warm gate's per-row settle input).
-- `scroll.contentRO.widthReflow` — width-only content reflow that armed
+- `scroll.contentRO.widthReflow`: width-only content reflow that armed
   the short layout-correction window.
-- `scroll.escape.set` — escape state changes.
-- `scroll.refreshIsNearBottom` — geometric near-bottom changes.
-- `chat.state` / `chat.dom` — MessageTimeline snapshots.
-- `timeline.margin.diverge` — settle-flicker regression oracle. Fires when a
+- `scroll.escape.set`: escape state changes.
+- `scroll.refreshIsNearBottom`: geometric near-bottom changes.
+- `chat.state` / `chat.dom`: MessageTimeline snapshots.
+- `timeline.margin.diverge`: settle-flicker regression oracle. Fires when a
   row's bottom margin escapes its content box (the measured row total counts
   it; the row's content-box observer does not), which used to drive a
   `contentRO` transient and an `oscillationSnap`. Must stay silent; see
   [`settle-flicker-analysis.md`](settle-flicker-analysis.md) for the root cause
   and the `[data-row-geometry-content] { display: flow-root }` containment fix.
-- `timeline.coldload` — one record per pane per thread-switch cold load
+- `timeline.coldload`: one record per pane per thread-switch cold load
   (`utils/coldLoadTrace.ts`), consolidating the switch-to-warm timeline
   into segments instead of leaving them scattered across the
   `scroll.warmup.*` / `chat.state` records above. Fields: `source`
   (`'cache-restore'` or `'fetch'`), `fetchMs` (switch start → initial
   slice applied; `null` on a cache restore), `itemCount` (rows the pane
-  holds after that slice merged — what actually mounts, not the wire
-  count), `settleMs` (slice applied — or switch start on a cache
-  restore — → the warm gate's rising edge), `totalMs` (switch start →
-  warm), `warmReason` (the controller's `warmReason` at that edge —
+  holds after that slice merged, meaning what actually mounts, not the wire
+  count), `settleMs` (slice applied → the warm gate's rising edge; on a
+  cache restore, switch start → that edge), `totalMs` (switch start →
+  warm), `warmReason` (the controller's `warmReason` at that edge:
   `'quiet'`, `'failsafe'`, `'settled'`, or `'skip'`), and `priors` (the
   size-priors replay summary stamped by MessageTimeline's warm-edge
-  effect — `{source, validity, rowsResolved}` per
+  effect: `{source, validity, rowsResolved}` per
   `SizePriorsReplayStats` in `timelineSizePriors.svelte.ts`, or `null`
   when no timeline stamped one). A large `fetchMs` points at the
   backend/IPC leg; a large `settleMs` with `warmReason: 'failsafe'`
@@ -1544,28 +1548,28 @@ Useful trace records:
 
   Three fields describe the gate's own cold-load behavior (see
   **Warm-Up And Restore**). `warmBeforeItems` counts warm rising edges
-  that landed BEFORE the slice — on a fetch these measure the empty
+  that landed BEFORE the slice. On a fetch these measure the empty
   pane, so the session survives them rather than closing on one, which
   is what makes `fetchMs`/`itemCount` non-null on a real cold open.
   `warmupRearmed` reports whether applying the slice re-closed the gate;
   a fetch record with `itemCount > 0` and `warmupRearmed: false` is this
   defense regressing. `abandoned` is `null` on a normal close and names
-  why otherwise — `'switched-away'` (a new switch replaced a session
+  why otherwise: `'switched-away'` (a new switch replaced a session
   still in flight) or `'thread-changed'` (the pane's warm edge arrived
   for a different thread). Every session emits on exactly one of these
   paths, so a switch that produced no record at all is itself a signal.
   Needs a `make dev DEBUG=1` build (`VITE_AGENT_OVERFLOW_UI_TRACE=1`).
-- `frame.loaf` — one record per long animation frame (>50ms, the spec's
-  fixed threshold), session-wide (`utils/loafTrace.ts`, light-tier —
-  the browser only delivers entries for frames that exceeded the
+- `frame.loaf`: one record per long animation frame (>50ms, the spec's
+  fixed threshold), session-wide (`utils/loafTrace.ts`, light-tier: the
+  browser only delivers entries for frames that exceeded the
   threshold, so there is no steady-state cost). Whole-frame duration,
   `blockingMs`, rendering-phase timestamps, and top-3 script
-  attribution — this covers what the chase telemetry can't: slow frames
+  attribution. This covers what the chase telemetry can't: slow frames
   outside any chase, and frames whose scripts were fine but whose
   style/layout phase blew the budget (invisible to `longtask`). One
   `frame.loaf.install` record per session states whether the observer
   is live, so a capture with the install record and no `frame.loaf`
-  records is positive evidence no frame exceeded 50ms — for a visible
+  records is positive evidence no frame exceeded 50ms. For a visible
   jump, that plus clean chase cadence points post-commit
   (WebView2/DWM presentation), not at the renderer.
 
@@ -1583,7 +1587,7 @@ Encode the failing ResizeObserver/geometry sequence in
 `scroll/index.svelte.test.ts` or `scroll.test.ts`, then fix the
 controller path. If the regression is two mechanisms interacting (a
 write landing inside another program's trip), add the missing op or
-starting state to `scroll/scrollInterleavings.test.ts` instead — its
+starting state to `scroll/scrollInterleavings.test.ts` instead. Its
 ops × states product holds the frame invariants (bounded motion, no
 counter-chase movement, escaped viewports never move, quiet
 convergence) across every combination, so the whole defect class stays

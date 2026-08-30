@@ -38,7 +38,7 @@ type Bootstrap struct {
 	PageMarker string `json:"pageMarker,omitempty"`
 	// BackendID and ReplicaGeneration identify the backend's history
 	// store for the client-side thread replica
-	// (docs/specs/thread-replica-sync.md §3.3): the first keys the
+	// (docs/architecture/thread-replica-sync.md §3.3): the first keys the
 	// client's replica database per backend, the second invalidates it
 	// wholesale when the backend's history counters lose continuity (a
 	// database restore). Both are empty when the store is not open yet —

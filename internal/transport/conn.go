@@ -37,7 +37,7 @@ const DefaultMaxConcurrentRPCs = 64
 const (
 	// defaultKeepaliveInterval is how often the per-connection keepalive
 	// loop writes a client-visible {"type":"ping"} frame — full
-	// rationale in AGENTS.md §Keepalive; the frontend
+	// rationale in docs/architecture/transport.md; the frontend
 	// STALE_TRAFFIC_THRESHOLD_MS is 3× this cadence, keep them in
 	// ratio. Config.KeepaliveInterval overrides (tests shrink it).
 	defaultKeepaliveInterval = 10 * time.Second

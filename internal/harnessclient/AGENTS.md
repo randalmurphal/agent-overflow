@@ -2,7 +2,7 @@
 
 The Go client for a running agent test harness or soak instance: how to
 find one, how to start one, how to speak its wire, and how to read the
-evidence files it leaves behind. Twin of `e2e/src/harness.ts` — the same
+evidence files it leaves behind. Twin of `e2e/src/harness.ts`, the same
 contract from Go, so `cmd/ao-harness` and any Go test share one
 implementation of it instead of two that drift.
 
@@ -19,28 +19,28 @@ reason `cmd/ao-harness` cannot fabricate app state.
 
 ## Layout
 
-- `bootstrap.go` — the package doc, the `Bootstrap` payload (the stdout
+- `bootstrap.go`: the package doc, the `Bootstrap` payload (the stdout
   line AND `<dataDir>/harness-instance.json`, one shape for both),
   `BootstrapPrefix`, and the readers that find an instance from a data
   root or from a captured stdout line.
-- `info.go` — the one RPC result this package TYPES (`HarnessInfo`),
+- `info.go`: the one RPC result this package TYPES (`HarnessInfo`),
   because every consumer of it wants a path. `SoakAutopilot` rides along
   as an optional string (`armed` / `failed: <reason>` / `off`); an older
   backend omits it, and a reader must treat absent as "not judged".
-- `frames.go` — the wire frames. See the restatement rule below.
-- `client.go` — `Dial` / `DialURL`, the read loop, `Call` / `CallRaw`,
+- `frames.go`: the wire frames. See the restatement rule below.
+- `client.go`: `Dial` / `DialURL`, the read loop, `Call` / `CallRaw`,
   `Subscribe` / `Replay`, `Close`, and the read limit.
-- `events.go` — the event log: `WaitForEvent`, `WaitForEventOpts`,
+- `events.go` holds the event log: `WaitForEvent`, `WaitForEventOpts`,
   `Await`, `Count`, `Events`, `Clear`, `Listen`, and `dispatch`, which is
   where the log and waiter rules below actually live.
-- `launch.go`, `spawn_unix.go`, `spawn_windows.go` — detached boot: own
+- `launch.go`, `spawn_unix.go`, `spawn_windows.go` handle detached boot: own
   session/process group, stderr to a file that IS the child's console,
   stdout to a sibling file polled for the bootstrap line. A pipe would
   hand the child SIGPIPE the moment the parent returned.
-- `process.go` — liveness and signalling for a pid. `TerminateProcess`
+- `process.go`: liveness and signalling for a pid. `TerminateProcess`
   CONFIRMS its kill (see below).
-- `tail.go` — `TailFile` (last N lines) and `FollowFile` (`-f`).
-- `fileident_unix.go`, `fileident_other.go` — `FileIdentity(FileInfo)`,
+- `tail.go`: `TailFile` (last N lines) and `FollowFile` (`-f`).
+- `fileident_unix.go`, `fileident_other.go`: `FileIdentity(FileInfo)`,
   the one platform-split call here. Unix answers device+inode from
   `FileInfo.Sys()`; everywhere else answers empty, and every caller falls
   back to its size heuristic alone. `cmd/ao-harness`'s health cursor uses
@@ -58,7 +58,7 @@ is a transport-shaped server that decodes what this client SENDS through
 tests exercise this package's private frames against the real ones on
 every run, and a field that is renamed on one side fails the other. If
 you add a field here, add the case that crosses it through the fake
-backend — a restatement with no traffic over it is a copy that will rot.
+backend. A restatement with no traffic over it is a copy that will rot.
 
 Only the fields a client reads or writes are declared. The server
 tolerates omitted optional fields, and restating the full struct would
@@ -69,8 +69,8 @@ buy a maintenance burden with no assertion behind it.
 One in-memory log of pushed frames, and every assertion reads it.
 
 - **`WaitForEvent` CONSUMES its match.** Waiting twice for the same shape
-  observes two distinct occurrences rather than the first one twice —
-  multi-turn assertions depend on it, and the TS client behaves
+  observes two distinct occurrences rather than the first one twice.
+  Multi-turn assertions depend on it, and the TS client behaves
   identically. Consumption is a property of the LOG entry, not of the
   waiter, which is what makes "already arrived" and "arrives later" the
   same rule: history is scanned first, so a fast backend cannot win the
@@ -84,11 +84,11 @@ One in-memory log of pushed frames, and every assertion reads it.
   concurrent waits are ordered, not a coin flip.
 - **`Count` is the absence half.** A wait can only prove something
   happened; `Count` is how a test proves something did not. Twin of
-  `countEvents` in `e2e/src/harness.ts` — keep the two in step.
+  `countEvents` in `e2e/src/harness.ts`. Keep the two in step.
 - **The log sheds in CHUNKS at its cap** (`defaultEventLogCap`, 10k,
   matching the TS client). At the cap the oldest quarter goes in one
   move. Evicting one entry per arrival is an O(cap) memmove on every
-  subsequent event — quadratic over a sustained stream, on the read loop,
+  subsequent event, quadratic over a sustained stream, on the read loop,
   under the mutex. The cost is that a `Count` taken just after a shed
   sees less history than the cap implies, which the log's contract
   already allows: it is an assertion surface over recent traffic, not a
@@ -103,7 +103,7 @@ One in-memory log of pushed frames, and every assertion reads it.
   got there first" and "the deadline got there first" is a decision rather
   than a race with two losers.
 - **`Await` parks the wait BEFORE the caller causes the event.** Register,
-  then send — a mock can complete a turn inside the `SendMessage` round
+  then send. A mock can complete a turn inside the `SendMessage` round
   trip, and a wait started afterwards would miss it. Every `Await` must
   end in `Wait` or `Close`, or its waiter lives as long as the connection.
 - **`WaitForEventOpts` tunes WHICH occurrence settles a wait.** `Newest`
@@ -118,17 +118,17 @@ One in-memory log of pushed frames, and every assertion reads it.
 ## Following a file
 
 `FollowFile` polls (`followPollInterval`, a package var so tests can
-shrink it — production never writes it) and emits COMPLETE LINES ONLY.
+shrink it, though production never writes it) and emits COMPLETE LINES ONLY.
 Two bounds make that safe against a fast writer: each poll reads at most
 `followReadCap`, and the trailing partial line is carried in a buffer
 with the read offset advanced PAST it. Leaving the offset before the
-fragment instead — the obvious implementation — re-reads and re-scans the
+fragment instead (the obvious implementation) re-reads and re-scans the
 same bytes every tick until the writer finishes the line.
 
 A rotation is detected two ways, and each catches one the other cannot.
 SIZE catches the file that SHRANK (a truncating rotate). IDENTITY
-(`FileIdentity`, device+inode) catches the file that was REPLACED — a new
-inode renamed over the name — and then grew back PAST the old offset,
+(`FileIdentity`, device+inode) catches the file that was REPLACED (a new
+inode renamed over the name) and then grew back PAST the old offset,
 which looks like ordinary growth to the size check and would silently
 resume mid-record inside a file the follower has never read. Where
 identity is empty (a platform with no cheap answer) the size heuristic is
@@ -137,7 +137,7 @@ file it belonged to, because its newline is never coming.
 
 ## Confirming a kill
 
-`TerminateProcess` sends SIGTERM, waits out `grace`, then SIGKILLs — and
+`TerminateProcess` sends SIGTERM, waits out `grace`, then SIGKILLs, and
 then POLLS until the pid is actually gone, failing with `pid N survived
 SIGKILL after <window>` if it is not. A successful `Kill()` is a signal
 DELIVERED, not a process removed: an uninterruptible sleep (a wedged 9p
@@ -163,14 +163,14 @@ not have to spend it.
 ## Testing
 
 `go test ./internal/harnessclient/` runs everything against
-`fakeBackend`, an httptest server speaking the real transport frames — no
+`fakeBackend`, an httptest server speaking the real transport frames. No
 App, no boot. It covers RPC round trips and error envelopes, batch and
 ping frames, the wait/consume/count rules, the chunked shed, waiter
 ordering, subscribe/replay reaching the server, close semantics, the
 detached launch, and the tail/follow cases (including a rotate-and-regrow
 that only identity can see). Two of them are about the timeout path
-specifically — a wait that times out consumes nothing, and an event
-delivered in the race window is still returned — because a lost event
+specifically (a wait that times out consumes nothing, and an event
+delivered in the race window is still returned), because a lost event
 there is invisible until an assertion hangs somewhere else. The
 survived-SIGKILL report is exercised by stubbing the liveness probe: no
 cooperating child can be asked to outlive SIGKILL on demand. The real

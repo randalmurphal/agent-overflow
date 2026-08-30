@@ -457,9 +457,9 @@ describe('buildPathLinkExtension', () => {
     });
 
     it('rewrites a workspace-relative href when a workspace is present', () => {
-      const links = findLinks(lex('[doc](docs/specs/theme-system.md)', ext()));
+      const links = findLinks(lex('[doc](docs/architecture/theme-system.md)', ext()));
       expect(links).toHaveLength(1);
-      expect(links[0].href).toContain('path=docs%2Fspecs%2Ftheme-system.md');
+      expect(links[0].href).toContain('path=docs%2Farchitecture%2Ftheme-system.md');
       expect(links[0].href).toContain('workspace=%2Fworkspace');
     });
 

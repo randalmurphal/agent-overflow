@@ -6,7 +6,7 @@ frontend reads.
 
 ## Layout
 
-- `keybindings.go` — `Keybinding` wire shape, `Defaults`,
+- `keybindings.go`: `Keybinding` wire shape, `Defaults`,
   `Service{Get,Update,Reset}` (atomic JSON read/write under a private
   mutex, MaxCount-capped), and the pure `Merge(defaults, user)` used
   by `Service.Get`. `New(configDir)` falls back to
@@ -24,7 +24,7 @@ type LoadResult struct {
 }
 ```
 
-- `Bindings` is ALWAYS usable — `Defaults` merged with whatever
+- `Bindings` is ALWAYS usable, `Defaults` merged with whatever
   overrides were readable. A missing file is not a failure (fresh
   install); an unreadable or malformed one falls back to `Defaults`.
 - `LoadError` is non-empty only when the file existed and could not be
@@ -33,7 +33,7 @@ type LoadResult struct {
 Why not an error pair: both halves are non-nil together in exactly the
 case that matters, and that shape invites the reflexive
 `if err != nil { return }` that discards a perfectly good binding list.
-The failure is DATA here — it crosses the wire beside the bindings and
+The failure is DATA here. It crosses the wire beside the bindings and
 the frontend renders it (banner in Keybindings settings + a toast).
 That matters because `Update` overwrites the user file wholesale: a
 silently-swallowed read failure means the next edit in Settings
@@ -81,8 +81,8 @@ Rules that hold across the package:
   row it clears (`DefaultID` or `DefaultKey`). An empty key with no
   identity is a caller that dropped the chord, not a user who cleared
   one.
-- `Merge` treats an unbound entry exactly like a rebind — it replaces
-  its default row — except that an unbound entry matching NO default
+- `Merge` treats an unbound entry exactly like a rebind (it replaces
+  its default row), except that an unbound entry matching NO default
   is dropped rather than appended. It silences nothing, and keeping it
   would render a chordless row nothing can restore.
 - `Defaults` never contains the sentinel
@@ -108,7 +108,7 @@ Rules that hold across the package:
 - Do NOT log-and-swallow a parse error in `readFile`. `Get` turns it
   into `LoadResult.LoadError` (see the load-error contract above);
   silently dropping the file would make a fresh install and a
-  corrupted edit indistinguishable — to the code AND to the user
+  corrupted edit indistinguishable, to the code AND to the user
   whose next save overwrites it.
 - Do NOT change the JSON tags on `Keybinding` without a coordinated
-  frontend change — the bindings tree carries a generated mirror.
+  frontend change. The bindings tree carries a generated mirror.

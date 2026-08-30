@@ -1,7 +1,7 @@
 # Invariants
 
 Load-bearing rules the whole system depends on. If you're about to
-change code that touches any of these, read the rationale first — each
+change code that touches any of these, read the rationale first. Each
 one exists because violating it produced (or would produce) a specific
 user-visible bug.
 
@@ -24,7 +24,7 @@ an update could shift a row's index, history would renumber itself
 mid-conversation and the scroll position would jump.
 
 **Enforcement.** `UNIQUE INDEX idx_items_thread_turn_item_unique`
-(migration v15 in `internal/store/migrate.go`) — two rows in the same
+(migration v15 in `internal/store/migrate.go`). Two rows in the same
 thread+turn cannot share an `item_index`. The upsert path in
 `internal/store/items.go` only computes `item_index` on INSERT; UPDATE
 leaves the existing value untouched.
@@ -47,7 +47,7 @@ changed at completion, the reactive diff would see "old item removed,
 new item added" and re-mount the DOM node. That breaks selection,
 copy-paste, and any in-progress user interaction (e.g., expanding
 thinking). Also: `completion_of` and `parent_id` are back-references
-to ids — an id rewrite would require a cascade rewrite of every
+to ids, and an id rewrite would require a cascade rewrite of every
 referencing row, which we don't do.
 
 **Enforcement.** ID format is deterministic per kind (see "Item ID
@@ -58,7 +58,7 @@ event and keeps computing the same value on subsequent deltas.
 **Test.** The streaming-settle coverage in
 `internal/triage/stream_state_test.go` and the upsert-idempotency
 tests in `internal/store/items_lifecycle_test.go`
-(`TestUpsertItemIdempotentPreservesItemIndex` in particular —
+(`TestUpsertItemIdempotentPreservesItemIndex` in particular:
 replay re-upserts find the same row, which requires id stability).
 
 ---
@@ -113,7 +113,7 @@ in `app_e2e_lifecycle_test.go`.
 
 ## 5. `completion_of` references a `tool_call` with `is_background=true`
 
-**Rule.** Inline tool_calls mutate in place — they never produce a
+**Rule.** Inline tool_calls mutate in place. They never produce a
 `tool_completion`. Only backgrounded launches do. Every
 `items` row with `kind='tool_completion'` points via `completion_of`
 at a `tool_call` row with `is_background=1`.
@@ -187,7 +187,7 @@ two events for the same thread race on `item_index` assignment.
 
 **Rationale.** If two goroutines could concurrently assign
 `item_index`, one of them would lose the `UNIQUE` index race at
-commit time — by which point the first row might already be visible
+commit time, by which point the first row might already be visible
 to the frontend. Serializing up-front keeps `item_index` contiguous
 and eliminates the retry path.
 
@@ -255,7 +255,7 @@ resolves to the card's turn.
 ## 11. `item_index` is assigned in intended-appearance order, not wire-arrival order
 
 **Rule.** For inline events, the begin event fixes the index and the
-end event mutates the same row — automatic. For anything that triage
+end event mutates the same row, which is automatic. For anything that triage
 creates as a NEW row during an active streaming phase (currently:
 backgrounded `tool_completion`), the streaming-phase interrupt queue
 defers `item_index` assignment until the **same-scope** stream settles.
@@ -270,15 +270,15 @@ settles, then assigns indexes in the intended visual order.
 
 **Scope-aware deferral.** The defer is SAME-scope only. A main-scope
 completion (`parent_id == ""`) must NOT queue behind a concurrent
-subagent-scope stream — a subagent's nested text can't be the tail a
+subagent-scope stream. A subagent's nested text can't be the tail a
 main-timeline row would jump above, and a backgrounded subagent streams
 continuously, so the queue would drain only at thread idle. That landed
 the completion AFTER later main text it actually preceded (thread
 `4d82b192` turn 18: Agent A's "Report CPU model → done" rendered below
 "First back" instead of above it). The QUEUE decision keys on scope
 (`streamingScopeCounts`); the DRAIN stays thread-wide (drain once every
-scope is idle) — conservative and correct, since relative order within
-each scope is what matters and a queued row never strands.
+scope is idle), which is conservative and correct, since relative order
+within each scope is what matters and a queued row never strands.
 
 **If new event kinds are added later that produce fresh rows mid-turn,
 they must route through the queue too**, or the same "new row inserts
@@ -290,7 +290,7 @@ the interrupt queue. `persistDeferredUserText` calls the standard
 `persistItem` path at echo time, which allocates `MAX+1` of the
 dispatch-decided turn. This is correct because the "intended visual
 order" for a queued send is the tail at the moment the agent observes
-it — anything the model emits between dispatch and echo should sort
+it. Anything the model emits between dispatch and echo should sort
 BEFORE the queued message, not after. Capturing an item_index at
 dispatch (and then inserting at that captured slot via the now-removed
 `InsertItemAtIndex`) was the queued-message ordering regression
@@ -355,7 +355,7 @@ provider-specific packages." Triage and store are provider-agnostic;
 letting the provider write to SQLite would force the store to handle
 provider-specific types and defeat the abstraction.
 
-**Enforcement.** Architectural — the `provider/` package `AGENTS.md`
+**Enforcement.** Architectural: the `provider/` package `AGENTS.md`
 calls this out explicitly, and the package has no import of
 `internal/store`. Reviews catch any new import.
 
@@ -411,8 +411,8 @@ usage/cost accounting is carried on turn completion metadata.
 `ErrUnhandledEventKind` so a missing case is caught on the test
 loop rather than silently dropped at runtime.
 
-**Rationale.** A kind the router doesn't handle is a silent drop —
-the event evaporates and the frontend sees nothing. The Go-side
+**Rationale.** A kind the router doesn't handle is a silent drop. The
+event evaporates and the frontend sees nothing. The Go-side
 exhaustiveness tests guarantee that every declared kind is
 reachable; if a new kind is added to the enum but not handled, the
 test fails.
@@ -495,14 +495,14 @@ only signal that SQLite concurrency has degraded.
 **Rationale.** SQLite silently downgrades `journal_mode=WAL` to the
 prior mode under some filesystems (network mounts, read-only mounts,
 shared-cache DBs). A store running in DELETE mode has different
-concurrency semantics — concurrent readers during a write block on
-the file — which we rely on not blocking for responsive thread
-switches. The warning tells us that the concurrency model has
+concurrency semantics: concurrent readers block on the file during a
+write, and responsive thread switches rely on them not blocking. The
+warning tells us that the concurrency model has
 degraded so we can investigate before users hit the visible symptom.
 
 **Note.** Earlier docs described this as "boot fails loudly." The
 code today logs and continues. If the hard-fail behavior is desired,
-it needs a deliberate change plus a test — today's rule is "warn
+it needs a deliberate change plus a test. Today's rule is "warn
 and proceed."
 
 **Enforcement.** `configureDatabase` runs on every `Open` via
@@ -522,7 +522,7 @@ today.
 `tool_use_id`. No ID rewriting between start and complete. No
 "consumed by another handler." Task-lifecycle enrichments (Claude's
 TaskOutput, `task_updated` terminal) emit a SEPARATE
-`EventBackgroundTaskTerminal` — they never substitute for the
+`EventBackgroundTaskTerminal`. They never substitute for the
 tool-lifecycle completion.
 
 **Rationale.** Violating this produced the TaskOutput stuck-`running`
@@ -545,14 +545,14 @@ parser; assert TaskOutput's own `tool_use_id` receives an
 `EventToolComplete` in addition to any task-terminal events.
 
 **See also.** [`turn-lifecycle.md §Tool lifecycle`](turn-lifecycle.md#1-tool-lifecycle);
-[`claude-wire.md §tool_result`](../references/claude-wire.md#user-message--tool_result-blocks).
+[`claude-wire.md §tool_result`](../references/claude-wire.md#user-message-tool_result-blocks).
 
 ---
 
 ## 21. `task_notification` is not a completion source (but it can drain a stash)
 
 **Rule.** The Claude `system/task_notification` envelope is not a
-completion **status** source — its arrival never decides whether a
+completion **status** source. Its arrival never decides whether a
 task ended in `completed` / `failed` / `killed`. Lifecycle status
 comes only from `system/task_updated` `patch.status` and TaskOutput
 `tool_use_result.task.status`.
@@ -590,7 +590,7 @@ one `EventBackgroundTaskNotification` and zero lifecycle events.
 drain + sibling write behaviour.
 
 **See also.** [`turn-lifecycle.md §Task lifecycle`](turn-lifecycle.md#2-task-lifecycle-claude-only);
-[`turn-lifecycle.md §Tray decoupling`](turn-lifecycle.md#tray-decoupling--process-state-vs-agent-observation-tray-a);
+[`turn-lifecycle.md §Tray decoupling`](turn-lifecycle.md#tray-decoupling-process-state-vs-agent-observation-tray-a);
 [`claude-wire.md §task_notification`](../references/claude-wire.md#systemtask_notification).
 
 ---
@@ -611,7 +611,7 @@ that drops a completion freezes the UI. Deriving from process
 liveness means a legitimately backgrounded task makes the agent look
 like it's still working. The single-source-of-truth global registry
 (rather than a per-pane field) means the indicator survives a
-thread switch — switching away from and back to a thread that's
+thread switch. Switching away from and back to a thread that's
 still working preserves the live record because nothing in pane
 lifecycle clears the global map. Invariant 20 (force every tool_use
 to complete) addresses the parser-bug case; this invariant ensures
@@ -625,7 +625,7 @@ populated only by `projectTurnStarted` (called from the
 `projectTurnCompleted`. Every reader (chat working indicator,
 sidebar pill, message timeline empty-state, composer mid-turn gate,
 LiveTodoPanel pull-up, workspace-change lock) calls
-`getActiveTurn(pane.threadId)` directly — no per-pane shim, no
+`getActiveTurn(pane.threadId)` directly: no per-pane shim, no
 parallel state slice. No code path rehydrates the registry from
 SQLite or item state.
 
@@ -650,7 +650,7 @@ Backgrounded launches are exempt.
 `tool_result`, leaving a tool_call row orphaned at `running`. The
 turn-complete handler acts as a safety net so the timeline always
 settles cleanly. Backgrounded launches are exempt because their
-work can legitimately outlive the turn — see invariant 24.
+work can legitimately outlive the turn. See invariant 24.
 
 **Enforcement.** `handleTurnComplete` in
 `internal/triage/turn_lifecycle.go` iterates the turn's items and
@@ -677,8 +677,8 @@ returns every live `is_background=1` launch at ANY depth, every live
 agent launch that DESCENDS from one (which also supplies the
 intermediate ancestors, so the frontend indents by walking `parentId`
 within the result), and the recent completion siblings of that set. A
-foreground plain tool call under a background agent is NOT a tray row —
-it is the agent's own work, rendered inside its card. This is a DISPLAY
+foreground plain tool call under a background agent is NOT a tray row.
+It is the agent's own work, rendered inside its card. This is a DISPLAY
 rule only: the reaper and queue gates in `items_lifecycle.go`
 (`HasRunningTopLevelForegroundToolCall`, `HasLiveBackgroundToolCall`,
 `HasQueueBlockingBackgroundToolCall`,
@@ -691,7 +691,7 @@ survives a session teardown are different questions.
 **Rationale.** Claude's `task_updated` terminal / TaskOutput
 enrichment and Codex's background terminal / subagent completion
 signals can arrive AFTER the turn that launched the work. Agents
-expect this — they send messages that dispatch background work and
+expect this. They send messages that dispatch background work and
 move on. Captured Claude evidence:
 `docs/references/fixtures/claude/ndjson_outlives.log` shows the turn-1 `result`
 landing before the backgrounded task's `task_updated`.
@@ -747,7 +747,7 @@ fabricate transcript history. See
 it does have backgrounded execution: `exec_command` yields to the model
 after `yield_time_ms` (10s default) while the PTY keeps running in
 `UnifiedExecProcessManager`. The tool call item stays `inProgress` until
-`spawn_exit_watcher` eventually fires `ExecCommandEnd` — potentially
+`spawn_exit_watcher` eventually fires `ExecCommandEnd`, potentially
 across turns, up to `background_terminal_max_timeout` (1h default).
 `source: "unifiedExecStartup"` is the unambiguous wire signal for "this item is
 a unified exec candidate"; typed `TerminalInteraction` is the visible wait
@@ -760,7 +760,7 @@ history.
 `spawn_agent` child threads live on their own `thread_id` and the
 parent's `spawn_agent` tool_call completes on the wire immediately. The
 `is_background` flag on the parent's tool_call row reflects that the
-referenced child thread may still be running — authorized by V1's
+referenced child thread may still be running, authorized by V1's
 `agentsStates` or V2's canonical started activity, not by any event-ordering
 heuristic. V2 child output is quarantined until the typed ownership edge
 arrives, including recursively-spawned grandchildren.
@@ -777,24 +777,24 @@ The former `BackgroundClassifier` at
 `is_background=true`.
 
 **Test.** Codex projector unit tests:
-- `TestCodexUnifiedExecStartWaitsForTypedTerminalInteraction` — text,
+- `TestCodexUnifiedExecStartWaitsForTypedTerminalInteraction`: text,
   reasoning, and turn-complete events do not background unified exec without
   a typed wait signal; the raw running result can still enrich live state but
   not transcript history or tray backgrounding.
-- `TestCodexUnifiedExecQuickCompletionPersistsNormalCommand` —
+- `TestCodexUnifiedExecQuickCompletionPersistsNormalCommand`:
   typed command completion persists as a normal command row.
 - `TestCodexUnifiedExecIdleCompletionAfterTurnCompleteClearsTransientStateWithoutHistory`
   and
-  `TestCodexUnifiedExecIdleCompletionAfterInterruptedTurnClearsTransientStateWithoutHistory`
-  — late typed completions clear the live tracker but do not append chat
+  `TestCodexUnifiedExecIdleCompletionAfterInterruptedTurnClearsTransientStateWithoutHistory`:
+  late typed completions clear the live tracker but do not append chat
   history once no Codex wire round is active.
-- `TestCodexUnifiedExecLateRawYieldResultDoesNotCreateDuplicate`
-  — a late raw exec result cannot create duplicate or reordered transcript
+- `TestCodexUnifiedExecLateRawYieldResultDoesNotCreateDuplicate`:
+  a late raw exec result cannot create duplicate or reordered transcript
   history after typed command completion.
-- `TestCodexSubagentRunningPastTurnEnd_Backgrounded` — spawn_agent
+- `TestCodexSubagentRunningPastTurnEnd_Backgrounded`: spawn_agent
   with running child stamps background at parent turn close.
 - `TestCodexSubagentCompletion_WaitResolvesBackgroundedSpawn` and
-  `TestCodexSubagentCompletion_SynthesizesSiblingAtTail` — wait and
+  `TestCodexSubagentCompletion_SynthesizesSiblingAtTail`: wait and
   notification terminal paths synthesize sibling completions.
 
 **Per-row stop (no longer an upstream gap).** This section used to record
@@ -812,7 +812,7 @@ per-row Stop button Claude's `stop_task` renders; see
 [`codex.md §Background terminals`](../references/codex.md#background-terminals).
 
 This changes nothing about the rule above. Stopping a background terminal
-is a user action on an already-authorized row — it is not, and must not
+is a user action on an already-authorized row. It is not, and must not
 become, a source of `is_background` authorization. Whether a row is
 backgrounded is still decided only by the two wire-typed signals; the
 stop RPC merely acts on rows that already are.
@@ -856,15 +856,15 @@ authorized "model has stopped" values:
 
 It does NOT emit on:
 
-- `"tool_use"` — model paused for a tool; more text follows
-- `"pause_turn"` — model explicitly asked for more time
-- `"max_tokens"` — harness may auto-continue
+- `"tool_use"`: model paused for a tool; more text follows
+- `"pause_turn"`: model explicitly asked for more time
+- `"max_tokens"`: harness may auto-continue
 
 The emitted event carries a typed `provider.SoftRoundCloseMeta` with
 `stop_reason` and the parser's PEEKED `assistant_message_id` (peek,
-not take — the trailing wire `result` envelope still consumes via
-`takeLastAssistantMessageID`). Usage/cost are NOT on the soft event
-— those land on the trailing `result`. Triage's
+not take: the trailing wire `result` envelope still consumes via
+`takeLastAssistantMessageID`). Usage/cost are NOT on the soft event.
+Those land on the trailing `result`. Triage's
 `handleTurnComplete` settles the round on this signal; the trailing
 wire `result` envelope folds late payload via
 `persistLateTurnPayload` → `store.UpdateTurnLatePayload`. Per-column
@@ -874,23 +874,23 @@ fold semantics:
   settle's value).
 - `assistant_message_id`: last non-empty wins (overwrite). Each
   subsequent round's settle replaces the persisted column so it
-  always reflects the FINAL assistant message of the turn —
-  matches the documented contract on
+  always reflects the FINAL assistant message of the turn,
+  matching the documented contract on
   `SettledTurn.assistantMessageId`.
 
 **Rationale.** Claude Code 2.1.118 withholds the `result` envelope
 when a `local_agent` (Task) subagent is still running at parent
-end_turn — the wire turn stays alive even though the parent is
+end_turn. The wire turn stays alive even though the parent is
 idle. Without this signal, the working indicator stays on for the
 full subagent runtime (~10s in the captured spike).
-Backgrounded `local_bash` does NOT trigger this delay — the
+Backgrounded `local_bash` does NOT trigger this delay. The
 distinction is keyed on `local_agent` specifically. Backed by
 fixtures
 [`local_agent_outlives.ndjson`](../references/fixtures/claude/local_agent_outlives.ndjson),
 [`local_agent_user_input_during_wait.ndjson`](../references/fixtures/claude/local_agent_user_input_during_wait.ndjson),
 [`local_agent_plus_bg_bash.ndjson`](../references/fixtures/claude/local_agent_plus_bg_bash.ndjson).
 
-The gating rules are not heuristics — `parent_tool_use_id == null`
+The gating rules are not heuristics: `parent_tool_use_id == null`
 distinguishes parent messages from subagent messages, and the
 authorized stop_reason set is the closed list documented in
 [`claude-wire.md`](../references/claude-wire.md). Treating this as a
@@ -905,12 +905,12 @@ keeps running uninterrupted).
 
 **Parent-content resume re-arm (Claude 2.1.154+).** The soft-close
 above is correct when the parent has genuinely stopped (a subagent
-outlives it, or the turn is truly done — the trailing `result`
-follows within ~milliseconds). But Claude Code 2.1.154+ also emits a
+outlives it, or the turn is truly done, with the trailing `result`
+following within ~milliseconds). But Claude Code 2.1.154+ also emits a
 parent `end_turn` at *intermediate* message boundaries: it splits one
 logical turn (interleaved thinking + tool use) into multiple wire
 messages and resumes the SAME turn with a fresh parent `message_start`
-— no intervening `result` or `system.init`. The soft-close has
+and no intervening `result` or `system.init`. The soft-close has
 already fired `provider:turn_completed` (clearing the working
 indicator + Stop button), so without a re-arm the indicator stays
 dead for the rest of the turn while the agent is visibly still
@@ -919,7 +919,7 @@ mid-thinking, couldn't interrupt, but it kept going" bug; it did not
 exist before 2.1.154 (verified: 0 occurrences across 25 days of
 pre-2.1.154 wire logs, 14 the day 2.1.154 landed).
 
-The fix is reactive, not predictive — at the `end_turn` the three
+The fix is reactive, not predictive. At the `end_turn` the three
 cases ("done", "parked waiting on subagent", "about to resume") are
 byte-identical on the wire, so the only safe discriminator is what
 happens *next*. When the FIRST **parent** (`parent_tool_use_id == ""`)
@@ -930,19 +930,19 @@ the `system.init` re-round) and re-emits `provider:turn_started`.
 
 Two guards keep this invariant-27-safe:
 
-- **parent-only** — subagent content (`parent_tool_use_id != ""`)
+- **parent-only**: subagent content (`parent_tool_use_id != ""`)
   never re-arms. In the `local_agent`-outlives case the parent IS
   done and only the subagent streams until the trailing `result`; the
   indicator correctly stays cleared through that wait. Verified
   against production 2.1.154+ wire: 14/14 real parent resumes
   re-armed, 0 subagent parks lit.
-- **settled + no-open-round** — only the first parent block after a
+- **settled + no-open-round**: only the first parent block after a
   soft-close re-arms; subsequent blocks in the same resumed round are
   no-ops (no per-block blink), and an ordinary mid-round block start
   (round not yet settled) never fires.
 
 Stuck-ON is structurally impossible: re-arm only ever *opens* a round;
-the real `result` (reliably emitted — 36/36 turns on 2.1.154+) and
+the real `result` (reliably emitted, 36/36 turns on 2.1.154+) and
 `CleanupThread`/the next send always terminate it.
 
 **Enforcement.** Only `parse_stream.go`'s `message_delta` case may
@@ -965,13 +965,13 @@ column on the persisted row converges on the FINAL round's id via
   `TestParentContentResumeReArmsAfterSoftClose` (two soft-close→resume
   cycles in one logical turn each re-emit `provider:turn_started`),
   `TestSubagentContentDoesNotReArmDuringSoftClose` (the parent-only
-  guard — subagent content never re-arms),
+  guard: subagent content never re-arms),
   `TestParentContentDoesNotReArmMidRound` and
   `TestParentContentDoesNotReArmFreshSession` (the settled +
   no-open-round guards).
 
 **See also.**
-[`claude-wire.md §Soft round close`](../references/claude-wire.md#soft-round-close--message_deltastop_reason),
+[`claude-wire.md §Soft round close`](../references/claude-wire.md#soft-round-close-message_deltastop_reason),
 [`turn-lifecycle.md §Wire-round vs logical-turn cadence`](turn-lifecycle.md).
 
 ---
@@ -981,7 +981,7 @@ column on the persisted row converges on the FINAL round's id via
 **Rule.** Any uuid Agent Overflow passes as `--resume-session-at` must
 be a `user`/`assistant` row that (a) is reachable by walking
 `parentUuid` back from the session file's last uuid-bearing transcript
-row (the **active branch** — the chain claude itself reconstructs on
+row (the **active branch**, the chain claude itself reconstructs on
 resume) AND (b) survives the CLI's resume deserialization filters
 (unresolved client tool_uses, orphaned thinking-only rows,
 whitespace-only rows + the user-run merge). And any session file AO
@@ -1001,27 +1001,27 @@ have bricked real threads, deterministically on every retry:
   34-minute Bash mid-run, leaving the transcript leaf an assistant
   `tool_use` row with no `tool_result`. The row is the branch tip, but
   the CLI drops it (and its thinking sibling) before validating the
-  cursor — see
+  cursor. See
   [`claude-wire.md §resume deserialization filters`](../references/claude-wire.md#session-jsonl-resume-deserialization-filters-crash-tails).
 
 **Enforcement, all three layers:**
 
-- `sessionfork/rechain.go` — fork/slice output force-chains each
+- `sessionfork/rechain.go`: fork/slice output force-chains each
   deferred api_error row to its file predecessor (subtype-scoped;
   compact-boundary system rows are legitimate `parentUuid:null` roots
-  and are never re-chained). User/assistant rows are never re-chained —
-  claude's own walk correctly ignores abandoned content branches.
-- `sessionleaf_branch.go` + `sessionleaf_resumefilters.go` — the cold
+  and are never re-chained). User/assistant rows are never re-chained,
+  because claude's own walk correctly ignores abandoned content branches.
+- `sessionleaf_branch.go` + `sessionleaf_resumefilters.go`: the cold
   scan validates the file-order leaf against a branch index built in
   the same pass, runs the CLI's three resume filters over the active
-  chain (conservative mirror — every blessed uuid survives the CLI's
+  chain (conservative mirror: every blessed uuid survives the CLI's
   possibly-larger list), and repairs rejected picks to the deepest
   surviving row; no usable row → empty leaf → the spawn omits
   `--resume-session-at` entirely (claude's own default-leaf semantics,
   always safe).
-- `resolveClaudeResumeAt` (app_session.go) — explicit cursors (the
+- `resolveClaudeResumeAt` (app_session.go): explicit cursors (the
   live-tracker leaf from the context-repair restart) are validated via
-  `claude.ResumeAtOnActiveBranch` before spawn — same branch + filter
+  `claude.ResumeAtOnActiveBranch` before spawn, the same branch + filter
   screen, so a wire-derived leaf whose tool_result never reached the
   file (process died mid-tool) is rejected; rejected cursors fall
   back to the file scan, loudly.
@@ -1029,8 +1029,8 @@ have bricked real threads, deterministically on every retry:
 The row-admission set for the branch walk
 (`sessionfork.TranscriptTypes`: user/assistant/attachment/system/
 progress, sidechains excluded) is spike-verified per type against
-2.1.170 and is shared by the fork transform and the branch validator —
-one exported set, no copies to drift — see
+2.1.170 and is shared by the fork transform and the branch validator
+(one exported set, no copies to drift). See
 [`claude-wire.md §active-branch semantics`](../references/claude-wire.md#session-jsonl-active-branch-semantics---resume----resume-session-at).
 Fixture:
 [`session_api_error_offbranch.jsonl`](../references/fixtures/claude/session_api_error_offbranch.jsonl).
@@ -1054,18 +1054,18 @@ rejection); `app_session_resumeat_test.go`
 `CleanupThread` (StopSession / revert / thread delete) and cleared
 **only** by the host's session-start funnel
 (`startSessionNowWithClaudeResumeAt` → `triage.MarkThreadActive`,
-pre-spawn). No wire event clears it — not even `EventInit`.
+pre-spawn). No wire event clears it, not even `EventInit`.
 Host-synthesized events (send-failure synthetic turn-completes,
 `emitErrorToThread`) route through `triage.HandleSynthetic`, which
 bypasses the gate; wire events from a stopped thread's prior session
-stay dropped (Bug B5 semantics) — including errors a wire event
+stay dropped (Bug B5 semantics), including errors a wire event
 *triggers* on the read loop, which use `emitWireErrorToThread`.
 
 **Rationale.** The original design cleared the marker on wire
-`EventInit` — proof-of-life from the replacement session. But a
+`EventInit`, proof-of-life from the replacement session. But a
 replacement session that dies during startup (e.g. an unusable
-`--resume-session-at` cursor, invariant 28) emits its only diagnostics
-— the pre-init error `result` — and never inits. With the
+`--resume-session-at` cursor, invariant 28) emits its only diagnostics,
+the pre-init error `result`, and never inits. With the
 wire-controlled clear, that error was dropped by the very gate meant
 to silence the PREVIOUS session, the turn never settled, and the
 thread hung on "Working" forever (2026-06-10 incident, link 4 of 5).
@@ -1084,7 +1084,7 @@ asynchronous teardowns (`teardownDeadPreInitSession`) capture the
 epoch before unregistering and run their cleanup via
 `CleanupThreadIfEpoch`, so a teardown that loses the race against a
 user retry's session start cannot re-stop the live thread or sweep
-its state — the registry token guard alone can't cover that window
+its state. The registry token guard alone can't cover that window
 because the retry's spawn runs for seconds between `MarkThreadActive`
 and re-registration.
 
@@ -1092,9 +1092,9 @@ Corollary: a wire error `result` with no open round and no open turn
 persists an orphan error item (attributed to the pending-send head
 when one exists) and suppresses the queued-send flush; a pre-init
 error result additionally reaps the dead session
-(`teardownDeadPreInitSession` — Claude-only, queued sends restored to
+(`teardownDeadPreInitSession`, Claude-only, queued sends restored to
 the composer draft before the sweep). There is deliberately NO init
-watchdog/timer — pre-init process exit already surfaces via the read
+watchdog/timer. Pre-init process exit already surfaces via the read
 loop, and liveness probing is an explicit non-goal
 ([`turn-lifecycle.md`](turn-lifecycle.md)).
 
@@ -1121,7 +1121,7 @@ engine's scheduler state (`items`, `holders`, `waitingKeys`,
 methods, the scheduler, and the startup sweep all enqueue commands and
 wait for a reply; none touch the maps. `teardown` (`fsm.go`) is the
 only function that releases a resource holder and the only caller of
-`Runner.Stop` — with `teardownUnit` (`unit_outcomes.go`) as the
+`Runner.Stop`, with `teardownUnit` (`unit_outcomes.go`) as the
 per-unit half of the same contract. Normal phase exit, gate park,
 validation exhaustion, failure, cancel, pause, takeover, discard, and
 crash sweep are *triggers* of that one path, never alternatives to it.
@@ -1130,8 +1130,8 @@ crash sweep are *triggers* of that one path, never alternatives to it.
 (one writer per thread). Resource capacity is a project-local
 semaphore with no timeout: a second release site that forgets one
 holder does not crash, it silently lowers the project's capacity for
-the rest of the process lifetime, and the symptom — "phases stopped
-starting" — points nowhere near the code that leaked. Serializing on
+the rest of the process lifetime, and the symptom ("phases stopped
+starting") points nowhere near the code that leaked. Serializing on
 one goroutine is also what makes a child run's terminal transition
 safe to re-enter its parent's call phase: `transition` pushes the
 parent's settle onto `e.deferred` instead of recursing, so the child's
@@ -1139,9 +1139,9 @@ teardown finishes before the parent's phase completes.
 
 **Enforcement.** The engine exposes no state accessor that returns a
 live map; `Paused` and friends round-trip through the command channel.
-`internal/workflow/scheduler/` never imports the engine — it imports
+`internal/workflow/scheduler/` never imports the engine. It imports
 `store` and `workflow/def` only, and takes one start callback from the
-app — so an automation firing cannot reach into FSM state; the same
+app, so an automation firing cannot reach into FSM state; the same
 holds for `internal/workflow/runner/`, which is pure helpers. Every
 new exit path must route through `teardown`; adding a `releaseResources`
 call anywhere else is the defect.
@@ -1160,7 +1160,7 @@ trigger; `engine/unit_actions_test.go` for the per-unit half.
 **Rule.** Pausing or interrupting a workflow attempt tears the attempt
 down without killing the provider process. `workflowhost.Runner.Stop`
 (`internal/workflowhost/runner.go`) interrupts the turn for an agent
-attempt — never `StopSession`, never `CleanupThread` — so the CLI
+attempt (never `StopSession`, never `CleanupThread`), so the CLI
 process, its session file, and the thread's history survive the park.
 Resume carries the parked attempt's thread through `ContinueThread`
 (`engine/start.go`, `engine/units.go`) and the runner sends only the recovery
@@ -1176,7 +1176,7 @@ instead of the runner silently substituting a thread.
 identically. A tool attempt has no turn to interrupt: teardown kills
 its process group, because a command is re-run from the start.
 
-**Rationale.** Core principle 2 — the provider process is the source of
+**Rationale.** Core principle 2: the provider process is the source of
 truth during a turn. A phase that resumes into a new session loses
 everything the model established before the pause and pays the context
 cost again; worse, the resumed run would silently produce different
@@ -1195,7 +1195,7 @@ phase session is the D25 project-deletion cleanup
 is not a park: the run has already been cancelled and the thread is
 about to be deleted, so there is no session left to resume into.
 
-**Test.** `engine/pause_test.go` —
+**Test.** `engine/pause_test.go`:
 `TestPauseParksRunReleasesResourcesAndStopsTheTurn`,
 `TestResumeContinuesTheParkedProviderThread`,
 `TestResumeInterruptedRunUsesTheSameContinuation`,
@@ -1209,7 +1209,7 @@ repair/continuation pair.
 
 **Rule.** Only a *root* run may be bound to a thread
 (`work_items.origin_thread_id`), and the wake for a resting run is
-delivered by `registerQueueItem` (`app_workflow_wake.go`) — the same
+delivered by `registerQueueItem` (`app_workflow_wake.go`), the same
 queued-user-message path a human `SendMessage` uses. There is no second
 delivery channel: an idle thread flushes the queued item immediately, a
 busy thread queues it behind the running turn, and a deleted thread
@@ -1221,22 +1221,22 @@ descendant parks are silent.
 jumps a live turn either interleaves with the user's own message or is
 dropped by the thread's one-writer rule (invariant 8). Riding the
 queue makes "the run woke you up" indistinguishable from "someone sent
-you a message" everywhere downstream — persistence, replay, steer,
-undo — so no consumer needs a workflow-shaped special case. Binding
+you a message" everywhere downstream (persistence, replay, steer,
+undo), so no consumer needs a workflow-shaped special case. Binding
 only roots is what keeps the mapping one-to-one: a called run's news is
 its parent's business, and the parent's root already has the thread.
 
 **Enforcement.** Structural, in SQLite: migration v39 rebuilt
 `work_items` with `CHECK(parent_item_id = '' OR origin_thread_id = '')`
 (`internal/store/migrate.go`), so binding a child run is not a bug the
-app can have — the insert fails. `WorkflowBindThread` refuses threads a
+app can have. The insert fails. `WorkflowBindThread` refuses threads a
 run cannot report into, and `WorkflowUnbindThread` refuses a called
 run. The composed message itself is bounded and quoted per invariant 34.
 
 **Test.** `TestMigrationV39AddsOriginThreadAndPausedReason`
 (`internal/store/migrate_test.go`) for the CHECK;
 `app_workflow_binding_test.go` for the bind/unbind refusals;
-`app_workflow_wake_test.go` —
+`app_workflow_wake_test.go`:
 `TestWorkflowWakeDeliversToAnIdleBoundThread`,
 `TestWorkflowWakeQueuesIntoABusyBoundThread`,
 `TestWorkflowWakeFallsBackWhenTheBoundThreadIsGone`,
@@ -1255,8 +1255,8 @@ run. The composed message itself is bounded and quoted per invariant 34.
   Registration rides the session map, not the spawn path, so a token
   cannot outlive the process it was minted for.
 - **Surface.** `transport.ScopedTokenMethods` is a closed allow-list
-  mapping method name to the grants that admit it. Anything absent —
-  every non-workflow RPC, every `LocalOnly` method outside the table —
+  mapping method name to the grants that admit it. Anything absent
+  (every non-workflow RPC, every `LocalOnly` method outside the table)
   is `method_not_found` for a scoped token. A phase scope additionally
   needs one of the listed grants and gets the typed `grant_required`
   refusal naming what to add; an interactive scope may call everything
@@ -1266,7 +1266,7 @@ run. The composed message itself is bounded and quoted per invariant 34.
   and does not honour the server's own session token.
 
 **Rationale.** The credential sits in the environment of a full-access
-autonomous provider session — the one place in the app where a prompt
+autonomous provider session, the one place in the app where a prompt
 injection has hands. Its authority therefore has to be bounded by
 construction rather than by what the CLI happens to send: a leaked
 entry in the map is standing authority after the session is gone, and
@@ -1274,14 +1274,14 @@ a method reachable-but-ungated is the whole App surface one grep away.
 Grants are *frozen at run start*, so widening a workflow's grants
 cannot retroactively widen a session already in flight.
 
-**Enforcement.** `ResolveScopedToken` is `//wails:ignore` — the method
+**Enforcement.** `ResolveScopedToken` is `//wails:ignore`. The method
 that turns a token into authority is not itself callable with one.
 Row-level scoping ("which runs may this phase act on") is deliberately
 not expressed in the table; it depends on the run record and is
 enforced by the bound methods from `CallerScopeFrom` in
 `app_workflow_cli.go`.
 
-**Test.** `internal/transport/scopedtoken_test.go` —
+**Test.** `internal/transport/scopedtoken_test.go`:
 `TestScopedTokenMethodsNameOnlyKnownGrants` (grants exist in `def`'s
 closed set), `TestScopedTokenMethodsAreLocalOnly` (the LAN-reach
 pairing), `TestAuthorizeScopedMethodByKindAndGrant`,
@@ -1297,7 +1297,7 @@ mint/register/revoke riding the session map.
 worktree, or a third party and is then embedded in a prompt we send to
 another model goes through `untrustedtext.Field` (single-line values),
 `untrustedtext.Quote` (bounded free text), or `untrustedtext.Truncate`
-(whole blocks). One package, one rule — no local escaping helper, no
+(whole blocks). One package, one rule: no local escaping helper, no
 "this field is obviously safe" exception.
 
 **Rationale.** The workflow triage seed, the wake message, and the PR
@@ -1305,7 +1305,7 @@ review composer all splice text one agent wrote into a prompt another
 agent obeys. Without a shared rule, two prompts drift on what "this is
 data, not an instruction" looks like, and the weaker one becomes the
 injection path. The rune-bounded quoting also caps unbounded model
-output before it reaches a context window — a correctness property as
+output before it reaches a context window, a correctness property as
 well as a safety one.
 
 **Enforcement.** The quoting is `strconv.QuoteToASCII` plus `<`, `>`,
@@ -1324,8 +1324,8 @@ and bounded.
 
 ## 35. Cancelling a workflow run never happens under a thread lock
 
-**Rule.** No caller may hold `a.threadLocks().Lock(threadID)` — for any
-thread — across `Engine.Cancel`, `WorkflowCancelItem`,
+**Rule.** No caller may hold `a.threadLocks().Lock(threadID)`, for any
+thread, across `Engine.Cancel`, `WorkflowCancelItem`,
 `discardWorkflowTree`, or anything else that can drive a run to
 teardown. `DeleteProject` (`app_projects.go`) is the shape that forces
 the rule: it locks every thread in the project, so its D25 workflow
@@ -1339,9 +1339,9 @@ The interrupt takes the phase thread's action lock and holds it across
 the provider's interrupt ack, so a caller already holding that lock is
 asking the stop to wait on itself. Since the stop bound
 (`workflowStopSendWait`) that wait is no longer an unbounded hard
-deadlock — `Runner.Stop` abandons it at the bound and a background
+deadlock (`Runner.Stop` abandons it at the bound and a background
 goroutine fires the interrupt once the caller finally releases the
-lock — but the rule stands unchanged. The violation still freezes the
+lock), but the rule stands unchanged. The violation still freezes the
 engine's single command goroutine for the bound, still pushes the
 interrupt to an arbitrarily later moment, and a bounded stall that
 squeaks under most timeouts is harder to notice than the hang it
@@ -1350,7 +1350,7 @@ which is exactly the case a happy-path test misses.
 
 **Enforcement.** The cleanup runs before the lock acquisition and the
 locked section re-reads what it cleaned up, refusing with a retry
-message if a cron fire changed the set underneath it — so "stop the
+message if a cron fire changed the set underneath it. So "stop the
 runs first" cannot be softened into "stop them wherever, then
 re-check". Anything that stops a run as a *side effect* of a
 thread-scoped operation belongs on the same side of the locks.
@@ -1367,8 +1367,8 @@ as a survivable stall inside it.
 
 ## See Also
 
-- [`chat-rewrite.md`](chat-rewrite.md) — the spec these rules were
+- [`chat-rewrite.md`](chat-rewrite.md): the spec these rules were
   distilled from.
-- [`conventions.md`](conventions.md) — softer contributor guardrails.
-- [`how-to.md`](how-to.md) — step-by-step recipes for common changes.
-- [`adrs/`](adrs/) — the decisions behind these rules.
+- [`conventions.md`](conventions.md): softer contributor guardrails.
+- [`how-to.md`](how-to.md): step-by-step recipes for common changes.
+- [`adrs/`](adrs/): the decisions behind these rules.

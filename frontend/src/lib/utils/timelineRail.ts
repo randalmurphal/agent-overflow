@@ -14,7 +14,7 @@ import type { TimelineNode } from './subagentGrouping';
 // Leaf item kinds that participate in the rail. Subagent / wait group
 // containers also participate so the rail stays continuous through nested
 // cards and the agent card's chevron/icon/label gutter aligns with adjacent
-// tool rows — see docs/specs/tool-call-ui-redesign/README.md.
+// tool rows.
 export const RAIL_LEAF_KINDS: ReadonlySet<string> = new Set([
   'tool_call',
   'tool_completion',

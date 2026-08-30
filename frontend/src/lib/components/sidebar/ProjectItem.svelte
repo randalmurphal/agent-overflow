@@ -7,7 +7,7 @@
   // lets the row render the input in-place of the project name without
   // piping state across a component boundary.
   //
-  // Collapsed-state polish (matches forge):
+  // Collapsed-state polish:
   //   - The chevron crossfades with a "project status rollup" dot — the
   //     most-important display status across this project's top-level
   //     threads. The dot tells the user "something needs attention in
@@ -224,7 +224,7 @@
   }
 
   // Manual-mode DnD — the whole project row is the drag activator
-  // (matches forge / t3-code: cursor-grab on the row, no separate grip
+  // (cursor-grab on the whole row, no separate grip
   // icon). Click still toggles expand because click fires only when no
   // drag completed; HTML5 suppresses click after a successful drag.
   // Duplicate names are legal (paths are the unique key), so the label
@@ -314,7 +314,7 @@
       and any thread is non-idle, the rollup dot is visible by default
       and the chevron fades in on row hover. When expanded, the chevron
       is always visible (and rotated). This avoids layout shift across
-      the swap and matches forge's behavior.
+      the swap.
     -->
     <div class="relative flex h-4 w-4 items-center justify-center shrink-0">
       <button

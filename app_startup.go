@@ -616,7 +616,7 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 // retiredSettingsFieldNames, so neither the typed value nor the
 // unknown-field preservation carries it any more. This one-time
 // migration is the only legitimate reader left, which is exactly what
-// that accessor exists for (docs/specs/theme-system.md §6.2).
+// that accessor exists for (docs/architecture/theme-system.md §6.2).
 //
 // Neither half fails boot. A themes directory that cannot be created
 // costs live reload and the on-disk reference; GetThemeFiles still

@@ -71,7 +71,7 @@ type Settings struct {
 	SchemaVersion int `json:"$schemaVersion,omitempty"`
 
 	// NOTE: "theme" used to live here and is RETIRED (see
-	// retiredSettingsFieldNames and docs/specs/theme-system.md §6.2). The
+	// retiredSettingsFieldNames and docs/architecture/theme-system.md §6.2). The
 	// light/dark mode is a property of the CLIENT MACHINE, not of a backend,
 	// so it moved to <configDir>/themes/appearance.json. The old value is
 	// CONSUMED ONCE at boot (initThemeDirectory reads it raw via
@@ -655,7 +655,7 @@ func (s *Service) Path() string {
 // writing — and it leaves exactly one legitimate reader, the ONE-TIME
 // migration that moves the old value to wherever it now lives (today:
 // "theme" → <configDir>/themes/appearance.json, per
-// docs/specs/theme-system.md §6.2).
+// docs/architecture/theme-system.md §6.2).
 //
 // Reads the file rather than the cache on purpose: the cache is typed,
 // so it cannot hold a field the type no longer has. Every failure —
@@ -900,7 +900,7 @@ func retiredSettingsFieldNames() map[string]struct{} {
 		"defaultFastMode":        {},
 		"defaultContextWindow":   {},
 		// Moved to <configDir>/themes/appearance.json — theme is a property
-		// of the client machine, not of a backend (docs/specs/theme-system.md
+		// of the client machine, not of a backend (docs/architecture/theme-system.md
 		// §6.2). Listed here so it is not round-tripped through unknownFields
 		// preservation: an upgrading user's value is CONSUMED ONCE at boot
 		// (initThemeDirectory, via RetiredString) and DROPPED by the next

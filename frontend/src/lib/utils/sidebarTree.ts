@@ -1,11 +1,5 @@
 // Sidebar thread tree + multi-key sort.
 //
-// Ported from forge's SidebarTree.logic.ts, adapted for agent-overflow:
-//   - Unix-ms `number` timestamps instead of ISO strings.
-//   - A `pinned` tier above forge's groups (driven by Thread.pinnedAt).
-//   - Null pills (idle + read) treated as the lowest priority instead of
-//     forge's PAUSED/COMPLETED placeholder pills.
-//
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 //
 // Sort order (highest first):
@@ -21,7 +15,7 @@
 // Discussion children bubble:
 //   - displayStatus: a child's higher-priority status is shown on the
 //     parent row UNLESS the parent itself sits in a more important tier
-//     than the child (mirrors forge's resolveDisplayStatus).
+//     than the child.
 //   - latestActivityAt: parent's effective activity is the max of its own
 //     `updatedAt` and any descendant's latestActivityAt, so a parent
 //     with a freshly-active child surfaces in the sort even if its own
@@ -174,7 +168,7 @@ function resolveLatestActivityAt(
 
 /**
  * Pick the displayed status for a parent row given its own status and
- * its children. Mirrors forge:resolveDisplayStatus — the parent keeps
+ * its children. The parent keeps
  * its own status when it has a strictly higher group priority AND it's
  * not in passive rows (so an idle/read parent surfaces a "running"
  * child instead of dominating it). Otherwise the most-important child

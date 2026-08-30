@@ -56,7 +56,7 @@ type TurnCompletedEvent struct {
 	RevertedUserMessage bool `json:"revertedUserMessage,omitempty"`
 	CountsAsActivity    bool `json:"countsAsActivity"`
 	// HistoryRev / HistoryEpoch are the thread's history invalidation
-	// stamps (docs/specs/thread-replica-sync.md §3) read at the moment
+	// stamps (docs/architecture/thread-replica-sync.md §3) read at the moment
 	// this event was built — BEFORE the settlement writes that follow it
 	// in handleTurnComplete, so settle-time item writes (stranded
 	// streaming rows, force-closed orphan tool_calls) only ever make the

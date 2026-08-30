@@ -80,7 +80,7 @@
   });
 
   // Visible projects: respect search (name match OR thread match) and
-  // the current sort mode. Three modes mirror forge / t3-code:
+  // the current sort mode. Three modes:
   //   - lastActivity: most-recently-touched thread first (sidebar default).
   //   - createdAt: project creation time, newest first.
   //   - manual: user-defined via DnD; persisted in Project.sortPosition.

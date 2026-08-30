@@ -25,7 +25,7 @@ func TestCommandDescriptorsDriveGroupHelp(t *testing.T) {
 }
 
 func TestCheckedInReferenceMatchesGeneratedReference(t *testing.T) {
-	path := filepath.Join("..", "..", "docs", "reference", "ao-harness.md")
+	path := filepath.Join("..", "..", "docs", "references", "ao-harness.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read checked-in reference: %v", err)

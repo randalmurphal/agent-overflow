@@ -1,552 +1,295 @@
 # transport/
 
-HTTP+WebSocket transport between the Svelte frontend (whether the
-Wails-embedded webview or a remote browser/desktop client) and the Go
-backend.
+HTTP+WebSocket wire between the Svelte frontend (the Wails-embedded webview,
+`agent-overflow --connect`, or a remote browser) and the Go backend. Mechanism
+walkthroughs live in
+[docs/architecture/transport.md](../../docs/architecture/transport.md).
 
 ## What this package owns
 
-- HTTP listener serving the embedded SPA, a `/bootstrap.json` manifest,
-  and the `/ws` upgrade endpoint.
-- A small JSON wire frame:
-  `{type:"rpc"|"event"|"replay"|"subscribe"|"batch", ...}`.
-- Reflection-based RPC dispatch against a receiver's exported methods.
-  Method IDs are FNV-1a 32-bit of `<package>.<typeName>.<methodName>`
-  so they match Wails' `internal/hash.Fnv` and the existing generated
-  TypeScript bindings keep working without translation.
-- Per-channel bounded ring buffer for event-push replay on reconnect.
-  In-memory only — the ring is a network jitter buffer, not a history
-  store (see root CLAUDE.md principle 3).
-- Ephemeral token authentication (`?token=<value>`).
+The HTTP listener (embedded SPA, `/bootstrap.json`, the `/ws` upgrade, and
+`POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
+per-connection authorization policy, reflection-based RPC dispatch, and a
+per-channel bounded ring for event replay on reconnect. Method IDs are FNV-1a
+32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
+`internal/hash.Fnv`, so the generated TypeScript bindings keep working. The ring
+is in-memory only: a network jitter buffer, not a history store (root
+`AGENTS.md` principle 3).
 
-## What this package does NOT own
+Not owned here: the receiver (the dispatcher takes an `any` and reflects), TLS
+(local binds are plain `ws://`, and public exposure goes behind Tailscale Serve,
+an SSH tunnel, or a reverse proxy), and where the listen port comes from
+(`Config.Port` is injected, never read from a file here).
 
-- The receiver (App). The dispatcher takes an `any` and reflects.
-- TLS termination. Local binds are always plain `ws://`; real public
-  exposure goes behind Tailscale Serve / SSH tunnel / reverse proxy.
-- Where the listen port comes from. `Config.Port` is injected; this
-  package never reads a config file.
+## Every new App method is also a wire RPC, so classify it
 
-## The listen port is pinned per install
+Adding an exported method to `App` puts it on the wire. If it touches the local
+filesystem, external processes, provider sessions, settings, credentials, or
+attachments, add its name to `LocalOnlyMethods` in the same change.
 
-An ephemeral port makes the webview's origin (host + port) change every
-launch, which wipes every origin-scoped browser store — localStorage and
-the IndexedDB thread replica (`docs/specs/thread-replica-sync.md` §6.0).
-So whenever the resolved port would be 0 — the desktop default AND an
-explicit `--listen host:0`, which is what the Windows WSL launcher
-passes — `main.go` (`main_transport_port.go`, `pinTransportPort`) reads
-a pinned port from `transport-port.json` in the boot settings dir
-(alongside `client-id.json`, same atomicfile pattern) and injects it as
-`Config.Port`. After `Start` it re-reads `Server.Addr()` and persists
-whatever actually got bound. First boot, a missing file, and an invalid
-one (garbage JSON, port outside 1–65535) are all "no pin": bind
-ephemeral, then record. An explicit non-zero `--listen host:port` wins
-outright and neither reads nor writes the file. Persistence is
-best-effort — an unresolvable settings dir or a failed write logs and
-leaves the run ephemeral, never blocks boot. Port obscurity was never an
-access control here (the bootstrap token and the Host/Origin checks
-are), so pinning costs nothing.
+`internalmethods.go` holds the two filter sets the dispatcher consults:
 
-`Config.EphemeralPortFallback` is the transport half: with a non-zero
-`Port`, a bind that fails **because of the port** (`portUnavailable` —
-EADDRINUSE, EACCES, and their WSA spellings) retries exactly once on
-port 0 and logs both the failure and where it landed; any other bind
-error — notably a bind address this host does not own — still fails
-Start loudly, since port 0 would fail identically. `main.go` then adopts
-the new port into the file, so a permanently squatted port churns the
-origin once rather than every launch. Callers who named a port
-explicitly leave the flag off. `Rebind` (the LAN toggle) is untouched by
-all of this: `app_network.go` computes the new addr from the live
-`Server.Addr()` port, so a host flip keeps the pinned port, and Rebind
-never falls back to an ephemeral port — silently moving a live server's
-port would break every connected client's origin. Rebind's own recovery
-uses the strictly narrower `addrInUse` (EADDRINUSE / WSAEADDRINUSE):
-that path cures a bind by CLOSING our live listener and retrying, which
-can only help when the address was in use — a permission/reservation
-refusal survives the close, so widening the predicate there would
-destroy a working listener for an error it cannot fix.
+- `InternalServiceMethods`: Wails framework hooks and `//wails:ignore` methods.
+  Never registered, as defense in depth beside the codegen filter.
+- `LocalOnlyMethods`: the privileged surface (RCE-equivalent calls, session
+  control, settings mutation, attachment writes, FS bookkeeping, credential
+  retrieval and enumeration). `Dispatcher.ResolveForOrigin` refuses these from
+  non-loopback peers with the same `method_not_found` shape an unregistered
+  method returns, so the privileged surface stays unenumerable from the LAN.
 
-### The pin can be honoured and still be wrong: `--reset-transport-port`
+The classification list is the source of truth and method bodies do not re-check
+origin. `methods_gen_test.go` fails on a generated method nobody classified
+(`TestGeneratedMethods_AllClassified`) and on a classified name that no longer
+exists. A reverse proxy on the same host makes remote peers appear loopback and
+defeats this locality, so proxy from a different host instead.
 
-A bind that SUCCEEDS proves nothing about reachability. Under the
-Windows/WSL launcher the backend binds inside the distro while the
-window connects from the Windows host, and Hyper-V/WSL2 excluded port
-ranges — re-seeded on every Windows reboot, routinely covering the
-ephemeral range an adopted pin comes from — silently break that hop. The
-in-server fallback and `clearOnFailedBind` both key on a bind FAILURE,
-so neither can ever see this: the pin is honoured perfectly and the
-launcher's `/connectivity-error` page comes up identically on every
-launch, forever.
+## Credentials and refusal shapes
 
-Only the launcher can observe it, so the signal is explicit rather than
-inferred. `cmd/agent-overflow-windows` classifies a probe that never got
-a single HTTP response (`errBackendUnreachable`) as unreachable,
-retires that backend, and relaunches it ONCE with
-`--reset-transport-port` (`wsllauncher.ResetTransportPortFlag` — one
-definition, spelled by the launcher's argv and declared by the backend's
-flag set). The backend deletes `transport-port.json` before consulting
-it, logs the removal, and boots normally: ephemeral bind, then adopt. A
-reset with no pin is an ordinary boot, and a reset alongside an explicit
-`--listen host:port` leaves the file alone, because that boot never
-consults it. One retry only — a fresh port costs the user every
-origin-scoped browser store, and a second unreachable port means the
-forwarding path itself is broken, which is what the error page covers.
+`auth.go` owns both token primitives and every credential check goes through
+them. `NewToken` returns 32 random bytes (256 bits) base64url-encoded, and `New`
+mints one when `Config.Token` is empty, so a token is per launch, never
+persisted, and a stale bookmarked URL cannot reach a new boot.
+`ConstantTimeEqual` is the only comparison, and it answers `ErrEmptyToken` when
+either side is empty: an unset server token must never authorize an unset client.
 
-## Token refusal is a 404, and the SPA depends on it
+Both credentialled entry points answer a wrong or empty token with
+`http.NotFound`: `/bootstrap.json?t=` (`handleBootstrap`) and the `/ws` upgrade
+(`upgrade`). The 404 is deliberately indistinguishable from "no such path" so a
+LAN scanner cannot fingerprint us, and it is the only positive auth-rejection
+signal on the wire. The SPA keys terminal state on it: a 401/403/404 on the
+manifest refetch latches `'unauthorized'` and stops the reconnect ladder for a
+network-served session. So a transient failure must keep its own status. The
+readiness gate stays 503 and the startup-failure page stays 500, and neither may
+become a 404, or a client that is merely early gets told its credential is dead.
+See `frontend/src/lib/transport/bootstrap.ts` (`BootstrapRejectedError`) and
+`wsClient.ts` (`enterCredentialDead`).
 
-Both credentialled entry points — `/bootstrap.json?t=` (`handleBootstrap`)
-and the `/ws` upgrade (`upgrade`) — answer a wrong or empty token with
-`http.NotFound`, deliberately indistinguishable from "no such path" so a
-LAN scanner can't fingerprint us. That 404 is the only positive
-auth-rejection signal on the wire, and it is the one the SPA keys its
-terminal state on: `wsClient` refetches the manifest during a reconnect
-outage, and a 401/403/404 there latches `'unauthorized'` and STOPS the
-reconnect ladder for a session served over the network (tokens are
-per-launch, so only a freshly-opened share link can recover it). A
-transient failure must therefore keep its own status — the readiness gate
-stays 503 and the startup-failure page stays 500; neither may become a
-404, or a client that is merely early would be told its credential is
-dead. See `frontend/src/lib/transport/bootstrap.ts`
-(`BootstrapRejectedError`) and `wsClient.ts` (`enterCredentialDead`).
+## Origin allow-list and peer locality
 
-## Method-level authorization
+**The origin allow-list gates `/ws` upgrades.** `upgrade` (conn.go) checks the
+token first, then hands the live allow-list to coder/websocket. An empty list is
+loopback mode and sets `InsecureSkipVerify`: no LAN-attached browser origin
+exists to validate and the token is the gate. A non-empty list is LAN mode, and
+the handshake is refused unless the request's `Origin` matches a pattern.
+`internal/network.OriginPatterns` produces the list and this package enforces
+it. Read it live, through `currentOriginPatterns()` per handshake rather than
+`Config.OriginPatterns`, since `SetOriginPatterns` and `Rebind` rotate it under
+`mu`. Sockets already upgraded keep their handshake-time policy.
 
-`internalmethods.go` defines two filter sets the dispatcher consults:
+Whether that list is empty is also this package's LAN switch for two guards.
+Empty enables `loopbackHostGuard` on `/bootstrap.json`, `/ws`, `/rpc`, and
+`/design/`, a DNS-rebinding defence that 404s any non-loopback `Host` header
+(`IsLoopbackHost` accepts only `127.0.0.1`, `localhost`, and `::1`). Non-empty
+enables `designLoopbackOnly`, which 404s `/design/*` for non-loopback peers,
+because agent-rendered HTML in the design workdir can carry user material and
+that route has no token check of its own.
 
-- `InternalServiceMethods` — Wails framework hooks plus `//wails:ignore`
-  methods. Never registered. Defense-in-depth alongside the codegen
-  filter.
-- `LocalOnlyMethods` — privileged methods (RCE-equivalent, session
-  control, settings mutation, attachment writes, FS bookkeeping,
-  credential retrieval/enumeration). `Dispatcher.ResolveForOrigin`
-  refuses these from non-loopback peers, returning the same
-  `method_not_found` shape an unregistered method would — the
-  privileged surface stays unenumerable from the LAN.
+**Peer locality is `remoteAddrIsLoopback(r.RemoteAddr)`** (conn.go), captured
+before the upgrade and reused for `LocalOnlyMethods`, permessage-deflate
+selection, asset cache headers, and the manifest's `Remote` field. It reads the
+kernel-reported peer address, never a header, fails closed on an empty or
+unparseable one, and carries the same same-host-proxy caveat as above.
 
-The classification list is the source of truth. Method bodies do not
-re-check origin; adding a new App method that touches FS / process /
-settings / credentials must add the name to `LocalOnlyMethods` (and
-the `methods_gen_test.go` integrity test catches drift).
+## Security headers
 
-A reverse proxy on the same host makes remote peers appear loopback and
-defeats `LocalOnlyMethods` locality; proxy from a different host, or do not
-front privileged use with a same-host proxy.
+`wireheaders.go` is the one definition, shared with `internal/clientmode`.
+`WriteSecurityHeaders` sends `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer`, which keeps the
+bootstrap token out of outbound referers. Cache-Control is deliberately NOT in
+that set: each route picks its own policy.
+`WriteCrossOriginIsolationHeaders` (COOP, COEP `require-corp`, CORP) is
+diagnostic-mode only, gated on `Config.CrossOriginIsolate` from
+`diagenv.RendererDiag`: it buys `crossOriginIsolated` and
+`measureUserAgentSpecificMemory` at the cost of breaking remote images in chat
+markdown and remote assets in design previews, so do not make it default.
 
 ## Scoped tokens (the `ao` CLI surface)
 
-`scopedtoken.go` + `httprpc.go` add a SECOND, strictly narrower credential
-class for the `ao` CLI (spec §5, D15). It is not a second API: the same
-dispatcher, frame types, and method table serve it.
+`scopedtoken.go` plus `httprpc.go` add a second, strictly narrower credential
+class for the `ao` CLI (spec §5, D15). Not a second API: the same dispatcher,
+frame types, and method table serve it. The route is `POST /rpc`
+(`ScopedRPCPath`) with a bearer token, loopback-only, 404 for non-loopback
+peers, and the server's own session token is not honoured on it. Route and
+registry mechanics are in
+[docs/architecture/transport.md](../../docs/architecture/transport.md).
 
-- **Route.** `POST /rpc` (`ScopedRPCPath`), `Authorization: Bearer <token>`,
-  one `ClientFrame` in and one `ServerFrame` out. A CLI process makes one call
-  and exits, so it gets a POST rather than a WebSocket with a replay ring.
-  Loopback-only, and a non-loopback peer gets a 404 so the route stays
-  unfingerprintable. The server's own session token is **not** honoured here —
-  this surface can never be wider than the table below, however it is reached.
-- **Registry.** The app owns it (`App.aoTokens`, mutated only from the session
-  map in `app_session_manager.go`); this package consults it through the narrow
-  `ScopedTokens` interface. A token exists exactly as long as the provider
-  session it was minted for, so a resolved scope always names a live session.
-  An unknown token and a revoked one are both a bare 401, by design.
-- **Scope.** `CallerScope` travels on the request context
-  (`WithCallerScope` / `CallerScopeFrom`), never as a parameter the caller
-  could supply. `interactive` is a human-driven thread whose every invocation
-  passes the provider's own bash-approval UX; `phase` is an unattended workflow
-  phase carrying the grants its workflow FROZE at start.
-- **Method table.** `ScopedTokenMethods` is a closed allow-list mapping method
-  name to the grants that admit it. Anything absent — every non-workflow RPC,
-  every `LocalOnly` method outside the table — is `method_not_found` for a
-  scoped token, exactly as an unregistered method would be. An interactive
-  scope may call everything listed; a phase scope needs one of the listed
-  grants, and gets the typed `grant_required` refusal (`ErrCodeGrantRequired`)
-  naming what to add. That refusal is deliberately distinct from
-  `method_not_found`: the route is loopback-only and the caller is our own CLI,
-  so naming the grant leaks nothing while making a misconfigured workflow
-  fixable.
-- **What this layer does NOT decide.** Row-level scoping ("which runs may this
-  phase touch") depends on the run record, not the method name. The bound
-  methods enforce it from the scope on their context — see `app_workflow_cli.go`.
+- **Scope, not parameters.** `CallerScope` travels on the request context
+  (`WithCallerScope` / `CallerScopeFrom`), never as an argument the caller could
+  supply. `interactive` is a human-driven thread whose every invocation passes
+  the provider's own bash-approval UX; `phase` is an unattended workflow phase
+  carrying the grants its workflow froze at start.
+- **Closed allow-list.** `ScopedTokenMethods` maps method name to the grants
+  that admit it. Anything absent, including every non-workflow RPC and every
+  `LocalOnly` method outside the table, is `method_not_found`. An interactive
+  scope may call everything listed; a phase scope needs one of the listed grants
+  and otherwise gets the typed `grant_required` refusal (`ErrCodeGrantRequired`)
+  naming what to add. Naming the grant leaks nothing on a loopback-only route
+  whose caller is our own CLI, and it makes a misconfigured workflow fixable.
+- **Not decided here.** Row-level scoping ("which runs may this phase touch")
+  depends on the run record, not the method name. The bound methods enforce it
+  from the scope on their context (`app_workflow_cli.go`).
 
 Adding a method to `ScopedTokenMethods` widens what a compromised agent session
 can do. Do it only for methods whose row-level authorization is enforced from
-`CallerScopeFrom`, and add it to `LocalOnlyMethods` too.
+`CallerScopeFrom`, and add it to `LocalOnlyMethods` too. `GrantNotRequired`
+(`"*"`) marks a method whose authority is entirely row-level, admitting every
+scoped token whatever grants the phase froze. It is not a grant: no workflow may
+declare it, `def.KnownGrant` does not know it, and a test pins that in both
+directions. Use it only for a method that is part of doing the work rather than
+an extra capability, which is the case campaign memory makes.
 
-- **One method on this route BLOCKS.** `WorkflowAgentWatchRun` holds its request
-  until the run it names moves, bounded by the app's own
-  `maxWorkflowWatchHold` (25s). Nothing in this package special-cases it — a
-  POST gets its own goroutine, and there is no per-route concurrency bound — but
-  two server timeouts do bracket it: `HTTPReadTimeout` / `HTTPWriteTimeout`
-  (60s each) must stay comfortably above that hold, or the transport would kill
-  a healthy blocked call and every quiet minute would read as a dead backend.
-  Keep the ordering `hold < CLI rpcTimeout (30s) < HTTP write timeout` in mind
-  before changing any of the three.
-
-`GrantNotRequired` (`"*"`) is the table's way of saying "this method's authority
-is ENTIRELY row-level": it admits every scoped token, phase or interactive,
-whatever grants the phase froze. It is not a grant — no workflow may declare it,
-and `def.KnownGrant` does not know it, which a test pins in both directions.
-Campaign memory is what it exists for: recording what the work learned is part of
-doing the work, exactly as returning an envelope is, and a `grants:` line
-standing between an element and its own campaign's memory would mean every
-workflow that forgot one silently relearns everything each wave. Use it only for
-a method that is part of doing the work rather than an extra capability, AND
-whose row scoping is enforced from `CallerScopeFrom`. A method that widens what a
-phase may REACH still needs a grant of its own.
+**One method on this route blocks.** `WorkflowAgentWatchRun` holds its request
+until the run it names moves, bounded by the app's `maxWorkflowWatchHold` (25s).
+`HTTPReadTimeout` and `HTTPWriteTimeout` (60s each) must stay comfortably above
+that hold, or the transport would kill a healthy blocked call and every quiet
+minute would read as a dead backend. Keep the ordering
+`hold < CLI rpcTimeout (30s) < HTTP write timeout` before changing any of them.
 
 ## Additional receivers
 
-`Dispatcher.Register` accepts more than one receiver. The only second
-receiver today is the agent test harness's `Harness` type, registered
-solely by the `--harness` boot path with
-`RegisterOptions{LocalOnly: true}` — the whole receiver is refused for
-non-loopback peers, and outside harness mode its methods don't exist
-on the wire at all. Rules for any future receiver:
-
-- Registration must be gated by the boot path that needs it; a
-  receiver that exists on every boot belongs on `App` instead.
-- Method names must not collide with `App` methods (name-based
-  dispatch shares one namespace) — use a distinctive prefix, as
-  `Harness*` does.
-- Receiver-level `LocalOnly` is coarse by design. If a future receiver
-  needs per-method classification, extend `internalmethods.go` rather
-  than re-checking origin in method bodies.
-
-`Config.Harness` is the manifest half of the same switch: it makes
-`/bootstrap.json` carry `"harness": true`, and `main.go` sets it from
-the very expression that registers the receiver, so the manifest can
-never claim a harness whose methods are absent from the wire. It
-announces a mode; it grants nothing, and the receiver stays LocalOnly
-either way. The SPA keys its (W3) harness bridge import on it so an
-ordinary boot never loads that module.
+`Dispatcher.Register` accepts more than one receiver, and the only one besides
+`App` is the harness's `Harness` under `--harness`, registered with
+`RegisterOptions{LocalOnly: true}` so the whole receiver is refused for
+non-loopback peers. Registering another one has rules (boot-path gating, name
+collisions, receiver-level versus per-method classification):
+[docs/architecture/transport.md](../../docs/architecture/transport.md).
 
 ## Event-channel policy registry
 
-`event_channels.go` holds `channelPolicies`, ONE authored row per
-channel the app emits: `{Channel, Audience, Retention, Why}`. It is the
-source of truth for both questions decided per channel — who may
-receive its frames and how deep its replay ring is — and it cannot be
-generated, because emit sites are spread across the root package,
-`internal/triage`, `internal/workflow` and others, and several build
-their channel name at runtime. **Adding a channel means adding a row.**
+`event_channels.go` holds `channelPolicies`, one authored row per channel the
+app emits: `{Channel, Audience, Retention, Why}`. It decides both per-channel
+questions, who may receive a channel's frames and how deep its replay ring is.
+It cannot be generated, because emit sites are spread across several packages
+and some build their channel name at runtime.
 
-Each row's `Channel` is an `eventchan.Channel` constant, not a string:
-`internal/eventchan` holds the SPELLING half of the same table, and
-`EventBus.Emit` — along with `(*App).emit`, `triage.NewRouter`'s emit
-callback, and `workflow/engine.Emitter` — takes that type. So **adding a
-channel is two edits**, a constant there and a row here;
-`event_channels_eventchan_test.go` AST-parses the constants and fails on
-either half missing its counterpart. The type stops a channel *variable*
-crossing into an emit site without an explicit `eventchan.Channel(...)`
-conversion; Go would still assign a bare string LITERAL silently, which
-the root package's `TestEmitSitesNameAnEventChannelConstant` is what
-catches.
+**Adding a channel is two edits**, an `eventchan.Channel` constant in
+`internal/eventchan` and a row here. `event_channels_eventchan_test.go`
+AST-parses the constants and fails on either half missing its counterpart. The
+newtype stops a channel *variable* reaching an emit site without an explicit
+conversion; Go would still assign a bare string literal silently, which the root
+package's `TestEmitSitesNameAnEventChannelConstant` catches.
 
-The registry's own lookups (`channelPolicyIndex`, and the two derived
-visibility sets in `event_visibility.go`) stay keyed by plain `string`.
-That is deliberate, not an oversight: every one of them is reached by a
-channel name that came off the WIRE at least some of the time — a replay
-cursor, a subscribe filter, `Event.Channel` on the hot delivery path —
-and converting peer-chosen input into the newtype would assert a
-registration nobody checked. The one-time init converts the authored
-rows; `string` and `eventchan.Channel` share a representation, so no
-conversion on any path costs anything.
+- `Audience`: `AudienceAny` / `AudienceLoopbackOnly` / `AudienceRemoteOnly`.
+- `Retention`: `RetentionDefault` (full ring) / `RetentionEphemeral`
+  (capacity 0) / `RetentionLatestOnly` (capacity 1). Class-level doctrine,
+  including the unkeyed membership rule for latest-only, lives on the constants.
+- `Why`: the decision. A `Why` containing `"unreviewed"` marks a row that
+  inherited a default rather than one anyone decided, and
+  `TestChannelPolicyUnreviewedWorklist` prints any that appear.
 
-- `Audience` — `AudienceAny` / `AudienceLoopbackOnly` /
-  `AudienceRemoteOnly`.
-- `Retention` — `RetentionDefault` (full ring) / `RetentionEphemeral`
-  (capacity 0) / `RetentionLatestOnly` (capacity 1). The class-level
-  doctrine, including the UNKEYED membership rule for latest-only,
-  lives on the constants.
-- `Why` — the decision. A `Why` containing `"unreviewed"` marks a row
-  that inherited a default rather than one anyone decided; the
-  2026-08-25 classification pass emptied the set, and
-  `TestChannelPolicyUnreviewedWorklist` prints any that reappear
-  (`go test ./internal/transport/ -run UnreviewedWorklist -v`).
+A channel with no row gets the fail-closed default
+(`unregisteredChannelPolicy`: loopback-only, full ring) and Emit logs it once at
+ring creation, so a forgotten registration degrades to "invisible to remote
+clients", never to "leaked to remote clients". The two harness-only emit paths
+(`HarnessEmit`, `harness.Replayer`) name caller-supplied channels and are
+unregistrable by construction; both spell the explicit conversion at the call
+site so the escape hatch stays visible.
+`TestChannelPolicyPreservesFrozenClassification` freezes every non-default
+classification, so changing one of those lists is a behavior change, not a
+refactor. Registry lookups stay keyed by plain `string`, because each is reached
+by a channel name that came off the wire at least some of the time and the
+newtype would assert a registration nobody checked.
 
-A channel with NO row gets the fail-CLOSED default
-(`unregisteredChannelPolicy`: loopback-only, full ring), and Emit logs
-once per such channel at ring creation. A forgotten registration
-degrades to "invisible to remote clients", never to "leaked to remote
-clients"; local UX keeps working. Two harness-only emit paths
-(`HarnessEmit`, `harness.Replayer`) publish onto arbitrary
-caller-named channels and are unregistrable by construction — the
-loopback-only default still reaches their loopback-by-construction
-consumers; both spell an explicit `eventchan.Channel(name)` conversion
-at the call site so the escape hatch is visible. The file header
-documents them alongside the two dynamic families that DO resolve to
-registered names.
+`event_visibility.go` filters pushed events per connection origin, deriving its
+two sets from those rows at init, so change a row rather than editing them. A
+non-loopback connection receives only `remoteVisibleEventChannels` (the
+`AudienceAny` and `AudienceRemoteOnly` rows). One thing the rows do not say: a
+remote-only channel's producer is ALSO gated on `Server.HasRemoteClient()`, an
+atomic count of non-loopback WS connections, so no work happens when only
+loopback clients are attached. SSH-tunneled remotes arrive as loopback and are
+invisible to that probe, so they keep the RPC path.
 
-`TestChannelPolicyPreservesFrozenClassification` freezes every
-non-default classification (the original four hand-authored maps plus
-the 2026-08-25 review's additions). Changing one of those lists is a
-behavior change, not a refactor.
+## Events are entity-keyed
 
-## Event-channel visibility
+A pushed frame is addressed by the entity it describes: a cwd (`git:status`), a
+PR key (`pr:updated`), a thread id, a project. Never by the subscription that
+happens to be listening. Subscription ids stay legitimate on the RPC result that
+hands out the unsubscribe handle (`GitStatusSubscriptionResult.ID`), a
+per-caller lease rather than an address.
+`TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed` (repo root) fails on any
+struct field that serializes as `subscriptionId`.
 
-`event_visibility.go` filters pushed events per connection origin. Its
-two sets are DERIVED from `channelPolicies` at init — do not edit them
-directly. They survive as maps only because this is the one hot
-registry consumer (per event per subscriber, and again per event per
-connection); the two retention classes below are cold and read the
-registry directly through `channelRetention`. Visibility is
-fail-CLOSED for remote peers: a non-loopback connection receives only
-channels in `remoteVisibleEventChannels` (AudienceAny +
-AudienceRemoteOnly rows), so an unregistered channel reaches loopback
-connections only.
+Two panes routinely watch one entity, so subscription-keyed frames force each
+pane into a private filtered copy and those copies drift: they disagreed about
+whether there was anything to commit for minutes at a time before `git:status`
+was re-keyed (audit 2026-08-08). The producer is therefore refcounted per
+entity, not per caller. N subscribers on one cwd share one
+`gitwatch.Subscription`, one goroutine, and one frame per change; pause and
+resume compose across them, and fetch errors ride the payload.
 
-- `AudienceLoopbackOnly` rows — frames carrying local paths,
-  local-terminal bytes, or identity/billing data that a LAN peer must
-  not see. Absent from `remoteVisibleEventChannels`.
-- `remoteOnlyEventChannels` — frames that exist purely to hide WAN
-  round-trip latency (`highlight:seed`) and are waste on a local pipe.
-  The producer is ALSO gated on `Server.HasRemoteClient()` (an atomic
-  count of non-loopback WS connections), so no work happens when only
-  loopback clients are attached; the wire filter is what keeps the
-  frames off loopback pipes while a remote viewer keeps the producer
-  running. Caveat: SSH-tunneled remotes arrive as loopback and are
-  invisible to the probe — they keep the RPC path.
-  (`highlight:diff_seed` used to sit here too; it goes to every client
-  now because its persist-time seeds can be parse-primed — better than
-  the loopback RPC recompute — and local clients consume them as
-  in-place cache upgrades.)
-- `RetentionEphemeral` — channels excluded from replay-ring
-  retention (`eventbus.go` gives them a zero-capacity ring: sequence
-  tracking only). Both seed channels are here because seeds are
-  point-in-time cache warmers — replaying superseded frames after a
-  reconnect is useless, and each frame can carry large span/hash
-  arrays that would otherwise sit in the ring up to
-  `DefaultRingCapacity` deep. `updater:install` is here for the
-  opposite reason: it is an imperative directive (swap the app binary
-  and restart), valid only for the install in flight when it was
-  emitted, so replaying it to a launcher that reconnects would
-  spontaneously restart the app on a stale instruction. Replay for
-  these channels returns nothing and no gap marker — except for an
-  above-head cursor, which is a client-state fault rather than a
-  retention question (see the gap discussion under Wire frames).
-- `RetentionLatestOnly` — unkeyed whole-state channels
-  (`system:stats`) get a capacity-1 ring: the newest frame fully
-  supersedes all prior ones, so a default-depth ring would retain
-  hundreds of stale samples forever and replay them all on reconnect.
-  Replay delivers the single newest frame and never a gap marker for
-  an evicted cursor — those frames are superseded state, not lost
-  history (an above-head cursor still gaps). Keyed
-  channels (git:status, provider:usage, discussion:state, mcp:status)
-  must NOT join this set: capacity 1 would evict other keys' latest
-  frames.
+## Wire frames and the gap marker
 
-To change any of the four memberships, edit the channel's row in
-`channelPolicies`; nothing else needs touching.
+`frame.go` is the frame catalog: `ClientFrame` and `ServerFrame` document every
+type, field, and bound (`MaxReplayChannels`, `MaxSubscribeChannels`,
+`MaxRPCParams`) beside the decoder. What a gap means to a client is not.
 
-## Events Are Entity-Keyed
-
-A pushed frame is addressed by the ENTITY it describes — a cwd
-(`git:status`), a PR key (`pr:updated`), a thread id, a project — never
-by the subscription that happens to be listening. Subscription ids stay
-legitimate on the RPC RESULT that hands out the unsubscribe /
-ConnState-cleanup handle (`GitStatusSubscriptionResult.ID`): that is a
-per-caller lease, not an address.
-
-The reason lives on the client. Two panes routinely watch one entity —
-two threads on one worktree is the default for project-root threads, and
-"implement this plan in a new thread" inherits the source worktree. A
-subscription-keyed frame forces each pane to keep a private copy filtered
-by its own handle, and those copies drift: they disagreed about whether
-there was anything to commit for minutes at a time before `git:status`
-was re-keyed (audit 2026-08-08). One entity-keyed frame heals every
-consumer.
-
-It follows that the producer is refcounted per entity, not per caller: N
-subscribers on one cwd share one `gitwatch.Subscription`, one forwarding
-goroutine, and one frame per change. Pause/resume composes across
-subscribers (active if ANY subscriber is active), and fetch errors ride
-the payload so consumers can show them.
-
-`TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed` (repo root) fails on
-any struct field that serializes as `subscriptionId`.
-
-## Wire frames
-
-- **Client → Server**:
-  - `{type:"rpc", id, methodId|method, params:[...]}` — invoke
-  - `{type:"replay", lastSeqByChannel:{...}}` — request missed events
-  - `{type:"subscribe", channels:[...]}` — opt into a narrow live-event set;
-    ordinary SPA clients omit this and continue receiving all visible channels
-- **Server → Client**:
-  - `{type:"rpc", id, result|error}` — response
-  - `{type:"event", channel, seq, data, gap?}` — push
-  - `{type:"batch", events:[{channel, seq, data, gap?}, ...]}` —
-    coalesced events (any connection; multi-event windows only)
-  - `{type:"replay", id?}` — completion marker for a replay request;
-    strict-order consumers buffer interleaved live events until this arrives
-  - `{type:"ping"}` — keepalive heartbeat (see below). Consumers that
-    switch on known frame types skip it for free; the SPA uses its
-    arrival as the liveness signal for stale-socket detection
-
-`gap:true` is the "your replay seq fell outside the in-memory ring,
-re-fetch via list endpoints" signal. The server cannot reconstruct
-arbitrary history from SQLite — that's intentional per CLAUDE.md
-principle 3.
-
-A replay cursor can fall outside the ring at EITHER end, and both gap:
-
-- **Below the oldest retained seq** — eviction lost what the client
-  wanted. The ordinary case.
-- **Above the current head** — the client is holding a sequence space
-  that isn't ours (a restarted backend re-seeds every channel from 1).
-  Answering "nothing missed" would leave it dropping every live event
-  below its stale cursor forever, because the client dedups on seq.
-
-That second case makes a gap marker a RESYNC INSTRUCTION, not just a
-late event: its seq can be lower than the client's cursor, so clients
-must honour `gap:true` before their own dedup check and reset the
-channel cursor to the marker's seq in both directions
-(`wsClient.handleEventEntry`). It is also why the latest-only
-newest-frame substitution applies to the eviction-side gap only — the
-newest frame's seq would read as a duplicate to an ahead cursor.
-
-`gap:true` is the RECONNECT half of the story, and the server is the
-only party that can raise it. The other half is client-side: a live
-event whose seq is more than one past that channel's cursor means the
-events between them were dropped into a full subscriber buffer
-(`Subscriber.deliver`), which the server never records and no later
-frame announces. `wsClient.handleEventEntry` treats that forward skip as
-a gap — same console warning, same synthetic `transport:gap` dispatch —
-and still delivers the carried event, which is real data. Without it a
-single drop on an edge-triggered channel (`git:status`, `pr:updated`,
-`mcp:status` emit exactly one frame per state change) leaves every
-consumer of that entity stale until the entity next changes.
-
-That detection is scoped to ONE connection: it fires only when the
-channel's previous event arrived on the current socket. Across a
-reconnect a forward skip is expected and not a drop — `Replay` answers
-an ephemeral channel with nothing at all, and a latest-only channel
-with just its newest frame — so a client that judged those against a
-carried-over cursor would resync spuriously on every reconnect. Within
-a connection there is no such ambiguity: every event on a visible
-channel is either delivered or dropped.
+`gap:true` means "your replay seq fell outside the in-memory ring, re-fetch
+through the list endpoints". It is a resync instruction rather than a late
+event: a cursor can fall outside the ring at either end, and an above-head
+cursor produces a marker whose seq is LOWER than the client's own. Clients must
+honour it before their own dedup check and reset the channel cursor to the
+marker's seq in both directions (`wsClient.handleEventEntry`). Both ends, the
+retention interactions, and the client-side forward-skip detection are in
+[docs/architecture/transport.md](../../docs/architecture/transport.md).
 
 ## Code generation
 
-`methodgen/` parses the Go AST of every `*.go` in each scanned
-directory for `func (a *<Receiver>) <Name>(...)` declarations, honors
-`//wails:ignore` directives, and emits `methods_gen.go` with the static
-name → FNV-ID list. Run via `go run ./internal/transport/methodgen` and
-committed.
+`methodgen/` emits `methods_gen.go`, the static name to FNV-ID table. Run
+`go run ./internal/transport/methodgen` and commit the result;
+`TestMethodsGen_InSync` bytes-diffs a fresh run against the committed output, so
+a new exported `App` method without a regeneration fails CI.
 
-What it scans is the `receiverSpecs` list in `methodgen/main.go`: one
-`{Dir, Receiver, Package, TypeName}` tuple per receiver, merged and
-sorted by method name. `Package`/`TypeName` are the FQN labels the
-method hashes under, not facts about where the code lives — a service
-promoted into `internal/<pkg>` keeps `{Package: "main", TypeName:
-"App"}` and its IDs never move (see
-`docs/architecture/root-decomposition.md` § Wire compatibility). A
-method name claimed by two specs is a codegen error naming both FQNs,
-mirroring the dispatcher's `byName` collision refusal.
+A `receiverSpecs` entry's `Package` and `TypeName` are the FQN labels a method
+hashes under, not facts about where the code lives, so a service promoted into
+`internal/<pkg>` keeps `{Package: "main", TypeName: "App"}` and its IDs never
+move (`docs/architecture/root-decomposition.md` § Wire compatibility). Adding a
+spec widens both the production allow-list and the LAN-safety classification
+gate in `methods_gen_test.go`, which is why `Harness` is deliberately not one.
 
-Today the list holds exactly one entry: the repo-root `App`. `Harness`
-is deliberately not in it — the generated table is the App allow-list
-`bootTransport` passes on the App registration alone, while `Harness`
-registers unfiltered and receiver-level `LocalOnly` under `--harness`
-only. Adding a spec widens both the production allow-list and the
-LAN-safety classification gate in `methods_gen_test.go`.
+## Per-connection policy and keepalive
 
-`methods_gen_test.go` is a CI gate: it re-runs the generator into a
-tempfile and bytes-diffs against the committed output. Adding a new
-exported `App` method without regenerating fails the test.
-`methodgen/main_test.go` covers the multi-spec path itself against
-`methodgen/testdata/`.
+`connProfile` (conn.go) captures transport policy at upgrade time and is
+immutable for the connection's lifetime. Every connection coalesces events
+(`DefaultCoalesceWindow` 16ms, `DefaultCoalesceMaxEvents` 50) into one
+`type:"batch"` frame, loopback included, because the receiving webview pays per
+message; single-event windows fall through to `type:"event"`. Non-loopback
+connections additionally get `permessage-deflate` with context takeover, about
+1.5 MB per connection, since bytes are free on a local pipe and CPU is not.
 
-## Per-connection transport policy
+The keepalive loop (conn.go `keepalive`) defaults to a 10s cadence and a 10s
+pong timeout, both overridable through `Config.KeepaliveInterval` and
+`Config.KeepalivePongTimeout`, which are test knobs, not production tuning.
 
-`connProfile` (conn.go) captures transport policy at upgrade time:
-
-- **All connections**: events coalesce in a per-connection buffer
-  (16 ms window / 50 event threshold) and ship as one
-  `type:"batch"` frame. Single-event windows fall through to regular
-  `type:"event"` frames. Coalescing applies to loopback too — the
-  receiving webview pays per-message (macrotask + JSON.parse +
-  effect flush), so batching protects the render loop during
-  streaming bursts; latency is bounded at one window.
-- **Non-loopback only**: `permessage-deflate` with context takeover
-  (~1.5 MB per connection). Loopback skips compression — bytes are
-  free on a local pipe, CPU isn't.
-
-The profile is immutable for the connection's lifetime. Replay
-(`handleReplay`) ships through the same `type:"batch"` envelope, in
-chunks of the same 50-event threshold, but without the timer — the
-whole backlog is already in hand, so chunking adds no latency. A
-reconnect during heavy streaming can drain up to
-`DefaultRingCapacity` (1000) events; per-event frames gave the worst
-case the least protection. Ordering is preserved end to end
-(`writeBatchFrame` per chunk under `writeMu`, `spliceBatchFrame` keeps
-slice order, every consumer iterates entries in order), and the
-`type:"replay"` completion marker still lands last.
-
-## Keepalive and connection-death detection
-
-Every connection runs a keepalive loop (conn.go `keepalive`; cadence
-and pong timeout default to 10s and are overridable per server via
-`Config.KeepaliveInterval` / `Config.KeepalivePongTimeout` — test
-knobs, not production tuning):
-
-- A client-visible `{type:"ping"}` frame every keepalive interval.
-  Two jobs: keeps intermediary connection state warm — the
-  Windows↔WSL2 localhost relay tore down mid-session connections with
-  a clean FIN (incident 2026-07-28) — and gives browser clients, which
-  cannot observe protocol pings, a guaranteed traffic floor. The SPA's
-  stale-socket watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`, 3
-  heartbeat periods) force-closes a connected socket that has received
-  nothing for that long: a half-open TCP (peer gone, no FIN) never
-  fires a close event on its own. The watchdog arms per connection —
-  the first ping frame proves this server heartbeats, and the proof
-  resets on close — so version/deployment skew in either direction
-  can't reconnect-loop an idle-but-healthy connection. It also stands
-  down while a remote backend has RPCs in flight (a single large
-  response frame can legitimately silence the wire past the
-  threshold). Keep the two constants in ratio when changing either.
-- Every 3rd tick additionally round-trips a protocol-level ping with a
-  pong timeout, detecting half-open connections server-side (writes
-  into a dead TCP window buffer silently). Pongs are only surfaced
-  while the read loop sits in `ws.Read`, so a missed pong is only
-  treated as fatal when the reader was actually parked in Read with no
-  recent frame (`inRead` + `lastReadAt`) — a reader busy streaming a
-  replay or waiting on the RPC semaphore proves nothing about the
-  peer. On a convicting timeout the conn is closed so the handler
-  tears down instead of lingering.
-- Every wire write goes through `writeRaw`, bounded by `writeTimeout`
-  (30s). A peer that stops draining would otherwise block a write
-  forever while holding `writeMu`, wedging the event pump and the
-  keepalive loop; on expiry coder/websocket tears the connection down.
-
-Every connection close logs ONE line — graceful closes included — with
-peer address, duration, and close reason (`closeReason`): close status
-1005 with no close frame is the intermediary-teardown signature, 1006
-a network drop, 1000/1001 a client navigation. The duration in that
-line is the same quantity the client's reconnect ladder judges itself
-on — `wsClient` resets its backoff only after a connection survived
-`BACKOFF_RESET_AFTER_MS`, so a relay that tears down long-lived
-sessions keeps reconnecting fast while an accept-then-close backend
-backs off instead of storming. Per-write errors on an
-already-closed conn stay suppressed (`isClosedError`).
+- A client-visible `{type:"ping"}` frame every interval. The SPA's stale-socket
+  watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`) is three heartbeat
+  periods, so keep the two constants in ratio when changing either.
+- Every third tick also round-trips a protocol ping, and a missed pong convicts
+  only when the reader was parked in `ws.Read` with no recent frame (`inRead`
+  plus `lastReadAt`).
+- Every wire write goes through `writeRaw` under `writeTimeout` (30s), so a peer
+  that stops draining cannot wedge the event pump while holding `writeMu`.
+- Every close logs one line, graceful closes included, with peer address,
+  duration, and `closeReason`. That duration is what the client's reconnect
+  ladder judges itself on, so keep it in the line.
 
 ## Conventions specific to this package
 
 - Wire-bound errors carry only generic prose (`"internal error"`,
-  `"bad parameter"`). Full text + correlation id is logged
-  server-side. Internal panic / file paths must never reach the wire.
-- Subscriber buffers drop oldest on overflow and mark themselves
-  "behind"; the next event the slow subscriber sees carries
-  `Gap: true` so the client knows to re-fetch.
-- `Server.Start` returns when the listener is bound; the HTTP serve
-  goroutine surfaces async failure via `Server.ServeErr() <-chan error`.
+  `"bad parameter"`). Full text plus a correlation id is logged server-side, and
+  internal panics and file paths must never reach the wire.
+- A full subscriber buffer drops the incoming event silently
+  (`Subscriber.deliver`). Nothing marks the subscriber behind and no later frame
+  announces it: the client detects the per-channel seq skip and re-fetches.
+- `Server.Start` returns when the listener is bound. The HTTP serve goroutine
+  surfaces async failure through `Server.ServeErr() <-chan error`.
 
 ## References
 
-- Root `AGENTS.md` § "Permanent invariants" for the cross-cutting
-  transport-boundary rule.
-- `docs/architecture/data-flow.md` — how triage events reach the bus.
-- `frontend/bindings/agent-overflow/app.ts` — generated TS bindings
-  the wire-format must keep working.
-- `frontend/src/lib/transport/` — the wsClient + `@wailsio/runtime` shim
-  on the other side of this wire.
+- Root `AGENTS.md` § "Permanent invariants" for the transport-boundary rule.
+- [docs/architecture/transport.md](../../docs/architecture/transport.md) for
+  port pinning, gap-marker semantics, coalescing, keepalive rationale, and the
+  scoped-token route mechanics.
+- `docs/architecture/data-flow.md` for how triage events reach the bus.
+- `frontend/bindings/agent-overflow/app.ts` for the generated bindings the wire
+  format must keep working, and `frontend/src/lib/transport/` for the wsClient
+  and `@wailsio/runtime` shim on the other side of this wire.

@@ -2548,8 +2548,7 @@ export function ProbeClaudeAccount(): $CancellablePromise<provider$0.AccountInfo
  * Unlike Claude, Codex deliberately omits the unauthenticated-banner
  * hook: an empty planType is ambiguous (backend latency can produce it
  * for an authenticated user) so surfacing a banner here would create
- * false positives. See drift D3 in
- * `docs/architecture/refactor-phase-1/duplication.md`.
+ * false positives. (Drift D3 from the app-root refactor.)
  */
 export function ProbeCodexAccount(): $CancellablePromise<provider$0.AccountInfo> {
     return $Call.ByID(2614227175).then(($result: any) => {
