@@ -132,8 +132,8 @@ func TestConversationRollbackCodexForksAtAnchorAndStopsSession(t *testing.T) {
 		forkedThreadID:  "forked-provider-thread",
 		requestLogPath:  requestLog,
 	})
-	// The revert stops the live session BEFORE forking, so the fork
-	// always runs through a temp resume session spawned from settings.
+	// This legacy-history thread cannot use the live in-place cut, so the
+	// fork runs through a temp resume session spawned from settings.
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
@@ -468,6 +468,15 @@ type codexForkMock struct {
 	historyMode string
 	// revertLogPath captures the `thread/revert` request frame.
 	revertLogPath string
+	// resumeLogPath captures every `thread/resume` request. A live in-place
+	// revert must not cold-resume the thread a second time.
+	resumeLogPath string
+	// interruptLogPath captures every standalone `turn/interrupt` request.
+	// thread/revert owns that transition for a live in-place cut.
+	interruptLogPath string
+	// activeTurnID makes the resumed fake session announce an active turn and
+	// settle it as interrupted while handling thread/revert.
+	activeTurnID string
 	// revertErrorMessage makes `thread/revert` answer invalid_request
 	// with this message instead of succeeding.
 	revertErrorMessage string
@@ -482,6 +491,14 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 	logRevertRequest := ":"
 	if mock.revertLogPath != "" {
 		logRevertRequest = fmt.Sprintf(`/bin/echo "$line" >> '%s'`, mock.revertLogPath)
+	}
+	logResumeRequest := ":"
+	if mock.resumeLogPath != "" {
+		logResumeRequest = fmt.Sprintf(`/bin/echo "$line" >> '%s'`, mock.resumeLogPath)
+	}
+	logInterruptRequest := ":"
+	if mock.interruptLogPath != "" {
+		logInterruptRequest = fmt.Sprintf(`/bin/echo "$line" >> '%s'`, mock.interruptLogPath)
 	}
 	tailExpr := `"$cut"`
 	if mock.forkTailTurnID != "" {
@@ -502,6 +519,17 @@ func writeCodexForkAtBinary(t *testing.T, mock codexForkMock) string {
 		`printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"%s,"turns":[]},"turnsBackwardsCursor":"turns-cursor","itemsBackwardsCursor":"items-cursor"}}\n' "$id"
         printf '{"jsonrpc":"2.0","method":"thread/reverted","params":{"threadId":"%s"}}\n'`,
 		mock.resumedThreadID, resumedHistoryMode, mock.resumedThreadID)
+	resumeTurnStarted := ":"
+	revertTurnCompleted := ":"
+	if mock.activeTurnID != "" {
+		resumeTurnStarted = fmt.Sprintf(
+			`printf '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"%s","turn":{"id":"%s","status":"inProgress"}}}\n'`,
+			mock.resumedThreadID, mock.activeTurnID)
+		revertTurnCompleted = fmt.Sprintf(
+			`printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"%s","turn":{"id":"%s","status":"interrupted"}}}\n'`,
+			mock.resumedThreadID, mock.activeTurnID)
+		revertReply = revertTurnCompleted + "\n        " + revertReply
+	}
 	if mock.revertErrorMessage != "" {
 		revertReply = fmt.Sprintf(
 			`printf '{"jsonrpc":"2.0","id":%%s,"error":{"code":-32600,"message":"%s"}}\n' "$id"`,
@@ -518,7 +546,9 @@ while IFS= read -r line; do
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then
+		%s
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"%s,"turns":[]}}}\n' "$id"
+		%s
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/revert"'; then
@@ -535,6 +565,7 @@ while IFS= read -r line; do
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/interrupt"'; then
+		%s
         printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
         continue
     fi
@@ -550,8 +581,9 @@ while IFS= read -r line; do
         continue
     fi
 done
-`, initializeResult, mock.resumedThreadID, resumedHistoryMode, logRevertRequest, revertReply,
-		logForkRequest, tailExpr, mock.forkedThreadID, mock.forkedThreadID)
+`, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
+		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
+		mock.forkedThreadID, mock.forkedThreadID)
 
 	path := filepath.Join(t.TempDir(), "codex-fork-at.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -753,6 +785,60 @@ func TestConversationRollbackCodexFallsBackToForkOnRefusedRevert(t *testing.T) {
 	}
 	if updated.SessionRef != "forked-provider-thread" {
 		t.Fatalf("SessionRef = %q, want the fallback fork", updated.SessionRef)
+	}
+}
+
+// TestConversationRollbackCodexStopsLiveSessionBeforeForkFallback covers the
+// live version-skew transition. AO first asks the existing paginated session
+// for the identity-preserving cut. If the server refuses it, AO closes that
+// source runtime before opening the cold fork path and never repeats revert.
+func TestConversationRollbackCodexStopsLiveSessionBeforeForkFallback(t *testing.T) {
+	app := newTestApp(t)
+	logDir := t.TempDir()
+	mock := codexForkMock{
+		resumedThreadID:    "provider-live-refused-revert",
+		forkedThreadID:     "forked-provider-thread",
+		requestLogPath:     filepath.Join(logDir, "fork-requests.jsonl"),
+		revertLogPath:      filepath.Join(logDir, "revert-requests.jsonl"),
+		userAgent:          "codex_cli_rs/0.149.0 (Ubuntu 24.04; x86_64) some/1.0",
+		historyMode:        "paginated",
+		revertErrorMessage: "thread/revert only supports paginated threads",
+	}
+	thread := paginatedRevertThread(t, app, "codex-live-refused-revert", mock)
+	binary := app.providerBinaryPath(string(provider.Codex))
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        thread.WorkspacePath,
+		ResumeThreadID: thread.SessionRef,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	app.sessionManager().put(thread.ID, session{
+		provider: string(provider.Codex),
+		token:    "live-refused-revert",
+		codex:    sess,
+	})
+
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if _, ok := app.activeCodexSession(thread.ID); ok {
+		t.Fatal("source session survived an identity-changing fork fallback")
+	}
+	if revertRequest := readCodexRevertRequest(t, mock.revertLogPath); !strings.Contains(revertRequest, `"beforeTurnId":"turn-b"`) {
+		t.Fatalf("revert request = %s, want exactly one live attempt", revertRequest)
+	}
+	if forkRequest := readCodexForkRequest(t, mock.requestLogPath); !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
+		t.Fatalf("fork request = %s, want cold fallback at turn-a", forkRequest)
+	}
+	updated, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if updated.SessionRef != mock.forkedThreadID {
+		t.Fatalf("SessionRef = %q, want %q", updated.SessionRef, mock.forkedThreadID)
 	}
 }
 

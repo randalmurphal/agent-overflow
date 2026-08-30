@@ -17,7 +17,11 @@ import type { Item } from '../../types/models';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import MessageNavRail from './MessageNavRail.svelte';
-import { TICK_REST_WIDTH_PX } from './messageNavRail';
+import {
+  NAV_RAIL_TICK_LEFT_PX,
+  TICK_FULL_WIDTH_PX,
+  TICK_REST_WIDTH_PX,
+} from './messageNavRail';
 
 function item(partial: Partial<Item>): Item {
   return {
@@ -96,6 +100,20 @@ describe('MessageNavRail', () => {
       expect(el.style.transform).toBe('');
       expect(el.style.width).toBe(`${TICK_REST_WIDTH_PX}px`);
     }
+  });
+
+  it('acquires through the resting tick width, then keeps the full fisheye width active', async () => {
+    const { getByTestId } = renderRail();
+    const strip = getByTestId('nav-rail-strip');
+
+    expect(strip.style.left).toBe(`${NAV_RAIL_TICK_LEFT_PX}px`);
+    expect(strip.style.width).toBe(`${TICK_REST_WIDTH_PX}px`);
+
+    await fireEvent.mouseMove(strip);
+    expect(strip.style.width).toBe(`${TICK_FULL_WIDTH_PX}px`);
+
+    await fireEvent.mouseLeave(strip);
+    expect(strip.style.width).toBe(`${TICK_REST_WIDTH_PX}px`);
   });
 
   it('renders baseline ticks for unloaded history, spliced under the window', async () => {
@@ -199,7 +217,7 @@ describe('MessageNavRail', () => {
       expect(getByTestId('nav-rail-preview').textContent).toContain('first ask');
       expect(getByTestId('nav-rail-preview').textContent).toContain('reply one');
 
-      // offsetY 28 maps past the 12px vertical grace to the final tick.
+      // offsetY 28 maps past the vertical grace to the final tick.
       // Once the rail session is active, this update pays no second dwell.
       const moveToThird = new MouseEvent('mousemove', { bubbles: true });
       Object.defineProperty(moveToThird, 'offsetY', { value: 28 });

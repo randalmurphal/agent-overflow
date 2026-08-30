@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createProvenAppend } from 'svelte-streamdown';
+import { createProvenAppend } from '../../../markdown';
 import { RawJsonFenceFormatter, isRawJsonSource } from './rawJsonFence';
 
 // A workflow-envelope-shaped document on ONE line: nested objects and

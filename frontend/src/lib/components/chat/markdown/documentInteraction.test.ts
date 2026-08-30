@@ -1,4 +1,4 @@
-import { acquireDocumentInteraction } from 'svelte-streamdown';
+import { acquireDocumentInteraction } from '../../../markdown';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mounted: Node[] = [];

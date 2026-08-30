@@ -323,6 +323,22 @@ func steerDataReportsNotSteerable(data json.RawMessage) bool {
 	return codexErrorInfoKind(body.Info) == "activeTurnNotSteerable"
 }
 
+// InterruptFence captures the root-control generation an interrupt belongs to.
+// It is intentionally opaque outside this package: callers may carry it across
+// their own serialization wait, but only Session can decide whether it is
+// still current.
+type InterruptFence struct {
+	revertEpoch uint64
+}
+
+// CaptureInterruptFence records the history generation an interrupt intends
+// to stop. A revert advances the generation before releasing controlMu, so a
+// fence captured before or during that operation cannot interrupt the runtime
+// left behind afterward.
+func (s *Session) CaptureInterruptFence() InterruptFence {
+	return InterruptFence{revertEpoch: s.revertEpoch.Load()}
+}
+
 // Interrupt sends turn/interrupt to abort whatever the thread is
 // currently doing. We pass `turnId: activeTurnID` when a turn is in
 // flight and `turnId: ""` (the empty string) when the user pressed
@@ -343,17 +359,32 @@ func steerDataReportsNotSteerable(data json.RawMessage) bool {
 // CodexSessionRuntime.interruptTurn (CodexSessionRuntime.ts:1238–1250),
 // which only sends the JSON-RPC and leaks the local Deferreds.
 func (s *Session) Interrupt(ctx context.Context) error {
+	_, err := s.InterruptIfCurrent(ctx, s.CaptureInterruptFence())
+	return err
+}
+
+// InterruptIfCurrent sends turn/interrupt only while fence still names this
+// session's current history generation. controlMu orders it against Revert;
+// the second epoch read turns a queued pre-revert interrupt into a no-op.
+// sent is false only for that stale-intent case.
+func (s *Session) InterruptIfCurrent(ctx context.Context, fence InterruptFence) (sent bool, err error) {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if s.revertEpoch.Load() != fence.revertEpoch {
+		return false, nil
+	}
+
 	s.mu.Lock()
 	turnID := s.turn.activeTurnID
 	s.mu.Unlock()
 
-	_, err := s.sendRequest(ctx, "turn/interrupt", map[string]any{
+	_, err = s.sendRequest(ctx, "turn/interrupt", map[string]any{
 		"threadId": s.rootThreadID(),
 		"turnId":   turnID,
 	})
 
 	s.drainPendingApprovalsForScope(s.rootThreadID(), "cancel", true)
-	return err
+	return true, err
 }
 
 // claimTurnStart records the first observation of a turnID, returning

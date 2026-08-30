@@ -6,6 +6,12 @@ import { describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { tick } from 'svelte';
 import {
+  NAV_RAIL_HIT_WIDTH_PX,
+  TICK_FULL_WIDTH_PX,
+  TICK_REST_WIDTH_PX,
+} from './messageNavRail';
+import { waitFor } from '../../../test/helpers/browserFrames';
+import {
   mountTimeline,
   seedTimelineItems,
   setupTimelineHarness,
@@ -36,6 +42,14 @@ function resolvedBackground(variable: string): string {
   return color;
 }
 
+function hasVisibleShadow(value: string): boolean {
+  const colors = value.match(/rgba?\([^)]*\)/g) ?? [];
+  return colors.some((color) => {
+    const channels = color.match(/[\d.]+/g)?.map(Number) ?? [];
+    return channels.length === 3 || (channels[3] ?? 0) > 0;
+  });
+}
+
 describe('message navigation rail interaction geometry', () => {
   it('leaves a real gap between its hit target and selectable transcript text', async () => {
     const threadId = 'thread-nav-rail-selection';
@@ -52,9 +66,11 @@ describe('message navigation rail interaction geometry', () => {
       .find((el) => el.getBoundingClientRect().height > 0);
     expect(prose, 'a selectable assistant line must be mounted').toBeDefined();
 
-    const gap = prose!.getBoundingClientRect().left - strip!.getBoundingClientRect().right;
+    const rail = host.querySelector('[data-testid="message-nav-rail"]')!;
+    const gap = prose!.getBoundingClientRect().left - rail.getBoundingClientRect().right;
     expect(gap, 'the invisible rail button must not intercept the start of a line')
       .toBeGreaterThanOrEqual(8);
+    expect(rail.getBoundingClientRect().width).toBe(NAV_RAIL_HIT_WIDTH_PX);
 
     const ticks = [...host.querySelectorAll<HTMLElement>('.nav-rail-tick')];
     const current = ticks.find((el) => el.dataset.current === 'true');
@@ -66,13 +82,31 @@ describe('message navigation rail interaction geometry', () => {
 
     const stripRect = strip!.getBoundingClientRect();
     const targetRect = hoverTarget!.getBoundingClientRect();
+    expect(stripRect.width, 'cold acquisition must match the resting tick').toBeCloseTo(
+      TICK_REST_WIDTH_PX,
+      1,
+    );
+    const expandedOnlyX = stripRect.left + TICK_FULL_WIDTH_PX - 1;
+    const targetY = targetRect.top + targetRect.height / 2;
+    expect(
+      document.elementFromPoint(expandedOnlyX, targetY),
+      'the future fisheye area must be inert before deliberate acquisition',
+    ).not.toBe(strip);
+    expect(
+      document.elementFromPoint(stripRect.left + 1, targetY),
+      'the resting tick column must acquire the rail',
+    ).toBe(strip);
+
     const hover = new MouseEvent('mousemove', { bubbles: true });
     Object.defineProperty(hover, 'offsetY', {
-      value: targetRect.top + targetRect.height / 2 - stripRect.top,
+      value: targetY - stripRect.top,
     });
     strip!.dispatchEvent(hover);
     await tick();
 
+    expect(strip!.getBoundingClientRect().width, 'an acquired rail must retain its fisheye area')
+      .toBe(TICK_FULL_WIDTH_PX);
+    expect(document.elementFromPoint(expandedOnlyX, targetY)).toBe(strip);
     expect(hoverTarget!.dataset.hovered).toBe('true');
     expect(getComputedStyle(hoverTarget!).backgroundColor)
       .toBe(resolvedBackground('--color-border-strong'));
@@ -107,5 +141,35 @@ describe('message navigation rail interaction geometry', () => {
         else rootStyle.removeProperty(name);
       }
     }
+  });
+
+  it('renders an aligned bare chevron while preserving its 24px button target', async () => {
+    const threadId = 'thread-nav-rail-arrow';
+    const { host } = await mountTimeline(
+      threadId,
+      seedTimelineItems(threadId, PROSE),
+      QUIET_BOTTOM,
+    );
+
+    host.style.height = '260px';
+    await waitFor(() => {
+      const button = host.querySelector<HTMLElement>('[data-testid="nav-rail-jump-first"]');
+      return button !== null && getComputedStyle(button).visibility === 'visible';
+    }, 'first-message chevron to become visible after rail clipping');
+    const first = host.querySelector<HTMLElement>('[data-testid="nav-rail-jump-first"]')!;
+
+    const style = getComputedStyle(first);
+    expect(first.getBoundingClientRect().width).toBe(24);
+    expect(first.getBoundingClientRect().height).toBe(24);
+    expect(style.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(style.borderTopStyle).toBe('none');
+    expect(hasVisibleShadow(style.boxShadow)).toBe(false);
+
+    const restingTick = host.querySelector<HTMLElement>('.nav-rail-tick')!;
+    const tickCenter = restingTick.getBoundingClientRect().left + TICK_REST_WIDTH_PX / 2;
+    const buttonCenter = first.getBoundingClientRect().left + first.getBoundingClientRect().width / 2;
+    expect(buttonCenter).toBeCloseTo(tickCenter, 1);
+    const strip = host.querySelector<HTMLElement>('[data-testid="nav-rail-strip"]')!;
+    expect(first.getBoundingClientRect().bottom).toBeLessThan(strip.getBoundingClientRect().top);
   });
 });

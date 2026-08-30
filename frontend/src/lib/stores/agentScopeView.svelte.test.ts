@@ -255,15 +255,15 @@ describe('createAgentScopeView', () => {
     expect(view.pane.pruneRowUiState).not.toBe(pane.pruneRowUiState);
 
     pane.setUserMessageExpanded('main-text', true);
-    // `false` rather than `true`: the registry clears an override that
+    // `true` rather than `false`: the registry clears an override that
     // matches the current collapseDiffPreviews default instead of storing it.
-    pane.setDiffCardExpanded('main-text', 'src/app.ts', false);
+    pane.setDiffCardExpanded('main-text', 'src/app.ts', true);
     expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
 
     view.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
 
     expect(pane.isUserMessageExpanded('main-text')).toBe(true);
-    expect(pane.diffCardExpandedOverride('main-text', 'src/app.ts')).toBe(false);
+    expect(pane.diffCardExpandedOverride('main-text', 'src/app.ts')).toBe(true);
     expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(true);
 
     view.dispose();

@@ -1,5 +1,5 @@
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { createProvenAppend, type ProvenAppend } from 'svelte-streamdown';
+import { createProvenAppend, type ProvenAppend } from '../markdown';
 import {
   isAssistantLiteralTailCodeUnit,
   isSafeAssistantLiteralDelta,

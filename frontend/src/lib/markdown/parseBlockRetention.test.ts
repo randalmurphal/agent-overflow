@@ -6,18 +6,42 @@ import { describe, expect, it } from 'vitest';
 const markedModuleUrl = pathToFileURL(
   resolve(
     import.meta.dirname,
-    '../../../vendor/svelte-streamdown/dist/marked/index.js',
+    './parser/index.ts',
   ),
 ).href;
 
+// The workload runs in a bare `node --expose-gc` subprocess, because the
+// measurement is a whole-heap delta and vitest's own heap is not quiet. Node
+// strips the types itself, but it resolves specifiers the way Node does: the
+// parser's internal imports are extensionless (`moduleResolution: bundler`),
+// so the subprocess registers a resolve hook that retries with `.ts`, then
+// with `/index.ts`. Nothing else in the app loads this tree outside Vite.
+//
+// The retry is unconditional for a relative specifier: a "does it already
+// have an extension" test on the string cannot tell `./x.ts` from module
+// names that carry a dot (`./parseBlocks.cache`), and guessing wrong makes
+// the subprocess die with ERR_MODULE_NOT_FOUND in a test about heap bytes.
 const workload = `
-import {
+import nodeModule from 'node:module';
+nodeModule.registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier.startsWith('.')) {
+      try { return next(specifier + '.ts', context); } catch {}
+      try { return next(specifier, context); } catch {}
+      return next(specifier + '/index.ts', context);
+    }
+    return next(specifier, context);
+  },
+});
+
+// Dynamic, because a static import is hoisted above the hook registration.
+const {
   createMaterializedProvenAppend,
   createParseBlocksCache,
   createProvenAppend,
   parseBlocks,
   updateParseBlockStringMaterialization,
-} from ${JSON.stringify(markedModuleUrl)};
+} = await import(${JSON.stringify(markedModuleUrl)});
 
 for (let index = 0; index < 4; index++) globalThis.gc();
 const before = process.memoryUsage().heapUsed;

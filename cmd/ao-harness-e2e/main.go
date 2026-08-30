@@ -53,11 +53,15 @@ func run(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "ao-harness-e2e: resolve working directory:", err)
 		return 1
 	}
+	// The suite dir is identified by its Playwright config, not by
+	// package.json: the repo root carries a forwarder package.json too, so
+	// a package.json probe run from the root resolved the ROOT as the
+	// suite dir and tsc failed on the missing root tsconfig.
 	testDir := worktree
-	if _, err := os.Stat(filepath.Join(testDir, "package.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(testDir, "playwright.config.ts")); err != nil {
 		candidate := filepath.Join(worktree, "e2e")
-		if _, candidateErr := os.Stat(filepath.Join(candidate, "package.json")); candidateErr != nil {
-			fmt.Fprintf(stderr, "ao-harness-e2e: no E2E package.json in %s or %s\n", worktree, candidate)
+		if _, candidateErr := os.Stat(filepath.Join(candidate, "playwright.config.ts")); candidateErr != nil {
+			fmt.Fprintf(stderr, "ao-harness-e2e: no playwright.config.ts in %s or %s\n", worktree, candidate)
 			return 1
 		}
 		testDir = candidate

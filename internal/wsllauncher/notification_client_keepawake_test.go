@@ -81,6 +81,7 @@ func TestNotificationClientDispatchesKeepAwakeDirective(t *testing.T) {
 func TestNotificationClientKeepAwakeDirectivesApplyInOrderLatestWins(t *testing.T) {
 	applied := make(chan string, 8)
 	gate := make(chan struct{})
+	started := make(chan struct{})
 	first := true
 	// The handler only ever runs on the single drain goroutine, so
 	// `first` needs no lock — that serialization is the property under
@@ -88,6 +89,7 @@ func TestNotificationClientKeepAwakeDirectivesApplyInOrderLatestWins(t *testing.
 	client, _ := newTestKeepAwakeClient(t, func(m string) {
 		if first {
 			first = false
+			close(started)
 			<-gate
 		}
 		applied <- m
@@ -114,23 +116,25 @@ func TestNotificationClientKeepAwakeDirectivesApplyInOrderLatestWins(t *testing.
 		}
 	}
 
-	// The first handler run parks the drain; more frames arrive meanwhile
-	// and coalesce. Which frame the drain saw first is a scheduling
-	// accident (the mailbox may be overwritten before the drain's first
-	// read) — what must hold is that the LAST applied mode is the newest
-	// frame, with at most one intermediate run before it.
+	// Park the drain inside the first handler before sending the burst. Without
+	// this handshake, the drain may consume the first "off" before the final
+	// "off" arrives; the output values are identical and a test cannot tell an
+	// intermediate application from convergence.
 	deliver("display")
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first keep-awake handler to start")
+	}
 	deliver("off")
 	deliver("display")
 	deliver("off")
 	close(gate)
-	var got []string
-	got = append(got, receive())
-	for len(got) < 2 && got[len(got)-1] != "off" {
-		got = append(got, receive())
+	if got := receive(); got != "display" {
+		t.Fatalf("first applied mode = %q, want %q", got, "display")
 	}
-	if got[len(got)-1] != "off" {
-		t.Fatalf("applied modes = %v, want the newest frame (%q) applied last", got, "off")
+	if got := receive(); got != "off" {
+		t.Fatalf("converged mode = %q, want newest frame %q", got, "off")
 	}
 	select {
 	case extra := <-applied:

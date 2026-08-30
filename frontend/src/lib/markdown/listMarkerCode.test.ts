@@ -1,4 +1,4 @@
-// Coverage for the svelte-streamdown patch hunk that stops LLM "aligned
+// Coverage for the parser rule that stops LLM "aligned
 // value" bullets from rendering as code blocks.
 //
 // CommonMark reads five or more columns between a list marker and its
@@ -21,7 +21,7 @@ import {
   incrementalLex,
   lex,
   parseIncompleteMarkdown,
-} from 'svelte-streamdown';
+} from './index';
 
 interface Token {
   type: string;

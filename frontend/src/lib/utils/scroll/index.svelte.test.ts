@@ -2960,7 +2960,7 @@ describe('createUseStickToBottomController — spring chase', () => {
       // Idle-thread flicker regression: the engine mounts rows at the
       // ESTIMATED_ROW_SIZE then corrects to measured heights over a series
       // of contentRO fires spaced wider than SETTLED_QUIET_MS. With the
-      // settle signal already on (svelte-streamdown idle for an
+      // settle signal already on (the markdown renderer idle for an
       // already-rendered thread), a shortened window would fire in the gap
       // between two corrections and reveal a still-growing surface. Warm
       // must stay false until the cascade goes quiet — geometry, not the
@@ -5877,7 +5877,7 @@ describe('createUseStickToBottomController — spring chase', () => {
 
     it('streamdown token-close-then-reopen pattern (~22px shrink mid-chunk) does not jump the viewport', async () => {
       // Reproduces the user-visible streaming bug: while streaming
-      // chat text through svelte-streamdown with
+      // chat text through the markdown renderer with
       // parseIncompleteMarkdown=true, an unclosed code fence is
       // auto-balanced (DOM transiently shrinks), then the next chunk
       // reopens it (DOM grows again). Pre-fix, the shrink's

@@ -170,6 +170,11 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   mean "no signal", never "off" or "empty". An EMPTY array, by contrast,
   is usually a real replacement value; check the wire reference per
   envelope before treating one as the other.
+- In `transcript_mirror`, `attributionSkill` is attribution, not ownership.
+  It labels both inline-skill main work and forked-skill work. Only an
+  `isSidechain:true` row carrying that attribution proves a direct command
+  fork; `isSidechain:false` must never open a projector or parent later main
+  activity beneath the command.
 
 ## Lifecycles this package drives
 

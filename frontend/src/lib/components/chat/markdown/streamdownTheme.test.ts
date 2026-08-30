@@ -1,74 +1,191 @@
+import { readFileSync } from 'node:fs';
+import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { mergeTheme, theme as vendorTheme } from 'svelte-streamdown';
+import { SRC_ROOT, walkSources } from '../../../../test/sourceScan';
 import { MD_BLOCK_MARKER, chatMarkdownTheme } from './streamdownTheme';
 
-// Tailwind palette scales and the raw black/white utilities the vendor base
-// theme reaches for. None of these may survive the merge on any key the
-// component can mount — they are hardcoded light-mode values with no dark
-// counterpart.
+// Completeness tripwire for the ONE first-party markdown theme table.
+//
+// The table used to be an override layer merged over a vendor base at
+// runtime (`mergeTheme`, i.e. tailwind-merge per sub-key). Both halves are
+// gone: `chatMarkdownTheme` is now the whole theme, handed to `<Streamdown>`
+// as-is, and a slot the render path reads but the table omits is a
+// `class={undefined}` — an element that silently loses all of its styling.
+//
+// So the roster is derived from the CODE, not maintained here: every
+// `streamdown.theme.<group>.<slot>` read across the render path (the
+// tree plus the app's own hosts) must exist in the table, and every entry in
+// the table must have a reader. Both directions matter — the first catches a
+// deleted entry, the second stops dead class strings from surviving in a
+// table nobody merges any more (Tailwind compiles what it scans, so a dead
+// entry is a dead rule in the bundle).
+
+// ---------------------------------------------------------------------------
+// The read set, scanned out of the render path
+// ---------------------------------------------------------------------------
+
+/** Every file that can read `streamdown.theme.*`. */
+const RENDER_PATH_ROOTS = [
+  // The renderer (Streamdown, Block, CompactBlocks, Element,
+  // elements/*, staticHtml).
+  join(SRC_ROOT, 'lib', 'markdown', 'render'),
+  // The app's own hosts, which render code-block DOM themselves and read the
+  // same table (`StreamdownCodeHost.svelte`, `staticCodeBlock.ts`).
+  join(SRC_ROOT, 'lib', 'components', 'chat', 'markdown'),
+];
+
+function renderPathSources(): Array<{ path: string; text: string }> {
+  const files: Array<{ path: string; text: string }> = [];
+  for (const root of RENDER_PATH_ROOTS) {
+    for (const file of walkSources(root, /\.(ts|js|svelte)$/)) {
+      if (/\.(test|spec)\.[a-z]+$|\.manual\.ts$/.test(file)) continue;
+      files.push({ path: file.split(sep).join('/'), text: readFileSync(file, 'utf8') });
+    }
+  }
+  return files;
+}
+
+const SOURCES = renderPathSources();
+
+/** `streamdown.theme.<group>.<slot>` — the literal reads. */
+const STATIC_READ = /streamdown\.theme\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)/g;
+
+/**
+ * The reads that index the table with a computed key. A regex cannot resolve
+ * these, so each one names the slots its branch can produce and carries the
+ * exact source expression as a probe: if the site is renamed or deleted, the
+ * probe stops matching and this list fails rather than quietly widening.
+ */
+const DYNAMIC_READS: Array<{ what: string; probe: string; slots: string[] }> = [
+  {
+    what: "Element.svelte's heading branch",
+    probe: 'streamdown.theme[`h${token.depth}`].base',
+    slots: ['h1.base', 'h2.base', 'h3.base', 'h4.base', 'h5.base', 'h6.base'],
+  },
+  {
+    what: "staticHtml.ts's heading branch",
+    probe: "streamdown.theme[tag as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'].base",
+    slots: ['h1.base', 'h2.base', 'h3.base', 'h4.base', 'h5.base', 'h6.base'],
+  },
+  {
+    what: "staticHtml.ts's list branch",
+    probe: 'streamdown.theme[tag].base',
+    slots: ['ul.base', 'ol.base'],
+  },
+  {
+    what: "staticHtml.ts's table-section, cell, inline and description branches",
+    probe: 'streamdown.theme[token.type].base',
+    slots: [
+      'thead.base',
+      'tbody.base',
+      'tfoot.base',
+      'td.base',
+      'th.base',
+      'sub.base',
+      'sup.base',
+      'strong.base',
+      'em.base',
+      'del.base',
+      'descriptionTerm.base',
+      'descriptionDetail.base',
+    ],
+  },
+  {
+    what: "Alert.svelte's variant class",
+    probe: 'streamdown.theme.alert[token.variant]',
+    slots: ['alert.note', 'alert.tip', 'alert.warning', 'alert.caution', 'alert.important'],
+  },
+];
+
+function readSet(): Set<string> {
+  const slots = new Set<string>();
+  for (const { text } of SOURCES) {
+    for (const match of text.matchAll(STATIC_READ)) {
+      slots.add(`${match[1]}.${match[2]}`);
+    }
+  }
+  for (const entry of DYNAMIC_READS) {
+    for (const slot of entry.slots) slots.add(slot);
+  }
+  return slots;
+}
+
+const READ = readSet();
+
+/**
+ * The table as a plain string map. `Theme` names its groups explicitly (that
+ * is what makes a missing slot a compile error at the table), so the sweeps
+ * below — which walk it generically — need the erased shape.
+ */
+const TABLE = chatMarkdownTheme as unknown as Record<string, Record<string, string>>;
+
+/** `group.slot` for every class string in the table. */
+function tableSlots(): string[] {
+  const slots: string[] = [];
+  for (const [group, entry] of Object.entries(TABLE)) {
+    for (const [slot, value] of Object.entries(entry)) {
+      expect(value, `${group}.${slot} must be a class string`).toBeTypeOf('string');
+      slots.push(`${group}.${slot}`);
+    }
+  }
+  return slots;
+}
+
+describe('chatMarkdownTheme completeness', () => {
+  it('scans a render path it could actually read', () => {
+    // A scan that found nothing would pass every assertion below forever.
+    expect(SOURCES.length).toBeGreaterThan(20);
+    expect(SOURCES.some((f) => f.path.endsWith('/staticHtml.ts'))).toBe(true);
+    expect(SOURCES.some((f) => f.path.endsWith('/elements/Element.svelte'))).toBe(true);
+    expect(SOURCES.some((f) => f.path.endsWith('/StreamdownCodeHost.svelte'))).toBe(true);
+    expect(READ.size).toBeGreaterThan(35);
+  });
+
+  for (const entry of DYNAMIC_READS) {
+    it(`still finds the computed-key read in ${entry.what}`, () => {
+      const holders = SOURCES.filter((f) => f.text.includes(entry.probe));
+      expect(
+        holders.map((f) => f.path),
+        `no render-path file contains ${entry.probe}; the slot list beside it is stale`,
+      ).not.toEqual([]);
+    });
+  }
+
+  it('carries every slot the render path reads', () => {
+    const table = new Set(tableSlots());
+    const missing = [...READ].filter((slot) => !table.has(slot)).sort();
+    expect(
+      missing,
+      'the render path reads these slots and the table has no entry: each renders class={undefined}',
+    ).toEqual([]);
+  });
+
+  it('carries no slot the render path never reads', () => {
+    const dead = tableSlots()
+      .filter((slot) => !READ.has(slot))
+      .sort();
+    expect(
+      dead,
+      'nothing reads these entries; delete them rather than shipping dead classes Tailwind compiles',
+    ).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Class-string hygiene
+// ---------------------------------------------------------------------------
+
+// Tailwind palette scales and the raw black/white utilities the deleted vendor
+// base theme reached for. None may appear in the table: they are hardcoded
+// light-mode values with no dark counterpart.
 //
 // Written as a pattern rather than a list of literal classes on purpose:
-// Tailwind scans comments and string literals alike, so quoting a vendor class
-// here would compile that dead rule into the production bundle.
+// Tailwind scans comments and string literals alike, so quoting one here would
+// compile that dead rule into the production bundle.
 const PALETTE_CLASS =
   /(?:^|[\s:])(?:[a-z-]+-)?(?:(?:gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}|black|white)(?:\/\d+)?(?![\w-])/;
 
-// The merged theme is what actually reaches the DOM: streamdown runs
-// `cn()` (clsx + tailwind-merge) per sub-key, so an override only
-// cancels a vendor color when it collides with it in the SAME utility
-// category AND under the SAME modifier. Asserting on the merge result
-// rather than on our own strings is the only assertion that can catch
-// a near-miss like a bare text color failing to cancel the vendor's
-// title color under its `[&>[data-alert-title]]:` modifier — or a
-// `border-0` that cancels a width and leaves the color standing.
-const merged = mergeTheme(
-  chatMarkdownTheme,
-  // Matches ChatMarkdown.svelte's `baseTheme="tailwind"`.
-  'tailwind',
-) as unknown as Record<string, unknown>;
-
-/**
- * Keys we deliberately do not theme, each because the class never mounts from
- * chat markdown. This is the ONLY reason an entry belongs here: "the vendor
- * happens not to leak on it today" is not one, because the sweep below would
- * pass on it anyway.
- *
- * Entries are checked against the vendor theme, so a rename upstream fails
- * rather than silently widening the exemption.
- */
-const UNREACHABLE_KEYS: Record<string, string> = {
-  // The library's code chrome has no consumer: `StreamdownCodeHost` renders
-  // the pre/code DOM itself from backend highlight spans, and the vendored
-  // shiki `Code.svelte` is replaced wholesale. Chat code blocks are
-  // zero-chrome — the host's hover-revealed copy button is the only
-  // affordance. See docs/architecture/theme-system.md §4.3.
-  'code.header': 'replaced by StreamdownCodeHost; the vendor header never renders',
-  'code.skeleton': 'replaced by StreamdownCodeHost; there is no vendor loading skeleton',
-  'code.buttons': 'replaced by StreamdownCodeHost; the host owns its own button row',
-  'code.language': 'replaced by StreamdownCodeHost; no language chip is rendered',
-  'code.line': 'replaced by StreamdownCodeHost; lines come from backend spans',
-  // Inline citations are a shadcn-token group (a design vocabulary this app
-  // does not define at all, so nothing here resolves) behind a snippet
-  // ChatMarkdown overrides. Nested two levels deep, unlike every other group.
-  inlineCitation: 'snippet overridden in ChatMarkdown; the group names tokens this app has none of',
-};
-
-/** Every `group.key` in the vendor theme whose value is a class string. */
-function vendorClassKeys(): Array<readonly [string, string]> {
-  const keys: Array<readonly [string, string]> = [];
-  for (const [group, entry] of Object.entries(vendorTheme as Record<string, unknown>)) {
-    if (group in UNREACHABLE_KEYS) continue;
-    if (typeof entry !== 'object' || entry === null) continue;
-    for (const [key, value] of Object.entries(entry as Record<string, unknown>)) {
-      if (typeof value !== 'string') continue;
-      if (`${group}.${key}` in UNREACHABLE_KEYS) continue;
-      keys.push([group, key]);
-    }
-  }
-  return keys;
-}
-
-describe('chatMarkdownTheme', () => {
+describe('chatMarkdownTheme class strings', () => {
   it('keeps fenced code wrapable instead of horizontally scrollable', () => {
     const codePreBase = chatMarkdownTheme.code.pre;
     const preClasses = codePreBase.split(/\s+/);
@@ -104,123 +221,96 @@ describe('chatMarkdownTheme', () => {
     expect(chatMarkdownTheme.mermaid.base).toMatch(/\bbg-surface-1\b/);
   });
 
-  describe('vendor palette leaks', () => {
-    // Driven off the VENDOR theme's own keys, not a list maintained here.
-    //
-    // The hand-maintained list this replaced could only assert about keys
-    // somebody had already thought about, which is precisely the set that
-    // does not need asserting: the one real leak in this area — a table
-    // border whose width was cancelled and whose COLOR was not — sat on a
-    // key the list happened to name and a sub-key it happened to miss. A
-    // sweep cannot have that blind spot, and it inherits new keys from a
-    // vendor bump for free.
-    const keys = vendorClassKeys();
-
-    it('sweeps a vendor theme it could actually read', () => {
-      expect(keys.length).toBeGreaterThan(30);
-      for (const key of Object.keys(UNREACHABLE_KEYS)) {
-        const [group, sub] = key.split('.');
-        const entry = (vendorTheme as Record<string, Record<string, unknown>>)[group!];
-        expect(entry, `${key} is allowlisted but the vendor theme has no such group`).toBeTypeOf(
-          'object',
-        );
-        if (sub !== undefined) {
-          expect(entry?.[sub], `${key} is allowlisted but the vendor theme has no such key`).toBeTypeOf(
-            'string',
-          );
-        }
-      }
-    });
-
-    for (const [group, key] of keys) {
-      it(`leaves no palette class on ${group}.${key} after the merge`, () => {
-        const value = (merged[group] as Record<string, string> | undefined)?.[key];
-        expect(value).toBeTypeOf('string');
-        expect(value).not.toMatch(PALETTE_CLASS);
-      });
+  it('carries the alert title color under the modifier the markup needs', () => {
+    // The title color lands on the alert's `[data-alert-title]` row, which is
+    // a CHILD of the element carrying the class — so the variant entry must
+    // keep the descendant modifier, not a bare text color.
+    for (const variant of ['note', 'tip', 'warning', 'caution', 'important'] as const) {
+      expect(chatMarkdownTheme.alert[variant]).toMatch(/\[&>\[data-alert-title\]\]:text-[a-z-]+\b/);
     }
-
-    it('cancels the alert title color under the vendor modifier', () => {
-      // The vendor writes the title color as a palette text class under an
-      // `[&>[data-alert-title]]:` modifier; tailwind-merge keys on
-      // (modifier, category), so only a same-modifier override collides.
-      for (const variant of ['note', 'tip', 'warning', 'caution', 'important']) {
-        expect(chatMarkdownTheme.alert[variant]).toMatch(
-          /\[&>\[data-alert-title\]\]:text-[a-z-]+\b/,
-        );
-      }
-    });
-
-    it('recognises the leak it is looking for', () => {
-      // The sweep asserts a negative on every key, so a pattern that matched
-      // nothing would read as a clean theme forever. These are the exact
-      // shapes the vendor base theme uses, assembled at runtime so no
-      // complete class literal exists for Tailwind's scanner to compile.
-      expect('border-gray-' + '200').toMatch(PALETTE_CLASS);
-      expect('bg-' + 'white').toMatch(PALETTE_CLASS);
-      expect('[&>[data-alert-title]]:text-blue-' + '600').toMatch(PALETTE_CLASS);
-      expect('hover:bg-gray-' + '100/50').toMatch(PALETTE_CLASS);
-      // Our own vocabulary must not read as a leak.
-      expect('border-border-subtle bg-surface-1 text-fg-muted').not.toMatch(PALETTE_CLASS);
-    });
   });
 
-  describe('md-blk block marker', () => {
-    // Every element that can render as a DIRECT child of the streamdown
-    // root (the .md-committed / .md-volatile wrapper) carries md-blk, and
-    // nothing else does. Streamdown uses it to find the two direct edge
-    // blocks and publishes explicit `sd-trim-*` classes. app.css therefore
-    // needs no structural pseudo whose invalidation set reacts to nested
-    // syntax-span changes. See the MD_BLOCK_MARKER doc in streamdownTheme.ts.
-    //
-    // A block-level key missing the marker keeps its own edge margin when
-    // it lands first/last in a message; an inline key carrying it would
-    // hand the resets an element that is never a wrapper child. Both
-    // directions are asserted, over the MERGED theme (what reaches the
-    // DOM), so a tailwind-merge behavior change that dropped the unknown
-    // class would fail here too.
-    const BLOCK_KEYS = [
-      'alert.base',
-      'blockquote.base',
-      'code.base',
-      'descriptionList.base',
-      'h1.base',
-      'h2.base',
-      'h3.base',
-      'h4.base',
-      'h5.base',
-      'h6.base',
-      'hr.base',
-      'math.block',
-      'mermaid.base',
-      'ol.base',
-      'paragraph.base',
-      'table.base',
-      'ul.base',
-    ];
-
-    const markerRe = new RegExp(`(?:^|\\s)${MD_BLOCK_MARKER}(?:\\s|$)`);
-
-    for (const key of BLOCK_KEYS) {
-      it(`stamps ${key} with the marker after the merge`, () => {
-        const [group, sub] = key.split('.') as [string, string];
-        const value = (merged[group] as Record<string, string> | undefined)?.[sub];
-        expect(value).toBeTypeOf('string');
-        expect(value).toMatch(markerRe);
-      });
-    }
-
-    it('keeps the marker off every non-block key', () => {
-      const offenders: string[] = [];
-      for (const [group, entry] of Object.entries(merged)) {
-        if (typeof entry !== 'object' || entry === null) continue;
-        for (const [sub, value] of Object.entries(entry as Record<string, unknown>)) {
-          if (typeof value !== 'string') continue;
-          if (BLOCK_KEYS.includes(`${group}.${sub}`)) continue;
-          if (markerRe.test(value)) offenders.push(`${group}.${sub}`);
-        }
+  it('leaves no raw palette class anywhere in the table', () => {
+    const offenders: string[] = [];
+    for (const [group, entry] of Object.entries(TABLE)) {
+      for (const [slot, value] of Object.entries(entry)) {
+        if (PALETTE_CLASS.test(value)) offenders.push(`${group}.${slot}`);
       }
-      expect(offenders).toEqual([]);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('recognises the leak it is looking for', () => {
+    // The sweep asserts a negative over every entry, so a pattern that matched
+    // nothing would read as a clean theme forever. These are the exact shapes
+    // the deleted vendor base theme used, assembled at runtime so no complete
+    // class literal exists for Tailwind's scanner to compile.
+    expect('border-gray-' + '200').toMatch(PALETTE_CLASS);
+    expect('bg-' + 'white').toMatch(PALETTE_CLASS);
+    expect('[&>[data-alert-title]]:text-blue-' + '600').toMatch(PALETTE_CLASS);
+    expect('hover:bg-gray-' + '100/50').toMatch(PALETTE_CLASS);
+    // Our own vocabulary must not read as a leak.
+    expect('border-border-subtle bg-surface-1 text-fg-muted').not.toMatch(PALETTE_CLASS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The block marker
+// ---------------------------------------------------------------------------
+
+describe('md-blk block marker', () => {
+  // Every element that can render as a DIRECT child of the streamdown root
+  // (the .md-committed / .md-volatile wrapper) carries md-blk, and nothing
+  // else does. Streamdown uses it to find the two direct edge blocks and
+  // publishes explicit `sd-trim-*` classes. app.css therefore needs no
+  // structural pseudo whose invalidation set reacts to nested syntax-span
+  // changes. See the MD_BLOCK_MARKER doc in streamdownTheme.ts.
+  //
+  // A block-level key missing the marker keeps its own edge margin when it
+  // lands first/last in a message; an inline key carrying it would hand the
+  // resets an element that is never a wrapper child. Both directions are
+  // asserted.
+  const BLOCK_KEYS = [
+    'alert.base',
+    'blockquote.base',
+    'code.base',
+    'descriptionList.base',
+    'h1.base',
+    'h2.base',
+    'h3.base',
+    'h4.base',
+    'h5.base',
+    'h6.base',
+    'hr.base',
+    'math.block',
+    'mermaid.base',
+    'ol.base',
+    'paragraph.base',
+    'table.base',
+    'ul.base',
+  ];
+
+  const markerRe = new RegExp(`(?:^|\\s)${MD_BLOCK_MARKER}(?:\\s|$)`);
+
+  function valueOf(key: string): string | undefined {
+    const [group, slot] = key.split('.') as [string, string];
+    return TABLE[group]?.[slot];
+  }
+
+  for (const key of BLOCK_KEYS) {
+    it(`stamps ${key} with the marker`, () => {
+      expect(valueOf(key)).toMatch(markerRe);
     });
+  }
+
+  it('keeps the marker off every non-block key', () => {
+    const offenders: string[] = [];
+    for (const [group, entry] of Object.entries(TABLE)) {
+      for (const [slot, value] of Object.entries(entry)) {
+        if (BLOCK_KEYS.includes(`${group}.${slot}`)) continue;
+        if (markerRe.test(value)) offenders.push(`${group}.${slot}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

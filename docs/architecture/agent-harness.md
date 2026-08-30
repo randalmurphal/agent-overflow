@@ -384,10 +384,21 @@ zero-config harness still streams a sensible reply.
 
 General-purpose scripts: `streaming-text` (Claude default),
 `thinking-then-text`, `tool-call`, `tool-approval`, `file-edit`,
-`session-death`, `stall-forever`, `step-gated`,
+`file-edit-diff`, `session-death`, `stall-forever`, `step-gated`,
 `soak-background-agents` (three async `local_agent` subagents streaming
 forever; see [soak-rig.md](soak-rig.md)), `codex-basic` (Codex
 default), `codex-approval`.
+
+The two file-edit scripts are not interchangeable. `file-edit` writes a
+file and answers with a plain-string `tool_result`, so triage extracts
+no diff and the card renders a disabled header — the shape most tools
+actually produce. `file-edit-diff` answers with the real Edit
+`tool_use_result` (`filePath` + a two-hunk `structuredPatch`), which is
+the only library script that makes triage persist an inline diff
+PAYLOAD, so it is the one that exercises diff rows, expand-to-load, and
+the `collapseDiffPreviews` default. Its claim is pinned by
+`internal/triage/scenario_file_edit_diff_test.go`, which drives the
+scenario's own lines through the real parser and Router.
 
 Bench scripts (`bench-burst-stream`, `bench-active-stream`, `bench-giant-turn`,
 `bench-subagent-fanout`) are the load workloads, and their one shared
@@ -709,7 +720,7 @@ prefix matching skips a process it does not recognise by design.
 ## Driving an instance from a shell (`bin/ao-harness`)
 
 `cmd/ao-harness` is the same surface for a human or an agent at a
-terminal: `up` / `down` / `list` / `info` / `open`, `seed`, `reset`,
+terminal: `up` / `down` / `list` / `info` / `open` / `attach`, `seed`, `reset`,
 `rpc <Method> [json]`,
 `threads` / `items` / `send`, `scenario`, `mock`, `events tail|await|count`,
 `record` / `bundles` / `replay`, `logs`, a read-only `db`, the
@@ -730,8 +741,26 @@ The generated CLI reference is [docs/references/ao-harness.md](../references/ao-
 the same consume-on-match `WaitForEvent` semantics as
 `e2e/src/harness.ts`, detached launch, and file tailing. A Go test that
 needs a real instance imports that rather than re-implementing the
-frames. Details and the registry prune rule:
+frames. Details, the registry prune rule, and the one refusal an operator
+may override (`down --force`, for a row whose data root no longer claims
+any instance):
 [cmd/ao-harness/AGENTS.md](../../cmd/ao-harness/AGENTS.md).
+
+The bridge-backed commands need a page open on the instance, and
+`attach` is the unattended way to get one: it hosts the instance URL in a
+headless Chromium, waits for that page to register and answer the bridge,
+then either holds it open until SIGINT/SIGTERM or, with `--detach`,
+prints the pid and returns (stop it by killing that pid). A wait that
+runs out of its wall-clock `--timeout` fails and kills the browser group
+rather than reporting a page that is not there. The browser is resolved
+in three links, and the chosen one is printed: `--browser` or
+`$AO_HARNESS_BROWSER`, then the `chrome-headless-shell` design mode
+already cached (`internal/headlessshell` — a path lookup, never a
+download), then a Chromium-family binary on `PATH`. `--devtools-port`
+additionally exposes CDP, which is what `profile` and `bench --trace`
+need. A headless-shell page hosts the bridge faithfully but is not the
+production rendering engine on any platform, so treat its perf numbers as
+comparable to other headless runs, not to a WebView2 or WebKitGTK window.
 
 The monitor CLI is typed at its edge. `monitor start`, `heartbeat`, `overlap`, `status`,
 `collect`, `stop`, `cleanup`, and `last` send only the finite monitor query

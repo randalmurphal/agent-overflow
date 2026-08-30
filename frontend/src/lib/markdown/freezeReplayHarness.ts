@@ -30,7 +30,7 @@ import {
   createProvenAppend,
   parseIncompleteMarkdown,
   type ProvenAppend,
-} from 'svelte-streamdown';
+} from './index';
 import { StreamingBoundarySplitter } from './boundary';
 
 /** Default ceiling for a single replay step. Anything near it is the bug. */

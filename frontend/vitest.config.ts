@@ -4,6 +4,11 @@ import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
 import { resolve } from 'node:path';
 
+// There is no `svelte.config.js` (see vite.config.ts for why). Saying so
+// keeps the plugin from logging "no Svelte config found" once per project
+// on every run.
+const svelteOptions = { configFile: false } as const;
+
 // Shared resolve config for the happy-dom suite. Use the browser entry for
 // Svelte so `mount()` is available in tests (without this Vitest resolves
 // svelte's `default` export -> index-server.js -> lifecycle_function_unavailable).
@@ -18,7 +23,7 @@ const happyDomResolve = {
     { find: '../../../bindings/agent-overflow/app.js', replacement: resolve(import.meta.dirname, 'src/test/mocks/bindings-app.ts') },
     { find: '../../../bindings/agent-overflow/internal/provider/models.js', replacement: resolve(import.meta.dirname, 'src/test/mocks/bindings-models.ts') },
     // Vitest's loader can't parse raw CSS imported outside of a Svelte
-    // `<style>` block -- `svelte-streamdown`'s Math element does
+    // `<style>` block -- `lib/markdown`'s Math element does
     // `import 'katex/dist/katex.min.css'`, which would crash component tests
     // with "Unknown file extension '.css'". Stub it explicitly.
     { find: 'katex/dist/katex.min.css', replacement: resolve(import.meta.dirname, 'src/test/mocks/empty-css.ts') },
@@ -53,7 +58,7 @@ export default defineConfig({
   test: {
     projects: [
       {
-        plugins: [svelte()],
+        plugins: [svelte(svelteOptions)],
         resolve: happyDomResolve,
         test: {
           name: 'unit',
@@ -93,7 +98,7 @@ export default defineConfig({
         // mount throws. tailwindcss stays so app.css compiles against the real
         // cascade. Order: svelte first so .svelte transforms run before tailwind
         // post-processes the emitted CSS.
-        plugins: [svelte(), tailwindcss()],
+        plugins: [svelte(svelteOptions), tailwindcss()],
         resolve: happyDomResolve,
         // Scan the browser test files (and their component imports) up front
         // so Vite's dep optimizer pre-bundles everything they reach. Without
@@ -136,7 +141,7 @@ export default defineConfig({
         // reach the same mocked bindings — with a disjoint include glob and a
         // timeout that lets a long sweep finish rather than being cut off
         // mid-corpus.
-        plugins: [svelte()],
+        plugins: [svelte(svelteOptions)],
         resolve: happyDomResolve,
         test: {
           name: 'manual',

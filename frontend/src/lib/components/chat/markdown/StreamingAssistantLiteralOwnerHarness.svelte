@@ -3,12 +3,12 @@
   import {
     attachStreamdownLiteralHost,
     type StreamdownLiteralHostHandle,
-  } from 'svelte-streamdown';
+  } from '../../../markdown';
   import { createStreamingAssistantLiteralOwner } from './streamingAssistantLiteralOwner';
   import type { StreamingAssistantParserCheckpoint } from '../../../stores/streamingAssistantReveal';
 
   // The host renders EMPTY and its controller is the single writer, exactly as
-  // the vendored `LiteralHost.svelte` mounts it. Driving the controller here
+  // `LiteralHost.svelte` mounts it. Driving the controller here
   // rather than mounting Streamdown keeps this a contract test for the owner.
   let root: HTMLElement;
   let hostElement: HTMLSpanElement;

@@ -469,8 +469,8 @@ then gone quiet for `QUIET_MS`, or until `FAILSAFE_MS` elapses. The quiet
 timer is gated on ResizeObserver evidence; do not replace it with a plain
 wall-clock delay.
 
-A consumer that knows its async typesetting (svelte-streamdown's
-shiki/katex/mermaid) has settled can pass `quietContextSignal` to shorten
+A consumer that knows its async typesetting (the markdown renderer's
+katex/mermaid) has settled can pass `quietContextSignal` to shorten
 the quiet window to `SETTLED_QUIET_MS` (~one frame). That shortcut is
 itself gated on **geometry stability**: `quietContextSignal` is blind to
 the engine's estimate→measure cascade, which grows `scrollHeight` over a
@@ -551,7 +551,7 @@ the rows that arrive 100–300ms later would mount through an open gate and
 run their estimate cascade in front of the reader.
 
 The **initial-slice re-arm** closes it again: `applyInitialSlice`'s call
-site in `thread.svelte.ts` (`armInitialSliceWarmup`) calls
+site in `threadPaneScroll.svelte.ts` (`armInitialSliceWarmup`) calls
 `PaneScrollController.armWarmup` synchronously with the item mutation
 (strictly before the flush that mounts those rows, the same ordering
 contract `markStructuralContentPending` carries), so the hide covers the
@@ -923,7 +923,7 @@ sync-pin invisibly instead of deferring to a dead chase after the append
 settles.
 
 The pane data layer is the sole owner of the arm, with two arm shapes in
-`thread.svelte.ts`: `armLiveContentAppendSpring` (arm + liveness stamp)
+`threadPaneScroll.svelte.ts`: `armLiveContentAppendSpring` (arm + liveness stamp)
 for `applyProviderItemUpserts` (a wire append to the loaded tail) and
 `recomputeRevealPass` (the reveal gate releasing withheld rows, which are
 already in `pane.items` and mount without any upsert in that flush), and bare
@@ -1055,11 +1055,13 @@ pending a product call: the `animate-spin` loading ring on
 `primitives/Button` (load-older/newer, the message editor's working
 state, plan-card expansion: a *transform* animation, so a straight
 violation of the fade-never-move rule, and live during exactly the
-head-splice compensation commits load paging performs), and the vendored
-streamdown popovers' `transition:scale|global` dialogs (click-gated,
-outside the directive tripwire's `components/chat` walk). Removing or
-converting these (e.g. to the ticker-driven `SteppedSpinner`) changes
-visible behavior, so they are a decision, not a cleanup. (A third exception, the
+head-splice compensation commits load paging performs). Removing or
+converting it (e.g. to the ticker-driven `SteppedSpinner`) changes
+visible behavior, so it is a decision, not a cleanup. `lib/markdown/render/`
+is the other subtree the walks miss; it carries no animation or transition
+today, and the popovers that used to (`transition:scale|global` on
+click-gated dialogs) were deleted with the rest of the library chrome.
+(A third exception, the
 user-message jump-target glow, turned out to be dead code. Its only
 producer died with `DiffPanelDrawer` in the review-pane redesign, and
 the whole flash mechanism was removed rather than left dormant.)

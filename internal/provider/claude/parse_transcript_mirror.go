@@ -68,31 +68,47 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 	}
 
 	state := p.ensureTranscriptMirrorState()
-	facts := inspectMirrorEntries(envelope.Entries)
+	facts, err := inspectMirrorEntries(envelope.Entries)
+	if err != nil {
+		return nil, fmt.Errorf("inspect transcript_mirror %q: %w", envelope.FilePath, err)
+	}
 	if facts.agentID == "" {
 		facts.agentID = mirrorAgentIDFromPath(envelope.FilePath)
 	}
 	projectionKey := mirrorProjectionKey(envelope.FilePath, facts.agentID)
 	projection := state.projections[projectionKey]
 	var events []provider.ProviderEvent
-	var err error
 	entries := envelope.Entries
+	// attributionSkill names the skill responsible for work in both the main
+	// transcript and a forked skill's sidechain. isSidechain is the ownership
+	// fact. Main-transcript rows already arrive on stdout and must never be
+	// projected beneath the provisional command row.
+	if facts.scope == mirrorTranscriptMain {
+		state.clearPending(projectionKey)
+		if projection != nil {
+			return nil, fmt.Errorf("transcript_mirror %q changed from sidechain to main transcript", envelope.FilePath)
+		}
+		return nil, nil
+	}
 	if projection == nil && p.activeCommandUUID != "" && state.commands[p.activeCommandUUID] != nil {
-		if facts.attributionSkill == "" {
+		if !facts.provesSkillFork() {
 			if state.bufferPending(projectionKey, p.activeCommandUUID, entries) {
 				events = append(events, transcriptMirrorDegradedEvent(
 					threadID, p.activeCommandUUID, state.commands[p.activeCommandUUID].launchID, now,
 				))
 			}
-			// A direct-command fork has no launch scope until attribution proves
-			// it is a Skill. Keep its small prefix buffered without rescanning the
-			// whole prefix on every append. A manually-backgrounded/nested task
+			// A direct-command fork has no launch scope until sidechain attribution
+			// proves it is a Skill. Keep its small prefix buffered without rescanning
+			// the whole prefix on every append. A manually-backgrounded/nested task
 			// already has a scope and can project immediately.
 			if state.taskScopes[facts.agentID].scope == "" {
 				return events, nil
 			}
 			entries = state.pending[projectionKey]
-			facts = inspectMirrorEntries(entries)
+			facts, err = inspectMirrorEntries(entries)
+			if err != nil {
+				return events, fmt.Errorf("inspect buffered transcript_mirror %q: %w", envelope.FilePath, err)
+			}
 			if facts.agentID == "" {
 				facts.agentID = mirrorAgentIDFromPath(envelope.FilePath)
 			}
@@ -100,8 +116,11 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 			combined := make([]json.RawMessage, 0, len(pending)+len(entries))
 			combined = append(combined, pending...)
 			entries = append(combined, entries...)
+			facts, err = inspectMirrorEntries(entries)
+			if err != nil {
+				return events, fmt.Errorf("inspect buffered transcript_mirror %q: %w", envelope.FilePath, err)
+			}
 			state.clearPending(projectionKey)
-			facts = inspectMirrorEntries(entries)
 		}
 	}
 
@@ -131,9 +150,10 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 
 	// A direct command fork is identified from the wire, not from a list of
 	// commands AO believes may fork. The active stdin command proves the
-	// outer command, and attributionSkill on the mirrored transcript proves
-	// that Claude created a Skill sidechain for it.
-	if projection == nil && p.activeCommandUUID != "" && facts.attributionSkill != "" {
+	// outer command, while isSidechain plus attributionSkill prove that Claude
+	// created a Skill sidechain for it. Attribution alone also labels ordinary
+	// main-agent work performed after an inline skill injected context.
+	if projection == nil && p.activeCommandUUID != "" && facts.provesSkillFork() {
 		commandState := state.commands[p.activeCommandUUID]
 		if commandState != nil {
 			launchID := commandState.launchID
@@ -317,9 +337,18 @@ func (p *Parser) closeTranscriptMirrors() {
 type mirrorEntryInspection struct {
 	agentID          string
 	attributionSkill string
+	scope            mirrorTranscriptScope
 	firstTimestamp   time.Time
 	entries          []mirrorEntryFact
 }
+
+type mirrorTranscriptScope uint8
+
+const (
+	mirrorTranscriptUnknown mirrorTranscriptScope = iota
+	mirrorTranscriptMain
+	mirrorTranscriptSidechain
+)
 
 type mirrorEntryFact struct {
 	uuid string
@@ -332,13 +361,34 @@ func (i mirrorEntryInspection) timestampOr(fallback time.Time) time.Time {
 	return fallback
 }
 
-func inspectMirrorEntries(entries []json.RawMessage) mirrorEntryInspection {
+func (i mirrorEntryInspection) provesSkillFork() bool {
+	return i.scope == mirrorTranscriptSidechain && i.attributionSkill != ""
+}
+
+func (i *mirrorEntryInspection) observeScope(value *bool) error {
+	if value == nil {
+		return nil
+	}
+	next := mirrorTranscriptMain
+	if *value {
+		next = mirrorTranscriptSidechain
+	}
+	if i.scope != mirrorTranscriptUnknown && i.scope != next {
+		return fmt.Errorf("batch mixes main-transcript and sidechain rows")
+	}
+	i.scope = next
+	return nil
+}
+
+func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, error) {
 	facts := mirrorEntryInspection{entries: make([]mirrorEntryFact, 0, len(entries))}
 	for _, entry := range entries {
 		var raw struct {
 			UUID             string `json:"uuid"`
 			AgentID          string `json:"agentId"`
 			LegacyAgentID    string `json:"agent_id"`
+			IsSidechain      *bool  `json:"isSidechain"`
+			LegacySidechain  *bool  `json:"is_sidechain"`
 			AttributionSkill string `json:"attributionSkill"`
 			LegacySkill      string `json:"attribution_skill"`
 			Timestamp        string `json:"timestamp"`
@@ -350,6 +400,12 @@ func inspectMirrorEntries(entries []json.RawMessage) mirrorEntryInspection {
 		if err := json.Unmarshal(entry, &raw); err != nil {
 			facts.entries = append(facts.entries, mirrorEntryFact{})
 			continue
+		}
+		if err := facts.observeScope(raw.IsSidechain); err != nil {
+			return mirrorEntryInspection{}, err
+		}
+		if err := facts.observeScope(raw.LegacySidechain); err != nil {
+			return mirrorEntryInspection{}, err
 		}
 		facts.entries = append(facts.entries, mirrorEntryFact{uuid: strings.TrimSpace(raw.UUID)})
 		facts.agentID = firstNonEmpty(facts.agentID,
@@ -363,7 +419,7 @@ func inspectMirrorEntries(entries []json.RawMessage) mirrorEntryInspection {
 			}
 		}
 	}
-	return facts
+	return facts, nil
 }
 
 func mirrorAgentIDFromPath(path string) string {

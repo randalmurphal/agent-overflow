@@ -3,8 +3,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// Regression for DIVERGENCE.md entry 18: the vendored mermaid SVG cache
-// keys on the PALETTE, not on `mermaidConfig.theme`.
+// The mermaid SVG cache keys on the PALETTE, not on
+// `mermaidConfig.theme`.
 //
 // The app pins `theme: 'base'` permanently (it is the only mermaid theme
 // that derives its colors from `themeVariables`), so a theme-only key
@@ -12,9 +12,9 @@ import { describe, expect, it } from 'vitest';
 // diagram rendered after boot would be served back on every theme flip,
 // under a remount whose entire purpose is repainting it.
 //
-// This runs the vendored expression itself rather than grepping for it:
+// This runs the renderer's expression itself rather than grepping for it:
 // the source is lifted out and evaluated, so the assertions below are
-// about behavior. If the extraction stops matching, the vendored hunk was
+// about behavior. If the extraction stops matching, the key builder was
 // reformatted or removed — re-read it against the ledger entry before
 // touching this file.
 const MERMAID_SOURCE = readFileSync(
@@ -23,7 +23,7 @@ const MERMAID_SOURCE = readFileSync(
   // invoked from anywhere but `frontend/`.
   resolve(
     dirname(fileURLToPath(import.meta.url)),
-    '../../../../../vendor/svelte-streamdown/dist/Elements/Mermaid.svelte',
+    '../../../markdown/render/elements/Mermaid.svelte',
   ),
   'utf8',
 );
@@ -34,7 +34,7 @@ function extractPaletteKeyBuilder(): (vars: unknown) => string {
   );
   if (!match) {
     throw new Error(
-      'vendored Mermaid.svelte no longer builds a `paletteKey` before `cacheKey` — see DIVERGENCE.md entry 18',
+      'Mermaid.svelte no longer builds a `paletteKey` before `cacheKey`',
     );
   }
   return new Function('themeVariables', `return (${match[1]});`) as (
@@ -42,7 +42,7 @@ function extractPaletteKeyBuilder(): (vars: unknown) => string {
   ) => string;
 }
 
-describe('vendored mermaid SVG cache key', () => {
+describe('mermaid SVG cache key', () => {
   const buildPaletteKey = extractPaletteKeyBuilder();
 
   it('separates two palettes that share a theme name', () => {

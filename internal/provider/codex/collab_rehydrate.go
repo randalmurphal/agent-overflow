@@ -176,9 +176,15 @@ func (s *Session) inspectCollabHistoryChild(job collabHistoryJob) error {
 		return err
 	}
 	if status == "active" {
-		if err := s.attachActiveChildWithRetry(job.Ownership.ChildThreadID); err != nil {
+		meta, err := s.attachActiveChildWithRetry(job.Ownership.ChildThreadID)
+		if err != nil {
 			return err
 		}
+		if !s.collabHistoryGenerationCurrent(job.Generation) {
+			return nil
+		}
+		s.rememberCollabReceiverMeta(meta)
+		s.emitCollabReceiverMetaUpdate(job.Ownership.ParentItemID, meta, job.Ownership.LaunchMeta)
 	}
 	return nil
 }
@@ -299,24 +305,12 @@ func (s *Session) readCollabThreadSnapshot(ctx context.Context, providerThreadID
 	return snapshot, nil
 }
 
-func (s *Session) attachActiveChildWithRetry(providerThreadID string) error {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 && !ctxutil.Sleep(s.ctx, time.Duration(attempt)*150*time.Millisecond) {
-			return s.ctx.Err()
-		}
-		ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
-		_, err := s.sendRequest(ctx, "thread/resume", map[string]any{
-			"threadId":     providerThreadID,
-			"excludeTurns": true,
-		})
-		cancel()
-		if err == nil {
-			return nil
-		}
-		lastErr = err
+func (s *Session) attachActiveChildWithRetry(providerThreadID string) (collabReceiverMeta, error) {
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return lastErr
+	return s.readChildThreadProfileWithRetry(ctx, providerThreadID)
 }
 
 func (s *Session) collabHistoryGenerationCurrent(generation uint64) bool {

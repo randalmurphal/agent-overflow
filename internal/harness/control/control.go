@@ -35,8 +35,8 @@ const (
 	// the mock's stand-in for a provider home: the Claude adapter writes its
 	// synthetic transcript there so a backend restart can exercise the real
 	// cold-resume preflight, and the Codex adapter records each thread's
-	// history mode there so a THROWAWAY RESUME (which is how every rollback
-	// reaches the provider) still knows whether the thread is revertible.
+	// history mode there so a cold or fork-fallback throwaway resume still
+	// knows whether the thread is revertible.
 	// Neither ever touches a developer's provider home; without this
 	// variable both behaviours are simply absent.
 	EnvTranscriptHome = "AO_HARNESS_TRANSCRIPT_HOME"

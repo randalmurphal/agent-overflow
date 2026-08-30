@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { Streamdown } from 'svelte-streamdown';
-  import { STREAMDOWN_CONTROLS } from './markdown/streamdownConfig';
+  import { Streamdown } from '../../markdown';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';
 
   let { source }: { source: string } = $props();
@@ -10,12 +9,10 @@
   <Streamdown
     content={source}
     parseIncompleteMarkdown={false}
-    baseTheme="tailwind"
     theme={chatMarkdownTheme}
     allowedLinkPrefixes={['*']}
     allowedImagePrefixes={['*']}
     renderHtml={false}
-    controls={STREAMDOWN_CONTROLS}
     {compactStaticHtml}
   />
 {/snippet}

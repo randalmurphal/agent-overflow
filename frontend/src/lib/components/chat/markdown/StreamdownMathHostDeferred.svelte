@@ -25,7 +25,7 @@
   };
 
   // `id` is part of the wire interface the real host consumes (passes
-  // to svelte-streamdown's inner `<Math>` for its anchor id), so the
+  // to the renderer's inner `<Math>` for its anchor id), so the
   // deferred host accepts it for drop-in symmetry but doesn't render
   // anything that uses it.
   let { token, id: _id }: { token: MathToken; id: string } = $props();

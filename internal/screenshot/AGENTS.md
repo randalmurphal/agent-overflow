@@ -50,6 +50,10 @@ Headless-Chromium-driven page capture for design-mode read_screenshot.
 ## Layout
 
 - `doc.go` — package purpose.
+- The cache's layout is owned by `internal/headlessshell` (platform string,
+  version-directory binary path, executable check, and `Installed`). The
+  shared installer is its writer; `cmd/ao-harness attach` reads it without
+  linking a CDP library. Keep layout knowledge there.
 - `installer.go` — compatibility wrapper selecting
   `chromium.ArtifactHeadlessShell`; the shared installer owns manifest
   resolution, bounded extraction, caching, and stale-version pruning. The

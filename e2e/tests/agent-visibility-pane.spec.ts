@@ -36,6 +36,12 @@ const INTERMEDIATE = 'Intermediate note: starting with the parser.';
 const SURVEY_FINAL = 'Survey complete: no drift.';
 const PROBE_NOTE = 'Probe note: the grammar looks stable.';
 
+test.beforeEach(async ({ harness }) => {
+  // These specs exercise card and pane contents, not the shipped collapse
+  // preference. Keep their transcript fixtures open explicitly.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 /** localStorage key the appStorage bucket cache lives under. */
 const CLIENT_ID_CACHE_KEY = 'agent-overflow:uistate:clientId';
 

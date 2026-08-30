@@ -86,22 +86,59 @@ async function session(opts: { harness: boolean; remote?: boolean }): Promise<Se
   };
 }
 
+// The wait below can spend real seconds on a starved worker, and three of
+// them in one case. Raised from the 5s default so an honest slow import
+// still reports what it was waiting for rather than a bare test timeout.
+vi.setConfig({ testTimeout: 20_000 });
+
+/** How long `settle(until)` waits before declaring the chain broken. */
+const SETTLE_TIMEOUT_MS = 5_000;
+
 /**
  * Lets the answer chain settle: macrotask hops rather than a microtask
  * drain, because its first link is a dynamic import of a module graph.
  * `until` short-circuits the wait for the cases that have something to
  * wait FOR; the cases asserting that nothing happens spend the full run.
+ *
+ * A wait that runs out THROWS, and is bounded by the WALL CLOCK rather
+ * than by a count of hops. Both halves of that were the 2026-08-30 flake
+ * in this file, which failed about one full-suite run in 45:
+ *
+ *   * A hop count is not a timeout. The event loop spins `setTimeout(0)`
+ *     hops happily while the vite transform of the `lib/harness` graph
+ *     holds up the import, so the old 500-hop budget expired on a fast
+ *     machine's schedule instead of on the work's. Idle, that import
+ *     lands in under 3 hops; on a worker starved by the other 600 files
+ *     it outran all 500.
+ *   * Running out returned NORMALLY, so the case went on to assert
+ *     against state that had not arrived — and the activation it was
+ *     waiting for then landed inside the NEXT case, past the afterEach
+ *     that had just zeroed the counters. One slow import, two failures,
+ *     neither naming the wait. Starving the budget to 3 hops reproduces
+ *     both, in order, exactly.
+ *
+ * Only the third case pays that cold import: it is the first to reach the
+ * chunk, and vitest caches the mock factory across `resetModules`. It also
+ * cannot be pre-warmed, because proving the chunk is NOT loaded before the
+ * first query is the whole contract it exists to hold.
  */
 async function settle(until?: () => boolean): Promise<void> {
-  // A waiting case polls generously — a module graph resolving under a
-  // loaded CI box takes as many hops as it takes, and a fixed budget there
-  // is a flake. A case asserting that NOTHING happens has nothing to poll
-  // for, so it spends a small fixed one.
-  const budget = until ? 500 : 25;
-  for (let i = 0; i < budget; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (until?.()) return;
+  // A case asserting that NOTHING happens has nothing to poll for, so it
+  // spends a small fixed run of hops.
+  if (!until) {
+    for (let i = 0; i < 25; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return;
   }
+  const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+  do {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (until()) return;
+  } while (Date.now() < deadline);
+  throw new Error(
+    `harness bridge chain did not settle within ${SETTLE_TIMEOUT_MS}ms`,
+  );
 }
 
 afterEach(() => {

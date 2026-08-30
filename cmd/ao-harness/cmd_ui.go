@@ -187,8 +187,9 @@ func uiQueryError(err error) error {
 	}
 	return fmt.Errorf("%w\n"+
 		"  the bridge answers only while a page is open on this instance:\n"+
-		"    make harness-window   (opens the real webview on this worktree's harness)\n"+
-		"    ao-harness open       (prints the URL to open in a browser)", err)
+		"    ao-harness attach --detach   (hosts the page in a headless browser, unattended)\n"+
+		"    make harness-window          (opens the real webview on this worktree's harness)\n"+
+		"    ao-harness open              (prints the URL to open in a browser)", err)
 }
 
 func uiSnapshot(e *env, args []string) error {

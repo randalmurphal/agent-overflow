@@ -1,13 +1,12 @@
 <script lang="ts">
   // Test-only harness for exercising host prop reuse directly. Rendering
   // StreamdownMathHost / StreamdownMermaidHost outside a Streamdown tree fails
-  // because their inner svelte-streamdown components require context; this
+  // because their inner markdown-tree components require context; this
   // supplies the minimum context while keeping a single host instance mounted
   // across source changes.
 
   import { setContext } from 'svelte';
-  import { mergeTheme } from 'svelte-streamdown';
-  import type { Tokens } from 'marked';
+  import type { Tokens } from '../../markdown';
   import StreamdownMathHost from './markdown/StreamdownMathHost.svelte';
   import StreamdownMermaidHost from './markdown/StreamdownMermaidHost.svelte';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';
@@ -22,18 +21,13 @@
   };
 
   let { kind, source }: { kind: HostKind; source: string } = $props();
-  const fullTheme = mergeTheme(chatMarkdownTheme, 'tailwind');
 
   setContext('streamdown', {
-    isMounted: false,
     pendingAsyncCount: 0,
-    theme: fullTheme,
+    theme: chatMarkdownTheme,
     mermaidConfig: { theme: 'default' },
     katexConfig: undefined,
-    controls: { code: false, mermaid: false, table: false },
     icons: undefined,
-    animationBlockStyle: undefined,
-    animationTextStyle: undefined,
     registerAsyncResource() {
       return () => {};
     },

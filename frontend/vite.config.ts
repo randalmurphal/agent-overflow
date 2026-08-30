@@ -18,7 +18,12 @@ export default defineConfig({
       "@wailsio/runtime": transportShim,
     },
   },
-  plugins: [tailwindcss(), svelte()],
+  // `configFile: false`: there is no `svelte.config.js`. The only one this
+  // project ever had suppressed compiler warnings from `vendor/`, and that
+  // tree is first-party `src/` code now — every warning in it is ours to
+  // fix. Stating the absence keeps the plugin from logging a "no Svelte
+  // config found" line on every build, test and dev start.
+  plugins: [tailwindcss(), svelte({ configFile: false })],
   server: {
     watch: {
       // Belt-and-braces: `.claude/worktrees/agent-*/` and
@@ -69,22 +74,25 @@ export default defineConfig({
               name: "transport-vendor",
               test: /src\/lib\/transport\//,
             },
-            // svelte-streamdown ships a sizeable amount of code
-            // (Streamdown core + marked + Element renderers + token
-            // utilities) and only the chat surface uses it. Splitting
-            // it off keeps the main `index.js` bundle from ballooning
-            // on initial load and means library upgrades don't bust
-            // unrelated chunks.
+            // The markdown renderer is a sizeable amount of code
+            // (Streamdown core + the absorbed marked lexer + element
+            // renderers + token utilities) and only the chat surface
+            // uses it. Splitting it off keeps the main `index.js`
+            // bundle from ballooning on initial load and means upgrades
+            // don't bust unrelated chunks.
             //
-            // `vendor/` is in the alternation because svelte-streamdown
-            // is vendored in-repo (`frontend/vendor/svelte-streamdown`,
-            // see its VENDOR.md). Rolldown resolves the pnpm symlink to
-            // its real path, so the module ids are `vendor/...`, not
-            // `node_modules/...` — matching only the latter silently
-            // dumps the whole library back into the entry chunk.
+            // `src/lib/markdown/` is first-party source (the tree used
+            // to be a vendored package plus the `marked` dependency; see
+            // its LICENSE), so the alternation matches the in-repo path
+            // and the one node_modules half it still pulls in. The
+            // `src/` alternative deliberately requires the trailing
+            // slash so `markdown/` matches the directory, never a
+            // sibling file. Verify against `dist/assets` after any
+            // edit here: a regex that matches nothing fails silently by
+            // folding ~153KB into the entry chunk.
             {
               name: "markdown-vendor",
-              test: /(?:node_modules|vendor)\/(svelte-streamdown|marked|idiomorph)\//,
+              test: /(?:node_modules\/idiomorph|src\/lib\/markdown)\//,
             },
           ],
         },

@@ -85,9 +85,12 @@ launch, how do progress and terminal signals arrive, which controls exist
   (`stop_task`); never forks (interrupt-only) or Codex children
   (`close_agent` is model-only).
 - A direct Claude slash command appears as a running Command row on its
-  `command_lifecycle` started frame. If `attributionSkill` proves a fork, the
-  same row changes to Skill and owns the mirrored transcript. This uses wire
-  evidence, not a maintained list of commands that may fork.
+  `command_lifecycle` started frame. If an `isSidechain:true` mirror row also
+  carries `attributionSkill`, the same row changes to Skill and owns the
+  mirrored transcript. Main-agent rows can carry the same attribution with
+  `isSidechain:false`; they leave the Command row and later top-level launches
+  alone. This uses wire evidence, not a maintained list of commands that may
+  fork.
 - A forked command's outer synthetic answer renders once after that activity
   as top-level Markdown labelled `<skill> · skill result`. It remains a
   system `command_result`, not parent-agent prose, and remains visible when
@@ -144,8 +147,8 @@ launch, how do progress and terminal signals arrive, which controls exist
   provider turns it outlives, so keying the response divider/pill on the
   main thread's turn stamped "Response 1m 58s" on a still-running agent
   the moment the main turn settled (regression 2026-08-22).
-- Forked skills are detected structurally: the first row attributed to
-  a `Skill` tool_use marks the fork; the completion's
+- Forked skills are detected structurally: the first attributed sidechain row
+  marks the fork; the completion's
   `tool_use_result.status:"forked"` + `agentId` closes it. No skill-name
   list (claude-wire.md §E9).
 

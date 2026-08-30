@@ -32,9 +32,8 @@ import (
 //   - The mode is decided ONCE, at `thread/start`, from the params.
 //     `ThreadResumeParams` has no history-mode member at all, so a resume
 //     can only report what the thread already is.
-//   - It therefore has to OUTLIVE the process. Every real rollback cuts
-//     through a throwaway resume session (app_thread_fork_codex.go
-//     `withCodexThreadSession`), which is a second mock process that
+//   - It therefore has to OUTLIVE the process. Cold and fork-fallback
+//     rollbacks use a throwaway resume session, a second mock process that
 //     never saw the start. A mode held only in memory would read as
 //     legacy there and the fork fallback would fire on a thread that is
 //     genuinely paginated — the exact bug this file exists to make
@@ -90,25 +89,37 @@ func (a *codexAdapter) noteThreadResume(threadID string) {
 	a.mu.Unlock()
 }
 
-// anchorIsCuttable reports whether a history anchor is one this connection
-// is willing to cut at, for either of the two cuts.
+// revertAnchorState reports whether thread/revert recognises an anchor and
+// whether it names the current live turn.
 //
 // Three cases, and only the middle one is a real refusal:
 //
 //   - A turn this process began and FINISHED. Cuttable, and the only
 //     anchor the mock can vouch for out of its own ledger.
-//   - A turn this process began and has NOT finished. Codex refuses that
-//     outright — `thread/fork` because the snapshot would be of a live
-//     turn (the refusal AO's mid-turn anchor normalisation exists for),
-//     `thread/revert` because upstream would tear the runtime down and
-//     silently destroy the turn (AO refuses to reach it mid-turn, and a
-//     cheerful mock would let that guard rot).
+//   - A turn this process began and has NOT finished. Recognised and live:
+//     thread/revert shuts it down before cutting. thread/fork keeps its
+//     separate refusal in engine.forkedTurnIDs.
 //   - A turn this process never began. On a thread it STARTED that is
 //     nonsense — it ran the whole history — and staying an error keeps a
 //     tripwire a blanket "believe every anchor" would have thrown away.
 //     On a thread it RESUMED it is ignorance: the turns are in a rollout
 //     the mock does not keep, and EVERY real rollback arrives this way.
-func (a *codexAdapter) anchorIsCuttable(turnID string) bool {
+func (a *codexAdapter) revertAnchorState(turnID string) (recognised, live bool) {
+	if turnID == "" {
+		return false, false
+	}
+	if began, finished := a.e.turnStatus(turnID); began {
+		return true, !finished
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.resumedThread, false
+}
+
+// forkAnchorIsCuttable keeps thread/fork's stricter contract: a named live
+// turn is not a stable inclusive boundary, while an unknown anchor on a
+// resumed thread may belong to history this process did not execute.
+func (a *codexAdapter) forkAnchorIsCuttable(turnID string) bool {
 	if turnID == "" {
 		return false
 	}
@@ -176,10 +187,14 @@ func (a *codexAdapter) revertThread(id json.RawMessage, params json.RawMessage) 
 		a.writeRPCError(id, -32600, revertRefusalMessage)
 		return
 	}
-	if !a.anchorIsCuttable(beforeTurnID) {
+	recognised, live := a.revertAnchorState(beforeTurnID)
+	if !recognised {
 		a.writeRPCError(id, -32602, fmt.Sprintf(
-			"thread/revert: beforeTurnId %q is unknown or names the in-progress turn", beforeTurnID))
+			"thread/revert: beforeTurnId %q is unknown", beforeTurnID))
 		return
+	}
+	if live {
+		a.e.shutdownTurn(beforeTurnID)
 	}
 	a.w.writeLine(mustJSON(map[string]any{
 		"jsonrpc": "2.0",

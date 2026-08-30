@@ -136,7 +136,7 @@ func TestDispatchRawAgentMessageRoutesRootAndDedupesDurableRecord(t *testing.T) 
 	}
 }
 
-func TestRawSpawnMetadataIncludesActiveModelAndEffort(t *testing.T) {
+func TestRawSpawnMetadataDoesNotPresentRequestedProfileAsEffective(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := &Session{
 		threadID: "thread-1",
@@ -172,8 +172,8 @@ func TestRawSpawnMetadataIncludesActiveModelAndEffort(t *testing.T) {
 	if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta.Input.Model != "gpt-5.4-mini" || meta.Input.ReasoningEffort != "low" {
-		t.Fatalf("spawn model metadata = %+v", meta.Input)
+	if meta.Input.Model != "" || meta.Input.ReasoningEffort != "" {
+		t.Fatalf("spawn model metadata = %+v, want blank until thread/resume reports the effective profile", meta.Input)
 	}
 }
 

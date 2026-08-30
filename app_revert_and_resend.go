@@ -142,16 +142,12 @@ func (a *App) RevertConversationAndResendMessage(
 	// staged above lives there), and there is no composer to rehydrate —
 	// the replacement is sent below.
 	//
-	// markReverted stays false: there is no in-flight turn-complete to
-	// tag (resolveRevertAndResendTarget rejected an active turn), so no
-	// Interrupted pill to suppress.
 	cut, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
 		thread:                      thread,
 		userItem:                    item,
 		anchor:                      anchor,
 		promptDraft:                 nil,
 		errorPrefix:                 "revert and resend",
-		markReverted:                false,
 		clearRunningBackgroundTasks: opts.KillRunningBackgroundTasks,
 	})
 	if err != nil {
@@ -233,7 +229,8 @@ func (a *App) resolveRevertAndResendTarget(
 	// while a turn runs (UserMessage's actionsTurnLocked); this guard is
 	// defense-in-depth for script callers and races, mirroring
 	// ForkThreadFromMessage. The live-turn un-send has its own entry
-	// point (InterruptAndRevertIfClean), which interrupts first.
+	// point (InterruptAndRevertIfClean), whose Codex path lets
+	// thread/revert own active-turn shutdown.
 	if _, active, err := a.store.GetActiveTurn(threadID); err != nil {
 		return store.Thread{}, store.Item{}, fmt.Errorf("revert and resend: active turn check: %w", err)
 	} else if active {

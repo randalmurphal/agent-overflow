@@ -36,6 +36,12 @@ import {
 
 const FORK_DIFF_COMMAND = 'git diff HEAD~2 --stat';
 
+test.beforeEach(async ({ harness }) => {
+  // Attribution assertions need the cards mounted; collapse behavior has its
+  // own coverage and the product default is intentionally collapsed now.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 test('a forked code-review skill is one skill card and nothing it does is the main agent’s', async ({
   harness,
   page,

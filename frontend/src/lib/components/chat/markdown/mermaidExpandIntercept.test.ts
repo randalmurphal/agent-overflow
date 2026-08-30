@@ -1,15 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
+import { render, waitFor } from '@testing-library/svelte';
+import StreamdownHostSourceSwapHarness from '../StreamdownHostSourceSwapHarness.svelte';
 
 /**
- * Verifies the capture-phase intercept that routes the panzoom "Toggle
- * expand" button to DiagramModal instead of the library's broken
- * position:fixed overlay (which lands off-screen inside the
- * virtualizer's containment-scoped rows).
+ * Verifies the capture-phase intercept that routes the renderer's Mermaid
+ * component's "Toggle expand" button to `DiagramModal`.
  *
- * These are pure DOM tests — they don't mount the full Svelte component
- * because that requires the mermaid library. The handler logic under
- * test is the same pattern wired via `onclickcapture` in
- * StreamdownMermaidHost.svelte.
+ * The button is the ONLY diagram control the library still renders: the
+ * inline panzoom (zoom in / out / fit) and download chrome were deleted,
+ * because a `position: fixed` overlay lands off-screen inside the
+ * virtualizer's containment-scoped rows and `DiagramInteractionHost` +
+ * `DiagramModal` own zoom, pan and copy anyway. The button therefore
+ * carries no handler of its own — this intercept is the whole behavior,
+ * which is why the mounted case below is covered as well as the DOM one.
+ *
+ * The pure-DOM cases exercise the handler pattern in isolation (no
+ * mermaid module, no async render); the mounted case proves the real
+ * component still emits the element the selector depends on.
  */
 
 function attachCaptureHandler(wrapper: HTMLElement): void {
@@ -33,23 +40,25 @@ function attachCaptureHandler(wrapper: HTMLElement): void {
   );
 }
 
-function buildDOM(): { wrapper: HTMLElement; expandBtn: HTMLButtonElement; container: HTMLElement } {
+function buildDOM(): {
+  wrapper: HTMLElement;
+  expandBtn: HTMLButtonElement;
+  container: HTMLElement;
+  svg: SVGSVGElement;
+} {
   const wrapper = document.createElement('div');
   wrapper.setAttribute('data-mermaid-source', 'graph TD; A-->B');
   wrapper.className = 'mermaid streamdown-mermaid-host';
 
   const container = document.createElement('div');
-  container.setAttribute('data-expanded', 'false');
   wrapper.appendChild(container);
 
   const toolbar = document.createElement('div');
   container.appendChild(toolbar);
 
-  for (const label of ['Zoom to fit', 'Zoom in', 'Zoom out', 'Toggle expand']) {
-    const btn = document.createElement('button');
-    btn.setAttribute('aria-label', label);
-    toolbar.appendChild(btn);
-  }
+  const expandBtn = document.createElement('button');
+  expandBtn.setAttribute('aria-label', 'Toggle expand');
+  toolbar.appendChild(expandBtn);
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('data-mermaid-svg', '');
@@ -57,11 +66,7 @@ function buildDOM(): { wrapper: HTMLElement; expandBtn: HTMLButtonElement; conta
 
   document.body.appendChild(wrapper);
 
-  const expandBtn = toolbar.querySelector<HTMLButtonElement>(
-    '[aria-label="Toggle expand"]',
-  )!;
-
-  return { wrapper, expandBtn, container };
+  return { wrapper, expandBtn, container, svg };
 }
 
 describe('mermaid expand intercept', () => {
@@ -83,7 +88,7 @@ describe('mermaid expand intercept', () => {
     wrapper.remove();
   });
 
-  it('prevents propagation so panzoom.toggleExpand never fires', () => {
+  it('prevents propagation so no library handler can fire', () => {
     const { wrapper, expandBtn } = buildDOM();
     attachCaptureHandler(wrapper);
 
@@ -97,29 +102,51 @@ describe('mermaid expand intercept', () => {
     wrapper.remove();
   });
 
-  it('does not intercept clicks on other toolbar buttons', () => {
-    const { wrapper } = buildDOM();
+  it('does not intercept clicks elsewhere in the diagram', () => {
+    const { wrapper, svg } = buildDOM();
     attachCaptureHandler(wrapper);
 
     const spy = vi.fn();
     document.addEventListener('diagram-expand', spy);
 
-    const zoomBtn = wrapper.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!;
-    zoomBtn.click();
+    svg.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(spy).not.toHaveBeenCalled();
 
     document.removeEventListener('diagram-expand', spy);
     wrapper.remove();
   });
+});
 
-  it('does not set data-expanded to true', () => {
-    const { wrapper, expandBtn, container } = buildDOM();
-    attachCaptureHandler(wrapper);
+describe('mounted mermaid host', () => {
+  it('renders exactly one diagram control and routes it to the expand event', async () => {
+    const spy = vi.fn();
+    document.addEventListener('diagram-expand', spy);
 
-    expandBtn.click();
+    const view = render(StreamdownHostSourceSwapHarness, {
+      props: { kind: 'mermaid', source: 'graph TD\n  A[start] --> B[end]' },
+    });
 
-    expect(container.dataset.expanded).toBe('false');
-    wrapper.remove();
+    await waitFor(() => {
+      expect(view.container.querySelector('[aria-label="Toggle expand"]')).not.toBeNull();
+    });
+
+    // The panzoom toolbar is gone: no zoom, fit-view or download control
+    // survives inside the rendered diagram.
+    const controls = Array.from(
+      view.container.querySelectorAll('[data-streamdown-mermaid] button'),
+      (button) => button.getAttribute('aria-label'),
+    );
+    expect(controls).toEqual(['Toggle expand']);
+
+    view.container
+      .querySelector<HTMLButtonElement>('[aria-label="Toggle expand"]')!
+      .click();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect((spy.mock.calls[0][0] as CustomEvent).detail.html).toContain('data-mermaid-svg');
+
+    document.removeEventListener('diagram-expand', spy);
+    view.unmount();
   });
 });

@@ -24,7 +24,7 @@
 // path the chat surface runs (`freezeReplayHarness.ts`), at the recorded wire
 // boundaries, at per-word reveal granularity (what `ChatMarkdown` actually
 // sees), and at seeded fuzzed boundaries — plus synthetic token-soup fuzz over
-// the vendored marked extensions, super-linearity probes for the shapes our
+// the marked extensions, super-linearity probes for the shapes our
 // divergence touches, and the AnsiText/Idiomorph command-output path.
 //
 // Findings that turned into permanent coverage get their own always-on suite
@@ -36,28 +36,28 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-import { Lexer } from 'marked';
+import { Lexer } from './parser/engine';
 import {
   parseBlocks,
   createParseBlocksCache,
   parseIncompleteMarkdown,
   lex,
-} from 'svelte-streamdown';
+} from './index';
 // Importing the package's `marked/index.js` FIRST applies its patched
 // `Lexer.rules` overrides (fixed del, no mailto autolink, split GFM text run).
-import '../../../vendor/svelte-streamdown/dist/marked/index.js';
-import { markedAlert } from '../../../vendor/svelte-streamdown/dist/marked/marked-alert.js';
-import { markedFootnote } from '../../../vendor/svelte-streamdown/dist/marked/marked-footnotes.js';
-import { markedMath } from '../../../vendor/svelte-streamdown/dist/marked/marked-math.js';
-import { markedSub, markedSup } from '../../../vendor/svelte-streamdown/dist/marked/marked-subsup.js';
-import { markedList } from '../../../vendor/svelte-streamdown/dist/marked/marked-list.js';
-import { markedBr } from '../../../vendor/svelte-streamdown/dist/marked/marked-br.js';
-import { markedHr } from '../../../vendor/svelte-streamdown/dist/marked/marked-hr.js';
-import { markedTable } from '../../../vendor/svelte-streamdown/dist/marked/marked-table.js';
-import { markedDl } from '../../../vendor/svelte-streamdown/dist/marked/marked-dl.js';
-import { markedAlign } from '../../../vendor/svelte-streamdown/dist/marked/marked-align.js';
-import { markedCitations } from '../../../vendor/svelte-streamdown/dist/marked/marked-citations.js';
-import { markedMdx } from '../../../vendor/svelte-streamdown/dist/marked/marked-mdx.js';
+import './parser/index';
+import { markedAlert } from './parser/extensions/alert';
+import { markedFootnote } from './parser/extensions/footnotes';
+import { markedMath } from './parser/extensions/math';
+import { markedSub, markedSup } from './parser/extensions/subsup';
+import { markedList } from './parser/extensions/list';
+import { markedBr } from './parser/extensions/br';
+import { markedHr } from './parser/extensions/hr';
+import { markedTable } from './parser/extensions/table';
+import { markedDl } from './parser/extensions/dl';
+import { markedAlign } from './parser/extensions/align';
+import { markedCitations } from './parser/extensions/citations';
+import { markedMdx } from './parser/extensions/mdx';
 import AnsiText from '../components/chat/AnsiText.svelte';
 import {
   ChatMarkdownPipeline,
@@ -279,7 +279,7 @@ describe.skipIf(!HAVE_FIXTURE)('freeze replay — fuzzed re-chunking (seeded)', 
 
 // ── Synthetic fuzz (no corpus needed) ─────────────────────────────────────
 
-describe('freeze replay — structural termination fuzz over the vendored marked', () => {
+describe('freeze replay — structural termination fuzz over marked', () => {
   // A block/inline extension that returns a zero-length `raw` makes marked's
   // `while (src)` loops spin forever (marked has no progress guard for
   // extension tokenizers). Hunt for one over shapes agent prose actually
@@ -353,7 +353,7 @@ describe('freeze replay — structural termination fuzz over the vendored marked
 // An extension that returns a token with an empty `raw` (or a `raw` that
 // isn't a prefix of `src`) spins forever while `tokens` grows, which is
 // exactly the observed signature (one core pegged, memory climbing, no
-// repaint). svelte-streamdown registers 13 custom extensions, several of
+// repaint). The parser registers 13 custom extensions, several of
 // them carrying our divergence. Wrap every one and fuzz.
 // ══════════════════════════════════════════════════════════════════════════
 
@@ -539,7 +539,7 @@ describe('freeze replay — super-linear shape probes', () => {
   );
 
   it(
-    'marker-alignment code path (divergence entry 13) re-lexes each aligned item',
+    'marker-alignment code path re-lexes each aligned item',
     () => {
       let src = '';
       for (let i = 0; i < 400; i++) src += `-     $${i} aligned value ${i}\n`;

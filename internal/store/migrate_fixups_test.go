@@ -278,6 +278,66 @@ func TestV21TrimsCodexV2EncryptedCollabPrompts(t *testing.T) {
 	}
 }
 
+func TestV70TrimsUnverifiedCodexV2Profiles(t *testing.T) {
+	db := migrateThrough(t, 69)
+
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v70', '/v70', 'v70', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode)
+		VALUES ('t-v70', 'p-v70', 'T', 'codex', '/tmp', '', 1, 1, 0, 'chat')`)
+
+	seed := func(id, meta string, itemIndex int) {
+		t.Helper()
+		mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+			summary, parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+			VALUES (?, 't-v70', 0, ?, 'tool_call', 'assistant', 'completed',
+			'collab_agent', '', 0, '', 'collab_agent', '', ?, 1, 1)`, id, itemIndex, meta)
+	}
+	seed("v2", `{"toolName":"collab_agent","input":{"tool":"spawn_agent","activityKind":"started","model":"gpt-parent","reasoningEffort":"high","agentPath":"/root/reviewer","receiverThreadIds":["child-1"]}}`, 0)
+	seed("v1", `{"toolName":"collab_agent","input":{"tool":"spawn_agent","model":"gpt-child","reasoningEffort":"low","receiverThreadIds":["child-2"]}}`, 1)
+	seed("v2-clean", `{"toolName":"collab_agent","input":{"tool":"spawn_agent","activityKind":"started","agentPath":"/root/worker","receiverThreadIds":["child-3"]}}`, 2)
+
+	if err := applyMigration(db, migrationByVersion(t, 70)); err != nil {
+		t.Fatalf("apply v70: %v", err)
+	}
+
+	readInput := func(id string) map[string]json.RawMessage {
+		t.Helper()
+		var meta string
+		if err := db.QueryRow(`SELECT meta FROM items WHERE thread_id = 't-v70' AND id = ?`, id).Scan(&meta); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		var decoded struct {
+			Input map[string]json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal([]byte(meta), &decoded); err != nil {
+			t.Fatalf("decode %s: %v", id, err)
+		}
+		return decoded.Input
+	}
+
+	v2 := readInput("v2")
+	if _, ok := v2["model"]; ok {
+		t.Fatalf("v70 kept the inferred V2 model: %#v", v2)
+	}
+	if _, ok := v2["reasoningEffort"]; ok {
+		t.Fatalf("v70 kept the inferred V2 effort: %#v", v2)
+	}
+	if string(v2["agentPath"]) != `"/root/reviewer"` || string(v2["receiverThreadIds"]) != `["child-1"]` {
+		t.Fatalf("v70 dropped V2 ownership metadata: %#v", v2)
+	}
+
+	v1 := readInput("v1")
+	if string(v1["model"]) != `"gpt-child"` || string(v1["reasoningEffort"]) != `"low"` {
+		t.Fatalf("v70 changed the typed V1 profile: %#v", v1)
+	}
+	clean := readInput("v2-clean")
+	if string(clean["agentPath"]) != `"/root/worker"` {
+		t.Fatalf("v70 changed an already-clean V2 row: %#v", clean)
+	}
+}
+
 func mustMarshalJSON(t *testing.T, v any) string {
 	t.Helper()
 	raw, err := json.Marshal(v)

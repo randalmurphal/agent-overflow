@@ -56,6 +56,14 @@ afterEach(() => {
   __resetHarnessModeForTest();
 });
 
+// Position-distinguishable filler. Identical repeats made a divergence
+// report unreadable: with every word the same you cannot tell WHICH
+// repeat differed, only that something in 14KB did. Word width is
+// unchanged in kind, so the boundary geometry these tests measure is
+// the same shape.
+const filler = (words: number): string =>
+  Array.from({ length: words }, (_, word) => `ordinary streamed words${word} `).join('');
+
 describe('assistant streaming reveal integration', () => {
   it('does not expose Markdown source state in an ordinary session', async () => {
     const item = makeItem({
@@ -427,7 +435,7 @@ describe('assistant streaming reveal integration', () => {
     // bounded Text nodes carry it is the literal owner's business — the render
     // context change relinquishes the RUN, and an authoritative update that
     // merely extends what the reveal already painted appends to those nodes
-    // rather than collapsing the leaf (divergence 21). Asserting a node count
+    // rather than collapsing the leaf. Asserting a node count
     // here is what a delete-then-rebuild reset used to guarantee, and that
     // rebuild is the rollback the single owner exists to remove.
     expect(authoritativeHost?.textContent).toBe('first words paint directly');
@@ -454,7 +462,7 @@ describe('assistant streaming reveal integration', () => {
     await tick();
 
     const paragraphs = Array.from({ length: 24 }, (_, paragraph) =>
-      `Paragraph ${paragraph} ${'ordinary streamed words '.repeat(24)}ends.`,
+      `Paragraph ${paragraph} ${filler(24)}ends.`,
     );
     const source = paragraphs.join('\n\n');
     pane.applyItemDelta({
@@ -476,7 +484,7 @@ describe('assistant streaming reveal integration', () => {
     }
 
     expect(clock.hasPendingFrame()).toBe(false);
-    expect(pane.getItemById(item.id)?.summary).toBe(source);
+    expect(pane.getItemById(item.id)?.summary).toEqualWithFirstDivergence(source);
     const body = view.getByTestId('assistant-message-body');
     const committed = body.querySelector('.md-committed');
     const volatile = body.querySelector('.md-volatile');
@@ -485,14 +493,14 @@ describe('assistant streaming reveal integration', () => {
     expect(maxVolatileCharacters).toBeLessThan(paragraphs[0].length * 2);
     expect(
       Array.from(body.querySelectorAll('p'), (paragraph) => paragraph.textContent),
-    ).toEqual(paragraphs);
+    ).toEqualWithFirstDivergence(paragraphs);
   });
 
   it('advances markdown boundaries in every pane when reveal frames are shared', async () => {
     const clock = new FakeSmoothingClock();
     __setSmoothingClockForTest(clock);
     const paragraphs = Array.from({ length: 8 }, (_, paragraph) =>
-      `Paragraph ${paragraph} ${'ordinary streamed words '.repeat(24)}ends.`,
+      `Paragraph ${paragraph} ${filler(24)}ends.`,
     );
     const source = paragraphs.join('\n\n');
     const chunks = source.match(/\S+\s*|\s+/g) ?? [];

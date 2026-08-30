@@ -19,6 +19,7 @@ type collabReceiverMeta struct {
 	AgentRole       string `json:"agentRole,omitempty"`
 	Model           string `json:"-"`
 	ReasoningEffort string `json:"-"`
+	ProfileKnown    bool   `json:"-"`
 }
 
 type collabLaunchMeta struct {
@@ -590,50 +591,12 @@ func (s *Session) rememberSubAgentActivityOwnership(sourceThreadID string, activ
 	if !s.registerChildOwnership(sourceThreadID, activity.AgentThreadID, activity.AgentPath, activity.ItemID) {
 		return nil
 	}
-	model, reasoningEffort := s.collabProfileForThread(sourceThreadID)
 	launchMeta := collabLaunchMeta{
-		Model:             model,
-		ReasoningEffort:   reasoningEffort,
 		AgentPath:         activity.AgentPath,
 		ReceiverThreadIDs: []string{activity.AgentThreadID},
 	}
-	s.scheduleCollabMetadataRead(activity.AgentThreadID, activity.ItemID, launchMeta)
+	s.scheduleCollabProfileRead(activity.AgentThreadID, activity.ItemID, launchMeta)
 	return []string{activity.AgentThreadID}
-}
-
-func (s *Session) activeCollabModel() (string, string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.turnConfig.model, s.turnConfig.reasoningEffort
-}
-
-func (s *Session) collabProfileForThread(providerThreadID string) (string, string) {
-	providerThreadID = strings.TrimSpace(providerThreadID)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if providerThreadID != "" && providerThreadID != s.rootThreadID() {
-		if meta := s.collab.agentMetaByThread[providerThreadID]; meta.Model != "" || meta.ReasoningEffort != "" {
-			return meta.Model, meta.ReasoningEffort
-		}
-	}
-	return s.turnConfig.model, s.turnConfig.reasoningEffort
-}
-
-func (s *Session) rememberCollabProfile(providerThreadID, model, reasoningEffort string) {
-	providerThreadID = strings.TrimSpace(providerThreadID)
-	if providerThreadID == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.collab.agentMetaByThread == nil {
-		s.collab.agentMetaByThread = make(map[string]collabReceiverMeta)
-	}
-	meta := s.collab.agentMetaByThread[providerThreadID]
-	meta.ThreadID = providerThreadID
-	meta.Model = strings.TrimSpace(model)
-	meta.ReasoningEffort = strings.TrimSpace(reasoningEffort)
-	s.collab.agentMetaByThread[providerThreadID] = meta
 }
 
 func (s *Session) observeSubAgentActivityOwnership(method string, params json.RawMessage) []string {
@@ -686,6 +649,7 @@ func (s *Session) deleteParentToolUseForProviderThread(providerThreadID string) 
 	delete(s.collab.childParentByThread, providerThreadID)
 	delete(s.collab.childRuntimeByThread, providerThreadID)
 	delete(s.collab.agentMetaByThread, providerThreadID)
+	delete(s.collab.profileReadsByThread, providerThreadID)
 	// The generation counter goes with the ownership it counted. Zero — what a
 	// later delivery for this child would now read — is already the documented
 	// legal answer for a child this session never watched start, and after the
@@ -744,11 +708,16 @@ func collabReceiverMetaUpdateInput(meta collabReceiverMeta, launchMeta collabLau
 	if strings.TrimSpace(launchMeta.Prompt) != "" {
 		input["prompt"] = strings.TrimSpace(launchMeta.Prompt)
 	}
-	if strings.TrimSpace(launchMeta.Model) != "" {
-		input["model"] = strings.TrimSpace(launchMeta.Model)
-	}
-	if strings.TrimSpace(launchMeta.ReasoningEffort) != "" {
-		input["reasoningEffort"] = strings.TrimSpace(launchMeta.ReasoningEffort)
+	if meta.ProfileKnown {
+		input["model"] = strings.TrimSpace(meta.Model)
+		input["reasoningEffort"] = strings.TrimSpace(meta.ReasoningEffort)
+	} else {
+		if strings.TrimSpace(launchMeta.Model) != "" {
+			input["model"] = strings.TrimSpace(launchMeta.Model)
+		}
+		if strings.TrimSpace(launchMeta.ReasoningEffort) != "" {
+			input["reasoningEffort"] = strings.TrimSpace(launchMeta.ReasoningEffort)
+		}
 	}
 	if strings.TrimSpace(launchMeta.AgentPath) != "" {
 		input["agentPath"] = strings.TrimSpace(launchMeta.AgentPath)
@@ -1207,7 +1176,11 @@ func (s *Session) readChildThreadMetadataOnce(ctx context.Context, providerThrea
 
 func (s *Session) rememberCollabReceiverMeta(meta collabReceiverMeta) {
 	meta.ThreadID = strings.TrimSpace(meta.ThreadID)
-	if meta.ThreadID == "" || (meta.AgentNickname == "" && meta.AgentRole == "") {
+	meta.AgentNickname = strings.TrimSpace(meta.AgentNickname)
+	meta.AgentRole = strings.TrimSpace(meta.AgentRole)
+	meta.Model = strings.TrimSpace(meta.Model)
+	meta.ReasoningEffort = strings.TrimSpace(meta.ReasoningEffort)
+	if meta.ThreadID == "" || (meta.AgentNickname == "" && meta.AgentRole == "" && !meta.ProfileKnown) {
 		return
 	}
 	s.mu.Lock()
@@ -1222,11 +1195,10 @@ func (s *Session) rememberCollabReceiverMeta(meta collabReceiverMeta) {
 	if meta.AgentRole != "" {
 		existing.AgentRole = meta.AgentRole
 	}
-	if meta.Model != "" {
+	if meta.ProfileKnown {
 		existing.Model = meta.Model
-	}
-	if meta.ReasoningEffort != "" {
 		existing.ReasoningEffort = meta.ReasoningEffort
+		existing.ProfileKnown = true
 	}
 	s.collab.agentMetaByThread[meta.ThreadID] = existing
 	s.mu.Unlock()

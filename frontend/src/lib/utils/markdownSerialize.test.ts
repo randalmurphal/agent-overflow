@@ -275,7 +275,7 @@ describe('serializeRangeToMarkdown — task lists', () => {
     expect(serializeRangeToMarkdown(selectAll(host))).toBe('- [x] done\n- [ ] todo');
   });
 
-  // The property path — svelte-streamdown binds `checked` as a DOM property
+  // The property path — the renderer binds `checked` as a DOM property
   // and never writes the attribute — is proved in
   // markdownSerialize.browser.test.ts: preserving checkedness across
   // Range.cloneContents is the HTML cloning steps' job, and happy-dom does
@@ -443,7 +443,7 @@ describe('serializeRangeToMarkdown — math and mermaid', () => {
   });
 
   it('does not trust a data-mermaid-source host without a rendered nested SVG', () => {
-    // The outer panzoom SVG exists before Mermaid finishes. Only a nested
+    // The outer host SVG exists before Mermaid finishes. Only a nested
     // rendered SVG proves that the source attribute describes visible output.
     const host = asMarkdownBody(
       '<div class="mermaid streamdown-mermaid-host" data-mermaid-source="evil source">'

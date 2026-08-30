@@ -32,7 +32,9 @@ func bootstrapForTarget(t target) (harnessclient.Bootstrap, error) {
 	}
 	bs, err := harnessclient.ReadInstanceFile(t.DataDir)
 	if err != nil {
-		return harnessclient.Bootstrap{}, err
+		// Verbatim message, tagged: this is the one refusal --force may
+		// override (see noManifestError).
+		return harnessclient.Bootstrap{}, &noManifestError{msg: err.Error(), cause: err}
 	}
 	if err := bs.ValidateFor(t.DataRoot, t.DataDir); err != nil {
 		return harnessclient.Bootstrap{}, fmt.Errorf("bootstrap identity does not match selected instance %q: %w", t.ID, err)
@@ -69,7 +71,7 @@ func confirmInstanceRow(row instanceinfo.Row) error {
 	}
 	bs, err := harnessclient.ReadInstanceFile(row.DataDir)
 	if err != nil {
-		return fmt.Errorf("the registry names pid %d but %s claims no instance (%v); refusing to signal a pid nothing confirms (`ao-harness list` prunes the row)", row.PID, row.DataDir, err)
+		return &noManifestError{msg: fmt.Sprintf("the registry names pid %d but %s claims no instance (%v); refusing to signal a pid nothing confirms (`ao-harness list` prunes the row; `ao-harness down --force` stops the pid if /proc confirms it is ours)", row.PID, row.DataDir, err), cause: err}
 	}
 	if err := bs.ValidateFor(row.DataRoot, row.DataDir); err != nil {
 		return fmt.Errorf("identity mismatch: %w", err)

@@ -1,4 +1,4 @@
-// Equivalence proof for the svelte-streamdown incremental-lex patch hunk.
+// Equivalence proof for the incremental-lex fast paths.
 //
 // `incrementalLex` promises IDENTICAL output to a fresh `lex` at every
 // streamed prefix — the fast paths (re-lex from the last list item or table
@@ -21,6 +21,12 @@
 // string in isolation) — that pre-existing upstream property is out of
 // scope here.
 import { describe, expect, it, vi } from 'vitest';
+import { expectCleanTransitions } from '../../test/helpers/transitions';
+import { describeFirstDivergence } from '../../test/helpers/firstDivergence';
+import {
+  assertTimingContract,
+  type PerfContractContext,
+} from '../../test/helpers/perfContract';
 import {
   createIncrementalLexCache,
   createMaterializedProvenAppend,
@@ -31,7 +37,7 @@ import {
   parseBlocks,
   parseIncompleteMarkdown,
   updateParseBlockStringMaterialization,
-} from 'svelte-streamdown';
+} from './index';
 
 interface CorpusDoc {
   name: string;
@@ -232,6 +238,45 @@ function* prefixes(text: string, sizes: number[]): Generator<string> {
 const fullReference = (prefix: string, complete: boolean) =>
   lex(complete ? parseIncompleteMarkdown(prefix.trim()) : prefix);
 
+describe('incrementalLex completion-mode cache transitions', () => {
+  // One cache serves both modes: the live tail lexes through
+  // `parseIncompleteMarkdown`, a sealed block lexes raw. `cache.completeKey`
+  // is what keeps the two apart, and the failure mode is silent — a stale
+  // key reuses tokens completed under the other mode. Drive the flips.
+  it('carries no state across a completion-mode flip', () => {
+    const source = '- alpha item one\n- bravo item two\n- charlie **bold** and `code';
+    const cache = createIncrementalLexCache();
+    const raw = () => incrementalLex(source, [], cache, null);
+    const completing = () => incrementalLex(source, [], cache, parseIncompleteMarkdown);
+
+    // Enter disengaged: raw is the resting mode this subject returns to.
+    raw();
+
+    expectCleanTransitions('incrementalLex completion mode', {
+      on: () => { completing(); },
+      off: () => { raw(); },
+      whileOn: () => {
+        expect(cache.completeKey).not.toBeNull();
+        expect(incrementalLex(source, [], cache, parseIncompleteMarkdown))
+          .toEqual(fullReference(source, true));
+      },
+      onAgain: () => { completing(); },
+      inFlight: () => {
+        // A longer prefix arriving while completion is engaged, so the
+        // flip back lands on a cache holding tail state from the other mode.
+        incrementalLex(`${source} tail`, [], cache, parseIncompleteMarkdown);
+      },
+      read: () => ({
+        completeKey: cache.completeKey,
+        tokens: incrementalLex(source, [], cache, null),
+        reference: fullReference(source, false),
+      }),
+    });
+
+    expect(raw()).toEqual(fullReference(source, false));
+  });
+});
+
 describe('incrementalLex streamed equivalence', () => {
   it('reports only calls that perform parser work', () => {
     const observed: Array<{ path: string; inputLength: number }> = [];
@@ -264,18 +309,12 @@ describe('incrementalLex streamed equivalence', () => {
               complete ? parseIncompleteMarkdown : null,
             );
             const reference = fullReference(prefix, complete);
-            const incStr = JSON.stringify(incremental);
-            const refStr = JSON.stringify(reference);
-            if (incStr !== refStr) {
-              // The raw strings run to megabytes and the reporter truncates
-              // them into uselessness — fail with the divergence window.
-              let d = 0;
-              while (d < Math.min(incStr.length, refStr.length) && incStr[d] === refStr[d]) d++;
+            if (JSON.stringify(incremental) !== JSON.stringify(reference)) {
+              // The raw trees run to megabytes; report only the window.
               expect.fail(
                 `token divergence at prefix length ${prefix.length} (path=${cache.lastPath})\n` +
                 `stream tail: ${JSON.stringify(prefix.slice(-80))}\n` +
-                `expected …${refStr.slice(Math.max(0, d - 200), d + 240)}…\n` +
-                `received …${incStr.slice(Math.max(0, d - 200), d + 240)}…`,
+                describeFirstDivergence(incremental, reference),
               );
             }
             if (doc.descent && cache.lastPath === doc.descent) descents += 1;
@@ -705,6 +744,13 @@ describe('incremental lexing performance contract', () => {
   // Pre-fix reference points on the profiling machine: full lex 27ms and
   // block-level append 5.9ms at a 120KB list — the 5× margins are far
   // outside noise in both directions.
+  //
+  // Robust to machine speed is not robust to a machine under LOAD: beside
+  // the soak rig or a perf profile both paths stall unevenly and the ratio
+  // fails while the code is fine. The measurement always runs; the
+  // wall-clock assertion is gated on AO_PERF_CONTRACT=1 (set by `make
+  // test`). The path breadcrumbs and the largest-input bound below are
+  // deterministic work counts and stay unconditional.
   const bigList = bullets(660, (i) => `- Item ${i}: the \`resolver\` keeps a **steady** cadence while pass ${i} holds the viewport across its flush.`);
   const bigTable = tableOf(660, (i) => `| Item ${i} | the \`resolver\` keeps a **steady** cadence on pass ${i} | ${i * 7} |`);
   const bigFence = `\`\`\`ts\n${bullets(1600, (i) => `const value${i} = computeThing(alpha, beta); // streamed code line ${i}`)}`;
@@ -714,7 +760,11 @@ describe('incremental lexing performance contract', () => {
     return sorted[Math.floor(sorted.length / 2)];
   };
 
-  const lexAppendContract = (text: string, path: 'list-append' | 'table-append'): void => {
+  const lexAppendContract = async (
+    ctx: PerfContractContext,
+    text: string,
+    path: 'list-append' | 'table-append',
+  ): Promise<void> => {
     const cache = createIncrementalLexCache();
     // Establish the stream mid-document, then measure steady-state appends.
     let previous = text.slice(0, text.length - 2100);
@@ -740,16 +790,25 @@ describe('incremental lexing performance contract', () => {
     }
     const append = median(appendTimes);
     const full = median(fullTimes);
-    expect(append, `append=${append.toFixed(3)}ms full=${full.toFixed(3)}ms`).toBeLessThan(full / 5);
-    expect(append).toBeLessThan(10);
+    await assertTimingContract(
+      ctx,
+      `append=${append.toFixed(3)}ms full=${full.toFixed(3)}ms`,
+      () => {
+        expect(
+          append,
+          `append=${append.toFixed(3)}ms full=${full.toFixed(3)}ms`,
+        ).toBeLessThan(full / 5);
+        expect(append).toBeLessThan(10);
+      },
+    );
   };
 
-  it('incrementalLex list append costs far less than a full re-lex', () => {
-    lexAppendContract(bigList, 'list-append');
+  it('incrementalLex list append costs far less than a full re-lex', async (ctx) => {
+    await lexAppendContract(ctx, bigList, 'list-append');
   });
 
-  it('incrementalLex table append costs far less than a full re-lex', () => {
-    lexAppendContract(bigTable, 'table-append');
+  it('incrementalLex table append costs far less than a full re-lex', async (ctx) => {
+    await lexAppendContract(ctx, bigTable, 'table-append');
   });
 
   it('incrementalLex open-fence append takes the dedicated path', () => {
@@ -799,7 +858,11 @@ describe('incremental lexing performance contract', () => {
     expect(cache.lastPath).toBe('code-append');
   });
 
-  const parseBlocksAppendContract = (doc: string, kind: 'list' | 'table'): void => {
+  const parseBlocksAppendContract = async (
+    ctx: PerfContractContext,
+    doc: string,
+    kind: 'list' | 'table',
+  ): Promise<void> => {
     let maxLexInput = 0;
     const cache = createParseBlocksCache((_path, inputLength) => {
       maxLexInput = Math.max(maxLexInput, inputLength);
@@ -815,17 +878,22 @@ describe('incremental lexing performance contract', () => {
     }
     expect(cache.trailingBlock?.kind, 'descent record must be live at scale').toBe(kind);
     const append = median(appendTimes);
+    // Deterministic work bound: unconditional.
     expect(maxLexInput, `largest marked input was ${maxLexInput} of ${doc.length} code units`)
       .toBeLessThan(doc.length / 10);
-    expect(append).toBeLessThan(10);
+    await assertTimingContract(
+      ctx,
+      `append=${append.toFixed(3)}ms`,
+      () => { expect(append).toBeLessThan(10); },
+    );
   };
 
-  it('parseBlocks append with a trailing list costs far less than a fresh parse', () => {
-    parseBlocksAppendContract(`Intro paragraph.\n\n${bigList}`, 'list');
+  it('parseBlocks append with a trailing list costs far less than a fresh parse', async (ctx) => {
+    await parseBlocksAppendContract(ctx, `Intro paragraph.\n\n${bigList}`, 'list');
   });
 
-  it('parseBlocks append with a trailing table costs far less than a fresh parse', () => {
-    parseBlocksAppendContract(`Intro paragraph.\n\n${bigTable}`, 'table');
+  it('parseBlocks append with a trailing table costs far less than a fresh parse', async (ctx) => {
+    await parseBlocksAppendContract(ctx, `Intro paragraph.\n\n${bigTable}`, 'table');
   });
 
   it('parseBlocks descends into an open trailing fence', () => {

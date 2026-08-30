@@ -1,4 +1,4 @@
-import { Lexer } from 'marked';
+import { Lexer } from './parser/engine';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createParseBlocksCache,
@@ -7,20 +7,20 @@ import {
   parseBlocks,
   type Extension,
   type ParseBlocksCache,
-} from 'svelte-streamdown';
+} from './index';
 import {
   markedListBlock,
   parseListSource,
-} from '../../../vendor/svelte-streamdown/dist/marked/marked-list.js';
-import { parseBlockquoteSource } from '../../../vendor/svelte-streamdown/dist/marked/marked-blockquote-source.js';
-import { markedDl } from '../../../vendor/svelte-streamdown/dist/marked/marked-dl.js';
-import { markedFootnote } from '../../../vendor/svelte-streamdown/dist/marked/marked-footnotes.js';
-import { markedBr } from '../../../vendor/svelte-streamdown/dist/marked/marked-br.js';
-import { markedCitations } from '../../../vendor/svelte-streamdown/dist/marked/marked-citations.js';
-import { markedMath } from '../../../vendor/svelte-streamdown/dist/marked/marked-math.js';
-import { parseMdxSource } from '../../../vendor/svelte-streamdown/dist/marked/marked-mdx.js';
-import { markedSub, markedSup } from '../../../vendor/svelte-streamdown/dist/marked/marked-subsup.js';
-import { markedTableBlock } from '../../../vendor/svelte-streamdown/dist/marked/marked-table-source.js';
+} from './parser/extensions/list';
+import { parseBlockquoteSource } from './parser/extensions/blockquoteSource';
+import { markedDl } from './parser/extensions/dl';
+import { markedFootnote } from './parser/extensions/footnotes';
+import { markedBr } from './parser/extensions/br';
+import { markedCitations } from './parser/extensions/citations';
+import { markedMath } from './parser/extensions/math';
+import { parseMdxSource } from './parser/extensions/mdx';
+import { markedSub, markedSup } from './parser/extensions/subsup';
+import { markedTableBlock } from './parser/extensions/tableSource';
 
 type ParseBlocksPath = ParseBlocksCache['lastPath'];
 
@@ -60,7 +60,7 @@ function expectAppendEquivalent(
     const append = createProvenAppend(previous, prefix.slice(previous.length));
     const actual = parseBlocks(prefix, extensions, cache, append);
     const expected = parseBlocks(prefix, extensions);
-    expect(actual).toEqual(expected);
+    expect(actual).toEqualWithFirstDivergence(expected);
     if (cache.lastPath === 'paragraph-append') paragraphAppends++;
     paths.add(cache.lastPath);
     previous = prefix;
@@ -70,7 +70,7 @@ function expectAppendEquivalent(
 
 function expectFullLexEquivalent(text: string): void {
   const blockTokens = parseBlocks(text).flatMap((block) => lex(block));
-  expect(withoutRaw(blockTokens)).toEqual(withoutRaw(lex(text)));
+  expect(withoutRaw(blockTokens)).toEqualWithFirstDivergence(withoutRaw(lex(text)));
 }
 
 const TRANSITION_CORPUS = [
@@ -443,7 +443,8 @@ describe('parseBlocks append differential', () => {
     parseBlocks(first, [], cache);
 
     const replacement = 'Fresh replacement text';
-    expect(parseBlocks(replacement, [], cache)).toEqual(parseBlocks(replacement, []));
+    expect(parseBlocks(replacement, [], cache))
+      .toEqualWithFirstDivergence(parseBlocks(replacement, []));
     expect(cache.lastPath).toBe('full');
 
     const next = `${replacement} keeps growing.`;
@@ -452,7 +453,7 @@ describe('parseBlocks append differential', () => {
       [],
       cache,
       createProvenAppend(replacement, ' keeps growing.'),
-    )).toEqual(parseBlocks(next, []));
+    )).toEqualWithFirstDivergence(parseBlocks(next, []));
     expect(cache.lastPath).toBe('paragraph-append');
   });
 

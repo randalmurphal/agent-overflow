@@ -30,14 +30,15 @@
 //     code spans (`` `src/foo.ts` ``) and fenced code blocks are
 //     correctly skipped without any DOM ancestry tests.
 
-import type { Token, Tokens, TokensList } from 'marked';
+import type { Token, Tokens, TokensList } from '../markdown';
 import type { PathRef } from '../types/models';
 import { openInEditorLabel } from './editorLinkLabel';
 
 // Per-page-load nonce that gates our `agent-overflow:open?…` scheme.
 // Streamdown's `transformUrl` honors a custom-scheme prefix only when
-// the URL `startsWith(prefix.href)` (see svelte-streamdown/dist/utils/
-// url.js). By baking the nonce into the prefix we hand to Streamdown,
+// the URL `startsWith(prefix.href)` (see
+// `lib/markdown/render/elements/url.ts`). By baking the nonce into the
+// prefix we hand to Streamdown,
 // raw agent prose like `[click](agent-overflow:open?path=/etc/passwd)`
 // is rejected at the URL filter — the agent's input is markdown text
 // and can never observe the rendered nonce, so it cannot forge a
@@ -161,7 +162,7 @@ interface ParsedPathTarget {
  *     never. A refused click surfaces as a toast. Without the rewrite
  *     these hrefs are worse than useless: a raw `/`-leading href is a
  *     same-tab navigation onto the SPA origin (a 404), so the
- *     vendored streamdown Link element refuses to render raw anchors
+ *     markdown renderer's Link element refuses to render raw anchors
  *     for them at all.
  *
  * Href rewriting requires a non-empty `workspacePath` for EVERY shape

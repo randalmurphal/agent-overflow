@@ -76,8 +76,9 @@ describe('applyThemeClass', () => {
     expect(htmlClasses()).not.toContain('dark');
 
     applyThemeClass('dark');
-    // `.dark` is what the vendored streamdown MutationObserver reads; only
-    // `html.light` is read by our own CSS. Both are written.
+    // `.dark` is the conventional root marker (the markdown renderer's
+    // MutationObserver that read it is deleted); only `html.light` is read
+    // by our own CSS. Both are written.
     expect(htmlClasses()).toContain('dark');
     expect(htmlClasses()).not.toContain('light');
   });
@@ -85,7 +86,7 @@ describe('applyThemeClass', () => {
   it('does not touch the class attribute when already correct', async () => {
     // Asserted through a REAL MutationObserver rather than classList
     // spies, because the claim is about what an observer sees: the
-    // vendored streamdown watches the root element's attributes, and a
+    // deleted markdown observer watched the root element's attributes, and a
     // `classList.add` of a class already present is a no-op the spy would
     // have counted anyway. This is the actual contract.
     applyThemeClass('dark');
@@ -144,7 +145,7 @@ describe('theme pipeline (App.svelte wiring)', () => {
       // component runs before every descendant USER effect in the flush,
       // which is what puts the class stamp ahead of anything that
       // resolves a palette off the cascade (the mermaid bridge reads it
-      // from inside the vendored `{@attach}`, a user effect).
+      // from inside `Mermaid.svelte`'s `{@attach}`, a user effect).
       $effect.pre(() => {
         applyThemeClass(getResolvedTheme());
       });

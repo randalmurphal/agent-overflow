@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -148,15 +149,16 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 		markedReverted = true
 	}
 
-	// Best-effort provider interrupt before tearing down. For Claude
-	// this aborts the in-flight model call; for Codex it cancels the
-	// turn at the app-server. MarkTurnReverted happens before this call
-	// because Codex can synchronously emit turn/completed while handling
-	// the interrupt response; that completion must be tagged as a revert.
-	if sess, ok := a.sessionManager().get(threadID); ok {
-		if providerSess := sess.providerSession(); providerSess != nil {
-			if err := providerSess.Interrupt(context.Background()); err != nil {
-				log.Printf("app: interrupt-and-revert: provider interrupt: %v", err)
+	// Codex thread/revert owns active-turn shutdown and the history cut as one
+	// server-side operation. Sending turn/interrupt first splits that operation
+	// across two readiness boundaries. Claude has no equivalent primitive, so
+	// it still receives its interrupt before AO rewrites provider history.
+	if thread.Provider != string(provider.Codex) {
+		if sess, ok := a.sessionManager().get(threadID); ok {
+			if providerSess := sess.providerSession(); providerSess != nil {
+				if err := providerSess.Interrupt(context.Background()); err != nil {
+					log.Printf("app: interrupt-and-revert: provider interrupt: %v", err)
+				}
 			}
 		}
 	}
@@ -168,12 +170,11 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 	anchor := a.resolveMessageAnchor("interrupt-and-revert", threadID, userItem)
 
 	cut, err := a.rollbackConversationLocked(rollbackConversationLockedArgs{
-		thread:       thread,
-		userItem:     userItem,
-		anchor:       anchor,
-		promptDraft:  &promptDraft,
-		errorPrefix:  "interrupt-and-revert",
-		markReverted: false,
+		thread:      thread,
+		userItem:    userItem,
+		anchor:      anchor,
+		promptDraft: &promptDraft,
+		errorPrefix: "interrupt-and-revert",
 	})
 	if err != nil {
 		if markedReverted {
@@ -216,9 +217,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string) (InterruptAndRevertResu
 //   - The triage flush queue is empty for the thread (a queued
 //     follow-up means Stop should let the queue drain through, not
 //     discard everything).
-//   - No background task is running in the tray. Reverting would close
-//     the provider session, which kills background work; early Stop
-//     should preserve that work and fall back to a plain interrupt.
+//   - No background task is running in the tray. Reverting shuts down the
+//     provider thread runtime, which kills background work; early Stop should
+//     preserve that work and fall back to a plain interrupt.
 //
 // Thinking blocks, error rows, and other synthetic kinds DO NOT block
 // the revert (matches Claude Code's `messagesAfterAreOnlySynthetic`).

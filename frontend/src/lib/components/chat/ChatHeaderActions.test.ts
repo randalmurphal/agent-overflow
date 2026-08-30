@@ -143,12 +143,8 @@ describe('<ChatHeaderActions> badge gating', () => {
     await flush();
     const toggle = getByTestId('activity-runs-toggle');
 
-    expect(pane.activityRuns.bulkCollapsed).toBe(false);
-    expect(toggle.getAttribute('aria-label')).toBe('Collapse all activity runs');
-
-    await fireEvent.click(toggle);
-    await flush();
-
+    // Runs start collapsed by default, so the control opens with the
+    // expand-all direction.
     expect(pane.activityRuns.bulkCollapsed).toBe(true);
     expect(toggle.getAttribute('aria-label')).toBe('Expand all activity runs');
 
@@ -156,12 +152,18 @@ describe('<ChatHeaderActions> badge gating', () => {
     await flush();
 
     expect(pane.activityRuns.bulkCollapsed).toBe(false);
+    expect(toggle.getAttribute('aria-label')).toBe('Collapse all activity runs');
+
+    await fireEvent.click(toggle);
+    await flush();
+
+    expect(pane.activityRuns.bulkCollapsed).toBe(true);
   });
 
   it('runs the bulk toggle inside the viewport-bottom transaction', async () => {
-    // Collapse-all is the largest height change in the app. Applied bare it
-    // pushes the reader's rows down the page and, from the bottom, springs the
-    // viewport across the whole delta.
+    // The bulk toggle is the largest height change in the app, in either
+    // direction. Applied bare it moves the reader's rows up or down the page
+    // and, from the bottom, springs the viewport across the whole delta.
     const pane = await buildPane();
     const held: Array<() => void> = [];
     pane.attachScrollController(
@@ -181,10 +183,10 @@ describe('<ChatHeaderActions> badge gating', () => {
     // Withheld, so the toggle demonstrably did not reach the registry on its
     // own — the transaction owns when it applies.
     expect(held).toHaveLength(1);
-    expect(pane.activityRuns.bulkCollapsed).toBe(false);
+    expect(pane.activityRuns.bulkCollapsed).toBe(true);
 
     held[0]();
-    expect(pane.activityRuns.bulkCollapsed).toBe(true);
+    expect(pane.activityRuns.bulkCollapsed).toBe(false);
   });
 
   it('hides the run toggle on a design thread, which has no transcript runs', async () => {

@@ -60,20 +60,21 @@ describe('<GeneralSettings> — Behavior toggles', () => {
   it('dispatches collapseDiffPreviews patch when the toggle is clicked', async () => {
     const { getByRole } = render(GeneralSettings);
     const toggle = getByRole('switch', { name: 'Toggle Collapse Diff Previews' });
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    // On by default, so the first click is the turn-off.
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
 
     await fireEvent.click(toggle);
 
     const mock = getBindingMock('UpdateSettings');
     expect(mock).toBeDefined();
-    expect(mock!.mock.calls[0][0]).toEqual({ collapseDiffPreviews: true });
+    expect(mock!.mock.calls[0][0]).toEqual({ collapseDiffPreviews: false });
   });
 
-  it('renders the collapse toggle checked when the setting is on', async () => {
-    await seed({ collapseDiffPreviews: true });
+  it('renders the collapse toggle unchecked when the setting is off', async () => {
+    await seed({ collapseDiffPreviews: false });
     const { getByRole } = render(GeneralSettings);
     const toggle = getByRole('switch', { name: 'Toggle Collapse Diff Previews' });
-    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
 
   it('dispatches lowPowerMode patch when the toggle is clicked', async () => {

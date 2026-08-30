@@ -116,17 +116,18 @@ var sessionCloseFieldDispositions = map[string]string{
 	"requestTimeoutOverride":           "scalar config",
 
 	// Process/identity/infrastructure — lives exactly as long as the Session.
-	"proc":     "process handle; Close closes it",
-	"ctx":      "lifecycle context",
-	"cancel":   "lifecycle cancel; Close calls it",
-	"closing":  "the Close latch itself",
-	"readDone": "read-loop join channel; Close waits on it",
-	"threadID": "identity",
-	"workDir":  "identity",
-	"binary":   "identity",
-	"nextID":   "request-id counter",
-	"mu":       "the lock",
-	"eventMu":  "the event-callback lock",
+	"proc":      "process handle; Close closes it",
+	"ctx":       "lifecycle context",
+	"cancel":    "lifecycle cancel; Close calls it",
+	"closing":   "the Close latch itself",
+	"readDone":  "read-loop join channel; Close waits on it",
+	"threadID":  "identity",
+	"workDir":   "identity",
+	"binary":    "identity",
+	"nextID":    "request-id counter",
+	"controlMu": "root control-operation lock",
+	"mu":        "the lock",
+	"eventMu":   "the event-callback lock",
 
 	// Handlers/callbacks installed at construction.
 	"onEvent":                       "construction-time callback",
@@ -155,6 +156,7 @@ var sessionCloseFieldDispositions = map[string]string{
 	"appServerVersion":  "wire fact, atomic",
 	"threadHistoryMode": "wire fact, atomic",
 	"pendingRevert":     "atomic pointer, one small expectation",
+	"revertEpoch":       "root control-operation generation, atomic",
 	"threadQueueNative": "wire fact, atomic",
 }
 

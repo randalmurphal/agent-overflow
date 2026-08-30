@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { getToasts } from '../../../stores/toast.svelte';
 import { contentKey } from '../../../utils/fnv1a';
-import { createProvenAppend } from 'svelte-streamdown';
+import { createProvenAppend } from '../../../markdown';
 import {
   appendCodeSourceIdentity,
   CODE_SPAN_CACHE_MAX_ENTRIES,

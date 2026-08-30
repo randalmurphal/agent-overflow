@@ -1,8 +1,8 @@
 <script lang="ts" module>
   // Code-block host. Renders the pre/code DOM itself from backend
-  // syntax spans (internal/highlight over the HighlightCode RPC) —
-  // svelte-streamdown's built-in shiki Code component is out of the
-  // pipeline entirely. The wrapper:
+  // syntax spans (internal/highlight over the HighlightCode RPC). This
+  // is the ONLY code renderer: the renderer's shiki-backed Code
+  // component was deleted with the rest of its dead chrome. The wrapper:
   //   1. Keeps a source-free `data-code-source` marker for code-block
   //      discovery. The DOM text and CopyButton already own the source, so
   //      duplicating a growing block into an attribute only wastes Oilpan
@@ -118,8 +118,8 @@
     useStreamdown,
     type DocumentInteraction,
     type ProvenAppend,
-  } from 'svelte-streamdown';
-  import type { Tokens } from 'marked';
+  } from '../../../markdown';
+  import type { Tokens } from '../../../markdown';
   import { onDestroy, onMount, untrack } from 'svelte';
   import CopyButton from '../../primitives/CopyButton.svelte';
   import { addToast } from '../../../stores/toast.svelte';
@@ -570,7 +570,6 @@
 >
   <div
     data-streamdown-code={id}
-    style={streamdown.isMounted ? streamdown.animationBlockStyle : ''}
     class={streamdown.theme.code.base}
   >
     <div style="height: fit-content; width: 100%;" class={streamdown.theme.code.container}>

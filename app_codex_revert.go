@@ -53,8 +53,8 @@ type codexHistoryCut struct {
 //
 // Falling back to the fork after a REFUSED revert is only safe because
 // every refusal that reaches ErrThreadRevertUnsupported is raised before
-// upstream mutates anything (see codex.classifyThreadRevertError). Any
-// revert error that is neither a pre-mutation refusal nor an UNRESOLVED
+// upstream changes durable history (see codex.classifyThreadRevertError). Any
+// revert error that is neither a pre-history-mutation refusal nor an UNRESOLVED
 // outcome aborts the whole truncation — a fork built on a half-reverted
 // thread would silently disagree with both.
 //
@@ -86,7 +86,7 @@ func (a *App) cutCodexThreadHistory(source store.Thread, lastKeptTurnID, firstDr
 	// which the session constructor calls with nowhere to report to. So its
 	// verdict is carried out in a variable and re-raised as fn's first act,
 	// which is the earliest point that can still refuse — before the revert,
-	// before the fork, before anything upstream is mutated.
+	// before the fork, and before provider history changes.
 	var purgeErr error
 	err := a.withCodexThreadSessionPreparedBy(source, func(session *codex.Session) {
 		// The provider's own message queue, over whichever connection this
@@ -108,48 +108,83 @@ func (a *App) cutCodexThreadHistory(source store.Thread, lastKeptTurnID, firstDr
 		if purgeErr != nil {
 			return purgeErr
 		}
-		if firstDroppedTurnID != "" && session.SupportsThreadRevert() {
-			reverted, err := session.Revert(context.Background(), firstDroppedTurnID)
-			switch {
-			case err == nil:
-				cut = codexHistoryCut{ThreadRef: reverted.ThreadID, Reverted: true}
-				return nil
-			case errors.Is(err, codex.ErrThreadRevertUnsupported):
-				// Version skew between what the thread reported and what
-				// this app-server will do. Loud, because the pre-flight
-				// gate is supposed to make this unreachable.
-				log.Printf("app: codex rollback: thread %s refused the in-place cut (%v); falling back to thread/fork", source.ID, err)
-			case errors.Is(err, codex.ErrThreadRevertAnchorUnresolvable),
-				errors.Is(err, codex.ErrThreadRevertOutcomeUnknown):
-				// Neither shape says the thread was left alone, and both
-				// ask the provider the same question — is the boundary
-				// already here? — so both go through one verification.
-				// An anchor refusal is overwhelmingly a cut that already
-				// landed and whose local half then failed; an unknown
-				// outcome is a cut whose answer was lost. Where the
-				// provider confirms the boundary, AO converges IN PLACE
-				// and keeps the thread id it would otherwise have paid a
-				// fork for.
-				log.Printf("app: codex rollback: thread %s left the in-place cut at turn %s unresolved (%v); verifying the provider boundary", source.ID, firstDroppedTurnID, err)
-				if verified, applied := a.codexRevertBoundaryApplied(session, source.ID, lastKeptTurnID, firstDroppedTurnID); applied {
-					log.Printf("app: codex rollback: thread %s is already cut at turn %s; converging in place", source.ID, firstDroppedTurnID)
-					cut = codexHistoryCut{ThreadRef: verified.ThreadID, Reverted: true}
-					return nil
-				}
-				// Not applied, or unverifiable: fall back to the fork,
-				// which lands on the SAME history in both worlds because
-				// its anchor is the last KEPT turn — retained whether or
-				// not the revert took effect.
-			case errors.Is(err, codex.ErrThreadRevertInFlight):
-				// A concurrent cut on the same thread. Not a fork case:
-				// the other cut may be landing right now, so anything AO
-				// built on top of the current history could be built on
-				// history that is about to change. Retryable, and said
-				// that way.
-				return fmt.Errorf("another rollback is still cutting this thread's history; try again in a moment: %w", err)
-			default:
-				return err
-			}
+		revertCut, needsFork, revertErr := a.tryCodexThreadRevert(
+			session, source.ID, lastKeptTurnID, firstDroppedTurnID,
+		)
+		if revertErr != nil {
+			return revertErr
+		}
+		if !needsFork {
+			cut = revertCut
+			return nil
+		}
+		forkedID, err := session.ForkAt(context.Background(), lastKeptTurnID)
+		if err != nil {
+			return err
+		}
+		cut = codexHistoryCut{ThreadRef: forkedID}
+		return nil
+	})
+	if err != nil {
+		return codexHistoryCut{}, err
+	}
+	return cut, nil
+}
+
+// tryCodexThreadRevert attempts the same-thread cut without silently changing
+// thread identity. needsFork means the caller may use the inclusive fork
+// anchor after applying whatever session-lifecycle boundary its caller needs.
+// A live active-turn caller stops the session before that fallback; a cold
+// throwaway session may fork on the connection it already owns.
+func (a *App) tryCodexThreadRevert(
+	session *codex.Session,
+	threadID, lastKeptTurnID, firstDroppedTurnID string,
+) (cut codexHistoryCut, needsFork bool, err error) {
+	if firstDroppedTurnID == "" || !session.SupportsThreadRevert() {
+		return codexHistoryCut{}, true, nil
+	}
+
+	reverted, err := session.Revert(context.Background(), firstDroppedTurnID)
+	switch {
+	case err == nil:
+		return codexHistoryCut{ThreadRef: reverted.ThreadID, Reverted: true}, false, nil
+	case errors.Is(err, codex.ErrThreadRevertUnsupported):
+		// Version skew between what the thread reported and what this
+		// app-server will do. Loud, because the pre-flight gate is supposed
+		// to make this unreachable.
+		log.Printf("app: codex rollback: thread %s refused the in-place cut (%v); falling back to thread/fork", threadID, err)
+		return codexHistoryCut{}, true, nil
+	case errors.Is(err, codex.ErrThreadRevertAnchorUnresolvable),
+		errors.Is(err, codex.ErrThreadRevertOutcomeUnknown):
+		// Neither shape says the thread was left alone, and both ask the
+		// provider the same question: is the boundary already here? An
+		// applied boundary converges in place. Otherwise the inclusive fork
+		// anchor lands on the same retained history.
+		log.Printf("app: codex rollback: thread %s left the in-place cut at turn %s unresolved (%v); verifying the provider boundary", threadID, firstDroppedTurnID, err)
+		if verified, applied := a.codexRevertBoundaryApplied(session, threadID, lastKeptTurnID, firstDroppedTurnID); applied {
+			log.Printf("app: codex rollback: thread %s is already cut at turn %s; converging in place", threadID, firstDroppedTurnID)
+			return codexHistoryCut{ThreadRef: verified.ThreadID, Reverted: true}, false, nil
+		}
+		return codexHistoryCut{}, true, nil
+	case errors.Is(err, codex.ErrThreadRevertInFlight):
+		return codexHistoryCut{}, false, fmt.Errorf("another rollback is still cutting this thread's history; try again in a moment: %w", err)
+	default:
+		return codexHistoryCut{}, false, err
+	}
+}
+
+// forkCodexThreadHistory performs only the identity-changing fallback. It is
+// separate from cutCodexThreadHistory so a live mid-turn revert refusal can
+// stop that runtime before opening the cold fork connection, without issuing
+// thread/revert a second time.
+func (a *App) forkCodexThreadHistory(source store.Thread, lastKeptTurnID string) (codexHistoryCut, error) {
+	cut := codexHistoryCut{}
+	var purgeErr error
+	err := a.withCodexThreadSessionPreparedBy(source, func(session *codex.Session) {
+		purgeErr = a.purgeCodexQueueBeforeCut(source.ID, session)
+	}, func(session *codex.Session) error {
+		if purgeErr != nil {
+			return purgeErr
 		}
 		forkedID, err := session.ForkAt(context.Background(), lastKeptTurnID)
 		if err != nil {

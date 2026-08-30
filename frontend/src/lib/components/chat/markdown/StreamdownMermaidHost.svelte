@@ -1,7 +1,10 @@
 <script lang="ts">
-  // Mermaid host. Delegates rendering to svelte-streamdown's built-in
-  // Mermaid component (which provides panzoom, fullscreen toggle, copy
-  // and download). Stashes the original source on a wrapping element
+  // Mermaid host. Delegates rendering to `lib/markdown/`'s built-in
+  // Mermaid component. That component's only control is the "Toggle
+  // expand" button this host intercepts below (its inline panzoom and
+  // download chrome were deleted — `DiagramModal` and
+  // `DiagramInteractionHost` own zoom, pan and copy).
+  // Stashes the original source on a wrapping element
   // tagged `mermaid` + `data-mermaid-source` so the markdown-aware
   // copy serializer (`utils/markdownSerialize.ts`) can round-trip the
   // diagram back to ` ```mermaid ` markdown — the rendered SVG itself
@@ -22,7 +25,7 @@
   // Which palette it re-renders INTO comes from
   // `markdown/mermaidTokens.ts` via `ChatMarkdown`'s `mermaidConfig`
   // prop (`theme: 'base'` + `themeVariables` resolved from app tokens),
-  // not from svelte-streamdown's `html.dark` MutationObserver — that
+  // not from a `html.dark` MutationObserver — that
   // fallback only applies when no `mermaidConfig.theme` is passed.
   //
   // The `{#key}` input is `mermaidPaletteIdentity()`, the SAME string the
@@ -31,7 +34,7 @@
   // font comes from `--font-sans`, which a settings change rewrites live,
   // and a mode-keyed remount left every rendered diagram in the old font
   // forever. Phase-2 theme files widen that one identity string; nothing
-  // here has to learn about them (and the vendored SVG cache already keys
+  // here has to learn about them (and the SVG cache already keys
   // on the variables themselves).
   //
   // Same source-text fallback story as `StreamdownMathHost`: the
@@ -49,8 +52,8 @@
   // actual size change.
 
   import { untrack } from 'svelte';
-  import Mermaid from 'svelte-streamdown/mermaid';
-  import type { Tokens } from 'marked';
+  import Mermaid from '../../../markdown/render/elements/Mermaid.svelte';
+  import type { Tokens } from '../../../markdown';
   import { mermaidPaletteIdentity } from './mermaidTokens';
   import {
     readMermaidRenderedHeight,
@@ -133,7 +136,7 @@
   $effect(() => {
     if (!wrapperEl) return;
     const sourceKey = token.text;
-    // Measure the INNER mermaid wrapper (the one svelte-streamdown
+    // Measure the INNER mermaid wrapper (the one `Mermaid.svelte`
     // renders the SVG into), not the outer host. The outer host's
     // offsetHeight is the grid max of `fallback`, `min-height-pin`,
     // and the inner mermaid wrapper — caching THAT value compounds

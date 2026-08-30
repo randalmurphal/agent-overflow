@@ -7,10 +7,10 @@
   // stays self-contained and `markdownSerialize.ts` keeps round-tripping
   // the source.
 
-  import type { Tokens } from 'marked';
+  import type { Tokens } from '../../../markdown';
 
   // `id` is part of the wire interface the real host consumes (passes
-  // to svelte-streamdown's inner `<Mermaid>` for its anchor id), so
+  // to the renderer's inner `<Mermaid>` for its anchor id), so
   // the deferred host accepts it for drop-in symmetry but doesn't
   // render anything that uses it.
   let { token, id: _id }: { token: Tokens.Code; id: string } = $props();

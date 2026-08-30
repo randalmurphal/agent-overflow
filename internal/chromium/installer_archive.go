@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"agent-overflow/internal/headlessshell"
 )
 
 func unzip(src, dst string) error {
@@ -104,18 +106,7 @@ func extractZipFile(file *zip.File, dst string, maxBytes int64) (int64, error) {
 // currentPlatform returns the Chrome-for-Testing platform string for
 // the running OS+arch.
 func currentPlatform() (string, error) {
-	switch runtime.GOOS + "/" + runtime.GOARCH {
-	case "linux/amd64":
-		return "linux64", nil
-	case "darwin/amd64":
-		return "mac-x64", nil
-	case "darwin/arm64":
-		return "mac-arm64", nil
-	case "windows/amd64":
-		return "win64", nil
-	default:
-		return "", fmt.Errorf("unsupported platform %s/%s — Chrome-for-Testing has no supported build", runtime.GOOS, runtime.GOARCH)
-	}
+	return headlessshell.Platform()
 }
 
 // binaryPathFor is the canonical post-extraction path under
@@ -123,11 +114,7 @@ func currentPlatform() (string, error) {
 // always extract to a single subdirectory named after the platform.
 func binaryPathFor(versionDir, platform string, artifact Artifact) string {
 	if artifact == ArtifactHeadlessShell {
-		bin := "chrome-headless-shell"
-		if platform == "win64" {
-			bin += ".exe"
-		}
-		return filepath.Join(versionDir, string(artifact)+"-"+platform, bin)
+		return headlessshell.BinaryPath(versionDir, platform)
 	}
 	switch platform {
 	case "mac-x64", "mac-arm64":
@@ -145,11 +132,10 @@ func binaryPathFor(versionDir, platform string, artifact Artifact) string {
 func findBrowserBinary(versionDir, platform string, artifact Artifact) (string, error) {
 	target := "chrome"
 	if artifact == ArtifactHeadlessShell {
-		target = "chrome-headless-shell"
-	}
-	if platform == "win64" {
+		target = headlessshell.BinaryName(platform)
+	} else if platform == "win64" {
 		target += ".exe"
-	} else if artifact == ArtifactChrome && strings.HasPrefix(platform, "mac-") {
+	} else if strings.HasPrefix(platform, "mac-") {
 		target = "Google Chrome for Testing"
 	}
 	var found string

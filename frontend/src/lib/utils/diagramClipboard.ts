@@ -28,15 +28,16 @@
  *    awaited before that call; `copyAsPNG` keeps its whole prologue
  *    synchronous for that reason.
  *
- * 3. The element handed in is the LIVE diagram. svelte-streamdown's
- *    panzoom writes `transform: translate3d(…) scale(…)`, plus
- *    `transform-origin` / `will-change` / `cursor`, onto the outer
- *    `svg[data-mermaid-svg]`, and mermaid emits `width="100%"` with an
- *    inline `max-width` (`useMaxWidth`). Serialising that verbatim
- *    exports the reader's current pan/zoom on a root with no intrinsic
- *    size, which rasterises blank or cropped. `exportableDiagram` is the
- *    one place that undoes both — the same normalisation
- *    `DiagramModal.normalizeSvg` performs for on-screen display.
+ * 3. The element handed in is the LIVE diagram: mermaid's own `<svg>`
+ *    nested inside the markdown tree's outer `svg[data-mermaid-svg]`
+ *    host, emitted with `width="100%"` and an inline `max-width`
+ *    (`useMaxWidth`). Serialising that verbatim exports a root with no
+ *    intrinsic size, which rasterises blank or cropped.
+ *    `exportableDiagram` descends to the diagram root and restores real
+ *    dimensions — the same normalisation `DiagramModal.normalizeSvg`
+ *    performs for on-screen display. (The host `<svg>` used to carry an
+ *    inline panzoom transform too; that chrome is gone, but the
+ *    normalisation is still what makes the export correct.)
  */
 
 import { errString } from './errors';
@@ -121,17 +122,16 @@ function requireClipboard(need: 'write' | 'writeText'): Clipboard {
  * pixel size to rasterise it at. See note 3 for what is being undone.
  */
 function exportableDiagram(live: SVGSVGElement): ExportableDiagram {
-  // svelte-streamdown renders mermaid's own `<svg>` INSIDE the panzoom
-  // host `<svg data-mermaid-svg>`, and the host is what the context menu
-  // resolves. Descending to the diagram root starts the export from
-  // markup the panzoom transform never touched.
+  // The markdown tree renders mermaid's own `<svg>` INSIDE its outer
+  // `<svg data-mermaid-svg>` host, and the host is what the context menu
+  // resolves. Descend to the diagram root before exporting.
   const root = Array.from(live.children).find(isSvgElement) ?? live;
   const { width, height } = intrinsicDimensions(root, live);
 
   const clone = root.cloneNode(true) as SVGSVGElement;
   // Mermaid's root `style` holds only `max-width` (its real styling is in
-  // a `<style>` child), and panzoom's transform lands in the same place,
-  // so dropping the attribute wholesale is both safe and the whole fix.
+  // a `<style>` child), so dropping the attribute wholesale is both safe
+  // and the whole fix.
   clone.removeAttribute('style');
   clone.setAttribute('width', String(width));
   clone.setAttribute('height', String(height));
@@ -155,7 +155,7 @@ function isSvgElement(el: Element): el is SVGSVGElement {
 }
 
 // Prefer the viewBox: it is in user-space units, so unlike a layout box
-// it is not already multiplied by the panzoom scale.
+// it does not carry any page-side scaling.
 function intrinsicDimensions(
   root: SVGSVGElement,
   live: SVGSVGElement,

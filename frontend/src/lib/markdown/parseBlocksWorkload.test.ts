@@ -8,7 +8,7 @@ import {
   updateParseBlockStringMaterialization,
   type ParseBlocksCache,
   type ParseBlocksLexPath,
-} from 'svelte-streamdown';
+} from './index';
 import { StreamingBoundarySplitter } from './boundary';
 import { wordUnitOffsets } from './freezeReplayHarness';
 
@@ -98,6 +98,12 @@ function activeStreamText(iterations: number): string {
   return text;
 }
 
+// Deliberately NOT behind AO_PERF_CONTRACT: every bound here counts WORK,
+// not time. Code units fed to marked, the largest single input, and which
+// fast path each step took are pure functions of the corpus and the cache
+// logic, identical on an idle laptop and under a soak rig. Gating them
+// would drop real coverage to buy nothing. Wall-clock contracts (the
+// relative-cost assertions in incrementalLex.test.ts) are the gated kind.
 describe('parseBlocks active-pane workload', () => {
   it('keeps marked input bounded to the block that can still change', () => {
     const text = activeStreamText(200);

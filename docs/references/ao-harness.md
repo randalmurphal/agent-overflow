@@ -24,10 +24,11 @@ Global flags work before or after the command. `--instance` accepts a full insta
 | Command | Description |
 | --- | --- |
 | `up` | start a harness instance (detached) and print how to reach it |
-| `down` | stop an instance (SIGTERM, then kill after 5s) |
+| `down` | stop an instance (SIGTERM, then kill after 5s; --force for an orphaned pid) |
 | `list` | list known instances, pruning rows whose process is gone |
 | `info` | identity, evidence paths and URL for one instance |
 | `open` | print the instance URL (--browser opens it) |
+| `attach` | host the instance page in a headless browser so ui/perf/bench work unattended |
 | `rpc` | call any App or Harness method by name with JSON arguments |
 | `seed` | apply a HarnessSeed spec (-f file, or - for stdin) |
 | `reset` | wipe app state without rebooting |

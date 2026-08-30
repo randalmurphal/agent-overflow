@@ -92,8 +92,14 @@ const twoFilePreviewMeta: ToolResultMeta = {
 };
 
 describe('<DiffFileStack>', () => {
-  beforeEach(() => {
+  // These cases are about what the EXPANDED stack renders, so they seed
+  // collapseDiffPreviews off rather than riding the shipped default (which
+  // collapses); the collapsed case below seeds it on for itself.
+  beforeEach(async () => {
     resetBindingMocks();
+    resetSettingsForTest();
+    setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews: false }));
+    await loadSettings();
   });
 
   afterEach(() => {

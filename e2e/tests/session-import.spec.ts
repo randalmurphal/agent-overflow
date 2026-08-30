@@ -39,6 +39,12 @@ import {
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 
+test.beforeEach(async ({ harness }) => {
+  // Import assertions inspect tool/thinking rows. State that fixture policy
+  // directly instead of inheriting the product's collapsed-run default.
+  await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
+});
+
 /** One frame of `session-import:progress` (app_session_import_run.go). */
 interface ImportProgressFrame {
   importId: string;

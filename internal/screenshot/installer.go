@@ -5,6 +5,9 @@ import (
 	"agent-overflow/internal/eventchan"
 )
 
+// Installer remains an alias for callers that historically imported the
+// screenshot package. Downloading, extraction, caching, and cache recovery are
+// shared with the in-app browser through internal/chromium.
 type Installer = chromium.Installer
 type InstallProgress = chromium.InstallProgress
 type InstallResult = chromium.InstallResult

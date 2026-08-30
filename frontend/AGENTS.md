@@ -3,7 +3,23 @@
 Svelte 5 (runes only), Vite 8 (Rolldown), Tailwind 4, TypeScript.
 `pnpm run check` and `pnpm run build` are blockers, `pnpm test` is the
 unit gate (`test:browser` and `test:manual` are separate vitest
-projects).
+projects). They live here, in `frontend/`, but the repo root carries a
+`package.json` of forwarders so running one from there does the right
+thing instead of failing on a missing manifest.
+
+`pnpm run check:file <file.ts> …` is the tight loop: `tsc` over exactly
+those files and what they import, ~2s against the full check's ~20s. It
+covers no `.svelte` file and no Svelte component's props, and prints
+that on every run. svelte-check has no per-file mode and its narrowest
+scope, `--workspace <dir>`, measured SLOWER than checking everything
+(23s vs 20s) because the cost is building the TypeScript program, not
+running the diagnostics — so there is no scoped `.svelte` check to have.
+`pnpm run check` stays the thing you run before calling it done.
+
+There is no formatter, and that is deliberate. No prettier, no eslint,
+no `.editorconfig`, no commit hook: `pnpm exec prettier` fails because
+the dependency does not exist, and adding it would rewrite files nobody
+asked to have rewritten. Match the file you are editing.
 
 Area guides: [`stores/`](src/lib/stores/AGENTS.md),
 [`transport/`](src/lib/transport/AGENTS.md), and under
@@ -55,7 +71,10 @@ primitive to build on, and its attach/apply contract:
 `ThreadPane` (`stores/thread.svelte.ts`) is the sole owner of per-thread
 runtime UI state, from visible items and streaming flags through
 approvals, channel messages, checkpoints and scroll-controller
-registration. Add to it rather than beside it. Layout stores own
+registration. It is a composition root over `thread*` helper modules that
+are constructed once per pane and are pieces of that owner, not sibling
+stores ([`stores/AGENTS.md`](src/lib/stores/AGENTS.md) § The ThreadPane
+modules). Add to it rather than beside it. Layout stores own
 placement, order and min-size. A command-palette action resolves against
 an explicit target pane, because enablement can change while the palette
 is open.
@@ -212,6 +231,46 @@ changes get a component test. Scroll behavior is covered in
 and the frame-level `scrollInterleavings.test.ts`) plus
 `components/chat/scroll.test.ts`.
 
+A globally suppressed engine warning is a defect-ledger entry, not a
+config setting. "ResizeObserver loop completed with undelivered
+notifications" was filtered out of the browser suite's error sink as
+benign noise, and it hid a user-visible stale-frame paint bug for the
+whole 2026-08-28 session: an undelivered notification means the
+observer's write slid past the frame it belonged to, which is precisely
+a row painting last frame's geometry. Suppress at the narrowest scope
+that unblocks the test, name the defect it stands for, and pair it with
+an assertion that the suppressed condition does not occur where it
+matters — never a suite-wide filter. The two real instances are
+documented at their sites: `MessageTimeline.svelte`'s
+`observeScrollSurfaceContentWidth` (ancestor resolved before row
+observers) and `TimelineVirtualizer.svelte`'s
+`deferNewRowObservationUntilNextFrame` (overscan rows registered next
+frame, outside the painted window).
+
+A stateful door gets a transition test, not just an on-state assertion.
+`test/helpers/transitions.ts` drives on→off→on, teardown twice, a second
+engagement, and teardown-mid-flight, comparing the state you name after
+every lap. The leaks the 2026-08 perf session found by hand all lived in
+the SECOND lap — a re-register that duplicated a sink, a toggle that kept
+a stale checkpoint, a cache that carried the previous mode.
+
+A wait that gives up must FAIL, and its budget is wall-clock, never a
+count of loop turns. Both halves came from the same 2026-08-30 flake:
+`harnessBridge.test.ts`'s poll helper spent 500 `setTimeout(0)` hops and
+then RETURNED, so a cold dynamic import that outran them left the case
+asserting against state that had not arrived — and the arrival then
+landed inside the NEXT case, past the `afterEach` that had just zeroed
+the counters. One slow import, two failing tests, neither naming the
+wait. The event loop spins hops happily while a starved worker gets no
+CPU, so hops measure the fast machine rather than the work.
+
+Do not quantize a continuous measurement in an assertion. The same
+session's second flake compared which 125ms slot two aligned animations
+floored into, when what the aligner promises is that their PHASES agree
+to within a frame — a pair a millisecond either side of a slot boundary
+failed a mechanism that was working. Assert the distance, with the
+tolerance the mechanism actually claims.
+
 `vi.mock` a shared store with an `importOriginal` spread, never a
 whole-module factory. A factory listing only the exports one test drives
 turns every LATER export of that module into `undefined` for it, and the
@@ -235,25 +294,26 @@ Generate one with `scripts/generate-freeze-replay-fixture.mjs`.
 
 ## Vendor patches
 
-Third-party divergence lives in one of two places, and the choice is
-about the upstream, not the change. `patches/` holds pnpm patches keyed
-to exact versions in `pnpm-workspace.yaml`, so a bump without re-rolling
-fails `pnpm install` (`pnpm patch <pkg>@<version> --edit-dir <dir>` then
-`pnpm patch-commit`). Use it while the upstream is alive and the fix is
-meant to be dropped. `vendor/` holds in-repo pnpm workspace packages, for
-a dormant upstream and permanent divergence. Each vendored package keeps
-a `VENDOR.md` (upstream URL, baseline, how to diff a release) and a
-`DIVERGENCE.md` ledger beside its code, which a one-file patch has
-nowhere to keep, so patch hunks are listed below instead. Never edit
+Third-party divergence has two shapes, and the choice is about the
+upstream, not the change. A live upstream whose fix is meant to be
+dropped gets a pnpm patch: `patches/` is keyed to exact versions in
+`pnpm-workspace.yaml`, so a bump without re-rolling fails `pnpm install`
+(`pnpm patch <pkg>@<version> --edit-dir <dir>` then `pnpm patch-commit`).
+A patch has nowhere to keep its rationale, so each one's hunks are
+documented below. A dormant upstream and permanent divergence gets
+ADOPTED into `src/` as ordinary first-party code carrying the upstream
+LICENSE — there is no `vendor/` tree and no divergence ledger. Never edit
 `node_modules`: packages are hardlinked from the pnpm store, so an edit
-corrupts every project on the machine, and that is why vendored packages
-are `workspace:` rather than `file:`.
+corrupts every project on the machine.
 
-`vendor/svelte-streamdown/` is the markdown pipeline. Fix parser bugs
-there and record each in
-[`DIVERGENCE.md`](vendor/svelte-streamdown/DIVERGENCE.md) (per-entry
-rationale, drop rule, regression test), never duplicating the fix in
-`markdownEnhance.ts` or the host wrappers.
+The markdown pipeline is the one adoption so far, at
+[`src/lib/markdown/`](src/lib/markdown/AGENTS.md) — `svelte-streamdown`
+(formerly `vendor/svelte-streamdown/`) plus marked's lexing half in
+`parser/engine/`, which replaced both the `marked` dependency and its
+pnpm patch. Fix parser bugs there, never duplicating the fix in
+`markdownEnhance.ts` or the host wrappers. Its area guide owns the parser
+map, the host seams, the path-relative URL security boundary and the test
+map.
 
 `patches/svelte@5.56.8.patch` has six hunks, each dropping when its suite
 passes against an unpatched release. `svelte-patch-zombie-leak.test.ts`
@@ -268,12 +328,6 @@ fixed in 5.56.5.
 | flush-loop-caps | Both synchronous flush loops were unbounded, so a cycle was an unreportable renderer freeze (2026-08-07: WebView2 wedged 8+ minutes, no paint, no error, nothing in any log). The caps abort and throw a svelte-shaped error that `utils/frontendErrorCapture.ts` persists, message kept in production. PR candidate. | `svelte-patch-flush-caps.test.ts` |
 | reconnect-dedupe | `get()` on a disconnected, dirty, previously-run derived registered it twice in one dep, so losing its last reader left that dep and everything upstream connected for the app's life (2026-08-23 heap snapshot: a closed pane's 3.4k detached nodes). PR candidate. | `svelte-patch-reconnect-dedupe.test.ts`, `chatview-dom-retention.test.ts` |
 | flip-phases | An animated keyed-each reorder interleaved abort / read / create per item, forcing up to N style-layout passes in one microtask (34.6ms of gBCR self-time in a sidebar-reorder burst, 2026-08-26). Three phased loops instead: identical geometry, one forced pass. PR candidate. | `svelte-patch-flip-phases.test.ts` |
-
-`patches/marked@16.4.2.patch`, allocation-free extension dispatch: one
-typed receiver per Lexer and indexed loops, replacing a closure and a
-fresh `{ lexer }` receiver per extension candidate at every token
-position. The public shape is unchanged and Marked's own suites pass
-patched. Drop it when upstream stops allocating inside the token loops.
 
 `patches/@lucide__svelte@1.28.0.patch`, mask-icons: `dist/Icon.svelte`
 renders a CSS-mask `<span>` against the patch's own hidden `<mask>`
@@ -292,7 +346,10 @@ a vendor patch cannot import app code. Upstream's `color` prop and
 ## References
 
 `bindings/` is Wails-generated. Regenerate with `wails3 generate bindings
--ts` rather than editing it. Backend to frontend flow:
+-ts` rather than editing it. `src/lib/generated/` is generated from Go too
+and is equally not hand-edited: `settingsDefaults.ts` comes from
+`internal/settings.DefaultSettings` via `go generate ./internal/settings`,
+and a Go test fails on a stale copy. Backend to frontend flow:
 [`data-flow.md`](../docs/architecture/data-flow.md). Extension playbooks:
 [`how-to.md`](../docs/architecture/how-to.md). When Wails or provider
 behavior is unclear, spike outside the repo

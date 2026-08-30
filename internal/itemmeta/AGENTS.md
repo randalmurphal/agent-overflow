@@ -27,6 +27,9 @@ logic lives here. Stdlib-only.
   MultiAgentV2 collaboration message ciphertext from persisted item
   metadata, keyed structurally by `input.activityKind`. Legacy plaintext
   V1 prompts are preserved.
+- `collab_profile.go`: `TrimUnverifiedCodexV2Profile(raw)` removes model
+  and reasoning-effort fields that the pre-v70 adapter inferred from a parent
+  profile or requested spawn arguments. V1 typed profiles are preserved.
 - `promoted_at_interrupt.go`: the truncation-relevant markers on a
   queued flush user row (`promoted_at_interrupt`,
   `promoted_echo_boundary`) plus `DecodePromotionState`, and the

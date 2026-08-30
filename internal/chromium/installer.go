@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/headlessshell"
 )
 
 // chromeForTestingManifestURL is the canonical manifest published by
@@ -218,7 +219,7 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	binaryPath := binaryPathFor(versionDir, platform, i.Artifact)
 
 	// Already installed?
-	if isExecutable(binaryPath) {
+	if i.executable(binaryPath) {
 		i.emit(InstallProgress{Phase: "ready", Version: stable.Version})
 		i.pruneOldVersions(cacheDir, stable.Version)
 		return InstallResult{Version: stable.Version, BinaryPath: binaryPath}, nil
@@ -251,7 +252,7 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	}
 	_ = os.Remove(zipPath)
 
-	if !isExecutable(binaryPath) {
+	if !i.executable(binaryPath) {
 		// Either the zip layout shifted upstream or chmod failed.
 		// Walk the version dir and try to recover the binary path.
 		recovered, walkErr := findBrowserBinary(versionDir, platform, i.Artifact)
@@ -270,12 +271,16 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 
 func (i *Installer) cacheName() string {
 	if i.Artifact == ArtifactHeadlessShell {
-		return "headless-shell"
+		return headlessshell.CacheDirName
 	}
 	return string(i.Artifact)
 }
 
 func (i *Installer) cachedInstall(platform string) (InstallResult, bool) {
+	if i.Artifact == ArtifactHeadlessShell {
+		path, version, ok := headlessshell.Installed(i.ConfigDir)
+		return InstallResult{Version: version, BinaryPath: path}, ok
+	}
 	cacheDir := filepath.Join(i.ConfigDir, i.cacheName())
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil {
@@ -301,6 +306,13 @@ func (i *Installer) cachedInstall(platform string) (InstallResult, bool) {
 		}
 	}
 	return best, best.BinaryPath != ""
+}
+
+func (i *Installer) executable(path string) bool {
+	if i.Artifact == ArtifactHeadlessShell {
+		return headlessshell.Executable(path)
+	}
+	return isExecutable(path)
 }
 
 // pruneOldVersions removes sibling version directories under cacheDir

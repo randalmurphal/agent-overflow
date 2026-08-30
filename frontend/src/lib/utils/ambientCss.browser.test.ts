@@ -204,16 +204,30 @@ describe('startAmbientPhase', () => {
   it('puts spinners mounted at different times on one wall-clock beat', async () => {
     stop = startAmbientPhase();
     const first = mount('<svg class="stepped-spin"></svg>');
-    // Long enough to land in a different 125ms slot without alignment.
+    // Long enough to be plainly out of phase without alignment.
     await new Promise((r) => setTimeout(r, 320));
     const second = mount('<svg class="stepped-spin"></svg>');
     await new Promise((r) => setTimeout(r, 30));
 
     const a = animationOf(first, 'ambient-spin');
     const b = animationOf(second, 'ambient-spin');
-    const slot = (animation: Animation): number =>
-      Math.floor(((((animation.currentTime as number) % 1500) + 1500) % 1500) / AMBIENT_SLOT_MS);
-    expect(slot(b), 'later spinner is on a different beat from the first').toBe(slot(a));
+    // Compare how far apart the two phases ARE, not which 125ms slot each
+    // one floors into. `alignOne` pins `startTime` from the FRAME's
+    // `timeline.currentTime` minus the INSTANT's `Date.now()`, so two
+    // alignments differ by wherever in their frames the `animationstart`
+    // handlers ran — under a frame, invisible, and exactly what the module
+    // promises. A slot index turns that into a coin flip whenever the pair
+    // straddles a boundary, which is a boundary the animations do not
+    // have: it failed about one browser run in thirty (2026-08-30). Two
+    // unaligned spinners mounted 320ms apart sit 320ms out, so the signal
+    // this test exists for still clears the bound by 2.5x.
+    const phase = (animation: Animation): number =>
+      ((((animation.currentTime as number) % 1500) + 1500) % 1500);
+    const apart = Math.abs(phase(a) - phase(b));
+    expect(
+      Math.min(apart, 1500 - apart),
+      'later spinner is on a different beat from the first',
+    ).toBeLessThan(AMBIENT_SLOT_MS);
   });
 
   // A long period makes the two outcomes unmistakable: an untouched

@@ -123,7 +123,7 @@ describe('direct markdown reveal visible-text monotonicity', () => {
 
     // Settle the first paragraph into the committed container BEFORE
     // recording. Promoting a block out of the volatile tail is Streamdown's
-    // own committed/volatile handoff (divergence 12/22), not the reveal, and
+    // own committed/volatile handoff, not the reveal, and
     // it is deliberately outside this window.
     for (const unit of revealUnits(INCIDENT_PARAGRAPH)) await harness.append(unit);
     await harness.append('\n\n');

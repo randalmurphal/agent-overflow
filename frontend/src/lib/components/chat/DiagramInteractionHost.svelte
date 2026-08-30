@@ -37,9 +37,9 @@
   // that lands on a rendered mermaid block. The selector matches the
   // wrapper emitted by `StreamdownMermaidHost.svelte`, which stamps
   // `data-mermaid-source` on a `<div class="mermaid streamdown-mermaid-host">`
-  // sitting around svelte-streamdown's Mermaid renderer. The SVG lives
-  // a few levels in (Streamdown's Mermaid creates its own container +
-  // panzoom svg).
+  // sitting around the markdown tree's Mermaid renderer. The SVG lives
+  // a few levels in (Streamdown's Mermaid creates its own container and
+  // an outer `svg[data-mermaid-svg]` host).
   function handleInlineContextMenu(e: MouseEvent): void {
     if (!(e.target instanceof Element)) return;
     const host = e.target.closest<HTMLElement>('[data-mermaid-source]');

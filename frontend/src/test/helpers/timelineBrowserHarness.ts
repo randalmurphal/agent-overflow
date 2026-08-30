@@ -19,6 +19,7 @@ import type { Item } from '../../lib/types/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from './chat';
 import { raf, waitFor } from './browserFrames';
+import { makeSettings } from './settings';
 
 // ~44 markdown rows at 100-200px rendered height each ≈ 6-8k px of scrollback
 // — comfortably past the 600px viewport + the virtualizer's 2×1800px buffers,
@@ -49,7 +50,10 @@ const mounted: MountedEntry[] = [];
 // after. Call once at module scope in each test file that uses mountTimeline.
 export function setupTimelineHarness(): void {
   beforeEach(async () => {
-    setBindingMock('GetSettings', async () => null);
+    // Geometry/outcome suites begin with runs open, then exercise collapse as
+    // an explicit action. The shipped default is now collapsed, so pin the
+    // fixture policy instead of inheriting a product preference accidentally.
+    setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
     setBindingMock('GetThreadUserMessageTicks', async () => []);
     await loadSettings();
   });

@@ -471,10 +471,15 @@ e2e: harness-build
 	cd e2e && pnpm install --frozen-lockfile
 	bin/ao-harness-e2e
 
+# AO_PERF_CONTRACT=1 enforces the wall-clock timing contracts (see
+# frontend/src/test/helpers/perfContract.ts). They are gated off by
+# default so an ad-hoc `pnpm test` beside the soak rig or a perf profile
+# reports the numbers instead of failing on borrowed CPU; the gate is
+# where they must always run.
 test:
 	$(MAKE) go-test
-	cd frontend && pnpm test
-	cd frontend && pnpm run test:browser
+	cd frontend && AO_PERF_CONTRACT=1 pnpm test
+	cd frontend && AO_PERF_CONTRACT=1 pnpm run test:browser
 
 check:
 	$(MAKE) go-build

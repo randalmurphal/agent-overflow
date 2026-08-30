@@ -76,7 +76,10 @@ unmapped non-root provider thread must be quarantined rather than treated as
 the AO root. A started activity emitted on a child creates a nested ownership
 edge for a grandchild. Reopen recovery walks persisted descendant histories
 with bounded read-only `thread/read` calls and resumes only currently-active
-children for notification subscription. See
+children for notification subscription. The V2 activity and raw spawn request
+do not report the effective child profile. Agent Overflow reads model and
+reasoning effort from the child's metadata-only
+`thread/resume {excludeTurns:true}` response, without replaying turns. See
 [`codex-wire.md §Collab agent lifecycle`](codex-wire.md#collab-agent-lifecycle-multiagentv1-and-multiagentv2).
 
 ## Background terminals
@@ -141,7 +144,7 @@ Still true, and still not a workaround worth taking:
 
 **History truncation is turn-granular only, on every cut upstream
 offers.** Source-verified at rust-v0.144.5 / rust-v0.145.0-alpha.23
-(2026-07-17) and re-verified at rust-v0.149.0 (2026-08-21).
+(2026-07-17) and re-verified at rust-v0.150.1 (2026-08-29).
 `ThreadForkParams` has grown a second anchor since the first check:
 `last_turn_id` (`truncate_rollout_after_turn_id`, inclusive) and
 `before_turn_id` (`truncate_rollout_before_turn_id`, exclusive, added in

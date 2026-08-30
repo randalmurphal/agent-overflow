@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 
-// Regression coverage for the patched marked-math block rule.
+// Regression coverage for the marked-math block rule.
 //
-// Upstream svelte-streamdown ships a block-math regex that recognises
-// only two shapes:
+// Upstream shipped a block-math regex that recognised only two shapes:
 //   1. `$$\nCONTENT\n$$`  — canonical newline-delimited multiline.
 //   2. `$$CONTENT$$`       — single-line, no newlines or `$` in CONTENT.
 //

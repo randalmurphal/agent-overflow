@@ -258,25 +258,25 @@ func TestCollapseDiffPreviewsRoundTripAndSparseDefault(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
 
-	updated, err := svc.Update(map[string]any{"collapseDiffPreviews": true})
-	if err != nil {
-		t.Fatalf("Update(collapseDiffPreviews=true) error = %v", err)
-	}
-	if !updated.CollapseDiffPreviews {
-		t.Fatal("CollapseDiffPreviews = false, want true")
-	}
-
-	reloaded := NewService(dir).Get()
-	if !reloaded.CollapseDiffPreviews {
-		t.Fatal("reloaded CollapseDiffPreviews = false, want true")
-	}
-
-	updated, err = svc.Update(map[string]any{"collapseDiffPreviews": false})
+	updated, err := svc.Update(map[string]any{"collapseDiffPreviews": false})
 	if err != nil {
 		t.Fatalf("Update(collapseDiffPreviews=false) error = %v", err)
 	}
 	if updated.CollapseDiffPreviews {
 		t.Fatal("CollapseDiffPreviews = true, want false")
+	}
+
+	reloaded := NewService(dir).Get()
+	if reloaded.CollapseDiffPreviews {
+		t.Fatal("reloaded CollapseDiffPreviews = true, want false")
+	}
+
+	updated, err = svc.Update(map[string]any{"collapseDiffPreviews": true})
+	if err != nil {
+		t.Fatalf("Update(collapseDiffPreviews=true) error = %v", err)
+	}
+	if !updated.CollapseDiffPreviews {
+		t.Fatal("CollapseDiffPreviews = false, want true")
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, "settings.json"))

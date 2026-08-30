@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Item } from '../types/models';
 import type { SmoothingClock } from '../markdown/smoothing/PerItemSmoother';
 import { makeItem } from '../../test/helpers/chat';
+import { expectCleanTransitions } from '../../test/helpers/transitions';
 import { __setSmoothingClockForTest } from './threadPaneShared';
 import { createThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { StreamingAssistantRevealSink } from './streamingAssistantReveal';
-import { matchesProvenAppend } from 'svelte-streamdown';
+import { getSettings, resetSettingsForTest } from './settings.svelte';
+import { matchesProvenAppend } from '../markdown';
 
 class FakeSmoothingClock implements SmoothingClock {
   private nextHandle = 1;
@@ -103,6 +105,67 @@ function makeReveal(initialItems: Item[]) {
 
 afterEach(() => {
   __setSmoothingClockForTest(undefined);
+  resetSettingsForTest();
+});
+
+describe('streaming reveal live-updates toggle transitions', () => {
+  // `streamingEnabled` is the live-updates toggle: off, the smoother
+  // hands its whole pending buffer over in one mutation instead of
+  // animating (`revealImmediately`). The existing coverage flips it once;
+  // these are the laps a toggle has to survive — repeated flips, a flip
+  // that lands while a backlog is still draining, and the settled state
+  // being identical after every one of them.
+  it('returns the reveal to a clean settled state across every flip', () => {
+    const clock = new FakeSmoothingClock();
+    __setSmoothingClockForTest(clock);
+    const item = makeItem({ id: 'text', status: 'streaming', summary: '' });
+    const { reveal, getItems } = makeReveal([item]);
+
+    const BACKLOG = Array.from({ length: 60 }, (_, i) => `word${i} `).join('');
+    let received = '';
+    let updatedAt = 1;
+
+    const append = (delta: string): void => {
+      reveal.appendStreamingDelta(item.id, getItems()[0].summary, delta, ++updatedAt);
+      received += delta;
+    };
+    const drain = (): void => {
+      for (let frame = 0; frame < 2_000; frame++) {
+        if (getItems()[0].summary === received) return;
+        clock.tick(16);
+      }
+      throw new Error('reveal did not drain');
+    };
+
+    append('seed words ');
+    drain();
+
+    expectCleanTransitions('streaming reveal live-updates toggle', {
+      on: () => { getSettings().streamingEnabled = false; },
+      // Disengaging restores the animated cadence and lets whatever is
+      // pending settle — a toggle is only clean once the reveal it
+      // governs has finished.
+      off: () => {
+        getSettings().streamingEnabled = true;
+        drain();
+      },
+      whileOn: () => {
+        // Live updates off means the whole backlog lands in one tick.
+        append(BACKLOG);
+        clock.tick(16);
+        expect(getItems()[0].summary).toBe(received);
+      },
+      inFlight: () => { append(BACKLOG); },
+      read: () => ({
+        smoothers: reveal.smootherCount(),
+        boundary: reveal.revealBoundary,
+        caughtUp: getItems()[0].summary === received,
+        tails: reveal.debugStats().liveThinkingTails,
+      }),
+    });
+
+    expect(getItems()[0].summary).toBe(received);
+  });
 });
 
 describe('thread streaming reveal cleanup', () => {
@@ -401,9 +464,14 @@ describe('thread streaming reveal cleanup', () => {
     reveal.registerAssistantRevealSink(second.id, sink(secondReset));
     reveal.appendStreamingDelta(first.id, '', 'first pending ', 1);
     reveal.appendStreamingDelta(second.id, '', 'second pending ', 1);
+    // A DIVERGENT terminal summary is what forces disposal. A terminal
+    // replacement whose summary is still a prefix of `received` keeps the
+    // smoother draining instead (incident 2026-08-29: disposing on the
+    // drain's own partial row stranded the final text mid-reveal).
     const terminalItems = getItems().map((current) => ({
       ...current,
       status: 'completed' as const,
+      summary: `rewritten ${current.id}`,
     }));
     expect(() => reveal.prepareItemReplacements(terminalItems)).toThrow(
       /smoother disposal failed/,

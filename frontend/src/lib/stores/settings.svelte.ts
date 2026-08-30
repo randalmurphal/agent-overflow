@@ -1,102 +1,35 @@
 import type { Settings } from "../types/settings";
+import { SETTINGS_DEFAULTS } from "../generated/settingsDefaults";
 import { GetSettings, UpdateSettings } from "./bindings";
 import { addToast } from "./toast.svelte";
 
-const DEFAULT_SETTINGS: Settings = {
-  timestampFormat: "locale",
-  sansFont: "geist",
-  monoFont: "geist",
-  fontSize: 13,
-  recentWorkspaces: [],
-  diffWordWrap: false,
-  collapseDiffPreviews: false,
-  streamingEnabled: true,
-  lowPowerMode: false,
-  browserEnabled: true,
-  browserPersistSiteData: true,
-  browserAllowOutsideWorkspace: false,
-  // Keep-awake mirrors internal/settings: enabled follows the
-  // zero-value-off pattern, screen scope defaults on.
-  keepAwakeEnabled: false,
-  keepAwakeScreen: true,
-  // Spinner defaults mirror internal/settings.DefaultSettings: verbs on
-  // (text-only), animations off (the LED chase is stock), compaction
-  // slot "" = the built-in robo-papers default.
-  spinnerVerbsEnabled: true,
-  spinnerAnimationsEnabled: false,
-  spinnerCustomVerbs: [],
-  spinnerBuiltinVerbsDisabled: false,
-  spinnerDisabledAnimations: [],
-  spinnerCompactionAnimation: "",
-  confirmArchive: true,
-  confirmDelete: true,
-  claudeBinaryPath: "claude",
-  codexBinaryPath: "codex",
-  claudeEnabled: true,
-  codexEnabled: true,
-  // Off by default, mirroring internal/settings.Settings.ClaudeTUIEnabled's
-  // deliberate zero-value default: an unloaded store must not flash the TUI
-  // into the pickers before GetSettings answers.
-  claudeTuiEnabled: false,
-  claudeHiddenModels: [],
-  codexHiddenModels: [],
-  defaultThreadEnvMode: "local",
-  worktreeBranchPrefix: "ao-",
-  paneDensity: "compact",
-  activityRunDefault: "expanded",
-  activityRunWindowRows: 30,
-  // Text generation defaults mirror internal/settings.DefaultSettings.
-  textGenerationProvider: "codex",
-  textGenerationModel: "",
-  textGenerationReasoningEffort: "low",
-  commitMessageStyle: "conventional",
-  commitMessageStyleCustom: "",
-  // Auto-compact thresholds default to 90% per provider per tier — same
-  // value as the Go DefaultSettings so an unloaded settings store doesn't
-  // disagree with what the backend would send back on first GetSettings.
-  claudeAutoCompactStandardPercent: 90,
-  claudeAutoCompactExtendedPercent: 90,
-  codexAutoCompactStandardPercent: 90,
-  codexAutoCompactExtendedPercent: 90,
-  observabilityTracingEnabled: false,
-  observabilityOtlpEndpoint: "",
-  observabilityEventLogEnabled: false,
-  // Phase E LAN-bind preference defaults to false — loopback is the
-  // safe out-of-the-box behaviour. Toggling on through Settings →
-  // Network rebinds the transport without restarting the app.
-  network: { bindAll: false },
-  // 30-day retention mirrors internal/settings.DefaultSettings so a
-  // fresh frontend boot before GetSettings returns shows the right
-  // default in the GeneralSettings input.
-  retention: { days: 30 },
-  // On by default, mirroring internal/settings.DefaultSettings: the
-  // behind badge is only meaningful if something refreshes it.
-  backgroundGitFetch: true,
-  // Empty allowlist — only gitlab.com / github.com are recognised by
-  // default. Users add self-hosted entries through the Settings UI.
-  gitlabSelfHostedHosts: [],
-  // No custom provider environment out of the box; the backend omits the
-  // keys entirely until the user adds one.
-  claudeCustomEnv: [],
-  codexCustomEnv: [],
-  projectSortMode: "lastActivity",
-  usagePeriod: "month",
-  workflowPaused: false,
-};
-
+/**
+ * The defaults are GENERATED from internal/settings.DefaultSettings
+ * (`go generate ./internal/settings`), never hand-mirrored: the two used
+ * to be kept in step by comments, which is a synchronization method with
+ * no failure mode short of a user noticing the wrong value. Which fields
+ * get a default and which stay undefined is the generator's deny-list.
+ *
+ * They are load-bearing at runtime, not just a pre-load placeholder: Go's
+ * `omitempty` drops zero-valued fields on the wire, so every GetSettings
+ * read comes back missing keys that mergeSettingsWithDefaults fills from
+ * here.
+ */
 function defaultSettings(): Settings {
+  // Deep-copied per call: the store mutates what it hands out, and the
+  // generated object is module-level shared state.
   return {
-    ...DEFAULT_SETTINGS,
-    recentWorkspaces: [...DEFAULT_SETTINGS.recentWorkspaces],
-    network: { ...DEFAULT_SETTINGS.network },
-    retention: { ...DEFAULT_SETTINGS.retention },
-    gitlabSelfHostedHosts: [...DEFAULT_SETTINGS.gitlabSelfHostedHosts],
-    claudeHiddenModels: [...(DEFAULT_SETTINGS.claudeHiddenModels ?? [])],
-    codexHiddenModels: [...(DEFAULT_SETTINGS.codexHiddenModels ?? [])],
-    claudeCustomEnv: [...(DEFAULT_SETTINGS.claudeCustomEnv ?? [])],
-    codexCustomEnv: [...(DEFAULT_SETTINGS.codexCustomEnv ?? [])],
-    spinnerCustomVerbs: [...(DEFAULT_SETTINGS.spinnerCustomVerbs ?? [])],
-    spinnerDisabledAnimations: [...(DEFAULT_SETTINGS.spinnerDisabledAnimations ?? [])],
+    ...SETTINGS_DEFAULTS,
+    recentWorkspaces: [...SETTINGS_DEFAULTS.recentWorkspaces],
+    network: { ...SETTINGS_DEFAULTS.network },
+    retention: { ...SETTINGS_DEFAULTS.retention },
+    gitlabSelfHostedHosts: [...SETTINGS_DEFAULTS.gitlabSelfHostedHosts],
+    claudeHiddenModels: [...SETTINGS_DEFAULTS.claudeHiddenModels],
+    codexHiddenModels: [...SETTINGS_DEFAULTS.codexHiddenModels],
+    claudeCustomEnv: [...SETTINGS_DEFAULTS.claudeCustomEnv],
+    codexCustomEnv: [...SETTINGS_DEFAULTS.codexCustomEnv],
+    spinnerCustomVerbs: [...SETTINGS_DEFAULTS.spinnerCustomVerbs],
+    spinnerDisabledAnimations: [...SETTINGS_DEFAULTS.spinnerDisabledAnimations],
   };
 }
 

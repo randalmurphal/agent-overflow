@@ -402,7 +402,7 @@ describe('scroll integration — per-thread snapshot save/restore', () => {
   it('bottom-snapshot restore leaves the controller sticky and not escaped', async () => {
     // The bottom-restore path uses `stick.forceStick()` — a single
     // scrollTop write against the current target. Subsequent
-    // svelte-streamdown async typesetting
+    // markdown async typesetting
     // (shiki / KaTeX / mermaid / parseIncompleteMarkdown rebalance)
     // and the engine's per-row remeasurement get handled invisibly by the
     // controller's contentRO sync-pin path.

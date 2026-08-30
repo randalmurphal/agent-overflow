@@ -12,7 +12,8 @@ import {
   type Extension,
   type ProvenAppend,
   type useStreamdown,
-} from 'svelte-streamdown';
+} from '../../../markdown';
+import { chatMarkdownTheme } from './streamdownTheme';
 
 type StreamdownContext = ReturnType<typeof useStreamdown>;
 
@@ -181,11 +182,11 @@ describe('single volatile Streamdown block', () => {
     let context: StreamdownContext | undefined;
     const view = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: source,
         parseIncompleteMarkdown: false,
         compactStaticHtml: true,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return context;
         },
@@ -202,12 +203,12 @@ describe('single volatile Streamdown block', () => {
     // committed source did not move. The document parser is idempotent, and
     // its stable result must also stop before CompactBlocks reconciliation.
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: source,
       contentAppend: createProvenAppend('unrelated', '!'),
       parseIncompleteMarkdown: false,
       compactStaticHtml: true,
       diagnostics: true,
-      controls: { code: false, table: false },
       get streamdown() {
         return context;
       },
@@ -227,11 +228,11 @@ describe('single volatile Streamdown block', () => {
     let context: StreamdownContext | undefined;
     const view = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: initial,
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -243,36 +244,37 @@ describe('single volatile Streamdown block', () => {
     await tick();
 
     const state = forensics(view.container);
-    expect(state.content).toBe(initial);
+    expect(state.content).toEqualWithFirstDivergence(initial);
     expect(state.lastPath).toBe('initial-boundary');
     expect(state.trailingBlock?.kind).toBe('paragraph');
     expect(state.documentParseCalls).toBe(1);
     expect(state.incrementalLexMetrics.calls).toBeGreaterThan(0);
-    expect(view.container.textContent).toBe(initial);
+    expect(view.container.textContent).toEqualWithFirstDivergence(initial);
 
     const delta = ' keeps growing on its current line.';
     const append = createProvenAppend(initial, delta);
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: append.next,
       contentAppend: append,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
 
     expect(state.lastPath).toBe('single-block');
     expect(state.documentParseCalls).toBe(1);
     expect(state.incrementalLexMetrics.calls).toBeGreaterThan(1);
-    expect(view.container.textContent).toBe(append.next);
+    expect(view.container.textContent).toEqualWithFirstDivergence(append.next);
 
     await view.rerender({
+
+      theme: chatMarkdownTheme,
       content: append.next,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: false,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).not.toBe('single-block');
@@ -280,11 +282,12 @@ describe('single volatile Streamdown block', () => {
     const parsedCalls = state.documentParseCalls;
 
     await view.rerender({
+
+      theme: chatMarkdownTheme,
       content: append.next,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).not.toBe('single-block');
@@ -292,17 +295,17 @@ describe('single volatile Streamdown block', () => {
 
     const resumed = createProvenAppend(append.next, ' Still stable.');
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: resumed.next,
       contentAppend: resumed,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).toBe('single-block');
     expect(state.documentParseCalls).toBe(parsedCalls + 1);
-    expect(view.container.textContent).toBe(resumed.next);
+    expect(view.container.textContent).toEqualWithFirstDivergence(resumed.next);
   });
 
   it('returns to document parsing at a newline, then skips same-line fence growth', async () => {
@@ -310,11 +313,11 @@ describe('single volatile Streamdown block', () => {
     let context: StreamdownContext | undefined;
     const view = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: initial,
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -329,12 +332,12 @@ describe('single volatile Streamdown block', () => {
 
     const sameLine = createProvenAppend(initial, ' + 1');
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: sameLine.next,
       contentAppend: sameLine,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).toBe('single-block');
@@ -342,12 +345,12 @@ describe('single volatile Streamdown block', () => {
 
     const nextLine = createProvenAppend(sameLine.next, '\nconst second = true;');
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: nextLine.next,
       contentAppend: nextLine,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).not.toBe('single-block');
@@ -355,19 +358,22 @@ describe('single volatile Streamdown block', () => {
 
     const resumed = createProvenAppend(nextLine.next, ' // suffix');
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: resumed.next,
       contentAppend: resumed,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
     expect(state.lastPath).toBe('single-block');
     expect(state.documentParseCalls).toBe(2);
-    expect(
-      Array.from(view.container.querySelectorAll('code > span'), (line) => line.textContent),
-    ).toEqual(['const first = true; + 1', 'const second = true; // suffix']);
+    // No host `components.code` here, so the fence renders through the
+    // library's source-text fallback: one `<code>` holding the fence body.
+    expect(view.container.querySelector('code')?.textContent?.split('\n')).toEqual([
+      'const first = true; + 1',
+      'const second = true; // suffix',
+    ]);
   });
 
   it('rejects a fabricated same-line append proof', async () => {
@@ -375,11 +381,11 @@ describe('single volatile Streamdown block', () => {
     let context: StreamdownContext | undefined;
     const view = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: initial,
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -396,12 +402,12 @@ describe('single volatile Streamdown block', () => {
     const next = initial + delta;
     const fabricated = { previous: initial, delta, next } as ProvenAppend;
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: next,
       contentAppend: fabricated,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
 
@@ -414,11 +420,11 @@ describe('single volatile Streamdown block', () => {
     let context: StreamdownContext | undefined;
     const view = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: initial,
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return context;
         },
@@ -431,12 +437,12 @@ describe('single volatile Streamdown block', () => {
     const state = forensics(view.container);
     const append = createProvenAppend(initial, 'Value');
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: append.next,
       contentAppend: append,
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false, table: false },
     });
     await tick();
 
@@ -459,12 +465,12 @@ describe('single volatile Streamdown block', () => {
     let context: StreamdownContext | undefined;
     const view = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: initial,
         extensions: [customBlock],
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false },
         get streamdown() {
           return context;
         },
@@ -477,13 +483,13 @@ describe('single volatile Streamdown block', () => {
     const state = forensics(view.container);
     const append = createProvenAppend(initial, '!Beta');
     await view.rerender({
+      theme: chatMarkdownTheme,
       content: append.next,
       contentAppend: append,
       extensions: [customBlock],
       parseIncompleteMarkdown: true,
       isolatedVolatileTail: true,
       diagnostics: true,
-      controls: { code: false },
     });
     await tick();
 
@@ -521,11 +527,11 @@ describe('single volatile Streamdown block', () => {
     let referenceContext: StreamdownContext | undefined;
     const optimized = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: '',
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: true,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return optimizedContext;
         },
@@ -536,11 +542,11 @@ describe('single volatile Streamdown block', () => {
     });
     const reference = render(Streamdown, {
       props: {
+        theme: chatMarkdownTheme,
         content: '',
         parseIncompleteMarkdown: true,
         isolatedVolatileTail: false,
         diagnostics: true,
-        controls: { code: false, table: false },
         get streamdown() {
           return referenceContext;
         },
@@ -555,10 +561,10 @@ describe('single volatile Streamdown block', () => {
       const source = MIXED_TAIL.slice(0, end);
       const split = splitter.split(source);
       const props = {
+        theme: chatMarkdownTheme,
         content: split.tail,
         contentAppend: splitter.tailAppend,
         parseIncompleteMarkdown: true,
-        controls: { code: false, table: false },
       };
       await optimized.rerender({ ...props, isolatedVolatileTail: true });
       await reference.rerender({ ...props, isolatedVolatileTail: false });

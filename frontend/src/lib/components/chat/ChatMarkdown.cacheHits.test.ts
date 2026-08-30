@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 
-// Cache-hit coverage for the module-level KaTeX cache in the patched
-// svelte-streamdown Math component. The proof we need is that the
+// Cache-hit coverage for the module-level KaTeX cache in the renderer's
+// Math component. The proof we need is that the
 // second occurrence of the same (token.text, mode) pair does not
 // re-invoke `katex.renderToString`.
 //

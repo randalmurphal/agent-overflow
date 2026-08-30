@@ -26,8 +26,8 @@ const NO_ROWS_LOADED = {
 
 // Diff-card overrides are read against the live collapseDiffPreviews default
 // (see `liveDiffOverride`), so a case about a specific default has to state
-// it. Everything else runs on the shipped default: collapseDiffPreviews off,
-// i.e. diff cards expanded.
+// it. Everything else runs on the shipped default: collapseDiffPreviews on,
+// i.e. diff cards collapsed.
 async function seedCollapseDiffPreviews(collapseDiffPreviews: boolean): Promise<void> {
   setBindingMock('GetSettings', async () => makeSettings({ collapseDiffPreviews }));
   await loadSettings();
@@ -435,26 +435,26 @@ describe('createThreadRowUiState', () => {
     const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
 
     // Absent = follow the collapseDiffPreviews setting default, which is
-    // expanded here (collapseDiffPreviews defaults off), so a reader's only
-    // available deviation is a collapse.
+    // collapsed here (collapseDiffPreviews defaults on), so a reader's only
+    // available deviation is an expand.
     expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBeUndefined();
 
-    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', false);
-    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(false);
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
 
     // Files under the same item stay independent, as do other items.
-    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', false);
-    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/bar.ts')).toBe(false);
-    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(false);
+    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/bar.ts')).toBe(true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
     expect(rowUiState.diffCardExpandedOverride('item-b', 'src/foo.ts')).toBeUndefined();
 
     // Putting a card BACK to the default stores nothing: an override is a
     // deviation, so there is no redundant entry to leave behind and no
     // clear call for the caller to forget. Emptying an item drops its entry.
-    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', true);
+    rowUiState.setDiffCardExpanded('item-a', 'src/bar.ts', false);
     expect(rowUiState.diffCardExpandedOverride('item-a', 'src/bar.ts')).toBeUndefined();
-    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(false);
-    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', true);
+    expect(rowUiState.diffCardExpandedOverride('item-a', 'src/foo.ts')).toBe(true);
+    rowUiState.setDiffCardExpanded('item-a', 'src/foo.ts', false);
     expect(rowUiState.debugStats().diffCardOverrideItems).toBe(0);
   });
 
@@ -576,8 +576,8 @@ describe('createThreadRowUiState', () => {
       url: 'blob:before-dispose',
     });
 
-    rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', false);
-    rowUiState.setDiffCardExpanded('item-other', 'src/keep.ts', false);
+    rowUiState.setDiffCardExpanded(item.id, 'src/foo.ts', true);
+    rowUiState.setDiffCardExpanded('item-other', 'src/keep.ts', true);
 
     expect(rowUiState.debugStats().itemExpansionStates).toBe(1);
     expect(rowUiState.debugStats().payloadExpansionStates).toBe(1);
@@ -590,7 +590,7 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.isSubagentGroupExpanded(`wait:${item.id}`)).toBe(false);
     // Diff card overrides for the disposed item drop; others survive.
     expect(rowUiState.diffCardExpandedOverride(item.id, 'src/foo.ts')).toBeUndefined();
-    expect(rowUiState.diffCardExpandedOverride('item-other', 'src/keep.ts')).toBe(false);
+    expect(rowUiState.diffCardExpandedOverride('item-other', 'src/keep.ts')).toBe(true);
     expect(revoke).toHaveBeenCalledWith('blob:before-dispose');
 
     staleCache.set('after-dispose', {
@@ -835,8 +835,8 @@ describe('createThreadRowUiState', () => {
     );
     rowUiState.toggleSubagentGroupExpanded('group-old');
     rowUiState.toggleSubagentGroupExpanded('group-retained');
-    rowUiState.setDiffCardExpanded(oldItem.id, 'src/old.ts', false);
-    rowUiState.setDiffCardExpanded(retainedItem.id, 'src/retained.ts', false);
+    rowUiState.setDiffCardExpanded(oldItem.id, 'src/old.ts', true);
+    rowUiState.setDiffCardExpanded(retainedItem.id, 'src/retained.ts', true);
     rowUiState.setUserMessageExpanded(oldItem.id, true);
     rowUiState.setUserMessageExpanded(retainedItem.id, true);
     const oldAttachmentCache = rowUiState.attachmentCacheFor(oldItem.id);
@@ -886,7 +886,7 @@ describe('createThreadRowUiState', () => {
     expect(rowUiState.isUserMessageExpanded(oldItem.id)).toBe(false);
     expect(rowUiState.isUserMessageExpanded(retainedItem.id)).toBe(true);
     expect(rowUiState.diffCardExpandedOverride(oldItem.id, 'src/old.ts')).toBeUndefined();
-    expect(rowUiState.diffCardExpandedOverride(retainedItem.id, 'src/retained.ts')).toBe(false);
+    expect(rowUiState.diffCardExpandedOverride(retainedItem.id, 'src/retained.ts')).toBe(true);
     expect(retainedAttachmentCache.get('retained-attachment')).toBeTruthy();
     expect(oldAttachmentCache.get('old-attachment')).toBeUndefined();
 
@@ -1038,6 +1038,7 @@ describe('createThreadRowUiState', () => {
       // its non-empty check never proved the `=0` branch.)
       // The two arms need opposite defaults to exist at all: an override only
       // stores as the negation of the default in force when it was written.
+      await seedCollapseDiffPreviews(false);
       const collapsed = createThreadRowUiState(NO_ROWS_LOADED);
       collapsed.setDiffCardExpanded('item-1', 'src/foo.ts', false);
       const collapsedSig = collapsed.expansionSignature();
@@ -1066,12 +1067,12 @@ describe('createThreadRowUiState', () => {
       const a = createThreadRowUiState(NO_ROWS_LOADED);
       a.toggleSubagentGroupExpanded('group-b');
       a.toggleSubagentGroupExpanded('group-a');
-      a.setDiffCardExpanded('item-2', 'src/z.ts', false);
-      a.setDiffCardExpanded('item-1', 'src/a.ts', false);
+      a.setDiffCardExpanded('item-2', 'src/z.ts', true);
+      a.setDiffCardExpanded('item-1', 'src/a.ts', true);
       const b = createThreadRowUiState(NO_ROWS_LOADED);
-      b.setDiffCardExpanded('item-1', 'src/a.ts', false);
+      b.setDiffCardExpanded('item-1', 'src/a.ts', true);
       b.toggleSubagentGroupExpanded('group-a');
-      b.setDiffCardExpanded('item-2', 'src/z.ts', false);
+      b.setDiffCardExpanded('item-2', 'src/z.ts', true);
       b.toggleSubagentGroupExpanded('group-b');
       expect(a.expansionSignature()).toBe(b.expansionSignature());
     });
@@ -1079,7 +1080,7 @@ describe('createThreadRowUiState', () => {
     it('returns to empty after clear() (the switch-in reset)', () => {
       const rowUiState = createThreadRowUiState(NO_ROWS_LOADED);
       rowUiState.toggleSubagentGroupExpanded('group-a');
-      rowUiState.setDiffCardExpanded('item-1', 'src/foo.ts', false);
+      rowUiState.setDiffCardExpanded('item-1', 'src/foo.ts', true);
       expect(rowUiState.expansionSignature()).not.toBe('');
       rowUiState.clear();
       expect(rowUiState.expansionSignature()).toBe('');
@@ -1103,6 +1104,7 @@ describe('createThreadRowUiState', () => {
       // engagement with the run. Which of the two a reader can even produce
       // follows collapseDiffPreviews, so both arms are exercised under the
       // default that admits them.
+      await seedCollapseDiffPreviews(false);
       const openByDefault = createThreadRowUiState(NO_ROWS_LOADED);
       openByDefault.setDiffCardExpanded('item-a', 'src/a.ts', false);
       expect(openByDefault.hasUserExpansionWithin(['item-a'])).toBe(false);

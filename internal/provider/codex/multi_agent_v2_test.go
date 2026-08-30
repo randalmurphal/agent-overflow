@@ -231,7 +231,7 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 			t.Fatalf("decode event meta: %v", err)
 		}
 		if meta.Input.Tool != "spawn_agent" || meta.Input.AgentPath != "/root/reviewer" ||
-			meta.Input.Model != "gpt-5.4" || meta.Input.ReasoningEffort != "high" ||
+			meta.Input.Model != "" || meta.Input.ReasoningEffort != "" ||
 			meta.Input.AgentNickname != "Socrates" || meta.Input.AgentRole != "default" ||
 			len(meta.Input.ReceiverThreadIDs) != 1 || meta.Input.ReceiverThreadIDs[0] != "child-a" ||
 			len(meta.Input.AgentsStates) != 1 {
@@ -240,7 +240,7 @@ func TestMultiAgentV2StartedNormalizesAndMapsChild(t *testing.T) {
 	}
 }
 
-func TestMultiAgentV2NestedSpawnInheritsSourceAgentProfile(t *testing.T) {
+func TestMultiAgentV2NestedSpawnDoesNotInheritSourceAgentProfile(t *testing.T) {
 	var events []provider.ProviderEvent
 	s := newMultiAgentV2RoutingSession(t, func(event provider.ProviderEvent) {
 		events = append(events, event)
@@ -250,7 +250,12 @@ func TestMultiAgentV2NestedSpawnInheritsSourceAgentProfile(t *testing.T) {
 	if !s.registerChildOwnership("root-provider-thread", "child-a", "/root/reviewer", "spawn-a") {
 		t.Fatal("register source child ownership")
 	}
-	s.rememberCollabProfile("child-a", "gpt-child", "low")
+	s.rememberCollabReceiverMeta(collabReceiverMeta{
+		ThreadID:        "child-a",
+		Model:           "gpt-child",
+		ReasoningEffort: "low",
+		ProfileKnown:    true,
+	})
 
 	s.dispatchLine(v2ActivityLine("child-a", "child-turn", "spawn-b", "started", "grandchild-b", "/root/reviewer/worker"))
 
@@ -267,8 +272,8 @@ func TestMultiAgentV2NestedSpawnInheritsSourceAgentProfile(t *testing.T) {
 		if err := json.Unmarshal(event.Meta, &meta); err != nil {
 			t.Fatalf("decode nested spawn meta: %v", err)
 		}
-		if meta.Input.Model != "gpt-child" || meta.Input.ReasoningEffort != "low" {
-			t.Fatalf("nested profile = %q/%q, want gpt-child/low", meta.Input.Model, meta.Input.ReasoningEffort)
+		if meta.Input.Model != "" || meta.Input.ReasoningEffort != "" {
+			t.Fatalf("nested profile = %q/%q, want blank until the grandchild profile arrives", meta.Input.Model, meta.Input.ReasoningEffort)
 		}
 	}
 }

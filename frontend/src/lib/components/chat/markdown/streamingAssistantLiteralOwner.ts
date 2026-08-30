@@ -1,7 +1,7 @@
 import {
   streamdownLiteralHostOf,
   type StreamdownLiteralHost,
-} from 'svelte-streamdown';
+} from '../../../markdown';
 import type { PathRef } from '../../../types/models';
 import type {
   StreamingAssistantParserCheckpoint,
@@ -168,7 +168,7 @@ interface StreamingAssistantLiteralOwnerOptions {
 /**
  * The single owner of the active literal host's visible text.
  *
- * The host (vendored `LiteralHost.svelte`, divergence 21) renders no Text node
+ * The host (`markdown/render/LiteralHost.svelte`) renders no Text node
  * of its own. This owner adopts it and is the only writer of its children, so
  * one visible text run is never split between Svelte and the reveal. Two
  * writers is what produced the settle flicker: `reset()` deleted the revealed
@@ -477,7 +477,7 @@ export function createStreamingAssistantLiteralOwner(
   }
 
   /**
-   * An authoritative parser update for the adopted host. Called by the vendored
+   * An authoritative parser update for the adopted host. Called by the
    * controller inside the Svelte flush that publishes it.
    */
   function present(text: string): void {

@@ -85,9 +85,9 @@ function serializeNode(node: Node, ctx: SerializeContext): string {
   // The current Mermaid host keeps a hidden source fallback beside the
   // rendered SVG. Serializing its children would copy that fallback as an
   // unlabelled fence, then append the SVG's visible labels. Recover the
-  // canonical source from the host instead. The panzoom SVG exists while
-  // Mermaid is still loading, so require the nested rendered SVG before
-  // trusting the data attribute.
+  // canonical source from the host instead. The outer host SVG exists
+  // while Mermaid is still loading, so require the nested rendered SVG
+  // before trusting the data attribute.
   const mermaidSource = renderedMermaidSource(el);
   if (mermaidSource !== null) return fencedBlock('mermaid', mermaidSource);
 
@@ -319,7 +319,7 @@ function parseListStart(startAttr: string | null): number {
 /**
  * `[x] ` / `[ ] ` for a GFM task-list item, `''` for a plain one.
  *
- * svelte-streamdown renders `- [x] done` as
+ * The renderer renders `- [x] done` as
  * `<li><input type="checkbox" checked disabled>done</li>`, so the checked
  * state lives only on the input — the visible text carries none of it and
  * the browser default copy drops it entirely. Checkedness is read from the

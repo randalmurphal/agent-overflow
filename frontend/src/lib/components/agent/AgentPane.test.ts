@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AgentPane from './AgentPane.svelte';
 import { installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
+import { makeSettings } from '../../../test/helpers/settings';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
@@ -71,6 +72,10 @@ describe('<AgentPane>', () => {
   });
 
   it('renders only the scoped subtree, thinking and intermediate text included', async () => {
+    // The tool row's text is inside an activity run, which the shipped
+    // default collapses — this case is about what the scope RENDERS.
+    setBindingMock('GetSettings', async () => makeSettings({ activityRunDefault: 'expanded' }));
+    await loadSettings();
     const { ctx } = await setup([
       launchItem(),
       makeItem({ id: 'top-text', itemIndex: 1, threadId: THREAD_ID, summary: 'main thread prose' }),

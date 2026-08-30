@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/headlessshell"
 )
 
 // fakeArchive builds an in-memory zip mirroring Chrome-for-Testing's
@@ -24,7 +25,7 @@ import (
 // containing a fake `chrome-headless-shell` (or .exe on Windows).
 // The fake binary is a tiny shell script / batch file we never
 // actually exec — it only has to exist with the executable bit set
-// for isExecutable() to accept it.
+// for headlessshell.Executable() to accept it.
 func fakeArchive(t *testing.T, platform string) []byte {
 	t.Helper()
 	binName := "chrome-headless-shell"
@@ -144,9 +145,9 @@ func TestInstallerInstallsFullChromeArtifact(t *testing.T) {
 // any external network access.
 func fakeManifestServer(t *testing.T, version string) (*httptest.Server, *int32) {
 	t.Helper()
-	platform, err := currentPlatform()
+	platform, err := headlessshell.Platform()
 	if err != nil {
-		t.Skipf("currentPlatform unsupported: %v", err)
+		t.Skipf("headlessshell.Platform unsupported: %v", err)
 	}
 	zipBytes := fakeArchive(t, platform)
 
@@ -185,7 +186,7 @@ func fakeManifestServer(t *testing.T, version string) (*httptest.Server, *int32)
 }
 
 func TestInstaller_Install_Fresh(t *testing.T) {
-	if _, err := currentPlatform(); err != nil {
+	if _, err := headlessshell.Platform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	cacheDir := t.TempDir()
@@ -212,7 +213,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 	if res.Version != "999.0.1.0" {
 		t.Errorf("Version = %q, want 999.0.1.0", res.Version)
 	}
-	if !isExecutable(res.BinaryPath) {
+	if !headlessshell.Executable(res.BinaryPath) {
 		t.Errorf("BinaryPath %q not executable", res.BinaryPath)
 	}
 	if *downloads != 1 {
@@ -239,7 +240,7 @@ func TestInstaller_Install_Fresh(t *testing.T) {
 }
 
 func TestInstaller_Install_Cached(t *testing.T) {
-	if _, err := currentPlatform(); err != nil {
+	if _, err := headlessshell.Platform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	cacheDir := t.TempDir()
@@ -264,7 +265,7 @@ func TestInstaller_Install_Cached(t *testing.T) {
 }
 
 func TestInstaller_Install_BadStatus(t *testing.T) {
-	if _, err := currentPlatform(); err != nil {
+	if _, err := headlessshell.Platform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	cacheDir := t.TempDir()
@@ -372,7 +373,7 @@ func TestInstaller_Install_BadPlatform(t *testing.T) {
 }
 
 func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
-	platform, err := currentPlatform()
+	platform, err := headlessshell.Platform()
 	if err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
@@ -430,7 +431,7 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 	if !strings.HasSuffix(res.BinaryPath, "chrome-headless-shell") {
 		t.Errorf("recovered BinaryPath = %q, want suffix chrome-headless-shell", res.BinaryPath)
 	}
-	if !isExecutable(res.BinaryPath) {
+	if !headlessshell.Executable(res.BinaryPath) {
 		t.Errorf("recovered BinaryPath %q not executable", res.BinaryPath)
 	}
 }
@@ -440,7 +441,7 @@ func TestInstaller_Install_RecoversIfBinaryAtUnexpectedPath(t *testing.T) {
 // left behind by previous Chrome rolls, so the on-disk cache size is
 // O(1) in the number of upstream releases rather than unbounded.
 func TestInstaller_PrunesOldVersionsOnFreshInstall(t *testing.T) {
-	if _, err := currentPlatform(); err != nil {
+	if _, err := headlessshell.Platform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	configDir := t.TempDir()
@@ -477,7 +478,7 @@ func TestInstaller_PrunesOldVersionsOnFreshInstall(t *testing.T) {
 // again) is removed on the second invocation even though no fresh
 // download happened.
 func TestInstaller_PrunesOldVersionsOnWarmCache(t *testing.T) {
-	if _, err := currentPlatform(); err != nil {
+	if _, err := headlessshell.Platform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	configDir := t.TempDir()
@@ -517,7 +518,7 @@ func TestInstaller_PrunesOldVersionsOnWarmCache(t *testing.T) {
 // edited cacheDir could turn the prune step into a recursive-remove
 // primitive on arbitrary sibling paths.
 func TestInstaller_PruneIgnoresInvalidSegments(t *testing.T) {
-	if _, err := currentPlatform(); err != nil {
+	if _, err := headlessshell.Platform(); err != nil {
 		t.Skipf("unsupported platform: %v", err)
 	}
 	configDir := t.TempDir()

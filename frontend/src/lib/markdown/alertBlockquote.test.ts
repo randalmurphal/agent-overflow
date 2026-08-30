@@ -1,4 +1,4 @@
-// Coverage for the two vendored `marked/marked-alert.js` fixes.
+// Coverage for the two `parser/extensions/alert.ts` fixes.
 //
 // The alert extension owns EVERY blockquote, not just the `[!NOTE]` ones:
 // it is registered ahead of marked's built-ins, matches the plain blockquote
@@ -19,10 +19,10 @@
 //     shapes terminate, so nothing crashed; what broke is the contract every
 //     incremental path leans on, that a block token's `raw` names the bytes
 //     it consumed.
-import { Lexer } from 'marked';
+import { Lexer } from './parser/engine';
 import { describe, expect, it } from 'vitest';
-import { lex } from 'svelte-streamdown';
-import { markedAlert } from '../../../vendor/svelte-streamdown/dist/marked/marked-alert.js';
+import { lex } from './index';
+import { markedAlert } from './parser/extensions/alert';
 
 /** Run the extension's tokenizer the way marked's block loop does. */
 const tokenizeBlockquote = (src: string) =>

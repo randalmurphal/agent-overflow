@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
 import ChatMarkdown from './ChatMarkdown.svelte';
+import FootnotePopoverHost from './FootnotePopoverHost.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
@@ -258,10 +259,8 @@ describe('<ChatMarkdown> path-link rendering', () => {
   it('renders a repo-relative link as plain text without a [blocked] tag', async () => {
     // PR/issue bodies routinely carry repo-relative links like
     // `[docs/guide.md](docs/guide.md)` — not navigable from the app,
-    // but not *blocked URLs* either. The Link.svelte divergence in the
-    // vendored svelte-streamdown (`DIVERGENCE.md` entry 10) drops the
-    // " [blocked]"
-    // suffix for schemeless relative references (the href survives as
+    // but not *blocked URLs* either. `Link.svelte` drops the
+    // " [blocked]" suffix for schemeless relative references (the href survives as
     // the hover title); disallowed absolute URLs keep the tag.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -367,7 +366,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
 
   it('never renders a raw same-origin img for a /-leading image src', async () => {
     // Image.svelte carried the same isPathRelativeUrl bypass Link.svelte
-    // lost (DIVERGENCE.md entry 17 follow-up): `![x](/api/whatever)`
+    // lost (markdown/AGENTS.md § Security boundary): `![x](/api/whatever)`
     // rendered a raw <img> issuing a model-authored same-origin GET.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -389,8 +388,8 @@ describe('<ChatMarkdown> path-link rendering', () => {
     // streamdown would render `[x](/home/user/x.md)` as a RAW anchor
     // (its isPathRelativeUrl branch bypasses transformUrl) — a same-tab
     // top-level navigation onto the SPA origin: a 404 at best, an
-    // origin-isolation escape at worst. The vendored Link.svelte drops
-    // that branch (DIVERGENCE.md entry 17); the href renders as a
+    // origin-isolation escape at worst. `Link.svelte` drops that branch
+    // (markdown/AGENTS.md § Security boundary); the href renders as a
     // non-navigable schemeless reference instead.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -540,5 +539,189 @@ describe('<ChatMarkdown> warm-gate presence registration', () => {
       props: { source: 'standalone' },
     });
     expect(container.textContent).toContain('standalone');
+  });
+});
+
+describe('<ChatMarkdown> library chrome removed in the W1 sweep', () => {
+  // The renderer used to ship four interactive surfaces this app
+  // never wanted: a footnote popover, a table download menu, a citation
+  // carousel, and mermaid's inline panzoom toolbar. All four are gone.
+  // These assertions pin what SURVIVED, so a future edit that revives the
+  // chrome (or drops the surviving markup with it) fails here.
+
+  it('renders a footnote reference chip and no in-tree popover', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: { source: 'A claim[^note].\n\n[^note]: The supporting body.' },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-streamdown-footnote-ref]')).not.toBeNull();
+    });
+
+    const chip = container.querySelector('[data-streamdown-footnote-ref]')!;
+    expect(chip.textContent).toBe('note');
+    // The library's `<dialog>` and its floating-ui positioning are gone; the
+    // chip only PUBLISHES which footnote it is, and the app's
+    // `FootnotePopoverHost` renders it. Nothing mounts inside the row.
+    expect(container.querySelector('dialog')).toBeNull();
+    expect(container.querySelector('[data-streamdown-footnote-popover]')).toBeNull();
+    expect(container.querySelector('[data-footnote-popover]')).toBeNull();
+    expect(chip.getAttribute('aria-controls')).toBeNull();
+    // The one seam that replaced it: the chip says WHICH footnote it is and
+    // that clicking it opens something. The host resolves the body
+    // document-level and owns the open state.
+    expect(chip.getAttribute('data-footnote-label')).toBe('note');
+    expect(chip.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(chip.getAttribute('aria-expanded')).toBeNull();
+  });
+
+  it('renders a table with no download control', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '| Left | Right |\n| :--- | ----: |\n| alpha | beta |',
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-streamdown-table]')).not.toBeNull();
+    });
+
+    expect(container.querySelectorAll('td')).toHaveLength(2);
+    expect(container.textContent).toContain('alpha');
+    // The download menu was the only control the table ever rendered.
+    expect(container.querySelector('[data-streamdown-table] button')).toBeNull();
+    expect(container.querySelector('button[aria-label="Download"]')).toBeNull();
+  });
+
+  it('renders citation-shaped prose through the host snippet', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: { source: 'The result holds [1] under load.' },
+    });
+
+    await waitFor(() => {
+      expect(container.textContent).toContain('under load');
+    });
+
+    // The `citations` tokenizer stays (it changes how `[foo]` parses), but
+    // ChatMarkdown's `inlineCitation` snippet renders the literal text and
+    // the carousel/list component is gone.
+    expect(container.textContent).toContain('The result holds [1] under load.');
+    expect(container.querySelector('[aria-label^="Citation"]')).toBeNull();
+    expect(container.querySelector('dialog')).toBeNull();
+  });
+});
+
+describe('<FootnotePopoverHost> footnote body popup', () => {
+  // The `[^1]: body` definition renders no DOM of its own (the parser drops
+  // the block) and the ref token's back-reference is empty across block
+  // boundaries, so the chip publishes only its LABEL and this ONE app-level
+  // host — mounted from App.svelte, one delegated document click listener,
+  // one shared Popover — resolves the body and shows it. The popup portals
+  // to <body>, deliberately: inside a containment-scoped virtualizer row a
+  // `position: fixed` overlay positions against the row.
+
+  const mountHost = () => render(FootnotePopoverHost);
+  const popup = () => document.body.querySelector('[data-footnote-popover]');
+  const chipIn = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>('[data-streamdown-footnote-ref]')!;
+
+  const renderWithHost = async (source: string) => {
+    mountHost();
+    const { container } = render(ChatMarkdown, { props: { source } });
+    await waitFor(() => {
+      expect(container.querySelector('[data-streamdown-footnote-ref]')).not.toBeNull();
+    });
+    return container;
+  };
+
+  it('opens a popup rendering the definition as markdown, not text', async () => {
+    const container = await renderWithHost(
+      'A claim[^note].\n\n[^note]: See **weighted** `avg()` for the method.',
+    );
+    expect(popup()).toBeNull();
+
+    const chip = chipIn(container);
+    chip.click();
+
+    await waitFor(() => expect(popup()).not.toBeNull());
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
+    const body = popup()!;
+    // Rendered through the block path: emphasis and code are real elements,
+    // not the literal markdown characters.
+    expect(body.querySelector('strong')?.textContent).toBe('weighted');
+    expect(body.querySelector('code')?.textContent).toBe('avg()');
+    expect(body.textContent).not.toContain('**weighted**');
+    // Mounted outside the markdown row, on the app's popover layer.
+    expect(container.querySelector('[data-footnote-popover]')).toBeNull();
+    expect(body.closest('[data-popover]')).not.toBeNull();
+  });
+
+  it('closes on Escape', async () => {
+    const container = await renderWithHost('A claim[^note].\n\n[^note]: The body.');
+    const chip = chipIn(container);
+    chip.click();
+    await waitFor(() => expect(popup()).not.toBeNull());
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    await waitFor(() => expect(popup()).toBeNull());
+    expect(chip.getAttribute('aria-expanded')).toBeNull();
+  });
+
+  it('closes on an outside click', async () => {
+    const container = await renderWithHost('A claim[^note].\n\n[^note]: The body.');
+    chipIn(container).click();
+    await waitFor(() => expect(popup()).not.toBeNull());
+
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    await waitFor(() => expect(popup()).toBeNull());
+  });
+
+  it('toggles closed when the same chip is clicked again', async () => {
+    const container = await renderWithHost('A claim[^note].\n\n[^note]: The body.');
+    const chip = chipIn(container);
+    chip.click();
+    await waitFor(() => expect(popup()).not.toBeNull());
+
+    chip.click();
+
+    await waitFor(() => expect(popup()).toBeNull());
+  });
+
+  it('shares one definition between every reference to the same label', async () => {
+    const container = await renderWithHost(
+      'First[^a] and second[^a].\n\n[^a]: Shared body.',
+    );
+    const chips = container.querySelectorAll<HTMLElement>(
+      '[data-streamdown-footnote-ref]',
+    );
+    expect(chips).toHaveLength(2);
+
+    chips[1].click();
+
+    await waitFor(() => expect(popup()?.textContent).toContain('Shared body.'));
+    expect(chips[1].getAttribute('aria-expanded')).toBe('true');
+    expect(chips[0].getAttribute('aria-expanded')).toBeNull();
+
+    // Switching chips moves the open state with the popup.
+    chips[0].click();
+    await waitFor(() => expect(chips[0].getAttribute('aria-expanded')).toBe('true'));
+    expect(chips[1].getAttribute('aria-expanded')).toBeNull();
+    expect(popup()?.textContent).toContain('Shared body.');
+  });
+
+  it('leaves a reference with no matching definition inert', async () => {
+    const container = await renderWithHost('A dangling claim[^missing].');
+    const chip = chipIn(container);
+    expect(chip.getAttribute('data-footnote-label')).toBe('missing');
+
+    chip.click();
+
+    await Promise.resolve();
+    expect(popup()).toBeNull();
+    // `aria-haspopup` is unconditional on the chip (the renderer cannot know
+    // which labels are defined), but nothing ever reports itself expanded.
+    expect(chip.getAttribute('aria-expanded')).toBeNull();
   });
 });

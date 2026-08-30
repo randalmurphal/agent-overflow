@@ -136,8 +136,8 @@ The rules that bite here:
   `autoScrollInFlight()`: its bottom-pinned restore is a direct write that
   snaps a live glide.
 - Engagement is deviation-based through `pane.hasUserExpansionWithin`,
-  never a rendered-height proxy, since `collapseDiffPreviews` defaults
-  diffs to expanded and a pixel guard would pin every run with an edit.
+  never a rendered-height proxy: with `collapseDiffPreviews` off, diffs
+  render expanded and a pixel guard would pin every run with an edit.
 - Every collapse and expand runs inside `withViewportBottomHeld`, and the
   hold lives INSIDE the registry mutators, so callers just call the
   mutator. The one hold-free expand is `expandForReveal`, whose missing
@@ -176,21 +176,33 @@ subscribe to every chat tick. Inline diff affordances route into
 
 ## Markdown rendering
 
-`ChatMarkdown.svelte` mounts `svelte-streamdown`, VENDORED at
-`frontend/vendor/svelte-streamdown`, with host wrappers under `markdown/`
-for Code, Mermaid and Math. Fix parser bugs in the vendored tree, record
-each in its
-[`DIVERGENCE.md`](../../../../vendor/svelte-streamdown/DIVERGENCE.md), and
-never duplicate the fix in `markdownEnhance.ts` or a host wrapper.
+`ChatMarkdown.svelte` mounts the renderer from
+[`lib/markdown/`](../../markdown/AGENTS.md) — first-party source, imported
+through its `index.ts` barrel and nothing deeper — with host wrappers
+under `markdown/` for Code, Mermaid and Math. Fix parser bugs in that
+tree, never duplicating the fix in `markdownEnhance.ts` or a host
+wrapper. Its area guide owns the parser map, the host seams, the
+path-relative URL security boundary and the test map.
 
 Mermaid and Math stamp their source on `data-mermaid-source` and
 `data-math-source`, keeping markdown copy and diagram actions working.
 Code uses a source-free `data-code-source=""` marker, because
 `<code>.textContent` owns the source: never recover it from the marker.
+
+A footnote body is the one thing NOT recoverable from the DOM: a `[^1]:
+body` definition renders nothing, and per-block lexing leaves the ref
+token's back-reference empty. The chip publishes
+`data-footnote-label`, `markdown/footnoteDefinitions.ts` resolves it
+against the source each `.markdown-body` registers, and
+`FootnotePopoverHost.svelte` — one app-level instance, delegated
+click and hover listeners, one `primitives/Popover.svelte` — shows the
+body. Hover previews, click pins. The lookup runs at open time and
+never during render.
+
 The direct assistant prose reveal
 (`markdown/streamingAssistantLiteralOwner.ts`) is the SINGLE owner of the
-active literal host's visible text, a correctness boundary: the vendored
-host renders empty and hands the element over (divergence 21). The
+active literal host's visible text, a correctness boundary: the host
+renders empty and hands the element over. The
 invariant is **extend-only**. A reveal delta extends the visible string,
 an authoritative parser update either extends it or replaces it in ONE
 `replaceChildren` mutation, and a fallback relinquishes the RUN without
@@ -201,7 +213,7 @@ Text nodes only at `Intl.Segmenter` word boundaries, because Blink shapes
 adjacent Text nodes as separate runs and can expose a detached combining
 mark or broken emoji join.
 
-Path linkification runs inside marked parsing from the server-validated
+Path linkification runs inside markdown parsing from the server-validated
 `PathRef[]` allowlist on item metadata, and the generated href carries a
 per-page-load nonce that is the only `agent-overflow:open` form
 `transformUrl` admits. Explicit markdown-link hrefs are the second half,

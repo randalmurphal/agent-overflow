@@ -48,7 +48,7 @@ import {
   createProvenAppend,
   matchesProvenAppend,
   type ProvenAppend,
-} from 'svelte-streamdown';
+} from '../index';
 
 export class StreamingBoundarySplitter {
   /** Proven append applied to the volatile tail by the latest split. */

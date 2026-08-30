@@ -52,9 +52,9 @@
 // Scope caveat, identical to the directive guard: the walk covers this
 // DIRECTORY, but the hazard is the scroller's DOM SUBTREE. Components
 // rendered into rows from elsewhere — `primitives/Button`'s
-// `animate-spin` loading ring on load-older/newer, the vendored
-// streamdown popovers — carry animations this test cannot see. Both are
-// recorded as known exceptions in the Print Doctrine; a new external
+// `animate-spin` loading ring on load-older/newer, and anything
+// `lib/markdown/render/` grows — carry animations this test cannot see.
+// The known exceptions are recorded in the Print Doctrine; a new external
 // dependency rendered inside rows needs the same check by hand.
 
 import { readdirSync, readFileSync } from 'node:fs';

@@ -1,7 +1,7 @@
 <script lang="ts">
   // Streaming-aware markdown renderer.
   //
-  // Powered by `svelte-streamdown`, which mounts a Svelte component tree
+  // Powered by `lib/markdown/`, which mounts a Svelte component tree
   // directly off marked tokens — every paragraph, code block, math block,
   // diagram, etc. is its own keyed Svelte child. The DOM is reactive but
   // node identity is preserved across content updates, so:
@@ -33,7 +33,7 @@
   // target keeps the structure this component renders.
 
   import { getContext } from 'svelte';
-  import { Streamdown, type ProvenAppend } from 'svelte-streamdown';
+  import { Streamdown, type ProvenAppend } from '../../markdown';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
     CHAT_MARKDOWN_SETTLED_CONTEXT,
@@ -42,7 +42,6 @@
   import { resolveMermaidThemeConfig } from './markdown/mermaidTokens';
   import { getResolvedTheme } from '../../stores/themeMode.svelte';
   import {
-    STREAMDOWN_CONTROLS,
     STREAMDOWN_STATIC_RENDERERS,
     STREAMDOWN_STATIC_WORK_SCHEDULER,
     streamdownComponentsFor,
@@ -65,6 +64,7 @@
     type StreamingAssistantSelectionSnapshot,
   } from './markdown/streamingAssistantSelection';
   import { ensureStaticCodeCopyDelegate } from './markdown/staticCodeBlock';
+  import { registerFootnoteSource } from './markdown/footnoteDefinitions';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
   import { getSettings } from '../../stores/settings.svelte';
@@ -163,21 +163,12 @@
   const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
   const allowedImagePrefixes = ['*', LOCAL_IMAGE_HREF_PREFIX];
 
-  // LOAD-BEARING ABSENCE: no `defaultOrigin` is ever passed to
-  // Streamdown. With no origin, streamdown's `parseUrl` returns null
-  // for every schemeless href, so the `*` wildcard can never resurrect
-  // a raw relative anchor (url.js's `inputWasRelative` return).
-  // Passing a defaultOrigin here would reopen origin-isolation defect
-  // A (docs/specs/remote-access-boundaries.md) through transformUrl
-  // itself, bypassing the vendored Link/Image fixes.
-
-  // Diagram palette. Without a `mermaidConfig` the vendored Streamdown
-  // falls back to mermaid's built-in `'dark'`/`'default'` themes, which
+  // Diagram palette. Without a `mermaidConfig` the renderer falls back
+  // to mermaid's built-in `'dark'`/`'default'` themes, which
   // are the only colors in the app that come from nowhere near the token
   // layer. `markdown/mermaidTokens.ts` resolves our tokens to concrete
   // sRGB and pins `theme: 'base'` so mermaid derives everything from
-  // them. Streamdown's context exposes this to the vendored
-  // `Mermaid.svelte`; ChatMarkdown owns it because the CONTEXT is
+  // them. Streamdown's context exposes this to `Mermaid.svelte`; ChatMarkdown owns it because the CONTEXT is
   // created here — `StreamdownMermaidHost` is a child of it and has no
   // door back up.
   //
@@ -191,7 +182,7 @@
   // font read inside the resolver both go through the wholesale-replaced
   // settings object). That is fine and load-bearing: the resolver's memo
   // returns the SAME object for an unchanged palette identity, which is
-  // what stops the vendored `Mermaid.svelte`'s `{@attach}` from
+  // what stops `Mermaid.svelte`'s `{@attach}` from
   // re-rendering every visible diagram on an unrelated save.
   const mermaidConfig = $derived(resolveMermaidThemeConfig(getResolvedTheme()));
 
@@ -210,8 +201,7 @@
 
   // Streaming-only block-boundary memoization. When `streaming === true`,
   // the source is split at the last stable markdown block boundary
-  // (incremark's BoundaryDetector — vendored under
-  // `lib/markdown/boundary/`); the committed prefix is parsed once and
+  // (incremark's BoundaryDetector, `lib/markdown/boundary/`); the committed prefix is parsed once and
   // never re-parses while streaming, and the volatile tail re-parses on
   // every update with `parseIncompleteMarkdown` enabled to absorb
   // half-typed fences / tables / setext underlines.
@@ -268,6 +258,19 @@
       ) restoreStreamingAssistantSelection(selection);
     }));
   });
+
+  // Publish the source this surface renders, so a footnote chip's popup can
+  // resolve `[^1]` to its `[^1]: body` definition. The body renders nowhere
+  // (the parser drops the definition block) and the ref token's own
+  // back-reference is empty across block boundaries, so the SOURCE is the
+  // only answer — see `markdown/footnoteDefinitions.ts`. An attachment
+  // rather than an `$effect`, because the registration is per NODE and must
+  // not make the root element a reactive dependency of anything: the
+  // selection-preserving `$effect.pre` above reads `markdownRoot` and
+  // re-running it on bind would be a live hazard. The reader closes over
+  // `processedSource` lazily, so a streaming delta re-registers nothing.
+  const publishFootnoteSource = (node: HTMLElement) =>
+    registerFootnoteSource(node, () => processedSource);
 
   // "Streaming enabled" (Settings → Live Updates) governs whether the
   // in-progress markdown block is shown while a turn streams. When it is
@@ -333,13 +336,11 @@
     {parseIncompleteMarkdown}
     isolatedVolatileTail={parseIncompleteMarkdown}
     {diagnostics}
-    baseTheme="tailwind"
     theme={chatMarkdownTheme}
     {mermaidConfig}
     {allowedLinkPrefixes}
     {allowedImagePrefixes}
     renderHtml={false}
-    controls={STREAMDOWN_CONTROLS}
     compactStaticHtml={true}
     {trimFirstBlockMargin}
     {trimLastBlockMargin}
@@ -360,6 +361,7 @@
 
 <div
   bind:this={markdownRoot}
+  {@attach publishFootnoteSource}
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >
   {#if splitDerived.prefix}

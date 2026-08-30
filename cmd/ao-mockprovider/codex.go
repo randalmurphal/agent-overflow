@@ -346,7 +346,7 @@ func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
 	}
 	turnIDs, ok := a.e.forkedTurnIDs(anchor)
 	if !ok {
-		if !a.anchorIsCuttable(anchor) {
+		if !a.forkAnchorIsCuttable(anchor) {
 			a.writeRPCError(id, -32602, fmt.Sprintf(
 				"thread/fork: lastTurnId %q is unknown or names the in-progress turn", anchor))
 			return
