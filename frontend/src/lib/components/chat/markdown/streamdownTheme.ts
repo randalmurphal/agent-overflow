@@ -194,7 +194,12 @@ export const chatMarkdownTheme: Theme = {
   // it sits in. Clicking it opens the definition body: the chip publishes
   // its label on `data-footnote-label` and `chat/FootnotePopoverHost.svelte`
   // resolves and shows the definition.
-  footnoteRef: { base: 'px-1 py-0.5 rounded-md text-xs text-fg-muted bg-surface-1/80' },
+  // A footnote reference presents like one: superscript, link-colored,
+  // with a hover affordance — the muted inline pill it replaced read as
+  // plain prose and nothing said "clickable" (2026-08-30).
+  footnoteRef: {
+    base: 'align-super text-[0.7em] leading-none px-0.5 font-medium text-md-link cursor-pointer hover:underline',
+  },
   // Definition lists: the term is the focal text and the detail is body copy,
   // exactly the fg/fg-muted split.
   descriptionList: { base: 'my-4 space-y-2 md-blk' },
