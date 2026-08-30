@@ -65,6 +65,21 @@ stops waking readers.
   (`trackDeferredBets`): the stamped tiers strip optimistic rows because
   a bet can be dropped without a rev bump, and an untracked merged row
   would persist into the replica as a phantom.
+- A row can be TERMINAL while its smoother still drains: the completion
+  patch flips `status` and skips the summary write, so for the next few
+  seconds the row's summary is a strict prefix of the smoother's
+  `received` and NOTHING later rewrites it — the drain is the only path
+  to the full text. Every reconciliation that sees such a row
+  (`prepareItemReplacements` runs on the KEPT rows of every wholesale
+  commit: fold eviction, prune, revert, cache install) must keep the
+  smoother, never dispose it; dispose-and-keep-current-summary strands
+  the row at the partial text forever (incident 2026-08-29: the final
+  assistant answer froze at ~130 of 1021 chars whenever a subagent child
+  settled inside the drain window; replay tripwire in
+  `threadStreamingReveal.incidentReplay.test.ts`). Disposing is correct
+  only when the incoming summary genuinely diverges — then the incoming
+  summary must WIN the row, so the visible text snaps rather than
+  truncates.
 - An event-driven authoritative refresh converges, it never supersedes.
   Cancelling the in-flight refresh on each new trigger (`++generation`
   guards at every await) livelocks under an event storm, because triggers

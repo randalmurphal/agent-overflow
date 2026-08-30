@@ -1034,12 +1034,21 @@ export function createThreadStreamingReveal(
     );
     if (
       !belongsToCurrentStream &&
-      incoming.status === 'streaming' &&
       incomingSummary.length < received.length &&
       received.startsWith(incomingSummary)
     ) {
-      // SQLite and replica snapshots can trail the wire-visible delta stream.
-      // The smoother already owns every byte after this prefix.
+      // A summary that is a strict prefix of `received` belongs to the
+      // current stream WHATEVER the row's status. Two producers make it:
+      // SQLite/replica snapshots trailing the wire-visible delta stream,
+      // and the drain's own partial row re-entering through a wholesale
+      // commit (fold eviction, prune, reconcile pass the KEPT rows back
+      // through here). The second one is terminal during the post-settle
+      // drain — the completion patch flips status while the smoother
+      // still owns the summary — and disposing there stranded the row at
+      // the partial reveal forever, because the patch's summary write was
+      // already skipped in favor of the smoother (incident 2026-08-29:
+      // final assistant text froze at ~130 of 1021 chars whenever a
+      // subagent child settled inside the drain window).
       belongsToCurrentStream = true;
     }
 

@@ -401,9 +401,14 @@ describe('thread streaming reveal cleanup', () => {
     reveal.registerAssistantRevealSink(second.id, sink(secondReset));
     reveal.appendStreamingDelta(first.id, '', 'first pending ', 1);
     reveal.appendStreamingDelta(second.id, '', 'second pending ', 1);
+    // A DIVERGENT terminal summary is what forces disposal. A terminal
+    // replacement whose summary is still a prefix of `received` keeps the
+    // smoother draining instead (incident 2026-08-29: disposing on the
+    // drain's own partial row stranded the final text mid-reveal).
     const terminalItems = getItems().map((current) => ({
       ...current,
       status: 'completed' as const,
+      summary: `rewritten ${current.id}`,
     }));
     expect(() => reveal.prepareItemReplacements(terminalItems)).toThrow(
       /smoother disposal failed/,
