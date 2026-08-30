@@ -31,11 +31,11 @@ func TestTranscriptMirrorTurnsDirectForkedCommandIntoLiveSkill(t *testing.T) {
 
 	// The prompt can be mirrored before the first attributed assistant row.
 	// The row is already visible. Retain the prompt, then change that same
-	// row to Skill when attribution proves this file is the fork root.
+	// row to Skill when sidechain attribution proves this file is the fork root.
 	if events := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"user","uuid":"u-root","agentId":"root","timestamp":"2026-08-24T12:00:00Z","message":{"role":"user","content":"review the change"}}]}`); len(events) != 0 {
 		t.Fatalf("unattributed mirror emitted beyond the existing command row: %+v", events)
 	}
-	events := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-tool","agentId":"root","attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu-read","name":"Read","input":{"file_path":"/repo/a.go"}}]}}]}`)
+	events := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-tool","agentId":"root","isSidechain":true,"attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu-read","name":"Read","input":{"file_path":"/repo/a.go"}}]}}]}`)
 	if len(events) != 3 {
 		t.Fatalf("attributed mirror batch emitted %d events, want launch + prompt + tool: %+v", len(events), events)
 	}
@@ -68,7 +68,7 @@ func TestTranscriptMirrorTurnsDirectForkedCommandIntoLiveSkill(t *testing.T) {
 	if events := parse(`{"type":"assistant","message":{"id":"synthetic-2","role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"second page"}]}}`); len(events) != 0 {
 		t.Fatalf("second synthetic fork wrapper leaked: %+v", events)
 	}
-	final := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-final","agentId":"root","attributionSkill":"code-review","timestamp":"2026-08-24T12:00:02Z","message":{"id":"msg-final","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"No findings."}]}}]}`)
+	final := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-final","agentId":"root","isSidechain":true,"attributionSkill":"code-review","timestamp":"2026-08-24T12:00:02Z","message":{"id":"msg-final","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"No findings."}]}}]}`)
 	if len(final) != 1 || final[0].Kind != provider.EventTextDelta || final[0].ParentToolUseID != launchID {
 		t.Fatalf("mirrored final = %+v", final)
 	}
@@ -106,6 +106,58 @@ func TestTranscriptMirrorTurnsDirectForkedCommandIntoLiveSkill(t *testing.T) {
 	}
 }
 
+func TestTranscriptMirrorDoesNotTurnAttributedMainWorkIntoSkill(t *testing.T) {
+	session := &Session{}
+	session.directCommands.note("cmd-1", "/brainstorm", provider.SendOptions{})
+	parser := NewParser()
+	parser.peerTurns = session
+
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+
+	started := parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"started"}`)
+	if len(started) != 2 || started[0].Kind != provider.EventToolStart || started[0].ItemType != "Command" {
+		t.Fatalf("command start = %+v", started)
+	}
+	if events := parse(`{"type":"transcript_mirror","filePath":"/tmp/session.jsonl","entries":[{"type":"user","uuid":"u-root","attributionSkill":"brainstorm","timestamp":"2026-08-24T12:00:00Z","message":{"role":"user","content":"brainstorm this"}}]}`); len(events) != 0 {
+		t.Fatalf("scope-unknown transcript emitted events: %+v", events)
+	}
+	if got := len(parser.transcriptMirror.pending["/tmp/session.jsonl"]); got != 1 {
+		t.Fatalf("scope-unknown transcript buffered %d rows, want 1", got)
+	}
+
+	events := parse(`{"type":"transcript_mirror","filePath":"/tmp/session.jsonl","entries":[{"type":"assistant","uuid":"a-agent","isSidechain":false,"attributionSkill":"brainstorm","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu-agent","name":"Agent","input":{"description":"Survey implementation","prompt":"inspect"}}]}}]}`)
+	if len(events) != 0 {
+		t.Fatalf("attributed main transcript was projected as a fork: %+v", events)
+	}
+	command := parser.transcriptMirror.commands["cmd-1"]
+	if command == nil || command.forked {
+		t.Fatalf("main-transcript command classified as forked: %+v", command)
+	}
+	if len(parser.transcriptMirror.projections) != 0 {
+		t.Fatalf("main transcript opened sidechain projections: %+v", parser.transcriptMirror.projections)
+	}
+	if len(parser.transcriptMirror.pending) != 0 || parser.transcriptMirror.totalPendingBytes != 0 {
+		t.Fatalf("classified main transcript retained pending data: %+v", parser.transcriptMirror.pending)
+	}
+}
+
+func TestInspectMirrorEntriesRejectsMixedTranscriptScopes(t *testing.T) {
+	_, err := inspectMirrorEntries([]json.RawMessage{
+		json.RawMessage(`{"uuid":"main","isSidechain":false}`),
+		json.RawMessage(`{"uuid":"child","isSidechain":true}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "mixes main-transcript and sidechain") {
+		t.Fatalf("mixed transcript scopes returned %v", err)
+	}
+}
+
 func TestTranscriptMirrorSyntheticAnswerBeatsCancelledLifecycleForStatus(t *testing.T) {
 	session := &Session{}
 	session.directCommands.note("cmd-1", "/code-review high", provider.SendOptions{})
@@ -120,7 +172,7 @@ func TestTranscriptMirrorSyntheticAnswerBeatsCancelledLifecycleForStatus(t *test
 		return events
 	}
 	parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"started"}`)
-	parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-tool","agentId":"root","attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"reviewed"}]}}]}`)
+	parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-tool","agentId":"root","isSidechain":true,"attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"reviewed"}]}}]}`)
 	parse(`{"type":"assistant","message":{"id":"synthetic-1","role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"final findings"}]}}`)
 	events := parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"cancelled"}`)
 	if len(events) < 2 || events[0].Kind != provider.EventToolComplete || events[1].Kind != provider.EventCommandResult {
@@ -149,7 +201,7 @@ func TestTranscriptMirrorEmptySyntheticWrapperDoesNotHideCancelledStatus(t *test
 		return events
 	}
 	parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"started"}`)
-	parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-tool","agentId":"root","attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"reviewed"}]}}]}`)
+	parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-tool","agentId":"root","isSidechain":true,"attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"reviewed"}]}}]}`)
 	parse(`{"type":"assistant","message":{"id":"synthetic-1","role":"assistant","model":"<synthetic>","content":[{"type":"text","text":""}]}}`)
 	events := parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"cancelled"}`)
 	if len(events) == 0 || events[0].Kind != provider.EventToolComplete {
@@ -179,7 +231,7 @@ func TestTranscriptMirrorNestedProjectionInheritsCommandAndIsReleased(t *testing
 	}
 
 	parse(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"started"}`)
-	root := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-launch","agentId":"root","attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu-child","name":"Agent","input":{"description":"nested review","prompt":"inspect"}}]}},{"type":"user","uuid":"u-child-result","agentId":"root","timestamp":"2026-08-24T12:00:02Z","toolUseResult":{"agentId":"child-agent"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-child","content":"spawned"}]}}]}`)
+	root := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-root.jsonl","entries":[{"type":"assistant","uuid":"a-launch","agentId":"root","isSidechain":true,"attributionSkill":"code-review","timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-root","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu-child","name":"Agent","input":{"description":"nested review","prompt":"inspect"}}]}},{"type":"user","uuid":"u-child-result","agentId":"root","isSidechain":true,"timestamp":"2026-08-24T12:00:02Z","toolUseResult":{"agentId":"child-agent"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu-child","content":"spawned"}]}}]}`)
 	if len(root) < 2 {
 		t.Fatalf("root mirror did not emit nested launch: %+v", root)
 	}
@@ -187,7 +239,7 @@ func TestTranscriptMirrorNestedProjectionInheritsCommandAndIsReleased(t *testing
 		t.Fatalf("nested task binding = %+v", binding)
 	}
 
-	child := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-child-agent.jsonl","entries":[{"type":"assistant","uuid":"a-child","agentId":"child-agent","timestamp":"2026-08-24T12:00:03Z","message":{"id":"msg-child","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu-read","name":"Read","input":{"file_path":"/repo/a.go"}}]}}]}`)
+	child := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-child-agent.jsonl","entries":[{"type":"assistant","uuid":"a-child","agentId":"child-agent","isSidechain":true,"timestamp":"2026-08-24T12:00:03Z","message":{"id":"msg-child","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"toolu-read","name":"Read","input":{"file_path":"/repo/a.go"}}]}}]}`)
 	if len(child) < 2 {
 		t.Fatalf("child mirror was not projected: %+v", child)
 	}
@@ -349,10 +401,11 @@ func TestTranscriptMirrorClassifiesAttributedBatchBeforePendingBounds(t *testing
 	entries := make([]map[string]any, 0, maxPendingMirrorEntries+2)
 	for i := 0; i <= maxPendingMirrorEntries; i++ {
 		entries = append(entries, map[string]any{
-			"type":      "user",
-			"uuid":      fmt.Sprintf("u-%d", i),
-			"agentId":   "root",
-			"timestamp": "2026-08-24T12:00:00Z",
+			"type":        "user",
+			"uuid":        fmt.Sprintf("u-%d", i),
+			"agentId":     "root",
+			"isSidechain": true,
+			"timestamp":   "2026-08-24T12:00:00Z",
 			"message": map[string]any{
 				"role":    "user",
 				"content": fmt.Sprintf("prompt %d", i),
@@ -363,6 +416,7 @@ func TestTranscriptMirrorClassifiesAttributedBatchBeforePendingBounds(t *testing
 		"type":             "assistant",
 		"uuid":             "a-attributed",
 		"agentId":          "root",
+		"isSidechain":      true,
 		"attributionSkill": "code-review",
 		"timestamp":        "2026-08-24T12:00:01Z",
 		"message": map[string]any{
