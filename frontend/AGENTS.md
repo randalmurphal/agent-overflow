@@ -251,6 +251,23 @@ every lap. The leaks the 2026-08 perf session found by hand all lived in
 the SECOND lap — a re-register that duplicated a sink, a toggle that kept
 a stale checkpoint, a cache that carried the previous mode.
 
+A wait that gives up must FAIL, and its budget is wall-clock, never a
+count of loop turns. Both halves came from the same 2026-08-30 flake:
+`harnessBridge.test.ts`'s poll helper spent 500 `setTimeout(0)` hops and
+then RETURNED, so a cold dynamic import that outran them left the case
+asserting against state that had not arrived — and the arrival then
+landed inside the NEXT case, past the `afterEach` that had just zeroed
+the counters. One slow import, two failing tests, neither naming the
+wait. The event loop spins hops happily while a starved worker gets no
+CPU, so hops measure the fast machine rather than the work.
+
+Do not quantize a continuous measurement in an assertion. The same
+session's second flake compared which 125ms slot two aligned animations
+floored into, when what the aligner promises is that their PHASES agree
+to within a frame — a pair a millisecond either side of a slot boundary
+failed a mechanism that was working. Assert the distance, with the
+tolerance the mechanism actually claims.
+
 `vi.mock` a shared store with an `importOriginal` spread, never a
 whole-module factory. A factory listing only the exports one test drives
 turns every LATER export of that module into `undefined` for it, and the
