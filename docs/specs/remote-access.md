@@ -354,6 +354,12 @@ it; the backend derives scope from the authenticated session's device.
   hidden models, default thread env mode, worktree branch prefix,
   auto-compact thresholds, GitLab hosts.
 
+Multi-machine convenience without a sync engine: host- and user-tier
+settings are per-machine by design (divergence is a feature), but the
+settings UI shows which machine is being edited and offers "apply to
+all / selected machines" on eligible keys — the client fans the same
+write out per backend; no cross-backend settings replication exists.
+
 The **key→tier taxonomy lands in phase 3**, with the scope table:
 device-tier writes ride a valid session (they touch only `device:self`),
 user-tier writes need `settings:write`, host-tier needs step-up. Phase 4
@@ -452,18 +458,26 @@ behind a healthcheck-and-auto-rollback watchdog that preserves listener
 config and the session store. A bad update must never lock the owner
 out of a machine they cannot physically reach.
 
-### Provider re-authentication while remote
+### Provider accounts and remote login
+
+Provider credentials live in each backend's provider homes, so
+accounts are a **per-machine fact**: configured per machine (account
+dropdown scoped to the machine, usage keyed per backend), and the
+composer's target picker shows which account a thread will run and
+bill against (§10). All account management works over the wire —
+switching the active account *and adding a new login remotely*.
 
 Provider OAuth redirects to `localhost` **on the host**, unreachable
 from a phone, yet provider logins die at inconvenient times (see the
 2026-08-03 credential-death incident chain). Without a remote path, one
 token rotation bricks the backend until the owner is physically present.
 Required: provider auth state is a first-class remote-visible signal
-with a push event, and re-auth is completable remotely: the backend
-surfaces the authorize URL to the authenticated remote client and
-proxies its own loopback callback (or relays the paste-code/setup-token
-flow). If any provider makes this impossible, that limitation is
-documented explicitly rather than discovered in the field.
+with a push event, and login/re-auth is completable remotely: the
+backend surfaces the authorize URL to the authenticated remote client
+and proxies its own loopback callback (or relays the
+paste-code/setup-token flow). If any provider makes this impossible,
+that limitation is documented explicitly rather than discovered in the
+field.
 
 ## 8. State sync completeness
 
@@ -607,6 +621,15 @@ Prerequisite sweep, valuable standalone:
   than presence-guessing: presence heuristics are wrong whenever the
   desktop is attached but unattended), and a deep-link scheme carrying
   backend UUID + thread id.
+- **Desktop notifications ride the same event mapping.** An attached
+  client already receives the events, so it raises native OS
+  notifications for any attached backend — remote behaves exactly as
+  native on the box, no push infrastructure involved (push is the
+  phone/unattached path). Notification preferences become a general
+  device-tier setting (per event type × per backend); today's
+  workflow-only, always-on notifications fold into this and become
+  configurable. The handled-elsewhere retraction applies to local OS
+  notifications the same as to push.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and
@@ -626,8 +649,44 @@ Decide the **seams** in phase 1, not a speculative store rewrite:
 
 The genuinely collision-prone singletons (git status by path, provider
 accounts/usage, settings, sysstat) get keyed when multi-backend UI
-lands. `--connect` becomes "add/attach endpoint", and the sidebar groups
-projects under backend sections.
+lands. `--connect` becomes "add/attach endpoint".
+
+### Unified sidebar: the machine is a property, not a partition
+
+One sidebar, no backend sections. Threads live on backends and appear
+in every attached UI; concurrent viewing is ordinary multi-client
+sync, so a thread started from one UI shows up natively on the
+machine that hosts it and everywhere else attached. The machine
+surfaces in exactly three places:
+
+- **Project identity is the repo, not the checkout.** A project entry
+  is the repository — matched by primary remote URL, root-commit hash
+  when remoteless — and each machine × checkout path is a **target**
+  under it. Two clones of the same repo, on one machine or five, are
+  simply two targets of one project, exactly as worktrees already are:
+  project ≠ workspace generalizes to project ≠ checkout ≠ machine.
+  Thread rows carry a target chip only when their project spans more
+  than one target. Identity is user-correctable (link/split) when the
+  remote-URL match gets it wrong; nothing beyond that match is
+  guessed.
+- **The composer picks the target.** Sticky last-used per project. An
+  unreachable target disables the composer for it and offers the
+  reachable alternatives — never silent failover to a different
+  machine. The picker shows what the choice implies: machine,
+  checkout/branch, and the provider account that runs and bills the
+  thread (§7).
+- **Reachability is ambient, not modal.** Per-backend status lives in
+  the sidebar footer; threads on an unreachable backend dim and stay
+  readable from the replica. The full-width transport banner is
+  reserved for the visible thread's own backend dropping.
+
+Path links and open-in-editor from a UI that is not on the thread's
+host default to copy/preview, with "open on <machine>" as the explicit
+secondary. The recommended posture for real remote editing is the
+editor's own remote mode over the tailnet (VS Code Remote-SSH against
+the host's tailnet name and the like): a per-machine editor command
+template lets the local UI open the *local* editor pointed at the
+remote checkout. We do not build a file-open protocol.
 
 ## 11. Team sharing (federation)
 
@@ -779,6 +838,20 @@ frame.**
   (not per byte), on a path served rarely.
 - **Snapshot and attachment transfers ride HTTP**, not the WS, so large
   bodies never block the event socket or inflate the replay ring.
+
+**Initial wire budgets** — starting targets, revised by measurement,
+never by feel; a harness scenario counts actual bytes on the wire and
+fails on regression:
+
+- Warm attach to an already-replicated thread: **< 5 KB**.
+- Cold attach to a typical thread window: **< 50 KB compressed**;
+  heavy payloads stay on-demand and never ride the attach.
+- Idle attached thread: **keepalive only** (tens of bytes per 10 s
+  tick); an idle *unfocused* thread with subscription narrowing: zero.
+- Streaming a turn: **≤ 1.3×** the raw delta bytes after compression
+  and framing.
+- A backgrounded / unleased client: **zero event traffic** until it
+  leases back in.
 
 Phase 6's phone work (subscription narrowing, buffered deltas, scope
 leases) is a net *reduction* in wire and CPU cost, not an addition.
