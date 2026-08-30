@@ -48,8 +48,8 @@ importers:
         specifier: ^0.7.4
         version: 0.7.4
       katex:
-        specifier: 0.16.45
-        version: 0.16.45
+        specifier: 0.18.4
+        version: 0.18.4
       mermaid:
         specifier: 11.16.1
         version: 11.16.1
@@ -75,9 +75,6 @@ importers:
       '@tsconfig/svelte':
         specifier: 5.0.8
         version: 5.0.8
-      '@types/katex':
-        specifier: 0.16.8
-        version: 0.16.8
       '@types/node':
         specifier: 25.6.0
         version: 25.6.0
@@ -532,9 +529,6 @@ packages:
   '@types/geojson@7946.0.16':
     resolution: {integrity: sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg==}
 
-  '@types/katex@0.16.8':
-    resolution: {integrity: sha512-trgaNyfU+Xh2Tc+ABIb44a5AYUpicB3uwirOioeOkNPPbmgRNtcWyDeeFRzjPZENO9Vq8gvVqfhaaXWLlevVwg==}
-
   '@types/node@25.6.0':
     resolution: {integrity: sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ==}
 
@@ -968,6 +962,10 @@ packages:
 
   katex@0.16.45:
     resolution: {integrity: sha512-pQpZbdBu7wCTmQUh7ufPmLr0pFoObnGUoL/yhtwJDgmmQpbkg/0HSVti25Fu4rmd1oCR6NGWe9vqTWuWv3GcNA==}
+    hasBin: true
+
+  katex@0.18.4:
+    resolution: {integrity: sha512-IMPntbRLOU+eu88XDiFKqQ8Akhr9Tv7jDMXqPhjG9SI1JMA4DIgXk4x9k4skJz2NZJXBRbC+2pYBLj9olqcZow==}
     hasBin: true
 
   khroma@2.1.0:
@@ -1821,8 +1819,6 @@ snapshots:
 
   '@types/geojson@7946.0.16': {}
 
-  '@types/katex@0.16.8': {}
-
   '@types/node@25.6.0':
     dependencies:
       undici-types: 7.19.2
@@ -2267,6 +2263,10 @@ snapshots:
   js-tokens@4.0.0: {}
 
   katex@0.16.45:
+    dependencies:
+      commander: 8.3.0
+
+  katex@0.18.4:
     dependencies:
       commander: 8.3.0
 
