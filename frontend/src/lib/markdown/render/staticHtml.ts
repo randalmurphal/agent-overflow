@@ -45,6 +45,16 @@ export function renderStaticTokenHtml(
 			switch (token.type) {
 				case 'code': {
 					if (streamdown.snippets.code) return false;
+					// Mirror Element.svelte's routing: a `mermaid` fence is the
+					// diagram host's token, not the code host's, so the static
+					// path must bail to a component island exactly like the
+					// component path routes it. Without this, a warm span cache
+					// (the backend highlights every fence, all-plain for unknown
+					// languages) let the static code renderer serialize the
+					// DIAGRAM as a plain code block — silently, only in the real
+					// app, because test environments have no backend to warm the
+					// cache. Caught by e2e/tests/markdown-render.spec.ts.
+					if (token.lang === 'mermaid') return false;
 					const html = streamdown.staticRenderers?.code?.(token, id, streamdown);
 					if (html === null || html === undefined) return false;
 					output.push(html);

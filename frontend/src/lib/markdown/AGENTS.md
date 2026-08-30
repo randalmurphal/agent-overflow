@@ -178,6 +178,19 @@ marker: `<code>.textContent` owns the source.
 - **Any prefix inspection of the streaming source flattens it.** That is
   what `ProvenAppend` exists to avoid; a new fast path takes the proof,
   never `startsWith` / `slice` on the full input.
+- **`staticHtml.ts` must route every token the way `Element.svelte`
+  does.** They are two renderers of one token stream, and a case the
+  static path serializes that the component path routes to a component
+  is a silent output fork. The mermaid fence was exactly that: the
+  static code case had no `lang === 'mermaid'` bail, and a warm span
+  cache (the backend highlights every fence, all-plain for unknown
+  languages) serialized the DIAGRAM as a plain code block — invisible
+  to every frontend suite, because with no backend the cache is always
+  cold and the island always mounted. Pinned by
+  `chat/ChatMarkdown.compactStaticMermaid.test.ts` (warm-cache unit)
+  and `e2e/tests/markdown-render.spec.ts` (real app). When a test's
+  fast path depends on a cache a backend fills, at least one test must
+  warm that cache by hand.
 - **A blockquote is lexed by a blockquote-SCOPED Lexer.** A module-level
   one accumulated an undrained `inlineQueue` entry per quoted paragraph
   for the life of the page (16,511 over one corpus) and carried
