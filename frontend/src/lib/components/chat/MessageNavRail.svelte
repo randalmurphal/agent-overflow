@@ -59,6 +59,7 @@
     previewTranslateYPercent,
     railHeightPx,
     railOverflows,
+    TICK_FULL_WIDTH_PX,
     TICK_REST_WIDTH_PX,
     tickFraction,
     tickIndexFromPointer,
@@ -82,13 +83,13 @@
   } = $props();
 
   const ARROW_SIZE_PX = 24;
-  const ARROW_GAP_PX = 14;
+  const ARROW_GAP_PX = 4;
   // Vertical px the rail column reserves for the two arrow slots and
-  // breathing room: 2 × (ARROW_SIZE_PX + ARROW_GAP_PX) + 20 slack.
+  // breathing room: two targets plus their rail gaps and 20px slack.
   // A CONSTANT on purpose: deriving it from whether the arrows
   // currently render would couple available height → overflow
   // → arrows → available height into a layout feedback loop.
-  const RAIL_VERTICAL_RESERVE_PX = 96;
+  const RAIL_VERTICAL_RESERVE_PX = 2 * (ARROW_SIZE_PX + ARROW_GAP_PX) + 20;
   // The clip wrapper's vertical grace beyond the rail window: edge
   // ticks and the dot render whole instead of losing their half past
   // the window boundary. The wrapper's negative insets and the strip's
@@ -100,7 +101,7 @@
   // to catch a near-miss, small enough (< ARROW_GAP_PX) not to overlap
   // the arrows, and bounded so a click in the wider left gutter never
   // teleports the reader to the first/last message.
-  const STRIP_PAD_PX = 12;
+  const STRIP_PAD_PX = 2;
   // One grace period when the pointer first enters the rail. It prevents a
   // pass across the gutter from throwing a card over the transcript. After
   // activation, every tick preview follows immediately so the reader can
@@ -111,6 +112,7 @@
   // purpose — the magnify effect is transient and the dot deliberately
   // does not track it.
   const MARKER_CENTER_X_PX = NAV_RAIL_TICK_LEFT_PX + TICK_REST_WIDTH_PX / 2;
+  const ARROW_LEFT_PX = MARKER_CENTER_X_PX - ARROW_SIZE_PX / 2;
 
   // ============================================================
   // Tick sourcing: store baseline + loaded-window splice
@@ -463,11 +465,11 @@
   });
 
   const ARROW_CLASSES = [
-    'pointer-events-auto absolute left-1.5 z-30',
+    'pointer-events-auto absolute z-30',
     'inline-flex items-center justify-center',
-    'rounded-full border border-border-subtle bg-card text-text-secondary',
-    'shadow-sheet transition-[background-color,color] duration-150 motion-reduce:transition-none',
-    'hover:bg-surface-2/80 hover:text-text-primary',
+    'rounded-full border-none bg-transparent p-0 text-text-secondary shadow-none',
+    'transition-colors duration-150 motion-reduce:transition-none',
+    'hover:text-text-primary',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
     'cursor-pointer',
   ].join(' ');
@@ -486,14 +488,18 @@
     data-testid="message-nav-rail"
   >
     <!-- Hit strip: one pointer-only surface for hover + click, spanning
-         the rail plus a small grace pad — never the whole column, so
-         gutter clicks and selection drags outside the rail stay inert.
+         the rail plus a small vertical grace pad. Cold acquisition is
+         exactly the resting tick width; once acquired, it widens to the
+         fisheye width so scanning can use the expanded target. It never
+         reaches the text gutter, so selection drags there stay inert.
          Pointer-only deliberately (aria-hidden + tabindex -1 together,
          the activity-run rail precedent): the arrows are the accessible
          controls, and a focus ring on an invisible strip helps nobody. -->
     <button
       type="button"
-      class="pointer-events-auto absolute left-0 w-full cursor-pointer bg-transparent"
+      class="pointer-events-auto absolute cursor-pointer bg-transparent"
+      style:left={`${NAV_RAIL_TICK_LEFT_PX}px`}
+      style:width={`${resolvedActive === null ? TICK_REST_WIDTH_PX : TICK_FULL_WIDTH_PX}px`}
       style:top={`calc(${railTop} - ${STRIP_PAD_PX}px)`}
       style:height={`${railH + STRIP_PAD_PX * 2}px`}
       tabindex="-1"
@@ -515,6 +521,7 @@
         bind:this={firstArrowEl}
         type="button"
         class={ARROW_CLASSES}
+        style:left={`${ARROW_LEFT_PX}px`}
         style:width={`${ARROW_SIZE_PX}px`}
         style:height={`${ARROW_SIZE_PX}px`}
         style:top={`calc(${railTop} - ${ARROW_GAP_PX + ARROW_SIZE_PX}px)`}
@@ -530,6 +537,7 @@
         bind:this={latestArrowEl}
         type="button"
         class={ARROW_CLASSES}
+        style:left={`${ARROW_LEFT_PX}px`}
         style:width={`${ARROW_SIZE_PX}px`}
         style:height={`${ARROW_SIZE_PX}px`}
         style:top={`calc(${railTop} + ${railH + ARROW_GAP_PX}px)`}
