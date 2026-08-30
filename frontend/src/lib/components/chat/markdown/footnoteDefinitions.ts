@@ -76,6 +76,20 @@ export function resolveFootnoteBody(chip: HTMLElement): string | null {
   // rendered this chip and never crosses into a neighbouring message.
   const root = chip.closest<HTMLElement>('.markdown-body');
   if (!root) return null;
+  return resolveFootnoteBodyAt(root, label);
+}
+
+/**
+ * The same lookup against an explicit rendered root. The popup host uses
+ * it for a footnote ref INSIDE a footnote body: that chip's nearest
+ * `.markdown-body` is the popup's, whose registered source is just the
+ * body being shown, so a chained `[^b]` must resolve against the
+ * document root the ORIGINAL chip came from.
+ */
+export function resolveFootnoteBodyAt(
+  root: HTMLElement,
+  label: string,
+): string | null {
   const read = sources.get(root);
   if (!read) return null;
   const body = definitionsFor(read())?.get(label)?.lines.join('\n').trim();

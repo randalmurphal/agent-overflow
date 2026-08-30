@@ -32,7 +32,10 @@
   import { onMount } from 'svelte';
   import Popover from '../primitives/Popover.svelte';
   import ChatMarkdown from './ChatMarkdown.svelte';
-  import { resolveFootnoteBody } from './markdown/footnoteDefinitions';
+  import {
+    resolveFootnoteBody,
+    resolveFootnoteBodyAt,
+  } from './markdown/footnoteDefinitions';
   import {
     popoverCloseRestoresFocus,
     type PopoverCloseReason,
@@ -41,6 +44,11 @@
   let anchor: HTMLElement | undefined = $state(undefined);
   let body = $state('');
   let label = $state('');
+  // The document root the OPEN popup's chip came from. A footnote body can
+  // itself reference another footnote; that chained chip's nearest
+  // `.markdown-body` is the popup's own, whose registered source is just
+  // the body on display, so chained refs resolve against this root instead.
+  let documentRoot: HTMLElement | undefined;
 
   function close(reason?: PopoverCloseReason): void {
     const chip = anchor;
@@ -56,6 +64,7 @@
     anchor = undefined;
     body = '';
     label = '';
+    documentRoot = undefined;
     // The chip declares `aria-haspopup` for every reference (the renderer
     // cannot know which ones have a definition); the OPEN state is only
     // knowable here, so this host owns that half of the trigger contract.
@@ -69,6 +78,21 @@
     if (!(e.target instanceof Element)) return;
     const chip = e.target.closest<HTMLElement>('[data-streamdown-footnote-ref]');
     if (!chip) return;
+    // A chained ref inside the open popup navigates the popup in place:
+    // same anchor (the popup must not re-anchor to a chip inside itself —
+    // swapping the body unmounts that chip and Popover closes on a gone
+    // anchor), new body resolved against the original document.
+    if (documentRoot !== undefined && chip.closest('[data-footnote-popover]')) {
+      const chained = chip.dataset.footnoteLabel;
+      const chainedBody = chained
+        ? resolveFootnoteBodyAt(documentRoot, chained)
+        : null;
+      if (chainedBody) {
+        body = chainedBody;
+        label = chained!;
+      }
+      return;
+    }
     const definition = resolveFootnoteBody(chip);
     // No definition for this label: the chip stays the inert marker it
     // has always been rather than opening an empty popup.
@@ -86,6 +110,7 @@
     anchor = chip;
     body = definition;
     label = chip.dataset.footnoteLabel ?? '';
+    documentRoot = chip.closest<HTMLElement>('.markdown-body') ?? undefined;
     chip.setAttribute('aria-expanded', 'true');
   }
 

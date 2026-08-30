@@ -255,6 +255,13 @@ own rule overrides (`~~`-only strikethrough, no mailto autolinking,
 homogeneous leading runs in the GFM inline `text` rule) and the
 blockquote `raw` fix above. The 17.x/18.x ReDoS and quadratic-backtracking
 fixes are ported by semantics; their token-shape changes deliberately are
-not, so output stays 16.4.2-identical. Fix bugs there like any other file
+not, so output stays 16.4.2-identical with one accepted exception: the
+17.0.5 link-label fix (#3918) changes the accepted language, so an
+unmatched multi-backtick run mid-label (`` [use ``raw](x) ``) no longer
+forms a link. 16.4.2 matched the run as an empty code span via
+catastrophic-backtracking-prone grammar; every marked release since
+17.0.5 parses it the way we do, and this renderer's input is
+attacker-influenced by construction, so the ReDoS fix wins over parity
+(`engine/labelBacktickRuns.test.ts` pins it). Fix bugs there like any other file
 — but a fix that upstream also made is worth diffing against, because the
 grammar tables are still recognisably theirs.

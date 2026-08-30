@@ -96,4 +96,54 @@ describe('footnote popup geometry', () => {
     // And the body is rendered markdown, sized by its own content.
     expect(popup.textContent).toContain('The supporting body.');
   });
+
+  it('navigates a chained footnote ref against the original document', async () => {
+    render(FootnotePopoverHost);
+    const scope = containmentScope();
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source:
+          'A claim[^a] worth checking.\n\n' +
+          '[^a]: See also[^b] for details.\n' +
+          '[^b]: The chained body.',
+      },
+      target: scope,
+    });
+
+    const chip = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>(
+        '[data-streamdown-footnote-ref]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    chip.click();
+
+    const popup = await waitFor(() => {
+      const found = document.body.querySelector<HTMLElement>(
+        '[data-footnote-popover]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(popup.textContent).toContain('See also');
+
+    // The `[^b]` chip inside the popup body: its nearest `.markdown-body`
+    // is the popup's own, whose registered source is just the body on
+    // display — the chained lookup must reach back to the document root.
+    const chained = await waitFor(() => {
+      const found = popup.querySelector<HTMLElement>(
+        '[data-streamdown-footnote-ref]',
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    chained.click();
+
+    // Same popup (same anchor), new body.
+    await waitFor(() => {
+      expect(popup.textContent).toContain('The chained body.');
+    });
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
+  });
 });
