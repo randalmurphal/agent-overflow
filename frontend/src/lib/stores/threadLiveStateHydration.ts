@@ -1,4 +1,4 @@
-import type { Thread } from '../types/models';
+import type { Item, Thread } from '../types/models';
 import type {
   PendingInteractiveRequests,
   ProviderSessionAccountEvent,
@@ -7,7 +7,6 @@ import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
 import { GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import {
-  beginThreadLiveStateHydration,
   finishThreadLiveStateHydration,
   getActiveTurn,
   isThreadLiveStateHydrationCurrent,
@@ -49,13 +48,40 @@ export interface ThreadLiveStateHydrationOptions {
   ): void;
 }
 
+export interface LiveStateFetchResult {
+  /**
+   * Pending-send timeline rows the backend has NOT persisted to SQLite
+   * yet (a pending send's row lands on its wire echo). A caller
+   * reconciling a SQLite page merges these in — the page is
+   * structurally blind to them. Empty when the fetch failed.
+   */
+  deferredItems: Item[];
+  /**
+   * Apply the fetched snapshot to the pane and the global registries,
+   * gen/token-guarded, entirely synchronously. Consumes the hydration
+   * token (idempotent: second call no-ops). If never called, the caller
+   * owns finishing the token.
+   */
+  apply(): void;
+}
+
 export interface ThreadLiveStateHydration {
-  /** Fetch and apply the thread's live state (active turn, send queue, pending interactive requests, live todos), gen-guarded throughout. */
-  hydrateThreadLiveState(
+  /**
+   * Fetch the thread's live state (active turn, send queue, pending
+   * interactive requests, live todos, deferred pending-send rows);
+   * apply when the caller says so. Both authoritative install paths —
+   * the cold-open sync leg and `refreshFromBackend` — fetch in
+   * parallel with their SQLite page, merge the result's
+   * `deferredItems` into the page, and commit the install and the
+   * live-state apply back-to-back with no await between them, so the
+   * timeline never paints the slice-only intermediate state (which is
+   * missing pending sends and streaming partials).
+   */
+  startLiveStateFetch(
     threadID: string,
     gen: number,
-    existingHydrationToken?: number,
-  ): Promise<void>;
+    hydrationToken: number,
+  ): Promise<LiveStateFetchResult>;
 }
 
 /**
@@ -81,30 +107,13 @@ export function createThreadLiveStateHydration(
     replaceInteractiveRequestsForThread(threadID, registrySnapshot);
   }
 
-  async function hydratePendingInteractiveRequests(
+  function deferredItemsForThread(
+    snapshot: ThreadLiveState,
     threadID: string,
-    gen: number,
-    hydrationToken?: number,
-  ): Promise<void> {
-    let snapshot: PendingInteractiveRequests;
-    try {
-      snapshot = (await ListPendingInteractiveRequests(
-        threadID,
-      )) as PendingInteractiveRequests;
-    } catch (err) {
-      if (gen === options.getSwitchGeneration() && options.getThread()?.id === threadID) {
-        console.error('Failed to hydrate pending interactive requests:', err);
-      }
-      return;
-    }
-    if (gen !== options.getSwitchGeneration() || options.getThread()?.id !== threadID) return;
-    if (
-      hydrationToken !== undefined &&
-      !isThreadLiveStateHydrationCurrent(threadID, hydrationToken)
-    )
-      return;
-
-    applyPendingInteractiveSnapshot(threadID, snapshot);
+  ): Item[] {
+    const rows = (snapshot.deferredItems ?? []) as Item[];
+    if (rows.length === 0) return rows;
+    return rows.filter((row) => row.threadId === threadID);
   }
 
   function applyThreadLiveStateSnapshot(
@@ -169,13 +178,14 @@ export function createThreadLiveStateHydration(
     hydrateCompactingState(threadID, snapshot.compactingSinceUnixMs ?? 0);
   }
 
-  async function hydrateThreadLiveState(
+  async function startLiveStateFetch(
     threadID: string,
     gen: number,
-    existingHydrationToken?: number,
-  ): Promise<void> {
-    const hydrationToken =
-      existingHydrationToken ?? beginThreadLiveStateHydration(threadID);
+    hydrationToken: number,
+  ): Promise<LiveStateFetchResult> {
+    // Guard values captured BEFORE the RPC leaves, exactly like the
+    // single-phase form: apply-time comparisons against these detect
+    // registries that moved while the snapshot was in flight.
     const guard: LiveStateHydrationGuard = {
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
@@ -184,24 +194,56 @@ export function createThreadLiveStateHydration(
         options.getProviderSessionAccountRevision(),
       effectiveModelRevisionAtRequest: options.getEffectiveModelRevision(),
     };
+    const currentTarget = (): boolean =>
+      gen === options.getSwitchGeneration() &&
+      options.getThread()?.id === threadID;
+
+    let snapshot: ThreadLiveState | null = null;
+    let fallbackInteractive: PendingInteractiveRequests | null = null;
     try {
-      let snapshot: ThreadLiveState;
-      try {
-        snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
-      } catch (err) {
-        if (gen === options.getSwitchGeneration() && options.getThread()?.id === threadID) {
-          console.error('Failed to hydrate thread live state:', err);
-        }
-        await hydratePendingInteractiveRequests(threadID, gen, hydrationToken);
-        return;
+      snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
+    } catch (err) {
+      if (currentTarget()) {
+        console.error('Failed to hydrate thread live state:', err);
       }
-      if (gen !== options.getSwitchGeneration() || options.getThread()?.id !== threadID) return;
-      if (!isThreadLiveStateHydrationCurrent(threadID, hydrationToken)) return;
-      applyThreadLiveStateSnapshot(snapshot, threadID, guard);
-    } finally {
-      finishThreadLiveStateHydration(threadID, hydrationToken);
+      // Degraded leg: pending approvals/questions block the user, so
+      // they get their own fetch even when the full snapshot failed.
+      try {
+        fallbackInteractive = (await ListPendingInteractiveRequests(
+          threadID,
+        )) as PendingInteractiveRequests;
+      } catch (fallbackErr) {
+        if (currentTarget()) {
+          console.error(
+            'Failed to hydrate pending interactive requests:',
+            fallbackErr,
+          );
+        }
+      }
     }
+
+    let tokenConsumed = false;
+    return {
+      deferredItems: snapshot ? deferredItemsForThread(snapshot, threadID) : [],
+      apply(): void {
+        if (tokenConsumed) return;
+        try {
+          if (!currentTarget()) return;
+          if (!isThreadLiveStateHydrationCurrent(threadID, hydrationToken)) {
+            return;
+          }
+          if (snapshot) {
+            applyThreadLiveStateSnapshot(snapshot, threadID, guard);
+          } else if (fallbackInteractive) {
+            applyPendingInteractiveSnapshot(threadID, fallbackInteractive);
+          }
+        } finally {
+          tokenConsumed = true;
+          finishThreadLiveStateHydration(threadID, hydrationToken);
+        }
+      },
+    };
   }
 
-  return { hydrateThreadLiveState };
+  return { startLiveStateFetch };
 }

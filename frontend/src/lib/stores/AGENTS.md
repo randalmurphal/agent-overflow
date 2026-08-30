@@ -50,6 +50,27 @@ stops waking readers.
   refresh and remove path, for the picker and Settings alike.
 - `thread.svelte.ts` (`ThreadPane`) is the sole owner of per-thread runtime
   UI state. Add to it rather than beside it.
+- An authoritative install that evicts absent rows
+  (`installTimelineItems({disposeDropped: true})`) must first fold in the
+  rows SQLite structurally cannot hold: pending sends persist only on wire
+  echo, streaming rows persist on completion, so a fresh slice never
+  contains either. Both authoritative install paths in
+  `threadSwitchLoad` (`runBackendRefresh` and the cold-open sync leg)
+  follow the pattern: merge `GetThreadLiveState.deferredItems` into the
+  page, retain current `streaming`/`running` rows, and commit the
+  install and the live-state apply in one synchronous step so no
+  slice-only frame ever paints (incident 2026-08-29: gap-refresh cycles
+  made a queued message flicker in and out of the timeline). Merged
+  deferred rows also join the pane's optimistic-id ledger
+  (`trackDeferredBets`): the stamped tiers strip optimistic rows because
+  a bet can be dropped without a rev bump, and an untracked merged row
+  would persist into the replica as a phantom.
+- An event-driven authoritative refresh converges, it never supersedes.
+  Cancelling the in-flight refresh on each new trigger (`++generation`
+  guards at every await) livelocks under an event storm, because triggers
+  outpace the RPC round-trip and no install ever lands. Use
+  `utils/refreshScheduler.ts` (architecture rule 5); generation guards are
+  for user-input-driven flows where the newest intent wins.
 
 State ownership taxonomy and the entity-keying doctrine:
 [`frontend/AGENTS.md`](../../../AGENTS.md).

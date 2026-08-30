@@ -18,6 +18,10 @@ import {
 import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import {
+  createRefreshScheduler,
+  type RefreshToken,
+} from '../utils/refreshScheduler';
+import {
   closeCompanion,
   closeCompanionsForSource,
   companionForSource,
@@ -31,6 +35,7 @@ import {
 import {
   itemsAreEqual,
   itemsForThread,
+  mergeMissingItemsById,
   reconcileSnapshotPage,
   type TimelineCursorLike,
 } from './threadItems';
@@ -81,7 +86,10 @@ import {
 } from './threadTurnProjection';
 import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import type { ThreadSubagentMemory } from './threadSubagentMemory';
-import type { ThreadLiveStateHydration } from './threadLiveStateHydration';
+import type {
+  LiveStateFetchResult,
+  ThreadLiveStateHydration,
+} from './threadLiveStateHydration';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
@@ -315,10 +323,25 @@ export function createThreadSwitchLoad(
     anchorItemId: string;
   } | null = null;
   let historyRetryPromise: Promise<void> | null = null;
-  // Distinct from the pane switch generation: multiple gap refreshes can
-  // overlap on the same thread, and an older response must not overwrite a
-  // newer one. resetPipeline also advances it to invalidate detached work.
-  let refreshGeneration = 0;
+  /**
+   * Serialized single-flight for backend refreshes. The old hand-rolled
+   * ++generation supersede was a livelock under a transport-gap storm:
+   * every new gap cancelled the in-flight refresh at its next await, the
+   * refresh's own RPC replies rode the same congested socket, and no
+   * install ever landed — the pane stood truncated for the storm's whole
+   * duration (incident 2026-08-29). The scheduler runs at most one
+   * refresh at a time and answers every request that arrives during one
+   * with exactly one trailing run, so recovery converges instead of
+   * being cancelled. Thread switches invalidate through reset() in
+   * resetPipeline; the run itself re-checks the pane switch generation.
+   */
+  const refreshWaiters: Array<() => void> = [];
+  const refreshScheduler = createRefreshScheduler({
+    name: 'thread-refresh',
+    delayMs: 150,
+    maxWaitMs: 600,
+    run: (token) => performBackendRefresh(token),
+  });
   /**
    * The attestation for the window THIS PANE currently holds
    * (docs/architecture/thread-replica-sync.md §3.4). Attestation is a property
@@ -859,6 +882,11 @@ export function createThreadSwitchLoad(
    * window — no cache-sourced row survives a reconcile, which is what
    * makes the write-back safe (every persisted row descends from an
    * attested page). `gone` drops every cached copy and empties the pane.
+   *
+   * `deferredItems` (pending sends whose SQLite row lands on the wire
+   * echo) are folded into every non-`gone` answer and tracked as
+   * optimistic bets, because neither a page nor any stamped tier can
+   * carry them.
    */
   function applySyncResponse(
     response: SyncThreadWindowResult,
@@ -866,6 +894,7 @@ export function createThreadSwitchLoad(
     paintSource: ColdLoadPaintSource,
     sentStamp: ThreadHistoryStamp | null,
     lineageChanged: boolean,
+    deferredItems: readonly Item[],
   ): void {
     const threadId = newThread.id;
     coldLoadSyncStatus(paneId, response.status);
@@ -890,8 +919,13 @@ export function createThreadSwitchLoad(
     const page = response.page;
     if (page) {
       const incoming = itemsForThread((page.items ?? []) as Item[], threadId);
+      // Rows the page is structurally blind to: pending sends the
+      // backend holds deferred (no SQLite row until the wire echo).
+      // Same merge the gap-refresh path does; tracked as bets so the
+      // stamped tiers keep stripping them.
+      trackDeferredBets(deferredItems, options.getItems());
       const next = reconcileSnapshotPage(
-        incoming,
+        mergeMissingItemsById(deferredItems, incoming),
         options.getItems(),
         liveTouchedDuringSync ?? EMPTY_ID_SET,
         liveRemovedDuringSync ?? EMPTY_ID_SET,
@@ -920,6 +954,18 @@ export function createThreadSwitchLoad(
           ]);
         },
       });
+    } else if (deferredItems.length > 0) {
+      // A page-less answer keeps the painted rows as-is — but the
+      // stamped tiers strip optimistic rows, so a pending send is never
+      // in the paint a `fresh` answer attests. Fold the missing ones in
+      // (no-op install when none are missing); window metadata is
+      // untouched because deferred rows sit past the attested tail.
+      const current = options.getItems();
+      const merged = mergeMissingItemsById(deferredItems, current);
+      if (merged !== current) {
+        trackDeferredBets(deferredItems, current);
+        options.installTimelineItems(merged);
+      }
     }
     // Attested last: the stamp describes the rows now installed, so it
     // must not be recorded before they are. A page is a full attestation
@@ -972,6 +1018,7 @@ export function createThreadSwitchLoad(
     gen: number,
     cached: ThreadItemSnapshot | null,
     sliceAnchorId: string,
+    liveStateFetch: Promise<LiveStateFetchResult> | null,
   ): Promise<void> {
     const threadId = newThread.id;
     let paintSource: ColdLoadPaintSource = cached ? 'l1' : 'none';
@@ -1058,7 +1105,21 @@ export function createThreadSwitchLoad(
         response = await ask(sentStamp);
         if (gen !== options.getSwitchGeneration()) return;
       }
-      applySyncResponse(response, newThread, paintSource, sentStamp, lineageChanged);
+      // Runs in parallel with the sync ask; never rejects (a failed
+      // fetch resolves with empty deferredItems). The retry path passes
+      // null — its pane self-heals through the next refresh or echo.
+      const deferredItems = liveStateFetch
+        ? (await liveStateFetch).deferredItems
+        : [];
+      if (gen !== options.getSwitchGeneration()) return;
+      applySyncResponse(
+        response,
+        newThread,
+        paintSource,
+        sentStamp,
+        lineageChanged,
+        deferredItems,
+      );
       if (gen === options.getSwitchGeneration()) {
         failedHistoryLoad = null;
         options.clearPaneError('history-load');
@@ -1121,10 +1182,9 @@ export function createThreadSwitchLoad(
    * Returns `{ liveStateHydrationConsumed }` so the caller can decide
    * whether its outer `finally` still needs to call
    * `finishThreadLiveStateHydration` — the live-state leg always
-   * consumes the token through `hydrateThreadLiveState`'s own
-   * `finally`, but if the leg is invalidated before reaching
-   * `hydrateThreadLiveState` (it isn't, today, but the contract is
-   * explicit) the caller would still be on the hook.
+   * consumes the token through `apply()`'s own `finally`, but if the
+   * leg is invalidated before reaching `apply()` (it isn't, today, but
+   * the contract is explicit) the caller would still be on the hook.
    */
   async function runParallelLoad(
     newThread: Thread,
@@ -1169,18 +1229,23 @@ export function createThreadSwitchLoad(
       }
     })();
 
+    // One live-state fetch, two consumers: the apply leg below (the
+    // registries half of hydration) and the item leg, which merges the
+    // fetch's deferred pending-send rows into the sync page — the same
+    // blindness the gap-refresh path closes (see runBackendRefresh).
+    const liveStateFetch = options.liveStateHydration.startLiveStateFetch(
+      newThread.id,
+      gen,
+      liveStateHydrationToken,
+    );
     const liveStatePromise = (async () => {
       try {
-        await options.liveStateHydration.hydrateThreadLiveState(
-          newThread.id,
-          gen,
-          liveStateHydrationToken,
-        );
+        (await liveStateFetch).apply();
       } finally {
-        // hydrateThreadLiveState always passes the token through to
-        // finishThreadLiveStateHydration in its own finally, so by the
-        // time we get here the token is consumed. Flag it so the outer
-        // switchThread finally doesn't double-finish.
+        // apply() consumes the token on every path it runs (its own
+        // finally), so by the time we get here the token is consumed.
+        // Flag it so the outer switchThread finally doesn't
+        // double-finish.
         liveStateHydrationConsumed = true;
       }
     })();
@@ -1190,7 +1255,13 @@ export function createThreadSwitchLoad(
     // bottom-snapshot and saved-anchor restores. Older items page in
     // lazily via `pane.loadOlder()` (driven by the auto-load trigger in
     // `MessageTimeline.svelte` and the manual "Load older" button).
-    const loadItemsPromise = runItemWindowSync(newThread, gen, cached, sliceAnchorId);
+    const loadItemsPromise = runItemWindowSync(
+      newThread,
+      gen,
+      cached,
+      sliceAnchorId,
+      liveStateFetch,
+    );
 
     // Two rows of safety so a crashed-then-completed sequence can skip
     // over the in-flight row and still find the prior settled one.
@@ -1233,7 +1304,7 @@ export function createThreadSwitchLoad(
     }
     options.clearDraftPlaceholder();
     // Live-state hydration token. The live-state leg always consumes
-    // it through `hydrateThreadLiveState`'s own finally; the outer
+    // it through the fetch result's `apply()` finally; the outer
     // finally below only finishes it as defense-in-depth against a
     // synchronous throw before runParallelLoad runs.
     let liveStateHydrationConsumed = false;
@@ -1296,72 +1367,128 @@ export function createThreadSwitchLoad(
    * Re-fetch the visible window from the backend without resetting
    * pane-scoped UI state (terminal / diff panel / draft). Used by the
    * transport-gap consumer when a missed event window forces a full
-   * reconcile of the active pane. Honours the switch generation so a
-   * thread swap mid-fetch invalidates the late resolution.
+   * reconcile of the active pane, and by the reconnect banner. Requests
+   * go through the refresh scheduler: at most one refresh is in flight,
+   * a request during one is answered by exactly one trailing run, and
+   * the returned promise resolves once a refresh that STARTED at or
+   * after the call has completed.
    *
    * Coarse on purpose — when we know we lost events, the cheap fix is
    * to re-pull from SQLite which is the authoritative history cache.
    * Surgical reconciliation would need the channel + seq window the
    * transport doesn't expose to the consumer today.
    */
-  async function refreshFromBackend(): Promise<void> {
+  function refreshFromBackend(): Promise<void> {
+    return new Promise((resolve) => {
+      refreshWaiters.push(resolve);
+      refreshScheduler.request({ immediate: true });
+    });
+  }
+
+  async function performBackendRefresh(token: RefreshToken): Promise<void> {
+    // Waiters claimed at run start: anyone who requested before this run
+    // began is answered by it; a request landing mid-run stays queued for
+    // the trailing run its own dirty bit guarantees.
+    const claimedWaiters = refreshWaiters.splice(0, refreshWaiters.length);
+    try {
+      await runBackendRefresh(token);
+    } finally {
+      for (const resolve of claimedWaiters) resolve();
+    }
+  }
+
+  /**
+   * One backend refresh: the SQLite page and the live-state snapshot are
+   * fetched in parallel, then committed back-to-back with no await
+   * between the install and the live-state apply. Two row classes exist
+   * only in live state — pending sends (their SQLite row lands on the
+   * wire echo) and streaming partials (persisted on completion) — so a
+   * page-only install would briefly evict the user's own just-sent
+   * message and the block being streamed; the deferred-item merge and
+   * the status-based retention below close that window.
+   */
+  async function runBackendRefresh(token: RefreshToken): Promise<void> {
     const currentThread = options.getThread();
     if (!currentThread) return;
     const gen = options.getSwitchGeneration();
-    const refreshGen = ++refreshGeneration;
     const refreshIsCurrent = (): boolean =>
-      gen === options.getSwitchGeneration() && refreshGen === refreshGeneration;
+      token.isCurrent()
+      && gen === options.getSwitchGeneration()
+      && options.getThread()?.id === currentThread.id;
     const refreshMutations = {
       ids: new Set<string>(),
       removedIds: new Set<string>(),
     };
     liveMutationDuringRefresh = refreshMutations;
-    let liveStateHydrationToken = beginThreadLiveStateHydration(
+    const liveStateHydrationToken = beginThreadLiveStateHydration(
       currentThread.id,
     );
+    let liveStateApplied = false;
     try {
+      const liveStatePromise = options.liveStateHydration.startLiveStateFetch(
+        currentThread.id,
+        gen,
+        liveStateHydrationToken,
+      );
+      let paged: Awaited<ReturnType<typeof ListThreadSliceAround>>;
       try {
         const anchorItemId = options.timelineWindow.hasMoreNewer
           ? (options.getItems().at(-1)?.id ?? '')
           : '';
-        const paged = await ListThreadSliceAround(
+        paged = await ListThreadSliceAround(
           currentThread.id,
           anchorItemId,
           ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
         );
-        if (!refreshIsCurrent()) return;
-        const snapshot = itemsForThread(
-          (paged.items ?? []) as Item[],
-          currentThread.id,
-        );
-        const currentItems = options.getItems();
-        const changedDuringFetch =
-          refreshMutations.ids.size > 0 || refreshMutations.removedIds.size > 0;
-        const next = reconcileSnapshotPage(
-          snapshot,
-          currentItems,
-          refreshMutations.ids,
-          refreshMutations.removedIds,
-        );
-        options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-        options.installTimelineItems(next.items, {
-          disposeDropped: true,
-          afterCommit: () => {
-            runWindowCommitEffects('refreshed thread window metadata', [
-              () => options.timelineWindow.applyWindowMetadataFromPaged(paged),
-              () => {
-                if (changedDuringFetch) {
-                  options.timelineWindow.refreshCursorsAfterTailAppend();
-                }
-              },
-            ]);
-          },
-        });
       } catch (err) {
         if (!refreshIsCurrent()) return;
         console.error('Failed to refresh thread items after gap:', err);
+        reportFrontendDiagnostic(
+          'transport: gap refresh failed to fetch items',
+          errString(err),
+        );
         return;
       }
+      // Never rejects: fetch failures resolve with empty deferredItems
+      // and an apply() that falls back to the interactive-only leg.
+      const liveState = await liveStatePromise;
+      if (!refreshIsCurrent()) return;
+      const snapshot = itemsForThread(
+        (paged.items ?? []) as Item[],
+        currentThread.id,
+      );
+      // Rows the page is structurally blind to, part 1: pending sends
+      // the backend holds deferred (no SQLite row until the wire echo).
+      const merged = mergeMissingItemsById(liveState.deferredItems, snapshot);
+      const currentItems = options.getItems();
+      trackDeferredBets(liveState.deferredItems, currentItems);
+      const changedDuringFetch =
+        refreshMutations.ids.size > 0 || refreshMutations.removedIds.size > 0;
+      const next = reconcileSnapshotPage(
+        merged,
+        currentItems,
+        liveRetainedIds(currentItems, refreshMutations.ids),
+        refreshMutations.removedIds,
+      );
+      options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
+      options.installTimelineItems(next.items, {
+        disposeDropped: true,
+        afterCommit: () => {
+          runWindowCommitEffects('refreshed thread window metadata', [
+            () => options.timelineWindow.applyWindowMetadataFromPaged(paged),
+            () => {
+              if (changedDuringFetch) {
+                options.timelineWindow.refreshCursorsAfterTailAppend();
+              }
+            },
+          ]);
+        },
+      });
+      // Live-state apply immediately after the install, synchronously:
+      // no frame can paint the page-only intermediate state.
+      options.pendingInteractiveState.prepareForLiveStateHydration();
+      liveStateApplied = true;
+      liveState.apply();
       try {
         const recent = (await ListRecentTurns(currentThread.id, 2)) as
           | TurnRow[]
@@ -1380,23 +1507,69 @@ export function createThreadSwitchLoad(
         if (!refreshIsCurrent()) return;
         console.error('Failed to refresh recent turns after gap:', err);
       }
-      options.pendingInteractiveState.prepareForLiveStateHydration();
-      await options.liveStateHydration.hydrateThreadLiveState(
-        currentThread.id,
-        gen,
-        liveStateHydrationToken,
-      );
-      liveStateHydrationToken = 0;
     } finally {
       if (liveMutationDuringRefresh === refreshMutations) {
         liveMutationDuringRefresh = null;
       }
-      if (liveStateHydrationToken !== 0) {
+      // apply() consumes the token on every path it runs (its own
+      // finally); this covers the early returns before it did.
+      if (!liveStateApplied) {
         finishThreadLiveStateHydration(
           currentThread.id,
           liveStateHydrationToken,
         );
       }
+    }
+  }
+
+  /**
+   * Ids of current rows the SQLite page is structurally blind to, part
+   * 2: streaming and running rows persist per-item on COMPLETION (root
+   * AGENTS.md principle 3), so a page read mid-stream lacks them and a
+   * page-trusting install would tear the block being streamed out of
+   * the timeline. Retaining by status keeps them across the install;
+   * the stream's own settle (or the next refresh after it) converges
+   * them with SQLite. A retained row whose backing was truly deleted
+   * server-side mid-turn is the accepted residual — deletion mid-stream
+   * only happens on lineage changes, which go through switch/sync, not
+   * this path.
+   */
+  function liveRetainedIds(
+    currentItems: readonly Item[],
+    touched: ReadonlySet<string>,
+  ): ReadonlySet<string> {
+    let retained: Set<string> | null = null;
+    for (const item of currentItems) {
+      if (item.status === 'streaming' || item.status === 'running') {
+        (retained ??= new Set(touched)).add(item.id);
+      }
+    }
+    return retained ?? touched;
+  }
+
+  /**
+   * A deferred row is a bet exactly like the composer's optimistic
+   * send: no SQLite row exists until the wire echo. A row this pane
+   * learned from `GetThreadLiveState` (rather than its own composer)
+   * must join the same optimistic-id ledger, or the stamped tiers —
+   * which strip optimistic rows precisely because a bet can be dropped
+   * without a rev bump (`optimisticFreeWindow`) — would persist it
+   * under an attested stamp, a phantom a later `fresh` answer would
+   * re-bless. Rows already present in the window are skipped: they are
+   * either composer-tracked bets or echoed persisted rows, and
+   * re-tracking an echoed row would exile it from the stamped tiers
+   * until the next switch clears the ledger. The wire echo untracks
+   * these exactly like composer bets (`threadItemStreamApply`).
+   */
+  function trackDeferredBets(
+    deferred: readonly Item[],
+    present: readonly Item[],
+  ): void {
+    if (deferred.length === 0) return;
+    const presentIds = new Set<string>();
+    for (const item of present) presentIds.add(item.id);
+    for (const row of deferred) {
+      if (!presentIds.has(row.id)) options.optimisticItemIds.add(row.id);
     }
   }
 
@@ -1421,6 +1594,7 @@ export function createThreadSwitchLoad(
           failed.generation,
           null,
           failed.anchorItemId,
+          null,
         );
       } finally {
         if (options.getSwitchGeneration() === failed.generation) {
@@ -1463,7 +1637,11 @@ export function createThreadSwitchLoad(
     liveMutationDuringRefresh = null;
     failedHistoryLoad = null;
     historyRetryPromise = null;
-    refreshGeneration += 1;
+    // Invalidate the in-flight refresh's token and drop any pending
+    // trailing run; the pane is moving on. Waiters resolve rather than
+    // hang — their refresh is moot, and callers only sequence on it.
+    refreshScheduler.reset();
+    while (refreshWaiters.length > 0) refreshWaiters.pop()?.();
     pastSpinnerThreshold = false;
   }
 

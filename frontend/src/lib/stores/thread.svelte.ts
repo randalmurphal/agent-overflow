@@ -1205,9 +1205,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // below the last state they capture.
 
   // Thread live-state hydration protocol (applyPendingInteractiveSnapshot,
-  // hydratePendingInteractiveRequests, applyThreadLiveStateSnapshot,
-  // hydrateThreadLiveState) lives in threadLiveStateHydration.ts as
-  // `liveStateHydration`.
+  // applyThreadLiveStateSnapshot, startLiveStateFetch) lives in
+  // threadLiveStateHydration.ts as `liveStateHydration`.
 
   // Child-transcript hydration for a subagent launch anchor
   // (hydrateSubagentChildren) lives in threadSubagentMemory.ts as

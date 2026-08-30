@@ -1012,3 +1012,170 @@ func TestEventBus_SubscriberOriginFilterAtEnqueue(t *testing.T) {
 }
 
 func ptrBool(v bool) *bool { return &v }
+
+// TestEventBus_DropStampsNextSameChannelEventWithGap: a subscriber that
+// dropped an event learns about the loss from the NEXT event that fits
+// on that channel — it arrives Gap-stamped with a re-encoded envelope —
+// even though nothing else ever exposes a seq skip. The wave after that
+// is clean again.
+func TestEventBus_DropStampsNextSameChannelEventWithGap(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	if _, err := bus.Emit("test:chA", 1); err != nil { // fills the buffer
+		t.Fatalf("emit 1: %v", err)
+	}
+	if _, err := bus.Emit("test:chA", 2); err != nil { // dropped
+		t.Fatalf("emit 2: %v", err)
+	}
+	first := drainEvents(t, sub, 1, time.Second)
+	if len(first) != 1 || first[0].Seq != 1 || first[0].Gap {
+		t.Fatalf("expected clean seq-1 event first, got %+v", first)
+	}
+
+	if _, err := bus.Emit("test:chA", 3); err != nil {
+		t.Fatalf("emit 3: %v", err)
+	}
+	stamped := drainEvents(t, sub, 1, time.Second)
+	if len(stamped) != 1 {
+		t.Fatalf("expected the stamped event, got none")
+	}
+	got := stamped[0]
+	if !got.Gap || got.Seq != 3 || got.Channel != "test:chA" {
+		t.Fatalf("expected gap-stamped seq-3 event, got %+v", got)
+	}
+	var frame ServerFrame
+	if err := json.Unmarshal(got.WireBytes, &frame); err != nil {
+		t.Fatalf("decode stamped WireBytes: %v", err)
+	}
+	if !frame.Gap || frame.Seq != 3 || string(frame.Data) != "3" {
+		t.Fatalf("stamped envelope wrong: gap=%v seq=%d data=%s", frame.Gap, frame.Seq, frame.Data)
+	}
+
+	if _, err := bus.Emit("test:chA", 4); err != nil {
+		t.Fatalf("emit 4: %v", err)
+	}
+	clean := drainEvents(t, sub, 1, time.Second)
+	if len(clean) != 1 || clean[0].Gap {
+		t.Fatalf("expected the flag cleared after the announcement, got %+v", clean)
+	}
+}
+
+// TestEventBus_DropOnOtherChannelFlushesStandaloneMarker: a loss on a
+// channel that never sees another event is announced by a standalone
+// {gap:true, data:null} marker (Replay's marker shape) enqueued ahead of
+// the next delivery on any other channel.
+func TestEventBus_DropOnOtherChannelFlushesStandaloneMarker(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 2
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	if _, err := bus.Emit("test:chA", 1); err != nil {
+		t.Fatalf("emit a1: %v", err)
+	}
+	if _, err := bus.Emit("test:chA", 2); err != nil { // buffer now full
+		t.Fatalf("emit a2: %v", err)
+	}
+	if _, err := bus.Emit("test:chB", 1); err != nil { // dropped
+		t.Fatalf("emit b1: %v", err)
+	}
+	if got := drainEvents(t, sub, 2, time.Second); len(got) != 2 {
+		t.Fatalf("expected the two buffered events, got %d", len(got))
+	}
+
+	if _, err := bus.Emit("test:chA", 3); err != nil {
+		t.Fatalf("emit a3: %v", err)
+	}
+	got := drainEvents(t, sub, 2, time.Second)
+	if len(got) != 2 {
+		t.Fatalf("expected marker + event, got %d", len(got))
+	}
+	marker, evt := got[0], got[1]
+	if !marker.Gap || marker.Channel != "test:chB" || marker.Seq != 1 || string(marker.Data) != "null" {
+		t.Fatalf("expected standalone chB gap marker first, got %+v", marker)
+	}
+	var frame ServerFrame
+	if err := json.Unmarshal(marker.WireBytes, &frame); err != nil {
+		t.Fatalf("decode marker WireBytes: %v", err)
+	}
+	if !frame.Gap || frame.Channel != "test:chB" {
+		t.Fatalf("marker envelope wrong: %+v", frame)
+	}
+	if evt.Gap || evt.Channel != "test:chA" || evt.Seq != 3 {
+		t.Fatalf("expected clean chA event after marker, got %+v", evt)
+	}
+}
+
+// TestEventBus_MarkerThatDoesNotFitSurvivesForNextDelivery: a standing
+// full buffer keeps the loss flagged rather than forgetting it.
+func TestEventBus_MarkerThatDoesNotFitSurvivesForNextDelivery(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	if _, err := bus.Emit("test:chA", 1); err != nil { // fills the buffer
+		t.Fatalf("emit a1: %v", err)
+	}
+	if _, err := bus.Emit("test:chB", 1); err != nil { // dropped
+		t.Fatalf("emit b1: %v", err)
+	}
+	// Buffer still full: the flush attempt cannot place chB's marker, and
+	// chA's event itself drops too (flagging chA as well).
+	if _, err := bus.Emit("test:chA", 2); err != nil {
+		t.Fatalf("emit a2: %v", err)
+	}
+	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("expected only the seq-1 event, got %+v", got)
+	}
+	// Room now exists: the next delivery flushes chB's marker, then the
+	// chA event rides with its own gap stamp.
+	if _, err := bus.Emit("test:chA", 3); err != nil {
+		t.Fatalf("emit a3: %v", err)
+	}
+	got := drainEvents(t, sub, 2, 2*time.Second)
+	if len(got) < 1 {
+		t.Fatalf("expected at least the chB marker, got none")
+	}
+	if !got[0].Gap || got[0].Channel != "test:chB" {
+		t.Fatalf("expected chB marker first, got %+v", got[0])
+	}
+	if len(got) > 1 && (!got[1].Gap || got[1].Channel != "test:chA") {
+		t.Fatalf("expected gap-stamped chA event second, got %+v", got[1])
+	}
+}
+
+// TestEventBus_LatestOnlyDropIsNotAnnounced: whole-state channels get no
+// gap treatment on drop — the next frame supersedes the lost one, the
+// same reasoning as Replay's latest-only carve-out.
+func TestEventBus_LatestOnlyDropIsNotAnnounced(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	channel := string(eventchan.SystemStats)
+	if _, err := bus.Emit(eventchan.SystemStats, 1); err != nil { // fills the buffer
+		t.Fatalf("emit 1: %v", err)
+	}
+	if _, err := bus.Emit(eventchan.SystemStats, 2); err != nil { // dropped, no flag
+		t.Fatalf("emit 2: %v", err)
+	}
+	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 {
+		t.Fatalf("expected the buffered frame, got %d", len(got))
+	}
+	if _, err := bus.Emit(eventchan.SystemStats, 3); err != nil {
+		t.Fatalf("emit 3: %v", err)
+	}
+	got := drainEvents(t, sub, 1, time.Second)
+	if len(got) != 1 || got[0].Gap || got[0].Channel != channel {
+		t.Fatalf("expected clean superseding frame, got %+v", got)
+	}
+}

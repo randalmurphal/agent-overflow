@@ -52,15 +52,22 @@ const DefaultSubscriberBuffer = 1024
 //     subsequent Subscribe / Close don't touch the snapshot's
 //     backing array slots.
 //   - Subscribers' deliver() drops to a non-blocking select; a slow
-//     consumer drops events. Nothing on this side records the drop — the
-//     per-channel seq is what makes it observable: the next event the
-//     subscriber does receive carries a seq more than one past its last,
-//     and the client treats that forward skip as the drop it is
-//     (frontend/src/lib/transport/wsClient.ts handleEventEntry), firing
-//     the same synthetic resync the reconnect-path gap marker does.
-//     Detection is scoped to one connection there, because across a
-//     reconnect a legitimate skip is expected (ephemeral and latest-only
-//     channels — see event_visibility.go) and Replay is the authority.
+//     consumer drops events. The drop is recorded per (subscriber,
+//     channel) in Subscriber.gapped, and the next event that DOES fit is
+//     stamped Gap:true (re-encoded per subscriber), so the client learns
+//     about the loss even when the dropped events were the channel's
+//     tail. The client's forward-skip detection (wsClient.ts
+//     handleEventEntry) still covers the mid-stream case on its own; the
+//     sticky flag exists because that detection needs a later same-channel
+//     delivery to fire, which a flood can starve for tens of seconds
+//     (incident 2026-08-29: 30-40s standing timeline truncation under a
+//     subagent fan-out storm). Other gapped channels piggyback: any
+//     successful delivery first flushes standalone {gap:true} markers
+//     (same shape Replay emits) for every other gapped channel that has
+//     buffer room. Detection stays scoped to one connection client-side,
+//     because across a reconnect a legitimate skip is expected (ephemeral
+//     and latest-only channels — see event_visibility.go) and Replay is
+//     the authority.
 type EventBus struct {
 	mu       sync.RWMutex
 	rings    map[string]*ring
@@ -371,8 +378,9 @@ func encodeEventFrame(evt Event) ([]byte, error) {
 // events plus gap markers.
 func (b *EventBus) Subscribe() *Subscriber {
 	s := &Subscriber{
-		ch:   make(chan Event, b.subBuf),
-		done: make(chan struct{}),
+		ch:     make(chan Event, b.subBuf),
+		done:   make(chan struct{}),
+		gapped: make(map[string]struct{}),
 	}
 	b.mu.Lock()
 	if b.closed.Load() {
@@ -511,6 +519,12 @@ type Subscriber struct {
 	// visible events and gap-driven re-fetches. nil means unfiltered
 	// (non-conn subscribers like the harness workflow waiter).
 	loopback atomic.Pointer[bool]
+	// gapped records the channels this subscriber has dropped events on
+	// since it last learned about the loss. Written only inside deliver,
+	// which runs under the bus mutex (Emit's fanout is its sole call
+	// site), so no extra locking. See the EventBus doc comment for the
+	// announce protocol.
+	gapped map[string]struct{}
 }
 
 type subscriberChannelFilter map[string]struct{}
@@ -563,9 +577,10 @@ func (s *Subscriber) explicitlySubscribes(channel string) bool {
 }
 
 // deliver pushes an event into the subscriber's buffered channel. A
-// full channel drops the event silently — the client detects the
-// per-channel seq skip on the next received event and re-fetches via
-// list endpoints. Falling behind is the subscriber's problem to detect.
+// full channel drops the event and records the channel in s.gapped; the
+// next event that does fit on that channel is stamped Gap:true so the
+// client resyncs even when nothing else ever arrives to expose a seq
+// skip. Runs only from Emit's fanout, under the bus mutex.
 func (s *Subscriber) deliver(e Event) {
 	if s.closed.Load() {
 		return
@@ -576,11 +591,70 @@ func (s *Subscriber) deliver(e Event) {
 	if lb := s.loopback.Load(); lb != nil && !eventVisibleToOrigin(e.Channel, *lb) {
 		return
 	}
+	if len(s.gapped) > 0 {
+		s.flushGapMarkers(e.Channel)
+	}
+	out := e
+	if _, isGapped := s.gapped[e.Channel]; isGapped {
+		// Ride the loss announcement on this frame rather than spending
+		// a buffer slot on a standalone marker. Per-subscriber re-encode:
+		// WireBytes is shared across subscribers and must not be mutated.
+		stamped := e
+		stamped.Gap = true
+		if wire, err := encodeEventFrame(stamped); err == nil {
+			stamped.WireBytes = wire
+			out = stamped
+		}
+	}
 	select {
-	case s.ch <- e:
+	case s.ch <- out:
+		if out.Gap {
+			delete(s.gapped, e.Channel)
+		}
 	case <-s.done:
 	default:
-		// Drop. Client recovers via per-channel seq-gap detection.
+		// Drop. A whole-state channel's next frame supersedes the lost
+		// one (the same reasoning as Replay's latest-only carve-out), so
+		// only deeper retentions need the loss announced.
+		if channelRetention(e.Channel) != RetentionLatestOnly {
+			s.gapped[e.Channel] = struct{}{}
+		}
+	}
+}
+
+// flushGapMarkers enqueues a standalone {gap:true} marker — the same
+// shape Replay emits — for every gapped channel other than the one
+// being delivered, which announces its own loss by riding the delivered
+// frame. Non-blocking: a marker that doesn't fit stays flagged and is
+// retried on the next delivery. Runs under the bus mutex (see deliver),
+// which is what makes the s.bus.rings read safe.
+func (s *Subscriber) flushGapMarkers(deliveringChannel string) {
+	for channel := range s.gapped {
+		if channel == deliveringChannel {
+			continue
+		}
+		r, ok := s.bus.rings[channel]
+		if !ok {
+			delete(s.gapped, channel)
+			continue
+		}
+		marker := Event{
+			Channel: channel,
+			Seq:     r.seq,
+			Gap:     true,
+			Data:    json.RawMessage(`null`),
+		}
+		wire, err := encodeEventFrame(marker)
+		if err != nil {
+			continue
+		}
+		marker.WireBytes = wire
+		select {
+		case s.ch <- marker:
+			delete(s.gapped, channel)
+		default:
+			// Still full; the flag survives for the next delivery.
+		}
 	}
 }
 

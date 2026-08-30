@@ -41,6 +41,8 @@
 // point rather than the bug.
 
 import { untrack } from 'svelte';
+import { errString } from './errors';
+import { reportFrontendDiagnostic } from './frontendErrorCapture';
 
 /** Handed to `run`; the one staleness check a consumer needs. */
 export interface RefreshToken {
@@ -182,9 +184,15 @@ export function createRefreshScheduler(config: RefreshSchedulerConfig): RefreshS
 
   // The consumers own their error posture and catch inside `run`; this is the
   // net that keeps a rejection from becoming an unhandled one and silently
-  // stranding the cooldown with a run that never settles.
+  // stranding the cooldown with a run that never settles. Persisted too:
+  // a rejection here means an authoritative refresh silently stopped
+  // refreshing, which is incident evidence, not console chatter.
   function reportFailure(err: unknown): void {
     console.error(`refreshScheduler(${name}): run rejected:`, err);
+    reportFrontendDiagnostic(
+      'refreshScheduler: run rejected',
+      `${name}: ${errString(err)}`,
+    );
   }
 
   function settle(gen: number): void {

@@ -2235,7 +2235,12 @@ describe('createThreadPane', () => {
     expect(pane.providerSessionAccount?.account.email).toBe('new@example.com');
   });
 
-  it('does not let an older live-state hydration apply after a newer one completed', async () => {
+  it('coalesces an overlapping refresh into one trailing run whose fresher snapshot wins', async () => {
+    // Refreshes are single-flight (utils/refreshScheduler): a request
+    // during one in flight never opens a second concurrent fetch — the
+    // interleaving where an older snapshot resolves after a newer one is
+    // structurally impossible. The second request is answered by exactly
+    // one trailing run, and the surface converges to ITS snapshot.
     const pane = createThreadPane();
     await pane.switchThread(makeThread({ id: 'thread-hydration-order' }));
 
@@ -2251,24 +2256,11 @@ describe('createThreadPane', () => {
     const older = pane.refreshFromBackend();
     for (let i = 0; i < 4 && releases.length < 1; i += 1)
       await Promise.resolve();
+    expect(releases).toHaveLength(1);
     const newer = pane.refreshFromBackend();
-    for (let i = 0; i < 4 && releases.length < 2; i += 1)
-      await Promise.resolve();
-    expect(releases).toHaveLength(2);
-
-    releases[1]({
-      threadId: 'thread-hydration-order',
-      activeTurn: {
-        threadId: 'thread-hydration-order',
-        turnId: 'new-round',
-        turnIndex: 3,
-        startedAt: 30,
-      },
-      queueItems: [],
-      interactive: { approvals: [], userInputs: [] },
-      todo: null,
-    });
-    await newer;
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    // Coalesced: no second fetch while the first is in flight.
+    expect(releases).toHaveLength(1);
 
     releases[0]({
       threadId: 'thread-hydration-order',
@@ -2307,6 +2299,25 @@ describe('createThreadPane', () => {
       },
     });
     await older;
+
+    // The queued request fires exactly one trailing run once the first
+    // completes (after the scheduler's cooldown).
+    await vi.waitFor(() => expect(releases).toHaveLength(2), {
+      timeout: 2000,
+    });
+    releases[1]({
+      threadId: 'thread-hydration-order',
+      activeTurn: {
+        threadId: 'thread-hydration-order',
+        turnId: 'new-round',
+        turnIndex: 3,
+        startedAt: 30,
+      },
+      queueItems: [],
+      interactive: { approvals: [], userInputs: [] },
+      todo: null,
+    });
+    await newer;
 
     expect(getActiveTurn('thread-hydration-order')).toEqual({
       turnId: 'new-round',
@@ -4039,7 +4050,11 @@ describe('createThreadPane', () => {
       expect(pane.newestLoadedTurnIndex).toBe(2);
     });
 
-    it('does not let an older gap snapshot overwrite a newer refresh', async () => {
+    it('answers a refresh requested mid-refresh with one trailing run that converges the window', async () => {
+      // Single-flight: the overlapping request opens no second concurrent
+      // fetch (the stale-overwrites-newer interleaving is structurally
+      // impossible), and is answered by exactly one trailing run whose
+      // page the window converges to.
       const pane = createThreadPane();
       const releases: Array<(value: unknown) => void> = [];
       let sliceCall = 0;
@@ -4063,17 +4078,8 @@ describe('createThreadPane', () => {
       await flushMicrotasks();
       const newer = pane.refreshFromBackend();
       await flushMicrotasks();
-      expect(releases).toHaveLength(2);
+      expect(releases).toHaveLength(1);
 
-      releases[1]({
-        items: [makeItem({ id: 'newer', threadId: 't', turnIndex: 2 })],
-        oldestTurnIndex: 2,
-        newestTurnIndex: 2,
-        hasMore: false,
-        hasMoreOlder: false,
-        hasMoreNewer: false,
-      });
-      await newer;
       releases[0]({
         items: [makeItem({ id: 'older', threadId: 't', turnIndex: 1 })],
         oldestTurnIndex: 1,
@@ -4083,9 +4089,152 @@ describe('createThreadPane', () => {
         hasMoreNewer: false,
       });
       await older;
+      expect(pane.items.map((item) => item.id)).toEqual(['older']);
+
+      await vi.waitFor(() => expect(releases).toHaveLength(2), {
+        timeout: 2000,
+      });
+      releases[1]({
+        items: [makeItem({ id: 'newer', threadId: 't', turnIndex: 2 })],
+        oldestTurnIndex: 2,
+        newestTurnIndex: 2,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      });
+      await newer;
 
       expect(pane.items.map((item) => item.id)).toEqual(['newer']);
       expect(pane.newestLoadedTurnIndex).toBe(2);
+    });
+
+    it('merges deferred pending-send rows into a refresh page', async () => {
+      // A pending send has no SQLite row until its wire echo, so the
+      // refresh page is structurally blind to it. The live-state
+      // snapshot carries those rows (deferredItems) and the refresh
+      // merges them in — without this, a transport-gap refresh mid-send
+      // dropped the user's own message from the timeline.
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 'persisted', threadId: 't', turnIndex: 1 })],
+        oldestTurnIndex: 1,
+        newestTurnIndex: 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      setBindingMock('GetThreadLiveState', async () => ({
+        threadId: 't',
+        activeTurn: null,
+        queueItems: [],
+        flushedItems: [],
+        deferredItems: [
+          makeItem({
+            id: 'pending-send',
+            threadId: 't',
+            kind: 'user_text',
+            turnIndex: 2,
+            itemIndex: 0,
+            summary: 'not yet echoed',
+          }),
+        ],
+        interactive: { approvals: [], userInputs: [] },
+        todo: null,
+      }));
+
+      await pane.refreshFromBackend();
+
+      expect(pane.items.map((item) => item.id)).toEqual([
+        'persisted',
+        'pending-send',
+      ]);
+      // Merged deferred rows join the optimistic-id ledger so the
+      // stamped tiers (L1 / replica write-back) keep stripping them —
+      // no SQLite row exists until the wire echo.
+      expect(pane.isOptimisticItem('pending-send')).toBe(true);
+      expect(pane.isOptimisticItem('persisted')).toBe(false);
+    });
+
+    it('merges deferred pending-send rows into the cold-open window', async () => {
+      // Same blindness on the cold-open leg: the stamped tiers strip
+      // optimistic rows and SQLite has no row until the echo, so after
+      // a reload the ONLY source for a pending send is the live-state
+      // snapshot. Without the merge the user's queued message vanished
+      // across an app restart until its echo landed.
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 'persisted', threadId: 't', turnIndex: 1 })],
+        oldestTurnIndex: 1,
+        newestTurnIndex: 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      setBindingMock('GetThreadLiveState', async () => ({
+        threadId: 't',
+        activeTurn: null,
+        queueItems: [],
+        flushedItems: [],
+        deferredItems: [
+          makeItem({
+            id: 'pending-send',
+            threadId: 't',
+            kind: 'user_text',
+            turnIndex: 2,
+            itemIndex: 0,
+            summary: 'not yet echoed',
+          }),
+        ],
+        interactive: { approvals: [], userInputs: [] },
+        todo: null,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      expect(pane.items.map((item) => item.id)).toEqual([
+        'persisted',
+        'pending-send',
+      ]);
+      expect(pane.isOptimisticItem('pending-send')).toBe(true);
+      expect(pane.isOptimisticItem('persisted')).toBe(false);
+    });
+
+    it('folds deferred pending-send rows into a page-less sync answer', async () => {
+      // A `fresh` answer keeps the painted rows as-is, but no stamped
+      // tier can carry a pending send, so the deferred fold is the only
+      // way the row reaches the window.
+      const pane = createThreadPane();
+      setBindingMock('SyncThreadWindow', async () => ({
+        status: 'fresh',
+        epoch: 1,
+        rev: 1,
+        generation: 'test-generation',
+        page: null,
+      }));
+      setBindingMock('GetThreadLiveState', async () => ({
+        threadId: 't',
+        activeTurn: null,
+        queueItems: [],
+        flushedItems: [],
+        deferredItems: [
+          makeItem({
+            id: 'pending-send',
+            threadId: 't',
+            kind: 'user_text',
+            turnIndex: 2,
+            itemIndex: 0,
+            summary: 'not yet echoed',
+          }),
+        ],
+        interactive: { approvals: [], userInputs: [] },
+        todo: null,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      expect(pane.items.map((item) => item.id)).toEqual(['pending-send']);
+      expect(pane.isOptimisticItem('pending-send')).toBe(true);
     });
 
     it('prunes older rows when live tail growth exceeds the active window cap', async () => {
@@ -9952,8 +10101,6 @@ describe('createThreadPane', () => {
         });
         expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 0 });
 
-        // This is an attested refresh, not a live mutation. The backend page
-        // is authoritative and removes the row whose smoother owns the gate.
         setBindingMock('ListThreadSliceAround', async () => ({
           items: [],
           oldestTurnIndex: -1,
@@ -9962,6 +10109,20 @@ describe('createThreadPane', () => {
           hasMoreOlder: false,
           hasMoreNewer: false,
         }));
+        // While the row is still STREAMING, a page that lacks it is
+        // expected — streaming rows persist per-item on completion, so
+        // the refresh retains it (and its gate) rather than tearing the
+        // block being streamed out of the timeline.
+        await pane.refreshFromBackend();
+        expect(pane.items.map((item) => item.id)).toEqual(['frontier']);
+        expect(pane.revealBoundary).toEqual({ turnIndex: 1, itemIndex: 0 });
+
+        // Once the row has SETTLED, the backend page is authoritative:
+        // a refresh whose page lacks it removes the row and the gate
+        // cannot outlive its frontier.
+        pane.applyProviderItemUpserts([
+          { ...frontier, status: 'completed', summary: 'streamed words arriving' },
+        ]);
         await pane.refreshFromBackend();
 
         expect(pane.items).toEqual([]);

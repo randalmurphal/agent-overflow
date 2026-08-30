@@ -122,20 +122,33 @@ marker for an evicted cursor, because those frames are superseded state rather
 than lost history. An above-head cursor still gaps in both classes: that is a
 client-state fault, not a retention question.
 
-### The client owns the other half
+### Live-connection drops are announced by the server too
 
-`gap:true` is the reconnect half, and the server is the only party that can
-raise it. Within a live connection, an event whose seq is more than one past the
-channel's cursor means the events between them were dropped into a full
-subscriber buffer (`Subscriber.deliver`). The server never records that and no
-later frame announces it.
+`gap:true` also covers drops within a live connection. When an event does not
+fit a subscriber's buffer, `Subscriber.deliver` flags that channel in the
+subscriber's `gapped` set and announces the loss on the next opportunity: the
+next event that fits on the flagged channel is re-encoded for that subscriber
+with `gap:true`, and any OTHER flagged channels get standalone
+`{gap:true, data:null}` markers (the same shape `Replay` sends) flushed ahead
+of whatever delivers next. Latest-only channels are never flagged, because
+their next frame supersedes the lost one, which mirrors `Replay`'s carve-out.
 
-`wsClient.handleEventEntry` treats that forward skip as a gap, with the same
-console warning and the same synthetic `transport:gap` dispatch, and still
-delivers the carried event, which is real data. Without it, a single drop on an
-edge-triggered channel (`git:status`, `pr:updated`, and `mcp:status` emit
-exactly one frame per state change) leaves every consumer of that entity stale
-until the entity next changes.
+Before 2026-08-29 the server never recorded a drop, and detection relied
+entirely on the client noticing a seq forward-skip on a LATER same-channel
+delivery. A flood starves exactly that: during a subagent fan-out storm the
+dropped channel's next frames were themselves dropped, so no skip was ever
+observable and a pane sat truncated for 30-40s on a healthy connection.
+
+`wsClient.handleEventEntry` keeps the client half: an event whose seq is more
+than one past the channel's cursor is treated as a gap, with the same
+synthetic `transport:gap` dispatch, and the carried event is still delivered,
+which is real data. Without it, a single drop on an edge-triggered channel
+(`git:status`, `pr:updated`, and `mcp:status` emit exactly one frame per state
+change) leaves every consumer of that entity stale until the entity next
+changes. Both detection paths persist a diagnostic through
+`reportFrontendDiagnostic`, so a storm leaves evidence in
+`frontend-errors.jsonl` rather than only in a devtools console nobody has
+open.
 
 ### Forward-skip detection is scoped to one connection
 

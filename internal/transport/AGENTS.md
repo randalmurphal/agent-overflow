@@ -277,9 +277,15 @@ pong timeout, both overridable through `Config.KeepaliveInterval` and
 - Wire-bound errors carry only generic prose (`"internal error"`,
   `"bad parameter"`). Full text plus a correlation id is logged server-side, and
   internal panics and file paths must never reach the wire.
-- A full subscriber buffer drops the incoming event silently
-  (`Subscriber.deliver`). Nothing marks the subscriber behind and no later frame
-  announces it: the client detects the per-channel seq skip and re-fetches.
+- A full subscriber buffer drops the incoming event, and the loss is
+  ANNOUNCED (`Subscriber.deliver`): the channel is flagged per subscriber, the
+  next event that fits on it arrives `gap:true` (re-encoded per subscriber),
+  and other flagged channels get standalone `{gap:true, data:null}` markers
+  flushed ahead of any later delivery. Client-side seq-skip detection alone
+  needed a later same-channel delivery to fire, which a flood starves — a
+  subagent fan-out storm left a pane's timeline truncated for 30-40s with the
+  connection healthy (incident 2026-08-29). Latest-only channels stay
+  unannounced on purpose: the next frame supersedes the lost one.
 - `Server.Start` returns when the listener is bound. The HTTP serve goroutine
   surfaces async failure through `Server.ServeErr() <-chan error`.
 
