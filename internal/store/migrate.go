@@ -1342,6 +1342,17 @@ CREATE TABLE provider_thread_cost (
 		// plain ADD COLUMN, so the FK-parent threads table is not rebuilt.
 		SQL: `ALTER TABLE threads ADD COLUMN pending_fork_resume_at TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		Version: 70,
+		Name:    "trim_unverified_codex_v2_profiles",
+		// Older MultiAgentV2 rows stored the parent session profile or the
+		// requested spawn arguments as if they were the child's effective
+		// model and effort. Codex applies role and default configuration after
+		// those inputs, and its activity item does not report the result. Drop
+		// the unverified cache fields once. The current adapter repopulates
+		// active rows from a metadata-only child thread/resume response.
+		Fix: trimUnverifiedCodexV2ProfilesFixup,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

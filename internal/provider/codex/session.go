@@ -225,6 +225,12 @@ type sessionCollabState struct {
 	// a historical child identity can survive an app-server restart while its
 	// work cannot.
 	childRuntimeByThread map[string]childRuntimeState
+	// profileReadsByThread coalesces repeated V2 activity delivery while one
+	// effective-profile request is in flight.
+	profileReadsByThread map[string]struct{}
+	// profileWarningEmitted limits an unavailable child-profile warning to one
+	// visible notification per session. Each failed request is still logged.
+	profileWarningEmitted bool
 }
 
 type childRuntimePhase uint8
@@ -300,10 +306,9 @@ type Session struct {
 	// running when the constructor learns the id — NewSession has to start
 	// readLoop to receive the handshake response at all, so every
 	// notification arriving in that window reads the field concurrently with
-	// the write. Two of those readers (registerChildOwnershipWithSource,
-	// collabProfileForThread) hold mu already, so folding this field into mu
-	// would introduce a self-deadlock; a second mutex would introduce a lock
-	// order. An atomic has neither.
+	// the write. registerChildOwnershipWithSource holds mu already, so folding
+	// this field into mu would introduce a self-deadlock; a second mutex would
+	// introduce a lock order. An atomic has neither.
 	codexThreadID atomic.Pointer[string]
 	// turn is the per-turn state of this session's own thread; origins is who
 	// started each of those turns; turnConfig is what the next turn will ask

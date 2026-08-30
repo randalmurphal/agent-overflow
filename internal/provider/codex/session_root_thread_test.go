@@ -9,7 +9,7 @@ import (
 // rootThreadHandshakeTimeout bounds the concurrent phase below. It only
 // fires if a read path blocks forever — which is what folding the root
 // thread id back under s.mu would do to the two readers that already hold
-// it (registerChildOwnershipWithSource, collabProfileForThread). Without
+// it (registerChildOwnershipWithSource). Without
 // the bound that regression shows up as a package-wide test timeout with
 // no attribution.
 const rootThreadHandshakeTimeout = 15 * time.Second
@@ -41,7 +41,9 @@ func TestRootThreadIDSurvivesHandshakeWindow(t *testing.T) {
 			// past the end of the test.
 			s.dispatchNotification("thread/settings/updated", params)
 			s.isUnmappedForeignProviderThread("child-thread")
-			s.collabProfileForThread("child-thread")
+			s.mu.Lock()
+			_ = s.rootThreadID()
+			s.mu.Unlock()
 		}
 	}()
 

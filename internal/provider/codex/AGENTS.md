@@ -24,6 +24,7 @@ from the name.
 | `session_start.go` | Spawn, `initialize`, the one `thread/start` / `thread/resume`, the `BeforeResume` window. Every failure here means "there is no usable thread". |
 | `session_notifications.go` | `dispatchRoutableNotification`: five named steps in a fixed order (route, ownership claim, child interception, parent fold, classify and emit). |
 | `child_routing.go` | The bounded, deadlined, fail-closed quarantine for not-yet-owned child threads. |
+| `collab_profiles.go` | Effective MultiAgentV2 child model and effort resolution through metadata-only child resumes. |
 | `live_update.go` | Mid-session model / effort / fast-mode / runtime-mode change with no restart. |
 | `notification_catalog.go` | The pinned upstream notification list, the DERIVED opt-out complement, the per-session drift log. |
 | `probe.go`, `identity_probe.go`, `login.go`, `mcp_auth_flow.go` | The credential and OAuth paths. Treat changes here as security-relevant. |
@@ -226,6 +227,12 @@ sequence, V1 and V2 shapes, quarantine contract and delivery envelope:
   `usageAcct.observe` and never emitted as `EventTokenUsage`. The figure is
   the child's cumulative spend from `childAgentTokenSpend`, not
   `total.totalTokens`, which re-counts the cached prompt every round.
+- **MultiAgentV2 spawn activity does not carry the child profile.** Raw
+  `spawn_agent` model and effort fields are requests, not the effective result
+  after Codex applies role and default configuration. Resolve the profile from
+  the child's metadata-only `thread/resume {excludeTurns:true}` response and
+  leave the badge blank until that response arrives. Never inherit the parent
+  profile or copy the raw request into persisted launch metadata.
 - **Transcript presentation waits for delivery into parent model context**,
   not for child completion, which changes only live launch state. Resumed
   sessions cannot opt into raw events, so `session_rollout_notifications.go`
@@ -269,7 +276,7 @@ Params and response shapes are in `codex-wire.md`. These are the AO-side rules.
 | Method | AO's rule |
 |---|---|
 | `thread/start`, `thread/resume` | `buildThreadParams` always names `approvalsReviewer`, and `verifyApprovalsReviewerEcho` reads it back before the session is handed out. Resume always sends `excludeTurns: true`, because AO's SQLite projection is the transcript authority. |
-| mid-life reconcile resumes | `session_probe.go` and `collab_rehydrate.go` send NO overrides. Codex ignores overrides when resuming a LOADED thread, and a divergent one arms its shutdown-and-cold-resume branch. |
+| mid-life reconcile resumes | `session_probe.go`, `collab_profiles.go`, and `collab_rehydrate.go` send NO overrides. Codex ignores overrides when resuming a LOADED thread, and a divergent one arms its shutdown-and-cold-resume branch. A child resume response is also the authority for that child's effective model and effort. |
 | `thread/fork` | Names none of the config axes, safe only because nothing executes until a `turn/start` re-asserts every axis. Do not special-case the reviewer without doing the same for the sandbox. |
 | `turn/start` | Carries the per-turn config overrides, which is how a live model, effort, fast-mode or runtime-mode change lands with no restart. `SendOptions.OutputSchema` rides it and is never sticky. |
 | `turn/steer` | Takes no config fields. Refuse with `ErrNoActiveTurn`, without writing, when there is no tracked `activeTurnID`. |

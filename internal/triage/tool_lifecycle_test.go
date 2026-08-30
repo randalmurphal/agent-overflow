@@ -1429,6 +1429,8 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 		"input": map[string]any{
 			"tool":              "spawn_agent",
 			"prompt":            "Run sleep jobs",
+			"model":             "gpt-5.6-sol",
+			"reasoningEffort":   "high",
 			"receiverThreadIds": []string{"child-1", "child-2"},
 		},
 	})
@@ -1450,6 +1452,8 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 		"toolName":         "collab_agent",
 		"input": map[string]any{
 			"tool":              "spawn_agent",
+			"model":             "gpt-5.6-luna",
+			"reasoningEffort":   "low",
 			"receiverThreadIds": []string{"child-1", "child-2"},
 			"newAgentNickname":  "Hypatia",
 			"newAgentRole":      "default",
@@ -1471,6 +1475,8 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 			ReceiverThreadIDs []string `json:"receiverThreadIds"`
 			NewAgentNickname  string   `json:"newAgentNickname"`
 			NewAgentRole      string   `json:"newAgentRole"`
+			Model             string   `json:"model"`
+			ReasoningEffort   string   `json:"reasoningEffort"`
 		} `json:"input"`
 	}
 	if err := json.Unmarshal([]byte(item.Meta), &persistedMeta); err != nil {
@@ -1482,6 +1488,9 @@ func TestCodexSpawnLabelMetaUpdatePreservesFullReceiverList(t *testing.T) {
 	}
 	if persistedMeta.Input.NewAgentNickname != "Hypatia" || persistedMeta.Input.NewAgentRole != "default" {
 		t.Fatalf("agent label = %q/%q, want Hypatia/default", persistedMeta.Input.NewAgentNickname, persistedMeta.Input.NewAgentRole)
+	}
+	if persistedMeta.Input.Model != "gpt-5.6-luna" || persistedMeta.Input.ReasoningEffort != "low" {
+		t.Fatalf("effective profile = %q/%q, want gpt-5.6-luna/low", persistedMeta.Input.Model, persistedMeta.Input.ReasoningEffort)
 	}
 }
 

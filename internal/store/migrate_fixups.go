@@ -121,6 +121,19 @@ func trimCodexV2EncryptedCollabPromptsFixup(tx *sql.Tx) error {
 	}
 }
 
+// trimUnverifiedCodexV2ProfilesFixup removes model and effort values that the
+// pre-v70 MultiAgentV2 adapter copied from the parent session or raw spawn
+// arguments. Neither source describes the effective child configuration after
+// Codex applies role and default configuration. V1 typed rows are preserved.
+func trimUnverifiedCodexV2ProfilesFixup(tx *sql.Tx) error {
+	return rewriteItemMetas(tx,
+		`meta LIKE '%"activityKind"%' AND (meta LIKE '%"model"%' OR meta LIKE '%"reasoningEffort"%')`,
+		func(_ string, meta []byte) ([]byte, bool) {
+			return itemmeta.TrimUnverifiedCodexV2Profile(meta)
+		},
+	)
+}
+
 func encryptedPromptFromMeta(meta string) string {
 	var decoded struct {
 		Input struct {

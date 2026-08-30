@@ -17,16 +17,14 @@ const (
 )
 
 type rawToolCall struct {
-	CallID          string
-	Name            string
-	ProcessID       string
-	Command         string
-	AgentType       string
-	Model           string
-	ReasoningEffort string
-	Prompt          string
-	Target          string
-	Targets         []string
+	CallID    string
+	Name      string
+	ProcessID string
+	Command   string
+	AgentType string
+	Prompt    string
+	Target    string
+	Targets   []string
 }
 
 func (s *Session) observeRawResponseItem(method string, params json.RawMessage) json.RawMessage {
@@ -66,8 +64,6 @@ func (s *Session) rememberRawToolCall(item map[string]json.RawMessage) {
 		isMultiAgentV2 := strings.TrimSpace(readRawString(item, "namespace")) == "collaboration" ||
 			readFlexibleString(args, "task_name") != ""
 		call.AgentType = readFlexibleString(args, "agent_type")
-		call.Model = readFlexibleString(args, "model")
-		call.ReasoningEffort = readFlexibleString(args, "reasoning_effort")
 		if !isMultiAgentV2 {
 			call.Prompt = rawSpawnAgentPrompt(args)
 		}
@@ -186,8 +182,6 @@ func (s *Session) enrichRawToolCallMetadata(evt *provider.ProviderEvent) {
 			setRawStringIfMissing(input, "tool", "spawn_agent")
 			setRawStringIfMissing(input, "prompt", call.Prompt)
 			setRawStringIfMissing(input, "newAgentRole", call.AgentType)
-			setRawStringIfMissing(input, "model", call.Model)
-			setRawStringIfMissing(input, "reasoningEffort", call.ReasoningEffort)
 		case "wait_agent":
 			setRawStringIfMissing(input, "tool", "wait_agent")
 			setRawStringArray(input, "requestedReceiverThreadIds", call.Targets)
@@ -259,13 +253,8 @@ func (s *Session) emitRawSpawnAgentMetaUpdate(call rawToolCall, meta collabRecei
 	if s.onEvent == nil || strings.TrimSpace(call.CallID) == "" {
 		return
 	}
-	model, reasoningEffort := s.activeCollabModel()
-	model = firstNonEmptyString(strings.TrimSpace(call.Model), model)
-	reasoningEffort = firstNonEmptyString(strings.TrimSpace(call.ReasoningEffort), reasoningEffort)
 	launchMeta := collabLaunchMeta{
 		Prompt:            call.Prompt,
-		Model:             model,
-		ReasoningEffort:   reasoningEffort,
 		ReceiverThreadIDs: []string{meta.ThreadID},
 	}
 	if meta.AgentRole == "" {

@@ -10,6 +10,10 @@ the exact `rust-v0.144.0` tag (`767822446c...`) and a live
 an older tag; use `git show rust-v0.144.0:<path>` rather than assuming its
 worktree revision describes the installed binary.
 
+Child-profile resolution was re-verified on 2026-08-29 against
+`rust-v0.150.1`. The public V2 `SubAgentActivity` has no model or effort.
+`thread/resume` returns both from the effective child `ThreadConfigSnapshot`.
+
 ## Sources
 
 **Shape-of-truth, in priority order:**
@@ -545,8 +549,9 @@ tool output. These raw items can carry the same label metadata:
 ```
 
 Agent Overflow treats the typed `item/*` lifecycle as authoritative for the
-visible tool row. `thread/read` is the primary label source; raw response
-items are only an additional typed signal when present, not a prerequisite.
+visible tool row. `thread/read` is the primary label source. A metadata-only
+child `thread/resume` is the profile source. Raw response items are only an
+additional typed signal when present, not a prerequisite.
 
 ### MultiAgentV2 spawn normalization
 
@@ -572,26 +577,33 @@ child. This is a typed authorization signal, not an ordering heuristic.
 MultiAgentV2 marks `spawn_agent.message`, `send_message.message`, and
 `followup_task.message` as encrypted tool parameters. Raw response items carry
 opaque model-service ciphertext in those fields; clients cannot decrypt it and
-must never normalize it as a plaintext prompt. Safe raw fields such as target,
-explicit role, model, and effort may enrich the row. On codex 0.149.0 a V2
+must never normalize it as a plaintext prompt. Safe raw fields such as target
+and explicit role may enrich the row. Raw model and effort are requested
+values, not the effective child profile, so they must not populate the model
+badge. On codex 0.149.0 a V2
 `spawn_agent` in practice carries only `{task_name, fork_turns, message}` and
 its output only `{task_name}`, with no nickname and no agent_type, so the
 model-chosen `task_name` is the whole plaintext statement of what the child
 was asked to do, and a display label derived from it is the same string
 twice. The canonical activity,
-active session profile, cached `thread/started`, and `thread/read` metadata
-provide path, effective model/effort, and display label. Effective profiles are
-tracked per owned provider thread so a nested spawn inherits its immediate
-parent agent's model/effort rather than the AO root's. On resume, raw events
-are unavailable, so those typed sources remain authoritative.
+cached `thread/started`, and `thread/read` metadata provide path and display
+label. They do not provide the effective model or effort. Agent Overflow sends
+`thread/resume {threadId, excludeTurns:true}` with no overrides after typed
+ownership arrives. The response's top-level `model` and `reasoningEffort`
+describe the child after Codex has applied explicit requests, defaults, and
+role configuration. Each nested child is queried independently. No child
+inherits a displayed profile from its parent. On resume, raw events are
+unavailable, so the same response repairs active child profiles without
+replaying turns.
 `thread/resume` history is scanned for both V1 spawn items and V2 started
 activities to rebuild ownership without replaying duplicate transcript rows.
-One bounded, session-cancellable worker follows descendants with read-only
-`thread/read {includeTurns:true}` calls. It resumes only children whose
-reported status is `active`, using `excludeTurns:true` solely to restore the
-live subscription. A fresh `Session.Resume` starts a new traversal generation;
-transient reads/resumes retry, conflicting/self-referential ownership is
-rejected, and traversal stops after 256 descendants with a visible warning.
+A sequential, session-cancellable worker inspects each unresolved child with
+`thread/read {includeTurns:false}` and one latest-turn query when needed. It
+resumes only children whose reported status is `active`, using
+`excludeTurns:true` to restore the live subscription and recover the effective
+profile. The queue bounds concurrency without an arbitrary child-count limit.
+A fresh `Session.Resume` starts a new traversal generation. Transient
+reads/resumes retry, and conflicting or self-referential ownership is rejected.
 
 Known child `turn/started` is normalized to a launch-keyed running status. This
 reactivates a previously completed child's background projection when `followup_task`

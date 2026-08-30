@@ -76,7 +76,10 @@ unmapped non-root provider thread must be quarantined rather than treated as
 the AO root. A started activity emitted on a child creates a nested ownership
 edge for a grandchild. Reopen recovery walks persisted descendant histories
 with bounded read-only `thread/read` calls and resumes only currently-active
-children for notification subscription. See
+children for notification subscription. The V2 activity and raw spawn request
+do not report the effective child profile. Agent Overflow reads model and
+reasoning effort from the child's metadata-only
+`thread/resume {excludeTurns:true}` response, without replaying turns. See
 [`codex-wire.md §Collab agent lifecycle`](codex-wire.md#collab-agent-lifecycle-multiagentv1-and-multiagentv2).
 
 ## Background terminals

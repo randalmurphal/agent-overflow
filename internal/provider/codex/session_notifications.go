@@ -440,13 +440,10 @@ func (s *Session) enrichSubAgentActivitySpawnMetadata(evt *provider.ProviderEven
 	if evt == nil || evt.ItemType != "collab_agent" {
 		return
 	}
-	model, reasoningEffort := s.collabProfileForThread(providerThreadIDFromParams(params))
 	mutateEventMetaInput(evt, false, func(input map[string]json.RawMessage) {
 		if readRawString(input, "tool") != "spawn_agent" {
 			return
 		}
-		setRawStringIfMissing(input, "model", model)
-		setRawStringIfMissing(input, "reasoningEffort", reasoningEffort)
 		receiverThreadIDs := readRawStringArray(input, "receiverThreadIds")
 		receiverMetadata := s.collabReceiverMetadataForThreads(receiverThreadIDs)
 		if len(receiverMetadata) == 1 {
@@ -454,13 +451,6 @@ func (s *Session) enrichSubAgentActivitySpawnMetadata(evt *provider.ProviderEven
 			setRawStringIfMissing(input, "newAgentRole", receiverMetadata[0].AgentRole)
 		}
 		setRawStringIfMissing(input, "newAgentRole", "default")
-		for _, receiverThreadID := range receiverThreadIDs {
-			s.rememberCollabProfile(
-				receiverThreadID,
-				readRawString(input, "model"),
-				readRawString(input, "reasoningEffort"),
-			)
-		}
 	})
 }
 
