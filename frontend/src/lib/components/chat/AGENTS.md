@@ -187,6 +187,16 @@ Mermaid and Math stamp their source on `data-mermaid-source` and
 `data-math-source`, keeping markdown copy and diagram actions working.
 Code uses a source-free `data-code-source=""` marker, because
 `<code>.textContent` owns the source: never recover it from the marker.
+
+A footnote body is the one thing NOT recoverable from the DOM: a `[^1]:
+body` definition renders nothing, and per-block lexing leaves the ref
+token's back-reference empty (divergence 29). The chip publishes
+`data-footnote-label`, `markdown/footnoteDefinitions.ts` resolves it
+against the source each `.markdown-body` registers, and
+`FootnotePopoverHost.svelte` — one app-level instance, one delegated
+click, one `primitives/Popover.svelte` — shows the body. The lookup runs
+on the click and never during render.
+
 The direct assistant prose reveal
 (`markdown/streamingAssistantLiteralOwner.ts`) is the SINGLE owner of the
 active literal host's visible text, a correctness boundary: the vendored

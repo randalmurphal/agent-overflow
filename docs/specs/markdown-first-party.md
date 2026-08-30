@@ -38,7 +38,20 @@ a 266-line patch against a re-minified bundle that cannot survive a bump.
    added to the modal later if ever wanted.
 4. Delete the footnote popover chrome (`FootnoteRef` popover, popover.svelte,
    useClickOutside, useKeyDown, floating-ui). `[^1]` refs keep rendering as
-   superscript links to the footnote list.
+   chips.
+
+   AMENDED after W2: there is no footnote list, so W1 left the definition
+   body with no renderer at all — the chip pointed at nothing. The popup is
+   back, REBUILT on the app's own primitives rather than restored:
+   `chat/FootnotePopoverHost.svelte`, one instance for the whole app,
+   opened by a delegated click on the chip and positioned by
+   `primitives/Popover.svelte` (which portals out of the row, the thing
+   floating-ui inside a containment-scoped row could not do). Nothing
+   comes back into the vendor tree: the chip publishes
+   `data-footnote-label`, `marked/index.js` gains one document-level
+   `lexFootnoteDefinitions` query, and the rest is app code. Vendor
+   DIVERGENCE entry 29. The same change gave `sup`/`sub` and the chip
+   explicit, non-compounding sizes.
 5. Keep the `citations` and `mdx` tokenizers even though their UI is
    overridden/disabled: removing them changes how `[foo]` and `<Foo/>`
    shaped prose parses. Rendering behavior stays identical.

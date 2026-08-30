@@ -86,6 +86,7 @@
   import { getVisibleSidebarThreadIds } from './lib/stores/sidebarThreadOrder';
   import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
+  import FootnotePopoverHost from './lib/components/chat/FootnotePopoverHost.svelte';
   import ExternalLinkContextHost from './lib/components/shared/ExternalLinkContextHost.svelte';
   import {
     openDraftThreadForProject,
@@ -584,4 +585,5 @@
 />
 <Toast />
 <DiagramInteractionHost />
+<FootnotePopoverHost />
 <ExternalLinkContextHost />

@@ -209,6 +209,24 @@ export const lex = (markdown, extensions = []) => {
         .lex(markdown)
         .filter((token) => token.type !== 'space' && token.type !== 'footnote');
 };
+// Divergence 29: `[^label]` → its `[^label]: body` definition, for a whole
+// document. The render path cannot answer this. A definition is always its
+// own block, parseBlocks splits blocks apart, and each Block lexes its
+// string in its own Lexer (see incrementalLex's cross-BLOCK note), so the
+// tokenizer's `ref.content` back-reference is the empty placeholder for
+// every ref whose definition lives in another block — which is every real
+// document, since definitions conventionally sit at the end. The definition
+// tokens are also filtered out of every render list, so the body reaches no
+// DOM either. One Lexer over the whole source answers it with the real
+// grammar (fenced code, list nesting and blockquotes included) instead of a
+// second `[^x]:` regex somewhere in the app. Returns null when the document
+// declares no footnotes at all. Callers own the memo: this is a full lex,
+// paid lazily on the gesture that needs it, never during render.
+export const lexFootnoteDefinitions = (markdown, extensions = []) => {
+    const lexer = new Lexer(getLexOptions(extensions));
+    lexer.lex(markdown);
+    return lexer.hasFootnotes ? lexer.footnotes.footnotes : null;
+};
 export const createParseBlocksCache = (observeLex) => ({
     content: '',
     extKey: null,

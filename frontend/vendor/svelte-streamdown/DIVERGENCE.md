@@ -652,11 +652,15 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
       `Elements/FootnoteRef.svelte`, `Elements/popover.svelte.js`,
       `utils/useClickOutside.svelte.js`, `utils/useKeyDown.svelte.js` and
       the `@floating-ui/dom` dependency. The `[^1]` chip renders exactly as
-      before. NOTE: the footnote BODY has no renderer now — it never had
-      one outside the popover (`Element.svelte`'s `footnote` branch was
-      always empty), so a `[^1]: body` definition contributes nothing to
-      the output. Rendering a footnote list is new UI, not a W1 deletion.
-      Regression: `ChatMarkdown.test.ts`.
+      before. NOTE: the footnote BODY still has no renderer INSIDE this
+      tree, and never had one outside the popover (`Element.svelte`'s
+      `footnote` branch was always empty), so a `[^1]: body` definition
+      contributes no DOM of its own. The body is shown again, but app-side:
+      the chip publishes its LABEL and
+      `chat/FootnotePopoverHost.svelte` resolves and renders the body in one
+      app-owned popup — see entry 29. A footnote LIST (rendering
+      every definition at the end of the message) remains new UI that
+      nobody has asked for. Regression: `ChatMarkdown.test.ts`.
     - **Never-taken branches** — `Elements/fallbacks/*` (replaced by one
       inline source-text fallback in `Element.svelte`; the host always
       supplies `components`), `AnimatedText.svelte` and the whole
@@ -672,3 +676,51 @@ Paths below are relative to `dist/`. Regression-test paths are relative to
       render path reads, and the host's flat table is the whole theme.
     Nothing above changes rendering for this host except the two approved
     removals (mermaid panzoom/download chrome, footnote popover).
+29. **footnote definitions are resolved document-level, by the host**
+    (`Elements/FootnoteRef.svelte`, `marked/index.js`
+    `lexFootnoteDefinitions`). `marked-footnotes.js` back-references each
+    `[^1]` ref to its `[^1]: body` definition on `token.content`, and that
+    reference is empty in this renderer for every document that puts its
+    definitions where documents put them. A definition is always its own
+    block; `parseBlocks` splits the document into blocks and each `Block`
+    lexes its string in its own `Lexer` (the cross-BLOCK note above
+    `createIncrementalLexCache` states this), so a ref and its definition
+    never meet. The definition token is filtered out of every render list
+    on top of that, so the body reaches no DOM either — which is why entry
+    28 could delete the popover and leave the body with no renderer at all.
+
+    Two seams close it, and both keep the popup itself out of this tree.
+    The chip stamps `data-footnote-label` plus an unconditional
+    `aria-haspopup="dialog"` and stops: no handler, no popup, no state.
+    `aria-haspopup` cannot be conditional here for the same reason the body
+    cannot travel — whether a definition exists is not knowable at this
+    point in the render — and the host owns the `aria-expanded` half, which
+    only it can answer. `marked/index.js` exports
+    `lexFootnoteDefinitions(markdown)`, one Lexer over a whole source
+    returning the `label → footnote` map — the real grammar, so a `[^x]:`
+    line inside a fence or a definition nested in a list behaves as marked
+    says it does, rather than as a second regex in the app would guess.
+    `chat/markdown/footnoteDefinitions.ts` owns the registry (each rendered
+    `.markdown-body` publishes its source) and the memo, and
+    `chat/FootnotePopoverHost.svelte` — mounted once from `App.svelte`, one
+    delegated document `click`, one shared `primitives/Popover.svelte` —
+    renders the body through `ChatMarkdown`, so code, links and emphasis
+    inside a footnote render as markdown. The lex is paid on the click and
+    memoized, never during render. A ref whose label the document never
+    defines resolves to nothing and stays the inert marker it was.
+
+    Why the popup is not in here. Positioning: the deleted floating-ui
+    popover was `position: fixed` inside the row, which lands off-screen
+    once a virtualizer row is containment-scoped, while the app's Popover
+    portals to `<body>` and inherits the app's clip-boundary and
+    anchor-gone rules. Cost: a popup owned here is one component instance
+    per REF, against one instance for the whole app. The shape mirrors the
+    mermaid seams in entry 28 — `data-mermaid-source` for a value only the
+    parser has, and a handler-less control the host intercepts.
+    Host-specific integration metadata, not an upstream bug. Drop it if the
+    renderer ever lexes a document in one pass, which would make
+    `token.content` answer on its own. Regression:
+    `ChatMarkdown.test.ts` (label seam, popup opens with a rendered body,
+    Esc / outside click close it, refs sharing a label, unmatched ref
+    inert) and `markdown/footnoteDefinitions.test.ts` (fenced-code and
+    nesting cases, the memo, registry lifetime).

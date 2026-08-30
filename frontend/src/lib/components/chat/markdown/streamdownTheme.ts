@@ -158,8 +158,15 @@ export const chatMarkdownTheme: Theme = {
   th: {
     base: 'px-3 py-1.5 text-[0.8125rem] font-medium min-w-0 max-w-none break-words text-fg-muted text-left',
   },
-  sup: { base: 'text-sm' },
-  sub: { base: 'text-sm' },
+  // Stacked text. The size is `em`, not a rem step: `<sup>`/`<sub>` appear in
+  // prose (0.875rem), in table cells (0.8125rem) and inside headings, and a
+  // fixed rem value renders a superscript LARGER than the text it annotates
+  // in the smallest of those. The vertical-align is spelled out even though
+  // it matches the UA default, so the pair reads as one decision and neither
+  // half can drift. One `em` step only — nested stacking (`x^a^` inside a
+  // `<sup>`) compounds, and two levels is already the practical limit.
+  sup: { base: 'text-[0.75em] align-super' },
+  sub: { base: 'text-[0.75em] align-sub' },
   hr: { base: 'md-blk border-border-subtle my-5' },
   strong: { base: 'font-semibold' },
   em: { base: 'italic' },
@@ -180,8 +187,14 @@ export const chatMarkdownTheme: Theme = {
     buttons: 'absolute right-1 top-1 flex h-fit w-fit items-center gap-1',
   },
   math: { block: 'md-blk', inline: '' },
-  // Footnote reference chip (`[^1]`).
-  footnoteRef: { base: 'px-1 py-0.5 rounded-md text-fg-muted bg-surface-1/80' },
+  // Footnote reference chip (`[^1]`). The chip is UI chrome rather than
+  // prose, so it takes the app's smallest named text step instead of
+  // inheriting the body size — which also pins its line box (`text-xs`
+  // carries its own line-height) so a chip cannot grow the 1.65 prose line
+  // it sits in. Clicking it opens the definition body: the chip publishes
+  // its label on `data-footnote-label` and `chat/FootnotePopoverHost.svelte`
+  // resolves and shows the definition (vendor DIVERGENCE entry 29).
+  footnoteRef: { base: 'px-1 py-0.5 rounded-md text-xs text-fg-muted bg-surface-1/80' },
   // Definition lists: the term is the focal text and the detail is body copy,
   // exactly the fg/fg-muted split.
   descriptionList: { base: 'my-4 space-y-2 md-blk' },

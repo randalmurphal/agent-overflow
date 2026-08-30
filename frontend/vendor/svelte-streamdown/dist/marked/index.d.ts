@@ -1,6 +1,6 @@
 import { type MarkedToken, type Token, type TokenizerStartFunction, type TokenizerThis, type Tokens, type TokensList } from 'marked';
 import { type AlertToken } from './marked-alert.js';
-import { type FootnoteToken } from './marked-footnotes.js';
+import { type Footnote, type FootnoteToken } from './marked-footnotes.js';
 import { type MathToken } from './marked-math.js';
 import { type SubSupToken } from './marked-subsup.js';
 import { type ListItemToken, type ListToken } from './marked-list.js';
@@ -26,6 +26,7 @@ export type Extension = {
 export type StreamdownToken = Exclude<MarkedToken, Tokens.List | Tokens.ListItem | Tokens.Table> | ListToken | ListItemToken | MathToken | AlertToken | FootnoteToken | SubSupToken | BrToken | HrToken | TableToken | THead | TBody | TFoot | THeadRow | TRow | TH | TD | DescriptionListToken | DescriptionToken | DescriptionDetailToken | DescriptionTermToken | AlignToken | CitationToken | MdxToken;
 export type { TableToken, THead, TBody, TFoot, THeadRow, TRow, TH, TD } from './marked-table.js';
 export declare const lex: (markdown: string, extensions?: Extension[]) => StreamdownToken[];
+export declare const lexFootnoteDefinitions: (markdown: string, extensions?: Extension[]) => Map<string, Footnote> | null;
 declare const provenAppendBrand: unique symbol;
 export type ProvenAppend = Readonly<{
     previous: string;

@@ -64,6 +64,7 @@
     type StreamingAssistantSelectionSnapshot,
   } from './markdown/streamingAssistantSelection';
   import { ensureStaticCodeCopyDelegate } from './markdown/staticCodeBlock';
+  import { registerFootnoteSource } from './markdown/footnoteDefinitions';
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
   import { getSettings } from '../../stores/settings.svelte';
@@ -268,6 +269,19 @@
     }));
   });
 
+  // Publish the source this surface renders, so a footnote chip's popup can
+  // resolve `[^1]` to its `[^1]: body` definition. The body renders nowhere
+  // (the parser drops the definition block) and the ref token's own
+  // back-reference is empty across block boundaries, so the SOURCE is the
+  // only answer — see `markdown/footnoteDefinitions.ts`. An attachment
+  // rather than an `$effect`, because the registration is per NODE and must
+  // not make the root element a reactive dependency of anything: the
+  // selection-preserving `$effect.pre` above reads `markdownRoot` and
+  // re-running it on bind would be a live hazard. The reader closes over
+  // `processedSource` lazily, so a streaming delta re-registers nothing.
+  const publishFootnoteSource = (node: HTMLElement) =>
+    registerFootnoteSource(node, () => processedSource);
+
   // "Streaming enabled" (Settings → Live Updates) governs whether the
   // in-progress markdown block is shown while a turn streams. When it is
   // off, the volatile tail is withheld: the row reveals one committed
@@ -357,6 +371,7 @@
 
 <div
   bind:this={markdownRoot}
+  {@attach publishFootnoteSource}
   class={['markdown-body', className].filter(Boolean).join(' ')}
 >
   {#if splitDerived.prefix}
