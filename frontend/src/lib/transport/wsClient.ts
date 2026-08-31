@@ -827,6 +827,58 @@ export class WSClient {
   }
 
   /**
+   * Re-dial so the upgrade names the session this browser just paired.
+   * Called once, when the pairing flow completes: any socket opened
+   * before the credential existed dialed without a ticket, so its
+   * upgrade named whatever the page cookie did — on a browser that also
+   * holds the local page cookie, that is the LOCAL channel, and
+   * revoking the new device would never reach it. Closing the socket
+   * (or the attempt in flight) routes through the ordinary reconnect
+   * path, whose next dial mints a ticket.
+   */
+  redialAfterPairing(): void {
+    if (this.closed) return;
+    this.clearCredentialDead();
+    this.reconnectAttempt = 0;
+    if (this.queuedAttempt !== null) {
+      // A queued attempt re-evaluates the session store when it dials —
+      // run it now rather than waiting out a backoff that was priced
+      // for a failure, not for a credential that just arrived.
+      this.queuedAttempt.fire();
+      return;
+    }
+    if (this.connectPromise !== null) {
+      // An attempt is in flight and may already be past its mint stage.
+      // Let it settle, then close whatever socket it produced; the
+      // close event drives the re-dial.
+      void this.connectPromise.then(
+        () => {
+          try {
+            this.ws?.close();
+          } catch {
+            // ignore — already closing; the close event still fires.
+          }
+        },
+        () => {
+          // A failed attempt scheduled its own retry.
+        },
+      );
+      return;
+    }
+    if (this.ws !== null && this.ws.readyState === WS_OPEN) {
+      try {
+        this.ws.close();
+      } catch {
+        // ignore — already closing; the close event drives the re-dial.
+      }
+      return;
+    }
+    void this.ensureConnected().catch((err) => {
+      console.warn('wsClient: redialAfterPairing failed', err);
+    });
+  }
+
+  /**
    * Register the sink that persists transport diagnostics (one summary
    * line per outage on reconnect, watchdog force-closes). Wired to the
    * always-on frontend error log by installFrontendErrorCapture;
@@ -1070,13 +1122,29 @@ export class WSClient {
     // names its session through the single-use ticket instead
     // (docs/specs/remote-access.md §4). Minted fresh per attempt — a
     // ticket lives seconds and is spent whether or not the upgrade
-    // succeeds. Null when this browser never paired (every embedded and
-    // local page: their cookie rides the upgrade by itself) or when the
-    // backend will not honour the stored session; the dial then proceeds
-    // exactly as before. Runs before the closed check so a close() during
-    // the mint still stops the attempt. The unpaired path stays fully
-    // synchronous — no awaited microtask is added to every ordinary dial.
-    const dialTicket = hasPairedSession() ? await mintDialTicket() : null;
+    // succeeds. Runs before the closed check so a close() during the
+    // mint still stops the attempt. The unpaired path (every embedded
+    // and local page: their cookie rides the upgrade by itself) stays
+    // fully synchronous — no awaited microtask is added to every
+    // ordinary dial.
+    let dialTicket: string | null = null;
+    if (hasPairedSession()) {
+      dialTicket = await mintDialTicket();
+      if (dialTicket === null && hasPairedSession()) {
+        // No ticket, session still held: the mint could not prove the
+        // stored session right now (endpoint unreachable, or the owner
+        // has not confirmed the pairing yet) and did NOT conclude it is
+        // dead — that verdict clears the store, and the next attempt
+        // dials unpaired. Dialing anyway would let a page cookie this
+        // browser may also hold ride the upgrade and admit this screen
+        // as the LOCAL channel — a socket that revoking this device
+        // never reaches. Fail the attempt instead; the ladder retries.
+        this.connectPromise = null;
+        if (this.outage !== null) this.outage.attempts += 1;
+        this.scheduleReconnect();
+        throw new DisconnectedError('paired session has no dial ticket');
+      }
+    }
     if (this.closed) {
       this.connectPromise = null;
       throw new DisconnectedError('client closed', { terminal: true });

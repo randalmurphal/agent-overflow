@@ -325,8 +325,11 @@ function renewSession(fetcher: typeof fetch): Promise<boolean> {
 /**
  * Mint the single-use ticket the WebSocket upgrade names its session
  * with. Null when this browser holds no paired session, or when the
- * backend will not honour the one it holds — the dial then proceeds
- * without naming a session, exactly as an unpaired page does.
+ * backend will not honour the one it holds. The caller distinguishes
+ * the two by re-reading the store: a mint that PROVED the session dead
+ * cleared it (the dial then proceeds unpaired), while a null with the
+ * session still held means unproven — the dial must fail rather than
+ * fall back to a page cookie that would name a different session.
  *
  * Also the activation probe: while the owner has not confirmed the
  * pairing, the backend answers 404, and this keeps answering null

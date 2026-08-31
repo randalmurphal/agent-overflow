@@ -83,7 +83,7 @@ import {
 } from './wsClient';
 import { __resetRunModeForTest, isViewOnlySession } from './runMode';
 import { getConnectionId, getDeviceId } from './clientIdentity';
-import { clearPairedSession, redeemPairing } from './deviceSession';
+import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSession';
 
 // MockWebSocket is a hand-rolled fake that exposes the same shape as
 // the WSLike interface the wsClient depends on. Tests drive it via
@@ -3000,6 +3000,91 @@ describe('WSClient', () => {
       expect(ticketFetch).toHaveBeenCalledWith('/auth/ticket', expect.anything());
       const url = new URL(MockWebSocket.instances[0]!.url);
       expect(url.searchParams.get('ticket')).toBe('tik-9');
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // A paired session with no ticket must FAIL the dial, never dial
+  // bare: on a browser that also holds the local page cookie, a bare
+  // dial admits this screen as the LOCAL channel — a socket revoking
+  // the paired device would never reach.
+  it('fails the dial rather than fall back to the page cookie while the session is unproven', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      // Every /auth call answers 503: the mint proves nothing either
+      // way, so the stored session must survive and no socket may open.
+      const downFetch = vi.fn(async () => new Response('', { status: 503 }));
+      vi.stubGlobal('fetch', downFetch);
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(downFetch).toHaveBeenCalled());
+      await flushMicrotasks();
+
+      expect(MockWebSocket.instances).toHaveLength(0);
+      expect(hasPairedSession()).toBe(true);
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The socket that carried the pairing screen dialed before the
+  // credential existed. Completing the flow re-dials so the upgrade
+  // names the just-confirmed session instead of whatever the cookie did.
+  it('redialAfterPairing moves an open bare socket onto a ticket dial', async () => {
+    localStorage.clear();
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      const first = MockWebSocket.instances[0]!;
+      expect(new URL(first.url).searchParams.get('ticket')).toBeNull();
+      first.acceptOpen();
+      await flushMicrotasks();
+
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      const ticketFetch = vi.fn(
+        async () => new Response(JSON.stringify({ ticket: 'tik-2' }), { status: 200 }),
+      );
+      vi.stubGlobal('fetch', ticketFetch);
+
+      client.redialAfterPairing();
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+      expect(first.readyState).toBe(3);
+      const url = new URL(MockWebSocket.instances[1]!.url);
+      expect(url.searchParams.get('ticket')).toBe('tik-2');
       client.close();
     } finally {
       clearPairedSession();

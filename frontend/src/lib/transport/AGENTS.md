@@ -124,6 +124,14 @@ remote browser alike. Protocol and authz rules:
   exchange, because a refresh secret presented twice reads as reuse
   evidence that ends the session. `components/pairing/PairingScreen.svelte`
   (mounted by `main.ts` on a `#pair=` fragment) is its enrolment surface.
+  While a paired session is stored, it is the ONLY identity the upgrade
+  may present: a dial that cannot mint a ticket fails and retries rather
+  than proceeding bare, because on a browser that also holds the local
+  page cookie a bare dial admits the screen as the local channel — a
+  socket revoking the paired device never reaches. Completing the
+  pairing flow calls `wsClient.redialAfterPairing()` for the same
+  reason: the socket opened under the pairing screen predates the
+  credential and carries the wrong identity.
 
 The connection's opening frame is the OTHER identity source, alongside
 the manifest. `wsClient` records it as `TransportHello` and

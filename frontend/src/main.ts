@@ -72,6 +72,12 @@ async function mountApp(): Promise<void> {
         onDone: () => {
           history.replaceState(null, '', location.pathname + location.search);
           void (async () => {
+            // Any socket opened while this screen was up dialed before
+            // the credential existed; the app must attach under the
+            // session that was just confirmed. Module cache, not a new
+            // chunk — App's static graph already carries the client.
+            const { wsClient } = await import('./lib/transport/wsClient');
+            wsClient.redialAfterPairing();
             if (screen) await unmount(screen);
             mount(App, { target });
           })();
