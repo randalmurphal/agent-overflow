@@ -216,13 +216,32 @@ live session stands in for `Authenticate` (the ticket was minted moments ago
 by presenting that session's credential); the ambient-cookie arm gets no such
 waiver, and the Origin check runs on every upgrade regardless.
 
-**A page URL carries a one-time ticket (`?t=`), never the session token.**
-Tickets are minted per page URL produced — `Server.AppURL` at boot,
-`MintPageTicket` for the LAN share URL, the `PageURLPath` route (`/pageurl`) for
-every later navigation — and the first `/bootstrap.json` presenting one
-exchanges it for the cookie. The SPA then strips it from the URL, and a reload
-rides the cookie. Outstanding tickets are bounded (`maxOutstandingTickets`,
-oldest evicted), so the newest URL a user just copied is always live.
+**A page gets a one-time ticket, never the session token — and which channel
+carries it depends on who opened the page.** A BROWSER gets it in the URL
+(`?t=`), because a URL is the only channel that reaches one: `Server.AppURL` at
+boot, `MintPageTicket` for the LAN share URL, the `PageURLPath` route
+(`/pageurl`) for every later navigation. A WEBVIEW window this process owns gets
+it by `ExecJS` instead, and its URL is bare: the same Go process that mints the
+ticket also holds the `WebviewWindow`, and a page URL is copyable, lands in logs
+and window diagnostics, and outlives its single use in shell history and error
+reports. Either way the first `/bootstrap.json` presenting the ticket exchanges
+it for the cookie; the SPA strips a URL ticket from the address bar, and a
+reload rides the cookie. Outstanding tickets are bounded
+(`maxOutstandingTickets`, oldest evicted), so the newest URL a user just copied
+is always live.
+
+**The webview channel is `internal/pagehost`** — one stdlib-only package (the
+Windows launcher links it without linking this server) holding the marker param
+the bare URL carries (`host=webview`), the two names the injected script writes
+(`window.__aoPageTicket` and the `ao:page-ticket` event), the `/pageurl` JSON
+answer, and `DeliveryScript`, the ONE place that script is rendered.
+`internal/uiwindow.DeliverPageTicket` is the Wails half, shared by all three
+window hosts (`main_desktop.go`, `cmd/agent-overflow-windows`,
+`internal/clientmode`): it answers `events.Common.WindowRuntimeReady` by minting
+a ticket and `ExecJS`ing it, once per document, so a reload gets a fresh one and
+re-delivering a spent one is harmless. The SPA raises that readiness itself
+(`frontend/src/lib/transport/pageHost.ts`), because it replaces
+`@wailsio/runtime` and nothing else in the page will.
 
 **There is ONE ticket mechanism** (`ticket.go`), and both users share it. A
 `ticketBook` mints a CSPRNG token, hands it out over a channel that is already
@@ -232,16 +251,18 @@ differ in exactly two parameters:
 
 | | subject | deadline |
 |---|---|---|
-| page ticket (`Credential.tickets`) | none — a launch has one page credential, so the ticket only decides who receives it | none — the URL is produced for a person to open, and a launcher's fixed `?t=` URL must still work an hour later |
+| page ticket (`Credential.tickets`) | none — a launch has one page credential, so the ticket only decides who receives it | none — a URL ticket is produced for a person to open, and a launcher's fixed `?t=` URL must still work an hour later |
 | WS ticket (`Server.wsTickets`) | the session id it names | `wsTicketTTL` (30s) — a client mints one immediately before it dials |
 
 Do not add a third implementation. A new single-use token is a new book with
 those two parameters set; building it separately means a second constant-time
 compare and a second place for "single use" to be got subtly wrong. Because a
 ticket is spent by the page it was minted for, anything that navigates more than
-once asks `/pageurl` for a fresh URL rather than reusing the boot one: the WSL
-launcher's reload keybinding, `ao-harness open`/`info`/`attach`/`up`, and the
-e2e `HarnessApp.open()`. That route is itself credentialled, and the two
+once asks `/pageurl` for a fresh one rather than reusing the boot URL:
+`ao-harness open`/`info`/`attach`/`up` and the e2e `HarnessApp.open()` take the
+plain-text ticketed URL, and the WSL launcher's reload keybinding takes the
+`?host=webview` JSON answer, which keeps the two halves apart so the URL it
+navigates to stays bare. That route is itself credentialled, and the two
 binaries that call it without linking this package restate its path behind a
 drift-guard test (`internal/wsllauncher`, `internal/harnessclient`).
 

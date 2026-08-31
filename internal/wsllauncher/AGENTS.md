@@ -20,7 +20,7 @@ Two callers:
   whitespace-tolerant (column widths shift across Windows versions).
 - `launcher.go` is the public surface: `Distro`, `Bootstrap`, `Launcher`,
   `LaunchOptions`, the two-binary contract constants
-  (`ResetTransportPortFlag`, `PageURLPath`), plus the `readBootstrapLine`
+  (`ResetTransportPortFlag`, `PageURLPath`, `PageURLWebviewQuery`), plus the `readBootstrapLine`
   helper. Cross-platform
   in shape; Linux/macOS callers get errors from `Launch` /
   `InstallPayload` so the package compiles for unit tests on those hosts.
@@ -101,25 +101,34 @@ Two callers:
   - The WSL-side backend itself. That's the root `main.go`'s headless
     mode (`--print-url-fd`).
 
-## The page URL comes from the backend, once per navigation
+## The page URL comes from the backend, and its ticket does not
 
-`Bootstrap.PageURL` is the fully assembled URL the WebView2 navigates to.
-The launcher never builds one: the URL carries a **one-time page ticket**
-the browser exchanges for its session cookie, and only the backend can
-mint one. A bootstrap line without `pageUrl` is refused at the parse
-boundary rather than opening an empty window.
+`Bootstrap.PageURL` is the URL the WebView2 navigates to, and the
+launcher never builds one — only the backend knows its own origin, and a
+bootstrap line without `pageUrl` is refused at the parse boundary rather
+than opening an empty window. The URL carries **no credential**: it is
+copyable, it lands in `launcher.log` and in window diagnostics, and it
+outlives its single use. The page's **one-time page ticket** arrives by
+`ExecJS` instead, from `uiwindow.DeliverPageTicket` in
+`cmd/agent-overflow-windows`, and the page exchanges it for its session
+cookie exactly as a browser exchanges a URL ticket
+(`internal/pagehost`).
 
-The ticket is spent by the load it was minted for, so the reload
-keybinding cannot reuse the boot URL. It asks the backend's `PageURLPath`
-(`/pageurl`) route for a fresh one, presenting `Bootstrap.Token` as a
-bearer header. That path is restated here rather than imported so this
-package stays linkable without the transport server; a drift-guard test
-compares it to `transport.PageURLPath`. If the request fails the launcher
-logs and reuses the launch URL — a spent ticket at worst, never a wedge.
+A ticket is spent by the document it was minted for, so every navigation
+needs its own. The launcher asks the backend's `PageURLPath` (`/pageurl`)
+route with `PageURLWebviewQuery` (`?host=webview`), presenting
+`Bootstrap.Token` as a bearer header; that shape answers JSON with the
+bare URL and the ticket in separate fields rather than the plain-text
+ticketed URL a browser tool gets. Both constants are restated here rather
+than imported so this package stays linkable without the transport
+server; drift-guard tests compare them to `transport.PageURLPath` and
+`pagehost.Param`/`Webview`. If the request fails the launcher logs and
+reuses the launch URL — a page that must wait for its next injection at
+worst, never a wedge.
 
 `Bootstrap.Token` is the session credential for the launcher's OWN
 requests (the connectivity probe, the notification socket). It is never
-put on a page URL.
+put on a page URL either.
 
 ## The launcher forwards the backend's session credential
 

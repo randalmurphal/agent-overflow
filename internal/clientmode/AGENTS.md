@@ -39,19 +39,22 @@ could read. The flow mirrors a local boot exactly:
 1. `Serve` builds a `transport.Credential` around the configured upstream
    token — the same type, and therefore the same `Authenticate`, the
    transport server uses.
-2. `AppURL` mints a one-time page ticket and stamps `?t=…&mode=client&cid=…`
-   on the URL it hands the webview.
+2. `AppURL` stamps `?host=webview&mode=client&cid=…` and NO credential:
+   this process owns the window, so `main_desktop.go` hands the page its
+   ticket by `uiwindow.DeliverPageTicket(window, stub.MintPageTicket)`
+   rather than writing one into a URL that is copyable and lands in logs
+   (`internal/pagehost`). `AppURL` therefore mints nothing and is stable
+   across calls; `MintPageTicket` is the mint, once per document.
 3. `handleBootstrap` calls `Credential.Exchange`, which validates the
-   ticket and sets this stub's own HttpOnly cookie for this origin. The
-   SPA scrubs the ticket from the URL, and every later request rides the
-   cookie.
+   ticket and sets this stub's own HttpOnly cookie for this origin. Every
+   later request rides the cookie.
 4. `handleWS` checks `transport.OriginAllowed` and `Credential.Authenticate`,
    then hands the request to a `httputil.ReverseProxy` that deletes the
    local `Cookie` and `Origin` headers and sets `Authorization: Bearer
    <upstream token>` for the hop.
 
 The hop REPLACES the query rather than forwarding it (the operator's
-endpoint owns it, and the page's own `?t=` ticket means nothing
+endpoint owns it, and the page's own marker and client id mean nothing
 upstream), so anything the page must still be identified by has to be
 re-emitted explicitly. `upstreamQuery` does that for the two declared
 client-identity parameters (`did`, `conn`), parsed and re-rendered
@@ -109,7 +112,9 @@ negotiate with each other and this process only splices bytes.
   `sessionStorage` stash, or any other route by which page script can
   read a credential. The shell is served verbatim; a first-load
   `/bootstrap.json` fetch is how the page learns its manifest, and the
-  round trip it costs is what buys the HttpOnly cookie.
+  round trip it costs is what buys the HttpOnly cookie. The page ticket
+  the host injects is not an exception: it is single-use, it is spent by
+  that same fetch, and what it buys is the cookie no script can read.
 - Do NOT serve the upstream token to a local GET. Anything on this
   listener that would hand out the token is a way for any process on the
   host to become a client; the ticket exchange exists so it doesn't need
@@ -141,7 +146,9 @@ outage still lands its cookie and its retry costs no ticket.
 ## References
 
 - `frontend/src/lib/transport/bootstrap.ts`: `defaultBootstrap` fetches
-  `/bootstrap.json`, forwarding the URL's ticket on first contact.
+  `/bootstrap.json`, forwarding its one-time ticket on first contact —
+  here the injected one, read through
+  `frontend/src/lib/transport/pageHost.ts`.
 - `internal/transport/credential.go`: the credential type, the ticket
   exchange, and the origin rule this package reuses rather than restates.
 - `internal/transport/server.go`: the in-process HTTP+WS server

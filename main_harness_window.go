@@ -52,8 +52,10 @@ func runWindowedShell(appService *App, srv *transport.Server, title string) erro
 		beforeRun: quitOnSignal,
 		// Raw URL on purpose: webviewShell.run threads the client id on
 		// (its `withClientID`), and it is the one place that rule lives for
-		// every windowed boot.
-		pageURL: func() string { return appURLWithPageMarker(srv.AppURL(), srv.PageMarker()) },
+		// every windowed boot. Bare, like every window this binary owns —
+		// the ticket goes in by injection (mintTicket below).
+		pageURL:    func() string { return appURLWithPageMarker(srv.WebviewPageURL(), srv.PageMarker()) },
+		mintTicket: srv.MintPageTicket,
 		// Geometry rides the instance's own settings.json: both sides
 		// resolve through the --data-dir override (bootSettingsDir for the
 		// read, App.settings for the write), so a windowed harness

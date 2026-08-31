@@ -425,7 +425,10 @@ var Routes = []Route{
 		Why: "Answers a freshly minted page URL, for consumers that " +
 			"navigate more than once and cannot reuse a single-use ticket " +
 			"— the Windows launcher's reload, ao-harness, the e2e rig. " +
-			"Minting a credential requires presenting one.",
+			"Two shapes: plain text with the ticket on the URL for a " +
+			"browser, JSON with the two halves apart for a host that " +
+			"owns its window and injects the ticket instead. Minting a " +
+			"credential requires presenting one.",
 	},
 	{
 		Pattern:    "/healthz",

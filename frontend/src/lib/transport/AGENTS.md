@@ -141,11 +141,12 @@ remote browser alike. Protocol and authz rules:
 - `bootstrap.ts` owns the `/bootstrap.json` fetch, the one-time page-ticket
   exchange, and WS-URL validation that stops a tampered manifest pivoting
   the connection to another scheme. **No credential is readable by page
-  script.** The first fetch forwards the URL's `?t=` ticket, the server
-  answers with an HttpOnly cookie, and the ticket is scrubbed from the URL;
-  every later request (the manifest refetch on reconnect, the `/ws`
-  upgrade) carries the cookie because `credentials: 'same-origin'` and a
-  same-origin `wsUrl` put it there. So there is nothing to stash, nothing
+  script.** The first fetch forwards a one-time ticket, the server answers
+  with an HttpOnly cookie, and the ticket is gone: scrubbed from the URL
+  for a browser, never in the URL at all for a window the backend owns
+  (`pageHost.ts` below). Every later request (the manifest refetch on
+  reconnect, the `/ws` upgrade) carries the cookie because
+  `credentials: 'same-origin'` and a same-origin `wsUrl` put it there. So there is nothing to stash, nothing
   to append to a URL, and nothing for a new reader to reach for — if you
   find yourself wanting a token here, the answer is that the browser
   already has one you cannot see. The one exception rides in from
@@ -157,6 +158,28 @@ remote browser alike. Protocol and authz rules:
   wrong is user-visible in both directions: a false "remote" tells a
   desktop user to reopen a share link that does not exist, and a false
   "loopback" leaves a phone retrying a dead session.
+- `pageHost.ts` is the OTHER ticket channel: the page's half of the
+  handshake with a Go process that owns its window. Such a page is marked
+  by `?host=webview` on an otherwise bare URL, because a URL is copyable,
+  lands in logs and window diagnostics, and outlives its single use in
+  shell history and error reports — so its ticket arrives by host-evaluated
+  script instead, as `window.__aoPageTicket` plus an `ao:page-ticket`
+  event. The Go side is `internal/pagehost` (which renders that script from
+  ONE constant) and `internal/uiwindow.DeliverPageTicket`.
+
+  The page ASKS: Wails only evaluates queued script once a document
+  announces `wails:runtime:ready`, and this app replaces
+  `@wailsio/runtime`, so nothing else in the page will ever send it.
+  `awaitInjectedPageTicket` announces through whichever host bridge
+  exists, re-announces on an interval until the ticket lands, and resolves
+  from EITHER order — the global if delivery beat the wait, the event if
+  it did not. It is idempotent on a second delivery and rejects with
+  `PageTicketUndeliveredError` at a deadline, which lands in the ordinary
+  bootstrap-failure UI rather than a page that waits forever. Only a
+  backend REFUSAL clears the stored ticket (`clearInjectedPageTicket`), so
+  a retry waits for a fresh injection instead of re-presenting a token the
+  server already rejected.
+
 - `deviceSession.ts` is the deliberate exception to "nothing readable by
   script", for exactly one credential class: a PAIRED device's session
   pair arrives in the `/auth/pair` response body (a cross-device flow

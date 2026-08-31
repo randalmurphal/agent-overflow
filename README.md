@@ -136,11 +136,14 @@ make verify     # full release gate
 
 Agent Overflow's transport (the HTTP+WebSocket layer between the Svelte
 SPA and the Go backend) defaults to loopback-only and binds to a fresh
-ephemeral port at every launch. The launch URL — `http://127.0.0.1:<port>/?t=<ticket>` —
-is what the embedded webview attaches to. The `?t=` is a one-time page
-ticket: the first page load exchanges it for an HttpOnly session cookie
-and the ticket is stripped from the address bar, so no page script ever
-holds a credential and a copied URL opens exactly one session.
+ephemeral port at every launch. Every page gets a one-time ticket and
+exchanges it, on its first load, for an HttpOnly session cookie — so no
+page script ever holds a credential. A URL a person opens carries the
+ticket (`http://127.0.0.1:<port>/?t=<ticket>`), stripped from the address
+bar once spent, so a copied URL opens exactly one session. The embedded
+webview's URL carries no credential at all: the same process that mints
+the ticket owns the window, so it hands the loaded page its ticket
+directly rather than putting it somewhere copyable.
 
 A handful of opt-in modes extend that:
 

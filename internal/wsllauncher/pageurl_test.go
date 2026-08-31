@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/transport"
 )
 
@@ -21,9 +22,21 @@ func TestPageURLPathMatchesTransport(t *testing.T) {
 	}
 }
 
+// TestPageURLWebviewQueryMatchesPagehost guards the other half of the
+// restated route contract: the query that selects the bare-URL-plus-
+// ticket answer. A rename of the marker would otherwise leave the
+// launcher asking for the browser shape and injecting a ticket it never
+// received, which again only a live Windows session would notice.
+func TestPageURLWebviewQueryMatchesPagehost(t *testing.T) {
+	want := "?" + pagehost.Param + "=" + pagehost.Webview
+	if PageURLWebviewQuery != want {
+		t.Fatalf("PageURLWebviewQuery = %q, want %q", PageURLWebviewQuery, want)
+	}
+}
+
 // TestReadBootstrapLine_RequiresPageURL: the page URL is assembled by the
-// backend, because only the backend can mint the one-time ticket it
-// carries. A bootstrap line without one means the launcher has nothing to
+// backend, because the client id and page marker on it are the backend's
+// to know. A bootstrap line without one means the launcher has nothing to
 // navigate to, and a launcher that accepted it would open an empty
 // WebView2 and report success. Refusing at the parse boundary turns that
 // into a startup error the picker UI can show.

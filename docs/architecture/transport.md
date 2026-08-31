@@ -166,11 +166,11 @@ One launch, one session token, one validation function
 (`Credential.Authenticate`, `credential.go`). Everything below is about how
 that token reaches a request, never about a second policy.
 
-### A page URL carries a ticket, not the token
+### A page URL carries a ticket, not the token — and a window we own carries neither
 
 A page URL travels: through window history, shell arguments, launcher logs,
-`--print-url-fd` output, and screenshots. What it carries is a **one-time page
-ticket** (`?t=`), and what a ticket buys is exactly one cookie.
+`--print-url-fd` output, and screenshots. So the most it ever carries is a
+**one-time page ticket** (`?t=`), and what a ticket buys is exactly one cookie.
 
 ```
 Server.AppURL()  ──mint──▶  http://127.0.0.1:34567/?t=<ticket>&cid=…
@@ -183,6 +183,34 @@ Server.AppURL()  ──mint──▶  http://127.0.0.1:34567/?t=<ticket>&cid=…
                                       │
        bootstrap.ts strips ?t= from the URL; reload rides the cookie
 ```
+
+A URL is the only channel that reaches a BROWSER, so that is the browser's
+path. A WEBVIEW window is a different situation: the Go process that mints the
+ticket also holds the window and can evaluate script in the document it just
+loaded, so the credential never has to enter the URL at all — and the reasons
+above are reasons not to put it there.
+
+```
+Server.WebviewPageURL()  ─────▶  http://127.0.0.1:34567/?host=webview&cid=…
+                                      │
+       page loads, announces itself, SPA waits on window.__aoPageTicket
+                                      │
+  uiwindow.DeliverPageTicket ─mint─▶ ExecJS(pagehost.DeliveryScript(ticket))
+                                      │
+       SPA fetches /bootstrap.json?t=<ticket> ─▶ same Exchange, same cookie
+```
+
+`?host=webview` is a marker, not a credential: it tells the page its ticket is
+arriving by injection so it waits for one instead of booting bare.
+`internal/pagehost` holds the marker, the two names the script writes
+(`window.__aoPageTicket` and the `ao:page-ticket` event, one per race
+direction) and the script itself, stdlib-only so the Windows launcher can link
+it. The trigger is Wails' `WindowRuntimeReady`, which the SPA raises for itself
+— it replaces `@wailsio/runtime`, so nothing else in the page will — and a
+ticket is minted per announcement, which is what gives a reloaded document a
+live one. All three window hosts share `uiwindow.DeliverPageTicket`: the
+desktop and isolated windowed boots, the Windows/WSL launcher, and the
+`--connect` stub. **No ticket appears in a webview URL.**
 
 Minted tickets are held oldest-first and bounded at `maxOutstandingTickets`
 (16). The bound matters because the settings panel's LAN share URL mints one
@@ -234,20 +262,22 @@ has already made the decision, so one rule holds on loopback and LAN alike.
 
 ### `/pageurl`: a ticket is spent, and some clients navigate twice
 
-`PageURLPath` answers one freshly ticketed page URL, in plain text, to a caller
-that already holds the credential. It exists because several consumers navigate
-more than once per launch and the boot URL's ticket is gone after the first
-load:
+`PageURLPath` answers a fresh page URL to a caller that already holds the
+credential. It exists because several consumers navigate more than once per
+launch and a ticket is spent by the document it was minted for. It has two
+answer shapes, one per delivery channel:
 
-| Consumer | When it asks |
-|---|---|
-| Windows/WSL launcher | the reload keybinding re-navigates WebView2 |
-| `ao-harness open` / `info` / `attach` / `up` | any time it prints or opens a URL for a human |
-| e2e `HarnessApp.open()` | every navigation, since each test gets a fresh cookie jar |
+| Shape | Answer | Consumer | When it asks |
+|---|---|---|---|
+| default | plain text: one ticketed URL | `ao-harness open` / `info` / `attach` / `up` | any time it prints or opens a URL for a human |
+| default | plain text: one ticketed URL | e2e `HarnessApp.open()` | every navigation, since each test gets a fresh cookie jar |
+| `?host=webview` | JSON `{url, ticket}` | Windows/WSL launcher | the reload keybinding re-navigates WebView2 |
 
-`Config.PageURL` supplies the renderer, so `main.go` keeps the single rule for
-assembling a full page URL (`?cid=`, the harness marker) and this package does
-not restate it. Two binaries call the route without linking this package
+The webview shape keeps the halves apart so the URL the launcher navigates to
+stays bare and the ticket goes to `ExecJS`. `Config.DecoratePageURL` supplies
+the renderer for both, so `main.go` keeps the single rule for what a shell adds
+to a page URL (`?cid=`, the harness marker) and this package does not restate
+it. Two binaries call the route without linking this package
 (`internal/wsllauncher`, `internal/harnessclient`); each restates the path
 behind a drift-guard test rather than pulling the server into a launcher.
 

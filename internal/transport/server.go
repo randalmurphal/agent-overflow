@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/loopback"
+	"agent-overflow/internal/pagehost"
 )
 
 // Bootstrap is the JSON document the SPA fetches at /bootstrap.json on
@@ -106,16 +107,17 @@ type Config struct {
 	// the `--connect` stub dialling this server. See credential.go.
 	Token string
 
-	// PageURL assembles the full page URL this server's own tooling
-	// should navigate to, including a freshly minted one-time ticket
-	// and whatever else the boot threads onto it (the durable client id,
-	// the harness page marker). Served by the PageURLPath route.
+	// DecoratePageURL threads whatever else the boot puts on a page URL
+	// (the durable client id, the harness page marker) onto a base this
+	// package built. Served by the PageURLPath route.
 	//
-	// A getter supplied by the boot, not a value: the assembly rule
-	// lives with the boot that knows those extra parameters, and every
-	// call must mint a new ticket. Optional — when nil the route answers
-	// AppURL(), which is the same URL without those parameters.
-	PageURL func() string
+	// A decorator supplied by the boot, not a whole assembler: the ticket
+	// half differs per consumer — a browser's rides `?t=`, a webview
+	// host's is delivered by injection and the URL is bare — and only
+	// this package can mint one either way. The boot's extra parameters
+	// are the same in both cases, so it contributes those and nothing
+	// else. Optional; nil leaves the base untouched.
+	DecoratePageURL func(base string) string
 
 	// Dispatcher hosts the registered RPC methods. Required.
 	Dispatcher *Dispatcher
@@ -891,10 +893,43 @@ func (s *Server) AppURL() string {
 	return fmt.Sprintf("http://%s:%s/?%s=%s", host, port, PageTicketParam, ticket)
 }
 
+// WebviewPageURL is AppURL's answer for a host that owns the window it
+// is about to load: a BARE page URL, no ticket on it, marked as
+// webview-hosted so the SPA waits for one to be injected instead
+// (internal/pagehost).
+//
+// It mints nothing, and that is the difference that matters beside
+// AppURL. A ticketed URL is single-use, so producing one is producing a
+// credential; a bare one is just an address, so a host may re-read it on
+// every reload without churning the ticket book. The credential comes
+// from MintPageTicket, once per document, at the moment that document
+// asks for it.
+//
+// Pre-Start returns "" for the same reason AppURL does.
+func (s *Server) WebviewPageURL() string {
+	host, port, ok := s.hostPort()
+	if !ok {
+		return ""
+	}
+	return pagehost.MarkWebview(fmt.Sprintf("http://%s:%s/", host, port))
+}
+
 // MintPageTicket hands out a one-time page ticket for a URL this package
 // does not build itself — the LAN share URL, which names a discovered
-// interface address rather than the listener's own host.
+// interface address rather than the listener's own host — and for a
+// window host re-ticketing a document it did not navigate (uiwindow's
+// per-load delivery).
 func (s *Server) MintPageTicket() (string, error) { return s.cred.MintPageTicket() }
+
+// decoratePageURL applies the boot's extra page-URL parameters, if it
+// supplied any. The empty base passes through, since every caller
+// already reads "" as "no page to open yet".
+func (s *Server) decoratePageURL(base string) string {
+	if base == "" || s.cfg.DecoratePageURL == nil {
+		return base
+	}
+	return s.cfg.DecoratePageURL(base)
+}
 
 // hostPort resolves the host and port a page URL should name, reporting
 // false when no listener is bound.
@@ -955,11 +990,19 @@ func (s *Server) hostPort() (string, string, bool) {
 //
 // It grants nothing the caller does not already have: presenting the
 // session token is already full access to this wire.
+//
+// Two answer shapes, one per consumer class. A caller pointing a BROWSER
+// at this backend gets the plain-text ticketed URL, because a URL is the
+// only channel a browser has. A caller that owns the WINDOW it is about
+// to navigate asks with `?host=webview` and gets a bare URL and the
+// ticket as separate JSON fields, so nothing credential-shaped reaches
+// the URL at all — see WebviewAppURL and internal/pagehost.
 const PageURLPath = "/pageurl"
 
-// handlePageURL answers PageURLPath with one URL and a newline. Plain
-// text because every consumer wants exactly the string, and the two
-// non-Go ones (a shell, the e2e rig) should not need a parser.
+// handlePageURL answers PageURLPath. The default shape is one URL and a
+// newline: plain text because every browser-pointing consumer wants
+// exactly the string, and the two non-Go ones (a shell, the e2e rig)
+// should not need a parser.
 func (s *Server) handlePageURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.NotFound(w, r)
@@ -969,10 +1012,11 @@ func (s *Server) handlePageURL(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	pageURL := s.AppURL()
-	if s.cfg.PageURL != nil {
-		pageURL = s.cfg.PageURL()
+	if r.URL.Query().Get(pagehost.Param) == pagehost.Webview {
+		s.writeWebviewPageURL(w, r)
+		return
 	}
+	pageURL := s.decoratePageURL(s.AppURL())
 	if pageURL == "" {
 		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
 		return
@@ -986,6 +1030,37 @@ func (s *Server) handlePageURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = io.WriteString(w, pageURL+"\n")
+}
+
+// writeWebviewPageURL answers the same route for a caller that owns the
+// window it is about to navigate: the bare URL and the ticket, as JSON,
+// because the two have to arrive as separate strings and a plain-text
+// answer would need a delimiter nobody else wants.
+//
+// The two callers on this branch are Go (the Windows launcher, which
+// decodes pagehost.Answer without linking this package), so the parser
+// the plain-text form exists to spare a shell is not needed here.
+func (s *Server) writeWebviewPageURL(w http.ResponseWriter, r *http.Request) {
+	pageURL := s.decoratePageURL(s.WebviewPageURL())
+	if pageURL == "" {
+		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ticket, err := s.cred.MintPageTicket()
+	if err != nil {
+		log.Printf("transport: page url: mint page ticket: %v", err)
+		http.Error(w, "page url unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	h := w.Header()
+	WriteSecurityHeaders(h, s.csp)
+	h.Set("Cache-Control", "no-store, max-age=0")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(pagehost.Answer{URL: pageURL, Ticket: ticket})
 }
 
 // handleBootstrap answers the SPA's manifest fetch and is the one place

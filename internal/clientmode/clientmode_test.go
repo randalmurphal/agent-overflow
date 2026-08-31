@@ -15,6 +15,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/transport"
 
@@ -148,17 +149,17 @@ func serveStub(t *testing.T, cfg Config) *Server {
 }
 
 // stubBootstrapURL builds the manifest URL a freshly loaded page fetches:
-// the stub's own origin, carrying the page ticket the page URL arrived
-// with.
+// the stub's own origin, carrying the page ticket the host window
+// injected into that page.
 func stubBootstrapURL(t *testing.T, srv *Server) string {
 	t.Helper()
 	parsed, err := url.Parse(srv.AppURL())
 	if err != nil {
 		t.Fatalf("parse app url: %v", err)
 	}
-	ticket := parsed.Query().Get(transport.PageTicketParam)
-	if ticket == "" {
-		t.Fatal("app url carries no page ticket")
+	ticket, err := srv.MintPageTicket()
+	if err != nil {
+		t.Fatalf("mint page ticket: %v", err)
 	}
 	return fmt.Sprintf("http://%s/bootstrap.json?%s=%s", parsed.Host, transport.PageTicketParam, url.QueryEscape(ticket))
 }
@@ -196,42 +197,68 @@ func TestServe_ServesTheShellVerbatim(t *testing.T) {
 	}
 }
 
-// TestServe_AppURLCarriesTicketModeAndClientID pins what rides the page
-// URL: a one-time ticket (never the upstream token), the run mode the
-// SPA reads synchronously at module load, and the durable client
-// identity. A fresh ticket per call is what lets the reload keybinding
-// re-navigate after the first load spent one.
-func TestServe_AppURLCarriesTicketModeAndClientID(t *testing.T) {
+// TestServe_AppURLCarriesNoCredential pins what rides the page URL and
+// what does not. The stub's page is only ever loaded by the window the
+// same process owns, so its ticket is injected (MintPageTicket) and the
+// URL carries three markers and nothing else: the host marker the SPA
+// waits on, the run mode it reads synchronously at module load, and the
+// durable client identity.
+func TestServe_AppURLCarriesNoCredential(t *testing.T) {
 	srv := serveStub(t, Config{
 		WSURL:    "ws://upstream:1234/",
 		Token:    "tok-abc",
 		ClientID: "11111111-2222-3333-4444-555555555555",
 	})
 
-	first, err := url.Parse(srv.AppURL())
+	parsed, err := url.Parse(srv.AppURL())
 	if err != nil {
 		t.Fatalf("parse app url: %v", err)
 	}
-	q := first.Query()
+	q := parsed.Query()
+	if q.Get(pagehost.Param) != pagehost.Webview {
+		t.Errorf("host = %q, want %q", q.Get(pagehost.Param), pagehost.Webview)
+	}
 	if q.Get("mode") != "client" {
 		t.Errorf("mode = %q, want client", q.Get("mode"))
 	}
 	if q.Get("cid") != "11111111-2222-3333-4444-555555555555" {
 		t.Errorf("cid = %q, want the configured client id", q.Get("cid"))
 	}
-	ticket := q.Get(transport.PageTicketParam)
-	if ticket == "" {
-		t.Fatal("app url carries no page ticket")
+	if got := q.Get(transport.PageTicketParam); got != "" {
+		t.Fatalf("the page URL carries a ticket %q", got)
 	}
 	if strings.Contains(srv.AppURL(), "tok-abc") {
 		t.Fatal("the upstream token reached the page URL")
 	}
-	second, err := url.Parse(srv.AppURL())
-	if err != nil {
-		t.Fatalf("parse second app url: %v", err)
+	// Stable across calls, because nothing single-use is on it: the
+	// reload keybinding re-navigates to the same string and the reloaded
+	// document is re-ticketed by injection.
+	if srv.AppURL() != parsed.String() {
+		t.Fatalf("two AppURL calls disagreed: %q vs %q", srv.AppURL(), parsed.String())
 	}
-	if second.Query().Get(transport.PageTicketParam) == ticket {
-		t.Fatal("two AppURL calls handed out the same ticket")
+}
+
+// TestServe_MintPageTicketIsFreshPerDocument: the injected ticket is the
+// same ordinary page ticket a URL used to carry — same book, same
+// exchange (TestServe_ManifestNamesThisOriginAndCarriesNoCredential
+// spends one against a live manifest) — so only the delivery channel
+// moved, and every document the window loads gets its own.
+func TestServe_MintPageTicketIsFreshPerDocument(t *testing.T) {
+	srv := serveStub(t, Config{WSURL: "ws://upstream:1234/", Token: "tok-abc"})
+
+	first, err := srv.MintPageTicket()
+	if err != nil {
+		t.Fatalf("mint page ticket: %v", err)
+	}
+	second, err := srv.MintPageTicket()
+	if err != nil {
+		t.Fatalf("mint page ticket: %v", err)
+	}
+	if first == "" || first == second {
+		t.Fatalf("two mints handed out %q and %q", first, second)
+	}
+	if strings.Contains(srv.AppURL(), first) {
+		t.Fatal("a minted ticket appears in the page URL")
 	}
 }
 

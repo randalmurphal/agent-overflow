@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/loopback"
+	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/transport"
 )
@@ -304,18 +305,23 @@ func Serve(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// AppURL returns the loopback URL the Wails webview should load, with a
-// freshly minted one-time page ticket. Empty before Serve completes.
+// AppURL returns the loopback URL the Wails webview should load. Empty
+// before Serve completes.
 //
-// Every call mints its own ticket, which is what makes the reload
-// keybinding (main_desktop.go hands this method itself to
-// uikeys.BrowserWithReload) reload a page whose first ticket was already
-// spent.
+// It carries NO credential. This stub's page is only ever loaded by the
+// window the same process owns, so its one-time ticket is injected into
+// each document instead of written into the URL that loaded it
+// (MintPageTicket, internal/uiwindow.DeliverPageTicket) — which keeps it
+// out of window diagnostics, shell history and error reports entirely.
+// The URL is stable enough that the reload keybinding (main_desktop.go
+// hands this method itself to uikeys.BrowserWithReload) can reuse it,
+// and the reloaded document is re-ticketed on its own.
 //
-// Two more parameters ride the URL, both facts about the local shell
-// rather than credentials, and both surviving the SPA's scrub of the
-// ticket:
+// Three parameters ride it, all facts about the local shell rather than
+// credentials:
 //
+//   - host=webview tells the SPA to wait for that injection rather than
+//     read a ticket off its URL (internal/pagehost).
 //   - mode=client tells the SPA it is attached to a remote backend, so
 //     the settings panels whose RPCs would edit the REMOTE machine's
 //     state render a placeholder. It travels on the URL rather than in
@@ -337,17 +343,17 @@ func (s *Server) AppURL() string {
 	if host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	ticket, err := s.cred.MintPageTicket()
-	if err != nil {
-		log.Printf("clientmode: mint page ticket: %v", err)
-		return ""
-	}
-	pageURL := fmt.Sprintf("http://%s:%s/?%s=%s&mode=client", host, port, transport.PageTicketParam, ticket)
+	pageURL := pagehost.MarkWebview(fmt.Sprintf("http://%s:%s/", host, port)) + "&mode=client"
 	if s.cfg.ClientID != "" {
 		pageURL += "&cid=" + url.QueryEscape(s.cfg.ClientID)
 	}
 	return pageURL
 }
+
+// MintPageTicket hands the window host one one-time page ticket for the
+// document it has just loaded. The same ticket book AppURL used to draw
+// from — only the delivery channel moved.
+func (s *Server) MintPageTicket() (string, error) { return s.cred.MintPageTicket() }
 
 // Addr returns the resolved listen address (e.g. "127.0.0.1:54321").
 func (s *Server) Addr() string {

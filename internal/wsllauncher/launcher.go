@@ -36,17 +36,27 @@ const DefaultBootstrapPrefix = "__AO_BOOTSTRAP__:"
 // passing a flag the other rejects.
 const ResetTransportPortFlag = "reset-transport-port"
 
-// PageURLPath is the backend transport route that answers a page URL
-// carrying a freshly minted one-time ticket. The launcher asks for one
-// when it re-navigates its WebView2 (the reload keybinding), because the
-// ticket on the boot URL is spent by the load it was minted for.
+// PageURLPath is the backend transport route that answers a page URL.
+// The launcher asks it twice over a document's life: once for the bare
+// URL to navigate to (the reload keybinding, since the boot URL is a
+// one-shot string the backend assembled) and once per loaded document
+// for the one-time ticket that document exchanges for its cookie.
 //
-// It lives here for the same reason ResetTransportPortFlag does: it is a
-// contract between two binaries built from this repo, and restating it
-// keeps the Windows launcher from linking the transport server it never
-// runs. A drift guard in this package's tests compares it to
-// transport.PageURLPath.
-const PageURLPath = "/pageurl"
+// PageURLWebviewQuery selects the second answer shape: a caller that
+// owns the window it is navigating gets the URL and the ticket as
+// separate JSON fields (pagehost.Answer) rather than one ticketed URL,
+// so no credential ever reaches a URL the launcher logs or a window
+// diagnostic reports.
+//
+// Both live here for the same reason ResetTransportPortFlag does: they
+// are a contract between two binaries built from this repo, and
+// restating them keeps the Windows launcher from linking the transport
+// server it never runs. A drift guard in this package's tests compares
+// them to their transport-side originals.
+const (
+	PageURLPath         = "/pageurl"
+	PageURLWebviewQuery = "?host=webview"
+)
 
 // ErrNotSupported is the sentinel returned by every Windows-only entry
 // point on macOS and Linux hosts. The wsllauncher package compiles on
@@ -76,12 +86,14 @@ type Bootstrap struct {
 	// PID is the Linux backend pid. It is diagnostic identity evidence for
 	// profiled Windows/WSL harness launches. Older backends omit it.
 	PID int `json:"pid,omitempty"`
-	// PageURL is the fully assembled URL the WebView2 navigates to, page
-	// ticket and every other parameter included. Assembled by the backend
-	// because only it can mint the ticket; the launcher navigates to it
-	// as given rather than rebuilding the rule on the Windows side. A
-	// second navigation (the reload keybinding) asks the backend's
-	// transport.PageURLPath route for a fresh one.
+	// PageURL is the fully assembled URL the WebView2 navigates to. It
+	// carries no credential: the launcher owns that window, so every
+	// document it loads is handed its one-time ticket by injection
+	// (internal/pagehost). Assembled by the backend because the client id
+	// and page marker on it are the backend's to know; the launcher
+	// navigates to it as given rather than rebuilding the rule on the
+	// Windows side. A second navigation (the reload keybinding) asks the
+	// backend's transport.PageURLPath route for a fresh one.
 	PageURL string `json:"pageUrl"`
 	// ClientID is the backend installation's durable UI-state client
 	// identity (main.go ensureClientID). It already rides PageURL as

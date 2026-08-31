@@ -396,13 +396,17 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	// the Windows launcher escapes a pinned port the host cannot reach.
 	portPin := pinTransportPort(&cfg, bootSettingsDir(), resetTransportPortPin)
 
-	// One assembly rule for every page URL this backend hands out, and
+	// One decoration rule for every page URL this backend hands out, and
 	// the transport serves it (PageURLPath) to the local tooling that
 	// navigates more than once over a backend's life: the Windows
-	// launcher, `ao-harness open` / `attach`, the e2e rig. Closing over
-	// srv is safe because nothing calls this before New returns.
+	// launcher, `ao-harness open` / `attach`, the e2e rig. The transport
+	// owns the credential half (a `?t=` ticket for a browser, injection
+	// for a window host); this owns the two parameters only the boot
+	// knows.
+	// Closing over srv is safe because nothing calls this before New
+	// returns.
 	var srv *transport.Server
-	cfg.PageURL = func() string { return fullPageURL(srv) }
+	cfg.DecoratePageURL = func(base string) string { return decoratePageURL(base, srv) }
 
 	phaseStarted = time.Now()
 	srv, err = transport.New(cfg)
@@ -563,11 +567,13 @@ func shutdownHeadless(appService *App, srv *transport.Server) {
 // writeBootstrap publishes the listener address, the session credential
 // and a ready-to-navigate page URL to the launcher.
 //
-// The page URL is assembled here, not on the Windows side, because it
-// carries a one-time page ticket only this process can mint plus the
-// client id and page marker only this process knows. The launcher
-// navigates to it as given, and asks the transport's PageURLPath route
-// for a fresh one whenever it needs to navigate again.
+// The page URL is assembled here, not on the Windows side, because the
+// client id and page marker it carries are only this process's to know.
+// It carries NO credential: the launcher owns the window it navigates,
+// so it asks the transport's PageURLPath route (`?host=webview`) for a
+// ticket and injects it into the document that navigation produces
+// (internal/pagehost). The same route answers a fresh bare URL whenever
+// the launcher needs to navigate again.
 //
 // Why two channels: the spec asks for fd 3 because it gives the
 // launcher a clean separation from any startup chatter the backend
@@ -583,7 +589,8 @@ func writeBootstrap(fd int, srv *transport.Server) error {
 		Token string `json:"token"`
 		PID   int    `json:"pid"`
 		// PageURL is the fully assembled URL the launcher's WebView2
-		// navigates to, one-time page ticket included (fullPageURL).
+		// navigates to. Bare — the launcher's ticket arrives by
+		// injection (webviewPageURL).
 		PageURL string `json:"pageUrl,omitempty"`
 		// ClientID is this installation's durable UI-state identity
 		// (see ensureClientID). It rides PageURL as ?cid= already, and
@@ -596,7 +603,7 @@ func writeBootstrap(fd int, srv *transport.Server) error {
 		Port:       portFromAddr(srv.Addr()),
 		Token:      srv.Token(),
 		PID:        os.Getpid(),
-		PageURL:    fullPageURL(srv),
+		PageURL:    webviewPageURL(srv),
 		ClientID:   ensureClientID(),
 		PageMarker: srv.PageMarker(),
 	}
@@ -758,13 +765,26 @@ func ensureClientID() string {
 	return appservice.EnsureClientIDIn(bootSettingsDir())
 }
 
+// decoratePageURL threads the two parameters a shell has to add onto a
+// page URL the transport built: the harness page marker and the durable
+// client id. One expression, because the stdout bootstrap line, the
+// Windows launcher and `ao-harness` must all open the SAME page — a URL
+// missing the client id silently changes which ui_state bucket the
+// frontend reads.
+//
+// It is the transport's Config.DecoratePageURL hook, so the same rule
+// applies to both credential shapes: the ticketed URL a browser opens
+// and the bare one a window host loads.
+func decoratePageURL(base string, srv *transport.Server) string {
+	if base == "" || srv == nil {
+		return base
+	}
+	return appURLWithClientID(appURLWithPageMarker(base, srv.PageMarker()), ensureClientID())
+}
+
 // fullPageURL assembles the page URL this backend's own tooling should
-// navigate to: a freshly minted one-time ticket from the transport, plus
-// the two parameters a shell has to thread on (the harness page marker,
-// the durable client id). One expression, because the stdout bootstrap
-// line, the Windows launcher and `ao-harness` must all open the SAME
-// page — a URL missing the client id silently changes which ui_state
-// bucket the frontend reads.
+// navigate to with a BROWSER: a freshly minted one-time ticket on the
+// URL, plus the boot's own parameters.
 //
 // A nil or pre-Start server yields "", which every caller already treats
 // as "no page to open yet".
@@ -772,7 +792,21 @@ func fullPageURL(srv *transport.Server) string {
 	if srv == nil {
 		return ""
 	}
-	return appURLWithClientID(appURLWithPageMarker(srv.AppURL(), srv.PageMarker()), ensureClientID())
+	return decoratePageURL(srv.AppURL(), srv)
+}
+
+// webviewPageURL assembles the page URL a host that owns its WINDOW
+// should load: the same page with no credential on it at all, because
+// that host delivers the ticket by injection instead
+// (internal/pagehost, internal/uiwindow.DeliverPageTicket). The ticket
+// minted alongside is deliberately discarded here — the caller of this
+// function is publishing a URL for another process to navigate, and that
+// process asks PageURLPath for its own ticket once its document is live.
+func webviewPageURL(srv *transport.Server) string {
+	if srv == nil {
+		return ""
+	}
+	return decoratePageURL(srv.WebviewPageURL(), srv)
 }
 
 // appURLWithClientID threads the durable UI-state client ID onto a page

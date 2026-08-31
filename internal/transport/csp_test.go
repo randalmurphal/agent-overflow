@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/pagehost"
 )
 
 // parseCSP splits a policy into directive name → source list. The
@@ -189,7 +191,6 @@ func TestEveryHTTPRouteCarriesThePolicy(t *testing.T) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			_, _ = w.Write([]byte("<!doctype html><title>t</title>"))
 		})
-		cfg.PageURL = func() string { return "http://127.0.0.1:1/?t=x" }
 	})
 
 	for _, tc := range []struct {
@@ -199,6 +200,7 @@ func TestEveryHTTPRouteCarriesThePolicy(t *testing.T) {
 		{"spa shell", "/"},
 		{"bootstrap manifest", "/bootstrap.json"},
 		{"page url", PageURLPath},
+		{"page url, webview shape", PageURLPath + "?" + pagehost.Param + "=" + pagehost.Webview},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequest(http.MethodGet, "http://"+f.srv.Addr()+tc.path, nil)

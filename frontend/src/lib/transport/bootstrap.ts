@@ -4,17 +4,26 @@
 // pivoting the connection to another origin or scheme.
 //
 // The page holds no credential of its own. It arrives carrying a
-// one-time ticket in `?t=`, spends it on the first manifest fetch, and
-// from then on the server's HttpOnly cookie authenticates every request
-// this document makes — the manifest refetch, the WebSocket upgrade, a
+// one-time ticket, spends it on the first manifest fetch, and from then
+// on the server's HttpOnly cookie authenticates every request this
+// document makes — the manifest refetch, the WebSocket upgrade, a
 // reload. Nothing readable from script is involved, which is why there
 // is no token field on the manifest and no stash anywhere in this file.
+//
+// The ticket arrives by one of two channels, decided by who served the
+// document rather than by anything this file branches on twice. A
+// BROWSER can only be told things through its URL, so its ticket rides
+// `?t=` and is scrubbed once spent. A page hosted by a WINDOW this
+// application owns is handed its ticket by injection instead, and its
+// URL carries no credential at all (./pageHost.ts). Both end at the same
+// exchange, on the same route, with the same cookie.
 
 import { setPageGrantsFromBootstrap } from './scopes';
 import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
 import { hasPairedSession, pairedSessionHeaders, renewPairedSession } from './deviceSession';
+import { awaitInjectedPageTicket, clearInjectedPageTicket, isWebviewHosted } from './pageHost';
 
 // BootstrapRejectedError marks the one bootstrap failure that retrying
 // cannot fix: the server answered, and refused our credential. The
@@ -118,10 +127,11 @@ export interface Bootstrap {
 }
 
 // defaultBootstrap fetches /bootstrap.json from this page's own origin,
-// spending the one-time `?t=` ticket if the URL still carries one. This
-// runs the first time anyone calls `ensureConnected`; subsequent calls
-// reuse the cached promise, and the reconnect path refetches through the
-// same function.
+// spending the one-time ticket its host gave it — off the URL for a
+// browser, by injection for a page whose window this application owns.
+// This runs the first time anyone calls `ensureConnected`; subsequent
+// calls reuse the cached promise, and the reconnect path refetches
+// through the same function.
 //
 // Every boot flow lands here — embedded webview, `--connect` stub, WSL
 // launcher window, LAN browser, dev (where the Go server proxies Vite
@@ -129,6 +139,25 @@ export interface Bootstrap {
 // served the page; the credential exchange and the same-origin manifest
 // are identical, which is what lets this file hold no per-flow branches.
 export async function defaultBootstrap(): Promise<Bootstrap> {
+  if (isWebviewHosted()) {
+    // The host window injects the ticket; there is none on the URL to
+    // read and nothing to scrub afterwards. A delivery that never
+    // arrives rejects rather than hanging, and rejects TRANSIENTLY —
+    // the reconnect ladder's next attempt re-announces this document to
+    // its host, which answers with a fresh ticket.
+    //
+    // A refetch re-presents the ticket already delivered, which the
+    // server treats as it treats a spent one on a reloaded URL: the
+    // cookie authenticates first. Only a REFUSAL means that ticket is
+    // worth nothing, and then the stale copy has to go or the retry
+    // would present it forever.
+    try {
+      return await fetchManifest(await awaitInjectedPageTicket());
+    } catch (err) {
+      if (err instanceof BootstrapRejectedError) clearInjectedPageTicket();
+      throw err;
+    }
+  }
   const search = typeof window !== 'undefined' ? window.location.search : '';
   const ticket = new URLSearchParams(search).get(PAGE_TICKET_PARAM) ?? '';
   return fetchManifest(ticket);
@@ -208,11 +237,13 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   setBackendIdentityFromBootstrap(data.backendId, data.replicaGeneration);
   // Remove the spent ticket from history, Referer, and Performance
   // Resource Timing entries. The cookie carries the session from here,
-  // so a reload of the scrubbed URL still boots. Skip when
-  // history.replaceState isn't available (older happy-dom builds, weird
-  // host pages).
+  // so a reload of the scrubbed URL still boots. Skipped for a
+  // webview-hosted page, whose ticket was never on the URL to begin
+  // with, and when history.replaceState isn't available (older
+  // happy-dom builds, weird host pages).
   if (
     ticket !== '' &&
+    !isWebviewHosted() &&
     typeof window !== 'undefined' &&
     typeof window.history !== 'undefined' &&
     typeof window.history.replaceState === 'function'

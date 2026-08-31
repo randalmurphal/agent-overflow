@@ -17,6 +17,7 @@ import {
   wsUrlMatchesPageOrigin,
 } from './bootstrap';
 import { clearPairedSession, redeemPairing } from './deviceSession';
+import { __resetPageHostForTest } from './pageHost';
 
 describe('isLoopbackHostname', () => {
   it('accepts every host that names this machine', () => {
@@ -151,6 +152,7 @@ describe('defaultBootstrap', () => {
 
   afterEach(() => {
     setPageSearch('');
+    __resetPageHostForTest();
     vi.unstubAllGlobals();
   });
 
@@ -207,6 +209,39 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
 
     await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+  });
+
+  // A page whose window this application owns is handed its ticket by
+  // injection, so nothing credential-shaped is on its URL and there is
+  // nothing to scrub. The exchange is otherwise identical.
+  it('spends the injected ticket when the host owns the window', async () => {
+    setPageSearch('?host=webview&cid=desktop-1');
+    (window as unknown as Record<string, unknown>).__aoPageTicket = 'ticket-injected';
+    const fetchMock = vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/bootstrap.json?t=ticket-injected',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    // The marker survives, exactly as the mode and client id do: it is a
+    // fact about the shell, not a credential.
+    expect(window.location.search).toBe('?host=webview&cid=desktop-1');
+    delete (window as unknown as Record<string, unknown>).__aoPageTicket;
+  });
+
+  // A refused exchange is the one case where re-presenting the delivered
+  // ticket is pointless, so the page drops it and the retry ladder's next
+  // lap waits for a fresh injection instead.
+  it('forgets an injected ticket the backend refused', async () => {
+    setPageSearch('?host=webview');
+    (window as unknown as Record<string, unknown>).__aoPageTicket = 'ticket-dead';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
+
+    await expect(defaultBootstrap()).rejects.toBeInstanceOf(BootstrapRejectedError);
+    expect((window as unknown as Record<string, unknown>).__aoPageTicket).toBeUndefined();
   });
 
   it('surfaces a refusal as BootstrapRejectedError', async () => {

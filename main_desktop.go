@@ -73,7 +73,7 @@ func runClient(rawURL string) {
 	// RPC against a remote backend instead.
 	app := application.New(desktopApplicationOptions(title))
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            title,
 		Width:            1280,
 		Height:           800,
@@ -83,6 +83,10 @@ func runClient(rawURL string) {
 		URL:              stub.AppURL(),
 		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(stub.AppURL)),
 	})
+	// The stub's page URL carries no credential — this process owns the
+	// window, so each document it loads is handed its one-time ticket
+	// directly (internal/uiwindow, internal/pagehost).
+	uiwindow.DeliverPageTicket(window, stub.MintPageTicket)
 
 	runErr := app.Run()
 
@@ -127,10 +131,16 @@ type webviewShell struct {
 	// starts. runDesktop boots its transport here, because the updater
 	// must observe the application first.
 	beforeRun func(app *application.App)
-	// pageURL returns the CURRENT page URL (the transport's AppURL). A
-	// getter, not a value: Ctrl+R re-reads it so a rebind (the LAN
-	// toggle) reloads onto the new origin.
+	// pageURL returns the CURRENT page URL, bare and marked
+	// webview-hosted (the transport's WebviewAppURL). A getter, not a
+	// value: Ctrl+R re-reads it so a rebind (the LAN toggle) reloads
+	// onto the new origin.
 	pageURL func() string
+	// mintTicket hands out one one-time page ticket. Separate from
+	// pageURL because this shell owns the window: the credential is
+	// injected into each document it loads rather than written into the
+	// URL that loaded it (internal/uiwindow.DeliverPageTicket).
+	mintTicket func() (string, error)
 	// loadGeometry / persistGeometry are the saved window placement's
 	// reader and writer. Both resolve through the boot data dir, so an
 	// isolated instance remembers its own window, not the user's.
@@ -213,6 +223,7 @@ func (s webviewShell) run() error {
 	// uiwindow.RestoreAndTrack for why creation must happen here.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		w, flush := uiwindow.RestoreAndTrack(app, opts, s.loadGeometry(), s.persistGeometry)
+		uiwindow.DeliverPageTicket(w, s.mintTicket)
 		winMu.Lock()
 		window = w
 		flushGeometry = flush
@@ -268,7 +279,13 @@ func runDesktop(listenAddr string) {
 			if srv == nil {
 				return ""
 			}
-			return srv.AppURL()
+			return srv.WebviewPageURL()
+		},
+		mintTicket: func() (string, error) {
+			if srv == nil {
+				return "", errors.New("transport: not started")
+			}
+			return srv.MintPageTicket()
 		},
 		loadGeometry: loadPersistedWindowGeometry,
 		persistGeometry: func(geometry windowgeom.Geometry) {

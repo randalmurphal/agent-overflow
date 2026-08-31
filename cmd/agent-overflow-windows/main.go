@@ -65,6 +65,7 @@ import (
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/observability/pprofserve"
+	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/wsldistro"
@@ -677,16 +678,18 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		}
 	}
 
-	// The backend assembles the page URL (main.go fullPageURL): only it
-	// can mint the one-time page ticket, and the client id and page
-	// marker that ride alongside are its own. It names 127.0.0.1, not
-	// "localhost", because Windows resolves "localhost" to both ::1 and
-	// 127.0.0.1 and WSL2's localhostForwarding only proxies IPv4 — a ::1
-	// attempt hits Windows-loopback directly and is refused.
+	// The backend assembles the page URL (main.go webviewPageURL): the
+	// client id and page marker that ride on it are its own. It carries
+	// no credential — this window's ticket arrives by injection — and it
+	// names 127.0.0.1, not "localhost", because Windows resolves
+	// "localhost" to both ::1 and 127.0.0.1 and WSL2's
+	// localhostForwarding only proxies IPv4, so a ::1 attempt hits
+	// Windows-loopback directly and is refused.
 	pageURL := bs.PageURL
-	// Redacted logging, same shape the probe uses: the URL carries a
-	// credential, and launcher.log persists in %APPDATA% across runs and
-	// is a likely artifact in user bug reports.
+	// Redacted logging, same shape the probe uses. The URL no longer
+	// carries a credential, but launcher.log persists in %APPDATA% across
+	// runs and is a likely artifact in user bug reports, so the byte
+	// counts stay the whole record.
 	log.Printf("backend ready at http://127.0.0.1:%d/ (page url=%d bytes, token=%d bytes)", bs.Port, len(pageURL), len(bs.Token))
 	// Publish the URL before SetURL so a reload that lands between
 	// SetURL and the SPA's first bootstrap fetch still finds a credential.
@@ -999,13 +1002,13 @@ func probeLaunchedBackend(bs *wsllauncher.Bootstrap) error {
 // window.Reload() — picker / loading / connectivity-error pages are
 // static and reload-safe.
 //
-// It asks the backend for a FRESH page URL first. A page ticket is spent
-// by the load it was minted for, and while the reload normally rides the
-// page cookie that first load received, a WebView2 profile that lost its
-// cookies would otherwise reload onto a URL with nothing left to
-// present. The request is one loopback GET against a backend that is by
-// definition serving; the stored URL is the fallback, so a blip costs a
-// reload nothing.
+// It asks the backend for a FRESH page URL first, because the boot URL
+// is a string the backend assembled for one navigation and a rebind (the
+// LAN toggle) moves the origin out from under it. The credential is not
+// on either URL — the reloaded document is ticketed by injection like
+// every other one — so the stored URL is a perfectly good fallback and a
+// blip costs a reload nothing. The request is one loopback GET against a
+// backend that is by definition serving.
 func (a *launcherApp) currentBackendURL() string {
 	stored := ""
 	if p := a.backendURL.Load(); p != nil {
@@ -1025,37 +1028,76 @@ func (a *launcherApp) currentBackendURL() string {
 	return fresh
 }
 
+// pageTicket mints one one-time page ticket for the SPA document the
+// WebView2 has just loaded, or fails before the WSL backend exists.
+//
+// The launcher owns this window, so the ticket is injected into the
+// document rather than written into the URL that loaded it
+// (internal/uiwindow.DeliverPageTicket). The failure before a backend is
+// what keeps the launcher's own picker / loading / error pages out of the
+// delivery path even if one of them ever announced itself as a host page.
+func (a *launcherApp) pageTicket() (string, error) {
+	a.mu.Lock()
+	bs := a.backendBootstrap
+	a.mu.Unlock()
+	if bs == nil {
+		return "", errors.New("page ticket requested before the backend booted")
+	}
+	answer, err := fetchWebviewPageURL(bs.Port, bs.Token)
+	if err != nil {
+		return "", err
+	}
+	return answer.Ticket, nil
+}
+
 // pageURLTimeout bounds the reload path's page-URL request. The
 // keybinding runs on the WebView2 UI thread, so this is a stall budget
 // as much as a network one: the backend is local and answering the
 // route from memory.
 const pageURLTimeout = 2 * time.Second
 
-// fetchPageURL asks the backend's transport for a page URL carrying a
-// fresh one-time ticket. The session token goes in a header — the query
-// slot on this backend's routes belongs to the page ticket now, and a
-// header keeps the credential out of any URL a proxy or log would see.
+// fetchPageURL asks the backend's transport for a bare page URL to
+// navigate to. The session token goes in a header — the query slot on
+// this backend's routes belongs to the page ticket, and a header keeps
+// the credential out of any URL a proxy or log would see.
 func fetchPageURL(port int, token string) (string, error) {
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", port, wsllauncher.PageURLPath)
-	resp, err := getWithToken(&http.Client{Timeout: pageURLTimeout}, endpoint, token)
+	answer, err := fetchWebviewPageURL(port, token)
 	if err != nil {
 		return "", err
+	}
+	return answer.URL, nil
+}
+
+// fetchWebviewPageURL is the one request behind both halves: the bare
+// URL a navigation needs and the ticket the document it produces needs.
+// Asking with the webview marker is what splits them, so neither half
+// ever appears in the other's string.
+func fetchWebviewPageURL(port int, token string) (pagehost.Answer, error) {
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s%s", port, wsllauncher.PageURLPath, wsllauncher.PageURLWebviewQuery)
+	resp, err := getWithToken(&http.Client{Timeout: pageURLTimeout}, endpoint, token)
+	if err != nil {
+		return pagehost.Answer{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: status %d", endpoint, resp.StatusCode)
+		return pagehost.Answer{}, fmt.Errorf("GET %s: status %d", endpoint, resp.StatusCode)
 	}
-	// The response is one URL and a newline; 8 KiB is far past any real
-	// page URL and bounds a misbehaving responder.
+	// One small JSON object; 8 KiB is far past any real page URL and
+	// bounds a misbehaving responder.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if err != nil {
-		return "", err
+		return pagehost.Answer{}, err
 	}
-	pageURL := strings.TrimSpace(string(body))
-	if pageURL == "" {
-		return "", errors.New("page url response was empty")
+	var answer pagehost.Answer
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return pagehost.Answer{}, fmt.Errorf("decode page url answer: %w", err)
 	}
-	return pageURL, nil
+	answer.URL = strings.TrimSpace(answer.URL)
+	answer.Ticket = strings.TrimSpace(answer.Ticket)
+	if answer.URL == "" || answer.Ticket == "" {
+		return pagehost.Answer{}, errors.New("page url answer was missing a half")
+	}
+	return answer, nil
 }
 
 // tolerantMultiWriter is io.MultiWriter without abort-on-first-error.
@@ -1464,6 +1506,13 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), saveWindowGeometry)
 		trimWebviewMemoryOnMinimise(w)
+		// Every SPA document this window loads is handed its one-time
+		// page ticket here, so the URL the launcher navigates to (and
+		// logs, and reports in a window diagnostic) carries no
+		// credential at all. Only the SPA announces itself to its host,
+		// so the picker / loading / error pages never reach this — and
+		// a.pageTicket refuses anyway until a backend exists to mint one.
+		uiwindow.DeliverPageTicket(w, a.pageTicket)
 		a.mu.Lock()
 		a.window = w
 		a.flushGeometry = flush
