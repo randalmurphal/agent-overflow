@@ -1265,13 +1265,25 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    only, because it is a decision about our own component and not a
    property of the boundary.
 
-   - **A baseline CSP**, strict in production and relaxed in dev.
-     There is no CSP anywhere in the product today. The Vite dev
-     server needs inline styles regardless of HMR, so the split is
-     not an HMR concession; disabling HMR is an independent
-     preference. This is now the primary content-isolation control
-     rather than a defense-in-depth layer behind the design route,
-     because the route it was layered behind is gone.
+   - **A baseline CSP.** LANDED 2026-08-31 (2eb5c7dc): every served
+     response carries a prebuilt policy (`transport.CSPProduction` /
+     `CSPDevServer`), chosen once at server construction from the
+     dev-asset-proxy condition so policy and handler cannot disagree,
+     and `WriteSecurityHeaders` takes the policy as a typed argument
+     so a route cannot ship without naming one. `script-src 'self'`
+     with no hash and no nonce — the first-paint theme stamp moved to
+     `frontend/public/boot-theme.js` (byte-identical validator), and
+     `index.html` holds no inline script or style, held by a test.
+     The dev variant relaxes `connect-src` alone (Vite's baked-in
+     direct HMR socket fallback); a test fails if the two policies
+     differ anywhere else. The e2e page fixture collects
+     `securitypolicyviolation` events across the suite. Verified in
+     Chromium end to end; the WKWebView leg (macOS) is verified by
+     spec reading only and is the first thing to eyeball on a Mac
+     boot. The `--connect` stub now serves the exact root via
+     `/{$}` and everything else from the bundle file server, because
+     the shell answering for `/boot-theme.js` under `nosniff` would
+     have silently dropped the theme stamp on that origin.
    - **The boot credential moves out of script reach.** LANDED
      2026-08-31 (24486360): a page URL carries a one-time ticket
      (`?t=`), the first `/bootstrap.json` exchanges it for an
@@ -1313,18 +1325,30 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      20-class href corpus through `staticHtml.ts` and `Link.svelte`
      with per-class test names, so a future edit to one path that
      forgets the other fails the case naming the divergent class.
-   - **The §13 surface enumeration + CI gate**, seeded with the
-     verified inventory: 9 listeners across 7 packages including the
-     implicit Chrome DevTools port, the transport's routes, and
-     content origins. The RPC-method and event-channel columns join
-     in phase 3 when the scope table generates.
-   - **Doc drift inside the classification table.**
-     `internalmethods.go`'s header comment describes six categories;
-     the map body carries ten (1-10, plus the 8b/9b/9c sub-entries).
-     Anything citing "six" is stale. The entry count moved again when
-     design mode's methods were deleted (264 today), which is the
-     argument for the gate asserting the category set rather than a
-     number.
+   - **The §13 surface enumeration + CI gate.** LANDED 2026-08-31
+     (7ead32ed): `internal/surfaces` holds the authored rows — 9
+     listeners across 7 packages (the tree had not drifted from the
+     audit), 17 HTTP routes across all four muxes, 8 content origins,
+     each with binding class, credential, posture and a Why — and its
+     AST gate scans the Makefile's package roots, failing in both
+     directions (unenumerated bind/route, or a row whose file no
+     longer binds) with zero exclusions. The RPC-method and
+     event-channel columns join in phase 3 when the scope table
+     generates. Open repo-hygiene item the sweep surfaced:
+     `spike/claude-mitm` is checked in with two live `net.Listen`
+     calls against spike-policy step 5; it sits outside the gate's
+     package roots.
+   - **Doc drift inside the classification table.** LANDED 2026-08-31
+     (0114caed): `LocalOnlyCategory` is a closed typed set of ten,
+     each entry in the authored `localOnlyCategories` map carries one,
+     and `LocalOnlyMethods` is derived from it — the name set held
+     byte-identical through the change, with the wave-2 addition
+     (`StopThreadBackgroundWork`) categorized at the merge. Gates pin
+     the set closed, the ordinals contiguous, and every entry tagged.
+     Sibling landing, same commit series (d7b67946): seven loopback
+     predicates consolidated into `internal/loopback` (four named
+     predicates; `EndpointAuthority` and `EndpointHostname` provably
+     cannot fold and a test pins why).
 
 1. **Sync sweep + seams.** Archive-closes-session fix: LANDED
    2026-08-31 (b809e997, §7). Thread-row emits: LANDED 2026-08-31
