@@ -586,3 +586,17 @@ export interface BackgroundTaskRef {
   taskType?: string;
   description?: string;
 }
+
+/**
+ * `settings:updated` payload (Go: app.SettingsUpdatedEvent). One frame per
+ * TIER a persisted settings write moved.
+ *
+ * Values never ride this channel — settings carry redacted fields with no read
+ * path, so the frame names the changed keys and every client re-reads through
+ * `GetSettings` (see `resyncSettings`). `tier` is "host" | "user" | "device":
+ * whose preference moved (the backend machine's, the person's, this screen's).
+ */
+export interface SettingsUpdatedEvent {
+  tier: string;
+  keys: string[];
+}

@@ -191,6 +191,55 @@ async function sendSettingsPatch(
 }
 
 /**
+ * Converge on the backend's settings after a `settings:updated` frame (or a
+ * transport gap on that channel).
+ *
+ * The frame names the tier and the changed KEYS, never the values: settings
+ * carry redacted fields (endpoint tokens, sensitive environment values) with
+ * no read path, so the wire cannot carry the new state and the client re-reads
+ * the same redacted projection its own writes get back.
+ *
+ * Queued behind any in-flight write on the SAME queue `updateSettingsPatch`
+ * uses, which is what makes this safe rather than a race: an unordered re-read
+ * could be issued before a local optimistic write reached the backend and then
+ * land after it, discarding the field the user just changed.
+ *
+ * Not coalesced. A save that moved keys in two tiers pushes two frames and so
+ * costs two serialized reads of an in-memory value — the same answer either
+ * way, and skipping a later frame's read is how a client ends up converged on
+ * a state one write behind.
+ *
+ * The initiator receives its own echo and re-reads too. That costs one cheap
+ * RPC and buys the guarantee that every client, initiator included, ends on
+ * exactly the backend's projection — the same reasoning `thread:updated` uses
+ * for broadcasting the row the RPC returned.
+ */
+export function resyncSettings(): Promise<void> {
+  const ahead = updateQueue;
+  const run: Promise<void> = ahead
+    ? ahead.then(readSettingsIntoStore)
+    : readSettingsIntoStore();
+  updateQueue = run;
+  void run.then(() => {
+    if (updateQueue === run) updateQueue = null;
+  });
+  return run;
+}
+
+// Never rejects, for the same reason sendSettingsPatch does not: a failed read
+// must not poison the shared write queue for every write behind it.
+async function readSettingsIntoStore(): Promise<void> {
+  try {
+    const result = await GetSettings();
+    if (result) {
+      settings = mergeSettingsWithDefaults(result as Partial<Settings>);
+    }
+  } catch (err) {
+    console.error('Failed to converge settings after a settings:updated event:', err);
+  }
+}
+
+/**
  * Re-seeds the store from a full Settings snapshot returned by a dedicated
  * mutator (the custom-environment CRUD). Those bindings return the same
  * redacted shape GetSettings does, so the store stays consistent without a

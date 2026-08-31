@@ -571,6 +571,20 @@ var channelPolicies = []ChannelPolicy{
 			"third door.",
 	},
 	{
+		Channel:   eventchan.SettingsUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Why: "Carries a tier plus the changed key NAMES, never values — " +
+			"GetSettings is wire-safe precisely because it redacts endpoint " +
+			"tokens and sensitive environment values, and this channel must " +
+			"not become the path around that redaction. A remote peer that " +
+			"may already poll GetSettings therefore learns nothing new from " +
+			"the push. Retention default, not latest-only: each frame names " +
+			"a DIFFERENT set of keys, so the newest does not supersede the " +
+			"ones before it, and a client that dropped the frame naming " +
+			"`fontSize` would keep rendering the old size forever.",
+	},
+	{
 		Channel:   eventchan.SpinnerChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,

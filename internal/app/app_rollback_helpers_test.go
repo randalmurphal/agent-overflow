@@ -32,10 +32,8 @@ import (
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 	st := storetest.Clone(t)
-	app := &App{
-		store:    st,
-		settings: settings.NewService(t.TempDir()),
-	}
+	app := &App{store: st}
+	app.setSettingsService(settings.NewService(t.TempDir()))
 	// Registered before the cleanups below so (LIFO) its spawn check runs
 	// last, once nothing is still in flight.
 	isolateE2EProviderSpawns(t, app)

@@ -141,6 +141,24 @@ forward-compatible).
 - `remote.go`: the `RemoteEndpoint` shape and its CRUD helpers
   (`Add` / `Update` / `Delete` / `Touch`). Backs the `--connect`
   target list the desktop binary's settings panel exposes.
+- `mutate.go`: the SINGLE persisted-write path. Every mutator in this
+  package (`Update`, `AddRecentWorkspace`, the remote-endpoint CRUD, the
+  provider-environment CRUD) is a closure handed to `Service.mutate`,
+  which loads the file, projects the before state per key, applies,
+  writes, restamps the cache, and reports which keys moved to the
+  registered `ChangeObserver`. `internal/app` uses that observer to emit
+  `settings:updated` so a second attached client converges without a
+  refresh, which is why the chokepoint is enforced rather than
+  conventional: `TestOnlyMutateWritesSettings` fails if anything else
+  calls `writeSparse`. Two properties the callers depend on: the
+  observer runs AFTER the write lock is released (an observer that reads
+  settings back would otherwise deadlock), and a write that moved no key
+  reports nothing at all.
+- `tier.go`: the host / user / device taxonomy (`docs/specs/remote-access.md`
+  §6) as a total map from settings key to tier, plus the per-key JSON
+  projection and diff `mutate` reports with. Total is the point: a new
+  settings field fails `TestEverySettingsKeyHasATier` until it is placed,
+  because an unplaced key is one that silently stops announcing itself.
 - `gendefaults.go` + `gendefaults/`: the generator that makes
   `DefaultSettings` the SINGLE source of settings defaults. It reflects
   the struct's json tags (the `knownSettingsFieldNames` walk), takes each
@@ -278,6 +296,10 @@ gets redacted on read must follow the same pattern in the same commit.
   behavior.
 - Do NOT write partial settings silently. If validation fails, the
   save is an error and the caller decides the user-facing message.
+- Do NOT add a mutator that calls `writeSparse` (or `Save`) directly.
+  It would persist correctly and announce nothing, so every other
+  attached client would sit on stale state until its next full read.
+  Route it through `mutate` and place its keys in `tier.go`.
 
 ## References
 

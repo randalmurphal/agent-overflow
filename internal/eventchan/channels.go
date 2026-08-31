@@ -113,6 +113,16 @@ const (
 	SessionImportProgress Channel = "session-import:progress"
 )
 
+// settings:* — one frame per tier a persisted settings write moved,
+// carrying the tier and the changed KEY NAMES only. No values ride it:
+// GetSettings redacts endpoint tokens and sensitive environment values,
+// and a push carrying values would be the one path around that.
+// Receivers re-read through GetSettings, the same refetch-nudge shape
+// usage:thread_cost uses.
+const (
+	SettingsUpdated Channel = "settings:updated"
+)
+
 // spinner:* / theme:* — payload-less refetch nudges from the two
 // client-asset directory watchers.
 const (

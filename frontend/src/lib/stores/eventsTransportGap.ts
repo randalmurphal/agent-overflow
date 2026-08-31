@@ -26,6 +26,7 @@ import { getThreads } from './threads.svelte';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
+import { resyncSettings } from './settings.svelte';
 import { resyncWorkflowRunMapAfterGap } from './workflowRunMap.svelte';
 import {
   applyWorkflowDefinitionsChanged,
@@ -219,6 +220,19 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
     case 'mcp:status':
       resyncMcpServersAfterGap();
       return;
+    case 'settings:updated': {
+      // Edge-triggered like the entity channels: one frame per persisted
+      // write, and no later frame restates a key the gap swallowed — the
+      // stale value would sit there looking correct until something else
+      // happened to touch it.
+      //
+      // Blanket by construction rather than by choice: the frame carries the
+      // changed KEYS and the handler ignores them, because settings converge
+      // by re-reading the whole (redacted) projection anyway. One read of an
+      // in-memory value recovers every tier at once.
+      void resyncSettings();
+      return;
+    }
     case 'system:stats':
     case 'highlight:seed':
     case 'highlight:diff_seed': {

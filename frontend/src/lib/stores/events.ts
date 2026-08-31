@@ -29,6 +29,7 @@ import type {
   ProviderAccountEvent,
   ProviderAccountUsageErrorEvent,
   ProviderSessionAccountEvent,
+  SettingsUpdatedEvent,
   SystemStatsEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
@@ -102,6 +103,7 @@ import {
   applyProviderCommands,
   type ProviderCommandsPayload,
 } from './providerCommands.svelte';
+import { resyncSettings } from './settings.svelte';
 import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
@@ -282,6 +284,16 @@ export function setupEventListeners(): () => void {
     const threadId = payload?.threadId;
     if (threadId) bumpUsageRefresh(threadId);
   });
+  // settings:updated — a persisted settings write moved keys in one tier, on
+  // this client or another. Payload is the tier and the changed key names
+  // only: settings carry redacted fields with no read path, so nothing that
+  // could reconstruct the new state may ride the wire. Every client — the
+  // initiator included — converges by re-reading GetSettings, queued behind
+  // any in-flight local write. See resyncSettings.
+  const cancelSettingsUpdated = wailsEventOn<SettingsUpdatedEvent>(
+    'settings:updated',
+    () => { void resyncSettings(); },
+  );
   // provider:session_died — provider subprocess exited mid-turn. Drives
   // the per-pane Reconnect banner (separately from the synthesized
   // turn-completed event that clears the working indicator). The
@@ -502,6 +514,7 @@ export function setupEventListeners(): () => void {
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelThreadCost();
+    cancelSettingsUpdated();
     cancelSessionDied();
     cancelTodoUpdate();
     cancelTerminalOutput();
