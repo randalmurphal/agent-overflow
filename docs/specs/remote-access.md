@@ -176,6 +176,15 @@ remain a separate, narrower credential class, unchanged.
    IP. Discovery is convenience only. It grants nothing and changes
    no trust step.
 
+LANDED 2026-08-31 (wave 5b), steps 1-5: `identity` pairing over
+migration v76, `/auth/pair` as the one wire route (owner-facing mint /
+status / confirm / cancel are host-side Go API awaiting wave 5c's
+surface), redemption minting the real credential pair UNACTIVATED with
+the confirmation gate inside `Session.Live`, and the verification
+number as a backend-derived MAC over (link id, redeeming key). Step 6's
+fingerprint field is reserved in the payload and the row (phase 5
+fills it); step 7 (mDNS) is not built.
+
 ### Sessions
 
 - **Access tokens are short-lived** (minutes–hours), always
@@ -189,6 +198,16 @@ remain a separate, narrower credential class, unchanged.
   token on its own cannot self-renew.
 - Browser class: short TTL, non-renewable without passkey re-auth where
   passkeys are available.
+
+LANDED 2026-08-31 (wave 5b): rotating refresh in
+`internal/identity/refresh.go` over `refresh_secrets` (v76). The family
+key IS the session id — a renewal extends the session row rather than
+minting a new one, so revoke-the-family is exactly revoke-the-session
+and every open socket keys on one durable id. Reuse spends the whole
+chain FIRST, then revokes. Windows live in `policy.go` (browser
+15m/12h, native 1h/30d). The device-key binding is a thumbprint
+presented on `X-AO-Device-Key` until phase 5's DPoP proof replaces the
+value; browser passkey re-auth gating is phase 5.
 
 Every authentication failure carries a **closed, typed reason code**
 end-to-end (missing/malformed proof, key mismatch, time window,
@@ -210,6 +229,18 @@ that is **single-use** (consumed on first upgrade), short-lived, and
 connection re-validates session liveness on an interval and caps its own
 lifetime, forcing periodic re-ticket. Per-RPC scope checks still apply
 after upgrade.
+
+LANDED 2026-08-31 (wave 5b): one `ticketBook`
+(`internal/transport/ticket.go`) behind both the page ticket and the
+session-named `/auth/ticket` (30s TTL, spent on the upgrade whether or
+not it succeeds, subject re-checked against `SessionLive` so a ticket
+cannot resurrect a session revoked in flight). Key-binding rides
+`/auth/ticket`'s use of the same `SessionForRequest` hook, which runs
+`CheckDeviceProof`; the DPoP proof itself is phase 5. The interval
+re-check (60s default) and the 12h non-loopback lifetime cap live in
+`conn.go`'s `watchSession`, with the loopback exemption argued at
+`resolveWatchWindows`. `/ws` still ALSO admits launch-credential
+clients naming no session; migrating them off is phase 3.
 
 ### Revocation
 
@@ -252,6 +283,18 @@ bootstrap. The WSL launcher **forwards that credential** rather than
 relying on apparent loopback origin. With topology no longer
 authorizing by itself, "looks like loopback" must stop being a trust
 basis (a same-host relay can otherwise launder remote peers).
+
+LANDED 2026-08-31 (wave 5b), with one delivery difference: the session
+credential rides the existing bootstrap EXCHANGE (an HttpOnly
+`ao_session_<port>` cookie planted by `/bootstrap.json`) rather than
+the fd/stdout line, because the session core boots after the transport
+binds. The page keeps `?t=` — dropping it is the phase-3 migration.
+The channel device row (`devices.channel = "local"`, one row per boot
+via partial unique index) backs a session re-minted per boot with no
+refresh secret. The WSL launcher fetches the cookie over its
+authenticated bootstrap exchange and forwards it as a header on every
+dial (`internal/wsllauncher/session_credential.go`), re-fetching after
+a refused dial. The `--connect` stub does not forward one yet.
 
 ## 5. Authorization
 
@@ -1468,11 +1511,23 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    three credential surfaces refusing 429 + `Retry-After`, and
    `auth_failed` + reason on the wire with
    `frontend/src/lib/transport/authReason.ts` as the one hint module,
-   pinned against the Go set in both directions. Still open in this
-   phase: pairing with proof-of-possession + verification number,
-   token exchange, rotating refresh with reuse detection, generalized
-   ticket primitive (WS + HTTP), device management UI, webview/WSL
-   credential forwarding, ui_state device binding.
+   pinned against the Go set in both directions.
+   Pairing, token exchange, rotating refresh, tickets, and local-client
+   sessions: LANDED 2026-08-31 (wave 5b) — migration v76
+   (pairing_links, refresh_secrets, devices.channel,
+   sessions.activated_at with the confirmation gate INSIDE
+   Session.Live), keypair-first redemption with the owner verification
+   number derived from the redeeming key, rotating refresh whose
+   family key IS the session id (reuse spends the chain then revokes
+   the session), one ticketBook behind both the page ticket and the
+   30s session-named /ws ticket, per-connection liveness re-check +
+   remote lifetime cap, /auth/pair + /auth/token + /auth/ticket on one
+   shared tight budget, the implicit loopback page-channel session
+   riding the bootstrap exchange as an HttpOnly cookie, WSL launcher
+   credential forwarding, and `SessionForRequest`/`SessionLive` wired
+   from app boot. Owner-facing pairing calls are host-side Go API
+   only. Still open in this phase: device management UI (wave 5c),
+   ui_state device binding.
 3. **Authorization.** Annotation-driven generated method table, scope
    tiers + binding enforcement + step-up set, event visibility, settings
    key→tier taxonomy, capability-driven frontend, `LocalOnlyMethods`
