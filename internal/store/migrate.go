@@ -1406,6 +1406,15 @@ CREATE TABLE provider_thread_cost (
 ALTER TABLE threads ADD COLUMN created_remote_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		Version: 75,
+		Name:    "identity_core",
+		// Users, devices, sessions, signing keys, recovery codes, and the
+		// credential audit log. The first authoritative (non-cache) rows in
+		// this database — see the const's doc comment for why they are one
+		// migration and what each table's non-obvious columns decide.
+		SQL: identityCoreV75SQL,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

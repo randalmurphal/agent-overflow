@@ -8,6 +8,13 @@ Derived, version-stamped render metadata (span blobs, provider cost
 estimates) is cache content too: a stale row is dropped and recomputed,
 never migrated.
 
+**One family is exempt and it is the only one**: the identity tables
+(`users`, `devices`, `sessions`, `signing_keys`, `recovery_codes`,
+`auth_audit`, migration v75) are authoritative. They cannot be rebuilt
+from a provider session file, and dropping a stale row means someone is
+locked out. See "Recent schema changes (v75)" below before touching any
+sweep, prune, or restore path that walks tables generically.
+
 - `docs/architecture/schema.md`: table-by-table reference and the index
   list. Update it when you add a table, column, or index.
 - `docs/architecture/thread-replica-sync.md`: the design behind
@@ -978,6 +985,64 @@ an empty `provider_turn_id`.
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
 
+## Recent schema changes (v75) — the identity core
+
+Six tables in one migration (`migration_v75_identity.go`, accessors in
+`identity.go`): `users`, `devices`, `sessions`, `signing_keys`,
+`recovery_codes`, `auth_audit`. Spec: `docs/specs/remote-access.md` §3.
+
+- **These rows are NOT cache.** Every other table in this database can be
+  rebuilt from provider session files; identity cannot. The
+  "stale means drop and recompute" rule that governs span blobs and cost
+  estimates does not apply to any of them — a dropped session row is a
+  person locked out, and the only recovery is re-pairing from a host-local
+  surface or a recovery code (spec §12). Nothing here may be pruned by a
+  cache sweep.
+- **Plural from the start, with one bootstrap exception.** `users` holds N
+  rows, and every device, session, and audit row names its user
+  explicitly. `EnsureOwnerUser` is the ONLY accessor that resolves a user
+  by role, exists so the first pairing has something to bind to, and says
+  so in its doc comment. Adding a second such read re-introduces the
+  single-owner assumption the schema exists to avoid; take an explicit
+  user id instead. `idx_users_single_owner` makes a second owner
+  unrepresentable, and `EnsureOwnerUser` races against it deliberately —
+  a loser re-reads the winner's row rather than reporting a conflict.
+- **Revoking a device is ONE write.** `RevokeDevice` flips
+  `devices.revoked_at` and every live `sessions.revoked_at` in a single
+  transaction and returns the session ids that moved. Splitting it would
+  let a device be flagged revoked while its credentials still worked, one
+  forgotten call site away. The returned ids are what the caller
+  force-closes; a session already revoked is deliberately NOT returned,
+  because whoever revoked it already closed it.
+- **Recovery-code consumption is one statement.** `UPDATE … WHERE
+  code_hash = ? AND consumed_at IS NULL RETURNING user_id`. The predicate
+  IS the single-use rule and SQLite picks the winner, so no caller-side
+  check-then-write window exists. A replayed code matches nothing and
+  answers `sql.ErrNoRows`, the same answer a code that never existed
+  gets. The store never sees a code, only its hash.
+- **`auth_audit` is append-only by trigger** (`trg_auth_audit_immutable`
+  aborts UPDATE) and bounded by insert-order pruning inside
+  `AppendAuthAudit`, every `authAuditPruneEvery`-th append. There is no
+  DELETE trigger precisely so that bound can be enforced; immutability is
+  about rewriting a record, not about keeping every row forever. The
+  prune keys on the AUTOINCREMENT id, never on `at`, so a backwards clock
+  jump cannot decide which history survives.
+- **`auth_audit`'s attribution columns are not foreign keys.** The record
+  that a device was revoked is worth most after that device row is gone; a
+  cascade would delete exactly the history someone is reading.
+  `TestAuthAuditOutlivesWhatItDescribes` pins it.
+- **Value sets live in two places on purpose.** The `class`,
+  `binding_class`, `role`, and `outcome` CHECKs restate the sets that
+  `internal/identity` declares as Go types, because this package stays
+  identity-free the same way it stays provider-free.
+  `TestDeclaredValueSetsMatchTheSchemaChecks` (in `internal/identity`,
+  which can import this package while the reverse would cycle) drives
+  every declared value through a real store and pins both directions.
+- **A scope blob that does not decode is an error**, never an empty
+  grant. Reading a corrupt set as "no scopes" would turn a storage fault
+  into a permissions answer the caller cannot distinguish from a real
+  one. `[]` is the only spelling of "granted nothing".
+
 ## Recent schema changes (v73, v74) — where a thread came from
 
 - `threads.created_by_device` (v73, `TEXT NOT NULL DEFAULT ''`) names the
@@ -1422,12 +1487,16 @@ because those two always have to agree.
 Belongs here: timeline items and payloads, thread and project metadata,
 channels and messages, discussion templates, attachment metadata, composer
 favorites and model-profile seeds, workflow run records, automation
-definitions and cursors, migrations, indices, CHECK constraints, and query
-helpers returning typed rows.
+definitions and cursors, identity rows (accounts, devices, sessions,
+signing keys, recovery codes, the credential audit log), migrations,
+indices, CHECK constraints, and query helpers returning typed rows.
 
 Does not belong here: live per-turn provider state (the provider process
 owns it), transient UI state (frontend `$state`), logs
-(`internal/logging`), and business logic. If a tempting SELECT grows a
+(`internal/logging`), and business logic. Credential minting, claims
+signing and verification, and what a scope MEANS belong to
+`internal/identity`; this package persists the rows and enforces what
+SQLite can state about them. If a tempting SELECT grows a
 WHEN/CASE, the behavior belongs in Go. Workflow state-machine validation
 and scheduling belong to `internal/workflow`. This package holds bare
 run-record CRUD. `ui_state` is the one justified carve-out from the
