@@ -171,7 +171,7 @@ Take-control is WIRED, end to end: `attach.go` here
 (`AttachTerminal`, `DetachTerminal`, `TerminalReplaySnapshot`,
 `SetTakeControl`, `WriteInput`, `ResizeTerminal`, `RefreshTerminal`), the
 seven `ProviderTerminal*` App methods in `app_claudetui_terminal.go`
-(classified in `internal/transport/internalmethods.go`), and
+(all `//ao:scope terminal:operate`), and
 `frontend/src/lib/components/takecontrol/`. Design is
 [`claude-tui-provider.md §Attach & take-control`](../../../docs/architecture/claude-tui-provider.md).
 

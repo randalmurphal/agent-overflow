@@ -88,11 +88,11 @@ func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 // next-turn context automatically (see promptDiscussionSpeaker's
 // unseen-messages window).
 //
-// PostChannelMessage now has a side-effecting path (it can dispatch a
+// PostChannelMessage has a side-effecting path (it can dispatch a
 // prompt into a participant's live provider session via
-// promptDiscussionSpeakerAsync → sendMessage), so it is classified
-// LocalOnly in internal/transport/internalmethods.go alongside
-// SendMessage — see the category-2 comment there.
+// promptDiscussionSpeakerAsync → sendMessage), so it carries
+// threads:operate rather than a read scope — the same annotation
+// SendMessage does, for the same reason.
 //
 //ao:scope threads:operate
 func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessage, error) {

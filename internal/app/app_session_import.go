@@ -20,9 +20,10 @@ import (
 // per imported thread would turn "import my sessions" into a billed
 // operation.
 //
-// Every method in this file is LocalOnly (internal/transport/internalmethods.go):
-// they read the user's provider homes and hand back file paths and prompt
-// text from them.
+// Every method here carries //ao:scope threads:operate: they read the user's
+// provider homes and hand back file paths and prompt text from them, and they
+// write threads. A session granted that scope may run an import from off-host,
+// which is what the grant means.
 
 // ImportScanRequest is how a caller asks for the listing.
 //

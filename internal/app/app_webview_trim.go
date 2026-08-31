@@ -57,7 +57,8 @@ type webviewTrimDirective struct {
 // the last trim this caller saw accepted. Returns what happened —
 // "requested", "skipped-active-turn", "skipped-recent", or
 // "skipped-no-activity" — so the caller can log without a second RPC.
-// LocalOnly (internal/transport/internalmethods.go).
+// //ao:scope host: it reaches into the process that owns this window, so it
+// has no remote form.
 //
 //ao:scope host
 func (a *App) RequestWebviewMemoryTrim(inputSinceLastTrim bool) (string, error) {

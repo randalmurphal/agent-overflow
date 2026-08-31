@@ -175,9 +175,10 @@ export const BrowserCompanionResize = dispatch('BrowserCompanionResize');
 export const BrowserCompanionSubscribe = dispatch('BrowserCompanionSubscribe');
 export const BrowserCompanionUnsubscribe = dispatch('BrowserCompanionUnsubscribe');
 
-// Appearance / themes (stores/appearance.svelte.ts). Both writes are
-// local-only on the wire, so a test that wants the DEGRADED path throws a
-// `method_not_found` error from its mock rather than omitting one.
+// Appearance / themes (stores/appearance.svelte.ts). Both writes are gated
+// on the wire — `SetAppearance` needs `settings:write` and
+// `SetWindowBackgroundColor` is `host`-scoped — so a test that wants the
+// DEGRADED path throws from its mock rather than omitting the binding.
 export const GetThemeFiles = dispatch('GetThemeFiles');
 export const GetSpinnerFiles = dispatch('GetSpinnerFiles');
 export const SetAppearance = dispatch('SetAppearance');

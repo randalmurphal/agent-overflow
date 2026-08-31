@@ -396,9 +396,11 @@ Rules for any future receiver:
   every boot belongs on `App` instead.
 - Do not collide with `App` method names, since name-based dispatch shares one
   namespace. Use a distinctive prefix, as `Harness*` does.
-- Receiver-level `LocalOnly` is coarse by design. A receiver that needs
-  per-method classification extends `internalmethods.go` rather than re-checking
-  origin in method bodies.
+- Receiver-level `LocalOnly` is coarse by design, and it is the ONLY locality
+  gate left on the dispatcher — there is no per-method origin partition to
+  extend. A receiver that needs per-method authorization joins the generated
+  scope table (a `receiverSpecs` entry plus an `//ao:scope` on every method) so
+  the per-call gate reads it, rather than re-checking origin in method bodies.
 
 ## Event coalescing
 

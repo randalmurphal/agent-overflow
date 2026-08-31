@@ -20,7 +20,7 @@
   let keepAwakeOn = $derived(settings.keepAwakeEnabled);
   // Keep-awake asserts OS power state on the machine running the app —
   // a desktop-host control, so a view-only (--connect) session hides it
-  // rather than offering a switch that the local-only RPC would refuse.
+  // rather than offering a switch the host-scoped RPC would refuse.
   // keepAwakeEnabled is a host-tier settings key (internal/settings/tier.go):
   // it drives THIS machine's sleep inhibitor, so it is host presence that
   // authorizes it rather than any grant.

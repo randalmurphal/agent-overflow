@@ -1124,9 +1124,10 @@ export function GetProviderStatuses(): $CancellablePromise<provider$0.ProviderSt
  * per-thread mirror; also by remote `--connect` clients attaching
  * mid-session. Read-only — no emission.
  * 
- * LocalOnly: the snapshot exposes the user's drafted-but-not-yet-sent
- * prompts, attachment IDs, and plan refs. Same disclosure shape as
- * the diff bindings, hence loopback-only at the transport layer.
+ * threads:operate rather than threads:read: the snapshot exposes the
+ * user's drafted-but-not-yet-sent prompts, attachment IDs, and plan
+ * refs, which is what a session driving the thread sees and not what a
+ * read-only observer signed up for.
  */
 export function GetQueueState(threadID: string): $CancellablePromise<app$0.QueuedItem[]> {
     return $Call.ByID(3079581691, threadID).then(($result: any) => {
@@ -1303,9 +1304,10 @@ export function GetThreadItemProjectionSource(threadID: string, itemID: string):
  * It is the refresh/reconnect companion to the push events emitted during a
  * normal uninterrupted frontend session.
  * 
- * LocalOnly: the payload can expose pending prompts, tool approvals, drafted
- * queued messages, attachment ids, and provider session state. It belongs in
- * the same loopback-only class as GetQueueState and ListPendingInteractiveRequests.
+ * threads:operate rather than threads:read: the payload can expose pending
+ * prompts, tool approvals, drafted queued messages, attachment ids, and
+ * provider session state. Same class as GetQueueState and
+ * ListPendingInteractiveRequests, and annotated to match.
  */
 export function GetThreadLiveState(threadID: string): $CancellablePromise<app$0.ThreadLiveState> {
     return $Call.ByID(70226550, threadID).then(($result: any) => {
@@ -2548,11 +2550,11 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
  * next-turn context automatically (see promptDiscussionSpeaker's
  * unseen-messages window).
  * 
- * PostChannelMessage now has a side-effecting path (it can dispatch a
+ * PostChannelMessage has a side-effecting path (it can dispatch a
  * prompt into a participant's live provider session via
- * promptDiscussionSpeakerAsync → sendMessage), so it is classified
- * LocalOnly in internal/transport/internalmethods.go alongside
- * SendMessage — see the category-2 comment there.
+ * promptDiscussionSpeakerAsync → sendMessage), so it carries
+ * threads:operate rather than a read scope — the same annotation
+ * SendMessage does, for the same reason.
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<store$0.ChannelMessage> {
     return $Call.ByID(1315440605, channelID, content).then(($result: any) => {
@@ -3018,7 +3020,8 @@ export function ReportUpdateInstallStatus(stage: string, version: string, messag
  * the last trim this caller saw accepted. Returns what happened —
  * "requested", "skipped-active-turn", "skipped-recent", or
  * "skipped-no-activity" — so the caller can log without a second RPC.
- * LocalOnly (internal/transport/internalmethods.go).
+ * //ao:scope host: it reaches into the process that owns this window, so it
+ * has no remote form.
  */
 export function RequestWebviewMemoryTrim(inputSinceLastTrim: boolean): $CancellablePromise<string> {
     return $Call.ByID(2045178958, inputSinceLastTrim);
@@ -4348,7 +4351,8 @@ export function WorkflowAnswerQuestion(itemID: string, answer: string): $Cancell
  * The run's results are delivered there from then on, replacing any previous
  * binding.
  * 
- * LocalOnly: it associates a local run record with a local provider session.
+ * threads:autonomy: it decides where an unattended run reports, which is a
+ * statement about the autonomous work itself and not thread bookkeeping.
  */
 export function WorkflowBindThread(itemID: string, threadID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(1931806823, itemID, threadID).then(($result: any) => {
@@ -4411,7 +4415,8 @@ export function WorkflowDiscardItem(itemID: string): $CancellablePromise<app$0.W
  * WorkflowDiscardPreview reports what discarding a run tree would destroy. It
  * runs read-only git queries and mutates nothing.
  * 
- * LocalOnly: it reads local checkouts and repository history.
+ * git:operate: it reads local checkouts and repository history, the same
+ * grant the git reads it is built out of take.
  */
 export function WorkflowDiscardPreview(itemID: string): $CancellablePromise<app$0.WorkflowDiscardPreview> {
     return $Call.ByID(2659721862, itemID).then(($result: any) => {
@@ -4566,8 +4571,8 @@ export function WorkflowMergeItem(itemID: string): $CancellablePromise<app$0.Wor
  * comes down through the engine's one teardown path. Resuming continues on the
  * provider sessions the runs parked on.
  * 
- * LocalOnly: pausing interrupts local provider processes and releases the
- * worktrees they hold.
+ * threads:autonomy: pausing interrupts autonomous provider processes and
+ * releases the worktrees they hold.
  */
 export function WorkflowPauseItem(itemID: string): $CancellablePromise<void> {
     return $Call.ByID(3764767257, itemID);
@@ -4584,8 +4589,8 @@ export function WorkflowPauseItem(itemID: string): $CancellablePromise<void> {
  * the path that set it, and a caller that can only ever arm would have no way to
  * change its mind.
  * 
- * LocalOnly: the request decides whether the next wave of autonomous provider
- * sessions runs, which is the same control plane as pause.
+ * threads:autonomy: the request decides whether the next wave of autonomous
+ * provider sessions runs, which is the same control plane as pause.
  */
 export function WorkflowRequestSoftStop(itemID: string, armed: boolean): $CancellablePromise<void> {
     return $Call.ByID(2570221545, itemID, armed);
@@ -4738,7 +4743,7 @@ export function WorkflowTakeOverUnit(itemID: string, unitID: string): $Cancellab
  * WorkflowUnbindThread drops a run's origin binding. Its results go back to the
  * workflows overlay and the OS notification.
  * 
- * LocalOnly: same surface as WorkflowBindThread.
+ * threads:autonomy: same surface as WorkflowBindThread.
  */
 export function WorkflowUnbindThread(itemID: string): $CancellablePromise<store$0.WorkItem> {
     return $Call.ByID(2006703348, itemID).then(($result: any) => {

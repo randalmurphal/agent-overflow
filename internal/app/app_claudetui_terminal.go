@@ -17,8 +17,8 @@ import (
 // PTY exit is NOT a channel here — it rides the existing session-died rail the
 // session already emits on onPTYExit, so the frontend hears about death once.
 //
-// Every method below steers a provider subprocess + its host PTY, so all are
-// classified LocalOnly in internal/transport/internalmethods.go.
+// Every method below steers a provider subprocess + its host PTY, so all
+// carry //ao:scope terminal:operate.
 
 // ProviderTerminalHandle is what attaching to a provider PTY returns: the
 // terminal id (for routing output + replay) plus its current summary (winsize)

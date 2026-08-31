@@ -88,8 +88,9 @@ func CallerScopeFrom(ctx context.Context) (CallerScope, bool) {
 
 // ScopedTokenMethods is the complete set of App methods a scoped token may
 // invoke, mapped to the phase grants that admit each one. It is a closed
-// allow-list: anything absent — every non-workflow RPC, every LocalOnly method
-// outside this table — is refused for a scoped token as method_not_found,
+// allow-list: anything absent — every non-workflow RPC, every host-tooling
+// method outside this table — is refused for a scoped token as
+// method_not_found,
 // exactly as an unregistered method would be, so the surface stays
 // unenumerable from a compromised agent session.
 //

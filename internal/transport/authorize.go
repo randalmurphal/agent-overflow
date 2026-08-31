@@ -60,8 +60,8 @@ var methodClassification = func() map[string]MethodMeta {
 // method on a receiver methodgen does not generate for — the harness's,
 // today — and it is fail-closed rather than arbitrary: an unclassified
 // method is one nobody decided a remote form for, which is what `host`
-// already means. Those receivers register LocalOnly, so the answer also
-// matches the reachability they already have.
+// already means. Those receivers register RegisterOptions{LocalOnly}, so
+// the answer also matches the reachability they already have.
 func classify(methodName string) MethodMeta {
 	if meta, ok := methodClassification[methodName]; ok {
 		return meta
@@ -76,8 +76,9 @@ func classify(methodName string) MethodMeta {
 // passkey (or host-presence) proof"; passkeys arrive in phase 5, so the
 // host-presence half is what exists, and being on this machine is what it
 // means today. That is also the reality the step-up set already lives
-// under — every method carrying //ao:stepup derives local-only from its
-// scope, so nothing is loosened by naming the rule.
+// under: before the origin partition was deleted every //ao:stepup method
+// derived local-only from its scope, so naming host presence as the proof
+// preserves the reachability they already had rather than loosening it.
 //
 // It is a function rather than an inline `isLoopback` so phase 5 swaps the
 // PROOF without touching a call site: the passkey assertion lands here,

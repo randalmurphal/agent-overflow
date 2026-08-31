@@ -131,7 +131,7 @@ runtime palette change repaints everything for free **except**:
 |---|---|---|
 | **xterm terminals** (`terminal/terminalTheme.ts`, applied in `terminalXterm.ts`, `TerminalBody.svelte`, `TakeControlTerminal.svelte`) | **BRIDGED (phase 2).** Was: hand-maintained hex `DARK`/`LIGHT` `ITheme` duplicates (44 values) that CSS vars never reached, because xterm rejects `oklch`, and the app.css comment claiming otherwise was stale. Now the `ITheme` is resolved from the live cascade through `utils/cssColorProbe.ts` (the same module the phase-1 mermaid bridge uses, so there is still exactly one resolver), and the re-apply effect tracks the palette identity rather than just the light/dark flip. See §9. | WebGL addon has a GPU glyph-atlas cache, so verify visually after palette changes. |
 | **Mermaid** (`StreamdownMermaidHost.svelte` + `markdown/render/Streamdown.svelte`) | **BRIDGED (phase 1).** Was: built-in `'dark'`/`'default'` palettes only, diagram fills/strokes/labels a wholly uncaptured surface. Now `theme:'base'` + `themeVariables` resolved from app tokens (`chat/markdown/mermaidTokens.ts`, via the probe in `utils/cssColorProbe.ts`); the `{#key}` and the SVG cache key both key on the palette. | Widen the palette identity when theme files land (see §7 phase 2). |
-| **Native window background** (`main_desktop.go`) | **BRIDGED (phase 2).** Was: `NewRGBA(22,22,30)` hardcoded at construction, the resize-flash color, wrong for light theme already. Now `SetWindowBackgroundColor` (LocalOnly) paints it live from the app's cascade-reading `$effect`, and construction reads the `windowBackground` cache out of `themes/appearance.json` before the webview exists. See §9.3. | — |
+| **Native window background** (`main_desktop.go`) | **BRIDGED (phase 2).** Was: `NewRGBA(22,22,30)` hardcoded at construction, the resize-flash color, wrong for light theme already. Now `SetWindowBackgroundColor` (`//ao:scope host`) paints it live from the app's cascade-reading `$effect`, and construction reads the `windowBackground` cache out of `themes/appearance.json` before the webview exists. See §9.3. | — |
 | **WSL launcher pages** (`cmd/agent-overflow-windows/picker.go`) | Inline HTML, hardcoded `#16161e` + Tokyo Night. Pre-app bootstrap; could at best read settings JSON off disk for light/dark. | Low priority. |
 | **Favicon** (`public/favicon.svg`) | Static, dark tile. | Optional `prefers-color-scheme` inside the SVG. |
 | **Second window / `--connect` client** | No `settings:changed` push event exists, so another client learns of a theme change only on reload. | Needs a push event if themes should sync live (template: `app_workflow_definitions_watcher.go`'s `a.emit`). |
@@ -506,7 +506,8 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
   frontend picker off it.
 - Native window: `BackgroundColour` at window creation reads
   `appearance.windowBackground` (fallback: current hardcoded value);
-  a `SetWindowBackgroundColor` App method (LOCAL-ONLY) applies live
+  a `SetWindowBackgroundColor` App method (`//ao:scope host` — it paints
+  a window this process owns, so it has no remote form) applies live
   changes.
 
 **Frontend** (`frontend/src/lib/theme/`):

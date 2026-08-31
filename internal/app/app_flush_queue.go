@@ -937,9 +937,10 @@ func (a *App) registerQueueItem(
 // per-thread mirror; also by remote `--connect` clients attaching
 // mid-session. Read-only — no emission.
 //
-// LocalOnly: the snapshot exposes the user's drafted-but-not-yet-sent
-// prompts, attachment IDs, and plan refs. Same disclosure shape as
-// the diff bindings, hence loopback-only at the transport layer.
+// threads:operate rather than threads:read: the snapshot exposes the
+// user's drafted-but-not-yet-sent prompts, attachment IDs, and plan
+// refs, which is what a session driving the thread sees and not what a
+// read-only observer signed up for.
 //
 //ao:scope threads:operate
 func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {

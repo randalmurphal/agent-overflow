@@ -16,8 +16,8 @@ const (
 
 // draft:* — one frame per persisted composer-draft write, naming the thread
 // and the screen that wrote it. Carries no draft TEXT: receivers re-read
-// through GetDraft, which is loopback-only for the same reason this channel
-// is (in-progress user-typed work).
+// through GetDraft, which takes `threads:operate` for the same reason this
+// channel is loopback-only (in-progress user-typed work).
 const (
 	DraftUpdated Channel = "draft:updated"
 )

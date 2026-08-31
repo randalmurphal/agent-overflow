@@ -64,9 +64,10 @@ type LiveStateTodoStep struct {
 // It is the refresh/reconnect companion to the push events emitted during a
 // normal uninterrupted frontend session.
 //
-// LocalOnly: the payload can expose pending prompts, tool approvals, drafted
-// queued messages, attachment ids, and provider session state. It belongs in
-// the same loopback-only class as GetQueueState and ListPendingInteractiveRequests.
+// threads:operate rather than threads:read: the payload can expose pending
+// prompts, tool approvals, drafted queued messages, attachment ids, and
+// provider session state. Same class as GetQueueState and
+// ListPendingInteractiveRequests, and annotated to match.
 //
 //ao:scope threads:operate
 func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {

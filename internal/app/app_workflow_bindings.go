@@ -378,7 +378,8 @@ func automationView(automation store.Automation, now time.Time) WorkflowAutomati
 // The run's results are delivered there from then on, replacing any previous
 // binding.
 //
-// LocalOnly: it associates a local run record with a local provider session.
+// threads:autonomy: it decides where an unattended run reports, which is a
+// statement about the autonomous work itself and not thread bookkeeping.
 //
 //ao:scope threads:autonomy
 func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error) {
@@ -409,7 +410,7 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 // WorkflowUnbindThread drops a run's origin binding. Its results go back to the
 // workflows overlay and the OS notification.
 //
-// LocalOnly: same surface as WorkflowBindThread.
+// threads:autonomy: same surface as WorkflowBindThread.
 //
 //ao:scope threads:autonomy
 func (a *App) WorkflowUnbindThread(itemID string) (store.WorkItem, error) {
@@ -752,7 +753,8 @@ type WorkflowDiscardResult struct {
 // WorkflowDiscardPreview reports what discarding a run tree would destroy. It
 // runs read-only git queries and mutates nothing.
 //
-// LocalOnly: it reads local checkouts and repository history.
+// git:operate: it reads local checkouts and repository history, the same
+// grant the git reads it is built out of take.
 //
 //ao:scope git:operate
 func (a *App) WorkflowDiscardPreview(itemID string) (WorkflowDiscardPreview, error) {
@@ -890,8 +892,8 @@ func (a *App) autoDisposeWorkflowItem(itemID string) {
 // comes down through the engine's one teardown path. Resuming continues on the
 // provider sessions the runs parked on.
 //
-// LocalOnly: pausing interrupts local provider processes and releases the
-// worktrees they hold.
+// threads:autonomy: pausing interrupts autonomous provider processes and
+// releases the worktrees they hold.
 //
 //ao:scope threads:autonomy
 func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
@@ -915,8 +917,8 @@ func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 // the path that set it, and a caller that can only ever arm would have no way to
 // change its mind.
 //
-// LocalOnly: the request decides whether the next wave of autonomous provider
-// sessions runs, which is the same control plane as pause.
+// threads:autonomy: the request decides whether the next wave of autonomous
+// provider sessions runs, which is the same control plane as pause.
 //
 //ao:scope threads:autonomy
 func (a *App) WorkflowRequestSoftStop(ctx context.Context, itemID string, armed bool) error {

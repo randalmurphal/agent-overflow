@@ -20,8 +20,10 @@
 //   - Backend progress is awaited on the wire (`session-import:progress`,
 //     terminal frame) rather than inferred from the DOM.
 //
-// View-only/remote posture is out of scope: the harness binds loopback and
-// import is local-only by construction.
+// View-only/remote posture is out of scope here: the harness binds loopback,
+// and what an off-host session may reach is pinned in
+// harness-offhost-authz.spec.ts instead. The import RPCs are
+// `threads:operate`, so a session holding that grant may run one.
 
 import { test, expect } from './fixtures.js';
 import {
