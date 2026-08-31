@@ -187,6 +187,35 @@ export function hasPairedSession(): boolean {
   return readStoredSession() !== null;
 }
 
+/**
+ * The headers a same-origin request presents to name the paired
+ * session: the credential plus the device identifier its enrollment
+ * bound. Empty when this browser holds no paired session, so callers
+ * can spread it unconditionally. The manifest fetch is the consumer —
+ * after a backend restart the page cookie is dead and this credential
+ * is the one thing that still admits the page.
+ */
+export function pairedSessionHeaders(): Record<string, string> {
+  const held = readStoredSession();
+  if (!held) return {};
+  return {
+    [SESSION_CREDENTIAL_HEADER]: held.credential,
+    [DEVICE_KEY_HEADER]: deviceKeyThumbprint(),
+  };
+}
+
+/**
+ * One renewal attempt on the stored session, for a caller whose request
+ * was refused with the stored credential (the manifest fetch). Answers
+ * whether a fresh credential is now stored; a renewal the backend
+ * refuses as dead clears the store, so a false answer with
+ * hasPairedSession() still true means "unproven, retry later" exactly
+ * as it does for the ticket mint.
+ */
+export function renewPairedSession(fetcher: typeof fetch = fetch): Promise<boolean> {
+  return renewSession(fetcher);
+}
+
 /** The stored session's id, for "this device" affordances. Null when unpaired. */
 export function pairedSessionId(): string | null {
   return readStoredSession()?.sessionId ?? null;

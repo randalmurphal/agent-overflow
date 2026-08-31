@@ -14,6 +14,7 @@ import { setViewOnlySessionFromBootstrap } from './runMode';
 import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
+import { hasPairedSession, pairedSessionHeaders, renewPairedSession } from './deviceSession';
 
 // BootstrapRejectedError marks the one bootstrap failure that retrying
 // cannot fix: the server answered, and refused our credential. The
@@ -148,8 +149,26 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // same-origin credentials is the default for a same-origin request,
   // but state it: this fetch is the cookie's whole delivery path, and a
   // future caller passing a different mode would silently unauthenticate
-  // the page.
-  const resp = await fetch(url, { credentials: 'same-origin' });
+  // the page. A PAIRED page also presents its stored session credential:
+  // its one-time ticket is long spent and its cookie dies with the
+  // backend launch that planted it, so after a restart the session
+  // credential is the only thing that still names this page.
+  let resp = await fetch(url, {
+    credentials: 'same-origin',
+    headers: pairedSessionHeaders(),
+  });
+  if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession()) {
+    // The stored access credential may simply have aged out between
+    // visits; the refresh exchange decides whether the session is dead.
+    // One renewal, one retry — a renewal the backend refuses as dead
+    // clears the store, and the retry below then runs unpaired.
+    if (await renewPairedSession()) {
+      resp = await fetch(url, {
+        credentials: 'same-origin',
+        headers: pairedSessionHeaders(),
+      });
+    }
+  }
   if (!resp.ok) {
     if (!CREDENTIAL_REFUSED_STATUSES.has(resp.status)) {
       // Transient: the server is up but not serving the manifest yet

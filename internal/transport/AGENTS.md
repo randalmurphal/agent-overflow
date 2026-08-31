@@ -145,7 +145,13 @@ it, and they all end in that same comparison:
 
 Do not add a fourth check anywhere. A route needing a credential calls
 `Authenticate`; `/bootstrap.json` calls `Exchange`, which is `Authenticate` plus
-consuming the page ticket and writing the cookie.
+consuming the page ticket and writing the cookie. When `Exchange` refuses, the
+manifest falls back to `SessionForRequest`: a live durable session (a paired
+device's credential header, or a session cookie that outlived the launch that
+planted it) already admits the `/ws` upgrade, and the manifest must not be
+stricter than the socket it describes. The fallback never writes the local
+page channel's session cookie — that credential is reserved for requests the
+page credential admitted.
 
 **A page URL carries a one-time ticket (`?t=`), never the session token.**
 Tickets are minted per page URL produced — `Server.AppURL` at boot,

@@ -400,7 +400,11 @@ var Routes = []Route{
 		Why: "Exchanges a one-time ?t= ticket for the HttpOnly page " +
 			"cookie and returns the connection parameters. The one route " +
 			"that mints a credential rather than spending one, which is " +
-			"why the Host guard and the Origin allow-list both cover it.",
+			"why the Host guard and the Origin allow-list both cover it. " +
+			"A live durable session also admits it (without the cookie " +
+			"mint): the paired-device page holds no page credential " +
+			"after a backend restart, and the manifest must not be " +
+			"stricter than the /ws upgrade it describes.",
 	},
 	{
 		Pattern:    "/ws",

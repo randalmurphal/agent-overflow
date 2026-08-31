@@ -989,11 +989,23 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// the readiness and startup-failure paths below, where issuing the
 	// cookie is exactly right: the credential was good, the backend just
 	// is not serving yet, and the retry should not need another ticket.
-	if !s.cred.Exchange(w, r) {
-		// Indistinguishable from "no such path" so a LAN scanner can't
-		// fingerprint the agent-overflow server vs other 404 responses.
-		http.NotFound(w, r)
-		return
+	pageAuthed := s.cred.Exchange(w, r)
+	if !pageAuthed {
+		// The page credential is not the only door: a durable session —
+		// a paired device presenting its credential header, or a session
+		// cookie that outlived the launch credential that planted it —
+		// already admits the /ws upgrade (handleWS's non-ticket arm), so
+		// the manifest, whose whole job is to hand out wsUrl, must not
+		// be stricter than the socket it describes. Without this arm a
+		// paired page whose one-time ?t= is long spent can never load
+		// the manifest again after a backend restart.
+		if !s.sessionAdmitsRequest(r) {
+			// Indistinguishable from "no such path" so a LAN scanner
+			// can't fingerprint the agent-overflow server vs other 404
+			// responses.
+			http.NotFound(w, r)
+			return
+		}
 	}
 
 	// CORS not strictly needed (same origin), but emit no-store so a
@@ -1020,8 +1032,12 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// trip and neither needs a route of its own. Written after the
 	// readiness checks above because the credential does not exist until
 	// the App's startup has minted it, and a page that arrives early gets
-	// it on the refetch its reconnect already performs.
-	if issue := s.cfg.PageSessionCredential; issue != nil {
+	// it on the refetch its reconnect already performs. Gated on the
+	// PAGE credential: a request the session fallback admitted holds a
+	// device-bound session, and planting the local channel's credential
+	// on it would hand that device the one session this surface refuses
+	// to revoke.
+	if issue := s.cfg.PageSessionCredential; issue != nil && pageAuthed {
 		WriteSessionCookie(w, r, issue())
 	}
 	backendID, replicaGeneration := "", ""
@@ -1042,6 +1058,19 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		BackendID:         backendID,
 		ReplicaGeneration: replicaGeneration,
 	})
+}
+
+// sessionAdmitsRequest reports whether the request presents a durable
+// session credential the session core verifies as live. The resolver
+// treats "no credential presented" as ok-with-empty-id, so the id check
+// is what distinguishes an anonymous request from an authenticated one.
+func (s *Server) sessionAdmitsRequest(r *http.Request) bool {
+	resolve := s.cfg.SessionForRequest
+	if resolve == nil {
+		return false
+	}
+	id, ok := resolve(r)
+	return ok && id != ""
 }
 
 // HealthPath is the one route on this listener that consults no

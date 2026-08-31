@@ -107,7 +107,11 @@ remote browser alike. Protocol and authz rules:
   same-origin `wsUrl` put it there. So there is nothing to stash, nothing
   to append to a URL, and nothing for a new reader to reach for — if you
   find yourself wanting a token here, the answer is that the browser
-  already has one you cannot see. Whether the page is loopback decides
+  already has one you cannot see. The one exception rides in from
+  `deviceSession.ts`: a PAIRED page also presents its stored session
+  credential on the manifest fetch (renewing once on a refusal), because
+  its ticket is spent and its cookie dies with the backend launch — after
+  a restart that credential is the only thing that still names the page. Whether the page is loopback decides
   whether a refused credential is terminal, so getting that predicate
   wrong is user-visible in both directions: a false "remote" tells a
   desktop user to reopen a share link that does not exist, and a false

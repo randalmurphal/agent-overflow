@@ -388,6 +388,61 @@ func TestServer_BootstrapRejectsBadToken(t *testing.T) {
 	}
 }
 
+// The manifest must not be stricter than the /ws upgrade it describes:
+// a request presenting a live durable session (a paired device's header)
+// is served even when it holds no page credential — its one-time ticket
+// is long spent and its cookie died with the backend launch. A presented
+// credential the core refuses still 404s, and the fallback path never
+// plants the local page channel's session cookie.
+func TestServer_BootstrapAdmitsALiveSessionWithoutAPageCredential(t *testing.T) {
+	f := newServerFixtureWith(t, func(cfg *Config) {
+		cfg.SessionForRequest = func(r *http.Request) (string, bool) {
+			switch r.Header.Get(SessionCredentialHeader) {
+			case "cred-live":
+				return "ses-1", true
+			case "":
+				return "", true
+			default:
+				return "", false
+			}
+		}
+		cfg.PageSessionCredential = func() string { return "local-channel-cred" }
+	})
+
+	get := func(credential string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/bootstrap.json", f.srv.Addr()), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if credential != "" {
+			req.Header.Set(SessionCredentialHeader, credential)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	live := get("cred-live")
+	defer live.Body.Close()
+	if live.StatusCode != http.StatusOK {
+		t.Fatalf("live session bootstrap = %d, want 200", live.StatusCode)
+	}
+	for _, cookie := range live.Cookies() {
+		if cookie.Value == "local-channel-cred" {
+			t.Fatalf("session-admitted bootstrap planted the local page channel's credential")
+		}
+	}
+
+	refused := get("cred-unknown")
+	defer refused.Body.Close()
+	if refused.StatusCode != http.StatusNotFound {
+		t.Fatalf("refused session bootstrap = %d, want 404", refused.StatusCode)
+	}
+}
+
 func TestServer_BootstrapRejectsEmptyToken(t *testing.T) {
 	f := newServerFixture(t)
 	resp, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json", f.srv.Addr()))

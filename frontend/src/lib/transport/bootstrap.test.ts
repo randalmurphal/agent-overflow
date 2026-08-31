@@ -16,6 +16,7 @@ import {
   validateWsUrl,
   wsUrlMatchesPageOrigin,
 } from './bootstrap';
+import { clearPairedSession, redeemPairing } from './deviceSession';
 
 describe('isLoopbackHostname', () => {
   it('accepts every host that names this machine', () => {
@@ -212,6 +213,98 @@ describe('defaultBootstrap', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
 
     await expect(defaultBootstrap()).rejects.toBeInstanceOf(BootstrapRejectedError);
+  });
+
+  // A paired page presents its stored session credential on the
+  // manifest fetch: its one-time ticket is long spent and its cookie
+  // dies with the backend launch that planted it, so after a restart
+  // the session credential is the only thing that still names it.
+  it('presents the paired session credential on the manifest fetch', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: window.location.origin, token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        void _url;
+        void init;
+        return manifestResponse({ wsUrl: SAME_ORIGIN_WS });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+
+      const headers = fetchMock.mock.calls[0]![1]!.headers as Record<string, string>;
+      expect(headers['X-AO-Session']).toBe('cred-1');
+      expect(headers['X-AO-Device-Key']).toBeTruthy();
+    } finally {
+      clearPairedSession();
+    }
+  });
+
+  // A refusal with a session still stored gets ONE renewal and one
+  // retry: the access credential may simply have aged out between
+  // visits, and the refresh exchange is what decides whether the
+  // session is dead.
+  it('renews the paired session once when the manifest refuses it', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-stale',
+            expiresAtMs: Date.now() + 900_000,
+            refreshSecret: 'refresh-1',
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: window.location.origin, token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+        void init;
+        if (url === '/auth/token') {
+          return new Response(
+            JSON.stringify({
+              sessionId: 'sess-1',
+              credential: 'cred-fresh',
+              expiresAtMs: Date.now() + 900_000,
+              refreshSecret: 'refresh-2',
+            }),
+            { status: 200 },
+          );
+        }
+        // First manifest fetch refused; the post-renewal retry served.
+        if (fetchMock.mock.calls.filter(([u]) => u !== '/auth/token').length <= 1) {
+          return new Response('not found', { status: 404 });
+        }
+        return manifestResponse({ wsUrl: SAME_ORIGIN_WS });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+
+      const manifestCalls = fetchMock.mock.calls.filter(([u]) => u !== '/auth/token');
+      expect(manifestCalls).toHaveLength(2);
+      const retryHeaders = manifestCalls[1]![1]!.headers as Record<string, string>;
+      expect(retryHeaders['X-AO-Session']).toBe('cred-fresh');
+    } finally {
+      clearPairedSession();
+    }
   });
 
   // 503 is the readiness gate, not a verdict on the credential: the
