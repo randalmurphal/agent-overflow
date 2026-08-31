@@ -1,5 +1,5 @@
 import { execFile as execFileCallback, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 
@@ -100,7 +100,12 @@ async function captureProcessIdentityOnce(pid: number): Promise<ProcessIdentity>
       throw new Error(`harness watchdog: incomplete /proc/${pid}/stat`);
     }
     const { stdout: executable } = await execFile('/usr/bin/readlink', [`/proc/${pid}/exe`]);
-    return { pid, birth: fields[19], executable: executable.trim() };
+    // fields[2] is the process group id. Leaving it unset made
+    // captureProcessGroupMemberProof return undefined unconditionally on
+    // Linux (its first check), and made a proof row from processRows — which
+    // does carry groupId — fail sameProcessIdentity against a per-pid
+    // identity that didn't. Darwin always carried it; Linux must too.
+    return { pid, birth: fields[19], executable: executable.trim(), groupId: Number(fields[2]) };
   }
   if (process.platform === 'darwin') {
     const [{ stdout: birth }, { stdout: executable }, { stdout: group }] = await Promise.all([
@@ -254,10 +259,22 @@ async function processRows(): Promise<ProcessRow[]> {
         const status = await readFile(`/proc/${pid}/status`, 'utf8');
         const rss = /^VmRSS:\s+(\d+)\s+kB$/m.exec(status);
         if (close < 0 || fields.length < 20 || !rss) continue;
+        // Best-effort, like birth: a kernel thread or an exiting process has
+        // no readable exe link and simply carries no executable. The
+        // group-member proof REQUIRES executable, so leaving it unset here
+        // made captureProcessGroupMemberProof structurally impossible on
+        // Linux — every row failed the member filter.
+        let executable: string | undefined;
+        try {
+          executable = await readlink(`/proc/${pid}/exe`);
+        } catch {
+          // No exe link to read; the row still serves the RSS watchdog.
+        }
         rows.push({
           pid,
           ppid: Number(fields[1]),
           birth: fields[19],
+          executable,
           groupId: Number(fields[2]),
           rssBytes: Number(rss[1]) * 1024,
         });
