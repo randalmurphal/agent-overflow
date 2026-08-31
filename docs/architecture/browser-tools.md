@@ -121,6 +121,14 @@ permissions alone would make it a sandbox bypass.
 
 ## Browser hardening
 
+The MCP endpoint validates every request before it dispatches a method:
+the peer must be on loopback, the request must carry no `Origin` header,
+and it must declare `Content-Type: application/json`. The per-thread
+capability URL is therefore not the only thing standing between a
+document in a browser and the tools, and requiring JSON forces a
+preflight the endpoint refuses rather than letting a `text/plain` CORS
+simple request through unannounced.
+
 Chromium's sandbox and site isolation remain enabled.
 The manager uses a private temporary profile, grants no camera, microphone,
 geolocation, notification, or system-clipboard permission, bounds navigation
