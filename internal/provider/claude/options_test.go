@@ -572,14 +572,14 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 }
 
 // TestMcpConfigForCLIBackfillsHTTPType pins the contract that lets the
-// design package share one MCPServer struct between Codex (untagged
+// app layer share one MCPServer struct between Codex (untagged
 // {"url":...} via inline mcp_servers) and Claude (--mcp-config requires
 // `"type": "http"`). The shared shape is the canonical untagged one;
 // this helper is what makes Claude's CLI accept it.
 func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
 	cfg := Config{
 		MCPServers: map[string]any{
-			"design": map[string]any{
+			"browser": map[string]any{
 				"url": "http://127.0.0.1:1234/mcp/thread-A",
 			},
 		},
@@ -594,9 +594,9 @@ func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
 		t.Fatalf("unmarshal: %v\nout: %s", err, out)
 	}
-	server := payload.MCPServers["design"]
+	server := payload.MCPServers["browser"]
 	if server == nil {
-		t.Fatalf("design server missing from %s", out)
+		t.Fatalf("browser server missing from %s", out)
 	}
 	if got := server["type"]; got != "http" {
 		t.Fatalf("server type = %v, want \"http\" — Claude CLI rejects http servers without it (%s)", got, out)
@@ -614,7 +614,6 @@ func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 				"headers": map[string]string{"Authorization": "Bearer token"},
 			},
 		},
-		MergeMCPServers: true,
 	}
 	args := buildArgs(cfg, "")
 	joined := strings.Join(args, " ")

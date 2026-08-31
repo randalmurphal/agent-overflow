@@ -12,7 +12,6 @@ import {
 import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
-import type { ThreadDesignState } from './threadDesignState.svelte';
 import { isSmoothLiveContentKind } from './threadPaneShared';
 
 export interface ThreadItemStreamApplyOptions {
@@ -52,7 +51,6 @@ export interface ThreadItemStreamApplyOptions {
   timelineWindow: ThreadTimelineWindow;
   subagentMemory: ThreadSubagentMemory;
   streamingReveal: ThreadStreamingReveal;
-  designState: ThreadDesignState;
 }
 
 /** Distinct itemIds a pane will warn about before the ledger resets. */
@@ -80,8 +78,8 @@ export interface ThreadItemStreamApply {
 /**
  * Owns a thread pane's streaming item-application machine: the batched
  * upsert path (`applyItemUpsertsToWindow` + the admission and fold
- * swallows, live eviction, window prune, reveal reconcile and design
- * side-channel that ride it) and the three single-row wire applications
+ * swallows, live eviction, window prune, and reveal reconcile that ride it)
+ * and the three single-row wire applications
  * — delta, meta and field patch.
  *
  * The pane data layer remains the sole mutator of `items` and of the
@@ -139,16 +137,6 @@ export function createThreadItemStreamApply(
         timelineWindow.pruneToRecentWindowIfNeeded();
       } catch (error) {
         (errors ??= []).push(error);
-      }
-    }
-    const thread = options.getThread();
-    if (thread?.mode === 'design') {
-      for (const item of next.changedItems) {
-        try {
-          options.designState.applyAssistantPayloadsForItem(item, thread);
-        } catch (error) {
-          (errors ??= []).push(error);
-        }
       }
     }
     if (errors) {

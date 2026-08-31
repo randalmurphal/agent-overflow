@@ -61,7 +61,6 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`scroll-contracts.md`](architecture/scroll-contracts.md) | C1–C27: the user-observable scroll behaviors, each with regression provenance and the test that pins it. |
 | [`activity-runs.md`](architecture/activity-runs.md) | One maximal stretch of activity rows as a single timeline row: the nested scroller, its expansion lease, and collapse. |
 | [`theme-system.md`](architecture/theme-system.md) | The token vocabulary, the two independent appearance axes, and the client-side `themes/` directory. |
-| [`design-mode.md`](architecture/design-mode.md) | Per-thread isolated design workdir, the sandboxed preview iframe, and the MCP tool surface behind it. |
 | [`chat-rewrite.md`](architecture/chat-rewrite.md) | The item-model spec of record: item ID schemas, channels, the background tray. Cited by invariants and the event types. |
 | [`settle-flicker-analysis.md`](architecture/settle-flicker-analysis.md) | Root-cause record for the settle-flicker class; the standing-oracle tests cite it. |
 | [`scroll-arbitration-plan.md`](architecture/scroll-arbitration-plan.md) | Quiet-work deferral and scroll arbitration design; cited by `timelineQuietWork` and the interleaving tests. |

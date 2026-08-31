@@ -440,7 +440,7 @@
   {:else}
     {#each layoutItems as item, index (item.id)}
       {#if isCompanionKind(item.kind)}
-        <!-- Companion panes (plan/design-preview/review panels + the
+        <!-- Companion panes (plan/review/browser/agent panels + the
              take-control PTY mirror) are not ThreadPanes: no thread-drop
              wiring, and they hold their own logical focus — pane-scoped
              commands (close/move) act on the companion, thread-scoped

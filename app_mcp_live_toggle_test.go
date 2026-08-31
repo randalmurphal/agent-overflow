@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,65 +83,6 @@ func TestSetThreadMcpServerEnabled_Claude_LiveSession_FiresToggleRPC(t *testing.
 	}
 	if string(raw) != configBody {
 		t.Errorf("claude config was rewritten by the live toggle path:\n%s", raw)
-	}
-}
-
-// TestSetThreadMcpServerEnabled_Claude_DesignThread_WritesConfigNotRPC
-// guards the design carve-out: design-mode Claude sessions launch with
-// --strict-mcp-config, so user MCP is invisible to them and a live
-// mcp_toggle would be a no-op against the wrong server set. The toggle
-// must land in the workspace config (for future non-design sessions)
-// and no control_request may reach the live session.
-func TestSetThreadMcpServerEnabled_Claude_DesignThread_WritesConfigNotRPC(t *testing.T) {
-	app, claudePath, _ := newMCPTestApp(t)
-
-	workspace := t.TempDir()
-	writeClaudeConfig(t, claudePath, `{
-  "mcpServers": {
-    "fs": {"type": "stdio", "command": "fs-bin"}
-  }
-}`)
-
-	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "design")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	captureDir := t.TempDir()
-	binary := writeClaudeMcpToggleCaptureBinary(t, captureDir)
-	sess, err := claude.NewSession(
-		context.Background(),
-		thread.ID,
-		claude.Config{
-			Binary:  binary,
-			WorkDir: workspace,
-		},
-		func(provider.ProviderEvent) {},
-	)
-	if err != nil {
-		t.Fatalf("claude.NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-
-	app.sessions[thread.ID] = session{
-		provider: string(provider.Claude),
-		token:    "claude-design-token",
-		claude:   sess,
-	}
-
-	if err := app.SetThreadMcpServerEnabled(thread.ID, "fs", false); err != nil {
-		t.Fatalf("SetThreadMcpServerEnabled design thread: %v", err)
-	}
-
-	if waitForMcpCapture(captureDir, 500*time.Millisecond) {
-		t.Fatalf("design thread should NOT send mcp_toggle; capture observed at %s", captureDir)
-	}
-	listed, err := app.ListWorkspaceMcpServers("claude", workspace)
-	if err != nil {
-		t.Fatalf("ListWorkspaceMcpServers: %v", err)
-	}
-	if !findServer(listed, "fs").Disabled {
-		t.Errorf("fs: want disabled in workspace config after design-thread toggle")
 	}
 }
 
@@ -448,38 +388,4 @@ func trimToFirstLine(raw []byte) []byte {
 		}
 	}
 	return raw
-}
-
-// TestTriggerMcpAuth_Claude_DesignThreadRefused pins the sign-in
-// counterpart of the toggle carve-out above. A design session runs
-// --strict-mcp-config and cannot resolve a workspace MCP server name,
-// so the CLI would answer `Server not found: <name>` and the user would
-// see a sign-in-failed toast blaming the server. Worse, triggerMcpAuth
-// AUTO-STARTS a session when none is live, so without the guard a cold
-// design thread would spawn the useless session first. The refusal must
-// therefore happen before any session work.
-func TestTriggerMcpAuth_Claude_DesignThreadRefused(t *testing.T) {
-	app, claudePath, _ := newMCPTestApp(t)
-
-	workspace := t.TempDir()
-	writeClaudeConfig(t, claudePath, `{
-  "mcpServers": {
-    "remote": {"type": "http", "url": "https://example.invalid/mcp"}
-  }
-}`)
-
-	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "design")
-	if err != nil {
-		t.Fatalf("createTestThread: %v", err)
-	}
-
-	if _, err := app.TriggerMcpAuth(thread.ID, "plugin:atlassian:atlassian"); !errors.Is(err, ErrMCPDesignThreadUnsupported) {
-		t.Fatalf("TriggerMcpAuth on design thread = %v, want ErrMCPDesignThreadUnsupported", err)
-	}
-	if _, ok := app.sessions[thread.ID]; ok {
-		t.Fatal("design-thread sign-in must refuse before starting a session")
-	}
-	if err := app.ReconnectMcpServer(thread.ID, "plugin:atlassian:atlassian"); !errors.Is(err, ErrMCPDesignThreadUnsupported) {
-		t.Fatalf("ReconnectMcpServer on design thread = %v, want ErrMCPDesignThreadUnsupported", err)
-	}
 }

@@ -220,12 +220,6 @@
               "maxLength": 256,
               "description": "Foreground of the media-overlay pair. Stored opaque and consumed at partial alpha; mode-invariant by default."
             },
-            "design-paper": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256,
-              "description": "The design canvas iframe paper. Sandboxed agent HTML is authored against a light page, so this is default-locked."
-            },
             "card": {
               "type": "string",
               "minLength": 1,

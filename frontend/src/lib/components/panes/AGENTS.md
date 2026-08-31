@@ -35,7 +35,9 @@ contract explicit:
 - Browser companions are live, ephemeral projections of an explicitly
   presented backend Chrome target. Background pages do not open them; normal
   page activity does not steal their selected tab. They are never layout
-  persisted and must release their screencast subscription on unmount.
+  persisted and must release their screencast subscription on unmount. Pane
+  lifecycle shortcuts such as platform Mod+W are captured by `BrowserPane`
+  before its address bar or forwarded Chromium surface can consume them.
 
 Do not put chat behavior in this directory. Pane components mount and
 measure; chat/terminal/sidebar behavior stays in the owning feature

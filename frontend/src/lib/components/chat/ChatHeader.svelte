@@ -2,9 +2,7 @@
   // Chat header: the shared pane title (PaneTitleHandle — renameable,
   // draggable, focus-outlined) plus an attention dot on the left, and the
   // action cluster on the right (ChatHeaderActions: PR/diff badges, Open,
-  // git actions, terminal, design preview). Thread mode (chat vs design) is
-  // read inside ChatHeaderActions from `pane.thread.mode`; nothing here needs
-  // to render mode chrome.
+  // git actions, terminal). Nothing here needs to render mode chrome.
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { resolvePaneAttentionDot } from '../panes/paneAttention';
   import PaneTitleHandle from '../panes/PaneTitleHandle.svelte';

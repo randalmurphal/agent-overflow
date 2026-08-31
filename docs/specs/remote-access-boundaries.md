@@ -8,63 +8,19 @@ does not, and the specific cases the design has to handle. It is the
 reference for reviewing changes that touch listeners, routes, event
 channels, or credentials.
 
-## Confirmed defects (2026-08-04; A and B FIXED 2026-08-18)
+## Confirmed defects (2026-08-04; fixed)
 
-Found by audit, each step verified in code. All three were reachable
-**today in the desktop webview**, with no remote feature enabled. Fixes
-are spec §16 phase 0.
+The audit found three desktop-webview paths: raw model-authored links could
+navigate the app window, and the former same-origin design-file route exposed
+unauthenticated HTML and symlink-following file reads. The shared markdown root
+cause was fixed on 2026-08-18: links and images now render only after
+`transformUrl` approval, while path-shaped links use the nonce-protected
+`agent-overflow:open` editor flow. The remaining file-route exposure was removed
+with the retired design subsystem on 2026-08-30; the route no longer exists.
 
-> **Status 2026-08-18: A and B are fixed at their shared root cause.**
-> `Link.svelte` no longer has the `isPathRelativeUrl` raw-anchor
-> branch, and `Image.svelte` no longer has its raw-`src` twin
-> (`frontend/src/lib/markdown/AGENTS.md` § Security boundary): an anchor or `<img>` renders only for
-> a `transformUrl`-approved URL, so neither a `/`-leading nor a
-> `//host` href can top-level-navigate the window (or issue a raw
-> same-origin fetch) from model output. Path-shaped markdown hrefs
-> are instead rewritten during parsing to the nonce'd
-> `agent-overflow:open` editor scheme (`pathLinkExtension.ts`), only
-> on surfaces that carry a workspace, so third-party PR/review text
-> never grows editor affordances. The click-time gate is
-> `editor.ResolvePath`: existing regular files open from anywhere (a
-> deliberate 2026-08-18 loosening), folder opens are refused
-> everywhere (`.vscode/` tasks execute on folder open), UNC paths and
-> out-of-workspace scaffolding stay refused. The bodies of A and B
-> below are kept in their original present-tense form as the record
-> of what was reachable. **C remains open**, as do the `/design/`
-> hardening items (CSP/nosniff/XFO/token) that defense-in-depth still
-> wants even with the navigation path closed.
-
-**A. Model-authored content can reach the full method surface.**
-The markdown renderer's `Link.svelte`
-(`frontend/src/lib/markdown/render/elements/`) renders any href where
-`isPathRelativeUrl` is true (literally `startsWith('/')`) through a
-branch that **bypasses `transformUrl`**, emitting the raw href with no
-`target`/`rel`. The click delegate's `safeExternalURL` returns null for
-anything that is not `http(s)` and then returns *without*
-`preventDefault`, so the browser performs a same-tab top-level
-navigation. `/design/` serves agent-written files from the SPA origin as
-`text/html` with no CSP, no `nosniff`, no `X-Frame-Options`, and no
-token. Script running there reads
-`sessionStorage['ao:bootstrap-token']`, opens `/ws?token=…` as a
-loopback peer (so `LocalOnlyMethods` does not apply), and reaches every
-bound method. A design-mode agent writes the file itself as ordinary
-output; the link text is model-authored.
-
-**B. The app window can be replaced, with no design mode involved.** The
-same branch treats a protocol-relative `//other-host.example` as
-"relative", so model output alone can navigate the top-level window
-off-origin. The credential is not readable across origins, but the app
-window becomes third-party content with no route back, a convincing
-surface for a misleading prompt.
-
-**C. Unauthenticated local file read.** `http.Dir` blocks `../` but does
-not resolve symlinks, and `/design/` requires no token at all. A symlink
-created in an agent workdir exposes any user-readable file. There is
-also no per-thread scoping, and directory listings are enabled.
-
-The preview iframes are correctly sandboxed (`allow-scripts` without
-`allow-same-origin`). A and B route *around* that sandbox via top-level
-navigation rather than through it.
+The click-time file gate remains `editor.ResolvePath`: existing regular files
+open from anywhere, folder opens are refused (`.vscode/` tasks execute on folder
+open), and UNC paths plus out-of-workspace scaffolding remain refused.
 
 The rest of the render pipeline audited clean and should not be
 re-litigated: raw HTML disabled (`renderHtml={false}`), non-`http(s)`
@@ -76,9 +32,6 @@ the non-xterm ANSI renderer escapes all five characters and builds class
 names from parsed integers, highlight spans are metadata rendered
 through the template, no `eval`/`new Function` anywhere, and no
 credential in localStorage.
-
-Root cause of A and B is a single branch in a file the repo already
-patches.
 
 ## What a session credential represents
 

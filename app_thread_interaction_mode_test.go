@@ -15,8 +15,7 @@ func TestUpdateThreadModePersistsValidMode(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	// Only chat ↔ plan transitions are valid post-creation. Thread type
-	// (design / discussion) is immutable.
+	// Only chat ↔ plan transitions are valid post-creation.
 	for _, mode := range []string{"chat", "plan"} {
 		got, err := app.UpdateThreadMode(thread.ID, mode)
 		if err != nil {
@@ -41,31 +40,19 @@ func TestUpdateThreadModePersistsValidMode(t *testing.T) {
 	}
 }
 
-// TestUpdateThreadModeRejectsTypeMutations enforces immutable thread type:
-// design and discussion modes cannot be set on an existing thread, and a
-// design/discussion thread cannot be flipped to chat or plan either.
+// TestUpdateThreadModeRejectsTypeMutations enforces immutable discussion threads.
 func TestUpdateThreadModeRejectsTypeMutations(t *testing.T) {
 	app := newTestAppWithStore(t)
 	chatThread := testThread("chat-thread")
 	if err := app.store.CreateThread(chatThread); err != nil {
 		t.Fatalf("CreateThread(chat) error = %v", err)
 	}
-	for _, target := range []string{"design", "discussion"} {
+	for _, target := range []string{"discussion"} {
 		if _, err := app.UpdateThreadMode(chatThread.ID, target); err == nil {
 			t.Fatalf("UpdateThreadMode(chat→%s) error = nil, want rejection", target)
 		}
 	}
 
-	designThread := testThread("design-thread")
-	designThread.Mode = "design"
-	if err := app.store.CreateThread(designThread); err != nil {
-		t.Fatalf("CreateThread(design) error = %v", err)
-	}
-	for _, target := range []string{"chat", "plan"} {
-		if _, err := app.UpdateThreadMode(designThread.ID, target); err == nil {
-			t.Fatalf("UpdateThreadMode(design→%s) error = nil, want rejection", target)
-		}
-	}
 }
 
 func TestUpdateThreadModeRejectsInvalidMode(t *testing.T) {
@@ -163,13 +150,9 @@ func TestCreateThreadRejectsInvalidMode(t *testing.T) {
 	}
 }
 
-func TestCreateThreadAllowsDesign(t *testing.T) {
+func TestCreateThreadRejectsRetiredDesign(t *testing.T) {
 	app := newTestAppWithStore(t)
-	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/workspace", "claude-sonnet-4-6", "design")
-	if err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-	if thread.Mode != "design" {
-		t.Fatalf("Mode = %q, want design", thread.Mode)
+	if _, err := createTestThread(t, app, string(provider.Claude), "/tmp/workspace", "claude-sonnet-4-6", "design"); err == nil {
+		t.Fatal("CreateThread(design) error = nil, want validation error")
 	}
 }

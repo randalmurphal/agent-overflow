@@ -8,14 +8,6 @@ type Channel string
 // String returns the wire spelling.
 func (c Channel) String() string { return string(c) }
 
-// design:* — design-mode workdir signals. Both are id-only refetch
-// nudges; the watcher emits a WatchSubject that app_design.go switches
-// onto one of these.
-const (
-	DesignOptionsUpdate Channel = "design:options-update"
-	DesignReloadMain    Channel = "design:reload-main"
-)
-
 // discussion:* — multi-agent deliberation channels.
 const (
 	DiscussionMessage Channel = "discussion:message"
@@ -107,12 +99,11 @@ const (
 	ProviderUserInput              Channel = "provider:user_input"
 )
 
-// browser:* / screenshot:* — managed browser artifact install progress and
-// the live in-app companion surface.
+// browser:* — managed browser artifact install progress and the live in-app
+// companion surface.
 const (
-	BrowserCompanionState     Channel = "browser:companion-state"
-	BrowserInstallProgress    Channel = "browser:install-progress"
-	ScreenshotInstallProgress Channel = "screenshot:install-progress"
+	BrowserCompanionState  Channel = "browser:companion-state"
+	BrowserInstallProgress Channel = "browser:install-progress"
 )
 
 // session-import:* — one frame per session an import run finishes, plus

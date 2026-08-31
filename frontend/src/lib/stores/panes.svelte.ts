@@ -180,7 +180,7 @@ export function getFocusedPane(): ThreadPane {
 }
 
 // Resolve a layout pane id to the thread pane that owns it: thread panes
-// resolve to themselves, companion panes (plan/review/design-preview/
+// resolve to themselves, companion panes (plan/review/browser/agent/
 // take-control) to their sourcePaneId. Resolution goes through the layout
 // store's membership-keyed lookup — never the raw items array — so this
 // store never depends on companion stores AND reactive callers (ChatView's

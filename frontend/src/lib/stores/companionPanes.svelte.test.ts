@@ -16,7 +16,6 @@ import {
 import {
   closeCompanion,
   closeCompanionsForSource,
-  companionForSource,
   getCompanionPane,
   installCompanionPanes,
   isCompanionOpen,
@@ -51,21 +50,14 @@ describe('companionPanes store', () => {
     setPaneLayoutItemsForTest([threadItem('main', 900), threadItem('right')]);
 
     const plan = openCompanion('main', 'plan');
-    const preview = openCompanion('main', 'design-preview');
     const review = openCompanion('main', 'review');
 
     expect(plan).toEqual({ paneId: 'plan-main', kind: 'plan', sourcePaneId: 'main' });
-    expect(preview).toEqual({
-      paneId: 'design-preview-main',
-      kind: 'design-preview',
-      sourcePaneId: 'main',
-    });
     expect(review).toEqual({ paneId: 'review-main', kind: 'review', sourcePaneId: 'main' });
-    expect(paneIds()).toEqual(['main', 'plan-main', 'design-preview-main', 'review-main', 'right']);
+    expect(paneIds()).toEqual(['main', 'plan-main', 'review-main', 'right']);
     expect(getPaneLayoutItems()[1].widthPx).toBe(900);
     expect(isCompanionOpen('main', 'plan')).toBe(true);
     expect(getCompanionPane('plan-main')).toEqual(plan);
-    expect(companionForSource('main', 'design-preview')).toEqual(preview);
   });
 
   it('hosts an agent companion like any other panel kind', () => {
@@ -104,10 +96,6 @@ describe('companionPanes store', () => {
     expect(isCompanionOpen('main', 'plan')).toBe(false);
     expect(paneIds()).toEqual(['main']);
 
-    openCompanion('main', 'design-preview');
-    closeCompanion('design-preview-main');
-    expect(paneIds()).toEqual(['main']);
-    expect(getCompanionPane('design-preview-main')).toBeNull();
   });
 
   it('refuses to open when the source pane is absent from the layout', () => {
@@ -210,16 +198,14 @@ describe('companionPanes store', () => {
     setPaneLayoutItemsForTest([threadItem('p1')]);
     createPane('p1');
     openCompanion('p1', 'plan');
-    openCompanion('p1', 'design-preview');
     openCompanion('p1', 'review');
     openCompanion('p1', 'browser');
     openCompanion('p1', 'take-control');
-    expect(paneIds()).toEqual(['p1', 'take-control-p1', 'plan-p1', 'design-preview-p1', 'review-p1', 'browser-p1']);
+    expect(paneIds()).toEqual(['p1', 'take-control-p1', 'plan-p1', 'review-p1', 'browser-p1']);
 
     destroyPane('p1');
 
     expect(isCompanionOpen('p1', 'plan')).toBe(false);
-    expect(isCompanionOpen('p1', 'design-preview')).toBe(false);
     expect(isCompanionOpen('p1', 'review')).toBe(false);
     expect(isCompanionOpen('p1', 'browser')).toBe(false);
     expect(isCompanionOpen('p1', 'take-control')).toBe(false);

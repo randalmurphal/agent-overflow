@@ -126,6 +126,16 @@ test('agent browser page stays headless until explicitly presented as an interac
   await expect(page.getByTestId('browser-pane')).toHaveCount(0);
   await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId });
   await expect(page.getByTestId('browser-pane')).toBeVisible();
+
+  const second = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId: second.activePageId });
+  await expect(pane.getByRole('button', { name: 'Close tab' })).toHaveCount(2);
+  await pane.getByRole('textbox', { name: 'Address' }).focus();
+  await pane.getByRole('textbox', { name: 'Address' }).press('ControlOrMeta+w');
+  await expect(pane.getByRole('button', { name: 'Close tab' })).toHaveCount(1);
+  await pane.getByRole('textbox', { name: 'Address' }).focus();
+  await pane.getByRole('textbox', { name: 'Address' }).press('ControlOrMeta+w');
+  await expect(pane).toHaveCount(0);
 });
 
 test('browser settings toggle and clear through the real SPA and backend', async ({

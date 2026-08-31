@@ -1,5 +1,4 @@
 import type { Item, Thread } from '../types/models';
-import type { ActiveOptionSet, DesignViewport } from '../types/design';
 import { mountThreadInPane, syncThread } from './panes.svelte';
 import type { ThreadPane } from './thread.svelte';
 
@@ -37,10 +36,6 @@ export interface PanelContext {
   paneId: string;
   /** Workspace root for resolving relative paths in panel content. */
   workspacePath: string | undefined;
-  /** Design preview viewport selected for this pane. */
-  designViewport: DesignViewport;
-  /** Active design option set, when the agent has emitted choices. */
-  activeOptionSet: ActiveOptionSet | null;
   /** The source pane's loaded timeline window. Agent panel only. */
   readonly items: Item[];
   /** Bumped on every structural timeline change — the cutoff a projection
@@ -69,12 +64,6 @@ export interface PanelContext {
    *  mounting a second copy of it — and the pane's new contents are persisted
    *  with the layout. */
   switchThread(thread: Thread): Promise<void>;
-  /** Update the design preview viewport. */
-  setDesignViewport(viewport: DesignViewport): void;
-  /** Activate or clear the design option set. */
-  setActiveOptionSet(set: ActiveOptionSet | null): void;
-  /** Rehydrate design options from the backend workdir. */
-  refreshDesignOptions(threadId: string): Promise<void>;
 }
 
 /**
@@ -96,8 +85,6 @@ export function makePanelContext(pane: ThreadPane, close: () => void): PanelCont
     get threadId() { return pane.threadId; },
     get thread() { return pane.thread; },
     get workspacePath() { return pane.thread?.workspacePath; },
-    get designViewport() { return pane.designViewport; },
-    get activeOptionSet() { return pane.activeOptionSet; },
     get items() { return pane.items; },
     get timelineRevision() { return pane.timelineRevision; },
     getItemById: (itemId) => pane.getItemById(itemId),
@@ -106,8 +93,5 @@ export function makePanelContext(pane: ThreadPane, close: () => void): PanelCont
     close,
     replaceThread: syncThread,
     switchThread: async (thread) => { await mountThreadInPane(thread, pane); },
-    setDesignViewport: (viewport) => pane.setDesignViewport(viewport),
-    setActiveOptionSet: (set) => pane.setActiveOptionSet(set),
-    refreshDesignOptions: (threadId) => pane.applyDesignOptionsUpdate(threadId, ''),
   };
 }

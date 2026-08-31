@@ -73,7 +73,6 @@ var (
 		"provider:status",
 		"provider:terminal_output",
 		"provider:user_input",
-		"screenshot:install-progress", // 2026-08-25 pass
 		"session-import:progress",
 		"terminal:exit",
 		"terminal:output",

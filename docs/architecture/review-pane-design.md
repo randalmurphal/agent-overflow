@@ -35,8 +35,8 @@ read/write APIs and per-PR-key polling.
 
 ## Success Criteria
 
-- [ ] Panes are user-resizable with persisted splits; `plan` and
-      `design-preview` open as panes; the RHS sidebar system is deleted.
+- [ ] Panes are user-resizable with persisted splits; `plan` opens as a pane;
+      the RHS sidebar system is deleted.
 - [ ] A 5k-line, 100-file diff scrolls smoothly (no long frames from mount
       storms) with tree navigation, sticky file headers, and stacked/split
       modes.
@@ -54,7 +54,7 @@ read/write APIs and per-PR-key polling.
 ## Key Decisions
 
 - **Panes get kinds; RHS dies.** `PaneHost` learns pane kinds (`thread`,
-  `review`, `plan`, `design-preview`) with draggable splits persisted via
+  `review`, `plan`) with draggable splits persisted via
   per-client `ui_state` (not localStorage; see 036580a2). `RhsSidebarShell`,
   `rhsPanelSlot`, and both RHS diff surfaces are deleted when the review
   pane absorbs them. Rationale: one layout system; the RHS width constraint
@@ -188,7 +188,7 @@ read/write APIs and per-PR-key polling.
 ## Phasing (each independently shippable)
 
 1. **Pane foundation**: pane kinds in `PaneHost`, draggable persisted
-   splits, migrate `plan` + `design-preview` to panes.
+   splits and migrate `plan` to panes.
 2. **Engine features**: mid-splice compensation, exact-height rows,
    group/range queries; reducer unit tests.
 3. **Review pane, local scopes**: tree + continuous scroll + stacked/split

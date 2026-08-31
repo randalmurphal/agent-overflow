@@ -102,8 +102,6 @@ export interface BuiltinCommandHooks {
   // from panes.svelte#openThreadInNewPane, which opens an existing
   // thread in a new pane).
   openThreadFormInNewPane?: () => void;
-  openDesignThreadForm: () => void;
-  openDesignThreadFormInNewPane?: () => void;
   openThreadFromPR: () => void;
   openShipChanges: (paneId: string) => void;
   requestDiscussion: (thread: Thread) => void;
@@ -203,8 +201,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   const {
     openThreadForm,
     openThreadFormInNewPane,
-    openDesignThreadForm,
-    openDesignThreadFormInNewPane,
     openThreadFromPR,
     openShipChanges,
     requestDiscussion,
@@ -265,22 +261,6 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '+',
     editableReachable: true,
     run: () => openThreadFormInNewPane?.(),
-  });
-
-  registerCommand({
-    id: 'thread.new.design',
-    label: 'Thread: New Design',
-    icon: '+',
-    editableReachable: true,
-    run: () => openDesignThreadForm(),
-  });
-
-  registerCommand({
-    id: 'thread.newPane.design',
-    label: 'Thread: New Design in New Pane',
-    icon: '+',
-    editableReachable: true,
-    run: () => openDesignThreadFormInNewPane?.(),
   });
 
   registerCommand({
@@ -542,15 +522,13 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'mode.cycle',
     label: 'Agent Mode: Toggle Chat ↔ Plan',
-    description: 'Toggle the active chat thread between chat and plan agent modes. No-op on design / discussion threads — those types are immutable.',
+    description: 'Toggle the active chat thread between chat and plan agent modes. No-op on discussion threads.',
     icon: '⇆',
     when: 'hasActiveThread && !paletteOpen && !anyModalOpen',
     editableReachable: true,
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
-        // Design and discussion threads have immutable types — silently
-        // skip the toggle there rather than firing a backend rejection.
-        if (t.mode === 'design' || t.mode === 'discussion') return;
+        if (t.mode === 'discussion') return;
         const next = cycleMode(t.mode);
         if (pane.hasDraftPlaceholder) {
           pane.setDraftPlaceholderMode(next);

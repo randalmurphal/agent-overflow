@@ -1329,8 +1329,8 @@ func (s *Store) UpdateProvider(threadID, prov string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update provider for %s", threadID))
 }
 
-// UpdateMode overwrites the thread's mode (chat, plan, design,
-// discussion, or terminal). Empty strings are normalized to "chat" to
+// UpdateMode overwrites the thread's mode (chat, plan, discussion,
+// terminal, or a workflow-owned mode). Empty strings are normalized to "chat" to
 // match CreateThread/UpdateThread. This is the permissive store
 // primitive; user-driven toggles route through threadmode.ValidateSet,
 // which restricts the reachable set to chat/plan.

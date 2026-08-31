@@ -772,7 +772,7 @@ describe('<Composer>', () => {
     const { getByLabelText } = render(Composer, { props: { pane, draft } });
     const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
     await fireEvent.input(textarea, { target: { value: 'start first' } });
-    pane.startDraftPlaceholder(secondProject, 'design');
+    pane.startDraftPlaceholder(secondProject, 'chat');
     createGate.resolve(created);
 
     await tick();

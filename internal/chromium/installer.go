@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
-	"agent-overflow/internal/headlessshell"
 )
 
 // chromeForTestingManifestURL is the canonical manifest published by
@@ -20,13 +19,6 @@ const chromeForTestingManifestURL = "https://googlechromelabs.github.io/chrome-f
 // installerUserAgent identifies our traffic to googlechromelabs.github.io
 // so server-side rate-limit / anomaly logs can attribute requests.
 const installerUserAgent = "agent-overflow/chromium-installer"
-
-type Artifact string
-
-const (
-	ArtifactChrome        Artifact = "chrome"
-	ArtifactHeadlessShell Artifact = "chrome-headless-shell"
-)
 
 // Manifest body cap. The real Chrome-for-Testing manifest is ~600 KB;
 // a 5 MiB cap leaves room for upstream growth without letting a
@@ -75,11 +67,10 @@ type InstallResult struct {
 	BinaryPath string
 }
 
-// Installer resolves and downloads one managed Chrome artifact. Reuse a
+// Installer resolves and downloads managed Chrome for Testing. Reuse a
 // single instance per app process — it has no real state of its own
 // but it's the documented entry point.
 type Installer struct {
-	Artifact     Artifact
 	EventChannel eventchan.Channel
 	// ConfigDir is the parent of the artifact cache. Defaults
 	// to the App's configDir; tests pass a t.TempDir().
@@ -111,9 +102,8 @@ type Installer struct {
 }
 
 // NewInstaller wires the supplied dependencies and applies defaults.
-func NewInstaller(configDir string, artifact Artifact, channel eventchan.Channel, emit func(eventchan.Channel, any)) *Installer {
+func NewInstaller(configDir string, channel eventchan.Channel, emit func(eventchan.Channel, any)) *Installer {
 	return &Installer{
-		Artifact:     artifact,
 		EventChannel: channel,
 		ConfigDir:    configDir,
 		ManifestURL:  chromeForTestingManifestURL,
@@ -126,6 +116,19 @@ func NewInstaller(configDir string, artifact Artifact, channel eventchan.Channel
 		Emit: emit,
 	}
 }
+
+// InstalledChrome returns the newest usable full-Chrome artifact already in
+// the managed cache. It performs no network access.
+func InstalledChrome(configDir string) (InstallResult, bool) {
+	platform, err := currentPlatform()
+	if err != nil {
+		return InstallResult{}, false
+	}
+	return NewInstaller(configDir, "", nil).cachedInstall(platform)
+}
+
+// Executable reports whether path names a runnable browser binary.
+func Executable(path string) bool { return isExecutable(path) }
 
 // Install resolves the latest stable version, downloads the platform-
 // specific artifact zip if it isn't already cached,
@@ -148,9 +151,6 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	}
 	if i.ConfigDir == "" {
 		return InstallResult{}, fmt.Errorf("chromium: installer ConfigDir required")
-	}
-	if i.Artifact != ArtifactChrome && i.Artifact != ArtifactHeadlessShell {
-		return InstallResult{}, fmt.Errorf("chromium: unsupported artifact %q", i.Artifact)
 	}
 	if i.ManifestURL == "" {
 		i.ManifestURL = chromeForTestingManifestURL
@@ -175,7 +175,7 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	manifest, err := i.fetchManifest(ctx)
 	if err != nil {
 		if cached, ok := i.cachedInstall(platform); ok {
-			log.Printf("chromium: manifest unavailable; using cached %s %s: %v", i.Artifact, cached.Version, err)
+			log.Printf("chromium: manifest unavailable; using cached Chrome %s: %v", cached.Version, err)
 			i.emit(InstallProgress{Phase: "ready", Version: cached.Version})
 			return cached, nil
 		}
@@ -201,9 +201,9 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 		return InstallResult{}, err
 	}
 
-	zipURL, ok := stable.artifactURL(i.Artifact, platform)
+	zipURL, ok := stable.chromeURL(platform)
 	if !ok {
-		err := fmt.Errorf("chromium: no %s download for platform %s", i.Artifact, platform)
+		err := fmt.Errorf("chromium: no Chrome download for platform %s", platform)
 		i.emit(InstallProgress{Phase: "error", Error: err.Error()})
 		return InstallResult{}, err
 	}
@@ -214,12 +214,12 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 		}
 	}
 
-	cacheDir := filepath.Join(i.ConfigDir, i.cacheName())
+	cacheDir := filepath.Join(i.ConfigDir, "chrome")
 	versionDir := filepath.Join(cacheDir, stable.Version)
-	binaryPath := binaryPathFor(versionDir, platform, i.Artifact)
+	binaryPath := binaryPathFor(versionDir, platform)
 
 	// Already installed?
-	if i.executable(binaryPath) {
+	if isExecutable(binaryPath) {
 		i.emit(InstallProgress{Phase: "ready", Version: stable.Version})
 		i.pruneOldVersions(cacheDir, stable.Version)
 		return InstallResult{Version: stable.Version, BinaryPath: binaryPath}, nil
@@ -235,7 +235,7 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	if err := i.download(ctx, zipURL, zipPath, stable.Version); err != nil {
 		_ = os.Remove(zipPath)
 		if cached, ok := i.cachedInstall(platform); ok {
-			log.Printf("chromium: download unavailable; using cached %s %s: %v", i.Artifact, cached.Version, err)
+			log.Printf("chromium: download unavailable; using cached Chrome %s: %v", cached.Version, err)
 			i.emit(InstallProgress{Phase: "ready", Version: cached.Version})
 			return cached, nil
 		}
@@ -252,10 +252,10 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	}
 	_ = os.Remove(zipPath)
 
-	if !i.executable(binaryPath) {
+	if !isExecutable(binaryPath) {
 		// Either the zip layout shifted upstream or chmod failed.
 		// Walk the version dir and try to recover the binary path.
-		recovered, walkErr := findBrowserBinary(versionDir, platform, i.Artifact)
+		recovered, walkErr := findBrowserBinary(versionDir, platform)
 		if walkErr != nil || recovered == "" {
 			err := fmt.Errorf("chromium: extracted bundle missing binary at %s", binaryPath)
 			i.emit(InstallProgress{Phase: "error", Error: err.Error()})
@@ -269,19 +269,8 @@ func (i *Installer) Install(ctx context.Context) (InstallResult, error) {
 	return InstallResult{Version: stable.Version, BinaryPath: binaryPath}, nil
 }
 
-func (i *Installer) cacheName() string {
-	if i.Artifact == ArtifactHeadlessShell {
-		return headlessshell.CacheDirName
-	}
-	return string(i.Artifact)
-}
-
 func (i *Installer) cachedInstall(platform string) (InstallResult, bool) {
-	if i.Artifact == ArtifactHeadlessShell {
-		path, version, ok := headlessshell.Installed(i.ConfigDir)
-		return InstallResult{Version: version, BinaryPath: path}, ok
-	}
-	cacheDir := filepath.Join(i.ConfigDir, i.cacheName())
+	cacheDir := filepath.Join(i.ConfigDir, "chrome")
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil {
 		return InstallResult{}, false
@@ -292,7 +281,7 @@ func (i *Installer) cachedInstall(platform string) (InstallResult, bool) {
 		if !entry.IsDir() || validateVersionSegment(entry.Name()) != nil {
 			continue
 		}
-		binaryPath := binaryPathFor(filepath.Join(cacheDir, entry.Name()), platform, i.Artifact)
+		binaryPath := binaryPathFor(filepath.Join(cacheDir, entry.Name()), platform)
 		if !isExecutable(binaryPath) {
 			continue
 		}
@@ -308,13 +297,6 @@ func (i *Installer) cachedInstall(platform string) (InstallResult, bool) {
 	return best, best.BinaryPath != ""
 }
 
-func (i *Installer) executable(path string) bool {
-	if i.Artifact == ArtifactHeadlessShell {
-		return headlessshell.Executable(path)
-	}
-	return isExecutable(path)
-}
-
 // pruneOldVersions removes sibling version directories under cacheDir
 // that do not match keepVersion. Each candidate segment is re-validated
 // via validateVersionSegment before any RemoveAll, so a hand-edited
@@ -322,7 +304,7 @@ func (i *Installer) executable(path string) bool {
 // .zip.partial leftover) is left alone rather than recursively removed.
 //
 // Soft-fail per entry: a stale dir we can't unlink (Windows file lock
-// on a peer process's chrome-headless-shell.exe surfaces as
+// on a peer process's chrome.exe surfaces as
 // ERROR_SHARING_VIOLATION; a permission error on a manually-chmod'd
 // path) is logged but does not abort the caller's Install. Next launch
 // retries.

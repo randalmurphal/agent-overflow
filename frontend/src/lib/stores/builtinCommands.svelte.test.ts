@@ -510,8 +510,6 @@ type BuiltinHooks = Parameters<typeof registerBuiltinCommands>[0];
 function makeBuiltinHooks(overrides: Partial<BuiltinHooks> = {}): BuiltinHooks {
   return {
     openThreadForm: () => {},
-    openDesignThreadForm: () => {},
-    openDesignThreadFormInNewPane: () => {},
     openThreadFromPR: () => {},
     openShipChanges: () => {},
     requestDiscussion: () => {},
@@ -1102,14 +1100,14 @@ describe('mode.cycle command', () => {
     expect(calls[0]).toEqual(['thread-1', 'chat']);
   });
 
-  it('is a no-op on design threads (immutable thread type)', async () => {
-    const pane = readyPane({ mode: 'design' });
+  it('is a no-op on discussion threads (immutable thread type)', async () => {
+    const pane = readyPane({ mode: 'discussion' });
     const calls: Array<[string, string]> = [];
     setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) => {
       calls.push([id as string, mode as string]);
       return {
         id: id as string,
-        title: 'Design thread',
+        title: 'Discussion thread',
         provider: 'claude',
         workspacePath: '/tmp',
         projectPath: '/tmp',

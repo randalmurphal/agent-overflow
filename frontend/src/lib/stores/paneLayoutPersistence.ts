@@ -97,7 +97,7 @@ function isSafePersistedPaneId(paneId: string): boolean {
 // for a same-named source pane (companionPaneIdFor('main','plan') ===
 // 'plan-main'), so reject it at the parse edge. Real companion entries
 // keep the shape — this guard applies to thread panes only.
-const COMPANION_SHAPED_PANE_ID = /^(?:plan|design-preview|review|take-control|browser|agent)-/;
+const COMPANION_SHAPED_PANE_ID = /^(?:plan|review|take-control|browser|agent)-/;
 
 function isSafePersistedThreadPaneId(paneId: string): boolean {
   return isSafePersistedPaneId(paneId) && !COMPANION_SHAPED_PANE_ID.test(paneId);
@@ -109,7 +109,7 @@ function isSafePersistedThreadId(threadId: string): boolean {
 
 // Live PTY/browser surfaces are deliberately absent: neither can be restored.
 function isPersistedCompanionKind(kind: unknown): kind is PersistedCompanionKind {
-  return kind === 'plan' || kind === 'design-preview' || kind === 'review' || kind === 'agent';
+  return kind === 'plan' || kind === 'review' || kind === 'agent';
 }
 
 /**
@@ -385,11 +385,9 @@ export async function loadPersistedPaneLayout(availableThreads?: Thread[]): Prom
     if (!isPersistedCompanionKind(pane.kind) || !pane.sourcePaneId) continue;
     const sourcePane = getAllPanes().get(pane.sourcePaneId);
     if (!sourcePane) continue;
-    if (pane.kind === 'design-preview' && sourcePane.thread?.mode !== 'design') continue;
     // The agent pane's scope is seeded from the snapshot, keyed by the SOURCE
     // pane (one agent pane per source pane). A source pane that failed to
     // hydrate a thread has nothing to scope against, so drop the companion —
-    // same shape as the design-preview mode guard above.
     const sourceThreadId = sourcePane.threadId;
     if (pane.kind === 'agent' && (!pane.agentScope || !sourceThreadId)) continue;
     const item: PaneLayoutItem = {

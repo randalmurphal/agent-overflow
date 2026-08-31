@@ -263,7 +263,7 @@ done
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	launchOpts, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+	launchOpts, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}

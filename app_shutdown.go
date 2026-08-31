@@ -7,7 +7,6 @@ import (
 	"log"
 	"time"
 
-	"agent-overflow/internal/design"
 	"agent-overflow/internal/errorsx"
 )
 
@@ -277,21 +276,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopOrphanReaper()
 	record("stop orphan reaper", nil)
 
-	// Step 5: close the design reactor's pending choice requests. This
-	// tears down per-thread design state left dangling when a session
-	// never reached a clean Close — matches the teardownDesignThread
-	// work the session closers did above but is safe to call again
-	// (reactor.TeardownThread is a no-op when nothing is pending).
-	if a.design.reactor != nil {
-		// Walk the sessions we snapshotted so TeardownThread fires for
-		// each thread even if the session close itself failed before
-		// reaching its own teardown.
-		for threadID := range sessions {
-			a.design.reactor.TeardownThread(threadID)
-		}
-		record("close design reactor", nil)
-	}
-
 	// Step 5b: stop gitwatch subscriptions. Connection-tied subs were
 	// already drained at Step 0 (transport drain runs ConnState
 	// cleanups via runConnHandler's defer, which call our internal
@@ -312,29 +296,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.closePRUpdatePumps()
 	record("close PR update subscriptions", nil)
 
-	// Step 5c: stop any design watchers that survived session teardown.
-	// Per-session teardownDesignThread already fires from the parallel
-	// closer in step 4 for sessions that reached close cleanly, but a
-	// session that errored out before installing a teardown hook (or a
-	// future code path that creates a watcher without a session) would
-	// leave the goroutine alive past App lifetime. Walk the map under
-	// the dedicated mu and stop each watcher; safe to call after step 4
-	// because session closers don't write to a.design.watchers concurrently
-	// (each calls stopDesignWatcher which acquires the same mutex).
-	a.design.watchersMu.Lock()
-	leftoverWatchers := make([]*design.Watcher, 0, len(a.design.watchers))
-	for _, w := range a.design.watchers {
-		leftoverWatchers = append(leftoverWatchers, w)
-	}
-	a.design.watchers = nil
-	a.design.watchersMu.Unlock()
-	for _, w := range leftoverWatchers {
-		w.Stop()
-	}
-	if len(leftoverWatchers) > 0 {
-		record("close leftover design watchers", nil)
-	}
-
 	// Step 6: close PTYs. Must happen after provider sessions because
 	// a provider close might emit terminal output events; terminating
 	// the terminal manager first would drop those final frames.
@@ -342,34 +303,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("close terminal sessions", a.terminals.Shutdown())
 	}
 
-	// Step 7: close the headless Chromium driving read_screenshot.
-	// MUST run before the design MCP server: a.design.mcp.Close() calls
-	// http.Server.Shutdown(context.Background()) which blocks until
-	// in-flight handlers return, and any in-flight read_screenshot
-	// handler is parked inside Manager.Capture waiting on chromedp.
-	// Closing the manager first cancels browserCtx, the chromedp
-	// run returns, the handler returns, and step 7b's Shutdown
-	// finishes promptly. The opposite order deadlocked shutdown
-	// against a long-running capture.
-	// Safe on a never-started Manager — the package treats Close as a
-	// no-op when allocCancel/browserCancel are nil.
-	if a.design.screenshots != nil {
-		record("close headless screenshot manager", a.design.screenshots.Close())
-	}
 	a.browser.applyWG.Wait()
 	if a.browser.manager != nil {
 		record("close built-in browser manager", a.browser.manager.Close())
 	}
 	if a.browser.mcp != nil {
 		record("close built-in browser MCP server", a.browser.mcp.Close())
-	}
-
-	// Step 7b: close the design MCP server. Safe to close once no
-	// provider session holds a reference (step 4 guarantees that)
-	// and the screenshot manager has been torn down (step 7
-	// guarantees in-flight read_screenshot handlers can unblock).
-	if a.design.mcp != nil {
-		record("close design MCP server", a.design.mcp.Close())
 	}
 
 	// Step 8: close the provider event logger. After providers are

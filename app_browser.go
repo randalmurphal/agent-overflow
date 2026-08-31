@@ -38,23 +38,6 @@ func (a *App) browserMCPConfigForThread(thread store.Thread) (map[string]any, er
 	})
 }
 
-func mergeMCPServers(groups ...map[string]any) map[string]any {
-	count := 0
-	for _, group := range groups {
-		count += len(group)
-	}
-	if count == 0 {
-		return nil
-	}
-	merged := make(map[string]any, count)
-	for _, group := range groups {
-		for name, spec := range group {
-			merged[name] = spec
-		}
-	}
-	return merged
-}
-
 func isAppManagedMCPServer(name string) bool {
 	return strings.TrimSpace(name) == appbrowser.ServerName
 }

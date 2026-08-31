@@ -7,7 +7,6 @@
   import SendQueuePreview from '../composer/SendQueuePreview.svelte';
   import ProviderStatusBanner from './ProviderStatusBanner.svelte';
   import ThreadTerminalPlacement from '../terminal/ThreadTerminalPlacement.svelte';
-  import DesignClarificationPicker from '../design/DesignClarificationPicker.svelte';
   import ChatHeader from './ChatHeader.svelte';
   import ExpandedImageDialog from './ExpandedImageDialog.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
@@ -334,9 +333,6 @@
   });
 
   let inDiscussionMode = $derived(threadUsesDiscussionSurface(pane.thread));
-  let inDesignMode = $derived(
-    !!pane.thread && pane.thread.mode === 'design',
-  );
   // Terminal threads render a full-pane terminal surface instead of the chat
   // machinery (composer, timeline) — the same whole-surface swap
   // discussion mode does. No provider session is ever started for these.
@@ -481,13 +477,6 @@
               Failed to load worktree setup panel: {err instanceof Error ? err.message : String(err)}
             </div>
           {/await}
-        {/if}
-        {#if inDesignMode && pane.pendingClarification}
-          <div class="pointer-events-auto mx-auto w-full max-w-[62rem] px-6 pb-2">
-            <div class="flex max-h-[35vh] min-h-0 flex-col overflow-y-auto border border-border-subtle bg-surface-1/95 shadow-sheet">
-              <DesignClarificationPicker {pane} />
-            </div>
-          </div>
         {/if}
         <Composer
           {pane}

@@ -16,8 +16,8 @@ import (
 //
 // The route accepts SCOPED tokens only. The server's own session token is not
 // honoured here, so this surface can never be wider than ScopedTokenMethods
-// however it is reached. Loopback only, for the same reason the design file
-// route is: the credentials it accepts belong to local provider processes.
+// however it is reached. Loopback only because the credentials it accepts
+// belong to local provider processes.
 const ScopedRPCPath = "/rpc"
 
 // maxScopedRPCBody bounds one CLI request. Scoped calls carry ids, a goal, and

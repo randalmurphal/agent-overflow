@@ -32,7 +32,7 @@
 //
 // This package imports NOTHING — not even from this repo. Every layer
 // that emits (`main`, `internal/transport`, `internal/triage`,
-// `internal/workflow/engine`, `internal/screenshot`, `internal/notify`,
+// `internal/workflow/engine`, `internal/browser`, `internal/notify`,
 // `internal/selfupdate`) can therefore depend on it without acquiring a
 // path to anything else. Keep it that way.
 //

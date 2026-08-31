@@ -103,11 +103,11 @@ describe('token registry', () => {
   it('holds the section counts the format documents', () => {
     // Pinned so a deletion is loud: the schema, TOKENS.md and every theme file
     // on disk are written against these key spaces.
-    expect(tokensInSection('colors')).toHaveLength(46);
+    expect(tokensInSection('colors')).toHaveLength(45);
     expect(tokensInSection('syntax')).toHaveLength(21);
     expect(tokensInSection('ansi')).toHaveLength(16);
     expect(tokensInSection('code')).toHaveLength(2);
-    expect(TOKEN_REGISTRY).toHaveLength(85);
+    expect(TOKEN_REGISTRY).toHaveLength(84);
   });
 
   it('keeps entries well-formed', () => {
@@ -154,7 +154,6 @@ describe('token registry', () => {
       'provider-claude',
       'scrim',
       'scrim-fg',
-      'design-paper',
     ]);
   });
 

@@ -4,7 +4,7 @@
      Source: frontend/src/lib/theme/tokenRegistry.ts + the app stylesheets.
      Regenerate: cd frontend && node scripts/generate-theme-reference.mjs -->
 
-Every color this app paints, and the name a theme file calls it by. 85 tokens: 46 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
+Every color this app paints, and the name a theme file calls it by. 84 tokens: 45 in `colors`, 21 in `syntax`, 16 in `ansi`, 2 in `code`.
 
 ## Where theme files live
 
@@ -140,7 +140,6 @@ whatever base the mode has).
 | `overlay` | Backdrop dimming app chrome behind a modal or sheet. Varies with the mode. | `oklch(0 0 0 / 60%)` | `oklch(0.22 0.01 255 / 28%)` |
 | `scrim` | Chrome painted over USER MEDIA (lightbox grounds, thumbnail badges). Stored opaque and consumed at partial alpha; mode-invariant by default. | `oklch(0 0 0)` | — |
 | `scrim-fg` | Foreground of the media-overlay pair. Stored opaque and consumed at partial alpha; mode-invariant by default. | `oklch(1 0 0)` | — |
-| `design-paper` | The design canvas iframe paper. Sandboxed agent HTML is authored against a light page, so this is default-locked. | `#ffffff` | — |
 | `card` | Ambient card ground, referenced at low alpha by tool rows and cards. Follows the first elevation tier. **Derived** — override only to stop it tracking. | `var(--surface-1)` | — |
 | `ico-terminal` | Tool-kind icon: shell and terminal commands. | `oklch(0.78 0.12 195)` | `oklch(0.5 0.12 195)` |
 | `ico-file` | Tool-kind icon: file edits and writes. | `oklch(0.72 0.16 305)` | `oklch(0.5 0.18 305)` |

@@ -23,8 +23,8 @@ type chromeForTestingDownload struct {
 	URL      string `json:"url"`
 }
 
-func (c chromeForTestingChannel) artifactURL(artifact Artifact, platform string) (string, bool) {
-	for _, d := range c.Downloads[string(artifact)] {
+func (c chromeForTestingChannel) chromeURL(platform string) (string, bool) {
+	for _, d := range c.Downloads["chrome"] {
 		if d.Platform == platform {
 			return d.URL, true
 		}

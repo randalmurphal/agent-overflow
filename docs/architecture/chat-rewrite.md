@@ -30,7 +30,7 @@ listener, one list**.
 
 - Reframing the framework (Svelte stays).
 - Wholesale provider rewrites, sidebar, composer shell, terminal,
-  design mode, discussion mode, or settings.
+  discussion mode, or settings.
 - UI visual polish. That's a separate pass after the data model
   lands.
 
@@ -1087,8 +1087,9 @@ Any `kind` value not in the closed set is dropped by the frontend
 with a console warn. Adding a new kind requires updating the frontend
 banner component in the same PR.
 
-App-shell channels (`design:*`, `thread:mode_changed`, etc.) stay
-as-is. Toast channel for fatal infra errors stays as-is.
+App-shell channels stayed as-is for this historical rewrite; later subsystem
+retirements removed channels they owned. The toast channel for fatal infra
+errors remains unchanged.
 
 ## Backend chokepoint
 
@@ -1779,8 +1780,8 @@ break the UI.
 - ADD: `ContextWindowMeter.svelte` (composer toolbar)
 - ADD: `ToolCallCard.svelte` (the per-kind header + payload dispatcher
   + child recursion)
-- All composer components, sidebar, terminal drawer, design view,
-  discussion view: untouched
+- All composer components, sidebar, terminal drawer, and discussion view:
+  untouched by this historical rewrite
 - UNTOUCHED (explicitly out of scope for this rewrite):
   `PlanFollowUpBanner.svelte`, `PlanSidebar.svelte`,
   `LazyContentBlock.svelte`, `ChatHeader.svelte`, `ChatView.svelte`,

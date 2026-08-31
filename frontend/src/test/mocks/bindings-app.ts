@@ -407,12 +407,6 @@ export const GetChannelState = dispatch('GetChannelState');
 export const PostChannelMessage = dispatch('PostChannelMessage');
 export const ConcludeDiscussion = dispatch('ConcludeDiscussion');
 
-export const ListDesignOptions = dispatch('ListDesignOptions');
-export const LatestDesignOptionSet = dispatch('LatestDesignOptionSet');
-export const DismissDesignOptionSet = dispatch('DismissDesignOptionSet');
-export const EnsureDesignWorkdir = dispatch('EnsureDesignWorkdir');
-export const GetDesignWorkdirInfo = dispatch('GetDesignWorkdirInfo');
-export const IngestDiagnosticBatch = dispatch('IngestDiagnosticBatch');
 
 // Composer enhancements
 export const UploadAttachment = dispatch('UploadAttachment');

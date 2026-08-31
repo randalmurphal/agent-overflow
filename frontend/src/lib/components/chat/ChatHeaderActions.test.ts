@@ -189,15 +189,6 @@ describe('<ChatHeaderActions> badge gating', () => {
     expect(pane.activityRuns.bulkCollapsed).toBe(false);
   });
 
-  it('hides the run toggle on a design thread, which has no transcript runs', async () => {
-    const pane = await buildPane(makeThread({ mode: 'design' }));
-    installSubscribeMock(status({}));
-    const { queryByTestId } = render(ChatHeaderActions, { props: { pane } });
-    await flush();
-
-    expect(queryByTestId('activity-runs-toggle')).toBeNull();
-  });
-
   it('hides the PR badge but keeps the workspace +/- when there is no open PR', async () => {
     const pane = await buildPane();
     installSubscribeMock(status({ openPrUrl: '' }));
@@ -206,19 +197,6 @@ describe('<ChatHeaderActions> badge gating', () => {
 
     expect(queryByTestId('chat-header-pr-badge')).toBeNull();
     expect(getByTestId('review-toggle')).toBeTruthy();
-  });
-
-  it('hides PR + workspace +/- and shows Design Preview on a design thread', async () => {
-    const pane = await buildPane(makeThread({ mode: 'design' }));
-    installSubscribeMock(
-      status({ openPrUrl: 'https://github.com/o/r/pull/7', openPrNumber: 7 }),
-    );
-    const { queryByTestId, getByTestId } = render(ChatHeaderActions, { props: { pane } });
-    await flush();
-
-    expect(queryByTestId('chat-header-pr-badge')).toBeNull();
-    expect(queryByTestId('review-toggle')).toBeNull();
-    expect(getByTestId('design-preview-toggle')).toBeTruthy();
   });
 
   it('clicking the workspace +/- opens review on the workspace scope', async () => {

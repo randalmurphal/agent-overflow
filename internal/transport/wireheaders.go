@@ -29,11 +29,8 @@ func WriteSecurityHeaders(h http.Header) {
 // performance.measureUserAgentSpecificMemory becomes available.
 // Diagnostic mode only (Config.CrossOriginIsolate, set via
 // AGENT_OVERFLOW_RENDERER_DIAG): COEP require-corp blocks subresources
-// that don't send CORP, which breaks remote images in chat markdown
-// and remote assets in design previews. CORP: same-origin is included
-// on every response because COEP applies to nested documents too — the
-// design-preview iframe fails to load under the isolated shell without
-// it.
+// that don't send CORP, including remote images in chat markdown.
+// CORP: same-origin is included on every response as the matching resource policy.
 func WriteCrossOriginIsolationHeaders(h http.Header) {
 	h.Set("Cross-Origin-Opener-Policy", "same-origin")
 	h.Set("Cross-Origin-Embedder-Policy", "require-corp")

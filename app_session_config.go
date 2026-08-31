@@ -107,7 +107,7 @@ func (a *App) liveApplySessionConfig(threadID string) bool {
 	}
 	// Mirror startSessionNow's sanitize step (without persisting) so the
 	// comparison sees the same coerced view a spawn would.
-	opts, _, err := a.buildSessionOptions(a.sanitizeThreadModelSettings(thread))
+	opts, err := a.buildSessionOptions(a.sanitizeThreadModelSettings(thread))
 	if err != nil {
 		log.Printf("thread %s: config reconcile: build options: %v", threadID, err)
 		a.emitErrorToThread(threadID, "config change could not be applied: "+err.Error())

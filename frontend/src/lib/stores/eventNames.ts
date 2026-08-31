@@ -9,9 +9,6 @@
 // on transitively) need these names — keeping the constants in a
 // dependency-free module breaks the import cycle.
 
-// Design-mode preview/handler events.
-export const DESIGN_RELOAD_MAIN_EVENT = 'ao-design:reload-main';
-
 // Cross-component messaging (sidebar → drawer → composer, picker chord
 // → picker components, etc.). These exist only where the target is a
 // component the dispatcher holds no reference to — anything whose state

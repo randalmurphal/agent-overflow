@@ -96,7 +96,7 @@ effective = granted(device) ∩ ceiling(principal tier) ∩ ceiling(network path
 
 Resolved **once**, at session establishment, into a precomputed set
 carried on the connection. Every surface (WS RPC, HTTP RPC, event
-push, attachments, snapshots, design files) authorizes from that one
+push, attachments, and snapshots) authorizes from that one
 set (§13). There is no second code path that decides access, so there is
 no surface that can drift out of policy.
 
@@ -723,11 +723,11 @@ Classes to enumerate:
 
 - **RPC methods**: generated from `//ao:scope` annotations (§5).
 - **HTTP routes**: bootstrap, WS upgrade, scoped RPC, auth/token,
-  tickets, attachments, snapshots, design files, health/version.
+  tickets, attachments, snapshots, health/version.
 - **Event channels**: required scope per channel, resolved into the
   connection's precomputed visible set.
 - **Listeners**: loopback, LAN, tsnet, tunnel, plus the auxiliary
-  loopback servers (design MCP, harness control, claudetui gateway,
+  loopback servers (browser MCP, harness control, claudetui gateway,
   pprof) which must each declare that they carry no session credential.
 - **Content origins**: anything serving bytes an agent or user
   authored declares its origin and content-type posture; agent-authored

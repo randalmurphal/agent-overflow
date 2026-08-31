@@ -671,7 +671,7 @@ func TestListThreadsIncludesNewFields(t *testing.T) {
 		WorkspacePath: "/home/user/proj",
 		Model:         "opus-4",
 		Branch:        "main",
-		Mode:          "design",
+		Mode:          "plan",
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -695,8 +695,8 @@ func TestListThreadsIncludesNewFields(t *testing.T) {
 	if got.Branch != "main" {
 		t.Errorf("Branch: got %q, want %q", got.Branch, "main")
 	}
-	if got.Mode != "design" {
-		t.Errorf("Mode: got %q, want %q", got.Mode, "design")
+	if got.Mode != "plan" {
+		t.Errorf("Mode: got %q, want %q", got.Mode, "plan")
 	}
 	// Unset nullable fields should be empty.
 	if got.WorktreePath != "" {
@@ -884,7 +884,7 @@ func TestUpdateModeDoesNotBumpUpdatedAt(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	if err := s.UpdateMode(thr.ID, "design"); err != nil {
+	if err := s.UpdateMode(thr.ID, "plan"); err != nil {
 		t.Fatalf("UpdateMode() error = %v", err)
 	}
 

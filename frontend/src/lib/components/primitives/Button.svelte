@@ -31,7 +31,7 @@
    *
    * `pressed` toggles the aria-pressed state and applies a visual
    * depressed treatment (used for ChatHeader Diffs/Plans toggles and
-   * DesignPreviewPanel viewport selector).
+   * compact segmented controls).
    */
   import type { Snippet } from 'svelte';
 

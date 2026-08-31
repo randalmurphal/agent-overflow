@@ -182,15 +182,10 @@
   });
 
   const handleNewThread: ProjectNewThreadHandler = async (projectId, options = {}) => {
-    // Sidebar "+" always opens a chat draft. Design drafts are created
-    // from the in-pane ThreadModePicker (or the "Thread: New Design"
-    // palette commands) — keeping the sidebar single-purpose avoids
-    // doubling the button count for an entry point most users won't
-    // reach for.
+    // Sidebar "+" opens a chat draft.
     try {
       await openDraftThreadForProject({
         projectId,
-        mode: 'chat',
         targetPane: pane,
         openInNewPane: options.openInNewPane ?? false,
       });
@@ -319,4 +314,3 @@
   mid-run. It hangs off App.svelte with the other store-gated overlays; this
   header owns the trigger only.
 -->
-

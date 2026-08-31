@@ -122,9 +122,6 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 	if err := a.cleanupThreadAttachmentFiles(threadID); err != nil {
 		errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
 	}
-	if err := a.cleanupThreadDesignWorkdir(threadID); err != nil {
-		errs = append(errs, fmt.Errorf("cleanup design workdir: %w", err))
-	}
 	if a.replay != nil {
 		if err := a.replay.RemoveThreadLog(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("cleanup replay log: %w", err))
@@ -165,21 +162,6 @@ func (a *App) deleteThreadTree(threadID string, subtreeLocksHeld bool) error {
 	// The per-thread action and config-apply lock entries need no drop of
 	// their own: the registry self-cleans when the last holder or waiter —
 	// this delete flow included — releases.
-	return nil
-}
-
-// cleanupThreadDesignWorkdir tears down any active design watcher and
-// removes the on-disk per-thread design directory (main/, options/).
-// Returns nil when the design subsystem isn't wired (tests, threads
-// created before design mode existed) or the directory was already gone.
-func (a *App) cleanupThreadDesignWorkdir(threadID string) error {
-	a.teardownDesignThread(threadID)
-	if a.design.workdir == nil {
-		return nil
-	}
-	if err := a.design.workdir.Wipe(threadID); err != nil {
-		return fmt.Errorf("wipe design workdir: %w", err)
-	}
 	return nil
 }
 

@@ -87,18 +87,17 @@ describe('buildSidebarThreadTree', () => {
   });
 
   it('uses the running tier for every running thread mode', () => {
-    const modes: Array<NonNullable<Thread['mode']>> = ['chat', 'plan', 'design', 'discussion'];
+    const modes: Array<NonNullable<Thread['mode']>> = ['chat', 'plan', 'discussion'];
     const tree = buildSidebarThreadTree({
       threads: modes.map((mode, index) => mkThread(mode, { mode, updatedAt: index + 1 })),
       liveStatusOf: liveStatusMap({
         chat: 'running',
         plan: 'running',
-        design: 'running',
         discussion: 'running',
       }),
     });
 
-    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running', 'running', 'running']);
+    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'running', 'running']);
   });
 
   it('excludes workflow-owned modes before building parent-child relationships', () => {

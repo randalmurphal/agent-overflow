@@ -540,20 +540,6 @@ var LocalOnlyMethods = map[string]bool{
 	"GetAttachmentData":      true,
 	"GetAttachmentThumbnail": true,
 	"GetLocalImageData":      true,
-	// Design-mode local-FS + coordination surface. The frontend posts
-	// iframe-captured diagnostics into the per-thread ring and
-	// reads/writes the per-thread design workdir (option-set
-	// bookkeeping, layout enumeration). All loopback-only — these
-	// expose either RCE-equivalent surface (workdir mutation) or
-	// filesystem-layout disclosure (the absolute main path + manifest
-	// in GetDesignWorkdirInfo). The agent's read_screenshot path is
-	// backend-driven and never touches the wire.
-	"IngestDiagnosticBatch":  true,
-	"EnsureDesignWorkdir":    true,
-	"DismissDesignOptionSet": true,
-	"LatestDesignOptionSet":  true,
-	"GetDesignWorkdirInfo":   true,
-
 	// 5. Local-FS bookkeeping.
 	"AppendUIRenderTraceBatch": true,
 	"BookmarkUIRenderTrace":    true,
@@ -563,8 +549,7 @@ var LocalOnlyMethods = map[string]bool{
 	// able to write the host's disk, even rotation-capped.
 	"ReportFrontendErrorBatch": true,
 	// GetUIRenderTracePath returns the absolute path to the trace JSONL
-	// under the user config dir — same path-disclosure shape as
-	// GetDesignWorkdirInfo in category 4. The trace is a dev-only debug
+	// under the user config dir. The trace is a dev-only debug
 	// surface; a remote browser has no reason to know the backend's
 	// config-dir layout, and a LAN-attached token-holder fingerprinting
 	// the host filesystem layout is the threat we lock the writer
@@ -593,10 +578,7 @@ var LocalOnlyMethods = map[string]bool{
 	// the same host-fingerprinting shape as the enumeration entries
 	// above. The UX cost is nil: a remote viewer's localhost is not this
 	// machine, so a chip it cannot verify is a chip that would open the
-	// wrong host. Like every entry here, loopback classification assumes
-	// the SPA origin is not model-writable; the open /design/ origin-
-	// isolation defect (docs/specs/remote-access.md §16 phase 0) is the
-	// gate that makes that assumption real.
+	// wrong host.
 	"ProbeDevServerURL": true,
 
 	// 7. WSL inventory / preference. ListWSLDistros spawns wsl.exe per

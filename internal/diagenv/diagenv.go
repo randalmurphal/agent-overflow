@@ -14,8 +14,7 @@ const (
 	// crossOriginIsolated and performance.measureUserAgentSpecificMemory
 	// works in the renderer. Diagnostic mode only: COEP blocks
 	// subresources that don't send CORP, so remote images in chat
-	// markdown and remote assets in design previews won't load while
-	// it is on.
+	// markdown won't load while it is on.
 	RendererDiag = "AGENT_OVERFLOW_RENDERER_DIAG"
 )
 

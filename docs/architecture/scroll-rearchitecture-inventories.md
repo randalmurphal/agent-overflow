@@ -671,7 +671,7 @@ Duplication a shared abstraction should own: the escape-then-arm-then-restore-fo
 | PaneDivider | panes/PaneDivider.svelte:21-30,53 | split-pane divider drag, which acquires leases on BOTH adjacent panes | same |
 | Terminal drawer resize | terminal/ThreadTerminalPlacement.svelte:23-25 → ThreadTerminalDrawer.svelte:40 → primitives/Drawer.svelte:31,72 | bottom drawer height drag | pointerdown→pointerup |
 | Terminal drawer async mount | ThreadTerminalPlacement.svelte:29-36 `leaseDuringSettle(pane.scrollController)` | cold lazy-drawer commit after the open lease already released | 2-rAF; relies on release→re-pin to land the timeline above the drawer |
-| RHS panel open/close | thread.svelte.ts:417 `leaseDuringSettle(scrollController, 250)` inside `activatePanel` | plan/diff/design panel toggles (thread.svelte.ts:3903-3933) | 250ms setTimeout |
+| RHS panel open/close | thread.svelte.ts:417 `leaseDuringSettle(scrollController, 250)` inside `activatePanel` | historical plan/diff panel toggles (thread.svelte.ts:3903-3933) | 250ms setTimeout |
 | Terminal drawer toggle | thread.svelte.ts:3869 in `setShowTerminal` | terminal show/hide | 2-rAF default |
 
 Helper: `leaseDuringSettle` (utils/scrollLeaseDuringTransition.ts:26-46) time-boxes a lease and returns an idempotent early-release.

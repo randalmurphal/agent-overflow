@@ -775,9 +775,6 @@ describe('<ThreadRow> live status dot', () => {
     await rerender({ thread: { ...chat, mode: 'plan' }, pane });
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Planning');
 
-    await rerender({ thread: { ...chat, mode: 'design' }, pane });
-    expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Designing');
-
     await rerender({ thread: { ...chat, mode: 'discussion' }, pane });
     expect(getByTestId('thread-row-status-dot').getAttribute('aria-label')).toBe('Discussing');
   });

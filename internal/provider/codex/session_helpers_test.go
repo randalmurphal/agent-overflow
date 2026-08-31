@@ -698,7 +698,7 @@ func TestBuildThreadParamsWorkDir(t *testing.T) {
 func TestBuildThreadParamsIncludesMCPServers(t *testing.T) {
 	params := buildThreadParams(Config{
 		MCPServers: map[string]any{
-			"design": map[string]any{"url": "http://127.0.0.1:1234/mcp/thread"},
+			"browser": map[string]any{"url": "http://127.0.0.1:1234/mcp/thread"},
 		},
 	}, "")
 

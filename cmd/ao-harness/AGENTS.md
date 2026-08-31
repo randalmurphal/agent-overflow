@@ -37,10 +37,9 @@ is the authenticated one.
 
 Two sanctioned reads outside the "files the backend writes" rule, both
 of an executable path only: `attach` resolves a browser through
-`$AO_HARNESS_BROWSER`, then the `chrome-headless-shell` the app's
-design-mode installer cached under the `internal/appdirs` root
-(`internal/headlessshell`), then `exec.LookPath`. It never downloads —
-this binary has no network story and must not grow one.
+`$AO_HARNESS_BROWSER`, then the Chrome-for-Testing managed by the built-in
+browser under the `internal/appdirs` root, then `exec.LookPath`. It never
+downloads — this binary has no network story and must not grow one.
 
 ## Rules this binary enforces
 
@@ -262,11 +261,11 @@ rules it does not bend:
   spawned on `context.Background()` for that reason; `exec` refuses a
   `Cancel` on a command not built by `CommandContext`.
 - The argv carries no rendering flags beyond what an unattended launch
-  needs. This page is what `perf` and `bench` MEASURE, so the
-  memory-shaving options `internal/screenshot` uses (`--no-zygote`,
-  `--in-process-gpu`) are deliberately absent. A headless-shell page is
-  still not a fidelity model of WebView2 or WebKitGTK — it is a bridge
-  host, and cross-engine numbers are not comparable.
+  needs. This page is what `perf` and `bench` MEASURE, so browser-process
+  shortcuts such as `--no-zygote` and `--in-process-gpu` are deliberately
+  absent. A Chromium page is still not a fidelity model of WebView2 or
+  WebKitGTK — it is a bridge host, and cross-engine numbers are not
+  comparable.
 
 `--detach` leaves its browser profile in a temp directory, because that
 directory is the running browser's live state; the printed stop line

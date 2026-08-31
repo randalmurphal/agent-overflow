@@ -5,7 +5,7 @@ package provider
 // prompts for tool use, auto-approves file edits, routes approvals to a
 // model-based reviewer, bypasses approvals entirely, or is denied every
 // mutating action outright. Provider packages own the wire-level mapping.
-// Orthogonal to InteractionMode ("plan" / "design" / "discussion"), which
+// Orthogonal to InteractionMode ("plan" / "discussion"), which
 // shapes *what* the agent does, not how much friction is in the way.
 //
 // The modes are ordered from most to least restrictive on the *mutation*

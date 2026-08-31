@@ -260,8 +260,8 @@ without an opaque capability token, can target every Wails window, includes
 and posts eval results over HTTP in a way page CSP can block. Compiling it into
 AO would expose the trusted main UI and its bound methods to any local process.
 
-AO should own the MCP endpoint and reuse the tokenized, lazy-start pattern from
-`internal/design/mcp.go`. Do not enable Wails' global MCP server in production.
+AO should own the MCP endpoint and use an opaque-token, lazy-start lifecycle.
+Do not enable Wails' global MCP server in production.
 
 ## Recommended architecture (historical)
 
@@ -306,15 +306,11 @@ own BrowserContext under the same process. The spike measured one context plus
 one page together, so the exact page-versus-context marginal cost remains
 unseparated. Commands still need serialization per page.
 
-For the general browser, reuse only the existing download/cache machinery (if
-it is pointed at a suitable browser artifact) and proven lifecycle ideas rather
-than spawning Node Playwright MCP processes. Build a separate hardened
-allocator/manager. The current `internal/screenshot.Manager`
-uses `--no-sandbox`, `--no-zygote`, `--in-process-gpu`, a shared default browser
-context, and other flags justified only for trusted loopback design pages. None
-of those launch/profile assumptions are safe to inherit for arbitrary web. The
-new manager must keep the Chromium sandbox enabled and create real CDP
-BrowserContexts, not merely `chromedp.NewContext` tabs in the default profile.
+For the general browser, reuse the existing download/cache machinery while
+keeping browser allocation and policy in a hardened manager rather than
+spawning Node Playwright MCP processes. The manager must keep the Chromium
+sandbox enabled and create real CDP BrowserContexts, not merely
+`chromedp.NewContext` tabs in the default profile.
 
 The minimum useful tool set is:
 

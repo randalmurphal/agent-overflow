@@ -25,7 +25,7 @@ import {
 } from './sendQueue.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
-import { designFence, installThreadPaneTestEnv } from '../../test/helpers/threadPane';
+import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 
 describe('createThreadPane', () => {
   beforeEach(installThreadPaneTestEnv);
@@ -521,52 +521,6 @@ describe('createThreadPane', () => {
 
     expect(pane.channelMessages).toEqual([]);
     expect(pane.channelStatus).toBeNull();
-  });
-
-  it('resets design payload dedupe keys on thread switch', async () => {
-    const pane = createThreadPane();
-    setBindingMock('SwitchThread', async (threadId: unknown) =>
-      makeThread({
-        id: typeof threadId === 'string' ? threadId : 'design-a',
-        mode: 'design',
-      }),
-    );
-    const clarification = (questionId: string) =>
-      designFence({
-        kind: 'clarification_request',
-        requestId: 'clarify-same-id',
-        questions: [
-          {
-            id: questionId,
-            prompt: 'Choose',
-            choices: [{ id: 'yes', label: 'Yes' }],
-          },
-        ],
-      });
-
-    await pane.switchThread(makeThread({ id: 'design-a', mode: 'design' }));
-    pane.upsertItem(
-      makeItem({
-        id: 'assistant-a',
-        threadId: 'design-a',
-        kind: 'assistant_text',
-        summary: clarification('first-thread'),
-      }),
-    );
-    expect(pane.pendingClarification?.questions[0]?.id).toBe('first-thread');
-
-    await pane.switchThread(makeThread({ id: 'design-b', mode: 'design' }));
-    pane.upsertItem(
-      makeItem({
-        id: 'assistant-b',
-        threadId: 'design-b',
-        kind: 'assistant_text',
-        summary: clarification('second-thread'),
-      }),
-    );
-
-    expect(pane.pendingClarification?.threadId).toBe('design-b');
-    expect(pane.pendingClarification?.questions[0]?.id).toBe('second-thread');
   });
 
   it('derives isTurnActive strictly from activeTurn (invariant 22)', async () => {

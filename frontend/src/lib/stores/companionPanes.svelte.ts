@@ -1,5 +1,5 @@
 // Companion pane registry + lifecycle for every pane paired to a source
-// thread pane: plan, design-preview, review, browser, and take-control.
+// thread pane: plan, review, browser, and take-control.
 //
 // Companions are snapped immediately to the source pane's right by
 // paneLayout.svelte.ts, and they belong to the THREAD the source pane was

@@ -8,7 +8,6 @@
 //                              feed (assistant_text from unmounted
 //                              participant threads → discussionLiveTail.ts)
 //   - eventsProvider.ts      — approvals, usage, turn/session lifecycle
-//   - eventsDesign.ts        — design preview/options throttled reload
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
 //   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
@@ -78,13 +77,6 @@ import {
   applyTodoUpdate,
   applyModelFallback,
 } from './eventsProvider';
-import {
-  handleDesignReloadMain,
-  type DesignReloadMainPayload,
-  applyDesignOptionsUpdate,
-  type DesignOptionsUpdatePayload,
-  clearAllDesignThrottles,
-} from './eventsDesign';
 import { applyTerminalOutput, applyTerminalExit } from './eventsTerminal';
 import {
   applyQueueStateChanged,
@@ -416,26 +408,6 @@ export function setupEventListeners(): () => void {
     applyTransportGap,
   );
 
-  // design:reload-main — file watcher fired in the thread's main/
-  // directory. The preview panel listens for the throttled DOM event we
-  // re-dispatch and bumps its cache-bust counter. Throttling lives here
-  // (not in the panel) so a rapid burst of saves only causes one
-  // iframe reload per 500ms across all consumers.
-  const cancelDesignReloadMain = wailsEventOn<DesignReloadMainPayload>(
-    'design:reload-main',
-    handleDesignReloadMain,
-  );
-
-  // design:options-update — agent rewrote files in options/{setId}/ for
-  // the thread. Hydrates `pane.activeOptionSet` for the matching pane
-  // (so the N-up grid renders) and forwards a DOM event for any future
-  // component that needs the raw signal. Throttled per-thread so a
-  // burst of file writes doesn't fan out a list-options RPC for each.
-  const cancelDesignOptionsUpdate = wailsEventOn<DesignOptionsUpdatePayload>(
-    'design:options-update',
-    applyDesignOptionsUpdate,
-  );
-
   // thread:runtime_mode_changed — backend persisted a new three-tier
   // approval mode. Refresh the sidebar cache and active pane; AccessToggle
   // only stages draft intent, so this event or SendMessageWithOptions'
@@ -547,8 +519,6 @@ export function setupEventListeners(): () => void {
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelTransportGap();
-    cancelDesignReloadMain();
-    cancelDesignOptionsUpdate();
     cancelModeChanged();
     cancelRuntimeModeChanged();
     cancelDiscussionMessage();
@@ -563,7 +533,6 @@ export function setupEventListeners(): () => void {
     cancelSessionImport();
     cancelHighlightSeed();
     cancelHighlightDiffSeed();
-    clearAllDesignThrottles();
     clearAllDiscussionLiveTail();
   };
 }

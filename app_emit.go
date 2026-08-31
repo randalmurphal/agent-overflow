@@ -112,8 +112,6 @@ func (a *App) emitWithReplay() func(eventchan.Channel, any) {
 // closeSessionsParallel closes every session concurrently, bounded by the
 // given timeout. Any session whose Close does not return in time is
 // abandoned — the teardown emits a timeout error for it and moves on.
-// Design-thread teardown runs synchronously in the goroutine that closed
-// the session so each thread's state is cleaned up independently.
 func closeSessionsParallel(a *App, sessions map[string]session, timeout time.Duration) []error {
 	if len(sessions) == 0 {
 		return nil
@@ -125,14 +123,11 @@ func closeSessionsParallel(a *App, sessions map[string]session, timeout time.Dur
 	return closer.RunParallel(tasks, timeout)
 }
 
-// sessionCloseTask bundles the design teardown + provider Close for a
-// single thread into one closer.Task so both run under the shutdown
-// parallel timeout.
+// sessionCloseTask bundles provider Close for one thread into a closer.Task.
 func sessionCloseTask(a *App, threadID string, s session) closer.Task {
 	return closer.Task{
 		Label: fmt.Sprintf("session for thread %s", threadID),
 		Close: func() error {
-			a.teardownDesignThread(threadID)
 			// Routes through closeProviderSession so the orphan-reaper
 			// release fires on a clean shutdown close, same as every other
 			// teardown path.

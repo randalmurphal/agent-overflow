@@ -108,7 +108,7 @@ reliability:
 				t.Fatalf("thread workspace = %q, want the item worktree %q", thread.WorkspacePath, item.WorktreePath)
 			}
 
-			opts, _, err := app.buildSessionOptions(thread)
+			opts, err := app.buildSessionOptions(thread)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -25,8 +25,6 @@ export {
     ContextSettingsProfile,
     ContextSettingsUpdate,
     CreateThreadOptions,
-    DesignOptionSet,
-    DesignWorkdirInfo,
     DiffContextRequest,
     DiffContextResult,
     Draft,

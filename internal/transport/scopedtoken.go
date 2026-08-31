@@ -17,7 +17,7 @@ import (
 // HTTP route the CLI speaks.
 
 // Caller-scope kinds. An interactive session belongs to a human-driven thread
-// (chat, plan, design, triage, studio) whose every `ao` invocation is approved
+// (chat, plan, triage, studio) whose every `ao` invocation is approved
 // by the provider's own bash-approval UX; a phase session belongs to an
 // unattended workflow phase and carries exactly the grants that phase declared.
 const (

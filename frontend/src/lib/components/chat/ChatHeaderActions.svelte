@@ -3,12 +3,7 @@
   // ChatHeader.svelte (which kept it under the file-size budget and gave the
   // shared git-status subscription a single home).
   //
-  // Cluster order, chat threads:  [ PR#123 ] [ +X −Y ] [ Open ] [ git ] [ term ]
-  // Cluster order, design threads: [ Open ] [ git ] [ term ] [ Preview ]
-  //
-  // The PR badge and workspace +/- render only on normal chat threads; design
-  // threads keep their existing Design Preview button instead. GitActionsControl
-  // (commit/push/ship) and the terminal toggle are unchanged on both.
+  // Cluster order: [ PR#123 ] [ +X −Y ] [ Open ] [ git ] [ term ]
   //
   // This component is the pane's attacher on the shared, workspace-keyed
   // git-status store (stores/gitStatusStore.svelte.ts). GitActionsControl and
@@ -16,7 +11,6 @@
   // is a view onto the same entry — so two panes on one worktree share one
   // subscription and can never show different Commit/Push state.
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
-  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -39,7 +33,6 @@
 
   let { pane }: { pane: ThreadPane } = $props();
 
-  let isDesignThread = $derived(pane.thread?.mode === 'design');
   // Take-control is a claude-tui-only affordance: it opens a paired terminal
   // pane mirroring the live TUI session. Absent for other providers (an
   // unsupported control should not be shown rather than shown-and-disabled).
@@ -145,18 +138,15 @@
      "no thread at all" panes, and the subcomponents self-gate on
      `pane.threadId` for the pieces that genuinely need a persisted row. -->
 <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-  {#if !isDesignThread}
-    <PrBadge status={pane.gitStatus.status} />
-    <WorkspaceDiffBadge
-      status={pane.gitStatus.status}
-      pressed={pane.showReviewPane}
-      chord={reviewToggleChord}
-      onActivate={() => void ensureThenToggle(toggleWorkspaceReview)}
-    />
-  {/if}
+  <PrBadge status={pane.gitStatus.status} />
+  <WorkspaceDiffBadge
+    status={pane.gitStatus.status}
+    pressed={pane.showReviewPane}
+    chord={reviewToggleChord}
+    onActivate={() => void ensureThenToggle(toggleWorkspaceReview)}
+  />
 
-  {#if !isDesignThread}
-    <!-- Collapse/expand every activity run in this thread. Also the only
+  <!-- Collapse/expand every activity run in this thread. Also the only
          VISIBLE affordance for the run collapse mechanic: a single run is
          toggled by its rail, which consumes no width and so shows nothing
          until you find it. The setting under Settings → General → Activity
@@ -179,8 +169,7 @@
           class="opacity-90"
         />
       {/snippet}
-    </Button>
-  {/if}
+  </Button>
 
   {#if projectBadge}
     <OpenInEditorControl path={projectBadge.path} name={projectBadge.name} />
@@ -237,21 +226,4 @@
       <Icon icon={SquareTerminal} size={12} strokeWidth={2} class="opacity-90" />
     {/snippet}
   </Button>
-
-  {#if isDesignThread}
-    <Button
-      variant="secondary"
-      size="xs"
-      pressed={pane.showDesignPreviewPanel}
-      ariaLabel="Toggle Design Preview"
-      title="Toggle Design Preview"
-      onclick={() => void ensureThenToggle(() => pane.toggleDesignPreviewPanel())}
-      testId="design-preview-toggle"
-      class="shrink-0 w-6 px-0"
-    >
-      {#snippet children()}
-        <Icon icon={PanelRightOpen} size={12} strokeWidth={2} class="opacity-90" />
-      {/snippet}
-    </Button>
-  {/if}
 </div>

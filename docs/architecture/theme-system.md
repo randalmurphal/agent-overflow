@@ -19,7 +19,7 @@ layer on top of an existing vocabulary.
 
 | File | Owns |
 |---|---|
-| `frontend/src/app.css` | ALL colors: the `:root` dark palette, the single `html.light` override block, and the theme-INVARIANT color roles that deliberately have no light counterpart (`--provider-claude`, `--scrim`/`--scrim-fg`, `--design-paper`), so every literal color in the app is readable in one place. Plus the `@theme` mapping (`--color-*` → Tailwind utilities like `bg-surface-1`, `text-fg-muted`) |
+| `frontend/src/app.css` | ALL colors: the `:root` dark palette, the single `html.light` override block, and the theme-INVARIANT color roles that deliberately have no light counterpart (`--provider-claude`, `--scrim`/`--scrim-fg`), so every literal color in the app is readable in one place. Plus the `@theme` mapping (`--color-*` → Tailwind utilities like `bg-surface-1`, `text-fg-muted`) |
 | `frontend/src/styles/tokens.css` | Non-color scales: type (`--text-micro..lg`), radius (`--radius-field/control/card/composer`), shadows (`--shadow-sheet/menu/modal`), plus DERIVED color roles, which are `var()`/`color-mix()` over what app.css defined and so need no light override of their own: the fg hierarchy (`--fg-muted/subtle/hint`), `--border-subtle`, `--card`, `--code-block` |
 | `frontend/src/styles/syntax.css` | 21 `--syntax-*` vars (github-dark `:root`, github-light `html.light`) + the `.syntax-<name>` rules |
 
@@ -134,7 +134,6 @@ runtime palette change repaints everything for free **except**:
 | **Native window background** (`main_desktop.go`) | **BRIDGED (phase 2).** Was: `NewRGBA(22,22,30)` hardcoded at construction, the resize-flash color, wrong for light theme already. Now `SetWindowBackgroundColor` (LocalOnly) paints it live from the app's cascade-reading `$effect`, and construction reads the `windowBackground` cache out of `themes/appearance.json` before the webview exists. See §9.3. | — |
 | **WSL launcher pages** (`cmd/agent-overflow-windows/picker.go`) | Inline HTML, hardcoded `#16161e` + Tokyo Night. Pre-app bootstrap; could at best read settings JSON off disk for light/dark. | Low priority. |
 | **Favicon** (`public/favicon.svg`) | Static, dark tile. | Optional `prefers-color-scheme` inside the SVG. |
-| **Design canvas iframes** | Opaque-origin sandbox; agent HTML owns its colors. `bg-white` paper on the host side. | Out of scope architecturally (sandbox posture). Tokenize the paper as `--design-paper`, default locked white. |
 | **Second window / `--connect` client** | No `settings:changed` push event exists, so another client learns of a theme change only on reload. | Needs a push event if themes should sync live (template: `app_workflow_definitions_watcher.go`'s `a.emit`). |
 | **First frame** | No FOUC guard in `index.html`. | Pre-hydration script or Wails-side class stamp. |
 
@@ -193,7 +192,7 @@ primitives icons).
 6. *(optional)* `--shadow-accent-inset` (dup'd arbitrary shadow in
    `ComposerPendingApprovalPanel.svelte:36` /
    `ComposerPendingUserInputPanel.svelte:345`, already token-derived,
-   just unnamed), `--design-paper`.
+   just unnamed).
 
 ### 4.2 Straight swaps to existing tokens
 
@@ -366,8 +365,8 @@ state stays clean.
 
 **Landed 2026-08-18.** What shipped: the §4.1 tokens (`--accent-fg`,
 `--surface-3`, the `--scrim`/`--scrim-fg` pair that folded items 3+4,
-`--provider-claude`, `--shadow-accent-inset`, `--code-block`,
-`--design-paper`); the §4.2 swaps, three of them accepted visual changes
+`--provider-claude`, `--shadow-accent-inset`, `--code-block`); the §4.2 swaps,
+three of them accepted visual changes
 as noted there; the nine §4.3 streamdown keys; the mermaid
 `themeVariables` bridge (`chat/markdown/mermaidTokens.ts` +
 `utils/cssColorProbe.ts`, palette-keyed remount and SVG cache); the

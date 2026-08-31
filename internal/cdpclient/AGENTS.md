@@ -13,7 +13,7 @@ through the harness bridge and works on any engine.
 ## Why not chromedp/cdproto
 
 `github.com/chromedp/cdproto` is already in this module.
-`internal/screenshot` uses it. It is generated bindings for every domain
+`internal/browser` uses it. It is generated bindings for every domain
 of the protocol, and the callers here speak six methods whose parameters
 are three fields wide (`Profiler.setSamplingInterval`, `Tracing.start`,
 `IO.read`, …). Linking the generated surface into the harness CLI buys

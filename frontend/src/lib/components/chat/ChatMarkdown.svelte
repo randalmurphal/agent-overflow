@@ -88,8 +88,8 @@
      *  gates BOTH halves of the extension: relative prose paths resolve
      *  against it at click time, and markdown-link href rewriting
      *  (`[x](/abs/file.md)` → editor affordance) requires it for every
-     *  shape — a surface with no workspace (PR bodies, review comments,
-     *  design previews) gets no href rewriting at all, so third-party
+     *  shape — a surface with no workspace (PR bodies and review comments)
+     *  gets no href rewriting at all, so third-party
      *  root-relative links can never become editor links there. */
     workspacePath?: string;
     /** Server-validated allowlist of file paths to linkify in prose.

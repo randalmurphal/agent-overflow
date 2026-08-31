@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
@@ -83,15 +82,14 @@ func (a *App) startSessionNow(threadID string) error {
 }
 
 // buildSessionOptions composes the provider-agnostic SessionOptions bundle
-// (plus the design-mode config it derives from) for a thread row. Shared by
+// for a thread row. Shared by
 // the spawn path and the live config reconciler (app_session_config.go) so
 // both see the exact same view of "what a session for this row looks like".
 //
-// Design-mode plumbing (extra system prompt + Codex MCP servers) is
-// caller-owned: the provider package intentionally doesn't know about
-// design or discussion. We compose the final system prompt here, then
-// hand a provider-agnostic SessionOptions bundle to each provider's
-// ConfigFromOptions translator.
+// Feature-owned prompt plumbing is caller-owned: the provider package
+// intentionally doesn't know about discussions. We compose the final system
+// prompt here, then hand a provider-agnostic SessionOptions bundle to each
+// provider's ConfigFromOptions translator.
 //
 // What this function does NOT do is stamp the settings-owned axes
 // (SystemPrompt when no feature owns it, DisabledTools). Those are read
@@ -104,12 +102,8 @@ func (a *App) startSessionNow(threadID string) error {
 // here is what keeps the reconciler from composing an override — up to two
 // git subprocesses under the per-thread config lock — on every model,
 // effort, and runtime-mode change.
-func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, designSessionConfig, error) {
-	designCfg, err := a.designSessionConfig(t)
-	if err != nil {
-		return provider.SessionOptions{}, designSessionConfig{}, err
-	}
-	systemPrompt := a.featureOwnedSystemPrompt(t, designCfg)
+func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, error) {
+	systemPrompt := a.featureOwnedSystemPrompt(t)
 
 	// Pending-fork intent is a one-shot. SessionOptionsFromThread reads
 	// either PendingForkRef or SessionRef into opts.Resume based on this
@@ -138,13 +132,7 @@ func (a *App) buildSessionOptions(t store.Thread) (provider.SessionOptions, desi
 	// and an unresolved tier for the same thread.
 	opts.FastModeTierID = a.fastModeTierIDForModel(t.Provider, t.Model)
 
-	if dir, err := a.designWorkDirOverride(t); err != nil {
-		return provider.SessionOptions{}, designSessionConfig{}, fmt.Errorf("resolve design workdir: %w", err)
-	} else if dir != "" {
-		opts.WorkDir = dir
-	}
-
-	return opts, designCfg, nil
+	return opts, nil
 }
 
 func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string) error {
@@ -169,7 +157,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	sessionToken := uuid.NewString()
 	onEvent := a.sessionEventHandler(threadID, sessionToken, t.Provider)
 
-	opts, designCfg, err := a.buildSessionOptions(t)
+	opts, err := a.buildSessionOptions(t)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -233,17 +221,8 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 		a.triage.MarkThreadActive(threadID)
 	}
 
-	// Activate watcher + MCP AFTER stopExistingSessionLocked so the
-	// teardown of any prior session for the same thread doesn't stop
-	// resources we just allocated. teardownDesignThread on the failure
-	// paths below cleans up anything activate created.
-	designServers, err := a.activateDesignSession(t)
-	if err != nil {
-		return fmt.Errorf("start session: %w", err)
-	}
 	browserServers, err := a.browserMCPConfigForThread(t)
 	if err != nil {
-		a.teardownDesignThread(threadID)
 		return fmt.Errorf("start session: register browser tools: %w", err)
 	}
 
@@ -251,22 +230,12 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// on the resolution above (which already knows whether the override won
 	// the prompt) and never fatal to the spawn.
 	a.ensureClaudeMemoryDir(t, opts.WorkDir, promptOverride)
-	// designServers is non-nil only for design threads. Chat/plan sessions
-	// retain provider-native MCP discovery and add AO's browser capability;
-	// design sessions stay strict and receive only AO's design + browser
-	// servers.
-	designCfg.MCPServers = mergeMCPServers(designServers, browserServers)
-	// Non-design Claude sessions must keep native user/workspace MCP discovery
-	// alongside the injected browser server. Design stays strict by contract,
-	// but now receives both AO-owned design and browser servers.
-	designCfg.MergeMCPServers = t.Mode != threadmode.ModeDesign
 	// The `ao` credential is minted here, before the spawn, because the
 	// process env is what carries it. It only becomes usable when the session
 	// is registered (sessionManager.put), so a failed spawn leaves nothing
 	// behind. See app_ao_session.go.
 	credential, err := a.mintAOCredential(t)
 	if err != nil {
-		a.teardownDesignThread(threadID)
 		return fmt.Errorf("start session: %w", err)
 	}
 
@@ -275,14 +244,12 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// persisted for resume, while old live turns and PTYs leave the tray.
 	if t.Provider == string(provider.Codex) {
 		if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
-			a.teardownDesignThread(threadID)
 			return fmt.Errorf("start session: %w", err)
 		}
 	}
 
-	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, designCfg, credential, onEvent)
+	newSess, err := a.spawnProviderSession(threadID, sessionToken, t, opts, browserServers, credential, onEvent)
 	if err != nil {
-		a.teardownDesignThread(threadID)
 		a.emitProviderStatusOnSessionStartError(t.Provider)
 		return fmt.Errorf("start session: %w", err)
 	}
@@ -464,9 +431,6 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	}
 	a.emitProviderSessionDisconnected(threadID, existing.provider)
 
-	// Thread-scoped design state must be torn down alongside the session
-	// so a restart doesn't leak the prior turn's MCP registration.
-	a.teardownDesignThread(threadID)
 	err := a.closeProviderSession(threadID, existing)
 	// The replacement session streams fresh items; the old stream's
 	// scanner states are dead weight (their final ticks will never
@@ -552,7 +516,7 @@ func (a *App) spawnProviderSession(
 	threadID, sessionToken string,
 	t store.Thread,
 	opts provider.SessionOptions,
-	designCfg designSessionConfig,
+	mcpServers map[string]any,
 	credential aoSessionCredential,
 	onEvent func(provider.ProviderEvent),
 ) (session, error) {
@@ -576,8 +540,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
-		cfg.MCPServers = designCfg.MCPServers
-		cfg.MergeMCPServers = designCfg.MergeMCPServers
+		cfg.MCPServers = mcpServers
 		// Injected, never resolved inside the provider package: a session
 		// that read the transcript home from $HOME would hand its readers
 		// (and every writer downstream of them) the developer's real
@@ -616,7 +579,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
-		cfg.MCPServers = designCfg.MCPServers
+		cfg.MCPServers = mcpServers
 		// Ownership of a row sitting in the PROVIDER's queue is a store
 		// question — the id grammar is deterministic and therefore not a
 		// credential — so the codex package asks the app layer. AO writes no
@@ -1150,13 +1113,13 @@ func (a *App) codexResendAfterInterrupt(
 }
 
 // StopSession tears down the thread's provider session. Idempotent: a
-// thread with no active session still runs the design teardown +
-// triage cleanup so stale per-thread state doesn't leak.
+// thread with no active session still runs triage cleanup so stale
+// per-thread state doesn't leak.
 func (a *App) StopSession(threadID string) error {
 	sess, _ := a.sessionManager().take(threadID)
 	// teardownAndCloseSession tolerates the zero-value session — when
 	// no entry was registered, closeProviderSession returns nil and
-	// only the design + triage state is reset.
+	// only triage state is reset.
 	return a.teardownAndCloseSession(threadID, sess)
 }
 
@@ -1204,7 +1167,6 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 		return
 	}
 	a.emitProviderSessionDisconnected(threadID, sess.provider)
-	a.teardownDesignThread(threadID)
 	if a.triage != nil {
 		// Restore before cleanup: the sweep's clearFlushQueueLocked
 		// discards queued items, and they only exist in router memory —
@@ -1237,7 +1199,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 	}
 }
 
-// teardownAndCloseSession runs the per-thread design + triage cleanup
+// teardownAndCloseSession runs the per-thread triage cleanup
 // and closes the provider subprocess. Shared by StopSession (user
 // action) and idleCloseSession (reaper) so the close sequence stays in
 // one place — future per-thread cleanup steps land once and all paths
@@ -1249,7 +1211,7 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 // two concurrent closers can't both call Close on the same provider
 // session. A zero-value sess argument is intentionally tolerated:
 // closeProviderSession returns nil for it, which lets StopSession
-// reuse this helper to scrub design/triage state on a thread that
+// reuse this helper to scrub triage state on a thread that
 // never had a session registered.
 //
 // Not shared with unregisterSession (readLoop disconnect): that path
@@ -1257,7 +1219,6 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 // closeProviderSession would be redundant, and it deliberately leaves
 // triage state alone so the final wire frames have somewhere to land.
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
-	a.teardownDesignThread(threadID)
 	a.releaseWorkflowUsageAttentionForThread(threadID)
 	if a.triage != nil {
 		a.triage.CleanupThread(threadID)

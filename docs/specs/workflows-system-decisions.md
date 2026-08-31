@@ -493,10 +493,8 @@ and read files natively; MCP calls block and trap results in-context.
   become CLI subcommands; D7's `wftools` package becomes CLI + server-side
   handlers; the studio agent works with files + `ao workflow validate`; D13's
   post-back-to-thread flag is retained as the human-visibility nicety, but
-  background `ao run wait` is the primary agent pattern. The design-mode loopback
-  MCP server stays as-is for design mode; the workflow system just doesn't extend
-  it (the `--strict-mcp-config` composition refactor drops out of M0 scope unless
-  design mode needs it independently).
+  background `ao run wait` is the primary agent pattern. Workflow tooling does
+  not add a separate loopback MCP server.
 
 ## D14. Per-workflow workspace + cleanup policy (user ruling, 2026-07-11)
 

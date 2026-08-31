@@ -54,7 +54,7 @@ func promptOverrideOptionsAndResolution(t *testing.T, app *App, threadID string)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	opts, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+	opts, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestPinSettingsOwnedAxesKeepsAClaudeTUISessionOffTheRestartPath(t *testing.
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	rebuilt, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+	rebuilt, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}
@@ -294,7 +294,7 @@ func TestClaudeMemoryDirForThreadCoversBothClaudeTransports(t *testing.T) {
 	}
 }
 
-// Design mode and discussions already run a fully custom system prompt.
+// Discussions already run a fully custom system prompt.
 // Replacing it would break them, so the settings override stands down — but
 // the tool toggles are a separate axis and still apply.
 func TestBuildSessionOptionsKeepsAFeatureOwnedSystemPrompt(t *testing.T) {
@@ -356,7 +356,7 @@ func TestApplySettingsOwnedAxesRefusesAnOversizedRenderedPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	opts, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+	opts, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}
@@ -666,11 +666,11 @@ func TestPromptOverrideChangeDoesNotDisturbALiveSession(t *testing.T) {
 	}
 }
 
-// The other half of the pin: SystemPrompt is a SHARED axis. Design mode and
-// discussions own it for their threads, and an edit to a feature-owned prompt
+// The other half of the pin: SystemPrompt is a SHARED axis. Discussions own it
+// for their threads, and an edit to a feature-owned prompt
 // must keep converging exactly as it did before the settings override
-// existed. A pin that swallowed that would silently freeze design threads on
-// their first prompt.
+// existed. A pin that swallowed that would silently freeze feature-owned
+// prompts after their first value.
 func TestFeatureOwnedPromptChangeStillConvergesThroughTheReconciler(t *testing.T) {
 	app := newTestAppWithStore(t)
 	id, _ := seedPromptOverrideThread(t, app, "thread-prompt-override-feature-live", string(provider.Codex), "gpt-5.4")
@@ -784,12 +784,12 @@ func registerLiveCodexSession(t *testing.T, app *App, threadID string, launchOpt
 }
 
 // B19: the non-Claude early return pins the prompt, and the pin has to be
-// CONDITIONAL. SystemPrompt is a shared axis — design mode and discussions
+// CONDITIONAL. SystemPrompt is a shared axis — discussions
 // own it for their threads through threadSystemPrompts, and after
 // buildSessionOptions a non-empty value means exactly that. An unconditional
 // pin overwrote the freshly built feature prompt with the launched one, so
-// the reconciler saw no diff and a design thread froze on its first prompt
-// forever.
+// the reconciler saw no diff and the feature-owned prompt froze on its first
+// value forever.
 //
 // Driven per non-Claude provider rather than for one representative: the two
 // reach the early return from different Config types, and neither has
@@ -814,7 +814,7 @@ func TestReconcileSettingsOwnedAxesKeepsFeaturePromptsConvergingOffClaude(t *tes
 			if err != nil {
 				t.Fatalf("GetThread() error = %v", err)
 			}
-			rebuilt, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+			rebuilt, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
 			if err != nil {
 				t.Fatalf("buildSessionOptions() error = %v", err)
 			}
@@ -855,7 +855,7 @@ func TestReconcileSettingsOwnedAxesStillPinsTheSettingsOverrideOffClaude(t *test
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	rebuilt, _, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
+	rebuilt, err := app.buildSessionOptions(app.sanitizeThreadModelSettings(stored))
 	if err != nil {
 		t.Fatalf("buildSessionOptions() error = %v", err)
 	}

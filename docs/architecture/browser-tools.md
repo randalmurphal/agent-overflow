@@ -121,8 +121,7 @@ permissions alone would make it a sandbox bypass.
 
 ## Browser hardening
 
-The arbitrary-web manager does not reuse the trusted design screenshot
-manager's launch flags. Chromium's sandbox and site isolation remain enabled.
+Chromium's sandbox and site isolation remain enabled.
 The manager uses a private temporary profile, grants no camera, microphone,
 geolocation, notification, or system-clipboard permission, bounds navigation
 and tool deadlines, caps pages and contexts, dismisses JavaScript dialogs,

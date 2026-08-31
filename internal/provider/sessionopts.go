@@ -46,14 +46,13 @@ func NormalizeReasoningEffort(effort string) ReasoningEffort {
 }
 
 // InteractionMode identifies the shape of the agent's turn (chat vs.
-// plan-first vs. design-artifact vs. deliberation). Orthogonal to
+// plan-first vs. deliberation). Orthogonal to
 // RuntimeMode.
 type InteractionMode string
 
 const (
 	ModeChat       InteractionMode = "chat"
 	ModePlan       InteractionMode = "plan"
-	ModeDesign     InteractionMode = "design"
 	ModeDiscussion InteractionMode = "discussion"
 )
 
@@ -62,7 +61,6 @@ const (
 var AllInteractionModes = []InteractionMode{
 	ModeChat,
 	ModePlan,
-	ModeDesign,
 	ModeDiscussion,
 }
 
@@ -74,7 +72,7 @@ const DefaultInteractionMode = ModeChat
 // replicate the enum check.
 func NormalizeInteractionMode(mode string) InteractionMode {
 	switch InteractionMode(mode) {
-	case ModeChat, ModePlan, ModeDesign, ModeDiscussion:
+	case ModeChat, ModePlan, ModeDiscussion:
 		return InteractionMode(mode)
 	default:
 		return DefaultInteractionMode

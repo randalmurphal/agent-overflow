@@ -26,8 +26,6 @@ func eventChannelConstants() []eventchan.Channel {
 	return []eventchan.Channel{
 		eventchan.BrowserCompanionState,
 		eventchan.BrowserInstallProgress,
-		eventchan.DesignOptionsUpdate,
-		eventchan.DesignReloadMain,
 		eventchan.DiscussionMessage,
 		eventchan.DiscussionState,
 		eventchan.GitStatus,
@@ -67,7 +65,6 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderTurnStarted,
 		eventchan.ProviderUsage,
 		eventchan.ProviderUserInput,
-		eventchan.ScreenshotInstallProgress,
 		eventchan.SessionImportProgress,
 		eventchan.SpinnerChanged,
 		eventchan.ThemeChanged,

@@ -1,9 +1,9 @@
 // stores/threadPaneCompanions.ts
 //
 // OWNS the pane's side of its companion surfaces — plan sidebar, review
-// pane, design preview and the agent companion: which of them is open,
+// pane and the agent companion: which of them is open,
 // what opening each one actually means (the review pane needs a thread id
-// and an async open; design preview only exists in design mode; closing the
+// and an async open; closing the
 // agent pane drops its breadcrumb trail), and the close-them-all sweep a
 // pane clear runs.
 //
@@ -34,7 +34,7 @@ export interface ThreadPaneCompanionsOptions {
 export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions) {
   const { paneId } = options;
 
-  function closeFor(kind: 'plan' | 'review' | 'design-preview' | 'agent'): void {
+  function closeFor(kind: 'plan' | 'review' | 'agent'): void {
     const companion = companionForSource(paneId, kind);
     if (companion) closeCompanion(companion.paneId);
   }
@@ -45,9 +45,6 @@ export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions)
     },
     get showReviewPane() {
       return isCompanionOpen(paneId, 'review');
-    },
-    get showDesignPreviewPanel() {
-      return isCompanionOpen(paneId, 'design-preview');
     },
     /** Whether the agent companion (a subagent's scoped thread view) is
      *  open for this pane. There is at most one — opening another node
@@ -111,17 +108,6 @@ export function createThreadPaneCompanions(options: ThreadPaneCompanionsOptions)
       // Explicitly closing drops the trail: the next open arrives with its
       // own launch row, so a retained breadcrumb could only be stale.
       disposeAgentStateForPane(paneId);
-    },
-
-    toggleDesignPreviewPanel(): void {
-      if (options.getThread()?.mode !== 'design') return;
-      toggleCompanion(paneId, 'design-preview');
-    },
-
-    setShowDesignPreviewPanel(value: boolean): void {
-      if (options.getThread()?.mode !== 'design') return;
-      if (value) openCompanion(paneId, 'design-preview');
-      else closeFor('design-preview');
     },
   };
 }

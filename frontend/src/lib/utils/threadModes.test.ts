@@ -6,7 +6,7 @@ describe('isHiddenThreadMode', () => {
     expect(isHiddenThreadMode(mode)).toBe(true);
   });
 
-  it.each(['chat', 'plan', 'design', 'discussion', 'terminal', '', undefined])('keeps %s visible', (mode) => {
+  it.each(['chat', 'plan', 'discussion', 'terminal', '', undefined])('keeps %s visible', (mode) => {
     expect(isHiddenThreadMode(mode)).toBe(false);
   });
 });

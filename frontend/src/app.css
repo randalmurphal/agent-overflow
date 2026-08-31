@@ -71,13 +71,6 @@
   --scrim: oklch(0 0 0);
   --scrim-fg: oklch(1 0 0);
 
-  /* The design canvas' paper. Sandboxed user-authored HTML is written
-     against a white page — it brings its own colors and cannot be assumed
-     to survive a dark ground — so the iframe paper is deliberately white
-     rather than a surface tier. Theme-invariant like the scrim pair, and
-     themeable in principle (it is a token), default-locked in practice. */
-  --design-paper: #ffffff;
-
   /* Per-tool-kind icon colors. Cooler tones in the cobalt-violet
      family so categories read distinct without clashing with --accent.
      Keyed by ToolKindIcon enum names (see chat/toolCardHeader.ts),
@@ -323,10 +316,6 @@ html.light {
   /* Code-block ground, named apart from the elevation tier it currently
      aliases — see tokens.css. */
   --color-code-block: var(--code-block);
-  /* Deliberate white paper for sandboxed user-authored HTML — see the
-     :root definition. */
-  --color-design-paper: var(--design-paper);
-
   /* New semantic colors — the opacity-driven hierarchy layer. `fg` is
      the focal text, `fg-muted` is body copy, `fg-subtle` is labels,
      `fg-hint` is timestamps. Used via Tailwind utilities

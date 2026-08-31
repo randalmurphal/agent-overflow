@@ -64,9 +64,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
 	{Name: "DeleteUIState", ID: 1186757769},                        // main.App.DeleteUIState
-	{Name: "DismissDesignOptionSet", ID: 1381421528},               // main.App.DismissDesignOptionSet
 	{Name: "DownloadUpdate", ID: 115027584},                        // main.App.DownloadUpdate
-	{Name: "EnsureDesignWorkdir", ID: 1465371311},                  // main.App.EnsureDesignWorkdir
 	{Name: "ForkThread", ID: 4063914461},                           // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964},                // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286},                // main.App.GenerateCommitMessage
@@ -81,7 +79,6 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetCodexSkills", ID: 1018032480},                       // main.App.GetCodexSkills
 	{Name: "GetCommitDiff", ID: 3399370629},                        // main.App.GetCommitDiff
 	{Name: "GetContextSettings", ID: 3416004963},                   // main.App.GetContextSettings
-	{Name: "GetDesignWorkdirInfo", ID: 2179885147},                 // main.App.GetDesignWorkdirInfo
 	{Name: "GetDiffContextLines", ID: 1590634674},                  // main.App.GetDiffContextLines
 	{Name: "GetDiscussion", ID: 1924583939},                        // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146},                              // main.App.GetDraft
@@ -162,17 +159,14 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "HighlightSchemaVersion", ID: 2896867980},               // main.App.HighlightSchemaVersion
 	{Name: "ImportSessions", ID: 786331585},                        // main.App.ImportSessions
 	{Name: "ImportThreadUpdates", ID: 535929682},                   // main.App.ImportThreadUpdates
-	{Name: "IngestDiagnosticBatch", ID: 2606775930},                // main.App.IngestDiagnosticBatch
 	{Name: "InterruptAndRevertIfClean", ID: 753394581},             // main.App.InterruptAndRevertIfClean
 	{Name: "InterruptTurn", ID: 850013031},                         // main.App.InterruptTurn
 	{Name: "IsWSL", ID: 2789068977},                                // main.App.IsWSL
-	{Name: "LatestDesignOptionSet", ID: 4252906991},                // main.App.LatestDesignOptionSet
 	{Name: "ListArchivedThreads", ID: 2451527188},                  // main.App.ListArchivedThreads
 	{Name: "ListAttachments", ID: 1730798413},                      // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234},                 // main.App.ListAvailableEditors
 	{Name: "ListBranchCommits", ID: 352990129},                     // main.App.ListBranchCommits
 	{Name: "ListChatBarFavorites", ID: 2114948965},                 // main.App.ListChatBarFavorites
-	{Name: "ListDesignOptions", ID: 3070635863},                    // main.App.ListDesignOptions
 	{Name: "ListDiffReviewComments", ID: 3057473088},               // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562},                       // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885},             // main.App.ListDiscussionsForThread

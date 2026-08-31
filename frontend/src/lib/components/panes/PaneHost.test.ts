@@ -9,9 +9,6 @@ vi.mock('../chat/ChatView.svelte', async () => ({
 vi.mock('../chat/PlanSidebar.svelte', async () => ({
   default: (await import('../../../test/mocks/StubCompanionPanel.svelte')).default,
 }));
-vi.mock('../design/DesignPreviewRhsPanel.svelte', async () => ({
-  default: (await import('../../../test/mocks/StubCompanionPanel.svelte')).default,
-}));
 vi.mock('../review/ReviewPane.svelte', async () => ({
   default: (await import('../../../test/mocks/StubCompanionPanel.svelte')).default,
 }));

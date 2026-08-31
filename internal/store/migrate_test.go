@@ -1136,7 +1136,7 @@ func TestChatBarFavoritesAndProfilesCHECK(t *testing.T) {
 func TestThreadsModeCheckAcceptsTerminal(t *testing.T) {
 	s := newTestStore(t)
 
-	for _, m := range []string{"chat", "plan", "design", "discussion", "terminal"} {
+	for _, m := range []string{"chat", "plan", "discussion", "terminal"} {
 		if _, err := s.db.Exec(`
 			INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
 				created_at, updated_at, archived, mode)
@@ -1144,6 +1144,13 @@ func TestThreadsModeCheckAcceptsTerminal(t *testing.T) {
 		`, "t-mode-"+m, defaultTestProjectID, m); err != nil {
 			t.Errorf("INSERT with mode=%q must satisfy CHECK: %v", m, err)
 		}
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('t-mode-design', ?, 'B', 'claude', '/tmp', '', 1, 1, 0, 'design')
+	`, defaultTestProjectID); err == nil {
+		t.Fatal("INSERT with retired mode='design' must violate CHECK constraint")
 	}
 
 	if _, err := s.db.Exec(`
@@ -5195,6 +5202,57 @@ func TestMigrationV69AddsPendingForkResumeAt(t *testing.T) {
 			`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index,
 		).Scan(&found); err != nil {
 			t.Fatalf("index %s missing after v69: %v", index, err)
+		}
+	}
+}
+
+func TestMigrationV72ConvertsDesignThreadsAndRemovesMode(t *testing.T) {
+	db := migrateThrough(t, 71)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at)
+		VALUES ('p-v72', '/v72', 'v72', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (
+		id, project_id, title, provider, workspace_path, model,
+		created_at, updated_at, archived, mode
+	) VALUES ('t-v72', 'p-v72', 'Retired design', 'claude', '/v72', '', 1, 1, 0, 'design')`)
+	mustExec(t, db, `INSERT INTO turns (turn_id, thread_id, turn_index, started_at)
+		VALUES ('turn-v72', 't-v72', 0, 1)`)
+
+	if err := applyRebuildMigration(db, migrationByVersion(t, 72)); err != nil {
+		t.Fatalf("apply v72 rebuild: %v", err)
+	}
+
+	var mode string
+	if err := db.QueryRow(`SELECT mode FROM threads WHERE id = 't-v72'`).Scan(&mode); err != nil {
+		t.Fatalf("read converted thread: %v", err)
+	}
+	if mode != "chat" {
+		t.Fatalf("converted mode = %q, want chat", mode)
+	}
+	var childCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM turns WHERE thread_id = 't-v72'`).Scan(&childCount); err != nil {
+		t.Fatalf("count child turns: %v", err)
+	}
+	if childCount != 1 {
+		t.Fatalf("child turns after rebuild = %d, want 1", childCount)
+	}
+	if _, err := db.Exec(`UPDATE threads SET mode = 'design' WHERE id = 't-v72'`); err == nil {
+		t.Fatal("retired design mode still satisfies the threads CHECK")
+	}
+
+	for _, trigger := range []string{
+		"trg_items_rev_insert",
+		"trg_items_rev_update",
+		"trg_items_rev_delete",
+		"trg_items_require_import_override",
+		"thread_import_state_unique_source_insert",
+		"thread_import_state_unique_source_update",
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&count); err != nil {
+			t.Fatalf("find trigger %s: %v", trigger, err)
+		}
+		if count != 1 {
+			t.Errorf("trigger %s count = %d, want 1", trigger, count)
 		}
 	}
 }

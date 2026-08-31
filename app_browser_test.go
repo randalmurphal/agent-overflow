@@ -42,13 +42,6 @@ func TestBrowserMCPConfigRegistersOnlyHeadlessProviders(t *testing.T) {
 	}
 }
 
-func TestMergeMCPServersKeepsDesignAndBrowser(t *testing.T) {
-	merged := mergeMCPServers(map[string]any{"design": 1}, map[string]any{appbrowser.ServerName: 2})
-	if len(merged) != 2 || merged["design"] != 1 || merged[appbrowser.ServerName] != 2 {
-		t.Fatalf("merged = %#v", merged)
-	}
-}
-
 func TestPatchTouchesBrowserSettings(t *testing.T) {
 	if !patchTouchesBrowserSettings(map[string]any{"browserEnabled": false}) {
 		t.Fatal("browser setting not detected")

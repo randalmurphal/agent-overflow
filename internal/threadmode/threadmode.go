@@ -1,5 +1,5 @@
 // Package threadmode owns the pure validators and parsers behind the
-// thread interaction-mode (chat/plan/design) and runtime-mode
+// thread interaction-mode (chat/plan) and runtime-mode
 // (approval-required / auto-accept-edits / full-access) axes.
 //
 // The persistence and session-restart orchestration that consume these
@@ -22,7 +22,6 @@ const DefaultCreateMode = "chat"
 const (
 	ModeChat           = "chat"
 	ModePlan           = "plan"
-	ModeDesign         = "design"
 	ModeDiscussion     = "discussion"
 	ModeTerminal       = "terminal"
 	ModeWorkflow       = "workflow"
@@ -31,7 +30,7 @@ const (
 )
 
 var legalModes = map[string]struct{}{
-	ModeChat: {}, ModePlan: {}, ModeDesign: {}, ModeDiscussion: {},
+	ModeChat: {}, ModePlan: {}, ModeDiscussion: {},
 	ModeTerminal: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
 }
 
@@ -56,16 +55,14 @@ var hiddenModeSet = func() map[string]struct{} {
 // set "discussion" directly would produce orphan threads the discussion
 // runtime never knows about.
 var ManualSelectionModes = map[string]struct{}{
-	ModeChat:   {},
-	ModePlan:   {},
-	ModeDesign: {},
+	ModeChat: {},
+	ModePlan: {},
 }
 
 // PostCreationModes is the set the UI is allowed to mutate into via
-// the chat/plan agent-mode toggle. Thread *type* (design / discussion)
-// is determined at creation and is immutable thereafter — switching
-// the type of a live thread would orphan its associated runtime state
-// (design artifacts, deliberation channel) and confuse the UI shell.
+// the chat/plan agent-mode toggle. Saga-owned thread types are determined
+// at creation and are immutable thereafter — switching the type of a live
+// thread would orphan its associated runtime state and confuse the UI shell.
 // Internal callers that need to flip a chat thread's interaction mode
 // (sendMessage's plan→chat saga, proposed-plan revisions) only ever
 // move between chat and plan.
@@ -112,14 +109,14 @@ func ValidateCreate(mode string) (string, error) {
 		return DefaultCreateMode, nil
 	}
 	if _, ok := ManualSelectionModes[trimmed]; !ok {
-		return "", fmt.Errorf("invalid mode %q (allowed: chat, plan, design)", trimmed)
+		return "", fmt.Errorf("invalid mode %q (allowed: chat, plan)", trimmed)
 	}
 	return trimmed, nil
 }
 
 // ValidateSet validates a mode for UpdateThreadMode. Only chat and
-// plan are accepted: design and discussion are immutable thread types
-// set at creation time. The frontend's agent-mode toggle (chat ↔
+// plan are accepted; discussion is a saga-owned immutable thread type.
+// The frontend's agent-mode toggle (chat ↔
 // plan) is the only caller that should hit UpdateThreadMode at user-
 // facing scope; internal callsites (proposed-plan saga) only ever
 // pass chat or plan.
@@ -134,7 +131,7 @@ func ValidateSet(mode string) (string, error) {
 // IsPostCreationMode reports whether the given mode is one the UI is
 // allowed to mutate into post-creation. Callers use this to validate
 // that a *current* thread mode is still chat/plan before allowing the
-// UpdateThreadMode flip — design and discussion threads are immutable.
+// UpdateThreadMode flip — discussion threads are immutable.
 func IsPostCreationMode(mode string) bool {
 	_, ok := PostCreationModes[strings.TrimSpace(mode)]
 	return ok

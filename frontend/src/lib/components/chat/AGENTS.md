@@ -171,7 +171,7 @@ The rules that bite here:
 
 ## Companion panes
 
-Plan, design preview and review surfaces mount as companion panes through
+Plan and review surfaces mount as companion panes through
 `components/panes/CompanionPane.svelte`, opened by the companion and
 review store helpers rather than as a sidebar inside `ChatView`. Their
 bodies receive `ctx: PanelContext`, not `pane: ThreadPane`, so they cannot

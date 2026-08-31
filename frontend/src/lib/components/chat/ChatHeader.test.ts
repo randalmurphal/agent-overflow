@@ -226,20 +226,6 @@ describe('<ChatHeader>', () => {
     expect(pane.showReviewPane).toBe(true);
   });
 
-  it('shows the design preview toggle and hides the diff toggle on design threads', async () => {
-    const pane = await buildPane(makeThread({ mode: 'design' }));
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
-    const { getByTestId, queryByTestId } = render(ChatHeader, { props: { pane } });
-    await tick();
-
-    expect(queryByTestId('review-toggle')).toBeNull();
-    expect(pane.showDesignPreviewPanel).toBe(false);
-    await fireEvent.click(getByTestId('design-preview-toggle'));
-    expect(pane.showDesignPreviewPanel).toBe(true);
-    await fireEvent.click(getByTestId('design-preview-toggle'));
-    expect(pane.showDesignPreviewPanel).toBe(false);
-  });
-
   it('toggles the terminal drawer and latches focus-on-open via the terminal button', async () => {
     const pane = await buildPane();
     const { getByTestId } = render(ChatHeader, { props: { pane } });

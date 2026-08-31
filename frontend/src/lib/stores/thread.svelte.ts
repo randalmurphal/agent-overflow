@@ -17,9 +17,9 @@
 //   threadDraftPlaceholder.svelte.ts  the pre-materialization phase
 //   threadPaneScroll.svelte.ts        controller slot, spring arming, scroll intent
 //   threadPaneTurns.svelte.ts         turn start/settle/clear + the timeline facet
-//   threadPaneCompanions.ts           plan / review / design-preview / agent surfaces
+//   threadPaneCompanions.ts           plan / review / agent surfaces
 //   threadPaneErrors.svelte.ts        the banner-stack error slots
-//   threadChannelState / threadDesignState / threadActivityRuns /
+//   threadChannelState / threadActivityRuns /
 //   threadPendingInteractiveState / liveTodoState / threadLiveStateHydration
 //
 // Add per-thread runtime state to one of those (or a new one composed here),
@@ -38,11 +38,6 @@ import type {
   UserInputRequest,
 } from '../types/events';
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
-import type {
-  ActiveOptionSet,
-  ClarificationRequest,
-  DesignViewport,
-} from '../types/design';
 import { getThreadById } from './threads.svelte';
 import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 import { createGitStatusView, type GitStatusView } from './gitStatusStore.svelte';
@@ -79,7 +74,6 @@ import {
   seedContextWindow,
 } from './threadContextWindow';
 import { createThreadChannelState } from './threadChannelState.svelte';
-import { createThreadDesignState } from './threadDesignState.svelte';
 import {
   nowForLiveContent,
   type LoadOlderResult,
@@ -350,8 +344,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   );
 
   const channelState = createThreadChannelState();
-  const designState = createThreadDesignState();
-  // Plan sidebar / review pane / design preview / agent companion — which
+  // Plan sidebar / review pane / agent companion — which
   // is open for this pane and what opening each one means. See
   // threadPaneCompanions.ts.
   const companions = createThreadPaneCompanions({
@@ -563,7 +556,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     activityRuns,
     streamingReveal,
     channelState,
-    designState,
     pendingInteractiveState,
     liveTodoState,
     liveStateHydration,
@@ -583,7 +575,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     timelineWindow,
     subagentMemory,
     streamingReveal,
-    designState,
   });
 
   /**
@@ -634,7 +625,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     optimisticItemIds.clear();
     showTerminal = false;
     channelState.clear();
-    designState.reset();
     // activeTurn lives in the global registry (threadStatuses) and is
     // cleared by projectTurnCompleted; clearing it from a pane.clear()
     // would race with an in-flight turn on the same thread that
@@ -920,24 +910,12 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get channelLastLiveContentAt() {
       return channelState.lastLiveContentAt;
     },
-    get pendingClarification() {
-      return designState.pendingClarification;
-    },
-    get activeOptionSet() {
-      return designState.activeOptionSet;
-    },
-    get designViewport() {
-      return designState.designViewport;
-    },
     // Companion surfaces — see threadPaneCompanions.ts.
     get showPlanSidebar() {
       return companions.showPlanSidebar;
     },
     get showReviewPane() {
       return companions.showReviewPane;
-    },
-    get showDesignPreviewPanel() {
-      return companions.showDesignPreviewPanel;
     },
     get showAgentPane() {
       return companions.showAgentPane;
@@ -1577,8 +1555,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     setShowReviewPane: companions.setShowReviewPane,
     openAgentPane: companions.openAgentPane,
     closeAgentPane: companions.closeAgentPane,
-    toggleDesignPreviewPanel: companions.toggleDesignPreviewPanel,
-    setShowDesignPreviewPanel: companions.setShowDesignPreviewPanel,
 
     /** Single-message merge for a live `discussion:message` push, or the
      * message `PostChannelMessage` itself returns on a successful post. */
@@ -1602,61 +1578,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       channelState.clear();
     },
 
-    // --- Design-mode mutations ---
-
-    /**
-     * Set the agent's clarification request. Pass null when the user
-     * has answered (the panel sends the answers as a regular user
-     * message; it then clears local state by calling this with null).
-     */
-    setPendingClarification(request: ClarificationRequest | null): void {
-      designState.setPendingClarification(request);
-    },
-
-    /**
-     * Activate (or clear) the side-by-side options grid. `null` returns
-     * the pane to the main preview.
-     */
-    setActiveOptionSet(set: ActiveOptionSet | null): void {
-      designState.setActiveOptionSet(set);
-    },
-
-    setDesignViewport(viewport: DesignViewport): void {
-      designState.setDesignViewport(viewport);
-    },
-
-    clearDesign(): void {
-      designState.reset();
-    },
-
-    /**
-     * Hydrate `activeOptionSet` from the per-thread workdir. Called on:
-     *
-     *  - file watcher events (`design:options-update`) so a fresh set
-     *    or new index.html landing in an existing set is reflected
-     *    immediately;
-     *  - design pane mount so a refresh / app restart re-derives the
-     *    picker from disk instead of dropping in-memory state.
-     *
-     * Backend-side LatestDesignOptionSet is the source of truth: it
-     * picks the most recently-touched set under `options/` that has
-     * at least one option containing index.html and no `.picked`
-     * marker. The watcher's setId hint is informational only — using
-     * "latest" instead of "set the watcher named" gives us a uniform
-     * model where pick-dismissal (which writes a `.picked` marker)
-     * naturally clears the panel on the next refresh.
-     *
-     * Best-effort: a binding error is logged but not surfaced —
-     * failing to hydrate the panel is preferable to dragging a toast
-     * onto the user every time a transient mid-write fires the
-     * watcher.
-     */
-    async applyDesignOptionsUpdate(
-      threadId: string,
-      _setId: string,
-    ): Promise<void> {
-      await designState.applyDesignOptionsUpdate(() => thread, threadId);
-    },
   };
 }
 

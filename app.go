@@ -45,17 +45,6 @@ import (
 	"agent-overflow/internal/workspacefiles"
 )
 
-// DesignServer returns the http.Handler that serves the per-thread
-// design working directories. main.go wires this into the transport
-// Config so /design/ requests reach it. Returns nil when the design
-// workdir base couldn't be initialised (rare; shows up in tests that
-// skip the design subsystem).
-//
-//wails:ignore
-func (a *App) DesignServer() http.Handler {
-	return a.design.server
-}
-
 // ErrShuttingDown is returned from binding entry points once Shutdown has
 // started. Callers should surface this as a terminal state — no retry will
 // succeed because the app is tearing down.
@@ -130,12 +119,9 @@ type App struct {
 	generateWorkflowDigestFn func(context.Context, store.WorkItem, WorkflowDigest) (WorkflowDigest, error)
 	// turnObservers fans provider events out to internal App features after
 	// triage handling has been attempted.
-	turnObservers appTurnObserverState
-	registry      *discussion.Registry
-	channels      *discussion.ChannelService
-	// design is the design-mode concern (app_design*.go): workdirs, the
-	// file server over them, the preview screenshotter, and the watchers.
-	design         appDesignState
+	turnObservers  appTurnObserverState
+	registry       *discussion.Registry
+	channels       *discussion.ChannelService
 	browser        appBrowserState
 	terminals      *terminal.Manager
 	attachments    *attachment.Store

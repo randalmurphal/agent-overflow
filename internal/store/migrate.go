@@ -1362,6 +1362,12 @@ CREATE TABLE provider_thread_cost (
 		SQL: `ALTER TABLE threads ADD COLUMN pin_group INTEGER
     CHECK(pin_group IS NULL OR (pinned_at IS NOT NULL AND pin_group IN (0, 1)));`,
 	},
+	{
+		Version: 72,
+		Name:    "remove_design_mode",
+		SQL:     removeDesignModeV72SQL,
+		Rebuild: true,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

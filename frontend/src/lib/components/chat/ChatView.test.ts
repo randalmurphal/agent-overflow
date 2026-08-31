@@ -32,7 +32,6 @@ import { installPaneMocks, installThreadSwitchMocks, makeItem } from '../../../t
 import { resetLayoutMetricsForTest } from '../../stores/layoutMetrics.svelte';
 import {
   resetPaneLayoutForTest,
-  setPaneLayoutItemsForTest,
 } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetEditResendExecutionForTest } from './editResendFlow.svelte';
@@ -612,56 +611,6 @@ describe('<ChatView>', () => {
     // PRECEDES it (here, the anchor itself) is not doomed, which is why
     // the comparison is positional rather than per-turn.
     await waitFor(() => expect(rows()).toEqual([false, false, true, true]));
-  });
-
-  it('does not render design preview inside ChatView after explicit toggle', async () => {
-    setBindingMock('EnsureDesignWorkdir', async () => {});
-    setBindingMock('LatestDesignOptionSet', async () => null);
-    const pane = await buildPane({ ...seedThread(), mode: 'design' });
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
-    const { getByTestId, queryByTestId } = render(ChatView, { props: { pane } });
-    await tick();
-
-    expect(queryByTestId('design-split')).toBeNull();
-    expect(queryByTestId('design-split-resizer')).toBeNull();
-
-    await fireEvent.click(getByTestId('design-preview-toggle'));
-
-    expect(pane.showDesignPreviewPanel).toBe(true);
-    expect(queryByTestId('design-split')).toBeNull();
-    pane.setActiveOptionSet({ setId: 'set-1', optionPaths: ['options/set-1/alpha'] });
-    await tick();
-
-    expect(queryByTestId('design-options-panel')).toBeNull();
-  });
-
-  it('keeps design clarification controls in the chat column', async () => {
-    setBindingMock('EnsureDesignWorkdir', async () => {});
-    setBindingMock('LatestDesignOptionSet', async () => null);
-    const pane = await buildPane({ ...seedThread(), mode: 'design' });
-    setPaneLayoutItemsForTest([{ id: pane.paneId, paneId: pane.paneId, kind: 'thread', widthPx: 1 }]);
-    pane.setPendingClarification({
-      requestId: 'clarify-1',
-      threadId: pane.threadId ?? 'thread-1',
-      intro: 'Pick a direction',
-      questions: [{
-        id: 'direction',
-        prompt: 'Which direction should the agent take?',
-        choices: [{ id: 'simple', label: 'Simpler' }],
-      }],
-    });
-
-    const { getByTestId } = render(ChatView, { props: { pane } });
-    await tick();
-
-    const overlay = getByTestId('composer-overlay');
-    const picker = getByTestId('design-clarification-picker');
-    expect(overlay).toContainElement(picker);
-
-    await fireEvent.click(getByTestId('design-preview-toggle'));
-
-    expect(pane.showDesignPreviewPanel).toBe(true);
-    expect(overlay).toContainElement(picker);
   });
 
   it('renders TerminalView instead of the chat surface for terminal-mode threads', async () => {

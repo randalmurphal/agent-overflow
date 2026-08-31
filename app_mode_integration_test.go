@@ -55,26 +55,6 @@ func TestMode_CreateThreadWithDiscussion(t *testing.T) {
 	}
 }
 
-func TestMode_CreateThreadWithDesign(t *testing.T) {
-	app := newTestAppWithStore(t)
-
-	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-design", "claude-sonnet-4-6", "design")
-	if err != nil {
-		t.Fatalf("CreateThread(design) error = %v", err)
-	}
-	if thread.Mode != "design" {
-		t.Fatalf("mode = %q, want design", thread.Mode)
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Mode != "design" {
-		t.Fatalf("stored mode = %q, want design", stored.Mode)
-	}
-}
-
 func TestMode_CreateThreadWithPlan(t *testing.T) {
 	app := newTestAppWithStore(t)
 
@@ -108,6 +88,7 @@ func TestMode_CreateThreadRejectsInvalidMode(t *testing.T) {
 		"debug",
 		"ship",
 		"123",
+		"design",
 	}
 	for _, mode := range cases {
 		mode := mode
@@ -234,14 +215,14 @@ func TestMode_SetInteractionModeDoesNotBumpUpdatedAt(t *testing.T) {
 }
 
 // TestMode_ForkInheritsInteractionMode: ForkThread copies the source mode onto
-// the fork so a design-mode conversation keeps its capabilities after branching.
+// the fork so plan-first behavior survives branching.
 func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-fork-mode")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-abc"
-	source.Mode = "design"
+	source.Mode = "plan"
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -251,40 +232,16 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
-	if forked.Mode != "design" {
-		t.Fatalf("fork mode = %q, want design (inherited from source)", forked.Mode)
+	if forked.Mode != "plan" {
+		t.Fatalf("fork mode = %q, want plan (inherited from source)", forked.Mode)
 	}
 
 	stored, err := app.store.GetThread(forked.ID)
 	if err != nil {
 		t.Fatalf("GetThread() error = %v", err)
 	}
-	if stored.Mode != "design" {
-		t.Fatalf("stored fork mode = %q, want design", stored.Mode)
-	}
-}
-
-// TestMode_DesignModeThreadHasDesignArtifactCapability: create a design-mode
-// thread and verify the thread is queryable for design artifacts (empty list
-// is valid when no renders have happened). This mirrors the app_claude_design.go
-// gating where only design-mode Claude threads can run design tools.
-func TestMode_DesignModeThreadHasDesignArtifactCapability(t *testing.T) {
-	app := newTestAppWithStore(t)
-
-	thread, err := createTestThread(t, app, string(provider.Claude), "/tmp/ws-design-cap", "claude-sonnet-4-6", "design")
-	if err != nil {
-		t.Fatalf("CreateThread(design) error = %v", err)
-	}
-
-	stored, err := app.store.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if stored.Mode != "design" {
-		t.Fatalf("stored mode = %q, want design (capability gate)", stored.Mode)
-	}
-	if stored.Provider != string(provider.Claude) {
-		t.Fatalf("stored provider = %q, want claude (design tools only gate on Claude)", stored.Provider)
+	if stored.Mode != "plan" {
+		t.Fatalf("stored fork mode = %q, want plan", stored.Mode)
 	}
 }
 
@@ -293,7 +250,7 @@ func TestMode_DesignModeThreadHasDesignArtifactCapability(t *testing.T) {
 // only via StartDiscussion which wires a channel, the deliberation runtime, and
 // child participant threads. We also assert UpdateThreadMode rejects
 // "discussion" — thread type is immutable post-creation, mirroring the
-// design-thread immutability.
+// discussion-thread immutability.
 func TestMode_DiscussionModeCreatesOrPairsWithDiscussion(t *testing.T) {
 	app := newTestAppWithStore(t)
 

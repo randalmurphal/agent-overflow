@@ -28,8 +28,7 @@ The app writes everything under your OS's user-config directory:
 Inside that root: `agent-overflow.db` (SQLite — every thread, item,
 payload, attachment metadata), `logs/` (NDJSON provider stdio capture
 when `AGENT_OVERFLOW_DEBUG=provider`, plus runtime logs), `attachments/`
-(uploaded image / file bytes referenced by the DB), `design-workdirs/`
-(per-thread design-mode scratch trees), and `settings.json`.
+(uploaded image / file bytes referenced by the DB), and `settings.json`.
 
 ## Setup
 

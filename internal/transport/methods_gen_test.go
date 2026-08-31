@@ -179,10 +179,6 @@ var wireSafeMethods = map[string]bool{
 	"ListProposedPlanComments":  true,
 	"ListThreadProposedPlans":   true,
 
-	// Design-mode read of stored option choices. Workdir mutations
-	// are LocalOnly in category 4.
-	"ListDesignOptions": true,
-
 	// Attachment listings (metadata only — bytes/thumbnails are
 	// LocalOnly in category 4).
 	"ListAttachments": true,

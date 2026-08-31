@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/appdirs"
+	"agent-overflow/internal/chromium"
 	"agent-overflow/internal/harnessclient"
-	"agent-overflow/internal/headlessshell"
 	"agent-overflow/internal/procutil"
 )
 
@@ -81,7 +81,7 @@ func (c browserChoice) headlessShell() bool {
 type browserResolver struct {
 	getenv   func(string) string
 	lookPath func(string) (string, error)
-	// configRoot is the app-managed root whose headless-shell cache the
+	// configRoot is the app-managed root whose Chrome cache the
 	// chain consults. Resolved by appdirs in production.
 	configRoot func() (string, error)
 }
@@ -95,8 +95,8 @@ func defaultBrowserResolver() browserResolver {
 //  1. --browser, else $AO_HARNESS_BROWSER. An explicit path that is not
 //     executable is an error, never a silent fall-through to link 2:
 //     a caller who named a binary wants THAT binary.
-//  2. a chrome-headless-shell already installed by the design-mode
-//     screenshot installer, under the app-managed config root. This is
+//  2. a full Chrome-for-Testing already installed by the built-in browser,
+//     under the app-managed config root. This is
 //     a read of one executable path, never a download — `ao-harness`
 //     has no network story and must not grow one.
 //  3. a Chromium-family browser on PATH.
@@ -113,14 +113,14 @@ func (r browserResolver) resolve(explicit string) (browserChoice, error) {
 			}
 			path = found
 		}
-		if !headlessshell.Executable(path) {
+		if !chromium.Executable(path) {
 			return browserChoice{}, fmt.Errorf("browser %q is not an executable file", path)
 		}
 		return browserChoice{Path: path, Source: "explicit"}, nil
 	}
 	if root, err := r.configRoot(); err == nil {
-		if path, version, ok := headlessshell.Installed(root); ok {
-			return browserChoice{Path: path, Source: "cached chrome-headless-shell " + version}, nil
+		if installed, ok := chromium.InstalledChrome(root); ok {
+			return browserChoice{Path: installed.BinaryPath, Source: "cached Chrome for Testing " + installed.Version}, nil
 		}
 	}
 	for _, name := range systemBrowserNames {
@@ -132,8 +132,7 @@ func (r browserResolver) resolve(explicit string) (browserChoice, error) {
 	}
 	return browserChoice{}, fmt.Errorf(
 		"no headless browser found: set $%s to a Chromium-family binary (or pass --browser), "+
-			"install one of %s on PATH, or let the app download chrome-headless-shell once "+
-			"(design mode's read_screenshot does it)",
+			"install one of %s on PATH, or let the app install Chrome once by using the built-in browser tools",
 		attachBrowserEnv, strings.Join(systemBrowserNames, ", "))
 }
 
@@ -157,10 +156,8 @@ type attachSpec struct {
 // `bench` measure, so every non-default rendering flag is a distortion
 // of the numbers; only flags that make an unattended launch possible at
 // all are here. In particular the memory-shaving flags
-// `internal/screenshot` uses (--no-zygote, --in-process-gpu) are NOT
-// used: a screenshot is a one-shot capture, this is a long-lived page
-// under measurement, and --in-process-gpu turns a GPU fault into a whole
-// browser death.
+// Keep this long-lived measurement page on ordinary Chrome process flags;
+// unusual single-process/GPU flags would distort results and reduce isolation.
 func browserArgs(spec attachSpec) []string {
 	args := make([]string, 0, 10)
 	if !spec.Browser.headlessShell() {
@@ -192,7 +189,7 @@ func runAttach(e *env, args []string) error {
 	flags := e.newFlagSet("attach")
 	detach := flags.Bool("detach", false, "leave the browser running in the background and print its pid instead of holding the terminal")
 	timeout := flags.Duration("timeout", attachDefaultTimeout, "wall-clock budget for the page to load and the bridge to answer")
-	browser := flags.String("browser", "", "path to a Chromium-family binary (default: $"+attachBrowserEnv+", then the cached chrome-headless-shell, then PATH)")
+	browser := flags.String("browser", "", "path to a Chromium-family binary (default: $"+attachBrowserEnv+", then the app-managed Chrome, then PATH)")
 	width := flags.Int("width", 1600, "page width in CSS pixels")
 	height := flags.Int("height", 1000, "page height in CSS pixels")
 	devtools := flags.Int("devtools-port", 0, "also serve the Chromium DevTools protocol on this `port`, so profile and bench --trace can attach")

@@ -726,7 +726,7 @@ describe('<ChatMarkdown> code-block spans', () => {
   });
 
   it('adopts the result when a block is replaced with SHORTER source', async () => {
-    // Non-append rerenders (design previews, edited messages) can
+    // Non-append rerenders (for example, edited messages) can
     // shrink a block; supersession is by request sequence, not source
     // length, so the shorter source's spans must land.
     const longSource = 'def much_longer_name():\n    pass';

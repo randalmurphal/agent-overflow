@@ -11,14 +11,12 @@ import (
 	"time"
 
 	"agent-overflow/internal/closer"
-	"agent-overflow/internal/design"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
 	"agent-overflow/internal/observability/replay"
-	"agent-overflow/internal/screenshot"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/triage"
@@ -170,10 +168,6 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 	// The triage router does not expose in-flight work today; Shutdown
 	// still dispatches drainTriage under a timeout and records the step.
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
-	// A design reactor with nil helpers is fine for teardown —
-	// TeardownThread is a no-op when no pending captures or
-	// diagnostic state exist.
-	app.design.reactor = design.NewReactor(nil, nil)
 	// gitwatch.Manager has no real watchers in this test (no Subscribe
 	// calls), but Close() still records the "close gitwatch" step, so
 	// we wire it for parity with production.
@@ -182,18 +176,6 @@ func newFullyWiredTestApp(t *testing.T) (*App, *shutdownRecorder) {
 			return gitops.GitStatus{}, nil
 		},
 	})
-	// A never-started screenshot.Manager Closes cleanly (the package
-	// treats Close as a no-op when allocCancel/browserCancel are nil)
-	// so we wire it for parity with production without paying the
-	// chrome-headless-shell install cost.
-	app.design.screenshots = screenshot.NewManager(nil)
-	// a.design.mcp must Close after a.design.screenshots (the in-flight
-	// read_screenshot handler scenario — see app.go Step 7/7b
-	// comments). A never-RegisterThread'd MCPServer has no listener
-	// so Close is a no-op; wire it anyway so the ordering assertion
-	// catches a future regression.
-	app.design.mcp = design.NewMCPServer(app.design.reactor)
-
 	// Force logger on so every step in Shutdown fires — the debug env
 	// gate makes it nil by default which would hide the "close logger"
 	// step from the ordering assertion.
@@ -251,12 +233,6 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
 
-	// "close headless screenshot manager" MUST appear before
-	// "close design MCP server" — a.design.mcp.Close()'s blocking
-	// http.Server.Shutdown waits for in-flight read_screenshot
-	// handlers, which are parked inside Manager.Capture, which only
-	// returns after the screenshot manager's browserCtx is cancelled.
-	// See app.go Step 7/7b for the deadlock rationale.
 	want := []string{
 		// "cancel app context" MUST appear before "drain triage" —
 		// fire-and-forget goroutines bound to appCtx need to observe
@@ -297,12 +273,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// releases its watched group on a clean close, so the sidecar has
 		// nothing left to reap by the time we close its control pipe.
 		"stop orphan reaper",
-		"close design reactor",
 		"close gitwatch manager",
 		"close PR update subscriptions",
 		"close terminal sessions",
-		"close headless screenshot manager",
-		"close design MCP server",
 		"close logger",
 		"close store",
 	}
