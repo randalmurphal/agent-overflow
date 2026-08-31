@@ -1019,6 +1019,18 @@ files cap at 8 MB on disk. Nothing between the store and the socket
 counts bytes, so a row with thirty very long lines satisfies every
 check we have.
 
+Calibration, so the target is not mistaken for a crisis: t3code's own
+comment on their page size says it is *"sized so first paint on the
+heaviest observed threads stays around 100K gzipped."* Their widely
+quoted small figures (a 15.5 KB CI ceiling) come from a fixture whose
+point is that 9 MB of retained tool output ships as almost nothing —
+it measures their elision, not their window, and we already keep
+payload bodies off the wire. On comparable ground, heaviest thread to
+heaviest thread, they are at ~100 KB and we are at 149 KB. Our 50 KB
+budget is more aggressive than what they actually achieve, and it
+should stay that way, but the gap to close is 3× against our own
+target rather than an order of magnitude against theirs.
+
 Rules that follow, and hold for any future payload:
 
 - **Every count budget carries a byte budget.** A window admits rows
@@ -1065,13 +1077,28 @@ for an item outside the loaded window must not be appended at the
 end. Ours is cursor-based in both directions and handles negative
 item indexes from head-healed prompts.
 
-Deliberately not adopted: their field-allowlist projection. It is
-only as correct as the inventory of fields the client reads, and that
-inventory decayed twice in production — once dropping the real status
-so failed tool calls rendered as successful, once matching tool
-identity on the wrong field so the dedupe silently fell back to
-comparing titles. A byte cap on a field we already know is heavy
-carries no such inventory.
+Deliberately not adopted, three things:
+
+- **Their field-allowlist projection.** It is only as correct as the
+  inventory of fields the client reads, and that inventory decayed
+  twice in production — once dropping the real status so failed tool
+  calls rendered as successful, once matching tool identity on the
+  wrong field so the dedupe silently fell back to comparing titles. A
+  byte cap on a field we already know is heavy carries no such
+  inventory.
+- **Summarizing tool output to one line at ingestion, permanently.**
+  It is their single largest lever (9 MB of retained output shipping
+  as under 16 KB) and it is irreversible by construction: a 900 KB
+  result becomes 84 characters and no endpoint returns the rest. Our
+  payload table exists precisely so the full value stays fetchable.
+- **Buffering assistant text server-side and flushing at block
+  boundaries.** Their token streaming is a legacy opt-in that
+  defaults off, so a turn's prose crosses as a handful of frames.
+  That is a byte win bought with the live-typing feel the reveal
+  queue and spinner work are built around. We keep streaming and
+  bound its overhead with the ≤1.3× budget instead. Worth noting our
+  thread stream already coalesces (16 ms / 50 events) where theirs
+  does not — only their sidebar stream has a coalescing window.
 
 Worth taking beyond the byte budgets: dropping rows a snapshot does
 not need (they found 47k superseded tool-update rows in one database,
