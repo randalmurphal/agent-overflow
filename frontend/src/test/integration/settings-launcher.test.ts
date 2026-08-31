@@ -27,6 +27,17 @@ const SETTINGS_TESTID = 'settings-overlay';
 
 type Rendered = { getByTestId: (id: string) => HTMLElement };
 
+const LAZY_LOAD_BUDGET_MS = 5000;
+
+// A case that waits on the lazy load needs a WALL-CLOCK budget above that
+// wait's own, or the inner waitFor can never be the thing that fails: at
+// vitest's 5s default the two were equal, so a slow transform timed the
+// CASE out and reported a line number instead of the condition that was
+// not met (observed on the 2026-08-31 full run, green in isolation every
+// time). This is the wedged-runtime tripwire, ~15x the idle cost of the
+// whole file, not a tuned value.
+const LAZY_CASE_TIMEOUT_MS = 20_000;
+
 async function openSettingsFromSidebar(rendered: Rendered) {
   await fireEvent.click(rendered.getByTestId('sidebar-settings-button'));
   // SettingsOverlay is a lazy import; its first-ever load in a suite run pays
@@ -34,7 +45,7 @@ async function openSettingsFromSidebar(rendered: Rendered) {
   // suite load.
   await waitFor(() => {
     expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
-  }, { timeout: 5000 });
+  }, { timeout: LAZY_LOAD_BUDGET_MS });
 }
 
 describe('App integration — settings launcher', () => {
@@ -58,7 +69,7 @@ describe('App integration — settings launcher', () => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
     });
     expect(rendered.getByTestId('pane-host')).toBeInTheDocument();
-  });
+  }, LAZY_CASE_TIMEOUT_MS);
 
   it('closes settings on a scrim click', async () => {
     const rendered = render(App);
@@ -70,7 +81,7 @@ describe('App integration — settings launcher', () => {
     await waitFor(() => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
     });
-  });
+  }, LAZY_CASE_TIMEOUT_MS);
 
   // Deep links (the context-window meter, `/config`, the account switcher's
   // empty state) call the store directly — App has no listener of its own to
@@ -133,7 +144,7 @@ describe('App integration — settings launcher', () => {
       expect(rendered.queryByTestId(SETTINGS_TESTID)).not.toBeInTheDocument();
     });
     expect(blurredWhileMounted).toBe(true);
-  });
+  }, LAZY_CASE_TIMEOUT_MS);
 
   // Two full-height layers over the pane strip means two focus traps and an
   // ambiguous Esc, so each open path closes the other surface.
@@ -152,7 +163,7 @@ describe('App integration — settings launcher', () => {
       expect(rendered.getByTestId(SETTINGS_TESTID)).toBeInTheDocument();
     }, { timeout: 5000 });
     expect(isWorkflowsOverlayOpen()).toBe(false);
-  });
+  }, LAZY_CASE_TIMEOUT_MS);
 });
 
 // --- the overlay → anyModalOpen link ---
