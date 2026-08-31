@@ -185,6 +185,30 @@ const (
 	// a replay of a spent code and a code that never existed both land
 	// here, because the backend genuinely cannot tell them apart.
 	AuditRecoveryCodeRefused AuditEvent = "recovery-code-refused"
+	// AuditPairingLinkMinted records a pairing link being issued.
+	AuditPairingLinkMinted AuditEvent = "pairing-link-minted"
+	// AuditPairingRedeemed records a device spending a link and presenting
+	// its key thumbprint. The session it names is not live yet.
+	AuditPairingRedeemed AuditEvent = "pairing-redeemed"
+	// AuditPairingConfirmed records the owner matching the verification
+	// number, which is the moment the session became presentable.
+	AuditPairingConfirmed AuditEvent = "pairing-confirmed"
+	// AuditPairingCanceled records a link refused or withdrawn, together
+	// with the revocation of anything its redemption created.
+	AuditPairingCanceled AuditEvent = "pairing-canceled"
+	// AuditPairingRefused records a redemption this backend declined,
+	// carrying the typed Reason.
+	AuditPairingRefused AuditEvent = "pairing-refused"
+	// AuditSessionRefreshed records one rotation of a session's credential
+	// pair.
+	AuditSessionRefreshed AuditEvent = "session-refreshed"
+	// AuditRefreshRefused records a renewal this backend declined for a
+	// reason short of reuse: an unknown secret or a lapsed window.
+	AuditRefreshRefused AuditEvent = "refresh-refused"
+	// AuditRefreshReuseDetected records a SPENT refresh secret being
+	// presented again, and the family revocation that answered it. The one
+	// event in this set that is evidence rather than bookkeeping.
+	AuditRefreshReuseDetected AuditEvent = "refresh-reuse-detected"
 )
 
 // AuditEvents is every declared event kind.
@@ -192,4 +216,7 @@ var AuditEvents = []AuditEvent{
 	AuditSessionMinted, AuditSessionRevoked, AuditDeviceRevoked,
 	AuditVerificationRefused, AuditRecoveryCodesMinted,
 	AuditRecoveryCodeConsumed, AuditRecoveryCodeRefused,
+	AuditPairingLinkMinted, AuditPairingRedeemed, AuditPairingConfirmed,
+	AuditPairingCanceled, AuditPairingRefused,
+	AuditSessionRefreshed, AuditRefreshRefused, AuditRefreshReuseDetected,
 }

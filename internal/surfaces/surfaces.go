@@ -84,6 +84,27 @@ const (
 	// process on the host is authorized.
 	CredPeerLocality Credential = "peer locality only"
 
+	// CredSessionCredential is a durable, signed session credential
+	// (internal/identity): it names a device, a user, and a scope set,
+	// verifies against a stored signing key, and stops working the
+	// instant its row is revoked. The only credential on this list a
+	// person can withdraw.
+	CredSessionCredential Credential = "session credential"
+
+	// CredPairingToken is a single-use pairing token, spent by the first
+	// caller that presents it and dead within minutes either way. It
+	// authenticates nothing about WHO is asking — that is what the
+	// device key and the owner's verification-number match are for — it
+	// authenticates only that the caller received a link the owner
+	// produced.
+	CredPairingToken Credential = "single-use pairing token"
+
+	// CredRefreshSecret is one link of a rotating refresh chain,
+	// presented together with the device key it was issued to. Spending
+	// a link twice is what reveals a copy, so this credential's value is
+	// as much in its reuse being detectable as in its being secret.
+	CredRefreshSecret Credential = "rotating refresh secret"
+
 	// CredNone is no check of any kind. Only defensible on a listener
 	// that serves nothing, or one whose entire boundary is the bind
 	// address plus an explicit opt-in.
@@ -422,6 +443,46 @@ var Routes = []Route{
 			"stays on /bootstrap.json's 503 rather than being folded in " +
 			"here — a probe that conflates booting with unreachable is what " +
 			"both consumers are trying to avoid.",
+	},
+	{
+		Pattern:    "/auth/pair",
+		Listener:   "app transport",
+		Credential: CredPairingToken,
+		Posture:    PostureStructured,
+		Why: "Pairing redemption, and the one route whose caller is " +
+			"expected to hold nothing else — a device that has never met " +
+			"this backend has only the token from the owner's link. What " +
+			"stands in front of it is not a stronger credential but a " +
+			"weaker grant: the token is single-use and minutes old, the " +
+			"device must present the key it generated first, and the " +
+			"session it produces admits NOTHING until the owner matches a " +
+			"verification number derived from that same key. Registered " +
+			"only when Config.AuthEndpoints is set.",
+	},
+	{
+		Pattern:    "/auth/token",
+		Listener:   "app transport",
+		Credential: CredRefreshSecret,
+		Posture:    PostureStructured,
+		Why: "Credential rotation. The secret alone is deliberately not " +
+			"enough on any listener, loopback included: the device key " +
+			"rides X-AO-Device-Key and is checked before the secret is " +
+			"spent, so a copy of the secret cannot self-renew. Presenting " +
+			"a SPENT secret revokes the whole family rather than being " +
+			"answered, which is what makes a copy detectable at all.",
+	},
+	{
+		Pattern:    "/auth/ticket",
+		Listener:   "app transport",
+		Credential: CredSessionCredential,
+		Posture:    PostureStructured,
+		Why: "Mints the single-use, seconds-lived ticket a client presents " +
+			"on the /ws upgrade, so a session credential never rides a " +
+			"WebSocket URL — where it would land in history, proxy logs " +
+			"and screenshots. Authenticated through the same hook the " +
+			"upgrade uses, so it can never be a way around a proof that " +
+			"path demands. A caller naming no session gets the " +
+			"unfingerprintable 404: there is nothing to bind a ticket to.",
 	},
 	{
 		Pattern:    "/rpc",

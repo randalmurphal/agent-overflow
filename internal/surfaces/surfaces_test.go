@@ -23,6 +23,10 @@ var (
 		CredUnguessablePath:  true,
 		CredPeerLocality:     true,
 		CredNone:             true,
+
+		CredSessionCredential: true,
+		CredPairingToken:      true,
+		CredRefreshSecret:     true,
 	}
 	postures = map[ContentPosture]bool{
 		PostureAppOrigin:  true,

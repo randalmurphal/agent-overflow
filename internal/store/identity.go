@@ -62,9 +62,15 @@ type Device struct {
 	// present, so one key can never name two devices.
 	KeyThumbprint       string `json:"keyThumbprint,omitempty"`
 	PasskeyCredentialID string `json:"passkeyCredentialId,omitempty"`
-	CreatedAt           int64  `json:"createdAt"`
-	LastSeenAt          int64  `json:"lastSeenAt,omitempty"`
-	RevokedAt           int64  `json:"revokedAt,omitempty"`
+	// Channel names a device the backend mints for ITSELF rather than one
+	// a person paired: today only the local page channel (v76). Empty for
+	// every paired device, and uniquely indexed when present, so a channel
+	// resolves to the same row on every boot instead of accumulating one
+	// device per launch.
+	Channel    string `json:"channel,omitempty"`
+	CreatedAt  int64  `json:"createdAt"`
+	LastSeenAt int64  `json:"lastSeenAt,omitempty"`
+	RevokedAt  int64  `json:"revokedAt,omitempty"`
 }
 
 // Session binds a device to a user with a scope set for a bounded window.
@@ -84,14 +90,29 @@ type Session struct {
 	ExpiresAt    int64  `json:"expiresAt"`
 	RevokedAt    int64  `json:"revokedAt,omitempty"`
 	LastSeenAt   int64  `json:"lastSeenAt,omitempty"`
+	// ActivatedAt is 0 while a session is still waiting for the owner to
+	// confirm the pairing verification number (v76). Every directly minted
+	// session carries the moment it was created, because nothing gates it.
+	ActivatedAt int64 `json:"activatedAt,omitempty"`
 }
 
 // Live reports whether this row would admit a presentation at now (Unix
-// millis) — not revoked, not past its expiry. The claims still have to
-// verify separately; this answers the row half only.
+// millis) — activated, not revoked, not past its expiry. The claims still
+// have to verify separately; this answers the row half only.
+//
+// Activation is checked HERE rather than at the call sites that care,
+// because a session awaiting confirmation is exactly as unusable as a
+// revoked one and must be refused by the same predicate. A second check
+// somewhere else is one a later call path forgets.
 func (s Session) Live(now int64) bool {
-	return s.RevokedAt == 0 && s.ExpiresAt > now
+	return s.ActivatedAt != 0 && s.RevokedAt == 0 && s.ExpiresAt > now
 }
+
+// AwaitingConfirmation reports whether this row exists but has not been
+// confirmed yet, which is the one refusal `Live` produces that has an
+// action attached: confirm the verification number on the device that
+// minted the pairing link.
+func (s Session) AwaitingConfirmation() bool { return s.ActivatedAt == 0 && s.RevokedAt == 0 }
 
 // SigningKey is one HMAC secret the claims codec signs and verifies with.
 // The active key is the newest row; older rows stay so credentials minted
@@ -145,10 +166,10 @@ const authAuditPruneEvery = 64
 const userColumns = `id, display_name, role, created_at, disabled_at`
 
 const deviceColumns = `id, user_id, label, class, platform, key_thumbprint,
-	passkey_credential_id, created_at, last_seen_at, revoked_at`
+	passkey_credential_id, channel, created_at, last_seen_at, revoked_at`
 
 const sessionColumns = `id, user_id, device_id, binding_class, scopes,
-	signing_key_id, created_at, expires_at, revoked_at, last_seen_at`
+	signing_key_id, created_at, expires_at, revoked_at, last_seen_at, activated_at`
 
 const authAuditColumns = `id, at, event, outcome, reason, user_id, device_id,
 	session_id, peer, detail`
@@ -277,13 +298,142 @@ func (s *Store) CreateDevice(userID, label, class, platform string) (Device, err
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO devices (id, user_id, label, class, platform, key_thumbprint,
-			passkey_credential_id, created_at, last_seen_at, revoked_at)
-		 VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, 0, NULL)`,
+			passkey_credential_id, channel, created_at, last_seen_at, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, NULL, NULL, '', ?, 0, NULL)`,
 		device.ID, device.UserID, device.Label, device.Class, device.Platform, device.CreatedAt,
 	); err != nil {
 		return Device{}, fmt.Errorf("store: create device: %w", err)
 	}
 	return device, nil
+}
+
+// EnsureChannelDevice resolves the one device row belonging to an implicit
+// backend channel (v76 `devices.channel`), creating it on first boot.
+// Idempotent, and safe against a concurrent boot of the same store: the
+// insert names the channel, the partial unique index refuses the second
+// one, and the loser re-reads the winner's row.
+//
+// Unlike CreateDevice this is a resolve, not a mint — the channel is a
+// property of this backend, not of something a person paired, so two calls
+// must answer the same device rather than two.
+//
+// A revoked channel device is returned as it is, revoked. Reviving it here
+// would let a boot undo a deliberate revocation, and the caller is the one
+// that knows whether re-minting is the right answer.
+func (s *Store) EnsureChannelDevice(userID, channel, label, class, platform string) (Device, error) {
+	if strings.TrimSpace(channel) == "" {
+		return Device{}, fmt.Errorf("%w: device channel", ErrIdentityFieldRequired)
+	}
+	existing, err := s.deviceByChannel(channel)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Device{}, err
+	}
+	if strings.TrimSpace(userID) == "" {
+		return Device{}, fmt.Errorf("%w: device user id", ErrIdentityFieldRequired)
+	}
+	if strings.TrimSpace(label) == "" {
+		return Device{}, fmt.Errorf("%w: device label", ErrIdentityFieldRequired)
+	}
+	device := Device{
+		ID:        uuid.NewString(),
+		UserID:    userID,
+		Label:     strings.TrimSpace(label),
+		Class:     class,
+		Platform:  platform,
+		Channel:   channel,
+		CreatedAt: nowMillis(),
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO devices (id, user_id, label, class, platform, key_thumbprint,
+			passkey_credential_id, channel, created_at, last_seen_at, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, 0, NULL)`,
+		device.ID, device.UserID, device.Label, device.Class, device.Platform,
+		device.Channel, device.CreatedAt,
+	); err != nil {
+		// A concurrent boot won the unique index. Its row is as good as
+		// ours would have been, so read it rather than reporting a
+		// conflict nobody can act on.
+		if raced, readErr := s.deviceByChannel(channel); readErr == nil {
+			return raced, nil
+		}
+		return Device{}, fmt.Errorf("store: ensure channel device: %w", err)
+	}
+	return device, nil
+}
+
+func (s *Store) deviceByChannel(channel string) (Device, error) {
+	return scanDevice(s.reader().QueryRow(
+		`SELECT `+deviceColumns+` FROM devices WHERE channel = ? AND channel <> ''`, channel))
+}
+
+// CreatePairedDevice registers a device that already holds a key, writing
+// the thumbprint in the SAME statement as the row.
+//
+// Separate from CreateDevice + SetDeviceKeyThumbprint because those two are
+// two writes with no transaction around them: a thumbprint that loses the
+// unique index to a concurrent redemption would leave a device row nothing
+// created it for. One INSERT means the conflict refuses the whole thing.
+func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint string) (Device, error) {
+	if strings.TrimSpace(userID) == "" {
+		return Device{}, fmt.Errorf("%w: device user id", ErrIdentityFieldRequired)
+	}
+	if strings.TrimSpace(label) == "" {
+		return Device{}, fmt.Errorf("%w: device label", ErrIdentityFieldRequired)
+	}
+	if strings.TrimSpace(thumbprint) == "" {
+		return Device{}, fmt.Errorf("%w: device key thumbprint", ErrIdentityFieldRequired)
+	}
+	device := Device{
+		ID:            uuid.NewString(),
+		UserID:        userID,
+		Label:         strings.TrimSpace(label),
+		Class:         class,
+		Platform:      platform,
+		KeyThumbprint: thumbprint,
+		CreatedAt:     nowMillis(),
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO devices (id, user_id, label, class, platform, key_thumbprint,
+			passkey_credential_id, channel, created_at, last_seen_at, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, '', ?, 0, NULL)`,
+		device.ID, device.UserID, device.Label, device.Class, device.Platform,
+		device.KeyThumbprint, device.CreatedAt,
+	); err != nil {
+		return Device{}, fmt.Errorf("store: create paired device: %w", err)
+	}
+	return device, nil
+}
+
+// DeviceByKeyThumbprint resolves a device from the public key it presented.
+// sql.ErrNoRows when no device holds it, which is the ordinary answer for a
+// device pairing for the first time.
+func (s *Store) DeviceByKeyThumbprint(thumbprint string) (Device, error) {
+	if strings.TrimSpace(thumbprint) == "" {
+		return Device{}, sql.ErrNoRows
+	}
+	return scanDevice(s.reader().QueryRow(
+		`SELECT `+deviceColumns+` FROM devices
+		  WHERE key_thumbprint = ? AND key_thumbprint IS NOT NULL`, thumbprint))
+}
+
+// RelabelDevice rewrites the label and platform a device reports for
+// itself. Called when a known key re-pairs: the machine may have been
+// renamed or moved to another OS since, and the row should say what the
+// device says.
+func (s *Store) RelabelDevice(deviceID, label, platform string) error {
+	if strings.TrimSpace(label) == "" {
+		return fmt.Errorf("%w: device label", ErrIdentityFieldRequired)
+	}
+	result, err := s.db.Exec(
+		`UPDATE devices SET label = ?, platform = ? WHERE id = ?`,
+		strings.TrimSpace(label), platform, deviceID)
+	if err != nil {
+		return fmt.Errorf("store: relabel device: %w", err)
+	}
+	return requireRowsAffected(result, "store: relabel device")
 }
 
 // GetDevice reads one device by id. sql.ErrNoRows when it does not exist.
@@ -425,7 +575,8 @@ func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	var revokedAt sql.NullInt64
 	if err := sc.Scan(
 		&device.ID, &device.UserID, &device.Label, &device.Class, &device.Platform,
-		&thumbprint, &passkey, &device.CreatedAt, &device.LastSeenAt, &revokedAt,
+		&thumbprint, &passkey, &device.Channel, &device.CreatedAt, &device.LastSeenAt,
+		&revokedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Device{}, err
@@ -466,16 +617,89 @@ func (s *Store) CreateSession(session Session) error {
 	if err != nil {
 		return err
 	}
+	activatedAt := sql.NullInt64{Int64: session.ActivatedAt, Valid: session.ActivatedAt != 0}
 	if _, err := s.db.Exec(
 		`INSERT INTO sessions (id, user_id, device_id, binding_class, scopes,
-			signing_key_id, created_at, expires_at, revoked_at, last_seen_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)`,
+			signing_key_id, created_at, expires_at, revoked_at, last_seen_at, activated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)`,
 		session.ID, session.UserID, session.DeviceID, session.BindingClass, scopes,
-		session.SigningKeyID, session.CreatedAt, session.ExpiresAt,
+		session.SigningKeyID, session.CreatedAt, session.ExpiresAt, activatedAt,
 	); err != nil {
 		return fmt.Errorf("store: create session: %w", err)
 	}
 	return nil
+}
+
+// ActivateSession stamps the moment a session became presentable, which is
+// the moment the owner confirmed the pairing verification number. Reports
+// whether it moved: a second confirmation keeps the first stamp, so the
+// log records when access actually began.
+//
+// Scoped to unactivated rows that are still inside their window and not
+// revoked. A revoked session must not be activatable — that would be a
+// revocation a confirmation undoes — and neither must a lapsed one: the
+// pending window IS the deadline on the confirmation, so accepting one
+// after it would make the deadline decorative.
+func (s *Store) ActivateSession(sessionID string, at, expiresAt int64) (bool, error) {
+	if at == 0 {
+		return false, fmt.Errorf("%w: session activation stamp", ErrIdentityFieldRequired)
+	}
+	result, err := s.db.Exec(
+		`UPDATE sessions SET activated_at = ?, expires_at = ?
+		 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+		at, expiresAt, sessionID, at)
+	if err != nil {
+		return false, fmt.Errorf("store: activate session: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: activate session: rows affected: %w", err)
+	}
+	return rows > 0, nil
+}
+
+// ExtendSession moves a live session's expiry forward, reporting whether
+// it moved. This is what a refresh rotation writes: the access window is
+// the row's expiry, so renewing one means moving the other.
+//
+// Never shortens and never resurrects: the predicate requires the session
+// to be live and the new expiry to be later than the one it holds, so a
+// replayed or reordered renewal cannot cut a window short.
+func (s *Store) ExtendSession(sessionID string, expiresAt, now int64) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE sessions SET expires_at = ?
+		 WHERE id = ? AND revoked_at IS NULL AND activated_at IS NOT NULL
+		   AND expires_at > ? AND expires_at < ?`,
+		expiresAt, sessionID, now, expiresAt)
+	if err != nil {
+		return false, fmt.Errorf("store: extend session: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: extend session: rows affected: %w", err)
+	}
+	return rows > 0, nil
+}
+
+// DeleteSessionsExpiredBefore drops sessions whose window closed before
+// `before`, returning how many went.
+//
+// The only identity rows this package deletes, and the bound is what makes
+// it safe: a session past its expiry can never admit a presentation again,
+// so removing it takes nothing away from anybody. The caller keeps a
+// generous margin so the device list can still show recent history.
+// Revoked-but-unexpired rows are deliberately NOT covered — they are the
+// evidence that a revocation happened.
+func (s *Store) DeleteSessionsExpiredBefore(before int64) (int64, error) {
+	result, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at < ?`, before)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete expired sessions: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: delete expired sessions: rows affected: %w", err)
+	}
+	return rows, nil
 }
 
 // GetSession reads one session by id. sql.ErrNoRows when it does not
@@ -514,7 +738,7 @@ func (s *Store) ListSessionsForDevice(deviceID string) ([]Session, error) {
 func (s *Store) ListLiveSessions(now int64) ([]Session, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+sessionColumns+` FROM sessions
-		 WHERE revoked_at IS NULL AND expires_at > ?
+		 WHERE revoked_at IS NULL AND activated_at IS NOT NULL AND expires_at > ?
 		 ORDER BY created_at DESC, id`, now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list live sessions: %w", err)
@@ -568,11 +792,11 @@ func (s *Store) TouchSession(sessionID string, at int64) (bool, error) {
 func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	var session Session
 	var scopes string
-	var revokedAt sql.NullInt64
+	var revokedAt, activatedAt sql.NullInt64
 	if err := sc.Scan(
 		&session.ID, &session.UserID, &session.DeviceID, &session.BindingClass, &scopes,
 		&session.SigningKeyID, &session.CreatedAt, &session.ExpiresAt, &revokedAt,
-		&session.LastSeenAt,
+		&session.LastSeenAt, &activatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, err
@@ -580,6 +804,7 @@ func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 		return Session{}, fmt.Errorf("store: scan session: %w", err)
 	}
 	session.RevokedAt = revokedAt.Int64
+	session.ActivatedAt = activatedAt.Int64
 	decoded, err := decodeScopes(scopes)
 	if err != nil {
 		return Session{}, err

@@ -195,18 +195,30 @@ type sessionFixture struct {
 	mu      sync.Mutex
 	session string
 	refuse  bool
+	// dead names sessions SessionLive refuses, which is how a test makes
+	// a session stop WITHOUT the registry teardown running — an expiry,
+	// or a revocation performed by something that is not this process.
+	dead map[string]bool
+	// credential is what PageSessionCredential hands the page.
+	credential string
+	// mutate adjusts the Config before New, for the knobs one test needs.
+	mutate func(*Config)
 }
 
 func newSessionFixture(t *testing.T) *sessionFixture {
+	return newSessionFixtureWith(t, nil)
+}
+
+func newSessionFixtureWith(t *testing.T, mutate func(*Config)) *sessionFixture {
 	t.Helper()
-	fixture := &sessionFixture{session: "sess-1"}
+	fixture := &sessionFixture{session: "sess-1", dead: map[string]bool{}}
 	d := NewDispatcher()
 	stub := &integrationStub{}
 	if _, err := d.Register(stub, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	bus := NewEventBus(64)
-	srv, err := New(Config{
+	cfg := Config{
 		Dispatcher: d,
 		EventBus:   bus,
 		Token:      "integration-token",
@@ -218,7 +230,21 @@ func newSessionFixture(t *testing.T) *sessionFixture {
 			}
 			return fixture.session, true
 		},
-	})
+		SessionLive: func(sessionID string) bool {
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			return !fixture.dead[sessionID]
+		},
+		PageSessionCredential: func() string {
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			return fixture.credential
+		},
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
@@ -240,6 +266,21 @@ func (f *sessionFixture) setRefuse(refuse bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.refuse = refuse
+}
+
+// setSessionDead makes SessionLive refuse one id, without the live-session
+// registry closing anything: the state a session reaches when it simply
+// expires.
+func (f *sessionFixture) setSessionDead(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dead[sessionID] = true
+}
+
+func (f *sessionFixture) setPageCredential(credential string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.credential = credential
 }
 
 // TestRevokingASessionClosesItsLiveSockets is the end-to-end shape of the
@@ -370,11 +411,11 @@ func TestRevokedConnectionsAreNamedInTheCloseLog(t *testing.T) {
 	if got := h.closeReason(context.Canceled); got != "server shutdown" {
 		t.Fatalf("ordinary cancel reported as %q", got)
 	}
-	h.revoked.Store(true)
+	h.closeCause.Store(closeCauseRevoked)
 	if got := h.closeReason(context.Canceled); got != "session revoked" {
 		t.Fatalf("revoked connection reported as %q", got)
 	}
-	// The flag wins over any terminal error, because every teardown path a
+	// The cause wins over any terminal error, because every teardown path a
 	// revocation triggers ends in one error or another.
 	if got := h.closeReason(errors.New("use of closed network connection")); got != "session revoked" {
 		t.Fatalf("revoked connection reported as %q", got)

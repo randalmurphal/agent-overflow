@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"path"
 	"strings"
-	"sync"
 )
 
 // Credential is one launch's page-access credential, shared by this
@@ -37,14 +36,15 @@ type Credential struct {
 	// token is the per-launch session credential. Immutable after New.
 	token string
 
-	// mu guards tickets.
-	mu sync.Mutex
-	// tickets holds the minted-but-unexchanged page tickets, oldest
-	// first. Bounded: a producer of page URLs (the settings panel's LAN
-	// share URL rebuilds one per panel mount) must not be able to grow
-	// this without limit, and a ticket older than the last
-	// maxOutstandingTickets is one nobody is going to open.
-	tickets []string
+	// tickets holds the minted-but-unexchanged page tickets. A
+	// ticketBook (ticket.go) with no deadline and no subject: a launch
+	// has one page credential, so a page ticket only decides who receives
+	// it, and a launcher's fixed `?t=` URL must still work an hour after
+	// it was written. Bounded by count — a producer of page URLs (the
+	// settings panel's LAN share URL rebuilds one per panel mount) must
+	// not be able to grow it without limit, and a ticket older than the
+	// last maxOutstandingTickets is one nobody is going to open.
+	tickets *ticketBook
 }
 
 // maxOutstandingTickets caps how many minted-but-unexchanged page
@@ -83,7 +83,7 @@ func NewCredential(token string) (*Credential, error) {
 		}
 		token = minted
 	}
-	return &Credential{token: token}, nil
+	return &Credential{token: token, tickets: newTicketBook(maxOutstandingTickets, 0)}, nil
 }
 
 // Token returns the session token, the carrier for clients that are not
@@ -93,40 +93,14 @@ func (c *Credential) Token() string { return c.token }
 // MintPageTicket returns a fresh one-time ticket for a page URL and
 // records it as outstanding. Every page URL this process hands out gets
 // its own, so opening one URL never invalidates another.
-func (c *Credential) MintPageTicket() (string, error) {
-	ticket, err := NewToken()
-	if err != nil {
-		return "", err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.tickets) >= maxOutstandingTickets {
-		// Drop the oldest. Copying forward rather than reslicing keeps
-		// the backing array at its cap instead of walking off the end.
-		copy(c.tickets, c.tickets[len(c.tickets)-maxOutstandingTickets+1:])
-		c.tickets = c.tickets[:maxOutstandingTickets-1]
-	}
-	c.tickets = append(c.tickets, ticket)
-	return ticket, nil
-}
+func (c *Credential) MintPageTicket() (string, error) { return c.tickets.mint("") }
 
 // consumeTicket removes ticket from the outstanding set, reporting
 // whether it was there. A ticket answers exactly one exchange: a URL
 // that already bought its cookie cannot buy a second one.
 func (c *Credential) consumeTicket(ticket string) bool {
-	if ticket == "" {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i, candidate := range c.tickets {
-		if ConstantTimeEqual(candidate, ticket) != nil {
-			continue
-		}
-		c.tickets = append(c.tickets[:i], c.tickets[i+1:]...)
-		return true
-	}
-	return false
+	_, ok := c.tickets.consume(ticket)
+	return ok
 }
 
 // Authenticate reports whether r carries a valid credential for this
@@ -218,7 +192,12 @@ func (c *Credential) pageCookie(r *http.Request) *http.Cookie {
 // than a constant two instances could collide on. Both the issuing and
 // the reading side derive it from the same request field, so a client
 // that reaches the same listener the same way always agrees with us.
-func pageCookieName(host string) string {
+func pageCookieName(host string) string { return cookieNameForHost(pageCookiePrefix, host) }
+
+// cookieNameForHost is the shared derivation, so the page cookie and the
+// session cookie (authroutes.go) can never disagree about which instance
+// they belong to.
+func cookieNameForHost(prefix, host string) string {
 	port := ""
 	if _, p, err := net.SplitHostPort(host); err == nil {
 		port = p
@@ -226,9 +205,9 @@ func pageCookieName(host string) string {
 	if port == "" {
 		// A hostname with no port (a reverse proxy fronting us on 443).
 		// One name is right there: the authority itself is unique.
-		return strings.TrimSuffix(pageCookiePrefix, "_")
+		return strings.TrimSuffix(prefix, "_")
 	}
-	return pageCookiePrefix + port
+	return prefix + port
 }
 
 // bearerToken extracts the credential from an Authorization header,

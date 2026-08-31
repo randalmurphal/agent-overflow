@@ -42,8 +42,8 @@ type rateLimit struct {
 	perSecond float64
 }
 
-// The three credential surfaces. Separate budgets, and separate tables,
-// so a burst on one cannot spend another's: a reconnect ladder hammering
+// The credential surfaces. Separate budgets, and separate tables, so a
+// burst on one cannot spend another's: a reconnect ladder hammering
 // `/bootstrap.json` must not lock the same user's CLI out of `/rpc`.
 var (
 	// bootstrapRateLimit covers the ticket exchange. One page load costs
@@ -59,6 +59,16 @@ var (
 	// surface is loopback-only and its methods are already narrowed to
 	// the scoped table.
 	scopedRPCRateLimit = rateLimit{burst: 300, perSecond: 30}
+	// authRateLimit covers the three device-facing credential routes
+	// (/auth/pair, /auth/token, /auth/ticket) TOGETHER, on one table:
+	// they are alternative ways for the same peer to ask this backend for
+	// a credential, so a peer that has spent its budget on one must not
+	// simply move to the next. The tightest of the four budgets, because
+	// legitimate use is rare — a pairing happens when a person adds a
+	// device, a rotation once per access window, and a ticket once per
+	// connect — while this is the one surface reachable without a
+	// credential at all.
+	authRateLimit = rateLimit{burst: 30, perSecond: 1}
 )
 
 // maxTrackedPeers bounds the table. Reaching it takes that many distinct

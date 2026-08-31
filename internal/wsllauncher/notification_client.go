@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -74,8 +75,13 @@ type NotificationClientConfig struct {
 // for it, the ephemeral updater:install directive channel, and uses the same
 // connection for the RPCs both of those produce.
 type NotificationClient struct {
-	wsURL             string
-	token             string
+	wsURL string
+	token string
+	// session forwards the backend's local page-channel credential on
+	// every dial, so this connection names a session instead of being
+	// trusted for arriving over the WSL localhost relay. Best-effort:
+	// see session_credential.go.
+	session           *sessionCredentialSource
 	present           func(notify.Send) error
 	handleInstall     func(selfupdate.InstallDirective)
 	handleWebviewTrim func(reason string)
@@ -170,6 +176,7 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 	return &NotificationClient{
 		wsURL:             parsed.String(),
 		token:             config.Token,
+		session:           newSessionCredentialSource(parsed.String(), config.Token),
 		present:           config.Present,
 		handleInstall:     config.HandleUpdateInstall,
 		handleWebviewTrim: config.HandleWebviewTrim,
@@ -228,8 +235,23 @@ func (c *NotificationClient) runConnection(ctx context.Context) (bool, error) {
 	query.Set("token", c.token)
 	parsed.RawQuery = query.Encode()
 
-	conn, _, err := websocket.Dial(ctx, parsed.String(), nil)
+	// The session credential rides a HEADER, never the URL: a Go dial can
+	// set one, and a credential in a URL lands in every log that records
+	// them. Absent when the backend has none to give, which leaves this
+	// connection exactly as it was before forwarding existed.
+	var opts *websocket.DialOptions
+	if credential := c.session.credentialFor(ctx, false); credential != "" {
+		opts = &websocket.DialOptions{HTTPHeader: http.Header{
+			transportSessionHeader: []string{credential},
+		}}
+	}
+	conn, _, err := websocket.Dial(ctx, parsed.String(), opts)
 	if err != nil {
+		// A refused dial is the one signal that a forwarded credential has
+		// gone stale — the backend restarted, or the session was revoked.
+		// Re-fetch so the next attempt in the ladder carries a live one
+		// rather than replaying the dead one until the launcher restarts.
+		c.session.credentialFor(ctx, true)
 		return false, fmt.Errorf("connect to notification bridge: %s", redactNotificationBridgeError(err, c.token))
 	}
 	conn.SetReadLimit(notificationBridgeReadLimit)

@@ -57,6 +57,43 @@ const (
 	// needs. Sized for the largest legitimate frame (a tens-of-MiB
 	// thread load) crossing a slow WAN link.
 	writeTimeout = 30 * time.Second
+	// defaultSessionRecheck is how often an established connection
+	// re-asks whether the session it named is still live. A minute is far
+	// below every access-token window this backend issues and far above
+	// the per-RPC fast path's cost, so it bounds the outlier — an expiry
+	// or an out-of-process revocation — without turning a quiet
+	// connection into a polling one. Config.SessionRecheckInterval
+	// overrides (tests shrink it).
+	defaultSessionRecheck = time.Minute
+	// defaultRemoteConnLifetime caps a non-loopback session-bearing
+	// connection, forcing a periodic re-ticket
+	// (docs/specs/remote-access.md §4). Long enough that a person working
+	// through a day is not interrupted by it, short enough that a
+	// connection cannot outlive several rotations of the credential that
+	// opened it. Config.MaxRemoteConnLifetime overrides.
+	defaultRemoteConnLifetime = 12 * time.Hour
+)
+
+// Why a connection was torn down from this side. Recorded so the
+// per-connection close line names the cause: every one of these cancels
+// the connection context, which at the error alone is indistinguishable
+// from a server shutdown — and that is exactly the moment somebody is
+// checking whether a revocation took effect.
+//
+// A closed set of int32 constants rather than a bool per cause: the next
+// cause is a constant and a case, not a fourth atomic that three call
+// sites have to remember to read.
+const (
+	closeCauseNone int32 = iota
+	// closeCauseRevoked is the live-session registry force-closing this
+	// socket because its session was revoked.
+	closeCauseRevoked
+	// closeCauseSessionEnded is the periodic re-check finding the session
+	// no longer live: expired, or revoked by something that is not this
+	// process.
+	closeCauseSessionEnded
+	// closeCauseLifetime is the connection reaching its own cap.
+	closeCauseLifetime
 )
 
 // heartbeatFrame is the keepalive frame, encoded once from the same
@@ -103,6 +140,14 @@ type connSettings struct {
 	// handler runs outside one (unit tests). A connection naming a session
 	// registers itself here so a revocation can reach it.
 	sessionConns *SessionConns
+	// sessionLive re-checks the named session, or nil when nothing can
+	// answer. See Config.SessionLive.
+	sessionLive func(sessionID string) bool
+	// sessionRecheck and maxLifetime are Config.SessionRecheckInterval
+	// and Config.MaxRemoteConnLifetime, unresolved: zero takes the
+	// package default, negative disables.
+	sessionRecheck time.Duration
+	maxLifetime    time.Duration
 	// hello is the frame written before any other traffic. Populated per
 	// connection rather than once at boot because ServerTimeMs is the
 	// clock at accept time — a value cached at startup would be a
@@ -141,17 +186,24 @@ type connHandler struct {
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
 
+	// sessionLive / sessionRecheck / maxLifetime configure watchSession.
+	// Unresolved: watchSession applies the defaults, because it is the
+	// only reader and a resolved zero would lose "disabled".
+	sessionLive    func(sessionID string) bool
+	sessionRecheck time.Duration
+	maxLifetime    time.Duration
+
 	// inRead is true exactly while the read loop sits in ws.Read.
 	// coder/websocket only surfaces pongs from inside Read, so a
 	// missing pong while the reader is off processing a frame
 	// (streaming a replay, waiting on rpcSem) says nothing about the
 	// peer — the keepalive loop skips its teardown verdict then.
 	inRead atomic.Bool
-	// revoked is set by closeForRevocation before it tears the socket
-	// down, so the per-connection close line names the revocation rather
+	// closeCause is set by whichever server-side teardown ran before it
+	// cancels the connection, so the close line names the cause rather
 	// than reporting the context cancel as a server shutdown. One store
-	// per revocation, one load per connection close.
-	revoked atomic.Bool
+	// per teardown, one load per connection close.
+	closeCause atomic.Int32
 	// lastReadAt (unix nanos) is stamped after each successful Read.
 	// Second guard for the same race: a reader that re-entered Read
 	// moments ago may not have had time to surface a pong yet.
@@ -195,6 +247,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		rpcSem:            make(chan struct{}, settings.maxConcurrentRPCs),
 		keepaliveInterval: settings.keepaliveInterval,
 		pongTimeout:       settings.pongTimeout,
+		sessionLive:       settings.sessionLive,
+		sessionRecheck:    settings.sessionRecheck,
+		maxLifetime:       settings.maxLifetime,
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
 	defer h.sub.Close()
@@ -250,6 +305,14 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// teardown; on pong timeout the keepalive closes the conn itself
 	// to unblock it).
 	go h.keepalive(connCtx)
+
+	// Session watchdog: the interval re-check and the lifetime cap. Only
+	// for a connection that named a session — one that named none has
+	// nothing to re-validate and no credential to force back through the
+	// ticket route.
+	if profile.sessionID != "" {
+		go h.watchSession(connCtx, cancel)
+	}
 
 	started := time.Now()
 	readErr := h.readLoop(connCtx)
@@ -338,12 +401,101 @@ func (h *connHandler) keepalive(ctx context.Context) {
 // idempotent by definition, and CloseNow on a closed connection is a
 // no-op error nobody reads.
 func (h *connHandler) closeForRevocation(cancel context.CancelFunc) func() {
+	return h.closeWithCause(closeCauseRevoked, cancel)
+}
+
+// closeWithCause is the one server-side teardown. Records why, stops event
+// delivery, cancels the connection context, and closes the socket — in
+// that order, because a close that raced ahead of the subscriber shutdown
+// would let the pump write into a dead connection.
+func (h *connHandler) closeWithCause(cause int32, cancel context.CancelFunc) func() {
 	return func() {
-		h.revoked.Store(true)
+		h.closeCause.CompareAndSwap(closeCauseNone, cause)
 		h.sub.Close()
 		cancel()
 		_ = h.ws.CloseNow()
 	}
+}
+
+// watchSession re-validates the connection's session on an interval and
+// caps the connection's own lifetime (docs/specs/remote-access.md §4).
+//
+// Runs only for a connection that names a session. The interval exists
+// because revocation reaches live sockets synchronously but the two other
+// ways a session stops — it expires, or something outside this process
+// revokes it — reach nothing at all; without this, such a connection
+// streams until the client disconnects. The cap exists so a credential
+// that travels a network is re-presented periodically rather than once.
+func (h *connHandler) watchSession(ctx context.Context, cancel context.CancelFunc) {
+	recheck, lifetime := resolveWatchWindows(
+		h.sessionRecheck, h.maxLifetime, h.profile.isLoopback, h.sessionLive != nil)
+	if recheck <= 0 && lifetime <= 0 {
+		return
+	}
+
+	var ticks <-chan time.Time
+	if recheck > 0 {
+		ticker := time.NewTicker(recheck)
+		defer ticker.Stop()
+		ticks = ticker.C
+	}
+	var expiry <-chan time.Time
+	if lifetime > 0 {
+		timer := time.NewTimer(lifetime)
+		defer timer.Stop()
+		expiry = timer.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-expiry:
+			log.Printf("transport: ws %s reached its connection lifetime (%s); closing to force a re-ticket",
+				h.profile.remoteAddr, lifetime)
+			h.closeWithCause(closeCauseLifetime, cancel)()
+			return
+		case <-ticks:
+			if h.sessionLive(h.profile.sessionID) {
+				continue
+			}
+			log.Printf("transport: ws %s session %s is no longer live; closing",
+				h.profile.remoteAddr, h.profile.sessionID)
+			h.closeWithCause(closeCauseSessionEnded, cancel)()
+			return
+		}
+	}
+}
+
+// resolveWatchWindows turns the two configured knobs into the two windows
+// watchSession actually runs, applying every default and every exemption
+// in one place.
+//
+// Zero takes the package default and negative disables, for both. Two
+// further rules:
+//
+//   - no re-check without something to ask. A nil hook is the state before
+//     any client presents a session, and a timer that could only ever
+//     answer "still live" is a timer nobody needs.
+//   - loopback connections are exempt from the LIFETIME cap. It exists so
+//     a credential that travels a network is re-presented periodically;
+//     the local page's session is re-minted at boot and travels none, so
+//     capping it would cost the webview a visible reconnect and buy
+//     nothing. The re-check still applies — a local session can expire or
+//     be revoked like any other.
+func resolveWatchWindows(recheck, lifetime time.Duration, isLoopback, canCheck bool) (time.Duration, time.Duration) {
+	if recheck == 0 {
+		recheck = defaultSessionRecheck
+	}
+	if !canCheck || recheck < 0 {
+		recheck = 0
+	}
+	if lifetime == 0 {
+		lifetime = defaultRemoteConnLifetime
+	}
+	if isLoopback || lifetime < 0 {
+		lifetime = 0
+	}
+	return recheck, lifetime
 }
 
 // closeReason renders readLoop's terminal error (always non-nil — the
@@ -370,8 +522,13 @@ func closeReason(err error) string {
 // both the same way would make a revocation invisible in the log exactly
 // when somebody is checking whether one took effect.
 func (h *connHandler) closeReason(err error) string {
-	if h.revoked.Load() {
+	switch h.closeCause.Load() {
+	case closeCauseRevoked:
 		return "session revoked"
+	case closeCauseSessionEnded:
+		return "session no longer live"
+	case closeCauseLifetime:
+		return "connection lifetime reached"
 	}
 	return closeReason(err)
 }

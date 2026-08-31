@@ -121,6 +121,40 @@ logs and reuses the launch URL — a spent ticket at worst, never a wedge.
 requests (the connectivity probe, the notification socket). It is never
 put on a page URL.
 
+## The launcher forwards the backend's session credential
+
+`session_credential.go`. Every launcher connection reaches the WSL backend
+through the localhost relay, so it looks like a loopback peer at the
+socket — indistinguishable from a same-host relay carrying somebody else's
+traffic. Presenting the credential the backend minted for its own local
+page channel is what makes the notification socket attributable and
+revocable instead of trusted for its apparent topology
+(`docs/specs/remote-access.md` §4, "Local clients").
+
+- **The credential is not on the bootstrap line, and cannot be.** The
+  launcher receives that line as soon as the transport binds; the session
+  core boots later, during the backend's startup. So the launcher ASKS,
+  over the channel it is already authenticated on — an authenticated
+  `/bootstrap.json` GET, reading the credential out of the session cookie
+  that exchange plants. One route, one exchange, no second delivery
+  mechanism.
+- **It rides a header on the dial** (`X-AO-Session`), never the URL. A Go
+  dial can set one, and a credential in a URL lands in every log that
+  records them.
+- **Best-effort by construction.** A backend still booting (503), an older
+  backend, or one whose session core did not start all leave the
+  credential empty, and the connection carries the launch token alone
+  exactly as before. Forwarding improves attribution; it is never a new
+  requirement for the launcher to connect.
+- **A refused dial forces a re-fetch**, because that is the one signal a
+  forwarded credential has gone stale (the backend restarted, or the
+  session was revoked). Without it the ladder would replay a dead
+  credential until the launcher restarted.
+- The cookie prefix and the header name are **restated** here rather than
+  imported, for the reason `PageURLPath` is: this package is compiled into
+  the Windows launcher, which does not link the transport server.
+  `TestSessionCarriersMatchTransport` pins both spellings.
+
 ## WSL2 localhost forwarding
 
 WSL2 forwards `127.0.0.1:<port>` from inside the distro to the Windows

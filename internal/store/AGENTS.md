@@ -10,9 +10,10 @@ never migrated.
 
 **One family is exempt and it is the only one**: the identity tables
 (`users`, `devices`, `sessions`, `signing_keys`, `recovery_codes`,
-`auth_audit`, migration v75) are authoritative. They cannot be rebuilt
-from a provider session file, and dropping a stale row means someone is
-locked out. See "Recent schema changes (v75)" below before touching any
+`auth_audit`, migration v75; `pairing_links` and `refresh_secrets`,
+migration v76) are authoritative. They cannot be rebuilt from a provider
+session file, and dropping a stale row means someone is locked out. See
+"Recent schema changes (v75)" and "(v76)" below before touching any
 sweep, prune, or restore path that walks tables generically.
 
 - `docs/architecture/schema.md`: table-by-table reference and the index
@@ -984,6 +985,58 @@ an empty `provider_turn_id`.
   COLUMN with no CHECK — free-form text, and the table is nobody's FK parent —
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
+
+## Recent schema changes (v76) — pairing links and rotating refresh
+
+Two tables plus two columns (`migration_v76_pairing.go`, accessors in
+`pairing.go` and `identity.go`): `pairing_links`, `refresh_secrets`,
+`devices.channel`, `sessions.activated_at`. Spec:
+`docs/specs/remote-access.md` §4. Same authoritative-not-cache rule as
+v75 — every bullet there applies here unchanged.
+
+- **Single-use is one statement, twice more.** `RedeemPairingLink` and
+  `ConsumeRefreshSecret` are each a single `UPDATE … WHERE <unspent
+  predicate> RETURNING <columns>`. The predicate IS the rule: SQLite
+  picks the winner and every loser reads `sql.ErrNoRows`, so no caller
+  can open a check-then-write window by forgetting a guard. Both take a
+  HASH; neither table can hold a token or a secret.
+- **`refresh_secrets.session_id` IS the family key.** A rotation keeps
+  the session row and replaces the secret, so no `family_id` column
+  exists to drift out of step with it. Rotating the SESSION id instead
+  would strand every open socket the live-connection registry keys under
+  the old one.
+- **A spent refresh secret stays readable inside its window.** It is the
+  reuse detector's evidence: `ConsumeRefreshSecret` refuses it, and
+  `GetRefreshSecretByHash` still returns it so the caller can tell "this
+  was issued and already spent" from "this was never issued". The prune
+  bound is the EXPIRY, never consumption.
+- **`SpendRefreshSecretsForSession` is the family revocation half.** One
+  statement marks every unspent secret of a session consumed, stamped
+  with why. Splitting it per row would leave a partially-revoked family
+  behind a failed loop.
+- **`sessions.activated_at` is the confirmation gate, and it is a
+  PREDICATE, not a flag someone must remember to read.** `Session.Live`
+  requires it, so an unconfirmed session refuses on every presentation
+  path — verification, renewal, ticket, upgrade — without any of them
+  knowing pairing exists. `ActivateSession` also requires
+  `expires_at > ?`: the pending window IS the deadline on the
+  confirmation, so accepting one after it lapsed would make the deadline
+  decorative. The v76 migration backfills existing rows to `created_at`,
+  because a session that predates the column was already live.
+- **`devices.channel` is a partial unique index, not a kv row.**
+  `idx_devices_channel` covers `channel <> ''`, so paired devices (empty
+  channel) are unconstrained while the local page channel resolves to
+  exactly one row across every boot. `EnsureChannelDevice` races against
+  that index the way `EnsureOwnerUser` races against
+  `idx_users_single_owner`: a loser re-reads the winner.
+- **`devices.key_thumbprint` uniqueness makes re-pairing an ADOPTION.**
+  A device that pairs twice matches its existing row rather than
+  accumulating one per pairing; `internal/identity` refuses the match
+  when that row is revoked or belongs to another user.
+- **Both new tables cascade from their owner** (`users` for links,
+  `sessions` for secrets) because neither is a record of what happened —
+  `auth_audit` is, and it deliberately does not cascade. Deleting a
+  session must not leave secrets that name a session id nothing resolves.
 
 ## Recent schema changes (v75) — the identity core
 
