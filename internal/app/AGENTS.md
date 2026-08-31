@@ -44,9 +44,9 @@ use the existing guarded fixtures and mock scripts.
 
 `app_identity.go` is where `internal/identity` and `internal/transport`
 meet, because neither may import the other. It holds the one
-`*identity.Sessions`, satisfies the three hooks the transport declares
-(`SessionForRequest`, `SessionLive`, `PageSessionCredential`), and
-implements `transport.AuthEndpoints`.
+`*identity.Sessions`, satisfies the four hooks the transport declares
+(`SessionForRequest`, `SessionLive`, `SessionScopes`,
+`PageSessionCredential`), and implements `transport.AuthEndpoints`.
 
 Everything in that file is adaptation. **No policy decision belongs
 there** — a decision made in the adapter is one the session core could not
@@ -78,6 +78,38 @@ enforce for a caller that reached it another way; put it in
   refetched on every reconnect, so the moment a fresh credential is needed
   is also the moment somebody asks for it — and a bootstrap fetch must not
   write to the database on the ordinary path.
+
+## Argument-dependent authorization
+
+`app_authz.go` holds the rechecks a method's `//ao:scope` annotation cannot
+express, because the annotation classifies a method NAME and these authorities
+are decided by what the call CARRIES (`docs/specs/remote-access.md` §16 phase 3:
+"the annotation is the FLOOR").
+
+- `requireAutonomy` — selecting `auto` / `auto-accept-edits` / `full-access`
+  needs `threads:autonomy`. Six bound methods can select a runtime mode by
+  argument and all six call it; `TestBoundMethodsRecheckTheSelectedMode` is the
+  inventory in test form, so a seventh that skips the recheck fails there.
+- `requireSettingsTier` — `UpdateSettings` carries all three of §6's tiers, so
+  it is decided per patch key: device rides any valid session, user needs
+  `settings:write`, host needs a step-up proof.
+
+Three rules hold for every helper here:
+
+- **A call with no session context is ADMITTED.** That is every in-process
+  caller (a background saga, a workflow phase, a test) and every
+  launch-credential connection. Narrowing them would break the app for callers
+  the wave was never about.
+- **One helper set, never a copy per method.** A seventh mode-selecting method
+  gets written by somebody who greps for how the sixth did it, and a per-method
+  copy is how one of them ends up with a subtly different rule.
+- **The recheck runs before any store read**, so its refusal cannot be confused
+  with a lookup failure.
+
+Reaching the connection principal needs a leading `ctx context.Context` on the
+bound method. That parameter is **stripped from the generated TS bindings**, so
+adding one changes no wire signature and no method ID — but regenerate both
+`methodgen` and the Wails bindings anyway, since the doc comment travels.
 
 ## The device-access surface
 

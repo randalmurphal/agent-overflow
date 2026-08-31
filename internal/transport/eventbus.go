@@ -519,6 +519,12 @@ type Subscriber struct {
 	// visible events and gap-driven re-fetches. nil means unfiltered
 	// (non-conn subscribers like the harness workflow waiter).
 	loopback atomic.Pointer[bool]
+	// scopes, when set, applies the per-GRANT channel filter at the same
+	// point and for the same reason (event_visibility.go): a
+	// session-carrying connection must not spend buffer slots on channels
+	// its grants never open. nil means unfiltered, which is what every
+	// non-conn subscriber and every connection naming no session gets.
+	scopes atomic.Pointer[eventScopeFilter]
 	// gapped records the channels this subscriber has dropped events on
 	// since it last learned about the loss. Written only inside deliver,
 	// which runs under the bus mutex (Emit's fanout is its sole call
@@ -558,6 +564,13 @@ func (s *Subscriber) SetOriginLoopback(isLoopback bool) {
 	s.loopback.Store(&isLoopback)
 }
 
+// SetScopeFilter arms the grant half of the same enqueue-time filtering.
+// Same timing contract as SetOriginLoopback: set it before any event
+// matters, and the pump's own check stays the correctness gate.
+func (s *Subscriber) SetScopeFilter(filter eventScopeFilter) {
+	s.scopes.Store(&filter)
+}
+
 func (s *Subscriber) accepts(channel string) bool {
 	filter := s.channels.Load()
 	if filter == nil {
@@ -589,6 +602,9 @@ func (s *Subscriber) deliver(e Event) {
 		return
 	}
 	if lb := s.loopback.Load(); lb != nil && !eventVisibleToOrigin(e.Channel, *lb) {
+		return
+	}
+	if scopes := s.scopes.Load(); scopes != nil && !scopes.allows(e.Channel) {
 		return
 	}
 	if len(s.gapped) > 0 {

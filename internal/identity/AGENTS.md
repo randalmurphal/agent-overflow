@@ -5,7 +5,11 @@ answers the per-RPC liveness question, and revokes. Spec:
 [docs/specs/remote-access.md](../../docs/specs/remote-access.md) §3 and §4.
 
 Rows live in `internal/store` (migrations v75 and v76). Enforcement of what
-a scope PERMITS is phase 3 and is not here.
+a scope PERMITS is not here: `internal/transport` gates every RPC and every
+event channel, and `internal/app` rechecks the authorities that depend on a
+call's ARGUMENTS. All three read the grant set through one hook,
+`app.SessionScopes`, which goes through `Sessions.Live` — so a revoked
+session refuses on its next call rather than on a watchdog tick.
 
 The grantable scope names are declared here as the audit and persistence
 vocabulary, and RESTATED in `internal/transport/scopes.go` — which adds

@@ -81,6 +81,43 @@ The classification is the source of truth and method bodies do not re-check
 origin. A reverse proxy on the same host makes remote peers appear loopback and
 defeats this locality, so proxy from a different host instead.
 
+### The per-RPC scope gate
+
+`authorize.go` is the second gate, and it answers a different question. The
+ORIGIN gate above asks "is this peer on this machine". `AuthorizeSessionMethod`
+asks **"was this session granted this capability"**, and it runs only for a
+connection that named a durable session — a launch-credential client passes
+through untouched, because it names none. Both are live during the migration
+window; the origin gate is deleted when every client authenticates.
+
+- **Nothing caches.** The grants are re-read per call through
+  `Config.SessionScopes`, satisfied in `internal/app` over
+  `identity.Sessions.Live`. A revocation lands after the upgrade that admitted
+  the connection, so a grant read once at upgrade time would outlive it (§4
+  "Revocation": no RPC authorizes from state cached at upgrade time).
+- **`host` is decided by presence, never by the grant set** — refused without
+  it, admitted with it. No session may hold `host`, and the embedded webview's
+  own local-channel session calls host-scoped methods constantly. A method name
+  the generated table does not carry classifies as `host` for the same reason:
+  fail closed.
+- **Step-up goes through `stepUpProven`**, one function whose doc comment
+  carries §4's argument. This phase the proof is host presence; phase 5 swaps
+  the proof there and no call site moves.
+- **Two typed refusals**, following the `ErrCodeGrantRequired` precedent:
+  `scope_required` carries the missing scope in `FrameError.Scope` (a FIELD,
+  because prose does not survive the wire for a non-loopback caller and a
+  client explaining a disabled surface has to branch on something stable), and
+  `step_up_required` is its own code because no grant can satisfy it.
+
+**A method's annotation is the FLOOR, not the whole answer.** Authority that
+depends on a call's ARGUMENTS is rechecked inside the method — selecting an
+autonomous runtime mode, writing a host-tier settings key — using
+`transport.ScopeRequired` / `StepUpRequired` / `AuthRefused`. Those errors reach
+the wire as themselves: `Dispatcher.processResults` consults `AuthzFrame` before
+its correlation-id redaction, so the client that most needs to know which scope
+it lacks is not told "method failed". The helpers live in
+`internal/app/app_authz.go`; see that package's guide.
+
 ## Every route on this mux is also a row in internal/surfaces
 
 `buildHTTPServer` registers patterns as plain literals (or constants
@@ -481,8 +518,9 @@ collisions, receiver-level versus per-method classification):
 ## Event-channel policy registry
 
 `event_channels.go` holds `channelPolicies`, one authored row per channel the
-app emits: `{Channel, Audience, Retention, Why}`. It decides both per-channel
-questions, who may receive a channel's frames and how deep its replay ring is.
+app emits: `{Channel, Audience, Retention, Scope, Why}`. It decides all three
+per-channel questions: who may receive a channel's frames by ORIGIN, what
+GRANT a session needs to receive them, and how deep its replay ring is.
 It cannot be generated, because emit sites are spread across several packages
 and some build their channel name at runtime.
 
@@ -494,6 +532,12 @@ conversion; Go would still assign a bare string literal silently, which the root
 package's `TestEmitSitesNameAnEventChannelConstant` catches.
 
 - `Audience`: `AudienceAny` / `AudienceLoopbackOnly` / `AudienceRemoteOnly`.
+- `Scope`: the grant a session-carrying connection must hold. **Pick it by
+  finding the RPC that reads the same data** — a push must not be a way
+  around the authorization its pull half enforces, so `git:status` is
+  `git:operate` because `GetGitStatus` is. `ScopeHost` means host presence
+  is the only key. It does not replace `Audience`; a connection subject to
+  both is narrowed by both.
 - `Retention`: `RetentionDefault` (full ring) / `RetentionEphemeral`
   (capacity 0) / `RetentionLatestOnly` (capacity 1). Class-level doctrine,
   including the unkeyed membership rule for latest-only, lives on the constants.

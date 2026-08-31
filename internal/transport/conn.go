@@ -146,6 +146,7 @@ type connSettings struct {
 	// sessionScopes reads the named session's grants per RPC, or nil when
 	// nothing can answer. See Config.SessionScopes.
 	sessionScopes func(sessionID string) ([]string, string)
+
 	// sessionRecheck and maxLifetime are Config.SessionRecheckInterval
 	// and Config.MaxRemoteConnLifetime, unresolved: zero takes the
 	// package default, negative disables.
@@ -201,6 +202,10 @@ type connHandler struct {
 	// pre-enforcement behavior every launch-credential client still has.
 	sessionScopes func(sessionID string) ([]string, string)
 
+	// eventScopes is the grant half of this connection's event filter,
+	// resolved once at upgrade (see connEventScopes).
+	eventScopes eventScopeFilter
+
 	// inRead is true exactly while the read loop sits in ws.Read.
 	// coder/websocket only surfaces pongs from inside Read, so a
 	// missing pong while the reader is off processing a frame
@@ -246,6 +251,11 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// subscriber's buffer slots during bursts (they'd force drops of
 	// visible events and gap-driven re-fetches).
 	sub.SetOriginLoopback(profile.isLoopback)
+	// The grant half of the same arming. A connection naming no session
+	// leaves it inactive, which admits every channel — the unchanged
+	// behavior every launch-credential client still has.
+	eventScopes := connEventScopes(settings, profile)
+	sub.SetScopeFilter(eventScopes)
 	h := &connHandler{
 		ws:                ws,
 		dispatcher:        d,
@@ -259,6 +269,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		sessionRecheck:    settings.sessionRecheck,
 		maxLifetime:       settings.maxLifetime,
 		sessionScopes:     settings.sessionScopes,
+		eventScopes:       eventScopes,
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
 	defer h.sub.Close()
@@ -722,7 +733,7 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 	// before returning, so nothing retains the Event slice afterwards.
 	chunk := make([]Event, 0, min(len(missed), DefaultCoalesceMaxEvents))
 	for _, e := range missed {
-		if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
+		if !h.eventVisible(e.Channel) {
 			continue
 		}
 		if !h.sub.accepts(e.Channel) {
@@ -773,10 +784,10 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 			buf.flushNow()
 		case e := <-h.sub.Events():
 			// Correctness gate. Enqueue-time filtering (Subscriber
-			// SetOriginLoopback) already keeps invisible frames out of
-			// the buffer; this backstop covers any event enqueued
-			// before the filter was armed.
-			if !eventVisibleToOrigin(e.Channel, h.profile.isLoopback) {
+			// SetOriginLoopback / SetScopeFilter) already keeps
+			// invisible frames out of the buffer; this backstop covers
+			// any event enqueued before the filters were armed.
+			if !h.eventVisible(e.Channel) {
 				continue
 			}
 			buf.add(e)
@@ -1016,3 +1027,36 @@ var (
 	errOriginNotServed   = errors.New("transport: request origin is not served by this listener")
 	errCredentialRefused = errors.New("transport: request carries no valid credential")
 )
+
+// connEventScopes resolves the grant half of a connection's event filter,
+// once, at upgrade.
+//
+// Inactive — every channel admitted — for a connection that named no
+// session, or on a server with no SessionScopes hook. Those are the
+// launch-credential clients, and their visibility stays exactly what the
+// origin gate alone decided.
+//
+// A session whose grants cannot be read right now gets an ACTIVE filter
+// holding nothing: the connection sees only what host presence opens.
+// That is unreachable on the ordinary path (the upgrade verified the
+// session before it got here) and fail-closed if it ever is reached.
+func connEventScopes(settings connSettings, profile connProfile) eventScopeFilter {
+	if profile.sessionID == "" || settings.sessionScopes == nil {
+		return eventScopeFilter{}
+	}
+	granted, refusal := settings.sessionScopes(profile.sessionID)
+	if refusal != "" {
+		granted = nil
+	}
+	return sessionScopeFilter(granted, profile.isLoopback)
+}
+
+// eventVisible is the whole visibility question for this connection:
+// locality first, then grants. Both gates are live at once for the same
+// reason the RPC path runs two (authorize.go) — the origin gate is what a
+// launch-credential client has always been judged by, and it is deleted
+// when every client authenticates.
+func (h *connHandler) eventVisible(channel string) bool {
+	return eventVisibleToOrigin(channel, h.profile.isLoopback) &&
+		h.eventScopes.allows(channel)
+}

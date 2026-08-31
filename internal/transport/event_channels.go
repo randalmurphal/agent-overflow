@@ -154,6 +154,28 @@ type ChannelPolicy struct {
 	Audience Audience
 	// Retention is how deep this channel's replay ring is.
 	Retention Retention
+	// Scope is the grant a SESSION-carrying connection must hold to
+	// receive this channel's frames (docs/specs/remote-access.md §5).
+	//
+	// The rule for choosing one: it is the scope of the RPC that reads the
+	// same data. A push must not be a way around the authorization its
+	// pull half enforces — git:status carries what GetGitStatus returns,
+	// so both are git:operate; provider:terminal-output carries what
+	// ProviderTerminalReplay returns, so both are terminal:operate. Where
+	// no RPC reads the same data (system:stats is push-only), the row
+	// takes the observe-tier scope a client needs to render the surface
+	// those frames feed.
+	//
+	// ScopeHost means no session grant can open it and host presence is
+	// the only key — the same rule AuthorizeSessionMethod applies to a
+	// host-scoped method, for the same reason.
+	//
+	// It does NOT replace Audience. Both are enforced: Audience is the
+	// origin question ("may a LAN peer see this at all") and answers it
+	// for the launch-credential connections that name no session, while
+	// Scope is the grant question. A connection subject to both is
+	// narrowed by both.
+	Scope Scope
 	// Why records the decision. A Why containing "unreviewed" means the
 	// row was captured from an emit site, not decided.
 	Why string
@@ -178,6 +200,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.DiscussionMessage,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Deliberately remote-visible. Remote clients can already call " +
 			"GetChannelMessages (not in LocalOnlyMethods), so pushing the same " +
 			"data discloses nothing a poll could not already read — it just " +
@@ -188,6 +211,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.DiscussionState,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Deliberately remote-visible, same reasoning as " +
 			"discussion:message: GetChannelState is not LocalOnly. Keyed by " +
 			"channel id, so it must never become latest-only.",
@@ -196,6 +220,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.DraftUpdated,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsOperate,
 		Why: "Names a thread whose composer draft moved and the screen that " +
 			"moved it; the draft TEXT never rides it, because receivers " +
 			"re-read through GetDraft. Loopback-only regardless: GetDraft / " +
@@ -210,6 +235,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.GitStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
 		Why: "Addressed by the CANONICAL ABSOLUTE workspace path (it has to " +
 			"be — one frame serves every pane on that worktree), so every " +
 			"frame discloses where the user's repositories live on disk. " +
@@ -222,6 +248,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.HarnessMock,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "Frames carry the mock's cwd (a local path) and the exact wire " +
 			"text the app sent the provider. Harness-only (--harness boot, " +
 			"LocalOnly receiver), but the push side is the third door; its " +
@@ -231,6 +258,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.HarnessPerf,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "One fps/heap/RSS sample per tick of an armed perf run " +
 			"(app_harness_perf.go). Frames carry backend process names and " +
 			"per-process RSS read from /proc — host detail no LAN peer may " +
@@ -243,6 +271,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.HarnessReplay,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "Progress frames name the local NDJSON replay-log path and pass " +
 			"IO/parse errors verbatim. Harness-only; loopback consumers by " +
 			"construction (same story as harness:mock).",
@@ -251,6 +280,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.HarnessUIQuery,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
+		Scope:     ScopeHost,
 		Why: "A DIRECTIVE, not a state frame: each event asks the attached " +
 			"frontend bridge to answer query <id>, and the backend waiter for " +
 			"that id is gone 10s later. Ephemeral for the same reason " +
@@ -265,6 +295,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.HighlightDiffSeed,
 		Audience:  AudienceAny,
 		Retention: RetentionEphemeral,
+		Scope:     ScopeFilesRead,
 		Why: "Goes to EVERY client, deliberately: its persist-time seeds can " +
 			"be parse-primed with the just-edited workspace file — better " +
 			"spans than the loopback RPC path recomputes for a persisted diff " +
@@ -278,6 +309,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.HighlightSeed,
 		Audience:  AudienceRemoteOnly,
 		Retention: RetentionEphemeral,
+		Scope:     ScopeFilesRead,
 		Why: "Pushes syntax-span metadata alongside streaming text so a remote " +
 			"client colors code without a highlight RPC per growth step. " +
 			"Loopback clients get faster spans from the RPC path (sub-ms round " +
@@ -292,6 +324,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.MCPOAuthCompleted,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeSettingsWrite,
 		Why: "Carries provider-reported MCP error strings verbatim " +
 			"(sanitizeMCPError bounds length and collapses newlines — it does " +
 			"not redact, and an `invalid_grant` body can quote token " +
@@ -303,6 +336,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.MCPStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeSettingsWrite,
 		Why: "Same disclosure class as mcp:oauth-completed — verbatim " +
 			"provider MCP error strings, with every MCP RPC already LocalOnly. " +
 			"Keyed by server, so it must never become latest-only: capacity 1 " +
@@ -312,6 +346,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.NotificationActivated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "A reveal-this-target directive following a notification click. " +
 			"Every attached client is the same owner's session, and acting on " +
 			"a notification away from the desk is the reason remote access " +
@@ -329,6 +364,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.NotificationSend,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Instructs a presenter to raise a notification. The host-side " +
 			"presenter (the Windows launcher's notification client) is one " +
 			"consumer; an attached remote client is the other, and being told " +
@@ -345,6 +381,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.PowerKeepAwake,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeHost,
 		Why: "Imperative host directive: it commands the process that owns " +
 			"this machine's power state (the Windows launcher) to hold or " +
 			"release an OS sleep inhibitor. A LAN peer has no business " +
@@ -361,6 +398,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.PRUpdated,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeGitOperate,
 		Why: "Carries a pull request's full detail and every review thread on " +
 			"it — private-repo titles, branch names, reviewer logins and " +
 			"comment bodies — plus a poll-failure summary. Every one of its " +
@@ -373,6 +411,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProjectUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Carries a store.Project — the project's absolute path among " +
 			"them — but ListProjects is wire-reachable and returns exactly " +
 			"these rows, so the push discloses nothing a poll could not " +
@@ -388,6 +427,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderAccount,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeAccessAdmin,
 		Why: "Carries the user's email/display name plus authenticated " +
 			"subscriptionType, tokenSource (oauth | apikey | console), and " +
 			"apiProvider — account, auth-model, and billing identity in one " +
@@ -397,12 +437,14 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderAccountUsageError,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeAccessAdmin,
 		Why:       "Account-scoped billing/quota failure detail; same identity class as provider:account.",
 	},
 	{
 		Channel:   eventchan.ProviderApproval,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeApprovalsRespond,
 		Why: "Tool-use approval requests quote the exact command line, file " +
 			"path, or patch the provider wants to run against the user's " +
 			"machine. Approving is RCE-equivalent and the resolve RPCs are " +
@@ -412,6 +454,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderBackgroundTaskState,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Background terminal/task state carries the local command and " +
 			"its output-derived state — the same local-execution data class as " +
 			"terminal:output.",
@@ -420,6 +463,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderBackgroundTasksChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "threadId plus a full replacement set of task refs (ids and " +
 			"model-authored descriptions) — no command lines or paths; that " +
 			"loopback-only data rides provider:background_task_state instead. " +
@@ -429,6 +473,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderCommandLifecycle,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Queue UX is loopback: GetQueueState and every queue RPC are " +
 			"LocalOnly, and the provider:queue_* siblings are already " +
 			"loopback-only — a remote peer cannot render the rows these " +
@@ -440,6 +485,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderCommands,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Slash-command names and hints for composer autocomplete on any " +
 			"client — declared names, never command lines or output. Keyed " +
 			"per thread; each frame replaces wholesale, but per-key, so " +
@@ -449,6 +495,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderCompacting,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "{threadId, active} render state any viewer needs; the " +
 			"provider's failure prose is deliberately logged, not emitted " +
 			"(compaction_status.go). Keyed per thread: never latest-only.",
@@ -457,6 +504,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderFastMode,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Per-thread mode-chip state, restated on every session init and " +
 			"turn completion; disabledReason is provider prose but names no " +
 			"paths or identity. Keyed per thread.",
@@ -465,6 +513,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderItemEvent,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "The main transcript stream; a remote viewer that cannot see it " +
 			"has no product. Pinned remote-visible by " +
 			"TestEventVisibleToOrigin. Keyed by thread/item — never " +
@@ -474,6 +523,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderModelFallback,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Effective-model render state any viewer needs; the provider's " +
 			"refusal prose is rune-bounded at the emit site. Keyed per " +
 			"thread with a monotonic revision — ordered, never latest-only.",
@@ -482,6 +532,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderQueueFlushed,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsOperate,
 		Why: "Per-thread flush-queue frames carry the queued user message " +
 			"bodies and their attachment metadata (local file names), and the " +
 			"queue-mutating RPCs are LocalOnly.",
@@ -490,24 +541,28 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderQueueRestored,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsOperate,
 		Why:       "Same payload class as provider:queue_flushed — queued user message bodies restored into the composer.",
 	},
 	{
 		Channel:   eventchan.ProviderQueueStateChanged,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsOperate,
 		Why:       "Same payload class as provider:queue_flushed — the queue snapshot it announces carries the queued message bodies.",
 	},
 	{
 		Channel:   eventchan.ProviderSessionAccount,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeAccessAdmin,
 		Why:       "Per-session binding of a thread to a provider account identity; same identity class as provider:account.",
 	},
 	{
 		Channel:   eventchan.ProviderSessionDied,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Deliberately remote-visible: without it a remote viewer sees the " +
 			"turn silently stop with no explanation. The frame carries " +
 			"StderrTail — the dead process's last stderr line, pre-sanitized " +
@@ -522,6 +577,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeAccessAdmin,
 		Why: "Reports provider CLI installation/auth state and carries an " +
 			"actionURL plus provider-side error prose — install paths and " +
 			"authentication failures for the local machine's toolchain.",
@@ -530,6 +586,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderSubagentProgress,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Subagent tray/progress state; activity and summary are " +
 			"model-authored text, lastToolName names a tool without its " +
 			"arguments. Keyed per thread + launch item: never latest-only.",
@@ -538,6 +595,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderTerminalOutput,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeTerminalOperate,
 		Why: "Raw PTY bytes of a claude-tui take-control session — command " +
 			"output, file contents, anything on the TUI's screen — the same " +
 			"data class as terminal:output. The ProviderTerminal* RPCs are " +
@@ -548,6 +606,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderTodoUpdate,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Model-authored plan steps every viewer renders; each frame " +
 			"replaces the full list. Keyed per thread: never latest-only.",
 	},
@@ -555,6 +614,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderTurnCompleted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Core turn lifecycle — drives the active-turn registry on every " +
 			"client; a dropped frame is a stuck working indicator, which is " +
 			"why the gap handler forces a pane refresh. errorMessage is " +
@@ -566,6 +626,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderTurnStarted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Pairs with provider:turn_completed in the active-turn " +
 			"registry; ids and timestamps only. Keyed per thread/turn and " +
 			"ordered: never latest-only.",
@@ -574,6 +635,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderUsage,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Deliberately remote-visible: token counts, context %, and rate " +
 			"limits are essential feedback for understanding resource " +
 			"consumption. Pinned by TestEventVisibleToOrigin. Keyed by " +
@@ -583,6 +645,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ProviderUserInput,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Interactive provider questions quote whatever the provider is " +
 			"asking about — local paths, command lines, file content — and the " +
 			"answer RPCs are LocalOnly. Same class as provider:approval.",
@@ -591,6 +654,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.BrowserCompanionState,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
+		Scope:     ScopeTerminalOperate,
 		Why: "Per-thread live page titles and URLs, including file paths. The " +
 			"subscribe RPC returns a complete snapshot, so replay is unnecessary.",
 	},
@@ -598,6 +662,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.BrowserInstallProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeTerminalOperate,
 		Why: "Managed full-Chrome install progress; error strings can quote " +
 			"manifest URLs. Each phase supersedes the prior phase, so reconnect " +
 			"and live-drop recovery need only the newest state.",
@@ -606,6 +671,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.SessionImportProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsOperate,
 		Why: "Reports on files in the user's provider homes: each frame names " +
 			"the scan row it settled, and a failure carries the reader's own " +
 			"message, which quotes the absolute transcript path. Its RPCs are " +
@@ -616,6 +682,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.SettingsUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeSettingsRead,
 		Why: "Carries a tier plus the changed key NAMES, never values — " +
 			"GetSettings is wire-safe precisely because it redacts endpoint " +
 			"tokens and sensitive environment values, and this channel must " +
@@ -630,6 +697,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.SpinnerChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeSettingsRead,
 		Why: "Retention: a payload-less refetch signal — `emit(name, " +
 			"nil)` from a debounced fsnotify watcher over one directory, " +
 			"meaning exactly \"read that directory again\". N retained frames " +
@@ -646,6 +714,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.SystemStats,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeThreadsRead,
 		Why: "Retention reviewed: host CPU + memory sample for the sidebar " +
 			"footer, a fresh whole-state sample every 2s (app_sysstat.go), so " +
 			"a default-depth ring held ~33 minutes of stale samples and " +
@@ -659,18 +728,21 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.TerminalExit,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeTerminalOperate,
 		Why:       "Local PTY session lifecycle; paired with terminal:output and the same local-execution class.",
 	},
 	{
 		Channel:   eventchan.TerminalOutput,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeTerminalOperate,
 		Why:       "Raw local PTY bytes — command output, file contents, anything on the terminal's screen.",
 	},
 	{
 		Channel:   eventchan.ThemeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeSettingsRead,
 		Why: "Retention: payload-less refetch signal, same matched " +
 			"set as spinner:changed and workflow:definitions-changed — see " +
 			"spinner:changed for the full reasoning. Audience: GetThemeFiles " +
@@ -680,6 +752,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ThreadModeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Thread-row state (mode + a one-shot needsReconnect toast) " +
 			"every viewer renders; mutation stays LocalOnly " +
 			"(UpdateThreadMode). Keyed per thread.",
@@ -688,6 +761,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ThreadRuntimeModeChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Thread-row approval-posture state; names a mode, not a " +
 			"capability a remote peer could invoke (UpdateThreadRuntimeMode " +
 			"is LocalOnly). Keyed per thread.",
@@ -696,6 +770,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ThreadTitleGeneration,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Title-regen completion signal; error text passes " +
 			"textgen.RedactError, which collapses CLI failures to an opaque " +
 			"sentence precisely because raw ones can quote subprocess " +
@@ -705,6 +780,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.ThreadUpdated,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Full frames embed the whole store.Thread — absolute project/" +
 			"workspace/worktree paths and session refs — but ListThreads is " +
 			"deliberately wire-safe, so a remote peer can poll identical " +
@@ -717,6 +793,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UpdaterDownloadStarted,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "Update lifecycle is host-local: CheckForUpdate / " +
 			"DownloadUpdate / RestartToUpdate are all LocalOnly and only " +
 			"this host can install, so a LAN peer can neither arm nor act " +
@@ -728,6 +805,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UpdaterError,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "Verbatim updater/launcher error text — can quote URLs and " +
 			"staged file paths, and the WSL path forwards text from a " +
 			"separate Windows launcher process this backend does not " +
@@ -738,6 +816,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UpdaterInstall,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
+		Scope:     ScopeHost,
 		Why: "An imperative directive, not a notification: the Windows " +
 			"launcher acts on it by swapping the app binary and killing this " +
 			"backend. Its only legitimate consumer is the launcher on this " +
@@ -754,6 +833,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UpdaterInstalling,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "Same loopback-only story as updater:download-started. " +
 			"(Bridged from updater.EventInstalling.)",
 	},
@@ -761,6 +841,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UpdaterProgress,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeHost,
 		Why: "Per-chunk byte counters — the highest-frequency updater " +
 			"channel, unkeyed (one install at a time, ErrUpdateBusy), each " +
 			"frame fully superseding the last; replaying a backlog of stale " +
@@ -772,6 +853,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UpdaterReady,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "Arms the local Restart button; same loopback-only story as " +
 			"updater:download-started. Default ring so a reconnecting local " +
 			"pane still learns an update is staged. (Bridged from " +
@@ -782,6 +864,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UpdaterVerifying,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeHost,
 		Why: "Same loopback-only story as updater:download-started. " +
 			"(Bridged from updater.EventVerifying.)",
 	},
@@ -789,6 +872,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UsageThreadCost,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "threadId-only nudge, but both RPCs it triggers " +
 			"(GetThreadContextUsage, GetCodexAccountUsage) are LocalOnly — " +
 			"a remote peer receiving it cannot act on it, so frames off " +
@@ -799,6 +883,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.UserMessageReverted,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Timeline truncation directive every viewer must apply or its " +
 			"rendered history diverges from SQLite; ids and counters only, " +
 			"no message bodies. The client self-dedups on the monotonic " +
@@ -809,6 +894,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WebviewTrim,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionEphemeral,
+		Scope:     ScopeHost,
 		Why: "An imperative directive, not a notification: the Windows " +
 			"launcher acts on it by forcing a memory-reducing GC in the " +
 			"renderer over the WebView2 DevTools bridge. Its only " +
@@ -823,6 +909,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorkflowDefinitionsChanged,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeThreadsRead,
 		Why: "Retention: payload-less refetch signal, same matched " +
 			"set as theme:changed and spinner:changed — see spinner:changed " +
 			"for the full reasoning. Audience: workflow reads are " +
@@ -833,6 +920,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorkflowEngineState,
 		Audience:  AudienceAny,
 		Retention: RetentionLatestOnly,
+		Scope:     ScopeThreadsRead,
 		Why: "One unkeyed process-wide boolean ({paused}) where the newest " +
 			"frame is the whole answer — satisfies the latest-only " +
 			"membership rule, and replaying exactly the newest frame on " +
@@ -844,6 +932,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorkflowError,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Run-failure toasts remote overlay viewers need too (workflow " +
 			"reads are wire-safe); emit sites keep the real cause in local " +
 			"diagnostics and send a hand-written opaque sentence. One " +
@@ -858,6 +947,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorkflowGateNotify,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Workflow-authored ids and enums only; the one surface that " +
 			"reports a gate crossing without a park, so each frame is a " +
 			"distinct crossing and the ring must hold them all — never " +
@@ -868,6 +958,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorkflowItemState,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Run-state transitions the overlay accumulates (a transition " +
 			"on an unknown run triggers a full refetch); wire-safe workflow " +
 			"reads serve remote overlays. Keyed per run: never latest-only.",
@@ -876,6 +967,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorkflowPhaseState,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "Per-run/phase/attempt/unit patches the run map applies in " +
 			"place. Keyed: never latest-only.",
 	},
@@ -883,6 +975,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorkflowSoftStop,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
+		Scope:     ScopeThreadsRead,
 		Why: "{itemId, armed} supersede-per-key state; keyed per run-tree " +
 			"root, so capacity-1 retention would evict other runs' latest " +
 			"frames — never latest-only.",
@@ -891,6 +984,7 @@ var channelPolicies = []ChannelPolicy{
 		Channel:   eventchan.WorktreeSetup,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
+		Scope:     ScopeTerminalOperate,
 		Why: "Streams the stdout/stderr of the project's own setup commands " +
 			"running against the user's checkout — the same data class as " +
 			"terminal:output, and it can carry anything a build or install " +
@@ -942,7 +1036,11 @@ var channelPolicyIndex = func() map[string]ChannelPolicy {
 var unregisteredChannelPolicy = ChannelPolicy{
 	Audience:  AudienceLoopbackOnly,
 	Retention: RetentionDefault,
-	Why:       "unregistered channel — fail-closed default (see unregisteredChannelPolicy)",
+	// ScopeHost is the same fail-closed answer the Audience above gives,
+	// stated in the other vocabulary: a channel nobody classified is one
+	// nobody decided a remote form for, so host presence is the only key.
+	Scope: ScopeHost,
+	Why:   "unregistered channel — fail-closed default (see unregisteredChannelPolicy)",
 }
 
 // policyForChannel returns the registered policy for a channel, or the
