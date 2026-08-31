@@ -602,6 +602,12 @@ it; the backend derives scope from the authenticated session's device.
     is already `host`-scoped; a device-tier row would declare a phone
     may edit it. Its storage is redesigned in phase 7 with the
     multi-backend UI, not here.
+  - **`backgroundGitFetch` and `editor` retier to USER** (wave 7a
+    finding): both are consumed by BACKEND behavior — the unattended
+    fetch loop and the editor `OpenInEditor` spawns — and one global
+    behavior cannot be driven by a per-screen value. The rule is now
+    stated at the tier map: a key backend logic reads is not device
+    tier.
 - User tier (stored under the reserved `user:default` scope until
   phase 8 introduces real user identities): confirmations,
   commit-message style, textgen routing, hidden models, default thread
@@ -665,6 +671,26 @@ waves:
   are; `workflowPaused` joins (its dedicated RPC enforces
   `threads:autonomy`, and the generic patch demanding host step-up
   for the same act was two answers to one question).
+
+LANDED 2026-08-31 (wave 7a), the storage half: one `settings.Service`,
+tiered residency (`internal/settings/residency.go`). The struct and
+wire keep every key; the FILE CODEC holds host keys only, the user
+tier overlays from `ui_state` `user:default`, and the device tier
+overlays per caller through `Service.For(bucket)` (bucket derivation
+shared with `uiStateScope`; sessionless in-process callers read device
+defaults). Validators run on every write regardless of destination,
+and the device overlay re-runs `sanitizeLoadedSettings` on READ, so a
+value poked directly into a bucket via `SetUIState` is clamped exactly
+like a hand-edited file. Seeding runs once at boot: file values seed
+`user:default` and the backend screen's `client:<id>` bucket,
+never-overwrite, defaults skipped; moved keys are NOT retired (they
+must stay on the wire) — the codec split is the mechanism instead.
+`workflowPaused` joined the refused-from-patch class. `settings.json`
+writes now happen only when a host key moves. A store-less Service
+keeps every tier in the file, which the pre-database boot readers
+(bind address, window geometry) depend on. Still open in phase 4: the
+session-floor scope value (wave 7b) and device-class defaults (the
+seam exists; the class table is phase 6).
 
 ## 7. Transport, reachability, TLS
 
