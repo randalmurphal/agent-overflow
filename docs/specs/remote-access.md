@@ -526,30 +526,25 @@ frequently cannot unlock without a login session, so the signing key,
 provider credentials, and tsnet state need a defined at-rest strategy
 for unattended boot.
 
-**Session lifecycle on an unattended host.** Today `ArchiveThread` is
-a DB flag only — it never closes the thread's provider session, and
-the idle reaper deliberately skips sessions with running background
-tool calls. Locally, app shutdown eventually reaps what that leaves
-(provider processes are group-killed); on a headless host nothing
-ever does, so an archived thread's dev server and its ~hundreds-of-MB
-provider process burn forever. Required (t3code fixed the same class,
-#5774): archive stops the session — the group kill cascades to dev
-servers and monitors — with a stop-time re-check that the thread was
-not re-engaged in the gap. The reaper's keep-alive-while-working
-choice stays (killing quiet-but-working sessions is rejected
-doctrine); what an unattended host adds is **visibility and control,
-not timeouts**: a running-background-work inventory (which thread,
-what, since when) with per-task and per-thread stop controls from any
-attached client. The per-item data already exists — `store.Item`
-carries thread, tool, summary, status, parent, and timestamps — but
-every entry point today is thread-scoped, so this needs one new
-cross-thread bound method. It must union the same three sources
-`ListLiveBackgroundTasks` does (the store query, live Codex subagent
-launches, and the triage layer's in-memory Codex unified-exec tasks,
-which exist in no table), because a query written against SQLite
-alone silently under-reports. The tray's 2-second completed-sibling
-retention is a live-tray tuning value, not an inventory history;
-the inventory reports what is running now.
+**Session lifecycle on an unattended host.** LANDED 2026-08-31
+(b809e997). `ArchiveThread` closes the thread's provider session — the
+group kill cascades to dev servers and monitors — with a stop-time
+re-check against the newest turn's durable `started_at` so an archive
+that waited out a send does not kill the session that send just
+engaged (`internal/app/app_thread_archive.go`). The reaper's
+keep-alive-while-working choice stays (killing quiet-but-working
+sessions is rejected doctrine); what an unattended host adds is
+**visibility and control, not timeouts**:
+`ListRunningBackgroundWork` (wire-safe) reports the cross-thread
+inventory, unioning the same three sources `ListLiveBackgroundTasks`
+does (the store query, live Codex subagent launches, and the triage
+layer's in-memory Codex unified-exec tasks, which exist in no table),
+with per-thread unreadability carried in the payload rather than an
+error that would discard the rows; `StopThreadBackgroundWork`
+(LocalOnly) routes each row through the existing per-kind stop
+methods. The tray's 2-second completed-sibling retention is a
+live-tray tuning value, not an inventory history; the inventory
+reports what is running now.
 
 Update is a genuine availability requirement once the machine is
 unattended, and a supply-chain risk if remotely triggerable. Resolution:
@@ -601,15 +596,17 @@ field.
 
 Prerequisite sweep, valuable standalone:
 
-- Emit on every persisted mutation: the thread-row RPCs
-  (create/delete/archive/pin/read/model/effort/fastMode/contextWindow/
-  workspace), `settings:updated` (with tier + keys), `project:*`.
-  `UpdateThreadBranch` is the one that already emits, per changed row,
-  and its doc comment states exactly the convergence rationale the
-  rest of the sweep needs — copy that shape rather than inventing
-  one. Frontend replaces local-only applies (`syncThread`,
-  `*Local`) with event-driven convergence; initiators may still apply
-  optimistically.
+- Emit on every persisted mutation. Thread-row RPCs LANDED
+  2026-08-31 (9d48ee7c): every persisted thread-row mutation
+  broadcasts `thread:updated` carrying the written row plus an action
+  (`full`/`patch`/`listed`/`unlisted`/`deleted`, constants in
+  `internal/triage/router.go`); the store's write helper reads the row
+  back inside the write transaction and reports no-op writes so
+  repeats stay silent; the broadcast row is also the RPC's return
+  value, so initiator echo equals optimistic apply
+  (`frontend/src/lib/stores/eventsThreadRows.ts` is the applier).
+  Still open in this bullet: `settings:updated` (with tier + keys) and
+  `project:*`.
 - `draft:updated` with initiator echo-suppression; last-write-wins plus
   an "edited on <device>" affordance (cuttable polish).
 - Wire `GetQueueState` as the fresh-attach bootstrap.
@@ -1323,8 +1320,9 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      argument for the gate asserting the category set rather than a
      number.
 
-1. **Sync sweep + seams.** Archive-closes-session fix (§7 — a
-   standing leak today, acute once hosts are unattended). Emits,
+1. **Sync sweep + seams.** Archive-closes-session fix: LANDED
+   2026-08-31 (b809e997, §7). Thread-row emits: LANDED 2026-08-31
+   (9d48ee7c, §8). Remaining: settings/project emits,
    channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
    backend UUID, hello frame, multi-backend seams (§10). The
