@@ -84,6 +84,12 @@ type connProfile struct {
 	// client is the screen on the other end, declared on the upgrade URL.
 	// Zero when the client declared nothing, which is normal.
 	client ClientIdentity
+	// sessionID is the durable session this connection presented, resolved
+	// before the upgrade by Config.SessionForRequest. Empty means the
+	// connection names no session — every connection today, and still the
+	// ordinary case for the local webview afterwards — and such a
+	// connection is not tracked by the live-session registry.
+	sessionID string
 }
 
 // connSettings carries the server-config knobs runConnHandler needs.
@@ -93,6 +99,10 @@ type connSettings struct {
 	maxConcurrentRPCs int
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
+	// sessionConns is the server's live-session registry, or nil when the
+	// handler runs outside one (unit tests). A connection naming a session
+	// registers itself here so a revocation can reach it.
+	sessionConns *SessionConns
 	// hello is the frame written before any other traffic. Populated per
 	// connection rather than once at boot because ServerTimeMs is the
 	// clock at accept time — a value cached at startup would be a
@@ -137,6 +147,11 @@ type connHandler struct {
 	// (streaming a replay, waiting on rpcSem) says nothing about the
 	// peer — the keepalive loop skips its teardown verdict then.
 	inRead atomic.Bool
+	// revoked is set by closeForRevocation before it tears the socket
+	// down, so the per-connection close line names the revocation rather
+	// than reporting the context cancel as a server shutdown. One store
+	// per revocation, one load per connection close.
+	revoked atomic.Bool
 	// lastReadAt (unix nanos) is stamped after each successful Read.
 	// Second guard for the same race: a reader that re-entered Read
 	// moments ago may not have had time to surface a pong yet.
@@ -195,6 +210,20 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	connCtx, state := WithConnState(connCtx, profile.client)
 	defer state.RunCleanups()
 
+	// A connection carrying a durable session joins the live-session
+	// registry, so revoking that session force-closes this socket instead
+	// of leaving it streaming under a credential the database says is
+	// dead. Deregistration rides the SAME cleanup pass every other
+	// per-connection resource uses, rather than a parallel teardown that
+	// could disagree with it about when this connection ended.
+	if detach := settings.sessionConns.attach(
+		profile.sessionID, h.closeForRevocation(cancel),
+	); !state.RegisterCleanup(detach) {
+		// The connection was already closing when we got here. Nothing
+		// will run the cleanup list again, so undo the attach ourselves.
+		detach()
+	}
+
 	// Hello first, synchronously, before the pump and keepalive
 	// goroutines exist. Ordering is the contract: a client that reads
 	// hello as the first frame can seed its compatibility state before
@@ -231,7 +260,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// relay-flap diagnosis needlessly indirect.
 	log.Printf("transport: ws %s closed after %s (loopback=%t): %s",
 		profile.remoteAddr, time.Since(started).Round(time.Millisecond),
-		profile.isLoopback, closeReason(readErr))
+		profile.isLoopback, h.closeReason(readErr))
 
 	// Wait for in-flight RPC handlers to finish writing their
 	// responses before we let the parent close the WS underneath them.
@@ -291,6 +320,32 @@ func (h *connHandler) keepalive(ctx context.Context) {
 	}
 }
 
+// closeForRevocation builds the teardown the live-session registry calls
+// when this connection's session is revoked.
+//
+// Three steps, and the order is why it is not just ws.Close:
+//
+//  1. Close the event subscriber. The bus stops delivering to this
+//     connection immediately, which is what makes "stops their event
+//     streams synchronously" true at the moment CloseSession returns
+//     rather than whenever the read loop happens to notice.
+//  2. Cancel the connection context, stopping the pump and the keepalive.
+//  3. CloseNow the socket, which unblocks the reader parked in ws.Read so
+//     the ordinary teardown path runs and the cleanups fire.
+//
+// Every step is idempotent, because this races the connection's own
+// close: Subscriber.close is a compare-and-swap, context cancel is
+// idempotent by definition, and CloseNow on a closed connection is a
+// no-op error nobody reads.
+func (h *connHandler) closeForRevocation(cancel context.CancelFunc) func() {
+	return func() {
+		h.revoked.Store(true)
+		h.sub.Close()
+		cancel()
+		_ = h.ws.CloseNow()
+	}
+}
+
 // closeReason renders readLoop's terminal error (always non-nil — the
 // loop only exits by returning a Read error) for the per-connection
 // close log line. WS-level close statuses (1000 normal, 1001 going
@@ -307,6 +362,18 @@ func closeReason(err error) string {
 		return fmt.Sprintf("close status %d", status)
 	}
 	return fmt.Sprintf("%.200q", err.Error())
+}
+
+// closeReason is closeReason plus the one thing the error cannot carry:
+// a revoked connection is torn down by cancelling its context, which is
+// indistinguishable from a server shutdown at the error alone. Reporting
+// both the same way would make a revocation invisible in the log exactly
+// when somebody is checking whether one took effect.
+func (h *connHandler) closeReason(err error) string {
+	if h.revoked.Load() {
+		return "session revoked"
+	}
+	return closeReason(err)
 }
 
 // readLoop processes inbound frames until the client closes or an

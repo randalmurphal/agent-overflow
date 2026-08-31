@@ -389,13 +389,40 @@ peer needs.
 Every connection close logs one line, graceful closes included, with peer
 address, duration, and close reason (`closeReason`). Close status 1005 with no
 close frame is the intermediary-teardown signature, 1006 is a network drop, and
-1000 or 1001 is a client navigation.
+1000 or 1001 is a client navigation. `session revoked` is its own reason: a
+revocation tears the socket down by cancelling its context, which at the error
+alone reads identically to a server shutdown.
 
 The duration in that line is the same quantity the client's reconnect ladder
 judges itself on. `wsClient` resets its backoff only after a connection survived
 `BACKOFF_RESET_AFTER_MS`, so a relay that tears down long-lived sessions keeps
 reconnecting fast, while an accept-then-close backend backs off instead of
 storming.
+
+## Revoking a live connection
+
+A revoked session row stops the next call. It does nothing to a socket that is
+already streaming, which will keep receiving events until something closes it.
+`SessionConns` (`internal/transport/sessionconns.go`) is that something: a map
+from session id to the connections carrying it, and one `CloseSession` that
+tears all of them down synchronously.
+
+Two seams keep the direction of dependency clean. `Config.SessionForRequest`
+resolves a request's session before the upgrade and may refuse it (with the same
+`404` a bad credential gets), and `SessionConns` satisfies the one-method
+interface `internal/identity` declares for itself. Neither package names a type
+from the other, so transport stays store-free.
+
+The teardown itself is three ordered steps — close the event subscriber, cancel
+the connection context, then `CloseNow` the socket — because only the first of
+those makes "delivery has stopped" true at the moment `CloseSession` returns
+rather than whenever the parked reader notices. Deregistration rides
+`ConnState.RunCleanups`, the same pass that releases every other per-connection
+resource.
+
+The registry keeps no record of a revoked session, so a later connection on that
+id attaches like any other. Refusing it is the database row's job, checked per
+call rather than latched at upgrade time.
 
 ## References
 

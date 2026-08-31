@@ -10,9 +10,10 @@ walkthroughs live in
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
 upgrade, and
 `POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
-per-connection authorization policy, reflection-based RPC dispatch, and a
-per-channel bounded ring for event replay on reconnect. Method IDs are FNV-1a
-32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
+per-connection authorization policy, reflection-based RPC dispatch, a
+per-channel bounded ring for event replay on reconnect, and the live-session
+registry that lets a revocation reach connections that are already open. Method
+IDs are FNV-1a 32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
 `internal/hash.Fnv`, so the generated TypeScript bindings keep working. The ring
 is in-memory only: a network jitter buffer, not a history store (root
 `AGENTS.md` principle 3).
@@ -457,7 +458,46 @@ pong timeout, both overridable through `Config.KeepaliveInterval` and
   that stops draining cannot wedge the event pump while holding `writeMu`.
 - Every close logs one line, graceful closes included, with peer address,
   duration, and `closeReason`. That duration is what the client's reconnect
-  ladder judges itself on, so keep it in the line.
+  ladder judges itself on, so keep it in the line. A connection torn down by a
+  revocation reports `session revoked` rather than the context cancel's
+  `server shutdown`, because at the error alone the two are identical and a
+  revocation would otherwise be invisible in the log exactly when somebody is
+  checking whether it took effect.
+
+## Live-session registry and revocation teardown
+
+`SessionConns` (sessionconns.go) maps a durable session id to the WebSockets
+currently carrying it. It exists because a revoked row only stops the NEXT
+call: a socket that is mid-stream keeps receiving events until something
+closes it, and `CloseSession` is that something.
+
+- `Config.SessionForRequest` resolves a request's session BEFORE the upgrade
+  and may refuse it. Refusal is `http.NotFound`, the same unfingerprintable
+  shape a bad launch credential gets — see § Credentials and refusal shapes.
+  The hook is nil today, which is why nothing about the launch-credential path
+  changes yet; phase 3 supplies it from `internal/identity`.
+- Registration rides `ConnState.RegisterCleanup`, the same LIFO pass every
+  other per-connection resource uses. Do NOT add a parallel teardown: a second
+  path could disagree with the first about when a connection ended, and the
+  registry would keep closers for sockets that are already gone. When
+  registration reports the connection already closing, `runConnHandler` undoes
+  the attach itself, because nothing will run the cleanup list again.
+- `closeForRevocation` is three steps and the order is the mechanism: close the
+  event subscriber (delivery stops at the instant `CloseSession` returns, not
+  whenever the read loop notices), cancel the connection context (pump and
+  keepalive stop), then `CloseNow` the socket (the parked reader unblocks and
+  the ordinary teardown runs). Every step is idempotent, because it races the
+  connection's own close.
+- `CloseSession` runs its callbacks OUTSIDE the registry lock. A teardown that
+  blocked while holding it would stall every other attach and detach in the
+  process.
+- The registry keeps **no tombstone** for a revoked session, so a later
+  connection on that id attaches normally. Refusing it is the database row's
+  job (`SessionForRequest` → `identity.Sessions.Live`); a second source of that
+  truth would be one that could disagree.
+- A connection that names no session attaches nothing. Empty session ids must
+  never share a slot — that is every launch-credential connection today, and
+  one revocation would close all of them.
 
 ## Conventions specific to this package
 
