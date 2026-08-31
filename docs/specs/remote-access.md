@@ -1001,6 +1001,84 @@ fails on regression:
 - A backgrounded / unleased client: **zero event traffic** until it
   leases back in.
 
+### Measured baseline, and why the budget is missed today
+
+Measured 2026-08-30 against a real 65,866-item thread: the 500-item
+cold window serializes to **766 KB raw, 149 KB compressed** — 3× the
+budget above. Where it goes, per 500 rows: payload metadata 271 KB
+(45%, almost all on `tool_call` rows, worst single row 8.4 KB), item
+`meta` 152 KB (25%), `summary` 97 KB (16%, mostly thinking text),
+ids 49 KB (8%, but they compress to nearly nothing), preview
+highlight spans 35 KB (6%). The payload *bodies* are correctly
+withheld; this is entirely the metadata riding alongside.
+
+The cause is structural and one sentence long: **every cap in the
+wire path is a count, and none is a byte figure.** The window caps at
+500 items, inline diff previews cap at 30 lines per file, tool output
+files cap at 8 MB on disk. Nothing between the store and the socket
+counts bytes, so a row with thirty very long lines satisfies every
+check we have.
+
+Rules that follow, and hold for any future payload:
+
+- **Every count budget carries a byte budget.** A window admits rows
+  until either the row count or the encoded byte budget is reached,
+  whichever comes first. Count alone bounds reducer churn; bytes
+  alone bounds a small number of large rows. Both are needed and
+  neither substitutes.
+- **One oversized row is always admitted when the page is otherwise
+  empty**, or pagination stalls forever on a single item.
+- **Byte accounting charges what actually goes on the wire**,
+  including any row that appears twice in one payload.
+- **Elision ships with its recovery route in the same change.** A
+  truncated field carries a typed marker saying so, and the endpoint
+  that returns the full value lands with it, never "later". t3code
+  cut full MCP results from their payloads (12.2 MB → 546 KB) on the
+  stated promise of an on-demand detail endpoint and never built it,
+  turning an accepted temporary loss into a permanent one.
+- **Truncate at the wire boundary, not in storage.** The persisted
+  record stays complete; only the projection shrinks.
+
+### Wire budget enforcement
+
+The harness scenario is a real gate, modeled on t3code's: seed a
+deterministic heavy thread, drive one turn, and count actual socket
+bytes (headers included, compression negotiated exactly as in
+production), with separate ceilings for the cold snapshot and the
+live turn, plus the frame count. Theirs holds a 9 MB persisted tool
+result to 15.5 KB of total client-bound wire traffic and has never
+been raised. Budgets belong in that test rather than in logs or
+one-off measurements, so a regression fails locally before it ships.
+
+### What t3code did that we do not need, and what we do
+
+Their largest wins were architectural catch-up we already have.
+Their activity rows stored full tool payloads inline, so they built
+an allowlist projection to strip them on the way out (12.2 MB → 546
+KB for MCP results) and later a second one at ingestion, after
+discovering one 65 KB tool result had persisted 238.7 MB across 2,226
+streaming updates. Our payload bodies have always lived in a separate
+table behind an id, and items persist on completion rather than per
+update, so neither problem exists here. We also already have the
+partial-window guard they rate as their most valuable idea: an event
+for an item outside the loaded window must not be appended at the
+end. Ours is cursor-based in both directions and handles negative
+item indexes from head-healed prompts.
+
+Deliberately not adopted: their field-allowlist projection. It is
+only as correct as the inventory of fields the client reads, and that
+inventory decayed twice in production — once dropping the real status
+so failed tool calls rendered as successful, once matching tool
+identity on the wrong field so the dedupe silently fell back to
+comparing titles. A byte cap on a field we already know is heavy
+carries no such inventory.
+
+Worth taking beyond the byte budgets: dropping rows a snapshot does
+not need (they found 47k superseded tool-update rows in one database,
+and stale context-window rows were 24–37% of snapshot bytes), applied
+to snapshots only and never to live events, since the client folds
+live rows itself.
+
 Phase 6's phone work (subscription narrowing, buffered deltas, scope
 leases) is a net *reduction* in wire and CPU cost, not an addition.
 
@@ -1134,7 +1212,12 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    does the replica's missing lifecycle — nothing deletes a replica
    database today, and a backend-id change orphans the old one on the
    origin permanently — and §9's forward-tolerance obligation with
-   its future-dialect fixture.
+   its future-dialect fixture. Byte budgets land here too (§14): the
+   window gains a byte term alongside its row count, the heavy
+   metadata fields gain wire-boundary caps with typed markers and
+   their fetch route, and the counting harness scenario becomes the
+   gate. This is not remote-only work — the same 766 KB is parsed by
+   the renderer on every cold thread open today.
 2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
