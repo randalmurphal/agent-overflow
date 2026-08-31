@@ -498,7 +498,7 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		// worktree path until the user navigates. The caller's pane gets a
 		// redundant echo (the binding return already syncs it), which the
 		// pane store treats as idempotent.
-		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &t})
+		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
 		if _, err := a.restartSessionIfAffected(id, "workspace"); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session refresh failed: %w", id, err))
 			continue
