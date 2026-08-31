@@ -1368,6 +1368,44 @@ CREATE TABLE provider_thread_cost (
 		SQL:     removeDesignModeV72SQL,
 		Rebuild: true,
 	},
+	{
+		Version: 73,
+		Name:    "thread_created_by_device",
+		// Which screen started this thread. One backend now serves several
+		// clients, and a thread carries no record of where it came from.
+		//
+		// Creation only, never "last touched": a single column can hold one
+		// answer, and overwriting it on every mutation would destroy the
+		// provenance it exists to keep while still not being an audit trail
+		// (that needs a log, not a slot).
+		//
+		// NOT NULL DEFAULT '' so "unattributed" has one spelling, which is
+		// the honest value for every existing row and for every thread the
+		// backend creates on its own. A plain ADD COLUMN, so the FK-parent
+		// threads table is not rebuilt.
+		SQL: `ALTER TABLE threads ADD COLUMN created_by_device TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		Version: 74,
+		Name:    "thread_created_git_origin",
+		// The git coordinates of the workspace at the moment the thread was
+		// created: branch, remote URL, head commit.
+		//
+		// Recorded because they are unrecoverable later. A fork or a transfer
+		// needs to know which repository and which commit a thread grew from,
+		// and by then the branch has moved, the commit may have been rebased
+		// away, and the workspace may hold something else entirely. The live
+		// `branch` column answers a different question — it tracks the
+		// CHECKOUT and is rewritten whenever the working tree moves.
+		//
+		// Empty is a first-class value: a non-git workspace, a detached HEAD,
+		// a repository with no remote, and every pre-migration row all read
+		// as "not known", and no caller may treat empty as an error. Three
+		// plain ADD COLUMNs, no rebuild.
+		SQL: `ALTER TABLE threads ADD COLUMN created_branch TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN created_remote_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

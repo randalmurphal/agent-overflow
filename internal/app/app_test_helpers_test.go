@@ -52,7 +52,7 @@ func createTestThread(t *testing.T, a *App, providerName, workspacePath, model, 
 	if err != nil {
 		return store.Thread{}, err
 	}
-	return a.CreateThread(CreateThreadOptions{
+	return a.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: project.ID,
 		Provider:  providerName,
 		Model:     model,

@@ -978,6 +978,45 @@ an empty `provider_turn_id`.
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
 
+## Recent schema changes (v73, v74) — where a thread came from
+
+- `threads.created_by_device` (v73, `TEXT NOT NULL DEFAULT ''`) names the
+  screen that started a thread: the durable per-browser-profile device id the
+  connection carries (`transport.ClientIdentity`, parsed off the WebSocket
+  upgrade query). Empty means the backend created the thread itself — a
+  workflow phase, the harness RPC, a session import — which is a normal
+  answer, not a missing one.
+- It is **creation** attribution, not last-touched attribution, and that is a
+  decision rather than a shortcut. A column holds one answer: re-stamping it
+  on every mutation would overwrite the provenance it exists to keep and still
+  not produce a history, so a real "who changed what" record would be a log
+  table, not a column. Recording the DEVICE rather than the connection is the
+  matching choice — a connection id dies with the page load, which would make
+  the attribution expire on reload.
+- `threads.created_branch`, `threads.created_remote_url`,
+  `threads.created_head_commit` (v74, all `TEXT NOT NULL DEFAULT ''`) are the
+  workspace's git coordinates at the moment the thread was created, surfaced
+  on `store.Thread` as the `Origin` sub-struct. They exist so a thread can be
+  reproduced elsewhere later: by the time anyone asks, the branch has moved,
+  the commit may have been rebased away, and the workspace may hold something
+  else. `threads.branch` is a different question — the live checkout, which
+  moves with the working tree.
+- Empty is always "not known", never "none" and never an error. A workspace
+  outside a repository, a detached HEAD, a repo with no remote, and every row
+  created before v74 all read the same, and a consumer that needs the values
+  has to say so itself.
+- All four are write-once by the same mechanism as `import_source`: absent
+  from `updateThreadSetSQL`, classified in
+  `threadColumnsNotWrittenByUpdateThread`, and written only by `CreateThread`.
+  Plain `ADD COLUMN`s with no CHECK, so the FK-parent `threads` table is not
+  rebuilt.
+- The values are observed at the one moment they are true, by
+  `(*App).stampThreadCreation` / `(*App).observeThreadOrigin` and by the
+  `threadapp.Workspace` port's `ObserveOrigin`. Forgetting is structural, not
+  remembered: `TestEveryNewThreadRecordsWhereItCameFrom` (`internal/app`) scans
+  every thread-creating package for new-thread literals and fails any that
+  neither sets `Origin` nor carries a written reason.
+
 ## Recent schema changes (v50) — imported provider sessions
 
 - `threads.import_source` (`TEXT NOT NULL DEFAULT '' CHECK(import_source IN

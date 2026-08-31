@@ -2978,6 +2978,12 @@ export function ResizeTerminal(terminalID: string, rows: number, cols: number): 
 
 /**
  * RespondToApproval forwards an interactive response to the active provider session.
+ * 
+ * Several clients render the same prompt, so two of them can answer it. The
+ * router arbitrates: the loser gets transport.ErrAlreadyHandled and no
+ * failure event, because nothing failed — the question was answered without
+ * them, which is the state they wanted. Forwarding both answers would send
+ * the provider a second response for a request it has already resolved.
  */
 export function RespondToApproval(threadID: string, response: provider$0.ApprovalResponse): $CancellablePromise<void> {
     return $Call.ByID(1919237704, threadID, response);
@@ -2985,6 +2991,10 @@ export function RespondToApproval(threadID: string, response: provider$0.Approva
 
 /**
  * RespondToUserInput forwards structured answers to the active provider session.
+ * 
+ * Arbitrated the same way as RespondToApproval: a form two screens can both
+ * submit is answered once, and the second submitter is told it arrived second
+ * rather than handed a failure.
  */
 export function RespondToUserInput(threadID: string, response: provider$0.UserInputResponse): $CancellablePromise<void> {
     return $Call.ByID(1071592868, threadID, response);

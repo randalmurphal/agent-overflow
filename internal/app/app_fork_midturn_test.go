@@ -198,7 +198,7 @@ func TestForkThreadClaudeMidTurnTailPinsLazyCut(t *testing.T) {
 	seedMidTurnSourceRows(t, app.store, source.ID)
 	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread(mid-turn tail): %v", err)
 	}
@@ -332,7 +332,7 @@ func TestForkThreadClaudeMidTurnPinsLeafNotYetOnDisk(t *testing.T) {
 	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a2")
 
 	start := time.Now()
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread(mid-turn, leaf not on disk): %v", err)
 	}
@@ -375,7 +375,7 @@ func TestForkThreadClaudeMidTurnWithoutSessionFileStartsFresh(t *testing.T) {
 	}
 	openTurn(t, app.store, source.ID, source.ID+":0", 0)
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread(degenerate mid-turn): %v", err)
 	}
@@ -426,7 +426,7 @@ func TestForkThreadClaudeMidTurnAtActiveTurnBehavesAsTail(t *testing.T) {
 	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
 
 	atTurn := 1 // the ACTIVE turn
-	forked, err := app.ForkThread(source.ID, &atTurn)
+	forked, err := app.ForkThread(t.Context(), source.ID, &atTurn)
 	if err != nil {
 		t.Fatalf("ForkThread(at the active turn): %v", err)
 	}
@@ -494,7 +494,7 @@ func TestForkThreadCodexMidTurnTailForksWithNoBoundary(t *testing.T) {
 		t.Fatalf("InsertTurn(open): %v", err)
 	}
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread(codex mid-turn): %v", err)
 	}
@@ -573,7 +573,7 @@ func TestForkThreadFromMessageDuringActiveTurn(t *testing.T) {
 
 	// Fork from the mid-turn prompt: turn 0 survives whole, turn 1's
 	// prefix (nothing before the prompt) does not.
-	forked, err := app.ForkThreadFromMessage(source.ID, "src-u1")
+	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "src-u1")
 	if err != nil {
 		t.Fatalf("ForkThreadFromMessage(mid-turn): %v", err)
 	}
@@ -644,14 +644,14 @@ func TestForkThreadMidTurnAnchorOnAnItemlessActiveTurnIsATailFork(t *testing.T) 
 
 	// Above the in-flight turn: refused, same message as the idle path.
 	overshoot := 2
-	if _, err := app.ForkThread(source.ID, &overshoot); err == nil ||
+	if _, err := app.ForkThread(t.Context(), source.ID, &overshoot); err == nil ||
 		!strings.Contains(err.Error(), "exceeds source last turn") {
 		t.Fatalf("ForkThread(anchor above the in-flight turn) = %v, want an out-of-range refusal", err)
 	}
 
 	// Exactly the in-flight turn: a tail fork.
 	atTurn := 1
-	forked, err := app.ForkThread(source.ID, &atTurn)
+	forked, err := app.ForkThread(t.Context(), source.ID, &atTurn)
 	if err != nil {
 		t.Fatalf("ForkThread(anchor on the itemless active turn): %v", err)
 	}
@@ -704,7 +704,7 @@ func TestForkThreadClaudeMidTurnColdScanIOFailureFailsTheFork(t *testing.T) {
 		t.Fatalf("ListThreads(before): %v", err)
 	}
 
-	if _, err := app.ForkThread(source.ID, nil); err == nil {
+	if _, err := app.ForkThread(t.Context(), source.ID, nil); err == nil {
 		t.Fatal("ForkThread(unreadable transcript) succeeded — a read fault must fail the fork, not start a fresh thread")
 	} else if !strings.Contains(err.Error(), "scan claude session leaf") {
 		t.Fatalf("ForkThread error = %v, want the cold-scan failure", err)
@@ -758,7 +758,7 @@ func TestForkThreadClaudeBackgroundContinuationPinsLazyCut(t *testing.T) {
 	}
 	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread(background continuation): %v", err)
 	}
@@ -815,7 +815,7 @@ func TestForkThreadClaudeBackgroundContinuationAnchoredAtLastTurn(t *testing.T) 
 	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
 
 	atTurn := 1 // == LastTurnIndex; no open turn row to normalize against
-	forked, err := app.ForkThread(source.ID, &atTurn)
+	forked, err := app.ForkThread(t.Context(), source.ID, &atTurn)
 	if err != nil {
 		t.Fatalf("ForkThread(anchored at last turn, live session): %v", err)
 	}
@@ -1017,7 +1017,7 @@ func TestForkThreadClaudeMidTurnKeepsTriageWrittenSettledBackgroundWork(t *testi
 	openTurn(t, app.store, source.ID, source.ID+":1", 1)
 	attachLiveClaudeSession(t, app, source.ID, fixture.workspace, fixture.sessionID, "a1")
 
-	forked, err := app.ForkThread(source.ID, nil)
+	forked, err := app.ForkThread(t.Context(), source.ID, nil)
 	if err != nil {
 		t.Fatalf("ForkThread: %v", err)
 	}

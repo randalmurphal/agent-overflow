@@ -37,6 +37,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at, pin_group,
     worktree_setup_state, import_source,
+    created_by_device, created_branch, created_remote_url, created_head_commit,
 	EXISTS (
       SELECT 1
         FROM proposed_plans
@@ -188,6 +189,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
 		&t.WorktreeSetupState, &t.ImportSource,
+		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.RemoteURL, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
 		return Thread{}, err
@@ -271,8 +273,9 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
-		    created_at, updated_at, archived, last_read_at, import_source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    created_at, updated_at, archived, last_read_at, import_source,
+		    created_by_device, created_branch, created_remote_url, created_head_commit)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
@@ -282,6 +285,11 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, t.ImportSource,
+		// The write-once creation facts. They appear here and in
+		// threadColumns, and deliberately NOT in updateThreadSetSQL: a
+		// whole-row UpdateThread carrying a stale copy must not be able to
+		// blank a thread's provenance or its git origin.
+		t.CreatedByDevice, t.Origin.Branch, t.Origin.RemoteURL, t.Origin.HeadCommit,
 	)
 	return err
 }

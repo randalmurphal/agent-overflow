@@ -871,6 +871,10 @@ func (a *App) createWorkflowThread(spec workflowhost.ThreadSpec) (store.Thread, 
 	// sanitizeThreadModelSettings does not touch RuntimeMode (see its doc
 	// comment), so the access mapping set above survives it.
 	thread = a.sanitizeThreadModelSettings(thread)
+	// The engine runs this thread, so there is no screen to attribute it to:
+	// stampThreadCreation records the workspace's git coordinates and leaves
+	// the device empty, which is the true answer for engine-created work.
+	a.stampThreadCreation(context.Background(), &thread)
 	if err := a.store.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("workflow runner: create thread for %s: %w", spec.Label, err)
 	}
@@ -925,6 +929,7 @@ func (a *App) newWorkflowTriageThread(threadID string, project store.Project, wo
 		thread.WorktreePath = workspace
 		thread.Branch = branch
 	}
+	a.stampThreadCreation(context.Background(), &thread)
 	return a.sanitizeThreadModelSettings(thread)
 }
 

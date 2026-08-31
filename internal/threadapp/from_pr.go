@@ -19,14 +19,23 @@ type PullRequestPort interface {
 	EnsureProject(workspaceOrAnchor string) (store.Project, error)
 }
 
-func (s *Service) CreateFromPR(
-	project string,
-	number int,
-	providerName string,
-	model string,
-	forgeID string,
-	port PullRequestPort,
-) (store.Thread, error) {
+// PullRequestOptions is the request half of CreateFromPR. It replaces what
+// was a five-string positional list, so adding CreatedByDevice names the value
+// at the call site instead of adding a sixth same-typed slot to miscount.
+type PullRequestOptions struct {
+	Project  string
+	Number   int
+	Provider string
+	Model    string
+	Forge    string
+	// CreatedByDevice names the screen this call came from, or "" when the
+	// backend created the thread on its own behalf.
+	CreatedByDevice string
+}
+
+func (s *Service) CreateFromPR(opts PullRequestOptions, port PullRequestPort) (store.Thread, error) {
+	project, number, model := opts.Project, opts.Number, opts.Model
+	providerName := opts.Provider
 	database, err := s.database("create thread from pull request")
 	if err != nil {
 		return store.Thread{}, err
@@ -35,7 +44,7 @@ func (s *Service) CreateFromPR(
 	if err != nil {
 		return store.Thread{}, err
 	}
-	forgeID = strings.TrimSpace(forgeID)
+	forgeID := strings.TrimSpace(opts.Forge)
 	if forgeID == "" {
 		forgeID = "github"
 	}
@@ -96,6 +105,12 @@ func (s *Service) CreateFromPR(
 		RuntimeMode:     seed.RuntimeMode,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+		CreatedByDevice: opts.CreatedByDevice,
+		// A PR thread with no local clone has no workspace, so nothing to
+		// observe; observeOrigin reports that as unknown rather than guessing
+		// from the PR's own head, which names a branch on the forge that this
+		// machine may never have fetched.
+		Origin: s.observeOrigin(workspace),
 	}
 	if err := database.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("create thread from %s: %w", prthread.ForgeNounLong(forgeID), err)

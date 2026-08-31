@@ -287,14 +287,22 @@ func newImportedThread(
 	lastReadAt := updatedAt
 
 	return chatmodel.SanitizeThread(store.Thread{
-		ID:              uuid.NewString(),
-		ProjectID:       proj.ID,
-		ProjectPath:     proj.Path,
-		Title:           importedTitle(title),
-		Provider:        row.Provider,
-		Model:           profile.Model,
-		WorkspacePath:   row.ProjectPath,
-		Branch:          row.GitBranch,
+		ID:            uuid.NewString(),
+		ProjectID:     proj.ID,
+		ProjectPath:   proj.Path,
+		Title:         importedTitle(title),
+		Provider:      row.Provider,
+		Model:         profile.Model,
+		WorkspacePath: row.ProjectPath,
+		Branch:        row.GitBranch,
+		// Creation provenance stays empty by design. The session already
+		// happened, on a machine and at a commit this import cannot recover:
+		// the provider session file records the branch (above) and nothing
+		// else, and observing the workspace now would stamp today's head onto
+		// a thread that ran months ago. Empty reads as "not known", which is
+		// exactly what is true here.
+		Origin:          store.ThreadOrigin{},
+		CreatedByDevice: "",
 		Mode:            threadmode.DefaultCreateMode,
 		ReasoningEffort: profile.ReasoningEffort,
 		ContextWindow:   profile.ContextWindow,

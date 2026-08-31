@@ -70,6 +70,10 @@ func (p threadWorkspacePort) CurrentBranch(workspacePath string) string {
 	return p.app.gitCore().CurrentBranch(workspacePath)
 }
 
+func (p threadWorkspacePort) ObserveOrigin(workspacePath string) store.ThreadOrigin {
+	return p.app.observeThreadOrigin(workspacePath)
+}
+
 func (p threadWorkspacePort) FindWorktree(projectPath, candidate string) (string, string, bool, error) {
 	worktree, found, err := p.app.findWorktree(projectPath, candidate)
 	return worktree.Path, worktree.Branch, found, err

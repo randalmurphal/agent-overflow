@@ -15,7 +15,7 @@ func TestAppDeleteProjectReturnsThreadIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	thread, err := app.CreateThread(CreateThreadOptions{
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: p.ID,
 		Provider:  "claude",
 		Model:     "claude-sonnet-4-6",
@@ -81,7 +81,7 @@ func TestAppDeleteProjectRejectsRunningThread(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CreateProject: %v", err)
 			}
-			thread, err := app.CreateThread(CreateThreadOptions{
+			thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 				ProjectID: p.ID,
 				Provider:  "claude",
 				Model:     "claude-sonnet-4-6",
@@ -118,7 +118,7 @@ func TestAppDeleteProjectTeardownFailureKeepsProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	thread, err := app.CreateThread(CreateThreadOptions{
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: p.ID,
 		Provider:  "claude",
 		Model:     "claude-sonnet-4-6",
@@ -142,7 +142,7 @@ func TestAppDeleteProjectTeardownFailureKeepsProject(t *testing.T) {
 
 func TestAppCreateThreadRequiresProjectID(t *testing.T) {
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThread(CreateThreadOptions{})
+	_, err := app.CreateThread(t.Context(), CreateThreadOptions{})
 	if err == nil {
 		t.Fatal("CreateThread() error = nil, want projectId required")
 	}
@@ -158,7 +158,7 @@ func TestAppCreateThreadResolvesProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	thread, err := app.CreateThread(CreateThreadOptions{
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: p.ID,
 		// Provider intentionally empty; should fall back to settings default.
 	})

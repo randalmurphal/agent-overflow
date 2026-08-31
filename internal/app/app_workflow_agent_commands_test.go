@@ -90,7 +90,7 @@ func interactiveScope(fixture *toolWorkflowFixture, threadID string) transport.C
 
 func TestWorkflowAgentStartRunBindsAnInteractiveThread(t *testing.T) {
 	fixture := newCLIFixture(t)
-	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+	thread, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
 	})
 	if err != nil {
@@ -343,7 +343,7 @@ func TestAgentRunStatusNamesTheParentAndTheFailedUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+	thread, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
 	})
 	if err != nil {
@@ -429,7 +429,7 @@ func TestAnInteractiveScopeActsOnDescendantRunsAndAPhaseScopeDoesNot(t *testing.
 		t.Fatal(err)
 	}
 
-	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+	thread, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
 	})
 	if err != nil {
@@ -488,7 +488,7 @@ func TestResolvingAParkIsConfinedToWhatAPhaseStarted(t *testing.T) {
 	}
 	waitForWorkflowItem(t, fixture.app, foreign.ID, engine.StateDone, "")
 
-	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+	thread, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
 	})
 	if err != nil {
@@ -609,7 +609,7 @@ func TestAgentRunStatusReportsPerAttemptProvenance(t *testing.T) {
 		}
 	}
 
-	thread2, err := fixture.app.CreateThread(CreateThreadOptions{
+	thread2, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
 	})
 	if err != nil {
@@ -751,7 +751,7 @@ func TestWorkflowAgentMethodsRequireAScope(t *testing.T) {
 
 func TestWorkflowComposerBlockRendersTheProjectSurface(t *testing.T) {
 	fixture := newCLIFixture(t)
-	thread, err := fixture.app.CreateThread(CreateThreadOptions{
+	thread, err := fixture.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: fixture.project.ID, Provider: "claude", Model: "claude-opus-4-7",
 	})
 	if err != nil {

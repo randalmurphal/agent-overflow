@@ -41,7 +41,7 @@ func newProjectDeleteFixture(t *testing.T, itemID string) *projectDeleteFixture 
 		phaseID:        "run",
 	}
 
-	chatThread, err := base.app.CreateThread(CreateThreadOptions{
+	chatThread, err := base.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: base.project.ID, Provider: "claude", Model: "claude-sonnet-4-6",
 	})
 	if err != nil {
@@ -49,7 +49,7 @@ func newProjectDeleteFixture(t *testing.T, itemID string) *projectDeleteFixture 
 	}
 	fixture.chatThread = chatThread
 
-	phaseThread, err := base.app.CreateThread(CreateThreadOptions{
+	phaseThread, err := base.app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: base.project.ID, Provider: "claude", Model: "claude-sonnet-4-6",
 	})
 	if err != nil {

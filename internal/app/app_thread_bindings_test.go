@@ -39,7 +39,7 @@ func TestGetThreadDefaultsDoesNotLoadColdCodexCatalog(t *testing.T) {
 	if defaults.Provider != profile.Provider || defaults.Model != profile.Model {
 		t.Fatalf("defaults provider/model = %s/%s, want stored %s/%s", defaults.Provider, defaults.Model, profile.Provider, profile.Model)
 	}
-	if _, err := app.CreateThread(CreateThreadOptions{ProjectID: defaultTestProjectID, Provider: defaults.Provider, Model: defaults.Model}); err != nil {
+	if _, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: defaultTestProjectID, Provider: defaults.Provider, Model: defaults.Model}); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	if calls != 1 {
@@ -172,7 +172,7 @@ func TestStartTerminalPerProjectRootsAtProjectPath(t *testing.T) {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
 	}
 
-	term, err := app.StartTerminal(StartTerminalOptions{ProjectID: project.ID})
+	term, err := app.StartTerminal(t.Context(), StartTerminalOptions{ProjectID: project.ID})
 	if err != nil {
 		t.Fatalf("StartTerminal: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestStartTerminalStandaloneRootsAtHome(t *testing.T) {
 		t.Skipf("no home directory available: %v", err)
 	}
 
-	term, err := app.StartTerminal(StartTerminalOptions{})
+	term, err := app.StartTerminal(t.Context(), StartTerminalOptions{})
 	if err != nil {
 		t.Fatalf("StartTerminal: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestStartTerminalCwdOverrideAndCustomTitle(t *testing.T) {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
 	}
 
-	term, err := app.StartTerminal(StartTerminalOptions{
+	term, err := app.StartTerminal(t.Context(), StartTerminalOptions{
 		ProjectID: project.ID,
 		Cwd:       "/tmp/term-cwd-proj/sub",
 		Title:     "Logs",
@@ -266,7 +266,7 @@ func TestStartTerminalCwdOverrideAndCustomTitle(t *testing.T) {
 
 func TestStartTerminalRejectsUnknownProject(t *testing.T) {
 	app := newTestAppWithStore(t)
-	if _, err := app.StartTerminal(StartTerminalOptions{ProjectID: "does-not-exist"}); err == nil {
+	if _, err := app.StartTerminal(t.Context(), StartTerminalOptions{ProjectID: "does-not-exist"}); err == nil {
 		t.Fatal("StartTerminal(unknown project) error = nil, want resolve error")
 	}
 }
@@ -438,7 +438,7 @@ func TestCreateThreadRejectsUnsupportedExplicitFastMode(t *testing.T) {
 	}
 	fast := true
 
-	_, err = app.CreateThread(CreateThreadOptions{
+	_, err = app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:         project.ID,
 		Provider:          "codex",
 		Model:             "gpt-5.4-mini",
@@ -477,7 +477,7 @@ func TestCreateThreadRejectsUnsupportedContextWindow(t *testing.T) {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
 	}
 
-	_, err = app.CreateThread(CreateThreadOptions{
+	_, err = app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:     project.ID,
 		Provider:      "codex",
 		Model:         "gpt-5.4-mini",
@@ -537,7 +537,7 @@ func TestUpdateNewThreadDefaultsPersistsProfileForFutureThreads(t *testing.T) {
 		t.Fatalf("defaults RuntimeMode = %q, want approval-required", defaults.RuntimeMode)
 	}
 
-	thread, err := app.CreateThread(CreateThreadOptions{
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID: project.ID,
 		Provider:  "codex",
 		Model:     "gpt-5.4",
