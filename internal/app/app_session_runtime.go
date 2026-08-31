@@ -76,6 +76,7 @@ func (m sessionManager) idleCandidates(cutoffNano int64) []string {
 func (m sessionManager) takeIdle(threadID string, cutoffNano int64) (session, bool) {
 	return m.runtime.TakeIdle(threadID, cutoffNano)
 }
+func (m sessionManager) snapshot() map[string]session         { return m.runtime.Snapshot() }
 func (m sessionManager) snapshotAndClear() map[string]session { return m.runtime.SnapshotAndClear() }
 
 type sessionStart = sessionruntime.Start

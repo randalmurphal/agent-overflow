@@ -910,6 +910,7 @@ func (p *privilegedApp) CleanCodexBackgroundTerminals() string { return "ok" }
 
 func (p *privilegedApp) TerminateCodexBackgroundTerminal() string { return "ok" }
 func (p *privilegedApp) StopCodexSubagent() string                { return "ok" }
+func (p *privilegedApp) StopThreadBackgroundWork() string         { return "ok" }
 func (p *privilegedApp) StartCodexReview() string                 { return "ok" }
 func (p *privilegedApp) CompactCodexThread() string               { return "ok" }
 func (p *privilegedApp) GetThreadContextUsage() string            { return "ok" }

@@ -184,15 +184,8 @@ func (a *App) ListArchivedThreads() ([]store.Thread, error) {
 // GetThread returns a single thread row.
 func (a *App) GetThread(id string) (store.Thread, error) { return a.threadApplication().Get(id) }
 
-// ArchiveThread flips archived to true so the thread leaves the active sidebar.
-func (a *App) ArchiveThread(id string) error { return a.threadApplication().Archive(id) }
-
-// UnarchiveThread flips archived back to false so the thread reappears in the
-// active sidebar. Returns the refreshed row so the caller can re-render
-// without a follow-up GetThread round-trip.
-func (a *App) UnarchiveThread(id string) (store.Thread, error) {
-	return a.threadApplication().Unarchive(id)
-}
+// ArchiveThread / UnarchiveThread live in app_thread_archive.go: archiving
+// also releases the thread's host resources, which is more than a row flip.
 
 // RenameThread updates the thread title and emits a thread:updated
 // event so any other observer (chat header, multi-tab clients, future

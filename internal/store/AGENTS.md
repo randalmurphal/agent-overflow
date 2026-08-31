@@ -1309,10 +1309,13 @@ before changing a write path.
 - **`ListLiveBackgroundTasks` is the one read that does not share that
   filter**, because it lists by backgrounded ANCESTRY
   ([invariant 24](../../docs/architecture/invariants.md#24-backgrounded-work-outlives-its-launching-turn),
-  `docs/specs/agent-visibility.md` Q8). It is the DISPLAY query only: the
-  reaper and the flush-queue gates keep `parent_id = ''`, because whether
-  the tray SHOWS a nested background Bash and whether that Bash blocks the
-  queue are different questions.
+  `docs/specs/agent-visibility.md` Q8). The reaper and the flush-queue
+  gates keep `parent_id = ''`, because whether a nested background Bash is
+  LISTED and whether it blocks the queue are different questions. Its
+  callers are the tray and `App.ListRunningBackgroundWork`, the
+  cross-thread inventory; both go through `App.ListLiveBackgroundTasks`,
+  which unions this query with two sources that are not in any table, so a
+  new cross-thread reader must not call this one directly.
 - **`subagentLaunchFilterFor(alias)` is structural, never a tool-name
   list**: a `tool_call` with at least one visible child attributed to it,
   which is what keeps it provider-neutral. The alias argument is MANDATORY,

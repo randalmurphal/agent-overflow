@@ -70,6 +70,7 @@ export {
     RemoteEndpointSummary,
     RetainedWorktree,
     RevertAndResendOptions,
+    RunningBackgroundWork,
     SendDiffReviewCommentsInput,
     SendMessageOptions,
     SourceDiffReview,

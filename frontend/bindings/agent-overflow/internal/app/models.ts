@@ -3038,6 +3038,77 @@ export class RevertAndResendOptions {
     }
 }
 
+/**
+ * RunningBackgroundWork is one live background task, attributed to the
+ * thread that owns it.
+ * 
+ * The payload is deliberately narrower than the tray's `store.Item`: no
+ * meta blob, no payload ids, no completion siblings. An inventory
+ * answers which thread, what, and since when — the tray's richer row is
+ * what a client asks for once it has navigated somewhere.
+ */
+export class RunningBackgroundWork {
+    "threadId": string;
+    "threadTitle": string;
+    "projectId"?: string;
+    "provider": string;
+
+    /**
+     * Kind selects the stop RPC; StopID is the handle that RPC takes.
+     * An empty StopID means this task has no per-task handle — stopping
+     * it goes through StopThreadBackgroundWork or the session itself.
+     */
+    "kind": string;
+    "stopId"?: string;
+
+    /**
+     * ItemID is the timeline row, so a client can navigate to the task
+     * rather than only stop it. ParentItemID carries the nesting the
+     * tray indents by.
+     */
+    "itemId": string;
+    "parentItemId"?: string;
+    "toolName"?: string;
+    "summary"?: string;
+
+    /**
+     * StartedAt is the launch row's created_at, in Unix milliseconds.
+     */
+    "startedAt": number;
+
+    /** Creates a new RunningBackgroundWork instance. */
+    constructor($$source: Partial<RunningBackgroundWork> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("threadTitle" in $$source)) {
+            this["threadTitle"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RunningBackgroundWork instance from a string or object.
+     */
+    static createFrom($$source: any = {}): RunningBackgroundWork {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RunningBackgroundWork($$parsedSource as Partial<RunningBackgroundWork>);
+    }
+}
+
 export class SendDiffReviewCommentsInput {
     "pr"?: store$0.DiffReviewPRContext | null;
 
