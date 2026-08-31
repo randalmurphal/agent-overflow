@@ -348,8 +348,8 @@ func (s *Sessions) reissue(session store.Session, now int64) (TokenSet, error) {
 	if err != nil {
 		return TokenSet{}, fmt.Errorf("identity: reissue: read device: %w", err)
 	}
-	policy := PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass))
-	expiresAt := now + policy.Access.Milliseconds()
+	expiresAt := now + PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass)).
+		Access.Milliseconds()
 	if _, err := s.store.ExtendSession(session.ID, expiresAt, now); err != nil {
 		return TokenSet{}, err
 	}
@@ -362,7 +362,7 @@ func (s *Sessions) reissue(session store.Session, now int64) (TokenSet, error) {
 		return TokenSet{}, fmt.Errorf("identity: reissue: read session: %w", err)
 	}
 	s.rememberAt(generation, extended)
-	return s.issueFor(extended, policy, now)
+	return s.issueFor(extended, device, now)
 }
 
 // issueFor signs the access credential for a session row and, when the
@@ -370,7 +370,26 @@ func (s *Sessions) reissue(session store.Session, now int64) (TokenSet, error) {
 //
 // The refresh secret is written BEFORE the credential is returned, so a
 // device never holds a credential whose renewal path does not exist yet.
-func (s *Sessions) issueFor(session store.Session, policy TokenPolicy, now int64) (TokenSet, error) {
+//
+// It is the ONE function in this package that builds a TokenSet, which is
+// what makes it the place the device half of the conjunction is enforced
+// at issuance (docs/specs/remote-access.md §2). Two consequences of that
+// shape are deliberate:
+//
+//   - it takes the DEVICE ROW, not a policy. Every caller derived the
+//     policy from the same two values anyway, and passing the row means a
+//     caller cannot hand this function a policy from one device and a
+//     session from another — nor issue without having read a device at all.
+//   - the refusal is hygiene, not the enforcement. A revocation can land
+//     the instant after this check, so what actually makes such a
+//     credential worthless is that every consult re-asks (Sessions.Live).
+//     Refusing here is what stops one being HANDED OUT in the first place.
+func (s *Sessions) issueFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+	if device.RevokedAt != 0 {
+		return TokenSet{}, fmt.Errorf("identity: issue for session %s: %w",
+			session.ID, store.ErrDeviceRevoked)
+	}
+	policy := PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass))
 	key, err := s.signingKeyByID(session.SigningKeyID)
 	if err != nil {
 		return TokenSet{}, err

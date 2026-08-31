@@ -292,12 +292,12 @@ func TestRevokeDeviceEndsEverySessionItHeld(t *testing.T) {
 	closer := &recordingConns{}
 	sessions.AttachConns(closer)
 
-	ids, err := sessions.RevokeDevice(device.ID)
+	revoked, err := sessions.RevokeDevice(device.ID)
 	if err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
-	if len(ids) != 2 {
-		t.Fatalf("RevokeDevice returned %v, want both sessions", ids)
+	if !revoked.DeviceMoved || revoked.SessionsEnded != 2 {
+		t.Fatalf("RevokeDevice returned %+v, want the device and both sessions", revoked)
 	}
 	for _, credential := range []string{firstCredential, secondCredential} {
 		if _, reason := sessions.Verify(credential); reason != ReasonRevokedSession {

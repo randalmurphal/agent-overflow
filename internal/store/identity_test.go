@@ -404,8 +404,11 @@ func TestRevokeDeviceClosesItsSessionsInOneWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
-	if len(ids) != 1 || ids[0] != "sess-a" {
-		t.Fatalf("RevokeDevice returned %v, want [sess-a]", ids)
+	if len(ids.SessionIDs) != 1 || ids.SessionIDs[0] != "sess-a" {
+		t.Fatalf("RevokeDevice returned %v, want [sess-a]", ids.SessionIDs)
+	}
+	if !ids.DeviceMoved {
+		t.Fatal("RevokeDevice did not report the device row moving")
 	}
 	read, err := s.GetDevice(device.ID)
 	if err != nil {
@@ -421,13 +424,15 @@ func TestRevokeDeviceClosesItsSessionsInOneWrite(t *testing.T) {
 	if len(live) != 1 || live[0].ID != "sess-other" {
 		t.Fatalf("live sessions after device revoke = %v, want only sess-other", live)
 	}
-	// A second revocation is a no-op and reports nothing to close.
+	// A second revocation finds no un-revoked session, so it sweeps
+	// nothing — and says the device row did not move, which is what lets a
+	// caller report "already revoked, nothing was live" honestly.
 	again, err := s.RevokeDevice(device.ID, 3000)
 	if err != nil {
 		t.Fatalf("second RevokeDevice: %v", err)
 	}
-	if len(again) != 0 {
-		t.Fatalf("second RevokeDevice reported %v, want nothing", again)
+	if len(again.SessionIDs) != 0 || again.DeviceMoved {
+		t.Fatalf("second RevokeDevice reported %+v, want nothing moved", again)
 	}
 }
 

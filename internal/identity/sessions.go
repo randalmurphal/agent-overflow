@@ -165,6 +165,12 @@ type MintRequest struct {
 //
 // The session id is minted here rather than by the store because the same
 // id is signed into the claims; two independent mints could not agree.
+//
+// It is the only caller of store.CreateSession, which is what makes it the
+// single mint chokepoint for a session ROW — and the device gate lives
+// inside that statement rather than as a read here (see CreateSession).
+// A revoked device therefore fails the write itself, so a mint path added
+// later inherits the refusal instead of having to restate it.
 func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 	if !req.BindingClass.Valid() {
 		return store.Session{}, "", fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
@@ -206,7 +212,7 @@ func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 		return store.Session{}, "", err
 	}
 	if err := s.store.CreateSession(session); err != nil {
-		return store.Session{}, "", err
+		return store.Session{}, "", fmt.Errorf("identity: mint session: %w", err)
 	}
 	s.rememberKey(key)
 	s.audit(store.AuthAuditEntry{
@@ -272,6 +278,33 @@ func (s *Sessions) Verify(credential string) (store.Session, Reason) {
 // Nothing here reads state captured when a connection was upgraded. That
 // is the point: a revocation must reach a connection that is already open,
 // and it can only do so if every call re-asks.
+//
+// # The conjunction, and why it costs nothing per call
+//
+// A session is live only while its own row AND its device's row are both
+// unrevoked (docs/specs/remote-access.md §2, "Revocation is absolute").
+// Both halves are answered from ONE row: `sessionSelect` joins the device
+// and `store.Session.Live` folds its revocation stamp in, so the fast path
+// gained a second integer comparison and no second lookup, no second round
+// trip, and no device cache to keep coherent.
+//
+// The entry a hit reads carries the device stamp as it stood when the
+// entry was installed, and three things keep that from going stale:
+//
+//   - a device revocation sweeps every un-revoked session the device holds
+//     and forgets each one, so no entry for it survives (RevokeDevice);
+//   - a device revocation moves the generation UNCONDITIONALLY, so a slow
+//     path already in flight — one that read the rows before the
+//     revocation committed and would install a stamp of zero — declines to
+//     install;
+//   - a session row that appears after the sweep has no entry at all, so
+//     its first consult is a slow path, and the row it reads carries the
+//     revocation.
+//
+// That last case is the one the incident turned on. A device-liveness bit
+// resolved separately, or a set of revoked device ids consulted per call,
+// would both have to answer it with extra state; joining the stamp onto
+// the row answers it with the read that was already happening.
 func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 	if sessionID == "" {
 		return store.Session{}, ReasonUnknownSession
@@ -301,6 +334,13 @@ func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 	}
 	if session.RevokedAt != 0 {
 		return store.Session{}, ReasonRevokedSession
+	}
+	// Before expiry and before the confirmation gate: a revoked device is
+	// the most specific true thing about this credential, and it is the one
+	// with a different remedy (restore the device, then redeem a fresh
+	// link) than either of them.
+	if session.DeviceRevokedAt != 0 {
+		return store.Session{}, ReasonRevokedDevice
 	}
 	if session.ExpiresAt <= now {
 		return store.Session{}, ReasonExpiredSession
@@ -370,30 +410,65 @@ func (s *Sessions) RevokeSession(sessionID string) (bool, error) {
 	return moved, nil
 }
 
+// DeviceRevocation is what one RevokeDevice did, for a surface that has to
+// report it honestly: "revoked, 2 sessions ended, 1 connection closed" and
+// "already revoked, nothing was live" are different answers and a person
+// acting on a lost device needs to be told which one they got.
+type DeviceRevocation struct {
+	// DeviceMoved is false when the device row was already revoked, or
+	// names no row at all.
+	DeviceMoved bool
+	// SessionsEnded is how many un-revoked sessions this call swept.
+	SessionsEnded int
+	// ConnectionsClosed is how many live sockets it force-closed.
+	ConnectionsClosed int
+}
+
 // RevokeDevice ends a device and every session it holds. The store writes
 // both in one transaction and hands back the sessions that moved, so this
 // cannot leave a revoked device holding a live credential.
-func (s *Sessions) RevokeDevice(deviceID string) ([]string, error) {
+//
+// The three steps are RevokeSession's three, for the same reasons: rows,
+// then fast path, then sockets. Two rules are specific to devices:
+//
+//   - **Re-revoking re-sweeps.** The store no longer returns early on an
+//     already-revoked device, so a session that appeared after an earlier
+//     sweep is ended by the next revoke rather than being unreachable
+//     through this surface forever (incident 2026-08-31).
+//   - **The generation moves even when nothing was swept.** It is the
+//     device row that changed, and a Live() slow path already in flight may
+//     be holding a joined row whose device stamp is now stale. Moving the
+//     generation is what makes that read decline to install it. Bumping
+//     only per swept session — which is what a loop over `forget` does —
+//     would leave exactly the zero-session case, the straggler case,
+//     unguarded.
+func (s *Sessions) RevokeDevice(deviceID string) (DeviceRevocation, error) {
 	if deviceID == "" {
-		return nil, nil
+		return DeviceRevocation{}, nil
 	}
-	sessionIDs, err := s.store.RevokeDevice(deviceID, s.now().UnixMilli())
+	revoked, err := s.store.RevokeDevice(deviceID, s.now().UnixMilli())
 	if err != nil {
-		return nil, err
+		return DeviceRevocation{}, err
 	}
+	s.forgetAll(revoked.SessionIDs)
 	closed := 0
-	for _, id := range sessionIDs {
-		s.forget(id)
+	for _, id := range revoked.SessionIDs {
 		closed += s.closeConns(id)
 	}
-	if len(sessionIDs) > 0 {
+	result := DeviceRevocation{
+		DeviceMoved:       revoked.DeviceMoved,
+		SessionsEnded:     len(revoked.SessionIDs),
+		ConnectionsClosed: closed,
+	}
+	if revoked.DeviceMoved || result.SessionsEnded > 0 {
 		s.audit(store.AuthAuditEntry{
 			Event: string(AuditDeviceRevoked), Outcome: store.AuthAuditOutcomeAllowed,
 			DeviceID: deviceID,
-			Detail:   fmt.Sprintf("revoked %d sessions, closed %d connections", len(sessionIDs), closed),
+			Detail: fmt.Sprintf("device moved: %t, revoked %d sessions, closed %d connections",
+				revoked.DeviceMoved, result.SessionsEnded, closed),
 		})
 	}
-	return sessionIDs, nil
+	return result, nil
 }
 
 // RestoreDevice re-admits a revoked device's key to pairing. Its sessions
@@ -438,6 +513,20 @@ func (s *Sessions) RecordRefusal(reason Reason, peer, sessionID string) {
 func (s *Sessions) forget(sessionID string) {
 	s.mu.Lock()
 	delete(s.live, sessionID)
+	s.generation++
+	s.mu.Unlock()
+}
+
+// forgetAll drops a set of sessions in ONE lock hold and moves the
+// generation ONCE — including for an empty set, which is the case that
+// matters. A device revocation with nothing to sweep still invalidates
+// every slow-path read in flight, because what changed is the device row
+// those reads joined.
+func (s *Sessions) forgetAll(sessionIDs []string) {
+	s.mu.Lock()
+	for _, id := range sessionIDs {
+		delete(s.live, id)
+	}
 	s.generation++
 	s.mu.Unlock()
 }

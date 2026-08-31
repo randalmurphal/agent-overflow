@@ -104,25 +104,46 @@ type Session struct {
 	// confirm the pairing verification number (v76). Every directly minted
 	// session carries the moment it was created, because nothing gates it.
 	ActivatedAt int64 `json:"activatedAt,omitempty"`
+	// DeviceRevokedAt is the DEVICE row's revocation stamp, joined in by
+	// every read (sessionSelect). Derived, never written: CreateSession
+	// ignores whatever a caller puts here.
+	//
+	// It rides on the session because "live" is the conjunction of both
+	// rows and one predicate has to be able to answer it. A session whose
+	// device was revoked is exactly as unusable as one revoked itself, and
+	// a second check somewhere else is one a later call path forgets —
+	// the same argument ActivatedAt already carries.
+	DeviceRevokedAt int64 `json:"deviceRevokedAt,omitempty"`
 }
 
 // Live reports whether this row would admit a presentation at now (Unix
-// millis) — activated, not revoked, not past its expiry. The claims still
-// have to verify separately; this answers the row half only.
+// millis) — activated, neither it nor its device revoked, not past its
+// expiry. The claims still have to verify separately; this answers the row
+// half only.
 //
-// Activation is checked HERE rather than at the call sites that care,
-// because a session awaiting confirmation is exactly as unusable as a
-// revoked one and must be refused by the same predicate. A second check
-// somewhere else is one a later call path forgets.
+// All four are checked HERE rather than at the call sites that care,
+// because a session awaiting confirmation, a session whose device the
+// owner revoked, and a revoked session are equally unusable and must be
+// refused by the same predicate. A second check somewhere else is one a
+// later call path forgets.
+//
+// The device half is spec §2's "Revocation is absolute": a session row
+// that outlives its device's revocation is inert by definition rather than
+// a standing credential, whatever produced it.
 func (s Session) Live(now int64) bool {
-	return s.ActivatedAt != 0 && s.RevokedAt == 0 && s.ExpiresAt > now
+	return s.ActivatedAt != 0 && s.RevokedAt == 0 && s.DeviceRevokedAt == 0 && s.ExpiresAt > now
 }
 
 // AwaitingConfirmation reports whether this row exists but has not been
 // confirmed yet, which is the one refusal `Live` produces that has an
 // action attached: confirm the verification number on the device that
 // minted the pairing link.
-func (s Session) AwaitingConfirmation() bool { return s.ActivatedAt == 0 && s.RevokedAt == 0 }
+//
+// A revoked device has no such action — restoring it and redeeming a fresh
+// link is a different exchange — so it answers false there too.
+func (s Session) AwaitingConfirmation() bool {
+	return s.ActivatedAt == 0 && s.RevokedAt == 0 && s.DeviceRevokedAt == 0
+}
 
 // SigningKey is one HMAC secret the claims codec signs and verifies with.
 // The active key is the newest row; older rows stay so credentials minted
@@ -178,8 +199,21 @@ const userColumns = `id, display_name, role, created_at, disabled_at`
 const deviceColumns = `id, user_id, label, class, platform, key_thumbprint,
 	passkey_credential_id, channel, created_at, last_seen_at, revoked_at, proof_kind`
 
-const sessionColumns = `id, user_id, device_id, binding_class, scopes,
-	signing_key_id, created_at, expires_at, revoked_at, last_seen_at, activated_at`
+// sessionSelect is the ONE way a session row is read, and the join is
+// load-bearing: a session's liveness is the conjunction of its own row and
+// its DEVICE's (docs/specs/remote-access.md §2, "Revocation is absolute"),
+// so the device's revocation stamp travels with every row rather than
+// being a second read each caller has to remember.
+//
+// INNER JOIN is total — `sessions.device_id` is `NOT NULL REFERENCES
+// devices(id)` and the connection enforces foreign keys (dsn.go) — so it
+// drops nothing. A query that reached `sessions` without it would fail to
+// scan rather than silently report every device as live, which is what
+// makes the column count the enforcement.
+const sessionSelect = `SELECT s.id, s.user_id, s.device_id, s.binding_class, s.scopes,
+	s.signing_key_id, s.created_at, s.expires_at, s.revoked_at, s.last_seen_at,
+	s.activated_at, d.revoked_at
+	FROM sessions s JOIN devices d ON d.id = s.device_id`
 
 const authAuditColumns = `id, at, event, outcome, reason, user_id, device_id,
 	session_id, peer, detail`
@@ -523,8 +557,20 @@ func (s *Store) TouchDevice(deviceID string, at int64) (bool, error) {
 	return rows > 0, nil
 }
 
+// DeviceRevocation is what one RevokeDevice actually did.
+type DeviceRevocation struct {
+	// DeviceMoved is false when the device row was already revoked — or
+	// does not exist. A revoke that moved nothing is not a failure; it is
+	// the answer a caller has to be able to report honestly.
+	DeviceMoved bool
+	// SessionIDs are the sessions this call revoked. Never a subset: it is
+	// every un-revoked session the device held at this instant, whether or
+	// not the device row itself moved.
+	SessionIDs []string
+}
+
 // RevokeDevice marks a device revoked and revokes every session it still
-// holds, in ONE transaction, returning the session ids that moved.
+// holds, in ONE transaction, returning what moved.
 //
 // The two halves cannot be separate calls. A device marked revoked whose
 // sessions are still live is a credential that keeps working, and a caller
@@ -533,54 +579,59 @@ func (s *Store) TouchDevice(deviceID string, at int64) (bool, error) {
 // force-closes, so a partial write cannot leave a connection open under a
 // credential the database says is dead.
 //
-// Returns nil ids when the device was already revoked.
-func (s *Store) RevokeDevice(deviceID string, at int64) ([]string, error) {
+// **An already-revoked device still gets swept.** The device UPDATE's row
+// count says whether the DEVICE moved and nothing more; it is deliberately
+// not a reason to skip the sessions. This function used to return early
+// there, on the theory that a prior revocation had already closed
+// everything — which made every later revoke a silent no-op and left one
+// session on a revoked device reachable by nothing (incident 2026-08-31).
+// It is the same doctrine RevokeSession already carries: a credential that
+// survived a first revocation is exactly the one worth revoking again.
+//
+// A device id that names no row answers an empty result rather than an
+// error. There is nothing to revoke and nothing to say about it.
+func (s *Store) RevokeDevice(deviceID string, at int64) (DeviceRevocation, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: revoke device: %w", err)
+		return DeviceRevocation{}, fmt.Errorf("store: revoke device: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	result, err := tx.Exec(
 		`UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, at, deviceID)
 	if err != nil {
-		return nil, fmt.Errorf("store: revoke device: %w", err)
+		return DeviceRevocation{}, fmt.Errorf("store: revoke device: %w", err)
 	}
 	moved, err := result.RowsAffected()
 	if err != nil {
-		return nil, fmt.Errorf("store: revoke device: rows affected: %w", err)
-	}
-	if moved == 0 {
-		// Already revoked, or no such device. Either way nothing to close:
-		// a prior revocation already closed what it found.
-		return nil, nil
+		return DeviceRevocation{}, fmt.Errorf("store: revoke device: rows affected: %w", err)
 	}
 
 	rows, err := tx.Query(
 		`UPDATE sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL
 		 RETURNING id`, at, deviceID)
 	if err != nil {
-		return nil, fmt.Errorf("store: revoke device sessions: %w", err)
+		return DeviceRevocation{}, fmt.Errorf("store: revoke device sessions: %w", err)
 	}
 	var sessionIDs []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("store: revoke device sessions: %w", err)
+			return DeviceRevocation{}, fmt.Errorf("store: revoke device sessions: %w", err)
 		}
 		sessionIDs = append(sessionIDs, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, fmt.Errorf("store: revoke device sessions: %w", err)
+		return DeviceRevocation{}, fmt.Errorf("store: revoke device sessions: %w", err)
 	}
 	rows.Close()
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: revoke device: commit: %w", err)
+		return DeviceRevocation{}, fmt.Errorf("store: revoke device: commit: %w", err)
 	}
-	return sessionIDs, nil
+	return DeviceRevocation{DeviceMoved: moved > 0, SessionIDs: sessionIDs}, nil
 }
 
 // RestoreDevice clears a device's revocation, reporting whether a row
@@ -621,6 +672,12 @@ func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	return device, nil
 }
 
+// ErrDeviceRevoked is returned by a write that would have given a revoked
+// device a credential. A state, not a caller bug: the device row can move
+// underneath a mint that already read it as live, which is precisely the
+// interleaving this refusal closes.
+var ErrDeviceRevoked = errors.New("store: the device is revoked")
+
 // CreateSession writes a session row. The caller owns the id, because the
 // same id is signed into the claims that travel with it and the two must
 // be minted together.
@@ -629,6 +686,16 @@ func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 // class, and an expiry at or before creation. A session that is already
 // expired is not a session; accepting one would put a row in the table
 // that nothing could ever present.
+//
+// The device's liveness is part of the INSERT rather than a read before
+// it, and that is the mechanism (docs/specs/remote-access.md §2). SQLite
+// serializes writers, and RevokeDevice marks the device and sweeps its
+// sessions inside ONE transaction, so there is no interleaving in which
+// this row lands between those two statements: either it commits first and
+// the sweep revokes it, or the device reads revoked here and no row is
+// written. A caller-side check could only ever be a read that the
+// revocation then invalidates — which is exactly how a paired browser
+// outlived its revocation (incident 2026-08-31).
 func (s *Store) CreateSession(session Session) error {
 	switch {
 	case strings.TrimSpace(session.ID) == "":
@@ -650,16 +717,38 @@ func (s *Store) CreateSession(session Session) error {
 		return err
 	}
 	activatedAt := sql.NullInt64{Int64: session.ActivatedAt, Valid: session.ActivatedAt != 0}
-	if _, err := s.db.Exec(
+	result, err := s.db.Exec(
 		`INSERT INTO sessions (id, user_id, device_id, binding_class, scopes,
 			signing_key_id, created_at, expires_at, revoked_at, last_seen_at, activated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?)`,
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?
+		 WHERE EXISTS (SELECT 1 FROM devices WHERE id = ? AND revoked_at IS NULL)`,
 		session.ID, session.UserID, session.DeviceID, session.BindingClass, scopes,
 		session.SigningKeyID, session.CreatedAt, session.ExpiresAt, activatedAt,
-	); err != nil {
+		session.DeviceID,
+	)
+	if err != nil {
 		return fmt.Errorf("store: create session: %w", err)
 	}
+	written, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: create session: rows affected: %w", err)
+	}
+	if written == 0 {
+		// Diagnosed only on the refusal path, so the ordinary insert stays
+		// one statement. Both answers refuse; naming which one lets a
+		// caller tell "that device is gone" from "the owner revoked it".
+		return fmt.Errorf("store: create session for device %s: %w",
+			session.DeviceID, s.diagnoseDeviceRefusal(session.DeviceID))
+	}
 	return nil
+}
+
+// diagnoseDeviceRefusal names why a device-gated write matched no device.
+func (s *Store) diagnoseDeviceRefusal(deviceID string) error {
+	if _, err := s.GetDevice(deviceID); errors.Is(err, sql.ErrNoRows) {
+		return sql.ErrNoRows
+	}
+	return ErrDeviceRevoked
 }
 
 // ActivateSession stamps the moment a session became presentable, which is
@@ -667,18 +756,24 @@ func (s *Store) CreateSession(session Session) error {
 // whether it moved: a second confirmation keeps the first stamp, so the
 // log records when access actually began.
 //
-// Scoped to unactivated rows that are still inside their window and not
-// revoked. A revoked session must not be activatable — that would be a
-// revocation a confirmation undoes — and neither must a lapsed one: the
-// pending window IS the deadline on the confirmation, so accepting one
-// after it would make the deadline decorative.
+// Scoped to unactivated rows that are still inside their window, whose
+// session and whose DEVICE are both unrevoked. A revoked session must not
+// be activatable — that would be a revocation a confirmation undoes — and
+// neither must a lapsed one: the pending window IS the deadline on the
+// confirmation, so accepting one after it would make the deadline
+// decorative. The device clause is the same rule one row up: confirming a
+// pairing whose device the owner revoked in the meantime would turn an
+// inert row into a live credential, and it is in the statement rather than
+// in front of it so a revocation cannot land between the check and the
+// write.
 func (s *Store) ActivateSession(sessionID string, at, expiresAt int64) (bool, error) {
 	if at == 0 {
 		return false, fmt.Errorf("%w: session activation stamp", ErrIdentityFieldRequired)
 	}
 	result, err := s.db.Exec(
 		`UPDATE sessions SET activated_at = ?, expires_at = ?
-		 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?`,
+		 WHERE id = ? AND activated_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
 		at, expiresAt, sessionID, at)
 	if err != nil {
 		return false, fmt.Errorf("store: activate session: %w", err)
@@ -695,13 +790,16 @@ func (s *Store) ActivateSession(sessionID string, at, expiresAt int64) (bool, er
 // the row's expiry, so renewing one means moving the other.
 //
 // Never shortens and never resurrects: the predicate requires the session
-// to be live and the new expiry to be later than the one it holds, so a
-// replayed or reordered renewal cannot cut a window short.
+// to be live — its own row AND its device's — and the new expiry to be
+// later than the one it holds, so a replayed or reordered renewal cannot
+// cut a window short, and a rotation racing a device revocation cannot
+// move a window the revocation just closed.
 func (s *Store) ExtendSession(sessionID string, expiresAt, now int64) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE sessions SET expires_at = ?
 		 WHERE id = ? AND revoked_at IS NULL AND activated_at IS NOT NULL
-		   AND expires_at > ? AND expires_at < ?`,
+		   AND expires_at > ? AND expires_at < ?
+		   AND device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)`,
 		expiresAt, sessionID, now, expiresAt)
 	if err != nil {
 		return false, fmt.Errorf("store: extend session: %w", err)
@@ -739,16 +837,14 @@ func (s *Store) DeleteSessionsExpiredBefore(before int64) (int64, error) {
 // unknown session and a dead one are different facts even though both
 // refuse.
 func (s *Store) GetSession(id string) (Session, error) {
-	return scanSession(s.reader().QueryRow(
-		`SELECT `+sessionColumns+` FROM sessions WHERE id = ?`, id))
+	return scanSession(s.reader().QueryRow(sessionSelect+` WHERE s.id = ?`, id))
 }
 
 // ListSessionsForDevice returns a device's sessions, newest first,
 // revoked and expired ones included.
 func (s *Store) ListSessionsForDevice(deviceID string) ([]Session, error) {
 	rows, err := s.reader().Query(
-		`SELECT `+sessionColumns+` FROM sessions WHERE device_id = ? ORDER BY created_at DESC, id`,
-		deviceID)
+		sessionSelect+` WHERE s.device_id = ? ORDER BY s.created_at DESC, s.id`, deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list sessions: %w", err)
 	}
@@ -769,9 +865,9 @@ func (s *Store) ListSessionsForDevice(deviceID string) ([]Session, error) {
 // table at boot and to render the device-management list.
 func (s *Store) ListLiveSessions(now int64) ([]Session, error) {
 	rows, err := s.reader().Query(
-		`SELECT `+sessionColumns+` FROM sessions
-		 WHERE revoked_at IS NULL AND activated_at IS NOT NULL AND expires_at > ?
-		 ORDER BY created_at DESC, id`, now)
+		sessionSelect+` WHERE s.revoked_at IS NULL AND d.revoked_at IS NULL
+		 AND s.activated_at IS NOT NULL AND s.expires_at > ?
+		 ORDER BY s.created_at DESC, s.id`, now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list live sessions: %w", err)
 	}
@@ -824,11 +920,11 @@ func (s *Store) TouchSession(sessionID string, at int64) (bool, error) {
 func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 	var session Session
 	var scopes string
-	var revokedAt, activatedAt sql.NullInt64
+	var revokedAt, activatedAt, deviceRevokedAt sql.NullInt64
 	if err := sc.Scan(
 		&session.ID, &session.UserID, &session.DeviceID, &session.BindingClass, &scopes,
 		&session.SigningKeyID, &session.CreatedAt, &session.ExpiresAt, &revokedAt,
-		&session.LastSeenAt, &activatedAt,
+		&session.LastSeenAt, &activatedAt, &deviceRevokedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, err
@@ -836,6 +932,7 @@ func scanSession(sc interface{ Scan(...any) error }) (Session, error) {
 		return Session{}, fmt.Errorf("store: scan session: %w", err)
 	}
 	session.RevokedAt = revokedAt.Int64
+	session.DeviceRevokedAt = deviceRevokedAt.Int64
 	session.ActivatedAt = activatedAt.Int64
 	decoded, err := decodeScopes(scopes)
 	if err != nil {

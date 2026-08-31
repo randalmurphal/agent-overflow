@@ -478,8 +478,7 @@ func (s *Sessions) mintPendingSession(link store.PairingLink, device store.Devic
 	// Mint's own credential is discarded: it carries no refresh secret,
 	// and issuing the pair through one path keeps a device from ever
 	// holding an access credential whose renewal row does not exist.
-	policy := PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass))
-	tokens, err := s.issueFor(session, policy, now)
+	tokens, err := s.issueFor(session, device, now)
 	if err != nil {
 		return store.Session{}, TokenSet{}, err
 	}
@@ -524,8 +523,11 @@ func (s *Sessions) ConfirmPairing(linkID string) (store.PairingLink, error) {
 	}
 	if !moved {
 		// The session was revoked or expired between redemption and
-		// confirmation. The link is settled either way; say so rather
-		// than reporting a pairing that admits nothing as complete.
+		// confirmation, or its DEVICE was — ActivateSession's predicate
+		// covers all three, so a confirmation cannot turn an inert row into
+		// a live credential for a device the owner withdrew in the
+		// meantime. The link is settled either way; say so rather than
+		// reporting a pairing that admits nothing as complete.
 		return store.PairingLink{}, ErrPairingRefused
 	}
 	s.audit(store.AuthAuditEntry{

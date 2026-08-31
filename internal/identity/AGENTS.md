@@ -59,6 +59,47 @@ comparison, no signature work, no round trip. **No call may authorize from
 state captured at upgrade time** — that is the whole reason `Live` exists
 instead of a flag on the connection.
 
+### And "the row is live" is itself two rows
+
+**Revocation is absolute** (spec §2, owner ruling 2026-08-31): a session is
+live only while its own row AND its device's row are both unrevoked. Every
+consult reads that conjunction — the per-RPC gate, `Verify`, refresh
+rotation, `/auth/ticket`, the connection's interval re-check — because all
+five reach it through `Sessions.Live`.
+
+It costs nothing per call, and the shape is why. `internal/store`'s
+`sessionSelect` JOINs the device onto every session read and
+`store.Session.Live` folds `DeviceRevokedAt` in, so the fast path gained a
+second integer comparison — no second lookup, no second round trip, no
+device cache to keep coherent. A revoked-device SET consulted per call, or
+a liveness bit resolved separately, would both have to be kept in sync with
+rows they do not travel with.
+
+The entry a fast-path HIT reads carries the device stamp from install time.
+Three things keep that honest:
+
+- a device revocation sweeps every un-revoked session the device holds and
+  forgets each one, so no entry for it survives;
+- a device revocation moves the generation **unconditionally**, so a slow
+  path already in flight — one holding a joined row read before the
+  revocation committed — declines to install it;
+- a session row that appears AFTER the sweep has no entry at all, so its
+  first consult is a slow path and the row it reads carries the revocation.
+
+That last case is what the incident turned on, and it is why the
+enforcement is at the consult rather than at the mint. Mint-time refusals
+are real (below) but they are hygiene: a revocation can always land the
+instant after one.
+
+`TestEveryCredentialProducingCallGoesThroughAChokepoint` is the class gate.
+Four calls bring a credential into existence or keep one alive —
+`store.CreateSession`, `store.ActivateSession`, `store.ExtendSession`,
+`signClaims` — and each carries the device gate at the point of the write,
+so a mint path built from them inherits it. The test fails when one is
+called from somewhere new, which is the moment to say what stops the new
+caller producing a credential for a revoked device. Widening its list is
+not the answer on its own.
+
 ## The refusal ordering is structural, not documented
 
 `verifiedClaims` (claims.go) is an unexported type whose only constructor
@@ -102,6 +143,22 @@ fast path, where it would stay until expiry.
 A second revocation reports `moved == false` and **still closes
 connections**: a connection that survived the first revocation is exactly
 the case worth closing again.
+
+`RevokeDevice` honors that same doctrine, and used not to. The store's
+already-revoked early return meant a re-revoke touched no session, so a
+session that slipped past the first sweep was unreachable through the
+device surface forever — a paired browser kept full access and every later
+revoke was a silent no-op (incident 2026-08-31). It now re-sweeps, and this
+side forgets what came back, closes its sockets, and **moves the generation
+even when nothing came back at all**: what changed is the device row, and a
+`Live()` slow path in flight may be holding a joined copy of it. A loop of
+per-session `forget` calls would leave exactly the zero-session case — the
+straggler case — unguarded, which is why `forgetAll` exists and bumps once
+for the whole set.
+
+It reports an `identity.DeviceRevocation` rather than a bare id list, so a
+surface can say "revoked, 2 sessions ended, 1 connection closed" and
+"already revoked, nothing was live" as the different answers they are.
 
 ## Bounded by construction
 
@@ -208,6 +265,15 @@ class with a script-execution surface. Passkey re-auth on renewal is phase
 `issueFor` is the only function in this package that builds a `TokenSet`.
 Every issuance path — pairing, renewal, the local channel — goes through
 it, so a policy change cannot reach some callers and miss others.
+
+It takes the DEVICE ROW rather than a policy, and derives the policy
+itself. Every caller built the same `PolicyFor(device.Class,
+session.BindingClass)` anyway, and taking the row means a caller cannot
+pass a policy from one device with a session from another — nor issue
+without having read a device at all, which is what lets the device half of
+the conjunction be refused here (spec §2). `Mint` is the matching
+chokepoint for the session ROW: it is the only caller of
+`store.CreateSession`, and the device predicate lives inside that INSERT.
 
 ## The local page channel
 

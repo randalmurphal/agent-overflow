@@ -69,10 +69,10 @@ func (s *Sessions) EnsureLocalChannelSession(userID string) (store.Session, Toke
 			"identity: the local channel device is revoked; clear the revocation to serve local clients")
 	}
 
-	policy := PolicyFor(DeviceClass(device.Class), BindingLoopbackOnly)
 	now := s.now().UnixMilli()
 	if session, ok := s.liveSessionFor(device.ID, now); ok {
-		expiresAt := now + policy.Access.Milliseconds()
+		expiresAt := now + PolicyFor(DeviceClass(device.Class), BindingLoopbackOnly).
+			Access.Milliseconds()
 		if _, err := s.store.ExtendSession(session.ID, expiresAt, now); err != nil {
 			return store.Session{}, TokenSet{}, err
 		}
@@ -82,7 +82,7 @@ func (s *Sessions) EnsureLocalChannelSession(userID string) (store.Session, Toke
 			return store.Session{}, TokenSet{}, err
 		}
 		s.rememberAt(generation, refreshed)
-		tokens, err := s.issueFor(refreshed, policy, now)
+		tokens, err := s.issueFor(refreshed, device, now)
 		if err != nil {
 			return store.Session{}, TokenSet{}, err
 		}
@@ -94,7 +94,7 @@ func (s *Sessions) EnsureLocalChannelSession(userID string) (store.Session, Toke
 		DeviceID:     device.ID,
 		BindingClass: BindingLoopbackOnly,
 		Scopes:       Scopes,
-		TTL:          policy.Access,
+		TTL:          PolicyFor(DeviceClass(device.Class), BindingLoopbackOnly).Access,
 	})
 	if err != nil {
 		return store.Session{}, TokenSet{}, err
@@ -103,7 +103,7 @@ func (s *Sessions) EnsureLocalChannelSession(userID string) (store.Session, Toke
 	// every issuance in this package goes out of one function: one place
 	// decides what a TokenSet contains, and a policy change cannot reach
 	// some callers and miss others.
-	tokens, err := s.issueFor(session, policy, now)
+	tokens, err := s.issueFor(session, device, now)
 	if err != nil {
 		return store.Session{}, TokenSet{}, err
 	}

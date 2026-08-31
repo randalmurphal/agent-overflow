@@ -1074,13 +1074,42 @@ Six tables in one migration (`migration_v75_identity.go`, accessors in
   user id instead. `idx_users_single_owner` makes a second owner
   unrepresentable, and `EnsureOwnerUser` races against it deliberately —
   a loser re-reads the winner's row rather than reporting a conflict.
-- **Revoking a device is ONE write.** `RevokeDevice` flips
-  `devices.revoked_at` and every live `sessions.revoked_at` in a single
-  transaction and returns the session ids that moved. Splitting it would
-  let a device be flagged revoked while its credentials still worked, one
-  forgotten call site away. The returned ids are what the caller
-  force-closes; a session already revoked is deliberately NOT returned,
-  because whoever revoked it already closed it.
+- **Revoking a device is ONE write, and it re-sweeps.** `RevokeDevice`
+  flips `devices.revoked_at` and every live `sessions.revoked_at` in a
+  single transaction and returns a `DeviceRevocation`: whether the DEVICE
+  row moved, and the session ids that did. Splitting it would let a device
+  be flagged revoked while its credentials still worked, one forgotten
+  call site away. The returned ids are what the caller force-closes; a
+  session already revoked is deliberately NOT returned, because whoever
+  revoked it already closed it.
+
+  The device row's own count says whether the device moved and **nothing
+  more** — it is not a reason to skip the sessions. This used to return
+  early there, which made every later revoke a silent no-op and put one
+  session on a revoked device beyond the device surface's reach forever
+  (incident 2026-08-31). A device id naming no row answers an empty result
+  rather than an error.
+- **A session's liveness is the conjunction of two rows**
+  (`docs/specs/remote-access.md` §2, "Revocation is absolute"): its own and
+  its device's. Three mechanisms carry it, and none of them is a
+  caller-side check:
+  - `sessionSelect` is the one way a session is read and it JOINs
+    `devices`, so `Session.DeviceRevokedAt` rides on every row and
+    `Session.Live` folds it in — the same argument `ActivatedAt` already
+    carries. INNER JOIN is total (`sessions.device_id` is `NOT NULL
+    REFERENCES devices(id)` with `foreign_keys=1`), and a query that
+    reached `sessions` without it fails to SCAN rather than silently
+    reporting every device as live.
+  - `CreateSession`'s `WHERE EXISTS (… devices … revoked_at IS NULL)` is
+    inside the INSERT, and `ActivateSession` / `ExtendSession` carry the
+    same predicate inside their UPDATE. SQLite serializes writers and
+    `RevokeDevice` marks-and-sweeps in one transaction, so no such write
+    can land between those two statements: it either commits first and is
+    swept, or it reads the revocation and refuses. A read before the write
+    could only be invalidated by the revocation that follows it — which is
+    exactly how a paired browser outlived its revocation.
+  - `ListLiveSessions` filters `d.revoked_at IS NULL` too, so the boot warm
+    and the device list cannot disagree with the predicate.
 - **Recovery-code consumption is one statement.** `UPDATE … WHERE
   code_hash = ? AND consumed_at IS NULL RETURNING user_id`. The predicate
   IS the single-use rule and SQLite picks the winner, so no caller-side

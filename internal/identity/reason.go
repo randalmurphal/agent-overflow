@@ -70,11 +70,14 @@ const (
 	// spent value, an expired value, and a value that never existed all
 	// answer the same thing on purpose.
 	ReasonUnknownCredential
-	// ReasonRevokedDevice means a pairing redemption presented the key of
-	// a device the owner revoked. Distinct from ReasonKeyMismatch (whose
-	// remedy is re-pairing, which is exactly what was just refused): the
-	// remedy here is on the OWNER's screen — restore the device, then
-	// redeem a fresh link.
+	// ReasonRevokedDevice means the DEVICE half of the conjunction refused:
+	// a pairing redemption presented the key of a device the owner revoked,
+	// or a session was presented whose device row is revoked (spec §2,
+	// "Revocation is absolute"). Distinct from ReasonKeyMismatch (whose
+	// remedy is re-pairing, which is exactly what was just refused) and
+	// from ReasonRevokedSession (whose remedy is a fresh link on a device
+	// that is still paired): the remedy here is on the OWNER's screen —
+	// restore the device, then redeem a fresh link.
 	ReasonRevokedDevice
 	// ReasonProofReplayed means a device proof verified, is inside its
 	// freshness window, and carries a `jti` this backend already spent
