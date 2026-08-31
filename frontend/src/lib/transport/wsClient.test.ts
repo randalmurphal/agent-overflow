@@ -1571,6 +1571,43 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('defers stale-socket verdicts while hidden and starts a fresh window on resume', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.pushFrame({ type: 'ping' });
+
+    let visibilityState: DocumentVisibilityState = 'hidden';
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibilityState,
+    });
+    try {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS * 3);
+      expect(first.readyState).toBe(1);
+      expect(MockWebSocket.instances).toHaveLength(1);
+
+      visibilityState = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(STALE_TRAFFIC_THRESHOLD_MS);
+      expect(first.readyState).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(STALE_CHECK_INTERVAL_MS);
+      expect(first.readyState).toBe(3);
+    } finally {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+      client.close();
+    }
+  });
+
   it('keeps a socket alive while heartbeats keep arriving', async () => {
     vi.useFakeTimers();
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });

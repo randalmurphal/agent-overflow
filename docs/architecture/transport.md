@@ -244,8 +244,11 @@ a guaranteed traffic floor.
 The SPA's stale-socket watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`, three
 heartbeat periods) force-closes a connected socket that has received nothing for
 that long, because a half-open TCP connection with the peer gone and no FIN
-never fires a close event on its own. The watchdog arms per connection: the
-first ping frame proves this server heartbeats, and the proof resets on close,
+never fires a close event on its own. It makes no silence verdict while
+`document.hidden`, when browser scheduling may delay both its interval and
+WebSocket message delivery; becoming visible resets the traffic clock before
+verdicts resume. The watchdog arms per connection: the first ping frame proves
+this server heartbeats, and the proof resets on close,
 so version skew in either direction cannot reconnect-loop an idle but healthy
 connection. It also stands down while a remote backend has RPCs in flight, since
 one large response frame can legitimately silence the wire past the threshold.

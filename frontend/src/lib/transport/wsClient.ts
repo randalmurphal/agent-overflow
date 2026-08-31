@@ -598,6 +598,10 @@ export class WSClient {
 
   private checkStaleness(): void {
     if (this.closed || !this.serverSendsHeartbeats) return;
+    // A hidden renderer may throttle both this interval and WebSocket message
+    // delivery, so silence there says nothing about the socket. The visibility
+    // resume path refreshes lastFrameAt before verdicts resume.
+    if (documentHidden()) return;
     if (!this.ws || this.ws.readyState !== WS_OPEN) return;
     // A single huge response frame on a slow remote link yields no
     // message event until fully received — and it blocks the

@@ -259,7 +259,10 @@ pong timeout, both overridable through `Config.KeepaliveInterval` and
 
 - A client-visible `{type:"ping"}` frame every interval. The SPA's stale-socket
   watchdog (`wsClient.ts STALE_TRAFFIC_THRESHOLD_MS`) is three heartbeat
-  periods, so keep the two constants in ratio when changing either.
+  periods, so keep the two constants in ratio when changing either. It makes no
+  silence verdict while `document.hidden`: browser engines may throttle both
+  its interval and WebSocket message delivery then, and visibility resume gives
+  the connection a fresh threshold before judging it again.
 - Every third tick also round-trips a protocol ping, and a missed pong convicts
   only when the reader was parked in `ws.Read` with no recent frame (`inRead`
   plus `lastReadAt`).
