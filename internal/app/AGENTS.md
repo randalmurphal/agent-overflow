@@ -75,6 +75,48 @@ enforce for a caller that reached it another way; put it in
   is also the moment somebody asks for it — and a bootstrap fetch must not
   write to the database on the ordinary path.
 
+## The device-access surface
+
+`app_access.go` is the settings pane's half of the same core: which
+devices hold credentials on this backend, the pairing calls that add one,
+and the revocations that take one away. Adaptation on the same terms as
+`app_identity.go` — no policy decision lives there — but it owns the wire
+shape (flat DTOs, millisecond epochs, additive-only) and two refusals that
+are facts about this process rather than about a row:
+
+- **The local page channel is not a device a person may revoke.** That row
+  is what the embedded webview, the WSL relay, and the `--connect` stub
+  all present; revoking it signs the host's own window out. Both
+  revocations refuse it, `RevokeAccessSession` by resolving the session's
+  device first.
+- **`backend-peer` is not a class this surface mints.** Enrolling another
+  backend is the federation flow with its own trust decisions; admitting
+  one here would give it the posture of an owner's own device.
+
+Every method is `CategoryDeviceAccess` in
+`internal/transport/internalmethods.go`, and
+`TestDeviceAccessSurfaceIsWholeAndLocalOnly` is the tripwire that keeps
+the set together. Minting ISSUES a credential and revoking withdraws
+every credential a device holds; the overview read goes with them because
+it carries the device map, the connection counts, the audit log, and a
+pending pairing's verification number — which is only a check if the
+owner is the only party comparing it.
+
+Two shapes are worth knowing before editing:
+
+- **`pairingDeadline` is not the link row's `expires_at`.** Once a device
+  redeems, the deadline is the owner's confirmation window
+  (`identity.PairingConfirmWindow`), because redemption mints the session
+  under that window. A link filtered on its own five-minute expiry would
+  drop the confirm affordance five minutes into a live ten-minute
+  exchange. `pairingState` orders on the same rule: settled first, then
+  redeemed BEFORE expired.
+- **A pairing URL carries a page ticket and no `cid`.** The ticket is what
+  lets a device holding no credential load the page at all; `cid` is this
+  install's durable UI-state identity, and stamping it on a link for
+  somebody else's phone would point that phone at this machine's bucket.
+  The payload rides the URL FRAGMENT, which is never sent to a server.
+
 ## Tests
 
 Application tests stay beside the shell. `main_test.go` changes their working

@@ -43,10 +43,10 @@ same change.
   same `method_not_found` shape an unregistered method returns, so the
   privileged surface stays unenumerable from the LAN.
 
-`LocalOnlyCategory` is a closed set of ten: local execution, session control,
+`LocalOnlyCategory` is a closed set of eleven: local execution, session control,
 settings mutation, attachment payload, local-FS bookkeeping, credential and
 account enumeration, WSL inventory, MCP state, desktop host control, session
-import. `localonlycategory_test.go` parses the constant block out of the source
+import, device access. `localonlycategory_test.go` parses the constant block out of the source
 and fails on a constant with no name row, a name row with no constant, an entry
 tagged with an undeclared value, an untagged entry (the zero value is not a
 category), and a declared category that classifies nothing. Adding a category is

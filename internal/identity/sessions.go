@@ -322,6 +322,14 @@ func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 	return session, ReasonNone
 }
 
+// Now is the session core's clock, in Unix milliseconds.
+//
+// Exported so a surface that presents session and pairing rows reads the
+// SAME clock the core writes them with: two clocks would let a list say
+// "expired" about a row the core would still admit, and would leave a test
+// that moves time moving only half the answer.
+func (s *Sessions) Now() int64 { return s.now().UnixMilli() }
+
 // RevokeSession ends one session everywhere, in the order that makes
 // revocation real:
 //
