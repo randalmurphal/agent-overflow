@@ -12,8 +12,8 @@ elsewhere and worth knowing here: it loads the SPA, and the page then
 needs a paired session before the backend will open its socket
 (`internal/transport/AGENTS.md`, the launch credential and the `/ws`
 upgrade). So the URL is how a device REACHES this backend, not how it
-gets in — which is also why the token in it buys less than its shape
-suggests.
+gets in — which is also why the one-time ticket on it buys less than
+its shape suggests: it loads the page, and nothing else.
 
 ## Layout
 
@@ -41,8 +41,8 @@ suggests.
 
 - Do NOT return a public IPv4 from `DiscoverLocalLANIP`. A cloud VM
   flipping LAN-bind shouldn't auto-publish its public address.
-  Without TLS, that invites a user to share a token over an open
-  port. RFC1918 / link-local / Tailscale CGNAT only.
+  Without TLS, that invites a user to publish a cleartext endpoint
+  on an open port. RFC1918 / link-local / Tailscale CGNAT only.
 - Do NOT call `DiscoverLocalLANIP` more than once per Set flow. The
   origin allow-list and the URL must use the *same* discovered IP
   or the user can see a URL their browser can't reach without an

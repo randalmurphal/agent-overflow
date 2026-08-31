@@ -100,7 +100,7 @@
       <div class="flex flex-col gap-1">
         <SettingsField
           label="Allow remote access"
-          hint="Listen on all interfaces (0.0.0.0) so devices on your network can connect. Toggling off stops new LAN connections but does not invalidate the token — restart the app to rotate it."
+          hint="Listen on all interfaces (0.0.0.0) so devices on your network can connect. Toggling off stops new LAN connections; a device already connected stays until it closes — revoke it under Devices to cut it now."
           align="start"
         >
           <ToggleSwitch
@@ -118,9 +118,10 @@
     <section>
       <SettingsHeader
         title="Share URL"
-        description={settings.bindAll
+        description={(settings.bindAll
           ? "Copy this URL into a browser on another device to open Agent Overflow remotely. With LAN binding on, the URL points at this machine's private IP."
-          : 'Copy this URL into a browser on another device. While the server is on loopback, only this machine resolves the URL.'}
+          : 'Copy this URL into a browser on another device. While the server is on loopback, only this machine resolves the URL.') +
+          ' Each copy carries a one-time ticket that only loads the page: the device still has to pair.'}
       />
 
       <div class="flex items-center gap-2">
@@ -150,10 +151,11 @@
       {#if settings.insecure}
         <div class="mt-3" data-testid="insecure-url-warning">
           <SettingsCallout tone="warn">
-            The URL above is plaintext over LAN — the token in the query string
-            travels in the clear and any device on this network can read it. Front
-            the bind with Tailscale Serve, an SSH tunnel, or a reverse proxy with
-            TLS before sharing on an untrusted network.
+            The URL above is plaintext over LAN — the ticket on it, and everything
+            the device sends once it has paired, travel in the clear where any
+            device on this network can read them. Front the bind with Tailscale
+            Serve, an SSH tunnel, or a reverse proxy with TLS before sharing on an
+            untrusted network.
           </SettingsCallout>
         </div>
       {/if}

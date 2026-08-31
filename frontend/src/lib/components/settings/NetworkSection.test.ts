@@ -56,6 +56,21 @@ describe('<NetworkSection>', () => {
     });
   });
 
+  it('says what the share URL actually carries, on both binds', async () => {
+    // The URL carries a one-time page ticket that only loads the page;
+    // a device reaching this backend over the network still has to pair.
+    // Copy that promises a standing credential on the URL would be
+    // describing the shape this stopped having.
+    for (const bindAll of [true, false]) {
+      resetBindingMocks();
+      setBindingMock('GetNetworkSettings', async () => networkSettings({ bindAll }));
+      const { findByText, unmount } = render(NetworkSection);
+      await findByText(/one-time ticket that only loads the page/i);
+      await findByText(/still has to pair/i);
+      unmount();
+    }
+  });
+
   it('flips the toggle through SetNetworkSettings on click', async () => {
     setBindingMock('GetNetworkSettings', async () => networkSettings({ bindAll: false }));
     const setMock = setBindingMock('SetNetworkSettings', async (next: unknown) => {
@@ -124,7 +139,7 @@ describe('<NetworkSection>', () => {
     // and rendering it here would be misleading.
     const getMock = setBindingMock('GetNetworkSettings', async () => ({
       bindAll: true,
-      url: 'http://attacker:1234',
+      url: 'http://remote-backend:1234',
       token: 'should-not-render',
     }));
 

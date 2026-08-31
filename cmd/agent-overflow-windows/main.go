@@ -14,8 +14,10 @@
 //     --listen 127.0.0.1:0 --print-url-fd 0 and pins the child to a
 //     Win32 Job Object so closing this process kills the WSL-side one.
 //  5. Reads the bootstrap line { port, token } back from the child.
-//  6. Points the Wails WebView2 window at
-//     http://localhost:<port>/?t=<token>.
+//  6. Points the Wails WebView2 window at a BARE
+//     http://localhost:<port>/?host=webview page URL and injects the
+//     one-time page ticket into the document it just loaded, so the
+//     ticket never rides a copyable URL (internal/pagehost).
 //
 // WSL2 forwards 127.0.0.1:<port> from inside the distro to the Windows
 // host's localhost via vEthernet. localhostForwarding=true must be

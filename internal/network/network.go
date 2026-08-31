@@ -21,9 +21,12 @@ type Settings struct {
 	// 127.0.0.1.
 	BindAll bool `json:"bindAll"`
 
-	// URL is the http://host:port/?t=<token> URL the user can paste
-	// into a remote browser. Server-derived: when BindAll is true
-	// and a non-loopback interface IP is discoverable, the URL
+	// URL is the http://host:port/?t=<ticket> URL the user can paste
+	// into a remote browser. The `t` is a ONE-TIME page ticket, spent
+	// by that browser's first bootstrap exchange for a cookie, so a
+	// copied URL loads the page once and grants nothing further — a
+	// networked page still has to pair. Server-derived: when BindAll is
+	// true and a non-loopback interface IP is discoverable, the URL
 	// points at the LAN IP; otherwise it falls back to the server's
 	// own Addr.
 	URL string `json:"url"`
@@ -38,11 +41,11 @@ type Settings struct {
 
 	// Insecure is true when the URL above traverses an untrusted
 	// network in cleartext. Today that's any LAN bind: the URL is
-	// http://, the token is in the query string, and a network
-	// observer on the same Wi-Fi can read both. The frontend
-	// renders a warning banner when Insecure is true so the user
-	// knows to front the bind with Tailscale Serve, an SSH tunnel,
-	// or a reverse proxy before sharing.
+	// http://, so the ticket on it and every byte the paired device
+	// exchanges afterwards are readable by anything on the same
+	// Wi-Fi. The frontend renders a warning banner when Insecure is
+	// true so the user knows to front the bind with Tailscale Serve,
+	// an SSH tunnel, or a reverse proxy before sharing.
 	Insecure bool `json:"insecure"`
 }
 

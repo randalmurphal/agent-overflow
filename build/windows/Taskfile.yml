@@ -44,7 +44,8 @@ tasks:
         2. Drops the bundled Linux ELF into ~/.local/bin inside WSL.
         3. Spawns the backend pinned to a Job Object so it dies with
            the Windows process.
-        4. Points WebView2 at http://localhost:<port>/?t=<token>.
+        4. Points WebView2 at a bare http://localhost:<port>/?host=webview
+           page URL and injects its one-time page ticket.
 
       Output:
         bin/agent-overflow.exe
