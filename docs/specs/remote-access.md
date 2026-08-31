@@ -118,6 +118,11 @@ is deliberately out of scope.
 
 ## 3. Identity model
 
+LANDED 2026-08-31 (wave 5a): migration v75 holds all five entity
+families below (the backend row predates it, store v55), accessors in
+`internal/store/identity.go`, vocabulary and cross-checks in
+`internal/identity`. See §16 phase 2 for the landed/open split.
+
 Entities in SQLite are authoritative data, not cache (see §12):
 
 - **Backend**. One row, minted at first boot: stable UUID + display
@@ -192,6 +197,10 @@ window so a forged proof is never misreported as clock skew, and one
 client-side presentation module mapping codes to actionable hints
 ("check automatic date & time on both devices" for skew — the
 dominant real cause). Adapted from t3code's DPoP-failure rework.
+LANDED 2026-08-31 (wave 5a): `internal/identity/reason.go` (the
+ordering enforced structurally — `withinWindow` is a method on the
+type only the MAC check constructs), `transport.AuthFailure`, and
+`authReason.ts`, with gate tests pinning the three sets together.
 
 ### WebSocket tickets
 
@@ -209,6 +218,13 @@ registry keyed by session id **force-closes** matching WebSockets and
 stops their event streams synchronously on revoke; the in-memory session
 table is the per-RPC fast path and is invalidated at the same instant.
 No RPC authorizes from state cached at upgrade time.
+
+LANDED 2026-08-31 (wave 5a): `transport.SessionConns` +
+`identity.Sessions.RevokeSession`/`RevokeDevice` (device revocation
+flips the device and its live sessions in one store transaction), the
+generation counter that keeps a slow-path read racing a revoke from
+re-caching a dead row, and the `session revoked` close-log attribution.
+The revocation RPC and its UI wait for the device-management surface.
 
 ### Passkeys (where a real domain fronts the backend, §7)
 
@@ -1438,12 +1454,25 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
-   (users/devices/sessions/audit), pairing
-   with proof-of-possession + verification number, token exchange,
-   rotating refresh with reuse detection, generalized ticket primitive
-   (WS + HTTP), revocation with live teardown, recovery codes, device
-   management UI, rate limiting, webview/WSL credential forwarding,
-   ui_state device binding.
+   (users/devices/sessions/audit), revocation with live teardown,
+   recovery codes, rate limiting, and the typed refusal vocabulary:
+   LANDED 2026-08-31 (wave 5a, 7dccc702) — migration v75 (six tables;
+   `EnsureOwnerUser` is the one role-resolved read and says so),
+   `internal/identity` (HMAC session claims with signature checked
+   structurally before the time window, both-halves verification, the
+   in-memory per-RPC fast path invalidated synchronously on revoke,
+   Crockford-alphabet recovery codes consumed by one CAS statement,
+   idempotent `Bootstrap`), the transport live-session registry with
+   three-step synchronous teardown behind `Config.SessionForRequest`
+   (nil until phase 3 migrates clients), per-peer token buckets on the
+   three credential surfaces refusing 429 + `Retry-After`, and
+   `auth_failed` + reason on the wire with
+   `frontend/src/lib/transport/authReason.ts` as the one hint module,
+   pinned against the Go set in both directions. Still open in this
+   phase: pairing with proof-of-possession + verification number,
+   token exchange, rotating refresh with reuse detection, generalized
+   ticket primitive (WS + HTTP), device management UI, webview/WSL
+   credential forwarding, ui_state device binding.
 3. **Authorization.** Annotation-driven generated method table, scope
    tiers + binding enforcement + step-up set, event visibility, settings
    key→tier taxonomy, capability-driven frontend, `LocalOnlyMethods`
