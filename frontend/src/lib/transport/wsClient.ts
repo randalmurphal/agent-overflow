@@ -118,15 +118,132 @@ export const MAX_PENDING_RPCS = 10_000;
 // is the right tradeoff vs. forcing pagination on every load.
 export const MAX_FRAME_BYTES = 75 * 1024 * 1024;
 
+// DisconnectedErrorInit carries the preserved cause of a transport
+// failure onto the error the caller sees. Every field is optional: the
+// paths that genuinely know nothing (a superseded socket) supply none.
+export interface DisconnectedErrorInit {
+  /** WebSocket close code, when a close event produced this failure. */
+  closeCode?: number;
+  /** Close reason verbatim from the peer. Remote text — clamped before
+   *  it reaches the message. */
+  closeReason?: string;
+  /** The error underneath: a socket `error` event, a thrown WebSocket
+   *  constructor, or the bootstrap rejection that stopped the attempt. */
+  cause?: unknown;
+  /** True when the automatic reconnect ladder is STOPPED, so nothing
+   *  will retry the work behind this call without user action. False
+   *  during an ordinary reconnect, where the entity stores' suspension
+   *  re-sources every key on the next connect. */
+  terminal?: boolean;
+}
+
+// Close reasons are peer-supplied text that lands in logs, toasts, and
+// the diagnostics sink. The WS spec caps a reason at 123 UTF-8 bytes, so
+// this only ever truncates a peer that does not conform.
+const CLOSE_REASON_MAX = 123;
+
 // DisconnectedError is what we reject pending RPCs with when the socket
 // closes underneath them. Subclassing Error keeps `instanceof` checks
 // working at call sites; the `name` field is what most frontend code
 // branches on.
+//
+// The failure's CAUSE travels on the instance and, deliberately, inside
+// `message` too. Around 150 call sites render a failure as `err.message`,
+// so putting the close code and reason there is what makes the cause
+// legible everywhere at once; the alternative — each site reaching for a
+// new field — is a sweep that decays the moment someone adds site 151.
+// `cause` and the discrete fields remain for callers that branch rather
+// than render.
 export class DisconnectedError extends Error {
-  constructor(message = 'transport disconnected') {
-    super(message);
+  /** WS close code when a close event produced this, else undefined. */
+  readonly closeCode: number | undefined;
+  /** Clamped close reason when the peer supplied one. */
+  readonly closeReason: string | undefined;
+  /** See DisconnectedErrorInit.terminal. */
+  readonly terminal: boolean;
+
+  constructor(message = 'transport disconnected', init: DisconnectedErrorInit = {}) {
+    super(describeDisconnect(message, init), { cause: init.cause });
     this.name = 'DisconnectedError';
+    this.closeCode = init.closeCode;
+    this.closeReason = init.closeReason === undefined
+      ? undefined
+      : clampString(init.closeReason, CLOSE_REASON_MAX);
+    this.terminal = init.terminal === true;
   }
+}
+
+// describeDisconnect renders the preserved cause into the message. Kept
+// out of the constructor body so the no-detail case (the common one)
+// returns the caller's own string without building anything.
+function describeDisconnect(message: string, init: DisconnectedErrorInit): string {
+  const reason = init.closeReason === undefined || init.closeReason === ''
+    ? ''
+    : clampString(init.closeReason, CLOSE_REASON_MAX);
+  // Comma, not colon, between code and reason. `userFacingError` strips
+  // everything before the last ": " to unwrap Go-style error chains, so a
+  // colon here would render this as "Backend restarting)" — the cause
+  // shorn of what it is the cause OF, plus a stray bracket. The formatter
+  // is right for wrapped errors; this string just must not look like one.
+  if (init.closeCode !== undefined) {
+    return reason === ''
+      ? `${message} (code ${init.closeCode})`
+      : `${message} (code ${init.closeCode}, ${reason})`;
+  }
+  if (reason !== '') return `${message} (${reason})`;
+  // No close detail: fall back to the underlying error's own prose so a
+  // thrown constructor or a failed manifest fetch still names itself.
+  if (init.cause instanceof Error && init.cause.message !== '') {
+    return `${message}: ${clampString(init.cause.message)}`;
+  }
+  return message;
+}
+
+// RetryOnTransientCloseEntry names ONE RPC the client may re-send once
+// after a transient socket close instead of rejecting it.
+//
+// This is a seam, not a policy. A blanket "retry on disconnect" is
+// forbidden by construction: an RPC that reached the backend may have
+// executed, so retrying a lost ANSWER would duplicate the ACTION —
+// exactly the crash-equivalence that `isTransportClassError` exists to
+// warn callers about. An entry is admissible only when the call is
+// idempotent on the backend AND its loss falls inside a KNOWN transient
+// window — the bundle-swap reconnect of docs/specs/remote-access.md §9,
+// where a just-updated backend drops every socket seconds after serving
+// it.
+//
+// Match by `methodId` for generated bindings (which never carry a name)
+// or by `method` for the by-name call sites. `why` is the decision and is
+// mandatory: an entry nobody can justify in one sentence does not belong.
+export interface RetryOnTransientCloseEntry {
+  methodId?: number;
+  method?: string;
+  why: string;
+}
+
+// The production allowlist. EMPTY, and that is the right answer today:
+// every store that must survive a reconnect already does so through the
+// suspend/re-source observable (stores/entityStore.svelte.ts), which
+// re-asks for CURRENT state rather than replaying a stale request, and
+// nothing has been found that needs the weaker guarantee. Declared and
+// enforced-empty rather than absent so admitting the first entry is a
+// one-line reviewed decision instead of a redesign.
+export const RETRY_ON_TRANSIENT_CLOSE: readonly RetryOnTransientCloseEntry[] = Object.freeze([]);
+
+// matchesRetryAllowlist answers whether a dispatch spec is on `list`.
+// Consulted once per RPC at DISPATCH time, never on the close path, so
+// the empty production list costs one length check — and, decisively, so
+// a non-retryable call never retains its frame (see Pending.retry).
+function matchesRetryAllowlist(
+  list: readonly RetryOnTransientCloseEntry[],
+  spec: { methodId?: number; method?: string },
+): boolean {
+  if (list.length === 0) return false;
+  for (const entry of list) {
+    if (entry.methodId !== undefined && entry.methodId === spec.methodId) return true;
+    if (entry.method !== undefined && entry.method === spec.method) return true;
+  }
+  return false;
 }
 
 // TransportError wraps a server-side FrameError. The `code` is exposed
@@ -148,6 +265,14 @@ interface Pending {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+  // The frame to re-send if a TRANSIENT close kills this call, or null —
+  // which is every call under the empty production allowlist. Holding it
+  // costs a reference to the params the caller already owns, so it is
+  // populated only for allowlisted calls: an ordinary RPC's arguments
+  // (a full prompt, an attachment manifest) stay collectable the moment
+  // the send completes. Nulled when the one retry is spent, so a call
+  // cannot be re-sent twice.
+  retry: ClientRPCFrame | null;
 }
 
 type EventHandler = (data: unknown) => void;
@@ -245,6 +370,12 @@ interface WSClientOptions {
   // value (~4 KiB) so the oversized-frame regression case can be
   // exercised without allocating tens of MiB per run.
   maxFrameBytes?: number;
+  // For tests: override the retry-on-transient-close allowlist. The
+  // production list is empty by design (RETRY_ON_TRANSIENT_CLOSE), so
+  // the retry path would otherwise be unreachable and untestable — and
+  // an untested seam will not work the day someone needs it. Production
+  // code MUST NOT pass this.
+  retryOnTransientClose?: readonly RetryOnTransientCloseEntry[];
 }
 
 // ChannelCursor is one channel's seq bookkeeping: the last seq we
@@ -298,6 +429,7 @@ export class WSClient {
   private readonly WebSocketCtor: WSConstructor;
   private readonly maxFrameBytes: number;
   private readonly probeLoopbackOrigin: () => boolean;
+  private readonly retryAllowlist: readonly RetryOnTransientCloseEntry[];
 
   // Cached bootstrap and the resolved WS URL with token query param.
   private bootstrap: Bootstrap | null = null;
@@ -365,6 +497,10 @@ export class WSClient {
   // (the banner's Retry) or a manifest that fetches clean — never by
   // the passive loop, which is the whole point.
   private credentialDead = false;
+  // The refusal that latched credentialDead, kept so every later
+  // rejection can name the HTTP status the backend actually answered
+  // with instead of restating the latch. Cleared with the latch.
+  private credentialRefusal: BootstrapRejectedError | null = null;
   // Date.now() of the current socket's open, 0 when no socket is open.
   // The backoff ladder resets from this at close (see
   // BACKOFF_RESET_AFTER_MS) rather than on open.
@@ -377,8 +513,22 @@ export class WSClient {
   private diagnosticsSink: ((message: string, detail?: string) => void) | null = null;
   private outage: OutageRecord | null = null;
 
+  // The most recent socket `error` event, captured per attempt so the
+  // close that follows it can name what killed the connection. The
+  // browser event carries no detail by spec, but a `--connect` shell and
+  // the test fake both deliver a real Error here, and preserving it is
+  // the difference between "socket closed (code 1006)" and a cause.
+  private lastSocketError: unknown = null;
+
   // RPC state.
   private readonly pending = new Map<string, Pending>();
+  // Frames held across a transient close for their one allowed re-send
+  // (see RetryOnTransientCloseEntry). Always empty under the empty
+  // production allowlist. Their Pending entries stay in `pending` — the
+  // calls are still outstanding and their RPC timeout still bounds the
+  // wait — so the queue holds only what to re-send, never a second
+  // settlement path.
+  private readonly retryQueue: ClientRPCFrame[] = [];
   private readonly subscribers = new Map<string, Set<EventHandler>>();
   private readonly statusHandlers = new Set<StatusHandler>();
   private statusSnapshot: TransportStatusSnapshot = {
@@ -414,6 +564,7 @@ export class WSClient {
       ((globalThis as { WebSocket?: WSConstructor }).WebSocket as WSConstructor);
     this.maxFrameBytes = opts.maxFrameBytes ?? MAX_FRAME_BYTES;
     this.probeLoopbackOrigin = opts.loopbackOrigin ?? pageServedOverLoopback;
+    this.retryAllowlist = opts.retryOnTransientClose ?? RETRY_ON_TRANSIENT_CLOSE;
     this.detachLifecycleListeners = this.attachLifecycleListeners();
   }
 
@@ -644,9 +795,14 @@ export class WSClient {
       }
       this.ws = null;
     }
+    // Terminal by construction: a closed client runs no ladder, so a
+    // call parked for a transient re-send is settled here alongside the
+    // rest rather than stranded in the retry queue.
+    this.retryQueue.length = 0;
+    const closedErr = new DisconnectedError('client closed', { terminal: true });
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new DisconnectedError('client closed'));
+      pending.reject(closedErr);
     }
     this.pending.clear();
     this.subscribers.clear();
@@ -672,7 +828,6 @@ export class WSClient {
           reject(new TransportError('timeout', `RPC ${id} timed out after ${RPC_TIMEOUT_MS}ms`));
         }
       }, RPC_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer });
 
       const frame: ClientRPCFrame = {
         type: 'rpc',
@@ -685,6 +840,10 @@ export class WSClient {
       // method.
       if (typeof spec.methodId === 'number' && spec.methodId !== 0) frame.methodId = spec.methodId;
       if (typeof spec.method === 'string') frame.method = spec.method;
+      // Allowlist resolved HERE, once, so a call that will never be
+      // retried does not pin its params for the RPC's lifetime.
+      const retry = matchesRetryAllowlist(this.retryAllowlist, spec) ? frame : null;
+      this.pending.set(id, { resolve, reject, timer, retry });
 
       // An RPC is live demand: if reconnection is sitting in a queued
       // backoff, run the attempt now instead of making the caller wait
@@ -731,7 +890,10 @@ export class WSClient {
       // (a background poll, a subscribe from a remounting pane) must not
       // turn the stopped ladder back into one fetch per caller.
       return Promise.reject(
-        new DisconnectedError('backend refused this session credential; reopen the share link'),
+        new DisconnectedError('backend refused this session credential; reopen the share link', {
+          cause: this.credentialRefusal,
+          terminal: true,
+        }),
       );
     }
     if (this.connectPromise) {
@@ -779,13 +941,27 @@ export class WSClient {
       // reconnect so a transient bootstrap failure recovers without
       // requiring fresh user input.
       this.scheduleReconnect();
-      throw err;
+      // Wrapped, not re-thrown raw. A failed manifest fetch rejects with
+      // whatever fetch threw (a bare TypeError, "Failed to fetch"), and
+      // that is a TRANSPORT failure that isTransportClassError could not
+      // recognise — so a caller with side effects read it as a definite
+      // "nothing happened" when the request may in fact never have been
+      // sent. Wrapping puts every connect-stage failure in the one class
+      // callers classify on, with the original preserved as `cause`.
+      throw new DisconnectedError('transport unreachable', {
+        cause: err,
+        terminal: this.credentialDead,
+      });
     }
     if (this.closed) {
       this.connectPromise = null;
-      throw new DisconnectedError('client closed');
+      throw new DisconnectedError('client closed', { terminal: true });
     }
     const url = appendToken(bootstrap.wsUrl, bootstrap.token);
+
+    // Each attempt starts with no known socket-level cause; a stale one
+    // from the previous socket must never be attributed to this close.
+    this.lastSocketError = null;
 
     return await new Promise<void>((resolve, reject) => {
       const attempt: ConnectAttempt = { settled: false, resolve, reject };
@@ -794,7 +970,10 @@ export class WSClient {
         ws = new this.WebSocketCtor(url);
       } catch (err) {
         this.connectPromise = null;
-        reject(err);
+        // Same wrapping rationale as the bootstrap path: a thrown
+        // constructor (a malformed URL, a blocked scheme) is a transport
+        // failure and must classify as one.
+        reject(new DisconnectedError('socket could not be opened', { cause: err }));
         return;
       }
       this.ws = ws;
@@ -806,6 +985,12 @@ export class WSClient {
         // signal and the reconnect path takes over. Logging the event
         // leaves a debug breadcrumb for environments where the close
         // reason is opaque.
+        //
+        // Retained as the close's `cause`: on the browser the event
+        // carries no detail, but a `--connect` shell and the test fake
+        // deliver a real Error here, and the close code alone (1006 for
+        // every abnormal end) cannot distinguish them.
+        if (this.ws === ws) this.lastSocketError = errEv;
         console.warn('wsClient: socket error', errEv);
       });
       ws.addEventListener('close', (ev: CloseEvent) => this.handleSocketClose(ws, ev, attempt));
@@ -855,6 +1040,7 @@ export class WSClient {
       type: 'replay',
       lastSeqByChannel: replay,
     });
+    this.flushRetryQueue();
     this.connectPromise = null;
     this.preOpenFailures = 0;
     this.startStaleWatchdog();
@@ -921,7 +1107,10 @@ export class WSClient {
   private handleSocketClose(ws: WSLike, ev: CloseEvent, attempt: ConnectAttempt): void {
     if (this.ws !== ws) {
       attempt.settled = true;
-      attempt.reject(new DisconnectedError('socket superseded'));
+      attempt.reject(new DisconnectedError('socket superseded', {
+        closeCode: ev.code,
+        closeReason: ev.reason,
+      }));
       return;
     }
     this.stopStaleWatchdog();
@@ -947,8 +1136,20 @@ export class WSClient {
     // response on this connection. The reconnect path resends a
     // replay frame, but RPCs themselves are not retried (the caller
     // sees DisconnectedError and decides whether to retry at the
-    // app layer).
-    this.failPending(new DisconnectedError('socket closed'));
+    // app layer) — except the explicitly allowlisted few, which
+    // failPending holds for one re-send.
+    //
+    // The close code, the peer's reason, and any preceding socket error
+    // ride the rejection: without them every caller in the app reports
+    // the same "socket closed" for a relay teardown, a backend restart,
+    // and a policy close, and the first question of any triage — WHY did
+    // the wire go — has no answer left in the UI or the error log.
+    this.failPending(new DisconnectedError('socket closed', {
+      closeCode: ev.code,
+      closeReason: ev.reason,
+      cause: this.lastSocketError ?? undefined,
+      terminal: this.credentialDead,
+    }));
     this.notificationReplayPending = false;
     this.notificationReplayBuffer = [];
     this.ws = null;
@@ -974,7 +1175,12 @@ export class WSClient {
       // hanging on a Promise that never resolves.
       attempt.settled = true;
       this.connectPromise = null;
-      attempt.reject(new DisconnectedError('socket closed before open'));
+      attempt.reject(new DisconnectedError('socket closed before open', {
+        closeCode: ev.code,
+        closeReason: ev.reason,
+        cause: this.lastSocketError ?? undefined,
+        terminal: this.credentialDead,
+      }));
     }
     if (this.closed) return;
     this.setReconnecting(null);
@@ -1021,11 +1227,20 @@ export class WSClient {
   private enterCredentialDead(err: BootstrapRejectedError): void {
     if (this.credentialDead) return;
     this.credentialDead = true;
+    this.credentialRefusal = err;
     console.warn(
       `wsClient: backend refused this session's credential (${err.message}); ` +
         'reconnect stopped — the token is minted per backend launch, so only a ' +
         'freshly-opened share link can restore this session',
     );
+    // Nothing is coming back, so a call parked for its one transient
+    // re-send has nothing left to wait for. Release it with the refusal
+    // as its cause instead of letting it sit out the RPC timeout against
+    // a ladder that will never run again.
+    this.releaseRetryQueue(new DisconnectedError(
+      'backend refused this session credential; reopen the share link',
+      { cause: err, terminal: true },
+    ));
     this.setReconnecting(null);
   }
 
@@ -1036,6 +1251,7 @@ export class WSClient {
   private clearCredentialDead(): void {
     if (!this.credentialDead) return;
     this.credentialDead = false;
+    this.credentialRefusal = null;
     if (this.statusSnapshot.status === 'unauthorized') this.setReconnecting(null);
   }
 
@@ -1097,7 +1313,7 @@ export class WSClient {
           this.queuedAttempt = null;
         }
         if (this.closed) {
-          reject(new DisconnectedError('client closed'));
+          reject(new DisconnectedError('client closed', { terminal: true }));
           return;
         }
         // Switch to "in-flight attempt" — clear nextAttemptAt so the UI
@@ -1169,7 +1385,7 @@ export class WSClient {
         if (pending) {
           this.pending.delete(frame.id);
           clearTimeout(pending.timer);
-          pending.reject(new DisconnectedError('send failed'));
+          pending.reject(new DisconnectedError('send failed', { cause: err }));
         }
       }
     }
@@ -1396,13 +1612,64 @@ export class WSClient {
     }
   }
 
-  private failPending(err: Error): void {
+  // failPending settles every outstanding RPC with one preserved cause.
+  //
+  // The exception is the allowlisted few (RetryOnTransientCloseEntry):
+  // on a NON-terminal close they keep their Pending entry and their
+  // running timeout, and their frame moves to the retry queue for one
+  // re-send on the next open. A terminal failure, or a closed client,
+  // rejects them like everything else — there is no next open to wait
+  // for. `retry` is nulled either way, so a call gets at most one.
+  //
+  // One error instance is shared across the drained set on purpose: the
+  // cause genuinely IS shared (one socket died), and minting N copies of
+  // it would allocate per in-flight call at exactly the moment the app
+  // is already doing reconnect work.
+  private failPending(err: DisconnectedError): void {
     if (this.pending.size === 0) return;
-    const drained = [...this.pending.values()];
-    this.pending.clear();
+    const holdForRetry = !err.terminal && !this.closed;
+    const drained: Pending[] = [];
+    for (const [id, p] of this.pending) {
+      if (p.retry !== null && holdForRetry) {
+        this.retryQueue.push(p.retry);
+        p.retry = null;
+        continue;
+      }
+      p.retry = null;
+      drained.push(p);
+      this.pending.delete(id);
+    }
     for (const p of drained) {
       clearTimeout(p.timer);
       p.reject(err);
+    }
+  }
+
+  // releaseRetryQueue settles calls parked for a re-send that will never
+  // happen. Called when the ladder stops (enterCredentialDead) and when
+  // the client shuts down, so a parked call never outlives the transport
+  // that owed it an answer.
+  private releaseRetryQueue(err: DisconnectedError): void {
+    if (this.retryQueue.length === 0) return;
+    const parked = this.retryQueue.splice(0, this.retryQueue.length);
+    for (const frame of parked) {
+      const pending = this.pending.get(frame.id);
+      if (!pending) continue;
+      this.pending.delete(frame.id);
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+  }
+
+  // flushRetryQueue re-sends the parked calls on a fresh connection.
+  // Runs after the replay frame so the connection's event cursor is
+  // reconciled before new work lands on it. A call whose entry has since
+  // gone (its RPC timeout fired during the outage) is dropped.
+  private flushRetryQueue(): void {
+    if (this.retryQueue.length === 0) return;
+    const parked = this.retryQueue.splice(0, this.retryQueue.length);
+    for (const frame of parked) {
+      if (this.pending.has(frame.id)) this.sendFrame(frame);
     }
   }
 }

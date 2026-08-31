@@ -63,6 +63,7 @@ import {
   RECONNECT_INITIAL_MS,
   RECONNECT_MAX_LOCAL_MS,
   RECONNECT_MAX_REMOTE_MS,
+  RETRY_ON_TRANSIENT_CLOSE,
   RPC_TIMEOUT_MS,
   STALE_TRAFFIC_THRESHOLD_MS,
   STALE_CHECK_INTERVAL_MS,
@@ -108,8 +109,8 @@ class MockWebSocket {
     this.sent.push(JSON.parse(data) as Record<string, unknown>);
   }
 
-  close(code?: number, _reason?: string): void {
-    this.triggerClose(code ?? 1005);
+  close(code?: number, reason?: string): void {
+    this.triggerClose(code ?? 1005, reason);
   }
 
   addEventListener(type: 'open', listener: () => void): void;
@@ -143,15 +144,22 @@ class MockWebSocket {
   // Default code 1006 (abnormal closure) — the shape of a network
   // death, which is what most tests simulate and what the outage
   // diagnostics record.
-  triggerClose(code = 1006): void {
+  // `reason` is the peer's close reason. Real deployments supply one on
+  // every deliberate close (a relay teardown, a policy close), and it is
+  // the single most useful field for telling those apart after the fact,
+  // so the fake carries it.
+  triggerClose(code = 1006, reason = ''): void {
     if (this.readyState === 3) return;
     this.readyState = 3; // CLOSED
-    const ev = new CloseEvent('close', { code });
+    const ev = new CloseEvent('close', { code, reason });
     for (const fn of [...this.listeners.close]) fn(ev);
   }
 
-  triggerError(): void {
-    const ev = new Event('error');
+  // `detail` stands in for the richer error object a non-browser socket
+  // (the `--connect` shell) delivers, where the browser event carries
+  // nothing.
+  triggerError(detail?: Event): void {
+    const ev = detail ?? new Event('error');
     for (const fn of [...this.listeners.error]) fn(ev);
   }
 }
@@ -393,6 +401,173 @@ describe('WSClient', () => {
     expect(caught).toBeInstanceOf(DisconnectedError);
 
     client.close();
+  });
+
+  it('rejects with the close code and reason preserved, not a bare "socket closed"', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.triggerClose(1012, 'backend restarting');
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as DisconnectedError;
+    expect(err).toBeInstanceOf(DisconnectedError);
+    expect(err.closeCode).toBe(1012);
+    expect(err.closeReason).toBe('backend restarting');
+    // In the MESSAGE too: the ~150 sites that render a failure read
+    // `err.message`, and the cause has to survive that rendering or it
+    // never reaches a human.
+    expect(err.message).toContain('1012');
+    expect(err.message).toContain('backend restarting');
+    // Not terminal: the ladder is still running, so a store that
+    // suspends on this edge will re-source on the next connect.
+    expect(err.terminal).toBe(false);
+
+    client.close();
+  });
+
+  it('carries the socket error that preceded the close as the rejection cause', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    // A socket-level failure arrives before the close on every engine
+    // that reports one. 1006 is the same code for every abnormal end, so
+    // this object is the only thing distinguishing them.
+    const detail = new ErrorEvent('error', { message: 'TLS handshake failed' });
+    ws.triggerError(detail);
+    ws.triggerClose(1006);
+
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as DisconnectedError).cause).toBe(detail);
+
+    client.close();
+  });
+
+  it('clears a previous socket error so it cannot be blamed for the next close', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    client.subscribe('thread:updated', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerError(new ErrorEvent('error', { message: 'first socket died' }));
+    first.triggerClose(1006);
+
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const p = client.callByID(1, []);
+    await vi.advanceTimersByTimeAsync(0);
+    // Second socket dies cleanly, with no error event of its own.
+    second.triggerClose(1001, 'going away');
+    let caught: unknown;
+    try {
+      await p;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as DisconnectedError).cause).toBeUndefined();
+    expect((caught as DisconnectedError).closeReason).toBe('going away');
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('ships an EMPTY retry-on-transient-close allowlist', () => {
+    // A tripwire, not a formality. The allowlist is the one place an RPC
+    // can be re-sent without its caller knowing, and every entry trades
+    // a lost answer for a possibly-duplicated action. Growing it must be
+    // a reviewed decision that also updates this expectation and the
+    // entry's `why`, never a quiet append.
+    expect(RETRY_ON_TRANSIENT_CLOSE).toHaveLength(0);
+  });
+
+  it('does not retry an ordinary call across a transient close', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(1, []);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    first.triggerClose(1006);
+
+    await expect(p).rejects.toBeInstanceOf(DisconnectedError);
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // Only the replay handshake — the dead call was NOT re-sent.
+    expect(second.sent.filter((f) => f.type === 'rpc')).toHaveLength(0);
+
+    client.close();
+    vi.useRealTimers();
+  });
+
+  it('re-sends an allowlisted call once after a transient close, and only once', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap,
+      retryOnTransientClose: [{ methodId: 42, why: 'test seam' }],
+    });
+
+    const p = client.callByID(42, ['arg']);
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const id = first.sent.find((f) => f.type === 'rpc')!.id as string;
+
+    first.triggerClose(1006);
+    await vi.advanceTimersByTimeAsync(300);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Re-sent under the SAME id: request ids are client-side bookkeeping,
+    // so the caller's promise is still the one waiting on this answer.
+    const resent = second.sent.filter((f) => f.type === 'rpc');
+    expect(resent).toHaveLength(1);
+    expect(resent[0]!.id).toBe(id);
+
+    // The one retry is spent. A second close settles the call rather
+    // than parking it again — otherwise a flapping link would keep a
+    // caller waiting indefinitely on a call it believes is in flight.
+    second.triggerClose(1006, 'flapped again');
+    await expect(p).rejects.toMatchObject({ closeReason: 'flapped again' });
+
+    client.close();
+    vi.useRealTimers();
   });
 
   it('re-sends replay frame on reconnect with lastSeqByChannel', async () => {
@@ -771,7 +946,7 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('rejects on malformed bootstrap JSON via fetch path', async () => {
+  it('wraps a malformed-bootstrap failure as a transport error and keeps the cause', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     // Stub global fetch with a response that returns invalid JSON.
     const fetchMock = vi.fn(async () => ({
@@ -792,7 +967,14 @@ describe('WSClient', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(SyntaxError);
+    // The caller must see a TRANSPORT-class failure, not the raw
+    // SyntaxError: a manifest that would not parse means the request was
+    // never sent, and a caller with side effects classifies on
+    // DisconnectedError to decide whether "nothing happened" is safe to
+    // assume. The original error survives as `cause` so triage keeps it.
+    expect(caught).toBeInstanceOf(DisconnectedError);
+    expect((caught as DisconnectedError).cause).toBeInstanceOf(SyntaxError);
+    expect((caught as DisconnectedError).message).toContain('Unexpected token');
     client.close();
     vi.unstubAllGlobals();
   });
