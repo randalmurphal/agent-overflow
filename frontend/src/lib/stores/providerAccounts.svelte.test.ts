@@ -30,7 +30,7 @@ import {
 } from './rateLimitsInfo.svelte';
 import { getToasts, removeToast } from './toast.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { account, deferred } from '../../test/helpers/providerAccounts';
 import type { ManagedProviderAccount } from './bindings';
 
@@ -158,11 +158,11 @@ describe('loadProviderAccounts', () => {
     // The RPC is LocalOnly, so it can only be refused — and this load runs
     // unprompted at startup, where the refusal would be an unexplained toast.
     const listMock = setBindingMock('ListProviderAccounts', async () => [account()]);
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     try {
       await loadProviderAccounts();
     } finally {
-      setViewOnlySessionFromBootstrap(false);
+      setPageGrantsFromBootstrap(false);
     }
 
     expect(listMock).not.toHaveBeenCalled();

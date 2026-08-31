@@ -11,7 +11,15 @@ export interface ServerRPCFrame {
   // credential check refused the call. Map it through
   // ./authReason.ts — never render it raw, and never branch on `message`,
   // which is generic prose for non-loopback callers.
-  error?: { code: string; message: string; reason?: string };
+  //
+  // `scope` is present only alongside 'scope_required', and names the
+  // capability the caller's session was not granted (one member of
+  // ./scopes.ts's set, `host` included). Same rule: map it through
+  // ./scopeRefusal.ts. It is a field rather than prose for the reason
+  // `code` is one — a method error's TEXT does not survive the wire for a
+  // non-loopback caller, and this is exactly what such a caller must
+  // branch on to explain a disabled surface.
+  error?: { code: string; message: string; reason?: string; scope?: string };
 }
 
 export interface ServerEventFrame {

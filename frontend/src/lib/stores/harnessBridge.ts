@@ -57,7 +57,7 @@
 
 import { Call } from '@wailsio/runtime';
 import { harnessPageMarker, whenHarnessSession } from '../transport/harnessMode';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { wailsEventOn } from './wailsEvents';
 import { onTransportStatusChange } from './transportStatus.svelte';
 
@@ -167,13 +167,15 @@ export function installHarnessBridge(): () => void {
   };
   const cancelArm = whenHarnessSession(() => {
     if (!active) return;
-    // Locality, read at ARM time rather than at install time: the manifest
-    // sets the remote bit before it sets the harness bit (see
+    // Host presence, read at ARM time rather than at install time: the
+    // manifest publishes locality before it sets the harness bit (see
     // transport/bootstrap.ts), so by the time this runs the answer is
-    // final. A remote page can never be sent a `harness:ui-query`, so a
-    // subscription here would be a listener for an event that cannot
-    // arrive — and the module it would load is loopback-only tooling.
-    if (isViewOnlySession()) return;
+    // final. The harness drives THIS desktop's renderer, which is what the
+    // `host` scope names — a page elsewhere can never be sent a
+    // `harness:ui-query`, so a subscription would be a listener for an
+    // event that cannot arrive, and the module it would load is host
+    // tooling.
+    if (!hasScope('host')) return;
     publishPageIdentity();
     stopTransportStatus = onTransportStatusChange((status) => {
       if (!active) return;

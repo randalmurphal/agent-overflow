@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadContextMenu from './ThreadContextMenu.svelte';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { clearThreadSelection, setThreadSelection } from '../../stores/threadFilter.svelte';
@@ -216,13 +216,13 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
   beforeEach(() => {
     resetBindingMocks();
     clearThreadSelection();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     setBindingMock('ListThreads', async () => []);
     setBindingMock('ListProjects', async () => []);
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('is absent on a thread Agent Overflow created itself', () => {
@@ -314,7 +314,7 @@ describe('<ThreadContextMenu> Check for Provider Updates', () => {
   });
 
   it('is disabled with a Local only tooltip in a view-only session', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const check = setBindingMock('CheckThreadImportUpdates', async () => ({
       threadId: 'thread-1',
       status: 'updates-available',

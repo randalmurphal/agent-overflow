@@ -18,8 +18,13 @@
 //
 // We read once at module load and cache. The value can't change during
 // the SPA's lifetime — a different mode means a different process boot.
-
-import { createSubscriber } from 'svelte/reactivity';
+//
+// This is a PROCESS-BOOT fact and nothing else. What a session is allowed
+// to do is a different axis entirely and lives in ./scopes.ts: run mode
+// answers "whose settings would this RPC edit", capabilities answer "was
+// this session granted this". Conflating them is how a `--connect` client
+// attached to a LOCAL backend — which may do everything — ends up gated
+// like a remote viewer.
 
 // RunMode marks how the SPA is attached to its backend:
 //   - 'local'    — the desktop binary booted a local transport in the
@@ -42,14 +47,6 @@ function detectMode(): RunMode {
 }
 
 let cached: RunMode | null = null;
-let viewOnly = false;
-let notifyViewOnlyChanged: (() => void) | null = null;
-const subscribeViewOnly = createSubscriber((update) => {
-  notifyViewOnlyChanged = update;
-  return () => {
-    if (notifyViewOnlyChanged === update) notifyViewOnlyChanged = null;
-  };
-});
 
 // runMode returns the current run mode. Memoised because the value is
 // fixed for the process lifetime; tests that need to switch modes
@@ -65,29 +62,9 @@ export function isClientMode(): boolean {
   return runMode() === 'client';
 }
 
-// isViewOnlySession is reactive when read from a Svelte derived or template.
-// Every session learns the value asynchronously from /bootstrap.json — a
-// --connect client included, since its stub answers the same manifest
-// field from the upstream's locality.
-export function isViewOnlySession(): boolean {
-  subscribeViewOnly();
-  return viewOnly;
-}
-
-// Called only by bootstrap.ts after it validates a manifest. Keeping the
-// update at that boundary prevents non-boolean wire values from changing the
-// workflow control posture.
-export function setViewOnlySessionFromBootstrap(remote: boolean): void {
-  if (viewOnly === remote) return;
-  viewOnly = remote;
-  notifyViewOnlyChanged?.();
-}
-
 // __resetRunModeForTest is the test-only escape hatch. Invalidates the
 // cached value so a subsequent runMode() call re-reads the page URL.
 // Production code never calls it.
 export function __resetRunModeForTest(): void {
   cached = null;
-  viewOnly = false;
-  notifyViewOnlyChanged?.();
 }

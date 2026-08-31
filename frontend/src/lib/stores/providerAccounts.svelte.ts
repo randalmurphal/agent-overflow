@@ -14,11 +14,11 @@
 // PER-PROVIDER: logging in to Claude must not disable the Codex buttons, and
 // an account id belongs to exactly one provider anyway.
 //
-// Every one of these RPCs is LocalOnly on the transport
-// (internal/transport/internalmethods.go). The command that opens the picker
-// is gated on `!viewOnlySession`, but the listing is also pulled unprompted at
-// startup, so `loadProviderAccounts` refuses in a view-only session rather than
-// relying on every entry point to remember.
+// Every one of these RPCs carries the `access:admin` scope (billing identity;
+// docs/specs/remote-access.md §5). The command that opens the picker gates on
+// that capability, but the listing is also pulled unprompted at startup, so
+// `loadProviderAccounts` refuses without the grant rather than relying on
+// every entry point to remember.
 
 import {
   ListProviderAccounts,
@@ -32,7 +32,7 @@ import { clearProviderAccount, setProviderAccount } from './accountInfo.svelte';
 import { clearProviderRateLimits, setProviderRateLimits } from './rateLimitsInfo.svelte';
 import { addToast } from './toast.svelte';
 import { getProviderDefinition, PROVIDER_SETTINGS_ORDER } from '../providers/catalog';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { PROVIDER_IDS, type ProviderID } from '../types/providers';
 import { userFacingError } from '../utils/userFacingError';
 
@@ -175,12 +175,12 @@ export function providerAccountActionLabel(account: ManagedProviderAccount): str
  * that the user's accounts went away.
  */
 export function loadProviderAccounts(): Promise<void> {
-  // Every RPC in this module is LocalOnly on the transport, so in a view-only
-  // remote session the listing call can only be refused — and this one runs
-  // unprompted at startup (eventsProvider's hydrate) and on transport-gap
-  // recovery, where the refusal would surface as an unexplained error toast.
-  // Settle into "loaded, nothing saved" instead of asking.
-  if (isViewOnlySession()) {
+  // The provider-account surface is billing identity, which `access:admin`
+  // covers. Without the grant the listing call can only be refused — and this
+  // one runs unprompted at startup (eventsProvider's hydrate) and on
+  // transport-gap recovery, where the refusal would surface as an unexplained
+  // error toast. Settle into "loaded, nothing saved" instead of asking.
+  if (!hasScope('access:admin')) {
     loading = false;
     return Promise.resolve();
   }

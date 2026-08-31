@@ -33,7 +33,7 @@ import {
 import { resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
 import { openTerminalThread } from '../../stores/threadCreation.svelte';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import {
   applyThreadTitleGeneration,
   resetThreadTitleGenerationForTest,
@@ -597,7 +597,7 @@ describe('<ChatHeader>', () => {
   });
 
   it('disables the regenerate button in a view-only session (LocalOnly RPC)', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     try {
       const pane = await buildPane();
       const { getByTestId } = render(ChatHeader, { props: { pane } });
@@ -607,7 +607,7 @@ describe('<ChatHeader>', () => {
       expect(button.disabled).toBe(true);
       expect(button.title).toBe('Local only');
     } finally {
-      setViewOnlySessionFromBootstrap(false);
+      setPageGrantsFromBootstrap(false);
     }
   });
 });

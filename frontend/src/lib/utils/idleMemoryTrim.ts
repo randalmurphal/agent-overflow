@@ -39,7 +39,8 @@
 // allocation, no reactive state.
 import { RequestWebviewMemoryTrim } from '../stores/bindings';
 import { isMethodUnavailableError } from '../stores/transportStatus.svelte';
-import { isViewOnlySession, runMode } from '../transport/runMode';
+import { runMode } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { revealDrainStats } from './revealDrainProbe';
 
 /** Input silence before a trim request. A pause this long means reading,
@@ -63,17 +64,19 @@ export const IDLE_TRIM_CHECK_MS = 5_000;
 const INPUT_EVENTS = ['pointerdown', 'pointermove', 'keydown', 'wheel'] as const;
 
 /**
- * Install the idle detector. Local desktop sessions only: a `--connect`
- * client's or remote browser's idleness says nothing about the desktop
- * renderer, and the RPC is LocalOnly anyway — a session that still gets
- * the method refused disarms itself permanently. Returns an idempotent
- * stop that removes every listener and timer.
+ * Install the idle detector. The desktop's own screen only: a `--connect`
+ * client's or a remote browser's idleness says nothing about the desktop
+ * renderer, and the trim RPC is host-scoped anyway — a session that still
+ * gets the method refused disarms itself permanently. Returns an
+ * idempotent stop that removes every listener and timer.
  */
 export function startIdleMemoryTrim(): () => void {
-  // A remote LAN browser boots with mode 'local' too; the Remote flag in
-  // its bootstrap is what marks it. Both gates are fixed for the page's
-  // lifetime, so this is an install-time decision.
-  if (runMode() !== 'local' || isViewOnlySession()) return () => {};
+  // Two axes, both needed. `runMode` is the process-boot fact: a --connect
+  // stub trims the wrong renderer. Host presence is authorization, and a
+  // remote LAN browser boots with mode 'local' too, so only the manifest's
+  // locality marks it. Both are fixed for the page's lifetime, so this is
+  // an install-time decision.
+  if (runMode() !== 'local' || !hasScope('host')) return () => {};
 
   let lastInputAt = Date.now();
   let lastAttemptAt = 0;

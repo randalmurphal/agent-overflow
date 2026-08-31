@@ -74,6 +74,14 @@ interface StoredSession {
   refreshSecret?: string;
   refreshExpiresAtMs?: number;
   label?: string;
+  /**
+   * The grant set this session holds, as the issuing response published
+   * it. Absent when the backend is older than the field, which is why
+   * `pairedSessionScopes` answers null rather than `[]` for that case:
+   * "nothing granted" and "this backend does not say" take different
+   * fallbacks in ./scopes.ts.
+   */
+  scopes?: string[];
 }
 
 export class PairingRefusedError extends Error {
@@ -172,6 +180,11 @@ function readStoredSession(): StoredSession | null {
   try {
     const parsed = JSON.parse(raw) as StoredSession;
     if (typeof parsed.sessionId !== 'string' || typeof parsed.credential !== 'string') return null;
+    // A hand-edited or half-written entry must not become a grant set.
+    // Anything that is not an array of strings reads as "not published".
+    if (!Array.isArray(parsed.scopes) || parsed.scopes.some((s) => typeof s !== 'string')) {
+      delete parsed.scopes;
+    }
     return parsed;
   } catch {
     return null;
@@ -221,6 +234,23 @@ export function pairedSessionId(): string | null {
   return readStoredSession()?.sessionId ?? null;
 }
 
+/**
+ * The grant set the stored paired session holds, or null when this
+ * browser holds no paired session — or holds one from a backend too old
+ * to publish grants.
+ *
+ * Null is a distinct answer from `[]` on purpose. `[]` means the backend
+ * said "this session was granted nothing"; null means it said nothing at
+ * all, and ./scopes.ts falls back to judging the page rather than
+ * treating silence as a refusal of every surface.
+ *
+ * Read on demand rather than cached: the store moves on redemption and
+ * on rotation, and the two callers ask at exactly those moments.
+ */
+export function pairedSessionScopes(): readonly string[] | null {
+  return readStoredSession()?.scopes ?? null;
+}
+
 /** Drop the stored session. The device key survives — it names the device, not the session. */
 export function clearPairedSession(): void {
   storeSession(null);
@@ -236,6 +266,17 @@ interface GrantBody {
   verificationNumber?: string;
   pairingId?: string;
   reason?: string;
+  scopes?: string[];
+}
+
+/**
+ * The grant set a credential response published, or undefined when it
+ * published none. Filters to strings so a value from a backend speaking
+ * a shape this build does not know cannot land in storage as one.
+ */
+function grantedScopesFrom(body: GrantBody): string[] | undefined {
+  if (!Array.isArray(body.scopes)) return undefined;
+  return body.scopes.filter((scope): scope is string => typeof scope === 'string');
 }
 
 async function readGrant(res: Response): Promise<GrantBody> {
@@ -283,6 +324,7 @@ export async function redeemPairing(
     refreshSecret: body.refreshSecret,
     refreshExpiresAtMs: body.refreshExpiresAtMs,
     label,
+    scopes: grantedScopesFrom(body),
   });
   return {
     verificationNumber: body.verificationNumber ?? '',
@@ -343,6 +385,11 @@ function renewSession(fetcher: typeof fetch): Promise<boolean> {
       refreshSecret: body.refreshSecret,
       refreshExpiresAtMs: body.refreshExpiresAtMs,
       label: held.label,
+      // A rotation that did not publish grants keeps the ones the
+      // redemption did. Grants are immutable for a session's lifetime,
+      // so the carried copy is still true, and dropping it would turn a
+      // renewal into a downgrade of what this page offers.
+      scopes: grantedScopesFrom(body) ?? held.scopes,
     });
     return true;
   })().finally(() => {

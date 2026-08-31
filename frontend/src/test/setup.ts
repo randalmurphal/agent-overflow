@@ -24,6 +24,7 @@ import { __resetWorkspaceChangeLockForTest } from '../lib/stores/workspaceChange
 import { __resetThreadHistoryStampsForTest } from '../lib/stores/threadHistoryStamps';
 import { __resetReplicaForTest } from '../lib/replica';
 import { __resetBackendIdentityForTest } from '../lib/transport/backendIdentity';
+import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class StubResizeObserver {
@@ -214,6 +215,12 @@ beforeEach(() => {
   // suspends every connection-gated store. Pin it connected; a test that
   // cares about an outage drives it itself.
   __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+  // Same shape for capabilities: with no bootstrap fetch nothing resolves the
+  // page's grants, and the unresolved answer holds nothing — which would
+  // disable every gated surface in every test. Pin the manifest answer the
+  // embedded webview actually gets (loopback ⇒ the owner's own screen, every
+  // scope); a test exercising a narrower session sets its own.
+  setPageGrantsFromBootstrap(false);
   // Entity-keyed git status is a module-level singleton shared by every
   // pane, so it outlives a test. Reset after the transport pin, which
   // itself re-sources whatever the previous test left attached.

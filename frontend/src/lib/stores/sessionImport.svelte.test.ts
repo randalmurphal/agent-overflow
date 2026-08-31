@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { getToasts, removeToast } from './toast.svelte';
 import type {
   ImportScanResult,
@@ -119,7 +119,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setViewOnlySessionFromBootstrap(false);
+  setPageGrantsFromBootstrap(false);
   resetSessionImportForTest();
   clearToasts();
 });
@@ -370,7 +370,7 @@ describe('sessions that already ran in Agent Overflow', () => {
 describe('view-only sessions', () => {
   it('refuses to scan and says why', async () => {
     const { list } = installBindings();
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
 
     await loadImportCatalog();
 
@@ -381,7 +381,7 @@ describe('view-only sessions', () => {
 
   it('refuses to start a run and says why', async () => {
     const { start } = installBindings();
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
 
     await startImport(['claude:a']);
 

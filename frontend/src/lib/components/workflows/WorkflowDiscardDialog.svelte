@@ -15,7 +15,7 @@
   import { getWorkflowCosts, getWorkflowDetail, getWorkflowRun } from '../../stores/workflowRuns.svelte';
   import { resolveWorkflowRun } from '../../stores/workflowResolve';
   import { userFacingError } from '../../utils/userFacingError';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     open: boolean;
@@ -24,7 +24,8 @@
   }
   let { open, itemId, onClose }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Every control here drives the workflow engine, which is `threads:autonomy`.
+  let ungranted = $derived(!hasScope('threads:autonomy'));
   let item = $derived(getWorkflowRun(itemId));
   // Composed spend (see WorkflowRunDetail): `usage.costUsd` is wire-reported
   // cost alone and reads as zero for a run that ran on Codex.
@@ -58,7 +59,7 @@
   });
 
   async function confirm(): Promise<void> {
-    if (!item || viewOnly || submitting) return;
+    if (!item || ungranted || submitting) return;
     submitting = true;
     try {
       if (await resolveWorkflowRun(item, { kind: 'discard' }, costUsd)) onClose();
@@ -115,7 +116,7 @@
       size="sm"
       testId="workflow-discard-confirm"
       onclick={() => { void confirm(); }}
-      disabled={viewOnly || submitting || loading || !item || Boolean(error)}
+      disabled={ungranted || submitting || loading || !item || Boolean(error)}
       loading={submitting}
     >
       {#snippet children()}{submitting ? 'Discarding…' : 'Discard'}{/snippet}

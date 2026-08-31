@@ -35,7 +35,7 @@ export function harnessPageMarker(): string {
 }
 
 // Called only by bootstrap.ts once a manifest has been validated, the same
-// boundary setViewOnlySessionFromBootstrap sits on: a wire value must not
+// boundary setPageGrantsFromBootstrap sits on: a wire value must not
 // arm the bridge before the manifest it came from has been accepted.
 export function setHarnessSessionFromBootstrap(value: boolean): void {
   if (harness || !value) return;

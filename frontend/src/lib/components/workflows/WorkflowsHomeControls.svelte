@@ -12,7 +12,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import { isWorkflowEnginePaused } from '../../stores/workflowRuns.svelte';
   import {
     getWorkflowProjectFilter,
@@ -20,16 +20,17 @@
     setWorkflowsOverlayDialog,
   } from '../../stores/workflowsOverlay.svelte';
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Every control here drives the workflow engine, which is `threads:autonomy`.
+  let ungranted = $derived(!hasScope('threads:autonomy'));
   let paused = $derived(isWorkflowEnginePaused());
   let projects = $derived(getProjects());
   let filter = $derived(getWorkflowProjectFilter());
   let pausing = $state(false);
 
-  const localOnly = $derived(viewOnly ? 'Local only' : undefined);
+  const localOnly = $derived(ungranted ? 'Local only' : undefined);
 
   async function togglePause(): Promise<void> {
-    if (viewOnly || pausing) return;
+    if (ungranted || pausing) return;
     pausing = true;
     const next = !paused;
     try {
@@ -47,7 +48,7 @@
   <button
     class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
     onclick={togglePause}
-    disabled={viewOnly || pausing}
+    disabled={ungranted || pausing}
     title={localOnly ?? 'Pause stops new phase starts everywhere; in-flight turns finish'}
     data-testid="workflows-pause-all"
     aria-pressed={paused}
@@ -72,7 +73,7 @@
     <button
       class="rounded-md border border-border-subtle px-2 py-1 text-xs text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
       onclick={() => setWorkflowsOverlayDialog('intake')}
-      disabled={viewOnly}
+      disabled={ungranted}
       title={localOnly}
       data-testid="workflows-new-run"
     >+ New run</button>

@@ -94,7 +94,7 @@ import {
   isSettingsOpen,
   openSettingsOverlay,
 } from './settingsOverlay.svelte';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 
 export interface BuiltinCommandHooks {
   openThreadForm: () => void;
@@ -764,7 +764,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description:
       'Pick a saved Claude or Codex account and switch to it, with each account’s last-known limits.',
     icon: '⇄',
-    when: '!viewOnlySession',
+    when: 'accessAdmin',
     // Matches the composer picker toggles: you reach for an account switch
     // mid-sentence, so the chord has to survive composer focus.
     editableReachable: true,
@@ -1135,8 +1135,8 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     workflowsRunDetail: isWorkflowsOverlayOpen() && getWorkflowsOverlayTop().level === 'run',
     // Derived here, not passed in, for the same reason as the overlay flags:
     // the palette, per-keypress dispatch and tests must all see one answer for
-    // "may this session run local-only work".
-    viewOnlySession: isViewOnlySession(),
+    // "was this session granted that".
+    accessAdmin: hasScope('access:admin'),
     ...extra,
   };
   return {

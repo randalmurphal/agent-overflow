@@ -4,7 +4,7 @@ import ChatMarkdown from './ChatMarkdown.svelte';
 import FootnotePopoverHost from './FootnotePopoverHost.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 // Integration coverage for the path-link primitive flowing through
 // Streamdown's URL gate. The unit suite in `pathLinkExtension.test.ts`
@@ -19,7 +19,7 @@ import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
 
 describe('<ChatMarkdown> path-link rendering', () => {
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('renders an agent-overflow:open anchor when the path is on the allowlist', async () => {
@@ -60,7 +60,7 @@ describe('<ChatMarkdown> path-link rendering', () => {
   });
 
   it('emits no local path affordance in a view-only session', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const { container } = render(ChatMarkdown, {
       props: {
         source: 'See src/foo.ts here',

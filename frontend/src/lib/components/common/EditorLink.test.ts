@@ -3,12 +3,12 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import EditorLink from './EditorLink.svelte';
 import { setBindingMock, getBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 describe('<EditorLink>', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     // The toast registry is a module-level singleton; drain it so a
     // toast left by a sibling describe block can't satisfy a "find
     // this error" assertion below.
@@ -18,7 +18,7 @@ describe('<EditorLink>', () => {
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('renders inline with the path as text by default', () => {
@@ -162,7 +162,7 @@ describe('<EditorLink>', () => {
   });
 
   it('renders inert text and omits icon actions in a view-only session', () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const inline = render(EditorLink, { props: { path: 'src/foo.ts' } });
     const icon = render(EditorLink, { props: { path: 'src/foo.ts', asIcon: true } });

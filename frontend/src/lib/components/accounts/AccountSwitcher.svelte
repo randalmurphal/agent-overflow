@@ -30,7 +30,7 @@
   } from '../../stores/providerAccounts.svelte';
   import { getProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
   import { openSettingsOverlay } from '../../stores/settingsOverlay.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import type { ProviderID } from '../../types/providers';
   import { isImeComposingEvent } from '../../utils/imeComposition';
 
@@ -86,13 +86,12 @@
   // the LISTING is refetched: usage is whatever was last recorded, so opening
   // the picker never fans out a probe per account.
   //
-  // Every account RPC is LocalOnly on the transport, so a view-only remote
-  // session must not issue one: the command that opens this picker is gated on
-  // `!viewOnlySession`, but a browser can reach this effect before the
-  // bootstrap manifest lands that flag, and the refused RPC would surface as a
-  // raw failure toast.
+  // The provider-account surface is billing identity, which `access:admin`
+  // covers. The command that opens this picker asks the same question, but a
+  // browser can reach this effect before the bootstrap manifest resolves the
+  // answer, and a refused RPC would surface as a raw failure toast.
   $effect(() => {
-    if (!open || isViewOnlySession()) return;
+    if (!open || !hasScope('access:admin')) return;
     activeIndex = 0;
     void loadProviderAccounts();
     requestAnimationFrame(() => listEl?.focus());

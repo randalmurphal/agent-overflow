@@ -11,7 +11,7 @@ describe('WorkflowOutputs', () => {
     const view = render(WorkflowOutputs, {
       values: { summary: 'All checks passed' },
       artifacts,
-      viewOnly: false,
+      openDisabled: false,
       onOpenArtifact,
     });
 
@@ -25,7 +25,7 @@ describe('WorkflowOutputs', () => {
     const view = render(WorkflowOutputs, {
       values: {},
       artifacts,
-      viewOnly: true,
+      openDisabled: true,
       onOpenArtifact: vi.fn(),
     });
 
@@ -38,7 +38,7 @@ describe('WorkflowOutputs', () => {
     const view = render(WorkflowOutputs, {
       values: {},
       artifacts: [],
-      viewOnly: false,
+      openDisabled: false,
       onOpenArtifact: vi.fn(),
     });
 

@@ -20,7 +20,7 @@
   const RENDER_CONTEXT = {
     streaming: true,
     volatileTailVisible: true,
-    viewOnly: false,
+    pathLinksInert: false,
     workspacePath: '',
   } as const;
   const revealRouter = new StreamingAssistantRevealRouter();

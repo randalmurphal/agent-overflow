@@ -81,7 +81,8 @@ import {
   TransportError,
   transportGapChannel,
 } from './wsClient';
-import { __resetRunModeForTest, isViewOnlySession } from './runMode';
+import { __resetRunModeForTest } from './runMode';
+import { grantedScopes, hasScope } from './scopes';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { clearPairedSession, hasPairedSession, redeemPairing } from './deviceSession';
 
@@ -279,6 +280,43 @@ describe('WSClient', () => {
     expect(caught).toBeInstanceOf(TransportError);
     expect((caught as TransportError).code).toBe('method_not_found');
     expect((caught as TransportError).message).toBe('missing');
+
+    client.close();
+  });
+
+  it('carries a scope refusal\u2019s capability name onto the rejection', async () => {
+    // The missing capability rides a FIELD, because a method error\u2019s prose
+    // is redacted for a non-loopback caller \u2014 exactly the caller that has to
+    // explain why a surface is disabled. Losing it here leaves
+    // ./scopeRefusal.ts nothing to say but the generic sentence.
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+
+    const p = client.callByID(9, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const id = ws.sent[1]!.id as string;
+    ws.pushFrame({
+      type: 'rpc',
+      id,
+      error: { code: 'scope_required', message: 'not authorized', scope: 'git:operate' },
+    });
+    await expect(p).rejects.toMatchObject({ code: 'scope_required', scope: 'git:operate' });
+
+    // An ordinary failure leaves the field alone, so a caller reading it
+    // as "was this an authorization refusal" is never misled.
+    const q = client.callByID(10, []);
+    await flushMicrotasks();
+    const nextId = ws.sent.at(-1)!.id as string;
+    ws.pushFrame({ type: 'rpc', id: nextId, error: { code: 'method_error', message: 'boom' } });
+    let caught: unknown;
+    try {
+      await q;
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as TransportError).scope).toBeUndefined();
 
     client.close();
   });
@@ -1475,7 +1513,9 @@ describe('WSClient', () => {
       expect([...opened.searchParams.keys()].sort()).toEqual(['conn', 'did']);
       expect(opened.searchParams.get('did')).toBe(getDeviceId());
       expect(opened.searchParams.get('conn')).toBe(getConnectionId());
-      expect(isViewOnlySession()).toBe(true);
+      // A page served over the network holds no grant of its own.
+      expect(grantedScopes().source).toBe('unpaired');
+      expect(hasScope('host')).toBe(false);
 
       ws.acceptOpen();
       await flushMicrotasks();
@@ -1488,7 +1528,7 @@ describe('WSClient', () => {
     }
   });
 
-  it('publishes fetched bootstrap locality to the view-only helper', async () => {
+  it('publishes fetched bootstrap locality to the capability store', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
@@ -1501,7 +1541,8 @@ describe('WSClient', () => {
     try {
       const unsubscribe = client.subscribe('workflow:item-state', () => {});
       await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
-      expect(isViewOnlySession()).toBe(true);
+      expect(hasScope('host')).toBe(false);
+      expect(hasScope('threads:operate')).toBe(false);
       unsubscribe();
     } finally {
       client.close();

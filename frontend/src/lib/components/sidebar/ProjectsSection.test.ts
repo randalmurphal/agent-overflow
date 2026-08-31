@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import ProjectsSection from './ProjectsSection.svelte';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import {
   isSessionImportOpen,
   resetSessionImportForTest,
@@ -28,11 +28,11 @@ function importButton(container: HTMLElement): HTMLButtonElement {
 describe('ProjectsSection import trigger', () => {
   beforeEach(() => {
     resetSessionImportForTest();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     resetSessionImportForTest();
   });
 
@@ -64,7 +64,7 @@ describe('ProjectsSection import trigger', () => {
   });
 
   it('is disabled with a Local only tooltip in a view-only session', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const view = render(ProjectsSection, { props: { pane: null } });
     const button = importButton(view.container);
 

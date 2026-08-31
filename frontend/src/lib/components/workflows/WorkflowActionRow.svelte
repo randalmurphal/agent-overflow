@@ -34,7 +34,7 @@
     setWorkflowsOverlayDialog,
   } from '../../stores/workflowsOverlay.svelte';
   import { addToast } from '../../stores/toast.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     item: WorkItem;
@@ -53,8 +53,9 @@
     item, detail, costUsd, nextPhaseId, failedUnitId, failedUnitThreadId, onToggleFirstDiff,
   }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
-  const localOnly = $derived(viewOnly ? 'Local only' : undefined);
+  // Every action on this row resolves a workflow run.
+  let ungranted = $derived(!hasScope('threads:autonomy'));
+  const localOnly = $derived(ungranted ? 'Local only' : undefined);
   let kind = $derived(workflowResolutionKind(item));
   // A stop request only exists where a boundary exists to honour it: the ROOT
   // of a tree, whose workflow has a call phase. Offering it anywhere else would
@@ -77,7 +78,7 @@
   let noteInput = $state<HTMLInputElement | undefined>(undefined);
 
   async function act(request: WorkflowActionRequest): Promise<void> {
-    if (viewOnly || busy) return;
+    if (ungranted || busy) return;
     busy = true;
     try {
       if (await resolveWorkflowRun(item, request, costUsd)) {
@@ -106,7 +107,7 @@
   // control and open the thread it is already running in. Nothing here creates
   // a thread — every run-level spawn was removed (D32).
   async function takeOverUnit(): Promise<void> {
-    if (viewOnly || busy) return;
+    if (ungranted || busy) return;
     if (!failedUnitId) {
       addToast('warning', 'No failed unit to take over.');
       return;
@@ -115,7 +116,7 @@
   }
 
   function run(action: WorkflowActionButton): void {
-    if (viewOnly || busy) return;
+    if (ungranted || busy) return;
     if (action.arms) {
       const key = workflowActionConfirmationKey(action.id, item);
       if (armed !== key) {
@@ -169,7 +170,7 @@
   // action, because a question has no committable primary until it is typed.
   $effect(() => registerWorkflowsActionTarget({
     action(key: WorkflowActionKey) {
-      if (viewOnly || receipt) return;
+      if (ungranted || receipt) return;
       if (key === 'a' && kind === 'question') {
         answerInput?.focus();
         return;
@@ -178,7 +179,7 @@
       if (action) run(action);
     },
     enter() {
-      if (viewOnly || receipt) return;
+      if (ungranted || receipt) return;
       if (noteFor) commitNote();
       else if (kind === 'question' && answer.trim()) sendAnswer();
       else onToggleFirstDiff();
@@ -221,13 +222,13 @@
           bind:value={answer}
           class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
           placeholder="Answer — the phase resumes where it yielded"
-          disabled={viewOnly}
+          disabled={ungranted}
           title={localOnly}
           data-testid="workflow-answer-input"
         />
         <button
           class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={viewOnly || busy || !answer.trim()}
+          disabled={ungranted || busy || !answer.trim()}
           title={localOnly}
           data-testid="workflow-answer-send"
         >Send</button>
@@ -245,13 +246,13 @@
           bind:value={note}
           class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-50"
           placeholder={noteFor === 'rerun' ? 'Guidance for the new attempt (optional)' : 'What needs to change (optional)'}
-          disabled={viewOnly}
+          disabled={ungranted}
           title={localOnly}
           data-testid="workflow-note-input"
         />
         <button
           class="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={viewOnly || busy}
+          disabled={ungranted || busy}
           title={localOnly}
           data-testid="workflow-note-send"
         >Send</button>
@@ -263,7 +264,7 @@
         <button
           class={['rounded-md px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50', variantClass[action.variant]].join(' ')}
           onclick={() => run(action)}
-          disabled={viewOnly || busy}
+          disabled={ungranted || busy}
           title={localOnly}
           data-testid="workflow-action"
           data-action-id={action.id}

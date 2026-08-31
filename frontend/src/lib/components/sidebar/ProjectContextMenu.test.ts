@@ -13,7 +13,7 @@ import {
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { ProjectWithCounts } from '../../types/models';
 import type { ProjectDeletionPreview, ProjectDeletionResult } from '../../types/workflow';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 function makeProject(): ProjectWithCounts {
   return {
@@ -99,17 +99,17 @@ function toastMessages(): string[] {
 describe('<ProjectContextMenu> delete flow', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     for (const toast of [...getToasts()]) removeToast(toast.id);
     setBindingMock('DeleteProject', async () => emptyResult());
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('omits Open in Editor in a view-only session', () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
     const { baseElement } = renderMenu();
 

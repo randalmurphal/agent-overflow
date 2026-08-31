@@ -24,7 +24,7 @@
     createStreamingAssistantLiteralOwner,
   } from './markdown/streamingAssistantLiteralOwner';
   import type { StreamingAssistantRenderContext } from '../../stores/streamingAssistantReveal';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import { isHarnessSession } from '../../transport/harnessMode';
 
   type AssistantMarkdownForensics = {
@@ -136,12 +136,12 @@
   const parserRenderContext = $derived.by(() => {
     const nextStreaming = streaming;
     const nextVolatileTailVisible = !nextStreaming || getSettings().streamingEnabled;
-    const nextViewOnly = isViewOnlySession();
+    const nextPathLinksInert = !hasScope('host');
     const nextWorkspacePath = workspacePath;
     if (
       cachedParserRenderContext?.streaming === nextStreaming &&
       cachedParserRenderContext.volatileTailVisible === nextVolatileTailVisible &&
-      cachedParserRenderContext.viewOnly === nextViewOnly &&
+      cachedParserRenderContext.pathLinksInert === nextPathLinksInert &&
       cachedParserRenderContext.workspacePath === nextWorkspacePath
     ) {
       return cachedParserRenderContext;
@@ -149,7 +149,7 @@
     cachedParserRenderContext = {
       streaming: nextStreaming,
       volatileTailVisible: nextVolatileTailVisible,
-      viewOnly: nextViewOnly,
+      pathLinksInert: nextPathLinksInert,
       workspacePath: nextWorkspacePath,
     };
     return cachedParserRenderContext;

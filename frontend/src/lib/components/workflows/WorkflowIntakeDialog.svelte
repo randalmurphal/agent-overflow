@@ -16,7 +16,7 @@
   import { getProjectLabelText, getProjects } from '../../stores/projects.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { userFacingError } from '../../utils/userFacingError';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import { workflowChainSummary, workflowDefinitionMeta } from '../../stores/workflowData';
   import { compactWorkflowSeeds, workflowIntakeError, workflowSeedDefault } from '../../utils/workflowIntake';
   import { getWorkflowCatalog, refreshWorkflowRunsSoon } from '../../stores/workflowRuns.svelte';
@@ -28,7 +28,8 @@
   }
   let { open, onClose }: Props = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Every control here drives the workflow engine, which is `threads:autonomy`.
+  let ungranted = $derived(!hasScope('threads:autonomy'));
   let projects = $derived(getProjects());
   let projectId = $state('');
   let goal = $state('');
@@ -96,7 +97,7 @@
   }
 
   async function submit(): Promise<void> {
-    if (viewOnly || !selected || validationError || submitting) return;
+    if (ungranted || !selected || validationError || submitting) return;
     submitting = true;
     const definition = selected;
     const project = projects.find((entry) => entry.project.id === projectId)?.project;
@@ -201,7 +202,7 @@
           inputs={selected.inputs}
           {seeds}
           {browseRoot}
-          disabled={viewOnly}
+          disabled={ungranted}
           onChange={(name, value) => { seeds = { ...seeds, [name]: value }; }}
         />
       {/if}
@@ -225,7 +226,7 @@
       size="sm"
       testId="workflow-intake-submit"
       onclick={() => { void submit(); }}
-      disabled={viewOnly || Boolean(validationError) || submitting}
+      disabled={ungranted || Boolean(validationError) || submitting}
       loading={submitting}
     >
       {#snippet children()}{submitting ? 'Starting…' : 'Start'}{/snippet}

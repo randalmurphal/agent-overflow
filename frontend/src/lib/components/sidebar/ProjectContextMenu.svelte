@@ -25,7 +25,7 @@
   import Menu from '../primitives/Menu.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     project: ProjectWithCounts;
@@ -39,7 +39,8 @@
   }
 
   let { project, anchor, open, onClose, onRename }: Props = $props();
-  let viewOnly = $derived(isViewOnlySession());
+  // The one gated entry here opens an editor on the host desktop.
+  let noHost = $derived(!hasScope('host'));
 
   // Disambiguated label (parent-dir prefix when another project shares the
   // name) so confirm/toast copy names the right copy. Falls back to the raw
@@ -68,7 +69,7 @@
   }
 
   async function doOpenInEditor(): Promise<void> {
-    if (viewOnly) return;
+    if (noHost) return;
     try {
       // Project path is already absolute; workspacePath is unused.
       // Empty editorID → the user's default editor.
@@ -141,7 +142,7 @@
             onRename();
           }}
         />
-        {#if !viewOnly}
+        {#if !noHost}
           <MenuItem
             label="Open in Editor"
             onSelect={() => {

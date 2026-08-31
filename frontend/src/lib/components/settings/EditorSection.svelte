@@ -16,7 +16,8 @@
 
   import { addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
-  import { isClientMode, isViewOnlySession } from '../../transport/runMode';
+  import { isClientMode } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import {
     ensureEditorsLoaded,
     getEditorPreference,
@@ -32,8 +33,11 @@
   import Button from '../primitives/Button.svelte';
 
   const clientMode = isClientMode();
-  let viewOnly = $derived(isViewOnlySession());
-  let localOnly = $derived(clientMode || viewOnly);
+  // Two independent axes. `clientMode` is a process-boot fact: a --connect
+  // stub's RPCs would edit the REMOTE machine's editor preference. `host` is
+  // authorization: the editor catalog is discovered on the host desktop.
+  let noHost = $derived(!hasScope('host'));
+  let localOnly = $derived(clientMode || noHost);
 
   let editors = $derived(getEditors());
   let preference = $derived(getEditorPreference());

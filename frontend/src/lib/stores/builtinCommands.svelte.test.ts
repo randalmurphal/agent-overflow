@@ -41,7 +41,7 @@ import {
   openThreadPicker,
 } from './threadPicker.svelte';
 import { closeAccountSwitcher, isAccountSwitcherOpen } from './accountSwitcher.svelte';
-import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
@@ -1006,12 +1006,12 @@ describe('provider.switchAccount command', () => {
   beforeEach(() => {
     clearCommandRegistry();
     closeAccountSwitcher();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
     closeAccountSwitcher();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   it('toggles the picker open and closed on repeated runs', () => {
@@ -1031,13 +1031,15 @@ describe('provider.switchAccount command', () => {
     expect(getCommand('provider.switchAccount')?.editableReachable).toBe(true);
   });
 
-  it('is disabled — and refuses to run — in a view-only session', () => {
+  it('is disabled — and refuses to run — without the access:admin grant', () => {
     const pane = readyPane();
     registerFixtureCommands(pane);
-    setViewOnlySessionFromBootstrap(true);
+    // A page served over the network holds no grant of its own, so the
+    // provider-account surface is out of reach.
+    setPageGrantsFromBootstrap(true);
     const ctx = makeCommandContext(pane, {}) as CommandContext;
 
-    expect(ctx.flags.viewOnlySession).toBe(true);
+    expect(ctx.flags.accessAdmin).toBe(false);
     expect(isCommandEnabled('provider.switchAccount', ctx)).toBe(false);
     expect(runCommand('provider.switchAccount', ctx)).toBe(false);
     expect(isAccountSwitcherOpen()).toBe(false);

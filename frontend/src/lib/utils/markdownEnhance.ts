@@ -19,7 +19,7 @@ import { openInEditor } from '../stores/openInEditor';
 import { addToast } from '../stores/toast.svelte';
 import { errString } from './errors';
 import { PATH_LINK_HREF_PREFIX, parsePathLinkHref } from './pathLinkExtension';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 
 export {
   ensureMarkdownCopyDelegate,
@@ -53,10 +53,10 @@ function handlePathLinkClick(event: MouseEvent): void {
   const parsed = parsePathLinkHref(href);
   if (!parsed) return;
   event.preventDefault();
-  // The anchor may have been rendered before bootstrap established that this
-  // is a non-loopback session. Keep the document-level boundary safe across
-  // that transition even though ChatMarkdown stops emitting new path links.
-  if (isViewOnlySession()) return;
+  // The anchor may have been rendered before bootstrap established where
+  // this page is. Keep the document-level boundary safe across that
+  // transition even though ChatMarkdown stops emitting new path links.
+  if (!hasScope('host')) return;
   void invokePathLink(parsed.path, parsed.line, parsed.col, parsed.workspacePath);
 }
 

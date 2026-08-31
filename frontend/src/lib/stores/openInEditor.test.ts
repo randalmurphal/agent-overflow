@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { openInEditor } from './openInEditor';
 
 describe('openInEditor', () => {
   beforeEach(() => {
     resetBindingMocks();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
   });
 
   afterEach(() => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     resetBindingMocks();
   });
 
@@ -22,15 +22,15 @@ describe('openInEditor', () => {
     expect(open).toHaveBeenCalledWith('src/main.ts', 12, 4, '/repo', 'cursor');
   });
 
-  it('rejects before the RPC across local to view-only to local transitions', async () => {
+  it('rejects before the RPC across on-host to elsewhere to on-host transitions', async () => {
     const open = setBindingMock('OpenInEditor', vi.fn(async () => undefined));
 
     await openInEditor('first.ts', 0, 0, '/repo', '');
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     await expect(openInEditor('remote.ts', 0, 0, '/repo', '')).rejects.toThrow(
-      'Opening files in an editor is unavailable in a view-only session.',
+      'Opening files in an editor needs the app running on this computer.',
     );
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     await openInEditor('last.ts', 0, 0, '/repo', '');
 
     expect(open.mock.calls).toEqual([

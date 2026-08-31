@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap, __resetRunModeForTest } from '../transport/runMode';
+import { __resetRunModeForTest } from '../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../transport/scopes';
 import { probeDevServerURL, resetDevServerProbeForTest } from './devServerProbe';
 
 describe('probeDevServerURL', () => {
@@ -51,7 +52,7 @@ describe('probeDevServerURL', () => {
 
   it('short-circuits to not-live in a view-only session without touching the wire', async () => {
     const probe = setBindingMock('ProbeDevServerURL', vi.fn(async () => true));
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
 
     await expect(probeDevServerURL('http://localhost:5173/')).resolves.toBe(false);
     expect(probe).not.toHaveBeenCalled();

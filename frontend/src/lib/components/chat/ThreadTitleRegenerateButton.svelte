@@ -20,19 +20,20 @@
     regenerateThreadTitle,
     titleGenerationPending,
   } from '../../stores/threadTitleGeneration.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   let { pane }: { pane: PaneSession } = $props();
 
   let pending = $derived(pane.threadId ? titleGenerationPending(pane.threadId) : false);
-  let viewOnly = $derived(isViewOnlySession());
+  // Regenerating a title runs a provider turn and writes the thread.
+  let ungranted = $derived(!hasScope('threads:operate'));
 </script>
 
 {#if pane.thread}
   <PaneHeaderIconButton
     label="Regenerate title"
-    title={viewOnly ? 'Local only' : 'Regenerate title'}
-    disabled={pending || viewOnly}
+    title={ungranted ? 'Local only' : 'Regenerate title'}
+    disabled={pending || ungranted}
     testId="thread-title-regenerate"
     {pending}
     onclick={() => {

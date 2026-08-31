@@ -18,7 +18,7 @@ import {
   ImportSessions,
   ListImportableSessions,
 } from './bindings';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import type {
   ImportProviderFilter,
   ImportProviderStatus,
@@ -112,7 +112,7 @@ export interface ImportRunState {
   connectionLost: boolean;
 }
 
-const VIEW_ONLY_MESSAGE = 'Importing provider sessions is only available on the local app.';
+const IMPORT_UNGRANTED_MESSAGE = 'Importing provider sessions is only available on the local app.';
 
 let open = $state(false);
 let status = $state<SessionImportStatus>('idle');
@@ -265,11 +265,11 @@ export function closeSessionImport(): void {
  * modal's load-on-open effect cheap.
  */
 export function loadImportCatalog(force = false): Promise<void> {
-  if (isViewOnlySession()) {
+  if (!hasScope('threads:operate')) {
     providers = [];
     rows = [];
     pruneSelectionAndFilters();
-    catalogError = VIEW_ONLY_MESSAGE;
+    catalogError = IMPORT_UNGRANTED_MESSAGE;
     status = 'error';
     return Promise.resolve();
   }
@@ -428,8 +428,8 @@ export function setSelection(ids: Iterable<string>): void {
  */
 export async function startImport(ids: readonly string[]): Promise<void> {
   if (starting || run?.active) return;
-  if (isViewOnlySession()) {
-    catalogError = VIEW_ONLY_MESSAGE;
+  if (!hasScope('threads:operate')) {
+    catalogError = IMPORT_UNGRANTED_MESSAGE;
     return;
   }
   const unique = [...new Set(ids)].filter((id) => id.length > 0);

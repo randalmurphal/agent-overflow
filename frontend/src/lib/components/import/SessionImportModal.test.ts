@@ -22,7 +22,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import SessionImportModal from './SessionImportModal.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import {
   applyImportProgress,
   getImportSelection,
@@ -119,7 +119,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setViewOnlySessionFromBootstrap(false);
+  setPageGrantsFromBootstrap(false);
   resetSessionImportForTest();
 });
 
@@ -203,7 +203,7 @@ describe('empty and error states', () => {
   });
 
   it('view-only: the store refuses the scan and the modal renders the reason', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     installApi(scan([row('claude:a')]));
     openSessionImport();
     const { getByTestId } = render(SessionImportModal);

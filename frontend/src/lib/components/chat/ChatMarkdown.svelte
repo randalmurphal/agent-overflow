@@ -68,7 +68,7 @@
   import type { PathRef } from '../../types/models';
   import { StreamingBoundarySplitter } from '../../markdown/boundary';
   import { getSettings } from '../../stores/settings.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import { isHarnessSession } from '../../transport/harnessMode';
 
   let {
@@ -103,7 +103,9 @@
     class?: string;
   } = $props();
 
-  let viewOnly = $derived(isViewOnlySession());
+  // Path links resolve to an editor open on the host desktop, so a page
+  // that cannot act there emits none.
+  let noHost = $derived(!hasScope('host'));
   const diagnostics = isHarnessSession();
 
   // Aggregation hook for the chat warm-gate "is the visible
@@ -146,7 +148,7 @@
   // empty array keeps that fallback identity stable across streaming frames.
   // buildPathLinkExtension returns undefined when both halves are inert.
   const pathLinkExtension = $derived(
-    viewOnly
+    noHost
       ? undefined
       : buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath),
   );

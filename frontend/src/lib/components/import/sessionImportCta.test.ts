@@ -9,7 +9,7 @@ function input(over: Partial<ImportCtaInput> = {}): ImportCtaInput {
   return {
     status: 'ready',
     run: null,
-    viewOnly: false,
+    importUngranted: false,
     failedIds: [],
     selection: new Set(),
     filteredIds: new Set(['claude:a', 'codex:b']),
@@ -62,7 +62,7 @@ describe('resolveImportCta', () => {
   });
 
   it.each([
-    ['a view-only session', input({ viewOnly: true })],
+    ['a view-only session', input({ importUngranted: true })],
     ['a catalog that is still loading', input({ status: 'loading' })],
     ['a catalog that failed to scan', input({ status: 'error' })],
   ])('refuses %s', (_label, over) => {

@@ -63,13 +63,13 @@ async function session(opts: { harness: boolean; remote?: boolean }): Promise<Se
   vi.resetModules();
   const runtime = await import('../../test/mocks/wailsio-runtime');
   const bindings = await import('../../test/mocks/bindings-app');
-  const runMode = await import('../transport/runMode');
+  const scopes = await import('../transport/scopes');
   const harnessMode = await import('../transport/harnessMode');
   const store = await import('./harnessBridge');
 
   // Manifest order: bootstrap.ts settles the remote bit before the harness
   // bit, so the arm always sees a final locality answer.
-  runMode.setViewOnlySessionFromBootstrap(opts.remote === true);
+  scopes.setPageGrantsFromBootstrap(opts.remote === true);
   harnessMode.setHarnessSessionFromBootstrap(opts.harness);
 
   let pageId = store.__frontendPageIDForTest();

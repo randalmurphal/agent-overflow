@@ -50,7 +50,7 @@
   import { openThreadFromNavigation, openThreadInNewPane } from '../../stores/panes.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { getSettings } from '../../stores/settings.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import { countNoun } from '../../utils/format';
 
   interface Props {
@@ -128,7 +128,9 @@
   // refuses over a remote connection. Visible-but-disabled, per the §10
   // treatment every other mutating affordance uses: hiding it would read as
   // "this thread wasn't imported", which is a different fact.
-  let importUpdatesViewOnly = $derived(isViewOnlySession());
+  // CheckThreadImportUpdates re-reads the provider session file and writes
+  // what it finds into the thread.
+  let importUpdatesUngranted = $derived(!hasScope('threads:operate'));
   // The backend ships user-facing prose for the verdict it returned; it
   // knows the turn count and the exact wording, so it wins. The fallback
   // only covers a backend that sends none — and says the same two numbers.
@@ -305,8 +307,8 @@
           {#if canCheckImportUpdates}
             <MenuItem
               label={checkingUpdates ? 'Checking for Provider Updates…' : 'Check for Provider Updates'}
-              disabled={checkingUpdates || importUpdatesViewOnly}
-              title={importUpdatesViewOnly ? 'Local only' : undefined}
+              disabled={checkingUpdates || importUpdatesUngranted}
+              title={importUpdatesUngranted ? 'Local only' : undefined}
               onSelect={() => void handleCheckImportUpdates()}
             />
           {/if}

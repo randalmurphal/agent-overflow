@@ -10,7 +10,7 @@
 
   import { onMount } from 'svelte';
   import { getProjectLabelText, getProjects, isLoaded, refreshProjects } from '../../stores/projects.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import SettingsHeader from './SettingsHeader.svelte';
   import SettingsField from './SettingsField.svelte';
   import WorktreeSetupEditor from './WorktreeSetupEditor.svelte';
@@ -18,7 +18,8 @@
 
   let projects = $derived(getProjects());
   let loaded = $derived(isLoaded());
-  let viewOnly = $derived(isViewOnlySession());
+  // The editable half is the worktree setup command, which runs in a PTY.
+  let ungranted = $derived(!hasScope('terminal:operate'));
   let selectedId = $state('');
 
   onMount(() => {
@@ -44,7 +45,7 @@
     description="Per-project configuration. Settings here apply to every thread and workflow run in the selected project."
   />
 
-  {#if viewOnly}
+  {#if ungranted}
     <p class="text-[0.75rem] text-fg-muted" data-testid="settings-projects-local-only">
       Project configuration is local only. Open Agent Overflow on the host machine to edit it.
     </p>

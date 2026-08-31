@@ -4,7 +4,7 @@ import EditorSection from './EditorSection.svelte';
 import { setBindingMock, resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { setRunMode, resetRunMode } from '../../../test/runMode';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { resetEditorsForTest } from '../../stores/editors.svelte';
 
 interface EditorRow {
@@ -25,7 +25,7 @@ describe('<EditorSection>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetRunMode();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     resetEditorsForTest();
     // Drain the toast registry so a sibling case's error message can't
     // satisfy this case's "find this error" assertion.
@@ -35,7 +35,7 @@ describe('<EditorSection>', () => {
   afterEach(() => {
     resetBindingMocks();
     resetRunMode();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     resetEditorsForTest();
     for (const toast of [...getToasts()]) removeToast(toast.id);
   });
@@ -128,7 +128,7 @@ describe('<EditorSection>', () => {
   });
 
   it('renders the same local-only placeholder in a view-only browser', async () => {
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     const listMock = setBindingMock('ListAvailableEditors', vi.fn(async () => FIXTURE_EDITORS));
     const getMock = setBindingMock('GetEditorSettings', vi.fn(async () => ({ preference: '' })));
 

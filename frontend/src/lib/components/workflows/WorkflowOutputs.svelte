@@ -4,11 +4,12 @@
   interface Props {
     values: Record<string, unknown>;
     artifacts: WorkflowArtifact[];
-    viewOnly: boolean;
+    /** Opening an artifact acts on the host desktop; true hides that. */
+    openDisabled: boolean;
     onOpenArtifact: (path: string) => void;
   }
 
-  let { values, artifacts, viewOnly, onOpenArtifact }: Props = $props();
+  let { values, artifacts, openDisabled, onOpenArtifact }: Props = $props();
   let entries = $derived(Object.entries(values).sort(([left], [right]) => left.localeCompare(right)));
 
   function formatValue(value: unknown): string {
@@ -33,7 +34,7 @@
       </dl>
     {/if}
     {#each artifacts as artifact (artifact.path)}
-      <button class="flex w-full items-center gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-left text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => onOpenArtifact(artifact.path)} disabled={viewOnly} title={viewOnly ? 'Local only' : undefined} data-testid="wf-output-file">
+      <button class="flex w-full items-center gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-left text-xs hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50" onclick={() => onOpenArtifact(artifact.path)} disabled={openDisabled} title={openDisabled ? 'Local only' : undefined} data-testid="wf-output-file">
         <span>↗</span><span class="min-w-0 flex-1 truncate">{artifact.name}</span><span class="text-fg-muted">{artifact.size} bytes</span>
       </button>
     {/each}

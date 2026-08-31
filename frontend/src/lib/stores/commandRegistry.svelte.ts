@@ -62,12 +62,17 @@ export interface CommandFlags {
   /** True while the workflows overlay is showing a run detail level. */
   workflowsRunDetail: boolean;
   /**
-   * True in a view-only remote session (`isViewOnlySession`). Commands whose
-   * RPCs are LocalOnly on the transport gate on `!viewOnlySession` so they are
-   * *disabled* there — absent from the palette, chord falling through — rather
-   * than opening a surface whose every action would fail.
+   * Whether this session holds `access:admin` (`transport/scopes.ts`), which
+   * covers the device list and the provider-account surface. A command whose
+   * RPCs need it gates on this flag so it is *disabled* without it — absent
+   * from the palette, chord falling through — rather than opening a surface
+   * whose every action would be refused.
+   *
+   * Capability flags are named after the capability, never after who is
+   * asking: `viewOnlySession` used to stand in for all of them, and a
+   * command gated on it could not say which authority it actually wanted.
    */
-  viewOnlySession: boolean;
+  accessAdmin: boolean;
   /** Extra identifiers callers want to expose to `when` expressions. */
   [key: string]: boolean;
 }

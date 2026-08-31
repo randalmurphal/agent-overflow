@@ -10,7 +10,7 @@
 // reload. Nothing readable from script is involved, which is why there
 // is no token field on the manifest and no stash anywhere in this file.
 
-import { setViewOnlySessionFromBootstrap } from './runMode';
+import { setPageGrantsFromBootstrap } from './scopes';
 import { setHarnessPageMarkerFromBootstrap, setHarnessSessionFromBootstrap } from './harnessMode';
 import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { clampString } from './frames';
@@ -192,7 +192,11 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   }
   validateWsUrl(data.wsUrl);
   data.remote = data.remote === true;
-  setViewOnlySessionFromBootstrap(data.remote);
+  // Locality is this page's half of the capability answer: a page served
+  // over loopback IS the owner's screen, and a page served over the
+  // network holds only what it paired for. Published before the harness
+  // latch below, which reads it at arm time.
+  setPageGrantsFromBootstrap(data.remote);
   setHarnessPageMarkerFromBootstrap(data.pageMarker);
   // The harness bridge registers its page synchronously when this latch
   // flips. Publish the marker first so that first-load registration cannot

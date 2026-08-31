@@ -29,7 +29,7 @@
     openTerminalThread,
   } from '../../stores/threadCreation.svelte';
   import { openSessionImport } from '../../stores/sessionImport.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
   import History from '@lucide/svelte/icons/history';
   import Plus from '@lucide/svelte/icons/plus';
   import IconButton from '../primitives/IconButton.svelte';
@@ -56,7 +56,8 @@
   // Session import reads provider session files off the local disk, so the
   // trigger is inert in a view-only session (the store refuses the RPC too —
   // this is the visible half of that guard, not the whole of it).
-  let importViewOnly = $derived(isViewOnlySession());
+  // Session import walks the provider homes and writes threads.
+  let importUngranted = $derived(!hasScope('threads:operate'));
 
   // Normalise the search query once per derivation so every filter path
   // uses the same lowercase form.
@@ -259,9 +260,9 @@
     <ProjectSortMenu />
     <IconButton
       label="Import Sessions"
-      title={importViewOnly ? 'Local only' : undefined}
+      title={importUngranted ? 'Local only' : undefined}
       size="sm"
-      disabled={importViewOnly}
+      disabled={importUngranted}
       onClick={openSessionImport}
     >
       {#snippet children()}

@@ -51,6 +51,7 @@ import {
 } from './frames';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { hasPairedSession, mintDialTicket } from './deviceSession';
+import { refreshGrantedScopes } from './scopes';
 
 /**
  * Append this screen's identity to the upgrade URL. Kept as a function rather
@@ -289,11 +290,18 @@ export class TransportError extends Error {
   // so it is the only thing a hint can be derived from — see
   // ./authReason.ts, which is the one place it is translated.
   reason?: string;
-  constructor(code: string, message: string, reason?: string) {
+  // scope is set only on code 'scope_required' and names the capability
+  // this session was not granted (./scopes.ts's set). Same shape and same
+  // rule as reason: prose is redacted for a non-loopback caller, so the
+  // field is the whole answer, and ./scopeRefusal.ts is the one place it
+  // becomes a sentence.
+  scope?: string;
+  constructor(code: string, message: string, reason?: string, scope?: string) {
     super(message);
     this.name = 'TransportError';
     this.code = code;
     this.reason = reason;
+    this.scope = scope;
   }
 }
 
@@ -837,6 +845,12 @@ export class WSClient {
    * path, whose next dial mints a ticket.
    */
   redialAfterPairing(): void {
+    // The credential that just landed published the grants it carries, and
+    // this page's screens key off them. Re-read before the dial rather
+    // than after: the pairing screen unmounts into the ordinary app on the
+    // same tick, and a surface that mounted against the pre-pairing answer
+    // would sit disabled until something else happened to invalidate it.
+    refreshGrantedScopes();
     if (this.closed) return;
     this.clearCredentialDead();
     this.reconnectAttempt = 0;
@@ -1690,6 +1704,7 @@ export class WSClient {
             frame.error.code,
             clampString(frame.error.message ?? ''),
             frame.error.reason,
+            frame.error.scope,
           ),
         );
         return;

@@ -6,7 +6,7 @@ import {
   __setSmoothingClockForTest,
 } from '../../stores/thread.svelte';
 import { getSettings, resetSettingsForTest } from '../../stores/settings.svelte';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import {
   __resetHarnessModeForTest,
   setHarnessSessionFromBootstrap,
@@ -52,7 +52,7 @@ class FakeSmoothingClock implements SmoothingClock {
 
 afterEach(() => {
   __setSmoothingClockForTest(undefined);
-  setViewOnlySessionFromBootstrap(false);
+  setPageGrantsFromBootstrap(false);
   __resetHarnessModeForTest();
 });
 
@@ -382,7 +382,7 @@ describe('assistant streaming reveal integration', () => {
   });
 
   it('renders the full canonical tail before view-only linkification changes', async () => {
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     const clock = new FakeSmoothingClock();
     __setSmoothingClockForTest(clock);
     const item = makeItem({
@@ -424,7 +424,7 @@ describe('assistant streaming reveal integration', () => {
     );
     expect(directHost?.childNodes.length).toBeGreaterThan(1);
 
-    setViewOnlySessionFromBootstrap(true);
+    setPageGrantsFromBootstrap(true);
     await tick();
 
     expect(view.container.textContent).toContain('first words paint directly');

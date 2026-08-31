@@ -19,8 +19,8 @@
 // path that could only fail. So the two are tracked apart:
 //
 //   readAvailable — did `GetThemeFiles` answer? (themes, dir, file warnings)
-//   writesRefused — is `SetAppearance` known refused, or is this session
-//                   view-only up front (`isViewOnlySession`)?
+//   writesRefused — is `SetAppearance` known refused, or was this session
+//                   never granted `settings:write` (`hasScope`)?
 //
 // A session with reads but no writes takes the FILES off the wire and keeps
 // `localStorage` as the sole source of its selection. Nothing clears
@@ -52,7 +52,7 @@ import {
   type ParsedTheme,
   type ThemeWarning,
 } from '../theme/themeParse';
-import { isViewOnlySession } from '../transport/runMode';
+import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import { SetAppearance, SetWindowBackgroundColor, ThemeAppearance, GetThemeFiles } from './bindings';
 import type { ThemeFiles } from './bindings';
@@ -199,7 +199,7 @@ export function getAppearanceRevision(): number {
 }
 
 function writesBlocked(): boolean {
-  return writesRefused || isViewOnlySession();
+  return writesRefused || !hasScope('settings:write');
 }
 
 // ---------------------------------------------------------------------------

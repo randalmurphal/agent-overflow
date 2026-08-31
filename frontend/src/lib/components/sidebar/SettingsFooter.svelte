@@ -9,7 +9,7 @@
   import UpdateBadge from '../shared/UpdateBadge.svelte';
   import { hasPendingUpdate } from '../../stores/updates.svelte';
   import { getSettings, updateSetting } from '../../stores/settings.svelte';
-  import { isViewOnlySession } from '../../transport/runMode';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     onOpenSettings?: () => void;
@@ -21,7 +21,10 @@
   // Keep-awake asserts OS power state on the machine running the app —
   // a desktop-host control, so a view-only (--connect) session hides it
   // rather than offering a switch that the local-only RPC would refuse.
-  let viewOnly = $derived(isViewOnlySession());
+  // keepAwakeEnabled is a host-tier settings key (internal/settings/tier.go):
+  // it drives THIS machine's sleep inhibitor, so it is host presence that
+  // authorizes it rather than any grant.
+  let noHost = $derived(!hasScope('host'));
   let keepAwakeTitle = $derived(
     keepAwakeOn
       ? settings.keepAwakeScreen
@@ -47,7 +50,7 @@
         Settings{#if hasPendingUpdate()}<UpdateBadge />{/if}
       {/snippet}
     </Button>
-    {#if !viewOnly}
+    {#if !noHost}
       <Button
         variant="ghost"
         size="sm"

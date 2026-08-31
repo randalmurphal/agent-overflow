@@ -2,8 +2,6 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   runMode,
   isClientMode,
-  isViewOnlySession,
-  setViewOnlySessionFromBootstrap,
   __resetRunModeForTest,
 } from './runMode';
 
@@ -74,21 +72,10 @@ describe('runMode', () => {
     __resetRunModeForTest();
     expect(runMode()).toBe('local');
   });
-
-  // View-only is a fact about the backend, so it arrives on the manifest
-  // rather than the URL — every session learns it from the same fetch,
-  // `--connect` included.
-  it('is view-only only when the manifest marks the peer remote', () => {
-    expect(isViewOnlySession()).toBe(false);
-    setViewOnlySessionFromBootstrap(true);
-    expect(isViewOnlySession()).toBe(true);
-    setViewOnlySessionFromBootstrap(false);
-    expect(isViewOnlySession()).toBe(false);
-  });
-
-  it('resets view-only along with the memoised mode', () => {
-    setViewOnlySessionFromBootstrap(true);
-    __resetRunModeForTest();
-    expect(isViewOnlySession()).toBe(false);
-  });
 });
+
+// Run mode carries NOTHING about authorization. What a session may do
+// arrives on the manifest and lives in ./scopes.ts, which owns its own
+// suite; keeping the two apart is what lets a `--connect` client attached
+// to a LOCAL backend do everything while its local-only settings panels
+// still hide.

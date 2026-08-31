@@ -14,7 +14,7 @@ import {
 import { cancelWorkflowAutoAdvance } from '../../stores/workflowResolve';
 import { resetAppStorageForTest } from '../../stores/appStorage';
 import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { setViewOnlySessionFromBootstrap } from '../../transport/runMode';
+import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 
 function item(over: Partial<WorkItem> = {}): WorkItem {
   return {
@@ -58,7 +58,7 @@ describe('WorkflowActionRow', () => {
     resetAppStorageForTest();
     resetWorkflowsOverlayForTest();
     resetWorkflowRunsForTest();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     setBindingMock('WorkflowResolveGate', async () => undefined);
     setBindingMock('WorkflowCancelItem', async () => undefined);
     setBindingMock('WorkflowDropUnit', async () => undefined);
@@ -70,7 +70,7 @@ describe('WorkflowActionRow', () => {
 
   afterEach(() => {
     cancelWorkflowAutoAdvance();
-    setViewOnlySessionFromBootstrap(false);
+    setPageGrantsFromBootstrap(false);
     resetBindingMocks();
   });
 
@@ -227,7 +227,7 @@ describe('WorkflowActionRow', () => {
 
   describe('remote posture (§10)', () => {
     it('disables every action with a Local only tooltip', () => {
-      setViewOnlySessionFromBootstrap(true);
+      setPageGrantsFromBootstrap(true);
       const view = mount();
       const buttons = [...view.container.querySelectorAll('[data-testid="workflow-action"]')] as HTMLButtonElement[];
       expect(buttons.length).toBeGreaterThan(0);
@@ -238,14 +238,14 @@ describe('WorkflowActionRow', () => {
     });
 
     it('ignores the §8 keys too — the guard is not just visual', () => {
-      setViewOnlySessionFromBootstrap(true);
+      setPageGrantsFromBootstrap(true);
       mount();
       getWorkflowsActionTargetForTest()?.action('a');
       expect(getBindingMock('WorkflowResolveGate')).not.toHaveBeenCalled();
     });
 
     it('refuses the whole-attempt repair in a view-only session, by click and by key', async () => {
-      setViewOnlySessionFromBootstrap(true);
+      setPageGrantsFromBootstrap(true);
       const view = mount({ reason: 'unit-failed' }, { failedUnitId: 'port-3' });
       await fireEvent.click(actionButton(view, 'retry-failed-units'));
       getWorkflowsActionTargetForTest()?.action('u');
