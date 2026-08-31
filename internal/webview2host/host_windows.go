@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -31,13 +32,22 @@ type Host struct {
 	mu sync.Mutex
 	// envReady is closed once environment creation settles, success or
 	// failure. Directives that arrive during the cold create wait on it.
-	envReady  chan struct{}
-	envStart  sync.Once
-	env       *iCoreWebView2Environment
-	env10     *iCoreWebView2Environment10
-	envErr    error
-	envKeep   *envOptions
-	envHandle *iEnvironmentCompletedHandler
+	//
+	// The create is one-shot per GENERATION rather than once per process:
+	// clear-data releases the environment and bumps envGen, which re-arms
+	// envStarting and swaps in a fresh envReady so the next directive pays
+	// for a cold create against the recreated folder. Everything that
+	// mutates envGen, envReady or envStarting past ensureEnvironment's arm
+	// runs on the UI thread, which is what makes the close-once dance below
+	// safe without a second lock.
+	envReady    chan struct{}
+	envGen      uint64
+	envStarting bool
+	env         *iCoreWebView2Environment
+	env10       *iCoreWebView2Environment10
+	envErr      error
+	envKeep     *envOptions
+	envHandle   *iEnvironmentCompletedHandler
 
 	pages map[string]*hostPage
 
@@ -85,6 +95,20 @@ type hostPage struct {
 // its browser process is the slow part; past this the pane is broken and
 // the backend should hear so rather than block a directive forever.
 const envCreateTimeout = 30 * time.Second
+
+const (
+	// clearRetryBudget bounds the whole delete. The WebView2 browser process
+	// exits shortly after its last controller closes and the environment
+	// refs drop, but it can hold file locks in the user-data folder for a
+	// moment past that, and on Windows a locked file fails the delete rather
+	// than deferring it. Retrying is the only correct answer; retrying
+	// forever is not, so the clear reports a failure past this.
+	clearRetryBudget = 15 * time.Second
+	// clearRetryStart / clearRetryMax bound the backoff between attempts.
+	// The common case settles on the second attempt.
+	clearRetryStart = 100 * time.Millisecond
+	clearRetryMax   = 2 * time.Second
+)
 
 // New validates the configuration and allocates the CDP port. It creates
 // nothing: Start kicks the environment off on the UI thread.
@@ -186,6 +210,8 @@ func (h *Host) Apply(directive Directive) {
 		h.closePages(func(page *hostPage) bool { return page.id == directive.PageID })
 	case OpCloseProfile:
 		h.closePages(func(page *hostPage) bool { return page.profileID == directive.ProfileID })
+	case OpClearData:
+		h.clearData(directive.PageID)
 	}
 }
 
@@ -244,19 +270,38 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 // Environment
 // ---------------------------------------------------------------------
 
-// ensureEnvironment starts the pane environment once and waits for it to
-// settle. Every caller gets the same error.
+// ensureEnvironment starts the pane environment once per generation and
+// waits for it to settle. Every caller of one generation gets the same
+// error; a clear-data bumps the generation, so the next caller pays for a
+// fresh cold create rather than inheriting an environment whose folder was
+// deleted underneath it.
 func (h *Host) ensureEnvironment() (*iCoreWebView2Environment10, error) {
-	h.envStart.Do(func() { h.config.OnMain(h.startEnvironment) })
+	h.mu.Lock()
+	ready, gen := h.envReady, h.envGen
+	arm := !h.envStarting
+	h.envStarting = true
+	h.mu.Unlock()
+	if arm {
+		h.config.OnMain(h.startEnvironment)
+	}
 	select {
-	case <-h.envReady:
+	case <-ready:
 	case <-time.After(envCreateTimeout):
 		return nil, fmt.Errorf("browser host environment did not start within %s", envCreateTimeout)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.envGen != gen {
+		// A clear-data released this generation's environment while the
+		// caller waited. Its own report already went out; this directive is
+		// told to come back rather than handed a released COM pointer.
+		return nil, errors.New("browser host environment was cleared; retry the directive")
+	}
 	if h.envErr != nil {
 		return nil, h.envErr
+	}
+	if h.env10 == nil {
+		return nil, errors.New("browser host environment settled with no environment")
 	}
 	return h.env10, nil
 }
@@ -265,6 +310,10 @@ func (h *Host) ensureEnvironment() (*iCoreWebView2Environment10, error) {
 // It does not wait: WebView2 invokes the completion handler from the
 // message pump, which cannot run while this call holds the thread.
 func (h *Host) startEnvironment() {
+	h.mu.Lock()
+	gen := h.envGen
+	h.mu.Unlock()
+
 	// The scrub must precede EVERY environment creation in this process.
 	// See EnvOverrideNames: a set-but-empty WEBVIEW2_USER_DATA_FOLDER
 	// silently collapses the pane and the SPA onto one profile, with no
@@ -288,10 +337,12 @@ func (h *Host) startEnvironment() {
 	args := "--remote-debugging-port=" + strconv.Itoa(h.cdpPort)
 	options, optionsPtr := newEnvOptions(args, installed)
 
-	handler := newEnvironmentCompletedHandler(h.environmentCompleted)
+	handler := newEnvironmentCompletedHandler(func(hr uintptr, env *iCoreWebView2Environment) {
+		h.environmentCompleted(gen, hr, env)
+	})
 	folder, err := windows.UTF16PtrFromString(h.config.UserDataDir)
 	if err != nil {
-		h.settleEnvironment(fmt.Errorf("encode user data folder: %w", err))
+		h.settleEnvironment(gen, fmt.Errorf("encode user data folder: %w", err))
 		return
 	}
 
@@ -307,22 +358,22 @@ func (h *Host) startEnvironment() {
 		uintptr(unsafe.Pointer(handler)),
 	)
 	if err != nil {
-		h.settleEnvironment(fmt.Errorf("load WebView2 runtime: %w", err))
+		h.settleEnvironment(gen, fmt.Errorf("load WebView2 runtime: %w", err))
 		return
 	}
 	if hrErr := hresult(hr); hrErr != nil {
-		h.settleEnvironment(fmt.Errorf("create pane environment: %w", hrErr))
+		h.settleEnvironment(gen, fmt.Errorf("create pane environment: %w", hrErr))
 	}
 }
 
 // environmentCompleted runs on the UI thread, from the message pump.
-func (h *Host) environmentCompleted(hr uintptr, env *iCoreWebView2Environment) {
+func (h *Host) environmentCompleted(gen uint64, hr uintptr, env *iCoreWebView2Environment) {
 	if err := hresult(hr); err != nil {
-		h.settleEnvironment(fmt.Errorf("create pane environment: %w", err))
+		h.settleEnvironment(gen, fmt.Errorf("create pane environment: %w", err))
 		return
 	}
 	if env == nil {
-		h.settleEnvironment(errors.New("pane environment completed with no environment"))
+		h.settleEnvironment(gen, errors.New("pane environment completed with no environment"))
 		return
 	}
 	env.addRef()
@@ -334,32 +385,177 @@ func (h *Host) environmentCompleted(hr uintptr, env *iCoreWebView2Environment) {
 		// silent shared profile is precisely the failure the whole
 		// isolation design exists to prevent.
 		env.release()
-		h.settleEnvironment(errors.New(
-			"installed WebView2 runtime has no ICoreWebView2Environment10; " +
+		h.settleEnvironment(gen, errors.New(
+			"installed WebView2 runtime has no ICoreWebView2Environment10; "+
 				"per-workspace browser profiles need runtime 110 or newer"))
 		return
 	}
 	h.mu.Lock()
-	h.env = env
-	h.env10 = env10
+	// Superseded-generation AND already-adopted both refuse the adopt. The
+	// second can happen without the first: a clear-data can run between an
+	// ensureEnvironment arm and its queued startEnvironment, whose create
+	// then carries the NEW generation — releaseEnvironment re-armed
+	// envStarting, so a later caller starts a second create for that same
+	// generation. Overwriting the first adopt here would leak its refs and
+	// keep the browser process pinning the folder a future clear deletes.
+	stale := h.envGen != gen || h.env10 != nil
+	if !stale {
+		h.env = env
+		h.env10 = env10
+	}
 	h.mu.Unlock()
-	h.settleEnvironment(nil)
+	if stale {
+		// Adopting a superseded environment would hand the next directive
+		// one rooted in the folder a clear-data just deleted, so both refs
+		// go back; the settled generation's answer (or the clear's own
+		// report) stands.
+		env10.release()
+		env.release()
+		return
+	}
+	h.settleEnvironment(gen, nil)
 }
 
-func (h *Host) settleEnvironment(err error) {
+// settleEnvironment records one generation's outcome and releases its
+// waiters. Runs on the UI thread, always, which is what makes the
+// close-once check race-free.
+func (h *Host) settleEnvironment(gen uint64, err error) {
 	h.mu.Lock()
-	if h.envErr == nil {
+	if h.envGen != gen {
+		h.mu.Unlock()
+		return
+	}
+	// An error settles the generation only while it has no environment: a
+	// duplicate create's failure must not poison a generation that already
+	// adopted a healthy one (environmentCompleted refuses the duplicate's
+	// adopt for the same reason).
+	if h.envErr == nil && h.env10 == nil {
 		h.envErr = err
 	}
+	ready := h.envReady
 	h.mu.Unlock()
 	if err != nil {
 		h.config.Logf("browser host: %v", err)
 	}
 	select {
-	case <-h.envReady:
+	case <-ready:
 	default:
-		close(h.envReady)
+		close(ready)
 	}
+}
+
+// ---------------------------------------------------------------------
+// Clear site data
+// ---------------------------------------------------------------------
+
+// clearData destroys the pane environment's whole user-data folder, which
+// is where the Windows/WSL deployment's site data actually lives: the
+// backend's own browser-profiles/ tree is empty there, so the Settings
+// button would otherwise be a silent no-op.
+//
+// Runs on the bridge goroutine, deliberately. The COM teardown is
+// dispatched to the UI thread like every other COM call, but the delete
+// retry loop SLEEPS, and sleeping on the UI thread would freeze the
+// launcher window for the whole retry budget.
+//
+// Every path reports. A clear the backend never hears about is a Settings
+// button that spins until its own timeout.
+func (h *Host) clearData(correlationID string) {
+	// Order is the same load-bearing order the Manager uses: nothing may
+	// hold the profile open while it is deleted, or it writes its cookie
+	// jar back out over the cleared state.
+	h.closePages(func(*hostPage) bool { return true })
+	h.config.OnMain(h.releaseEnvironment)
+
+	if err := clearUserDataDir(h.config.UserDataDir); err != nil {
+		h.config.Logf("browser host: clear site data: %v", err)
+		h.config.Report(correlationID, ReportClearFailed, TruncateDetail(err.Error()))
+		return
+	}
+	h.config.Logf("browser host: cleared site data in %s", h.config.UserDataDir)
+	h.config.Report(correlationID, ReportCleared, "")
+}
+
+// releaseEnvironment drops the environment's COM objects and re-arms the
+// creation state, so the next directive lazily builds a fresh environment
+// against the recreated folder. Runs on the UI thread, like every other
+// COM call.
+//
+// Bumping envGen is what makes this safe against a create still in flight:
+// a completion handler for the old generation releases its own environment
+// instead of adopting it, and a waiter parked in ensureEnvironment is told
+// to retry rather than handed a pointer to a released object.
+func (h *Host) releaseEnvironment() {
+	h.mu.Lock()
+	env, env10 := h.env, h.env10
+	h.env, h.env10 = nil, nil
+	// envKeep and envHandle are Go objects whose COM refcounting is a no-op
+	// (see com_windows.go): dropping the reference IS the release, and it
+	// must not happen before the environment's own refs go back.
+	h.envKeep, h.envHandle = nil, nil
+	h.envErr = nil
+	h.envStarting = false
+	h.envGen++
+	// A fresh channel, and the old one is released rather than abandoned.
+	// ensureEnvironment waits on whichever channel it captured, and the
+	// superseded generation's settle no longer closes anything, so a caller
+	// parked on a cold create would otherwise sit out its full 30s bound to
+	// learn something already true. It wakes, sees the generation moved, and
+	// is told to retry. Closing here is race-free for the same reason
+	// settleEnvironment's is: both run on the UI thread.
+	stale := h.envReady
+	h.envReady = make(chan struct{})
+	h.mu.Unlock()
+
+	select {
+	case <-stale:
+	default:
+		close(stale)
+	}
+
+	if env10 != nil {
+		env10.release()
+	}
+	if env != nil {
+		env.release()
+	}
+}
+
+// clearUserDataDir deletes the folder and recreates it empty.
+//
+// The retry is not defensive padding: the WebView2 browser process exits
+// shortly after its last controller closes and the environment refs drop,
+// but until it does it holds handles inside this folder, and Windows fails
+// the unlink rather than deferring it.
+//
+// The folder is recreated because the launcher validated and created it at
+// boot (prepareBrowserProfileStorage) and environment creation expects it
+// to exist. Same mode, 0o700, for the same reason: it accumulates the
+// cookies of whatever the user browses in the pane.
+func clearUserDataDir(dir string) error {
+	deadline := time.Now().Add(clearRetryBudget)
+	delay := clearRetryStart
+	for {
+		err := os.RemoveAll(dir)
+		if err == nil {
+			break
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("delete %s: %w", dir, err)
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+		time.Sleep(delay)
+		if delay *= 2; delay > clearRetryMax {
+			delay = clearRetryMax
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("recreate %s: %w", dir, err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------

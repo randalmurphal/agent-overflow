@@ -96,6 +96,7 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 	engine.logf = func(format string, args ...any) { t.Logf(format, args...) }
 	engine.createTimeout = 150 * time.Millisecond
 	engine.attachTimeout = 150 * time.Millisecond
+	engine.clearTimeout = 150 * time.Millisecond
 	return engine, sink
 }
 
@@ -443,6 +444,177 @@ func TestHostedEngineDiscardPageClosesTheController(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	engine.DiscardPage("0123456789abcdef0123456789abcdef")
 	sink.expectOps(t, webview2host.OpClose)
+}
+
+// ---------------------------------------------------------------------
+// Clear site data
+// ---------------------------------------------------------------------
+
+// On the Windows/WSL deployment the Manager's own profile tree is empty and
+// every cookie jar is on the far side of the WSL boundary, so this seam is
+// the ENTIRE clear. An engine that stopped implementing it would make the
+// Settings button a silent no-op again, with nothing failing to compile.
+var _ engineSiteData = (*hostedEngine)(nil)
+
+// answerClear replies to the next clear-data directive, which is what the
+// launcher does once it has closed every controller, released the
+// environment, and finished deleting its user-data folder.
+// It hands back the directive it answered, because the feed is consumed by
+// the reply and a caller cannot read it twice.
+func answerClear(t *testing.T, engine *hostedEngine, sink *directiveSink, kind webview2host.ReportKind, detail string) <-chan webview2host.Directive {
+	t.Helper()
+	seen := make(chan webview2host.Directive, 1)
+	go func() {
+		directive := sink.next(t)
+		if directive.Op != webview2host.OpClearData {
+			t.Errorf("first directive was %q, want clear-data", directive.Op)
+			return
+		}
+		seen <- directive
+		engine.Report(directive.PageID, kind, detail)
+	}()
+	return seen
+}
+
+func TestHostedEngineClearSiteDataDispatchesAndSucceeds(t *testing.T) {
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	seen := answerClear(t, engine, sink, webview2host.ReportCleared, "")
+
+	if err := engine.ClearSiteData(context.Background()); err != nil {
+		t.Fatalf("clear site data: %v", err)
+	}
+	sink.expectOps(t, webview2host.OpClearData)
+	// The clear addresses the whole user-data folder: naming a profile would
+	// be a claim the launcher cannot honour, since one folder holds every
+	// workspace's named profile.
+	directive := <-seen
+	if directive.ProfileID != "" {
+		t.Fatalf("clear-data named profile %q", directive.ProfileID)
+	}
+	if err := webview2host.ValidatePageID(directive.PageID); err != nil {
+		t.Fatalf("clear-data correlation id is not addressable: %v", err)
+	}
+}
+
+func TestHostedEngineClearSiteDataSurfacesTheLauncherFailure(t *testing.T) {
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+	answerClear(t, engine, sink, webview2host.ReportClearFailed, "delete C:\\...\\browser-profiles: Access is denied.")
+
+	err := engine.ClearSiteData(context.Background())
+	if err == nil {
+		t.Fatal("a failed clear reported success; the user would believe cookies were destroyed")
+	}
+	if !strings.Contains(err.Error(), "Access is denied") {
+		t.Fatalf("error %v drops the launcher's reason", err)
+	}
+}
+
+func TestHostedEngineClearSiteDataIsBounded(t *testing.T) {
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+
+	started := time.Now()
+	err := engine.ClearSiteData(context.Background())
+	if err == nil {
+		t.Fatal("a clear with no answer succeeded")
+	}
+	if !strings.Contains(err.Error(), "did not answer") {
+		t.Fatalf("error %v does not name the timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > hostedTestDeadline {
+		t.Fatalf("the clear took %s: the wait is not bounded", elapsed)
+	}
+	// Nothing is closed on the way out: the clear owns no controller, and
+	// the launcher closes its own before deleting anything.
+	sink.expectOps(t, webview2host.OpClearData)
+}
+
+func TestHostedEngineClearSiteDataRespectsCancellationAndInterrupt(t *testing.T) {
+	t.Run("caller cancellation", func(t *testing.T) {
+		engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+		engine.clearTimeout = time.Hour
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- engine.ClearSiteData(ctx) }()
+		sink.next(t)
+		cancel()
+
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("got %v, want context.Canceled", err)
+			}
+		case <-time.After(hostedTestDeadline):
+			t.Fatal("a cancelled clear did not return")
+		}
+	})
+
+	t.Run("shutdown interrupt", func(t *testing.T) {
+		engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
+		engine.clearTimeout = time.Hour
+		done := make(chan error, 1)
+		go func() { done <- engine.ClearSiteData(context.Background()) }()
+		sink.next(t)
+		engine.Interrupt()
+
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "interrupted") {
+				t.Fatalf("got %v, want an interruption", err)
+			}
+		case <-time.After(hostedTestDeadline):
+			t.Fatal("Interrupt did not release the pending clear")
+		}
+	})
+}
+
+// A late or duplicated clear report names a correlation id, not a page. It
+// must not be mistaken for one: closing or retiring "page" clear-abc123
+// would tear down nothing and tell the Manager a page it never knew about
+// had died.
+func TestHostedEngineIgnoresAnAbandonedClearReport(t *testing.T) {
+	var closed []string
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
+		PageClosed: func(handle string) { closed = append(closed, handle) },
+	})
+	engine.Report("0123456789abcdef0123456789abcdef", webview2host.ReportCleared, "")
+	engine.Report("0123456789abcdef0123456789abcdef", webview2host.ReportClearFailed, "too late")
+	sink.expectOps(t)
+	if len(closed) != 0 {
+		t.Fatalf("a clear report was mistaken for a page: %v", closed)
+	}
+}
+
+// The Manager is the only router of launcher reports, and it refuses any
+// kind it does not recognise. A clear whose report kind never reached
+// ValidKind would be rejected at the RPC and the engine would wait out its
+// whole timeout for an answer that was already in the building.
+func TestManagerRoutesClearReportsToTheHostedEngine(t *testing.T) {
+	sink := newDirectiveSink()
+	manager := NewManager(t.TempDir(), Config{}, ManagerOptions{PaneHost: &PaneHostOptions{
+		Directive: sink.send,
+		Relay:     stubRelay{},
+	}})
+	engine, ok := manager.engine.(*hostedEngine)
+	if !ok {
+		t.Fatalf("engine is %T, want the hosted engine", manager.engine)
+	}
+	engine.clearTimeout = time.Hour
+
+	done := make(chan error, 1)
+	go func() { done <- engine.ClearSiteData(context.Background()) }()
+	directive := sink.next(t)
+	if err := manager.ReportPaneHost(directive.PageID, webview2host.ReportCleared, ""); err != nil {
+		t.Fatalf("route a cleared report: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("clear site data: %v", err)
+		}
+	case <-time.After(hostedTestDeadline):
+		t.Fatal("the routed report never reached the clear's waiter")
+	}
 }
 
 // The pane presentation path the companion drives is an engine

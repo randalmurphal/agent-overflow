@@ -32,6 +32,14 @@ const (
 	OpDevTools Op = "devtools"
 	// OpCloseProfile closes every controller on ProfileID.
 	OpCloseProfile Op = "close-profile"
+	// OpClearData destroys the pane environment's site data wholesale: every
+	// controller closes, the environment is released, and the user-data
+	// folder is deleted and recreated empty. It addresses no page and no
+	// profile — one folder holds every workspace's cookie jar, so "clear
+	// site data" is that folder or nothing. PageID is a correlation id: the
+	// backend waits on it exactly the way it waits on a create, and the
+	// launcher answers ReportCleared or ReportClearFailed under it.
+	OpClearData Op = "clear-data"
 )
 
 // Directive is one pane-host command. It is the JSON payload of an
@@ -88,6 +96,12 @@ func (d Directive) Validate() error {
 		return d.validateBounds()
 	case OpShow, OpHide, OpClose, OpDevTools:
 		return ValidatePageID(d.PageID)
+	case OpClearData:
+		// Same strictness as a page op even though nothing here is a page:
+		// the id is echoed back in a report and reaches log lines, and the
+		// backend's waiter is keyed on it, so an unaddressable clear would
+		// be a 45-second wait for an answer that can never arrive.
+		return ValidatePageID(d.PageID)
 	case OpCloseProfile:
 		return ValidateProfileID(d.ProfileID)
 	default:
@@ -130,6 +144,14 @@ const (
 	// page, so the backend can retire its page handle instead of waiting
 	// on a target that is gone.
 	ReportProcessFailed ReportKind = "process-failed"
+	// ReportCleared acknowledges a clear-data: the environment is released
+	// and the user-data folder is empty again. Addressed by the clear's own
+	// correlation id, never by a page.
+	ReportCleared ReportKind = "cleared"
+	// ReportClearFailed carries the last OS error the delete saw. Site data
+	// the user asked to destroy is still on disk, which the backend must be
+	// able to say out loud rather than report a silent success.
+	ReportClearFailed ReportKind = "clear-failed"
 )
 
 // RPCReport is the method name the launcher posts its answers under, over
@@ -149,7 +171,8 @@ const MaxReportDetailBytes = 4096
 // fails at the call site instead of at the far end.
 func ValidKind(kind ReportKind) bool {
 	switch kind {
-	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed:
+	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
+		ReportCleared, ReportClearFailed:
 		return true
 	default:
 		return false

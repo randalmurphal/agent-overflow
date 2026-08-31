@@ -104,6 +104,24 @@ controller exactly as it drives a Chrome tab. Only LIFETIME differs.
 - **One carve-out, deliberate.** `AttachPage` fails: the launcher does not
   surface WebView2's `NewWindowRequested`, so no popup is ever reported and a
   driver for a controller nobody created would be worse than a loud failure.
+- **Clear site data is a directive, because the data is not here.** The
+  Manager's `browser-profiles/` tree is EMPTY on this deployment: every
+  workspace's cookie jar is a named `CoreWebView2Profile` inside the ONE
+  launcher-side WebView2 user-data folder, on the other side of the WSL
+  boundary. So `hostedEngine` implements `engineSiteData` by emitting a
+  `clear-data` directive and WAITING for the launcher's `cleared` report
+  (`hostClearTimeout`, the largest of the three bounds — it covers the
+  launcher's own 15s delete retry while the WebView2 browser process lets
+  go of its file handles). The directive names no profile: one folder is
+  every workspace. A missing or failed report is an ERROR naming what
+  happened, never a quiet success — reporting success here would tell the
+  user cookies were destroyed that are still on disk.
+- **The clear's correlation id is not a page.** It is minted by
+  `newHostedPageID` and rides the same watch/report machinery `createPage`
+  uses, because that machinery is keyed on a page id. `Report` therefore
+  routes `cleared` / `clear-failed` to the waiter and NOWHERE else: an
+  unmatched one is logged, never closed as a controller or retired as a
+  page the Manager never knew about.
 - **Unverified CDP support stays on the CDP path.** `Browser.cancelDownload`,
   `Browser.setDownloadBehavior` and `Browser.setPermission` are not confirmed on
   WebView2. The existing code path is kept rather than guessed at; if one turns

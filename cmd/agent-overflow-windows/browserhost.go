@@ -83,11 +83,15 @@ func (a *launcherApp) handleBrowserHostDirective(bs *wsllauncher.Bootstrap, dire
 	host, err := a.ensureBrowserHost(bs)
 	if err != nil {
 		log.Printf("browser host: cannot host directive %q: %v", directive.Op, err)
-		// A create the user is waiting on becomes a visible failure rather
-		// than a pane that never appears. The other ops address a page
-		// that, by definition, was never created.
-		if directive.Op == webview2host.OpCreate {
+		// The two ops the backend BLOCKS on become visible failures rather
+		// than a pane that never appears or a Settings button that spins
+		// until its own timeout. The rest address a page that, by
+		// definition, was never created.
+		switch directive.Op {
+		case webview2host.OpCreate:
 			a.reportBrowserHost(directive.PageID, webview2host.ReportCreateFailed, err.Error())
+		case webview2host.OpClearData:
+			a.reportBrowserHost(directive.PageID, webview2host.ReportClearFailed, err.Error())
 		}
 		return
 	}

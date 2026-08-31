@@ -27,6 +27,66 @@ Only the `_windows` files are unreachable from `make go-test`, so every
 wire shape, every validator and the whole tunnel are covered by ordinary
 Linux unit tests.
 
+## The directive vocabulary
+
+Both vocabularies are CLOSED and both ends validate. `Validate` is the
+trust boundary: a directive names a profile that becomes a directory on
+disk and a page the host creates OS windows for.
+
+| Op | Addresses | Host does | Answers with |
+|---|---|---|---|
+| `create` | PageID + ProfileID | hidden controller on that named profile | `created` (CDP targetId) / `create-failed` |
+| `bounds` | PageID | scales the CSS-pixel rect by client size / viewport, `put_Bounds` | — |
+| `show` / `hide` | PageID | `put_IsVisible`; every show re-raises the child | — |
+| `devtools` | PageID | `OpenDevToolsWindow` | — |
+| `close` | PageID | destroys one controller | `closed` |
+| `close-profile` | ProfileID | destroys every controller on that profile | `closed` per page |
+| `clear-data` | correlation id | closes ALL controllers, releases the environment, deletes and recreates the user-data folder | `cleared` / `clear-failed` |
+
+`process-failed` is the one report no directive asked for: a browser or
+renderer death, so the backend retires a page instead of waiting on a
+target that is gone.
+
+Only `create` and `clear-data` are BLOCKING round trips — the backend
+parks a waiter on the id and its Settings button or tool call is what
+waits. So both must be answered on every path, including the one where
+`ensureBrowserHost` itself fails in the launcher. The other ops are
+fire-and-forget; a dropped one costs a retry.
+
+### clear-data is the whole Windows/WSL clear
+
+The backend's own `browser-profiles/` tree is EMPTY on this deployment.
+Every workspace's cookie jar is a named `CoreWebView2Profile` inside the
+ONE launcher-side user-data folder, on the other side of the WSL boundary,
+held open by a live WebView2 environment. So the folder is what the clear
+deletes, and it addresses no profile — one folder is all of them.
+
+Three things about the lifecycle are load-bearing:
+
+- **The environment is released, not just idled.** `releaseEnvironment`
+  drops `env` / `env10` (and the Go-side `envKeep` / `envHandle`, whose COM
+  refcounting is a no-op) so the WebView2 browser process can exit and let
+  go of its file handles.
+- **The create is one-shot per GENERATION, not per process.** `envGen`
+  replaced a `sync.Once`. Releasing bumps it, re-arms `envStarting` and
+  swaps in a fresh `envReady`, so the next directive pays for a cold create
+  against the recreated folder. A completion handler for a superseded
+  generation releases its own environment instead of adopting one rooted in
+  the folder that was just deleted, and a waiter parked in
+  `ensureEnvironment` is told to retry rather than handed a released
+  pointer. Everything past `ensureEnvironment`'s arm mutates that state on
+  the UI thread, which is what makes the close-once dance safe.
+- **The retry loop is NOT on the UI thread.** Windows fails an unlink on a
+  locked file rather than deferring it, and the browser process holds
+  handles for a moment after its last controller closes, so the delete
+  retries with backoff for up to 15s. That sleeps; sleeping on the UI
+  thread freezes the launcher window. COM teardown goes through `OnMain`,
+  the retry and the report run on the bridge goroutine.
+
+The folder is recreated empty afterwards, 0700, because the launcher
+validated and created it at boot (`prepareBrowserProfileStorage`) and
+environment creation expects it to exist.
+
 ## Direction is the security property
 
 The launcher DIALS. Nothing in this package listens on anything, and

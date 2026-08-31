@@ -33,11 +33,16 @@ host rect. The user and agent share its URL, DOM, cookies, history, focus, and
 tab set; no separate browser window or duplicate browsing session is opened.
 
 The Browser settings panel also exposes a destructive **Clear site data**
-action. It closes every browser page first, then clears both places site data
-can live: the AO-owned profile directory, and — on an engine that keeps its own
-store somewhere AO cannot reach by path — that engine's own state. Closing
-first is load-bearing: a later teardown would otherwise write the cleared state
-back.
+action. It closes every page first, so a later teardown cannot write the
+cleared state back, then clears BOTH places site data can live: the AO-owned
+profile directory, and — on a deployment whose engine keeps its data
+somewhere AO cannot reach by path — the engine's own store. On Windows/WSL
+that store is the launcher's WebView2 user-data folder on the far side of
+the WSL boundary, so the backend asks the launcher to release its browser
+environment and delete the folder, and waits for the answer; on macOS it is
+WebKit's own data-store directory. The button clears real state on every
+platform, and a failure is reported rather than swallowed — never a silent
+per-platform no-op.
 
 ## Ownership and lifecycle
 

@@ -19,6 +19,9 @@ func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
 		{Op: OpClose, PageID: "page-1"},
 		{Op: OpDevTools, PageID: "page-1"},
 		{Op: OpCloseProfile, ProfileID: "ws_abc"},
+		// A clear addresses the whole folder, so it names no profile: its
+		// page id is purely the correlation id the report comes back under.
+		{Op: OpClearData, PageID: "0123456789abcdef"},
 	} {
 		if err := directive.Validate(); err != nil {
 			t.Errorf("Validate(%#v) = %v, want nil", directive, err)
@@ -47,6 +50,11 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"profile id with separator", Directive{Op: OpCloseProfile, ProfileID: `a\b`}, "disallowed byte"},
 		{"profile id with trailing dot", Directive{Op: OpCloseProfile, ProfileID: "ws."}, "disallowed byte"},
 		{"profile id too long", Directive{Op: OpCloseProfile, ProfileID: strings.Repeat("a", 65)}, "over the 64 limit"},
+		// A clear with no correlation id could never be answered: the
+		// backend's waiter is keyed on it, so it would block for the whole
+		// clear timeout and then report a failure the launcher never had.
+		{"clear-data without correlation id", Directive{Op: OpClearData}, "page id is required"},
+		{"clear-data with a path correlation id", Directive{Op: OpClearData, PageID: "../evil"}, "disallowed byte"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.directive.Validate()
@@ -83,13 +91,38 @@ func TestDirectiveJSONShape(t *testing.T) {
 	}
 }
 
+// The clear-data op and its two report kinds are spelled in the backend's
+// engine and in the launcher's handler, and neither would fail to compile
+// if one side drifted: a renamed op reaches the launcher as an unknown
+// directive that is logged and dropped, and Settings would spin until its
+// own timeout with nothing anywhere naming the cause.
+func TestClearDataWireSpelling(t *testing.T) {
+	var directive Directive
+	raw := `{"op":"clear-data","pageId":"clear-1"}`
+	if err := json.Unmarshal([]byte(raw), &directive); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if want := (Directive{Op: OpClearData, PageID: "clear-1"}); directive != want {
+		t.Fatalf("decoded = %#v, want %#v", directive, want)
+	}
+	if err := directive.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if ReportCleared != "cleared" || ReportClearFailed != "clear-failed" {
+		t.Fatalf("report kinds are %q / %q", ReportCleared, ReportClearFailed)
+	}
+}
+
 func TestValidKind(t *testing.T) {
-	for _, kind := range []ReportKind{ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed} {
+	for _, kind := range []ReportKind{
+		ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
+		ReportCleared, ReportClearFailed,
+	} {
 		if !ValidKind(kind) {
 			t.Errorf("ValidKind(%q) = false, want true", kind)
 		}
 	}
-	for _, kind := range []ReportKind{"", "Created", "created ", "boom"} {
+	for _, kind := range []ReportKind{"", "Created", "created ", "boom", "clear", "cleared "} {
 		if ValidKind(kind) {
 			t.Errorf("ValidKind(%q) = true, want false", kind)
 		}

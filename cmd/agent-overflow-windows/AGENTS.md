@@ -138,16 +138,22 @@ for all three).
   backend without the feature simply never emits. A bootstrap flag would
   have to be kept in sync to say what the first directive already proves.
   A construction failure is not cached: its inputs (AppData, the profile
-  directory, a free port) can come back, and an `create` that fails this
-  way is reported as `create-failed` rather than becoming a pane that
-  never appears.
+  directory, a free port) can come back. The two ops the backend BLOCKS on
+  are answered even when the host could not be built at all — `create`
+  with `create-failed`, `clear-data` with `clear-failed` — rather than
+  becoming a pane that never appears or a Settings button that spins until
+  its own timeout. The rest address a page that, by definition, was never
+  created.
 - **Profile storage.** `prepareBrowserProfileStorage` creates
   `appidentity.BrowserProfilesDir(mode)` beside the SPA's own webview2
   directory, through the same `validateWindowsStoragePath` that refuses
   symlinked and reparse-point components. Per mode like the others, and
   for a harder reason: a WebView2 user-data folder belongs to one browser
   process, so a shared folder would leave whichever launcher started
-  second unable to create its environment at all.
+  second unable to create its environment at all. It is also the folder
+  Settings → Clear site data DELETES (and recreates empty): the backend's
+  own `browser-profiles/` tree is empty on this deployment, so this folder
+  is the whole of the user's pane site data.
 - **Env scrub at boot.** `main` calls `webview2host.ScrubEnvOverrides`
   before `prepareWebviewStorage`, ahead of the SPA environment Wails
   builds. An inherited `WEBVIEW2_USER_DATA_FOLDER`, including a SET BUT

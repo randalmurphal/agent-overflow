@@ -51,6 +51,12 @@ const (
 	// through the tunnel: waiting for the launcher's tunnel to dial back,
 	// one /json/version round trip, and the browser-level handshake.
 	hostAttachTimeout = 30 * time.Second
+	// hostClearTimeout bounds the wait for a `cleared` report. It is
+	// deliberately the largest of the three: the launcher closes every
+	// controller, releases the environment, and then retries deleting the
+	// user-data folder for up to its own 15s budget while the WebView2
+	// browser process lets go of its file handles.
+	hostClearTimeout = 45 * time.Second
 	// hostProfilePrefix keeps a derived profile id inside
 	// ValidateProfileID's character class whatever the digest looks like.
 	hostProfilePrefix = "ws"
@@ -105,6 +111,7 @@ type hostedEngine struct {
 	// test can drive the timeout paths without spending them.
 	createTimeout time.Duration
 	attachTimeout time.Duration
+	clearTimeout  time.Duration
 
 	// attachMu serializes ensureBrowser so a burst of concurrent creates
 	// establishes one browser connection rather than one each.
@@ -131,6 +138,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), events 
 		logf:          log.Printf,
 		createTimeout: hostCreateTimeout,
 		attachTimeout: hostAttachTimeout,
+		clearTimeout:  hostClearTimeout,
 
 		pending:      make(map[string]chan hostReport),
 		pageByTarget: make(map[string]string),
@@ -227,6 +235,49 @@ func hostedProfileID(workspace string) (string, error) {
 		return "", fmt.Errorf("browser: derive pane profile id: %w", err)
 	}
 	return id, nil
+}
+
+// ClearSiteData is the engineSiteData half of Settings → Clear site data.
+//
+// On this deployment the Manager's own `browser-profiles/` tree is EMPTY:
+// every cookie jar lives in the launcher's WebView2 user-data folder on the
+// Windows side of the WSL boundary, one folder holding every workspace's
+// named profile. The backend cannot delete it by path — it is a different
+// machine's filesystem, and a live WebView2 environment holds it open — so
+// the clear is a directive like every other pane-host operation, and the
+// launcher's answer is what makes it a real clear rather than a hope.
+//
+// The Manager calls this only after closeBrowser, so no page or profile is
+// live. The launcher still closes every controller of its own accord: its
+// controller set is the authority on what is actually open, and a stale one
+// would keep a handle on the folder being deleted.
+func (e *hostedEngine) ClearSiteData(ctx context.Context) error {
+	// The clear addresses no page, but the launcher's report machinery is
+	// keyed on a page id, so it carries a correlation id minted the same
+	// way. Registering the waiter BEFORE dispatching is what makes an
+	// instant answer impossible to miss.
+	correlationID := newHostedPageID()
+	waiter, err := e.watch(correlationID)
+	if err != nil {
+		return err
+	}
+	defer e.unwatch(correlationID)
+
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpClearData, PageID: correlationID}) {
+		return errors.New("browser: pane host refused the clear-data directive")
+	}
+
+	report, err := awaitHostReport(ctx, waiter, e.clearTimeout)
+	if err != nil {
+		// The site data may or may not be gone. Saying so is the honest
+		// answer: a Settings button that reported success here would leave
+		// the user believing cookies were destroyed that are still on disk.
+		return fmt.Errorf("browser: clear pane site data: %w", err)
+	}
+	if report.kind != webview2host.ReportCleared {
+		return fmt.Errorf("browser: pane host could not clear site data (%s): %s", report.kind, report.detail)
+	}
+	return nil
 }
 
 // DiscardPage closes a controller the Manager declined to adopt. The handle
@@ -460,6 +511,13 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
 			e.retirePage(pageID)
 		}
+	case webview2host.ReportCleared, webview2host.ReportClearFailed:
+		// A clear names a correlation id, not a page: there is no controller
+		// to close and no page to retire. Nobody waiting means ClearSiteData
+		// already gave up on its own bound and has reported that.
+		if !e.deliver(pageID, hostReport{kind: kind, detail: detail}) {
+			e.logf("browser: pane host reported %s for an abandoned clear %s", kind, pageID)
+		}
 	default:
 		e.logf("browser: ignoring unknown pane host report %q for page %s", kind, pageID)
 	}
@@ -607,6 +665,15 @@ func (e *hostedEngine) setShown(handle string, visible bool) bool {
 // launcher's check is the trust boundary, and this one makes a bug fail at
 // the line that wrote it instead of as a dropped frame in launcher.log.
 func (e *hostedEngine) dispatch(directive webview2host.Directive) bool {
+	// Start is the wiring validator for every other path, because nothing
+	// dispatches before the Manager has started the engine. ClearSiteData
+	// does — the launcher's folder holds site data whether or not this
+	// process ever opened a page — so the check lives at the one point every
+	// directive passes through rather than at that one call site.
+	if e.send == nil {
+		e.logf("browser: refusing to emit pane directive %q: the pane host is not wired", directive.Op)
+		return false
+	}
 	if err := directive.Validate(); err != nil {
 		e.logf("browser: refusing to emit pane directive %q: %v", directive.Op, err)
 		return false
