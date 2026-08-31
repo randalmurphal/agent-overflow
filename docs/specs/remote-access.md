@@ -95,6 +95,33 @@ Rules:
   happened. `TestEveryCredentialProducingCallGoesThroughAChokepoint`
   is the class gate on future mint paths.
 
+  LANDED 2026-08-31 (wave 7c2), the surfaces around it. Devices list:
+  per-device access label (derived from `AccessSession.Scopes`, wire
+  additive), connected-now / signed-out / last-seen, and an
+  error-styled anomaly row for a session standing on a revoked device
+  (unreachable by construction after 7c1; rendered as the alarm it
+  would be). `ForgetAccessDevice` (access:admin, no step-up, revoked
+  devices only): deletes the device row, sessions and refresh secrets
+  cascade, ui_state dropped defensively; audit rows stay
+  (`AuditDeviceForgotten`); the key thumbprint becomes free to
+  re-enroll, gated as ever by an owner-minted link plus the
+  verification number. The revoked-key pairing refusal names both
+  remedies (restore, or forget then pair fresh). View-only UX (owner
+  ruling): scope-ungranted controls go inert in place — disabled,
+  never hidden, no toasts — behind `hasScope` per capability;
+  passive mount-time RPCs check capability before firing;
+  `isViewOnly()` (no execute scope granted) drives exactly one quiet
+  "View only" chip in the sidebar footer. Post-pairing error burst
+  root-caused: the app mounted on redial REQUEST, not readiness —
+  `redialAfterPairing` now retires the pre-pairing socket detached
+  (its close settles only its own attempt) and resolves when the
+  transport is usable, bounded at 5s; `main.ts` awaits it. Ungranted
+  tooltip vocabulary is "Not granted to this device"; "Local only"
+  survives only on host-presence gates. Adjudicated against retier:
+  `GetThreadLiveState` stays threads:operate — its snapshot embeds
+  queued drafts and pending approvals, both above read tier; a
+  view-only thread open hydrates from the threads:read channels.
+
 ### Principal tiers
 
 Who the credential belongs to sets a hard ceiling no grant can exceed:
