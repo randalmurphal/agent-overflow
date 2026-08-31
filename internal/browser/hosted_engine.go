@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/webview2host"
 
 	cdpbrowser "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/google/uuid"
@@ -405,18 +406,27 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	// and chromedp's own /json/version probe would re-read the Windows-side
 	// address and dial it.
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), wsURL, chromedp.NoModifyURL)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(func(format string, args ...any) {
-		e.logf("browser: chromedp: "+format, args...)
-	}))
-	// The first Run dials the tunnel and attaches to whichever page target
-	// the browser reports, and chromedp bounds neither: a launcher that
-	// named a target it never created would park this call forever. So the
-	// wait is ours, on attachCtx, and a timeout tears the connection down
-	// rather than leaving a half-built browser behind. Run itself keeps
-	// browserCtx, whose lifetime is the connection's, so the success path
-	// is unchanged.
+	// The error logger rides the Allocate call in dialPaneBrowser, not a
+	// NewContext option: chromedp.WithErrorf lands in an unexported field
+	// only Run's own allocation path reads, and this dial bypasses Run.
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	// The dial must NOT go through chromedp.Run: on a remote allocator, Run
+	// against a context with no target issues Target.createTarget, which
+	// Chrome answers with a throwaway about:blank tab and WebView2 answers
+	// with `-32000 no browser is open` — a WebView2 target exists only as a
+	// launcher-created controller (the spike's "WebView2 has no /json/new").
+	// So the connection is established the way chromedp's own
+	// initContextBrowser does it, minus the target: allocate the browser on
+	// the context, then explicitly enable target discovery, which Run's
+	// skipped path was also the only sender of — without it the
+	// targetDestroyed backstop in dispatchEvent would never hear anything.
+	//
+	// chromedp bounds none of this: a launcher that never answers would park
+	// the dial forever. So the wait is ours, on attachCtx, and a timeout
+	// tears the connection down rather than leaving a half-built browser
+	// behind.
 	attached := make(chan error, 1)
-	go func() { attached <- chromedp.Run(browserCtx) }()
+	go func() { attached <- dialPaneBrowser(browserCtx, e.logf) }()
 	select {
 	case err := <-attached:
 		if err != nil {
@@ -434,6 +444,29 @@ func (e *hostedEngine) ensureBrowser() (context.Context, error) {
 	e.browserCtx, e.browserCancel, e.allocCancel = browserCtx, browserCancel, allocCancel
 	e.mu.Unlock()
 	return browserCtx, nil
+}
+
+// dialPaneBrowser establishes the browser-level CDP connection on
+// browserCtx without creating any target. It is chromedp's own
+// initContextBrowser through the exported surface — FromContext, one
+// Allocator.Allocate, publish the Browser on the context so every later
+// Run (all of them WithTargetID) finds the shared connection — followed by
+// the Target.setDiscoverTargets(true) chromedp's skipped first-context
+// path would have sent. Discovery is what feeds ListenBrowser the
+// target lifecycle events dispatchEvent re-keys.
+func dialPaneBrowser(browserCtx context.Context, logf func(string, ...any)) error {
+	c := chromedp.FromContext(browserCtx)
+	if c == nil || c.Allocator == nil {
+		return errors.New("not a chromedp context")
+	}
+	browser, err := c.Allocator.Allocate(browserCtx, chromedp.WithBrowserErrorf(func(format string, args ...any) {
+		logf("browser: chromedp: "+format, args...)
+	}))
+	if err != nil {
+		return err
+	}
+	c.Browser = browser
+	return target.SetDiscoverTargets(true).Do(cdp.WithExecutor(browserCtx, browser))
 }
 
 func (e *hostedEngine) browser() (context.Context, bool) {

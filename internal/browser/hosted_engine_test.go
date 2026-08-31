@@ -2,7 +2,10 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +14,8 @@ import (
 	"agent-overflow/internal/webview2host"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 )
 
 // The hosted engine is exercised against a fake directive sink and a fake
@@ -657,5 +662,86 @@ func TestManagerWithoutAWindowHasNoEngineAtAll(t *testing.T) {
 	}
 	if err := manager.ReportPaneHost("page1", webview2host.ReportClosed, ""); err == nil {
 		t.Fatal("a deployment with no pane host accepted a report")
+	}
+}
+
+// ---------------------------------------------------------------------
+// The browser-level dial
+// ---------------------------------------------------------------------
+
+// fakeCDPBrowser is a loopback websocket endpoint speaking just enough CDP
+// to accept a browser-level connection: every command is recorded and
+// answered with an empty success. It is what the launcher's WebView2
+// debugging endpoint looks like to the dial — a browser that answers
+// commands but has NO tabs of its own to hand out.
+func fakeCDPBrowser(t *testing.T) (wsURL string, methods func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			payload, err := wsutil.ReadClientText(conn)
+			if err != nil {
+				return
+			}
+			var msg struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				t.Errorf("bad CDP frame %q: %v", payload, err)
+				return
+			}
+			mu.Lock()
+			seen = append(seen, msg.Method)
+			mu.Unlock()
+			reply, _ := json.Marshal(map[string]any{"id": msg.ID, "result": map[string]any{}})
+			if err := wsutil.WriteServerText(conn, reply); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	return "ws" + strings.TrimPrefix(server.URL, "http"), func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+}
+
+// The regression this pins: chromedp.Run on a target-less remote context
+// issues Target.createTarget, which Chrome quietly answers with a
+// throwaway tab and WebView2 refuses with `-32000 no browser is open` —
+// a WebView2 target exists only as a launcher-created controller, so the
+// browser-level dial must never create one (2026-08-31, the first live
+// pane attach). It must instead enable target discovery, which is the
+// only thing that feeds dispatchEvent's targetDestroyed backstop.
+func TestHostedEngineBrowserDialCreatesNoTargetAndEnablesDiscovery(t *testing.T) {
+	wsURL, methods := fakeCDPBrowser(t)
+	engine, _ := newTestHostedEngine(t, stubRelay{url: wsURL}, engineEvents{})
+	engine.attachTimeout = 5 * time.Second
+
+	if _, err := engine.ensureBrowser(); err != nil {
+		t.Fatalf("ensureBrowser against the fake endpoint: %v", err)
+	}
+	defer engine.Interrupt()
+
+	sawDiscovery := false
+	for _, method := range methods() {
+		if method == "Target.createTarget" {
+			t.Fatal("the browser-level dial created a target; WebView2 answers that with -32000 no browser is open")
+		}
+		if method == "Target.setDiscoverTargets" {
+			sawDiscovery = true
+		}
+	}
+	if !sawDiscovery {
+		t.Fatal("the dial never enabled target discovery; the targetDestroyed backstop would hear nothing")
 	}
 }
