@@ -71,10 +71,29 @@ Rules:
   by definition rather than a standing credential; sweeps and
   mint-time re-checks are hygiene on top, not the enforcement.
   Re-revoking an already-revoked device re-sweeps rather than
-  early-returning, and a revoke that closed nothing says so. Lands
-  wave 7c; the incident that forced the shape: `store.RevokeDevice`'s
-  already-revoked early return made every later revoke a silent no-op
-  while a rotation-raced successor session kept full access.
+  early-returning, and a revoke that closed nothing says so. The
+  incident that forced the shape: `store.RevokeDevice`'s
+  already-revoked early return made every later revoke a silent no-op.
+
+  LANDED 2026-08-31 (wave 7c1). The straggler origin was NAMED, not
+  the rotation race first suspected: pairing redemption read the
+  device row as live outside the revoke transaction and its
+  `CreateSession` landed after the sweep (`ConfirmPairing` then
+  activated it, checking only the session row); `Sessions.Mint` also
+  accepted a revoked device with no race at all. Enforcement as
+  built: `store.sessionSelect` JOINs the device's revocation stamp
+  onto every session read and `Session.Live` folds it in — one extra
+  integer comparison per RPC, no second lookup or round trip;
+  `CreateSession` is an `INSERT ... WHERE EXISTS (device un-revoked)`
+  and Activate/Extend/Touch carry the same predicate inside their own
+  statements, atomic against the single-transaction mark-and-sweep;
+  `RevokeDevice` re-sweeps when already revoked and moves the
+  fast-path generation unconditionally (`forgetAll`), covering the
+  zero-session case; `RevokeAccessDevice` answers
+  `DeviceRevocationResult{deviceMoved, sessionsEnded,
+  connectionsClosed}` and the devices pane says which outcome
+  happened. `TestEveryCredentialProducingCallGoesThroughAChokepoint`
+  is the class gate on future mint paths.
 
 ### Principal tiers
 
