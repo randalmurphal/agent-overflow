@@ -141,7 +141,11 @@ remote browser alike. Protocol and authz rules:
   unpaired while its socket opens normally. `host` is answered from PRESENCE and
   never from a grant set — no session holds it, `internal/identity` does
   not declare it, and `authorize.go` authorizes it from "is the caller on
-  this machine" alone. Never authorization: the backend re-checks every
+  this machine" alone. `session` is the other name no session holds: it
+  is the backend's method FLOOR, admitted on session presence alone, so
+  nothing here gates on it and it has no arm in the resolver — a
+  view-only device's own font size and its ui_state bucket ride it
+  server-side. Never authorization: the backend re-checks every
   RPC, so the worst a wrong answer does is offer a control that is
   refused or hide one that would have worked.
 

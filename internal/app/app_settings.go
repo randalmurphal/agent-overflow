@@ -104,11 +104,13 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // tokens are fetched through GetRemoteEndpointToken and sensitive environment
 // values have no read path at all.)
 //
-// The scope below is the FLOOR. Which keys a given caller may actually write
-// is decided per key by requireSettingsTier, because one method carries all
-// three of §6's tiers and no single annotation can express that.
+// The scope below is the FLOOR, and it is the floor VALUE: one method carries
+// all three of §6's tiers, so the only honest thing its name can require is a
+// live session. requireSettingsTier is where the real answer is decided, per
+// key — device keys ride the session, user keys need settings:write, host keys
+// need a fresh step-up proof.
 //
-//ao:scope settings:write
+//ao:scope session
 func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.Settings{}, fmt.Errorf("settings service unavailable")

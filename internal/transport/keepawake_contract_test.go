@@ -26,19 +26,21 @@ func TestKeepAwakeContractClassifications(t *testing.T) {
 		)
 	}
 	// UpdateSettings is the only producer of this directive, and what
-	// keeps a remote session from pinning the desktop awake is now the
-	// KEY's tier rather than the caller's origin: both keep-awake keys are
-	// host-tier, and a host-tier patch key goes through the step-up proof
-	// in internal/app's requireSettingsTier. The method's own scope is the
-	// floor under that — it must at least stay out of the observe tier, or
-	// a read-only session would reach the recheck at all.
+	// keeps a remote session from pinning the desktop awake is the KEY's
+	// tier rather than the caller's origin or the method's name: both
+	// keep-awake keys are host-tier, and a host-tier patch key goes
+	// through the step-up proof in internal/app's requireSettingsTier. The
+	// method's own scope is the `session` FLOOR, which admits every live
+	// session on purpose — a view-only device sets its own font size
+	// through this method — so the per-key gate is the whole protection
+	// and the assertion below is what says so.
 	for _, key := range []string{"keepAwakeEnabled", "keepAwakeScreen"} {
 		tier, ok := settings.TierForKey(key)
 		if !ok || tier != settings.TierHost {
 			t.Errorf("%q must be host-tier (got %q, known=%t): it inhibits THIS machine's sleep, so writing it takes a fresh host-presence proof rather than a standing grant", key, tier, ok)
 		}
 	}
-	if tier := classify("UpdateSettings").Scope.Tier(); tier == TierObserve {
-		t.Error(`"UpdateSettings" resolved to the observe tier: a session granted only reads would reach the per-key settings recheck, which is the wrong floor for the only producer of this directive`)
+	if scope := classify("UpdateSettings").Scope; scope != ScopeSession {
+		t.Errorf(`"UpdateSettings" is scoped %q, want the %q floor: this directive's producer is gated per KEY, and a method-name scope that looked sufficient would invite dropping the recheck`, scope, ScopeSession)
 	}
 }

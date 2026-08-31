@@ -28,12 +28,13 @@ import (
 // paired device, "client:<id>" for a screen on this backend's own local
 // page channel. "user:<id>" stays reserved for the user tier (§6).
 //
-// These are observe/device-tier rather than `host`: per-device UI view
-// state is the whole point of this table — remote clients (--connect, LAN
-// browsers) need their own buckets. Same reasoning as GetKeybindings: UI
-// preferences, not credentials or filesystem access. The ui_state rows
-// are opaque strings written and read only by the connection they belong
-// to.
+// All three carry the `session` FLOOR rather than a settings scope: per-device
+// UI view state is the whole point of this table — remote clients (--connect,
+// LAN browsers) need their own buckets — and the bucket a call may touch is
+// resolved from the connection below, never from an argument. So the authority
+// is "you are a session reading and writing your own bucket", which is the one
+// thing the floor says. The rows are opaque strings, and a session reaches no
+// bucket but its own.
 
 // Wire-input bounds. Generous for real UI state (pane layout JSON is
 // the largest value today at well under 4 KB) while keeping a buggy
@@ -206,7 +207,7 @@ func (a *App) callerSettingsBucket(ctx context.Context) string {
 // GetUIState returns the calling connection's full persisted UI-state
 // bucket. A fresh client gets an empty map — defaults, not an error.
 //
-//ao:scope settings:read
+//ao:scope session
 func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("ui state: store unavailable")
@@ -220,7 +221,7 @@ func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 
 // SetUIState batch-upserts entries into the calling connection's bucket.
 //
-//ao:scope settings:write
+//ao:scope session
 func (a *App) SetUIState(ctx context.Context, entries map[string]string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")
@@ -309,7 +310,7 @@ func migrateUIStateFromSettings(configDir string, st *store.Store) {
 // DeleteUIState removes keys from the calling connection's bucket.
 // Missing keys are a no-op.
 //
-//ao:scope settings:write
+//ao:scope session
 func (a *App) DeleteUIState(ctx context.Context, keys []string) error {
 	if a.store == nil {
 		return fmt.Errorf("ui state: store unavailable")

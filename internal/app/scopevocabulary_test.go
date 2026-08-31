@@ -12,11 +12,15 @@ import (
 // vocabulary across the two packages that hold it.
 //
 // Neither can import the other: identity persists into internal/store
-// and transport stays store-free, so transport RESTATES the ten names
-// identity declares. A restatement with nobody checking it is a typo
-// waiting to happen, and the typo's shape is bad in both directions — a
-// name only transport knows is an annotation no session can ever be
+// and transport stays store-free, so transport RESTATES the grantable
+// names identity declares. A restatement with nobody checking it is a
+// typo waiting to happen, and the typo's shape is bad in both directions
+// — a name only transport knows is an annotation no session can ever be
 // granted, and a name only identity knows is a grant no method accepts.
+//
+// The two exceptions are deliberate and enumerated below: `host` and
+// `session` are method PROPERTIES, so transport declares them and
+// identity must not.
 //
 // This package imports both, which is what makes the check possible
 // here and nowhere else. It fails in both directions on purpose.
@@ -31,12 +35,16 @@ func TestScopeVocabularyMatchesIdentity(t *testing.T) {
 		declared[string(scope)] = true
 	}
 
-	// transport's set is identity's ten plus `host`, exactly.
-	want := make(map[string]bool, len(granted)+1)
+	// transport's set is identity's grantable names plus the two values
+	// that are method properties rather than grants, exactly.
+	transportOnly := []transport.Scope{transport.ScopeSession, transport.ScopeHost}
+	want := make(map[string]bool, len(granted)+len(transportOnly))
 	for name := range granted {
 		want[name] = true
 	}
-	want[string(transport.ScopeHost)] = true
+	for _, scope := range transportOnly {
+		want[string(scope)] = true
+	}
 
 	for _, name := range sortedKeys(want) {
 		if !declared[name] {
@@ -49,11 +57,15 @@ func TestScopeVocabularyMatchesIdentity(t *testing.T) {
 		}
 	}
 
-	// `host` is a method property, never a grant. identity says so in
-	// the Scope doc comment; this is the assertion behind the sentence.
-	if granted[string(transport.ScopeHost)] {
-		t.Errorf("identity.Scopes contains %q; a session row could then claim a scope that means "+
-			"'this call has no remote form'", transport.ScopeHost)
+	// Neither transport-only value is a grant. identity says so in the
+	// Scope doc comment; this is the assertion behind the sentence. A
+	// session row claiming `host` would claim a call has a remote form
+	// after all, and one claiming `session` would name an authority the
+	// gate never reads — it admits on session presence alone.
+	for _, scope := range transportOnly {
+		if granted[string(scope)] {
+			t.Errorf("identity.Scopes contains %q, which is a method property rather than a grant", scope)
+		}
 	}
 
 	// Every declared scope resolves to a tier. An unplaced scope answers

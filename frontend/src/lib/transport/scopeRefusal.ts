@@ -44,16 +44,18 @@ export interface ScopeRefusalPresentation {
 }
 
 /**
- * How each capability reads to a person. Short noun phrases, because they
- * are substituted into one sentence frame rather than read alone, and
- * because the wire spelling (`threads:autonomy`) is a vocabulary for the
- * audit log rather than for a screen.
+ * How each GRANTABLE capability reads to a person. Short noun phrases,
+ * because they are substituted into one sentence frame rather than read
+ * alone, and because the wire spelling (`threads:autonomy`) is a
+ * vocabulary for the audit log rather than for a screen.
  *
- * `host` is deliberately here and deliberately worded differently: it is
- * not a grant anybody can be given, so a hint offering to widen access
- * would be a false instruction.
+ * `host` and `session` are excluded by the type rather than worded here:
+ * neither is a grant anybody can be given, so the sentence frame's hint —
+ * "widen this device's access" — would be a false instruction for both.
+ * Each gets its own presentation in `presentScope`, and the Exclude is
+ * what makes a third such value decide on one too.
  */
-const CAPABILITY_NOUNS: Record<Scope, string> = {
+const CAPABILITY_NOUNS: Record<Exclude<Scope, 'host' | 'session'>, string> = {
   'threads:read': 'reading threads',
   'files:read': 'reading files and diffs',
   'threads:operate': 'sending and steering threads',
@@ -65,7 +67,6 @@ const CAPABILITY_NOUNS: Record<Scope, string> = {
   'settings:read': 'reading settings',
   'settings:write': 'changing settings',
   'access:admin': 'managing devices and accounts',
-  host: 'acting on the computer running Agent Overflow',
 };
 
 /** Where a grant comes from. One sentence, reused so it stays one sentence. */
@@ -79,6 +80,20 @@ const GRANT_HINT = "Widen this device's access under Settings → Network → De
 export const UNKNOWN_SCOPE_REFUSAL: ScopeRefusalPresentation = {
   title: 'This device was not granted access to that.',
   hint: GRANT_HINT,
+};
+
+/**
+ * The floor refusal, which a session caller cannot reach: `session` is
+ * satisfied by naming a live session, and only a connection that named
+ * one is judged by that gate at all. It exists because the presentation
+ * must answer for every name the wire can carry — a bundle live against a
+ * newer backend sees whatever that backend refuses with — and because
+ * "ask for a wider grant" is the wrong remedy for a session the backend
+ * did not accept.
+ */
+export const SESSION_REFUSAL: ScopeRefusalPresentation = {
+  title: 'This device is not signed in to Agent Overflow.',
+  hint: 'Pair it again under Settings → Network → Devices on that computer.',
 };
 
 /**
@@ -112,6 +127,7 @@ export function presentScope(scope: string | undefined | null): ScopeRefusalPres
     // Not a grant, so the grant hint would be a false instruction.
     return STEP_UP_REFUSAL;
   }
+  if (scope === 'session') return SESSION_REFUSAL;
   return {
     title: `This device was not granted ${CAPABILITY_NOUNS[scope]}.`,
     hint: GRANT_HINT,

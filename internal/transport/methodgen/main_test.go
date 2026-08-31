@@ -231,7 +231,7 @@ func TestLoadScopeVocabulary_ReadsTheDeclaredSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadScopeVocabulary: %v", err)
 	}
-	for _, want := range []string{"threads:read", "files:read", "settings:read", "threads:operate", "access:admin", "host"} {
+	for _, want := range []string{"threads:read", "files:read", "settings:read", "threads:operate", "access:admin", "session", "host"} {
 		if !scopes[want] {
 			t.Errorf("declared vocabulary is missing %q", want)
 		}
@@ -241,7 +241,7 @@ func TestLoadScopeVocabulary_ReadsTheDeclaredSet(t *testing.T) {
 	}
 	// The count is pinned so a constant deleted from the block fails
 	// here rather than in whichever annotation used it.
-	if len(scopes) != 12 {
-		t.Errorf("collected %d scopes (%v), want the eleven grantable names plus host", len(scopes), scopes)
+	if len(scopes) != 13 {
+		t.Errorf("collected %d scopes (%v), want the eleven grantable names plus session and host", len(scopes), scopes)
 	}
 }

@@ -34,12 +34,27 @@ vocabulary does not declare. There is no default and no silence: the generator
 is the gate, and it runs before a method reaches the wire at all.
 
 `scopes.go` is the vocabulary — the scope names a session can be granted
-(`docs/specs/remote-access.md` §5) plus `host` for a call with no remote form —
-and the tier each resolves to: **observe** (`threads:read`, `files:read`,
-`settings:read`), **execute**, **host**. It restates `internal/identity`'s
-grantable names rather than importing them, since this package stays store-free;
-`internal/app` imports both and `TestScopeVocabularyMatchesIdentity` fails in
-either direction.
+(`docs/specs/remote-access.md` §5) plus the two values that are method
+PROPERTIES rather than grants — and the tier each resolves to: **session**
+(the floor), **observe** (`threads:read`, `files:read`, `settings:read`),
+**execute**, **host**. It restates `internal/identity`'s grantable names rather
+than importing them, since this package stays store-free; `internal/app`
+imports both and `TestScopeVocabularyMatchesIdentity` fails in either
+direction, and neither non-grant value may appear in identity's list.
+
+The two non-grants:
+
+- **`host`** marks a call with no remote form. Authorized by presence alone.
+- **`session`** is the FLOOR: any connection that named a live session passes,
+  because that is the whole requirement. It carries the calls whose real
+  authority is decided per ARGUMENT (`UpdateSettings`, gated key by key
+  against §6's three tiers) or is simply "this session is writing its own
+  bucket" (`GetUIState` / `SetUIState` / `DeleteUIState`, whose bucket comes
+  from the connection and never from a parameter). A view-only device setting
+  its own font size is the case it exists for.
+  `TestSessionFloorMethodsAreTheSpecSet` pins WHICH methods carry it, because
+  the floor admits everybody: an annotation that drifted onto a method whose
+  authority its NAME decides would be an ungated surface.
 
 `//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
 pairing link, network bind / exposure changes, provider custom-env writes, MCP
@@ -108,6 +123,10 @@ on loopback.
   own local-channel session calls host-scoped methods constantly. A method name
   the generated table does not carry classifies as `host` for the same reason:
   fail closed.
+- **`session` is decided the same way, by having got here.** Only a connection
+  that named a live session is judged, and its liveness was re-read for this
+  call, so the floor admits an EMPTY grant set. Looking for `session` in the
+  grant set would refuse every session.
 - **Step-up goes through `stepUpProven`**, one function whose doc comment
   carries §4's argument. This phase the proof is host presence; phase 5 swaps
   the proof there and no call site moves.
@@ -117,7 +136,8 @@ on loopback.
   client explaining a disabled surface has to branch on something stable), and
   `step_up_required` is its own code because no grant can satisfy it.
 
-**A method's annotation is the FLOOR, not the whole answer.** Authority that
+**A method's annotation is the FLOOR, not the whole answer.** Literally so for
+the methods scoped `session`, whose whole authority is rechecked. Authority that
 depends on a call's ARGUMENTS is rechecked inside the method — selecting an
 autonomous runtime mode, writing a host-tier settings key — using
 `transport.ScopeRequired` / `StepUpRequired` / `AuthRefused`. Those errors reach

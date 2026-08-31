@@ -12,9 +12,10 @@ call's ARGUMENTS. All three read the grant set through one hook,
 session refuses on its next call rather than on a watchdog tick.
 
 The grantable scope names are declared here as the audit and persistence
-vocabulary, and RESTATED in `internal/transport/scopes.go` — which adds
-`host` and the observe/execute/host tier each resolves to — because
-transport must not import this package. `internal/app` imports both, so
+vocabulary, and RESTATED in `internal/transport/scopes.go` — which adds the
+two values that are method PROPERTIES rather than grants (`host`, and
+`session`, the floor any live session passes) plus the tier each name
+resolves to — because transport must not import this package. `internal/app` imports both, so
 `TestScopeVocabularyMatchesIdentity` there is what keeps one spelling,
 failing in either direction.
 

@@ -71,7 +71,7 @@ func eventVisibleToOrigin(channel string, isLoopback bool) bool {
 // A frame filter runs per event per subscriber AND per event per
 // connection, so the grant test has to cost about what the locality test
 // costs. It does: one map probe for the channel's bit and one AND against
-// a mask computed once. The mask is a uint32 because there are twelve
+// a mask computed once. The mask is a uint32 because there are thirteen
 // scope names and a slice scan per frame would be the expensive shape.
 
 // scopeMask is a set of scopes, one bit per index in Scopes.
@@ -123,8 +123,14 @@ type eventScopeFilter struct {
 // session. hostPresent sets the `host` bit, because host presence is what
 // opens a host-scoped channel and no grant ever can — the same rule
 // AuthorizeSessionMethod applies to a host-scoped method.
+//
+// The `session` floor bit is set unconditionally, for the mirror reason:
+// this filter is built only for a connection that named one, and the bit
+// is not a grant anybody can be given. No channel carries the floor
+// today; setting it here is what keeps a row that takes it later from
+// silently delivering to nobody.
 func sessionScopeFilter(granted []string, hostPresent bool) eventScopeFilter {
-	filter := eventScopeFilter{active: true}
+	filter := eventScopeFilter{active: true, granted: scopeBits[ScopeSession]}
 	for _, name := range granted {
 		filter.granted |= scopeBits[Scope(name)]
 	}

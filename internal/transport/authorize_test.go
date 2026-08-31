@@ -22,6 +22,7 @@ const (
 	hostMethod     = "BrowseDirectory"            // host
 	stepUpMethod   = "SetNetworkSettings"         // settings:write + //ao:stepup
 	settingsGetter = "GetSettings"                // settings:read
+	floorMethod    = "SetUIState"                 // session: the floor
 	unclassified   = "HarnessSomethingUnbindable" // no row: enforces as host
 )
 
@@ -106,6 +107,33 @@ func TestUnclassifiedMethodEnforcesAsHost(t *testing.T) {
 	}
 	if fe := AuthorizeSessionMethod(nil, unclassified, true); fe != nil {
 		t.Errorf("an unclassified method from the host = %#v, want admitted", fe)
+	}
+}
+
+// The floor over the wire: a session that was granted NOTHING still
+// writes its own ui_state bucket and its own device-tier settings, which
+// is the case the `session` scope exists for. The grant hook is still
+// consulted — a revoked session must refuse here like anywhere else — and
+// its empty answer admits.
+func TestSessionFloorAdmitsAConnectionWithNoGrants(t *testing.T) {
+	asked := false
+	h := &connHandler{
+		profile: connProfile{sessionID: "s1", isLoopback: false},
+		sessionScopes: func(string) ([]string, string) {
+			asked = true
+			return nil, ""
+		},
+	}
+	if fe := h.authorizeSession(floorMethod); fe != nil {
+		t.Fatalf("a session holding nothing was refused %s: %#v", floorMethod, fe)
+	}
+	if !asked {
+		t.Error("the grant hook was skipped for a floor method; a revoked session would still be admitted")
+	}
+	// The floor moves no other answer: the same connection is still
+	// refused everything its (empty) grant set does not cover.
+	if fe := h.authorizeSession(executeMethod); fe == nil {
+		t.Errorf("a session holding nothing reached %s", executeMethod)
 	}
 }
 

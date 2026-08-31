@@ -75,7 +75,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", StepUp: true},    // main.App.DeleteProviderCustomEnvVar
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297, Scope: "settings:write"},                       // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate"},                              // main.App.DeleteThread
-	{Name: "DeleteUIState", ID: 1186757769, Scope: "settings:write"},                              // main.App.DeleteUIState
+	{Name: "DeleteUIState", ID: 1186757769, Scope: "session"},                                     // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin"},                           // main.App.DevicePairingStatus
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host"},                                        // main.App.DownloadUpdate
 	{Name: "ForkThread", ID: 4063914461, Scope: "threads:operate"},                                // main.App.ForkThread
@@ -136,7 +136,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate"},                     // main.App.GetThreadWorktreeSetup
 	{Name: "GetTurnEditsDiff", ID: 2905371438, Scope: "threads:read"},                             // main.App.GetTurnEditsDiff
 	{Name: "GetUIRenderTracePath", ID: 1009213933, Scope: "host"},                                 // main.App.GetUIRenderTracePath
-	{Name: "GetUIState", ID: 3380106838, Scope: "settings:read"},                                  // main.App.GetUIState
+	{Name: "GetUIState", ID: 3380106838, Scope: "session"},                                        // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read"},                                // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565, Scope: "host"},                                // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113, Scope: "files:read"},                             // main.App.GetWorkingTreeDiff
@@ -287,7 +287,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", StepUp: true},      // main.App.SetProviderCustomEnvVar
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", StepUp: true},    // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate"},                         // main.App.SetThreadPinGroup
-	{Name: "SetUIState", ID: 1514250938, Scope: "settings:write"},                                 // main.App.SetUIState
+	{Name: "SetUIState", ID: 1514250938, Scope: "session"},                                        // main.App.SetUIState
 	{Name: "SetWSLDistroPreference", ID: 3978807241, Scope: "host", StepUp: true},                 // main.App.SetWSLDistroPreference
 	{Name: "SetWindowBackgroundColor", ID: 3648660014, Scope: "host"},                             // main.App.SetWindowBackgroundColor
 	{Name: "SetWorkspaceMcpServerEnabled", ID: 2181574220, Scope: "settings:write", StepUp: true}, // main.App.SetWorkspaceMcpServerEnabled
@@ -322,7 +322,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "UpdateProjectSortPositions", ID: 3717363955, Scope: "threads:operate"},                // main.App.UpdateProjectSortPositions
 	{Name: "UpdateProposedPlanComment", ID: 2747956806, Scope: "threads:operate"},                 // main.App.UpdateProposedPlanComment
 	{Name: "UpdateRemoteEndpoint", ID: 4268476031, Scope: "settings:write"},                       // main.App.UpdateRemoteEndpoint
-	{Name: "UpdateSettings", ID: 2894041249, Scope: "settings:write"},                             // main.App.UpdateSettings
+	{Name: "UpdateSettings", ID: 2894041249, Scope: "session"},                                    // main.App.UpdateSettings
 	{Name: "UpdateThreadBranch", ID: 2929723500, Scope: "threads:operate"},                        // main.App.UpdateThreadBranch
 	{Name: "UpdateThreadContextSettings", ID: 2621473242, Scope: "threads:operate"},               // main.App.UpdateThreadContextSettings
 	{Name: "UpdateThreadContextWindow", ID: 2456875639, Scope: "threads:operate"},                 // main.App.UpdateThreadContextWindow

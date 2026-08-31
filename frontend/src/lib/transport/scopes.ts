@@ -47,6 +47,12 @@
 // session on the owner's own machine therefore still opens files in an
 // editor, which is what the backend would do.
 //
+// `session` is the other method property: the FLOOR the backend admits on
+// session presence alone. Nothing here gates on it — a page that reached
+// this module at all is talking to a backend that already answered the
+// question — so it has no arm below and is only ever a name a refusal
+// could carry.
+//
 // Reactivity mirrors ./runMode.ts: a `createSubscriber` notified at the
 // two moments the answer can move, and never polled. Those moments are
 // the bootstrap manifest resolving (every boot, and every reconnect
@@ -61,8 +67,15 @@ import { pairedSessionScopes } from './deviceSession';
 
 /**
  * One capability name. Mirrors internal/transport/scopes.go — same
- * spellings, same order, `host` last because it is the one value that is
- * not a grant.
+ * spellings, same order, with the two values that are not grants last:
+ * `session` (the method FLOOR — any live session passes) and `host`.
+ *
+ * Neither is ever held. No surface gates on them: `host` is answered from
+ * page locality below, and `session` is a floor the backend admits on
+ * session presence alone, so a client asking about it would be asking the
+ * wrong question. They are in the union because the vocabulary is pinned
+ * to the Go one in both directions, and because ./scopeRefusal.ts has to
+ * be able to present a refusal naming either.
  */
 export type Scope =
   | 'threads:read'
@@ -76,6 +89,7 @@ export type Scope =
   | 'settings:read'
   | 'settings:write'
   | 'access:admin'
+  | 'session'
   | 'host';
 
 /** Every declared capability, in the spec table's order. */
@@ -91,6 +105,7 @@ export const SCOPES: readonly Scope[] = [
   'settings:read',
   'settings:write',
   'access:admin',
+  'session',
   'host',
 ] as const;
 

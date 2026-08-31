@@ -3967,9 +3967,11 @@ export function UpdateRemoteEndpoint(id: string, name: string, url: string, toke
  * tokens are fetched through GetRemoteEndpointToken and sensitive environment
  * values have no read path at all.)
  * 
- * The scope below is the FLOOR. Which keys a given caller may actually write
- * is decided per key by requireSettingsTier, because one method carries all
- * three of §6's tiers and no single annotation can express that.
+ * The scope below is the FLOOR, and it is the floor VALUE: one method carries
+ * all three of §6's tiers, so the only honest thing its name can require is a
+ * live session. requireSettingsTier is where the real answer is decided, per
+ * key — device keys ride the session, user keys need settings:write, host keys
+ * need a fresh step-up proof.
  */
 export function UpdateSettings(patch: { [_ in string]?: any }): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2894041249, patch).then(($result: any) => {

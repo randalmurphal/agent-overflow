@@ -217,3 +217,78 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionFloorAdmitsASessionThatWasGrantedNothing — the floor is the
+// method half of §6's device rule. `session` says "a live session named
+// this call", which every connection this gate judges has by definition,
+// so an EMPTY grant set passes and the real answer is decided past the
+// gate: per key in requireSettingsTier, or by the bucket uiStateScope
+// resolves for this connection and no other.
+//
+// hostPresent is false, because the whole point is the device that is not
+// here.
+func TestSessionFloorAdmitsASessionThatWasGrantedNothing(t *testing.T) {
+	floored := 0
+	for _, method := range GeneratedMethods {
+		if method.Scope != ScopeSession {
+			continue
+		}
+		floored++
+		if fe := AuthorizeSessionMethod(nil, method.Name, false); fe != nil {
+			t.Errorf("%s is at the session floor and refused a session holding nothing: %+v", method.Name, fe)
+		}
+	}
+	if floored == 0 {
+		t.Fatal("no method at the session floor; this gate is asserting nothing")
+	}
+}
+
+// TestSessionFloorMethodsAreTheSpecSet pins WHICH methods sit at the
+// floor, because the floor is the one scope that admits everybody: an
+// annotation that drifted onto a method whose authority is decided by its
+// NAME would be an ungated surface, and nothing else in the tree would
+// notice. §6 names four — the settings patch, gated per key, and the
+// three ui_state calls, each of which reaches only the calling
+// connection's own bucket.
+func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
+	want := map[string]string{
+		"UpdateSettings": "all three settings tiers on one method; requireSettingsTier decides per key",
+		"GetUIState":     "reads the calling connection's own bucket and no other",
+		"SetUIState":     "writes the calling connection's own bucket and no other",
+		"DeleteUIState":  "deletes from the calling connection's own bucket and no other",
+	}
+	got := map[string]bool{}
+	for _, method := range GeneratedMethods {
+		if method.Scope == ScopeSession {
+			got[method.Name] = true
+		}
+	}
+	for name, why := range want {
+		if !got[name] {
+			t.Errorf("%s left the session floor (%s, docs/specs/remote-access.md §6)", name, why)
+		}
+	}
+	for name := range got {
+		if _, ok := want[name]; !ok {
+			t.Errorf("%s is at the session floor and §6 does not list it; a method whose authority its NAME decides must carry that scope instead", name)
+		}
+	}
+}
+
+// TestSessionFloorIsNeverAGrant is the `host` rule restated for the other
+// value that is not one. Nothing may put it in a grant set: it would name
+// an authority the gate never reads, and a session row carrying it would
+// suggest one session holds a floor another does not.
+func TestSessionFloorIsNeverAGrant(t *testing.T) {
+	// The floor admits with an empty grant set, so the assertion that
+	// means anything is the reverse: holding it changes no OTHER answer.
+	if fe := AuthorizeSessionMethod(grantsFor(ScopeSession), "OpenInEditor", false); fe == nil {
+		t.Error("a grant set naming the session floor reached a host-scoped method")
+	}
+	if fe := AuthorizeSessionMethod(grantsFor(ScopeSession), "ArchiveThread", false); fe == nil {
+		t.Error("a grant set naming the session floor reached an execute-tier method")
+	}
+	if ScopeSession.Tier() != TierSession {
+		t.Errorf("the floor resolved to tier %d, want its own tier below observe", ScopeSession.Tier())
+	}
+}

@@ -96,7 +96,8 @@ func stepUpProven(hostPresent bool) bool { return hostPresent }
 // The order is the contract. `host` is judged before the grant set because
 // no grant can ever satisfy it — telling a caller to acquire a scope no
 // session may hold would be a false instruction — and step-up before the
-// grant set for the same reason.
+// grant set for the same reason. `session` joins them for the mirror
+// reason: no grant is needed, so no grant is looked for.
 func AuthorizeSessionMethod(granted []string, methodName string, hostPresent bool) *FrameError {
 	meta := classify(methodName)
 	if meta.Scope == ScopeHost && !hostPresent {
@@ -120,6 +121,16 @@ func AuthorizeSessionMethod(granted []string, methodName string, hostPresent boo
 		// Looking for `host` in the grant set would refuse the embedded
 		// webview — whose session names one and correctly holds no such
 		// grant, because none exists.
+		return nil
+	}
+	if meta.Scope == ScopeSession {
+		// The floor, and reaching this function is the proof: only a
+		// connection that named a live session is judged here, and its
+		// liveness was re-read for this call. Looking for `session` in the
+		// grant set would refuse every session, because it is not a grant
+		// anybody can be given. What the call may actually DO is decided
+		// past this point — per key in requireSettingsTier, or by the
+		// bucket uiStateScope resolves for this connection and no other.
 		return nil
 	}
 	if !meta.Scope.Valid() {

@@ -5,10 +5,11 @@ package transport
 // vocabulary `methodgen` validates against, and the vocabulary the
 // generated table carries (docs/specs/remote-access.md §5).
 //
-// The set is the scope names a session can be granted, plus `host` —
-// which is a method property, never a grant: it marks a call that acts
-// on the host desktop or reconfigures the host itself and has no remote
-// form at all.
+// The set is the scope names a session can be granted, plus two values
+// that are method properties rather than grants: `host`, which marks a
+// call that acts on the host desktop or reconfigures the host itself and
+// has no remote form at all, and `session`, the FLOOR — a call whose only
+// requirement is that the caller named a live session.
 //
 // Restated, not imported. `internal/identity` declares the same grantable
 // names as the audit and persistence vocabulary, and this package must
@@ -59,6 +60,18 @@ const (
 	// ScopeAccessAdmin covers the device list, revocation, audit read,
 	// and the provider-account surface (billing identity).
 	ScopeAccessAdmin Scope = "access:admin"
+	// ScopeSession is the FLOOR: any connection that named a live session
+	// may call it (docs/specs/remote-access.md §6, "The session floor").
+	// It marks the calls whose real authority is decided per ARGUMENT —
+	// the settings patch, gated key by key against §6's three tiers — or
+	// is simply "this session is writing its own bucket", which is what
+	// the ui_state methods do. A view-only device setting its own font
+	// size is the case it exists for.
+	//
+	// Not a grant, for the reason `host` is not: no session holds it,
+	// `internal/identity` does not declare it, and naming it in a grant
+	// set would describe an authority the gate never reads.
+	ScopeSession Scope = "session"
 	// ScopeHost marks a call with no remote form: it acts on the host
 	// desktop or reconfigures the host itself. Not a grant — no session
 	// holds it, and `internal/identity` deliberately does not declare it,
@@ -67,12 +80,12 @@ const (
 )
 
 // Scopes is every declared scope, in the order §5's table lists them,
-// with `host` last because it is the one value that is not a grant.
+// with the two values that are not grants last: the floor, then `host`.
 var Scopes = []Scope{
 	ScopeThreadsRead, ScopeFilesRead, ScopeThreadsOperate, ScopeApprovalsRespond,
 	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopeGitOperate,
 	ScopeAttachmentsWrite, ScopeSettingsRead, ScopeSettingsWrite,
-	ScopeAccessAdmin, ScopeHost,
+	ScopeAccessAdmin, ScopeSession, ScopeHost,
 }
 
 // ScopeTier is the enforced boundary the scope names resolve to. Scope
@@ -85,9 +98,17 @@ var Scopes = []Scope{
 type ScopeTier uint8
 
 const (
+	// TierSession is the floor, below observe: the method asks only that
+	// the caller named a live session, and what it may then DO is decided
+	// by the call's arguments or by the bucket it writes. Its own tier
+	// rather than a shade of observe, because a floor call is not
+	// read-only — a device-tier settings write rides it — and the gates
+	// that ask "is this observe-tier" are asking whether a read-only
+	// session's grants reach a method, which is a different question.
+	TierSession ScopeTier = iota + 1
 	// TierObserve is read-only access to history and content. The only
 	// tier a viewer link or a peer backend can reach.
-	TierObserve ScopeTier = iota + 1
+	TierObserve
 	// TierExecute is anything that changes state, drives a provider
 	// session, or reaches the host.
 	TierExecute
@@ -99,8 +120,9 @@ const (
 )
 
 // scopeTiers is §5's Tier column, declared once. Three observe entries,
-// one host entry, and execute for everything else.
+// one floor entry, one host entry, and execute for everything else.
 var scopeTiers = map[Scope]ScopeTier{
+	ScopeSession:          TierSession,
 	ScopeThreadsRead:      TierObserve,
 	ScopeFilesRead:        TierObserve,
 	ScopeSettingsRead:     TierObserve,

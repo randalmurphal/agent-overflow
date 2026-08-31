@@ -159,12 +159,12 @@ func (a *App) requireAutonomyForThread(ctx context.Context, threadID, selected s
 // treated as host here for the same fail-closed reason that answer exists: a
 // key nobody assigned a tier to is not one to write from a phone.
 //
-// The METHOD's own //ao:scope floor is still settings:write, so today a
-// device-tier-only patch also needs that grant to reach this function at all.
-// That is coarser than §6 wants and is a known gap of this phase: the scope
-// vocabulary has no name for "any valid session", so the floor cannot spell
-// the device rule. Narrowing the floor is a phase-4 change; nothing is
-// LOOSER than the spec here, only stricter.
+// The METHOD's own //ao:scope floor is `session` — any live session — so a
+// device-tier-only patch reaches this function on session presence alone and
+// the three rules above are the whole answer. That floor is what makes the
+// first rule true rather than aspirational: while the floor was
+// settings:write, a view-only device could not reach this function to set its
+// own font size.
 func (a *App) requireSettingsTier(ctx context.Context, patch map[string]any) error {
 	granted, refusal, hasSession := a.callerGrants(ctx)
 	if !hasSession {

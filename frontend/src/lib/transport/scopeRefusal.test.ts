@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TransportError, DisconnectedError } from './wsClient';
 import {
+  SESSION_REFUSAL,
   STEP_UP_REFUSAL,
   UNKNOWN_SCOPE_REFUSAL,
   isScopeRefusal,
@@ -54,6 +55,14 @@ describe('scopeRefusal', () => {
     // Nobody can be granted `host`, so offering to widen this device's
     // access would be a false instruction.
     expect(presentScope('host')).toEqual(STEP_UP_REFUSAL);
+  });
+
+  it('answers the `session` floor with the pairing remedy, not a grant one', () => {
+    // Unreachable for a session caller — the floor admits on session
+    // presence alone — so the sentence is for the only way it could
+    // arrive: a backend that did not accept this device's session.
+    expect(presentScope('session')).toEqual(SESSION_REFUSAL);
+    expect(SESSION_REFUSAL.hint).not.toBe(STEP_UP_REFUSAL.hint);
   });
 
   it('treats a step-up refusal as its own kind', () => {
