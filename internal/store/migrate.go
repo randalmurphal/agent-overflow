@@ -1415,6 +1415,15 @@ ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 		// migration and what each table's non-obvious columns decide.
 		SQL: identityCoreV75SQL,
 	},
+	{
+		Version: 76,
+		Name:    "pairing_and_refresh",
+		// Pairing links, rotating refresh secrets, the implicit-channel
+		// device key, and the confirmation gate on a session. See the
+		// const's doc comment for why the four are one migration and what
+		// each non-obvious column decides.
+		SQL: pairingAndRefreshV76SQL,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
