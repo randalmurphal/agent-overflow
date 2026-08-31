@@ -416,7 +416,6 @@ func (s *Session) Revert(ctx context.Context, beforeTurnID string) (RevertedThre
 // Proving the anchor GONE still costs a full walk, which is what the
 // page cap bounds.
 const (
-	threadTurnsListMethod = "thread/turns/list"
 	// threadTurnsProbePageLimit is upstream's own maximum page size
 	// (THREAD_TURNS_MAX_LIMIT); asking for more is silently clamped.
 	threadTurnsProbePageLimit = 100
@@ -531,42 +530,22 @@ func (s *Session) threadTurnIDs(ctx context.Context, threadID, stopWhenFound str
 	newest := ""
 	cursor := ""
 	for page := 0; page < threadTurnsProbeMaxPages; page++ {
-		params := map[string]any{
-			"threadId":      threadID,
-			"limit":         threadTurnsProbePageLimit,
-			"sortDirection": "desc",
-			// Turn shells only: this probe reads ids, never content.
-			"itemsView": "notLoaded",
-		}
-		if cursor != "" {
-			params["cursor"] = cursor
-		}
-		resp, err := s.sendRequest(ctx, threadTurnsListMethod, params)
+		turnPage, err := s.threadTurnIDsPage(
+			ctx, threadID, cursor, threadTurnsProbePageLimit,
+		)
 		if err != nil {
-			return nil, "", fmt.Errorf("codex: %s: %w", threadTurnsListMethod, err)
+			return nil, "", err
 		}
-		var decoded struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-			NextCursor string `json:"nextCursor"`
-		}
-		if err := json.Unmarshal(resp, &decoded); err != nil {
-			return nil, "", fmt.Errorf("codex: %s: decode response: %w", threadTurnsListMethod, err)
-		}
-		for _, turn := range decoded.Data {
-			if turn.ID == "" {
-				continue
-			}
+		for _, turnID := range turnPage.IDs {
 			if newest == "" {
-				newest = turn.ID
+				newest = turnID
 			}
-			turnIDs[turn.ID] = struct{}{}
-			if turn.ID == stopWhenFound {
+			turnIDs[turnID] = struct{}{}
+			if turnID == stopWhenFound {
 				return turnIDs, newest, nil
 			}
 		}
-		next := strings.TrimSpace(decoded.NextCursor)
+		next := turnPage.NextCursor
 		// A repeated cursor is upstream's own pathological case
 		// (it raises an internal error on one); stop rather than spin.
 		if next == "" || next == cursor {

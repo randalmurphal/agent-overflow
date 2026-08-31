@@ -769,8 +769,8 @@ func seedResendMidTurnThread(t *testing.T, app *App, id string) (store.Thread, s
 type codexResendMock struct {
 	forkedThreadID string
 	forkRequestLog string
-	// forkTailTurnID overrides the fork's echoed tail turn so the
-	// anchor cross-check fails.
+	// forkTailTurnID overrides the fork tail exposed by thread/turns/list so
+	// the anchor cross-check fails.
 	forkTailTurnID string
 }
 
@@ -799,7 +799,11 @@ while IFS= read -r line; do
         %s
         cut=$(/bin/echo "$line" | /usr/bin/grep -o '"lastTurnId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
         tail=%s
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[{"id":"%%s"}]}}}\n' "$id" "$tail"
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/turns/list"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"id":"%%s"}],"nextCursor":null}}\n' "$id" "$tail"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/resume"'; then

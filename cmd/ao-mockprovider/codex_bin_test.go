@@ -222,9 +222,14 @@ func TestCodexThreadForkCutsAtTheAnchor(t *testing.T) {
 		return resp.Result.Thread.ID, turnIDs, ""
 	}
 
-	anchored, turns, rpcErr := fork(t, 4, `{"threadId":"mock-codex-thread","lastTurnId":"turn-1"}`)
-	if rpcErr != "" || len(turns) != 1 || turns[0] != "turn-1" {
-		t.Fatalf("anchored fork = %q / %v / err %q, want the turn-1 cut", anchored, turns, rpcErr)
+	anchored, turns, rpcErr := fork(t, 4, `{"threadId":"mock-codex-thread","lastTurnId":"turn-1","excludeTurns":true}`)
+	if rpcErr != "" || len(turns) != 0 {
+		t.Fatalf("anchored fork = %q / %v / err %q, want excluded response turns", anchored, turns, rpcErr)
+	}
+	p.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":8,"method":"thread/turns/list","params":{"threadId":%q,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}}`, anchored))
+	listed := p.expectLineContaining(`"id":8`, testTimeout)
+	if !strings.Contains(listed, `"data":[{"id":"turn-1"}]`) {
+		t.Fatalf("anchored fork metadata = %q, want tail turn-1", listed)
 	}
 
 	full, turns, rpcErr := fork(t, 5, `{"threadId":"mock-codex-thread"}`)

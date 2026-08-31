@@ -1497,9 +1497,12 @@ that asked, not a description of what was cut.
 Checked against rust-v0.150.1 for every consumer of thread shape:
 
 - `thread/fork` still works on a paginated source (`prepare_fork` with
-  `ForkBoundary::ThroughTurn`) and still returns turns, so the fork cut stays
-  valid as a fallback. Its one paginated-specific refusal needs
-  `ephemeral: true`.
+  `ForkBoundary::ThroughTurn`), so the fork cut stays valid as a fallback. AO
+  sends `excludeTurns: true` on every fork because hydrating a long transcript
+  into that single response can exceed the process line cap. Anchored forks
+  validate the resulting tail with one descending
+  `thread/turns/list {itemsView:"notLoaded", limit:1}` page. The one
+  paginated-specific fork refusal needs `ephemeral: true`.
 - Two methods are refused outright on a paginated thread: `thread/rollback`
   ("paginated threads do not support thread/rollback") and DETACHED review
   ("paginated threads do not support detached review",

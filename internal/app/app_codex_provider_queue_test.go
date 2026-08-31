@@ -87,7 +87,8 @@ func steerRefusalTogglePath(capturePath string) string {
 // an error, because AO must never write to the provider's queue again and a
 // regrown caller has to be a failing test rather than a duplicated turn.
 //
-// It also answers `thread/resume` and `thread/fork`, because a rollback cuts
+// It also answers `thread/resume`, `thread/fork`, and `thread/turns/list`,
+// because a rollback cuts
 // history through a throwaway session spawned from the same binary and the
 // queue purge that rides that connection is only observable on a run that gets
 // all the way through. The resumed thread states no `historyMode`, so it is a
@@ -197,7 +198,11 @@ while IFS= read -r line; do
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/fork"'; then
         cut=$(/bin/echo "$line" | /usr/bin/grep -o '"lastTurnId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
-        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"forked-%s","turns":[{"id":"%%s"}]}}}\n' "$id" "$cut"
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"forked-%s","turns":[]}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/turns/list"'; then
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"id":"%%s"}],"nextCursor":null}}\n' "$id" "$cut"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"turn/steer"'; then

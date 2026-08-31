@@ -152,8 +152,8 @@ func TestThreadProjectIDIsIgnoredWithoutError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parseThreadForkResponse with projectId: %v", err)
 		}
-		if result.ThreadID != "fork-1" || result.LastTurnID != "turn-a" {
-			t.Errorf("result = %+v, want fork-1 ending at turn-a", result)
+		if result.ThreadID != "fork-1" {
+			t.Errorf("result = %+v, want fork-1", result)
 		}
 	})
 

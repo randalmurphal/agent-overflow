@@ -443,17 +443,16 @@ func readCodexForkRequest(t *testing.T, requestLogPath string) string {
 // old best-effort behavior by omission.
 //
 // codexForkMock configures writeCodexForkAtBinary, the fake app-server
-// behind the Codex history-cut tests. It answers `thread/fork` by
-// echoing the requested lastTurnId back as the fork's tail turn (the
-// shape a real cut returns); forkTailTurnID overrides that echo to
-// simulate a server whose fork survives through a different turn than
-// the requested anchor.
+// behind the Codex history-cut tests. It answers `thread/fork` without
+// hydrating turns, then exposes the fork's tail through the metadata-only
+// `thread/turns/list` call AO uses to validate an anchored cut.
+// forkTailTurnID overrides the requested lastTurnId to simulate a server
+// whose fork survives through a different turn than the requested anchor.
 //
 // The zero value is a pre-0.148 legacy-history server: no userAgent (so
 // AO reads the build as unknown and every per-method floor fails closed)
-// and no historyMode on the resumed thread. That is deliberately the
-// shape AO's own threads have today — see the revert tests for what it
-// takes to opt in.
+// and no historyMode on the resumed thread. Threads created before AO's
+// paginated-history opt-in keep this shape for life.
 type codexForkMock struct {
 	resumedThreadID string
 	forkedThreadID  string
@@ -573,17 +572,21 @@ while IFS= read -r line; do
         %s
         cut=$(/bin/echo "$line" | /usr/bin/grep -o '"lastTurnId":"[^"]*"' | /usr/bin/cut -d'"' -f4)
         tail=%s
+        printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"thread/turns/list"'; then
         if [ -n "$tail" ]; then
-            printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[{"id":"%%s"}]}}}\n' "$id" "$tail"
+            printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[{"id":"%%s"}],"nextCursor":null}}\n' "$id" "$tail"
         else
-            printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s","turns":[]}}}\n' "$id"
+            printf '{"jsonrpc":"2.0","id":%%s,"result":{"data":[],"nextCursor":null}}\n' "$id"
         fi
         continue
     fi
 done
 `, initializeResult, logResumeRequest, mock.resumedThreadID, resumedHistoryMode, resumeTurnStarted,
 		logRevertRequest, revertReply, logInterruptRequest, logForkRequest, tailExpr,
-		mock.forkedThreadID, mock.forkedThreadID)
+		mock.forkedThreadID)
 
 	path := filepath.Join(t.TempDir(), "codex-fork-at.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -725,10 +728,10 @@ func TestConversationRollbackCodexForksBelowTheRevertFloor(t *testing.T) {
 	}
 }
 
-// TestConversationRollbackCodexForksOnLegacyHistoryThreads is the case
-// that matters today: AO does not ask for paginated history on
-// thread/start, upstream defaults to legacy, and upstream refuses a
-// legacy revert. A 0.149 binary alone must NOT flip the cut.
+// TestConversationRollbackCodexForksOnLegacyHistoryThreads covers threads
+// created before AO's paginated-history opt-in. Upstream fixes history mode
+// at creation and refuses a legacy revert, so a new binary alone must not
+// flip the cut.
 func TestConversationRollbackCodexForksOnLegacyHistoryThreads(t *testing.T) {
 	app := newTestApp(t)
 	logDir := t.TempDir()
@@ -746,8 +749,12 @@ func TestConversationRollbackCodexForksOnLegacyHistoryThreads(t *testing.T) {
 		t.Fatalf("revert: %v", err)
 	}
 	requireNoCodexRequest(t, mock.revertLogPath, "thread/revert")
-	if forkRequest := readCodexForkRequest(t, mock.requestLogPath); !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
+	forkRequest := readCodexForkRequest(t, mock.requestLogPath)
+	if !strings.Contains(forkRequest, `"lastTurnId":"turn-a"`) {
 		t.Fatalf("fork request = %s, want the inclusive anchor turn-a", forkRequest)
+	}
+	if !strings.Contains(forkRequest, `"excludeTurns":true`) {
+		t.Fatalf("fork request = %s, want metadata-only fork response", forkRequest)
 	}
 }
 

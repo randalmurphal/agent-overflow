@@ -54,12 +54,20 @@ func (s *Session) Fork(ctx context.Context) (string, error) {
 // mid-turn precision Claude's session-file slice already has (see the
 // truncation-granularity comment in revertConversationLocked).
 //
-// The response's surviving turn tail is validated against the
-// requested anchor: a mismatch would mean the fork kept turns we asked
-// to drop (or vice versa), and building local truncation on top of
-// that is worse than failing the whole operation.
+// The response deliberately excludes turns. AO owns its rendered transcript
+// in SQLite, and asking Codex to serialize the provider's full history into one
+// JSON-RPC response can exceed the process line cap on a long thread.
+// `thread/fork.excludeTurns` and `thread/turns/list` both exist at AO's 0.143
+// minimum (source-verified at rust-v0.143.0 and rust-v0.150.1), so this needs
+// no capability downgrade. An anchored fork validates its surviving tail with
+// one metadata-only descending page instead: a mismatch would mean the fork
+// kept turns we asked to drop (or vice versa), and building local truncation on
+// top of that is worse than failing the whole operation.
 func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error) {
-	params := map[string]any{"threadId": s.rootThreadID()}
+	params := map[string]any{
+		"threadId":     s.rootThreadID(),
+		"excludeTurns": true,
+	}
 	if lastTurnID != "" {
 		params["lastTurnId"] = lastTurnID
 	}
@@ -71,30 +79,32 @@ func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("codex: thread/fork: %w", err)
 	}
-	if lastTurnID != "" && forked.LastTurnID != lastTurnID {
-		return "", fmt.Errorf(
-			"codex: thread/fork: fork %s survives through turn %q, expected anchor %q",
-			forked.ThreadID, forked.LastTurnID, lastTurnID,
-		)
+	if lastTurnID != "" {
+		newestTurnID, err := s.newestThreadTurnID(ctx, forked.ThreadID)
+		if err != nil {
+			return "", fmt.Errorf("codex: thread/fork: validate fork %s tail: %w", forked.ThreadID, err)
+		}
+		if newestTurnID != lastTurnID {
+			return "", fmt.Errorf(
+				"codex: thread/fork: fork %s survives through turn %q, expected anchor %q",
+				forked.ThreadID, newestTurnID, lastTurnID,
+			)
+		}
 	}
 	return forked.ThreadID, nil
 }
 
-// threadForkResult is the subset of Codex's ThreadForkResponse that
-// ForkAt needs: the new thread's identity and the id of its final
-// surviving turn (empty when the fork has no turns).
+// threadForkResult is the subset of Codex's ThreadForkResponse that ForkAt
+// needs. Turns are intentionally excluded from the request and validated
+// separately when the fork has an anchor.
 type threadForkResult struct {
-	ThreadID   string
-	LastTurnID string
+	ThreadID string
 }
 
 func parseThreadForkResponse(data json.RawMessage) (threadForkResult, error) {
 	var response struct {
 		Thread struct {
-			ID    string `json:"id"`
-			Turns []struct {
-				ID string `json:"id"`
-			} `json:"turns"`
+			ID string `json:"id"`
 		} `json:"thread"`
 	}
 	if err := json.Unmarshal(data, &response); err != nil {
@@ -103,9 +113,5 @@ func parseThreadForkResponse(data json.RawMessage) (threadForkResult, error) {
 	if response.Thread.ID == "" {
 		return threadForkResult{}, fmt.Errorf("response missing thread.id")
 	}
-	result := threadForkResult{ThreadID: response.Thread.ID}
-	if n := len(response.Thread.Turns); n > 0 {
-		result.LastTurnID = response.Thread.Turns[n-1].ID
-	}
-	return result, nil
+	return threadForkResult{ThreadID: response.Thread.ID}, nil
 }
