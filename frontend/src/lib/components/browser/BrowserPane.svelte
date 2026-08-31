@@ -1,25 +1,33 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
+  import Copy from '@lucide/svelte/icons/copy';
   import Plus from '@lucide/svelte/icons/plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import SquareCode from '@lucide/svelte/icons/square-code';
   import X from '@lucide/svelte/icons/x';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     attachBrowserCompanion,
     applyBrowserCompanionState,
-    resizeBrowserCompanion,
+    reportBrowserPaneRect,
   } from '../../stores/browserCompanion.svelte';
   import {
     BrowserCompanionAction,
+    BrowserCompanionCopyPageFile,
     BrowserCompanionDo,
-    BrowserCompanionInput,
-    type BrowserCompanionInputEvent,
   } from '../../stores/bindings';
   import Icon from '../primitives/Icon.svelte';
   import { errString } from '../../utils/errors';
+  import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
   import { isMacPlatform } from '../../utils/platform';
+
+  // The pane surface is an empty HOST RECT: the platform positions a real
+  // native browser view over it (spec docs/specs/embedded-browser.md §7).
+  // This component's job is the chrome around it and the geometry under it —
+  // it forwards no input and paints no page pixels. The native view receives
+  // real OS input when focused; overlays that must paint above it hide it
+  // through the airspace registry.
 
   let { ctx }: { ctx: PanelContext } = $props();
   let surface: HTMLDivElement | undefined = $state(undefined);
@@ -27,34 +35,27 @@
   let address = $state('');
   let addressFocused = $state(false);
   let error = $state('');
-  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-  let inputChain: Promise<void> = Promise.resolve();
-  let pendingMove: BrowserCompanionInputEvent | null = null;
-  let moveFrame = 0;
-  let moveQueued = false;
-  let pendingWheel: BrowserCompanionInputEvent | null = null;
-  let wheelFrame = 0;
-  let wheelQueued = false;
+  let rectFrame = 0;
+  let lastSent = { x: -1, y: -1, width: -1, height: -1, viewportWidth: -1, viewportHeight: -1, visible: false };
 
   let view = $derived(attachment?.current ?? null);
   let pages = $derived(view?.state.pages ?? []);
   let sessionName = $derived(view?.state.sessionName ?? '');
   let activePageId = $derived(view?.state.activePageId ?? '');
   let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
-  let frameSrc = $derived(view?.frame ? `data:image/jpeg;base64,${view.frame}` : '');
+  let activeIsLocalFile = $derived((activePage?.url ?? '').toLowerCase().startsWith('file:'));
+  // Boolean, not the view object: the re-report effect below must fire on
+  // attach, never on every page-state push.
+  let attached = $derived(view !== null);
 
   $effect(() => {
     const threadId = ctx.threadId;
     if (!threadId) return;
-    const rect = untrack(() => surface?.getBoundingClientRect());
-    attachment = attachBrowserCompanion(threadId, Math.round(rect?.width ?? 900), Math.round(rect?.height ?? 700));
+    attachment = attachBrowserCompanion(threadId);
     return () => {
-      if (moveFrame) cancelAnimationFrame(moveFrame);
-      if (wheelFrame) cancelAnimationFrame(wheelFrame);
-      moveFrame = 0;
-      wheelFrame = 0;
-      pendingMove = null;
-      pendingWheel = null;
+      if (rectFrame) cancelAnimationFrame(rectFrame);
+      rectFrame = 0;
+      lastSent = { x: -1, y: -1, width: -1, height: -1, viewportWidth: -1, viewportHeight: -1, visible: false };
       attachment?.release();
       attachment = null;
     };
@@ -65,24 +66,97 @@
     if (!addressFocused) address = url;
   });
 
-  $effect(() => {
+  // ─── Host-rect geometry ────────────────────────────────────────────────
+  // One report per changed frame: every signal below only SCHEDULES, and the
+  // flush reads geometry once. There is deliberately no standing rAF loop —
+  // a per-frame callback would pin frame production at panel refresh.
+
+  function scheduleRect(): void {
+    if (rectFrame) return;
+    rectFrame = requestAnimationFrame(() => {
+      rectFrame = 0;
+      flushRect();
+    });
+  }
+
+  // A native view cannot be partially cropped by the DOM, so a host rect
+  // that pokes outside a clipping ancestor (the pane scrolled half behind
+  // the sidebar) hides the view rather than letting it overhang neighbors.
+  function clippedByAncestors(el: HTMLElement, rect: DOMRect): boolean {
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+      const r = node.getBoundingClientRect();
+      if (
+        rect.left < r.left - 1 ||
+        rect.right > r.right + 1 ||
+        rect.top < r.top - 1 ||
+        rect.bottom > r.bottom + 1
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function flushRect(): void {
     const el = surface;
     const threadId = ctx.threadId;
     if (!el || !threadId) return;
-    const observer = new ResizeObserver((entries) => {
-      const size = entries[0]?.contentRect;
-      if (!size) return;
-      if (resizeTimer) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        void resizeBrowserCompanion(threadId, Math.round(size.width), Math.round(size.height)).catch(() => {});
-      }, 120);
-    });
+    const rect = el.getBoundingClientRect();
+    const visible =
+      rect.width >= 1 &&
+      rect.height >= 1 &&
+      !clippedByAncestors(el, rect) &&
+      !airspaceIntersects(rect);
+    const report = {
+      x: Math.round(rect.left * 100) / 100,
+      y: Math.round(rect.top * 100) / 100,
+      width: Math.round(rect.width * 100) / 100,
+      height: Math.round(rect.height * 100) / 100,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      visible,
+    };
+    if (
+      report.x === lastSent.x &&
+      report.y === lastSent.y &&
+      report.width === lastSent.width &&
+      report.height === lastSent.height &&
+      report.viewportWidth === lastSent.viewportWidth &&
+      report.viewportHeight === lastSent.viewportHeight &&
+      report.visible === lastSent.visible
+    ) {
+      return;
+    }
+    lastSent = report;
+    reportBrowserPaneRect(threadId, report);
+  }
+
+  $effect(() => {
+    const el = surface;
+    if (!el || !ctx.threadId) return;
+    const observer = new ResizeObserver(() => scheduleRect());
     observer.observe(el);
+    const onLayoutShift = (): void => scheduleRect();
+    window.addEventListener('resize', onLayoutShift);
+    // Capture-phase: a scroll anywhere in an ancestor chain moves the rect
+    // without resizing it (the pane strip scrolling behind the sidebar).
+    document.addEventListener('scroll', onLayoutShift, true);
+    scheduleRect();
     return () => {
       observer.disconnect();
-      if (resizeTimer) clearTimeout(resizeTimer);
-      resizeTimer = null;
+      window.removeEventListener('resize', onLayoutShift);
+      document.removeEventListener('scroll', onLayoutShift, true);
     };
+  });
+
+  // Overlay open/close re-evaluates obscurity; the mount acquiring its pane
+  // id re-sends the rect a too-early report dropped.
+  $effect(() => {
+    airspaceSurfaces();
+    if (attached) lastSent = { ...lastSent, x: -1 };
+    scheduleRect();
   });
 
   async function act(kind: string, pageId = activePageId, nextAddress = ''): Promise<void> {
@@ -101,147 +175,15 @@
     }
   }
 
-  function queueInput(event: BrowserCompanionInputEvent): void {
+  async function copyPageFile(): Promise<void> {
     const threadId = ctx.threadId;
-    const pageId = activePageId;
-    if (!threadId || !pageId) return;
-    inputChain = inputChain
-      .then(() => BrowserCompanionInput(threadId, pageId, event))
-      .catch((err) => { error = errString(err); });
-  }
-
-  // Pointer movement is lossy by nature. Keep at most one move queued behind
-  // the in-flight input chain so a slow backend cannot turn hovering into an
-  // unbounded promise/backlog; button/key edges stay ordered on the same chain.
-  function queueLatestMove(): void {
-    if (moveQueued || !pendingMove) return;
-    const event = pendingMove;
-    pendingMove = null;
-    const threadId = ctx.threadId;
-    const pageId = activePageId;
-    if (!threadId || !pageId) return;
-    moveQueued = true;
-    inputChain = inputChain
-      .then(() => BrowserCompanionInput(threadId, pageId, event))
-      .catch((err) => { error = errString(err); })
-      .finally(() => {
-        moveQueued = false;
-        if (pendingMove && !moveFrame) {
-          moveFrame = requestAnimationFrame(() => {
-            moveFrame = 0;
-            queueLatestMove();
-          });
-        }
-      });
-  }
-
-  function framePoint(event: PointerEvent | WheelEvent): { x: number; y: number } | null {
-    const el = event.currentTarget as HTMLElement;
-    const rect = el.getBoundingClientRect();
-    const width = view?.frameWidth ?? 0;
-    const height = view?.frameHeight ?? 0;
-    if (!width || !height || !rect.width || !rect.height) return null;
-    const scale = Math.min(rect.width / width, rect.height / height);
-    const renderedWidth = width * scale;
-    const renderedHeight = height * scale;
-    const left = rect.left + (rect.width - renderedWidth) / 2;
-    const top = rect.top + (rect.height - renderedHeight) / 2;
-    const x = (event.clientX - left) / scale;
-    const y = (event.clientY - top) / scale;
-    if (x < 0 || y < 0 || x > width || y > height) return null;
-    return { x, y };
-  }
-
-  function mouseButton(button: number): string {
-    if (button === 1) return 'middle';
-    if (button === 2) return 'right';
-    return 'left';
-  }
-
-  function pointerInput(event: PointerEvent, kind: 'move' | 'down' | 'up'): void {
-    const point = framePoint(event);
-    if (!point) return;
-    const input = {
-      kind,
-      ...point,
-      button: mouseButton(event.button),
-      buttons: event.buttons,
-      clickCount: event.detail || 1,
-    };
-    if (kind === 'move') {
-      pendingMove = input;
-      if (!moveFrame) {
-        moveFrame = requestAnimationFrame(() => {
-          moveFrame = 0;
-          queueLatestMove();
-        });
-      }
-      return;
+    if (!threadId || !activePageId) return;
+    error = '';
+    try {
+      await BrowserCompanionCopyPageFile(threadId, activePageId);
+    } catch (err) {
+      error = errString(err);
     }
-    if (kind === 'down') {
-      (event.currentTarget as HTMLElement).focus({ preventScroll: true });
-      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    }
-    queueInput(input);
-  }
-
-  function wheelInput(event: WheelEvent): void {
-    const point = framePoint(event);
-    if (!point) return;
-    event.preventDefault();
-    if (pendingWheel) {
-      pendingWheel = {
-        kind: 'wheel',
-        ...point,
-        deltaX: (pendingWheel.deltaX ?? 0) + event.deltaX,
-        deltaY: (pendingWheel.deltaY ?? 0) + event.deltaY,
-      };
-    } else {
-      pendingWheel = { kind: 'wheel', ...point, deltaX: event.deltaX, deltaY: event.deltaY };
-    }
-    if (!wheelFrame) {
-      wheelFrame = requestAnimationFrame(() => {
-        wheelFrame = 0;
-        queueLatestWheel();
-      });
-    }
-  }
-
-  function queueLatestWheel(): void {
-    if (wheelQueued || !pendingWheel) return;
-    const input = pendingWheel;
-    pendingWheel = null;
-    const threadId = ctx.threadId;
-    const pageId = activePageId;
-    if (!threadId || !pageId) return;
-    wheelQueued = true;
-    inputChain = inputChain
-      .then(() => BrowserCompanionInput(threadId, pageId, input))
-      .catch((err) => { error = errString(err); })
-      .finally(() => {
-        wheelQueued = false;
-        if (pendingWheel && !wheelFrame) {
-          wheelFrame = requestAnimationFrame(() => {
-            wheelFrame = 0;
-            queueLatestWheel();
-          });
-        }
-      });
-  }
-
-  function keyInput(event: KeyboardEvent): void {
-    if (event.isComposing) return;
-    if (event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') return;
-    event.preventDefault();
-    event.stopPropagation();
-    queueInput({
-      kind: 'key',
-      key: event.key,
-      alt: event.altKey,
-      control: event.ctrlKey,
-      meta: event.metaKey,
-      shift: event.shiftKey,
-    });
   }
 
   function closeTabShortcut(event: KeyboardEvent): void {
@@ -303,6 +245,20 @@
         }
       }}
     />
+    {#if activeIsLocalFile}
+      <button
+        class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
+        aria-label="Copy file to clipboard"
+        title="Copy file to clipboard"
+        onclick={() => void copyPageFile()}
+      ><Icon icon={Copy} size={13} /></button>
+    {/if}
+    <button
+      class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
+      aria-label="Open devtools"
+      title="Open devtools"
+      onclick={() => void act('devtools')}
+    ><Icon icon={SquareCode} size={13} /></button>
     <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Close browser" title="Close browser" onclick={() => void act('hide', '')}><Icon icon={X} size={14} /></button>
   </div>
 
@@ -310,29 +266,17 @@
     <div class="shrink-0 border-b border-error/25 bg-error/10 px-3 py-1.5 text-[0.7rem] text-error" role="alert">{error}</div>
   {/if}
 
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <!-- The host rect. The native browser view is positioned exactly over this
+       element by the platform host; what renders HERE is only visible when
+       no view is presented (no engine, or the page is hidden). -->
   <div
     bind:this={surface}
-    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0 outline-none focus:ring-1 focus:ring-inset focus:ring-accent/70"
-    role="application"
-    tabindex="0"
+    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0"
+    data-testid="browser-pane-host-rect"
     aria-label="Browser page"
-    onpointerdown={(event) => pointerInput(event, 'down')}
-    onpointermove={(event) => pointerInput(event, 'move')}
-    onpointerup={(event) => pointerInput(event, 'up')}
-    onpointercancel={(event) => pointerInput(event, 'up')}
-    onwheel={wheelInput}
-    onkeydown={keyInput}
-    oncompositionend={(event) => queueInput({ kind: 'text', text: event.data })}
-    oncontextmenu={(event) => event.preventDefault()}
   >
-    {#if frameSrc}
-      <img src={frameSrc} alt="" draggable="false" class="pointer-events-none h-full w-full select-none object-contain" />
-    {:else if view?.error || attachment?.error}
+    {#if view?.error || attachment?.error}
       <div class="flex h-full items-center justify-center px-4 text-sm text-error">{view?.error || attachment?.error}</div>
-    {:else}
-      <div class="flex h-full items-center justify-center text-sm text-fg-muted">Connecting…</div>
     {/if}
   </div>
 </div>

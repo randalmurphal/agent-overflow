@@ -66,6 +66,7 @@ type Manager struct {
 	idleTimer      *time.Timer
 	eventSink      func(CompanionEvent)
 	subscriptions  map[string]companionSubscriber
+	panes          map[string]paneMount
 	sessions       map[string]SessionInfo
 	artifactRoot   string
 	artifactInitMu sync.Mutex
@@ -75,6 +76,9 @@ type Manager struct {
 	// Production leaves it nil; the managed-Chrome integration test uses the
 	// signal instead of polling on wall-clock sleeps.
 	pageAdopted func()
+	// copyFileToOSClipboard is the test seam over the production subprocess
+	// hand-off in companion_clipboard.go. Production leaves it nil.
+	copyFileToOSClipboard func(ctx context.Context, path string) error
 }
 
 type ManagerOptions struct {
@@ -185,6 +189,7 @@ func NewManager(installer *chromium.Installer, configDir string, config Config, 
 		config:        config,
 		scopes:        make(map[string]*workspaceScope),
 		subscriptions: make(map[string]companionSubscriber),
+		panes:         make(map[string]paneMount),
 		sessions:      make(map[string]SessionInfo),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 	}

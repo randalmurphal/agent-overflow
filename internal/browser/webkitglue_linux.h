@@ -34,7 +34,12 @@ void ao_wk_host_unpark(void *view);
 // four GtkOverlay margins with ALIGN_FILL. gtk_widget_set_size_request cannot
 // SHRINK a WebKitWebView — its natural size sticks at the largest-ever
 // allocation — so a size-request pane would only ever grow.
-void ao_wk_host_present(void *view, int x, int y, int width, int height);
+// The rect is in the SPA's CSS pixels; vw/vh are the SPA viewport it was
+// measured in. The overlay's own size over that viewport is the scale, which
+// keeps the view aligned under webview zoom without either side knowing the
+// zoom factor. vw/vh <= 0 means the rect is already in overlay units.
+void ao_wk_host_present(void *view, double x, double y, double width,
+                        double height, double vw, double vh);
 
 // ao_wk_host_hide returns a presented view to the background host without
 // tearing anything down.
@@ -68,6 +73,10 @@ void ao_wk_view_adopt(void *view, uint64_t page_id, const char *user_script,
 
 void ao_wk_view_close(void *view);
 void ao_wk_view_set_size(void *view, int width, int height);
+// ao_wk_view_open_inspector shows the WebKit inspector for one view.
+// Developer extras are enabled at view construction, so the inspector is
+// always available to show; WebKitGTK docks it inside the app window.
+void ao_wk_view_open_inspector(void *view);
 void ao_wk_view_load_uri(void *view, const char *uri);
 void ao_wk_view_history(void *view, int action);
 int ao_wk_view_is_loading(void *view);

@@ -128,6 +128,15 @@ var LocalOnlyMethods = map[string]bool{
 	"BrowserCompanionResize":      true,
 	"BrowserCompanionDo":          true,
 	"BrowserCompanionInput":       true,
+	"BrowserCompanionThreadState": true,
+	// The pane mount drives real native views in the desktop window; a
+	// remote client has no pane and no say over where one paints.
+	"BrowserCompanionPaneAttach": true,
+	"BrowserCompanionPaneDetach": true,
+	"BrowserCompanionPaneRect":   true,
+	// CopyPageFile writes to the host OS clipboard (and stages onto the
+	// Windows volume under WSL).
+	"BrowserCompanionCopyPageFile": true,
 	"WriteThreadWorkspaceFile":    true,
 	"GitPush":                     true,
 	"GitStatusSubscribe":          true,

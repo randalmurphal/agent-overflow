@@ -11,6 +11,7 @@
 
   import { onMount, type Snippet } from 'svelte';
   import Menu from './Menu.svelte';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
 
   interface Props {
     /** Viewport coordinates of the invoking pointer event. */
@@ -72,6 +73,7 @@
   class="fixed z-[80]"
   style:left="{adjustedX}px"
   style:top="{adjustedY}px"
+  use:airspaceSurface
 >
   <Menu {ariaLabel} onClose={onDismiss} {minWidthClass}>
     {@render children()}

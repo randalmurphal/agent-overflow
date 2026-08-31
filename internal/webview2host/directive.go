@@ -48,6 +48,12 @@ type Directive struct {
 	Y         float64 `json:"y,omitempty"`
 	W         float64 `json:"w,omitempty"`
 	H         float64 `json:"h,omitempty"`
+	// VW/VH are the SPA viewport the rect was measured in, in its CSS
+	// pixels. The host scales the rect by its client size over these, so
+	// the position is exact under webview zoom and any DPI. Zero means
+	// unscaled (treat X/Y/W/H as client pixels).
+	VW float64 `json:"vw,omitempty"`
+	VH float64 `json:"vh,omitempty"`
 	// Ephemeral asks for an InPrivate profile on create, and on
 	// close-profile says the profile directory is expected to be
 	// discarded. It is meaningless on every other op.
@@ -90,7 +96,7 @@ func (d Directive) Validate() error {
 }
 
 func (d Directive) validateBounds() error {
-	for name, value := range map[string]float64{"x": d.X, "y": d.Y, "w": d.W, "h": d.H} {
+	for name, value := range map[string]float64{"x": d.X, "y": d.Y, "w": d.W, "h": d.H, "vw": d.VW, "vh": d.VH} {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return fmt.Errorf("bounds %s is not a finite number", name)
 		}
@@ -100,6 +106,11 @@ func (d Directive) validateBounds() error {
 	}
 	if d.W <= 0 || d.H <= 0 {
 		return fmt.Errorf("bounds must have positive width and height, got %gx%g", d.W, d.H)
+	}
+	// The viewport pair is all-or-nothing: scaling one axis and not the
+	// other could only misplace the view.
+	if (d.VW > 0) != (d.VH > 0) || d.VW < 0 || d.VH < 0 {
+		return fmt.Errorf("bounds viewport must be a positive pair or absent, got %gx%g", d.VW, d.VH)
 	}
 	return nil
 }

@@ -78,7 +78,10 @@ type hostRelay interface {
 type paneHost interface {
 	ShowPage(handle string)
 	HidePage(handle string)
-	SetPageBounds(handle string, x, y, width, height float64)
+	// SetPageBounds carries the whole PaneRect: the host scales the
+	// CSS-pixel rect by its own client size over the rect's viewport, so
+	// no engine ever equates CSS pixels with its native units.
+	SetPageBounds(handle string, rect PaneRect)
 	OpenPageDevTools(handle string)
 }
 
@@ -114,6 +117,7 @@ type hostedEngine struct {
 	pageByTarget  map[string]string
 	targetByPage  map[string]string
 	shown         map[string]bool
+	bounds        map[string]PaneRect
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), events engineEvents) *hostedEngine {
@@ -129,6 +133,7 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), events 
 		pageByTarget: make(map[string]string),
 		targetByPage: make(map[string]string),
 		shown:        make(map[string]bool),
+		bounds:       make(map[string]PaneRect),
 	}
 }
 
@@ -182,6 +187,7 @@ func (e *hostedEngine) Stop() {
 	e.pageByTarget = make(map[string]string)
 	e.targetByPage = make(map[string]string)
 	e.shown = make(map[string]bool)
+	e.bounds = make(map[string]PaneRect)
 	e.mu.Unlock()
 	if browserCancel != nil {
 		browserCancel()
@@ -474,6 +480,7 @@ func (e *hostedEngine) retirePage(pageID string) {
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
 	delete(e.shown, pageID)
+	delete(e.bounds, pageID)
 	e.mu.Unlock()
 	if !known {
 		return
@@ -539,6 +546,7 @@ func (e *hostedEngine) closePage(pageID string) {
 	delete(e.targetByPage, pageID)
 	delete(e.pageByTarget, targetID)
 	delete(e.shown, pageID)
+	delete(e.bounds, pageID)
 	e.mu.Unlock()
 	e.dispatch(webview2host.Directive{Op: webview2host.OpClose, PageID: pageID})
 }
@@ -555,8 +563,30 @@ func (e *hostedEngine) HidePage(handle string) {
 	}
 }
 
-func (e *hostedEngine) SetPageBounds(handle string, x, y, width, height float64) {
-	e.dispatch(webview2host.Directive{Op: webview2host.OpBounds, PageID: handle, X: x, Y: y, W: width, H: height})
+func (e *hostedEngine) SetPageBounds(handle string, rect PaneRect) {
+	if e.setBounds(handle, rect) {
+		e.dispatch(webview2host.Directive{
+			Op: webview2host.OpBounds, PageID: handle,
+			X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
+			VW: rect.ViewportWidth, VH: rect.ViewportHeight,
+		})
+	}
+}
+
+// setBounds is the bounds half of the setShown dedupe: the presentation sync
+// re-sends the active page's rect on every selection, focus and page-list
+// change, and only an actually-moved rect should cost a directive.
+func (e *hostedEngine) setBounds(handle string, rect PaneRect) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, known := e.targetByPage[handle]; !known {
+		return false
+	}
+	if e.bounds[handle] == rect {
+		return false
+	}
+	e.bounds[handle] = rect
+	return true
 }
 
 func (e *hostedEngine) OpenPageDevTools(handle string) {

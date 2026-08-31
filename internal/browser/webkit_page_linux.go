@@ -98,6 +98,7 @@ func (p *webkitPage) Close() {
 	slot := p.slot
 	p.mu.Unlock()
 	p.discard()
+	p.engine.forgetPane(p.id)
 	if slot >= 0 {
 		p.engine.releaseSlot(slot)
 	}

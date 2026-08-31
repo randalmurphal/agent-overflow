@@ -123,7 +123,8 @@ void ao_wk_host_unpark(void *view) {
 // MUST be expressed as four margins with ALIGN_FILL: gtk_widget_set_size_request
 // cannot SHRINK a WebKitWebView, whose natural size sticks at its largest-ever
 // allocation, so a size-request pane only ever grows.
-void ao_wk_host_present(void *view, int x, int y, int width, int height) {
+void ao_wk_host_present(void *view, double x, double y, double width,
+                        double height, double vw, double vh) {
   if (ao_overlay == NULL) {
     return;
   }
@@ -133,8 +134,15 @@ void ao_wk_host_present(void *view, int x, int y, int width, int height) {
   }
   int overlay_w = gtk_widget_get_width(ao_overlay);
   int overlay_h = gtk_widget_get_height(ao_overlay);
-  int right = overlay_w - (x + width);
-  int bottom = overlay_h - (y + height);
+  // CSS pixels -> overlay logical pixels by proportion (see header).
+  double sx = (vw > 0.0 && overlay_w > 0) ? overlay_w / vw : 1.0;
+  double sy = (vh > 0.0 && overlay_h > 0) ? overlay_h / vh : 1.0;
+  int ix = (int)(x * sx + 0.5);
+  int iy = (int)(y * sy + 0.5);
+  int iw = (int)(width * sx + 0.5);
+  int ih = (int)(height * sy + 0.5);
+  int right = overlay_w - (ix + iw);
+  int bottom = overlay_h - (iy + ih);
   if (right < 0) right = 0;
   if (bottom < 0) bottom = 0;
   if (gtk_widget_get_parent(w) != ao_overlay) {
@@ -144,8 +152,8 @@ void ao_wk_host_present(void *view, int x, int y, int width, int height) {
   gtk_widget_set_size_request(w, -1, -1);
   gtk_widget_set_halign(w, GTK_ALIGN_FILL);
   gtk_widget_set_valign(w, GTK_ALIGN_FILL);
-  gtk_widget_set_margin_start(w, x < 0 ? 0 : x);
-  gtk_widget_set_margin_top(w, y < 0 ? 0 : y);
+  gtk_widget_set_margin_start(w, ix < 0 ? 0 : ix);
+  gtk_widget_set_margin_top(w, iy < 0 ? 0 : iy);
   gtk_widget_set_margin_end(w, right);
   gtk_widget_set_margin_bottom(w, bottom);
   gtk_widget_set_visible(w, TRUE);
@@ -508,6 +516,14 @@ void ao_wk_view_close(void *view) {
 
 void ao_wk_view_set_size(void *view, int width, int height) {
   gtk_widget_set_size_request(GTK_WIDGET(view), width, height);
+}
+
+void ao_wk_view_open_inspector(void *view) {
+  WebKitWebInspector *inspector =
+      webkit_web_view_get_inspector(WEBKIT_WEB_VIEW(view));
+  if (inspector != NULL) {
+    webkit_web_inspector_show(inspector);
+  }
 }
 
 void ao_wk_view_load_uri(void *view, const char *uri) {

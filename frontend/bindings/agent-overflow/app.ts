@@ -205,6 +205,15 @@ export function BrowseDirectory(path: string): $CancellablePromise<dirbrowse$0.L
     });
 }
 
+/**
+ * BrowserCompanionCopyPageFile puts the local file a companion page is
+ * displaying onto the OS clipboard as a file object, so pasting it into a chat
+ * or mail client attaches the file itself. Remote pages have no file to copy.
+ */
+export function BrowserCompanionCopyPageFile(threadID: string, pageID: string): $CancellablePromise<void> {
+    return $Call.ByID(2556357179, threadID, pageID);
+}
+
 export function BrowserCompanionDo(threadID: string, action: app$0.BrowserCompanionAction): $CancellablePromise<browser$0.CompanionEvent> {
     return $Call.ByID(197228034, threadID, action).then(($result: any) => {
         return $$createType3($result);
@@ -221,6 +230,31 @@ export function BrowserCompanionNextFrame(subscriptionID: string): $CancellableP
     });
 }
 
+/**
+ * BrowserCompanionPaneAttach registers the calling connection's mounted pane
+ * surface for a thread. The native view is presented only while a mount with
+ * a paintable rect exists, so connection cleanup guarantees a dead UI can
+ * never leave a browser view painted over a window that no longer renders
+ * the pane under it.
+ */
+export function BrowserCompanionPaneAttach(threadID: string): $CancellablePromise<browser$0.CompanionSubscription> {
+    return $Call.ByID(205254296, threadID).then(($result: any) => {
+        return $$createType4($result);
+    });
+}
+
+export function BrowserCompanionPaneDetach(paneID: string): $CancellablePromise<void> {
+    return $Call.ByID(3255514830, paneID);
+}
+
+/**
+ * BrowserCompanionPaneRect reports where the mounted pane's host rect sits,
+ * coalesced to one call per changed frame by the frontend.
+ */
+export function BrowserCompanionPaneRect(paneID: string, rect: browser$0.PaneRect): $CancellablePromise<void> {
+    return $Call.ByID(2491183339, paneID, rect);
+}
+
 export function BrowserCompanionResize(subscriptionID: string, width: number, height: number): $CancellablePromise<void> {
     return $Call.ByID(2921114943, subscriptionID, width, height);
 }
@@ -234,6 +268,19 @@ export function BrowserCompanionResize(subscriptionID: string, width: number, he
 export function BrowserCompanionSubscribe(threadID: string, width: number, height: number): $CancellablePromise<browser$0.CompanionSubscription> {
     return $Call.ByID(668496681, threadID, width, height).then(($result: any) => {
         return $$createType4($result);
+    });
+}
+
+/**
+ * BrowserCompanionThreadState answers the thread's current page/session
+ * snapshot without acquiring anything. The `browser:companion-state` channel
+ * is ephemeral (no replay), so a freshly loaded UI has no way to know a
+ * thread already has live pages — this is the hydration read behind the chat
+ * header's browser chip and the pane-reopen reconcile.
+ */
+export function BrowserCompanionThreadState(threadID: string): $CancellablePromise<browser$0.CompanionEvent> {
+    return $Call.ByID(1485125416, threadID).then(($result: any) => {
+        return $$createType3($result);
     });
 }
 

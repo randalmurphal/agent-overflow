@@ -728,6 +728,11 @@ func (p *privilegedApp) BrowserCompanionUnsubscribe() string    { return "ok" }
 func (p *privilegedApp) BrowserCompanionResize() string         { return "ok" }
 func (p *privilegedApp) BrowserCompanionDo() string             { return "ok" }
 func (p *privilegedApp) BrowserCompanionInput() string          { return "ok" }
+func (p *privilegedApp) BrowserCompanionThreadState() string    { return "ok" }
+func (p *privilegedApp) BrowserCompanionPaneAttach() string     { return "ok" }
+func (p *privilegedApp) BrowserCompanionPaneDetach() string     { return "ok" }
+func (p *privilegedApp) BrowserCompanionPaneRect() string       { return "ok" }
+func (p *privilegedApp) BrowserCompanionCopyPageFile() string   { return "ok" }
 func (p *privilegedApp) WriteThreadWorkspaceFile() string       { return "ok" }
 func (p *privilegedApp) GitPush() string                        { return "ok" }
 func (p *privilegedApp) GitStatusSubscribe() string             { return "ok" }

@@ -347,16 +347,25 @@ func TestHostedEngineShowAndHideAreDedupedAndPageScoped(t *testing.T) {
 
 func TestHostedEngineBoundsAndDevToolsEmitValidDirectives(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	engine.SetPageBounds("page1", 12, 34, 800, 600)
+	engine.bind("page1", "TARGET-1")
+	rect := PaneRect{X: 12, Y: 34, Width: 800, Height: 600, ViewportWidth: 1600, ViewportHeight: 900, Visible: true}
+	engine.SetPageBounds("page1", rect)
 	engine.OpenPageDevTools("page1")
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 
 	bounds := sink.next(t)
-	if bounds.X != 12 || bounds.Y != 34 || bounds.W != 800 || bounds.H != 600 {
+	if bounds.X != 12 || bounds.Y != 34 || bounds.W != 800 || bounds.H != 600 || bounds.VW != 1600 || bounds.VH != 900 {
 		t.Fatalf("bounds directive lost its rectangle: %+v", bounds)
 	}
+	// The presentation sync re-sends the active rect on every selection and
+	// page-list change; an unmoved rect costs no directive.
+	engine.SetPageBounds("page1", rect)
+	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
+	// A page this engine does not own is not a directive, same as show/hide.
+	engine.SetPageBounds("page2", PaneRect{X: 1, Y: 2, Width: 300, Height: 400})
+	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 	// A rectangle the launcher would refuse never reaches the wire.
-	engine.SetPageBounds("page1", 0, 0, 0, 0)
+	engine.SetPageBounds("page1", PaneRect{})
 	sink.expectOps(t, webview2host.OpBounds, webview2host.OpDevTools)
 }
 

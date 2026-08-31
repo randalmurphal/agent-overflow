@@ -3,13 +3,16 @@
 package webview2host
 
 import (
+	"unsafe"
+
 	"golang.org/x/sys/windows"
 )
 
 var (
-	user32          = windows.NewLazySystemDLL("user32.dll")
-	procGetWindow   = user32.NewProc("GetWindow")
-	procSetWindowPo = user32.NewProc("SetWindowPos")
+	user32            = windows.NewLazySystemDLL("user32.dll")
+	procGetWindow     = user32.NewProc("GetWindow")
+	procSetWindowPo   = user32.NewProc("SetWindowPos")
+	procGetClientRect = user32.NewProc("GetClientRect")
 )
 
 const (
@@ -28,6 +31,20 @@ const (
 	// chain cannot spin the walk forever.
 	maxHostChildren = 256
 )
+
+// clientSize answers hwnd's client area in physical pixels, or ok=false
+// for a window the call cannot read (destroyed, zero).
+func clientSize(hwnd uintptr) (width, height int32, ok bool) {
+	if hwnd == 0 {
+		return 0, 0, false
+	}
+	var r rect
+	ret, _, _ := procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ret == 0 {
+		return 0, 0, false
+	}
+	return r.Right - r.Left, r.Bottom - r.Top, true
+}
 
 // childWindows walks hwnd's direct children in top-to-bottom z-order.
 func childWindows(hwnd uintptr) []uintptr {

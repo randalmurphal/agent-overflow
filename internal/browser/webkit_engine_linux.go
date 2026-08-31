@@ -48,6 +48,7 @@ func newNativeEngine(configDir string, opts ManagerOptions, events engineEvents)
 	return &webkitEngine{
 		configDir: configDir, window: opts.NativeWindow, events: events,
 		popups: make(map[string]unsafe.Pointer), slots: make(map[int]bool),
+		pane: make(map[uint64]webkitPaneState),
 	}
 }
 
@@ -66,6 +67,7 @@ type webkitEngine struct {
 	popups    map[string]unsafe.Pointer
 	slots     map[int]bool
 	profiles  map[uint64]*webkitProfile
+	pane      map[uint64]webkitPaneState
 	stopped   bool
 	pageCount int
 }

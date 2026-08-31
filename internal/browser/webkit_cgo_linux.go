@@ -292,8 +292,12 @@ func webkitParkView(view unsafe.Pointer, slot, width, height int) {
 	gtkDo(func() { C.ao_wk_host_park(view, C.int(slot), C.int(width), C.int(height)) })
 }
 
-func webkitPresentView(view unsafe.Pointer, x, y, width, height int) error {
-	if !gtkDo(func() { C.ao_wk_host_present(view, C.int(x), C.int(y), C.int(width), C.int(height)) }) {
+func webkitPresentView(view unsafe.Pointer, rect PaneRect) error {
+	if !gtkDo(func() {
+		C.ao_wk_host_present(view, C.double(rect.X), C.double(rect.Y),
+			C.double(rect.Width), C.double(rect.Height),
+			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight))
+	}) {
 		return errGTKUnavailable
 	}
 	return nil
@@ -369,6 +373,10 @@ func webkitAdoptView(view unsafe.Pointer, pageID uint64, userScript, consoleHand
 
 func webkitCloseView(view unsafe.Pointer) {
 	gtkDo(func() { C.ao_wk_view_close(view) })
+}
+
+func webkitOpenInspector(view unsafe.Pointer) {
+	gtkDo(func() { C.ao_wk_view_open_inspector(view) })
 }
 
 func webkitSetViewSize(view unsafe.Pointer, width, height int) error {

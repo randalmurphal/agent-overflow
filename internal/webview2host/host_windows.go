@@ -138,11 +138,22 @@ func (h *Host) Apply(directive Directive) {
 		h.create(directive)
 	case OpBounds:
 		h.withPage(directive.PageID, func(page *hostPage) {
+			// The rect arrives in the SPA's CSS pixels together with the
+			// viewport it was measured in; the client area is the same
+			// surface in physical pixels, so the proportion IS the whole
+			// DPI-and-zoom answer. A missing viewport means client pixels.
+			sx, sy := 1.0, 1.0
+			if directive.VW > 0 && directive.VH > 0 {
+				if cw, ch, ok := clientSize(h.config.HostWindow()); ok && cw > 0 && ch > 0 {
+					sx = float64(cw) / directive.VW
+					sy = float64(ch) / directive.VH
+				}
+			}
 			bounds := rect{
-				Left:   int32(directive.X),
-				Top:    int32(directive.Y),
-				Right:  int32(directive.X + directive.W),
-				Bottom: int32(directive.Y + directive.H),
+				Left:   int32(directive.X * sx),
+				Top:    int32(directive.Y * sy),
+				Right:  int32((directive.X + directive.W) * sx),
+				Bottom: int32((directive.Y + directive.H) * sy),
 			}
 			if err := page.controller.putBounds(bounds); err != nil {
 				h.config.Logf("browser host: page %s bounds: %v", page.id, err)

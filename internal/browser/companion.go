@@ -38,6 +38,33 @@ type companionSubscriber struct {
 	done     chan struct{}
 }
 
+// PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
+// CSS pixels, together with the SPA viewport it was measured in. A host never
+// assumes CSS pixels equal its units: it scales the rect by its own client
+// size over the viewport, which makes the position exact under webview zoom
+// (Ctrl+=) and any DPI without either side knowing the other's scale factor.
+// Visible is false while the pane is mounted but must not be painted over: an
+// AO overlay intersects the rect, or the rect is clipped by the pane strip.
+type PaneRect struct {
+	X              float64 `json:"x"`
+	Y              float64 `json:"y"`
+	Width          float64 `json:"width"`
+	Height         float64 `json:"height"`
+	ViewportWidth  float64 `json:"viewportWidth"`
+	ViewportHeight float64 `json:"viewportHeight"`
+	Visible        bool    `json:"visible"`
+}
+
+// paneMount is one mounted pane surface: the frontend's claim that a host rect
+// for this thread exists, plus the last rect it reported. The mount is the
+// unit connection cleanup releases, so a dead UI can never leave a native view
+// painted over a window that no longer renders the pane under it.
+type paneMount struct {
+	threadID string
+	rect     PaneRect
+	hasRect  bool
+}
+
 type pageStream struct {
 	width  int
 	height int
@@ -184,6 +211,78 @@ func (m *Manager) CompanionState(access Access) CompanionEvent {
 	return m.threadState(access.ThreadID)
 }
 
+// AttachPane registers one mounted pane surface for a thread and answers the
+// state snapshot the pane renders its chrome from. The returned id is what
+// SetPaneRect addresses and what DetachPane (or connection cleanup) releases.
+func (m *Manager) AttachPane(access Access) (CompanionSubscription, error) {
+	state := m.threadState(access.ThreadID)
+	if len(state.Pages) == 0 {
+		return CompanionSubscription{}, fmt.Errorf("browser: thread has no open pages")
+	}
+	id := uuid.NewString()
+	m.mu.Lock()
+	if len(m.panes) >= maxCompanionSubscribers {
+		m.mu.Unlock()
+		return CompanionSubscription{}, fmt.Errorf("browser: too many mounted browser panes")
+	}
+	m.panes[id] = paneMount{threadID: access.ThreadID}
+	m.mu.Unlock()
+	return CompanionSubscription{ID: id, State: state}, nil
+}
+
+// DetachPane releases one pane mount. The presentation sync runs so an engine
+// with a presented native view hides it rather than painting over whatever
+// replaced the pane.
+func (m *Manager) DetachPane(id string) {
+	m.mu.Lock()
+	mount, ok := m.panes[id]
+	if ok {
+		delete(m.panes, id)
+	}
+	m.mu.Unlock()
+	if ok {
+		m.syncThreadStream(mount.threadID)
+	}
+}
+
+// SetPaneRect records the mounted pane's current host rect. The frontend
+// coalesces to one report per changed frame, so this path must stay cheap: a
+// bookkeeping write and one presentation sync.
+func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
+	if rect.Width < 0 || rect.Height < 0 {
+		rect.Width, rect.Height = 0, 0
+	}
+	m.mu.Lock()
+	mount, ok := m.panes[strings.TrimSpace(id)]
+	if ok {
+		mount.rect = rect
+		mount.hasRect = true
+		m.panes[strings.TrimSpace(id)] = mount
+	}
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("browser: pane mount not found")
+	}
+	m.syncThreadStream(mount.threadID)
+	return nil
+}
+
+// OpenPaneDevTools opens the engine's inspector for one of the thread's pages.
+// Only engines with a real user-visible view have one to open; managed Chrome
+// answers with an explained refusal rather than a silent no-op.
+func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID string) error {
+	host, ok := m.engine.(paneHost)
+	if !ok {
+		return fmt.Errorf("browser: devtools are not available on this browser engine")
+	}
+	p, _, err := m.lookupOrSelectPage(ctx, access, pageID)
+	if err != nil {
+		return err
+	}
+	host.OpenPageDevTools(p.driver.Handle())
+	return nil
+}
+
 func (m *Manager) UnsubscribeCompanion(id string) {
 	m.mu.Lock()
 	sub, ok := m.subscriptions[id]
@@ -273,6 +372,20 @@ func (m *Manager) syncThreadStream(threadID string) {
 			width, height = sub.width, sub.height
 		}
 	}
+	// The pane rect the presented native view follows. At most one pane per
+	// thread exists (a frontend invariant); a mounted pane without a usable
+	// rect yet keeps the view hidden rather than flashing it at a stale place.
+	paneShown := false
+	var paneRect PaneRect
+	for _, mount := range m.panes {
+		if mount.threadID != threadID || !mount.hasRect {
+			continue
+		}
+		if mount.rect.Visible && mount.rect.Width >= 1 && mount.rect.Height >= 1 {
+			paneShown = true
+			paneRect = mount.rect
+		}
+	}
 	if hasSubscriber && session.ViewportSet {
 		width, height = session.ViewportW, session.ViewportH
 	}
@@ -299,7 +412,7 @@ func (m *Manager) syncThreadStream(threadID string) {
 	if width > 0 && active != nil {
 		active.startStream(m, width, height)
 	}
-	m.syncPanePresentation(pages, active, visible)
+	m.syncPanePresentation(pages, active, visible && paneShown, paneRect)
 }
 
 // syncPanePresentation drives an engine whose pages are real windows.
@@ -313,11 +426,11 @@ func (m *Manager) syncThreadStream(threadID string) {
 // Managed Chrome has no window and no paneHost, so this is a type
 // assertion that fails and costs nothing on every other deployment.
 //
-// Where the pane SITS is not decided here. Bounds come from the frontend's
-// host rect, which reaches paneHost.SetPageBounds through its own binding;
-// a controller with no bounds yet is shown at whatever the launcher last
-// positioned it to.
-func (m *Manager) syncPanePresentation(pages []*managedPage, active *managedPage, visible bool) {
+// Where the pane SITS is the frontend's answer: the mounted pane reports its
+// host rect (SetPaneRect), and the rect rides along here so bounds always
+// land before the show. `visible` is already the folded judgement — the
+// session says show AND a mounted pane has a paintable rect.
+func (m *Manager) syncPanePresentation(pages []*managedPage, active *managedPage, visible bool, rect PaneRect) {
 	host, ok := m.engine.(paneHost)
 	if !ok {
 		return
@@ -329,6 +442,7 @@ func (m *Manager) syncPanePresentation(pages []*managedPage, active *managedPage
 		host.HidePage(p.driver.Handle())
 	}
 	if visible && active != nil {
+		host.SetPageBounds(active.driver.Handle(), rect)
 		host.ShowPage(active.driver.Handle())
 	}
 }

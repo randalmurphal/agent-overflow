@@ -5,6 +5,7 @@
   import X from '@lucide/svelte/icons/x';
   import Icon from '../primitives/Icon.svelte';
   import { focusTrap } from '../../utils/focusTrap';
+  import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
 
   interface Props {
@@ -51,6 +52,7 @@
 <div
   bind:this={dialogRoot}
   class="fixed inset-0 z-[90] flex items-center justify-center bg-scrim/88 p-4"
+  use:airspaceSurface
   role="dialog"
   aria-modal="true"
   aria-label={image?.filename ?? 'Image Preview'}

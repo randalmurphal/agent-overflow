@@ -91,10 +91,30 @@ func (f *fixture) connect() *peer {
 	f.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	f.t.Cleanup(cancel)
+	f.endpoint.mu.Lock()
+	before := f.endpoint.session
+	f.endpoint.mu.Unlock()
 	url := "ws" + strings.TrimPrefix(f.server.URL, "http") + webview2host.CDPTunnelPath
 	conn, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
 		f.t.Fatalf("dial tunnel: %v", err)
+	}
+	// A successful dial proves only the client half of the handshake:
+	// install() runs in the server handler goroutine, and a local dial that
+	// races ahead of it is (correctly) refused as ErrTunnelDown. Wait until
+	// this connection's session is the installed one before returning.
+	deadline := time.Now().Add(testDeadline)
+	for {
+		f.endpoint.mu.Lock()
+		installed := f.endpoint.session
+		f.endpoint.mu.Unlock()
+		if installed != nil && installed != before {
+			break
+		}
+		if time.Now().After(deadline) {
+			f.t.Fatal("timed out waiting for the tunnel session to install")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	conn.SetReadLimit(webview2host.MaxTunnelFrameBytes)
 	p := &peer{

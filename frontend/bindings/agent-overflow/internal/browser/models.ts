@@ -144,6 +144,60 @@ export class PageInfo {
     }
 }
 
+/**
+ * PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
+ * CSS pixels, together with the SPA viewport it was measured in. A host never
+ * assumes CSS pixels equal its units: it scales the rect by its own client
+ * size over the viewport, which makes the position exact under webview zoom
+ * (Ctrl+=) and any DPI without either side knowing the other's scale factor.
+ * Visible is false while the pane is mounted but must not be painted over: an
+ * AO overlay intersects the rect, or the rect is clipped by the pane strip.
+ */
+export class PaneRect {
+    "x": number;
+    "y": number;
+    "width": number;
+    "height": number;
+    "viewportWidth": number;
+    "viewportHeight": number;
+    "visible": boolean;
+
+    /** Creates a new PaneRect instance. */
+    constructor($$source: Partial<PaneRect> = {}) {
+        if (!("x" in $$source)) {
+            this["x"] = 0;
+        }
+        if (!("y" in $$source)) {
+            this["y"] = 0;
+        }
+        if (!("width" in $$source)) {
+            this["width"] = 0;
+        }
+        if (!("height" in $$source)) {
+            this["height"] = 0;
+        }
+        if (!("viewportWidth" in $$source)) {
+            this["viewportWidth"] = 0;
+        }
+        if (!("viewportHeight" in $$source)) {
+            this["viewportHeight"] = 0;
+        }
+        if (!("visible" in $$source)) {
+            this["visible"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PaneRect instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PaneRect {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PaneRect($$parsedSource as Partial<PaneRect>);
+    }
+}
+
 // Private type creation functions
 const $$createType0 = PageInfo.createFrom;
 const $$createType1 = $Create.Array($$createType0);
