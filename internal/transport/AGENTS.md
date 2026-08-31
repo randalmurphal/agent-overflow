@@ -56,21 +56,13 @@ origin. `methods_gen_test.go` fails on a generated method nobody classified
 exists. A reverse proxy on the same host makes remote peers appear loopback and
 defeats this locality, so proxy from a different host instead.
 
-## HTTP surface inventory
+## Every route on this mux is also a row in internal/surfaces
 
-`httpsurfaces.go` is not a list that describes the routes: it IS the
-registration. `buildHTTPServer` mounts exactly what `httpSurfaces()`
-returns, so a route cannot reach the wire without declaring the four
-properties `docs/specs/remote-access.md` §13 requires — listener,
-principal tiers, required scope, content-type posture — plus the `Why`
-behind them. Declaration and mount cannot drift, because they are the
-same statement. `httpsurfaces_test.go` freezes the pattern set, so adding
-a route is a deliberate two-place edit rather than an append.
-
-Scopes in that table are DECLARATIONS, not enforcement: the generated
-scope table arrives in phase 3, and the enforced facts today remain the
-token check, the Host guard, and peer locality. Writing intent down now
-is what lets phase 3 diff against it.
+`buildHTTPServer` registers patterns as plain literals (or constants
+holding one) because that is what `internal/surfaces`' AST gate reads:
+add a route here without a `Route` row there and the gate fails. Keep the
+pattern a literal or a constant for the same reason — a computed pattern
+is a route the gate cannot see.
 
 `/healthz` is the one deliberately unauthenticated route besides the
 bundle. It answers version + backend id because its two consumers — the

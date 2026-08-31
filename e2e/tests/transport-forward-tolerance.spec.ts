@@ -78,7 +78,7 @@ test('the SPA keeps running when the backend speaks a future dialect', async ({
   });
   const threadId = seed.projects[0]!.threadIds[0]!;
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText(THREAD_TITLE).click();
   await expect(page.getByText(ANSWER)).toBeVisible();
 

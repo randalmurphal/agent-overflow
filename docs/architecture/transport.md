@@ -244,6 +244,24 @@ not restate it. Two binaries call the route without linking this package
 (`internal/wsllauncher`, `internal/harnessclient`); each restates the path
 behind a drift-guard test rather than pulling the server into a launcher.
 
+### `/healthz`: the one route that asks for nothing
+
+`HealthPath` answers `{version, backendId}` to any caller. Every other route
+on this listener spends a credential; this one cannot, because both consumers
+run at the moment there is no valid credential to spend. The SPA's pre-WS
+compatibility check runs before a socket exists, and the update watchdog is
+asking whether the backend it was talking to is still the same build — and a
+credentialled health route answers 404 to a *restarted* backend, which is
+indistinguishable from down and is precisely the state the probe exists to
+observe. Neither field authorizes anything, and both are already in the
+manifest the bundle serves.
+
+Two things it still does. It sends no `Access-Control-Allow-Origin`, so a
+foreign page may issue the request and can never read the reply, and it goes
+through the same `loopbackHostGuard` the credentialled routes use. Readiness
+is not folded in: `/bootstrap.json`'s 503 stays the "booting" answer, because a
+probe that reports booting as unreachable would defeat both consumers.
+
 ### `--connect` carries the socket rather than handing over the token
 
 The stub (`internal/clientmode`) holds the upstream token server-side and gives
