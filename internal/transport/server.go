@@ -327,6 +327,16 @@ type Server struct {
 	// connections it is deliberately keeping alive.
 	sessionConns *SessionConns
 
+	// Per-peer request budgets for the credential surfaces. Built at New
+	// and never replaced: a Rebind changes which address the server
+	// answers on, not how much work one peer may ask for, and rebuilding
+	// them would hand every peer a fresh burst on a LAN-bind toggle.
+	// Deliberately absent for /healthz and the SPA assets — see
+	// ratelimit.go.
+	bootstrapLimit *rateLimiter
+	pageURLLimit   *rateLimiter
+	scopedRPCLimit *rateLimiter
+
 	// remoteConns counts live non-loopback WebSocket connections.
 	// Feeds HasRemoteClient, which gates work that only benefits
 	// remote viewers (the highlight seed push). Note tunneled remotes
@@ -390,6 +400,9 @@ func New(cfg Config) (*Server, error) {
 		originPatterns: originPatterns,
 		serveErr:       make(chan error, 1),
 		sessionConns:   newSessionConns(),
+		bootstrapLimit: newRateLimiter("/bootstrap.json", bootstrapRateLimit),
+		pageURLLimit:   newRateLimiter(PageURLPath, pageURLRateLimit),
+		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
@@ -514,12 +527,22 @@ func matchesErrno(err error, errnos []syscall.Errno) bool {
 // HTTP callers from the LAN reach the server by its LAN host.
 func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
+	// Rate limiting sits OUTSIDE the host guard on the three credential
+	// surfaces, so a peer over budget is refused before any other work is
+	// done for it. /ws is not limited here: a WebSocket is one upgrade per
+	// long-lived connection, and the request that carries the credential
+	// is the same one that starts the connection — the budget that matters
+	// for it is the ticket exchange that precedes it. /healthz and the
+	// assets are never limited (ratelimit.go says why).
+	mux.HandleFunc("/bootstrap.json",
+		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap)))
 	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
-	mux.HandleFunc(PageURLPath, s.loopbackHostGuard(s.handlePageURL))
+	mux.HandleFunc(PageURLPath,
+		rateLimited(s.pageURLLimit, s.loopbackHostGuard(s.handlePageURL)))
 	mux.HandleFunc(HealthPath, s.loopbackHostGuard(s.handleHealthz))
 	if s.cfg.ScopedTokens != nil {
-		mux.HandleFunc(ScopedRPCPath, s.loopbackHostGuard(s.handleScopedRPC))
+		mux.HandleFunc(ScopedRPCPath,
+			rateLimited(s.scopedRPCLimit, s.loopbackHostGuard(s.handleScopedRPC)))
 	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {

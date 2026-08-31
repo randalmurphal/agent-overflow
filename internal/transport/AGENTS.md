@@ -10,9 +10,10 @@ walkthroughs live in
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
 upgrade, and
 `POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
-per-connection authorization policy, reflection-based RPC dispatch, a
-per-channel bounded ring for event replay on reconnect, and the live-session
-registry that lets a revocation reach connections that are already open. Method
+per-connection authorization policy, per-peer request budgets on the credential
+surfaces, reflection-based RPC dispatch, a per-channel bounded ring for event
+replay on reconnect, and the live-session registry that lets a revocation reach
+connections that are already open. Method
 IDs are FNV-1a 32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
 `internal/hash.Fnv`, so the generated TypeScript bindings keep working. The ring
 is in-memory only: a network jitter buffer, not a history store (root
@@ -252,6 +253,46 @@ carries the same same-host-proxy caveat as above.
 Both predicates live in `internal/loopback` alongside the two endpoint-URL
 classifiers. They are deliberately different rules and the package doc says why;
 do not swap one for another because the names look interchangeable.
+
+## Per-peer request budgets
+
+`ratelimit.go` gives three routes a token bucket per peer: `/bootstrap.json`,
+`/pageurl`, and `/rpc`. **`/healthz` and the SPA assets are never limited** — a
+readiness probe is polled by design and one page load is dozens of asset
+requests, so limiting either breaks ordinary use to bound work that is already
+trivial. `/ws` is not limited either: one upgrade per long-lived connection,
+and the budget that matters for it is the ticket exchange that precedes it.
+
+What this bounds is WORK, not guessing. The launch token is 256 random bits and
+scoped tokens are minted per provider process, so no achievable request rate
+makes guessing one plausible; what a rate does reach is the backend's own cost,
+and on `/pageurl` specifically it evicts tickets other pages are about to
+present.
+
+- **The refusal is 429 with `Retry-After`, never the credential channel's 404.**
+  The SPA latches terminal `unauthorized` state on a 401/403/404 from the
+  manifest and stops its reconnect ladder (§ Credentials and refusal shapes), so
+  a 404 here would tell a client that merely burst that its credential is dead.
+  Same class of mistake as answering a readiness probe with a 404.
+- **Loopback peers are limited on the same terms as everyone else.** Exempting
+  them would leave the path unexercised in development and in the e2e suite, so
+  its first real run would be its first LAN bind. The budgets are set so a
+  reconnect ladder, a Playwright worker, and a scripted CLI never reach them.
+- **Separate limiters per surface**, so a burst on one cannot spend another's.
+- The table is bounded (`maxTrackedPeers`) and self-cleaning: a bucket that has
+  refilled carries nothing a fresh entry would not, so the insert path drops
+  idle peers instead of running a sweep goroutine. With the table full of peers
+  that are all actively spending, a new peer is REFUSED rather than admitted
+  untracked — admitting it would mean not limiting it at all.
+- The admitted path allocates nothing: `peerKey` is hand-parsed because
+  `net.SplitHostPort` allocates an `*AddrError` on input it cannot read, and the
+  bucket is a map VALUE rewritten in place. Two tests pin this
+  (`TestRateLimiterAdmitsWithoutAllocating`, `TestPeerKeyDoesNotAllocate`); keep
+  them passing rather than treating them as incidental.
+- Refusals are logged with per-peer attribution, once per dry spell rather than
+  once per request — a flood must not be able to flood the log with its own
+  evidence. The capacity refusal has no bucket to mark, so it is throttled by
+  time instead.
 
 ## Security headers
 

@@ -399,6 +399,29 @@ judges itself on. `wsClient` resets its backoff only after a connection survived
 reconnecting fast, while an accept-then-close backend backs off instead of
 storming.
 
+## Per-peer request budgets
+
+Three routes carry a token bucket per peer: `/bootstrap.json`, `/pageurl`, and
+`/rpc`. `/healthz` and the SPA assets carry none, and `/ws` carries none because
+one upgrade opens a long-lived connection whose credential came from the ticket
+exchange that preceded it.
+
+The budget bounds work, not guessing. A 256-bit launch token is not reachable by
+any request rate; what a rate reaches is the backend's own cost per request, and
+on `/pageurl` the eviction of tickets other pages are about to present.
+
+The refusal is `429` with `Retry-After` rather than the credential channel's
+`404`, and that difference is load-bearing rather than cosmetic: the SPA treats a
+401/403/404 on the manifest as terminal and stops reconnecting, so a 404 here
+would convert a burst into a permanent logout. A rate-limit refusal is transient
+and has to look like one.
+
+Loopback peers are limited on the same terms as anyone else, so the path is
+exercised continuously in development and in the e2e suite rather than running
+for the first time on a LAN bind. The peer table is bounded and self-cleaning:
+an entry whose budget has refilled is indistinguishable from a peer never seen,
+so inserts drop idle peers instead of a sweep goroutine doing it on a timer.
+
 ## Revoking a live connection
 
 A revoked session row stops the next call. It does nothing to a socket that is
