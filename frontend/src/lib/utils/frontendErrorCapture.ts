@@ -66,7 +66,7 @@ let listenerAbort: AbortController | null = null;
 let flushInFlight = false;
 let consecutiveFlushFailures = 0;
 // Set when the backend refuses the method (non-loopback remote client —
-// ReportFrontendErrorBatch is LocalOnly). Persisting is impossible for
+// ReportFrontendErrorBatch is host-scoped). Persisting is impossible for
 // the rest of the session; stop capturing instead of warn-spamming.
 let reporterUnavailable = false;
 
@@ -136,7 +136,7 @@ export function installFrontendErrorCapture(): void {
  * past `MAX_PER_SIGNATURE`, and it grows `signatureCounts` until the
  * distinct-signature overflow bucket catches it. Callers pair the report with
  * a `console.warn` carrying the same detail, because a non-loopback session
- * cannot persist at all (`ReportFrontendErrorBatch` is LocalOnly) and the
+ * cannot persist at all (`ReportFrontendErrorBatch` is host-scoped) and the
  * console line is then the only surviving evidence.
  *
  * Current callers: the transport's outage/staleness summaries

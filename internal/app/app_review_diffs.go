@@ -209,8 +209,8 @@ type DiffContextResult struct {
 const maxDiffContextLines = 1000
 
 // GetDiffContextLines returns new-side source lines for review-diff
-// hunk-gap expansion. Same wire-exposure class as the diff getters:
-// classified LocalOnlyMethods.
+// hunk-gap expansion. Same wire-exposure class as the diff getters: it
+// answers a session granted `files:read`, and no other.
 //
 //ao:scope files:read
 func (a *App) GetDiffContextLines(threadID string, req DiffContextRequest) (DiffContextResult, error) {
@@ -286,9 +286,9 @@ const maxVerifyEditDiffFiles = 200
 // deliberate divergence from click-time resolution, and it only errs
 // fail-closed: an over-cap file shows no arrow (snapshots never exceed
 // the cap either; only a huge pre-snapshot workspace file can hit it).
-// Same wire-exposure class as GetDiffContextLines: classified
-// LocalOnlyMethods; remote clients' rejection leaves every path
-// unexpandable, which is exactly what their clicks would find.
+// Same wire-exposure class as GetDiffContextLines: `files:read`. A
+// session without that grant is refused here and refused at click time
+// too, so the arrows it sees match the expansions it can perform.
 //
 //ao:scope files:read
 func (a *App) VerifyEditDiffs(threadID string, req VerifyEditDiffsRequest) (VerifyEditDiffsResult, error) {

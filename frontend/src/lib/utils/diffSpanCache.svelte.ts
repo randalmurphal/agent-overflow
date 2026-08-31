@@ -262,7 +262,7 @@ function reportSpanFailure(path: string, err: unknown): void {
  * generation bump re-evaluates every row's `getSpansForLine` lookup.
  *
  * Review-pane callers pass `context` to get parse-priming file content
- * above each hunk (HighlightPatchWithContext, LocalOnly); on rejection
+ * above each hunk (HighlightPatchWithContext, `files:read`); on rejection
  * — the expected path for `--connect` remote clients — the request
  * degrades to the wire-safe HighlightPatch, still recorded under the
  * scoped key so the primed path is not retried within this client's
@@ -328,7 +328,7 @@ export async function requestFileSpans(
           editTurnIndex: context.editTurnIndex ?? -1,
         });
       } catch {
-        // LocalOnly method rejected — remote client or scope failure.
+        // Priming refused — a session without `files:read`, or a scope failure.
         // Fall through to the wire-safe unprimed request.
       }
     }

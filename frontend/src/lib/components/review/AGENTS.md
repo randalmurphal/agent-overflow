@@ -246,7 +246,7 @@ read tail-first.
   (`editExpandablePaths`). An arrow that can't serve never renders.
   Absolute-path edits (agent memory files, scratchpads) are never even
   sent; drifted pre-snapshot files and remote clients (the RPC is
-  LocalOnly) simply never verify. A click-time refusal (rare
+  ungranted) simply never verify. A click-time refusal (rare
   load-to-click race) still retires the path quietly
   (`unexpandableEditPaths`, no error banner), and unverified files'
   spans fall back to unprimed. Span quality is monotonic:

@@ -2830,8 +2830,8 @@ func updateThreadWrittenColumns(t *testing.T) map[string]bool {
 // cover every column the table has, and no column may appear in both.
 // TestUpdateThreadColumnGate enforces both halves against
 // `PRAGMA table_info('threads')`, so a new column cannot land unclassified —
-// the same forcing-function shape transport's LocalOnlyMethods /
-// wireSafeMethods pair uses for App methods.
+// the same forcing-function shape transport's //ao:scope annotation gate
+// uses for App methods: a new one cannot land unclassified.
 //
 // A new column belongs in updateThreadSetSQL only if a whole-row write from a
 // stale `Thread` struct is the CORRECT outcome for it. Anything owned by a
@@ -2874,8 +2874,8 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 //
 // The column set comes from PRAGMA table_info on a migrated database rather
 // than from a list in this file, so a migration that adds a column fails here
-// until somebody decides which side it belongs on. Mirrors the
-// LocalOnlyMethods / wireSafeMethods gate in internal/transport.
+// until somebody decides which side it belongs on. Mirrors the //ao:scope
+// completeness gate in internal/transport.
 func TestUpdateThreadColumnGate(t *testing.T) {
 	s := newTestStore(t)
 

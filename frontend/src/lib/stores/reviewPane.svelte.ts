@@ -917,7 +917,7 @@ function createReviewPaneState(
   // only those get gap arrows (editExpandablePaths gates the files
   // derived). Candidates come from the unsuppressed merge, NOT the
   // files derived — that one already suppresses everything still
-  // unverified. Any failure (remote client's LocalOnly rejection
+  // unverified. Any failure (a session without `files:read`
   // included) just leaves paths unverified: no arrows, no error
   // banner, exactly what clicking would have found out the hard way.
   async function verifyEditExpandability(seq: number): Promise<void> {

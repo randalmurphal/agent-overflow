@@ -1348,7 +1348,7 @@ export class WSClient {
       const detail =
         `down ${downSeconds}s, close code ${this.outage.closeCode}, ${this.outage.attempts} failed attempts`;
       // Console too, not just the sink: remote clients can't persist
-      // through ReportFrontendErrorBatch (LocalOnly), and the console
+      // through ReportFrontendErrorBatch (host-scoped), and the console
       // line is then the only surviving evidence of the outage.
       console.info(`wsClient: reconnected after outage (${detail})`);
       this.diagnosticsSink?.('transport: reconnected after outage', detail);
@@ -1517,7 +1517,7 @@ export class WSClient {
   //     backend has no manifest to have learned `remote` from.
   //
   // A session tunnelled over SSH satisfies neither (both ends read as
-  // loopback, exactly as LocalOnlyMethods sees it) and keeps the
+  // loopback, exactly as `loopback.PeerAddress` sees it) and keeps the
   // ordinary retry loop — honest-but-vague beats claiming a share link
   // that may not exist.
   //

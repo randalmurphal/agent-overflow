@@ -752,9 +752,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   // and Settings → Providers share stores/providerAccounts.svelte.ts, so this
   // is a second surface over the same state, not a second implementation.
   //
-  // Every provider-account RPC is LocalOnly on the transport
-  // (internal/transport/internalmethods.go LocalOnlyMethods), so a view-only
-  // remote session cannot run any of them. The `when` gate disables the
+  // Every provider-account RPC rides `access:admin` (billing identity), so a
+  // view-only remote session cannot run any of them. The `when` gate disables the
   // command there — it drops out of the palette and its chord falls through to
   // whatever else is bound — rather than opening a picker whose every action
   // would fail.

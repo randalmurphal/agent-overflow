@@ -8,15 +8,19 @@ import (
 // Per-RPC authorization for a connection that named a durable session
 // (docs/specs/remote-access.md §5).
 //
-// Two gates are live at once during the migration window, and they answer
-// different questions. The ORIGIN gate (LocalOnlyMethods, enforced in
-// Dispatcher.ResolveForOrigin) asks "is this peer on this machine"; it is
-// what a launch-credential client has always been judged by and it is
-// deleted when every client authenticates. The SCOPE gate here asks "was
-// this session granted this capability", and it is what remains. A
-// connection carrying only the launch credential passes through this file
-// untouched — it names no session, so there is nothing to compare a
-// method's scope against.
+// This file is the ONE gate on what a named session may call. The
+// per-method origin partition that ran beside it during the migration
+// window — LocalOnlyMethods, derived from these same scopes and enforced
+// in Dispatcher.ResolveForOrigin — is deleted: every off-host connection
+// now names a session (the admission rule) whose binding class permits the
+// peer presenting it, so "is this peer on this machine" no longer stands
+// in for "may this caller do this". What survives on the dispatcher is
+// RegisterOptions{LocalOnly}, a whole RECEIVER of host tooling, which is a
+// different statement.
+//
+// A connection carrying only the launch credential passes through this
+// file untouched — it names no session, so there is nothing to compare a
+// method's scope against, and it is loopback by the admission rule.
 //
 // Nothing here caches. The scopes are re-read per call through
 // Config.SessionScopes, because a revocation lands after the upgrade that

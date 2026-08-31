@@ -47,8 +47,9 @@ editor reachable via the vendor's WSL Remote integration.
   - The path-shape contract enforced before spawn: `ResolvePath` is
     the click-surface safety floor. The inputs that reach it from
     rendered markdown are model- or third-party-authored with no
-    render-time validation (the `OpenInEditor` binding itself is
-    LocalOnly, so remote token-holders never reach it). Relative
+    render-time validation (the `OpenInEditor` binding itself carries
+    `//ao:scope host`, which no session may be granted, so a remote
+    caller never reaches it). Relative
     inputs resolve against an absolute, canonical `workspacePath`,
     and the openability rule holds everywhere: existing regular
     files open, folder opens and UNC probes never, new files only

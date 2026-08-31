@@ -201,9 +201,9 @@ See [docs/references/spike-policy.md](docs/references/spike-policy.md).
   the same HTTP+WS wire shape. Any new App-bound method also becomes a
   wire RPC, so it carries an `//ao:scope <name>` annotation naming the
   capability it exercises — `methodgen` fails the run without one, and
-  `LocalOnlyMethods` is derived from those scopes. See
-  `internal/transport/AGENTS.md` for the vocabulary, the step-up set,
-  and the authz and replay rules.
+  that scope is what the per-call gate compares a session's grants
+  against. See `internal/transport/AGENTS.md` for the vocabulary, the
+  step-up set, and the authz and replay rules.
 
 - **`.claude/` and `.playwright-mcp/` MUST stay excluded from the
   Wails3 dev watcher.** Claude Code's worktree isolation creates

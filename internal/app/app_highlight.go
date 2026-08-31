@@ -148,8 +148,8 @@ func (a *App) HighlightPatch(req HighlightPatchRequest) (HighlightResult, error)
 // correctly because the parser has seen the opening. Content
 // resolution is best-effort: if the scope lookup fails (file gone at
 // ref, no local clone), the unprimed result is returned instead of an
-// error. LocalOnlyMethods category 1: it reads workspace/ref file
-// content by path; remote clients use HighlightPatch.
+// error. It reads workspace/ref file content by path, so it rides
+// `files:read`; a session without that grant uses HighlightPatch.
 //
 //ao:scope files:read
 func (a *App) HighlightPatchWithContext(threadID string, req HighlightPatchContextRequest) (HighlightResult, error) {

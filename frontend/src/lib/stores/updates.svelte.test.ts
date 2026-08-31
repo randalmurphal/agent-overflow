@@ -11,6 +11,7 @@ vi.mock('./bindings', () => ({
 }));
 
 import { CheckForUpdate, ListReleases, DownloadUpdate, RestartToUpdate } from './bindings';
+import { TransportError } from '../transport/wsClient';
 import {
   getUpdateState,
   hasPendingUpdate,
@@ -71,9 +72,17 @@ function availability(overrides: Partial<Availability> = {}): Availability {
   return { supported: true, available: false, currentVersion: '1.0.0', ...overrides };
 }
 
-// The transport refuses a LocalOnly method to a non-loopback peer with the
-// same envelope it uses for an unregistered one (internal/transport/
-// dispatcher.go). This is that rejection as the wsClient surfaces it.
+// The updater RPCs carry `//ao:scope host`, which no session may be granted,
+// so an off-host caller is refused with `scope_required` naming it
+// (internal/transport/authorize.go). This is that rejection as the wsClient
+// surfaces it.
+function hostScopeRefused(): Error {
+  return new TransportError('scope_required', 'not authorized', undefined, 'host');
+}
+
+// A backend older than this bundle refused the same call by NAME, with the
+// envelope it uses for an unregistered method. A tab that outlived an update
+// still has to read it as "not available here".
 function methodNotFound(): Error {
   return Object.assign(new Error('method not registered'), {
     name: 'TransportError',
@@ -223,11 +232,14 @@ describe('updates store', () => {
   });
 
   describe('remote (non-loopback) sessions', () => {
-    it('maps a method_not_found refusal to unsupported, not the error phase', async () => {
-      // The updater RPCs are LocalOnly, so a remote client's launch check is
+    it.each([
+      ['a host scope refusal', hostScopeRefused],
+      ['a method_not_found refusal from an older backend', methodNotFound],
+    ])('maps %s to unsupported, not the error phase', async (_label, refusal) => {
+      // The updater RPCs are host-scoped, so a remote client's launch check is
       // refused. That is "not available here", not a failure — the panel must
       // show the clean unsupported copy rather than a scary error callout.
-      mockCheck.mockRejectedValue(methodNotFound());
+      mockCheck.mockRejectedValue(refusal());
       await runUpdateCheck();
       const s = getUpdateState();
       expect(s.supported).toBe(false);

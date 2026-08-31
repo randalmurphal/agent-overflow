@@ -27,11 +27,12 @@ import (
 // paired device, "client:<id>" for a screen on this backend's own local
 // page channel. "user:<id>" stays reserved for the user tier (§6).
 //
-// Not LocalOnlyMethods entries: per-device UI view state is the whole
-// point of this table — remote clients (--connect, LAN browsers) need
-// their own buckets. Same reasoning as GetKeybindings: UI preferences,
-// not credentials or filesystem access. The ui_state rows are opaque
-// strings written and read only by the connection they belong to.
+// These are observe/device-tier rather than `host`: per-device UI view
+// state is the whole point of this table — remote clients (--connect, LAN
+// browsers) need their own buckets. Same reasoning as GetKeybindings: UI
+// preferences, not credentials or filesystem access. The ui_state rows
+// are opaque strings written and read only by the connection they belong
+// to.
 
 // Wire-input bounds. Generous for real UI state (pane layout JSON is
 // the largest value today at well under 4 KB) while keeping a buggy

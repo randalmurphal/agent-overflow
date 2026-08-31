@@ -2,7 +2,7 @@
   // Settings → Network → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
   // revocations that take one away — plus restore, the way back in for a
-  // revoked device's key. Wire: the eight CategoryDeviceAccess RPCs
+  // revoked device's key. Wire: the eight `access:admin` RPCs
   // (internal/app/app_access.go).
   //
   // The local page channel — the backend's own window, whatever relays it

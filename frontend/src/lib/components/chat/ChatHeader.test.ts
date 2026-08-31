@@ -596,7 +596,7 @@ describe('<ChatHeader>', () => {
     expect((getByTestId('thread-title-regenerate') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('disables the regenerate button in a view-only session (LocalOnly RPC)', async () => {
+  it('disables the regenerate button in a view-only session (ungranted RPC)', async () => {
     setPageGrantsFromBootstrap(true);
     try {
       const pane = await buildPane();

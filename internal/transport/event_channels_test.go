@@ -224,11 +224,13 @@ func TestChannelPolicyUnreviewedWorklist(t *testing.T) {
 // attach one at all. That is only sound because PRODUCING either frame is
 // host-side: `notification:send` comes from App.notifyOS, which no RPC
 // exposes, and `notification:activated` comes from the
-// `NotificationActivated` binding, which is LocalOnly. Drop that entry and
-// the audience change becomes "any LAN token-holder can steer every
-// attached client's pane focus" — the receive side stays innocuous only
-// while the send side stays local. The two decisions live in different
-// files, so this is where they are held together.
+// `NotificationActivated` binding, which is `//ao:scope host` — a call
+// with no remote form, admitted by host presence and by no grant any
+// session can hold. Re-scope it and the audience change becomes "any
+// paired client can steer every attached client's pane focus" — the
+// receive side stays innocuous only while the send side stays host-only.
+// The two decisions live in different files, so this is where they are
+// held together.
 func TestNotificationChannelsReachRemoteButStayHostProduced(t *testing.T) {
 	for _, channel := range []eventchan.Channel{
 		eventchan.NotificationSend,
@@ -248,8 +250,8 @@ func TestNotificationChannelsReachRemoteButStayHostProduced(t *testing.T) {
 			t.Errorf("%s retention = %v, want %v", channel, got, RetentionDefault)
 		}
 	}
-	if !LocalOnlyMethods["NotificationActivated"] {
-		t.Error("NotificationActivated left LocalOnlyMethods while notification:activated reaches remote clients: " +
-			"a LAN peer could now steer every attached client's pane focus")
+	if got := classify("NotificationActivated").Scope; got != ScopeHost {
+		t.Errorf("NotificationActivated carries scope %q while notification:activated reaches remote clients: "+
+			"any session granted %[1]q could now steer every attached client's pane focus", got)
 	}
 }

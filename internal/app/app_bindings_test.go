@@ -347,8 +347,9 @@ func TestCreateThreadInheritsWorktreeAndBranch(t *testing.T) {
 // CreateThread rejects a WorktreePath that isn't actually a registered
 // worktree of the project. Without this check, a misbehaving (or future
 // careless) caller could spawn a provider session with WorkDir set to
-// any path on disk — directly under LocalOnlyMethods is enough for now,
-// but defense in depth is cheap.
+// any path on disk. The method's scope narrows WHO may ask, but the
+// path itself still has to be one the project owns; defense in depth is
+// cheap.
 func TestCreateThreadRejectsUnknownWorktreePath(t *testing.T) {
 	app := newTestAppWithStore(t)
 	repo := testutil.InitGitRepo(t)

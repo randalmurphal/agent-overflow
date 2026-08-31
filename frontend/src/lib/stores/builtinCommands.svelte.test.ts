@@ -999,7 +999,7 @@ describe('thread.search command', () => {
 // mod+shift+u toggles the account-switcher picker. Unlike thread.search there
 // is no `.close` twin — Modal's own Escape closes it — so the single command
 // has to toggle. Its `when` is the view-only gate: every provider-account RPC
-// is LocalOnly on the transport, so the command must be DISABLED in a
+// needs `access:admin`, so the command must be DISABLED in a
 // view-only session rather than opening a picker that can't act.
 
 describe('provider.switchAccount command', () => {

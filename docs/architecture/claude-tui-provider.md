@@ -221,8 +221,8 @@ branch.
 - Loopback-only endpoint, authenticated by a **per-session capability token**
   minted at launch and handed to the hook via env. Reject any call without the
   exact token, and any call whose origin is a browser/LAN peer.
-- The relay's App-bound methods → `internal/transport/internalmethods.go`
-  `LocalOnlyMethods` (refused from non-loopback peers).
+- The relay's App-bound methods carry `//ao:scope host` — the scope no
+  session may be granted, so no remote caller reaches them however it paired.
 - Hook payloads and wire bodies are secret-bearing; nothing credential-bearing
   is logged. AO must never collect Claude.ai credentials nor expose them to
   `--connect` remote clients.
@@ -537,8 +537,8 @@ Registration (the seam already anticipates a third provider:
    listener, and relay, analogous to the Codex arm's handler wiring.
 3. The `session` wrapper struct gains a `claudetui` typed pointer; its
    interface-dispatch sites pick it up via the shared `provider.Session`.
-4. The relay's App-bound methods → `//ao:scope terminal:operate`, which
-   derives local-only.
+4. The relay's App-bound methods → `//ao:scope terminal:operate`, so only a
+   session granted that scope reaches them.
 5. `docs/references/claude.md` / `providers.md`: document the TUI path.
 
 Provider-package discipline (unchanged): the package returns normalized
@@ -612,7 +612,7 @@ bump). Use the spike harness in `spike/claude-mitm/`.
 - [`providers.md`](providers.md): the existing two-provider process model.
 - [`how-to.md#add-a-new-provider-adapter`](how-to.md#add-a-new-provider-adapter): the
   new-provider playbook this follows.
-- [`invariants.md`](invariants.md): transport boundary, `LocalOnlyMethods`,
-  dev-watcher exclusions.
+- [`invariants.md`](invariants.md): transport boundary, the per-call scope
+  gate, dev-watcher exclusions.
 - `internal/provider/claude/`: the headless provider whose parser this reuses.
 - `internal/terminal/`: the PTY substrate for launch, attach, and take-control.

@@ -3,7 +3,7 @@
 The Wails surface has five methods: `ListProviderAccounts`,
 `LoginProviderAccount`, `SwitchProviderAccount`, `RemoveProviderAccount`, and
 `RefreshProviderAccountUsage`. The migration keeps those exact root receivers,
-DTOs, comments, RPC hashes, and `LocalOnlyMethods` entries.
+DTOs, comments, RPC hashes, and `//ao:scope access:admin` annotations.
 
 ## Ownership cut
 

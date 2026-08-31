@@ -3,9 +3,9 @@
   // — so the section is a project picker over a single editor rather than a
   // nested tab set.
   //
-  // The bindings behind the editor are LocalOnly (they configure argv commands
-  // that run unattended on every worktree this project cuts), so a view-only
-  // remote session cannot call them at all. The picker says so instead of
+  // The binding behind the editor carries //ao:stepup (it configures argv
+  // commands that run unattended on every worktree this project cuts), so no
+  // standing grant reaches it from a remote session. The picker says so instead of
   // rendering an editor whose every save would fail.
 
   import { onMount } from 'svelte';

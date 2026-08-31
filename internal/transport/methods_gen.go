@@ -29,8 +29,8 @@ type MethodMeta struct {
 
 // GeneratedMethods is the static, sorted-by-name list of every method
 // the dispatcher should expose. Use NewMethodAllowList to build a
-// dispatcher allow-list from this set, and LocalOnlyMethods for the
-// reachability cut derived from the scopes.
+// dispatcher allow-list from this set; the Scope column is what
+// AuthorizeSessionMethod compares a session's grants against.
 var GeneratedMethods = []MethodMeta{
 	{Name: "AddRemoteEndpoint", ID: 893963951, Scope: "settings:write"},                           // main.App.AddRemoteEndpoint
 	{Name: "AppendUIRenderTraceBatch", ID: 2157691816, Scope: "host"},                             // main.App.AppendUIRenderTraceBatch

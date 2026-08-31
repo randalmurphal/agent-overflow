@@ -155,7 +155,7 @@ describe('loadProviderAccounts', () => {
   });
 
   it('asks for nothing in a view-only session, and stops reporting as loading', async () => {
-    // The RPC is LocalOnly, so it can only be refused — and this load runs
+    // The RPC needs `access:admin`, so it can only be refused — and this load runs
     // unprompted at startup, where the refusal would be an unexplained toast.
     const listMock = setBindingMock('ListProviderAccounts', async () => [account()]);
     setPageGrantsFromBootstrap(true);

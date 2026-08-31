@@ -442,8 +442,8 @@ verbatim: it is the point of the command, the header above it already says what
 it is, and quoting prose into `\n` escapes would make it unreadable.
 
 Both verbs take the same grants as `run status` (`introspect`, or `start-run`
-for a run this phase started) and are `LocalOnly`: a wider view of a run the
-caller may already see is not a wider set of runs.
+for a run this phase started) and stay off the observe tier: a wider view of a
+run the caller may already see is not a wider set of runs.
 
 ## Parsing
 

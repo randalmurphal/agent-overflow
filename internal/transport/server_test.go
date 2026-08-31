@@ -262,11 +262,14 @@ func TestServer_BootstrapRemoteUsesPeerLocality(t *testing.T) {
 	}
 }
 
-func TestDispatcher_WorkflowReadsAreRemoteSafe(t *testing.T) {
-	d := NewDispatcher()
-	if _, err := d.Register(&privilegedApp{}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
+// TestWorkflowReadsAndPauseSplitOnScope re-states at the scope gate what
+// the origin partition used to say by receiver: a remote client may WATCH
+// a campaign it is not on the machine for, and may not pause the engine
+// for everybody. `threads:read` carries the reads; the global pause is
+// `threads:autonomy`, so a read-only session is told which grant it
+// lacks rather than that the method does not exist.
+func TestWorkflowReadsAndPauseSplitOnScope(t *testing.T) {
+	readOnly := []string{string(ScopeThreadsRead)}
 
 	for _, name := range []string{
 		"WorkflowListItems",
@@ -276,15 +279,17 @@ func TestDispatcher_WorkflowReadsAreRemoteSafe(t *testing.T) {
 		"WorkflowGetJobNotes",
 		"WorkflowGetEngineState",
 	} {
-		if _, frameErr := d.ResolveForOrigin(0, name, false); frameErr != nil {
-			t.Errorf("non-loopback resolve %s: %+v", name, frameErr)
+		if frameErr := AuthorizeSessionMethod(readOnly, name, false); frameErr != nil {
+			t.Errorf("off-host read-only session refused %s: %+v", name, frameErr)
 		}
 	}
 
-	if _, frameErr := d.ResolveForOrigin(0, "WorkflowSetGlobalPause", false); frameErr == nil {
-		t.Fatal("non-loopback peer resolved WorkflowSetGlobalPause mutation")
-	} else if frameErr.Code != ErrCodeMethodNotFound {
-		t.Fatalf("WorkflowSetGlobalPause error code = %q, want %q", frameErr.Code, ErrCodeMethodNotFound)
+	frameErr := AuthorizeSessionMethod(readOnly, "WorkflowSetGlobalPause", false)
+	if frameErr == nil {
+		t.Fatal("a read-only session paused the whole engine")
+	}
+	if frameErr.Code != ErrCodeScopeRequired || frameErr.Scope != string(ScopeThreadsAutonomy) {
+		t.Fatalf("refusal = {%s, %s}, want {%s, %s}", frameErr.Code, frameErr.Scope, ErrCodeScopeRequired, ScopeThreadsAutonomy)
 	}
 }
 
@@ -1696,16 +1701,20 @@ func TestServer_SetOriginPatterns_LiveRotation(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
 }
 
-// TestServer_LocalOnlyMethodEnforcement_LoopbackPathAllowed proves the
-// wire-level dispatch routes a LocalOnlyMethods call from a real
-// loopback peer through to the receiver. The serverFixture binds on
-// 127.0.0.1, so any connection it accepts is by definition loopback —
-// dialling it via websocket.Dial drives the same RemoteAddr capture
-// path production uses.
-func TestServer_LocalOnlyMethodEnforcement_LoopbackPathAllowed(t *testing.T) {
+// TestServer_HostToolingReceiverAnswersALoopbackPeer proves the
+// wire-level dispatch routes a call on a RegisterOptions{LocalOnly}
+// receiver from a real loopback peer through to that receiver. The
+// serverFixture binds on 127.0.0.1, so any connection it accepts is by
+// definition loopback — dialling it via websocket.Dial drives the same
+// RemoteAddr capture path production uses.
+//
+// The receiver-level option is the ONLY locality gate left on the
+// dispatcher (wave 6d2 deleted the per-method partition), and the
+// harness is its only user, so this is the whole of what the origin
+// rule now decides on a live connection.
+func TestServer_HostToolingReceiverAnswersALoopbackPeer(t *testing.T) {
 	d := NewDispatcher()
-	app := &privilegedApp{}
-	if _, err := d.Register(app, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+	if _, err := d.Register(&localOnlyReceiver{}, RegisterOptions{Package: "main", TypeName: "Harness", LocalOnly: true}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	bus := NewEventBus(20)
@@ -1728,13 +1737,10 @@ func TestServer_LocalOnlyMethodEnforcement_LoopbackPathAllowed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
 
-	// OpenTerminal is in LocalOnlyMethods. From a 127.0.0.1 peer the
-	// dispatcher must allow it (the embedded webview path is the
-	// canonical user).
 	frame := ClientFrame{
 		Type:     frameTypeRPC,
 		ID:       "loopback-1",
-		MethodID: fnvHash("main.App.OpenTerminal"),
+		MethodID: fnvHash("main.Harness.Ping"),
 	}
 	buf, _ := json.Marshal(frame)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1755,7 +1761,7 @@ func TestServer_LocalOnlyMethodEnforcement_LoopbackPathAllowed(t *testing.T) {
 			continue
 		}
 		if resp.Error != nil {
-			t.Fatalf("loopback peer refused privileged method: %+v", resp.Error)
+			t.Fatalf("loopback peer refused a host-tooling method: %+v", resp.Error)
 		}
 		return
 	}

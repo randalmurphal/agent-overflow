@@ -227,9 +227,9 @@ type connHandler struct {
 // disconnects or ctx is cancelled. Blocks until done.
 //
 // profile is captured at upgrade time and carries per-connection
-// transport policy. profile.isLoopback is forwarded to every
-// dispatcher resolution so LocalOnlyMethods gets enforced for
-// non-loopback peers.
+// transport policy. profile.isLoopback is forwarded to every dispatcher
+// resolution (host-tooling receivers, redacted error text) and to the
+// scope gate, where it is what a step-up proof resolves to this phase.
 func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus *EventBus, settings connSettings, profile connProfile) {
 	if settings.readLimit <= 0 {
 		settings.readLimit = DefaultReadLimit
@@ -644,11 +644,14 @@ func (h *connHandler) dispatchRPC(ctx context.Context, frame ClientFrame) {
 // name) and writes the response. Errors from the dispatcher already
 // arrive as FrameError values — we don't need to translate.
 //
-// ResolveForOrigin enforces LocalOnlyMethods against the per-conn
-// isLoopback flag. A non-loopback peer attempting a privileged method
-// gets ErrCodeMethodNotFound (matching an unregistered method) rather
-// than a distinct forbidden code, so the privileged surface stays
-// unenumerable from the LAN.
+// Two gates run in order, and they answer different questions.
+// ResolveForOrigin judges the RECEIVER against the per-conn isLoopback
+// flag: a non-loopback peer calling into a RegisterOptions{LocalOnly}
+// receiver (host tooling — the harness) gets ErrCodeMethodNotFound,
+// matching an unregistered method rather than a distinct forbidden code,
+// so that surface stays unenumerable off-host. authorizeSession then
+// judges the CALL against the session's grants, and its refusals DO name
+// what is missing, because the caller is already authenticated.
 func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	method, fe := h.dispatcher.ResolveForOrigin(frame.MethodID, frame.Method, h.profile.isLoopback)
 	if fe != nil {

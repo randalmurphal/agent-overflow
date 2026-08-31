@@ -256,8 +256,8 @@ fine off-host. So `handleWS` requires a non-loopback peer to NAME a live durable
 session (spec §4, "Local clients") — through the spent `?ticket=`, the
 `X-AO-Session` header, or the `ao_session_<port>` cookie, the three carriers
 `SessionForRequest` already reads. Locality is `loopback.PeerAddress` over the
-kernel-reported peer, the same predicate `LocalOnlyMethods` and the event filter
-use.
+kernel-reported peer, the same predicate the event filter, the step-up proof and
+`internal/app`'s `bindingAdmitsPeer` use.
 
 | Peer | Presents | Upgrade |
 |---|---|---|

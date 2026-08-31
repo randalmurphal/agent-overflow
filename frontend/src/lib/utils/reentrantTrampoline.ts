@@ -58,7 +58,7 @@ export function createReentrantTrampoline(
           // count in the message would mint a signature per call site and per
           // count, which is unbounded map growth in the capture pipeline and a
           // walk around its per-signature cap. Console too — a remote session
-          // cannot persist (`ReportFrontendErrorBatch` is LocalOnly), and the
+          // cannot persist (`ReportFrontendErrorBatch` is host-scoped), and the
           // console line is then the only surviving evidence.
           const detail = `${name}, ${laps} laps`;
           console.warn(

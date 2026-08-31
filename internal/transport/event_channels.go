@@ -68,10 +68,10 @@ const (
 	// AudienceLoopbackOnly reaches loopback connections only. For frames
 	// carrying local filesystem paths, local-terminal bytes, provider
 	// identity/billing data, or imperative host directives. Note this is a
-	// THIRD DOOR concern independently of RPC classification: a channel's
-	// RPCs being in LocalOnlyMethods stops a LAN peer arming the stream,
-	// but once a local pane subscribes the push side fans out to every
-	// subscriber regardless of who armed it.
+	// THIRD DOOR concern independently of the per-call scope gate: a
+	// channel's RPCs being `host`-scoped stops an off-host session arming
+	// the stream, but once a local pane subscribes the push side fans out
+	// to every subscriber regardless of who armed it.
 	AudienceLoopbackOnly
 	// AudienceRemoteOnly reaches non-loopback connections only. For frames
 	// that exist purely to hide WAN round-trip latency and are pure waste
@@ -201,11 +201,12 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "Deliberately remote-visible. Remote clients can already call " +
-			"GetChannelMessages (not in LocalOnlyMethods), so pushing the same " +
-			"data discloses nothing a poll could not already read — it just " +
-			"saves the round-trip. PostChannelMessage is separately LocalOnly " +
-			"because dispatching a turn prompt is session control, not a read.",
+		Why: "Deliberately remote-visible. A session granted threads:read can " +
+			"already call GetChannelMessages, so pushing the same data " +
+			"discloses nothing a poll could not already read — it just saves " +
+			"the round-trip. PostChannelMessage sits a tier up in " +
+			"threads:operate, because dispatching a turn prompt is session " +
+			"control, not a read.",
 	},
 	{
 		Channel:   eventchan.DiscussionState,
@@ -353,8 +354,9 @@ var channelPolicies = []ChannelPolicy{
 			"exists, so an attached remote client follows the same reveal. " +
 			"The target names a thread or work item by id, which such a " +
 			"client already reads over its ordinary RPCs. PRODUCING one stays " +
-			"host-only — NotificationActivated is in LocalOnlyMethods — so a " +
-			"remote client can receive a reveal and never inject one. " +
+			"host-only — the NotificationActivated RPC is `host`-scoped, which " +
+			"no session may be granted — so a remote client can receive a " +
+			"reveal and never inject one. " +
 			"Retained, because a click can cold-launch the desktop window " +
 			"before its first connection; only a loopback page asks for that " +
 			"ring, since a remote page was not launched by a toast on this " +

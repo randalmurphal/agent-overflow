@@ -49,46 +49,54 @@ config writes, the WSL distro preference, and worktree-setup recipe writes
 turns a mandatory proof into an ambient standing grant and nothing else in the
 tree would notice.
 
-`internalmethods.go` holds the two things the dispatcher consults:
+`internalmethods.go` holds `InternalServiceMethods`: Wails framework hooks and
+`//wails:ignore` methods, never registered, as defense in depth beside the
+codegen filter. That is all it holds.
 
-- `InternalServiceMethods`: Wails framework hooks and `//wails:ignore` methods.
-  Never registered, as defense in depth beside the codegen filter.
-- `LocalOnlyMethods`: **derived** from the generated table — local-only when the
-  scope's tier is not observe, or when the method requires step-up.
-  `Dispatcher.ResolveForOrigin` refuses these from non-loopback peers with the
-  same `method_not_found` shape an unregistered method returns, so the
-  privileged surface stays unenumerable from the LAN.
+### One gate decides what an off-host caller reaches
 
-`transitionalReachability` is the only hand-edited reachability left, and it is
-migration scaffolding. The annotation wave was required to change no method's
-reachability, so the 43 methods whose honest scope disagreed with the partition
-they inherited were pinned there with a one-line reason each — every entry a live
-question for the enforcement work, not a settled classification. 35 remain: the
-enforcement wave's `settings:read` scope resolved eight of them, which is what
-deleting an entry looks like. The map only shrinks:
-`TestTransitionalOverridesAreLoadBearing` fails an entry that has stopped
-contradicting the derivation. Nothing new belongs in it; a new method takes the
-reachability its scope implies.
+**There is no per-method origin partition.** `LocalOnlyMethods`, the
+`transitionalReachability` override map, and the frozen `preScopeTableLocalOnly`
+list they were held against are deleted (wave 6d2). They existed because a
+launch-credential client could be off-host and unnamed, so "is this peer on this
+machine" was the only fact available to judge it by. It no longer is: wave 6d1's
+admission rule requires every non-loopback `/ws` upgrade to name a session, and
+`internal/app`'s `bindingAdmitsPeer` refuses a `loopback-only` session presented
+by a non-loopback peer. An off-host caller is therefore always a named session,
+and what it may call is the scope gate's answer.
 
-That preservation is itself pinned. `preScopeTableLocalOnly`
-(`reachability_test.go`) is the frozen local-only partition of 2026-08-31, and
-`TestLocalOnlyMethodsMatchTheFrozenPartition` names the direction of any drift —
-a method that GAINED local-only is a remote client losing a surface, one that
-LOST it is a privileged call answered over the LAN. Moving a method is then a
-deliberate line in a diff rather than a side effect of re-reading its scope.
+Deleting it changed reachability deliberately and in one direction: the twelve
+diff / workspace-content methods that were pinned local-only in 2026-05 now
+answer a session granted `files:read` (two of them `threads:read`), and the
+twenty-one thread / project / discussion bookkeeping mutations ride
+`threads:operate`. That is what those scopes are for.
+`TestWorkspaceContentAnswersASessionGrantedTheScope` and
+`TestBookkeepingMutationsRideThreadsOperate` (`reachability_test.go`) pin the new
+truth by name, and `TestHostScopedMethodsStayRefusedForEveryOffHostSession` pins
+the floor the deletion must not lower.
 
-The classification is the source of truth and method bodies do not re-check
-origin. A reverse proxy on the same host makes remote peers appear loopback and
-defeats this locality, so proxy from a different host instead.
+What survives on the dispatcher is `RegisterOptions{LocalOnly}`, which marks a
+whole RECEIVER rather than a method. The harness is its only user: host tooling
+registered unfiltered under `--harness`, carrying no `//ao:scope` annotations at
+all, so no grant could reach it even if a session tried.
+`Dispatcher.ResolveForOrigin` refuses it from a non-loopback peer with the same
+`method_not_found` shape an unregistered method returns, so that receiver stays
+unenumerable off-host (`dispatcher_localonly_test.go`). `isLoopback` still
+travels with the connection for two more reasons: `InvokeForOrigin` redacts
+method-error text for a non-loopback peer, and host presence is what a step-up
+proof resolves to this phase.
+
+Method bodies do not re-check origin. A reverse proxy on the same host makes
+remote peers appear loopback and defeats this locality, so proxy from a
+different host instead.
 
 ### The per-RPC scope gate
 
-`authorize.go` is the second gate, and it answers a different question. The
-ORIGIN gate above asks "is this peer on this machine". `AuthorizeSessionMethod`
-asks **"was this session granted this capability"**, and it runs only for a
+`authorize.go` is where that answer is computed. `AuthorizeSessionMethod` asks
+**"was this session granted this capability"**, and it runs only for a
 connection that named a durable session — a launch-credential client passes
-through untouched, because it names none. Both are live during the migration
-window; the origin gate is deleted when every client authenticates.
+through untouched, because it names none, and the admission rule already puts it
+on loopback.
 
 - **Nothing caches.** The grants are re-read per call through
   `Config.SessionScopes`, satisfied in `internal/app` over
@@ -455,8 +463,11 @@ header that is not a loopback name (`loopback.HostHeader` accepts only
 that resolves to 127.0.0.1, which is the case it exists for).
 
 **Peer locality is `loopback.PeerAddress(r.RemoteAddr)`**, captured before the
-upgrade and reused for `LocalOnlyMethods`, permessage-deflate selection, asset
-cache headers, and the manifest's `Remote` field. It reads the kernel-reported
+upgrade and reused for the host-tooling receiver refusal, the step-up proof,
+error-text redaction, permessage-deflate selection, asset cache headers, the
+local-channel cookie plant on `/bootstrap.json`, and the manifest's `Remote`
+field. `internal/app`'s `bindingAdmitsPeer` calls the same predicate on the
+presentation side. It reads the kernel-reported
 peer address, never a header, fails closed on an empty or unparseable one, and
 carries the same same-host-proxy caveat as above.
 
@@ -545,7 +556,7 @@ registry mechanics are in
   phase carrying the grants its workflow FROZE at start.
 - **Method table.** `ScopedTokenMethods` is a closed allow-list mapping method
   name to the grants that admit it. Anything absent — every non-workflow RPC,
-  every `LocalOnly` method outside the table — is `method_not_found` for a
+  every host-tooling method outside the table — is `method_not_found` for a
   scoped token, exactly as an unregistered method would be. An interactive
   scope may call everything listed; a phase scope needs one of the listed
   grants, and gets the typed `grant_required` refusal (`ErrCodeGrantRequired`)
@@ -560,7 +571,7 @@ registry mechanics are in
 Adding a method to `ScopedTokenMethods` widens what a compromised agent session
 can do. Do it only for methods whose row-level authorization is enforced from
 `CallerScopeFrom`, and only for a method whose scope already keeps it out of
-the observe tier — `TestScopedTokenMethodsAreLocalOnly` pins that, and
+the observe tier — `TestScopedTokenMethodsAreNotObserveTier` pins that, and
 `TestScopedTokenMethodsExistInGeneratedTable` catches a name that has drifted
 off the receiver. `GrantNotRequired`
 (`"*"`) marks a method whose authority is entirely row-level, admitting every
@@ -581,8 +592,9 @@ minute would read as a dead backend. Keep the ordering
 `Dispatcher.Register` accepts more than one receiver, and the only one besides
 `App` is the harness's `Harness` under `--harness`, registered with
 `RegisterOptions{LocalOnly: true}` so the whole receiver is refused for
-non-loopback peers. Registering another one has rules (boot-path gating, name
-collisions, receiver-level versus per-method classification):
+non-loopback peers — the only locality gate left on the dispatcher. Registering
+another one has rules (boot-path gating, name collisions, what a receiver with
+no scope annotations means):
 [docs/architecture/transport.md](../../docs/architecture/transport.md).
 
 ## Event-channel policy registry
@@ -708,8 +720,9 @@ A `receiverSpecs` entry's `Package` and `TypeName` are the FQN labels a method
 hashes under, not facts about where the code lives, so a service promoted into
 `internal/<pkg>` keeps `{Package: "main", TypeName: "App"}` and its IDs never
 move (`docs/architecture/root-decomposition.md` § Wire compatibility). Adding a
-spec widens both the production allow-list and the LAN-safety classification
-gate in `methods_gen_test.go`, which is why `Harness` is deliberately not one.
+spec widens the production allow-list and gives every method on it a scope
+row the per-call gate reads, which is why `Harness` is deliberately not one:
+receiver-level `LocalOnly` says no grant reaches host tooling at all.
 
 ## Per-connection policy and keepalive
 

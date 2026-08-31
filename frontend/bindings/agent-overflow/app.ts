@@ -885,8 +885,8 @@ export function GetContextSettings(providerName: string, model: string): $Cancel
 
 /**
  * GetDiffContextLines returns new-side source lines for review-diff
- * hunk-gap expansion. Same wire-exposure class as the diff getters:
- * classified LocalOnlyMethods.
+ * hunk-gap expansion. Same wire-exposure class as the diff getters: it
+ * answers a session granted `files:read`, and no other.
  */
 export function GetDiffContextLines(threadID: string, req: app$0.DiffContextRequest): $CancellablePromise<app$0.DiffContextResult> {
     return $Call.ByID(1590634674, threadID, req).then(($result: any) => {
@@ -1423,8 +1423,8 @@ export function GetUIState(): $CancellablePromise<{ [_ in string]?: string }> {
  * update reprices all history the next time this runs. Buckets with
  * UnpricedRows > 0 carry a model the rate table doesn't recognize —
  * the UI should label those buckets' CostUSD as a lower bound.
- * Not a LocalOnlyMethods entry: read-only aggregate data, safe for
- * remote clients.
+ * Read-only aggregate data, so it rides `threads:read` rather than a
+ * scope only this machine can satisfy.
  */
 export function GetUsageStats(query: store$0.UsageQuery): $CancellablePromise<store$0.UsageBucket[]> {
     return $Call.ByID(3135466533, query).then(($result: any) => {
@@ -1813,8 +1813,8 @@ export function HighlightPatch(req: app$0.HighlightPatchRequest): $CancellablePr
  * correctly because the parser has seen the opening. Content
  * resolution is best-effort: if the scope lookup fails (file gone at
  * ref, no local clone), the unprimed result is returned instead of an
- * error. LocalOnlyMethods category 1: it reads workspace/ref file
- * content by path; remote clients use HighlightPatch.
+ * error. It reads workspace/ref file content by path, so it rides
+ * `files:read`; a session without that grant uses HighlightPatch.
  */
 export function HighlightPatchWithContext(threadID: string, req: app$0.HighlightPatchContextRequest): $CancellablePromise<app$0.HighlightResult> {
     return $Call.ByID(3722752402, threadID, req).then(($result: any) => {
@@ -3735,7 +3735,7 @@ export function SwitchThread(threadID: string): $CancellablePromise<store$0.Thre
  * ListThreadSliceAround: it answers with the window only when the
  * caller's stamps prove it necessary. Store-read-only — it opens one
  * read-pool transaction and touches no local FS, process, or credential
- * state, so it is deliberately NOT in transport.LocalOnlyMethods.
+ * state, so it rides `threads:read` like the history it answers with.
  * 
  * The other paging RPCs are unchanged; this one covers the initial
  * window only.
@@ -4139,9 +4139,9 @@ export function UploadAttachment(threadID: string, filename: string, mimeType: s
  * deliberate divergence from click-time resolution, and it only errs
  * fail-closed: an over-cap file shows no arrow (snapshots never exceed
  * the cap either; only a huge pre-snapshot workspace file can hit it).
- * Same wire-exposure class as GetDiffContextLines: classified
- * LocalOnlyMethods; remote clients' rejection leaves every path
- * unexpandable, which is exactly what their clicks would find.
+ * Same wire-exposure class as GetDiffContextLines: `files:read`. A
+ * session without that grant is refused here and refused at click time
+ * too, so the arrows it sees match the expansions it can perform.
  */
 export function VerifyEditDiffs(threadID: string, req: app$0.VerifyEditDiffsRequest): $CancellablePromise<app$0.VerifyEditDiffsResult> {
     return $Call.ByID(3907724148, threadID, req).then(($result: any) => {
@@ -4153,7 +4153,7 @@ export function VerifyEditDiffs(threadID: string, req: app$0.VerifyEditDiffsRequ
  * Version returns the build-stamped semantic version (e.g. "0.0.1") or
  * "dev" for unstamped builds. The frontend's Settings footer reads
  * this to display the current release. Read-only, no FS / process /
- * settings touch — intentionally NOT in LocalOnlyMethods so a
+ * settings touch — deliberately an observe scope rather than `host`, so a
  * remote --connect client sees the backend's version too.
  */
 export function Version(): $CancellablePromise<string> {

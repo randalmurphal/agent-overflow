@@ -25,10 +25,14 @@ import (
 // not a device a person may revoke, and a device class this backend does
 // not pair is not one a mint may name.
 //
-// All of these are LocalOnlyMethods (CategoryDeviceAccess). Minting a
-// pairing link issues a credential and revoking one withdraws every
-// credential a device holds; neither belongs to a LAN-attached caller,
-// and the audit read is the map for both.
+// All eight carry `//ao:scope access:admin` — one annotation, so the
+// surface moves together or not at all. Minting additionally carries
+// //ao:stepup: issuing a credential that enrolls ANOTHER device is the
+// one call here that no standing grant may make, because a session that
+// could mint could enroll its way around its own revocation. Everything
+// else (revoke, restore, the audit read) is answerable to a device the
+// owner already granted `access:admin`, which is what makes revoking a
+// lost phone from the other phone possible at all.
 
 // accessAuditLimit is how much credential history one overview carries.
 // Fifty rows is a screenful of scrollback and covers the exchange a

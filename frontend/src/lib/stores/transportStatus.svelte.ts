@@ -136,12 +136,18 @@ export function isTemporarilyUnavailableError(err: unknown): boolean {
  * this caller".
  *
  * One wire shape covers two causes, deliberately: a genuinely
- * unregistered method, and a `LocalOnlyMethods` method refused to a
+ * unregistered method, and a method on a host-tooling receiver (the
+ * harness's, registered `RegisterOptions{LocalOnly: true}`) refused to a
  * non-loopback peer. `internal/transport/dispatcher.go` returns the
- * identical `method_not_found` envelope for both so a LAN scanner cannot
- * fingerprint which methods are privileged. Callers therefore read it as
- * "this capability isn't available on this session", never as a failure
- * to report.
+ * identical `method_not_found` envelope for both so a scanner cannot
+ * fingerprint which receivers exist. Callers therefore read it as "this
+ * capability isn't available on this session", never as a failure to
+ * report.
+ *
+ * It is NOT how an ordinary App method is refused for want of a grant:
+ * that is `scope_required`, which names the missing capability and is
+ * presented by ./transport/scopeRefusal.ts. A surface that wants to
+ * degrade quietly on either reads both.
  *
  * The discriminator is the wire error CODE (`ErrCodeMethodNotFound` in
  * `internal/transport/frame.go`), never message prose. Every other

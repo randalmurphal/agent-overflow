@@ -399,7 +399,7 @@ describe('architecture', () => {
       offenders,
       {},
       'New violations.',
-      `Call openInEditor() from ${OPEN_IN_EDITOR_OWNER} so view-only sessions cannot reach the LocalOnly RPC.`,
+      `Call openInEditor() from ${OPEN_IN_EDITOR_OWNER} so view-only sessions cannot reach the host-scoped RPC.`,
     );
   });
 

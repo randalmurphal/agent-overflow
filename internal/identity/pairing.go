@@ -41,13 +41,13 @@ import (
 //     second flow.
 //
 // The minting, confirming, and cancelling calls are host-side Go API: they
-// are reached from an authenticated admin surface running in this process
-// (docs/specs/remote-access.md §4 step 1). That surface is
-// internal/app/app_access.go, whose RPCs are classified
-// CategoryDeviceAccess and therefore answered only over loopback — a
-// LAN-attached credential-holder cannot reach them. Only the
-// device-facing half — redemption — crosses the network, because only it
-// is spoken by something that holds no credential yet.
+// are reached from an authenticated admin surface (internal/app's
+// app_access.go, docs/specs/remote-access.md §4 step 1) whose RPCs all
+// carry `//ao:scope access:admin`, and MINTING additionally carries
+// `//ao:stepup` — so a link can only be created by somebody at the
+// machine, whatever a session was granted. Only the device-facing half —
+// redemption — crosses the network as an unauthenticated route, because
+// only it is spoken by something that holds no credential yet.
 
 const (
 	// pairingTokenBytes is the entropy in a link token: 32 bytes, the same

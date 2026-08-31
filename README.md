@@ -170,10 +170,11 @@ A handful of opt-in modes extend that:
 host as the user that launched the binary.** The token never rides a page
 URL (a URL carries a one-time ticket, exchanged once for an HttpOnly
 cookie), so page script cannot read a credential back out; that narrows
-how a credential leaks, not what one is worth. The transport's
-`LocalOnlyMethods` set refuses a narrow surface (terminal spawn, git
-mutators, settings writes, credential retrieval) for non-loopback peers —
-that's defense-in-depth against a leak on a shared LAN, not a security
+how a credential leaks, not what one is worth. A peer that is not on this
+machine has to name a paired device's session, and every call it makes is
+checked against that session's granted scopes — with a `host` tier
+(terminal spawn, editor open, updater, credential retrieval) that no
+session can be granted at all. That's defense-in-depth, not a security
 boundary you can expose to the public internet.
 
 For non-trusted networks, deploy behind a tunnel that handles

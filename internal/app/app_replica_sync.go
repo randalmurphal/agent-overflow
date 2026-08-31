@@ -69,7 +69,7 @@ type SyncThreadWindowResponse struct {
 // ListThreadSliceAround: it answers with the window only when the
 // caller's stamps prove it necessary. Store-read-only — it opens one
 // read-pool transaction and touches no local FS, process, or credential
-// state, so it is deliberately NOT in transport.LocalOnlyMethods.
+// state, so it rides `threads:read` like the history it answers with.
 //
 // The other paging RPCs are unchanged; this one covers the initial
 // window only.

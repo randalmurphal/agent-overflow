@@ -7,9 +7,9 @@
   // Pending state is thread-entity state in threadTitleGeneration (the run
   // outlives this component and its completion arrives as an event), so the
   // spinner survives pane switches and a remount mid-run resumes spinning.
-  // RegenerateThreadTitle runs provider CLIs on the host (LocalOnlyMethods),
-  // so a remote view-only session gets a disabled button rather than an RPC
-  // the transport would refuse.
+  // RegenerateThreadTitle runs provider CLIs on the host, so it rides
+  // `threads:operate`: a remote view-only session gets a disabled button
+  // rather than an RPC the transport would refuse.
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Icon from '../primitives/Icon.svelte';
   import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';

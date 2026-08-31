@@ -144,8 +144,9 @@ export {
   SetNetworkSettings,
 
   // Device access (Settings → Network → Devices): the paired-device
-  // list, the pairing lifecycle, and revocation. Every one of these is
-  // CategoryDeviceAccess — callable only from the backend's own screen.
+  // list, the pairing lifecycle, and revocation. Every one needs
+  // `access:admin`; MintDevicePairing also needs a host-presence proof,
+  // so a link can only be created from the backend's own screen.
   GetAccessOverview,
   MintDevicePairing,
   DevicePairingStatus,
@@ -398,9 +399,9 @@ export {
   UnarchiveProject,
   UpdateProjectSortPositions,
 
-  // Session import (provider session files → AO threads). All five are
-  // LOCAL-ONLY: they read the provider homes and name file paths, so a
-  // remote client gets a method_not_found refusal and the surface has to
+  // Session import (provider session files → AO threads). All five ride
+  // `threads:operate`: they read the provider homes and name file paths,
+  // so a session without that grant is refused and the surface has to
   // stay disabled there (stores/sessionImport.svelte.ts refuses first).
   // ImportSessions starts an ASYNC run — progress arrives on the
   // `session-import:progress` channel, never as a return value.
@@ -422,7 +423,7 @@ export {
   TriggerMcpAuth,
   TriggerWorkspaceMcpAuth,
 
-  // In-app self-update (internal/appupdate, via root bindings). LocalOnly — loopback callers only.
+  // In-app self-update (internal/appupdate, via root bindings). `host`-scoped — no grant reaches them.
   CheckForUpdate,
   ListReleases,
   DownloadUpdate,

@@ -296,9 +296,9 @@ Accepted as v1 product behavior; each becomes spec text in the final fold-in:
   watchdog both consume it.
 - Phase threads get a new `threads.mode` value `workflow` (Rebuild migration) so
   their exclusion from normal lists is principled, not filtered by convention.
-- Transport: new bound methods classified `LocalOnlyMethods` (session-control
-  class); state changes ride a new typed `workflow:*` channel (no generic
-  passthrough), following the documented add-a-channel path.
+- Transport: new bound methods annotated `//ao:scope threads:autonomy`
+  (session-control class); state changes ride a new typed `workflow:*` channel
+  (no generic passthrough), following the documented add-a-channel path.
 - CLAUDE.md updates at implementation start: Core Principle 1 gains the workflow
   engine as the second named coordination exception; the "Deferred" entry is
   removed.
@@ -529,11 +529,12 @@ mixed into normal chats.
    the drain-summary notification deep-links into it.
 4. *Step mode:* a checkbox on intake ("pause at every gate") + a per-workflow
    default in its definition.
-5. *Remote access posture:* workflow mutation methods classify LocalOnly like
-   the session-control methods they wrap → remote browsers get view-only
-   workflows v1, consistent with AO's existing remote posture. Remote
-   gate-approval is a possible later relaxation (decision + DB write only,
-   deferred finalize), explicitly not v1.
+5. *Remote access posture:* workflow mutation methods carry
+   `//ao:scope threads:autonomy` like the session-control methods they wrap →
+   a session not granted it gets view-only workflows, consistent with AO's
+   existing remote posture. Remote gate-approval is a possible later
+   relaxation (decision + DB write only, deferred finalize), explicitly not
+   v1.
 6. *Invalid definitions at intake:* the workflow picker lists broken definitions
    greyed-out with their first validation error; enqueue is blocked.
 7. *Failed/cancelled worktree cleanup:* run detail's action row includes
@@ -761,8 +762,8 @@ verdict it now is, with what the first attempt got wrong.
     does not explain the refusal (the checkout is clean, or the question
     itself failed), git broke rather than refused, and its own words are
     reported unchanged rather than replaced by a guess.
-  - `App.ProjectDeletionPreview` (`app_project_delete_workflow.go`, LocalOnly)
-    describes that cleanup before it runs: the run count, the runs still in
+  - `App.ProjectDeletionPreview` (`app_project_delete_workflow.go`,
+    `//ao:scope git:operate`) describes that cleanup before it runs: the run count, the runs still in
     flight, the automation count, and one row per checkout with its path, its
     branch, its uncommitted-file count, and whether it will be retained. It
     mutates nothing. It shares the *target collection* with the D23 discard
@@ -782,7 +783,7 @@ verdict it now is, with what the first attempt got wrong.
   **Rework note (2026-07-25).** The first implementation of D25 shipped as
   *refuse then cascade*: `DeleteProject` refused a project that owned workflow
   work with a typed error, a second `DeleteProjectDiscardingWorkflowWork`
-  method (LocalOnly) consented to it, and consenting ran the full D23 discard
+  method consented to it, and consenting ran the full D23 discard
   (forced worktree removal **and branch deletion**) across every run tree the
   project owned, behind a loss dialog listing unmerged commits. That was
   reworked the same day, on the user's ruling, to the cleanup above.
@@ -800,10 +801,10 @@ verdict it now is, with what the first attempt got wrong.
 
   Everything the consent machinery existed for went with it: because nothing
   the deletion does is unrecoverable, there is nothing to gate. The typed
-  refusal, the second method, and the LocalOnly row that classified it are
-  deleted; the preview stays LocalOnly because it still reads local checkouts
-  and their uncommitted paths, and `DeleteProject` stays wire-reachable as it
-  always was. The rule is pinned two ways in
+  refusal, the second method, and the reachability row that classified it are
+  deleted; the preview rides `git:operate` because it still reads local
+  checkouts and their uncommitted paths, and `DeleteProject` stays ordinary
+  project bookkeeping under `threads:operate` as it always was. The rule is pinned two ways in
   `app_project_delete_workflow_test.go`: the branch set of the fixture
   repository is asserted unchanged across a deletion that removes checkouts,
   and `TestProjectDeletionSourceCallsNoBranchDeletion` parses the three files

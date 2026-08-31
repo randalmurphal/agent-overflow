@@ -196,8 +196,8 @@ AO can also DRIVE this transition rather than only observe it:
 "background_tasks", tool_use_id}` and verifies
 `response.backgrounded == true`. A `false` is the provider saying no
 foreground task matched, which is an error, not a silent no-op.
-`App.BackgroundClaudeTask` is the bound method behind it (local-only,
-same class as `StopClaudeTask`). The `task_updated` and
+`App.BackgroundClaudeTask` is the bound method behind it
+(`threads:operate`, same class as `StopClaudeTask`). The `task_updated` and
 `background_tasks_changed` pushes arrive BEFORE the control response, so
 the row is already stamped by the time the call returns.
 

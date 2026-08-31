@@ -14,7 +14,7 @@ import (
 // Version returns the build-stamped semantic version (e.g. "0.0.1") or
 // "dev" for unstamped builds. The frontend's Settings footer reads
 // this to display the current release. Read-only, no FS / process /
-// settings touch — intentionally NOT in LocalOnlyMethods so a
+// settings touch — deliberately an observe scope rather than `host`, so a
 // remote --connect client sees the backend's version too.
 //
 //ao:scope threads:read

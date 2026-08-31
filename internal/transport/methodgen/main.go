@@ -95,7 +95,8 @@ func (s receiverSpec) fqnType() string {
 // registration — while Harness registers unfiltered, receiver-level
 // LocalOnly, and only under the --harness boot path. Listing it here
 // would put boot-mode-only methods into the production allow-list and
-// into the LAN-safety classification gate that partners it.
+// give them scope rows, which is the opposite of what receiver-level
+// LocalOnly says about them: no grant reaches host tooling.
 var receiverSpecs = []receiverSpec{
 	{Dir: "internal/app", Receiver: "App", Package: "main"},
 }
@@ -579,8 +580,8 @@ type MethodMeta struct {
 
 // GeneratedMethods is the static, sorted-by-name list of every method
 // the dispatcher should expose. Use NewMethodAllowList to build a
-// dispatcher allow-list from this set, and LocalOnlyMethods for the
-// reachability cut derived from the scopes.
+// dispatcher allow-list from this set; the Scope column is what
+// AuthorizeSessionMethod compares a session's grants against.
 var GeneratedMethods = []MethodMeta{
 `)
 	for _, e := range entries {

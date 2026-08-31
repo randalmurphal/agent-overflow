@@ -39,12 +39,12 @@
 // repo-root `App` type only; `Harness` is deliberately not scanned, which
 // is what keeps harness RPCs out of the production binding surface
 // entirely. Teaching the generator a second receiver to reach ONE method
-// would put a LocalOnly, harness-only call into `frontend/bindings/` for
+// would put a host-tooling, harness-only call into `frontend/bindings/` for
 // every build, where the architecture rules would then have to carve it
 // out by name. `Call.ByName` goes through `wsClient.callByName`, which
 // emits the identical `{type:"rpc", id, method, params}` frame the
 // generated `Call.ByID` wrappers emit — same socket, same dispatcher,
-// same LocalOnly authorization check on the Go side. Nothing about the
+// same receiver-level LocalOnly check on the Go side. Nothing about the
 // transport boundary is bypassed; only the method IDENTIFICATION differs,
 // and a name is what the harness client and `ao-harness` already use.
 //

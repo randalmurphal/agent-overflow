@@ -345,8 +345,7 @@ in-flight-turn race the feature makes benign rather than eliminates:
   participant's own child thread, not mirrored into the (concluded)
   channel.
 
-`ConcludeDiscussion` is `LocalOnly` in
-`internal/transport/internalmethods.go`, same class as
+`ConcludeDiscussion` rides `threads:operate`, same class as
 `PostChannelMessage`: it is lifecycle control over the deliberation's
 coordination state (it removes the live FSM and can race an in-flight
 participant turn), not a plain data read.
@@ -454,16 +453,15 @@ Two wire events keep the frontend live-updated instead of polling
   a deliberation channel) falls back to recomputing just the turn count
   and roster directly from SQLite.
 
-Both are wire-safe (not `LocalOnly`) the same way `GetChannelMessages`
-and `GetChannelState` are: read-only projections of state a LAN client
-is already allowed to poll for.
+Both are observe-tier (`threads:read`) the same way `GetChannelMessages`
+and `GetChannelState` are: read-only projections of state a session
+granted that scope is already allowed to poll for.
 
-`PostChannelMessage`, however, **is** `LocalOnly`: unlike a pure
+`PostChannelMessage`, however, rides `threads:operate`: unlike a pure
 persistence call, it can now dispatch a live prompt into a
 participant's provider session (`maybePromptNextDiscussionSpeaker` →
 `promptDiscussionSpeakerAsync` → `a.sendMessage`), which puts it in the
-same risk class as `SendMessage`. See the category-2 comment in
-`internal/transport/internalmethods.go`.
+same class as `SendMessage`.
 
 ## Why This Lives in Go
 

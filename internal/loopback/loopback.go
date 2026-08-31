@@ -105,7 +105,10 @@ func HostHeader(host string) bool {
 // deployment is to proxy from a different host.
 //
 // Callers: internal/transport (the per-connection flag that gates
-// LocalOnlyMethods, and the /rpc route's own check),
+// host-tooling receivers, error-text redaction and the step-up proof,
+// plus the /rpc route's own check), internal/app's bindingAdmitsPeer
+// (which compares a session's binding class against the peer that
+// presented it),
 // internal/browser's MCP endpoint, and internal/provider/claudetui's
 // hook relay and upstream gateway. For the last three it is the entire
 // admission decision, not one check among several.

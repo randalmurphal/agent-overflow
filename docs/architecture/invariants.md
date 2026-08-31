@@ -1269,13 +1269,14 @@ run. The composed message itself is bounded and quoted per invariant 34.
   cannot outlive the process it was minted for.
 - **Surface.** `transport.ScopedTokenMethods` is a closed allow-list
   mapping method name to the grants that admit it. Anything absent
-  (every non-workflow RPC, every `LocalOnly` method outside the table)
+  (every non-workflow RPC, every host-tooling method outside the table)
   is `method_not_found` for a scoped token. A phase scope additionally
   needs one of the listed grants and gets the typed `grant_required`
   refusal naming what to add; an interactive scope may call everything
   listed, because a human approves each invocation.
-- **Reach.** Every `ScopedTokenMethods` entry is also in
-  `LocalOnlyMethods`, and `/rpc` refuses non-loopback peers with a 404
+- **Reach.** No `ScopedTokenMethods` entry is observe-tier — a method an
+  unattended agent session may call must not ride a read-only session's
+  default grants either — and `/rpc` refuses non-loopback peers with a 404
   and does not honour the server's own session token.
 
 **Rationale.** The credential sits in the environment of a full-access
@@ -1296,7 +1297,7 @@ enforced by the bound methods from `CallerScopeFrom` in
 
 **Test.** `internal/transport/scopedtoken_test.go`:
 `TestScopedTokenMethodsNameOnlyKnownGrants` (grants exist in `def`'s
-closed set), `TestScopedTokenMethodsAreLocalOnly` (the LAN-reach
+closed set), `TestScopedTokenMethodsAreNotObserveTier` (the read-only-reach
 pairing), `TestAuthorizeScopedMethodByKindAndGrant`,
 `TestScopedRPCRouteAuthorizesAndRevokes`,
 `TestWebviewTokenIsNotAScopedToken`; `app_ao_session_test.go` for

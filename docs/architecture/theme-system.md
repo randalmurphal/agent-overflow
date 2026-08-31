@@ -280,8 +280,8 @@ recoloring, breaks under token renames).
 - **`keybindings.json` is the strongest precedent for a separate
   file**: own package + `Service` (`Get/Update/Reset`), own atomic
   write, defaults + user-override merge, read RPC deliberately
-  LAN-allowed while writes stay in `LocalOnlyMethods`. A theme read is
-  the same class as `GetKeybindings`; theme writes are local-only.
+  LAN-allowed (`settings:read`, observe tier) while writes need
+  `settings:write`. A theme read is the same class as `GetKeybindings`.
 - The in-flight prompt-overrides work establishes the in-`settings.json`
   alternative: typed sub-struct in its own file, `omitempty`, bounds
   consts, validate/sanitize dual, accessor methods. Collision risk with
@@ -429,8 +429,8 @@ window background, both carried into phase 2 below.
   atomic renames) → `theme:changed` emit → frontend re-resolves. This
   is the agent-edit loop. Errors are user-facing: a broken theme file
   surfaces a visible warning and falls back per-token, never silently.
-- **Native window background** binding (classified in
-  `LocalOnlyMethods`) + FOUC stamp for the first frame.
+- **Native window background** binding (`//ao:scope host` — it paints a
+  window on this desktop) + FOUC stamp for the first frame.
 - **Transport posture**: theme reads LAN-allowed (keybindings parity),
   writes need `settings:write`; a session without that grant renders with
   built-ins or the values the bootstrap/read path supplies.
@@ -494,8 +494,8 @@ Go is pipe and never parses theme JSON beyond `appearance.json`):
 - `GetThemeFiles() → { dir, themes: [{id, raw}], appearance,
   warnings: [string] }` is one RPC, LAN-read-allowed (keybindings
   parity). Unreadable files/dir problems land in `warnings`.
-- `SetAppearance(appearance)` is LOCAL-ONLY (`LocalOnlyMethods`),
-  atomic write, validated (mode enum, id shape, hex shape), sparse.
+- `SetAppearance(appearance)` needs `settings:write`, atomic write,
+  validated (mode enum, id shape, hex shape), sparse.
 - Watcher on `themes/` (template
   `app_workflow_definitions_watcher.go`: 250ms debounce, ignore own
   atomic renames) → `a.emit("theme:changed")`; frontend refetches.

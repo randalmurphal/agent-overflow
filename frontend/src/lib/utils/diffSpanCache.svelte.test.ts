@@ -169,7 +169,7 @@ describe('requestFileSpans', () => {
 
     // The primed attempt is recorded under the scoped key:
     // re-requesting with context is a cache hit, not another doomed
-    // LocalOnly round trip.
+    // priming round trip.
     await requestFileSpans(file, 'thread-1', workspaceContext);
     expect(primed).toHaveBeenCalledTimes(1);
     expect(unprimed).toHaveBeenCalledTimes(1);

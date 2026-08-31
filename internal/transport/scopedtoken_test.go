@@ -119,19 +119,24 @@ func TestGrantNotRequiredAdmitsEveryPhaseWhateverItsGrants(t *testing.T) {
 	}
 }
 
-// TestScopedTokenMethodsAreLocalOnly pins the pairing rule this package's
-// AGENTS.md states in prose: a method the `ao` CLI may call is by definition a
-// method that drives autonomous provider sessions, so it must also be refused
-// for non-loopback WebSocket peers. The scoped route is loopback-only on its
-// own, but the same method is reachable over `/ws`; without this check a new
-// entry could widen the LAN surface while looking like a CLI-only change.
+// TestScopedTokenMethodsAreNotObserveTier pins the pairing rule this
+// package's AGENTS.md states in prose, re-spelled in the vocabulary that
+// decides reachability now that the per-method origin partition is gone.
+// A method the `ao` CLI may call is by definition a method that drives
+// autonomous provider sessions; such a method must never be classified
+// observe-tier, because an observe scope is what a read-only session is
+// granted. The scoped route stays loopback-only on its own, but the same
+// method is also reachable over `/ws` — without this check a new entry
+// could land in `threads:read` and widen the read-only surface while
+// looking like a CLI-only change.
 //
-// Transitively this also proves every scoped method exists: LocalOnlyMethods is
-// checked against GeneratedMethods by TestLocalOnlyMethods_AllExist.
-func TestScopedTokenMethodsAreLocalOnly(t *testing.T) {
+// `classify` fails closed to `ScopeHost` for a name the generator never
+// emitted, which is not observe-tier, so a typo would pass here.
+// TestScopedTokenMethodsExistInGeneratedTable is what catches that.
+func TestScopedTokenMethodsAreNotObserveTier(t *testing.T) {
 	for method := range ScopedTokenMethods {
-		if !LocalOnlyMethods[method] {
-			t.Errorf("ScopedTokenMethods[%q] is not in LocalOnlyMethods: a method an unattended agent session may call must not be reachable from a LAN peer either — add it to internalmethods.go", method)
+		if scope := classify(method).Scope; scope.Tier() == TierObserve {
+			t.Errorf("ScopedTokenMethods[%q] is scoped %q, which is observe-tier: a method an unattended agent session may call must not ride a read-only session's default grants — give it an execute-tier or host //ao:scope", method, scope)
 		}
 	}
 }

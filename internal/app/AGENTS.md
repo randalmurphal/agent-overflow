@@ -17,8 +17,9 @@ labels: any of those changes every method ID.
 `internal/transport/methodgen` scans this directory but hashes methods under
 `main.App`. Every bound method here carries an `//ao:scope <name>` directive in
 its doc comment (plus `//ao:stepup` where the spec requires a per-call proof);
-the generator fails the run without one, and `transport.LocalOnlyMethods` is
-derived from those scopes rather than hand-listed. A bound method
+the generator fails the run without one, and that scope is the whole of what
+`transport.AuthorizeSessionMethod` compares a caller's grants against — there
+is no second, hand-listed reachability table. A bound method
 addition/removal must annotate it, regenerate Wails bindings with `-ts`,
 regenerate methodgen,
 and verify all existing `$Call.ByID` values remain stable unless a wire migration
@@ -156,10 +157,14 @@ are facts about this process rather than about a row:
   backend is the federation flow with its own trust decisions; admitting
   one here would give it the posture of an owner's own device.
 
-Every method is `CategoryDeviceAccess` in
-`internal/transport/internalmethods.go`, and
-`TestDeviceAccessSurfaceIsWholeAndLocalOnly` is the tripwire that keeps
-the set together. Minting ISSUES a credential, revoking withdraws
+Every method carries `//ao:scope access:admin`, which is what keeps the
+set together: one annotation, so the surface moves as a unit. Minting
+alone adds `//ao:stepup`, because issuing a credential that enrolls
+ANOTHER device is the one call a standing grant must not make — a session
+that could mint could enroll its way around its own revocation. The rest
+answer a device the owner granted `access:admin`, which is what makes
+revoking a lost phone from the other phone possible.
+Minting ISSUES a credential, revoking withdraws
 every credential a device holds, and restoring re-admits a revoked
 device's KEY to pairing without moving any credential (the revoked-key
 redemption refusal names it as the remedy); the overview read goes with them because
