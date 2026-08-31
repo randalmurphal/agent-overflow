@@ -143,6 +143,15 @@ export interface DisconnectedErrorInit {
 // this only ever truncates a peer that does not conform.
 const CLOSE_REASON_MAX = 123;
 
+// Distinct kinds of unrecognized wire input tracked for the debug tally.
+// Bounded because the kind label can be a frame type the peer chose: a
+// backend naming a new type on every frame must not be able to grow the
+// map. Past the cap the total still counts.
+const MAX_TRACKED_UNKNOWN_KINDS = 8;
+// Kind labels come off the wire, so they are clamped before they reach a
+// console line or the stats object.
+const UNKNOWN_KIND_LABEL_MAX = 64;
+
 // DisconnectedError is what we reject pending RPCs with when the socket
 // closes underneath them. Subclassing Error keeps `instanceof` checks
 // working at call sites; the `name` field is what most frontend code
@@ -570,6 +579,11 @@ export class WSClient {
   // with that backend's frame, which is the only case where the old
   // answer was wrong.
   private helloSnapshot: TransportHello | null = null;
+
+  // Forward-tolerance accounting: how much wire input this build could
+  // not address, and of what kinds. See noteUnknownInput.
+  private unknownInputTotal = 0;
+  private readonly unknownInputKinds = new Map<string, number>();
   private statusSnapshot: TransportStatusSnapshot = {
     status: 'disconnected',
     nextAttemptAt: null,
@@ -1164,12 +1178,31 @@ export class WSClient {
       }
       return;
     }
+    let parsed: unknown;
     try {
-      const frame = JSON.parse(text) as ServerFrame;
-      this.handleFrame(frame);
-    } catch (err) {
-      console.warn('wsClient: malformed frame', err);
+      parsed = JSON.parse(text);
+    } catch {
+      // Rate-limited, and NOT an error-level log: a peer emitting
+      // unparseable frames would otherwise write one console line per
+      // frame, and console spam during a wire problem buries the one
+      // line that explains it.
+      this.noteUnknownInput('unparseable');
+      return;
     }
+    // A frame is an object with a string `type`. Anything else — a JSON
+    // primitive, an array, null — is not addressable by this client and
+    // is counted rather than thrown on. `null` in particular would make
+    // every property read below throw.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      this.noteUnknownInput('non-object');
+      return;
+    }
+    const type = (parsed as { type?: unknown }).type;
+    if (typeof type !== 'string') {
+      this.noteUnknownInput('untyped');
+      return;
+    }
+    this.handleFrame(parsed as ServerFrame);
   }
 
   // handleSocketClose tears down after a socket dies: outage
@@ -1467,6 +1500,14 @@ export class WSClient {
   // handleFrame routes a parsed server frame. RPC responses are matched
   // by id; event pushes fan out to subscribers; batch frames iterate
   // their event array through the same per-event path.
+  //
+  // FORWARD TOLERANCE (docs/specs/remote-access.md §9): an unknown frame
+  // type is ignored and counted, never thrown on and never logged per
+  // frame. The swap window — an old bundle live against a just-updated
+  // backend for minutes — is a normal operating state, not a fault, so
+  // a client of this generation must run correctly against the next
+  // one's wire. Unknown FIELDS need no handling at all: nothing here
+  // enumerates a frame's properties.
   private handleFrame(frame: ServerFrame): void {
     if (frame.type === 'ping') {
       // Server keepalive heartbeat. The message listener already
@@ -1503,13 +1544,21 @@ export class WSClient {
       return;
     }
     if (frame.type === 'batch') {
+      // A batch whose `events` is absent or not an array would throw on
+      // iteration, and the throw would abandon the rest of the frame —
+      // dispatching a prefix and losing the remainder is worse than
+      // dropping the whole thing, because the seq cursor then lies.
+      if (!Array.isArray(frame.events)) {
+        this.noteUnknownInput('batch-without-events');
+        return;
+      }
       for (const evt of frame.events) {
         // Guard BEFORE building the ServerEventFrame shape: replay
         // buffering is live only during the brief post-reconnect window
         // and only for one rare channel, so the steady streaming state
         // (coalesced batches of up to 50 item deltas) must not pay a
         // throwaway spread copy per event just to probe it.
-        if (this.notificationReplayPending && evt.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
+        if (this.notificationReplayPending && evt?.channel === NOTIFICATION_ACTIVATED_CHANNEL) {
           this.notificationReplayBuffer.push({ type: 'event', ...evt });
           continue;
         }
@@ -1523,7 +1572,53 @@ export class WSClient {
       this.notificationReplayBuffer = [];
       this.notificationReplayPending = false;
       for (const event of buffered) this.handleEventEntry(event);
+      return;
     }
+    // A frame type this build has never heard of. Expected, not
+    // exceptional: see the forward-tolerance note above.
+    //
+    // The cast is the point rather than a workaround: ServerFrame
+    // enumerates the types THIS build knows, so the compiler narrows to
+    // `never` here and would happily let the branch read nothing. The
+    // whole reason the branch exists is that the runtime wire is not
+    // limited to what the type declares.
+    this.noteUnknownInput((frame as { type: string }).type);
+  }
+
+  // noteUnknownInput records one piece of wire input this build cannot
+  // address, and is the ONLY reaction to it.
+  //
+  // Counted, so the condition is observable and a future-dialect test can
+  // assert on it. Rate-limited to one console line per distinct kind, at
+  // debug level, because the alternative — a line per frame — turns a
+  // routine version skew into console spam that buries whatever else was
+  // going wrong. Never `error`: an unknown frame from a newer backend is
+  // the wire working as designed, and routing it to the always-on error
+  // log would fill that log with non-faults.
+  private noteUnknownInput(kind: string): void {
+    this.unknownInputTotal += 1;
+    const label = clampString(kind, UNKNOWN_KIND_LABEL_MAX);
+    const seen = this.unknownInputKinds.get(label);
+    if (seen !== undefined) {
+      this.unknownInputKinds.set(label, seen + 1);
+      return;
+    }
+    // Bounded: a peer that names a new type on every frame must not be
+    // able to grow this map without limit. Past the cap the total still
+    // counts, only the per-kind breakdown stops.
+    if (this.unknownInputKinds.size >= MAX_TRACKED_UNKNOWN_KINDS) return;
+    this.unknownInputKinds.set(label, 1);
+    console.debug(`wsClient: ignoring unrecognized wire input (${label})`);
+  }
+
+  /** Tally of wire input this build could not address, by kind. Read by
+   *  the future-dialect tests; a running client's counters are also the
+   *  quickest way to tell "skewed against a newer backend" from "broken". */
+  getUnknownInputStats(): { total: number; kinds: Record<string, number> } {
+    return {
+      total: this.unknownInputTotal,
+      kinds: Object.fromEntries(this.unknownInputKinds),
+    };
   }
 
   // applyHello records the connection's opening frame and publishes it.
@@ -1565,12 +1660,36 @@ export class WSClient {
 
   // handleEventEntry processes a single event entry — used by both
   // the regular event path and the batch iteration path.
+  //
+  // The shape check is not defensive padding. Everything below writes
+  // into `lastSeqByChannel`, and that map is echoed back to the server as
+  // the replay cursor on the next reconnect: an entry keyed `undefined`
+  // with a NaN seq serializes as `{"undefined": null}`, which the server
+  // decodes into map[string]uint64, fails, and answers `bad_params` — so
+  // one mis-shaped event from a newer backend would cost the client its
+  // entire gap-recovery handshake, silently, from then on. Validate at
+  // ingest and the cursor map can only ever hold real values.
+  //
+  // An event on a channel nobody subscribes to needs no check: dispatch
+  // is subscriber-keyed, so an unrecognized channel reaches no handler
+  // by construction. That is the steady state today, not an anomaly, and
+  // counting it would fire constantly.
   private handleEventEntry(evt: {
     channel: string;
     seq: number;
     data: unknown;
     gap?: boolean;
   }): void {
+    if (
+      typeof evt !== 'object'
+      || evt === null
+      || typeof evt.channel !== 'string'
+      || !Number.isSafeInteger(evt.seq)
+      || evt.seq < 0
+    ) {
+      this.noteUnknownInput('event-shape');
+      return;
+    }
     if (evt.gap === true) {
       // A gap marker is a resync instruction, not a data event, so it
       // is honoured BEFORE the dedup check and its seq is adopted in

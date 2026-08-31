@@ -50,6 +50,13 @@
 //   - close() during pending reconnect cancels the timer
 //   - subscriber-throw isolation; unsubscribe-during-dispatch
 //   - send-throw fails the matching pending RPC
+//   - forward tolerance (the future-dialect fixture): unknown frame
+//     types, unknown event channels, unknown fields on known frames and
+//     unaddressable shapes all counted rather than thrown on, with the
+//     known traffic still delivered in full and the console silent; the
+//     replay cursor stays free of the mis-shaped entries that would
+//     otherwise break gap recovery for the session; the per-kind tally
+//     is capped against a peer naming a new type every frame
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BootstrapRejectedError } from './bootstrap';
@@ -677,6 +684,187 @@ describe('WSClient', () => {
     expect(hello.serverTimeMs).toBe(0);
     expect(hello.clockSkewMs).toBe(0);
     expect(client.hasCapability('demo.feature')).toBe(true);
+
+    client.close();
+  });
+
+  // The future-dialect fixture (docs/specs/remote-access.md §9).
+  //
+  // The swap window — an old bundle live against a just-updated backend
+  // for minutes — is a normal operating state. This drives a recorded
+  // stream salted with everything the NEXT dialect could plausibly add
+  // and asserts the client keeps working: unknown frame types, unknown
+  // event channels, unknown fields on frames it does know, and shapes it
+  // cannot address at all. Nothing may throw, nothing may reach the
+  // error console, and no known-frame handling may be disturbed.
+  it('runs normally against a future dialect, and reports zero errors', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const known: unknown[] = [];
+    const futureChannel: unknown[] = [];
+    client.subscribe('thread:updated', (data) => known.push(data));
+    client.subscribe('future:channel', (data) => futureChannel.push(data));
+
+    const p = client.callByID(1, []);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const id = ws.sent.find((f) => f.type === 'rpc')!.id as string;
+
+    // A hello carrying fields this build has never seen, alongside the
+    // ones it has.
+    ws.pushFrame({
+      type: 'hello',
+      protocolVersion: 2,
+      capabilities: ['demo.feature'],
+      backendId: 'backend-uuid-1',
+      serverTimeMs: Date.now(),
+      negotiatedCiphers: ['x'],
+      leaseTtlMs: 30_000,
+    });
+
+    // Frame types from a dialect that does not exist yet.
+    ws.pushFrame({ type: 'lease', scopes: ['threads:read'], ttlMs: 30_000 });
+    ws.pushFrame({ type: 'push-token-request', nonce: 'abc' });
+    ws.pushFrame({ type: 'hello-again', protocolVersion: 3 });
+
+    // A known frame with unknown fields, and a known event on a channel
+    // this build never registered.
+    ws.pushFrame({
+      type: 'event',
+      channel: 'thread:updated',
+      seq: 1,
+      data: { id: 't1' },
+      deviceId: 'device-9',
+      originScope: 'threads:write',
+    });
+    ws.pushFrame({ type: 'event', channel: 'future:channel', seq: 1, data: { future: true } });
+    ws.pushFrame({ type: 'event', channel: 'nobody:listens', seq: 1, data: null });
+
+    // A batch mixing a known event with one on an unknown channel, plus
+    // an entry shape this build cannot address at all. The known event
+    // must still arrive — dropping a prefix or a suffix would leave the
+    // seq cursor lying about what was delivered.
+    ws.pushFrame({
+      type: 'batch',
+      events: [
+        { channel: 'thread:updated', seq: 2, data: { id: 't2' }, replicaEpoch: 4 },
+        { channel: 'future:channel', seq: 2, data: { future: true } },
+        { channel: 42, seq: 'soon', data: null },
+      ],
+      coalescedFrom: 3,
+    });
+
+    // Shapes that are not frames at all.
+    ws.pushRawText('not json at all');
+    ws.pushFrame(null);
+    ws.pushFrame([1, 2, 3]);
+    ws.pushFrame({ id: 'no-type-field' });
+
+    // The RPC still completes across all of it.
+    ws.pushFrame({ type: 'rpc', id, result: 'ok' });
+    await expect(p).resolves.toBe('ok');
+
+    // Known traffic was delivered in full, including the batch entries
+    // on either side of the unaddressable one.
+    expect(known).toEqual([{ id: 't1' }, { id: 't2' }]);
+    expect(futureChannel).toEqual([{ future: true }, { future: true }]);
+    // Unknown fields did not disturb the hello this build understands.
+    expect(client.getHello()?.backendId).toBe('backend-uuid-1');
+    expect(client.hasCapability('demo.feature')).toBe(true);
+
+    // Everything unaddressable was COUNTED, never thrown on.
+    const stats = client.getUnknownInputStats();
+    expect(stats.kinds).toMatchObject({
+      lease: 1,
+      'push-token-request': 1,
+      'hello-again': 1,
+      'event-shape': 1,
+      unparseable: 1,
+      'non-object': 2, // null and the array
+      untyped: 1,
+    });
+    expect(stats.total).toBe(8);
+
+    // Zero errors, and no per-frame warn spam either: a routine version
+    // skew must not fill the console.
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleWarn).not.toHaveBeenCalled();
+
+    // And the client is still usable afterwards — the point of the whole
+    // exercise is that the swap window is survivable, not merely quiet.
+    const after = client.callByID(2, []);
+    await flushMicrotasks();
+    const secondId = ws.sent.filter((f) => f.type === 'rpc')[1]!.id as string;
+    ws.pushFrame({ type: 'rpc', id: secondId, result: 'still working' });
+    await expect(after).resolves.toBe('still working');
+
+    client.close();
+  });
+
+  it('keeps the replay cursor clean when a future dialect sends an event it cannot address', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+
+    await vi.advanceTimersByTimeAsync(0);
+    const first = MockWebSocket.instances[0]!;
+    first.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 4, data: null });
+    // Channel and seq of a shape this build cannot read. Before the
+    // ingest check these landed in the cursor map as key "undefined" with
+    // a NaN seq, which serialized into the next replay request as
+    // {"undefined": null} — a map[string]uint64 decode failure that made
+    // the server refuse the WHOLE replay, costing the client its gap
+    // recovery for the rest of the session.
+    first.pushFrame({ type: 'event', seq: 5, data: null });
+    first.pushFrame({ type: 'event', channel: 'thread:updated', seq: 'later', data: null });
+
+    first.triggerClose(1006);
+    // Drain the reconnect timer (Math.random=0.5, attempt=0 -> 125ms).
+    await vi.advanceTimersByTimeAsync(125);
+    const second = MockWebSocket.instances[1]!;
+    second.acceptOpen();
+    await flushMicrotasks();
+
+    const replay = second.sent.find((f) => f.type === 'replay')!;
+    const cursors = replay.lastSeqByChannel as Record<string, unknown>;
+    expect(cursors['thread:updated']).toBe(4);
+    for (const [channel, seq] of Object.entries(cursors)) {
+      expect(typeof channel).toBe('string');
+      expect(channel).not.toBe('undefined');
+      expect(Number.isSafeInteger(seq)).toBe(true);
+    }
+
+    client.close();
+  });
+
+  it('bounds the unknown-kind tally against a peer naming a new frame type every frame', async () => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    for (let i = 0; i < 200; i += 1) {
+      ws.pushFrame({ type: `future-type-${i}` });
+    }
+
+    const stats = client.getUnknownInputStats();
+    // Every frame counted, but the per-kind breakdown is capped so the
+    // map cannot be grown without limit by the peer.
+    expect(stats.total).toBe(200);
+    expect(Object.keys(stats.kinds).length).toBeLessThanOrEqual(8);
 
     client.close();
   });

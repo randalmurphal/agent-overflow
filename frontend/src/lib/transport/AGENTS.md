@@ -33,8 +33,27 @@ remote browser alike. Protocol and authz rules:
   an answer. Ordinary reconnect recovery is the store-level suspension
   (`stores/entityStore.svelte.ts`), which re-asks for current state — do
   not build a second one.
+  **Wire input this build cannot address is expected, not exceptional.**
+  A tab stays loaded across a backend update, so an older bundle reading
+  a newer dialect is a normal operating state, and the client must not
+  throw, log at error/warn level, or corrupt state on an unknown frame
+  type, an unknown channel, an unknown field, or an entry whose shape it
+  cannot read. The single reaction is `noteUnknownInput`: a total plus a
+  bounded per-kind tally, one `console.debug` per distinct kind. Two
+  places where "ignore it" is not enough on its own — a `batch` missing
+  `events` must be dropped WHOLE, because dispatching a prefix and
+  throwing on the rest leaves the seq cursor claiming delivery that
+  never happened; and an event entry is shape-checked BEFORE it reaches
+  `lastSeqByChannel`, because that map is echoed back as the replay
+  cursor and one `undefined`/NaN entry makes the server reject every
+  future replay, costing gap recovery for the rest of the session. The
+  future-dialect fixture in `wsClient.test.ts` is the tripwire; add to it
+  rather than to a new file.
 - `frames.ts` is the TypeScript mirror of `internal/transport/frame.go`.
-  Change one and change the other in the same commit.
+  Change one and change the other in the same commit. Frames evolve
+  ADDITIVELY: a new optional field or a new frame type is safe because
+  of the tolerance above, while renaming or repurposing an existing one
+  is not, and no amount of client tolerance makes it so.
 - `runtime.ts` replaces `@wailsio/runtime` through a Vite alias, so the
   generated bindings keep working unregenerated. Its surface must mirror
   `src/test/mocks/wailsio-runtime.ts`, or generated code that type-checks

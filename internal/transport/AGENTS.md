@@ -100,9 +100,16 @@ It carries `protocolVersion`, `capabilities`, `backendId`, and
   exists so a client can measure its own skew, and a cached value would
   be wrong by the process uptime.
 
-Frame consumers must ignore unknown frame types. The Go launcher client
-(`wsllauncher/notification_client.go`) does this by having no `default`
-in its type switch; keep it that way.
+Every frame consumer must ignore what it does not recognize — unknown
+frame types, unknown event channels, and unknown fields on frames it does
+know — without erroring and without dropping the parts it does
+understand. That tolerance is what lets a frame or field be added in one
+release and consumed in the next. The Go clients get it by having no
+`default` in their type switch (`wsllauncher/notification_client.go`,
+`harnessclient`); keep it that way. The SPA's client counts unknown input
+instead, so the condition stays observable — see
+`frontend/src/lib/transport/AGENTS.md` and the future-dialect fixtures in
+`wsClient.test.ts` and `e2e/tests/transport-forward-tolerance.spec.ts`.
 
 ## Credentials and refusal shapes
 
