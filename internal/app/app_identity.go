@@ -85,6 +85,11 @@ func (a *App) initIdentity(backendID string) {
 		log.Printf("identity: minted %d recovery codes for the owner account", len(result.RecoveryCodes))
 	}
 	a.identity.Store(state)
+	// The other half of AttachSessionConns's ordering handshake: when the
+	// transport was constructed first, its registry is already parked here.
+	if conns := a.liveConns.Load(); conns != nil {
+		sessions.AttachConns(*conns)
+	}
 
 	// The local page channel: a loopback-only session this backend mints
 	// for ITSELF, so a local connection names a session instead of being
@@ -107,7 +112,18 @@ func (a *App) initIdentity(backendID string) {
 // AttachSessionConns hands the session core the live-connection registry,
 // so revoking a session force-closes the sockets carrying it. Called from
 // the transport boot once the server exists.
+//
+// The registry is parked on the App and the attach is completed by
+// whichever side boots second: the transport is constructed before
+// Start runs initIdentity, so attaching only through an
+// already-booted core would quietly wire nothing on every ordinary
+// boot (revocation would then wait on the per-connection watchdog
+// instead of closing sockets synchronously — the defect the live
+// pairing exercise caught on 2026-08-31). The store-then-check on both
+// sides is the handshake that makes the order irrelevant; AttachConns
+// is an idempotent set, so both sides completing it is fine.
 func AttachSessionConns(a *App, conns identity.LiveConns) {
+	a.liveConns.Store(&conns)
 	if state := a.identityState(); state != nil {
 		state.sessions.AttachConns(conns)
 	}

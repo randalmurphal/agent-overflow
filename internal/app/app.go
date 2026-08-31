@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/highlightapp"
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/logging"
@@ -216,6 +217,11 @@ type App struct {
 	// initIdentity has run, and nil there means "identity is not wired",
 	// which every accessor answers honestly rather than panicking.
 	identity identitySlot
+	// liveConns parks the transport's live-connection registry for the
+	// AttachSessionConns ordering handshake: the transport is constructed
+	// before initIdentity runs, so the registry must survive until the
+	// session core exists to receive it (app_identity.go).
+	liveConns atomic.Pointer[identity.LiveConns]
 	// updater owns the complete in-app update state machine. This shell retains
 	// only the stable App-bound wire adapters in app_updater.go.
 	updater *appupdate.Service

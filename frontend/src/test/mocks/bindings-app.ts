@@ -240,6 +240,15 @@ export const UpdateThreadContextSettings = dispatch('UpdateThreadContextSettings
 export const GetNetworkSettings = dispatch('GetNetworkSettings');
 export const SetNetworkSettings = dispatch('SetNetworkSettings');
 
+// Device access (Settings → Network → Devices).
+export const GetAccessOverview = dispatch('GetAccessOverview');
+export const MintDevicePairing = dispatch('MintDevicePairing');
+export const DevicePairingStatus = dispatch('DevicePairingStatus');
+export const ConfirmDevicePairing = dispatch('ConfirmDevicePairing');
+export const CancelDevicePairing = dispatch('CancelDevicePairing');
+export const RevokeAccessDevice = dispatch('RevokeAccessDevice');
+export const RevokeAccessSession = dispatch('RevokeAccessSession');
+
 // WSL distro switcher (Settings → Network → WSL Distro section).
 // IsWSL gates whether the section renders at all; the other three
 // drive the dropdown + persist on change.

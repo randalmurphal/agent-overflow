@@ -143,6 +143,17 @@ export {
   GetNetworkSettings,
   SetNetworkSettings,
 
+  // Device access (Settings → Network → Devices): the paired-device
+  // list, the pairing lifecycle, and revocation. Every one of these is
+  // CategoryDeviceAccess — callable only from the backend's own screen.
+  GetAccessOverview,
+  MintDevicePairing,
+  DevicePairingStatus,
+  ConfirmDevicePairing,
+  CancelDevicePairing,
+  RevokeAccessDevice,
+  RevokeAccessSession,
+
   // WSL distro switcher — exposed only when the backend is running
   // inside a WSL distribution spawned by the Windows launcher. The
   // setter mutates %APPDATA%\agent-overflow\wsl.json so the next
@@ -517,6 +528,17 @@ export {
 export {
   Settings as NetworkSettings,
 } from '../../../bindings/agent-overflow/internal/network/models.js';
+// Device-access DTOs are read-only views; components never construct
+// one, so type-only exports keep the classes out of the bundle.
+export type {
+  AccessOverview,
+  AccessDevice,
+  AccessSession,
+  AccessAuditEntry,
+  PendingPairing,
+  PairingInvite,
+  PairingStatusView,
+} from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   Distro as WSLDistro,
 } from '../../../bindings/agent-overflow/internal/wsllauncher/models.js';

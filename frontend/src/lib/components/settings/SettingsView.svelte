@@ -3,6 +3,7 @@
   import Icon from '../primitives/Icon.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
   import GeneralSettings from './GeneralSettings.svelte';
+  import DevicesSection from './DevicesSection.svelte';
   import NetworkSection from './NetworkSection.svelte';
   import RemoteEndpointsSection from './RemoteEndpointsSection.svelte';
   import WSLSection from './WSLSection.svelte';
@@ -174,6 +175,7 @@
           -->
           <div class="flex flex-col gap-6">
             <NetworkSection />
+            <DevicesSection />
             <WSLSection />
             <RemoteEndpointsSection />
           </div>

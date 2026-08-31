@@ -494,6 +494,33 @@ func TestRevokeReachesTheLiveSockets(t *testing.T) {
 	}
 }
 
+// TestRevokeReachesSocketsWhenTheTransportBootsFirst pins the attach
+// against the PRODUCTION boot order: main.go hands the registry over at
+// transport-construct time, before Start has run initIdentity. An attach
+// that only completes through an already-booted core wires nothing on
+// that order — which shipped, and which the live pairing exercise caught
+// as a revocation that left the revoked device's socket streaming.
+func TestRevokeReachesSocketsWhenTheTransportBootsFirst(t *testing.T) {
+	app := newTestAppWithStore(t)
+	conns := &recordingConns{}
+	AttachSessionConns(app, conns) // transport first,
+	app.initIdentity("backend-under-test") // identity second
+	app.SetTransportServer(startTestTransportServer(t))
+	id, err := app.store.Identity()
+	if err != nil {
+		t.Fatalf("store identity: %v", err)
+	}
+	app.storeIdentity.Store(&id)
+
+	_, session := pairDevice(t, app, "A browser", "thumb-order")
+	if err := app.RevokeAccessSession(session.ID); err != nil {
+		t.Fatalf("RevokeAccessSession: %v", err)
+	}
+	if !conns.sawClose(session.ID) {
+		t.Fatal("registry attached before the session core booted never reached it")
+	}
+}
+
 // mintSessionFor issues a second session on an EXISTING device row.
 func mintSessionFor(t *testing.T, app *App, device store.Device) store.Session {
 	t.Helper()
