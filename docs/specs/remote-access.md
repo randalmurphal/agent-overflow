@@ -62,6 +62,19 @@ Rules:
 - **Execute-tier scopes (§5) require `binding ≥ device-bound`.** A
   leaked `loopback-only` webview session therefore carries no remote
   capability at all.
+- **Revocation is absolute** (owner ruling 2026-08-31). A session is
+  live only while its own row AND its device's row are both
+  unrevoked, and that conjunction is what every consult reads —
+  rotation, ticket mint, the connection's interval re-check, per-call
+  authorization. A session row that outlives its device's revocation
+  (a mint racing the revoke, a sweep that missed) is therefore inert
+  by definition rather than a standing credential; sweeps and
+  mint-time re-checks are hygiene on top, not the enforcement.
+  Re-revoking an already-revoked device re-sweeps rather than
+  early-returning, and a revoke that closed nothing says so. Lands
+  wave 7c; the incident that forced the shape: `store.RevokeDevice`'s
+  already-revoked early return made every later revoke a silent no-op
+  while a rotation-raced successor session kept full access.
 
 ### Principal tiers
 
