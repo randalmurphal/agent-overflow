@@ -746,6 +746,8 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 
 	core := a.gitCore()
 	previousWorkspace := thread.WorkspacePath
+	previousWorktree := thread.WorktreePath
+	previousBranch := thread.Branch
 	switch {
 	case gitops.SameFilesystemPath(target, project):
 		thread.WorkspacePath = project
@@ -791,6 +793,14 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("switch workspace: refresh thread after workspace switch: %w", err)
 	}
+	// Broadcast so a second attached client's pane follows the thread to its
+	// new checkout. `store.UpdateThread` rewrites the whole row, so the
+	// no-change test is the three fields this switch owns — re-selecting the
+	// workspace the thread already sits in moves nothing and says nothing.
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed,
+		previousWorkspace != thread.WorkspacePath ||
+			previousWorktree != thread.WorktreePath ||
+			previousBranch != thread.Branch)
 	return refreshed, nil
 }
 

@@ -1590,7 +1590,7 @@ func TestWorkflowWakeStaleBindingSpendsTheRecord(t *testing.T) {
 
 	// The thread is archived, so the next wake falls back to the unbound
 	// surface — and takes the record with it.
-	if err := h.app.store.ArchiveThread(thread.ID); err != nil {
+	if _, _, err := h.app.store.ArchiveThread(thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	h.park(item.ID, item.ProjectID, engine.StateNeedsHuman)

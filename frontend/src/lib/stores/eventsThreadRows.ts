@@ -8,10 +8,10 @@
 import type { TurnCompletedEvent } from '../types/events';
 import type { Item, Thread } from '../types/models';
 import { ListThreads } from './bindings';
-import { findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 
@@ -307,7 +307,19 @@ export function syncProposedPlanStatus(item: Item): void {
   });
 }
 
+/**
+ * Payload for thread:updated. Mirrors triage.ThreadUpdateEvent, which owns
+ * the action vocabulary; `action` names what this client must DO with the
+ * row, because sidebar membership is not derivable from the row alone.
+ *
+ * Every persisted thread-row mutation sends one, which is what makes a
+ * second attached client converge without a refresh. The client that issued
+ * the mutation may also have applied its RPC result optimistically; the
+ * broadcast row IS that RPC's return value, so the echo lands on state the
+ * optimistic apply already reached rather than moving it somewhere else.
+ */
 export interface ThreadUpdateEvent {
+  /** 'full' | 'patch' | 'listed' | 'unlisted' | 'deleted' */
   action: string;
   thread?: Thread;
   id?: string;
@@ -318,19 +330,58 @@ export interface ThreadUpdateEvent {
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
   if (!evt) return;
-  if (evt.action === 'patch' && evt.id) {
-    const cached = getThreadById(evt.id)
-      ?? ingestPaneShowingThread(evt.id)?.thread;
-    if (!cached) return;
-    const merged = { ...cached };
-    if (evt.title !== undefined) merged.title = evt.title;
-    if (evt.model !== undefined) merged.model = evt.model;
-    if (evt.sessionRef !== undefined) merged.sessionRef = evt.sessionRef;
-    syncThreadRow(merged);
-    return;
-  }
-  if (evt.thread?.id) {
-    syncThreadRow(evt.thread);
+  switch (evt.action) {
+    case 'patch': {
+      if (!evt.id) return;
+      const cached = getThreadById(evt.id)
+        ?? ingestPaneShowingThread(evt.id)?.thread;
+      if (!cached) return;
+      const merged = { ...cached };
+      if (evt.title !== undefined) merged.title = evt.title;
+      if (evt.model !== undefined) merged.model = evt.model;
+      if (evt.sessionRef !== undefined) merged.sessionRef = evt.sessionRef;
+      syncThreadRow(merged);
+      return;
+    }
+    case 'deleted': {
+      // The row is gone from SQLite. Same teardown the deleting client
+      // runs on its own RPC result: drop the row and its per-thread
+      // caches, then close panes that were showing it — a pane on a row
+      // that no longer exists cannot load, send, or resume.
+      if (!evt.id) return;
+      removeThread(evt.id);
+      closePanesShowingThread(evt.id);
+      return;
+    }
+    case 'unlisted': {
+      // Archived: still in SQLite, no longer in the active sidebar. The
+      // row is carried so a pane showing it converges before the pane
+      // closes, which is the order the archiving client's own sequence
+      // produces.
+      const id = evt.thread?.id ?? evt.id;
+      if (!id) return;
+      if (evt.thread) syncThreadRow(evt.thread);
+      removeThread(id);
+      closePanesShowingThread(id);
+      return;
+    }
+    case 'listed': {
+      // Created, forked, or unarchived: the row belongs in the active
+      // sidebar now. Insert it if this client does not have it — the
+      // initiating client's own prepend is the same step, so an echo of
+      // its own creation is idempotent.
+      if (!evt.thread?.id) return;
+      const merged = mergeThreadRowWithLocal(evt.thread);
+      if (!getThreadById(merged.id)) prependThread(merged);
+      syncThread(merged);
+      return;
+    }
+    default: {
+      // 'full': the row's current state. Says nothing about membership,
+      // so a row this client does not have is not invented here — the
+      // authoritative ListThreads resync owns that.
+      if (evt.thread?.id) syncThreadRow(evt.thread);
+    }
   }
 }
 

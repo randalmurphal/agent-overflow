@@ -609,7 +609,7 @@ func TestInterruptRollbackPreservesConcurrentEffortChange(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load rollback snapshot: %v", err)
 			}
-			if err := app.store.UpdateReasoningEffort(thread.ID, "xhigh"); err != nil {
+			if _, _, err := app.store.UpdateReasoningEffort(thread.ID, "xhigh"); err != nil {
 				t.Fatalf("update effort during rollback: %v", err)
 			}
 

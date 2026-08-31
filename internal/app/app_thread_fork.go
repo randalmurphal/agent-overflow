@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/closer"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -217,6 +218,10 @@ func (a *App) ForkThread(sourceThreadID string, atTurnIndex *int) (store.Thread,
 		)
 	}
 
+	// The fork row carries cloned history, so it is sidebar-visible the
+	// moment it exists: broadcast it as `listed` so every other attached
+	// client shows it beside the source, as the forking client does.
+	a.broadcastThreadRow(triage.ThreadActionListed, fork)
 	return fork, nil
 }
 
@@ -357,6 +362,7 @@ func (a *App) ForkThreadFromMessage(sourceThreadID string, userItemID string) (s
 			cleanups.Run(),
 		)
 	}
+	a.broadcastThreadRow(triage.ThreadActionListed, fork)
 	return fork, nil
 }
 

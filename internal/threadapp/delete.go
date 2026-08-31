@@ -22,7 +22,13 @@ type DeletePorts struct {
 	ClearAutoReconnect      func(threadID string)
 	CleanupAttachments      func(threadID string) error
 	CleanupReplayLog        func(threadID string) error
-	Logf                    func(format string, args ...any)
+	// Deleted fires once per row actually dropped from SQLite, children
+	// included, after the row is gone. Root broadcasts it on
+	// `thread:updated` so a second attached client drops the same rows
+	// without a refresh; a tree deletion is several rows, and the child
+	// ids are only knowable here.
+	Deleted func(store.Thread)
+	Logf    func(format string, args ...any)
 }
 
 func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports DeletePorts) error {
@@ -111,6 +117,9 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 			return nil
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
+	}
+	if ports.Deleted != nil {
+		ports.Deleted(thread)
 	}
 	return nil
 }

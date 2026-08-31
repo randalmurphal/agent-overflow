@@ -63,7 +63,7 @@ func TestThreadIDsOlderThan(t *testing.T) {
 	}
 
 	// Confirms archived rows are included (uniform policy).
-	if err := s.ArchiveThread("middle"); err != nil {
+	if _, _, err := s.ArchiveThread("middle"); err != nil {
 		t.Fatalf("archive middle: %v", err)
 	}
 	// ArchiveThread bumps updated_at to nowMillis(), so middle no longer

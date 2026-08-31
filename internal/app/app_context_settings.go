@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 type ContextSettingsProfile struct {
@@ -106,7 +107,8 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 		return store.Thread{}, err
 	}
 
-	if err := a.store.UpdateContextSettings(threadID, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent); err != nil {
+	_, changed, err := a.store.UpdateContextSettings(threadID, update.ContextWindow, update.AutoCompactStandardPercent, update.AutoCompactExtendedPercent)
+	if err != nil {
 		return store.Thread{}, err
 	}
 	// Clear the persisted token-usage snapshot and notify the frontend
@@ -129,5 +131,6 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 		return store.Thread{}, err
 	}
 	a.rememberChatModelProfile(refreshed)
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
 	return refreshed, nil
 }

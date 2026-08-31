@@ -196,49 +196,47 @@ func (s *Service) applyModelProfile(previous store.Thread, profile store.ChatMod
 	return ModelUpdate{Previous: previous, Thread: stored}, nil
 }
 
-func (s *Service) UpdateReasoningEffort(threadID, effort string) (store.Thread, error) {
+// UpdateReasoningEffort and UpdateFastMode return the row the write produced
+// plus whether the write moved anything, so root can broadcast the changed row
+// on `thread:updated` and stay silent when the thread already carried the
+// requested value.
+func (s *Service) UpdateReasoningEffort(threadID, effort string) (store.Thread, bool, error) {
 	database, err := s.database("update effort")
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, false, err
 	}
 	models, err := s.modelPolicy("update effort")
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, false, err
 	}
 	thread, err := database.GetThread(threadID)
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, false, err
 	}
 	normalized := strings.TrimSpace(effort)
 	if !models.SupportsReasoningEffort(thread.Provider, thread.Model, normalized) {
-		return store.Thread{}, fmt.Errorf("update effort: unsupported reasoning effort %q for %s/%s", normalized, thread.Provider, thread.Model)
+		return store.Thread{}, false, fmt.Errorf("update effort: unsupported reasoning effort %q for %s/%s", normalized, thread.Provider, thread.Model)
 	}
-	if err := database.UpdateReasoningEffort(threadID, normalized); err != nil {
-		return store.Thread{}, err
-	}
-	return database.GetThread(threadID)
+	return database.UpdateReasoningEffort(threadID, normalized)
 }
 
-func (s *Service) UpdateFastMode(threadID string, on bool) (store.Thread, error) {
+func (s *Service) UpdateFastMode(threadID string, on bool) (store.Thread, bool, error) {
 	database, err := s.database("update fast mode")
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, false, err
 	}
 	models, err := s.modelPolicy("update fast mode")
 	if err != nil {
-		return store.Thread{}, err
+		return store.Thread{}, false, err
 	}
 	if on {
 		thread, err := database.GetThread(threadID)
 		if err != nil {
-			return store.Thread{}, err
+			return store.Thread{}, false, err
 		}
 		if !models.SupportsFastMode(thread.Provider, thread.Model) {
-			return store.Thread{}, fmt.Errorf("update fast mode: unsupported for %s/%s", thread.Provider, thread.Model)
+			return store.Thread{}, false, fmt.Errorf("update fast mode: unsupported for %s/%s", thread.Provider, thread.Model)
 		}
 	}
-	if err := database.UpdateFastMode(threadID, on); err != nil {
-		return store.Thread{}, err
-	}
-	return database.GetThread(threadID)
+	return database.UpdateFastMode(threadID, on)
 }

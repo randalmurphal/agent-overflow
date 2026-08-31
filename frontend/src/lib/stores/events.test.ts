@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupEventListeners } from './events';
 import { createThreadPane } from './thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { findPaneShowingThread, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import {
   getActiveTurn,
   getThreadStatus,
@@ -1523,6 +1523,120 @@ describe('setupEventListeners', () => {
     expect(getThreads()[0]?.sessionRef).toBe('session-abc');
     expect(pane.thread?.sessionRef).toBe('session-abc');
     expect(getThreads()[0]?.title).toBe('Fresh');
+  });
+
+  // The convergence half of "every persisted thread-row mutation emits".
+  // These four exercise the case the RPC return value cannot reach: a
+  // client that did NOT issue the mutation. Each drives a row this pane
+  // never touched and asserts the store lands where the mutating client's
+  // own optimistic apply would have put it.
+  describe('thread:updated converges a client that did not mutate', () => {
+    it("applies every field a full row carries, not just the mutating client's field", async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({
+          id: 'thread-1',
+          title: 'Before',
+          model: 'claude-sonnet-4-6',
+          reasoningEffort: 'medium',
+          fastMode: false,
+          contextWindow: 200000,
+          branch: 'main',
+          workspacePath: '/repo',
+        }),
+      ]);
+      await refreshThreads();
+
+      emitWailsEvent('thread:updated', {
+        action: 'full',
+        thread: makeThread({
+          id: 'thread-1',
+          title: 'After',
+          model: 'claude-opus-4-1',
+          reasoningEffort: 'xhigh',
+          fastMode: true,
+          contextWindow: 1000000,
+          branch: 'feature/live',
+          workspacePath: '/repo/wt',
+          pinnedAt: 42,
+          pinGroup: 1,
+        }),
+      });
+
+      const row = getThreads()[0];
+      expect(row?.title).toBe('After');
+      expect(row?.model).toBe('claude-opus-4-1');
+      expect(row?.reasoningEffort).toBe('xhigh');
+      expect(row?.fastMode).toBe(true);
+      expect(row?.contextWindow).toBe(1000000);
+      expect(row?.branch).toBe('feature/live');
+      expect(row?.workspacePath).toBe('/repo/wt');
+      expect(row?.pinnedAt).toBe(42);
+      expect(row?.pinGroup).toBe(1);
+    });
+
+    it('inserts a row this client has never seen from a listed event', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
+      await refreshThreads();
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-1']);
+
+      emitWailsEvent('thread:updated', {
+        action: 'listed',
+        thread: makeThread({ id: 'thread-new', title: 'Made elsewhere' }),
+      });
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-new', 'thread-1']);
+      expect(getThreads()[0]?.title).toBe('Made elsewhere');
+
+      // A second listed frame for the same row (this client's own echo of
+      // a creation it already prepended) must not duplicate it.
+      emitWailsEvent('thread:updated', {
+        action: 'listed',
+        thread: makeThread({ id: 'thread-new', title: 'Made elsewhere' }),
+      });
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-new', 'thread-1']);
+    });
+
+    it('drops the row from the sidebar on unlisted and on deleted', async () => {
+      setBindingMock('ListThreads', async () => [
+        makeThread({ id: 'thread-1' }),
+        makeThread({ id: 'thread-2' }),
+      ]);
+      await refreshThreads();
+
+      emitWailsEvent('thread:updated', {
+        action: 'unlisted',
+        thread: makeThread({ id: 'thread-1', archived: true }),
+      });
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+
+      emitWailsEvent('thread:updated', { action: 'deleted', id: 'thread-2' });
+      expect(getThreads()).toEqual([]);
+    });
+
+    it('closes a pane whose thread was deleted elsewhere', async () => {
+      const pane = await buildPane(makeThread({ id: 'thread-1' }));
+      expect(pane.threadId).toBe('thread-1');
+
+      emitWailsEvent('thread:updated', { action: 'deleted', id: 'thread-1' });
+
+      expect(findPaneShowingThread('thread-1')).toBeNull();
+    });
+
+    it('leaves a full row for an unknown thread alone', async () => {
+      setBindingMock('ListThreads', async () => [makeThread({ id: 'thread-1' })]);
+      await refreshThreads();
+
+      // 'full' says what the row IS, never that it belongs in the sidebar:
+      // listing also depends on items and draft content, which only the
+      // backend knows. Inventing the row here would show a draft the
+      // mutating client's own sidebar does not.
+      emitWailsEvent('thread:updated', {
+        action: 'full',
+        thread: makeThread({ id: 'thread-unknown' }),
+      });
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-1']);
+    });
   });
 
   it('projects a model fallback without overwriting the requested model', async () => {

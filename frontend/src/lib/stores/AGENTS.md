@@ -41,6 +41,18 @@ stops waking readers.
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the
   reaction in a domain module, and never subscribe from a component.
+- `thread:updated` is the convergence channel for the thread row, and the
+  handler is `eventsThreadRows.ts`. The backend broadcasts one event per
+  persisted row change, so the handler must apply the WHOLE row, not the
+  fields the local pane happened to change — a second client's mutation
+  arrives with no local edit to merge against. `action` names what the
+  receiver does with it: `full` converges a row this client already has
+  (never inserts, because sidebar membership depends on items and draft
+  content the row alone cannot answer), `listed` inserts or converges,
+  `unlisted` and `deleted` drop it and close panes showing it, `patch`
+  merges the named fields onto the cached row. The initiator's own echo is
+  the same row its RPC returned, so an optimistic apply and the event
+  settle on identical bytes.
 - `bindings.ts` re-exports what `wails3 generate bindings -ts` produced.
   Add the new App method by regenerating and re-exporting. Never hand-wrap
   a binding, and never reach for `window.runtime`.
