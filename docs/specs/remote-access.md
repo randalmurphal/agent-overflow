@@ -463,6 +463,26 @@ so disabled-state tooltips are self-describing. **The server never
 trusts the client's capability object**. Every RPC re-checks
 server-side; hello-frame flags are compat hints, never authorization.
 
+LANDED 2026-08-31 (wave 6c1): `frontend/src/lib/transport/scopes.ts`
+answers `hasScope()` from, in precedence order, a paired session's
+published grants (which win even on loopback — the upgrade presents
+that session), then the local page (an explicit every-scope answer),
+else nothing. `host` is answered from presence, never a grant,
+mirroring the server gate. The grant list rides the existing
+credential-route DTOs (`TokenGrant.Scopes`, always an array — absent
+means a backend too old to say and falls back to judging the page,
+`[]` means granted nothing). `isViewOnlySession` is deleted; run mode
+survives as the process-boot axis only ("whose settings would this
+RPC edit"), and the two axes are read together where both apply.
+`scopeRefusal.ts` is the one presentation module for
+`scope_required` / `step_up_required` (wired through
+`userFacingError`), sibling to `authReason.ts`'s credential half; a
+Go gate pins the TS scope vocabulary to `transport.Scopes` in order.
+Policy note: an unpaired networked page answers "granted nothing"
+rather than borrowing the local channel's grants it cannot enumerate
+— stricter than the backend would permit, moot once pairing is the
+only way onto a networked page.
+
 ## 6. Per-device and per-user state
 
 ### Fix the identity hole
@@ -1640,11 +1660,11 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    refusals, host-presence step-up, the effective-runtime-mode
    autonomy recheck, scope-driven event visibility, settings-tier
    gate, `settings:read` (35 overrides remain): LANDED 2026-08-31
-   (wave 6b — §5 has the shape and the two recorded gaps). Still open
-   in this phase: the capability-driven frontend, `/ws` onto session
-   credentials + the webview dropping `?t=`, origin-gate deletion
-   with the override adjudications it unlocks, and §13's RPC and
-   event-channel columns.
+   (wave 6b — §5 has the shape and the two recorded gaps). The
+   capability-driven frontend: LANDED 2026-08-31 (wave 6c1 — §5).
+   Still open in this phase: `/ws` onto session credentials + the
+   webview dropping `?t=`, origin-gate deletion with the override
+   adjudications it unlocks, and §13's RPC and event-channel columns.
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
    migrations, per-class defaults.
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with

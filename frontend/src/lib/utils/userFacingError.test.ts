@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { scopeRefusalMessage } from '../transport/scopeRefusal';
+import { TransportError } from '../transport/wsClient';
 import { userFacingError } from './userFacingError';
 
 describe('userFacingError', () => {
@@ -58,5 +60,27 @@ describe('userFacingError', () => {
 
   it('returns the fallback when the error stringifies to whitespace', () => {
     expect(userFacingError(new Error('   '))).toBe('Something went wrong.');
+  });
+
+  it('phrases an authorization refusal through the one presentation module', () => {
+    const refused = new TransportError(
+      'scope_required',
+      'RenameThread requires the threads:operate scope, which this session was not granted',
+      undefined,
+      'threads:operate',
+    );
+    const message = userFacingError(refused);
+    // The exact sentence belongs to scopeRefusal.ts; what this pins is
+    // that the wrap-trimmer below never touches a refusal (which would
+    // surface only the tail segment of the server sentence).
+    expect(message).toBe(scopeRefusalMessage(refused));
+    expect(message).toContain('granted');
+    expect(message).not.toBe('Granted.');
+  });
+
+  it('leaves an ordinary transport error to the generic path', () => {
+    expect(
+      userFacingError(new TransportError('internal_error', 'method failed: database is closed')),
+    ).toBe('Database is closed.');
   });
 });
