@@ -622,6 +622,38 @@ export function DownloadUpdate(tag: string): $CancellablePromise<void> {
 }
 
 /**
+ * ForgetAccessDevice deletes a REVOKED device row entirely, along with
+ * everything the schema cascades from it — its sessions, and their
+ * refresh secrets. The credential log is deliberately not among them:
+ * its rows name the device by string and have no foreign key, so what
+ * this backend admitted and withdrew survives the row it happened to.
+ * 
+ * It refuses an un-revoked device, and says so. Revoking is what ENDS
+ * access — it is the call that closes live sockets and drops the
+ * device's persisted UI state — and deleting the row first would take
+ * away the only handle the person has on a device that still holds
+ * credentials. Revoke, then forget.
+ * 
+ * The local page channel is refused ahead of that, on the same grounds
+ * as RevokeAccessDevice: it is never revoked, so the ordering refusal
+ * would tell the owner to do something this surface will not let them
+ * do.
+ * 
+ * Forgetting frees the device's key thumbprint, so the same key may
+ * enroll again through a fresh pairing link. That is intended and is the
+ * whole difference from RestoreAccessDevice, which says "that is still
+ * my device": either way the owner mints the link and confirms the
+ * verification number, so nothing re-enrolls unwatched.
+ * 
+ * Carries no //ao:stepup, matching every call on this surface but the
+ * mint: it issues no credential, and a device the owner already granted
+ * `access:admin` must be able to finish tidying up a phone it revoked.
+ */
+export function ForgetAccessDevice(deviceID: string): $CancellablePromise<void> {
+    return $Call.ByID(516065248, deviceID);
+}
+
+/**
  * ForkThread copies a source thread's timeline into a new fork and wires
  * the provider-specific resume state. The whole sequence is atomic from
  * the caller's point of view: if any step fails, the partially-created

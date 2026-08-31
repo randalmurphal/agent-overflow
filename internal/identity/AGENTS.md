@@ -160,6 +160,32 @@ It reports an `identity.DeviceRevocation` rather than a bare id list, so a
 surface can say "revoked, 2 sessions ended, 1 connection closed" and
 "already revoked, nothing was live" as the different answers they are.
 
+`RestoreDevice` and `ForgetDevice` are the two ways OUT of a revoked
+device row, and they answer opposite questions. Restoring says "that is
+still my device": it re-admits the KEY to pairing (the remedy the
+revoked-key redemption refusal names) and moves no credential. Forgetting
+says the device is nothing to this backend any more: it DELETES the row,
+and the schema cascades its sessions and their refresh secrets with it.
+
+Both refuse to hand back a credential — the way to one is still an
+owner-minted link plus the verification number — and `ForgetDevice`
+additionally refuses an un-revoked device (`ErrDeviceNotRevoked`).
+Revoking is what ENDS access and what closes live sockets; deleting the
+row first would remove the only handle on a device that still holds
+credentials. Revoke, then forget.
+
+Two consequences worth stating rather than discovering:
+
+- **The key becomes free.** `idx_devices_key_thumbprint` is unique over
+  the surviving rows, so a forgotten device's key may enroll again. That
+  is intended: re-enrolment still costs a link the owner minted and a
+  number the owner compared, so nothing returns unwatched.
+- **The audit log outlives every row it names.** `auth_audit.device_id`
+  is a plain column with no foreign key, so the revoke and the forget
+  both stay in the log after the device is gone. That is the point of
+  keeping attribution out of the cascade — the row being deleted is
+  exactly when the record matters.
+
 ## Bounded by construction
 
 - The fast path holds one entry per live session, bounded by the devices a

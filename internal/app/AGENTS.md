@@ -177,6 +177,15 @@ are facts about this process rather than about a row:
   all present; revoking it signs the host's own window out. Both
   revocations refuse it, `RevokeAccessSession` by resolving the session's
   device first.
+- **The overview shows the state that should not exist.** A session
+  standing on a REVOKED device is carried, marked
+  `SurvivedRevocation` — `store.RevokeDevice` moves both rows in one
+  transaction, so reaching it means something wrote around that, and
+  filtering it away with the ordinary revoked history is how a device
+  that kept access goes unnoticed twice. `AccessSession.Scopes` rides
+  along verbatim for the same "carry the fact, not a verdict" reason:
+  what "view only" MEANS is one definition, and it lives on the page
+  that already applies it to itself.
 - **A revoke reports what it DID, not that it succeeded.**
   `RevokeAccessDevice` answers a `DeviceRevocationResult` — whether the
   device row moved, how many sessions ended, how many sockets closed —
@@ -206,9 +215,13 @@ that could mint could enroll its way around its own revocation. The rest
 answer a device the owner granted `access:admin`, which is what makes
 revoking a lost phone from the other phone possible.
 Minting ISSUES a credential, revoking withdraws
-every credential a device holds, and restoring re-admits a revoked
+every credential a device holds, restoring re-admits a revoked
 device's KEY to pairing without moving any credential (the revoked-key
-redemption refusal names it as the remedy); the overview read goes with them because
+redemption refusal names it as the remedy), and forgetting DELETES a
+revoked device's row — refusing an un-revoked one, because revoking is
+what ends access and this only removes the row it emptied
+(`internal/identity/AGENTS.md` has both consequences: the key becomes
+free to enroll again, and the audit rows stay); the overview read goes with them because
 it carries the device map, the connection counts, the audit log, and a
 pending pairing's verification number — which is only a check if the
 owner is the only party comparing it.

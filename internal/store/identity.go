@@ -652,6 +652,36 @@ func (s *Store) RestoreDevice(deviceID string) (bool, error) {
 	return moved > 0, nil
 }
 
+// DeleteDevice removes a REVOKED device row and everything the schema
+// hangs off it: its sessions cascade (`sessions.device_id ... ON DELETE
+// CASCADE`), and their refresh secrets cascade behind those. Rows that
+// only NAME the device by string — `auth_audit.device_id`,
+// `pairing_links.device_id` — have no foreign key and stay, which is the
+// point: the log is the record of what this backend admitted and
+// withdrew, and deleting the device must not delete its history.
+//
+// The revoked-only guard is in the WHERE clause rather than in a caller,
+// so it holds for every path and cannot lose a race with a restore. An
+// un-revoked device answers false, the same shape a missing one does;
+// the caller distinguishes them when it needs a sentence.
+//
+// The device's key thumbprint becomes free afterwards
+// (`idx_devices_key_thumbprint` is unique over the surviving rows), so
+// the same key may enroll again. That is the intent: re-pairing still
+// costs an owner-minted link and the verification number.
+func (s *Store) DeleteDevice(deviceID string) (bool, error) {
+	result, err := s.db.Exec(
+		`DELETE FROM devices WHERE id = ? AND revoked_at IS NOT NULL`, deviceID)
+	if err != nil {
+		return false, fmt.Errorf("store: delete device: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: delete device: rows affected: %w", err)
+	}
+	return deleted > 0, nil
+}
+
 func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	var device Device
 	var thumbprint, passkey sql.NullString

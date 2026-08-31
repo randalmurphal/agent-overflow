@@ -494,6 +494,62 @@ func (s *Sessions) RestoreDevice(deviceID string) (bool, error) {
 	return moved, nil
 }
 
+// ErrDeviceNotRevoked refuses forgetting a device that still holds
+// standing. Revoke is what withdraws access; forgetting only removes the
+// row a revocation already emptied, so the two are ordered rather than
+// alternatives.
+var ErrDeviceNotRevoked = errors.New("identity: the device is not revoked")
+
+// ForgetDevice deletes a REVOKED device row and everything the schema
+// cascades from it (store.DeleteDevice names the set). Reports whether a
+// row was there to delete; forgetting a device that is already gone is a
+// no-op, not an error, so a double click on the surface answers the same
+// thing twice.
+//
+// It refuses an un-revoked device. Revoking is what ENDS access, and it
+// is the step that closes live sockets and drops the device's persisted
+// UI state; deleting the row first would remove the only handle the
+// person has on a device that still holds credentials. Revoke, then
+// forget.
+//
+// The device's key becomes free to enroll again, which is intended and
+// is the whole difference from RestoreDevice: restoring says "that is
+// still my device", forgetting says "that device is no longer anything
+// to me". Either way the way back to a credential is an owner-minted
+// link and the verification number, so a re-enrollment is still one the
+// owner confirms.
+//
+// The audit rows naming the device STAY. They are the record of what
+// this backend admitted and withdrew, and the row being gone is exactly
+// when that record matters.
+func (s *Sessions) ForgetDevice(deviceID string) (bool, error) {
+	if deviceID == "" {
+		return false, nil
+	}
+	device, err := s.store.GetDevice(deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("identity: forget device: %w", err)
+	}
+	if device.RevokedAt == 0 {
+		return false, ErrDeviceNotRevoked
+	}
+	forgotten, err := s.store.DeleteDevice(deviceID)
+	if err != nil {
+		return false, err
+	}
+	if forgotten {
+		s.audit(store.AuthAuditEntry{
+			Event: string(AuditDeviceForgotten), Outcome: store.AuthAuditOutcomeAllowed,
+			DeviceID: deviceID,
+			Detail:   fmt.Sprintf("label: %s, class: %s", device.Label, device.Class),
+		})
+	}
+	return forgotten, nil
+}
+
 // RecordRefusal writes one refused presentation to the credential log.
 // Kept separate from Verify so the caller — which knows the peer address
 // and the surface that was reached — supplies the attribution this package

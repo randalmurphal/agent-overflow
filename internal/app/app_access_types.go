@@ -40,10 +40,11 @@ type AccessDevice struct {
 	CreatedAtMs  int64  `json:"createdAtMs"`
 	LastSeenAtMs int64  `json:"lastSeenAtMs,omitempty"`
 	RevokedAtMs  int64  `json:"revokedAtMs,omitempty"`
-	// Sessions carries the live and awaiting-confirmation sessions only.
-	// A device's expired and revoked sessions are history the audit log
-	// already holds, and shipping them would grow this list without
-	// bound for a device that has reconnected for months.
+	// Sessions carries the live and awaiting-confirmation sessions, plus
+	// any that outlived their device's revocation (SurvivedRevocation).
+	// A device's expired and ordinarily revoked sessions are history the
+	// audit log already holds, and shipping them would grow this list
+	// without bound for a device that has reconnected for months.
 	Sessions []AccessSession `json:"sessions,omitempty"`
 }
 
@@ -62,6 +63,20 @@ type AccessSession struct {
 	// now, read from the transport's live-session registry. Zero for a
 	// session nobody is attached on, which is a normal answer.
 	Connections int `json:"connections,omitempty"`
+	// Scopes is the grant set this session was minted with, verbatim.
+	// Carried rather than reduced to a label, because what "view only"
+	// MEANS is the frontend's own definition (`transport/scopes.ts`
+	// isViewOnlyGrantSet, which the page already applies to itself) and
+	// two copies of it would agree only until one moved. Empty is a real
+	// answer for a session granted nothing.
+	Scopes []string `json:"scopes,omitempty"`
+	// SurvivedRevocation marks the state that should not exist: this
+	// credential was NOT withdrawn while its device was. Revoking a
+	// device revokes its sessions in one transaction
+	// (store.RevokeDevice), so a true here means that invariant broke,
+	// and the surface renders it as the anomaly it is rather than as
+	// another row (docs/specs/remote-access.md §2).
+	SurvivedRevocation bool `json:"survivedRevocation,omitempty"`
 }
 
 // PendingPairing is one link the owner can still act on.

@@ -78,6 +78,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteUIState", ID: 1186757769, Scope: "session"},                                     // main.App.DeleteUIState
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin"},                           // main.App.DevicePairingStatus
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host"},                                        // main.App.DownloadUpdate
+	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin"},                            // main.App.ForgetAccessDevice
 	{Name: "ForkThread", ID: 4063914461, Scope: "threads:operate"},                                // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate"},                     // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate"},                         // main.App.GenerateCommitMessage

@@ -302,6 +302,10 @@ const (
 	// AuditDeviceRestored records a revoked device being re-admitted to
 	// pairing. No credential moves: the device still redeems a fresh link.
 	AuditDeviceRestored AuditEvent = "device-restored"
+	// AuditDeviceForgotten records a revoked device's row being deleted.
+	// The device is gone; this line and the revocation above it are what
+	// is left of it, which is why the log outlives every row it names.
+	AuditDeviceForgotten AuditEvent = "device-forgotten"
 	// AuditVerificationRefused records a presentation this backend refused,
 	// carrying the typed Reason.
 	AuditVerificationRefused AuditEvent = "verification-refused"
@@ -343,6 +347,7 @@ const (
 // AuditEvents is every declared event kind.
 var AuditEvents = []AuditEvent{
 	AuditSessionMinted, AuditSessionRevoked, AuditDeviceRevoked,
+	AuditDeviceRestored, AuditDeviceForgotten,
 	AuditVerificationRefused, AuditRecoveryCodesMinted,
 	AuditRecoveryCodeConsumed, AuditRecoveryCodeRefused,
 	AuditPairingLinkMinted, AuditPairingRedeemed, AuditPairingConfirmed,

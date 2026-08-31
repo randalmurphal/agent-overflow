@@ -1,6 +1,8 @@
 package app
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -9,6 +11,7 @@ import (
 
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
 )
 
@@ -25,7 +28,7 @@ import (
 // not a device a person may revoke, and a device class this backend does
 // not pair is not one a mint may name.
 //
-// All eight carry `//ao:scope access:admin` — one annotation, so the
+// All nine carry `//ao:scope access:admin` — one annotation, so the
 // surface moves together or not at all. Minting additionally carries
 // //ao:stepup: issuing a credential that enrolls ANOTHER device is the
 // one call here that no standing grant may make, because a session that
@@ -90,6 +93,8 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 				LastUsedAtMs:         session.LastSeenAt,
 				ExpiresAtMs:          session.ExpiresAt,
 				Connections:          a.sessionConnCount(session.ID),
+				Scopes:               slicesx.OrEmpty(session.Scopes),
+				SurvivedRevocation:   survivedRevocation(session, now),
 			})
 		}
 		out.Devices = append(out.Devices, view)
@@ -320,6 +325,71 @@ func (a *App) RestoreAccessDevice(deviceID string) error {
 	return nil
 }
 
+// ForgetAccessDevice deletes a REVOKED device row entirely, along with
+// everything the schema cascades from it — its sessions, and their
+// refresh secrets. The credential log is deliberately not among them:
+// its rows name the device by string and have no foreign key, so what
+// this backend admitted and withdrew survives the row it happened to.
+//
+// It refuses an un-revoked device, and says so. Revoking is what ENDS
+// access — it is the call that closes live sockets and drops the
+// device's persisted UI state — and deleting the row first would take
+// away the only handle the person has on a device that still holds
+// credentials. Revoke, then forget.
+//
+// The local page channel is refused ahead of that, on the same grounds
+// as RevokeAccessDevice: it is never revoked, so the ordering refusal
+// would tell the owner to do something this surface will not let them
+// do.
+//
+// Forgetting frees the device's key thumbprint, so the same key may
+// enroll again through a fresh pairing link. That is intended and is the
+// whole difference from RestoreAccessDevice, which says "that is still
+// my device": either way the owner mints the link and confirms the
+// verification number, so nothing re-enrolls unwatched.
+//
+// Carries no //ao:stepup, matching every call on this surface but the
+// mint: it issues no credential, and a device the owner already granted
+// `access:admin` must be able to finish tidying up a phone it revoked.
+//
+//ao:scope access:admin
+func (a *App) ForgetAccessDevice(deviceID string) error {
+	state, err := a.accessState()
+	if err != nil {
+		return err
+	}
+	device, err := a.store.GetDevice(deviceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Already gone. The overview a person clicked from is a snapshot,
+		// so a second click — or one from another screen — must answer
+		// what it asked for rather than a lookup failure.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("access: read device %s: %w", deviceID, err)
+	}
+	if device.Channel == identity.LocalChannel {
+		return fmt.Errorf(
+			"access: %q is this app's own page channel, not a paired device; it cannot be removed",
+			device.Label)
+	}
+	if _, err := state.sessions.ForgetDevice(deviceID); err != nil {
+		if errors.Is(err, identity.ErrDeviceNotRevoked) {
+			return fmt.Errorf(
+				"access: %q still has access; revoke it before removing it", device.Label)
+		}
+		return err
+	}
+	// The revocation already dropped this scope (§6), and a revoked
+	// device can write nothing more. Repeated here because that delete
+	// answers a failure with a log line rather than an error, and this is
+	// the last moment anything knows the bucket's name.
+	if _, err := a.store.DeleteUIStateScope("device:" + deviceID); err != nil {
+		log.Printf("access: drop ui state for forgotten device %s: %v", deviceID, err)
+	}
+	return nil
+}
+
 // RevokeAccessSession ends one session, leaving its device paired.
 //
 // Refused for the local page channel on the same grounds as
@@ -376,15 +446,35 @@ func (a *App) sessionConnCount(sessionID string) int {
 }
 
 // presentableSession decides which of a device's sessions the overview
-// carries: the ones a person can act on. A live session is one; a session
-// awaiting confirmation is the other, because it is the one the owner is
-// being asked about. Expired and revoked rows are history, and the audit
-// log already holds them.
+// carries: the ones a person can act on, plus the ones that should not
+// exist. A live session is the first; a session awaiting confirmation is
+// the second, because it is the one the owner is being asked about.
+// Expired and ordinarily revoked rows are history, and the audit log
+// already holds them.
+//
+// The third is survivedRevocation, which is not history at all: nothing
+// should be able to produce it, and the one thing worse than that state
+// is a surface that cannot show it.
 func presentableSession(session store.Session, now int64) bool {
 	if session.Live(now) {
 		return true
 	}
-	return session.AwaitingConfirmation() && session.ExpiresAt > now
+	if session.AwaitingConfirmation() && session.ExpiresAt > now {
+		return true
+	}
+	return survivedRevocation(session, now)
+}
+
+// survivedRevocation reports the invariant break: the DEVICE row is
+// revoked and this credential was not withdrawn with it. store.RevokeDevice
+// moves both in one transaction, so this can only be true if something
+// wrote around it.
+//
+// An expired row is excluded. It stopped admitting anything by itself,
+// so it is untidy rather than reachable, and calling it an anomaly would
+// train the owner to ignore the one that is.
+func survivedRevocation(session store.Session, now int64) bool {
+	return session.DeviceRevokedAt > 0 && session.RevokedAt == 0 && session.ExpiresAt > now
 }
 
 // pendingPairings lists the links the owner can still act on.
