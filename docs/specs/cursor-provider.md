@@ -200,6 +200,44 @@ shared ACP runtime):
 - Image prompts work: `{type: "image", data: <base64>, mimeType}`
   content block accepted and seen by the model (spike: described a
   1px PNG).
+- Turn control (wave-3 spikes, 2026-08-31): `session/cancel` resolves
+  the in-flight `session/prompt` with `stopReason: "cancelled"`; the
+  session stays usable and keeps the partial progress in context. A
+  second `session/prompt` while one runs does NOT error and does NOT
+  fold: cursor implicitly cancels the running turn (first prompt
+  returns `cancelled`) and starts the new one with partial progress in
+  context — mid-turn steering is cancel+resend semantics, simpler than
+  t3-code's fold description.
+- Resume: `session/load` then `session/prompt` works — replay, then
+  live turns with full context. This is the AO resume path and it
+  holds.
+- Crash/limbo recovery: killing the process with a permission request
+  unanswered leaves nothing stuck — a later `session/load` replays
+  user + partial agent text and drops the never-approved tool call.
+  Unanswered permission requests block the turn indefinitely until
+  then.
+- Error taxonomy: unknown-session `session/load` → `-32602 Invalid
+  params` with `data.message`; `session/prompt` on unknown session →
+  `-32603 Internal error` with `data.details` (inconsistent detail
+  key); invalid model → `-32602` naming the value; malformed params →
+  `-32603` with zod-style issue arrays.
+- Extension methods (wave-3): `cursor/create_plan` is a real
+  agent→client request `{toolCallId, name, overview, plan(markdown)}`,
+  and todo lists arrive as the ACP-core `plan` update
+  (`entries: [{content, priority, status}]`) — refusing create_plan
+  degrades gracefully. `cursor/ask_question` is DORMANT on 2026.08.25:
+  the model reports having no such tool in every mode (agent/plan/ask,
+  with and without `_meta.parameterizedModelPicker`); implement the
+  handler per the t3-code shape but expect no traffic until a CLI
+  update revives it.
+- Subagent permissions: a child's shell command bubbles a normal
+  `session/request_permission` on the parent session; child output
+  returns only in parent prose. `subagentType` was
+  `{custom: {unspecified: {}}}` even for a named delegation.
+- Cadence (nano turn, quantified): updates arrive in micro-bursts —
+  median inter-chunk gap 0ms, p90 2ms, pauses up to ~3s — with tiny
+  payloads (median thought chunk 4 chars; 101 chunks totalled 436
+  chars). Parser-side coalescing is mandatory, not an optimization.
 - Headless (`agent -p --output-format stream-json --model … --trust`):
   Claude-Code-shaped events (`system`/`init` with
   `permissionMode`/`session_id`, `user`, `assistant` message chunks,
@@ -218,6 +256,8 @@ shared ACP runtime):
 | Non-image attachments | `embeddedContext: false` advertised at initialize | path-in-prompt; images native and spike-verified (S5) |
 | Subagent child streaming | `cursor/task` fires only at completion; no child transcript on the wire (S8) | launch row + completion metadata only; no live child view |
 | MCP tool result content | completed update carries `{success: true}` only (S3) | render call + args + success; result text stays in model prose |
+| `cursor/ask_question` | dormant on 2026.08.25 — model has no such tool in any mode | implement handler (t3-code shape), expect no traffic; re-probe on CLI updates |
+| Queued sends | second prompt mid-turn cancels the running turn (no queue, no fold) | AO steer maps to cancel+resend; a queue would be client-side fiction |
 
 ## Integration inventory (Phase B)
 
@@ -296,3 +336,10 @@ docs. Spike models: `gpt-5.4-nano` / `composer-2.5[fast=true]`.
 | S11 | Capability advertisement vs reality | CLOSED 2026-08-31: every advertised capability checked out on 2026.08.25 (list, load, image, MCP http); re-verify after CLI updates |
 | S12 | Does cursor call `terminal/*`/`fs/*` when advertised? | CLOSED 2026-08-31: never; all file/shell work is agent-side |
 | S13 | Headless `stream-json` event shapes | CLOSED 2026-08-31: Claude-Code-shaped stream, `result.usage` present; needs `--trust` |
+| S14 | Interrupt (`session/cancel`) semantics | CLOSED 2026-08-31: `stopReason: "cancelled"`, session continues with context |
+| S15 | Mid-turn steer | CLOSED 2026-08-31: implicit cancel + new turn; see Verified wire facts |
+| S16 | Load-then-continue (resume path) | CLOSED 2026-08-31: works, full context after replay |
+| S17 | Error shapes (bad session/model/params) | CLOSED 2026-08-31: prompt typed errors; see taxonomy |
+| S18 | Extension methods live behavior | CLOSED 2026-08-31: create_plan + core `plan` update real; ask_question dormant |
+| S19 | Pending-permission across client death | CLOSED 2026-08-31: clean replay, pending call dropped |
+| S20 | Subagent child permission routing | CLOSED 2026-08-31: bubbles on parent session |
