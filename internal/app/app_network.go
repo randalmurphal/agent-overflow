@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/network"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/transport"
 )
 
@@ -56,12 +57,7 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 		return network.FromServer(srv, prevCfg.Network.BindAll), nil
 	}
 
-	patch := map[string]any{
-		"network": map[string]any{
-			"bindAll": s.BindAll,
-		},
-	}
-	if _, err := a.settings.Update(patch); err != nil {
+	if _, err := a.settings.SetNetwork(settings.NetworkSettings{BindAll: s.BindAll}); err != nil {
 		return network.Settings{}, fmt.Errorf("persist network settings: %w", err)
 	}
 
@@ -87,12 +83,7 @@ func (a *App) SetNetworkSettings(s network.Settings) (network.Settings, error) {
 		// loopback. Rebind is state-intact on failure (the
 		// transport never moved), so the settings rollback is the
 		// only state we need to undo.
-		rollback := map[string]any{
-			"network": map[string]any{
-				"bindAll": prevCfg.Network.BindAll,
-			},
-		}
-		if _, rbErr := a.settings.Update(rollback); rbErr != nil {
+		if _, rbErr := a.settings.SetNetwork(settings.NetworkSettings{BindAll: prevCfg.Network.BindAll}); rbErr != nil {
 			return network.Settings{}, fmt.Errorf("rebind failed: %w (rollback also failed: %v)", err, rbErr)
 		}
 		return network.Settings{}, fmt.Errorf("rebind transport: %w", err)

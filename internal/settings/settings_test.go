@@ -167,17 +167,26 @@ func TestUpdatePersistsAndSparseSerializes(t *testing.T) {
 }
 
 // TestNetworkSettingsBindAllRoundTripAndSparseDefault confirms the
-// Phase E LAN-bind toggle persists through the same path as every
-// other setting: Update writes the patch, the file omits the key when
-// it equals the default, and a fresh service reload yields the same
-// in-memory value.
+// The LAN-bind toggle persists through SetNetwork, the one write path
+// for the "network" key: the file omits the key when it equals the
+// default, and a fresh service reload yields the same in-memory value.
+// Update refuses the key outright — network exposure rides the
+// step-up-annotated SetNetworkSettings RPC, and a generic patch must
+// not carry the same change past that requirement.
 func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)
 
-	updated, err := svc.Update(map[string]any{"network": map[string]any{"bindAll": true}})
+	if _, err := svc.Update(map[string]any{"network": map[string]any{"bindAll": true}}); err == nil {
+		t.Fatal("Update accepted the network key, want refusal")
+	}
+	if svc.Get().Network.BindAll {
+		t.Fatal("refused Update still flipped Network.BindAll")
+	}
+
+	updated, err := svc.SetNetwork(NetworkSettings{BindAll: true})
 	if err != nil {
-		t.Fatalf("Update(bindAll=true) error = %v", err)
+		t.Fatalf("SetNetwork(bindAll=true) error = %v", err)
 	}
 	if !updated.Network.BindAll {
 		t.Fatal("Network.BindAll = false, want true")
@@ -190,9 +199,9 @@ func TestNetworkSettingsBindAllRoundTripAndSparseDefault(t *testing.T) {
 
 	// Toggle back to default; file must omit the network key entirely
 	// since the zero-valued struct equals DefaultSettings.Network.
-	updated, err = svc.Update(map[string]any{"network": map[string]any{"bindAll": false}})
+	updated, err = svc.SetNetwork(NetworkSettings{BindAll: false})
 	if err != nil {
-		t.Fatalf("Update(bindAll=false) error = %v", err)
+		t.Fatalf("SetNetwork(bindAll=false) error = %v", err)
 	}
 	if updated.Network.BindAll {
 		t.Fatal("Network.BindAll = true, want false")

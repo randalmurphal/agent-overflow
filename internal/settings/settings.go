@@ -753,6 +753,14 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 			return Settings{}, fmt.Errorf("settings: use SetProviderEnvVar / DeleteProviderEnvVar to mutate %s", key)
 		}
 	}
+	if _, ok := patch["network"]; ok {
+		// Network exposure changes ride the SetNetworkSettings RPC, which
+		// carries the //ao:stepup annotation (docs/specs/remote-access.md
+		// §4) and calls SetNetwork below. Accepting the key here would
+		// perform the same bind change through a method with no step-up
+		// requirement.
+		return Settings{}, fmt.Errorf("settings: use SetNetworkSettings to change network exposure")
+	}
 	return s.mutate(func(current Settings) (Settings, error) {
 		patched, err := applyPatch(current, patch)
 		if err != nil {
@@ -763,6 +771,18 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 			return Settings{}, fmt.Errorf("settings: validate: %w", err)
 		}
 		return patched, nil
+	})
+}
+
+// SetNetwork persists the network exposure preference. It is the ONE
+// write path for the "network" key, which Update refuses: the key
+// changes what the transport listens on, so it belongs to the
+// step-up-annotated SetNetworkSettings RPC, and a generic settings
+// patch must not carry the same change past that requirement.
+func (s *Service) SetNetwork(n NetworkSettings) (Settings, error) {
+	return s.mutate(func(current Settings) (Settings, error) {
+		current.Network = n
+		return current, nil
 	})
 }
 
