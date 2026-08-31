@@ -996,7 +996,7 @@ func (s *Server) hostPort() (string, string, bool) {
 // only channel a browser has. A caller that owns the WINDOW it is about
 // to navigate asks with `?host=webview` and gets a bare URL and the
 // ticket as separate JSON fields, so nothing credential-shaped reaches
-// the URL at all — see WebviewAppURL and internal/pagehost.
+// the URL at all — see WebviewPageURL and internal/pagehost.
 const PageURLPath = "/pageurl"
 
 // handlePageURL answers PageURLPath. The default shape is one URL and a

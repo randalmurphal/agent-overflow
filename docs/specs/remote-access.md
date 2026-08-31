@@ -308,6 +308,18 @@ can link it; a drift test pins the restated cookie prefix and header
 name) and the `--connect` stub now forwards the credential on every
 carried upgrade too, marking it stale on any non-101 response.
 
+LANDED 2026-08-31 (wave 6c2): the `?t=` drop itself. Every webview
+window loads a BARE page URL (marked `host=webview`) and is handed its
+one-time ticket by `ExecJS` injection instead — `internal/pagehost`
+holds the marker, the two injected names, and the one rendered script;
+`uiwindow.DeliverPageTicket` answers `WindowRuntimeReady` (which the
+SPA raises itself, `pageHost.ts`, since it replaces `@wailsio/runtime`)
+in all three window hosts: desktop/windowed boots, the Windows
+launcher, the `--connect` stub. `/pageurl?host=webview` answers
+`{url, ticket}` as separate JSON fields for the launcher. Browsers
+keep `?t=` — a URL is the only channel that reaches one. Same
+`ticketBook`, same exchange, same cookie; only the delivery moved.
+
 ## 5. Authorization
 
 ### Two enforcement tiers, eleven labels
@@ -1661,10 +1673,11 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    autonomy recheck, scope-driven event visibility, settings-tier
    gate, `settings:read` (35 overrides remain): LANDED 2026-08-31
    (wave 6b — §5 has the shape and the two recorded gaps). The
-   capability-driven frontend: LANDED 2026-08-31 (wave 6c1 — §5).
-   Still open in this phase: `/ws` onto session credentials + the
-   webview dropping `?t=`, origin-gate deletion with the override
-   adjudications it unlocks, and §13's RPC and event-channel columns.
+   capability-driven frontend: LANDED 2026-08-31 (wave 6c1 — §5). The
+   webview dropping `?t=`: LANDED 2026-08-31 (wave 6c2 — §4 "Local
+   clients"). Still open in this phase: `/ws` onto session
+   credentials, origin-gate deletion with the override adjudications
+   it unlocks, and §13's RPC and event-channel columns.
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
    migrations, per-class defaults.
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with

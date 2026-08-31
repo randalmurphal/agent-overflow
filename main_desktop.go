@@ -132,7 +132,7 @@ type webviewShell struct {
 	// must observe the application first.
 	beforeRun func(app *application.App)
 	// pageURL returns the CURRENT page URL, bare and marked
-	// webview-hosted (the transport's WebviewAppURL). A getter, not a
+	// webview-hosted (the transport's WebviewPageURL). A getter, not a
 	// value: Ctrl+R re-reads it so a rebind (the LAN toggle) reloads
 	// onto the new origin.
 	pageURL func() string
