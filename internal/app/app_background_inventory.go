@@ -112,6 +112,10 @@ type BackgroundWorkInventory struct {
 // live-render tuning value, so the terminal rows it carries are dropped
 // and an inventory reports what is running.
 //
+// The WRITE half does not follow it: StopThreadBackgroundWork stays
+// local-only. Seeing what a host is running and killing it are separate
+// authorizations, and only the read is safe on a session alone.
+//
 //ao:scope threads:read
 func (a *App) ListRunningBackgroundWork() (BackgroundWorkInventory, error) {
 	live := a.sessionManager().snapshot()

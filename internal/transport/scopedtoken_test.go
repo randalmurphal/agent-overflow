@@ -445,3 +445,24 @@ func TestWebviewTokenIsNotAScopedToken(t *testing.T) {
 		t.Fatalf("session token on the scoped route = %d, want 401", status)
 	}
 }
+
+// TestScopedTokenMethodsExistInGeneratedTable keeps the scoped-token
+// allow-list from naming a method that is not there.
+//
+// The two tables move for unrelated reasons — one is the `ao` CLI's
+// surface, the other is every bound method — and a rename on the App
+// receiver leaves this one silently pointing at nothing. That failure is
+// quiet in the worst way: `AuthorizeScopedMethod` would keep admitting
+// the stale name while the CLI's real call became method_not_found, so
+// the allow-list would look correct and grant nothing.
+func TestScopedTokenMethodsExistInGeneratedTable(t *testing.T) {
+	known := make(map[string]bool, len(GeneratedMethods))
+	for _, method := range GeneratedMethods {
+		known[method.Name] = true
+	}
+	for method := range ScopedTokenMethods {
+		if !known[method] {
+			t.Errorf("ScopedTokenMethods[%q] matches no entry in GeneratedMethods — typo or stale entry", method)
+		}
+	}
+}

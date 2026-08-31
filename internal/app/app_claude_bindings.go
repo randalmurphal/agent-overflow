@@ -77,6 +77,12 @@ type ThreadContextUsageCategory struct {
 //
 // Never spawns — a pure read of what a probe already left behind.
 //
+// Wire-reachable deliberately: the SAME rich entries already reach remote
+// peers on the `provider:commands` channel, whose registry row is
+// AudienceAny, so refusing the RPC would empty a cold thread's menu and buy
+// no confidentiality. If that channel ever becomes loopback-only, or this
+// shape grows a path or env field, re-run the decision.
+//
 //ao:scope threads:read
 func (a *App) GetClaudeSlashCommands() ClaudeSlashCommands {
 	commands, probed := a.providerDiscoveryService().ClaudeCommands()
