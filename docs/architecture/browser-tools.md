@@ -183,6 +183,31 @@ The streamed companion pane is CDP-only, so on the WebKit engine
 `browser_visibility` reports that the pane is not available yet; the presented
 native view replaces it.
 
+A windowed macOS desktop drives WKWebView subviews of the app's own NSWindow
+on the same terms. The tool contract, the bounds, and the JavaScript every
+operation is expressed as are shared with the Linux engine — both are WebKit —
+so the differences are only where the platform itself differs:
+
+- **Site data is WebKit's directory, not AO's.** macOS exposes no documented
+  way to place a `WKWebsiteDataStore` in a chosen path. On macOS 14+ each
+  workspace gets its own persistent store keyed by a digest of the workspace
+  root; on macOS 11–13 there is no per-workspace persistent store at all, so
+  the site-data setting has no effect there and every workspace is
+  in-memory-only. macOS 10.15 has no engine at all and keeps managed Chrome.
+- **Devtools are Safari's.** Views are marked inspectable, and inspection
+  happens from Safari's Develop menu rather than an in-app inspector.
+- **A full-page screenshot resizes the view.** WebKit's macOS snapshot cannot
+  reach past the view's own bounds, so a full-page or clipped capture grows the
+  view to the document, captures, and restores. Screenshots are normalized to
+  one image pixel per CSS pixel so clip rects mean the same thing they do on
+  the CDP driver.
+- **`beforeunload` proceeds.** WKWebView exposes no public delegate for it, so
+  a requested navigation continues — the same outcome the other engines reach
+  by accepting the dialog.
+- **Context menus need no suppression.** A hidden page is clipped out of the
+  window and receives no mouse input, so the real site menu appears on the
+  presented page and nowhere else.
+
 The Windows/WSL deployment uses the hosted engine
 (`docs/specs/embedded-browser.md`): a page is a WebView2 controller in the
 Windows launcher's process, and the backend drives it over CDP through the
@@ -191,9 +216,10 @@ are the same CDP calls. What differs is the user-visible half — a real browser
 view positioned by the launcher rather than a streamed image — so the
 screencast companion described above does not apply on that leg.
 
-macOS and every windowless run of the Linux binary (`--connect`, the harness)
-use managed Chrome for Testing, launched headless and, when explicitly
-requested, displayed through the companion protocol.
+Every windowless run — `--connect`, the harness, `go test`, and any desktop
+whose OS is too old for its native engine — uses managed Chrome for Testing,
+launched headless and, when explicitly requested, displayed through the
+companion protocol.
 
 The companion RPCs and
 URL/title state events are

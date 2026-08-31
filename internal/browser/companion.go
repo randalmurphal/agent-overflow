@@ -268,10 +268,11 @@ func (m *Manager) SetPaneRect(id string, rect PaneRect) error {
 }
 
 // OpenPaneDevTools opens the engine's inspector for one of the thread's pages.
-// Only engines with a real user-visible view have one to open; managed Chrome
-// answers with an explained refusal rather than a silent no-op.
+// Only engines with an inspector they can open implement paneDevTools;
+// managed Chrome (no window) and WKWebView (Safari's Develop menu is the
+// inspector) answer with an explained refusal rather than a silent no-op.
 func (m *Manager) OpenPaneDevTools(ctx context.Context, access Access, pageID string) error {
-	host, ok := m.engine.(paneHost)
+	host, ok := m.engine.(paneDevTools)
 	if !ok {
 		return fmt.Errorf("browser: devtools are not available on this browser engine")
 	}

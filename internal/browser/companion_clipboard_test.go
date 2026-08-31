@@ -190,4 +190,3 @@ func TestParseWindowsTempOutputIgnoresTheUNCWarningAndUnexpandedVars(t *testing.
 		t.Fatalf("empty output = %q", got)
 	}
 }
-

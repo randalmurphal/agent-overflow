@@ -67,14 +67,9 @@ type hostRelay interface {
 }
 
 // paneHost is the engine capability the Manager's visibility path drives.
-// Only the hosted engine implements it; managed Chrome has no window to
+// Every windowed engine implements it; managed Chrome has no window to
 // show. The Manager decides WHICH page is presented (policy); the engine
 // decides how a controller is made to appear (mechanism).
-//
-// SetPageBounds and OpenPageDevTools complete the launcher's directive
-// vocabulary. Their callers are the pane's host-rect surface and its
-// devtools affordance, both of which are the frontend wave's — the senders
-// live here so that wave adds a call site and no protocol.
 type paneHost interface {
 	ShowPage(handle string)
 	HidePage(handle string)
@@ -82,6 +77,15 @@ type paneHost interface {
 	// CSS-pixel rect by its own client size over the rect's viewport, so
 	// no engine ever equates CSS pixels with its native units.
 	SetPageBounds(handle string, rect PaneRect)
+}
+
+// paneDevTools is the OPTIONAL inspector half, split from paneHost because
+// implementing it is a capability claim: WKWebView has no public call that
+// opens its inspector (macOS devtools are Safari's Develop menu against an
+// inspectable view), so the darwin engine deliberately does not implement
+// this and the Manager's assertion failure — "devtools are not available on
+// this browser engine" — is the true answer there.
+type paneDevTools interface {
 	OpenPageDevTools(handle string)
 }
 

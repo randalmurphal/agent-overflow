@@ -2,8 +2,8 @@
 
 Built-in browser MCP over one engine behind the `driver.go` seam: managed
 headless Chrome by default, launcher-hosted WebView2 controllers on the
-Windows/WSL deployment, and WebKitGTK views embedded in the app's own
-window on the native Linux desktop.
+Windows/WSL deployment, and WebKit views embedded in the app's own window on
+the native Linux (WebKitGTK) and macOS (WKWebView) desktops.
 
 ## Ownership and isolation
 
@@ -14,21 +14,23 @@ window on the native Linux desktop.
   (the process and its profile factory), `engineProfile` (one workspace's
   isolated site data), and `pageDriver` (every per-page tool operation).
   `cdp_*.go` is the managed-Chrome implementation of those three,
-  `hosted_engine.go` the launcher-hosted one, and `webkit_*.go` the WebKitGTK
-  one (spec `docs/specs/embedded-browser.md` §6). An engine implements the seam
-  and nothing else.
+  `hosted_engine.go` the launcher-hosted one, `webkit_*.go` the WebKitGTK one,
+  and `wkwebview_*.go` the WKWebView one (spec
+  `docs/specs/embedded-browser.md` §6). An engine implements the seam and
+  nothing else.
 - WHICH engine is a capability answer, never a `runtime.GOOS` check.
   `ManagerOptions.PaneHost` is non-nil exactly when the executable built a CDP
   relay (WSL only) and selects the hosted engine; otherwise `selectEngine`
   takes the native one only when `ManagerOptions.NativeWindow` answers a real
-  window. The same Linux binary also runs windowless (`--connect`, the harness,
-  `go test`), and those keep managed Chrome — which is also why no test needs a
-  display.
+  window AND the platform half can actually host it. Every binary also runs
+  windowless (`--connect`, the harness, `go test`), and those keep managed
+  Chrome — which is also why no test needs a display.
 - An engine difference the tools can feel is ANSWERED, never assumed away:
-  `pageDriver.ReadOnlyCaveat` is the pattern. WebKit has no equivalent of CDP's
-  `throwOnSideEffect`, so it returns a sentence the Manager appends to the tool
-  result as a second content entry — the JSON payload stays byte-identical on
-  both engines.
+  `pageDriver.ReadOnlyCaveat` is the pattern. Neither WebKit engine has an
+  equivalent of CDP's `throwOnSideEffect`, so both return the SAME sentence,
+  which the Manager appends to the tool result as a second content entry — the
+  JSON payload stays byte-identical on every engine, and a caller reading two
+  engines' answers never has to notice which gave it.
 - `Manager` owns POLICY and never engine mechanics: `Access` checks, the page
   registry and its per-thread ownership, labels, session/visibility state, every
   cap and bound, artifact quotas, the AO-managed per-tab clipboard, and the MCP
@@ -128,6 +130,69 @@ completion callbacks, the window surgery). Everything else is ordinary Go.
   base64, and the streamed companion pane cannot run here at all — it speaks
   CDP directly and is replaced by the presented native view (spec §7/§9).
 
+## The WKWebView engine (macOS)
+
+`wkwebview_cgo_darwin.go` is the ONLY cgo in the engine; `wkwebviewglue_darwin.m`
+holds what needs real Objective-C (the WKWebView delegates, the two async
+completion blocks, the AppKit panels, the view surgery). Everything else is
+ordinary Go, and every page operation is the SAME `webkitjs.go` /
+`pagejs.go` builder the WebKitGTK driver uses — both engines are WebKit, so the
+difference is the call that carries the body, never the body. Do not fork a
+builder for macOS.
+
+- EVERY WebKit/AppKit call goes through `wkDo` (Wails' main-thread dispatch,
+  bounded). Same rule, same reasons, same lock discipline as `gtkDo`: a lock
+  here covers map bookkeeping only, and no wkDo-backed call happens under one.
+- A `//export` callback runs ON the main thread, so it must never call `wkDo`
+  itself — the dispatch would queue behind the delegate it is running inside
+  and freeze the UI for a full `wkCallTimeout`. And it must never release an
+  object the delegate is about to hand back to WebKit: the popup path returns
+  the very view a failed lookup would like to destroy, so that close goes to a
+  goroutine and lands on a LATER main-thread turn. Both traps caught the
+  WebKitGTK engine too and are fixed there in the same shape.
+- Hidden pages are IN THE WINDOW, parked in a 1x1 layer-masked `NSView` at
+  their own slot, added BELOW the SPA webview. An unparented WKWebView is the
+  trap: WebKit only guarantees layout and snapshots for a view inside a window.
+  This is the direct analogue of the Linux 1x1 clipping `GtkScrolledWindow`.
+- The pane rect arrives as a `PaneRect` in SPA CSS pixels and is scaled by the
+  content view's bounds over the rect's viewport (same proportional rule as
+  every host), then flipped against the content view's own `isFlipped`, never
+  assumed. AppKit needs no reparenting surgery: a second subview joins Wails'
+  content view directly. `wkwebview_pane_darwin.go` is the `paneHost` half,
+  mirroring `webkit_pane_linux.go` — and deliberately NOT `paneDevTools`:
+  WKWebView has no public call that opens its inspector, so the pane's
+  devtools button gets the Manager's explained refusal and the real
+  inspector is Safari's Develop menu against the inspectable view.
+- Two APIs decide what this engine can be. `-callAsyncJavaScript:…` (macOS 11)
+  is the one call every operation goes through, so `ao_wkv_supported()`
+  answering no keeps that Mac on managed Chrome — a capability answer exactly
+  like "is there a window". `+dataStoreForIdentifier:` (macOS 14) is the only
+  documented per-workspace persistent site data, and it lives in WebKit's own
+  directory: there is NO macOS counterpart to the AO-owned `browser-profiles/`
+  tree (spec §4), and on macOS 11–13 the site-data setting has no effect at all.
+  Do not invent a directory to make the platforms look alike.
+- A full-page or clipped screenshot RESIZES the view, captures, and restores:
+  `WKSnapshotConfiguration` cannot reach past the view's bounds, unlike
+  WebKitGTK's `FULL_DOCUMENT` region. Frames are normalized to one image pixel
+  per CSS pixel (premultiplied BGRA, so `webkitimage.go` decodes both engines),
+  because a backing-scaled image would crop clip rects at the wrong place.
+- WKWebView ships NO dialogs and NO open panel of its own: an unimplemented
+  delegate method makes the JavaScript call return immediately, so both answers
+  are spelled out — dismissed/refused on a hidden page, a real NSAlert or
+  NSOpenPanel on the presented one. `beforeunload` has no public delegate and
+  proceeds, which is the outcome the other engines reach by accepting it.
+  Context menus need no suppression: a clipped hidden view takes no input.
+- Downloads are `WKDownload` (macOS 11.3), forced into the profile's artifact
+  directory by handing `decideDestinationUsingResponse:` a handle-named path —
+  a nil destination is how one is refused. WKDownload has no per-chunk
+  callback, so the profile SAMPLES its `NSProgress`; without that the Manager
+  could only enforce its per-download byte cap after the whole file was written.
+- No Go pointer is ever handed to Objective-C. Ids resolve Go-side, page and
+  profile identity live on the view as associated objects, and the console
+  handler reads `WKScriptMessage.webView` rather than baking an id into the
+  handler — which is what keeps a popup sharing its opener's user content
+  controller from reporting under the opener's identity.
+
 ## Local files and website capabilities
 
 - `browser_open_file` resolves symlinks and requires a regular file. Default
@@ -189,11 +254,14 @@ completion callbacks, the window surgery). Everything else is ordinary Go.
 - Unit tests use fake controllers and temporary state directories.
 - Real-Chrome coverage must install into a temporary directory and must never
   start a provider CLI or touch provider homes.
-- The WebKit engine's testable half is everything pure: the JS builders, the
-  screenshot pixel path, and engine SELECTION (windowless selection must keep
-  choosing managed Chrome — that is what keeps `make go-test` display-free).
-  Its live half needs a real GTK window and is proven by running the desktop
-  app, not by the suite.
+- Both WebKit engines' testable half is everything pure: the JS builders, the
+  screenshot pixel path, the profile identifier, and engine SELECTION
+  (windowless selection must keep choosing managed Chrome — that is what keeps
+  `make go-test` display-free). Their live half needs a real GTK or AppKit
+  window and is proven by running the desktop app, not by the suite. A rule
+  whose only failure mode is silent belongs in the tag-free half: a malformed
+  `wkStoreIdentifier` costs a workspace its isolation with no error anywhere,
+  which is why it does not live in the darwin file that produced it.
 - Trusted keyboard tests must assert the resulting DOM state, not merely a
   successful CDP call. Encode modifier chords as modifiers/editing commands;
   concatenating modifier key runes presses and releases them before the key.

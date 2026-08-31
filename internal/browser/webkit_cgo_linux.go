@@ -186,8 +186,14 @@ func aoWebKitPopup(openerID C.uint64_t, profileID C.uint64_t, view unsafe.Pointe
 	opener := webkitLookupPage(uint64(openerID))
 	profile := webkitLookupProfile(uint64(profileID))
 	if opener == nil || profile == nil {
-		// Nothing can own it, so nothing may keep it alive.
-		gtkDo(func() { C.ao_wk_view_close(view) })
+		// Nothing can own it, so nothing may keep it alive — but not YET, and
+		// not from here. This export runs on the GTK thread inside `create`,
+		// which is about to return this very widget to WebKit: unreffing it now
+		// would hand WebKit a finalized object. And a bare gtkDo would queue the
+		// close behind the delegate it is running inside, freezing the UI for a
+		// full gtkCallTimeout. The goroutine's dispatch lands on a later GTK
+		// turn, which is both safe and immediate.
+		go webkitCloseView(view)
 		return
 	}
 	handle := profile.engine.holdPopup(view)
@@ -251,7 +257,15 @@ func aoWebKitDownloadProgress(downloadID C.uint64_t, received C.double, state C.
 		progress.State = downloadCanceled
 	}
 	if progress.State != downloadInProgress {
-		profile.releaseDownload(handle)
+		// Released off the GTK thread, in order, before the event goes out:
+		// releasing dispatches BACK to the GTK thread, which would queue behind
+		// the signal handler this export is running inside and freeze the UI
+		// for a full gtkCallTimeout on every finished download.
+		go func() {
+			profile.releaseDownload(handle)
+			profile.engine.events.DownloadProgress(progress)
+		}()
+		return
 	}
 	go profile.engine.events.DownloadProgress(progress)
 }
