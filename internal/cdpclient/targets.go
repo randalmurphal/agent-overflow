@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/loopback"
 )
 
 // Target is one row of the debugger's target listing. Only the fields a
@@ -300,7 +302,7 @@ func sameOrigin(targetURL, wantURL string) bool {
 	if a.Port() == "" || a.Port() != b.Port() {
 		return false
 	}
-	return isLoopbackHost(a.Hostname()) && isLoopbackHost(b.Hostname())
+	return loopback.EndpointHostname(a.Hostname()) && loopback.EndpointHostname(b.Hostname())
 }
 
 const pageMarkerQuery = "page"
@@ -348,12 +350,4 @@ func samePageMarker(targetURL, wantURL string) bool {
 		actual = a.Query().Get("token")
 	}
 	return actual == marker
-}
-
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

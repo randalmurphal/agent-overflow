@@ -185,6 +185,14 @@ remain a separate, narrower credential class, unchanged.
 - Browser class: short TTL, non-renewable without passkey re-auth where
   passkeys are available.
 
+Every authentication failure carries a **closed, typed reason code**
+end-to-end (missing/malformed proof, key mismatch, time window,
+invalid signature, …), with signature checked *before* the time
+window so a forged proof is never misreported as clock skew, and one
+client-side presentation module mapping codes to actionable hints
+("check automatic date & time on both devices" for skew — the
+dominant real cause). Adapted from t3code's DPoP-failure rework.
+
 ### WebSocket tickets
 
 The session credential never rides a WS URL. Client POSTs for a ticket
@@ -231,7 +239,7 @@ basis (a same-host relay can otherwise launder remote peers).
 
 ## 5. Authorization
 
-### Two enforcement tiers, eight labels
+### Two enforcement tiers, ten labels
 
 Scope names are the audit vocabulary; the enforced boundary is
 **observe vs. execute**, crossed with binding class (§2).
@@ -316,8 +324,10 @@ Loopback-vs-remote survives only as a transport optimization signal.
 ### Frontend capability model
 
 `isViewOnlySession()` (bootstrap boolean) is replaced by a granted-scope
-capability object; the ~15 gating files key off the capability they
-need. Scope-refusal errors are structured and name the required scope,
+capability object; the gating files key off the capability they
+need — 36 non-test consumers as of 2026-08-30 (24 components, 9
+stores, 3 utils), so budget the phase-3 migration for that, not for
+the ~15 this section first claimed. Scope-refusal errors are structured and name the required scope,
 so disabled-state tooltips are self-describing. **The server never
 trusts the client's capability object**. Every RPC re-checks
 server-side; hello-frame flags are compat hints, never authorization.
@@ -336,7 +346,9 @@ it; the backend derives scope from the authenticated session's device.
   before identity or the DB matter (network bind, port, provider
   binaries + custom env, retention, observability, WSL preference) and
   must be hand-editable when the UI is unreachable. Keeps
-  `settings.Service` + `atomicfile`.
+  `settings.Service` and its own inline atomic write (`os.CreateTemp`
+  → `Sync` → `os.Rename`; the package does not use
+  `internal/atomicfile`, despite an earlier draft of this line).
 - **User and device tiers live in the `ui_state` table**, which already
   exists for exactly this shape (and already migrated pane layout out of
   settings). User tier = `user:<id>` scope; device tier = `device:<id>`
@@ -353,6 +365,12 @@ it; the backend derives scope from the authenticated session's device.
 - User tier: confirmations, commit-message style, textgen routing,
   hidden models, default thread env mode, worktree branch prefix,
   auto-compact thresholds, GitLab hosts.
+
+Multi-machine convenience without a sync engine: host- and user-tier
+settings are per-machine by design (divergence is a feature), but the
+settings UI shows which machine is being edited and offers "apply to
+all / selected machines" on eligible keys — the client fans the same
+write out per backend; no cross-backend settings replication exists.
 
 The **key→tier taxonomy lands in phase 3**, with the scope table:
 device-tier writes ride a valid session (they touch only `device:self`),
@@ -373,10 +391,21 @@ Cross-origin defense is explicit: strict Host allow-list (canonical
 domain + known loopback names), Origin / `Sec-Fetch-Site` checks on
 `/ws` and every auth endpoint, DNS-rebinding rejection.
 
+Listener and endpoint-advertisement init is **per-listener isolated**:
+one integration failing to start (a broken `tailscale` binary on
+PATH, a dead tunnel) degrades that listener only and surfaces its
+error — it never takes down the others (t3code shipped exactly this
+bug: one spawn defect killed all endpoint advertisement).
+
 ### Stable endpoint
 
-Port becomes a setting (pick-random-once-then-persist default,
-user-fixable). Durable sessions remove re-pairing after restarts; origin
+The pick-random-once-then-persist half already shipped
+(`main_transport_port.go`: `transport-port.json` pin next to
+`client-id.json`, engages only when no explicit `--listen` port is
+given, falls back to ephemeral and re-pins if the pinned port is
+taken, `--reset-transport-port` to clear). What remains is the
+**user-fixable setting** surface: today the only controls are CLI
+flags. Durable sessions remove re-pairing after restarts; origin
 stability keeps browser storage attached.
 
 ### LAN access without a tailnet
@@ -425,6 +454,59 @@ subprocess with an owned domain. The chosen HTTPS name is the backend's
 **canonical domain**: passkey RP ID, related-origins anchor (max 5), and
 the phone app's dial target.
 
+**Termination by someone else's proxy** is the third path people will
+try regardless of what we build, so it gets a defined answer rather
+than a broken one. Two things break today. `deriveWSURL` derives the
+socket scheme from the listener, not the request, so an `https:` page
+served through a TLS-terminating proxy is handed a `ws://` URL and the
+browser refuses it as mixed content; the fix is honoring a validated
+`X-Forwarded-Proto`. And a same-host proxy makes every remote peer
+look like loopback, which is exactly the fact `LocalOnlyMethods` reads
+as "this is the machine's own window". Both are why the scope table
+replaces topology-based trust rather than extending it: with §5's
+model, forwarded-header handling is a routing detail. Until phase 3
+lands, a reverse proxy in front of the backend is documented as
+unsupported, not silently degraded.
+
+### Dev-server preview across machines (the port gateway)
+
+The in-app browser must reach a dev server the agent started on the
+thread's host — from any attached UI, over any path. t3code never
+built this (its relay case errors with "needs the planned
+authenticated preview gateway"; only tailnet-direct works, and only
+when the dev server binds beyond loopback). We build the gateway:
+
+- The backend proxies HTTP **and WebSocket upgrades** (HMR) to
+  `localhost:<port>` on its own machine; the in-app browser points at
+  the gateway when the thread's host is not the local machine. Works
+  over LAN, tailnet, and tunnel alike; the dev server needs no
+  `--host` flag and never binds beyond loopback.
+- **Reachable ports are an allowlist, never arbitrary**: ports the
+  dev-server scanner attributed to this thread's sessions, plus ports
+  the user adds explicitly. A localhost proxy that forwards anywhere
+  reaches every host-local service on the box; this one forwards only
+  to declared dev servers. Gateway access requires an execute-tier scope.
+- **The gateway is its own origin**: proxied content is
+  agent/app-authored and never shares the SPA origin, and the session
+  credential is never visible to it — access rides a short-lived
+  ticket bound to the gateway origin. Without a domain, "its own
+  origin" means its own loopback listener on its own pinned port.
+  One interaction to get right, because it makes the Origin
+  allow-list load-bearing rather than defense in depth: **cookies are
+  scoped by host, not by port**, so a document on the gateway origin
+  still has the boot cookie attached to requests it makes to the SPA
+  origin — including a WS upgrade, which CORS does not cover. The
+  upgrade must therefore refuse any `Origin` outside the allow-list,
+  and the gateway origin is never in it. This is the surface that
+  reintroduces the hazard `/design/` used to carry, so it inherits
+  the posture that route was going to be given rather than starting
+  from scratch.
+- Detection reuses t3code's proven shape, server-side: enumerate
+  loopback listeners (`lsof`/PowerShell), publish only candidates
+  whose bounded 1s probe returns HTML or a redirect, cache probe
+  results (~15s), poll (~3s) only while something subscribes,
+  attribute PIDs to the owning thread's sessions.
+
 ### Anywhere access
 
 tsnet embedded (BSD-3, userspace, works in WSL2 without TUN) with
@@ -444,6 +526,26 @@ frequently cannot unlock without a login session, so the signing key,
 provider credentials, and tsnet state need a defined at-rest strategy
 for unattended boot.
 
+**Session lifecycle on an unattended host.** LANDED 2026-08-31
+(b809e997). `ArchiveThread` closes the thread's provider session — the
+group kill cascades to dev servers and monitors — with a stop-time
+re-check against the newest turn's durable `started_at` so an archive
+that waited out a send does not kill the session that send just
+engaged (`internal/app/app_thread_archive.go`). The reaper's
+keep-alive-while-working choice stays (killing quiet-but-working
+sessions is rejected doctrine); what an unattended host adds is
+**visibility and control, not timeouts**:
+`ListRunningBackgroundWork` (wire-safe) reports the cross-thread
+inventory, unioning the same three sources `ListLiveBackgroundTasks`
+does (the store query, live Codex subagent launches, and the triage
+layer's in-memory Codex unified-exec tasks, which exist in no table),
+with per-thread unreadability carried in the payload rather than an
+error that would discard the rows; `StopThreadBackgroundWork`
+(LocalOnly) routes each row through the existing per-kind stop
+methods. The tray's 2-second completed-sibling retention is a
+live-tray tuning value, not an inventory history; the inventory
+reports what is running now.
+
 Update is a genuine availability requirement once the machine is
 unattended, and a supply-chain risk if remotely triggerable. Resolution:
 download/apply remain `scope: host`; a **remote trigger** exists but
@@ -452,29 +554,59 @@ behind a healthcheck-and-auto-rollback watchdog that preserves listener
 config and the session store. A bad update must never lock the owner
 out of a machine they cannot physically reach.
 
-### Provider re-authentication while remote
+The watchdog adopts t3code's proven architecture (its
+`server-updates` internals doc), which is concrete where "watchdog"
+is vague: a separate, stable **supervisor** process owns the launch
+state — the running server never mutates its own launch config; the
+new version installs into an immutable staged dir and its
+compatibility with the installed supervisor is checked *before*
+anything is touched; the store is **snapshotted while quiescent**
+before migrations; the new version boots fully as a trial — runs
+migrations, binds listeners, starts everything — but parks at an
+activation gate until it reports prepared within a hard time budget;
+only then does the supervisor durably commit. Failure or timeout
+restores the snapshot and restarts the old version, with a durable
+restore marker so a supervisor crash mid-rollback resumes correctly.
+The update carries an id the client correlates through its reconnect,
+so "update succeeded" means the new version answered, not that the
+old one stopped.
+
+### Provider accounts and remote login
+
+Provider credentials live in each backend's provider homes, so
+accounts are a **per-machine fact**: configured per machine (account
+dropdown scoped to the machine, usage keyed per backend), and the
+composer's target picker shows which account a thread will run and
+bill against (§10). All account management works over the wire —
+switching the active account *and adding a new login remotely*.
 
 Provider OAuth redirects to `localhost` **on the host**, unreachable
 from a phone, yet provider logins die at inconvenient times (see the
 2026-08-03 credential-death incident chain). Without a remote path, one
 token rotation bricks the backend until the owner is physically present.
 Required: provider auth state is a first-class remote-visible signal
-with a push event, and re-auth is completable remotely: the backend
-surfaces the authorize URL to the authenticated remote client and
-proxies its own loopback callback (or relays the paste-code/setup-token
-flow). If any provider makes this impossible, that limitation is
-documented explicitly rather than discovered in the field.
+with a push event, and login/re-auth is completable remotely: the
+backend surfaces the authorize URL to the authenticated remote client
+and proxies its own loopback callback (or relays the
+paste-code/setup-token flow). If any provider makes this impossible,
+that limitation is documented explicitly rather than discovered in the
+field.
 
 ## 8. State sync completeness
 
 Prerequisite sweep, valuable standalone:
 
-- Emit on every persisted mutation: the ~12 thread-row RPCs
-  (create/delete/archive/pin/read/model/effort/fastMode/contextWindow/
-  branch/workspace), `settings:updated` (with tier + keys),
-  `project:*`. Frontend replaces local-only applies (`syncThread`,
-  `*Local`) with event-driven convergence; initiators may still apply
-  optimistically.
+- Emit on every persisted mutation. Thread-row RPCs LANDED
+  2026-08-31 (9d48ee7c): every persisted thread-row mutation
+  broadcasts `thread:updated` carrying the written row plus an action
+  (`full`/`patch`/`listed`/`unlisted`/`deleted`, constants in
+  `internal/triage/router.go`); the store's write helper reads the row
+  back inside the write transaction and reports no-op writes so
+  repeats stay silent; the broadcast row is also the RPC's return
+  value, so initiator echo equals optimistic apply
+  (`frontend/src/lib/stores/eventsThreadRows.ts` is the applier).
+  Still open in this bullet: `settings:updated` (with tier + keys) and
+  `project:*`.
 - `draft:updated` with initiator echo-suppression; last-write-wins plus
   an "edited on <device>" affordance (cuttable polish).
 - Wire `GetQueueState` as the fresh-attach bootstrap.
@@ -536,7 +668,7 @@ Prerequisite sweep, valuable standalone:
   bundles are code, so transport trust is not enough. The shell
   verifies every bundle against the **release signing key baked into
   the shell itself**. A backend can only relay genuine signed
-  releases, never arbitrary script, so one compromised backend cannot
+  releases, never arbitrary script, so one misbehaving backend cannot
   reach the phone's device keys or its *other* backends' credentials
   through an update. Self-built/dev bundles require an explicit
   per-device "trust dev bundles from this backend" toggle. Only
@@ -570,15 +702,42 @@ Prerequisite sweep, valuable standalone:
   IndexedDB thread replica (cold opens paint locally, then
   `SyncThreadWindow` reconciles a windowed diff) is the remote story
   too: over a slow link, attach cost is a diff against the replica,
-  not a full load. Obligations it takes on: keyed by backend UUID
-  before multi-backend UI lands (§10), purged on sign-out and device
-  revocation, and the resume ladder becomes replay-ring → windowed
+  not a full load. Backend-UUID keying already shipped (one database
+  per backend, `ao-replica-<backendId>`; generation mismatch clears
+  and re-stamps). Obligations still open: purge on sign-out and
+  device revocation — today **no code path ever deletes a replica
+  database**, and a backendId change orphans the old
+  `ao-replica-<oldId>` database on the origin forever, outside the
+  per-database caps — and the resume ladder becomes replay-ring → windowed
   replica diff → full snapshot, in that order. At rest: the phone
   replica is encrypted with a key held in native secure storage
   outside the webview (biometric-gateable); browser profiles cannot
   do this. Revocation is not remote wipe. Cutting a device's access
   does not un-disclose what its replica already held (boundaries
   doc).
+- **Reconnect discipline** (two t3code patterns adopted; **mostly
+  built**, the remainder is phase 1). The target shape is already
+  in-tree and generic: `stores/transportStatus.svelte.ts`'s
+  `onTransportStatusChange` is the one canonical connection-state
+  observable, `isTransportClassError` the shared classifier, and
+  `entityStore.svelte.ts` wires the transport edge once for every
+  entity store — `connected` re-acquires, anything else *suspends*
+  rather than grinding a retry curve against a dead socket. Nine
+  stores ride it, and its header records that five carried a
+  verbatim copy before it moved there. Explicit retry-on-reconnect
+  exists too (`editors.svelte.ts`, `prReviewStore`, `gitStatusStore`,
+  `threadSwitchLoad`'s `retryHistoryLoad`). **Do not build a second
+  suspension mechanism.** What is genuinely missing is narrower: on
+  socket close `wsClient` still rejects every in-flight RPC with one
+  shared `DisconnectedError('socket closed')`, so a terminal failure
+  cannot name its own cause, and one-off RPCs that do not go through
+  an entity store have no suspension at all. Target for the
+  remainder: terminal states fail with the preserved underlying
+  cause, never a generic message. And retry-on-terminal is
+  only ever a small explicit allowlist scoped to a known transient
+  window (e.g. an authentication refusal in the seconds after a
+  server update restart), not a blanket policy. On a flaky link this
+  is the difference between an app that pauses and one that throws.
 - **Ticket primitive generalizes beyond WS**: short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
@@ -607,6 +766,22 @@ Prerequisite sweep, valuable standalone:
   than presence-guessing: presence heuristics are wrong whenever the
   desktop is attached but unattended), and a deep-link scheme carrying
   backend UUID + thread id.
+- **Desktop notifications ride the same event mapping.** An attached
+  client already receives the *thread* events, so it raises native OS
+  notifications for any attached backend — remote behaves exactly as
+  native on the box, no push infrastructure involved (push is the
+  phone/unattached path). This needs an audience change, not just a
+  preferences UI: `NotificationSend` and `NotificationActivated` are
+  loopback-only channels today, so an attached LAN browser receives
+  neither. `NotificationSend`'s retained (non-ephemeral) retention
+  stays — the Windows launcher replays it by cursor after reconnect.
+  Notification preferences become a general device-tier setting (per
+  event type × per backend); today's always-on notifications fold
+  into this and become configurable. Note there are two production
+  senders through `notifyOS`, not one: workflow items needing a human
+  or failing, and the WSL launcher's "update didn't apply" notice.
+  The handled-elsewhere retraction applies to local OS notifications
+  the same as to push.
 - **Approval policy**: pending approvals need a TTL / abandon policy so
   a turn does not hang forever holding a workspace when no device
   answers; approving from a notification is not allowed (app-open, and
@@ -621,13 +796,58 @@ Decide the **seams** in phase 1, not a speculative store rewrite:
 - `bindings.ts` routes RPCs through a resolvable transport handle
   rather than importing a singleton.
 - Event fan-out carries connection origin (backend UUID).
-- The IndexedDB thread replica keys its stores by backend UUID so two
-  backends' threads can never collide in one browser profile.
+- The IndexedDB thread replica keys its **database** by backend UUID
+  so two backends' threads can never collide in one browser profile.
+  Already shipped (`replica/session.ts`, `ao-replica-${backendId}`) —
+  listed here as a seam the multi-backend work must not break, not as
+  one to decide. Its lifecycle is not: see §9.
 
 The genuinely collision-prone singletons (git status by path, provider
 accounts/usage, settings, sysstat) get keyed when multi-backend UI
-lands. `--connect` becomes "add/attach endpoint", and the sidebar groups
-projects under backend sections.
+lands. `--connect` becomes "add/attach endpoint".
+
+### Unified sidebar: the machine is a property, not a partition
+
+One sidebar, no backend sections. Threads live on backends and appear
+in every attached UI; concurrent viewing is ordinary multi-client
+sync, so a thread started from one UI shows up natively on the
+machine that hosts it and everywhere else attached. The machine
+surfaces in exactly three places:
+
+- **Project identity is the repo, not the checkout.** A project entry
+  is the repository — matched by primary remote URL, root-commit hash
+  when remoteless — and each machine × checkout path is a **target**
+  under it. Two clones of the same repo, on one machine or five, are
+  simply two targets of one project, exactly as worktrees already are:
+  project ≠ workspace generalizes to project ≠ checkout ≠ machine.
+  Thread rows carry a target chip only when their project spans more
+  than one target. Identity is user-correctable (link/split) when the
+  remote-URL match gets it wrong; nothing beyond that match is
+  guessed.
+- **The composer picks the target.** Sticky last-used per project. An
+  unreachable target disables the composer for it and offers the
+  reachable alternatives — never silent failover to a different
+  machine. The picker shows what the choice implies: machine,
+  checkout/branch, and the provider account that runs and bills the
+  thread (§7).
+- **Reachability is ambient, not modal.** Per-backend status lives in
+  the sidebar footer; threads on an unreachable backend dim and stay
+  readable from the replica. The full-width transport banner is
+  reserved for the visible thread's own backend dropping.
+
+Path links and open-in-editor from a UI that is not on the thread's
+host default to copy/preview, with "open on <machine>" as the explicit
+secondary. The recommended posture for real remote editing is the
+editor's own remote mode over the tailnet (VS Code Remote-SSH against
+the host's tailnet name and the like): a per-machine editor command
+template lets the local UI open the *local* editor pointed at the
+remote checkout (`vscode://vscode-remote/ssh-remote+<host><path>`
+deep links — the editor's own SSH does the work). The backend
+self-probes before advertising remote-open targets: no `sshd`
+listening means no link offered (a clear "no SSH route" beats a
+hanging deep link), and offered hosts are ordered
+most-reachable-first (tailnet name, then mDNS `.local`). We do not
+build a file-open protocol.
 
 ## 11. Team sharing (federation)
 
@@ -702,11 +922,17 @@ no new store.
 
 ## 13. Surface inventory
 
-Complete coverage has to be structural, not a promise. The defect that exposed
-this requirement was the retired `/design/` route, which served agent-written
-files from the SPA origin outside the authorization model. Design mode and that
-route were removed on 2026-08-30; the lesson remains part of the boundary
-contract (see the boundaries doc's findings and §16 phase 0).
+Complete coverage has to be structural, not a promise. The worked
+counter-example, now removed: `/design/` served agent-written files
+from the SPA origin with **no token, no response headers, no
+per-thread check, and symlinks unresolved** — an entire HTTP surface
+sitting outside the authorization model, found only because it was
+audited, and closed in 2026-08-30's design-mode removal rather than
+by the fix that audit prescribed. It is kept here because deletion is
+not a mechanism: the same surface would have gone unenumerated for
+its whole life, and the dev-server gateway in §7 is the next thing
+shaped like it. What follows is what makes the next one visible
+without an audit (see the boundaries doc's findings, and §16 phase 0).
 
 Every externally-reachable surface is enumerated in one place with four
 declared properties: **listener** (which port/origin), **principal tiers
@@ -726,8 +952,19 @@ Classes to enumerate:
 - **Event channels**: required scope per channel, resolved into the
   connection's precomputed visible set.
 - **Listeners**: loopback, LAN, tsnet, tunnel, plus the auxiliary
-  loopback servers (browser MCP, harness control, claudetui gateway,
-  pprof) which must each declare that they carry no session credential.
+  loopback servers (browser MCP, harness control, claudetui gateway +
+  hook relay, pprof, the `--connect` client stub, the dev supervisor)
+  and the **implicit** ones our own child processes open — chromedp
+  gives every managed Chrome a loopback DevTools port, which no
+  inventory named until this audit. Each declares what capability it
+  carries and how it authenticates, not merely that it holds no
+  session credential: the browser MCP endpoint carries page
+  evaluation and workspace file reads behind an unguessable path
+  alone, which is a larger grant than "no session credential"
+  suggests. A listener whose credential is weaker than the surface it
+  gates is the pattern the enumeration exists to make visible. The
+  starting inventory is 9 listeners across 7 packages, one of them
+  implicit, verified 2026-08-30 against the design-mode-less tree.
 - **Content origins**: anything serving bytes an agent or user
   authored declares its origin and content-type posture; agent-authored
   bytes never execute at the SPA origin.
@@ -779,6 +1016,197 @@ frame.**
 - **Snapshot and attachment transfers ride HTTP**, not the WS, so large
   bodies never block the event socket or inflate the replay ring.
 
+**Initial wire budgets** — starting targets, revised by measurement,
+never by feel; a harness scenario counts actual bytes on the wire and
+fails on regression:
+
+- Warm attach to an already-replicated thread: **< 5 KB**.
+- Cold attach to a typical thread window: **< 50 KB compressed**;
+  heavy payloads stay on-demand and never ride the attach.
+- Idle attached thread: **keepalive only** (tens of bytes per 10 s
+  tick); an idle *unfocused* thread with subscription narrowing: zero.
+- Streaming a turn: **≤ 1.3×** the raw delta bytes after compression
+  and framing.
+- A backgrounded / unleased client: **zero event traffic** until it
+  leases back in.
+
+### Measured baseline, and why the budget is missed today
+
+Measured 2026-08-30 against a real 65,877-item thread, at the size the
+cold open actually asks for — `SLICE_AROUND_ITEM_BUDGET = 200`, not the
+500 of `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`, which is the *retention*
+target after paging and was the first figure this section carried. The
+200-row window serializes to **330 KB raw, 59 KB compressed**: 1.2×
+the budget above, not the 3× first recorded here.
+
+Where it goes matters more than the total. Of 200 rows, 109 are
+`tool_call` and they carry **81%** of the bytes. Per-field, across the
+whole window: payload metadata 100 KB (38%), item `meta` 63 KB (24%),
+`summary` 48 KB (18%, mostly thinking text), preview highlight spans
+17 KB (6%), ids and timestamps the rest. Payload *bodies* are
+correctly withheld; this is the metadata riding alongside.
+
+Two of those fields are content that **does not paint on first
+render**:
+
+- **Full tool arguments** (`meta.input`) are 59 KB of the 63 KB. A
+  4.2 KB `Bash` argument object ships so a card can show one command
+  line. Three consumers read sub-fields of it — `input.files`
+  (`utils/fileChangeRows.ts`), `input.questions`
+  (`AskUserQuestionCard.svelte`), `input.tool`
+  (`utils/subagentGrouping.ts`) — and nothing reads the whole object.
+- **Diff preview text and its highlight spans** are 51 KB, 15% of the
+  window. `collapseDiffPreviews` defaults to `true`, so by default the
+  patch sits behind a chevron and none of it paints until clicked.
+
+That is ~110 KB of 330 KB raw rendering nothing on arrival. The
+correction that follows is therefore *not* a shorter window: the row
+count is what makes the timeline look complete, and the reader pages
+back through it seamlessly already (auto-load fires 800 px before the
+top edge, one page per gesture, with the keyed virtualizer emitting
+exact scroll compensation on prepend). Cut the fields that arrive
+unrendered and the same 200 rows — or more — fit the budget.
+
+One wrinkle to design around rather than ignore: `collapseDiffPreviews`
+is a *client* setting. With it off the diff text does paint on first
+load, so that half of the elision is conditioned on the attaching
+client's preference, not dropped outright. The projection therefore
+belongs where the connection's state is known, not in the store.
+
+**The precedent already exists in-tree, and it is the right shape.**
+An earlier version of this section claimed every cap in the wire path
+was a count. That was wrong. Two byte budgets already bound the
+derived-cache fields, both justified in code by exactly the reasoning
+above:
+
+- `persistedCodeSpansMaxBytes = 256 << 10` (`app_highlight_persist.go`)
+  bounds the `codeSpans` blob on `items.meta` — *"Meta rides every
+  item-list load, so a pathological all-code message must not attach
+  megabytes of runs; fences past the budget fall back to the RPC path
+  lazily."* It spends a running budget across fences and **skips
+  rather than breaks**, so one giant fence cannot starve later small
+  ones.
+- The same constant caps `preview_spans`
+  (`app_highlight_diff_seed.go`) — *"preview_spans rides every item
+  list read, so it gets the same retained-bytes guardrail"* — behind
+  per-file (256 KB) and aggregate (1 MB) input caps.
+
+Both already satisfy the "elision ships with its recovery route" rule
+below: what they skip is fetchable through the highlight RPC. The gap
+is not that the pattern is missing, it is that it was applied to the
+two fields we authored ourselves and never to the provider-shaped
+fields the measurement blames. Count caps that remain count-only:
+`SLICE_AROUND_ITEM_BUDGET = 200`, `LOAD_OLDER_ITEM_BUDGET = 200`,
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 500`,
+`inlineDiffPreviewLineCount = 30`, and the 8 MB on-disk tool-output
+file cap. A row with thirty very long lines still satisfies all of
+them.
+
+Calibration, so the target is not mistaken for a crisis: t3code's own
+comment on their page size says it is *"sized so first paint on the
+heaviest observed threads stays around 100K gzipped."* Their widely
+quoted small figures (a 15.5 KB CI ceiling) come from a fixture whose
+point is that 9 MB of retained tool output ships as almost nothing —
+it measures their elision, not their window, and we already keep
+payload bodies off the wire. On comparable ground, heaviest thread to
+heaviest thread, they are at ~100 KB and we are at 59 KB — we are
+already ahead of them, and the only thing we are behind is our own
+50 KB target, by 9 KB. That target stays where it is: it is more
+aggressive than what they achieve, and the elision above clears it
+with room to spare.
+
+Rules that follow, and hold for any future payload:
+
+- **Elide unrendered fields before shortening the window.** The row
+  count is what makes a reopened thread look complete; the fields are
+  where the bytes are. Cutting rows trades visible history for bytes,
+  cutting a field nothing paints trades nothing. Reach for the window
+  only once the fields are clean.
+- **Every count budget still carries a byte budget**, as the backstop
+  that field elision cannot provide: a window admits rows until either
+  the row count or the encoded byte budget is reached, whichever comes
+  first. Count alone bounds reducer churn; bytes alone bounds a small
+  number of large rows. Neither substitutes for the other, and neither
+  substitutes for not sending the field.
+- **One oversized row is always admitted when the page is otherwise
+  empty**, or pagination stalls forever on a single item.
+- **A budget skips, it does not break.** Spending a running budget
+  across items and stopping at the first overage lets one giant item
+  starve every later small one, which reads to the user as history
+  that thins out for no reason. `buildPersistedCodeSpans` gets this
+  right and says so at the `continue`.
+- **Byte accounting charges what actually goes on the wire**,
+  including any row that appears twice in one payload.
+- **Elision ships with its recovery route in the same change.** A
+  truncated field carries a typed marker saying so, and the endpoint
+  that returns the full value lands with it, never "later". t3code
+  cut full MCP results from their payloads (12.2 MB → 546 KB) on the
+  stated promise of an on-demand detail endpoint and never built it,
+  turning an accepted temporary loss into a permanent one.
+- **Truncate at the wire boundary, not in storage.** The persisted
+  record stays complete; only the projection shrinks.
+
+### Wire budget enforcement
+
+LANDED 2026-08-31 (1fbb771c) as a Go gate rather than a harness
+scenario, deliberately: `internal/app/app_wire_budget_test.go` seeds a
+deterministic heavy thread built to the field split above (fixture
+entropy corrected until its deflate ratio matches the real thread's
+5.6:1), marshals the cold 200-row window into the same
+`transport.ServerFrame` the connection writes, and deflates it at the
+socket's own level. That puts the gate in `make go-test` on every
+commit instead of `make e2e`, with ceilings for both clients (default
+193.1 KB raw / 38.4 KB deflated measured, ceilings 216 KB / 44 KB —
+under the 50 KB budget with room; previews-on 248.4 / 49.0, ceilings
+272 / 54) plus an anti-rot companion that measures the same window
+unprojected and fails if the projection's saving disappears. Budgets
+live in that test rather than in logs, so a regression fails locally
+before it ships.
+
+### What t3code did that we do not need, and what we do
+
+Their largest wins were architectural catch-up we already have.
+Their activity rows stored full tool payloads inline, so they built
+an allowlist projection to strip them on the way out (12.2 MB → 546
+KB for MCP results) and later a second one at ingestion, after
+discovering one 65 KB tool result had persisted 238.7 MB across 2,226
+streaming updates. Our payload bodies have always lived in a separate
+table behind an id, and items persist on completion rather than per
+update, so neither problem exists here. We also already have the
+partial-window guard they rate as their most valuable idea: an event
+for an item outside the loaded window must not be appended at the
+end. Ours is cursor-based in both directions and handles negative
+item indexes from head-healed prompts.
+
+Deliberately not adopted, three things:
+
+- **Their field-allowlist projection.** It is only as correct as the
+  inventory of fields the client reads, and that inventory decayed
+  twice in production — once dropping the real status so failed tool
+  calls rendered as successful, once matching tool identity on the
+  wrong field so the dedupe silently fell back to comparing titles. A
+  byte cap on a field we already know is heavy carries no such
+  inventory.
+- **Summarizing tool output to one line at ingestion, permanently.**
+  It is their single largest lever (9 MB of retained output shipping
+  as under 16 KB) and it is irreversible by construction: a 900 KB
+  result becomes 84 characters and no endpoint returns the rest. Our
+  payload table exists precisely so the full value stays fetchable.
+- **Buffering assistant text server-side and flushing at block
+  boundaries.** Their token streaming is a legacy opt-in that
+  defaults off, so a turn's prose crosses as a handful of frames.
+  That is a byte win bought with the live-typing feel the reveal
+  queue and spinner work are built around. We keep streaming and
+  bound its overhead with the ≤1.3× budget instead. Worth noting our
+  thread stream already coalesces (16 ms / 50 events) where theirs
+  does not — only their sidebar stream has a coalescing window.
+
+Worth taking beyond the byte budgets: dropping rows a snapshot does
+not need (they found 47k superseded tool-update rows in one database,
+and stale context-window rows were 24–37% of snapshot bytes), applied
+to snapshots only and never to live events, since the client folds
+live rows itself.
+
 Phase 6's phone work (subscription narrowing, buffered deltas, scope
 leases) is a net *reduction* in wire and CPU cost, not an addition.
 
@@ -811,29 +1239,136 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 
 0. **Open content-isolation defects.** Independent of everything else
    and reachable today, in the desktop webview, with no remote feature
-   enabled: the markdown renderer's `Link.svelte` relative branch
-   (root-relative and protocol-relative hrefs render as live anchors,
-   bypassing `transformUrl`), an anchor-navigation guard, retirement of the
-   unsafe `/design/` content route, and a baseline CSP that
-   is strict in production and relaxed in dev (the Vite dev server injects
-   inline styles regardless of HMR, so the split is not an HMR
-   concession; disabling HMR is an independent preference). The boot
-   credential moves out of script reach entirely: bootstrap exchanges
-   the one-time `?t=` URL token for an HttpOnly cookie, strips the
-   token from the URL, and the WS upgrade authenticates via cookie
-   plus the §7 Origin allow-list, deleting the `sessionStorage` copy
-   and `window.__AO_BOOTSTRAP__`. This is the same channel that
-   carries session credentials from phase 2 on, not a stopgap. Also:
-   `safeExternalURL` on the two unvalidated `PRStep.svelte` hrefs, tests
-   for `/`- and `//`-leading hrefs, a correction to the false claim in
-   `frontend/CLAUDE.md`, and the §13 surface enumeration + CI gate
-   seeded with HTTP routes, listeners, and content origins (the
-   RPC-method and event-channel columns join in phase 3 when the scope
-   table generates).
+   enabled. Re-verified against this tree on 2026-08-30, after design
+   mode was removed on main. That removal closed the largest item on
+   this list outright — the `/design/` route was the only same-origin
+   surface serving agent-authored bytes, and with it went the
+   unauthenticated read, the symlink following, the directory
+   listings, the second Chrome launcher's sandbox disagreement, and
+   half the MCP-endpoint item. Four other entries left the list
+   earlier and are recorded elsewhere rather than here: the markdown
+   renderer's relative-href branch (fixed at the render layer, both
+   paths verified), the persisted stable port and the backend-keyed
+   replica (both already shipped, §7 and §9), and a `frontend/CLAUDE.md`
+   correction whose claim now lives in a code comment.
 
-1. **Sync sweep + seams.** Emits, channels, gap entries, race handling,
+   Two items were considered and **deliberately not taken**, so they
+   do not come back on a later pass. The click delegate's
+   no-`preventDefault` fall-through stays as it is: an agent that
+   could plant a hostile anchor already has a shell, so the anchor
+   buys it nothing, and the markdown path can no longer emit one
+   regardless. `PRStep.svelte`'s two unvalidated forge hrefs stay as
+   they are: a forge API returns the same URL the real pull request
+   page would link, so validating ours while the real page does not
+   is theater. The click delegate is recorded in the boundaries doc
+   as observed behavior rather than debt; PRStep is recorded here
+   only, because it is a decision about our own component and not a
+   property of the boundary.
+
+   - **A baseline CSP.** LANDED 2026-08-31 (2eb5c7dc): every served
+     response carries a prebuilt policy (`transport.CSPProduction` /
+     `CSPDevServer`), chosen once at server construction from the
+     dev-asset-proxy condition so policy and handler cannot disagree,
+     and `WriteSecurityHeaders` takes the policy as a typed argument
+     so a route cannot ship without naming one. `script-src 'self'`
+     with no hash and no nonce — the first-paint theme stamp moved to
+     `frontend/public/boot-theme.js` (byte-identical validator), and
+     `index.html` holds no inline script or style, held by a test.
+     The dev variant relaxes `connect-src` alone (Vite's baked-in
+     direct HMR socket fallback); a test fails if the two policies
+     differ anywhere else. The e2e page fixture collects
+     `securitypolicyviolation` events across the suite. Verified in
+     Chromium end to end; the WKWebView leg (macOS) is verified by
+     spec reading only and is the first thing to eyeball on a Mac
+     boot. The `--connect` stub now serves the exact root via
+     `/{$}` and everything else from the bundle file server, because
+     the shell answering for `/boot-theme.js` under `nosniff` would
+     have silently dropped the theme stamp on that origin.
+   - **The boot credential moves out of script reach.** LANDED
+     2026-08-31 (24486360): a page URL carries a one-time ticket
+     (`?t=`), the first `/bootstrap.json` exchanges it for an
+     HttpOnly, SameSite=Strict, port-qualified cookie
+     (`ao_page_<port>`), and the SPA strips the ticket from the URL.
+     `sessionStorage['ao:bootstrap-token']`, `window.__AO_BOOTSTRAP__`
+     and every reader of either are gone. `OriginAllowed` gates `/ws`,
+     `/bootstrap.json` and the new `/pageurl` ahead of the credential
+     and is load-bearing on loopback too (cookies do not scope by
+     port). Consumers that navigate more than once (Windows launcher
+     reload, `ao-harness`, the e2e rig) ask the credentialled
+     `GET /pageurl` for a fresh URL. One validation function
+     (`Credential.Authenticate`), three carriers: cookie, bearer
+     header, `?token=` for URL-only WebSocket APIs. This is the same
+     channel that carries session credentials from phase 2 on, not a
+     stopgap.
+   - **The `--connect` client stub hands out that same credential.**
+     LANDED 2026-08-31 (same commit): the stub serves the SPA shell
+     verbatim on its own origin, issues its own page cookie, and
+     carries `/ws` to the upstream through `httputil.ReverseProxy`
+     with the upstream token attached server-side, so `validateWsUrl`
+     now holds same-origin with no exemptions in every mode. The
+     upstream's verdict on the configured token is relayed through the
+     stub's own manifest probe (bearer header, refusal maps to 404,
+     transient to 503).
+   - **The browser MCP endpoint authenticates on an unguessable path
+     alone.** LANDED 2026-08-30 (476f428f): every request now clears a
+     loopback-peer check off `r.RemoteAddr` (the claudetui gateway's
+     precedent), a refusal of any `Origin` header, and an
+     `application/json` requirement that forces a preflight where a
+     `text/plain` POST would have been a CORS simple request. Both
+     real provider clients verified against their header
+     construction. The listener still binds eagerly — its URL rides
+     provider argv at spawn — and that property is now documented at
+     `ensureStarted`.
+   - **Tests.** LANDED 2026-08-30 (7897c969): the `//`-leading href
+     is pinned through the real `ChatMarkdown` on both render paths,
+     and `ChatMarkdown.compactStaticLinkUrls.test.ts` drives a
+     20-class href corpus through `staticHtml.ts` and `Link.svelte`
+     with per-class test names, so a future edit to one path that
+     forgets the other fails the case naming the divergent class.
+   - **The §13 surface enumeration + CI gate.** LANDED 2026-08-31
+     (7ead32ed): `internal/surfaces` holds the authored rows — 9
+     listeners across 7 packages (the tree had not drifted from the
+     audit), 17 HTTP routes across all four muxes, 8 content origins,
+     each with binding class, credential, posture and a Why — and its
+     AST gate scans the Makefile's package roots, failing in both
+     directions (unenumerated bind/route, or a row whose file no
+     longer binds) with zero exclusions. The RPC-method and
+     event-channel columns join in phase 3 when the scope table
+     generates. Open repo-hygiene item the sweep surfaced:
+     `spike/claude-mitm` is checked in with two live `net.Listen`
+     calls against spike-policy step 5; it sits outside the gate's
+     package roots.
+   - **Doc drift inside the classification table.** LANDED 2026-08-31
+     (0114caed): `LocalOnlyCategory` is a closed typed set of ten,
+     each entry in the authored `localOnlyCategories` map carries one,
+     and `LocalOnlyMethods` is derived from it — the name set held
+     byte-identical through the change, with the wave-2 addition
+     (`StopThreadBackgroundWork`) categorized at the merge. Gates pin
+     the set closed, the ordinals contiguous, and every entry tagged.
+     Sibling landing, same commit series (d7b67946): seven loopback
+     predicates consolidated into `internal/loopback` (four named
+     predicates; `EndpointAuthority` and `EndpointHostname` provably
+     cannot fold and a test pins why).
+
+1. **Sync sweep + seams.** Archive-closes-session fix: LANDED
+   2026-08-31 (b809e997, §7). Thread-row emits: LANDED 2026-08-31
+   (9d48ee7c, §8). Remaining: settings/project emits,
+   channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
-   backend UUID, hello frame, multi-backend seams (§10).
+   backend UUID, hello frame, multi-backend seams (§10). The
+   *remainder* of reconnect discipline lands here (§9) — per-call
+   cause preservation in `wsClient` and coverage for one-off RPCs
+   outside the entity primitive. The suspension mechanism itself is
+   already built and must not be duplicated. So does the replica's
+   missing lifecycle — nothing deletes a replica database today, and
+   a backend-id change orphans the old one on the origin permanently
+   — and §9's forward-tolerance obligation with its future-dialect
+   fixture. Byte budgets: LANDED 2026-08-31 (1fbb771c, §14
+   "Wire budget enforcement") — `internal/itemwire` projects every
+   item path (pagers, `SyncThreadWindow`, live upserts/patches), with
+   typed markers, the `GetThreadItemProjectionSource` recovery route,
+   a per-window byte backstop, and the counting gate in `make
+   go-test`. The window keeps its 200 rows.
 2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
@@ -862,8 +1397,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    native WebSocket bridge (the phone's only transport, §9) and
    bundle sync from the backend with rollback (§9); store builds
    come whenever the app ships.
-7. **Multi-backend UI.** Keying the collision-prone singletons, sidebar
-   sections.
+7. **Multi-backend UI.** Keying the collision-prone singletons; the
+   unified sidebar with project targets, composer target picker, and
+   ambient reachability (§10); the port gateway's remote wiring in
+   the in-app browser (§7).
 8. **Team sharing.** Hub-first: team-server deployment, shared
    workspaces with roles, peer sessions, hub-to-hub peering, payload
    sensitivity tiers, fork pipeline. Ingress triggers and per-workflow

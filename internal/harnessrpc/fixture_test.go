@@ -104,7 +104,10 @@ func (h *testHost) CreateThread(options ThreadOptions) (store.Thread, error) {
 	thread.WorkspacePath = project.Path
 	return thread, h.store.CreateThread(thread)
 }
-func (h *testHost) ArchiveThread(threadID string) error   { return h.store.ArchiveThread(threadID) }
+func (h *testHost) ArchiveThread(threadID string) error {
+	_, _, err := h.store.ArchiveThread(threadID)
+	return err
+}
 func (h *testHost) StopSession(string) error              { return nil }
 func (h *testHost) DeleteProject(projectID string) error  { return h.store.DeleteProject(projectID) }
 func (h *testHost) RecoverCrashedTurns() error            { return nil }

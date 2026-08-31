@@ -85,6 +85,15 @@ implementation markers and revision parent links.
   items (JSON preview/stats); a local payload shadows its immutable base.
 - `timeline_payloads.preview_spans`: loaded alongside items (small span blobs
   for inline diff previews; capped at write time).
+
+Always-loaded is a statement about SQLite reads, not about the wire. The
+rows these produce are complete; the copy a client receives is bounded by
+the wire projection (`internal/itemwire`), which can drop an oversized
+`meta.input` leaf, an inline preview patch, and the `preview_spans` blob
+that indexes patches it dropped. Nothing about the stored row changes —
+markers name what a client did not receive and
+`GetThreadItemProjectionSource` returns it. See
+[data-flow.md § Wire Projection](data-flow.md#wire-projection).
 - `payloads.data` + `payload_chunks.data`: composed on demand when the
   user expands, copies, or saves a heavy payload. `payloads.spans` rides
   along with those explicit payload reads.

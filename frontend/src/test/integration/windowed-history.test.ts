@@ -255,7 +255,16 @@ describe('App integration — windowed thread history', () => {
     // routed through loadUntilItem. loadUntilItem fetches the target
     // item, then recenters via ListThreadSliceAround.
     await waitFor(() => expect(getItemCall).toHaveBeenCalledWith('thread-1', 'old-hit'));
-    await waitFor(() => expect(sliceCall).toHaveBeenCalledWith('thread-1', 'old-hit', expect.any(Number)));
+    // The trailing argument is this client's inline-preview preference,
+    // which every item-window call states (stores/threadPaneShared.ts).
+    await waitFor(() =>
+      expect(sliceCall).toHaveBeenCalledWith(
+        'thread-1',
+        'old-hit',
+        expect.any(Number),
+        expect.any(Boolean),
+      ),
+    );
     // The paged-in window now covers turn 3 — the store state confirms
     // the window actually moved rather than stopping at a no-op.
     await waitFor(() => expect(pane.oldestLoadedTurnIndex).toBe(3));

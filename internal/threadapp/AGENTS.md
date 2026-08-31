@@ -37,5 +37,13 @@ What stays in `internal/app`:
   and clears session/lazy-fork state atomically when it is allowed.
 - Branch metadata updates are workspace-wide and match both the supplied and
   canonical path spellings.
+- A row-mutating operation returns `(row, changed, error)`. `internal/app`
+  broadcasts the row on `thread:updated` so a second attached client
+  converges without a refresh, and `changed` is the gate that keeps a write
+  which changed nothing off the wire — SQLite counts a row as affected when
+  the assignment restates the value it held, so a rows-affected count cannot
+  answer this. The row comes back from the write's own transaction; only the
+  no-change path (`rowOrCurrent`) pays a follow-up read, and only where the
+  caller still owes its client a row.
 - Thread action locks self-clean through `internal/keyedlock`; callers never
   delete registry entries manually.

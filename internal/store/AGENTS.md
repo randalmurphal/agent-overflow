@@ -1291,6 +1291,35 @@ before changing a write path.
   the only writer past `busy_timeout`. A rollback restores the flag with
   the rows.
 
+## Thread-row writes report what they changed
+
+Every persisted thread-row mutation is broadcast on `thread:updated` so a
+second attached client converges without a refresh, and a write that changed
+nothing is not broadcast. That makes "did this row actually move" a value the
+write itself must return, so the thread mutators go through
+`applyThreadRowWrite` (`threadrowwrite.go`) and return
+`(Thread, changed bool, error)`.
+
+- **Rows-affected cannot answer it.** SQLite counts a row as affected when
+  the SET restates the value the row already held, so `requireRowsAffected`
+  proves the row exists, never that it moved. The `Change` predicate on the
+  write (`archived IS NOT 1`, `reasoning_effort IS NOT ?`) is what makes the
+  UPDATE match nothing when there is nothing to do.
+- **Use `IS NOT`, not `<>`, on a nullable column.** `NULL <> 0` is `NULL`,
+  which is not true, so a `<>` change predicate silently skips every row
+  whose column is NULL and reports the write as a no-op.
+- **A no-op and a missing row are different answers.** With a `Change`
+  predicate the UPDATE returns no row for both, so the miss path re-probes
+  for the row under the eligibility half of the WHERE (`id`, plus any
+  `Match` clause such as `pinned_at IS NOT NULL`). Present means
+  `(zero, false, nil)`; absent means `sql.ErrNoRows`, which preserves the
+  refusals callers already depend on.
+- **The row comes back from the write's own transaction.** `RETURNING id`
+  then `listThreadsByIDTx` inside the same tx: `threadColumns` carries
+  correlated subqueries, which `RETURNING` cannot evaluate, and a second
+  round trip could read a row a concurrent write had already moved. The
+  projection is paid only when something changed.
+
 ## Reads that are easy to get wrong
 
 - **Partial indexes need textual qualification.** SQLite uses one only when
@@ -1309,10 +1338,13 @@ before changing a write path.
 - **`ListLiveBackgroundTasks` is the one read that does not share that
   filter**, because it lists by backgrounded ANCESTRY
   ([invariant 24](../../docs/architecture/invariants.md#24-backgrounded-work-outlives-its-launching-turn),
-  `docs/specs/agent-visibility.md` Q8). It is the DISPLAY query only: the
-  reaper and the flush-queue gates keep `parent_id = ''`, because whether
-  the tray SHOWS a nested background Bash and whether that Bash blocks the
-  queue are different questions.
+  `docs/specs/agent-visibility.md` Q8). The reaper and the flush-queue
+  gates keep `parent_id = ''`, because whether a nested background Bash is
+  LISTED and whether it blocks the queue are different questions. Its
+  callers are the tray and `App.ListRunningBackgroundWork`, the
+  cross-thread inventory; both go through `App.ListLiveBackgroundTasks`,
+  which unions this query with two sources that are not in any table, so a
+  new cross-thread reader must not call this one directly.
 - **`subagentLaunchFilterFor(alias)` is structural, never a tool-name
   list**: a `tool_call` with at least one visible child attributed to it,
   which is what keeps it provider-neutral. The alias argument is MANDATORY,

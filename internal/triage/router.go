@@ -1078,8 +1078,26 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 	return r.observeCodexSubagentStatus(evt)
 }
 
-// ThreadUpdateEvent is the wire shape for thread:updated. Action "full"
-// carries the entire Thread struct; "patch" carries only the changed fields.
+// ThreadUpdateEvent is the wire shape for thread:updated. Every persisted
+// thread-row mutation broadcasts one, so a second attached client converges
+// on the change without a refresh; a write that changed nothing broadcasts
+// nothing.
+//
+// Action names what the receiver must do with the row, not which RPC ran,
+// because membership of the active sidebar is not derivable from the row
+// alone (listing also depends on whether the thread has items or draft
+// content, which only the backend knows):
+//
+//   - "full"     the row's current state — converge a row the client already
+//     has. Says nothing about membership, so a client that does
+//     not have the row ignores it.
+//   - "patch"    changed fields only, keyed by ID.
+//   - "listed"   the row belongs in the active sidebar now — insert it if
+//     absent (creation, fork, terminal start, unarchive).
+//   - "unlisted" the row has left the active sidebar but still exists
+//     (archive). Carries the row so open panes converge too.
+//   - "deleted"  the row is gone from SQLite. ID only; one per row of a
+//     deleted tree, children included.
 type ThreadUpdateEvent struct {
 	Action     string        `json:"action"`
 	Thread     *store.Thread `json:"thread,omitempty"`
@@ -1089,8 +1107,18 @@ type ThreadUpdateEvent struct {
 	SessionRef *string       `json:"sessionRef,omitempty"`
 }
 
+// The Action vocabulary, spelled once so an emit site cannot invent a value
+// the frontend's applier does not handle.
+const (
+	ThreadActionFull     = "full"
+	ThreadActionPatch    = "patch"
+	ThreadActionListed   = "listed"
+	ThreadActionUnlisted = "unlisted"
+	ThreadActionDeleted  = "deleted"
+)
+
 func (r *Router) emitThreadPatch(threadID string, patch ThreadUpdateEvent) {
-	patch.Action = "patch"
+	patch.Action = ThreadActionPatch
 	patch.ID = threadID
 	r.emit(eventchan.ThreadUpdated, patch)
 }

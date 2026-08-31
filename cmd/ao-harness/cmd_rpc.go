@@ -383,7 +383,10 @@ func runItems(e *env, args []string) error {
 }
 
 func (e *env) printItems(ctx context.Context, client *harnessclient.Client, threadID string, turn int) error {
-	raw, err := client.Call(ctx, "ListItems", threadID)
+	// true: ask for inline previews so the printed rows carry the complete
+	// payload metadata rather than the wire projection's elided copy
+	// (internal/itemwire) — this is an inspection tool, not a renderer.
+	raw, err := client.Call(ctx, "ListItems", threadID, true)
 	if err != nil {
 		return err
 	}

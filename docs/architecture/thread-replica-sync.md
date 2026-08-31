@@ -437,8 +437,9 @@ that run and adopts the new port, so a permanently squatted port
 churns once, not forever, and a collision run merely re-primes the
 replica. An explicit `--listen host:port` still wins unchanged.
 
-Port obscurity was never a security control (the bootstrap token and
-Host checks are), so pinning it costs nothing. Side benefit: webview
+Port obscurity was never a security control (the page credential and the
+Host/Origin checks are), so pinning it costs nothing. The page cookie's
+name carries the port, so a stable port also means a stable cookie name. Side benefit: webview
 localStorage (the pre-hydration cache in `appStorage`) stops resetting
 every launch. The `--connect` client-mode stub keeps its ephemeral
 port for now; it can adopt the same helper when remote-attach windows

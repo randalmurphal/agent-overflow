@@ -83,9 +83,10 @@ subagent-aware path as guilty until it proves scope containment.
 - Tray membership and lifecycle gates must not share a filter.
   `Store.ListLiveBackgroundTasks` lists by backgrounded ancestry at any
   depth, while the reaper and queue gates beside it in
-  `store/items_lifecycle.go` stay `parent_id = ''`. Showing a nested
-  background Bash in the tray is display; whether it blocks the flush
-  queue or survives a teardown is top-level only (invariant 24).
+  `store/items_lifecycle.go` stay `parent_id = ''`. Listing a nested
+  background Bash — in the tray or in the cross-thread inventory — is a
+  membership question; whether it blocks the flush queue or survives a
+  teardown is top-level only (invariant 24).
 
 ## Stopped-thread routing (invariant 29)
 

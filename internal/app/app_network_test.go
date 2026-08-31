@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -69,8 +70,14 @@ func TestGetNetworkSettings_DefaultsToLoopback(t *testing.T) {
 	if !strings.Contains(got.URL, "127.0.0.1") {
 		t.Fatalf("URL = %q, want loopback host", got.URL)
 	}
-	if !strings.Contains(got.URL, srv.Token()) {
-		t.Fatalf("URL = %q, want token", got.URL)
+	// The shared URL carries a one-time page ticket, never the session
+	// token: what a user copies out of this panel buys one browser
+	// session and cannot be replayed.
+	if strings.Contains(got.URL, srv.Token()) {
+		t.Fatalf("URL = %q carries the session token", got.URL)
+	}
+	if !strings.Contains(got.URL, "?"+transport.PageTicketParam+"=") {
+		t.Fatalf("URL = %q carries no page ticket", got.URL)
 	}
 }
 
@@ -189,15 +196,32 @@ func TestSetNetworkSettings_NoOpWhenUnchanged(t *testing.T) {
 }
 
 // TestNetworkFromServer_LoopbackUsesAppURL pins the URL output for the
-// default loopback bind: it must equal Server.AppURL so the user
-// always sees a consistent string regardless of how settings is
-// queried.
+// default loopback bind: it is Server.AppURL's, so the user sees the
+// same address however settings is queried.
+//
+// It is not the same STRING twice: every render mints its own one-time
+// page ticket, so two reads of the panel hand out two independently
+// openable URLs rather than one that a second reader finds spent.
 func TestNetworkFromServer_LoopbackUsesAppURL(t *testing.T) {
 	_, srv := newNetworkTestApp(t)
-	got := network.FromServer(srv, false).URL
-	if got != srv.AppURL() {
-		t.Fatalf("loopback URL = %q, want srv.AppURL() = %q", got, srv.AppURL())
+	first := network.FromServer(srv, false).URL
+	second := network.FromServer(srv, false).URL
+	if originOf(t, first) != originOf(t, srv.AppURL()) {
+		t.Fatalf("loopback URL = %q, want the server's own origin", first)
 	}
+	if first == second {
+		t.Fatalf("two renders handed out the same URL: %q", first)
+	}
+}
+
+// originOf reduces a page URL to scheme://host:port.
+func originOf(t *testing.T, pageURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(pageURL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", pageURL, err)
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 // intToPortString matches what SplitHostPort produces — base-10

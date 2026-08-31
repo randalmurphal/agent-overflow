@@ -62,7 +62,7 @@ async function userItemId(
   threadId: string,
   summary: string,
 ): Promise<string> {
-  const items = await harness.rpc<Item[]>('ListItems', threadId);
+  const items = await harness.rpc<Item[]>('ListItems', threadId, true);
   const match = items.find((i) => i.kind === 'user_text' && i.summary === summary);
   if (!match) throw new Error(`no user_text ${JSON.stringify(summary)} in ${JSON.stringify(items)}`);
   return match.id;
@@ -103,7 +103,7 @@ test('editing a message on a paginated codex thread cuts it in place', async ({ 
   // The edited message replaced the old tail rather than appending to it.
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId);
+      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
       return items
         .filter((i) => i.kind === 'user_text' || i.kind === 'assistant_text')
         .map((i) => i.summary);
@@ -145,7 +145,7 @@ test('editing a message falls back to a fork when the app-server predates thread
 
   await expect
     .poll(async () => {
-      const items = await harness.rpc<Item[]>('ListItems', threadId);
+      const items = await harness.rpc<Item[]>('ListItems', threadId, true);
       return items
         .filter((i) => i.kind === 'user_text' || i.kind === 'assistant_text')
         .map((i) => i.summary);

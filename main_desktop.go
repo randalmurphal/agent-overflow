@@ -34,16 +34,17 @@ import (
 // runClient is the Phase F remote-client entry point. Instead of
 // booting the local transport (HTTP+WS server, App service registration,
 // SQLite, observability, sessions), the desktop binary points the
-// Wails webview at a tiny static-asset HTTP server whose index.html
-// has window.__AO_BOOTSTRAP__ pre-injected so the SPA's wsClient
-// connects to the operator-supplied remote endpoint instead.
+// Wails webview at a tiny loopback stub that serves the SPA shell
+// verbatim, answers /bootstrap.json on its own origin, and carries the
+// SPA's WebSocket to the operator-supplied remote endpoint with the
+// upstream credential attached in Go (internal/clientmode).
 //
 // Why we still need a loopback HTTP server: the Wails webview only
 // loads `http://`/`https://` URLs (or the embedded asset URL with the
 // devserver path). Pointing it directly at `ws://...` won't work, and
-// the bootstrap-injection step has to happen somewhere. The stub
-// server is single-purpose: serve the SPA shell with the bootstrap
-// snippet, plus the static assets the shell loads from /assets/.
+// the page needs an origin of its own for its cookie and its
+// same-origin manifest. The stub server is single-purpose: the shell,
+// the assets under /assets/, the manifest, and the /ws carry.
 func runClient(rawURL string) {
 	cfg, err := clientmode.ParseConnectURL(rawURL)
 	if err != nil {

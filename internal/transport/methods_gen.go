@@ -113,6 +113,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "GetThreadContextUsage", ID: 3852033265},                // main.App.GetThreadContextUsage
 	{Name: "GetThreadDefaults", ID: 3362481473},                    // main.App.GetThreadDefaults
 	{Name: "GetThreadItem", ID: 1969869112},                        // main.App.GetThreadItem
+	{Name: "GetThreadItemProjectionSource", ID: 1848576136},        // main.App.GetThreadItemProjectionSource
 	{Name: "GetThreadLiveState", ID: 70226550},                     // main.App.GetThreadLiveState
 	{Name: "GetThreadRuntimeMode", ID: 2573491630},                 // main.App.GetThreadRuntimeMode
 	{Name: "GetThreadTurnPreview", ID: 1512475224},                 // main.App.GetThreadTurnPreview
@@ -189,6 +190,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "ListRecentTurns", ID: 1083162294},                      // main.App.ListRecentTurns
 	{Name: "ListReleases", ID: 397986043},                          // main.App.ListReleases
 	{Name: "ListRemoteEndpoints", ID: 3443007043},                  // main.App.ListRemoteEndpoints
+	{Name: "ListRunningBackgroundWork", ID: 3808352241},            // main.App.ListRunningBackgroundWork
 	{Name: "ListSubagentDescendants", ID: 1299118478},              // main.App.ListSubagentDescendants
 	{Name: "ListTerminals", ID: 2445206506},                        // main.App.ListTerminals
 	{Name: "ListThreadEditDiffs", ID: 2243533007},                  // main.App.ListThreadEditDiffs
@@ -280,6 +282,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "StopClaudeTask", ID: 536320598},                        // main.App.StopClaudeTask
 	{Name: "StopCodexSubagent", ID: 4232843083},                    // main.App.StopCodexSubagent
 	{Name: "StopSession", ID: 3838500111},                          // main.App.StopSession
+	{Name: "StopThreadBackgroundWork", ID: 2155771620},             // main.App.StopThreadBackgroundWork
 	{Name: "SubmitPRReview", ID: 2692607191},                       // main.App.SubmitPRReview
 	{Name: "SubscribePRUpdates", ID: 3272491649},                   // main.App.SubscribePRUpdates
 	{Name: "SwitchProviderAccount", ID: 1249964095},                // main.App.SwitchProviderAccount

@@ -133,7 +133,7 @@ func (s *lineSink) next(t *testing.T) string {
 }
 
 func TestReadBootstrapLine_HappyPath(t *testing.T) {
-	stdin := strings.NewReader("starting...\n__AO_BOOTSTRAP__: {\"port\":54321,\"token\":\"abc123\"}\n")
+	stdin := strings.NewReader("starting...\n__AO_BOOTSTRAP__: {\"port\":54321,\"token\":\"abc123\",\"pageUrl\":\"http://127.0.0.1:54321/?t=tk\"}\n")
 
 	sink := newLineSink()
 	bs, err := readBootstrapLine(context.Background(), stdin, DefaultBootstrapPrefix, sink.drop)
@@ -162,7 +162,7 @@ func TestReadBootstrapLine_KeepsDrainingAfterBootstrap(t *testing.T) {
 	// One write: the bootstrap line AND the line after it land in the
 	// scanner's buffer together, so a drain that restarted from the raw
 	// reader instead of the scanner would drop "buffered-with-sentinel".
-	if _, err := pw.WriteString("__AO_BOOTSTRAP__: {\"port\":54321,\"token\":\"abc123\"}\nbuffered-with-sentinel\n"); err != nil {
+	if _, err := pw.WriteString("__AO_BOOTSTRAP__: {\"port\":54321,\"token\":\"abc123\",\"pageUrl\":\"http://127.0.0.1:54321/?t=tk\"}\nbuffered-with-sentinel\n"); err != nil {
 		t.Fatalf("write bootstrap: %v", err)
 	}
 
@@ -203,7 +203,7 @@ func TestReadBootstrapLine_PostBootstrapStdoutNeverBlocksChild(t *testing.T) {
 	defer pr.Close()
 	defer pw.Close()
 
-	if _, err := pw.WriteString("__AO_BOOTSTRAP__: {\"port\":1,\"token\":\"t\"}\n"); err != nil {
+	if _, err := pw.WriteString("__AO_BOOTSTRAP__: {\"port\":1,\"token\":\"t\",\"pageUrl\":\"http://127.0.0.1:1/?t=tk\"}\n"); err != nil {
 		t.Fatalf("write bootstrap: %v", err)
 	}
 	if _, err := readBootstrapLine(context.Background(), pr, DefaultBootstrapPrefix, func(string) {}); err != nil {

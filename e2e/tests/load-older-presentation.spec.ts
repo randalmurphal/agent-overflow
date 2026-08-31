@@ -221,7 +221,7 @@ async function runCollision(
   try {
     const page = await context.newPage();
     const held = await delayPagingResponse(page);
-    await page.goto(harness.url);
+    await harness.open(page);
     await page.getByText(THREAD_TITLE).click();
     await scrollToHistoryHead(page);
     if (disableSpinner) {

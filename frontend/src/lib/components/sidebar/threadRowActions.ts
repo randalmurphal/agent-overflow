@@ -83,11 +83,11 @@ export async function renameThreadAction(
 
 export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    // Stop the session before archiving so the provider process is cleaned up.
-    // Best-effort: log if it fails but proceed with archive.
-    await StopSession(ctx.thread.id).catch((err) => {
-      console.error('Failed to stop session before archive:', err);
-    });
+    // No StopSession here: ArchiveThread closes the thread's provider
+    // session server-side (internal/app/app_thread_archive.go), so the
+    // process is released for every client rather than only the one
+    // that remembers to ask first — and, unlike a client-side stop, it
+    // re-checks that the thread was not re-engaged in the gap.
     await ArchiveThread(ctx.thread.id);
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);

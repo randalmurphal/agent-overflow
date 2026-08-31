@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/flushqueue"
+	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -18,20 +19,20 @@ import (
 // threads.live_todo (migration v65) because a todo list outlives the session
 // that reported it and the process that received it.
 type ThreadLiveState struct {
-	ThreadID               string                              `json:"threadId"`
-	EffectiveModel         string                              `json:"effectiveModel,omitempty"`
-	EffectiveModelRevision uint64                              `json:"effectiveModelRevision,omitempty"`
-	ActiveTurn             *LiveStateActiveTurn                `json:"activeTurn,omitempty"`
-	QueueItems             []QueuedItem                        `json:"queueItems"`
-	FlushedItems           []QueueFlushedItem                  `json:"flushedItems"`
+	ThreadID               string               `json:"threadId"`
+	EffectiveModel         string               `json:"effectiveModel,omitempty"`
+	EffectiveModelRevision uint64               `json:"effectiveModelRevision,omitempty"`
+	ActiveTurn             *LiveStateActiveTurn `json:"activeTurn,omitempty"`
+	QueueItems             []QueuedItem         `json:"queueItems"`
+	FlushedItems           []QueueFlushedItem   `json:"flushedItems"`
 	// DeferredItems are pending-send timeline rows not yet persisted to
 	// SQLite (they persist on their wire echo), in FIFO send order. A
 	// refresh reconciling against a ListThreadSliceAround page merges
 	// these in so the user's own just-sent message survives the install.
-	DeferredItems []store.Item                        `json:"deferredItems"`
-	Interactive   provider.PendingInteractiveRequests `json:"interactive"`
-	Todo                   *LiveStateTodo                      `json:"todo,omitempty"`
-	ProviderAccount        *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
+	DeferredItems   []store.Item                        `json:"deferredItems"`
+	Interactive     provider.PendingInteractiveRequests `json:"interactive"`
+	Todo            *LiveStateTodo                      `json:"todo,omitempty"`
+	ProviderAccount *ProviderSessionAccountEvent        `json:"providerAccount,omitempty"`
 	// CompactingSinceUnixMs is non-zero while the provider is compacting
 	// this thread's context (epoch ms of the window's start). Mirrors the
 	// `provider:compacting` push channel for refresh/reconnect — the
@@ -103,7 +104,13 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		}
 	}
 	state.Interactive = live.Interactive
-	state.DeferredItems = append(state.DeferredItems, live.DeferredItems...)
+	// Deferred rows are merged straight into the same window the slice
+	// RPCs filled, so they take the same projection. A page whose rows
+	// came from two paths that shaped them differently is one window
+	// holding mixed rows, which reads as a bug wherever the difference
+	// shows. These are un-echoed user sends with no diff previews to
+	// weigh, so previews stay on and only the meta budget applies.
+	state.DeferredItems = append(state.DeferredItems, itemwire.ProjectItems(live.DeferredItems, true)...)
 	for _, item := range live.QueueItems {
 		state.QueueItems = append(state.QueueItems, flushqueue.ItemFromTriage(threadID, item))
 	}

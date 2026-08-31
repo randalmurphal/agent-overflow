@@ -42,7 +42,7 @@ func (a *App) ensureClaudeContextReadyForUserSendLocked(thread store.Thread) err
 		}
 		if changed {
 			a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
-				Action:     "patch",
+				Action:     triage.ThreadActionPatch,
 				ID:         thread.ID,
 				SessionRef: &sessionID,
 			})

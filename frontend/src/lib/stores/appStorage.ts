@@ -15,12 +15,12 @@
 //     debounce so a drag interaction is one RPC, not fifty.
 //
 // Client identity resolution (module init, synchronous — must run
-// before wsClient scrubs the URL): --connect's injected
-// __AO_BOOTSTRAP__.clientId, else the ?cid= URL param stamped by the
-// native shell / WSL launcher, else the localStorage-cached id, else a
-// freshly minted UUID. The first two are durable (persisted in the Go
-// config dir); the latter two are best-effort and reset with the
-// origin, degrading to fresh defaults — exactly today's behavior.
+// before the bootstrap fetch scrubs the URL's ticket): the ?cid= URL
+// param stamped by the native shell, the WSL launcher and the --connect
+// stub, else the localStorage-cached id, else a freshly minted UUID. The
+// first is durable (persisted in the Go config dir); the latter two are
+// best-effort and reset with the origin, degrading to fresh defaults —
+// exactly today's behavior.
 //
 // Consumers own their reactivity and parsing: this module stores
 // opaque strings. Structured values are JSON-encoded by the caller.
@@ -58,11 +58,6 @@ function writeLocal(key: string, value: string): void {
 }
 
 function resolveClientId(): string {
-  const injected = (globalThis as { __AO_BOOTSTRAP__?: { clientId?: unknown } }).__AO_BOOTSTRAP__;
-  if (injected && isValidClientId(injected.clientId)) {
-    writeLocal(CLIENT_ID_CACHE_KEY, injected.clientId);
-    return injected.clientId;
-  }
   if (typeof window !== 'undefined') {
     const cid = new URLSearchParams(window.location.search).get('cid');
     if (isValidClientId(cid)) {

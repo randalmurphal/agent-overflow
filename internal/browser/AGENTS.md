@@ -7,6 +7,19 @@ Built-in browser MCP backed by one lazily launched managed Chrome process.
 - `MCPServer` owns the loopback Streamable HTTP endpoint. Every provider
   thread receives an unguessable capability URL; unregistering the thread
   revokes it and closes only that thread's pages.
+- The capability URL is not the only check. Before any method dispatch,
+  every request must come from a loopback peer (`r.RemoteAddr`, set from
+  the accepted socket), carry no `Origin` header, and declare
+  `Content-Type: application/json`. The client is always a provider CLI
+  this app spawned, and both real ones match; a document in a browser
+  does not. Requiring JSON is load-bearing rather than hygiene — a
+  `text/plain` POST is a CORS simple request that skips the preflight, so
+  dropping it would let a page invoke tools. Keep new endpoints on the
+  same three checks; the URL rides provider argv, so it is not secret
+  from local software.
+- The listener binds at the first thread registration, not on first use:
+  its URL rides provider argv at spawn, so it must exist before the
+  process starts. Do not make it lazy.
 - `Manager` owns the Chrome process and workspace BrowserContexts. A canonical
   workspace gets one isolated context, while every page is tagged with its
   provider thread owner. A thread can never address another thread's page.

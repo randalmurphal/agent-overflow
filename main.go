@@ -305,7 +305,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	appService.SetEventBus(bus)
 
 	phaseStarted = time.Now()
-	assetHandler, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
+	assetHandler, devAssetProxy, err := buildAssetHandler(assets, isNativeDevMode() || opts.AllowDevServerAssets)
 	if err != nil {
 		fatalf("transport: build asset handler: %v", err)
 	}
@@ -320,6 +320,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		Dispatcher:               dispatcher,
 		EventBus:                 bus,
 		AssetHandler:             assetHandler,
+		DevAssetProxy:            devAssetProxy,
 		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
 		// The link-time stamp, injected rather than read by the transport:
 		// /healthz reports it, and the update watchdog compares it across
@@ -376,8 +377,16 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	// the Windows launcher escapes a pinned port the host cannot reach.
 	portPin := pinTransportPort(&cfg, bootSettingsDir(), resetTransportPortPin)
 
+	// One assembly rule for every page URL this backend hands out, and
+	// the transport serves it (PageURLPath) to the local tooling that
+	// navigates more than once over a backend's life: the Windows
+	// launcher, `ao-harness open` / `attach`, the e2e rig. Closing over
+	// srv is safe because nothing calls this before New returns.
+	var srv *transport.Server
+	cfg.PageURL = func() string { return fullPageURL(srv) }
+
 	phaseStarted = time.Now()
-	srv, err := transport.New(cfg)
+	srv, err = transport.New(cfg)
 	if err != nil {
 		fatalf("transport: construct server: %v", err)
 	}
@@ -527,7 +536,14 @@ func shutdownHeadless(appService *App, srv *transport.Server) {
 	}
 }
 
-// writeBootstrap publishes the listener address + token to the launcher.
+// writeBootstrap publishes the listener address, the session credential
+// and a ready-to-navigate page URL to the launcher.
+//
+// The page URL is assembled here, not on the Windows side, because it
+// carries a one-time page ticket only this process can mint plus the
+// client id and page marker only this process knows. The launcher
+// navigates to it as given, and asks the transport's PageURLPath route
+// for a fresh one whenever it needs to navigate again.
 //
 // Why two channels: the spec asks for fd 3 because it gives the
 // launcher a clean separation from any startup chatter the backend
@@ -542,18 +558,21 @@ func writeBootstrap(fd int, srv *transport.Server) error {
 		Port  int    `json:"port"`
 		Token string `json:"token"`
 		PID   int    `json:"pid"`
+		// PageURL is the fully assembled URL the launcher's WebView2
+		// navigates to, one-time page ticket included (fullPageURL).
+		PageURL string `json:"pageUrl,omitempty"`
 		// ClientID is this installation's durable UI-state identity
-		// (see ensureClientID). The launcher threads it onto the
-		// webview URL as ?cid= so the frontend's per-client ui_state
-		// bucket survives the per-launch origin change. Empty when the
-		// backend couldn't persist one; the frontend then falls back
-		// to a best-effort browser-cached ID.
+		// (see ensureClientID). It rides PageURL as ?cid= already, and
+		// is reported separately for the launcher's own diagnostics.
+		// Empty when the backend couldn't persist one; the frontend then
+		// falls back to a best-effort browser-cached ID.
 		ClientID   string `json:"clientId,omitempty"`
 		PageMarker string `json:"pageMarker,omitempty"`
 	}{
 		Port:       portFromAddr(srv.Addr()),
 		Token:      srv.Token(),
 		PID:        os.Getpid(),
+		PageURL:    fullPageURL(srv),
 		ClientID:   ensureClientID(),
 		PageMarker: srv.PageMarker(),
 	}
@@ -715,9 +734,26 @@ func ensureClientID() string {
 	return appservice.EnsureClientIDIn(bootSettingsDir())
 }
 
+// fullPageURL assembles the page URL this backend's own tooling should
+// navigate to: a freshly minted one-time ticket from the transport, plus
+// the two parameters a shell has to thread on (the harness page marker,
+// the durable client id). One expression, because the stdout bootstrap
+// line, the Windows launcher and `ao-harness` must all open the SAME
+// page — a URL missing the client id silently changes which ui_state
+// bucket the frontend reads.
+//
+// A nil or pre-Start server yields "", which every caller already treats
+// as "no page to open yet".
+func fullPageURL(srv *transport.Server) string {
+	if srv == nil {
+		return ""
+	}
+	return appURLWithClientID(appURLWithPageMarker(srv.AppURL(), srv.PageMarker()), ensureClientID())
+}
+
 // appURLWithClientID threads the durable UI-state client ID onto a page
 // URL as `&cid=`. The `&` (not `?`) is correct: every page URL the
-// transport hands out already carries the auth token query param.
+// transport hands out already carries its one-time page ticket.
 //
 // One helper because every window-opening boot needs the same rule and
 // they are spread across three files (runDesktop, runWindowedShell, the
@@ -733,7 +769,7 @@ func appURLWithClientID(pageURL, clientID string) string {
 }
 
 // appURLWithPageMarker adds the per-harness page marker without changing an
-// ordinary boot URL. The marker remains in browser history after the token is
+// ordinary boot URL. The marker remains in browser history after the ticket is
 // scrubbed, which lets CDP match the exact page rather than a same-origin tab.
 func appURLWithPageMarker(pageURL, marker string) string {
 	if pageURL == "" || marker == "" {
@@ -834,18 +870,24 @@ func isolatedDevAssetWarning(devURL string) string {
 //     Serve the embedded frontend/dist bundle. http.FS over fs.Sub is
 //     the safe pairing — http.Dir would expose path traversal of the
 //     developer's local filesystem.
-func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (http.Handler, error) {
+//
+// The devProxy return says which case was taken. It is the transport's
+// Config.DevAssetProxy — the one input that picks the relaxed CSP — so
+// the policy is decided by the same condition that decided the handler,
+// rather than by a second reading of the environment that could drift
+// from it.
+func buildAssetHandler(embeddedAssets embed.FS, allowDevAssets bool) (handler http.Handler, devProxy bool, err error) {
 	if devURL := os.Getenv("FRONTEND_DEVSERVER_URL"); devURL != "" && allowDevAssets {
 		parsed, err := url.Parse(devURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
+			return nil, false, fmt.Errorf("parse FRONTEND_DEVSERVER_URL %q: %w", devURL, err)
 		}
 		log.Printf("transport: dev mode — proxying assets to %s", devURL)
-		return httputil.NewSingleHostReverseProxy(parsed), nil
+		return httputil.NewSingleHostReverseProxy(parsed), true, nil
 	}
 	embeddedSPA, err := fs.Sub(embeddedAssets, "frontend/dist")
 	if err != nil {
-		return nil, fmt.Errorf("locate embedded frontend/dist: %w", err)
+		return nil, false, fmt.Errorf("locate embedded frontend/dist: %w", err)
 	}
-	return http.FileServer(http.FS(embeddedSPA)), nil
+	return http.FileServer(http.FS(embeddedSPA)), false, nil
 }

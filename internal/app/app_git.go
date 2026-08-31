@@ -8,6 +8,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 func (a *App) gitProjectPath(projectID string) (string, error) {
@@ -204,8 +205,13 @@ func (a *App) GitCheckout(threadID, branch string) error {
 		a.workspaceFiles.Invalidate(workspace)
 	}
 
+	previousBranch := thread.Branch
 	thread.Branch = core.CurrentBranch(workspace)
-	return a.store.UpdateThread(thread)
+	if err := a.store.UpdateThread(thread); err != nil {
+		return err
+	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, thread, thread.Branch != previousBranch)
+	return nil
 }
 
 // GitCheckoutForProject switches a project/worktree placeholder workspace to an
@@ -300,10 +306,12 @@ func (a *App) GitCreateBranchFrom(threadID, name, baseBranch string, carryLocalC
 	if a.workspaceFiles != nil {
 		a.workspaceFiles.Invalidate(workspace)
 	}
+	previousBranch := thread.Branch
 	thread.Branch = core.CurrentBranch(workspace)
 	if err := a.store.UpdateThread(thread); err != nil {
 		return store.Thread{}, err
 	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, thread, thread.Branch != previousBranch)
 	return thread, nil
 }
 

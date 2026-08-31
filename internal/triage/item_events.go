@@ -1,6 +1,9 @@
 package triage
 
-import "agent-overflow/internal/store"
+import (
+	"agent-overflow/internal/itemwire"
+	"agent-overflow/internal/store"
+)
 
 const (
 	itemStreamActionUpsert = "upsert"
@@ -43,11 +46,29 @@ func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
 	return NewItemStreamUpsertWithActivity(item, nil)
 }
 
+// NewItemStreamUpsertWithActivity is the single constructor every
+// item-upsert emit site goes through, which is why the wire projection
+// sits here rather than at the eleven call sites: a new emitter cannot
+// forget it.
+//
+// The bus encodes one payload and broadcasts the bytes to every
+// subscriber (transport.EventBus.Emit), so a push frame cannot carry a
+// per-client preference the way an RPC result can. It therefore takes
+// the preference-independent half of the projection — the byte budgets —
+// with inline previews left ON: a row that arrives with its preview
+// intact renders, where a row that arrived without one a client wanted
+// would have to fetch. The other direction is where correctness lives,
+// and it cannot happen: no row is ever elided without its marker.
+//
+// Under budget this is one length check per item event, and item events
+// are per persisted row, not per delta (newItemStreamDelta is untouched
+// and stays the streaming hot path).
 func NewItemStreamUpsertWithActivity(item store.Item, countsAsActivity *bool) ItemStreamEvent {
+	projected := itemwire.Project(item, true)
 	return ItemStreamEvent{
 		Action:           itemStreamActionUpsert,
-		ThreadID:         item.ThreadID,
-		Item:             &item,
+		ThreadID:         projected.ThreadID,
+		Item:             &projected,
 		CountsAsActivity: countsAsActivity,
 	}
 }
@@ -74,7 +95,18 @@ func newItemStreamMeta(threadID, itemID, kind, meta string, updatedAt int64) Ite
 	}
 }
 
+// newItemStreamPatch carries the settle-time field update for a row the
+// client already holds. Its `meta` is the same value an upsert would
+// have carried, so it takes the same projection — a row must not be able
+// to arrive projected and then be patched back to its unprojected shape.
+// The `payloadMeta` context the command-retention rule wants is not on a
+// patch, so the rule reads as "no second copy", which is the safe
+// direction: the leaf is kept.
 func newItemStreamPatch(threadID, itemID, kind string, patch ItemPatchFields) ItemStreamEvent {
+	if patch.Meta != nil {
+		projected := itemwire.ProjectMeta(*patch.Meta, "")
+		patch.Meta = &projected
+	}
 	return ItemStreamEvent{
 		Action:   itemStreamActionPatch,
 		ThreadID: threadID,

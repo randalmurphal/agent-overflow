@@ -83,7 +83,7 @@ test('bench burst-stream drives a real turn and writes a report', async ({ harne
 
   // The page must be attached BEFORE the CLI runs: perf lives in the
   // document, and bench refuses up front when nothing answers a ui-query.
-  await page.goto(harness.url);
+  await harness.open(page);
   await waitForBridge(harness);
 
   const outDir = await mkdtemp(path.join(tmpdir(), 'ao-bench-'));
@@ -144,7 +144,7 @@ test('bench burst-stream drives a real turn and writes a report', async ({ harne
 
 test('health rolls up the same instance and exits ok', async ({ harness, page }) => {
   test.setTimeout(60_000);
-  await page.goto(harness.url);
+  await harness.open(page);
   await waitForBridge(harness);
 
   const { stdout } = await run(

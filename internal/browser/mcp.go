@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"net"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
+	"agent-overflow/internal/loopback"
 )
 
 const (
@@ -126,6 +127,10 @@ func (s *MCPServer) Close() error {
 	return nil
 }
 
+// ensureStarted binds the loopback listener on first thread
+// registration. It cannot defer the bind until a tool is called: the
+// endpoint URL rides the provider CLI's argv at spawn, so the listener
+// has to exist before the process starts.
 func (s *MCPServer) ensureStarted() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -145,7 +150,13 @@ func (s *MCPServer) ensureStarted() error {
 
 func (s *MCPServer) handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		// An OPTIONS preflight lands here too, and answering it with 405
+		// and no CORS headers is what the content-type check below relies
+		// on: the browser stops before it sends the real request.
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !validMCPRequest(w, r) {
 		return
 	}
 	access, ok := s.accessForPath(r.URL.Path)
@@ -485,6 +496,63 @@ func hasJSFunctionPrefix(expression, keyword string) bool {
 	default:
 		return false
 	}
+}
+
+// validMCPRequest applies the request checks every request clears before
+// any method dispatch — initialize, notifications, tools/list and
+// tools/call alike — and writes the refusal itself when one fails.
+//
+// The only client of this endpoint is a provider CLI
+// this app spawned, which pins what a genuine request looks like: it
+// arrives from a loopback peer, carries no Origin, and declares JSON.
+// Both real clients match (verified 2026-08-30): Claude Code's HTTP
+// transport and the Codex app-server's rmcp adapter each set
+// `content-type: application/json` on every POST and neither sets Origin
+// — Codex goes further and rejects a user-configured Origin header
+// outright (codex-rs/rmcp-client/src/http_headers.rs).
+//
+// The per-thread UUID in the path is the only other credential, and it
+// rides provider argv, so it is readable by any process of the same
+// user. Same-user is already the trust boundary; these checks are what
+// keeps a document in a browser — which is not the same user's
+// process — from reaching the endpoint.
+func validMCPRequest(w http.ResponseWriter, r *http.Request) bool {
+	// Peer verification off the accepting socket, matching the claudetui
+	// gateway's check (isLoopback, internal/provider/claudetui/hookrelay.go
+	// — that copy also accepts the literal "localhost", which an accepted
+	// connection's RemoteAddr never carries). Go fills RemoteAddr from the
+	// accepted socket, so a request header cannot set it.
+	if !loopback.PeerAddress(r.RemoteAddr) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	// A local process sends no Origin. A document always sends one on a
+	// POST, cross-origin or same-origin, so refusing the header refuses
+	// the page without touching the provider CLI.
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	// Requiring JSON before the body is decoded is more than hygiene. A
+	// POST declaring text/plain is a CORS simple request: it is sent with
+	// no preflight, so a page could invoke a tool the browser never asked
+	// permission for — it could not read the reply, but the page
+	// evaluation or workspace file read would already have run. JSON is
+	// not a simple content type, so the browser must preflight first, and
+	// the method check in handle refuses that preflight.
+	if !jsonContentType(r.Header.Get("Content-Type")) {
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+		return false
+	}
+	return true
+}
+
+// jsonContentType reports whether a Content-Type header declares JSON.
+// Parameters are allowed: both provider clients send the bare type, but
+// a charset is legal and some MCP clients attach one.
+func jsonContentType(value string) bool {
+	mediaType, _, _ := strings.Cut(value, ";")
+	return strings.EqualFold(strings.TrimSpace(mediaType), "application/json")
 }
 
 func (s *MCPServer) accessForPath(path string) (Access, bool) {

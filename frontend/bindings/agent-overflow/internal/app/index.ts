@@ -3,6 +3,7 @@
 
 export {
     AttachmentThumbnail,
+    BackgroundWorkInventory,
     BranchCommit,
     BranchPruneCandidate,
     BranchPruneCandidates,
@@ -45,6 +46,7 @@ export {
     ImportUpdateStatus,
     ImportableSession,
     InterruptAndRevertResult,
+    ItemProjectionSource,
     LiveStateActiveTurn,
     LiveStateTodo,
     LiveStateTodoStep,
@@ -70,6 +72,7 @@ export {
     RemoteEndpointSummary,
     RetainedWorktree,
     RevertAndResendOptions,
+    RunningBackgroundWork,
     SendDiffReviewCommentsInput,
     SendMessageOptions,
     SourceDiffReview,

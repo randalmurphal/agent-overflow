@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -35,6 +34,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/transport"
 )
 
@@ -304,15 +304,7 @@ func sameHarnessOrigin(aRaw, bRaw string) bool {
 	if strings.EqualFold(a.Host, b.Host) {
 		return true
 	}
-	return a.Port() == b.Port() && isHarnessLoopback(a.Hostname()) && isHarnessLoopback(b.Hostname())
-}
-
-func isHarnessLoopback(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return a.Port() == b.Port() && loopback.EndpointHostname(a.Hostname()) && loopback.EndpointHostname(b.Hostname())
 }
 
 // HarnessUIQueryReply resolves the waiter for `id` only when pageID is the

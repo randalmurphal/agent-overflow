@@ -41,11 +41,34 @@ stops waking readers.
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the
   reaction in a domain module, and never subscribe from a component.
+- `thread:updated` is the convergence channel for the thread row, and the
+  handler is `eventsThreadRows.ts`. The backend broadcasts one event per
+  persisted row change, so the handler must apply the WHOLE row, not the
+  fields the local pane happened to change — a second client's mutation
+  arrives with no local edit to merge against. `action` names what the
+  receiver does with it: `full` converges a row this client already has
+  (never inserts, because sidebar membership depends on items and draft
+  content the row alone cannot answer), `listed` inserts or converges,
+  `unlisted` and `deleted` drop it and close panes showing it, `patch`
+  merges the named fields onto the cached row. The initiator's own echo is
+  the same row its RPC returned, so an optimistic apply and the event
+  settle on identical bytes.
 - `bindings.ts` re-exports what `wails3 generate bindings -ts` produced.
   Add the new App method by regenerating and re-exporting. Never hand-wrap
   a binding, and never reach for `window.runtime`.
 - A new entity store registers its RPCs in the architecture test's
   registry, and may import the RPCs it owns and no others.
+- Every item-window RPC states this client's projection preference, and
+  states it as `wantsInlinePreviews()` from `threadPaneShared.ts` — never
+  a literal and never a fresh `getSettings()` read. The backend bounds
+  what a window carries (`internal/itemwire`) and cannot read the setting
+  itself, because one backend serves several clients that can disagree.
+  A call site that asks differently from its neighbours puts mixed rows
+  in one window, which is a correctness bug, not a byte difference. Rows
+  that come back marked keep their marker for life: the recovered value
+  lives in `utils/itemProjectionSource.svelte.ts` and is composed at
+  render, never merged into the row, or a cached row could persist into
+  the replica claiming to be complete.
 - `providerAccounts.svelte.ts` is the one account load, login, switch,
   refresh and remove path, for the picker and Settings alike.
 - Settings DEFAULTS are never written here. `lib/generated/settingsDefaults.ts`

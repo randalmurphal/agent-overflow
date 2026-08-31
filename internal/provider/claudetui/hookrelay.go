@@ -11,10 +11,10 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
@@ -127,7 +127,7 @@ func (h *hookRelay) close() error {
 }
 
 func (h *hookRelay) handle(w http.ResponseWriter, r *http.Request) {
-	if !isLoopback(r.RemoteAddr) {
+	if !loopback.PeerAddress(r.RemoteAddr) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -325,16 +325,4 @@ func mintToken() (string, error) {
 		return "", fmt.Errorf("claudetui: mint hook token: %w", err)
 	}
 	return hex.EncodeToString(b), nil
-}
-
-func isLoopback(remoteAddr string) bool {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(strings.TrimSpace(host))
-	return ip != nil && ip.IsLoopback()
 }

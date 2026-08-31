@@ -31,9 +31,12 @@ export class Settings {
     "url": string;
 
     /**
-     * Token is the current ephemeral auth token. Surfaced for
-     * debugging / advanced wiring; the user shouldn't normally need
-     * to touch it directly.
+     * Token is this launch's session credential — what a client that is
+     * not a browser presents (`agent-overflow --connect
+     * ws://host:port/ws?token=<value>`, the `ao-harness` CLI). Browsers
+     * never use it: the URL above carries a one-time page ticket instead
+     * and the browser ends up holding a cookie. Surfaced for debugging /
+     * advanced wiring; the user shouldn't normally need to touch it.
      */
     "token": string;
 

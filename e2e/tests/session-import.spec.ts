@@ -130,7 +130,7 @@ test('lists sessions from both providers and narrows by provider filter and sear
   page,
 }) => {
   const fx = await seedImportFixtures(harness);
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
 
   await expect(page.getByTestId(fx.claudeLinear.rowTestId)).toContainText(fx.claudeLinear.title);
@@ -172,7 +172,7 @@ test('the project dropdown paints above the modal and applies its filter', async
   page,
 }) => {
   await seedImportFixtures(harness);
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
 
   // The menu is a Popover portaled to <body>, so it and the modal backdrop
@@ -203,7 +203,7 @@ test('importing a selection creates the threads and renders their history', asyn
   page,
 }) => {
   const fx = await seedImportFixtures(harness);
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
 
   const { done, rows } = await importRows(page, harness, [fx.claudeLinear, fx.codex]);
@@ -242,7 +242,7 @@ test('a multi-leaf Claude transcript imports one coherent active thread', async 
   page,
 }) => {
   const fx = await seedImportFixtures(harness);
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
 
   const { rows } = await importRows(page, harness, [fx.claudeBranched]);
@@ -250,7 +250,7 @@ test('a multi-leaf Claude transcript imports one coherent active thread', async 
   expect(threadIDs).toHaveLength(1);
   await expect(page.getByText('Imported 1 session (1 thread).')).toBeVisible();
 
-  const items = await harness.rpc<ImportedItemIdentity[] | null>('ListItems', threadIDs[0]);
+  const items = await harness.rpc<ImportedItemIdentity[] | null>('ListItems', threadIDs[0], true);
   const thinking = (items ?? []).filter((item) => item.kind === 'thinking');
   expect(thinking).toHaveLength(1);
   expect(thinking[0]?.payloadId).toBe('thinking:think:2:0');
@@ -279,7 +279,7 @@ test('an explicit Claude fork imports both histories and exposes navigable linea
   const fx = await seedImportFixtures(harness, { withForkedSession: true });
   const fork = fx.claudeFork;
   if (!fork) throw new Error('fixture did not write the explicit fork session');
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
 
   await expect(page.getByTestId(fx.claudeLinear.rowTestId)).toBeVisible();
@@ -329,7 +329,7 @@ test('an explicit Claude fork imports both histories and exposes navigable linea
 
 test('sessions already imported are gone from the next scan', async ({ harness, page }) => {
   const fx = await seedImportFixtures(harness);
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
 
   const done = waitForRunDone(harness);
@@ -355,7 +355,7 @@ test('a session that fails to import keeps the surface open with its stamps', as
   const broken = fx.claudeBroken;
   if (!broken) throw new Error('fixture did not write the failing session');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
 
   const { done, rows } = await importRows(page, harness, [broken]);
@@ -383,7 +383,7 @@ test('Check for Provider Updates appends what the session file grew', async ({
   page,
 }) => {
   const fx = await seedImportFixtures(harness);
-  await page.goto(harness.url);
+  await harness.open(page);
   await openImportModal(page);
   await importRows(page, harness, [fx.claudeLinear]);
 

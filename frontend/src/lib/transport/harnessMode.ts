@@ -21,23 +21,8 @@
 // field that went missing; the alternative buys nothing, because a
 // backend cannot stop being a harness without restarting.
 
-interface InjectedBootstrap {
-  harness?: unknown;
-  pageMarker?: unknown;
-}
-
-function detectHarness(): boolean {
-  if (typeof globalThis === 'undefined') return false;
-  const injected = (globalThis as { __AO_BOOTSTRAP__?: InjectedBootstrap }).__AO_BOOTSTRAP__;
-  return injected?.harness === true;
-}
-
-let harness = detectHarness();
-let pageMarker = (() => {
-  if (typeof globalThis === 'undefined') return '';
-  const value = (globalThis as { __AO_BOOTSTRAP__?: InjectedBootstrap }).__AO_BOOTSTRAP__?.pageMarker;
-  return typeof value === 'string' ? value : '';
-})();
+let harness = false;
+let pageMarker = '';
 const waiting = new Set<() => void>();
 
 /** Whether this session is attached to a --harness / --soak backend. */
@@ -87,11 +72,7 @@ export function whenHarnessSession(arm: () => void): () => void {
 
 /** Test-only: forget the latch and any pending waiters. */
 export function __resetHarnessModeForTest(): void {
-	harness = detectHarness();
-	pageMarker = (() => {
-		if (typeof globalThis === 'undefined') return '';
-		const value = (globalThis as { __AO_BOOTSTRAP__?: InjectedBootstrap }).__AO_BOOTSTRAP__?.pageMarker;
-		return typeof value === 'string' ? value : '';
-	})();
+  harness = false;
+  pageMarker = '';
   waiting.clear();
 }

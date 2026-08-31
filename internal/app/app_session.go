@@ -1076,9 +1076,10 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 
 // teardownAndCloseSession runs the per-thread triage cleanup
 // and closes the provider subprocess. Shared by StopSession (user
-// action) and idleCloseSession (reaper) so the close sequence stays in
-// one place — future per-thread cleanup steps land once and all paths
-// inherit it. teardownDeadPreInitSession mirrors the sequence but owns
+// action), idleCloseSession (reaper), and stopArchivedThreadSession
+// (archive releasing the thread's host resources) so the close sequence
+// stays in one place — future per-thread cleanup steps land once and all
+// paths inherit it. teardownDeadPreInitSession mirrors the sequence but owns
 // its own copy: its CleanupThread must be epoch-guarded against a
 // racing replacement start, and it restores the flush queue first.
 //

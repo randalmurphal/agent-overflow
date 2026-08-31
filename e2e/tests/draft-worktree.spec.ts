@@ -82,7 +82,7 @@ const errorToasts = (page: Page) => page.locator('[role="alert"].text-error');
 
 /** Open a project's brand-new draft placeholder: a pane, no thread row. */
 async function openFreshDraft(harness: HarnessApp, page: Page): Promise<void> {
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('project-item-new-thread').first().click();
   await expect(page.getByTestId('composer-workspace-strip')).toBeVisible();
   // The precondition the whole file rests on: a placeholder is not a row.

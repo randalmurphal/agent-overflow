@@ -65,6 +65,43 @@ type PagedItems struct {
 	HasMoreNewer    bool           `json:"hasMoreNewer"`
 }
 
+// TrimToRange rebuilds the page around a contiguous sub-range of its
+// own rows, `[from, to)`. The cursors follow the surviving rows and
+// the has-more flags gain whatever was dropped at each end, so a caller
+// that shortens a page for its own reasons — the wire byte backstop is
+// the one that does — cannot leave the client believing it holds the
+// edge of history when it does not.
+//
+// Trimming to nothing returns the empty page rather than a page with
+// impossible cursors.
+func (p PagedItems) TrimToRange(from, to int) PagedItems {
+	if from <= 0 && to >= len(p.Items) {
+		return p
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to > len(p.Items) {
+		to = len(p.Items)
+	}
+	if from >= to {
+		return emptyPagedItems()
+	}
+	kept := p.Items[from:to]
+	oldest, newest := cursorFromItem(kept[0]), cursorFromItem(kept[len(kept)-1])
+	hasMoreOlder := p.HasMoreOlder || from > 0
+	return PagedItems{
+		Items:           kept,
+		OldestCursor:    oldest,
+		NewestCursor:    newest,
+		OldestTurnIndex: oldest.TurnIndex,
+		NewestTurnIndex: newest.TurnIndex,
+		HasMore:         hasMoreOlder,
+		HasMoreOlder:    hasMoreOlder,
+		HasMoreNewer:    p.HasMoreNewer || to < len(p.Items),
+	}
+}
+
 // openUpperBound is the sentinel upper-turn bound used by queries that
 // want "all turns at or above floor." 2^31 is larger than any practical
 // turn_index — the schema only enforces CHECK(turn_index >= 0), so this

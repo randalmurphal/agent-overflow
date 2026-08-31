@@ -63,7 +63,7 @@ export interface TraceRecord {
 export interface ProbeHarness {
   rpc<T = unknown>(method: string, ...args: unknown[]): Promise<T>;
   waitForEvent<T = unknown>(channel: string, match?: (data: T) => boolean): Promise<T>;
-  url: string;
+  open(page: Page, options?: Parameters<Page['goto']>[1]): Promise<void>;
 }
 
 /** The per-frame fields every probe's rAF sampler records. */
@@ -119,8 +119,10 @@ export async function seedProbeThread(
  * Opens a thread seeded by `seedProbeThread` and lets the thread-switch
  * restore settle (warm gate) before the caller starts streaming.
  */
-export async function openProbeThread(page: Page, url: string, thread: string): Promise<void> {
-  await page.goto(url);
+export async function openProbeThread(page: Page, harness: ProbeHarness, thread: string): Promise<void> {
+  // The app, not a URL: each probe iteration runs in its own browser
+  // context (its own cookie jar), so each needs a page ticket of its own.
+  await harness.open(page);
   await page.getByText(thread).click();
   await expect(page.getByText(`history question ${PROBE_HISTORY_TURNS - 1}`)).toBeVisible();
   await page.waitForTimeout(1500);

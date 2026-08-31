@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // markThreadReadTimeout bounds a read-state stamp's wait for the single
@@ -153,13 +154,20 @@ func (a *App) markThreadFocused(threadID string) {
 		defer a.markThreadRead.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 		defer cancel()
-		if err := a.store.MarkThreadReadNow(ctx, threadID); err != nil {
+		row, changed, err := a.store.MarkThreadReadNow(ctx, threadID)
+		if err != nil {
 			// Nobody is waiting on this write, so a failure would
 			// otherwise be invisible: the sidebar keeps showing the
 			// frontend's optimistic read state and the next launch
 			// reverts to an unread badge with no explanation.
 			log.Printf("app: mark thread %s read: %v", threadID, err)
+			return
 		}
+		// Same broadcast the explicit MarkThreadRead binding makes: focus
+		// on one device clears the Completed pill on the others. A focus
+		// that found the marker already current changes nothing and stays
+		// off the wire, which is the common case.
+		a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
 	}()
 }
 

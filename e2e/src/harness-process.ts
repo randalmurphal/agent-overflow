@@ -1,5 +1,5 @@
 import { execFile as execFileCallback, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, readlink } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 
@@ -100,7 +100,10 @@ async function captureProcessIdentityOnce(pid: number): Promise<ProcessIdentity>
       throw new Error(`harness watchdog: incomplete /proc/${pid}/stat`);
     }
     const { stdout: executable } = await execFile('/usr/bin/readlink', [`/proc/${pid}/exe`]);
-    return { pid, birth: fields[19], executable: executable.trim() };
+    // groupId comes from the same stat line (field 5, pgrp), as it does on
+    // darwin. Without it every process-GROUP consumer degrades to undefined
+    // and the reaping regression tests pass vacuously on Linux.
+    return { pid, birth: fields[19], executable: executable.trim(), groupId: Number(fields[2]) };
   }
   if (process.platform === 'darwin') {
     const [{ stdout: birth }, { stdout: executable }, { stdout: group }] = await Promise.all([
@@ -240,6 +243,19 @@ export async function processTreeRSS(identity: ProcessIdentity): Promise<number>
   return total;
 }
 
+// processExecutable resolves /proc/<pid>/exe, which every proof consumer
+// requires and which the row builder therefore has to carry. Undefined
+// rather than throwing: another user's process, a kernel thread, or one
+// that exited mid-scan all fail this readlink, and dropping those rows
+// would take their RSS and their parent links with them.
+async function processExecutable(pid: number): Promise<string | undefined> {
+  try {
+    return await readlink(`/proc/${pid}/exe`);
+  } catch {
+    return undefined;
+  }
+}
+
 async function processRows(): Promise<ProcessRow[]> {
   if (process.platform === 'linux') {
     const entries = await readdir('/proc', { withFileTypes: true });
@@ -258,6 +274,7 @@ async function processRows(): Promise<ProcessRow[]> {
           pid,
           ppid: Number(fields[1]),
           birth: fields[19],
+          executable: await processExecutable(pid),
           groupId: Number(fields[2]),
           rssBytes: Number(rss[1]) * 1024,
         });
