@@ -22,15 +22,16 @@ import (
 // method here guards that case and reports the feature unsupported rather than
 // panicking.
 //
-// Trust model: every platform verifies the release against the SHA-256
-// SHASUMS256 sidecar, and verifiedProvider fails closed if that sidecar is
-// missing. macOS additionally validates the extracted app's code signature,
-// stapled notarization ticket, Gatekeeper assessment, and designated signing
-// requirement against the running app immediately before the swap. On other
-// platforms the sidecar is integrity-only: it shares the release-publishing
-// pipeline's trust root and does not stop an attacker who can publish a matching
-// {binary, SHASUMS256} pair. Wails supports an ed25519 PublicKey + signature if
-// that trust boundary needs to become platform-independent.
+// Trust model: integrity-only. Releases are verified against the SHA-256
+// SHASUMS256 sidecar published alongside each GitHub release (not cryptographic
+// signatures). verifiedProvider below fails the check closed if that sidecar is
+// missing, so an update never installs unverified. The sidecar is fetched over
+// the same TLS channel as the binary and is NOT independently signed, so it
+// guards against corruption and partial/missing assets — not against an attacker
+// who can publish a matching {binary, SHASUMS256} pair. The trust root is
+// therefore the release-publishing pipeline (the workflow's GITHUB_TOKEN and
+// maintainer credentials); if that ever needs hardening, Wails supports an
+// ed25519 PublicKey + signature in updater.Config.
 //
 // UX contract: nothing is downloaded, installed, or restarted without an
 // explicit user action. CheckForUpdate only reads release metadata;
@@ -430,12 +431,8 @@ func (a *App) RestartToUpdate() error {
 	if a.updater.wsl != nil {
 		return a.restartToUpdateWSL()
 	}
-	staged := a.updater.handle.DownloadedPath()
-	if staged == "" {
+	if a.updater.handle.DownloadedPath() == "" {
 		return ErrUpdateNotReady
-	}
-	if err := verifyStagedDesktopUpdate(staged); err != nil {
-		return fmt.Errorf("validate staged update: %w", err)
 	}
 	return a.restartWithExitWatchdog(a.updater.handle.Restart)
 }

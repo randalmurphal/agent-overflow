@@ -142,9 +142,8 @@ validate_arm64_macho() {
 package_darwin_zips() {
 	app="$ROOT_DIR/bin/agent-overflow.app"
 	validate_arm64_macho "$app/Contents/MacOS/agent-overflow"
-	"$ROOT_DIR/scripts/sign-notarize-macos.sh" "$app"
-	"$ROOT_DIR/scripts/verify-macos-app.sh" --require-notarized "$app"
-	ditto -c -k --sequesterRsrc --keepParent "$app" "$OUT_DIR/agent-overflow-darwin-arm64.zip"
+	"$ROOT_DIR/scripts/verify-macos-app.sh" "$app"
+	( cd "$ROOT_DIR/bin" && zip -qr "$OUT_DIR/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 }
 
 validate_version
@@ -171,7 +170,7 @@ if [ "$ONLY_MACOS" -eq 0 ]; then
 			;;
 	*)
 			echo "ERROR: Linux amd64 release artifacts must be built on Linux amd64/WSL." >&2
-			echo "       Rerun there, or use --only-macos for the signed Mac artifact." >&2
+			echo "       Rerun there, or use --only-macos for the Mac artifact." >&2
 			exit 1
 			;;
 	esac
@@ -200,7 +199,7 @@ if [ "$SKIP_MACOS" -eq 0 ]; then
 			package_darwin_zips
 			;;
 		*)
-			echo "ERROR: signed/notarized macOS release artifacts must be built on macOS." >&2
+			echo "ERROR: macOS release artifacts must be built on macOS." >&2
 			exit 1
 			;;
 	esac
