@@ -238,5 +238,9 @@ describe('assistant streaming Markdown sustained workload', () => {
       }
     }
     expect(completionSent).toBe(true);
-  }, 60_000);
+    // ~37s of deterministic CPU on an idle core; the 60s budget failed at
+    // ~1.6x suite-wide worker contention (2026-08-30). The hang tripwire is
+    // the frame cap above, so the wall budget only guards a wedged runtime
+    // and gets contention-sized headroom rather than a tight perf bound.
+  }, 240_000);
 });

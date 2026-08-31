@@ -118,7 +118,12 @@ function seededSizes(seed: number, count: number): number[] {
   return sizes;
 }
 
-describe('streaming Markdown pipeline differential', () => {
+// Deterministic CPU sweeps: wall time scales with suite-wide worker
+// contention, not with the work (the one-code-unit lap alone is ~2.4s on
+// an idle core and the default 5s budget flaked at ~1.6x contention,
+// 2026-08-30). The budget is a wedged-runtime tripwire — each lap is a
+// bounded loop over a fixed corpus, so it cannot spin forever on its own.
+describe('streaming Markdown pipeline differential', { timeout: 60_000 }, () => {
   it.each([
     ['one code unit', [1]],
     ['reveal-sized', [7, 13, 21]],

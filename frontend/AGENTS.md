@@ -254,6 +254,16 @@ every lap. The leaks the 2026-08 perf session found by hand all lived in
 the SECOND lap — a re-register that duplicated a sink, a toggle that kept
 a stale checkpoint, a cache that carried the previous mode.
 
+A deterministic CPU sweep gets a contention-sized budget, never the
+5s default. Vitest fans files across one fork per core, so a sweep's
+wall time scales with whatever else the gate is running — three
+markdown sweeps sitting at 48-62% of their budgets on an idle core all
+failed the same 2026-08-30 full run at ~1.6x contention, green in
+isolation every time. Size the budget as a wedged-runtime tripwire
+(10x+ idle cost, stated in a comment at the timeout), and put the real
+hang guard in the loop itself: a bounded corpus, or an explicit
+iteration cap that throws.
+
 A wait that gives up must FAIL, and its budget is wall-clock, never a
 count of loop turns. Both halves came from the same 2026-08-30 flake:
 `harnessBridge.test.ts`'s poll helper spent 500 `setTimeout(0)` hops and
