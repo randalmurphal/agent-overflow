@@ -741,6 +741,21 @@ func (s *Store) ConsumeRecoveryCode(hash []byte, at int64, byDevice string) (str
 	return userID, nil
 }
 
+// CountRecoveryCodes reports how many codes an account has EVER been
+// issued, spent ones included. It is the question first boot asks: an
+// account with zero rows has never been given a set, while an account
+// whose codes are all spent has, and must not be silently re-minted a set
+// nobody was shown.
+func (s *Store) CountRecoveryCodes(userID string) (int, error) {
+	var count int
+	if err := s.reader().QueryRow(
+		`SELECT COUNT(*) FROM recovery_codes WHERE user_id = ?`, userID,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: count recovery codes: %w", err)
+	}
+	return count, nil
+}
+
 // CountUnspentRecoveryCodes reports how many codes an account has left, so
 // a surface can tell someone to re-mint before they run out.
 func (s *Store) CountUnspentRecoveryCodes(userID string) (int, error) {
