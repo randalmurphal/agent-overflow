@@ -423,18 +423,16 @@ func TestParseConnectURL_RejectsUserinfo(t *testing.T) {
 	}
 }
 
-// TestServe_RejectsRebindHost guards against a DNS-rebinding attack:
-// the stub server binds to 127.0.0.1, but a hostile page whose DNS
-// resolves to 127.0.0.1 could direct the user's browser to
-// `http://attacker.tld:<port>/` — the request would arrive at our
-// server with `Host: attacker.tld`, and without a Host check the
-// bootstrap-injected page (carrying the WS URL + token) would execute
-// in the attacker's origin context. Reject anything that isn't a
-// loopback name.
+// TestServe_RejectsRebindHost covers the Host check. The stub binds
+// 127.0.0.1, but a DNS name resolving there reaches it too: a page
+// navigated to `http://foreign.test:<port>/` arrives with
+// `Host: foreign.test`, and without the check the document it received
+// — boot script and all — would run under that name's origin. Refuse
+// anything that is not a loopback name.
 //
-// 404 is intentional: it matches the existing transport server's
-// "indistinguishable from a real 404" auth-failure shape so the
-// presence of this defense isn't a fingerprint.
+// 404 is intentional: it matches the transport server's
+// "indistinguishable from a real 404" refusal shape, so the presence of
+// the check is not itself a fingerprint.
 func TestServe_RejectsRebindHost(t *testing.T) {
 	srv, err := Serve(Config{
 		WSURL:  "ws://h/",
@@ -452,17 +450,18 @@ func TestServe_RejectsRebindHost(t *testing.T) {
 
 	// Empty Host is omitted from the table: HTTP/1.1 requires a Host
 	// header and Go's http.Client substitutes the URL's authority when
-	// Request.Host is "". The defense still rejects an empty Host
-	// (isLoopbackHost("") returns false) but the Go client makes that
-	// branch unreachable from a real request.
+	// Request.Host is "". The check still rejects an empty Host
+	// (loopback.HostHeader("") is false, pinned in that package's own
+	// test) but the Go client makes the branch unreachable from a real
+	// request.
 	cases := []struct {
 		name string
 		path string
 		host string
 	}{
-		{"index attacker.tld", "/", "attacker.tld"},
-		{"index attacker.tld with port", "/", "attacker.tld:8080"},
-		{"asset attacker.tld", "/assets/index-abc.js", "attacker.tld"},
+		{"index foreign name", "/", "foreign.test"},
+		{"index foreign name with port", "/", "foreign.test:8080"},
+		{"asset foreign name", "/assets/index-abc.js", "foreign.test"},
 		{"index public IP", "/", "192.168.1.50"},
 		{"asset public IP", "/assets/index-abc.js", "192.168.1.50:54321"},
 		{"index ipv6 non-loopback", "/", "[2001:db8::1]:8080"},
@@ -484,46 +483,12 @@ func TestServe_RejectsRebindHost(t *testing.T) {
 			}
 			body, _ := io.ReadAll(resp.Body)
 			// The 404 must NOT contain the bootstrap snippet — the
-			// whole point is that the attacker's origin can't read
-			// the token. Defense-in-depth assertion.
+			// whole point is that the foreign origin reads no
+			// credential. Defense-in-depth assertion.
 			if strings.Contains(string(body), "__AO_BOOTSTRAP__") {
 				t.Fatalf("404 response leaked bootstrap snippet")
 			}
 		})
-	}
-}
-
-// TestIsLoopbackHost covers the rebind-defense decision function
-// directly. The integration test (TestServe_RejectsRebindHost) can't
-// exercise the empty-Host branch because Go's http.Client substitutes
-// the URL's authority for Request.Host == "", but a hand-crafted
-// raw-TCP client can — make sure the decision function rejects it.
-func TestIsLoopbackHost(t *testing.T) {
-	cases := []struct {
-		host string
-		want bool
-	}{
-		{"", false},
-		{"127.0.0.1", true},
-		{"127.0.0.1:54321", true},
-		{"localhost", true},
-		{"localhost:8080", true},
-		{"LocalHost", true},
-		{"[::1]", true},
-		{"[::1]:8080", true},
-		{"::1", false}, // unbracketed IPv6 is malformed for HTTP Host
-		{"attacker.tld", false},
-		{"attacker.tld:80", false},
-		{"192.168.1.5", false},
-		{"127.0.0.1.attacker.tld", false}, // string-prefix isn't enough
-		{"localhost.attacker.tld", false},
-		{"127.0.0.2", false},         // any other 127.x.x.x is rejected
-		{"[fe80::1234]:8080", false}, // non-loopback IPv6 with port
-	}
-	for _, c := range cases {
-		if got := transport.IsLoopbackHost(c.host); got != c.want {
-			t.Errorf("IsLoopbackHost(%q) = %v, want %v", c.host, got, c.want)
-		}
 	}
 }
 

@@ -45,6 +45,15 @@ const PAGE_TICKET_PARAM = 't';
 // isLoopbackHostname reports whether a document host names this machine.
 // Exported pure so the predicate is testable without a document.
 //
+// The Go counterpart is internal/loopback (which names this function in
+// its package doc). This one stays here — a different language with no
+// way to call that one — and it is deliberately WIDER than
+// loopback.EndpointHostname: it also accepts any *.localhost name,
+// because a document host is the browser's own idea of where it is
+// rather than something this process is deciding to trust. Nothing here
+// authorizes anything; the decision below is only whether a retry is
+// worth attempting.
+//
 // The distinction matters exactly once: a refused credential is only
 // terminal for a session that cannot mint a new one. The embedded
 // webview and the `--connect` stub always load from loopback and are

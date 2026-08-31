@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/loopback"
 )
 
 // gateway is the per-session loopback reverse proxy bound to ANTHROPIC_BASE_URL.
@@ -148,7 +150,7 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 	// but rejecting any non-loopback peer removes the asymmetry with the relay and
 	// closes a colocated-process proxy to the user's Anthropic account. Go sets
 	// RemoteAddr from the accepted socket, so this is not header-spoofable.
-	if !isLoopback(r.RemoteAddr) {
+	if !loopback.PeerAddress(r.RemoteAddr) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}

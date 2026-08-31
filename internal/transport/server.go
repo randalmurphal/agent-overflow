@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"agent-overflow/internal/loopback"
 )
 
 // Bootstrap is the JSON document the SPA fetches at /bootstrap.json on
@@ -469,13 +471,16 @@ func matchesErrno(err error, errnos []syscall.Errno) bool {
 //
 // Loopback paths (/bootstrap.json, /ws) are wrapped in a Host-header
 // guard that fires when the live origin allow-list is empty (loopback
-// mode). A hostile site whose DNS resolves to 127.0.0.1 can otherwise
-// navigate the user to http://attacker.tld:<our-port>/bootstrap.json
-// and read the bootstrap token; rejecting non-loopback Hosts in
-// loopback mode closes that vector. On LAN bind (origin allow-list
-// non-empty) the guard is a pass-through — origin validation already
-// covers cross-origin attacks for the WS handshake, and HTTP-side
-// callers from the LAN need to reach the server by its LAN host.
+// mode). Loopback binding is not by itself a boundary: a foreign origin
+// whose DNS name resolves to 127.0.0.1 can navigate the user to
+// http://that.name:<our-port>/bootstrap.json, and the request arrives
+// over the loopback interface like any other, carrying that name as its
+// Host and its origin as the document's. Requiring a loopback Host
+// (loopback.HostHeader, which refuses names precisely for this) makes
+// the guard about who is asking rather than about which interface the
+// packets crossed. On LAN bind (origin allow-list non-empty) it is a
+// pass-through — origin validation already covers the WS handshake, and
+// HTTP callers from the LAN reach the server by its LAN host.
 func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
@@ -523,7 +528,7 @@ func (s *Server) loopbackHostGuard(next http.HandlerFunc) http.HandlerFunc {
 		// origin-validation story for /ws; HTTP /bootstrap.json on LAN
 		// must be reachable from any LAN host the user shares.
 		if len(s.currentOriginPatterns()) == 0 {
-			if !IsLoopbackHost(r.Host) {
+			if !loopback.HostHeader(r.Host) {
 				http.NotFound(w, r)
 				return
 			}
@@ -863,7 +868,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		LaunchID: s.launchID,
 		// Use the exact predicate captured by handleWS before upgrade so
 		// the client posture cannot disagree with LocalOnly enforcement.
-		Remote:            !remoteAddrIsLoopback(r.RemoteAddr),
+		Remote:            !loopback.PeerAddress(r.RemoteAddr),
 		Harness:           s.cfg.Harness,
 		PageMarker:        s.cfg.PageMarker,
 		BackendID:         backendID,
@@ -885,7 +890,7 @@ func withAssetHeaders(next http.Handler, csp ContentSecurityPolicy) http.Handler
 		WriteSecurityHeaders(h, csp)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/assets/"):
-			if remoteAddrIsLoopback(r.RemoteAddr) {
+			if loopback.PeerAddress(r.RemoteAddr) {
 				// The only loopback consumer is the embedded webview,
 				// which loads the SPA once per process and never
 				// renavigates — a cached asset can never be reused.
@@ -953,7 +958,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// re-expose the original RemoteAddr. r.RemoteAddr is the kernel-
 	// reported peer address; we only mark a connection loopback when
 	// that address sits on a loopback interface.
-	isLoopback := remoteAddrIsLoopback(r.RemoteAddr)
+	isLoopback := loopback.PeerAddress(r.RemoteAddr)
 
 	// Read the live (post-rebind) allow-list, not Config's static value.
 	// A LAN-bind toggle rotates the allow-list under the same mu-guarded

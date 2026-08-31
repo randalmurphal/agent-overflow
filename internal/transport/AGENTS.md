@@ -139,15 +139,20 @@ gap — same-site ignores ports. `upgrade` therefore hands coder/websocket
 loopback and LAN alike.
 
 Whether that list is empty is also this package's LAN switch for the
-`loopbackHostGuard` on `/bootstrap.json`, `/ws`, and `/rpc`: a DNS-rebinding
-defence that 404s any non-loopback `Host` header (`IsLoopbackHost` accepts only
-`127.0.0.1`, `localhost`, and `::1`).
+`loopbackHostGuard` on `/bootstrap.json`, `/ws`, and `/rpc`: 404s any Host
+header that is not a loopback name (`loopback.HostHeader` accepts only
+`127.0.0.1`, `localhost`, and `::1`, and refuses every DNS name — including one
+that resolves to 127.0.0.1, which is the case it exists for).
 
-**Peer locality is `remoteAddrIsLoopback(r.RemoteAddr)`** (conn.go), captured
-before the upgrade and reused for `LocalOnlyMethods`, permessage-deflate
-selection, asset cache headers, and the manifest's `Remote` field. It reads the
-kernel-reported peer address, never a header, fails closed on an empty or
-unparseable one, and carries the same same-host-proxy caveat as above.
+**Peer locality is `loopback.PeerAddress(r.RemoteAddr)`**, captured before the
+upgrade and reused for `LocalOnlyMethods`, permessage-deflate selection, asset
+cache headers, and the manifest's `Remote` field. It reads the kernel-reported
+peer address, never a header, fails closed on an empty or unparseable one, and
+carries the same same-host-proxy caveat as above.
+
+Both predicates live in `internal/loopback` alongside the two endpoint-URL
+classifiers. They are deliberately different rules and the package doc says why;
+do not swap one for another because the names look interchangeable.
 
 ## Security headers
 

@@ -1,9 +1,7 @@
 package transport
 
 import (
-	"net"
 	"net/http"
-	"strings"
 )
 
 // ContentSecurityPolicy is a complete, prebuilt Content-Security-Policy
@@ -127,42 +125,4 @@ func WriteCrossOriginIsolationHeaders(h http.Header) {
 	h.Set("Cross-Origin-Opener-Policy", "same-origin")
 	h.Set("Cross-Origin-Embedder-Policy", "require-corp")
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
-}
-
-// IsLoopbackHost reports whether the request's Host header names a
-// loopback interface. Used by the DNS-rebinding defence in both the
-// embedded-webview server (server.go) and the --connect stub
-// (clientmode.go) so the same rule applies in both deployments.
-//
-// Accepts: "127.0.0.1", "127.0.0.1:<port>", "localhost",
-// "localhost:<port>", "[::1]", "[::1]:<port>". Empty Host is rejected
-// (HTTP/1.1 requires it; allowing empty would punch a hole in the
-// rebind defence for handcrafted clients).
-//
-// Anything else, including non-loopback IPv4/IPv6 literals or arbitrary
-// DNS names that happen to resolve to 127.0.0.1, is rejected.
-func IsLoopbackHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	hostOnly, _, err := net.SplitHostPort(host)
-	if err != nil {
-		// SplitHostPort fails on bare hosts and malformed inputs.
-		// A bracketed IPv6 with no port (`[::1]`) is the legitimate
-		// no-port case; anything else with a stray colon is malformed
-		// and we refuse rather than guess.
-		if strings.Contains(host, ":") {
-			if !(strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]")) {
-				return false
-			}
-			hostOnly = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-		} else {
-			hostOnly = host
-		}
-	}
-	switch strings.ToLower(hostOnly) {
-	case "127.0.0.1", "localhost", "::1":
-		return true
-	}
-	return false
 }

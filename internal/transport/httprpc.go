@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"agent-overflow/internal/loopback"
 )
 
 // ScopedRPCPath is the one-shot HTTP RPC route the `ao` CLI speaks. The
@@ -43,7 +45,7 @@ func (s *Server) handleScopedRPC(w http.ResponseWriter, r *http.Request) {
 	// A scoped token belongs to a provider process on this machine. Refusing
 	// non-loopback peers outright means a LAN bind never widens this surface,
 	// and the refusal is a 404 so the route stays unfingerprintable.
-	if !remoteAddrIsLoopback(r.RemoteAddr) {
+	if !loopback.PeerAddress(r.RemoteAddr) {
 		http.NotFound(w, r)
 		return
 	}

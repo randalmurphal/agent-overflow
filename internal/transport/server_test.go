@@ -1466,7 +1466,7 @@ func TestRebind_OriginPatternsTakeEffect(t *testing.T) {
 	// uses Host as a default; we explicitly set Origin to a disallowed
 	// value to drive the rejection branch.
 	disallowedHeader := http.Header{}
-	disallowedHeader.Set("Origin", "http://attacker.example")
+	disallowedHeader.Set("Origin", "http://foreign.example")
 	_, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
 		HTTPHeader: disallowedHeader,
 	})
@@ -1486,11 +1486,12 @@ func TestRebind_OriginPatternsTakeEffect(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "") })
 }
 
-// TestServer_BootstrapRejectsRebindHost pins the DNS-rebinding defence
-// on the HTTP side. In loopback mode (default), a request whose Host
-// header names anything other than a loopback alias gets 404. A
-// hostile site resolving attacker.tld to 127.0.0.1 cannot harvest the
-// bootstrap token by tricking the user into navigating there.
+// TestServer_BootstrapRejectsRebindHost pins the Host check on the HTTP
+// side. In loopback mode (the default) a request whose Host names
+// anything but a loopback alias gets 404, so a foreign origin whose DNS
+// name resolves to 127.0.0.1 cannot reach the credential exchange by
+// navigating the user there — the packets arrive locally, and the Host
+// gives it away.
 func TestServer_BootstrapRejectsRebindHost(t *testing.T) {
 	f := newServerFixture(t)
 
@@ -1501,7 +1502,7 @@ func TestServer_BootstrapRejectsRebindHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Host = "attacker.tld"
+	req.Host = "foreign.test"
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1636,7 +1637,7 @@ func TestServer_SetOriginPatterns_LiveRotation(t *testing.T) {
 	f.srv.SetOriginPatterns([]string{"http://only.example:*"})
 	wsURL := "ws://" + f.srv.Addr() + "/ws?token=test-token"
 	hdr := http.Header{}
-	hdr.Set("Origin", "http://attacker.example")
+	hdr.Set("Origin", "http://foreign.example")
 	if _, _, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
 		HTTPHeader: hdr,
 	}); err == nil {
@@ -1714,34 +1715,6 @@ func TestServer_LocalOnlyMethodEnforcement_LoopbackPathAllowed(t *testing.T) {
 			t.Fatalf("loopback peer refused privileged method: %+v", resp.Error)
 		}
 		return
-	}
-}
-
-// TestRemoteAddrIsLoopback walks the small set of forms r.RemoteAddr
-// can take so the LocalOnly enforcement flag stays correct across
-// IPv4, IPv6, and the malformed cases httptest sometimes produces.
-func TestRemoteAddrIsLoopback(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"127.0.0.1:54321", true},
-		{"127.0.0.1:0", true},
-		{"[::1]:54321", true},
-		// IPv4-mapped IPv6 loopback — IsLoopback recognises it.
-		{"[::ffff:127.0.0.1]:1234", true},
-		{"10.0.0.5:54321", false},
-		{"192.168.1.5:8080", false},
-		{"[fe80::1234]:1234", false},
-		{"", false},
-		// Malformed: expect false (fail closed) so a synthetic test
-		// request can't accidentally bypass LocalOnly enforcement.
-		{"not an address", false},
-	}
-	for _, c := range cases {
-		if got := remoteAddrIsLoopback(c.addr); got != c.want {
-			t.Errorf("remoteAddrIsLoopback(%q) = %v, want %v", c.addr, got, c.want)
-		}
 	}
 }
 

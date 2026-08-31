@@ -11,12 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/transport"
 )
 
@@ -248,7 +248,7 @@ func Serve(cfg Config) (*Server, error) {
 		cred:                 cred,
 		launchID:             launchID,
 		indexHTML:            indexHTML,
-		remote:               !isLoopbackEndpointHost(parsedWSURL.Host),
+		remote:               !loopback.EndpointAuthority(parsedWSURL.Host),
 		upstreamBootstrapURL: upstreamBootstrap,
 		wsProxy:              wsProxy,
 		probeClient:          &http.Client{Timeout: bootstrapProbeTimeout},
@@ -535,21 +535,25 @@ func upstreamBootstrapURL(wsURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-// loopbackOnly is a DNS-rebinding defense. The stub binds to 127.0.0.1,
-// but a hostile site whose DNS resolves to 127.0.0.1 could navigate the
-// user to http://attacker.tld:<our-port>/ and the embedded bootstrap
-// script (carrying the WS URL + token) would execute under the
-// attacker's origin. Browsers attach the requested Host header to those
-// requests verbatim, so we reject anything that isn't a loopback name.
+// loopbackOnly requires the request's Host to name loopback, which the
+// bind address alone does not establish. The stub binds 127.0.0.1, but a
+// DNS name that resolves to 127.0.0.1 reaches it just as well: a page
+// navigated to http://that.name:<our-port>/ arrives here over the
+// loopback interface, and the document it gets back — including the
+// boot script that fetches the WS URL — would run under that name's
+// origin rather than ours. Browsers send the requested Host verbatim,
+// so refusing a non-loopback one refuses the whole shape.
+// loopback.HostHeader is the strict predicate that does it, and it
+// refuses names rather than classifying them for exactly this reason.
 //
 // 404 (not 403) is the deliberate response code: the rest of the
-// transport / clientmode surface returns NotFound for both auth
-// failures and missing paths, so an attacker can't fingerprint the
-// server vs an arbitrary web service running on 127.0.0.1 by probing
-// rebind-protected vs open URLs.
+// transport / clientmode surface returns NotFound for both credential
+// failures and missing paths, so probing cannot tell a guarded route
+// from an absent one, or this server from any other service on
+// 127.0.0.1.
 func loopbackOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !transport.IsLoopbackHost(r.Host) {
+		if !loopback.HostHeader(r.Host) {
 			http.NotFound(w, r)
 			return
 		}
@@ -698,30 +702,4 @@ func newWSProxy(wsURL, token string) (*httputil.ReverseProxy, error) {
 			http.Error(w, "backend unreachable", http.StatusServiceUnavailable)
 		},
 	}, nil
-}
-
-// isLoopbackEndpointHost classifies a client-configured upstream URL with
-// the same netip loopback semantics used for the transport peer address.
-// It intentionally differs from the stricter IsLoopbackHost policy used to
-// defend this stub's HTTP listener from DNS rebinding.
-func isLoopbackEndpointHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	hostOnly, _, err := net.SplitHostPort(host)
-	if err != nil {
-		if strings.Contains(host, ":") {
-			if !(strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]")) {
-				return false
-			}
-			hostOnly = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-		} else {
-			hostOnly = host
-		}
-	}
-	if strings.EqualFold(hostOnly, "localhost") {
-		return true
-	}
-	addr, err := netip.ParseAddr(hostOnly)
-	return err == nil && addr.IsLoopback()
 }
