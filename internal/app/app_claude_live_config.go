@@ -798,7 +798,7 @@ func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provi
 		return
 	}
 	a.rememberChatModelProfile(sanitized)
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &sanitized})
+	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &sanitized})
 }
 
 // firstLine truncates a command answer to its first line for error surfaces.

@@ -917,25 +917,34 @@ func (s *Store) deleteThreadItemsChunk(id string) (int64, error) {
 	return n, nil
 }
 
-func (s *Store) ArchiveThread(id string) error {
-	result, err := s.db.Exec(`UPDATE threads SET archived = 1, updated_at = ? WHERE id = ?`,
-		nowMillis(), id)
-	if err != nil {
-		return fmt.Errorf("store: archive thread %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: archive thread %s", id))
+// ArchiveThread flips the archived column to 1 and bumps updated_at so the
+// thread leaves the active sidebar. Returns the archived row plus whether the
+// write moved anything: re-archiving an already-archived thread changes
+// nothing, so it must not bump updated_at and must not broadcast. A missing
+// id is still sql.ErrNoRows.
+func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
+	return s.applyThreadRowWrite(threadRowWrite{
+		Action:  fmt.Sprintf("store: archive thread %s", id),
+		ID:      id,
+		Set:     "archived = 1, updated_at = ?",
+		SetArgs: []any{nowMillis()},
+		Change:  "archived IS NOT 1",
+	})
 }
 
 // UnarchiveThread flips the archived column back to 0 for a thread and bumps
 // updated_at so the sidebar reshuffles it toward the top of the active list.
-// Returns an error if no row matches the id.
-func (s *Store) UnarchiveThread(id string) error {
-	result, err := s.db.Exec(`UPDATE threads SET archived = 0, updated_at = ? WHERE id = ?`,
-		nowMillis(), id)
-	if err != nil {
-		return fmt.Errorf("store: unarchive thread %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: unarchive thread %s", id))
+// Returns the restored row plus whether the write moved anything; a thread
+// that was already active is a no-op, not a reshuffle. Returns sql.ErrNoRows
+// if no row matches the id.
+func (s *Store) UnarchiveThread(id string) (Thread, bool, error) {
+	return s.applyThreadRowWrite(threadRowWrite{
+		Action:  fmt.Sprintf("store: unarchive thread %s", id),
+		ID:      id,
+		Set:     "archived = 0, updated_at = ?",
+		SetArgs: []any{nowMillis()},
+		Change:  "archived IS NOT 0",
+	})
 }
 
 // MarkThreadActivity bumps threads.updated_at to `at`. Sidebar sort and
@@ -984,11 +993,16 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 // delete batch, a streaming flush, or a checkpoint. A context-less
 // Begin waits for that with no ceiling; callers of a bookkeeping write
 // nobody is watching need one.
-func (s *Store) MarkThreadReadNow(ctx context.Context, id string) error {
+//
+// Returns the stamped row plus whether the stamp moved. Opening a thread
+// whose read marker already covers its newest turn is the common case and
+// changes nothing, so it hands back (zero row, false, nil) and the caller
+// broadcasts nothing.
+func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool, error) {
 	now := nowMillis()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("store: begin mark thread read %s: %w", id, err)
+		return Thread{}, false, fmt.Errorf("store: begin mark thread read %s: %w", id, err)
 	}
 	defer tx.Rollback()
 
@@ -1010,9 +1024,9 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) error {
 	).Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &lastReadAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
+			return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, sql.ErrNoRows)
 		}
-		return fmt.Errorf("store: read thread read-state %s: %w", id, err)
+		return Thread{}, false, fmt.Errorf("store: read thread read-state %s: %w", id, err)
 	}
 
 	readTarget := int64(0)
@@ -1031,9 +1045,9 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) error {
 	if lastReadAt.Valid {
 		if hasReadTarget && lastReadAt.Int64 >= readTarget {
 			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
+				return Thread{}, false, fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
 			}
-			return nil
+			return Thread{}, false, nil
 		}
 	}
 
@@ -1043,28 +1057,42 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) error {
 	}
 	if lastReadAt.Valid && lastReadAt.Int64 >= readAt {
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
+			return Thread{}, false, fmt.Errorf("store: commit mark thread read no-op %s: %w", id, err)
 		}
-		return nil
+		return Thread{}, false, nil
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE threads SET last_read_at = ? WHERE id = ?`, readAt, id)
 	if err != nil {
-		return fmt.Errorf("store: mark thread read %s: %w", id, err)
+		return Thread{}, false, fmt.Errorf("store: mark thread read %s: %w", id, err)
 	}
 	if err := requireRowsAffected(result, fmt.Sprintf("store: mark thread read %s", id)); err != nil {
-		return err
+		return Thread{}, false, err
+	}
+	// Read back inside the write's own transaction, like every other
+	// thread-row mutation: the caller broadcasts this row on
+	// `thread:updated`, and the two no-op returns above are what keeps a
+	// re-open of an already-read thread silent.
+	rows, err := listThreadsByIDTx(tx, []string{id})
+	if err != nil {
+		return Thread{}, false, fmt.Errorf("store: read back mark thread read %s: %w", id, err)
+	}
+	if len(rows) != 1 {
+		return Thread{}, false, fmt.Errorf("store: read back mark thread read %s: %d rows, want 1", id, len(rows))
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit mark thread read %s: %w", id, err)
+		return Thread{}, false, fmt.Errorf("store: commit mark thread read %s: %w", id, err)
 	}
-	return nil
+	return rows[0], true, nil
 }
 
 // MarkThreadUnread stamps last_read_at to zero. NULL is reserved for
 // "never tracked" and is treated as read by the frontend so old rows do not
 // light up on first launch; an explicit unread action needs a concrete value
 // that is older than every real thread update.
-func (s *Store) MarkThreadUnread(id string) error {
+//
+// Returns the stamped row plus whether the write moved anything: a thread
+// already marked unread stays as it is and broadcasts nothing.
+func (s *Store) MarkThreadUnread(id string) (Thread, bool, error) {
 	var zero int64
 	return s.setThreadLastRead(id, &zero)
 }
@@ -1072,76 +1100,76 @@ func (s *Store) MarkThreadUnread(id string) error {
 // setThreadLastRead is the shared primitive. Kept unexported — callers
 // should use the named MarkThreadReadNow / MarkThreadUnread wrappers so
 // the intent is visible at the call site.
-func (s *Store) setThreadLastRead(id string, ts *int64) error {
+func (s *Store) setThreadLastRead(id string, ts *int64) (Thread, bool, error) {
 	var arg any
 	if ts != nil {
 		arg = *ts
 	}
-	result, err := s.db.Exec(
-		`UPDATE threads SET last_read_at = ? WHERE id = ?`,
-		arg, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update last_read_at for %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update last_read_at for %s", id))
+	return s.applyThreadRowWrite(threadRowWrite{
+		Action:     fmt.Sprintf("store: update last_read_at for %s", id),
+		ID:         id,
+		Set:        "last_read_at = ?",
+		SetArgs:    []any{arg},
+		Change:     "last_read_at IS NOT ?",
+		ChangeArgs: []any{arg},
+	})
 }
 
 // PinThread places the thread on the front burner and preserves the existing
 // API contract of stamping pinned_at on every call. The timestamp remains
 // metadata only; it no longer controls ordering within a pin group.
-func (s *Store) PinThread(id string) error {
+//
+// Returns the pinned row; the changed flag is true whenever the row exists,
+// because the restamp always moves pinned_at.
+func (s *Store) PinThread(id string) (Thread, bool, error) {
 	now := nowMillis()
 	return s.setThreadPinnedAt(id, &now)
 }
 
 // UnpinThread clears both pin fields, returning the thread to the regular
 // status-aware sort order. An unpinned row never retains a latent group.
-func (s *Store) UnpinThread(id string) error {
+// Unpinning an already-unpinned thread changes nothing and reports so.
+func (s *Store) UnpinThread(id string) (Thread, bool, error) {
 	return s.setThreadPinnedAt(id, nil)
 }
 
 // SetThreadPinGroup moves an already-pinned thread between the exact two
 // manual attention groups. The WHERE clause makes assigning a group to an
 // unpinned row impossible even for a future caller that skips prevalidation.
-func (s *Store) SetThreadPinGroup(id string, group int) error {
+// An unpinned row is still refused with sql.ErrNoRows; a pinned row already
+// in the requested group is a no-op that changes nothing.
+func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
 	if group != PinGroupFront && group != PinGroupBack {
-		return fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
+		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
 	}
-	result, err := s.db.Exec(
-		`UPDATE threads SET pin_group = ? WHERE id = ? AND pinned_at IS NOT NULL`,
-		group, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update pin_group for %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update pin_group for pinned thread %s", id))
+	return s.applyThreadRowWrite(threadRowWrite{
+		Action:     fmt.Sprintf("store: update pin_group for pinned thread %s", id),
+		ID:         id,
+		Set:        "pin_group = ?",
+		SetArgs:    []any{group},
+		Match:      "pinned_at IS NOT NULL",
+		Change:     "pin_group IS NOT ?",
+		ChangeArgs: []any{group},
+	})
 }
 
 // setThreadPinnedAt is the shared pin/unpin primitive. We deliberately do NOT
 // touch updated_at here: pinning is a sidebar-presentation tweak, not
 // thread activity, and bumping updated_at would shuffle the project's
 // `lastActivity` ordering.
-func (s *Store) setThreadPinnedAt(id string, ts *int64) error {
-	var result sql.Result
-	var err error
+func (s *Store) setThreadPinnedAt(id string, ts *int64) (Thread, bool, error) {
+	write := threadRowWrite{
+		Action: fmt.Sprintf("store: update pin state for %s", id),
+		ID:     id,
+	}
 	if ts == nil {
-		result, err = s.db.Exec(
-			`UPDATE threads SET pinned_at = NULL, pin_group = NULL WHERE id = ?`,
-			id,
-		)
+		write.Set = "pinned_at = NULL, pin_group = NULL"
+		write.Change = "pinned_at IS NOT NULL"
 	} else {
-		result, err = s.db.Exec(
-			`UPDATE threads
-		        SET pinned_at = ?, pin_group = ?
-		      WHERE id = ?`,
-			*ts, PinGroupFront, id,
-		)
+		write.Set = "pinned_at = ?, pin_group = ?"
+		write.SetArgs = []any{*ts, PinGroupFront}
 	}
-	if err != nil {
-		return fmt.Errorf("store: update pin state for %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update pin state for %s", id))
+	return s.applyThreadRowWrite(write)
 }
 
 // UpdateSessionRef records the provider resume cursor without touching
@@ -1347,36 +1375,43 @@ func (s *Store) UpdateMode(threadID, mode string) error {
 	return requireRowsAffected(result, fmt.Sprintf("store: update mode for %s", threadID))
 }
 
-// UpdateReasoningEffort overwrites the effort tier. See legalEfforts for
-// the enumerated values.
-func (s *Store) UpdateReasoningEffort(threadID, effort string) error {
+// UpdateReasoningEffort overwrites the effort tier and hands back the row it
+// wrote. See legalEfforts for the enumerated values. Re-selecting the tier
+// the thread already carries changes nothing and reports so.
+func (s *Store) UpdateReasoningEffort(threadID, effort string) (Thread, bool, error) {
 	normalized := normalizeEffort(effort)
 	if _, ok := legalEfforts[normalized]; !ok {
-		return fmt.Errorf("%w: %q", ErrInvalidEffort, effort)
+		return Thread{}, false, fmt.Errorf("%w: %q", ErrInvalidEffort, effort)
 	}
 	var providerName string
 	if err := s.reader().QueryRow(`SELECT provider FROM threads WHERE id = ?`, threadID).Scan(&providerName); err != nil {
-		return fmt.Errorf("store: load provider for effort update %s: %w", threadID, err)
+		return Thread{}, false, fmt.Errorf("store: load provider for effort update %s: %w", threadID, err)
 	}
 	if !legalEffortForProvider(providerName, normalized) {
-		return fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
+		return Thread{}, false, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
 	}
-	result, err := s.db.Exec(`UPDATE threads SET reasoning_effort = ? WHERE id = ?`,
-		normalized, threadID)
-	if err != nil {
-		return fmt.Errorf("store: update reasoning effort for %s: %w", threadID, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update reasoning effort for %s", threadID))
+	return s.applyThreadRowWrite(threadRowWrite{
+		Action:     fmt.Sprintf("store: update reasoning effort for %s", threadID),
+		ID:         threadID,
+		Set:        "reasoning_effort = ?",
+		SetArgs:    []any{normalized},
+		Change:     "reasoning_effort IS NOT ?",
+		ChangeArgs: []any{normalized},
+	})
 }
 
-// UpdateFastMode flips the fast-mode boolean.
-func (s *Store) UpdateFastMode(threadID string, on bool) error {
-	result, err := s.db.Exec(`UPDATE threads SET fast_mode = ? WHERE id = ?`,
-		boolToInt(on), threadID)
-	if err != nil {
-		return fmt.Errorf("store: update fast mode for %s: %w", threadID, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update fast mode for %s", threadID))
+// UpdateFastMode flips the fast-mode boolean and hands back the row it wrote.
+// Setting the value the thread already carries changes nothing.
+func (s *Store) UpdateFastMode(threadID string, on bool) (Thread, bool, error) {
+	value := boolToInt(on)
+	return s.applyThreadRowWrite(threadRowWrite{
+		Action:     fmt.Sprintf("store: update fast mode for %s", threadID),
+		ID:         threadID,
+		Set:        "fast_mode = ?",
+		SetArgs:    []any{value},
+		Change:     "fast_mode IS NOT ?",
+		ChangeArgs: []any{value},
+	})
 }
 
 // UpdateContextWindow overwrites the context_window column.
@@ -1416,28 +1451,30 @@ func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings
 
 // UpdateContextSettings overwrites the context window and both compaction
 // threshold overrides. Percent zero means provider default/inherit.
-func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, extendedPercent int) error {
+// Hands back the row it wrote; a write that restates all three current
+// values changes nothing and reports so.
+func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, extendedPercent int) (Thread, bool, error) {
 	if !validContextWindow(tokens) {
-		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
+		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
 	}
 	if !validAutoCompactPercent(standardPercent) {
-		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, standardPercent)
+		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, standardPercent)
 	}
 	if !validAutoCompactPercent(extendedPercent) {
-		return fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, extendedPercent)
+		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, extendedPercent)
 	}
-	result, err := s.db.Exec(
-		`UPDATE threads
-		    SET context_window = ?,
+	return s.applyThreadRowWrite(threadRowWrite{
+		Action: fmt.Sprintf("store: update context settings for %s", threadID),
+		ID:     threadID,
+		Set: `context_window = ?,
 		        auto_compact_standard_percent = ?,
-		        auto_compact_extended_percent = ?
-		  WHERE id = ?`,
-		tokens, standardPercent, extendedPercent, threadID,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update context settings for %s: %w", threadID, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update context settings for %s", threadID))
+		        auto_compact_extended_percent = ?`,
+		SetArgs: []any{tokens, standardPercent, extendedPercent},
+		Change: `(context_window IS NOT ?
+		       OR auto_compact_standard_percent IS NOT ?
+		       OR auto_compact_extended_percent IS NOT ?)`,
+		ChangeArgs: []any{tokens, standardPercent, extendedPercent},
+	})
 }
 
 // UpdateBranchForWorkspace persists a branch observed in workspacePath onto

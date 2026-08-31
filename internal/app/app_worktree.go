@@ -498,7 +498,7 @@ func (a *App) removeProjectWorktree(project, callerThreadID, worktreePath string
 		// worktree path until the user navigates. The caller's pane gets a
 		// redundant echo (the binding return already syncs it), which the
 		// pane store treats as idempotent.
-		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &t})
+		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
 		if _, err := a.restartSessionIfAffected(id, "workspace"); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session refresh failed: %w", id, err))
 			continue
@@ -746,6 +746,8 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 
 	core := a.gitCore()
 	previousWorkspace := thread.WorkspacePath
+	previousWorktree := thread.WorktreePath
+	previousBranch := thread.Branch
 	switch {
 	case gitops.SameFilesystemPath(target, project):
 		thread.WorkspacePath = project
@@ -791,6 +793,14 @@ func (a *App) switchThreadWorkspace(threadID, path string) (store.Thread, error)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("switch workspace: refresh thread after workspace switch: %w", err)
 	}
+	// Broadcast so a second attached client's pane follows the thread to its
+	// new checkout. `store.UpdateThread` rewrites the whole row, so the
+	// no-change test is the three fields this switch owns — re-selecting the
+	// workspace the thread already sits in moves nothing and says nothing.
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed,
+		previousWorkspace != thread.WorkspacePath ||
+			previousWorktree != thread.WorktreePath ||
+			previousBranch != thread.Branch)
 	return refreshed, nil
 }
 

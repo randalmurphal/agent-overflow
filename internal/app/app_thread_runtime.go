@@ -185,6 +185,7 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			}
 			return a.replay.RemoveThreadLog(threadID)
 		},
+		Deleted: func(thread store.Thread) { a.broadcastThreadDeleted(thread.ID) },
 	}
 }
 

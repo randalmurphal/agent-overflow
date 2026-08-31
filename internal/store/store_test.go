@@ -457,7 +457,7 @@ func TestArchiveThread(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	if err := s.ArchiveThread("t1"); err != nil {
+	if _, _, err := s.ArchiveThread("t1"); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 
@@ -482,11 +482,11 @@ func TestUnarchiveThreadRestoresRow(t *testing.T) {
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.ArchiveThread("t-un"); err != nil {
+	if _, _, err := s.ArchiveThread("t-un"); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 
-	if err := s.UnarchiveThread("t-un"); err != nil {
+	if _, _, err := s.UnarchiveThread("t-un"); err != nil {
 		t.Fatalf("unarchive: %v", err)
 	}
 
@@ -509,7 +509,7 @@ func TestUnarchiveThreadRestoresSidebarVisibility(t *testing.T) {
 	if err := s.CreateThread(thr); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.ArchiveThread("t-vis"); err != nil {
+	if _, _, err := s.ArchiveThread("t-vis"); err != nil {
 		t.Fatalf("archive: %v", err)
 	}
 
@@ -522,7 +522,7 @@ func TestUnarchiveThreadRestoresSidebarVisibility(t *testing.T) {
 		t.Fatal("expected archived thread to be hidden from ListThreads")
 	}
 
-	if err := s.UnarchiveThread("t-vis"); err != nil {
+	if _, _, err := s.UnarchiveThread("t-vis"); err != nil {
 		t.Fatalf("unarchive: %v", err)
 	}
 
@@ -538,7 +538,7 @@ func TestUnarchiveThreadRestoresSidebarVisibility(t *testing.T) {
 func TestUnarchiveUnknownThreadErrors(t *testing.T) {
 	s := newTestStore(t)
 
-	if err := s.UnarchiveThread("missing"); err == nil {
+	if _, _, err := s.UnarchiveThread("missing"); err == nil {
 		t.Fatal("expected error for unknown thread id, got nil")
 	}
 }

@@ -101,8 +101,12 @@ type ThreadTitleGenerationEvent struct {
 // every normal new thread starts as a chat thread. "discussion" is rejected
 // as mode values because discussion/workflow threads must come through their
 // owning coordination sagas, which wire channels or phase run records.
+//
+// The created row is broadcast as `listed` so a second attached client puts
+// it in its sidebar without a refresh, matching what the creating client does
+// with the return value.
 func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
-	return a.threadApplication().Create(threadapp.CreateOptions{
+	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
 		Title:                      opts.Title,
 		Provider:                   opts.Provider,
@@ -119,6 +123,11 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
 	})
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	return thread, nil
 }
 
 // StartTerminal mints a persistent terminal-mode thread and returns it.
@@ -133,11 +142,16 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 // after restart re-spawns a fresh shell in its saved workspace (PTYs are
 // ephemeral across restart; the saved cwd is what persists).
 func (a *App) StartTerminal(opts StartTerminalOptions) (store.Thread, error) {
-	return a.threadApplication().StartTerminal(threadapp.TerminalOptions{
+	thread, err := a.threadApplication().StartTerminal(threadapp.TerminalOptions{
 		ProjectID: opts.ProjectID,
 		Cwd:       opts.Cwd,
 		Title:     opts.Title,
 	})
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	return thread, nil
 }
 
 // GetThreadDefaults returns the values CreateThread would have seeded
@@ -195,7 +209,9 @@ func (a *App) RenameThread(id string, title string) error {
 	if err := a.threadApplication().Rename(id, title); err != nil {
 		return err
 	}
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "patch", ID: id, Title: &title})
+	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{
+		Action: triage.ThreadActionPatch, ID: id, Title: &title,
+	})
 	a.syncPeerSessionNameAsync(id)
 	return nil
 }
@@ -210,29 +226,65 @@ func (a *App) RenameThread(id string, title string) error {
 // matches the store's busy_timeout — a wait past that is a wedged writer,
 // and the frontend has already patched its own read state optimistically,
 // so returning the error beats holding the RPC open.
+//
+// Broadcasts the stamped row so the other devices' sidebars stop showing the
+// pill too. Opening a thread whose marker already covers its newest turn
+// changes nothing and says nothing, which is what keeps every thread switch
+// off the wire.
 func (a *App) MarkThreadRead(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), markThreadReadTimeout)
 	defer cancel()
-	return a.threadApplication().MarkRead(ctx, id)
+	row, changed, err := a.threadApplication().MarkRead(ctx, id)
+	if err != nil {
+		return err
+	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	return nil
 }
 
 // MarkThreadUnread stamps last_read_at to zero. NULL is reserved for
 // "never tracked" rows that should not flood the sidebar as unread after
 // migration; explicit unread uses a concrete old timestamp.
-func (a *App) MarkThreadUnread(id string) error { return a.threadApplication().MarkUnread(id) }
+func (a *App) MarkThreadUnread(id string) error {
+	row, changed, err := a.threadApplication().MarkUnread(id)
+	if err != nil {
+		return err
+	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	return nil
+}
 
 // PinThread marks the thread as front-burner pinned. Pinned threads sort into
 // two manual attention groups above needs-attention.
-func (a *App) PinThread(id string) (store.Thread, error) { return a.threadApplication().Pin(id) }
+func (a *App) PinThread(id string) (store.Thread, error) {
+	row, changed, err := a.threadApplication().Pin(id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	return row, nil
+}
 
 // SetThreadPinGroup moves an already-pinned thread between the front and back
 // burners and returns the refreshed row for frontend reconciliation.
 func (a *App) SetThreadPinGroup(id string, group int) (store.Thread, error) {
-	return a.threadApplication().SetPinGroup(id, group)
+	row, changed, err := a.threadApplication().SetPinGroup(id, group)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	return row, nil
 }
 
 // UnpinThread clears pinned_at and pin_group and returns the refreshed row.
-func (a *App) UnpinThread(id string) (store.Thread, error) { return a.threadApplication().Unpin(id) }
+func (a *App) UnpinThread(id string) (store.Thread, error) {
+	row, changed, err := a.threadApplication().Unpin(id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, row, changed)
+	return row, nil
+}
 
 // UpdateThreadProvider switches to the provider's latest remembered profile
 // and restarts the session if one is live so the new provider takes effect.
@@ -280,7 +332,8 @@ func (a *App) UpdateThreadModelSelection(threadID string, providerName string, m
 // live session (Codex applies it on the next turn without a restart;
 // Claude needs a restart, deferred until the thread is quiet).
 func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, error) {
-	if _, err := a.threadApplication().UpdateReasoningEffort(id, effort); err != nil {
+	_, changed, err := a.threadApplication().UpdateReasoningEffort(id, effort)
+	if err != nil {
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(id, "effort")
@@ -288,6 +341,10 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 		return store.Thread{}, err
 	}
 	a.rememberChatModelProfile(refreshed)
+	// The row broadcast is the row returned, read after the session
+	// reconcile: the initiator's optimistic apply and its own echo then
+	// carry identical bytes.
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
 	return refreshed, nil
 }
 
@@ -296,7 +353,8 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 // Claude CLI only reads fast mode from launch settings, so a Claude
 // session restarts — deferred until the thread is quiet).
 func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
-	if _, err := a.threadApplication().UpdateFastMode(id, on); err != nil {
+	_, changed, err := a.threadApplication().UpdateFastMode(id, on)
+	if err != nil {
 		return store.Thread{}, err
 	}
 	refreshed, err := a.restartSessionIfAffected(id, "fastMode")
@@ -304,6 +362,7 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 		return store.Thread{}, err
 	}
 	a.rememberChatModelProfile(refreshed)
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
 	return refreshed, nil
 }
 
@@ -341,14 +400,18 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 		return nil, err
 	}
 	for index := range rows {
-		row := rows[index]
-		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &row})
+		a.broadcastThreadRow(triage.ThreadActionFull, rows[index])
 	}
 	return rows, nil
 }
 
 // DeleteThread tears down the thread and any child threads. The recursive
 // cascade logic lives in app_thread_delete.go.
+//
+// Every dropped row — the named thread and each of its children — is
+// broadcast as `deleted` so a second attached client drops the same rows and
+// their caches without a refresh. The fan-out rides the delete port's
+// per-row Deleted callback, which is the only place the child ids are known.
 func (a *App) DeleteThread(id string) error {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
@@ -450,9 +513,14 @@ func (a *App) CreateThreadFromPR(
 	model string,
 	forge string,
 ) (store.Thread, error) {
-	return a.threadApplication().CreateFromPR(
+	thread, err := a.threadApplication().CreateFromPR(
 		project, number, providerName, model, forge, threadPullRequestPort{app: a},
 	)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	a.broadcastThreadRow(triage.ThreadActionListed, thread)
+	return thread, nil
 }
 
 // RegenerateThreadTitle starts a re-title of an existing thread from its
@@ -476,6 +544,10 @@ func (a *App) RegenerateThreadTitle(threadID string) error {
 	return a.threadTitleApplication().Regenerate(threadID)
 }
 
+// finishThreadModelUpdate is the shared tail of the three model-selection
+// bindings: reconcile the live session, then broadcast the row those bindings
+// return. `SelectionChanged` is the no-change test, so re-selecting the model
+// a thread already carries reconciles nothing and broadcasts nothing.
 func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Thread, error) {
 	if !update.SelectionChanged() {
 		a.rememberChatModelProfile(update.Thread)
@@ -492,5 +564,6 @@ func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Threa
 		return store.Thread{}, err
 	}
 	a.rememberChatModelProfile(updated)
+	a.broadcastThreadRow(triage.ThreadActionFull, updated)
 	return updated, nil
 }

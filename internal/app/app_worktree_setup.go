@@ -57,7 +57,7 @@ func (e appWorktreeSetupEvents) Setup(event worktreesetupapp.Event) {
 }
 
 func (e appWorktreeSetupEvents) ThreadUpdated(thread store.Thread) {
-	e.app.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: "full", Thread: &thread})
+	e.app.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &thread})
 }
 
 func (a *App) startThreadWorktreeSetup(thread store.Thread) {

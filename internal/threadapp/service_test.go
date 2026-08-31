@@ -210,20 +210,20 @@ func TestLifecycleAndWorkspaceWideBranchUpdate(t *testing.T) {
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("UpdateBranch = %+v, %v", rows, err)
 	}
-	if err := service.Archive(first.ID); err != nil {
+	if _, _, err := service.Archive(first.ID); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 	archived, err := service.ListArchived()
 	if err != nil || len(archived) != 1 || archived[0].ID != first.ID {
 		t.Fatalf("ListArchived = %+v, %v", archived, err)
 	}
-	if _, err := service.Unarchive(first.ID); err != nil {
+	if _, _, err := service.Unarchive(first.ID); err != nil {
 		t.Fatalf("Unarchive: %v", err)
 	}
-	if _, err := service.Pin(second.ID); err != nil {
+	if _, _, err := service.Pin(second.ID); err != nil {
 		t.Fatalf("Pin: %v", err)
 	}
-	if _, err := service.Unpin(second.ID); err != nil {
+	if _, _, err := service.Unpin(second.ID); err != nil {
 		t.Fatalf("Unpin: %v", err)
 	}
 }

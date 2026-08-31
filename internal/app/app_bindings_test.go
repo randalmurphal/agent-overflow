@@ -932,7 +932,7 @@ func TestSwitchThreadDoesNotChangeRememberedContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create opened thread: %v", err)
 	}
-	if err := app.store.UpdateContextSettings(opened.ID, 1000000, 0, 0); err != nil {
+	if _, _, err := app.store.UpdateContextSettings(opened.ID, 1000000, 0, 0); err != nil {
 		t.Fatalf("UpdateContextSettings(opened): %v", err)
 	}
 

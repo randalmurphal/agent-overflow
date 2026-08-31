@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // Archiving a thread is the one row flip that also releases the
@@ -50,9 +51,14 @@ func (a *App) ArchiveThread(id string) error {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
 
-	if err := a.threadApplication().Archive(id); err != nil {
+	row, changed, err := a.threadApplication().Archive(id)
+	if err != nil {
 		return err
 	}
+	// Broadcast as `unlisted` so a second attached client drops the row
+	// from its sidebar too; re-archiving an already-archived thread
+	// changes nothing and says nothing.
+	a.broadcastThreadRowIfChanged(triage.ThreadActionUnlisted, row, changed)
 	a.stopArchivedThreadSession(id, requestedAt)
 	return nil
 }
@@ -76,7 +82,14 @@ func (a *App) ArchiveThread(id string) error {
 func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
-	return a.threadApplication().Unarchive(id)
+	row, changed, err := a.threadApplication().Unarchive(id)
+	if err != nil {
+		return store.Thread{}, err
+	}
+	// Broadcast as `listed` so every other attached client puts the row
+	// back in its sidebar.
+	a.broadcastThreadRowIfChanged(triage.ThreadActionListed, row, changed)
+	return row, nil
 }
 
 // stopArchivedThreadSession closes the just-archived thread's provider
