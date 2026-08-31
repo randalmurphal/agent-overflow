@@ -26,6 +26,7 @@ import {
 } from './bindings';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
 import { isTransportClassError } from './transportStatus.svelte';
+import { hasScope } from '../transport/scopes';
 import { wailsEventOn } from './wailsEvents';
 import { errString } from '../utils/errors';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
@@ -223,8 +224,27 @@ function reportBranchPersistFailure(workspacePath: string, err: unknown): void {
 // Public surface
 // ---------------------------------------------------------------------------
 
+// The answer for a session that was not granted `git:operate`: no value,
+// no error, nothing to release. Every RPC this store owns carries that
+// scope (internal/transport/methods_gen.go), so sourcing would be one
+// refusal per workspace per mount — and the store would then hold the
+// refusal as a persistent `statusError`, which the workspace strip
+// renders. A predicted absence is not a failure to report; the strip's
+// no-status state is the honest rendering of "this session does not see
+// git".
+const NO_GIT_STATUS: EntityAttachment<GitStatus> = {
+  get current() {
+    return null;
+  },
+  get error() {
+    return null;
+  },
+  release() {},
+};
+
 /** Refcounted attach for a workspace. Release when the consumer unmounts. */
 export function attachGitStatus(key: string, ctx: GitStatusCtx): EntityAttachment<GitStatus> {
+  if (!hasScope('git:operate')) return NO_GIT_STATUS;
   assertAttachableWhileSeeding(key);
   return store.attach(key, ctx);
 }
@@ -259,6 +279,7 @@ export async function refreshGitStatus(
   threadId: string,
   currentKey: () => string | null,
 ): Promise<void> {
+  if (!hasScope('git:operate')) return;
   try {
     const result = (await GetGitStatus(threadId)) as GitStatus;
     if (currentKey() !== key) return;

@@ -50,6 +50,18 @@ stops waking readers.
   the skills stores on `threads:operate`, `appearance` on
   `settings:write` — asks for the capability its RPCs actually carry,
   never for a stand-in.
+- **A PASSIVE load asks before it fires.** A loader that runs because a
+  pane mounted — thread live state, git status, the MCP listing, the model
+  catalog, worktree setup, the PR entity, the launch update check — has
+  nobody to report a refusal to, so an ungranted session would spend one
+  refusal per surface per open. That was the whole shape of the view-only
+  toast burst (owner's live test, 2026-08-30). Each such loader checks
+  `hasScope` first and returns its empty answer: an inert `EntityAttachment`
+  where callers hold one, a plain early return where they do not. This is
+  NOT a global swallow — a refusal arriving on a surface that believed it
+  had the grant must still surface through `transport/scopeRefusal.ts`.
+  `viewOnlyPassiveLoads.test.ts` is the sweep, and it asserts both
+  directions so a guard cannot pass by never firing at all.
 - `events.ts` is the single subscription root. It owns channel names,
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the

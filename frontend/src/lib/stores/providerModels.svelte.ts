@@ -1,4 +1,5 @@
 import { GetModelsForProvider } from './bindings';
+import { hasScope } from '../transport/scopes';
 import type { ModelInfo } from '../types/settings';
 import {
   asProviderID,
@@ -34,6 +35,12 @@ export function getProviderModels(provider: ProviderID): ModelInfo[] {
 export async function ensureProviderModels(provider: ProviderID): Promise<ModelInfo[]> {
   const cached = modelsByProvider.get(provider);
   if (cached) return cached;
+  // The catalog rides `threads:operate`: choosing a model is choosing what
+  // a turn will run under. A session without that grant is offered no
+  // model picker, and this warms on first paint — so asking would be one
+  // refusal per enabled provider on every boot, for a list nothing will
+  // render.
+  if (!hasScope('threads:operate')) return [];
 
   const existing = inFlight.get(provider);
   if (existing) return existing;
@@ -49,6 +56,7 @@ export async function ensureProviderModels(provider: ProviderID): Promise<ModelI
 }
 
 export async function refreshProviderModels(provider: ProviderID): Promise<ModelInfo[]> {
+  if (!hasScope('threads:operate')) return [];
   const generation = (generations.get(provider) ?? 0) + 1;
   generations.set(provider, generation);
   const request = loadProviderModels(provider, generation);

@@ -47,6 +47,7 @@ import {
   type MCPServerStatus,
 } from './bindings';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
+import { hasScope } from '../transport/scopes';
 import { wailsEventOn } from './wailsEvents';
 import { addToast } from './toast.svelte';
 
@@ -314,11 +315,28 @@ installMcpEventListeners();
 // Public surface
 // ---------------------------------------------------------------------------
 
+// The answer for a session that cannot reach the MCP surface at all.
+// Every listing RPC here carries `settings:write`
+// (internal/transport/methods_gen.go) because listing a server is reading
+// provider CONFIG, so a session without it would source one refusal per
+// mount and then hold that refusal as a persistent `peekMcpServersError`
+// on a trigger nothing can act through.
+const NO_MCP_SERVERS: EntityAttachment<ThreadMCPServer[]> = {
+  get current() {
+    return null;
+  },
+  get error() {
+    return null;
+  },
+  release() {},
+};
+
 /** Refcounted attach for an entity. Release when the consumer unmounts. */
 export function attachMcpServers(
   key: string,
   ctx: MCPCtx,
 ): EntityAttachment<ThreadMCPServer[]> {
+  if (!hasScope('settings:write')) return NO_MCP_SERVERS;
   return store.attach(key, ctx);
 }
 

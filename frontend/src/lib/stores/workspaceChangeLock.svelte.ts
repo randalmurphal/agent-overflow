@@ -65,6 +65,7 @@ import { GetWorkspaceActivity, type WorkspaceActivity } from './bindings';
 // suite's own `vi.mock` calls register.
 import { onItemUpsert } from './eventsItemStream';
 import { wailsEventOn } from './wailsEvents';
+import { hasScope } from '../transport/scopes';
 import { getActiveTurn } from './threadStatuses.svelte';
 import { createEntityStore } from './entityStore.svelte';
 import { isMethodUnavailableError } from './transportStatus.svelte';
@@ -82,12 +83,14 @@ const REFRESH_MAX_WAIT_MS = 400;
 const TURN_REASON = 'Workspace changes are unavailable while the agent is responding.';
 const TASKS_REASON = 'Workspace changes are unavailable while background tasks are running.';
 const CHECKING_REASON = 'Checking workspace availability...';
-// GetWorkspaceActivity is loopback-only, so a remote session can never
-// verify a workspace and never will — the refusal is a permanent property
-// of the session, not a failure to report. Unverified stays LOCKED; only
-// the reason changes, because "method not registered" reads as a broken
-// app rather than as the remote posture every other local-only affordance
-// already states (workflows UI-SPEC §10).
+// A backend that does not register GetWorkspaceActivity at all cannot
+// verify a workspace, and never will on this connection — the refusal is a
+// standing property rather than a failure to report. Unverified stays
+// LOCKED; only the reason changes, because "method not registered" reads
+// as a broken app rather than as a posture (workflows UI-SPEC §10). This is
+// no longer the ordinary remote answer: the per-method origin partition is
+// gone, so a session that simply lacks `git:operate` is answered by the
+// scope check in the refresh below and never reaches this sentence.
 const LOCAL_ONLY_REASON = 'Workspace changes are only available on the local machine.';
 
 function activityError(err: unknown): unknown {
@@ -113,6 +116,13 @@ const store = createEntityStore<WorkspaceActivity, void>({
       delayMs: REFRESH_DELAY_MS,
       maxWaitMs: REFRESH_MAX_WAIT_MS,
       run: async (token) => {
+        // GetWorkspaceActivity rides `git:operate`, and everything this
+        // lock gates — removing a checkout, moving a thread's workspace —
+        // rides it too. A session without that grant is not being offered
+        // any of those controls, so asking would be one refusal per
+        // workspace and one fail() painting a lock reason on a surface
+        // that has nothing to unlock.
+        if (!hasScope('git:operate')) return;
         try {
           const activity = (await GetWorkspaceActivity(key)) as WorkspaceActivity;
           if (token.isCurrent()) apply(activity);

@@ -56,6 +56,7 @@ import {
   type EditSelection,
 } from './reviewPaneLoad';
 import { persistScope, readPersistedScope } from './reviewPaneScope';
+import { hasScope } from '../transport/scopes';
 import { getSettings } from './settings.svelte';
 import { getActiveTurn } from './threadStatuses.svelte';
 import type { BranchCommit } from '../types/git';
@@ -602,6 +603,13 @@ function createReviewPaneState(
    */
   function holdPR(ref: PRRef): PRAttachment | null {
     if (disposed) return null;
+    // Every RPC behind this entity rides `git:operate` — the subscribe, the
+    // detail read, the review threads, the CI jobs. A pane restored into a
+    // saved layout mounts on boot, so a session without that grant would
+    // spend one refusal per pane before anybody touched anything. The
+    // no-attachment answer already exists for the disposed case, and the
+    // pane renders its empty state from it.
+    if (!hasScope('git:operate')) return null;
     const key = prKey(ref);
     if (prAttachment?.key === key) return prAttachment;
     releasePR();

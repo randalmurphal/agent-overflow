@@ -16,6 +16,7 @@ import {
   type SyncThreadWindowResult,
 } from './bindings';
 import { addToast } from './toast.svelte';
+import { hasScope } from '../transport/scopes';
 import { errString } from '../utils/errors';
 import {
   createRefreshScheduler,
@@ -1189,7 +1190,15 @@ export function createThreadSwitchLoad(
     liveStateHydrationToken: number,
   ): Promise<{ liveStateHydrationConsumed: boolean }> {
     let liveStateHydrationConsumed = false;
+    // Focus bookkeeping, not a read: SwitchThread stamps the thread read
+    // and AutoResumeThread is a retained no-op, and both ride
+    // `threads:operate`. A session without that grant opens threads all
+    // day, so issuing them anyway would put a refusal — and, for the
+    // first, a toast — on every open. The row the pane already holds
+    // from the thread list is what SwitchThread would have returned.
+    const mayOperate = hasScope('threads:operate');
     const switchPromise = (async () => {
+      if (!mayOperate) return;
       try {
         const switched = (await SwitchThread(newThread.id)) as
           | Thread
@@ -1211,6 +1220,7 @@ export function createThreadSwitchLoad(
     })();
 
     const autoResumePromise = (async () => {
+      if (!mayOperate) return;
       try {
         await AutoResumeThread(newThread.id);
       } catch (err) {

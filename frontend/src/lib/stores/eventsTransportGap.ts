@@ -28,6 +28,7 @@ import { resyncWorktreeSetups } from './eventsWorktreeSetup';
 import { markImportConnectionLost } from './sessionImport.svelte';
 import { releaseThreadTitleGenerationPending } from './threadTitleGeneration.svelte';
 import { getThreads } from './threads.svelte';
+import { hasScope } from '../transport/scopes';
 import { resyncGitStatusAfterGap } from './gitStatusStore.svelte';
 import { resyncPRReviewAfterGap } from './prReviewStore.svelte';
 import { resyncMcpServersAfterGap } from './mcpServers.svelte';
@@ -180,6 +181,11 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // local state and must merge forward, not revert. Dedupe by
       // threadId so two panes mounting the same thread don't issue
       // two RPCs for the same refresh.
+      // GetQueueState rides `threads:operate`, and so does everything that
+      // puts a row in that queue. A session without it has no queue to
+      // repair, and a gap on a busy backend would otherwise fan one
+      // refusal out per open pane.
+      if (!hasScope('threads:operate')) return;
       const seen = new Set<string>();
       for (const pane of ingestPanes()) {
         if (!pane.threadId || seen.has(pane.threadId)) continue;

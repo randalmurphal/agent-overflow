@@ -21,6 +21,7 @@
   import { getFocusedThreadPaneId, openThreadInPane } from '../../stores/panes.svelte';
   import { expandProject } from '../../stores/sidebar.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { hasScope } from '../../transport/scopes';
   import { autoPinNewThread } from '../../stores/threadAutoPin';
   import { getActiveTurn, getThreadStatus, projectThreadViewed } from '../../stores/threadStatuses.svelte';
   import { hydrateWorktreeSetupForThread } from '../../stores/eventsWorktreeSetup';
@@ -193,6 +194,12 @@
   }
 
   function schedulePersistThreadRead(threadId: string): void {
+    // MarkThreadRead rides `threads:operate` — the read stamp is a write
+    // on the thread row. Reading a thread is the most ordinary thing a
+    // view-only device does, so a session without that grant would issue
+    // one refused RPC per thread open and per settling turn. The local
+    // read state below still updates; only the durable stamp is skipped.
+    if (!hasScope('threads:operate')) return;
     const elapsed = Date.now() - lastReadPersistStartedAt;
     const canPersistNow =
       !readPersistInFlight

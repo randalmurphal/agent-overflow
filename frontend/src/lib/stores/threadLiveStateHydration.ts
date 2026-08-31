@@ -5,6 +5,7 @@ import type {
 } from '../types/events';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
 import { GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
+import { hasScope } from '../transport/scopes';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import {
   finishThreadLiveStateHydration,
@@ -200,14 +201,29 @@ export function createThreadLiveStateHydration(
 
     let snapshot: ThreadLiveState | null = null;
     let fallbackInteractive: PendingInteractiveRequests | null = null;
-    try {
-      snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
-    } catch (err) {
-      if (currentTarget()) {
-        console.error('Failed to hydrate thread live state:', err);
+    // Opening a thread is a READ, so neither leg may be issued
+    // speculatively. This runs on every thread switch, so a session that
+    // holds neither grant would spend two refusals per open on state it
+    // was never going to be shown. The snapshot rides `threads:operate`
+    // and the fallback rides `approvals:respond`
+    // (internal/transport/methods_gen.go), so each is asked for on its
+    // own — a session may hold one and not the other.
+    //
+    // Only the SNAPSHOT is lost. The channels that keep an open thread
+    // current are threads:read and reach a view-only session normally,
+    // so a thread opened mid-turn still fills in as the turn streams.
+    if (hasScope('threads:operate')) {
+      try {
+        snapshot = (await GetThreadLiveState(threadID)) as ThreadLiveState;
+      } catch (err) {
+        if (currentTarget()) {
+          console.error('Failed to hydrate thread live state:', err);
+        }
       }
-      // Degraded leg: pending approvals/questions block the user, so
-      // they get their own fetch even when the full snapshot failed.
+    }
+    // Degraded leg: pending approvals/questions block the user, so they
+    // get their own fetch when the full snapshot did not land.
+    if (snapshot === null && hasScope('approvals:respond')) {
       try {
         fallbackInteractive = (await ListPendingInteractiveRequests(
           threadID,
