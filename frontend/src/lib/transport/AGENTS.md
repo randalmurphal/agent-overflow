@@ -206,7 +206,12 @@ remote browser alike. Protocol and authz rules:
   `deviceSession.ts`: a PAIRED page also presents its stored session
   credential on the manifest fetch (renewing once on a refusal), because
   its ticket is spent and its cookie dies with the backend launch — after
-  a restart that credential is the only thing that still names the page. Whether the page is loopback decides
+  a restart that credential is the only thing that still names the page.
+  Assembling those headers is ASYNCHRONOUS, because a signing device
+  mints a proof there, so the fetch awaits
+  `pairedSessionHeaders('GET', '/bootstrap.json')` and passes the route
+  it is about to call — a proof names its target and one that named
+  something else would prove nothing about where it was presented. Whether the page is loopback decides
   whether a refused credential is terminal, and (with the manifest's
   `remote`) whether an unpaired page is asked to pair at all, so getting
   that predicate wrong is user-visible in three directions: a false
@@ -265,6 +270,43 @@ remote browser alike. Protocol and authz rules:
   and `scopes.ts` falls back to judging the page rather than blanking a
   screen on silence. A rotation that publishes none keeps what the
   redemption did, since grants are immutable for a session's lifetime.
+
+  Since phase 5 a device also PROVES the key it enrolled with, rather
+  than restating its name. Which of the two presentations a device makes
+  is fixed at enrolment and read off its own row by the backend
+  (`devices.proof_kind`, `internal/identity/deviceproof.go`), so this
+  module's job is only to send what its stored `proofKind` says. A key
+  that is gone is NOT a reason to fall back: the backend refuses the
+  bare identifier from a key-bound device, so the fallback would spend a
+  round trip to learn what the page already knows. Every such path
+  clears the session instead and lets the page ask to pair — and renewal
+  in particular must never reach the wire without its proof, since it is
+  the one exchange a retry could end the session with.
+
+- `deviceKey.ts` is that key, and the only module in the app that
+  generates one. Non-extractable ECDSA P-256 in IndexedDB, which is a
+  pair of decisions neither of which works alone: localStorage stores
+  strings, so a key kept there would have to be extractable to get
+  there, and IndexedDB stores structured clones, which a non-extractable
+  CryptoKey survives and comes back able to sign. Verified against a
+  real engine rather than assumed.
+
+  **Generation is enrolment's alone.** `enrollDeviceKey()` generates and
+  persists; `deviceKeyPair()` and `mintDeviceProof()` only ever READ, and
+  answer null when there is nothing stored. Making the read generate on a
+  miss would silently mint a second key for a device already enrolled
+  under the first, and since the session is bound to the OLD thumbprint
+  every request would be refused anyway — one round trip later, under a
+  reason describing a different problem.
+
+  A page with no secure context has no `crypto.subtle` at all and can
+  hold no key, which is spec §15 constraint 6 as a runtime test rather
+  than a gap to close: a plain-HTTP LAN browser enrols with a bare
+  identifier and keeps working exactly as it did. `deviceSession.test.ts`
+  runs under happy-dom's missing IndexedDB and is therefore that class's
+  regression suite; `deviceKey.test.ts` and `deviceSessionKeyed.test.ts`
+  bring `fake-indexeddb` and cover the signing one. Both must keep
+  passing — the phase added a presentation, it did not replace one.
 
 The connection's opening frame is the OTHER identity source, alongside
 the manifest. `wsClient` records it as `TransportHello` and

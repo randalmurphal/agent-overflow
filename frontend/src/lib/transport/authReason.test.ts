@@ -50,9 +50,21 @@ describe('presentAuthReason', () => {
     expect(shown.retryable).toBe(true);
   });
 
+  // The third: a proof is spent on first use and minted fresh per request,
+  // so a replayed one is the single refusal the NEXT attempt resolves by
+  // itself. The credential behind it is fine — nothing about it needs to
+  // change — which is exactly what separates this from the list below.
+  it('lets a spent proof be retried, since the next one is freshly minted', () => {
+    expect(presentAuthReason('proof_replayed').retryable).toBe(true);
+  });
+
   // Every remaining refusal is resolved by presenting a DIFFERENT credential,
   // so offering a retry would offer a button that cannot work.
-  const RETRYABLE_REFUSALS = new Set(['outside_time_window', 'pending_confirmation']);
+  const RETRYABLE_REFUSALS = new Set([
+    'outside_time_window',
+    'pending_confirmation',
+    'proof_replayed',
+  ]);
 
   it('marks the credential refusals as not retryable', () => {
     for (const code of AUTH_REASON_CODES) {

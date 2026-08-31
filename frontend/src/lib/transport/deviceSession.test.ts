@@ -1,3 +1,11 @@
+// This file runs under happy-dom, which provides no IndexedDB, so every
+// case here takes the KEYLESS path — which is not an accident of the
+// environment but the exact shape of spec §15 constraint 6: a plain-HTTP
+// LAN browser has no secure context, cannot hold a signing key, and
+// enrolls with a bare identifier instead. Keeping these assertions
+// unchanged through phase 5 is the regression test that the class still
+// works. The signing device is deviceSessionKeyed.test.ts, which brings
+// its own IndexedDB.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PairingRefusedError,
@@ -195,6 +203,13 @@ describe('mintDialTicket', () => {
     );
     const a = mintDialTicket(fetcher as unknown as typeof fetch);
     const b = mintDialTicket(fetcher as unknown as typeof fetch);
+    // Waited for rather than assumed: assembling the headers is async (a
+    // signing device mints a proof there), so the fetcher is called a
+    // microtask after the mint starts and resolving before that would
+    // resolve nothing. vi.waitFor FAILS at its deadline rather than
+    // returning, so a mint that never reaches the network is a failure
+    // naming this line instead of a timeout naming the whole case.
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
     resolveTicket(new Response(JSON.stringify({ ticket: 'tik-3' }), { status: 200 }));
     expect(await a).toBe('tik-3');
     expect(await b).toBe('tik-3');

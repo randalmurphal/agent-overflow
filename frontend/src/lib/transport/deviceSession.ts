@@ -12,18 +12,34 @@
 // backend (the port is stable per install):
 //
 //   - localStorage `agent-overflow:deviceSession` — the credential pair.
-//   - localStorage `agent-overflow:deviceKey` — the device identifier
-//     minted before redemption (below).
+//   - localStorage `agent-overflow:deviceKey` — the bearer device
+//     identifier, for a page that cannot hold a real key (below).
+//   - IndexedDB `agent-overflow-device-key` — the non-extractable signing
+//     keypair, when this page can hold one (./deviceKey.ts).
 //
-// On the device identifier: the spec's end state is a WebCrypto keypair
-// with a per-request possession proof (phase 5, DPoP). That needs a
-// secure context, and a LAN page served over plain http is not one —
-// `crypto.subtle` does not exist there. Today's wire carries only the
-// key THUMBPRINT string in either case (transport.DeviceKeyHeader swaps
-// to a signature when phase 5 lands with TLS), so until then the
-// identifier is 32 CSPRNG bytes minted once per origin and presented as
-// the thumbprint. Same bytes on the wire, no property lost, and the
-// phase-5 upgrade is a re-enrollment this module already has a slot for.
+// Two kinds of device, and which one this page is depends on what it CAN
+// do rather than on what it prefers (docs/specs/remote-access.md §4 and
+// §15 constraint 6):
+//
+//   - A secure context has `crypto.subtle`, so pairing generates a
+//     non-extractable ECDSA P-256 keypair and every credential request
+//     carries a fresh signature over that request. The backend records the
+//     device `key` and refuses the bare thumbprint from it afterwards, so
+//     a copied credential string admits nothing.
+//   - A plain-http LAN page has no `crypto.subtle` at all. It enrolls with
+//     32 CSPRNG bytes minted once per origin and presents that string,
+//     which is what it did before phase 5 and what it will keep doing:
+//     the spec states there is deliberately no LAN-HTTP proof path.
+//
+// Migration. A session stored before phase 5 records no `proofKind`, which
+// reads as `bearer` — matching its device row, which the v77 migration
+// defaulted the same way — so an already-paired browser keeps working
+// untouched and is never asked to re-pair. It upgrades only by pairing
+// again, which is the one moment a device may choose its kind. The
+// opposite case, a `key` session whose IndexedDB was cleared while
+// localStorage survived, cannot sign and cannot fall back (the backend
+// refuses the downgrade); it clears the stored session so the page asks to
+// pair rather than retrying something that can never succeed.
 //
 // Refresh discipline (internal/identity/refresh.go): a refresh secret is
 // single-use, and presenting a spent one reads as reuse evidence that
@@ -32,6 +48,8 @@
 // whose response it did not read — a lost response means the old secret
 // is already spent, the next presentation would end the session, and the
 // honest recovery is to let that happen and pair again.
+
+import { enrollDeviceKey, mintDeviceProof } from './deviceKey';
 
 // Mirrors internal/transport/authroutes.go. Names, not policy: the
 // backend decides what they mean.
@@ -82,6 +100,18 @@ interface StoredSession {
    * fallbacks in ./scopes.ts.
    */
   scopes?: string[];
+  /**
+   * How this session's device proves possession, as its enrolment
+   * decided. Absent means `bearer`: a session stored before phase 5,
+   * whose device row the v77 migration defaulted the same way. That
+   * agreement is the whole migration — neither side has to be told.
+   *
+   * It is read to decide what this page must SEND, never to decide what
+   * it may do. The backend re-checks against the device row on every
+   * request, so a hand-edited value changes only whether this page's
+   * requests are refused.
+   */
+  proofKind?: 'key' | 'bearer';
 }
 
 export class PairingRefusedError extends Error {
@@ -201,20 +231,54 @@ export function hasPairedSession(): boolean {
 }
 
 /**
- * The headers a same-origin request presents to name the paired
- * session: the credential plus the device identifier its enrollment
- * bound. Empty when this browser holds no paired session, so callers
- * can spread it unconditionally. The manifest fetch is the consumer —
- * after a backend restart the page cookie is dead and this credential
- * is the one thing that still admits the page.
+ * The device-key header for ONE request, or null when this device holds a
+ * key-bound session it can no longer sign for.
+ *
+ * The proof is minted per request because it is bound to the method and
+ * path and is spent on first use: caching one would be refused as
+ * `proof_replayed`, and reusing one across routes as `proof_not_bound`.
+ *
+ * The null answer is the missing-key case and is deliberately not a
+ * fallback to the bearer string. The backend refuses that presentation
+ * from a key-bound device (`proof_downgraded`) exactly so it cannot be
+ * used as one, and sending it anyway would spend a round trip to be told
+ * what this page already knows. Callers clear the session instead.
  */
-export function pairedSessionHeaders(): Record<string, string> {
+async function deviceKeyHeader(
+  held: StoredSession,
+  method: string,
+  path: string,
+): Promise<Record<string, string> | null> {
+  if (held.proofKind !== 'key') return { [DEVICE_KEY_HEADER]: deviceKeyThumbprint() };
+  const proof = await mintDeviceProof(method, path);
+  return proof === null ? null : { [DEVICE_KEY_HEADER]: proof };
+}
+
+/**
+ * The headers a same-origin request presents to name the paired
+ * session: the credential plus a proof of the key its enrollment bound.
+ * Empty when this browser holds no paired session, so callers can spread
+ * it unconditionally. The manifest fetch is the consumer — after a backend
+ * restart the page cookie is dead and this credential is the one thing
+ * that still admits the page.
+ *
+ * Asynchronous because minting a proof is: signing is a WebCrypto call.
+ * A device whose key is gone clears its session here and answers empty,
+ * so the fetch proceeds unpaired rather than carrying a credential the
+ * backend is certain to refuse.
+ */
+export async function pairedSessionHeaders(
+  method = 'GET',
+  path = '/bootstrap.json',
+): Promise<Record<string, string>> {
   const held = readStoredSession();
   if (!held) return {};
-  return {
-    [SESSION_CREDENTIAL_HEADER]: held.credential,
-    [DEVICE_KEY_HEADER]: deviceKeyThumbprint(),
-  };
+  const keyHeader = await deviceKeyHeader(held, method, path);
+  if (!keyHeader) {
+    clearPairedSession();
+    return {};
+  }
+  return { [SESSION_CREDENTIAL_HEADER]: held.credential, ...keyHeader };
 }
 
 /**
@@ -302,13 +366,29 @@ export async function redeemPairing(
   label: string,
   fetcher: typeof fetch = fetch,
 ): Promise<RedemptionOutcome> {
-  const thumbprint = deviceKeyThumbprint();
+  // The one moment a device chooses its kind, and it chooses by what it
+  // can do. A page that can sign generates its keypair here and proves it
+  // in the redemption itself, so the thumbprint the backend records is
+  // derived from a key this page just demonstrated it holds — there is no
+  // separate "register the key" step that could be skipped.
+  // enrollDeviceKey is the ONLY generation site in the app: everywhere
+  // else reads the stored key and answers null when there is none, so a
+  // key that went missing can never be silently replaced under a session
+  // still bound to the old one. It persists before returning, which is
+  // what lets the mint below read it back.
+  const proof = (await enrollDeviceKey()) ? await mintDeviceProof('POST', AUTH_PAIR_PATH) : null;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (proof !== null) headers[DEVICE_KEY_HEADER] = proof;
   const res = await fetcher(AUTH_PAIR_PATH, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({
       token: payload.token,
-      keyThumbprint: thumbprint,
+      // Sent only on the bearer path. A signed redemption names its key
+      // inside the proof, and the backend ignores this field entirely
+      // when one is present, so filling it would be a second and weaker
+      // claim about the same fact.
+      keyThumbprint: proof === null ? deviceKeyThumbprint() : '',
       label,
       platform: navigator.platform || '',
     }),
@@ -325,11 +405,31 @@ export async function redeemPairing(
     refreshExpiresAtMs: body.refreshExpiresAtMs,
     label,
     scopes: grantedScopesFrom(body),
+    proofKind: proof === null ? 'bearer' : 'key',
   });
   return {
     verificationNumber: body.verificationNumber ?? '',
     sessionId: body.sessionId,
   };
+}
+
+/**
+ * The headers one `/auth/ticket` mint presents. Null when the device
+ * cannot sign for a key-bound session — the caller then answers "no
+ * ticket", which its own contract already covers.
+ *
+ * The session is cleared on that path for the same reason renewal does
+ * it: a key-bound session with no key never heals, and a dial that keeps
+ * retrying one would leave the page reconnecting forever instead of
+ * showing the pairing prompt.
+ */
+async function ticketHeaders(held: StoredSession): Promise<Record<string, string> | null> {
+  const keyHeader = await deviceKeyHeader(held, 'POST', AUTH_TICKET_PATH);
+  if (!keyHeader) {
+    clearPairedSession();
+    return null;
+  }
+  return { [SESSION_CREDENTIAL_HEADER]: held.credential, ...keyHeader };
 }
 
 // Single-flight guards. Two callers asking at once must observe one
@@ -353,14 +453,19 @@ function renewSession(fetcher: typeof fetch): Promise<boolean> {
   renewalInFlight = (async () => {
     const held = readStoredSession();
     if (!held?.refreshSecret) return false;
+    const keyHeader = await deviceKeyHeader(held, 'POST', AUTH_TOKEN_PATH);
+    if (!keyHeader) {
+      // A key-bound session whose key is gone. Renewal is the one exchange
+      // that could END the session by being retried, so this must not
+      // reach the wire: clear it here and let the page ask to pair.
+      clearPairedSession();
+      return false;
+    }
     let res: Response;
     try {
       res = await fetcher(AUTH_TOKEN_PATH, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          [DEVICE_KEY_HEADER]: deviceKeyThumbprint(),
-        },
+        headers: { 'Content-Type': 'application/json', ...keyHeader },
         body: JSON.stringify({ refreshSecret: held.refreshSecret }),
       });
     } catch {
@@ -385,6 +490,10 @@ function renewSession(fetcher: typeof fetch): Promise<boolean> {
       refreshSecret: body.refreshSecret,
       refreshExpiresAtMs: body.refreshExpiresAtMs,
       label: held.label,
+      // Rotation never changes how this device proves possession — the
+      // device row decides that and nothing rotates it — so the kind is
+      // carried forward rather than re-derived.
+      proofKind: held.proofKind,
       // A rotation that did not publish grants keeps the ones the
       // redemption did. Grants are immutable for a session's lifetime,
       // so the carried copy is still true, and dropping it would turn a
@@ -424,13 +533,9 @@ export function mintDialTicket(fetcher: typeof fetch = fetch): Promise<string | 
     }
     let res: Response;
     try {
-      res = await fetcher(AUTH_TICKET_PATH, {
-        method: 'POST',
-        headers: {
-          [SESSION_CREDENTIAL_HEADER]: held.credential,
-          [DEVICE_KEY_HEADER]: deviceKeyThumbprint(),
-        },
-      });
+      const headers = await ticketHeaders(held);
+      if (!headers) return null;
+      res = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
     } catch {
       return null;
     }
@@ -444,13 +549,11 @@ export function mintDialTicket(fetcher: typeof fetch = fetch): Promise<string | 
         const renewed = readStoredSession();
         if (!renewed) return null;
         try {
-          const retry = await fetcher(AUTH_TICKET_PATH, {
-            method: 'POST',
-            headers: {
-              [SESSION_CREDENTIAL_HEADER]: renewed.credential,
-              [DEVICE_KEY_HEADER]: deviceKeyThumbprint(),
-            },
-          });
+          // A FRESH proof: the one the first attempt sent is spent, and
+          // re-sending it would be refused as a replay.
+          const headers = await ticketHeaders(renewed);
+          if (!headers) return null;
+          const retry = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
           if (retry.ok) {
             const grant = (await retry.json()) as { ticket?: string };
             return grant.ticket ?? null;
@@ -480,13 +583,9 @@ export async function probeActivation(fetcher: typeof fetch = fetch): Promise<bo
   if (!held) return false;
   let res: Response;
   try {
-    res = await fetcher(AUTH_TICKET_PATH, {
-      method: 'POST',
-      headers: {
-        [SESSION_CREDENTIAL_HEADER]: held.credential,
-        [DEVICE_KEY_HEADER]: deviceKeyThumbprint(),
-      },
-    });
+    const headers = await ticketHeaders(held);
+    if (!headers) return false;
+    res = await fetcher(AUTH_TICKET_PATH, { method: 'POST', headers });
   } catch {
     return false;
   }

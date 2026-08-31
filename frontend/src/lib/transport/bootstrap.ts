@@ -184,7 +184,7 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
   // credential is the only thing that still names this page.
   let resp = await fetch(url, {
     credentials: 'same-origin',
-    headers: pairedSessionHeaders(),
+    headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
   });
   if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession()) {
     // The stored access credential may simply have aged out between
@@ -194,7 +194,9 @@ async function fetchManifest(ticket: string): Promise<Bootstrap> {
     if (await renewPairedSession()) {
       resp = await fetch(url, {
         credentials: 'same-origin',
-        headers: pairedSessionHeaders(),
+        // A fresh proof: proofs are single-use, so the one the first
+        // attempt carried is spent.
+        headers: await pairedSessionHeaders('GET', '/bootstrap.json'),
       });
     }
   }
