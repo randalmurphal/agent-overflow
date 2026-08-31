@@ -52,6 +52,7 @@
     refreshDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
+  import { ignoringAlreadyHandled } from '../../transport/alreadyHandled';
   import {
     hasStagedWorktreeIntent,
     isWorktreeIntentApplying,
@@ -783,16 +784,20 @@
     return blockPromptAttachment(event, notify);
   }
 
+  // Another screen showing this same thread may have answered the prompt
+  // first. That is not a failure to report — the question is closed, just not
+  // by this click — so it resolves quietly and the panel closes on the
+  // resolution event like any other.
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
     const threadId = pane.threadId;
     if (!threadId) return;
-    await RespondToApproval(threadId, response);
+    await ignoringAlreadyHandled(RespondToApproval(threadId, response));
   }
 
   async function resolveUserInput(response: UserInputResponse): Promise<void> {
     const threadId = pane.threadId;
     if (!threadId) return;
-    await RespondToUserInput(threadId, response);
+    await ignoringAlreadyHandled(RespondToUserInput(threadId, response));
   }
 
   function handlePromptResolved(): void {

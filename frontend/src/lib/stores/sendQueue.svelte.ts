@@ -210,11 +210,14 @@ export async function registerQueueItem(
   return queueItemFromWire(wire);
 }
 
-// Note: `GetQueueState` (stores/bindings.ts) exists for remote-client / re-attach
-// bootstrap, but no caller wires it today (events drive Zone 1 in the
-// running session). Re-add a `fetchQueueState` wrapper here when the
-// bootstrap path needs it; keeping a dead helper around invites
-// confusion about which API the composer should call.
+// Note: the queue is READ from the backend in two places, and neither is
+// here. The attach path takes it inside `GetThreadLiveState` (one round trip
+// for the whole live snapshot — turn, queue, prompts, todos), and the
+// transport-gap handler re-reads it alone through `GetQueueState`, because a
+// gap on `provider:queue_state_changed` desynced the queue and nothing else.
+// Both apply through `replaceQueueForThread` below under the same revision
+// guard. A `fetchQueueState` wrapper here would be a third API for a job two
+// callers already do correctly.
 
 // ---- Event-handler surface (called from events.ts) -------------------
 

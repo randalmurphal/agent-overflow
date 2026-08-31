@@ -16,6 +16,11 @@ import {
 import type { ComposerDraftStore } from './composerDraft.svelte';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import {
+  getQueueForThread,
+  resetForTest as resetSendQueueForTest,
+} from './sendQueue.svelte';
+import { applyQueueStateChanged } from './eventsQueue';
+import {
   __resetThreadHistoryStampsForTest,
   getThreadHistoryStamp,
   recordAttestedStamp,
@@ -209,6 +214,103 @@ describe('transport gap — workflow channels', () => {
 
     expect(getBindingMock('WorkflowGetEngineState')?.mock.calls.length).toBeGreaterThan(1);
     expect(getBindingMock('WorkflowListDefinitions')?.mock.calls.length).toBe(definitions + 1);
+  });
+});
+
+// The send-queue family, which splits three ways: one channel whose whole
+// state is one RPC away, one that took the timeline with it, and two that
+// carry delivery badges nothing can re-derive.
+describe('transport gap — the send-queue channels', () => {
+  beforeEach(() => {
+    resetPanesForTest();
+    resetSendQueueForTest();
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListProjects', async () => []);
+  });
+
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  }
+
+  it('queue_state_changed re-reads the queue and nothing else', async () => {
+    setBindingMock('GetQueueState', async () => [
+      { threadId: 'thread-a', id: 'q1', message: 'queued while offline', enqueuedAt: 1 },
+    ]);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
+    const refresh = vi.spyOn(pane, 'refreshFromBackend');
+
+    applyTransportGap({ channel: 'provider:queue_state_changed', seq: 3 });
+    await settle();
+
+    expect(getQueueForThread('thread-a').map((item) => item.message))
+      .toEqual(['queued while offline']);
+    // A page of timeline items is not the way to repair a handful of queue
+    // rows; the targeted read exists precisely to avoid it.
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  // The queue is per thread, not per pane — unlike the item windows two panes
+  // on one thread can hold different slices of.
+  it('reads once for two panes on the same thread', async () => {
+    setBindingMock('GetQueueState', async () => []);
+    await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
+    await buildPane(makeThread({ id: 'thread-a' }), [], 'second');
+
+    applyTransportGap({ channel: 'provider:queue_state_changed', seq: 3 });
+    await settle();
+
+    expect(getBindingMock('GetQueueState')?.mock.calls.length).toBe(1);
+  });
+
+  // A live frame that lands while the snapshot is in flight is newer than the
+  // state we asked for, so it wins.
+  it('discards a snapshot a live frame overtook', async () => {
+    const inFlight: { release: () => void } = { release: () => {} };
+    setBindingMock('GetQueueState', async () => {
+      await new Promise<void>((resolve) => { inFlight.release = resolve; });
+      return [{ threadId: 'thread-a', id: 'stale', message: 'from before', enqueuedAt: 1 }];
+    });
+    await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
+
+    applyTransportGap({ channel: 'provider:queue_state_changed', seq: 3 });
+    await settle();
+    applyQueueStateChanged({
+      threadId: 'thread-a',
+      items: [{ threadId: 'thread-a', id: 'live', message: 'from after', enqueuedAt: 2 }],
+    });
+    inFlight.release();
+    await settle();
+
+    expect(getQueueForThread('thread-a').map((item) => item.message)).toEqual(['from after']);
+  });
+
+  // A restore deletes timeline rows and hands their text back to the composer,
+  // so the queue is not the only casualty of a missed frame.
+  it('queue_restored refreshes the pane rather than just the queue', async () => {
+    setBindingMock('GetQueueState', async () => []);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
+    const refresh = vi.spyOn(pane, 'refreshFromBackend');
+
+    applyTransportGap({ channel: 'provider:queue_restored', seq: 3 });
+    await settle();
+
+    expect(refresh).toHaveBeenCalled();
+    expect(getBindingMock('GetQueueState')).not.toHaveBeenCalled();
+  });
+
+  // Delivery badges are transient state no RPC returns. Refetching a pane's
+  // window would not repair them, so the honest answer is to do nothing.
+  it('the delivery channels recover nothing, and cost nothing', async () => {
+    setBindingMock('GetQueueState', async () => []);
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
+    const refresh = vi.spyOn(pane, 'refreshFromBackend');
+
+    applyTransportGap({ channel: 'provider:queue_flushed', seq: 3 });
+    applyTransportGap({ channel: 'provider:command_lifecycle', seq: 4 });
+    await settle();
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(getBindingMock('GetQueueState')).not.toHaveBeenCalled();
   });
 });
 

@@ -114,6 +114,17 @@ become a 404, or a client that is merely early gets told its credential is dead.
 See `frontend/src/lib/transport/bootstrap.ts` (`BootstrapRejectedError`) and
 `wsClient.ts` (`enterCredentialDead`).
 
+**A method error's TEXT does not survive the wire for a non-loopback
+caller** — it is replaced with `method failed (id: <cid>)` and the prose
+goes to the server log. So a client-side check that reads an error
+MESSAGE to classify a failure works on the desktop and silently does
+nothing over the network. Anything a client must branch on gets a stable
+CODE instead (`frame.go`), and the method wraps the matching sentinel:
+`ErrTemporarilyUnavailable` for "retrying may work",
+`ErrAlreadyHandled` for "another client already decided this". When you
+add one, wrap rather than replace, so callers testing for the concrete
+cause keep working.
+
 ## Origin allow-list and peer locality
 
 **`OriginAllowed` (credential.go) gates `/ws`, `/bootstrap.json` and

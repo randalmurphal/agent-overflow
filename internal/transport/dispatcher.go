@@ -454,8 +454,11 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				message = methodErr.Error()
 			}
 			code := ErrCodeMethodError
-			if errors.Is(methodErr, ErrTemporarilyUnavailable) {
+			switch {
+			case errors.Is(methodErr, ErrTemporarilyUnavailable):
 				code = ErrCodeTemporarilyUnavailable
+			case errors.Is(methodErr, ErrAlreadyHandled):
+				code = ErrCodeAlreadyHandled
 			}
 			return nil, &FrameError{
 				Code:    code,

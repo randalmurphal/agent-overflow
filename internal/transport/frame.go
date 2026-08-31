@@ -104,6 +104,10 @@ type FrameError struct {
 //     error is logged server-side under a correlation id.
 //   - temporarily_unavailable: the method could not complete before its
 //     bounded deadline. Retrying is safe and may succeed.
+//   - already_handled: the thing this call would have decided was already
+//     decided, by another client or by this one. Not a failure — the
+//     caller's intent is satisfied, just not by this call. Retrying can
+//     never succeed.
 //   - internal:         dispatcher panicked or hit an internal failure.
 //     Wire message is generic; full panic + stack is
 //     logged server-side under a correlation id.
@@ -113,6 +117,7 @@ const (
 	ErrCodeBadParams              = "bad_params"
 	ErrCodeMethodError            = "method_error"
 	ErrCodeTemporarilyUnavailable = "temporarily_unavailable"
+	ErrCodeAlreadyHandled         = "already_handled"
 	ErrCodeInternal               = "internal"
 	ErrCodeShuttingDown           = "shutting_down"
 )
@@ -122,6 +127,20 @@ const (
 // the dispatcher preserves the usual loopback/LAN message-redaction policy
 // while exposing the stable code clients need to offer a truthful retry.
 var ErrTemporarilyUnavailable = errors.New("temporarily unavailable")
+
+// ErrAlreadyHandled marks a decision another caller already made. It exists
+// because one backend now serves several screens, and two of them can hold
+// the same open question — an approval prompt, a queued message — and answer
+// it within the same second. The backend is the single writer and one answer
+// wins; the loser's call did not fail, it arrived second.
+//
+// The distinction is worth a code because the two outcomes want opposite
+// treatment. A method_error is a problem to report and possibly retry; an
+// already_handled is the state the caller wanted, reached without them, and
+// the honest UI response is to drop the prompt quietly rather than to raise
+// an error about a question that is no longer open. Retrying can never
+// succeed, so a client must not offer it.
+var ErrAlreadyHandled = errors.New("already handled")
 
 // batchEventEntry is one event inside a batch frame. It carries the
 // subset of Event fields the client needs to dispatch: channel, seq,

@@ -13,7 +13,12 @@
 // current truth rather than a replay of what was lost.
 import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
-import { GetThread } from './bindings';
+import { GetQueueState, GetThread } from './bindings';
+import {
+  getQueueRevisionForThread,
+  queueItemFromWire,
+  replaceQueueForThread,
+} from './sendQueue.svelte';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
@@ -233,6 +238,66 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
       // anyway — a deletion takes its threads with it). Blanket rather than
       // per-row because the gap carries no entity key.
       refreshSidebarProjections();
+      return;
+    }
+    case 'provider:queue_state_changed': {
+      // Every frame on this channel carries the WHOLE queue for a thread, so
+      // recovery is one re-read of the same snapshot the frames carry —
+      // GetQueueState is that read, and it is the only thing this channel
+      // could have desynced. The blanket default would have worked by
+      // refetching each pane's timeline window too, which is a page of items
+      // to repair a handful of queue rows.
+      //
+      // Deduped by thread (two panes on one thread share the queue, unlike
+      // their item windows) and revision-guarded exactly like the cold-open
+      // hydration: a live frame landing while the snapshot is in flight wins,
+      // because it is newer than the state we asked for.
+      const seen = new Set<string>();
+      for (const pane of ingestPanes()) {
+        const threadId = pane.threadId;
+        if (!threadId || seen.has(threadId)) continue;
+        seen.add(threadId);
+        const revisionAtRequest = getQueueRevisionForThread(threadId);
+        void GetQueueState(threadId).then((items) => {
+          if (getQueueRevisionForThread(threadId) !== revisionAtRequest) return;
+          replaceQueueForThread(threadId, (items ?? []).map(queueItemFromWire));
+        }).catch((err: unknown) => {
+          console.warn(`events: refresh queue for ${threadId} after transport gap: ${err}`);
+        });
+      }
+      return;
+    }
+    case 'provider:queue_restored': {
+      // Not queue-only, so not the targeted read above. A restore deletes
+      // timeline rows and puts their content back in the composer draft, and
+      // a missed frame leaves both wrong: rows on screen that SQLite no
+      // longer has, and a draft short the text the backend handed back. Both
+      // are what a full pane refresh re-reads, so this falls through to the
+      // blanket recovery below rather than pretending the queue was the only
+      // casualty.
+      dropStampsAfterGap();
+      for (const pane of ingestPanes()) {
+        if (!pane.threadId) continue;
+        void pane.refreshFromBackend();
+      }
+      return;
+    }
+    case 'provider:queue_flushed':
+    case 'provider:command_lifecycle': {
+      // These two cannot be recovered, and nothing pretends otherwise.
+      // They carry the DELIVERY story of a message already on its way —
+      // which queued item became which timeline row, and whether the
+      // provider acknowledged writing it — and no RPC returns that. It is
+      // not persisted anywhere: it is the transient badge state Zone 2
+      // renders while a message is in flight.
+      //
+      // The cost of a lost frame is bounded and cosmetic: a flushed item
+      // keeps its previous badge until the turn moves on, at which point
+      // the real timeline row supersedes it. command_lifecycle is already
+      // optional in exactly this way — it is Claude-only and depends on the
+      // CLI version, so a session that never emits it leaves Zone 2 as it
+      // was. Falling through to the default would refetch every pane's
+      // window to repair a badge, and still not repair it.
       return;
     }
     case 'draft:updated': {
