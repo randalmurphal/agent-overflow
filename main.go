@@ -342,6 +342,22 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// token's lifetime is a provider session's lifetime; the transport
 		// only asks what a presented token is allowed to do.
 		ScopedTokens: appService,
+		// The session core's three seams, all late-bound for the reason
+		// BackendIdentity is: identity boots during ServiceStartup, after
+		// this config is built. The transport never learns what a session
+		// row is — it asks these three questions and nothing else.
+		SessionForRequest: func(r *http.Request) (string, bool) {
+			return appservice.SessionForRequest(appService.App, r)
+		},
+		SessionLive: func(sessionID string) bool {
+			return appservice.SessionLive(appService.App, sessionID)
+		},
+		PageSessionCredential: func() string {
+			return appservice.PageSessionCredential(appService.App)
+		},
+		// Pairing redemption and credential rotation. The App adapts the
+		// session core onto the transport's dumb DTOs.
+		AuthEndpoints: appService,
 		// Diagnostic cross-origin isolation so the renderer exposes
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources such as chat-markdown images.
@@ -391,6 +407,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		fatalf("transport: construct server: %v", err)
 	}
 	appService.SetTransportServer(srv)
+	// Revocation is only real if it reaches live connections: hand the
+	// session core the registry of open sockets, so revoking a session
+	// force-closes the ones carrying it. Before Start, so no connection
+	// can be accepted into a registry the core cannot reach.
+	appservice.AttachSessionConns(appService.App, srv.SessionConns())
 	logBootPhase("transport.construct", phaseStarted)
 
 	phaseStarted = time.Now()

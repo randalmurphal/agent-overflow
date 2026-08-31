@@ -210,6 +210,12 @@ type App struct {
 	// empty identity there is a correct "not yet known" rather than a
 	// race. See docs/specs/thread-replica-sync.md §3.3.
 	storeIdentity atomic.Pointer[store.Identity]
+	// identity is the session core plus the local page channel's current
+	// credential (app_identity.go). atomic.Pointer for the reason
+	// storeIdentity is one: the transport's hooks can be serving before
+	// initIdentity has run, and nil there means "identity is not wired",
+	// which every accessor answers honestly rather than panicking.
+	identity identitySlot
 	// updater owns the complete in-app update state machine. This shell retains
 	// only the stable App-bound wire adapters in app_updater.go.
 	updater *appupdate.Service

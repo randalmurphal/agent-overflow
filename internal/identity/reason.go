@@ -79,14 +79,14 @@ const (
 // A code is stable forever once shipped: an older client bundle may still
 // be mapping it to a hint.
 var reasonCodes = [...]string{
-	ReasonNone:              "",
-	ReasonMissingProof:      "missing_proof",
-	ReasonMalformedProof:    "malformed_proof",
-	ReasonKeyMismatch:       "key_mismatch",
-	ReasonInvalidSignature:  "invalid_signature",
-	ReasonOutsideTimeWindow: "outside_time_window",
-	ReasonUnknownSession:    "unknown_session",
-	ReasonRevokedSession:    "revoked_session",
+	ReasonNone:                "",
+	ReasonMissingProof:        "missing_proof",
+	ReasonMalformedProof:      "malformed_proof",
+	ReasonKeyMismatch:         "key_mismatch",
+	ReasonInvalidSignature:    "invalid_signature",
+	ReasonOutsideTimeWindow:   "outside_time_window",
+	ReasonUnknownSession:      "unknown_session",
+	ReasonRevokedSession:      "revoked_session",
 	ReasonExpiredSession:      "expired_session",
 	ReasonPendingConfirmation: "pending_confirmation",
 	ReasonUnknownCredential:   "unknown_credential",

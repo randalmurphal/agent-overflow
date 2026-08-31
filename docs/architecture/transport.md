@@ -189,6 +189,13 @@ Minted tickets are held oldest-first and bounded at `maxOutstandingTickets`
 per render; evicting the oldest keeps the newest URL — the one a user just
 copied — always valid.
 
+There is **one ticket mechanism** (`ticket.go`), shared by the page ticket and
+the WebSocket ticket below. Mint a CSPRNG token over an already-authenticated
+channel, let the first presentation spend it. The two users differ in exactly
+two parameters — the page ticket has no subject and no deadline, the WS ticket
+names a session and lives 30 seconds — and a third single-use token is a third
+set of parameters, never a third implementation.
+
 The exchange is single-use by construction: the second `/bootstrap.json`
 presenting the same ticket finds nothing to consume, and with no cookie either
 it gets the standard 404. A bookmarked `?t=` URL from a previous launch behaves
@@ -399,16 +406,60 @@ judges itself on. `wsClient` resets its backoff only after a connection survived
 reconnecting fast, while an accept-then-close backend backs off instead of
 storming.
 
+## The device-facing credential routes
+
+Three POSTs (`authroutes.go`) are the only routes a client reaches without the
+launch credential, because they are how a client that has never met this backend
+gets one: `/auth/pair` redeems a pairing link, `/auth/token` rotates a credential
+pair, `/auth/ticket` mints the single-use ticket the `/ws` upgrade spends.
+
+```
+device                                   backend
+  │  POST /auth/pair {token, keyThumbprint}   │
+  │──────────────────────────────────────────▶│  spends the link, enrolls the key,
+  │                                           │  mints a session with activated_at unset
+  │◀── {credential, refreshSecret,            │
+  │     awaitingConfirmation, verification} ──│
+  │                                           │
+  │  (owner matches the six digits on the     │
+  │   minting surface → ConfirmPairing)       │
+  │                                           │
+  │  POST /auth/ticket   (session credential) │
+  │──────────────────────────────────────────▶│
+  │◀── {ticket, expiresAtMs} ─────────────────│
+  │  GET /ws?ticket=…                         │
+  │──────────────────────────────────────────▶│  spend, re-check liveness, upgrade
+```
+
+The transport owns the wire and nothing else: `AuthEndpoints` is a two-method
+interface it declares and the App satisfies over `internal/identity`, and the
+DTOs are dumb. A refusal is `401` with `{"reason": "<code>"}` — the typed code
+from `internal/identity`'s closed set, which the client's presentation module
+turns into a sentence. The device key rides `X-AO-Device-Key` and is never read
+from the body: a proof a caller may write into the document it is proving
+something about is not a proof.
+
+A session credential itself reaches a request two ways and is read one way
+(`SessionCredential`): the `X-AO-Session` header for a client that can set one,
+and the HttpOnly `ao_session_<port>` cookie the bootstrap exchange plants for the
+browser, which cannot set headers on a WebSocket handshake. The header wins when
+both are present — a relay forwarding a credential deliberately outranks an
+ambient cookie.
+
 ## Per-peer request budgets
 
-Three routes carry a token bucket per peer: `/bootstrap.json`, `/pageurl`, and
-`/rpc`. `/healthz` and the SPA assets carry none, and `/ws` carries none because
+Four budgets carry a token bucket per peer: `/bootstrap.json`, `/pageurl`,
+`/rpc`, and the three `/auth/*` routes together. `/healthz` and the SPA assets carry none, and `/ws` carries none because
 one upgrade opens a long-lived connection whose credential came from the ticket
 exchange that preceded it.
 
 The budget bounds work, not guessing. A 256-bit launch token is not reachable by
 any request rate; what a rate reaches is the backend's own cost per request, and
 on `/pageurl` the eviction of tickets other pages are about to present.
+
+The `/auth/*` routes share ONE table on purpose: they are alternative ways for
+the same peer to ask this backend for a credential, so a peer that has spent its
+budget on one must not simply move to the next.
 
 The refusal is `429` with `Retry-After` rather than the credential channel's
 `404`, and that difference is load-bearing rather than cosmetic: the SPA treats a
@@ -446,6 +497,24 @@ resource.
 The registry keeps no record of a revoked session, so a later connection on that
 id attaches like any other. Refusing it is the database row's job, checked per
 call rather than latched at upgrade time.
+
+Revocation reaches open sockets synchronously, but two other ways a session stops
+reach nothing at all: it EXPIRES, or something outside this process revokes it.
+So a connection that names a session also re-validates on an interval
+(`Config.SessionRecheckInterval`, 60s) and caps its own lifetime
+(`Config.MaxRemoteConnLifetime`, 12h) to force a periodic re-ticket.
+
+**Loopback connections are exempt from the lifetime cap.** The cap exists so a
+credential that travels a network is re-presented periodically; the local page's
+session is re-minted at boot and travels none, so capping it would cost the
+webview a visible reconnect and buy nothing. The re-check still applies — a local
+session can expire like any other. `resolveWatchWindows` holds every default and
+exemption in one function so none of it is invisible at the call site.
+
+All three server-side teardowns cancel the connection context, which at the
+terminal error alone is indistinguishable from a shutdown. `connHandler.closeCause`
+is what makes the close log say which one ran: `session revoked`, `session no
+longer live`, or `connection lifetime reached`.
 
 ## References
 

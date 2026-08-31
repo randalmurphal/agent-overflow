@@ -127,7 +127,7 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 		s.RecordRefusal(reason, req.Peer, held.SessionID)
 		return TokenSet{}, reason
 	}
-	if reason := s.checkDeviceProof(session, req.KeyThumbprint); reason.Refused() {
+	if reason := s.CheckDeviceProof(session, req.KeyThumbprint); reason.Refused() {
 		s.RecordRefusal(reason, req.Peer, session.ID)
 		return TokenSet{}, reason
 	}
@@ -211,8 +211,14 @@ func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string)
 	})
 }
 
-// checkDeviceProof enforces "refresh binds to the device key on every
-// listener".
+// CheckDeviceProof enforces "refresh binds to the device key on every
+// listener" (docs/specs/remote-access.md §4).
+//
+// Exported because the rule is not about REFRESHING: the app's request
+// hook runs it on every request that names a session, so a session whose
+// device enrolled a key presents it everywhere — including the ticket
+// route, which would otherwise be a way around it. One function, so a
+// caller cannot implement a weaker version of the same check.
 //
 // A `loopback-only` session has no key to bind to — it is the credential
 // this backend mints for its own page channel — and it is not renewable at
@@ -224,7 +230,7 @@ func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string)
 // the failure a device gets when it was paired before proof-of-possession
 // existed, and admitting it would be the downgrade the binding rule exists
 // to close.
-func (s *Sessions) checkDeviceProof(session store.Session, thumbprint string) Reason {
+func (s *Sessions) CheckDeviceProof(session store.Session, thumbprint string) Reason {
 	if BindingClass(session.BindingClass) == BindingLoopbackOnly {
 		return ReasonNone
 	}

@@ -36,6 +36,37 @@ The complete mocked-provider isolation set belongs in `ConfigureIsolation`.
 Tests must never spawn real Claude/Codex binaries or touch real provider homes;
 use the existing guarded fixtures and mock scripts.
 
+## The session core meets the wire here
+
+`app_identity.go` is where `internal/identity` and `internal/transport`
+meet, because neither may import the other. It holds the one
+`*identity.Sessions`, satisfies the three hooks the transport declares
+(`SessionForRequest`, `SessionLive`, `PageSessionCredential`), and
+implements `transport.AuthEndpoints`.
+
+Everything in that file is adaptation. **No policy decision belongs
+there** — a decision made in the adapter is one the session core could not
+enforce for a caller that reached it another way; put it in
+`internal/identity` and call it from here.
+
+- `initIdentity` runs from `Start` after the store opens, and is
+  **deliberately not fatal**. The launch credential still authorizes every
+  request, so an App whose identity core failed serves the local page
+  exactly as it did before this existed; what it loses is attribution and
+  revocation. Refusing to boot would turn a credential-table problem into
+  "the app does not start".
+- Every accessor answers honestly for an App that never called `Start`.
+  Test fixtures build one directly, and nil `identityState` means
+  "identity is not wired" — a state, not a fault. The one asymmetry is
+  deliberate: a request presenting NO session credential proceeds naming
+  none, while one presenting a credential nothing can judge is REFUSED,
+  because proceeding would name a session this process cannot revoke.
+- The local page credential is cached and re-issued within
+  `localReissueMargin` of expiry, rather than on a timer. The manifest is
+  refetched on every reconnect, so the moment a fresh credential is needed
+  is also the moment somebody asks for it — and a bootstrap fetch must not
+  write to the database on the ordinary path.
+
 ## Tests
 
 Application tests stay beside the shell. `main_test.go` changes their working

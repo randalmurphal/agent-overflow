@@ -214,11 +214,23 @@ the one revocation a host-local surface can perform unenforceable.
 
 `internal/transport`'s `Credential` is the per-launch page token: one per
 process, not persisted, no device, no scopes, no revocation. It is
-untouched by this package and still authorizes every request today. Phase
-3 migrates the wire onto this core; until then nothing routes through
-`Sessions`, and the launch credential's rules
+untouched by this package and **still authorizes every request today**.
+
+What changed in wave 5b is that a request may now ALSO name a session.
+`internal/app/app_identity.go` supplies the transport's hooks: a request
+carrying no session credential proceeds and names none (every
+launch-credential client — the harness CLI, the e2e rig, a `--connect`
+stub), and one carrying a credential this package refuses is refused
+outright, rather than silently downgrading to an unattributed connection.
+Phase 3 is what makes a session credential REQUIRED and enforces scopes
+per method; until then the launch credential's rules
 (`internal/transport/AGENTS.md` § Credentials and refusal shapes) are
 unchanged.
+
+`CheckDeviceProof` is exported for that hook and runs on every request
+that names a session, not only on renewal. A session whose device enrolled
+a key presents it everywhere, so no route added later can be a way around
+it — including `/auth/ticket`, whose whole authentication is that hook.
 
 ## Backend binding
 
