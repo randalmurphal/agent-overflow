@@ -29,7 +29,7 @@ import type { TerminalTransportStatus } from './wsClient';
  */
 const TERMINAL_MESSAGES: Record<TerminalTransportStatus, string> = {
   unauthorized: 'The backend restarted. Reopen the share link to reconnect.',
-  'pairing-required': 'Pair this device to use this backend. Open a pairing link here.',
+  'pairing-required': 'Pair this device to use this backend. Open a pairing link on this device.',
 };
 
 /** What to show while the transport sits in a terminal state. */

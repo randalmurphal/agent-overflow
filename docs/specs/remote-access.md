@@ -320,6 +320,25 @@ launcher, the `--connect` stub. `/pageurl?host=webview` answers
 keep `?t=` — a URL is the only channel that reaches one. Same
 `ticketBook`, same exchange, same cookie; only the delivery moved.
 
+LANDED 2026-08-31 (wave 6d1): a `/ws` upgrade from an off-host peer
+must NAME a live session (ticket, `X-AO-Session`, or session cookie —
+the carriers `SessionForRequest` already reads); refusal is the
+unfingerprintable 404. Loopback peers keep the launch-credential path
+BY ADJUDICATION, not as leftover migration: the embedded webview,
+`ao-harness`, the e2e rig, the launcher's notification socket, and the
+`--connect` stub's carried dial are the host's own processes
+presenting the boot secret, which is authentication of the host
+itself. The SPA decides the unpaired-networked condition BEFORE
+dialing (`manifest.remote` AND non-loopback origin AND no paired
+session) and latches a second terminal state, `pairing-required`,
+phrased by `connectionRefusal.ts`. Residual, pulled into the
+origin-gate deletion as a prerequisite: the bootstrap exchange still
+plants the local-channel session cookie without comparing peer
+locality against the session's `loopback-only` binding class, so a
+share-URL page can name that session on the wire even while the UI
+refuses to dial — the UI is stricter than the wire until the binding
+class is enforced at presentation.
+
 ## 5. Authorization
 
 ### Two enforcement tiers, eleven labels
@@ -1675,9 +1694,13 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    (wave 6b — §5 has the shape and the two recorded gaps). The
    capability-driven frontend: LANDED 2026-08-31 (wave 6c1 — §5). The
    webview dropping `?t=`: LANDED 2026-08-31 (wave 6c2 — §4 "Local
-   clients"). Still open in this phase: `/ws` onto session
-   credentials, origin-gate deletion with the override adjudications
-   it unlocks, and §13's RPC and event-channel columns.
+   clients"). `/ws` onto session credentials: LANDED 2026-08-31 (wave
+   6d1 — §4 "Local clients") for every off-host peer; loopback tooling
+   keeps the launch credential by adjudication. Still open in this
+   phase: origin-gate deletion with the override adjudications it
+   unlocks (prerequisite: enforce the local-channel session's
+   `loopback-only` binding class at presentation), and §13's RPC and
+   event-channel columns.
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
    migrations, per-class defaults.
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with
