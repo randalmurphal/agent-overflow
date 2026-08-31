@@ -18,7 +18,7 @@ func newWatchTestService(t *testing.T) (*Service, string) {
 	t.Cleanup(func() { _ = database.Close() })
 	workspace := t.TempDir()
 	now := time.Now().UnixMilli()
-	if err := database.CreateProject(store.Project{ID: "project", Path: workspace, Name: "project", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := database.CreateProject(store.Project{ID: "project", Path: workspace, Name: "project", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	if err := database.CreateThread(store.Thread{

@@ -220,6 +220,19 @@ export function applyTransportGap(gap: { channel: string; seq: number }): void {
     case 'mcp:status':
       resyncMcpServersAfterGap();
       return;
+    case 'project:updated': {
+      // Edge-triggered like thread:updated: one frame per persisted project
+      // write, and no later frame restates the row a gap swallowed. A missed
+      // 'deleted' or 'unlisted' leaves a project in the sidebar that is not
+      // there any more, which nothing else corrects.
+      //
+      // refreshSidebarProjections re-reads the authoritative ListProjects (and
+      // the thread rows beside it, which is what a project gap usually implies
+      // anyway — a deletion takes its threads with it). Blanket rather than
+      // per-row because the gap carries no entity key.
+      refreshSidebarProjections();
+      return;
+    }
     case 'settings:updated': {
       // Edge-triggered like the entity channels: one frame per persisted
       // write, and no later frame restates a key the gap swallowed — the

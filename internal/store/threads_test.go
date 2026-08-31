@@ -23,7 +23,7 @@ func newTestProject(t *testing.T, s *Store, id, path string) Project {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject(%s): %v", id, err)
 	}
 	return p

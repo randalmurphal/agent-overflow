@@ -70,6 +70,13 @@ const (
 	PRUpdated Channel = "pr:updated"
 )
 
+// project:* — one frame per project row a persisted write moved, carrying
+// the row and what the receiver must do with it. Same vocabulary and same
+// rules as thread:updated (triage.ProjectUpdateEvent).
+const (
+	ProjectUpdated Channel = "project:updated"
+)
+
 // provider:* — everything a provider session produces: the transcript
 // stream, turn lifecycle, approvals, queue state, account identity.
 const (

@@ -86,7 +86,7 @@ func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 		t.Fatalf("store.New: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	if err := database.CreateProject(store.Project{
+	if _, err := database.CreateProject(store.Project{
 		ID: "project", Path: "/repo", Name: "repo", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("CreateProject: %v", err)

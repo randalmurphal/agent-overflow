@@ -65,6 +65,10 @@ import {
   type RuntimeModeChangedPayload,
 } from './eventsThreadRows';
 import {
+  applyProjectUpdated,
+  type ProjectUpdateEvent,
+} from './eventsProjectRows';
+import {
   applyApprovalEvent,
   applyUserInputEvent,
   applyUsageEvent,
@@ -386,6 +390,14 @@ export function setupEventListeners(): () => void {
 
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
 
+  // project:updated — one frame per project row a persisted write moved. The
+  // sidebar list is otherwise refreshed only on mount and after the issuing
+  // client's own RPC, so this is what converges a second attached client.
+  const cancelProjectUpdated = wailsEventOn<ProjectUpdateEvent>(
+    'project:updated',
+    applyProjectUpdated,
+  );
+
   // thread:title_generation — the completion frame of one title-generation
   // run (auto first-turn, heal, or user-triggered regeneration). Clears the
   // pending flag the regenerate affordance renders from; the redacted error
@@ -529,6 +541,7 @@ export function setupEventListeners(): () => void {
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();
+    cancelProjectUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelTransportGap();

@@ -143,7 +143,15 @@ func NewManager(config ManagerConfig) *Manager {
 		importOne:     ImportOne,
 		planUpdate:    PlanUpdate,
 		applyUpdate:   ApplyUpdate,
-		ensureProject: project.EnsureForWorkspace,
+		ensureProject: func(database *store.Store, workspacePath string) (store.Project, error) {
+			// The created flag is dropped on purpose: an import that mints
+			// projects announces them through its own progress channel, which
+			// every attached client already resyncs the sidebar from
+			// (refreshSidebarProjections). A per-row project broadcast would be
+			// a second convergence path on a bulk hot loop.
+			proj, _, err := project.EnsureForWorkspace(database, workspacePath)
+			return proj, err
+		},
 	}
 	manager.scan = config.Scan
 	if manager.scan == nil {

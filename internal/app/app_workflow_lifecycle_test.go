@@ -861,7 +861,7 @@ func TestWorkflowBindThreadRefusesThreadsARunCannotReportInto(t *testing.T) {
 	if err := h.app.store.CreateWorkItem(child); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.app.store.CreateProject(store.Project{
+	if _, err := h.app.store.CreateProject(store.Project{
 		ID: "other-project", Name: "other", Path: "/tmp/other", Slug: "other", CreatedAt: 1,
 	}); err != nil {
 		t.Fatal(err)

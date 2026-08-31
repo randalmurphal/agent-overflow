@@ -14,7 +14,7 @@ import (
 // stale setup on every worktree cut afterwards.
 func TestProjectWorktreeSetupRoundTripsAndClears(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.CreateProject(newProject("wp1", "/tmp/wp1", "WP1")); err != nil {
+	if _, err := s.CreateProject(newProject("wp1", "/tmp/wp1", "WP1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -28,7 +28,7 @@ func TestProjectWorktreeSetupRoundTripsAndClears(t *testing.T) {
 		Run:     [][]string{{"pnpm", "install", "--frozen-lockfile"}},
 		Timeout: "15m",
 	}
-	if err := s.UpdateProjectWorktreeSetup("wp1", &first); err != nil {
+	if _, _, err := s.UpdateProjectWorktreeSetup("wp1", &first); err != nil {
 		t.Fatal(err)
 	}
 	config, found, err = s.ProjectWorktreeSetup("wp1")
@@ -36,7 +36,7 @@ func TestProjectWorktreeSetupRoundTripsAndClears(t *testing.T) {
 		t.Fatalf("stored setup = %+v, %v, %v", config, found, err)
 	}
 
-	if err := s.UpdateProjectWorktreeSetup("wp1", nil); err != nil {
+	if _, _, err := s.UpdateProjectWorktreeSetup("wp1", nil); err != nil {
 		t.Fatal(err)
 	}
 	config, found, err = s.ProjectWorktreeSetup("wp1")
@@ -45,7 +45,7 @@ func TestProjectWorktreeSetupRoundTripsAndClears(t *testing.T) {
 	}
 
 	second := worktreesetup.Config{Run: [][]string{{"make", "install"}}}
-	if err := s.UpdateProjectWorktreeSetup("wp1", &second); err != nil {
+	if _, _, err := s.UpdateProjectWorktreeSetup("wp1", &second); err != nil {
 		t.Fatal(err)
 	}
 	config, found, err = s.ProjectWorktreeSetup("wp1")
@@ -55,7 +55,7 @@ func TestProjectWorktreeSetupRoundTripsAndClears(t *testing.T) {
 
 	// A config that asks for nothing is the same state as nil, so a later read
 	// cannot report a configured-but-empty recipe.
-	if err := s.UpdateProjectWorktreeSetup("wp1", &worktreesetup.Config{}); err != nil {
+	if _, _, err := s.UpdateProjectWorktreeSetup("wp1", &worktreesetup.Config{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, found, err = s.ProjectWorktreeSetup("wp1"); err != nil || found {
@@ -65,7 +65,7 @@ func TestProjectWorktreeSetupRoundTripsAndClears(t *testing.T) {
 
 func TestProjectWorktreeSetupRefusesACorruptBlob(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.CreateProject(newProject("wp2", "/tmp/wp2", "WP2")); err != nil {
+	if _, err := s.CreateProject(newProject("wp2", "/tmp/wp2", "WP2")); err != nil {
 		t.Fatal(err)
 	}
 	for name, blob := range map[string]string{
@@ -88,7 +88,7 @@ func TestProjectWorktreeSetupRefusesACorruptBlob(t *testing.T) {
 
 func TestUpdateProjectWorktreeSetupRefusesAnUnknownProject(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.UpdateProjectWorktreeSetup("missing", &worktreesetup.Config{Run: [][]string{{"make"}}}); err == nil {
+	if _, _, err := s.UpdateProjectWorktreeSetup("missing", &worktreesetup.Config{Run: [][]string{{"make"}}}); err == nil {
 		t.Fatal("update against a missing project succeeded")
 	}
 	if _, _, err := s.ProjectWorktreeSetup("missing"); err == nil {

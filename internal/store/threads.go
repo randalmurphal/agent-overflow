@@ -923,7 +923,7 @@ func (s *Store) deleteThreadItemsChunk(id string) (int64, error) {
 // nothing, so it must not bump updated_at and must not broadcast. A missing
 // id is still sql.ErrNoRows.
 func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:  fmt.Sprintf("store: archive thread %s", id),
 		ID:      id,
 		Set:     "archived = 1, updated_at = ?",
@@ -938,7 +938,7 @@ func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
 // that was already active is a no-op, not a reshuffle. Returns sql.ErrNoRows
 // if no row matches the id.
 func (s *Store) UnarchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:  fmt.Sprintf("store: unarchive thread %s", id),
 		ID:      id,
 		Set:     "archived = 0, updated_at = ?",
@@ -1105,7 +1105,7 @@ func (s *Store) setThreadLastRead(id string, ts *int64) (Thread, bool, error) {
 	if ts != nil {
 		arg = *ts
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update last_read_at for %s", id),
 		ID:         id,
 		Set:        "last_read_at = ?",
@@ -1142,7 +1142,7 @@ func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
 	if group != PinGroupFront && group != PinGroupBack {
 		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update pin_group for pinned thread %s", id),
 		ID:         id,
 		Set:        "pin_group = ?",
@@ -1158,7 +1158,7 @@ func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
 // thread activity, and bumping updated_at would shuffle the project's
 // `lastActivity` ordering.
 func (s *Store) setThreadPinnedAt(id string, ts *int64) (Thread, bool, error) {
-	write := threadRowWrite{
+	write := rowWrite{
 		Action: fmt.Sprintf("store: update pin state for %s", id),
 		ID:     id,
 	}
@@ -1390,7 +1390,7 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) (Thread, bool, er
 	if !legalEffortForProvider(providerName, normalized) {
 		return Thread{}, false, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update reasoning effort for %s", threadID),
 		ID:         threadID,
 		Set:        "reasoning_effort = ?",
@@ -1404,7 +1404,7 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) (Thread, bool, er
 // Setting the value the thread already carries changes nothing.
 func (s *Store) UpdateFastMode(threadID string, on bool) (Thread, bool, error) {
 	value := boolToInt(on)
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update fast mode for %s", threadID),
 		ID:         threadID,
 		Set:        "fast_mode = ?",
@@ -1450,7 +1450,7 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 	if !validAutoCompactPercent(extendedPercent) {
 		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, extendedPercent)
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action: fmt.Sprintf("store: update context settings for %s", threadID),
 		ID:     threadID,
 		Set: `context_window = ?,

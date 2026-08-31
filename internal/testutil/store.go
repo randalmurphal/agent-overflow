@@ -28,8 +28,9 @@ func EnsureProject(t *testing.T, st *store.Store, path string) store.Project {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := st.CreateProject(p); err != nil {
+	stored, err := st.CreateProject(p)
+	if err != nil {
 		t.Fatalf("EnsureProject(%q): %v", path, err)
 	}
-	return p
+	return stored
 }

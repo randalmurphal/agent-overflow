@@ -104,7 +104,8 @@ func resolveProject(s *store.Store, row Row) (store.Project, error) {
 			return store.Project{}, err
 		}
 	}
-	return project.EnsureForWorkspace(s, row.ProjectPath)
+	proj, _, err := project.EnsureForWorkspace(s, row.ProjectPath)
+	return proj, err
 }
 
 // branchPlan is one thread-to-be: everything the thread row needs and the

@@ -343,6 +343,21 @@ var channelPolicies = []ChannelPolicy{
 			"emits to every subscriber: the push side is the third door.",
 	},
 	{
+		Channel:   eventchan.ProjectUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Why: "Carries a store.Project — the project's absolute path among " +
+			"them — but ListProjects is wire-reachable and returns exactly " +
+			"these rows, so the push discloses nothing a poll could not " +
+			"(same reasoning as thread:updated). The mutations behind it " +
+			"split: CreateProject and the worktree-setup writes are " +
+			"LocalOnly, rename / archive / reorder / delete are not, and " +
+			"the frames look identical either way, so no receiver can infer " +
+			"who issued one. Never latest-only: each frame names a " +
+			"different row and a different action, and a dropped one is a " +
+			"project the client keeps or loses wrongly.",
+	},
+	{
 		Channel:   eventchan.ProviderAccount,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

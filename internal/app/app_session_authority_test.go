@@ -150,7 +150,7 @@ func TestAOEndpointFromOriginIsBareAuthority(t *testing.T) {
 func TestDeriveCallerScopeByThreadKind(t *testing.T) {
 	app := newTestAppWithStore(t)
 	project := store.Project{ID: "scope-project", Path: t.TempDir(), Name: "Scope", CreatedAt: 1, UpdatedAt: 1}
-	if err := app.store.CreateProject(project); err != nil {
+	if _, err := app.store.CreateProject(project); err != nil {
 		t.Fatal(err)
 	}
 
@@ -357,7 +357,7 @@ func TestMintAOCredentialCarriesTheProjectSlug(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.SetTransportServer(startTestTransportServer(t))
 	projectRow := store.Project{ID: "slug-project", Path: t.TempDir(), Name: "Repo A", CreatedAt: 1, UpdatedAt: 1}
-	if err := app.store.CreateProject(projectRow); err != nil {
+	if _, err := app.store.CreateProject(projectRow); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := app.store.GetProject(projectRow.ID)

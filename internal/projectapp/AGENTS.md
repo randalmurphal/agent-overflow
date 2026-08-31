@@ -45,6 +45,19 @@ exposed through the Wails project bindings.
 
 - Preserve the binding-visible validation and unavailable-store error text;
   callers use these methods as the existing project wire surface.
+- **Every writing method answers with a `Write`** (the row as it now stands,
+  plus whether the write actually moved it), because `internal/app` broadcasts
+  the row on `project:updated` and a write that changed nothing must announce
+  nothing. Both halves are always populated: a no-op still answers with the
+  current row, since the calling client applies that answer and a blank row
+  would erase the project from its sidebar. `Create` and `UpdateSortPositions`
+  are the two shapes that do not need the flag — a creation always changed
+  something, and a reorder returns exactly the rows it wrote.
+- **A new writing method must be classified** in `internal/app`'s
+  `projectAppWrites`. `TestEveryProjectServiceMethodIsClassified` fails until it
+  is, and `TestEveryProjectMutationCallSiteBroadcasts` then fails until every
+  App call site broadcasts. A project mutation nothing announces is invisible to
+  every other attached client and looks correct on the screen that made it.
 - `Create` accepts only an existing directory, stores its absolute path, and
   derives the default name from the final path component.
 - Rename changes the display name only. Archive hides rows from `List`;

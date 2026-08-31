@@ -26,7 +26,7 @@ func newBackgroundFetchTestApp(t *testing.T) *App {
 func addProject(t *testing.T, app *App, id, path string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
-	if err := app.store.CreateProject(store.Project{
+	if _, err := app.store.CreateProject(store.Project{
 		ID:        id,
 		Path:      path,
 		Name:      id,

@@ -1291,14 +1291,16 @@ before changing a write path.
   the only writer past `busy_timeout`. A rollback restores the flag with
   the rows.
 
-## Thread-row writes report what they changed
+## Row writes report what they changed
 
-Every persisted thread-row mutation is broadcast on `thread:updated` so a
-second attached client converges without a refresh, and a write that changed
-nothing is not broadcast. That makes "did this row actually move" a value the
-write itself must return, so the thread mutators go through
-`applyThreadRowWrite` (`threadrowwrite.go`) and return
-`(Thread, changed bool, error)`.
+Every persisted thread row and project row is broadcast (`thread:updated`,
+`project:updated`) so a second attached client converges without a refresh, and
+a write that changed nothing is not broadcast. That makes "did this row
+actually move" a value the write itself must return, so those mutators go
+through `applyThreadRowWrite` / `applyProjectRowWrite` (`rowwrite.go`) and
+return `(row, changed bool, error)`. Both entry points wrap one generic
+`applyRowWrite`, and each names its own table AND its own read-back projection,
+because those two always have to agree.
 
 - **Rows-affected cannot answer it.** SQLite counts a row as affected when
   the SET restates the value the row already held, so `requireRowsAffected`
@@ -1319,6 +1321,15 @@ write itself must return, so the thread mutators go through
   correlated subqueries, which `RETURNING` cannot evaluate, and a second
   round trip could read a row a concurrent write had already moved. The
   projection is paid only when something changed.
+- **A write that is not one row states its rules by hand.**
+  `UpdateProjectSortPositions` writes N rows in one transaction, which
+  `applyRowWrite` cannot do without giving up that transaction, so it carries
+  its own `RETURNING id` + in-transaction read-back. It deliberately has NO
+  change predicate: the `updated_at` bump is the point of the write (a reorder
+  counts as project activity), so every matched row really did move.
+- **`CreateProject` returns the row it inserted, not its argument.** The slug
+  is generated inside the insert, so a caller holding its own copy has an empty
+  one — and would broadcast it.
 
 ## Reads that are easy to get wrong
 

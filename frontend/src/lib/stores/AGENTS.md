@@ -53,6 +53,20 @@ stops waking readers.
   merges the named fields onto the cached row. The initiator's own echo is
   the same row its RPC returned, so an optimistic apply and the event
   settle on identical bytes.
+- `project:updated` is the same contract one level up, handled by
+  `eventsProjectRows.ts`: one event per persisted project-row change, the same
+  `full` / `listed` / `unlisted` / `deleted` vocabulary, and the same
+  echo-equals-optimistic-apply guarantee. The list this client holds is the
+  NON-ARCHIVED projects, which is why archive arrives as `unlisted` rather than
+  as a row change. Threads that went with a deleted project arrive as their own
+  `thread:updated` `deleted` frames, so the project handler never touches panes.
+- `settings:updated` is the odd one out and deliberately so: it names the tier
+  and the changed KEYS, never the values, because settings carry redacted
+  fields with no read path. The handler (`settings.svelte.ts` `resyncSettings`)
+  ignores the keys and re-reads the whole redacted projection, queued behind any
+  in-flight write on the same queue `updateSettingsPatch` uses — an unordered
+  re-read could be issued before a local optimistic write reached the backend
+  and land after it.
 - `bindings.ts` re-exports what `wails3 generate bindings -ts` produced.
   Add the new App method by regenerating and re-exporting. Never hand-wrap
   a binding, and never reach for `window.runtime`.

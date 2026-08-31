@@ -25,7 +25,7 @@ func ensureDefaultTestProject(t *testing.T, a *App) {
 		return
 	}
 	now := time.Now().UnixMilli()
-	if err := a.store.CreateProject(store.Project{
+	if _, err := a.store.CreateProject(store.Project{
 		ID:        defaultTestProjectID,
 		Path:      "/tmp/workspace",
 		Name:      "Default Test Project",

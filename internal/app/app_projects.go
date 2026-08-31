@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/projectapp"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/worktreesetup"
 )
 
@@ -39,29 +40,61 @@ func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 // path already has a project row — the frontend interprets that as
 // "redirect to the existing project" rather than a failure.
 func (a *App) CreateProject(path string) (store.Project, error) {
-	return a.projectApplication().Create(path)
+	row, err := a.projectApplication().Create(path)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectRow(triage.ProjectActionListed, row)
+	return row, nil
 }
 
 // RenameProject updates the display name. Path is immutable.
 func (a *App) RenameProject(id, name string) (store.Project, error) {
-	return a.projectApplication().Rename(id, name)
+	write, err := a.projectApplication().Rename(id, name)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionFull, write)
+	return write.Project, nil
 }
 
 // ArchiveProject hides the project without deleting it.
 func (a *App) ArchiveProject(id string) error {
-	return a.projectApplication().Archive(id)
+	write, err := a.projectApplication().Archive(id)
+	if err != nil {
+		return err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionUnlisted, write)
+	return nil
 }
 
 // UnarchiveProject reverses ArchiveProject and returns the refreshed row.
 func (a *App) UnarchiveProject(id string) (store.Project, error) {
-	return a.projectApplication().Unarchive(id)
+	write, err := a.projectApplication().Unarchive(id)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionListed, write)
+	return write.Project, nil
 }
 
 // UpdateProjectSortPositions re-orders the projects list. The frontend
 // emits the full ordered list when the user drops a drag-reorder so the
 // store assigns dense positions 0..N-1 in one transaction.
+//
+// One frame per row written. Every listed project is written, not only the
+// ones whose index moved, because the reorder also bumps updated_at — that
+// bump is deliberate (it makes a reorder count as project activity), so those
+// rows really did change and other clients need them.
 func (a *App) UpdateProjectSortPositions(orderedIDs []string) error {
-	return a.projectApplication().UpdateSortPositions(orderedIDs)
+	moved, err := a.projectApplication().UpdateSortPositions(orderedIDs)
+	if err != nil {
+		return err
+	}
+	for _, row := range moved {
+		a.broadcastProjectRow(triage.ProjectActionFull, row)
+	}
+	return nil
 }
 
 // WorktreeSetupConfig is the wire shape of a project's worktree setup recipe.
@@ -93,10 +126,15 @@ func (a *App) GetProjectWorktreeSetup(projectID string) (WorktreeSetupConfig, er
 // "never configured" are the same state.
 func (a *App) SetProjectWorktreeSetup(projectID string, config WorktreeSetupConfig) (WorktreeSetupConfig, error) {
 	stored := worktreesetup.Config{Copy: config.Copy, Run: config.Run, Timeout: config.Timeout}
-	saved, err := a.projectApplication().SetWorktreeSetup(projectID, stored)
+	saved, write, err := a.projectApplication().SetWorktreeSetup(projectID, stored)
 	if err != nil {
 		return WorktreeSetupConfig{}, err
 	}
+	// The frame carries the project row, which does not include the recipe —
+	// the recipe has its own read (GetProjectWorktreeSetup), and putting it on
+	// every project frame would be wire weight for a surface almost nobody has
+	// open. What the frame says is that this project moved.
+	a.broadcastProjectWrite(triage.ProjectActionFull, write)
 	return toWireWorktreeSetup(saved), nil
 }
 
@@ -250,6 +288,7 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 		}
 		return ProjectDeletionResult{}, err
 	}
+	a.broadcastProjectDeleted(id)
 	result.ThreadIDs = slicesx.OrEmpty(ids)
 	return result, nil
 }
@@ -257,6 +296,14 @@ func (a *App) DeleteProject(id string) (ProjectDeletionResult, error) {
 // ensureProjectForWorkspace delegates to project.EnsureForWorkspace.
 // Kept as an *App method so existing callers (and tests in this package)
 // don't need to thread the store through their call sites.
+// A workspace no project covers yet mints one, which is a new sidebar entry
+// and is announced like any other creation. Resolving to an existing project
+// is the common case and says nothing.
 func (a *App) ensureProjectForWorkspace(workspacePath string) (store.Project, error) {
-	return a.projectApplication().EnsureForWorkspace(workspacePath)
+	write, err := a.projectApplication().EnsureForWorkspace(workspacePath)
+	if err != nil {
+		return store.Project{}, err
+	}
+	a.broadcastProjectWrite(triage.ProjectActionListed, write)
+	return write.Project, nil
 }
