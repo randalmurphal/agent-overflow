@@ -655,6 +655,10 @@ export class PagedItems {
  * directory. Threads belong to a project via the project_id FK; the
  * project's path is the canonical workspace root, though individual
  * threads may operate in a worktree that diverges from project.path.
+ * 
+ * ID carries the same cross-backend uniqueness contract as Thread.ID
+ * (internal/entityid). Path does not: two machines checked out at the
+ * same path are two projects.
  */
 export class Project {
     "id": string;
@@ -898,6 +902,11 @@ export class ProposedPlanSourceRef {
 
 /**
  * Thread represents a conversation thread.
+ * 
+ * ID is minted by internal/entityid and is unique across BACKENDS, not
+ * just within this database: a client attached to more than one backend
+ * keys its stores, its IndexedDB replica and its deep links by this
+ * string alone (docs/specs/remote-access.md §10).
  * 
  * ProjectPath is not persisted on threads — ProjectID is the FK to the
  * projects table — and three per-thread composer controls

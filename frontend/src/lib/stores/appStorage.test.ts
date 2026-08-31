@@ -5,7 +5,6 @@ import {
   appStorageGet,
   appStorageSet,
   flushAppStorage,
-  getAppStorageClientId,
   hydrateAppStorage,
   isAppStorageHydrated,
   reinitAppStorageForTest,
@@ -13,7 +12,6 @@ import {
 } from './appStorage';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
-const CLIENT_ID_CACHE_KEY = 'agent-overflow:uistate:clientId';
 const BUCKET_CACHE_KEY = 'agent-overflow:uistate:bucket';
 
 describe('appStorage', () => {
@@ -27,27 +25,8 @@ describe('appStorage', () => {
     setBindingMock('DeleteUIState', async () => null);
   });
 
-  describe('client identity', () => {
-    it('mints and caches an id when nothing provides one', () => {
-      const id = getAppStorageClientId();
-      expect(id).toMatch(/^[A-Za-z0-9-]{8,64}$/);
-      expect(localStorage.getItem(CLIENT_ID_CACHE_KEY)).toBe(id);
-    });
-
-    it('reuses the cached id across a simulated same-origin reload', () => {
-      const first = getAppStorageClientId();
-      reinitAppStorageForTest(); // module state resets, localStorage survives
-      expect(getAppStorageClientId()).toBe(first);
-    });
-
-    it('rejects a garbage cached id and mints a fresh one', () => {
-      localStorage.setItem(CLIENT_ID_CACHE_KEY, 'nope!bad id');
-      reinitAppStorageForTest();
-      expect(getAppStorageClientId()).not.toBe('nope!bad id');
-      expect(getAppStorageClientId()).toMatch(/^[A-Za-z0-9-]{8,64}$/);
-    });
-
-    it('restores the bucket cache across a simulated same-origin reload', () => {
+  describe('same-origin reload', () => {
+    it('restores the bucket cache', () => {
       appStorageSet('sidebar:width', '312');
       reinitAppStorageForTest();
       expect(appStorageGet('sidebar:width')).toBe('312');
@@ -78,7 +57,7 @@ describe('appStorage', () => {
       appStorageSet('a', '3'); // overwritten before the flush fires
       await flushAppStorage();
       expect(setMock).toHaveBeenCalledTimes(1);
-      expect(setMock).toHaveBeenCalledWith(getAppStorageClientId(), { a: '3', b: '2' });
+      expect(setMock).toHaveBeenCalledWith({ a: '3', b: '2' });
     });
 
     it('sends deletes through DeleteUIState', async () => {
@@ -87,7 +66,7 @@ describe('appStorage', () => {
       await flushAppStorage();
       appStorageDelete('a');
       await flushAppStorage();
-      expect(deleteMock).toHaveBeenCalledWith(getAppStorageClientId(), ['a']);
+      expect(deleteMock).toHaveBeenCalledWith(['a']);
     });
 
     it('re-queues failed writes without clobbering newer values', async () => {
@@ -99,7 +78,7 @@ describe('appStorage', () => {
 
       const setMock = setBindingMock('SetUIState', async () => null);
       await flushAppStorage(); // retry delivers the re-queued write
-      expect(setMock).toHaveBeenCalledWith(getAppStorageClientId(), { a: '1' });
+      expect(setMock).toHaveBeenCalledWith({ a: '1' });
     });
   });
 
@@ -123,7 +102,7 @@ describe('appStorage', () => {
       setBindingMock('GetUIState', async () => ({}));
       await hydrateAppStorage();
       await flushAppStorage();
-      expect(setMock).toHaveBeenCalledWith(getAppStorageClientId(), { 'sidebar:width': '333' });
+      expect(setMock).toHaveBeenCalledWith({ 'sidebar:width': '333' });
     });
 
     it('pending local writes beat the server value', async () => {
@@ -133,10 +112,7 @@ describe('appStorage', () => {
       expect(appStorageGet('sidebar:width')).toBe('250');
       const setMock = setBindingMock('SetUIState', async () => null);
       await flushAppStorage();
-      expect(setMock).toHaveBeenCalledWith(
-        getAppStorageClientId(),
-        expect.objectContaining({ 'sidebar:width': '250' }),
-      );
+      expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ 'sidebar:width': '250' }));
     });
 
     it('returns false and keeps the cache when the fetch fails', async () => {

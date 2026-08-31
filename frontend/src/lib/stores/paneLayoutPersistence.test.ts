@@ -612,7 +612,6 @@ describe('pane layout persistence', () => {
       { paneId: 'left', threadId: left.id, widthPx: 840 },
     ], 'left'));
     expect(mocks.setUIState).toHaveBeenCalledWith(
-      expect.any(String),
       expect.objectContaining({ paneLayout: expect.stringContaining('left-thread') }),
     );
     expect(localStorage.getItem(LEGACY_KEY)).toBeNull();

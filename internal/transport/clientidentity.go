@@ -57,6 +57,28 @@ func ParseClientIdentity(query url.Values) ClientIdentity {
 	}
 }
 
+// Query renders the identity back onto an upgrade URL's parameters, the
+// inverse of ParseClientIdentity. An empty half is omitted rather than
+// written blank, so a partial identity stays partial instead of declaring a
+// value the peer never sent.
+//
+// It exists for the one hop that has to re-emit an upgrade URL rather than
+// forward one: the `--connect` stub proxies the page's /ws to an upstream
+// backend and rewrites the whole query, so without an explicit round trip
+// the identity would be dropped and every stub connection would look
+// anonymous. Parse-then-render, not a raw copy, so only the two declared
+// and bounded parameters cross the hop.
+func (c ClientIdentity) Query() url.Values {
+	out := url.Values{}
+	if c.DeviceID != "" {
+		out.Set(deviceIDParam, c.DeviceID)
+	}
+	if c.ConnectionID != "" {
+		out.Set(connectionIDParam, c.ConnectionID)
+	}
+	return out
+}
+
 func validClientIdentityID(id string) string {
 	if len(id) < 8 || len(id) > 64 {
 		return ""

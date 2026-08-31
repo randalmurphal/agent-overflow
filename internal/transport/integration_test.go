@@ -63,6 +63,12 @@ func (s *integrationStub) CtxLabel(ctx context.Context, label string) string {
 	return "ctx:" + label
 }
 
+// WhoAmI reports the connection principal a handler sees, which is what a
+// bound method scoping durable state reads instead of a caller-supplied id.
+func (s *integrationStub) WhoAmI(ctx context.Context) string {
+	return SessionFromContext(ctx) + "|" + ClientFromContext(ctx).DeviceID
+}
+
 // JoinLines accepts a slice param — the most common production shape.
 func (s *integrationStub) JoinLines(lines []string) string {
 	return strings.Join(lines, ",")

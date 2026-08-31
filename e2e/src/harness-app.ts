@@ -88,9 +88,13 @@ export class HarnessApp {
   }
 
   async connect(): Promise<void> {
-    const ws = new WebSocket(
-      `ws://127.0.0.1:${this.bootstrap.port}/ws?token=${encodeURIComponent(this.bootstrap.token)}`,
-    );
+    // `did` is the instance's durable client id, the same one the page URL
+    // carries as `&cid=`. The backend scopes ui_state by the connection, so
+    // declaring it is what lets a spec read the bucket the page just wrote
+    // rather than getting a refusal for an anonymous socket.
+    const query = new URLSearchParams({ token: this.bootstrap.token });
+    if (this.bootstrap.clientId) query.set('did', this.bootstrap.clientId);
+    const ws = new WebSocket(`ws://127.0.0.1:${this.bootstrap.port}/ws?${query.toString()}`);
     this.ws = ws;
     ws.addEventListener('message', (msg) => this.onFrame(String(msg.data)));
     ws.addEventListener('close', () => {

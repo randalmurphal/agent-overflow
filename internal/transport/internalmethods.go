@@ -133,6 +133,18 @@ const (
 	// prompt text — a directory listing of every conversation on the
 	// host, which is the widest local-FS read in the set.
 	CategorySessionImport
+
+	// CategoryDeviceAccess is the device-access surface: minting a
+	// pairing link, confirming or cancelling one, the device and session
+	// inventory, the credential audit log, and revocation.
+	//
+	// Not folded into CategoryCredentialEnumeration, which covers
+	// DISCLOSURE. Minting is issuance — one call turns into a credential
+	// a new device holds — and revocation withdraws every credential a
+	// device has. A surface that can add and remove the peers of a
+	// backend is the surface that decides who reaches it at all, so it is
+	// answered only where the owner already is.
+	CategoryDeviceAccess
 )
 
 // localOnlyCategoryNames is the reverse map, used to name a category in
@@ -150,6 +162,7 @@ var localOnlyCategoryNames = map[LocalOnlyCategory]string{
 	CategoryMCPState:              "MCP state",
 	CategoryDesktopHostControl:    "desktop host control",
 	CategorySessionImport:         "session import",
+	CategoryDeviceAccess:          "device access",
 }
 
 // String names the category, or reports the ordinal when it has no name
@@ -831,4 +844,36 @@ var localOnlyCategories = map[string]LocalOnlyCategory{
 	"CancelSessionImport":      CategorySessionImport,
 	"CheckThreadImportUpdates": CategorySessionImport,
 	"ImportThreadUpdates":      CategorySessionImport,
+
+	// 11. CategoryDeviceAccess. The surface that decides which devices
+	// hold credentials on this backend (docs/specs/remote-access.md §4).
+	// MintDevicePairing ISSUES one: the link it returns is redeemable by
+	// the next device to present it with a key, so a wire-reachable mint
+	// would let a credential-holder enroll further devices of its own
+	// choosing — the one call that grows the trusted set. Confirm and
+	// Cancel are the owner's half of that same exchange, and the whole
+	// point of the verification number is that it is matched by a person
+	// at the machine rather than by whoever happens to hold a session.
+	// The two revocations run the other way and are just as decisive: one
+	// call ends every credential a device holds and closes its live
+	// sockets.
+	//
+	// GetAccessOverview is a read, and locked down with the writers on
+	// category 6's grounds: it lists every device, its platform, its live
+	// sessions with their connection counts, and the credential audit log
+	// — the complete map of what reaches this backend and when, which is
+	// exactly what a caller would consult before calling anything else
+	// here. It also carries the verification number of a pending pairing,
+	// and a number readable off the wire is one the owner is no longer
+	// the only party comparing.
+	//
+	// DevicePairingStatus is the polling companion of the mint and
+	// carries the same number, so it is answered in the same place.
+	"GetAccessOverview":    CategoryDeviceAccess,
+	"MintDevicePairing":    CategoryDeviceAccess,
+	"DevicePairingStatus":  CategoryDeviceAccess,
+	"ConfirmDevicePairing": CategoryDeviceAccess,
+	"CancelDevicePairing":  CategoryDeviceAccess,
+	"RevokeAccessDevice":   CategoryDeviceAccess,
+	"RevokeAccessSession":  CategoryDeviceAccess,
 }

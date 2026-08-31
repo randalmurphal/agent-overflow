@@ -1004,6 +1004,15 @@ func (p *privilegedApp) CancelSessionImport() string      { return "ok" }
 func (p *privilegedApp) CheckThreadImportUpdates() string { return "ok" }
 func (p *privilegedApp) ImportThreadUpdates() string      { return "ok" }
 
+// 12. Device access (pairing mint/confirm/cancel, inventory, revocation).
+func (p *privilegedApp) GetAccessOverview() string    { return "ok" }
+func (p *privilegedApp) MintDevicePairing() string    { return "ok" }
+func (p *privilegedApp) DevicePairingStatus() string  { return "ok" }
+func (p *privilegedApp) ConfirmDevicePairing() string { return "ok" }
+func (p *privilegedApp) CancelDevicePairing() string  { return "ok" }
+func (p *privilegedApp) RevokeAccessDevice() string   { return "ok" }
+func (p *privilegedApp) RevokeAccessSession() string  { return "ok" }
+
 // TestDispatcher_LocalOnlyRefusedFromNonLoopback pins the LAN-bind
 // safety contract on the dispatcher itself. ResolveForOrigin must
 // refuse a LocalOnlyMethods entry when isLoopback is false, and the

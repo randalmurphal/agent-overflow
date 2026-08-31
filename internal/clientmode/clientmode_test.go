@@ -10,10 +10,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/transport"
 
 	"github.com/coder/websocket"
@@ -561,29 +563,6 @@ func TestServe_ShutdownIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestUpstreamBootstrapURL(t *testing.T) {
-	tests := []struct {
-		wsURL string
-		want  string
-	}{
-		{"ws://host:1234/ws", "http://host:1234/bootstrap.json"},
-		{"wss://host/ws", "https://host/bootstrap.json"},
-		{"wss://host/ao/ws", "https://host/ao/bootstrap.json"},
-		{"ws://host:1234/", "http://host:1234/bootstrap.json"},
-		{"ws://host:1234", "http://host:1234/bootstrap.json"},
-	}
-	for _, tt := range tests {
-		got, err := upstreamBootstrapURL(tt.wsURL)
-		if err != nil {
-			t.Errorf("upstreamBootstrapURL(%q): %v", tt.wsURL, err)
-			continue
-		}
-		if got != tt.want {
-			t.Errorf("upstreamBootstrapURL(%q) = %q, want %q", tt.wsURL, got, tt.want)
-		}
-	}
-}
-
 // serveWithUpstream boots a stub whose WSURL points at the given
 // upstream httptest server, so /bootstrap.json probes land there.
 func serveWithUpstream(t *testing.T, upstream *httptest.Server) *Server {
@@ -718,6 +697,7 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 		auth   string
 		cookie string
 		origin string
+		query  string
 	}
 	seen := make(chan observed, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -734,6 +714,7 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 			auth:   r.Header.Get("Authorization"),
 			cookie: r.Header.Get("Cookie"),
 			origin: r.Header.Get("Origin"),
+			query:  r.URL.RawQuery,
 		}
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
@@ -756,7 +737,9 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 	header.Set("Origin", "http://"+srv.Addr())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, "ws://"+srv.Addr()+"/ws", &websocket.DialOptions{HTTPHeader: header})
+	conn, _, err := websocket.Dial(ctx,
+		"ws://"+srv.Addr()+"/ws?did=screen-abcdef01&conn=live-abcdef01&nonsense=1",
+		&websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		t.Fatalf("dial the stub's /ws with the page cookie: %v", err)
 	}
@@ -782,6 +765,53 @@ func TestHandleWS_CarriesTheUpgradeWithTheUpstreamCredential(t *testing.T) {
 	}
 	if got.origin != "" {
 		t.Errorf("the stub's origin reached the upstream: %q", got.origin)
+	}
+	// The page's declared identity has to survive the hop: the upstream
+	// scopes its ui_state bucket by the connection, so a stub that dropped
+	// these two parameters would leave every --connect client with no
+	// bucket at all. Nothing else the page put on the URL crosses.
+	upstreamQuery, err := url.ParseQuery(got.query)
+	if err != nil {
+		t.Fatalf("upstream query %q: %v", got.query, err)
+	}
+	if upstreamQuery.Get("did") != "screen-abcdef01" {
+		t.Errorf("upstream did = %q, want the page's device id", upstreamQuery.Get("did"))
+	}
+	if upstreamQuery.Get("conn") != "live-abcdef01" {
+		t.Errorf("upstream conn = %q, want the page's connection id", upstreamQuery.Get("conn"))
+	}
+	if upstreamQuery.Has("nonsense") {
+		t.Errorf("an undeclared page parameter crossed the hop: %q", got.query)
+	}
+}
+
+// TestUpstreamQuery_OperatorParametersWin — the operator's endpoint owns
+// its query and the page cannot see it, so a page parameter that
+// overwrote one would be the page reconfiguring the hop.
+func TestUpstreamQuery_OperatorParametersWin(t *testing.T) {
+	page := url.Values{"did": {"screen-abcdef01"}, "conn": {"live-abcdef01"}}
+	got, err := url.ParseQuery(upstreamQuery("did=operator-pinned-id&region=eu", page))
+	if err != nil {
+		t.Fatalf("parse the assembled query: %v", err)
+	}
+	if got.Get("did") != "operator-pinned-id" {
+		t.Errorf("did = %q, want the operator's value", got.Get("did"))
+	}
+	if got.Get("region") != "eu" {
+		t.Errorf("region = %q, want the operator's value preserved", got.Get("region"))
+	}
+	if got.Get("conn") != "live-abcdef01" {
+		t.Errorf("conn = %q, want the page's value where the operator named none", got.Get("conn"))
+	}
+}
+
+// TestUpstreamQuery_UnparseableOperatorQueryIsForwardedVerbatim — an
+// operator URL we cannot parse is one we must not rewrite from a guess.
+func TestUpstreamQuery_UnparseableOperatorQueryIsForwardedVerbatim(t *testing.T) {
+	const operator = "%zz"
+	page := url.Values{"did": {"screen-abcdef01"}}
+	if got := upstreamQuery(operator, page); got != operator {
+		t.Fatalf("upstreamQuery = %q, want %q", got, operator)
 	}
 }
 
@@ -824,5 +854,185 @@ func TestHandleWS_RefusesUnauthenticatedAndForeignOrigin(t *testing.T) {
 				t.Fatalf("refusal status = %d, want 404", resp.StatusCode)
 			}
 		})
+	}
+}
+
+// sessionForwardingUpstream is an upstream that plants the backend's local
+// page-channel cookie on /bootstrap.json and records the session
+// credential each carried upgrade presents.
+//
+// `accept` decides whether an upgrade is honoured, so one stub covers both
+// the forwarding case and the refused-upgrade case that follows it.
+type sessionForwardingUpstream struct {
+	*httptest.Server
+	// credential is the stem of what /bootstrap.json plants; each fetch
+	// gets its own suffix so a test can tell a cached value from a
+	// refetched one. Read under no lock: set before the server is handed
+	// to a stub and never written afterwards.
+	credential string
+	presented  chan string
+	accept     atomic.Bool
+	fetches    atomic.Int32
+}
+
+func newSessionForwardingUpstream(t *testing.T, credential string) *sessionForwardingUpstream {
+	t.Helper()
+	up := &sessionForwardingUpstream{
+		credential: credential,
+		presented:  make(chan string, 4),
+	}
+	up.accept.Store(true)
+	up.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bootstrap.json":
+			fetch := up.fetches.Add(1)
+			if up.credential != "" {
+				http.SetCookie(w, &http.Cookie{
+					Name:  relaysession.CookiePrefix + "4321",
+					Value: fmt.Sprintf("%s-%d", up.credential, fetch),
+					Path:  "/", HttpOnly: true,
+				})
+			}
+			_, _ = w.Write([]byte(`{"wsUrl":"ws://upstream-perspective/ws"}`))
+		case "/ws":
+			up.presented <- r.Header.Get(relaysession.Header)
+			if !up.accept.Load() {
+				// The refusal shape the transport uses for a credential it
+				// does not honour.
+				http.NotFound(w, r)
+				return
+			}
+			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+			if err != nil {
+				t.Errorf("upstream accept: %v", err)
+				return
+			}
+			conn.CloseNow()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(up.Close)
+	return up
+}
+
+// dialThroughStub opens the stub's /ws the way the page does, with the
+// cookie it exchanged and its own origin.
+func dialThroughStub(t *testing.T, srv *Server, cookie *http.Cookie) error {
+	t.Helper()
+	header := http.Header{}
+	header.Set("Cookie", cookie.Name+"="+cookie.Value)
+	header.Set("Origin", "http://"+srv.Addr())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws://"+srv.Addr()+"/ws", &websocket.DialOptions{HTTPHeader: header})
+	if conn != nil {
+		conn.CloseNow()
+	}
+	return err
+}
+
+// TestHandleWS_ForwardsTheUpstreamSessionCredential — the stub reaches the
+// upstream over loopback or the LAN and would otherwise be trusted for its
+// topology alone. Presenting the credential the upstream minted for its
+// own local page channel is what makes the carried socket an attributable,
+// revocable connection.
+func TestHandleWS_ForwardsTheUpstreamSessionCredential(t *testing.T) {
+	upstream := newSessionForwardingUpstream(t, "ao1.upstream-local")
+	srv := serveWithUpstream(t, upstream.Server)
+	cookie := exchangeStubCookie(t, srv)
+
+	if err := dialThroughStub(t, srv, cookie); err != nil {
+		t.Fatalf("dial through the stub: %v", err)
+	}
+	first := <-upstream.presented
+	if first == "" || !strings.HasPrefix(first, "ao1.upstream-local-") {
+		t.Fatalf("upstream saw session credential %q, want the one it planted", first)
+	}
+
+	// Cached: a second carried upgrade costs no second bootstrap fetch.
+	before := upstream.fetches.Load()
+	if err := dialThroughStub(t, srv, cookie); err != nil {
+		t.Fatalf("second dial through the stub: %v", err)
+	}
+	if got := <-upstream.presented; got != first {
+		t.Fatalf("the second upgrade presented %q, want the cached %q", got, first)
+	}
+	if got := upstream.fetches.Load(); got != before {
+		t.Fatalf("a cached credential cost %d extra fetches", got-before)
+	}
+}
+
+// TestHandleWS_ARefusedUpgradeRefreshesTheCredential — a refused upgrade is
+// the one signal a forwarded credential has gone dead (the upstream
+// restarted, or the session was revoked). Without the refresh the stub
+// would replay the dead value on every reconnect until the process was
+// restarted.
+func TestHandleWS_ARefusedUpgradeRefreshesTheCredential(t *testing.T) {
+	upstream := newSessionForwardingUpstream(t, "ao1.upstream-local")
+	srv := serveWithUpstream(t, upstream.Server)
+	cookie := exchangeStubCookie(t, srv)
+
+	upstream.accept.Store(false)
+	if err := dialThroughStub(t, srv, cookie); err == nil {
+		t.Fatal("the upstream refused the upgrade and the dial reported success")
+	}
+	refused := <-upstream.presented
+	if refused == "" {
+		t.Fatal("the refused upgrade carried no credential to go stale")
+	}
+
+	upstream.accept.Store(true)
+	if err := dialThroughStub(t, srv, cookie); err != nil {
+		t.Fatalf("dial after the refusal: %v", err)
+	}
+	if got := <-upstream.presented; got == refused {
+		t.Fatalf("the next upgrade replayed the refused credential %q", got)
+	}
+}
+
+// TestHandleWS_ForwardsNoCredentialItDidNotFetch — the page cannot put a
+// header on a WebSocket upgrade, but a local non-browser client holding
+// this stub's cookie can, and a forwarded one would let it name a session
+// it never obtained.
+func TestHandleWS_ForwardsNoCredentialItDidNotFetch(t *testing.T) {
+	// An upstream with no session core to speak of: nothing to plant, so
+	// nothing legitimate should reach it.
+	upstream := newSessionForwardingUpstream(t, "")
+	srv := serveWithUpstream(t, upstream.Server)
+	cookie := exchangeStubCookie(t, srv)
+
+	header := http.Header{}
+	header.Set("Cookie", cookie.Name+"="+cookie.Value)
+	header.Set("Origin", "http://"+srv.Addr())
+	header.Set(relaysession.Header, "ao1.not-ours")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws://"+srv.Addr()+"/ws", &websocket.DialOptions{HTTPHeader: header})
+	if conn != nil {
+		conn.CloseNow()
+	}
+	if err != nil {
+		t.Fatalf("dial through the stub: %v", err)
+	}
+	if got := <-upstream.presented; got != "" {
+		t.Fatalf("a caller-supplied session credential crossed the hop: %q", got)
+	}
+}
+
+// TestServe_DegradesWhenTheUpstreamHasNoCredential — forwarding is an
+// improvement in attribution, never a new requirement for the hop to
+// carry. An upstream with no session cookie to give leaves the upgrade
+// exactly as it was before forwarding existed: the bearer token alone.
+func TestServe_DegradesWhenTheUpstreamHasNoCredential(t *testing.T) {
+	upstream := newSessionForwardingUpstream(t, "")
+	srv := serveWithUpstream(t, upstream.Server)
+	cookie := exchangeStubCookie(t, srv)
+
+	if err := dialThroughStub(t, srv, cookie); err != nil {
+		t.Fatalf("dial through the stub: %v", err)
+	}
+	if got := <-upstream.presented; got != "" {
+		t.Fatalf("the upgrade named a session the upstream never issued: %q", got)
 	}
 }

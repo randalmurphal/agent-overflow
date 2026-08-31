@@ -16,6 +16,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/selfupdate"
 
 	"github.com/coder/websocket"
@@ -80,8 +81,8 @@ type NotificationClient struct {
 	// session forwards the backend's local page-channel credential on
 	// every dial, so this connection names a session instead of being
 	// trusted for arriving over the WSL localhost relay. Best-effort:
-	// see session_credential.go.
-	session           *sessionCredentialSource
+	// see internal/relaysession.
+	session           *relaysession.Source
 	present           func(notify.Send) error
 	handleInstall     func(selfupdate.InstallDirective)
 	handleWebviewTrim func(reason string)
@@ -192,6 +193,23 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 	}, nil
 }
 
+// newSessionCredentialSource points a relaysession.Source at the backend
+// this client dials.
+//
+// A WebSocket URL that will not map onto a bootstrap URL yields an inert
+// source rather than an error: forwarding the credential is an
+// improvement in attribution, and refusing to construct the notification
+// client over it would trade a working launcher for a better-labelled
+// one. The dial that follows carries the launch token alone, which is
+// what it carried before forwarding existed.
+func newSessionCredentialSource(wsURL, token string) *relaysession.Source {
+	bootstrap, err := relaysession.BootstrapURL(wsURL)
+	if err != nil {
+		log.Printf("wsllauncher: no session credential to forward: %v", err)
+	}
+	return relaysession.New(bootstrap, token, nil)
+}
+
 // Run reconnects until ctx is cancelled. Connection and presentation errors
 // are diagnostic state, not launcher-fatal errors.
 func (c *NotificationClient) Run(ctx context.Context) {
@@ -240,18 +258,18 @@ func (c *NotificationClient) runConnection(ctx context.Context) (bool, error) {
 	// them. Absent when the backend has none to give, which leaves this
 	// connection exactly as it was before forwarding existed.
 	var opts *websocket.DialOptions
-	if credential := c.session.credentialFor(ctx, false); credential != "" {
+	if credential := c.session.Credential(ctx); credential != "" {
 		opts = &websocket.DialOptions{HTTPHeader: http.Header{
-			transportSessionHeader: []string{credential},
+			relaysession.Header: []string{credential},
 		}}
 	}
 	conn, _, err := websocket.Dial(ctx, parsed.String(), opts)
 	if err != nil {
 		// A refused dial is the one signal that a forwarded credential has
 		// gone stale — the backend restarted, or the session was revoked.
-		// Re-fetch so the next attempt in the ladder carries a live one
+		// Mark it so the next attempt in the ladder fetches a live one
 		// rather than replaying the dead one until the launcher restarts.
-		c.session.credentialFor(ctx, true)
+		c.session.Stale()
 		return false, fmt.Errorf("connect to notification bridge: %s", redactNotificationBridgeError(err, c.token))
 	}
 	conn.SetReadLimit(notificationBridgeReadLimit)

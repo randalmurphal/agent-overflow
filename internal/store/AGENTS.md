@@ -392,10 +392,13 @@ transactions.
   `work_items` row with `source='automation'` and this source ref in a
   non-terminal state (`running` or `needs-human`), backed by
   `idx_work_items_automation_source_ref`.
-- `ui_state.go` — persisted per-client UI view state (`ui_state`
-  table, migration v15). `(scope, key) → value` where scope is an
-  opaque namespace (`client:<uuid>` now, `user:<id>` reserved) and
-  values are opaque strings. The justified carve-out from "transient
+- `ui_state.go` — persisted per-device UI view state (`ui_state`
+  table, migration v15). `(scope, key) → value` where scope is a
+  namespace `internal/app` derives from the calling connection
+  (`device:<id>` for a paired device, `client:<uuid>` for a screen on
+  the local page channel, `user:<id>` reserved) and values are opaque
+  strings. `DeleteUIStateScope` drops a whole bucket, which is how
+  revoking a device drops its state. The justified carve-out from "transient
   UI state belongs to frontend `$state`": these rows are the
   restart-surviving copy behind the frontend `appStorage` module,
   needed because webview localStorage resets every launch (ephemeral

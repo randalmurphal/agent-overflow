@@ -154,6 +154,33 @@ func TestEveryDeclaredCategoryIsUsed(t *testing.T) {
 	}
 }
 
+// TestDeviceAccessSurfaceIsWholeAndLocalOnly is the tripwire for the one
+// category where a single missing row is a credential-issuance call
+// answered over the LAN. The generic gate in methods_gen_test.go catches
+// an UNCLASSIFIED method, but a row moved to wireSafeMethods would pass
+// it; naming the surface here means the whole set moves together or not
+// at all.
+func TestDeviceAccessSurfaceIsWholeAndLocalOnly(t *testing.T) {
+	for _, method := range []string{
+		"GetAccessOverview",
+		"MintDevicePairing",
+		"DevicePairingStatus",
+		"ConfirmDevicePairing",
+		"CancelDevicePairing",
+		"RevokeAccessDevice",
+		"RevokeAccessSession",
+	} {
+		if !LocalOnlyMethods[method] {
+			t.Errorf("%q is not local-only; the device-access surface decides who reaches this backend at all", method)
+			continue
+		}
+		category, ok := LocalOnlyCategoryOf(method)
+		if !ok || category != CategoryDeviceAccess {
+			t.Errorf("%q carries category %v, want CategoryDeviceAccess", method, category)
+		}
+	}
+}
+
 // parseCategoryConstants reads the LocalOnlyCategory const block out of
 // internalmethods.go, in source order, and reports which constants carry
 // an explicit value. Parsing the source rather than reflecting is the

@@ -42,10 +42,12 @@ import (
 //
 // The minting, confirming, and cancelling calls are host-side Go API: they
 // are reached from an authenticated admin surface running in this process
-// (docs/specs/remote-access.md §4 step 1), and there is deliberately no
-// wire route for them. Only the device-facing half — redemption — crosses
-// the network, because only it is spoken by something that holds no
-// credential yet.
+// (docs/specs/remote-access.md §4 step 1). That surface is
+// internal/app/app_access.go, whose RPCs are classified
+// CategoryDeviceAccess and therefore answered only over loopback — a
+// LAN-attached credential-holder cannot reach them. Only the
+// device-facing half — redemption — crosses the network, because only it
+// is spoken by something that holds no credential yet.
 
 const (
 	// pairingTokenBytes is the entropy in a link token: 32 bytes, the same

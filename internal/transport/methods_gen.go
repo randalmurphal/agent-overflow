@@ -37,6 +37,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "BrowserCompanionResize", ID: 2921114943},               // main.App.BrowserCompanionResize
 	{Name: "BrowserCompanionSubscribe", ID: 668496681},             // main.App.BrowserCompanionSubscribe
 	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912},          // main.App.BrowserCompanionUnsubscribe
+	{Name: "CancelDevicePairing", ID: 2608316491},                  // main.App.CancelDevicePairing
 	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport
 	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate
 	{Name: "CheckThreadImportUpdates", ID: 2932719708},             // main.App.CheckThreadImportUpdates
@@ -47,6 +48,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "CloseThreadTerminals", ID: 1705768020},                 // main.App.CloseThreadTerminals
 	{Name: "CompactCodexThread", ID: 4090329093},                   // main.App.CompactCodexThread
 	{Name: "ConcludeDiscussion", ID: 4019739936},                   // main.App.ConcludeDiscussion
+	{Name: "ConfirmDevicePairing", ID: 3813775159},                 // main.App.ConfirmDevicePairing
 	{Name: "CountRunningBackgroundTasks", ID: 2617952423},          // main.App.CountRunningBackgroundTasks
 	{Name: "CreateDiffReviewComment", ID: 565306783},               // main.App.CreateDiffReviewComment
 	{Name: "CreateDiscussion", ID: 757689265},                      // main.App.CreateDiscussion
@@ -64,10 +66,12 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "DeleteRemoteEndpoint", ID: 3667944297},                 // main.App.DeleteRemoteEndpoint
 	{Name: "DeleteThread", ID: 1186337974},                         // main.App.DeleteThread
 	{Name: "DeleteUIState", ID: 1186757769},                        // main.App.DeleteUIState
+	{Name: "DevicePairingStatus", ID: 604263015},                   // main.App.DevicePairingStatus
 	{Name: "DownloadUpdate", ID: 115027584},                        // main.App.DownloadUpdate
 	{Name: "ForkThread", ID: 4063914461},                           // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964},                // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286},                // main.App.GenerateCommitMessage
+	{Name: "GetAccessOverview", ID: 1559710962},                    // main.App.GetAccessOverview
 	{Name: "GetAttachmentData", ID: 71154490},                      // main.App.GetAttachmentData
 	{Name: "GetAttachmentThumbnail", ID: 3414107538},               // main.App.GetAttachmentThumbnail
 	{Name: "GetBranchBaseDiff", ID: 1342635161},                    // main.App.GetBranchBaseDiff
@@ -204,6 +208,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "MarkDiffReviewCommentsSent", ID: 1673567995},           // main.App.MarkDiffReviewCommentsSent
 	{Name: "MarkThreadRead", ID: 1480646012},                       // main.App.MarkThreadRead
 	{Name: "MarkThreadUnread", ID: 236597375},                      // main.App.MarkThreadUnread
+	{Name: "MintDevicePairing", ID: 400809065},                     // main.App.MintDevicePairing
 	{Name: "MoveThreadTerminals", ID: 3013708277},                  // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793},                // main.App.NotificationActivated
 	{Name: "OpenExternalURL", ID: 3362740399},                      // main.App.OpenExternalURL
@@ -250,6 +255,8 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "RestartToUpdate", ID: 3141913084},                      // main.App.RestartToUpdate
 	{Name: "RetryThreadWorktreeSetup", ID: 1657104469},             // main.App.RetryThreadWorktreeSetup
 	{Name: "RevertConversationAndResendMessage", ID: 2059566413},   // main.App.RevertConversationAndResendMessage
+	{Name: "RevokeAccessDevice", ID: 2945903583},                   // main.App.RevokeAccessDevice
+	{Name: "RevokeAccessSession", ID: 2284519219},                  // main.App.RevokeAccessSession
 	{Name: "SaveDraft", ID: 3025273299},                            // main.App.SaveDraft
 	{Name: "SavePRCIJobLog", ID: 1537914193},                       // main.App.SavePRCIJobLog
 	{Name: "SavePayloadToFile", ID: 3576148797},                    // main.App.SavePayloadToFile
