@@ -107,7 +107,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // Auto-load-newer trigger — mirror of older at the bottom edge. Fires
   // `pane.loadNewer()` when the user scrolls within the prefetch zone of
   // the loaded window's bottom while more recent history is unloaded
-  // (`hasMoreNewer`, set after an older-paging prune dropped the tail, or
+  // (`hasMoreNewer`, set after a streaming prune dropped newer rows or
   // after a search jump into the middle). Returns whether it fired.
   function maybeAutoLoadNewer(offset: number): boolean {
     // Cheap pre-check (mirror of maybeAutoLoadOlder): `hasMoreNewer` is false

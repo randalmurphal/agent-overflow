@@ -60,26 +60,29 @@ export const LOAD_OLDER_ITEM_BUDGET = 200;
 export const ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 500;
 
 /**
- * Loaded item count that arms pruning/recentering. The pane keeps a
- * single contiguous window; exceeding this cap drops the far side and
- * exposes an older/newer gap control. The recent-window path defers
- * its prune to turn settle while a turn is streaming — see
- * ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS below.
+ * Loaded TOP-LEVEL item count that arms pruning/recentering. The pane
+ * keeps a single contiguous window; exceeding this cap drops the far
+ * side and exposes an older/newer gap control. Subagent children are
+ * deliberately not counted (and travel with their anchor through every
+ * cut) — the same rule as the backend pagers' `topLevelItemsFilter`,
+ * because a busy agent's held-loaded child transcript renders as one
+ * card, and counting it evicted the visible conversation (incident
+ * 2026-08-31). The recent-window path defers its prune to turn settle
+ * while a turn is streaming — see
+ * ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS below. NONE of the prunes
+ * run once the reader has explicitly paged history in
+ * (`userPinnedHistory` in threadTimelineWindow.svelte.ts): loaded
+ * history the user asked for is never taken back automatically.
  */
 export const ACTIVE_TIMELINE_WINDOW_MAX_ITEMS = 800;
 
 /**
- * Memory backstop for the prune deferral. While a turn is streaming, the
- * recent-window prune waits for turn settle (a mid-stream head-drop
- * repaints the visible timeline — incident 2026-06-10); a single turn
- * that streams past this ceiling gets pruned anyway, accepting the
- * repaint over unbounded growth.
- *
- * Also the trigger for the paged (click-driven) prunes: "Load older" /
- * "Load newer" tolerate up to this ceiling before dropping the opposite
- * edge, because pruning at MAX_ITEMS evicted the on-screen conversation
- * when one giant activity run held most of the item budget (see
- * pruneToHeadWindowIfNeeded in threadTimelineWindow.svelte.ts).
+ * Memory backstop for the prune deferral, in top-level items. While a
+ * turn is streaming, the recent-window prune waits for turn settle (a
+ * mid-stream head-drop repaints the visible timeline — incident
+ * 2026-06-10); a single turn that streams past this ceiling gets pruned
+ * anyway, accepting the repaint over unbounded growth. Also the
+ * loadNewer opposite-edge prune trigger.
  */
 export const ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS = 1600;
 

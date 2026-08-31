@@ -1247,11 +1247,12 @@ describe('threadTimelineWindow', () => {
       expect(pane.hasMoreNewer).toBe(true);
     });
 
-    // === keyed combined paging mutations ===
-    // The virtualizer derives structural changes from row keys, so paging can
-    // commit a prepend + opposite-edge prune in one render flush. No caller
-    // direction flag or transient over-cap render exists.
-    it('loadOlder prepends and tail-prunes in one render flush', async () => {
+    // === user-pinned history ===
+    // A successful loadOlder pins the window: the reader asked to see this
+    // history, so no automatic prune — not the opposite-edge drop, not the
+    // streaming or settle prunes — may take it back (user ruling
+    // 2026-08-31). The window grows as far as the reader pages.
+    it('loadOlder never drops the tail and pins the window against later prunes', async () => {
       const pane = createThreadPane();
       const initial = Array.from(
         { length: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS },
@@ -1271,42 +1272,89 @@ describe('threadTimelineWindow', () => {
         hasMoreOlder: true,
         hasMoreNewer: false,
       }));
-      let releaseOlder!: (value: unknown) => void;
-      setBindingMock(
-        'ListItemsBeforeCursor',
-        () =>
-          new Promise((resolve) => {
-            releaseOlder = resolve;
-          }),
-      );
-
-      await pane.switchThread(makeThread({ id: 't' }));
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS);
-
-      const pending = pane.loadOlder();
-      releaseOlder({
+      setBindingMock('ListItemsBeforeCursor', async () => ({
         items: [
           makeItem({ id: 'older', threadId: 't', turnIndex: 999, itemIndex: 0 }),
         ],
         oldestTurnIndex: 999,
         hasMore: true,
         hasMoreOlder: true,
-      });
-      // Resume past the fetch. The prepend and prune both commit before the
-      // one render tick the method awaits.
-      await Promise.resolve();
+      }));
 
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
-      expect(pane.items[0]?.id).toBe('older');
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS);
 
-      await pending;
+      await pane.loadOlder();
       await tick();
 
-      // The freshly prepended head survives and the dropped tail becomes a
-      // newer-history gap.
-      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+      // Prepend landed, nothing was dropped, no newer-history gap invented.
+      expect(pane.items).toHaveLength(
+        ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS + 1,
+      );
       expect(pane.items[0]?.id).toBe('older');
-      expect(pane.hasMoreNewer).toBe(true);
+      expect(pane.hasMoreNewer).toBe(false);
+
+      // Live tail growth past every cap: the pinned window keeps the loaded
+      // history instead of pruning back to the recent target.
+      pane.upsertItems(
+        Array.from({ length: 400 }, (_, index) =>
+          makeItem({
+            id: `live${index}`,
+            threadId: 't',
+            turnIndex: 5000 + index,
+            itemIndex: 0,
+          }),
+        ),
+      );
+      expect(pane.items[0]?.id).toBe('older');
+      expect(pane.items).toHaveLength(
+        ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS + 1 + 400,
+      );
+    });
+
+    it('thread re-entry re-arms bounded pruning after a pinned visit', async () => {
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'seed', threadId: 't', turnIndex: 10, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 10,
+        hasMore: true,
+        hasMoreOlder: true,
+      }));
+      setBindingMock('ListItemsBeforeCursor', async () => ({
+        items: [
+          makeItem({ id: 'older', threadId: 't', turnIndex: 9, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 9,
+        hasMore: true,
+        hasMoreOlder: true,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadOlder();
+
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [
+          makeItem({ id: 'other', threadId: 'u', turnIndex: 0, itemIndex: 0 }),
+        ],
+        oldestTurnIndex: 0,
+        hasMore: false,
+      }));
+      await pane.switchThread(makeThread({ id: 'u' }));
+
+      // Fresh thread, fresh bounded window: tail growth past the cap prunes
+      // again (no lingering pin from the previous thread's paging).
+      pane.upsertItems(
+        Array.from({ length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 50 }, (_, index) =>
+          makeItem({
+            id: `u${index}`,
+            threadId: 'u',
+            turnIndex: 100 + index,
+            itemIndex: 0,
+          }),
+        ),
+      );
+      expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
     });
 
     it('loadNewer appends and head-prunes in one render flush', async () => {
@@ -1846,6 +1894,155 @@ describe('threadTimelineWindow', () => {
       expect(pane.oldestLoadedTurnIndex).toBe(301);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.hasMoreNewer).toBe(false);
+    });
+
+    // Incident 2026-08-31: a busy subagent with an open companion pane held
+    // 1000+ live child rows loaded (the companion scope blocks fold
+    // eviction), the raw-count caps read that invisible mass as a full
+    // window, and the forced prune evicted the actual conversation —
+    // leaving one launch card and a "Load older" button whose pages the
+    // next prune cycle ate again. The caps now count TOP-LEVEL rows only,
+    // the same rule as the backend pagers' topLevelItemsFilter.
+    it('loaded subagent children never trigger the window prune', async () => {
+      const pane = createThreadPane();
+      const conversation = Array.from({ length: 20 }, (_, index) =>
+        makeItem({
+          id: `top${index}`,
+          threadId: 't',
+          turnIndex: index,
+          itemIndex: 0,
+        }),
+      );
+      const anchor = makeItem({
+        id: 'anchor',
+        threadId: 't',
+        turnIndex: 20,
+        itemIndex: 0,
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        toolName: 'Agent',
+      });
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [...conversation, anchor],
+        oldestTurnIndex: 0,
+        newestTurnIndex: 20,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      // Stream far more child rows than the hard ceiling. Active status
+      // keeps them out of fold eviction, exactly like a companion hold.
+      pane.upsertItems(
+        Array.from(
+          { length: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS + 100 },
+          (_, index) =>
+            makeItem({
+              id: `child${index}`,
+              threadId: 't',
+              turnIndex: 20,
+              itemIndex: index + 1,
+              parentId: 'anchor',
+              kind: 'tool_call',
+              role: 'assistant',
+              status: 'running',
+            }),
+        ),
+      );
+
+      // Every top-level conversation row survives — the child mass is not
+      // "screens of content" and must not arm any prune.
+      for (const item of conversation) {
+        expect(pane.items.some((it) => it.id === item.id)).toBe(true);
+      }
+      expect(pane.items.some((it) => it.id === 'anchor')).toBe(true);
+      expect(pane.hasMoreHistory).toBe(false);
+    });
+
+    it('the forced prune cuts by top-level position and keeps children with their anchor', async () => {
+      const pane = createThreadPane();
+      // Old anchor with children, then a long top-level tail that pushes
+      // the TOP-LEVEL count itself past the hard ceiling mid-turn.
+      const oldAnchor = makeItem({
+        id: 'old-anchor',
+        threadId: 't',
+        turnIndex: 0,
+        itemIndex: 0,
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        toolName: 'Agent',
+      });
+      const oldChildren = Array.from({ length: 40 }, (_, index) =>
+        makeItem({
+          id: `old-child${index}`,
+          threadId: 't',
+          turnIndex: 0,
+          itemIndex: index + 1,
+          parentId: 'old-anchor',
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'running',
+        }),
+      );
+      const newAnchor = makeItem({
+        id: 'new-anchor',
+        threadId: 't',
+        turnIndex: 1,
+        itemIndex: 0,
+        kind: 'tool_call',
+        role: 'assistant',
+        status: 'running',
+        toolName: 'Agent',
+      });
+      const newChildren = Array.from({ length: 40 }, (_, index) =>
+        makeItem({
+          id: `new-child${index}`,
+          threadId: 't',
+          turnIndex: 1,
+          itemIndex: index + 1,
+          parentId: 'new-anchor',
+          kind: 'tool_call',
+          role: 'assistant',
+          status: 'running',
+        }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [oldAnchor, ...oldChildren, newAnchor, ...newChildren],
+        oldestTurnIndex: 0,
+        newestTurnIndex: 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      pane.upsertItems(
+        Array.from(
+          { length: ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS + 10 },
+          (_, index) =>
+            makeItem({
+              id: `tail${index}`,
+              threadId: 't',
+              turnIndex: 10 + index,
+              itemIndex: 0,
+            }),
+        ),
+      );
+
+      // The cut kept the newest TARGET top-level rows; the old anchor and
+      // its whole subtree fell together (no stranded children), and the
+      // kept side holds no child whose anchor was dropped.
+      expect(pane.items.some((it) => it.id === 'old-anchor')).toBe(false);
+      expect(pane.items.some((it) => it.id.startsWith('old-child'))).toBe(false);
+      const keptIds = new Set(pane.items.map((it) => it.id));
+      for (const item of pane.items) {
+        const parentId = item.parentId ?? '';
+        if (parentId !== '') expect(keptIds.has(parentId)).toBe(true);
+      }
+      expect(pane.hasMoreHistory).toBe(true);
     });
   });
 });
