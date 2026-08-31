@@ -33,12 +33,13 @@ exercises — the same comment-directive form as `//wails:ignore`. `methodgen`
 vocabulary does not declare. There is no default and no silence: the generator
 is the gate, and it runs before a method reaches the wire at all.
 
-`scopes.go` is the vocabulary — the ten scope names a session can be granted
+`scopes.go` is the vocabulary — the scope names a session can be granted
 (`docs/specs/remote-access.md` §5) plus `host` for a call with no remote form —
-and the tier each resolves to: **observe** (`threads:read`, `files:read`),
-**execute**, **host**. It restates `internal/identity`'s ten names rather than
-importing them, since this package stays store-free; `internal/app` imports both
-and `TestScopeVocabularyMatchesIdentity` fails in either direction.
+and the tier each resolves to: **observe** (`threads:read`, `files:read`,
+`settings:read`), **execute**, **host**. It restates `internal/identity`'s
+grantable names rather than importing them, since this package stays store-free;
+`internal/app` imports both and `TestScopeVocabularyMatchesIdentity` fails in
+either direction.
 
 `//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
 pairing link, network bind / exposure changes, provider custom-env writes, MCP
@@ -61,11 +62,13 @@ tree would notice.
 `transitionalReachability` is the only hand-edited reachability left, and it is
 migration scaffolding. The annotation wave was required to change no method's
 reachability, so the 43 methods whose honest scope disagreed with the partition
-they inherited are pinned there with a one-line reason each — every entry a live
-question for the enforcement work, not a settled classification. The map only
-shrinks: `TestTransitionalOverridesAreLoadBearing` fails an entry that has
-stopped contradicting the derivation. Nothing new belongs in it; a new method
-takes the reachability its scope implies.
+they inherited were pinned there with a one-line reason each — every entry a live
+question for the enforcement work, not a settled classification. 35 remain: the
+enforcement wave's `settings:read` scope resolved eight of them, which is what
+deleting an entry looks like. The map only shrinks:
+`TestTransitionalOverridesAreLoadBearing` fails an entry that has stopped
+contradicting the derivation. Nothing new belongs in it; a new method takes the
+reachability its scope implies.
 
 That preservation is itself pinned. `preScopeTableLocalOnly`
 (`reachability_test.go`) is the frozen local-only partition of 2026-08-31, and

@@ -33,7 +33,7 @@ func (a *App) currentSettings() settings.Settings {
 // GetSettings returns the current persisted settings merged over defaults,
 // with every secret redacted (see redactedSettings).
 //
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) GetSettings() (settings.Settings, error) {
 	return redactedSettings(a.currentSettings()), nil
 }

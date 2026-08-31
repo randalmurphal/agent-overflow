@@ -166,7 +166,7 @@ func (a *App) uiStateScope(ctx context.Context) (string, error) {
 // GetUIState returns the calling connection's full persisted UI-state
 // bucket. A fresh client gets an empty map — defaults, not an error.
 //
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) GetUIState(ctx context.Context) (map[string]string, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("ui state: store unavailable")

@@ -136,7 +136,7 @@ func firstVisibleModel(providerName string, hidden []string) string {
 	return chatmodel.FallbackModelForProvider(providerName)
 }
 
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) ListChatBarFavorites() ([]store.ChatBarFavorite, error) {
 	if a.store == nil {
 		return nil, fmt.Errorf("list chat bar favorites: store unavailable")

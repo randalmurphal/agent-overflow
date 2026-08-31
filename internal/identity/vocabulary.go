@@ -10,9 +10,11 @@
 // cross-checked from here without an import cycle.
 //
 // What this package does NOT decide: what a scope permits. The names below
-// are the audit and persistence vocabulary; enforcement is phase 3
-// (docs/specs/remote-access.md §5), and nothing here consults a scope to
-// admit or refuse a call.
+// are the audit and persistence vocabulary; the per-RPC gate that compares
+// a session's grants against a method's declared scope lives in
+// internal/transport, reading this package's answer through internal/app
+// (docs/specs/remote-access.md §5). Nothing here consults a scope to admit
+// or refuse a call.
 package identity
 
 import (
@@ -81,16 +83,19 @@ var BindingClasses = []BindingClass{
 // Valid reports whether b is a declared binding class.
 func (b BindingClass) Valid() bool { return slices.Contains(BindingClasses, b) }
 
-// Scope names what a principal may ask for. The ten values are the audit
+// Scope names what a principal may ask for. The values are the audit
 // vocabulary of docs/specs/remote-access.md §5, persisted on a session row
 // as a JSON array.
 //
 // They are NAMES here and nothing more. No function in this package reads
 // a scope to admit or refuse anything: the enforced boundary (observe vs
-// execute, crossed with binding class) and the generated method table are
-// phase 3. They are declared now because a session cannot be stored
-// without a scope set, and an unvalidated set would let a typo persist as
-// a grant nobody can ever satisfy.
+// execute, crossed with binding class) and the generated method table live
+// in internal/transport, and the per-RPC gate that compares the two reads
+// a session's scopes through internal/app. This package answers "what does
+// this session hold", never "may this call proceed". They are declared
+// here because a session cannot be stored without a scope set, and an
+// unvalidated set would let a typo persist as a grant nobody can ever
+// satisfy.
 //
 // `host` is deliberately absent. It is a value the phase-3 method
 // annotation carries, marking a call with no remote form; it is not
@@ -120,6 +125,12 @@ const (
 	ScopeGitOperate Scope = "git:operate"
 	// ScopeAttachmentsWrite covers uploads; reads ride payload auth.
 	ScopeAttachmentsWrite Scope = "attachments:write"
+	// ScopeSettingsRead covers reads of the settings and preference
+	// surface: settings, keybindings, themes, spinner assets, composer
+	// favourites, and per-device view state. Observe tier — a read of a
+	// preference is not the authority to change one, and without a name
+	// for it every getter would have to carry the write scope.
+	ScopeSettingsRead Scope = "settings:read"
 	// ScopeSettingsWrite covers user- and device-tier settings, excluding
 	// host-tier keys and the step-up set.
 	ScopeSettingsWrite Scope = "settings:write"
@@ -132,7 +143,8 @@ const (
 var Scopes = []Scope{
 	ScopeThreadsRead, ScopeFilesRead, ScopeThreadsOperate, ScopeApprovalsRespond,
 	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopeGitOperate,
-	ScopeAttachmentsWrite, ScopeSettingsWrite, ScopeAccessAdmin,
+	ScopeAttachmentsWrite, ScopeSettingsRead, ScopeSettingsWrite,
+	ScopeAccessAdmin,
 }
 
 // Valid reports whether s is a declared scope.

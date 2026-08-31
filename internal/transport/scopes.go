@@ -5,12 +5,12 @@ package transport
 // vocabulary `methodgen` validates against, and the vocabulary the
 // generated table carries (docs/specs/remote-access.md §5).
 //
-// The set is the ten scope names a session can be granted, plus `host`
-// — which is a method property, never a grant: it marks a call that
-// acts on the host desktop or reconfigures the host itself and has no
-// remote form at all.
+// The set is the scope names a session can be granted, plus `host` —
+// which is a method property, never a grant: it marks a call that acts
+// on the host desktop or reconfigures the host itself and has no remote
+// form at all.
 //
-// Restated, not imported. `internal/identity` declares the same ten
+// Restated, not imported. `internal/identity` declares the same grantable
 // names as the audit and persistence vocabulary, and this package must
 // not import it: identity persists into `internal/store`, and transport
 // stays store-free (see identity's package comment for the direction).
@@ -46,6 +46,13 @@ const (
 	ScopeGitOperate Scope = "git:operate"
 	// ScopeAttachmentsWrite covers uploads; reads ride payload auth.
 	ScopeAttachmentsWrite Scope = "attachments:write"
+	// ScopeSettingsRead covers reads of the settings and preference
+	// surface: settings, keybindings, themes, spinner assets, composer
+	// favourites, and per-device view state. Observe tier, and the reason
+	// the tier exists at all for this surface: before it, a getter had
+	// only `settings:write` to name itself with, so reading a preference
+	// enforced as the authority to change one.
+	ScopeSettingsRead Scope = "settings:read"
 	// ScopeSettingsWrite covers user- and device-tier settings,
 	// excluding host-tier keys and the step-up set.
 	ScopeSettingsWrite Scope = "settings:write"
@@ -64,8 +71,8 @@ const (
 var Scopes = []Scope{
 	ScopeThreadsRead, ScopeFilesRead, ScopeThreadsOperate, ScopeApprovalsRespond,
 	ScopeThreadsAutonomy, ScopeTerminalOperate, ScopeGitOperate,
-	ScopeAttachmentsWrite, ScopeSettingsWrite, ScopeAccessAdmin,
-	ScopeHost,
+	ScopeAttachmentsWrite, ScopeSettingsRead, ScopeSettingsWrite,
+	ScopeAccessAdmin, ScopeHost,
 }
 
 // ScopeTier is the enforced boundary the scope names resolve to. Scope
@@ -91,11 +98,12 @@ const (
 	TierHost
 )
 
-// scopeTiers is §5's Tier column, declared once. Two observe entries,
+// scopeTiers is §5's Tier column, declared once. Three observe entries,
 // one host entry, and execute for everything else.
 var scopeTiers = map[Scope]ScopeTier{
 	ScopeThreadsRead:      TierObserve,
 	ScopeFilesRead:        TierObserve,
+	ScopeSettingsRead:     TierObserve,
 	ScopeThreadsOperate:   TierExecute,
 	ScopeApprovalsRespond: TierExecute,
 	ScopeThreadsAutonomy:  TierExecute,

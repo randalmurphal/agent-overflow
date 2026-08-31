@@ -113,11 +113,10 @@ type transitionalOverride struct {
 //     (rename a thread, archive a project) and are wire-reachable today.
 //     "Execute implies local-only" is what puts them here; whether that
 //     rule or that reachability is wrong is the adjudication.
-//  2. The settings and preferences surface, which has no observe-tier
-//     scope at all: the ten names carry `settings:write` and nothing to
-//     spell "read a setting", so every getter reads as execute. §6's
-//     later refinement ("device-tier writes ride a valid session") says
-//     the same thing about the ui_state pair.
+//  2. The settings and preferences surface. The getters left when
+//     `settings:read` (observe) was added; the ui_state WRITES remain,
+//     because §6 puts device-tier writes on "a valid session" and the
+//     vocabulary has no name for that floor.
 //  3. Workspace content reads the spec places in `files:read` (observe)
 //     that this tree deliberately locked to loopback in 2026-05, before
 //     the scope table existed.
@@ -146,18 +145,15 @@ var transitionalReachability = map[string]transitionalOverride{
 	"UpdateProposedPlanComment":  {Reason: "plan comment CRUD"},
 	"DeleteProposedPlanComment":  {Reason: "plan comment CRUD"},
 
-	// 2. The settings and preferences surface. Every getter here is a
-	// read the vocabulary has no observe-tier name for.
-	"GetSettings":          {Reason: "settings read; redacts every RemoteEndpoint.Token before it answers"},
-	"GetEditorSettings":    {Reason: "settings read"},
-	"GetContextSettings":   {Reason: "settings read"},
-	"GetKeybindings":       {Reason: "the frontend has no client-side defaults, so a refusal zeroes every shortcut on a remote browser"},
-	"GetThemeFiles":        {Reason: "keybindings parity: a refusal strands a remote browser on built-in themes"},
-	"GetSpinnerFiles":      {Reason: "keybindings parity, one config directory over; there is no write companion at all"},
-	"ListChatBarFavorites": {Reason: "composer favourites read; SetChatBarFavorite stays local-only"},
-	"GetUIState":           {Reason: "per-device view state; §6 has device-tier state riding a valid session, not settings:write"},
-	"SetUIState":           {Reason: "the bucket is derived from the connection, so there is no argument in which to ask for another device's"},
-	"DeleteUIState":        {Reason: "same bucket, same derivation"},
+	// 2. What is left of the settings and preferences surface. The eight
+	// GETTERS that sat here are gone: `settings:read` (observe) now names
+	// what they do, so the derivation and today's reachability agree and
+	// the overrides had nothing left to pin. These two are WRITES, and
+	// they stay because §6 puts device-tier writes on "a valid session"
+	// while the vocabulary can only spell `settings:write` — a floor no
+	// session minted today lacks, so nothing is narrowed by waiting.
+	"SetUIState":    {Reason: "the bucket is derived from the connection, so there is no argument in which to ask for another device's"},
+	"DeleteUIState": {Reason: "same bucket, same derivation"},
 
 	// 3. Workspace content the spec calls observe and this tree locked
 	// to loopback before the scope table existed. Unlocking them is the

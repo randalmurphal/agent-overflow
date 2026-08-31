@@ -92,14 +92,14 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetCodexAccountUsage", ID: 1110466608, Scope: "access:admin"},                         // main.App.GetCodexAccountUsage
 	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate"},                            // main.App.GetCodexSkills
 	{Name: "GetCommitDiff", ID: 3399370629, Scope: "files:read"},                                  // main.App.GetCommitDiff
-	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:write"},                         // main.App.GetContextSettings
+	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read"},                          // main.App.GetContextSettings
 	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read"},                            // main.App.GetDiffContextLines
 	{Name: "GetDiscussion", ID: 1924583939, Scope: "threads:read"},                                // main.App.GetDiscussion
 	{Name: "GetDraft", ID: 875977146, Scope: "threads:operate"},                                   // main.App.GetDraft
-	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:write"},                          // main.App.GetEditorSettings
+	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:read"},                           // main.App.GetEditorSettings
 	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate"},                                  // main.App.GetGitStatus
 	{Name: "GetGitStatusFastForProject", ID: 2193133889, Scope: "git:operate"},                    // main.App.GetGitStatusFastForProject
-	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:write"},                             // main.App.GetKeybindings
+	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:read"},                              // main.App.GetKeybindings
 	{Name: "GetLocalImageData", ID: 3247514443, Scope: "files:read"},                              // main.App.GetLocalImageData
 	{Name: "GetMcpServerStatus", ID: 4139359668, Scope: "settings:write"},                         // main.App.GetMcpServerStatus
 	{Name: "GetMergeConflictFile", ID: 3176695009, Scope: "git:operate"},                          // main.App.GetMergeConflictFile
@@ -119,10 +119,10 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate"},                             // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read"},                       // main.App.GetRateLimitsSnapshots
 	{Name: "GetRemoteEndpointToken", ID: 3604571249, Scope: "host"},                               // main.App.GetRemoteEndpointToken
-	{Name: "GetSettings", ID: 2554697378, Scope: "settings:write"},                                // main.App.GetSettings
-	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:write"},                            // main.App.GetSpinnerFiles
+	{Name: "GetSettings", ID: 2554697378, Scope: "settings:read"},                                 // main.App.GetSettings
+	{Name: "GetSpinnerFiles", ID: 2622552651, Scope: "settings:read"},                             // main.App.GetSpinnerFiles
 	{Name: "GetTerminalReplay", ID: 2329592604, Scope: "terminal:operate"},                        // main.App.GetTerminalReplay
-	{Name: "GetThemeFiles", ID: 2000462111, Scope: "settings:write"},                              // main.App.GetThemeFiles
+	{Name: "GetThemeFiles", ID: 2000462111, Scope: "settings:read"},                               // main.App.GetThemeFiles
 	{Name: "GetThread", ID: 1098302047, Scope: "threads:read"},                                    // main.App.GetThread
 	{Name: "GetThreadContextUsage", ID: 3852033265, Scope: "threads:operate"},                     // main.App.GetThreadContextUsage
 	{Name: "GetThreadDefaults", ID: 3362481473, Scope: "threads:operate"},                         // main.App.GetThreadDefaults
@@ -136,7 +136,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate"},                     // main.App.GetThreadWorktreeSetup
 	{Name: "GetTurnEditsDiff", ID: 2905371438, Scope: "threads:read"},                             // main.App.GetTurnEditsDiff
 	{Name: "GetUIRenderTracePath", ID: 1009213933, Scope: "host"},                                 // main.App.GetUIRenderTracePath
-	{Name: "GetUIState", ID: 3380106838, Scope: "settings:write"},                                 // main.App.GetUIState
+	{Name: "GetUIState", ID: 3380106838, Scope: "settings:read"},                                  // main.App.GetUIState
 	{Name: "GetUsageStats", ID: 3135466533, Scope: "threads:read"},                                // main.App.GetUsageStats
 	{Name: "GetWSLDistroPreference", ID: 294719565, Scope: "host"},                                // main.App.GetWSLDistroPreference
 	{Name: "GetWorkingTreeDiff", ID: 1858968113, Scope: "files:read"},                             // main.App.GetWorkingTreeDiff
@@ -181,7 +181,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read"},                              // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234, Scope: "host"},                                 // main.App.ListAvailableEditors
 	{Name: "ListBranchCommits", ID: 352990129, Scope: "git:operate"},                              // main.App.ListBranchCommits
-	{Name: "ListChatBarFavorites", ID: 2114948965, Scope: "settings:write"},                       // main.App.ListChatBarFavorites
+	{Name: "ListChatBarFavorites", ID: 2114948965, Scope: "settings:read"},                        // main.App.ListChatBarFavorites
 	{Name: "ListDiffReviewComments", ID: 3057473088, Scope: "threads:read"},                       // main.App.ListDiffReviewComments
 	{Name: "ListDiscussions", ID: 942288562, Scope: "threads:read"},                               // main.App.ListDiscussions
 	{Name: "ListDiscussionsForThread", ID: 2502562885, Scope: "threads:read"},                     // main.App.ListDiscussionsForThread

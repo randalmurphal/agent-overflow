@@ -105,14 +105,19 @@ func TestScopeValidationRefusesWhatItCannotName(t *testing.T) {
 	}
 }
 
-// TestScopeSetMatchesTheSpecTable pins the ten names. They are the audit
-// vocabulary, so a rename is a wire change and a deletion loses history's
-// ability to say what was granted.
+// TestScopeSetMatchesTheSpecTable pins the grantable names. They are the
+// audit vocabulary, so a rename is a wire change and a deletion loses
+// history's ability to say what was granted.
+//
+// `settings:read` joined in the phase-3 enforcement wave: §5's ten could
+// not spell a settings or preference read, so ten getters carried
+// `settings:write` and enforced reading a preference as the authority to
+// change one.
 func TestScopeSetMatchesTheSpecTable(t *testing.T) {
 	want := []string{
 		"threads:read", "files:read", "threads:operate", "approvals:respond",
 		"threads:autonomy", "terminal:operate", "git:operate",
-		"attachments:write", "settings:write", "access:admin",
+		"attachments:write", "settings:read", "settings:write", "access:admin",
 	}
 	if !slices.Equal(asStrings(Scopes), want) {
 		t.Fatalf("scope set = %v\nwant %v", asStrings(Scopes), want)

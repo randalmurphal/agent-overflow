@@ -128,7 +128,7 @@ func (a *App) OpenInEditor(path string, line, col int, workspacePath, editorID s
 // open time — surfaced verbatim so the settings UI can render an
 // "Auto" pill rather than guessing on the frontend.
 //
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) GetEditorSettings() settings.EditorSettings {
 	if a.settings == nil {
 		return settings.EditorSettings{}

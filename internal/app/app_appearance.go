@@ -33,7 +33,7 @@ func (a *App) themeService() (*theme.Service, error) {
 // path). Per-file problems are Warnings on the result — user-facing
 // state, not log entries.
 //
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) GetThemeFiles() (theme.Files, error) {
 	service, err := a.themeService()
 	if err != nil {
@@ -141,7 +141,7 @@ func (a *App) spinnerService() (*spinner.Service, error) {
 // path). Per-sprite problems are Warnings on the result — user-facing
 // state, not log entries.
 //
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) GetSpinnerFiles() (spinner.Files, error) {
 	service, err := a.spinnerService()
 	if err != nil {

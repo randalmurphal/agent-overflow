@@ -21,7 +21,7 @@ func (a *App) keybindingsService() (*keybindings.Service, error) {
 // of the result the frontend renders, so the bindings survive the
 // report; see keybindings.LoadResult.
 //
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) GetKeybindings() (keybindings.LoadResult, error) {
 	svc, err := a.keybindingsService()
 	if err != nil {

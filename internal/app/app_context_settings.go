@@ -31,7 +31,7 @@ type ContextSettingsUpdate struct {
 	AutoCompactExtendedPercent int    `json:"autoCompactExtendedPercent"`
 }
 
-//ao:scope settings:write
+//ao:scope settings:read
 func (a *App) GetContextSettings(providerName, model string) (ContextSettingsProfile, error) {
 	if a.store == nil {
 		return ContextSettingsProfile{}, fmt.Errorf("context settings: store unavailable")
