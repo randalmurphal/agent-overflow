@@ -1269,17 +1269,31 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      preference. This is now the primary content-isolation control
      rather than a defense-in-depth layer behind the design route,
      because the route it was layered behind is gone.
-   - **The boot credential moves out of script reach.** Bootstrap
-     exchanges the one-time `?t=` URL token for an HttpOnly cookie,
-     strips the token from the URL, and the WS upgrade authenticates
-     via cookie plus the §7 Origin allow-list, deleting the
-     `sessionStorage['ao:bootstrap-token']` copy and
-     `window.__AO_BOOTSTRAP__`. This is the same channel that carries
-     session credentials from phase 2 on, not a stopgap.
+   - **The boot credential moves out of script reach.** LANDED
+     2026-08-31 (24486360): a page URL carries a one-time ticket
+     (`?t=`), the first `/bootstrap.json` exchanges it for an
+     HttpOnly, SameSite=Strict, port-qualified cookie
+     (`ao_page_<port>`), and the SPA strips the ticket from the URL.
+     `sessionStorage['ao:bootstrap-token']`, `window.__AO_BOOTSTRAP__`
+     and every reader of either are gone. `OriginAllowed` gates `/ws`,
+     `/bootstrap.json` and the new `/pageurl` ahead of the credential
+     and is load-bearing on loopback too (cookies do not scope by
+     port). Consumers that navigate more than once (Windows launcher
+     reload, `ao-harness`, the e2e rig) ask the credentialled
+     `GET /pageurl` for a fresh URL. One validation function
+     (`Credential.Authenticate`), three carriers: cookie, bearer
+     header, `?token=` for URL-only WebSocket APIs. This is the same
+     channel that carries session credentials from phase 2 on, not a
+     stopgap.
    - **The `--connect` client stub hands out that same credential.**
-     Its loopback listener serves the injected `__AO_BOOTSTRAP__`,
-     upstream token included, on an unauthenticated `GET /`. Same
-     credential shape, so it is fixed in the same change.
+     LANDED 2026-08-31 (same commit): the stub serves the SPA shell
+     verbatim on its own origin, issues its own page cookie, and
+     carries `/ws` to the upstream through `httputil.ReverseProxy`
+     with the upstream token attached server-side, so `validateWsUrl`
+     now holds same-origin with no exemptions in every mode. The
+     upstream's verdict on the configured token is relayed through the
+     stub's own manifest probe (bearer header, refusal maps to 404,
+     transient to 503).
    - **The browser MCP endpoint authenticates on an unguessable path
      alone.** LANDED 2026-08-30 (476f428f): every request now clears a
      loopback-peer check off `r.RemoteAddr` (the claudetui gateway's

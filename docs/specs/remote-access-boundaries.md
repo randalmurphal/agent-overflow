@@ -36,12 +36,13 @@ Two things the markdown fix did not touch, both still true today. The
 click delegate (`utils/externalLinks.ts`) returns *without*
 `preventDefault` when `safeExternalURL` yields null, so a non-`http(s)`
 anchor performs its default navigation — unreachable from markdown now,
-still app-wide policy for every other anchor. And the bootstrap token
-is still readable by script, in `sessionStorage['ao:bootstrap-token']`
-and on `window.__AO_BOOTSTRAP__`; moving it out of script reach is spec
-§16 phase 0. Neither is a live path on its own: with no same-origin
-route serving agent-authored bytes, there is nothing at the SPA origin
-to run the script that would read it.
+still app-wide policy for every other anchor. The second one is closed:
+as of 2026-08-31 (24486360) no credential is readable by script.
+`sessionStorage['ao:bootstrap-token']` and `window.__AO_BOOTSTRAP__` are
+gone with every reader of either; the page holds an HttpOnly cookie its
+one-time `?t=` ticket bought at the first `/bootstrap.json`, and the WS
+upgrade authenticates via that cookie behind an Origin check that runs
+first and is load-bearing on loopback too.
 
 The rest of the render pipeline audited clean and should not be
 re-litigated: raw HTML disabled (`renderHtml={false}`), non-`http(s)`
@@ -62,11 +63,17 @@ stub, and the full listener set, then re-checked on 2026-08-30 against
 the tree with design mode removed. Verified in code, reachable today.
 
 **D. The `--connect` client stub serves the upstream credential.**
-Its loopback listener returns the injected `__AO_BOOTSTRAP__` — token
-included — on `GET /`, behind a Host guard and nothing else. Any
-loopback peer on the machine running `--connect` reads a working
-credential for the remote backend. Fix is spec §16 phase 0, in the
-same change that moves the boot credential out of script reach.
+*Status 2026-08-31: landed (24486360), in the same change that moved
+the boot credential out of script reach.* The stub now serves the SPA
+shell verbatim — nothing is injected — and keeps the upstream token in
+Go, attached as a bearer header where it carries the page's `/ws` to
+the upstream through a reverse proxy. The page authenticates to the
+stub with the stub's own page cookie, bought with a one-time ticket
+like any other boot. The body is kept in its original present tense as
+the record: its loopback listener returned the injected
+`__AO_BOOTSTRAP__` — token included — on `GET /`, behind a Host guard
+and nothing else, so any loopback peer on the machine running
+`--connect` could read a working credential for the remote backend.
 
 **E. The browser MCP endpoint authenticates on the path alone.**
 *Status 2026-08-30: landed (476f428f). All three checks below are in
@@ -111,9 +118,10 @@ the better outcome — is the only launcher left.
 **Not a defect, checked and cleared.** The in-app browser reaching
 loopback URLs is correct: that is what it exists for, and it is a
 browser. It cannot obtain a session credential by doing so —
-`/bootstrap.json` requires the server token in `?t=`, and the managed
-Chrome runs an ephemeral profile with no access to the webview's
-`sessionStorage`. The companion pane is pixels only (screencast JPEGs
+`/bootstrap.json` answers only a request carrying the page cookie or a
+one-time ticket it was never handed, and the managed Chrome runs an
+ephemeral profile with no access to the webview's cookie jar. The
+companion pane is pixels only (screencast JPEGs
 into an `<img>`, no DOM crossing). The one thing it *could* reach was
 `/design/`, and that route is gone. Likewise the browser MCP listener
 cannot start lazily: its URL rides provider argv at spawn, so it must
