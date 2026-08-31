@@ -239,7 +239,7 @@ basis (a same-host relay can otherwise launder remote peers).
 
 ## 5. Authorization
 
-### Two enforcement tiers, eight labels
+### Two enforcement tiers, ten labels
 
 Scope names are the audit vocabulary; the enforced boundary is
 **observe vs. execute**, crossed with binding class (§2).
@@ -324,8 +324,10 @@ Loopback-vs-remote survives only as a transport optimization signal.
 ### Frontend capability model
 
 `isViewOnlySession()` (bootstrap boolean) is replaced by a granted-scope
-capability object; the ~15 gating files key off the capability they
-need. Scope-refusal errors are structured and name the required scope,
+capability object; the gating files key off the capability they
+need — 36 non-test consumers as of 2026-08-30 (24 components, 9
+stores, 3 utils), so budget the phase-3 migration for that, not for
+the ~15 this section first claimed. Scope-refusal errors are structured and name the required scope,
 so disabled-state tooltips are self-describing. **The server never
 trusts the client's capability object**. Every RPC re-checks
 server-side; hello-frame flags are compat hints, never authorization.
@@ -344,7 +346,9 @@ it; the backend derives scope from the authenticated session's device.
   before identity or the DB matter (network bind, port, provider
   binaries + custom env, retention, observability, WSL preference) and
   must be hand-editable when the UI is unreachable. Keeps
-  `settings.Service` + `atomicfile`.
+  `settings.Service` and its own inline atomic write (`os.CreateTemp`
+  → `Sync` → `os.Rename`; the package does not use
+  `internal/atomicfile`, despite an earlier draft of this line).
 - **User and device tiers live in the `ui_state` table**, which already
   exists for exactly this shape (and already migrated pane layout out of
   settings). User tier = `user:<id>` scope; device tier = `device:<id>`
@@ -597,10 +601,13 @@ field.
 
 Prerequisite sweep, valuable standalone:
 
-- Emit on every persisted mutation: the ~12 thread-row RPCs
+- Emit on every persisted mutation: the thread-row RPCs
   (create/delete/archive/pin/read/model/effort/fastMode/contextWindow/
-  branch/workspace), `settings:updated` (with tier + keys),
-  `project:*`. Frontend replaces local-only applies (`syncThread`,
+  workspace), `settings:updated` (with tier + keys), `project:*`.
+  `UpdateThreadBranch` is the one that already emits, per changed row,
+  and its doc comment states exactly the convergence rationale the
+  rest of the sweep needs — copy that shape rather than inventing
+  one. Frontend replaces local-only applies (`syncThread`,
   `*Local`) with event-driven convergence; initiators may still apply
   optimistically.
 - `draft:updated` with initiator echo-suppression; last-write-wins plus
@@ -711,17 +718,25 @@ Prerequisite sweep, valuable standalone:
   do this. Revocation is not remote wipe. Cutting a device's access
   does not un-disclose what its replica already held (boundaries
   doc).
-- **Reconnect discipline** (two t3code patterns adopted; unbuilt
-  today, phase 1). Current behavior is the opposite of the target:
-  on socket close `wsClient` rejects every in-flight RPC with one
-  shared `DisconnectedError('socket closed')` — no suspension queue,
-  no per-call cause, and no app-layer retry wrapper anywhere, so a
-  reconnect that takes 200ms still surfaces as a failed call. Target:
-  every in-flight query/RPC derives from one canonical
-  connection-state observable — transient states (connecting,
-  backoff) *suspend* pending work so it re-runs on the next
-  "connected", while terminal states fail it with the preserved
-  underlying cause, never a generic message. And retry-on-terminal is
+- **Reconnect discipline** (two t3code patterns adopted; **mostly
+  built**, the remainder is phase 1). The target shape is already
+  in-tree and generic: `stores/transportStatus.svelte.ts`'s
+  `onTransportStatusChange` is the one canonical connection-state
+  observable, `isTransportClassError` the shared classifier, and
+  `entityStore.svelte.ts` wires the transport edge once for every
+  entity store — `connected` re-acquires, anything else *suspends*
+  rather than grinding a retry curve against a dead socket. Nine
+  stores ride it, and its header records that five carried a
+  verbatim copy before it moved there. Explicit retry-on-reconnect
+  exists too (`editors.svelte.ts`, `prReviewStore`, `gitStatusStore`,
+  `threadSwitchLoad`'s `retryHistoryLoad`). **Do not build a second
+  suspension mechanism.** What is genuinely missing is narrower: on
+  socket close `wsClient` still rejects every in-flight RPC with one
+  shared `DisconnectedError('socket closed')`, so a terminal failure
+  cannot name its own cause, and one-off RPCs that do not go through
+  an entity store have no suspension at all. Target for the
+  remainder: terminal states fail with the preserved underlying
+  cause, never a generic message. And retry-on-terminal is
   only ever a small explicit allowlist scoped to a known transient
   window (e.g. an authentication refusal in the seconds after a
   server update restart), not a blanket policy. On a flaky link this
@@ -784,8 +799,11 @@ Decide the **seams** in phase 1, not a speculative store rewrite:
 - `bindings.ts` routes RPCs through a resolvable transport handle
   rather than importing a singleton.
 - Event fan-out carries connection origin (backend UUID).
-- The IndexedDB thread replica keys its stores by backend UUID so two
-  backends' threads can never collide in one browser profile.
+- The IndexedDB thread replica keys its **database** by backend UUID
+  so two backends' threads can never collide in one browser profile.
+  Already shipped (`replica/session.ts`, `ao-replica-${backendId}`) —
+  listed here as a seam the multi-backend work must not break, not as
+  one to decide. Its lifecycle is not: see §9.
 
 The genuinely collision-prone singletons (git status by path, provider
 accounts/usage, settings, sysstat) get keyed when multi-backend UI
@@ -1017,21 +1035,75 @@ fails on regression:
 
 ### Measured baseline, and why the budget is missed today
 
-Measured 2026-08-30 against a real 65,866-item thread: the 500-item
-cold window serializes to **766 KB raw, 149 KB compressed** — 3× the
-budget above. Where it goes, per 500 rows: payload metadata 271 KB
-(45%, almost all on `tool_call` rows, worst single row 8.4 KB), item
-`meta` 152 KB (25%), `summary` 97 KB (16%, mostly thinking text),
-ids 49 KB (8%, but they compress to nearly nothing), preview
-highlight spans 35 KB (6%). The payload *bodies* are correctly
-withheld; this is entirely the metadata riding alongside.
+Measured 2026-08-30 against a real 65,877-item thread, at the size the
+cold open actually asks for — `SLICE_AROUND_ITEM_BUDGET = 200`, not the
+500 of `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS`, which is the *retention*
+target after paging and was the first figure this section carried. The
+200-row window serializes to **330 KB raw, 59 KB compressed**: 1.2×
+the budget above, not the 3× first recorded here.
 
-The cause is structural and one sentence long: **every cap in the
-wire path is a count, and none is a byte figure.** The window caps at
-500 items, inline diff previews cap at 30 lines per file, tool output
-files cap at 8 MB on disk. Nothing between the store and the socket
-counts bytes, so a row with thirty very long lines satisfies every
-check we have.
+Where it goes matters more than the total. Of 200 rows, 109 are
+`tool_call` and they carry **81%** of the bytes. Per-field, across the
+whole window: payload metadata 100 KB (38%), item `meta` 63 KB (24%),
+`summary` 48 KB (18%, mostly thinking text), preview highlight spans
+17 KB (6%), ids and timestamps the rest. Payload *bodies* are
+correctly withheld; this is the metadata riding alongside.
+
+Two of those fields are content that **does not paint on first
+render**:
+
+- **Full tool arguments** (`meta.input`) are 59 KB of the 63 KB. A
+  4.2 KB `Bash` argument object ships so a card can show one command
+  line. Three consumers read sub-fields of it — `input.files`
+  (`utils/fileChangeRows.ts`), `input.questions`
+  (`AskUserQuestionCard.svelte`), `input.tool`
+  (`utils/subagentGrouping.ts`) — and nothing reads the whole object.
+- **Diff preview text and its highlight spans** are 51 KB, 15% of the
+  window. `collapseDiffPreviews` defaults to `true`, so by default the
+  patch sits behind a chevron and none of it paints until clicked.
+
+That is ~110 KB of 330 KB raw rendering nothing on arrival. The
+correction that follows is therefore *not* a shorter window: the row
+count is what makes the timeline look complete, and the reader pages
+back through it seamlessly already (auto-load fires 800 px before the
+top edge, one page per gesture, with the keyed virtualizer emitting
+exact scroll compensation on prepend). Cut the fields that arrive
+unrendered and the same 200 rows — or more — fit the budget.
+
+One wrinkle to design around rather than ignore: `collapseDiffPreviews`
+is a *client* setting. With it off the diff text does paint on first
+load, so that half of the elision is conditioned on the attaching
+client's preference, not dropped outright. The projection therefore
+belongs where the connection's state is known, not in the store.
+
+**The precedent already exists in-tree, and it is the right shape.**
+An earlier version of this section claimed every cap in the wire path
+was a count. That was wrong. Two byte budgets already bound the
+derived-cache fields, both justified in code by exactly the reasoning
+above:
+
+- `persistedCodeSpansMaxBytes = 256 << 10` (`app_highlight_persist.go`)
+  bounds the `codeSpans` blob on `items.meta` — *"Meta rides every
+  item-list load, so a pathological all-code message must not attach
+  megabytes of runs; fences past the budget fall back to the RPC path
+  lazily."* It spends a running budget across fences and **skips
+  rather than breaks**, so one giant fence cannot starve later small
+  ones.
+- The same constant caps `preview_spans`
+  (`app_highlight_diff_seed.go`) — *"preview_spans rides every item
+  list read, so it gets the same retained-bytes guardrail"* — behind
+  per-file (256 KB) and aggregate (1 MB) input caps.
+
+Both already satisfy the "elision ships with its recovery route" rule
+below: what they skip is fetchable through the highlight RPC. The gap
+is not that the pattern is missing, it is that it was applied to the
+two fields we authored ourselves and never to the provider-shaped
+fields the measurement blames. Count caps that remain count-only:
+`SLICE_AROUND_ITEM_BUDGET = 200`, `LOAD_OLDER_ITEM_BUDGET = 200`,
+`ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS = 500`,
+`inlineDiffPreviewLineCount = 30`, and the 8 MB on-disk tool-output
+file cap. A row with thirty very long lines still satisfies all of
+them.
 
 Calibration, so the target is not mistaken for a crisis: t3code's own
 comment on their page size says it is *"sized so first paint on the
@@ -1040,20 +1112,32 @@ quoted small figures (a 15.5 KB CI ceiling) come from a fixture whose
 point is that 9 MB of retained tool output ships as almost nothing —
 it measures their elision, not their window, and we already keep
 payload bodies off the wire. On comparable ground, heaviest thread to
-heaviest thread, they are at ~100 KB and we are at 149 KB. Our 50 KB
-budget is more aggressive than what they actually achieve, and it
-should stay that way, but the gap to close is 3× against our own
-target rather than an order of magnitude against theirs.
+heaviest thread, they are at ~100 KB and we are at 59 KB — we are
+already ahead of them, and the only thing we are behind is our own
+50 KB target, by 9 KB. That target stays where it is: it is more
+aggressive than what they achieve, and the elision above clears it
+with room to spare.
 
 Rules that follow, and hold for any future payload:
 
-- **Every count budget carries a byte budget.** A window admits rows
-  until either the row count or the encoded byte budget is reached,
-  whichever comes first. Count alone bounds reducer churn; bytes
-  alone bounds a small number of large rows. Both are needed and
-  neither substitutes.
+- **Elide unrendered fields before shortening the window.** The row
+  count is what makes a reopened thread look complete; the fields are
+  where the bytes are. Cutting rows trades visible history for bytes,
+  cutting a field nothing paints trades nothing. Reach for the window
+  only once the fields are clean.
+- **Every count budget still carries a byte budget**, as the backstop
+  that field elision cannot provide: a window admits rows until either
+  the row count or the encoded byte budget is reached, whichever comes
+  first. Count alone bounds reducer churn; bytes alone bounds a small
+  number of large rows. Neither substitutes for the other, and neither
+  substitutes for not sending the field.
 - **One oversized row is always admitted when the page is otherwise
   empty**, or pagination stalls forever on a single item.
+- **A budget skips, it does not break.** Spending a running budget
+  across items and stopping at the first overage lets one giant item
+  starve every later small one, which reads to the user as history
+  that thins out for no reason. `buildPersistedCodeSpans` gets this
+  right and says so at the `continue`.
 - **Byte accounting charges what actually goes on the wire**,
   including any row that appears twice in one payload.
 - **Elision ships with its recovery route in the same change.** A
@@ -1173,8 +1257,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    regardless. `PRStep.svelte`'s two unvalidated forge hrefs stay as
    they are: a forge API returns the same URL the real pull request
    page would link, so validating ours while the real page does not
-   is theater. Both are recorded in the boundaries doc as observed
-   behavior, not as debt.
+   is theater. The click delegate is recorded in the boundaries doc
+   as observed behavior rather than debt; PRStep is recorded here
+   only, because it is a decision about our own component and not a
+   property of the boundary.
 
    - **A baseline CSP**, strict in production and relaxed in dev.
      There is no CSP anywhere in the product today. The Vite dev
@@ -1227,19 +1313,22 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    standing leak today, acute once hosts are unattended). Emits,
    channels, gap entries, race handling,
    device attribution column, thread branch/remote/head recording,
-   backend UUID, hello frame, multi-backend seams (§10). Reconnect
-   discipline lands here (§9): it is client-transport work that every
-   later surface depends on, and today's blanket
-   fail-every-in-flight-RPC is what a flaky link would surface. So
-   does the replica's missing lifecycle — nothing deletes a replica
-   database today, and a backend-id change orphans the old one on the
-   origin permanently — and §9's forward-tolerance obligation with
-   its future-dialect fixture. Byte budgets land here too (§14): the
-   window gains a byte term alongside its row count, the heavy
-   metadata fields gain wire-boundary caps with typed markers and
-   their fetch route, and the counting harness scenario becomes the
-   gate. This is not remote-only work — the same 766 KB is parsed by
-   the renderer on every cold thread open today.
+   backend UUID, hello frame, multi-backend seams (§10). The
+   *remainder* of reconnect discipline lands here (§9) — per-call
+   cause preservation in `wsClient` and coverage for one-off RPCs
+   outside the entity primitive. The suspension mechanism itself is
+   already built and must not be duplicated. So does the replica's
+   missing lifecycle — nothing deletes a replica database today, and
+   a backend-id change orphans the old one on the origin permanently
+   — and §9's forward-tolerance obligation with its future-dialect
+   fixture. Byte budgets land here too (§14), and the shape is
+   settled: elide the fields that arrive unrendered (full tool
+   arguments, diff preview text and its spans) with a typed marker
+   and their fetch route, following the `persistedCodeSpansMaxBytes`
+   precedent, and make the counting harness scenario the gate. The
+   window keeps its 200 rows. This is not remote-only work — the same
+   330 KB is parsed by the renderer on every cold thread open today,
+   and a third of it renders nothing.
 2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
