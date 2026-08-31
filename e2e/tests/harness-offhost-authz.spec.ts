@@ -259,7 +259,7 @@ test.describe('off-host authorization', () => {
     // plant that cookie — the page has to load to show the pairing state —
     // and must NOT plant the backend's own `loopback-only` session, whose
     // class does not reach this peer.
-    const link = mintLink(await harness.rpc<{ url: string }>('MintDevicePairing', 'phone'));
+    const link = mintLink(await harness.rpc<{ url: string }>('MintDevicePairing', 'phone', 'full'));
     const manifest = await fetch(
       `http://${lanIP}:${port}/bootstrap.json?t=${encodeURIComponent(link.pageTicket)}`,
     );

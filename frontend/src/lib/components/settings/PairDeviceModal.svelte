@@ -15,6 +15,7 @@
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
   import MicroLabel from '../primitives/MicroLabel.svelte';
+  import Segmented from '../primitives/Segmented.svelte';
   import Smartphone from '@lucide/svelte/icons/smartphone';
   import Laptop from '@lucide/svelte/icons/laptop';
   import Check from '@lucide/svelte/icons/check';
@@ -51,7 +52,18 @@
     | { at: 'done' }
     | { at: 'ended'; note: string };
 
+  // What the paired device may do, chosen before the link is minted
+  // because the grant set is fixed at mint. Full is what this surface
+  // always issued; view-only is the observe scopes, and the backend is
+  // what decides which those are.
+  type Access = 'full' | 'view-only';
+  const ACCESS_OPTIONS: Array<{ value: Access; label: string }> = [
+    { value: 'full', label: 'Full access' },
+    { value: 'view-only', label: 'View only' },
+  ];
+
   let stage = $state<Stage>({ at: 'choose' });
+  let access = $state<Access>('full');
   let minting = $state<'phone' | 'browser' | null>(null);
   let deciding = $state(false);
   let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -83,6 +95,7 @@
   function reset(): void {
     stopTimers();
     stage = { at: 'choose' };
+    access = 'full';
     minting = null;
     deciding = false;
     copyState = 'idle';
@@ -99,7 +112,7 @@
     if (minting !== null) return;
     minting = deviceClass;
     try {
-      const invite = await MintDevicePairing(deviceClass);
+      const invite = await MintDevicePairing(deviceClass, access);
       stage = { at: 'share', invite };
       nowMs = Date.now();
       startWatching(invite.linkId);
@@ -233,6 +246,16 @@
           Binding first for another device to reach it.
         </SettingsCallout>
       {/if}
+      <div class="flex items-center justify-between gap-3">
+        <MicroLabel>Access</MicroLabel>
+        <Segmented
+          options={ACCESS_OPTIONS}
+          value={access}
+          onChange={(next) => (access = next)}
+          ariaLabel="Access"
+          disabled={minting !== null}
+        />
+      </div>
       <div class="grid grid-cols-2 gap-2">
         <button
           type="button"

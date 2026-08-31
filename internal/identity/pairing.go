@@ -162,8 +162,10 @@ type PairingRequest struct {
 	// local channel's posture.
 	DeviceClass  DeviceClass
 	BindingClass BindingClass
-	// Scopes is the subset this link grants. A viewer link and a peer
-	// invitation are this field, not a second flow.
+	// Scopes is the subset this link grants, and the set the redeemed
+	// session holds for its whole life. A viewer link and a peer
+	// invitation are this field, not a second flow — PairingAccess is the
+	// device-pairing surface's name for the two choices it offers.
 	Scopes []Scope
 	// CertFingerprint is the reserved phase-5 field (see PairingPayload).
 	// Empty today on every path.

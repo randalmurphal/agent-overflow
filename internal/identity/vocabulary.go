@@ -153,8 +153,54 @@ var Scopes = []Scope{
 	ScopeAccessAdmin,
 }
 
+// ObserveScopes is the read-only subset: the grant set a device paired
+// for VIEWING holds. Declared here beside the names rather than at the
+// mint surface, so a second mint path cannot spell "read-only" a third
+// way.
+//
+// Its members are exactly the scopes `internal/transport` places in the
+// observe tier, which this package cannot say and must not restate — the
+// two are pinned together by `internal/app`'s
+// TestObserveScopesAreTheObserveTier, so a scope added to that tier has
+// to join this set or fail.
+var ObserveScopes = []Scope{ScopeThreadsRead, ScopeFilesRead, ScopeSettingsRead}
+
 // Valid reports whether s is a declared scope.
 func (s Scope) Valid() bool { return slices.Contains(Scopes, s) }
+
+// PairingAccess is how much a pairing link grants the device that
+// redeems it (docs/specs/remote-access.md §5, "narrowing is offered
+// per-device"). The names are the mint surface's wire vocabulary; the
+// grant set each resolves to is decided here.
+type PairingAccess string
+
+const (
+	// PairingAccessFull grants every declared scope: an owner's own
+	// device, which is what pairing usually means.
+	PairingAccessFull PairingAccess = "full"
+	// PairingAccessViewOnly grants the observe tier and nothing else. The
+	// device reads threads, files and settings; it drives no session,
+	// answers no approval, and reaches no host surface.
+	PairingAccessViewOnly PairingAccess = "view-only"
+)
+
+// Grants resolves the scope set an access level names.
+//
+// The EMPTY level is full, because this parameter arrived after the mint
+// surface did: a caller that names no level is asking for what it always
+// got. An unrecognized one is an ERROR rather than a fall back to full —
+// a level nobody declared must never widen a link somebody meant to
+// narrow.
+func (a PairingAccess) Grants() ([]Scope, error) {
+	switch a {
+	case "", PairingAccessFull:
+		return Scopes, nil
+	case PairingAccessViewOnly:
+		return ObserveScopes, nil
+	default:
+		return nil, fmt.Errorf("identity: %q is not a declared pairing access level", string(a))
+	}
+}
 
 // ValidateScopes returns the set as the strings a session row stores,
 // refusing any name that is not declared.

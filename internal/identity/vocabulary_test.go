@@ -128,6 +128,44 @@ func TestScopeSetMatchesTheSpecTable(t *testing.T) {
 	}
 }
 
+// TestPairingAccessResolvesItsGrantSet — the mint surface names a level
+// and this package decides what it means, so both ends of the choice are
+// pinned here: full is the whole declared set, view-only is the observe
+// subset and nothing more, an absent level is full (the parameter arrived
+// after the surface did), and an undeclared one is refused rather than
+// widened.
+func TestPairingAccessResolvesItsGrantSet(t *testing.T) {
+	for _, level := range []PairingAccess{"", PairingAccessFull} {
+		grants, err := level.Grants()
+		if err != nil {
+			t.Fatalf("PairingAccess(%q).Grants(): %v", level, err)
+		}
+		if !slices.Equal(grants, Scopes) {
+			t.Errorf("PairingAccess(%q) grants %v, want every declared scope", level, grants)
+		}
+	}
+
+	grants, err := PairingAccessViewOnly.Grants()
+	if err != nil {
+		t.Fatalf("view-only Grants(): %v", err)
+	}
+	want := []Scope{ScopeThreadsRead, ScopeFilesRead, ScopeSettingsRead}
+	if !slices.Equal(grants, want) {
+		t.Errorf("view-only grants %v, want exactly %v", grants, want)
+	}
+	// Every member is still a real grant, or a view-only session could not
+	// be minted at all (ValidateScopes refuses what it cannot name).
+	if _, err := ValidateScopes(grants); err != nil {
+		t.Errorf("view-only grants do not validate: %v", err)
+	}
+
+	for _, level := range []PairingAccess{"read-only", "View only", "none"} {
+		if _, err := level.Grants(); err == nil {
+			t.Errorf("PairingAccess(%q).Grants() answered a grant set", level)
+		}
+	}
+}
+
 func TestValidReportsMembership(t *testing.T) {
 	for _, class := range DeviceClasses {
 		if !class.Valid() {

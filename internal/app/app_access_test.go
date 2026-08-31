@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 )
 
 // accessApp is identityApp plus the two things the device-access surface
@@ -43,7 +45,7 @@ func findDevice(t *testing.T, overview AccessOverview, label string) AccessDevic
 // the payload carries, which is what a redeeming device presents.
 func mintLink(t *testing.T, app *App, class identity.DeviceClass) (linkID, token string) {
 	t.Helper()
-	invite, err := app.MintDevicePairing(string(class))
+	invite, err := app.MintDevicePairing(string(class), "")
 	if err != nil {
 		t.Fatalf("MintDevicePairing(%s): %v", class, err)
 	}
@@ -165,7 +167,7 @@ func TestGetAccessOverview_CarriesNoDeadSessions(t *testing.T) {
 func TestMintDevicePairing_HandsTheDeviceALoadablePageAndAFragmentPayload(t *testing.T) {
 	app := accessApp(t)
 
-	invite, err := app.MintDevicePairing(string(identity.DevicePhone))
+	invite, err := app.MintDevicePairing(string(identity.DevicePhone), "")
 	if err != nil {
 		t.Fatalf("MintDevicePairing: %v", err)
 	}
@@ -233,11 +235,124 @@ func TestMintDevicePairing_RefusesAClassItDoesNotPair(t *testing.T) {
 		"backend peer": string(identity.DeviceBackendPeer),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := app.MintDevicePairing(class); err == nil {
+			if _, err := app.MintDevicePairing(class, ""); err == nil {
 				t.Fatalf("MintDevicePairing(%q) minted a link", class)
 			}
 		})
 	}
+}
+
+// mintForAccess mints at the named access level and drives the exchange
+// the device side does, returning the grant the wire publishes to it. The
+// redemption goes through AuthEndpoints rather than the session core
+// directly, because the grant a device LEARNS its scopes from is the one
+// that route builds.
+func mintForAccess(t *testing.T, app *App, access, thumbprint string) transport.TokenGrant {
+	t.Helper()
+	invite, err := app.MintDevicePairing(string(identity.DeviceBrowser), access)
+	if err != nil {
+		t.Fatalf("MintDevicePairing(%q): %v", access, err)
+	}
+	_, encoded, found := strings.Cut(invite.URL, pairingFragmentPrefix)
+	if !found {
+		t.Fatalf("the invite URL carries no pairing fragment: %s", invite.URL)
+	}
+	payload, err := identity.DecodePairingPayload(encoded)
+	if err != nil {
+		t.Fatalf("decode the pairing payload: %v", err)
+	}
+	grant, refusal := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
+		Token: payload.Token, KeyThumbprint: thumbprint, Label: "A browser", Platform: "linux",
+	})
+	if refusal != "" {
+		t.Fatalf("RedeemPairing: %s", refusal)
+	}
+	if _, err := app.identityState().sessions.ConfirmPairing(invite.LinkID); err != nil {
+		t.Fatalf("ConfirmPairing: %v", err)
+	}
+	return grant
+}
+
+// TestMintDevicePairing_AccessLevelDecidesTheGrantSet — the owner narrows
+// a device at the moment they enroll it, and the narrowing is the grant
+// set the session is minted with. An ABSENT level is full, because the
+// parameter was appended to a call that already existed.
+func TestMintDevicePairing_AccessLevelDecidesTheGrantSet(t *testing.T) {
+	app := accessApp(t)
+
+	full := mintForAccess(t, app, "", "thumb-default")
+	if len(full.Scopes) != len(identity.Scopes) {
+		t.Errorf("naming no access level granted %v, want every scope", full.Scopes)
+	}
+	named := mintForAccess(t, app, string(identity.PairingAccessFull), "thumb-full")
+	if len(named.Scopes) != len(identity.Scopes) {
+		t.Errorf("full access granted %v, want every scope", named.Scopes)
+	}
+
+	// The grant the wire publishes IS the session's set, so a view-only
+	// device can render its own capability model from what it was handed.
+	view := mintForAccess(t, app, string(identity.PairingAccessViewOnly), "thumb-view")
+	want := []string{
+		string(identity.ScopeThreadsRead),
+		string(identity.ScopeFilesRead),
+		string(identity.ScopeSettingsRead),
+	}
+	if !slices.Equal(view.Scopes, want) {
+		t.Fatalf("view-only granted %v, want exactly %v", view.Scopes, want)
+	}
+	stored, refusal := SessionScopes(app, view.SessionID)
+	if refusal != "" {
+		t.Fatalf("SessionScopes: %s", refusal)
+	}
+	if !slices.Equal(stored, want) {
+		t.Errorf("the session row holds %v, want exactly %v", stored, want)
+	}
+}
+
+// TestMintDevicePairing_RefusesAnUndeclaredAccessLevel — an unrecognized
+// level is refused rather than widened to full, which is the direction a
+// typo must fail in.
+func TestMintDevicePairing_RefusesAnUndeclaredAccessLevel(t *testing.T) {
+	app := accessApp(t)
+
+	for _, access := range []string{"read-only", "View only", "none"} {
+		if _, err := app.MintDevicePairing(string(identity.DeviceBrowser), access); err == nil {
+			t.Errorf("MintDevicePairing(access=%q) minted a link", access)
+		}
+	}
+}
+
+// TestViewOnlyDeviceReadsWithoutOperatingOrLosingItsOwnScreen is what the
+// narrowing buys, end to end: the same session is admitted a read, refused
+// an operation with the missing scope NAMED, and still sets its own font
+// size — the last of those only because UpdateSettings carries the
+// `session` floor and requireSettingsTier decides per key.
+func TestViewOnlyDeviceReadsWithoutOperatingOrLosingItsOwnScreen(t *testing.T) {
+	app := accessApp(t)
+	grant := mintForAccess(t, app, string(identity.PairingAccessViewOnly), "thumb-view")
+
+	if refusal := transport.AuthorizeSessionMethod(grant.Scopes, "ListThreads", false); refusal != nil {
+		t.Errorf("a view-only device was refused a read: %+v", refusal)
+	}
+	refusal := transport.AuthorizeSessionMethod(grant.Scopes, "ArchiveThread", false)
+	if refusal == nil {
+		t.Fatal("a view-only device was admitted an operation")
+	}
+	if refusal.Code != transport.ErrCodeScopeRequired || refusal.Scope != string(transport.ScopeThreadsOperate) {
+		t.Errorf("refusal = %+v, want %s naming threads:operate", refusal, transport.ErrCodeScopeRequired)
+	}
+
+	// A device-tier setting is a property of the screen in front of the
+	// person, not an authority over this backend.
+	if refusal := transport.AuthorizeSessionMethod(grant.Scopes, "UpdateSettings", false); refusal != nil {
+		t.Fatalf("a view-only device could not reach UpdateSettings: %+v", refusal)
+	}
+	if err := app.requireSettingsTier(callFrom(grant.SessionID, false), map[string]any{"fontSize": 15}); err != nil {
+		t.Errorf("a view-only device setting its own font size: %v", err)
+	}
+	// The user tier is still a grant it does not hold.
+	wantScopeRefusal(t, app.requireSettingsTier(callFrom(grant.SessionID, false),
+		map[string]any{"confirmDelete": false}), transport.ScopeSettingsWrite)
 }
 
 // TestDevicePairingStatus_WalksTheExchange pins the state machine the
@@ -642,7 +757,7 @@ func TestAccessSurfaceWithoutIdentity(t *testing.T) {
 	if _, err := app.GetAccessOverview(); err == nil {
 		t.Error("GetAccessOverview answered with no session core")
 	}
-	if _, err := app.MintDevicePairing(string(identity.DevicePhone)); err == nil {
+	if _, err := app.MintDevicePairing(string(identity.DevicePhone), ""); err == nil {
 		t.Error("MintDevicePairing minted with no session core")
 	}
 	if _, err := app.DevicePairingStatus("any"); err == nil {
@@ -667,7 +782,7 @@ func TestAccessSurfaceWithoutIdentity(t *testing.T) {
 // single-use token on a URL that goes nowhere.
 func TestMintDevicePairing_NeedsATransportToPointAt(t *testing.T) {
 	app := identityApp(t)
-	if _, err := app.MintDevicePairing(string(identity.DevicePhone)); err == nil {
+	if _, err := app.MintDevicePairing(string(identity.DevicePhone), ""); err == nil {
 		t.Fatal("MintDevicePairing minted a link with no transport running")
 	}
 }

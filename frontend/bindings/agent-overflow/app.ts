@@ -2436,16 +2436,21 @@ export function MarkThreadUnread(id: string): $CancellablePromise<void> {
 
 /**
  * MintDevicePairing issues a pairing link for a new device of the named
- * class, and returns the URL that device should open.
+ * class and access level, and returns the URL that device should open.
  * 
  * The CLASS is decided here and the redeeming device never names its own
  * (identity.PairingRequest says why). `backend-peer` is refused: enrolling
  * another backend is §8's federation flow, with its own trust decisions,
  * and admitting one through the device-pairing surface would grant it the
  * posture of an owner's own device.
+ * 
+ * The ACCESS level is `full` or `view-only` (identity.PairingAccess), and
+ * an EMPTY string is full — the parameter was appended to a call that
+ * already existed, so naming none asks for what the surface always did.
+ * An unrecognized level is refused rather than widened.
  */
-export function MintDevicePairing(deviceClass: string): $CancellablePromise<app$0.PairingInvite> {
-    return $Call.ByID(400809065, deviceClass).then(($result: any) => {
+export function MintDevicePairing(deviceClass: string, access: string): $CancellablePromise<app$0.PairingInvite> {
+    return $Call.ByID(400809065, deviceClass, access).then(($result: any) => {
         return $$createType121($result);
     });
 }

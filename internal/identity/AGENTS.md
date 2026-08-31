@@ -144,6 +144,18 @@ keeping:
   uniquely indexed), so a device that pairs twice does not accumulate
   rows. A revoked device, or one belonging to another user, is refused
   with `key_mismatch` rather than re-admitted.
+- **The grant set is decided at MINT and copied onto the session.**
+  `PairingRequest.Scopes` is the link's set, `mintPendingSession` copies
+  it onto the row, and nothing edits it afterwards — so how much a device
+  may do is a property of the link somebody handed it. The access surface
+  names its two choices through `PairingAccess`: `full` is `Scopes`
+  entire, `view-only` is `ObserveScopes`, and an undeclared level errors
+  rather than falling back to full, because a level nobody declared must
+  never widen a link somebody meant to narrow. `ObserveScopes` is exactly
+  transport's observe tier, which this package cannot check and
+  `internal/app` does (`TestObserveScopesAreTheObserveTier`). Narrowing a
+  device that is already paired is a new link, and its old session keeps
+  what it holds until it is revoked.
 - **`PairingPayload.CertFingerprint` is reserved and unread.** Phase 5
   fills it when TLS exists. It is in the shape now so the QR a device
   scanned before that phase is not a payload version older clients cannot

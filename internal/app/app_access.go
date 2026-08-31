@@ -120,7 +120,7 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 }
 
 // MintDevicePairing issues a pairing link for a new device of the named
-// class, and returns the URL that device should open.
+// class and access level, and returns the URL that device should open.
 //
 // The CLASS is decided here and the redeeming device never names its own
 // (identity.PairingRequest says why). `backend-peer` is refused: enrolling
@@ -128,9 +128,14 @@ func (a *App) GetAccessOverview() (AccessOverview, error) {
 // and admitting one through the device-pairing surface would grant it the
 // posture of an owner's own device.
 //
+// The ACCESS level is `full` or `view-only` (identity.PairingAccess), and
+// an EMPTY string is full — the parameter was appended to a call that
+// already existed, so naming none asks for what the surface always did.
+// An unrecognized level is refused rather than widened.
+//
 //ao:scope access:admin
 //ao:stepup
-func (a *App) MintDevicePairing(deviceClass string) (PairingInvite, error) {
+func (a *App) MintDevicePairing(deviceClass, access string) (PairingInvite, error) {
 	state, err := a.accessState()
 	if err != nil {
 		return PairingInvite{}, err
@@ -142,6 +147,10 @@ func (a *App) MintDevicePairing(deviceClass string) (PairingInvite, error) {
 	if class == identity.DeviceBackendPeer {
 		return PairingInvite{}, fmt.Errorf(
 			"access: a peer backend is enrolled through the federation flow, not device pairing")
+	}
+	grants, err := identity.PairingAccess(access).Grants()
+	if err != nil {
+		return PairingInvite{}, err
 	}
 
 	pageURL, endpoint, err := a.pairingPageURL()
@@ -164,12 +173,13 @@ func (a *App) MintDevicePairing(deviceClass string) (PairingInvite, error) {
 		// point is a device that holds its own key; `loopback-only` is the
 		// local channel's posture and is never handed to a paired device.
 		BindingClass: identity.BindingDeviceBound,
-		// The full declared set, matching what the local channel grants
-		// (identity.EnsureLocalChannelSession). Narrowing per device is a
-		// real feature (§5, "narrowing is offered per-device") and is not
-		// this call: what each scope PERMITS is phase 3, so a narrower
-		// grant here would describe a restriction nothing enforces.
-		Scopes: identity.Scopes,
+		// What the caller chose: the full declared set, matching what the
+		// local channel grants (identity.EnsureLocalChannelSession), or the
+		// observe tier alone (§5, "narrowing is offered per-device — useful
+		// for a browser on a shared machine — and never imposed by device
+		// size"). The narrowing is real now that the per-RPC gate enforces
+		// what each scope permits.
+		Scopes: grants,
 	})
 	if err != nil {
 		return PairingInvite{}, err

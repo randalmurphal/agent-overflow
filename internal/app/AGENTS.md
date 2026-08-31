@@ -180,6 +180,14 @@ are facts about this process rather than about a row:
 - **`backend-peer` is not a class this surface mints.** Enrolling another
   backend is the federation flow with its own trust decisions; admitting
   one here would give it the posture of an owner's own device.
+- **How much a link grants is chosen at mint, and only there.**
+  `MintDevicePairing` takes an access level — `full` or `view-only`
+  (`identity.PairingAccess`) — and the grant set it resolves to is the
+  session's for that session's whole life. An EMPTY level is full: the
+  parameter was appended to a call that already existed, so naming none
+  asks for what the surface always did, and an unrecognized one is
+  refused rather than widened. Re-narrowing a paired device is a fresh
+  link, not an edit to a row.
 
 Every method carries `//ao:scope access:admin`, which is what keeps the
 set together: one annotation, so the surface moves as a unit. Minting

@@ -125,9 +125,10 @@ remote browser alike. Protocol and authz rules:
 - `scopes.ts` is the capability answer, and the TypeScript mirror of
   `internal/transport/scopes.go`'s vocabulary. A surface asks
   `hasScope('threads:operate')` rather than "am I a remote session",
-  because the two answer the same only until a paired device arrives
-  holding a named subset — at which point a gate written against the
-  proxy is wrong in both directions at once. It resolves in precedence
+  because the two answer the same only for a device paired with FULL
+  access. The pairing modal also mints VIEW-ONLY, whose session holds the
+  three observe scopes and nothing else, and a gate written against the
+  proxy is wrong in both directions at once for it. It resolves in precedence
   order: a PAIRED session's published grants (they win even on loopback,
   since the upgrade presents that session and its grants are what the
   backend's gate compares), then the local page, which holds every

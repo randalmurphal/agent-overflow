@@ -77,6 +77,31 @@ func TestScopeVocabularyMatchesIdentity(t *testing.T) {
 	}
 }
 
+// TestObserveScopesAreTheObserveTier pins the OTHER restatement between
+// these two packages: identity.ObserveScopes is what a view-only pairing
+// mints, and "view-only" means transport's observe tier — the tier the
+// per-RPC gate compares. identity cannot say that itself (it has no tier
+// table and may not import one), so the sentence in its doc comment is
+// checked here, in both directions.
+//
+// A scope demoted to observe and not added to ObserveScopes is a surface
+// a view-only device is silently denied; one promoted out of observe and
+// left in it is authority a view-only device silently keeps.
+func TestObserveScopesAreTheObserveTier(t *testing.T) {
+	inMint := make(map[string]bool, len(identity.ObserveScopes))
+	for _, scope := range identity.ObserveScopes {
+		inMint[string(scope)] = true
+		if tier := transport.Scope(scope).Tier(); tier != transport.TierObserve {
+			t.Errorf("view-only mints %q, which enforces at tier %d rather than observe", scope, tier)
+		}
+	}
+	for _, scope := range transport.Scopes {
+		if scope.Tier() == transport.TierObserve && !inMint[string(scope)] {
+			t.Errorf("%q is observe-tier and a view-only device is not granted it", scope)
+		}
+	}
+}
+
 func sortedKeys(set map[string]bool) []string {
 	out := make([]string, 0, len(set))
 	for name := range set {
