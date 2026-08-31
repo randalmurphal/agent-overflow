@@ -61,6 +61,14 @@ enforce for a caller that reached it another way; put it in
   deliberate: a request presenting NO session credential proceeds naming
   none, while one presenting a credential nothing can judge is REFUSED,
   because proceeding would name a session this process cannot revoke.
+- `AuthEndpoints(a *App)` is a bootstrap-boundary function returning an
+  unexported adapter type, **not** two exported `App` methods. An exported
+  method on `App` is promoted onto `main.App` and becomes a wire RPC by
+  construction (see § Bootstrap boundary); redeeming a pairing link over
+  the RPC wire would let a caller who already holds a session enroll
+  another device, which is the one thing the HTTP route's shape exists to
+  constrain. Anything the transport calls through an interface belongs on
+  a type of its own for the same reason.
 - The local page credential is cached and re-issued within
   `localReissueMargin` of expiry, rather than on a timer. The manifest is
   refetched on every reconnect, so the moment a fresh credential is needed

@@ -357,7 +357,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		},
 		// Pairing redemption and credential rotation. The App adapts the
 		// session core onto the transport's dumb DTOs.
-		AuthEndpoints: appService,
+		AuthEndpoints: appservice.AuthEndpoints(appService.App),
 		// Diagnostic cross-origin isolation so the renderer exposes
 		// measureUserAgentSpecificMemory. Opt-in: COEP breaks remote
 		// subresources such as chat-markdown images.

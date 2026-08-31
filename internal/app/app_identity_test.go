@@ -110,7 +110,7 @@ func TestADeviceBoundSessionPresentsItsKeyOnEveryRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintPairingLink: %v", err)
 	}
-	grant, reason := app.RedeemPairing(transport.PairingRedemption{
+	grant, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
 		Token: link.Token, KeyThumbprint: "thumb-phone", Label: "A Phone", Platform: "ios",
 	})
 	if reason != "" {
@@ -151,7 +151,7 @@ func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MintPairingLink: %v", err)
 	}
-	first, reason := app.RedeemPairing(transport.PairingRedemption{
+	first, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
 		Token: link.Token, KeyThumbprint: "thumb-phone",
 	})
 	if reason != "" {
@@ -161,7 +161,7 @@ func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
 		t.Fatalf("ConfirmPairing: %v", err)
 	}
 
-	second, reason := app.RenewSession(transport.SessionRenewal{
+	second, reason := AuthEndpoints(app).RenewSession(transport.SessionRenewal{
 		RefreshSecret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
 	})
 	if reason != "" {
@@ -175,7 +175,7 @@ func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
 	}
 	// The spent predecessor: reuse revokes the family, and the code has to
 	// survive the adapter unchanged.
-	if _, reason := app.RenewSession(transport.SessionRenewal{
+	if _, reason := AuthEndpoints(app).RenewSession(transport.SessionRenewal{
 		RefreshSecret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
 	}); reason != identity.ReasonRevokedSession.Code() {
 		t.Fatalf("reuse answered %q, want %q", reason, identity.ReasonRevokedSession.Code())
@@ -199,7 +199,7 @@ func TestAnAppWithNoIdentityCoreRefusesACredentialItCannotJudge(t *testing.T) {
 	if SessionLive(app, "sess-1") {
 		t.Fatal("an App with no identity core reported a session live")
 	}
-	if _, reason := app.RedeemPairing(transport.PairingRedemption{Token: "x"}); reason == "" {
+	if _, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{Token: "x"}); reason == "" {
 		t.Fatal("a redemption succeeded with no session core")
 	}
 }

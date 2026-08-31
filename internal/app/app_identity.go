@@ -213,9 +213,24 @@ func PageSessionCredential(a *App) string {
 	return state.local.Credential
 }
 
+// AuthEndpoints returns the transport-facing adapter for the device-facing
+// credential routes.
+//
+// A separate type, and a bootstrap-boundary FUNCTION rather than two
+// exported App methods, for the reason internal/app/AGENTS.md gives: an
+// exported method on App is promoted onto main.App and becomes a wire RPC.
+// Redeeming a pairing link over the RPC wire would let a caller who
+// already holds a session enroll another device — the one thing the HTTP
+// route's shape (no session, a spent token, an owner confirmation) exists
+// to constrain.
+func AuthEndpoints(a *App) transport.AuthEndpoints { return authEndpoints{app: a} }
+
+// authEndpoints adapts the session core onto the transport's dumb DTOs.
+type authEndpoints struct{ app *App }
+
 // RedeemPairing spends a pairing link. Satisfies transport.AuthEndpoints.
-func (a *App) RedeemPairing(req transport.PairingRedemption) (transport.TokenGrant, string) {
-	state := a.identityState()
+func (e authEndpoints) RedeemPairing(req transport.PairingRedemption) (transport.TokenGrant, string) {
+	state := e.app.identityState()
 	if state == nil {
 		return transport.TokenGrant{}, identity.ReasonUnknownCredential.Code()
 	}
@@ -237,8 +252,8 @@ func (a *App) RedeemPairing(req transport.PairingRedemption) (transport.TokenGra
 
 // RenewSession rotates one credential pair. Satisfies
 // transport.AuthEndpoints.
-func (a *App) RenewSession(req transport.SessionRenewal) (transport.TokenGrant, string) {
-	state := a.identityState()
+func (e authEndpoints) RenewSession(req transport.SessionRenewal) (transport.TokenGrant, string) {
+	state := e.app.identityState()
 	if state == nil {
 		return transport.TokenGrant{}, identity.ReasonUnknownCredential.Code()
 	}
