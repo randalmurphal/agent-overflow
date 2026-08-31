@@ -7,7 +7,11 @@ export interface ServerRPCFrame {
   type: 'rpc';
   id: string;
   result?: unknown;
-  error?: { code: string; message: string };
+  // `reason` is present only alongside code 'auth_failed', and names which
+  // credential check refused the call. Map it through
+  // ./authReason.ts — never render it raw, and never branch on `message`,
+  // which is generic prose for non-loopback callers.
+  error?: { code: string; message: string; reason?: string };
 }
 
 export interface ServerEventFrame {

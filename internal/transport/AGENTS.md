@@ -10,9 +10,11 @@ walkthroughs live in
 The HTTP listener (embedded SPA, `/bootstrap.json`, `/healthz`, the `/ws`
 upgrade, and
 `POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
-per-connection authorization policy, reflection-based RPC dispatch, and a
-per-channel bounded ring for event replay on reconnect. Method IDs are FNV-1a
-32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
+per-connection authorization policy, per-peer request budgets on the credential
+surfaces, reflection-based RPC dispatch, a per-channel bounded ring for event
+replay on reconnect, and the live-session registry that lets a revocation reach
+connections that are already open. Method
+IDs are FNV-1a 32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
 `internal/hash.Fnv`, so the generated TypeScript bindings keep working. The ring
 is in-memory only: a network jitter buffer, not a history store (root
 `AGENTS.md` principle 3).
@@ -190,6 +192,28 @@ CODE instead (`frame.go`), and the method wraps the matching sentinel:
 add one, wrap rather than replace, so callers testing for the concrete
 cause keep working.
 
+### Two refusal shapes, and which one applies
+
+A request the backend cannot attribute to anything gets the 404 above and
+learns nothing. A caller whose SESSION credential was read and then refused
+gets `ErrCodeAuthFailed` with a `reason` naming which check refused it —
+built by `AuthFailure`, never by a struct literal, because the two fields
+are only meaningful together.
+
+The split is about what the answer discloses. The 404 hides whether a route
+exists from someone who has presented nothing; the typed reason tells a
+paired client which of its own credentials went wrong, which it needs in
+order to say anything more useful than "not allowed". A refusal that is
+already attributable discloses nothing by being specific.
+
+`reason` values are the wire spellings of `internal/identity`'s closed set.
+Transport carries the string and does not interpret it: `internal/identity`
+owns the vocabulary (transport cannot import it without pulling the store in
+behind it), and `frontend/src/lib/transport/authReason.ts` is the one place
+it becomes a sentence. `TestFrontendHintsCoverEveryRefusal` pins the two
+sets together. A code is stable forever once shipped; an older bundle may
+still be mapping it.
+
 ## Origin allow-list and peer locality
 
 **`OriginAllowed` (credential.go) gates `/ws`, `/bootstrap.json` and
@@ -229,6 +253,46 @@ carries the same same-host-proxy caveat as above.
 Both predicates live in `internal/loopback` alongside the two endpoint-URL
 classifiers. They are deliberately different rules and the package doc says why;
 do not swap one for another because the names look interchangeable.
+
+## Per-peer request budgets
+
+`ratelimit.go` gives three routes a token bucket per peer: `/bootstrap.json`,
+`/pageurl`, and `/rpc`. **`/healthz` and the SPA assets are never limited** — a
+readiness probe is polled by design and one page load is dozens of asset
+requests, so limiting either breaks ordinary use to bound work that is already
+trivial. `/ws` is not limited either: one upgrade per long-lived connection,
+and the budget that matters for it is the ticket exchange that precedes it.
+
+What this bounds is WORK, not guessing. The launch token is 256 random bits and
+scoped tokens are minted per provider process, so no achievable request rate
+makes guessing one plausible; what a rate does reach is the backend's own cost,
+and on `/pageurl` specifically it evicts tickets other pages are about to
+present.
+
+- **The refusal is 429 with `Retry-After`, never the credential channel's 404.**
+  The SPA latches terminal `unauthorized` state on a 401/403/404 from the
+  manifest and stops its reconnect ladder (§ Credentials and refusal shapes), so
+  a 404 here would tell a client that merely burst that its credential is dead.
+  Same class of mistake as answering a readiness probe with a 404.
+- **Loopback peers are limited on the same terms as everyone else.** Exempting
+  them would leave the path unexercised in development and in the e2e suite, so
+  its first real run would be its first LAN bind. The budgets are set so a
+  reconnect ladder, a Playwright worker, and a scripted CLI never reach them.
+- **Separate limiters per surface**, so a burst on one cannot spend another's.
+- The table is bounded (`maxTrackedPeers`) and self-cleaning: a bucket that has
+  refilled carries nothing a fresh entry would not, so the insert path drops
+  idle peers instead of running a sweep goroutine. With the table full of peers
+  that are all actively spending, a new peer is REFUSED rather than admitted
+  untracked — admitting it would mean not limiting it at all.
+- The admitted path allocates nothing: `peerKey` is hand-parsed because
+  `net.SplitHostPort` allocates an `*AddrError` on input it cannot read, and the
+  bucket is a map VALUE rewritten in place. Two tests pin this
+  (`TestRateLimiterAdmitsWithoutAllocating`, `TestPeerKeyDoesNotAllocate`); keep
+  them passing rather than treating them as incidental.
+- Refusals are logged with per-peer attribution, once per dry spell rather than
+  once per request — a flood must not be able to flood the log with its own
+  evidence. The capacity refusal has no bucket to mark, so it is throttled by
+  time instead.
 
 ## Security headers
 
@@ -457,7 +521,46 @@ pong timeout, both overridable through `Config.KeepaliveInterval` and
   that stops draining cannot wedge the event pump while holding `writeMu`.
 - Every close logs one line, graceful closes included, with peer address,
   duration, and `closeReason`. That duration is what the client's reconnect
-  ladder judges itself on, so keep it in the line.
+  ladder judges itself on, so keep it in the line. A connection torn down by a
+  revocation reports `session revoked` rather than the context cancel's
+  `server shutdown`, because at the error alone the two are identical and a
+  revocation would otherwise be invisible in the log exactly when somebody is
+  checking whether it took effect.
+
+## Live-session registry and revocation teardown
+
+`SessionConns` (sessionconns.go) maps a durable session id to the WebSockets
+currently carrying it. It exists because a revoked row only stops the NEXT
+call: a socket that is mid-stream keeps receiving events until something
+closes it, and `CloseSession` is that something.
+
+- `Config.SessionForRequest` resolves a request's session BEFORE the upgrade
+  and may refuse it. Refusal is `http.NotFound`, the same unfingerprintable
+  shape a bad launch credential gets — see § Credentials and refusal shapes.
+  The hook is nil today, which is why nothing about the launch-credential path
+  changes yet; phase 3 supplies it from `internal/identity`.
+- Registration rides `ConnState.RegisterCleanup`, the same LIFO pass every
+  other per-connection resource uses. Do NOT add a parallel teardown: a second
+  path could disagree with the first about when a connection ended, and the
+  registry would keep closers for sockets that are already gone. When
+  registration reports the connection already closing, `runConnHandler` undoes
+  the attach itself, because nothing will run the cleanup list again.
+- `closeForRevocation` is three steps and the order is the mechanism: close the
+  event subscriber (delivery stops at the instant `CloseSession` returns, not
+  whenever the read loop notices), cancel the connection context (pump and
+  keepalive stop), then `CloseNow` the socket (the parked reader unblocks and
+  the ordinary teardown runs). Every step is idempotent, because it races the
+  connection's own close.
+- `CloseSession` runs its callbacks OUTSIDE the registry lock. A teardown that
+  blocked while holding it would stall every other attach and detach in the
+  process.
+- The registry keeps **no tombstone** for a revoked session, so a later
+  connection on that id attaches normally. Refusing it is the database row's
+  job (`SessionForRequest` → `identity.Sessions.Live`); a second source of that
+  truth would be one that could disagree.
+- A connection that names no session attaches nothing. Empty session ids must
+  never share a slot — that is every launch-credential connection today, and
+  one revocation would close all of them.
 
 ## Conventions specific to this package
 

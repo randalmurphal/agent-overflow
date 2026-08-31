@@ -77,6 +77,18 @@ remote browser alike. Protocol and authz rules:
   ADDITIVELY: a new optional field or a new frame type is safe because
   of the tolerance above, while renaming or repurposing an existing one
   is not, and no amount of client tolerance makes it so.
+- `authReason.ts` is the ONE place a credential refusal becomes a
+  sentence. The backend answers `auth_failed` plus a `reason` from a
+  closed set (`internal/identity/reason.go`), and a component that
+  branches on `'expired_session'` itself is how two screens end up
+  explaining the same refusal differently. It always answers: a code this
+  bundle does not know degrades to the generic refusal rather than
+  showing nothing, because a surface that silently does not work is
+  worse than one that says so vaguely. Only the time-window refusal is
+  `retryable` — every other one needs a different credential, so offering
+  a retry offers a button that cannot work. `TestFrontendHintsCoverEveryRefusal`
+  (Go side) fails if this module and the Go set disagree in either
+  direction.
 - `runtime.ts` replaces `@wailsio/runtime` through a Vite alias, so the
   generated bindings keep working unregenerated. Its surface must mirror
   `src/test/mocks/wailsio-runtime.ts`, or generated code that type-checks

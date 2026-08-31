@@ -110,9 +110,9 @@ type helloFrame struct {
 }
 
 // MaxReplayChannels caps the number of channels a single replay request
-// can ask the server to scan. A maliciously oversized LastSeqByChannel
-// map could otherwise force the dispatcher to allocate proportionally
-// large response slices.
+// can ask the server to scan. An oversized LastSeqByChannel map could
+// otherwise force the dispatcher to allocate proportionally large
+// response slices.
 const MaxReplayChannels = 1024
 
 // MaxSubscribeChannels bounds an opt-in connection event filter. Ordinary
@@ -185,6 +185,19 @@ type ServerFrame struct {
 type FrameError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Reason is set only alongside ErrCodeAuthFailed, and carries the
+	// stable spelling of one member of internal/identity's closed refusal
+	// set. It is a plain string here on purpose: transport does not import
+	// identity (that direction would pull the store in behind it), so this
+	// field is carriage, and identity owns the vocabulary.
+	//
+	// The frontend maps it to an actionable hint in
+	// frontend/src/lib/transport/authReason.ts; a code that module does not
+	// know degrades to the generic message rather than showing nothing.
+	//
+	// Omitted on every other error, so a client that reads it as
+	// "was this an auth refusal, and why" gets an unambiguous answer.
+	Reason string `json:"reason,omitempty"`
 }
 
 // Error codes returned on rpc responses. Stable strings so the frontend
@@ -205,6 +218,9 @@ type FrameError struct {
 //     Wire message is generic; full panic + stack is
 //     logged server-side under a correlation id.
 //   - shutting_down:    server is mid-shutdown; this RPC was dropped.
+//   - auth_failed:      the caller's session credential did not admit this
+//     call. The FrameError carries a Reason naming which
+//     check refused it; see the field.
 const (
 	ErrCodeMethodNotFound         = "method_not_found"
 	ErrCodeBadParams              = "bad_params"
@@ -213,7 +229,32 @@ const (
 	ErrCodeAlreadyHandled         = "already_handled"
 	ErrCodeInternal               = "internal"
 	ErrCodeShuttingDown           = "shutting_down"
+	ErrCodeAuthFailed             = "auth_failed"
 )
+
+// AuthFailure builds the refusal envelope for a caller whose session
+// credential did not admit a call.
+//
+// One constructor rather than a struct literal per site, because the two
+// fields are only meaningful together: a Reason on any other code is
+// unreadable by the client's hint module, and an auth_failed with no
+// reason degrades every refusal to the same generic prose. Building them
+// apart is exactly the mistake that would ship.
+//
+// The message stays generic. It is the code and the reason that carry
+// meaning across the wire, and prose is redacted for non-loopback callers
+// anyway (§ Credentials and refusal shapes in AGENTS.md).
+//
+// A refusal the backend cannot attribute to a session at all is NOT this:
+// that is answered before the request reaches a method, with the
+// unfingerprintable 404 the credential channel has always used.
+func AuthFailure(reasonCode string) *FrameError {
+	return &FrameError{
+		Code:    ErrCodeAuthFailed,
+		Message: "not authorized",
+		Reason:  reasonCode,
+	}
+}
 
 // ErrTemporarilyUnavailable marks a method failure as transient at the RPC
 // boundary. Methods wrap this sentinel together with their concrete cause;

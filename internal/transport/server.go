@@ -147,6 +147,23 @@ type Config struct {
 	// client keeps its replica disabled.
 	BackendIdentity func() (backendID, replicaGeneration string)
 
+	// SessionForRequest resolves the durable session a request presents,
+	// if any, and says whether the request may proceed at all.
+	//
+	// The seam between this package and internal/identity, in the
+	// direction that keeps transport store-free: the boot passes a
+	// closure over the session core, and this package never learns what a
+	// session row is. A false `ok` refuses the upgrade with the same
+	// http.NotFound shape a bad launch credential gets, which is what
+	// makes a reconnection on a revoked credential fail rather than
+	// silently downgrade to an unattributed connection.
+	//
+	// Optional. Nil — the state today, before phase 3 migrates clients
+	// onto session credentials — means every request proceeds and names
+	// no session, which is exactly the launch-credential behavior this
+	// server has always had.
+	SessionForRequest func(r *http.Request) (sessionID string, ok bool)
+
 	// ScopedTokens resolves an `ao` CLI credential to the caller scope it
 	// was minted for. The App owns the registry (a token lives exactly as
 	// long as the provider session it belongs to); this package owns the
@@ -304,6 +321,22 @@ type Server struct {
 
 	startupFailed atomic.Bool
 
+	// sessionConns is the live-session registry: which upgraded sockets
+	// carry which durable session, and how to close them. Built at New
+	// and never replaced, because a Rebind must not lose track of the
+	// connections it is deliberately keeping alive.
+	sessionConns *SessionConns
+
+	// Per-peer request budgets for the credential surfaces. Built at New
+	// and never replaced: a Rebind changes which address the server
+	// answers on, not how much work one peer may ask for, and rebuilding
+	// them would hand every peer a fresh burst on a LAN-bind toggle.
+	// Deliberately absent for /healthz and the SPA assets — see
+	// ratelimit.go.
+	bootstrapLimit *rateLimiter
+	pageURLLimit   *rateLimiter
+	scopedRPCLimit *rateLimiter
+
 	// remoteConns counts live non-loopback WebSocket connections.
 	// Feeds HasRemoteClient, which gates work that only benefits
 	// remote viewers (the highlight seed push). Note tunneled remotes
@@ -366,6 +399,10 @@ func New(cfg Config) (*Server, error) {
 		csp:            csp,
 		originPatterns: originPatterns,
 		serveErr:       make(chan error, 1),
+		sessionConns:   newSessionConns(),
+		bootstrapLimit: newRateLimiter("/bootstrap.json", bootstrapRateLimit),
+		pageURLLimit:   newRateLimiter(PageURLPath, pageURLRateLimit),
+		scopedRPCLimit: newRateLimiter(ScopedRPCPath, scopedRPCRateLimit),
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
@@ -490,12 +527,22 @@ func matchesErrno(err error, errnos []syscall.Errno) bool {
 // HTTP callers from the LAN reach the server by its LAN host.
 func (s *Server) buildHTTPServer() *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/bootstrap.json", s.loopbackHostGuard(s.handleBootstrap))
+	// Rate limiting sits OUTSIDE the host guard on the three credential
+	// surfaces, so a peer over budget is refused before any other work is
+	// done for it. /ws is not limited here: a WebSocket is one upgrade per
+	// long-lived connection, and the request that carries the credential
+	// is the same one that starts the connection — the budget that matters
+	// for it is the ticket exchange that precedes it. /healthz and the
+	// assets are never limited (ratelimit.go says why).
+	mux.HandleFunc("/bootstrap.json",
+		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap)))
 	mux.HandleFunc("/ws", s.loopbackHostGuard(s.handleWS))
-	mux.HandleFunc(PageURLPath, s.loopbackHostGuard(s.handlePageURL))
+	mux.HandleFunc(PageURLPath,
+		rateLimited(s.pageURLLimit, s.loopbackHostGuard(s.handlePageURL)))
 	mux.HandleFunc(HealthPath, s.loopbackHostGuard(s.handleHealthz))
 	if s.cfg.ScopedTokens != nil {
-		mux.HandleFunc(ScopedRPCPath, s.loopbackHostGuard(s.handleScopedRPC))
+		mux.HandleFunc(ScopedRPCPath,
+			rateLimited(s.scopedRPCLimit, s.loopbackHostGuard(s.handleScopedRPC)))
 	}
 	assetH := s.cfg.AssetHandler
 	if assetH == nil {
@@ -663,6 +710,14 @@ func (s *Server) LaunchID() string { return s.launchID }
 // is serving a harness. It is intentionally read-only and immutable after
 // construction so page URLs and bootstrap manifests cannot drift.
 func (s *Server) PageMarker() string { return s.cfg.PageMarker }
+
+// SessionConns is the live-session registry: the connections currently
+// carrying each durable session, and the teardown a revocation runs.
+//
+// Handed to internal/identity's session core at boot, which reaches it
+// through its own one-method interface so neither package imports the
+// other. Never nil for a server built by New.
+func (s *Server) SessionConns() *SessionConns { return s.sessionConns }
 
 // HasRemoteClient reports whether at least one non-loopback WebSocket
 // connection is currently attached. Producers of remote-only event
@@ -1022,6 +1077,25 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// that address sits on a loopback interface.
 	isLoopback := loopback.PeerAddress(r.RemoteAddr)
 
+	// Resolve the durable session BEFORE the upgrade, so a credential
+	// that has been revoked is refused with the same unfingerprintable
+	// 404 a bad launch credential gets. Refusing after the upgrade would
+	// hand the client a live socket first and close it a moment later,
+	// which a reconnect ladder reads as a flaky network rather than as a
+	// dead credential.
+	//
+	// Nil hook means no client presents a session yet (the state before
+	// phase 3), and every request proceeds naming none.
+	sessionID := ""
+	if resolve := s.cfg.SessionForRequest; resolve != nil {
+		id, ok := resolve(r)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		sessionID = id
+	}
+
 	// Read the live (post-rebind) allow-list, not Config's static value.
 	// A LAN-bind toggle rotates the allow-list under the same mu-guarded
 	// swap as the listener; the upgrader must see whichever policy was
@@ -1035,6 +1109,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	profile := connProfile{
 		isLoopback: isLoopback,
 		remoteAddr: r.RemoteAddr,
+		sessionID:  sessionID,
 		// Read from the pre-upgrade request: websocket.Conn does not
 		// re-expose the handshake URL, and the identity has to be in place
 		// before the first RPC is dispatched.
@@ -1058,6 +1133,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		maxConcurrentRPCs: s.cfg.MaxConcurrentRPCs,
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
+		sessionConns:      s.sessionConns,
 		hello: helloFrame{
 			Capabilities: serverCapabilities,
 			BackendID:    backendID,
