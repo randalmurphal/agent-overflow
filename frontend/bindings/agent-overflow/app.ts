@@ -3231,9 +3231,9 @@ export function SetProviderCustomEnvVar(providerName: string, name: string, valu
  * persists the name into the canonical project entry's
  * `disabledMcpServers` — the CLI owns the config write (it is
  * debounced CLI-side, so AO never double-writes or reads it back to
- * confirm). Claude without a session (or a design session, which runs
- * --strict-mcp-config and cannot see user MCP): AO writes the same
- * list directly, keyed identically (claudeconfig.ProjectKey). Codex: the global `enabled` flag in ~/.codex/config.toml,
+ * confirm). Claude without a live session: AO writes the same list directly,
+ * keyed identically (claudeconfig.ProjectKey). Codex: the global `enabled`
+ * flag in ~/.codex/config.toml,
  * hot-reloaded into this thread's live session when there is one.
  * Other running threads keep their current state until their next
  * session start — provider-native semantics, by design.
