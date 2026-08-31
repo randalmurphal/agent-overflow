@@ -338,27 +338,68 @@ let fanoutScratchInUse = false;
 // in-flight after a previous close. nextAttemptAt is the wall-clock
 // millis when the next attempt is scheduled — null if the attempt is
 // already in flight.
-// 'unauthorized' is the one TERMINAL state: the backend answered and
-// positively refused our bootstrap credential (BootstrapRejectedError —
-// internal/transport/server.go handleBootstrap answers an unrecognised
-// credential with 404), AND this session has no way to obtain a fresh
-// one because it was served over the network. The session cookie is
-// minted per backend launch, so a LAN/remote client whose backend
-// restarted holds one that will be refused identically forever; the
-// automatic ladder stops rather than burn the device's radio and battery
-// on attempts that cannot succeed. Recovery is re-opening the share link
-// — a fresh page load with a fresh ticket. The banner's Retry still
-// works as a manual escape hatch (see triggerReconnect), which is what
-// un-latches it if the refusal turns out to have been a lie from
-// something in the path.
-// A loopback session never enters this state: the embedded webview and
+// Two states are TERMINAL: the backend answered, the answer will not
+// change while this page sits there, and the automatic ladder stops
+// rather than burn a device's radio and battery on attempts that cannot
+// succeed. They differ in what the person has to do, which is why they
+// are two.
+//
+// 'unauthorized' means the backend positively refused our bootstrap
+// credential (BootstrapRejectedError — internal/transport/server.go
+// handleBootstrap answers an unrecognised credential with 404) AND this
+// session has no way to obtain a fresh one because it was served over
+// the network. The page cookie is minted per backend launch, so a
+// LAN/remote client whose backend restarted holds one that will be
+// refused identically forever. Recovery is re-opening the share link —
+// a fresh page load with a fresh ticket.
+//
+// 'pairing-required' means the opposite half: the manifest SERVES, so
+// the credential is fine, but this page's socket would arrive at the
+// backend as an off-host peer and this browser holds no paired session
+// to name on the upgrade — which that backend refuses (spec §4 "Local
+// clients", internal/transport/AGENTS.md). Dialing would produce one
+// unfingerprintable 404 per attempt, so the ladder does not start.
+// Recovery is pairing this device.
+//
+// The banner's Retry works out of both (see triggerReconnect), which is
+// what recovers a refusal that was a lie from something in the path, and
+// what picks up a pairing completed in another tab of this browser.
+// A loopback session never enters either state: the embedded webview and
 // the --connect stub load a page URL minted by the shell that owns the
-// backend, so their refusals stay ordinary 'reconnecting' retries.
+// backend, and their sockets reach a backend on this machine.
 // 'disconnected' is the zero-value before any connect has been
 // attempted; we never re-enter it once a connect cycle starts (we stay
 // in 'reconnecting' across attempts) because a still-running loop must
 // not present itself as settled.
-export type TransportStatus = 'connected' | 'reconnecting' | 'unauthorized' | 'disconnected';
+export type TransportStatus =
+  | 'connected'
+  | 'reconnecting'
+  | 'unauthorized'
+  | 'pairing-required'
+  | 'disconnected';
+
+/**
+ * The subset of TransportStatus the automatic ladder stops on. Exported
+ * because ./connectionRefusal.ts is the one module that phrases them and
+ * has to be exhaustive over exactly this set.
+ */
+export type TerminalTransportStatus = Extract<
+  TransportStatus,
+  'unauthorized' | 'pairing-required'
+>;
+
+// TerminalLatch is what the client holds while the ladder is stopped:
+// which terminal state, and the sentence every rejection issued from
+// under it carries. The message is stored rather than rebuilt per
+// rejection because ~150 call sites report a failure as `err.message`
+// and they must all say the same thing about the same latch.
+interface TerminalLatch {
+  status: TerminalTransportStatus;
+  /** What a caller awaiting the transport is told. */
+  message: string;
+  /** The refusal that produced the latch, when there was one. */
+  cause?: unknown;
+}
 
 // TransportHello is what the connection's opening frame told us about
 // the backend on the other end, plus the one thing only the client can
@@ -563,17 +604,17 @@ export class WSClient {
   // the bootstrap cache mid-outage doesn't flip a remote client onto
   // the aggressive local retry cadence.
   private remoteBackend = false;
-  // Terminal latch: the backend refused this session's credential and
-  // this session cannot mint another one (see enterCredentialDead).
-  // While set, the automatic reconnect ladder is stopped and the status
-  // reads 'unauthorized'. Cleared only by an explicit triggerReconnect
-  // (the banner's Retry) or a manifest that fetches clean — never by
-  // the passive loop, which is the whole point.
-  private credentialDead = false;
-  // The refusal that latched credentialDead, kept so every later
-  // rejection can name the HTTP status the backend actually answered
-  // with instead of restating the latch. Cleared with the latch.
-  private credentialRefusal: BootstrapRejectedError | null = null;
+  // The terminal latch, null when the ladder is running (see
+  // enterTerminal). While set, the automatic reconnect ladder is stopped
+  // and the status reads whichever terminal state latched it. Cleared
+  // only by an explicit triggerReconnect (the banner's Retry) or by
+  // evidence that the condition has lifted — never by the passive loop,
+  // which is the whole point.
+  //
+  // One field rather than one flag per state: every reader asks "is the
+  // ladder stopped, and what do I tell the caller", and a second boolean
+  // would be a second thing each of the five call sites could forget.
+  private terminal: TerminalLatch | null = null;
   // Date.now() of the current socket's open, 0 when no socket is open.
   // The backoff ladder resets from this at close (see
   // BACKOFF_RESET_AFTER_MS) rather than on open.
@@ -794,17 +835,17 @@ export class WSClient {
    * timer and kicks off a fresh connect. Safe to call from a UI button
    * — when an attempt is already in flight, this is a no-op.
    *
-   * This is also the manual escape hatch out of the terminal
-   * 'unauthorized' latch. Un-latching on an explicit user action keeps
-   * the stop-the-ladder decision about the AUTOMATIC loop: one attempt
-   * per click can't storm anything, and if the refusal was a lie told by
-   * something in the path (a proxy 404-ing while the backend was down)
-   * this is what recovers. A second refusal re-latches within one round
-   * trip.
+   * This is also the manual escape hatch out of both terminal latches.
+   * Un-latching on an explicit user action keeps the stop-the-ladder
+   * decision about the AUTOMATIC loop: one attempt per click can't storm
+   * anything, and if the refusal was a lie told by something in the path
+   * (a proxy 404-ing while the backend was down, a pairing completed in
+   * another tab of this browser) this is what recovers. A condition that
+   * still holds re-latches within one round trip.
    */
   triggerReconnect(): void {
     if (this.closed) return;
-    this.clearCredentialDead();
+    this.clearTerminal();
     if (this.ws && this.ws.readyState === WS_OPEN) {
       // A half-open socket also reads as OPEN. An explicit retry
       // deserves the watchdog's staleness verdict now rather than at
@@ -852,7 +893,7 @@ export class WSClient {
     // would sit disabled until something else happened to invalidate it.
     refreshGrantedScopes();
     if (this.closed) return;
-    this.clearCredentialDead();
+    this.clearTerminal();
     this.reconnectAttempt = 0;
     if (this.queuedAttempt !== null) {
       // A queued attempt re-evaluates the session store when it dials —
@@ -1063,13 +1104,13 @@ export class WSClient {
     if (this.ws && this.ws.readyState === WS_OPEN) {
       return Promise.resolve();
     }
-    if (this.credentialDead) {
+    if (this.terminal !== null) {
       // Terminal: refuse without touching the network. Passive demand
       // (a background poll, a subscribe from a remounting pane) must not
       // turn the stopped ladder back into one fetch per caller.
       return Promise.reject(
-        new DisconnectedError('backend refused this session credential; reopen the share link', {
-          cause: this.credentialRefusal,
+        new DisconnectedError(this.terminal.message, {
+          cause: this.terminal.cause,
           terminal: true,
         }),
       );
@@ -1096,11 +1137,6 @@ export class WSClient {
     let bootstrap: Bootstrap;
     try {
       bootstrap = await this.getBootstrap();
-      // A manifest in hand means the credential was accepted, so a
-      // latched refusal is history. Republishing here rather than at
-      // socket-open means the banner stops naming a cause that no
-      // longer holds as soon as we have the evidence.
-      this.clearCredentialDead();
     } catch (err) {
       this.connectPromise = null;
       // A refused credential is not a transient failure. For a session
@@ -1128,9 +1164,28 @@ export class WSClient {
       // callers classify on, with the original preserved as `cause`.
       throw new DisconnectedError('transport unreachable', {
         cause: err,
-        terminal: this.credentialDead,
+        terminal: this.terminal !== null,
       });
     }
+    // Both terminal conditions are decided here, against the manifest
+    // that just landed, and in this order. The pairing rule is asked
+    // FIRST so a page that is going to latch on it never publishes a
+    // moment of 'reconnecting' on the way: clearTerminal below is
+    // evidence that a latched condition has lifted, and for an unpaired
+    // networked page it has not.
+    if (this.pairingRequired(bootstrap.remote === true)) {
+      this.connectPromise = null;
+      this.enterPairingRequired();
+      throw new DisconnectedError('this backend admits paired devices only', {
+        terminal: true,
+      });
+    }
+    // A manifest in hand means the credential was accepted, and the
+    // pairing rule just answered no, so a latched refusal is history.
+    // Republishing here rather than at socket-open means the banner stops
+    // naming a cause that no longer holds as soon as we have the
+    // evidence.
+    this.clearTerminal();
     // A PAIRED device holds its session credential in script (it arrived
     // in the /auth/pair response body, not as a cookie), so the upgrade
     // names its session through the single-use ticket instead
@@ -1410,7 +1465,7 @@ export class WSClient {
       closeCode: ev.code,
       closeReason: ev.reason,
       cause: this.lastSocketError ?? undefined,
-      terminal: this.credentialDead,
+      terminal: this.terminal !== null,
     }));
     this.notificationReplayPending = false;
     this.notificationReplayBuffer = [];
@@ -1440,7 +1495,7 @@ export class WSClient {
         closeCode: ev.code,
         closeReason: ev.reason,
         cause: this.lastSocketError ?? undefined,
-        terminal: this.credentialDead,
+        terminal: this.terminal !== null,
       }));
     }
     if (this.closed) return;
@@ -1475,60 +1530,112 @@ export class WSClient {
     return remoteBackend || !this.probeLoopbackOrigin();
   }
 
-  // enterCredentialDead latches the transport's one terminal state and
-  // is the ONLY place the automatic reconnect ladder is stopped. The
-  // backend answered and refused this session's credential, and this
-  // session cannot produce another one, so every further attempt is
-  // structurally doomed: retrying would be a battery-burning loop
-  // against a server that will refuse each attempt identically.
+  // pairingRequired reports that this page's socket would arrive at the
+  // backend as an off-host peer while this browser holds no paired
+  // session to name on the upgrade — which that backend refuses (spec §4
+  // "Local clients"). Asked BEFORE dialing, because the refusal is an
+  // unfingerprintable 404 the browser surfaces as a bare 1006: dialing
+  // would buy no information and cost one doomed socket per attempt.
   //
-  // The latch is deliberately not self-clearing — no timer un-sets it —
-  // because nothing about waiting makes a per-launch credential valid
-  // again.
-  // It clears on exactly two events, both of them evidence rather than
-  // hope: a manual triggerReconnect (bounded by the user's finger) and
-  // a manifest that fetches clean.
+  // The AND of the two signals isRemoteSession ORs, and each term
+  // excludes a case the other admits wrongly:
   //
-  // Leaves any queued attempt alone: whatever settles that attempt's
-  // promise is what awaiting RPCs are parked on, and the attempt itself
-  // re-enters this path and stops there.
+  //   - `remote` is the backend's own pre-upgrade loopback verdict on
+  //     THIS page's peer (handleWS captures it with the same predicate),
+  //     so it is the exact mirror of the rule. It alone would be wrong
+  //     for a `--connect` stub page, whose manifest sets `remote` from
+  //     the UPSTREAM endpoint while the page's own socket goes to the
+  //     stub on this machine.
+  //   - a non-loopback document origin, which is false for exactly that
+  //     stub page (the stub binds loopback only) and for the embedded
+  //     webview. It alone would be wrong for Tailscale Serve or a
+  //     same-host proxy, where the page origin is a public name and the
+  //     backend still sees a loopback peer.
+  private pairingRequired(remoteBackend: boolean): boolean {
+    return remoteBackend && !this.probeLoopbackOrigin() && !hasPairedSession();
+  }
+
+  // enterCredentialDead latches the terminal state for a refused
+  // credential. The backend answered and refused this session's
+  // credential, and this session cannot produce another one, so every
+  // further attempt is structurally doomed: retrying would be a
+  // battery-burning loop against a server that will refuse each attempt
+  // identically.
   private enterCredentialDead(err: BootstrapRejectedError): void {
-    if (this.credentialDead) return;
-    this.credentialDead = true;
-    this.credentialRefusal = err;
-    console.warn(
+    this.enterTerminal(
+      {
+        status: 'unauthorized',
+        message: 'backend refused this session credential; reopen the share link',
+        cause: err,
+      },
       `wsClient: backend refused this session's credential (${err.message}); ` +
         'reconnect stopped — the credential is minted per backend launch, so ' +
         'only a freshly-opened share link can restore this session',
     );
+  }
+
+  // enterPairingRequired latches the other terminal state. The manifest
+  // served, so nothing is wrong with the credential; the socket is what
+  // this backend will not open for an unpaired off-host device.
+  private enterPairingRequired(): void {
+    this.enterTerminal(
+      {
+        status: 'pairing-required',
+        message: 'this backend admits paired devices only',
+      },
+      'wsClient: this backend admits paired devices only and this browser holds ' +
+        'no paired session; reconnect stopped until one is paired',
+    );
+  }
+
+  // enterTerminal is the ONLY place the automatic reconnect ladder is
+  // stopped.
+  //
+  // The latch is deliberately not self-clearing — no timer un-sets it —
+  // because nothing about waiting makes a per-launch credential valid or
+  // pairs a device. It clears on exactly two events, both of them
+  // evidence rather than hope: a manual triggerReconnect (bounded by the
+  // user's finger) and a connect attempt that gets past the condition.
+  //
+  // A latch of a DIFFERENT status replaces the one held, because the two
+  // conditions are answered by different evidence and the newer answer is
+  // the one that just came off the wire.
+  //
+  // Leaves any queued attempt alone: whatever settles that attempt's
+  // promise is what awaiting RPCs are parked on, and the attempt itself
+  // re-enters this path and stops there.
+  private enterTerminal(latch: TerminalLatch, log: string): void {
+    if (this.terminal?.status === latch.status) return;
+    this.terminal = latch;
+    console.warn(log);
     // Nothing is coming back, so a call parked for its one transient
     // re-send has nothing left to wait for. Release it with the refusal
     // as its cause instead of letting it sit out the RPC timeout against
     // a ladder that will never run again.
-    this.releaseRetryQueue(new DisconnectedError(
-      'backend refused this session credential; reopen the share link',
-      { cause: err, terminal: true },
-    ));
+    this.releaseRetryQueue(new DisconnectedError(latch.message, {
+      cause: latch.cause,
+      terminal: true,
+    }));
     this.setReconnecting(null);
   }
 
-  // clearCredentialDead is the single un-latch. Both callers are
-  // evidence-driven — a manifest that fetched clean, or a user asking
-  // for one more attempt — and both want the terminal message to stop
-  // immediately rather than linger until a socket opens.
-  private clearCredentialDead(): void {
-    if (!this.credentialDead) return;
-    this.credentialDead = false;
-    this.credentialRefusal = null;
-    if (this.statusSnapshot.status === 'unauthorized') this.setReconnecting(null);
+  // clearTerminal is the single un-latch. Both callers are
+  // evidence-driven — a connect attempt that got past the condition, or
+  // a user asking for one more attempt — and both want the terminal
+  // message to stop immediately rather than linger until a socket opens.
+  private clearTerminal(): void {
+    const held = this.terminal;
+    if (held === null) return;
+    this.terminal = null;
+    if (this.statusSnapshot.status === held.status) this.setReconnecting(null);
   }
 
   // setReconnecting publishes a between-connections status. The terminal
   // latch wins over anything a caller asks for, and carries no
   // nextAttemptAt — there is no next attempt to count down to.
   private setReconnecting(nextAttemptAt: number | null): void {
-    if (this.credentialDead) {
-      this.setStatus({ status: 'unauthorized', nextAttemptAt: null });
+    if (this.terminal !== null) {
+      this.setStatus({ status: this.terminal.status, nextAttemptAt: null });
       return;
     }
     this.setStatus({ status: 'reconnecting', nextAttemptAt });
@@ -1547,9 +1654,9 @@ export class WSClient {
   // strictly the safety net for the no-awaiter path.
   private scheduleReconnect(): void {
     if (this.closed) return;
-    if (this.credentialDead) {
-      // Terminal (see enterCredentialDead): no timer, no ladder, no
-      // countdown — just the state that says what the user has to do.
+    if (this.terminal !== null) {
+      // Terminal (see enterTerminal): no timer, no ladder, no countdown
+      // — just the state that says what the user has to do.
       this.setReconnecting(null);
       return;
     }
@@ -2056,8 +2163,8 @@ export class WSClient {
   }
 
   // releaseRetryQueue settles calls parked for a re-send that will never
-  // happen. Called when the ladder stops (enterCredentialDead) and when
-  // the client shuts down, so a parked call never outlives the transport
+  // happen. Called when the ladder stops (enterTerminal) and when the
+  // client shuts down, so a parked call never outlives the transport
   // that owed it an answer.
   private releaseRetryQueue(err: DisconnectedError): void {
     if (this.retryQueue.length === 0) return;

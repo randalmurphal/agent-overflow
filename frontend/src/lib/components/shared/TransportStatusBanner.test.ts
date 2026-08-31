@@ -91,6 +91,24 @@ describe('<TransportStatusBanner>', () => {
     expect(getByTestId('transport-status-retry')).not.toBeNull();
   });
 
+  // The other terminal state, and the one whose remedy is different in
+  // kind: this page loads fine, the backend simply will not open a
+  // socket for it until the device is paired. Telling this person to
+  // reopen a share link would send them around the loop they are
+  // already in.
+  it('names the pairing action when the backend admits paired devices only', async () => {
+    h.snapshot = { status: 'pairing-required', nextAttemptAt: Date.now() + 5_000 };
+    const { getByTestId } = render(TransportStatusBanner);
+    await settleBootGrace();
+
+    const banner = getByTestId('transport-status-banner');
+    expect(banner.dataset.status).toBe('pairing-required');
+    expect(banner.textContent).toContain('Pair this device to use this backend.');
+    expect(banner.textContent).not.toContain('share link');
+    expect(banner.textContent).not.toContain('Reconnecting');
+    expect(getByTestId('transport-status-retry')).not.toBeNull();
+  });
+
   it('forces a reconnect when Retry is clicked', async () => {
     h.snapshot = { status: 'disconnected', nextAttemptAt: null };
     const { getByTestId } = render(TransportStatusBanner);

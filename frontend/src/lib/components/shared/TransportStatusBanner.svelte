@@ -18,17 +18,24 @@
   // to force an attempt sooner. It calls wsClient.triggerReconnect via
   // the store, which resets the backoff counter.
   //
-  // 'unauthorized' is the one state the automatic loop cannot resolve:
-  // the backend answered and refused this session's token, which is what
-  // a remote/LAN client sees after the backend restarts (tokens are
-  // minted per launch). The wsClient stops retrying there, so this
-  // banner is the whole recovery story and has to name the action that
-  // actually works — otherwise the user watches "Reconnecting…" forever
-  // on a client that is no longer even trying. Retry stays because
-  // triggerReconnect un-latches (one attempt, user-initiated); the
-  // countdown does not, because no attempt is scheduled.
+  // Two states the automatic loop cannot resolve, and the wsClient stops
+  // retrying on both, so this banner is the whole recovery story for
+  // each and has to name the action that actually works — otherwise the
+  // user watches "Reconnecting…" forever on a client that is no longer
+  // even trying. 'unauthorized' is a refused credential, which is what a
+  // remote/LAN client sees after the backend restarts (credentials are
+  // minted per launch); 'pairing-required' is a networked page this
+  // backend will not open a socket for until the device is paired. The
+  // sentence for either comes from transport/connectionRefusal.ts, the
+  // one module that phrases them. Retry stays because triggerReconnect
+  // un-latches (one attempt, user-initiated); the countdown does not,
+  // because no attempt is scheduled.
 
   import { fade } from 'svelte/transition';
+  import {
+    connectionRefusalMessage,
+    isTerminalConnectionStatus,
+  } from '../../transport/connectionRefusal';
   import { getTransportStatus, retryTransport } from '../../stores/transportStatus.svelte';
 
   // Tick once per second so the countdown stays in sync. We only mount
@@ -117,8 +124,8 @@
       }
       return 'Reconnecting…';
     }
-    if (snapshot.status === 'unauthorized') {
-      return 'The backend restarted. Reopen the share link to reconnect.';
+    if (isTerminalConnectionStatus(snapshot.status)) {
+      return connectionRefusalMessage(snapshot.status);
     }
     return 'Disconnected from the agent backend.';
   });

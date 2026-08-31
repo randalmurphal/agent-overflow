@@ -28,6 +28,39 @@ remote browser alike. Protocol and authz rules:
   reads as Go-style error wrapping and truncates to the last segment.
   Structured detail goes in parentheses, comma-separated.
 
+  **The reconnect ladder stops on exactly two conditions, and one latch
+  holds both.** `unauthorized` is a refused credential this session
+  cannot re-mint; `pairing-required` is a page whose socket would arrive
+  at the backend as an off-host peer while this browser holds no paired
+  session to name on the upgrade, which that backend refuses
+  (`internal/transport/AGENTS.md` § the launch credential and the
+  upgrade). Neither is self-clearing — no timer un-sets a latch, because
+  nothing about waiting mints a per-launch credential or pairs a device
+  — and both clear only on evidence: a user-initiated
+  `triggerReconnect`, or a connect attempt that gets past the condition.
+  Three rules the states have to keep:
+
+  - The pairing condition is decided BEFORE dialing, against the
+    manifest that just landed, and before the un-latch. The refusal is
+    an unfingerprintable 404 the browser surfaces as a bare 1006, so
+    dialing would buy no information and cost one doomed socket per
+    backoff step — and a page that is going to latch must not publish a
+    moment of `reconnecting` on the way there.
+  - Its predicate is the AND of the two signals `isRemoteSession` ORs
+    (the manifest's `remote`, and a non-loopback document origin), plus
+    `hasPairedSession()`. Each term alone decides a working page wrongly:
+    `remote` alone strands the `--connect` stub page, whose manifest
+    describes its UPSTREAM while its own socket goes to a stub on this
+    machine; the origin alone strands Tailscale Serve and same-host
+    proxies, where the page origin is a public name and the backend
+    still sees a loopback peer.
+  - A latched client refuses RPCs locally rather than re-entering the
+    ladder, so passive demand (a remounting pane, a background poll)
+    cannot turn a stopped ladder into one fetch per caller.
+
+  The sentence either state shows comes from `connectionRefusal.ts`
+  below, never from a surface branching on the status itself.
+
   One channel is seeded into the replay map at zero rather than carried
   from a cursor: `notification:activated`, because a Windows toast click
   can COLD-LAUNCH the desktop window, so the click that started the page
@@ -100,8 +133,12 @@ remote browser alike. Protocol and authz rules:
   backend's gate compares), then the local page, which holds every
   grantable scope and answers so explicitly rather than by skipping the
   check. A networked page that never paired names no session of its own,
-  so it answers "granted nothing"; reads are unaffected, because nothing
-  asks permission before reading. `host` is answered from PRESENCE and
+  so it answers "granted nothing" — and its socket does not open either
+  (`wsClient.ts` above, `pairing-required`), which is why that page's
+  whole story is the pairing prompt rather than a read-only app with
+  every control disabled. The answer still has to be right, because a
+  page reached through a same-host proxy is networked by origin and
+  unpaired while its socket opens normally. `host` is answered from PRESENCE and
   never from a grant set — no session holds it, `internal/identity` does
   not declare it, and `authorize.go` authorizes it from "is the caller on
   this machine" alone. Never authorization: the backend re-checks every
@@ -130,6 +167,17 @@ remote browser alike. Protocol and authz rules:
   than its name (`transport.ScopeRequired`), or a revocation landing
   mid-session. Like `authReason.ts` it always answers — a capability
   name this bundle has no word for degrades to the generic sentence.
+- `connectionRefusal.ts` is the third sibling, and the one whose refusals
+  are the CONNECTION's rather than a call's. The other two read a code
+  off the wire; a terminal transport state has none to read, because the
+  manifest and the `/ws` upgrade both answer an unfingerprintable 404 —
+  so the client decides which condition it is in (`wsClient.ts` below)
+  and this module says what to do about it. Exhaustive over
+  `TerminalTransportStatus` by construction (a `Record`, not a
+  `switch`), so a third terminal state fails the type check here rather
+  than rendering an empty banner. `TransportStatusBanner.svelte` is the
+  one consumer today and asks `isTerminalConnectionStatus` rather than
+  listing the members itself.
 - `runtime.ts` replaces `@wailsio/runtime` through a Vite alias, so the
   generated bindings keep working unregenerated. Its surface must mirror
   `src/test/mocks/wailsio-runtime.ts`, or generated code that type-checks
@@ -154,10 +202,13 @@ remote browser alike. Protocol and authz rules:
   credential on the manifest fetch (renewing once on a refusal), because
   its ticket is spent and its cookie dies with the backend launch — after
   a restart that credential is the only thing that still names the page. Whether the page is loopback decides
-  whether a refused credential is terminal, so getting that predicate
-  wrong is user-visible in both directions: a false "remote" tells a
-  desktop user to reopen a share link that does not exist, and a false
-  "loopback" leaves a phone retrying a dead session.
+  whether a refused credential is terminal, and (with the manifest's
+  `remote`) whether an unpaired page is asked to pair at all, so getting
+  that predicate wrong is user-visible in three directions: a false
+  "remote" tells a desktop user to reopen a share link that does not
+  exist or to pair a device that IS the host, and a false "loopback"
+  leaves a phone retrying a dead session or dialing an upgrade the
+  backend will not open for it.
 - `pageHost.ts` is the OTHER ticket channel: the page's half of the
   handshake with a Go process that owns its window. Such a page is marked
   by `?host=webview` on an otherwise bare URL, because a URL is copyable,

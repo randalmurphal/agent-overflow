@@ -30,6 +30,10 @@
 //     are refused locally, a manual retry un-latches and a repeat
 //     refusal re-latches. A loopback session, a 1005 relay teardown,
 //     and a network-down loop all keep the ordinary retry behavior.
+//   - the OTHER terminal state, 'pairing-required': a page whose socket
+//     would arrive off-host while it holds no paired session latches
+//     before dialing, and pairing un-latches it. A paired networked
+//     page and every loopback page are unaffected.
 //   - backoff collapse: an RPC / page resume / triggerReconnect fires a
 //     queued backoff attempt immediately; the RPC path is rate-floored
 //     (one attempt per RECONNECT_INITIAL_MS); resume-while-hidden no-ops
@@ -2787,6 +2791,10 @@ describe('WSClient', () => {
   // The WSL relay tears sockets down with 1005 and a minimised WebView2
   // gets suspended out from under its connection; neither is an auth
   // failure. Same backend, same token, recovery must be silent.
+  //
+  // Both of those pages load from loopback and reach a backend the
+  // manifest calls remote (the `--connect` stub's `remote` describes its
+  // UPSTREAM), which is the shape driven here.
   it('rides out a relay teardown on a remote session without latching', async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
@@ -2799,7 +2807,7 @@ describe('WSClient', () => {
     const client = createWSClient({
       WebSocketCtor: FakeCtor,
       bootstrap: fetchSpy,
-      loopbackOrigin: () => false,
+      loopbackOrigin: () => true,
     });
     const seen: string[] = [];
     client.onStatusChange((snap) => seen.push(snap.status));
@@ -2854,6 +2862,198 @@ describe('WSClient', () => {
     expect(client.getStatus().nextAttemptAt).not.toBeNull();
 
     client.close();
+  });
+
+  // The second terminal state. The backend opens a `/ws` upgrade for an
+  // off-host peer only when the upgrade NAMES a live session, so a page
+  // whose socket would arrive that way while holding no paired session
+  // has nothing to dial with. It must say what to do instead of climbing
+  // a ladder of doomed sockets.
+  //
+  // The three inputs are asserted separately below, because each one
+  // alone would decide this wrongly for a page that really works.
+  it('latches a pairing prompt for a networked page holding no paired session', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    localStorage.clear();
+
+    const fetchSpy = vi
+      .fn<() => Promise<{ wsUrl: string; token: string; remote?: boolean }>>()
+      .mockResolvedValue({ wsUrl: 'ws://example/ws', token: 't', remote: true });
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: fetchSpy,
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The manifest SERVED — the page loads and the person can act — and
+    // no socket was opened to learn the upgrade would be refused.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(client.getStatus()).toEqual({ status: 'pairing-required', nextAttemptAt: null });
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    // Terminal, on the same terms as the refused credential: waiting
+    // pairs no device, so minutes of wall clock buy nothing.
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    // Passive demand must not restart the ladder either.
+    const call = client.callByName('App.Anything', []);
+    await expect(call).rejects.toBeInstanceOf(DisconnectedError);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    client.close();
+  });
+
+  // Term 1 of the rule: `remote` is the backend's own verdict on THIS
+  // page's peer. A networked page against a backend that reads it as
+  // loopback — Tailscale Serve, a same-host reverse proxy — has a socket
+  // that opens, so the origin alone must not latch it.
+  it('does not ask a page to pair when the backend reads its peer as local', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    localStorage.clear();
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't' }),
+      loopbackOrigin: () => false,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getStatus().status).toBe('connected');
+    client.close();
+  });
+
+  // Term 2: the `--connect` stub's page is served from a loopback
+  // listener on this machine while its manifest's `remote` describes the
+  // UPSTREAM it carries the socket to. Latching on the manifest alone
+  // would strand a desktop window behind a pairing prompt for a device
+  // that IS the host.
+  it('does not ask a loopback page to pair when the manifest names a remote backend', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    localStorage.clear();
+
+    const client = createWSClient({
+      WebSocketCtor: FakeCtor,
+      bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+      loopbackOrigin: () => true,
+    });
+    client.subscribe('x', () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    MockWebSocket.instances[0]!.acceptOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getStatus().status).toBe('connected');
+    client.close();
+  });
+
+  // Term 3, and the state this whole path exists to let a person reach:
+  // the same networked page once it holds a paired session dials exactly
+  // as before, naming that session with a ticket.
+  it('dials a networked page normally once it holds a paired session', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ ticket: 'tik-p' }), { status: 200 })),
+      );
+
+      const client = createWSClient({
+        WebSocketCtor: FakeCtor,
+        bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+        loopbackOrigin: () => false,
+      });
+      const seen: string[] = [];
+      client.onStatusChange((snap) => seen.push(snap.status));
+      client.subscribe('x', () => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+
+      const url = new URL(MockWebSocket.instances[0]!.url);
+      expect(url.searchParams.get('ticket')).toBe('tik-p');
+      MockWebSocket.instances[0]!.acceptOpen();
+      await flushMicrotasks();
+
+      expect(client.getStatus().status).toBe('connected');
+      expect(seen).not.toContain('pairing-required');
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The door's transition, not just its on-state: pairing from the
+  // latched page must produce a live connection without a reload, which
+  // is the only remedy the banner offers.
+  it('un-latches the pairing prompt when the device pairs', async () => {
+    localStorage.clear();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const client = createWSClient({
+        WebSocketCtor: FakeCtor,
+        bootstrap: async () => ({ wsUrl: 'ws://example/ws', token: 't', remote: true }),
+        loopbackOrigin: () => false,
+      });
+      client.subscribe('x', () => {});
+      await vi.waitFor(() =>
+        expect(client.getStatus().status).toBe('pairing-required'),
+      );
+      expect(MockWebSocket.instances).toHaveLength(0);
+
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ ticket: 'tik-r' }), { status: 200 })),
+      );
+      client.redialAfterPairing();
+
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      MockWebSocket.instances[0]!.acceptOpen();
+      await flushMicrotasks();
+      expect(client.getStatus().status).toBe('connected');
+
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('reports an outage summary through the diagnostics sink on reconnect', async () => {
