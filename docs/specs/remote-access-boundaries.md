@@ -69,6 +69,12 @@ credential for the remote backend. Fix is spec §16 phase 0, in the
 same change that moves the boot credential out of script reach.
 
 **E. The browser MCP endpoint authenticates on the path alone.**
+*Status 2026-08-30: landed (476f428f). All three checks below are in
+place — loopback peer off `r.RemoteAddr`, any `Origin` refused,
+`application/json` required — and case 18's row describes shipped
+behavior. The body is kept in its original present tense as the record
+of what was reachable.*
+
 `MCPServer.handle` checks the HTTP method and an unguessable
 per-thread UUID in the path, then decodes the body regardless of
 `Content-Type`: no `Origin` or `Sec-Fetch-Site` rejection and no

@@ -1281,21 +1281,21 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      upstream token included, on an unauthenticated `GET /`. Same
      credential shape, so it is fixed in the same change.
    - **The browser MCP endpoint authenticates on an unguessable path
-     alone** — no `Origin` / `Sec-Fetch-Site` rejection, no
-     loopback-peer re-check, and the body decodes whatever its
-     `Content-Type` claims, which makes a `tools/call` POST a CORS
-     simple request that runs without a preflight. The claudetui
-     gateway next door already does the peer check off `r.RemoteAddr`;
-     copy it, require `application/json`, and reject any `Origin`.
-     Lazy-starting the listener is not available: its URL rides
-     provider argv at spawn, so it must exist before the first tool
-     call.
-   - **Tests**: a `//`-leading link href through `ChatMarkdown` (the
-     `//`-versus-schemeless discrimination exists in both render
-     paths and is pinned in neither for links), and a link-level
-     differential between `staticHtml.ts` and `Link.svelte` —
-     `markdown/AGENTS.md` already names that silent fork as a known
-     hazard.
+     alone.** LANDED 2026-08-30 (476f428f): every request now clears a
+     loopback-peer check off `r.RemoteAddr` (the claudetui gateway's
+     precedent), a refusal of any `Origin` header, and an
+     `application/json` requirement that forces a preflight where a
+     `text/plain` POST would have been a CORS simple request. Both
+     real provider clients verified against their header
+     construction. The listener still binds eagerly — its URL rides
+     provider argv at spawn — and that property is now documented at
+     `ensureStarted`.
+   - **Tests.** LANDED 2026-08-30 (7897c969): the `//`-leading href
+     is pinned through the real `ChatMarkdown` on both render paths,
+     and `ChatMarkdown.compactStaticLinkUrls.test.ts` drives a
+     20-class href corpus through `staticHtml.ts` and `Link.svelte`
+     with per-class test names, so a future edit to one path that
+     forgets the other fails the case naming the divergent class.
    - **The §13 surface enumeration + CI gate**, seeded with the
      verified inventory: 9 listeners across 7 packages including the
      implicit Chrome DevTools port, the transport's routes, and
