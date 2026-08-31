@@ -70,9 +70,15 @@ func (r *setupRecorder) Start(thread store.Thread) {
 	_ = r.store.SetThreadWorktreeSetupState(thread.ID, store.WorktreeSetupStateRunning)
 }
 
-type recentRecorder struct{ paths []string }
+type recentRecorder struct {
+	paths   []string
+	buckets []string
+}
 
-func (r *recentRecorder) AddRecentWorkspace(path string) { r.paths = append(r.paths, path) }
+func (r *recentRecorder) AddRecentWorkspace(bucket, path string) {
+	r.buckets = append(r.buckets, bucket)
+	r.paths = append(r.paths, path)
+}
 
 type pullRequestPort struct {
 	workspace string

@@ -347,15 +347,17 @@ func TestWorkflowSettingsDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("workflow defaults = paused:%t, want false", got.WorkflowPaused)
 	}
 	svc := NewService(t.TempDir())
-	updated, err := svc.Update(map[string]any{"workflowPaused": true})
+	updated, err := svc.SetWorkflowPaused(true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !updated.WorkflowPaused {
 		t.Fatalf("workflow settings update = %+v", updated)
 	}
-	if _, err := svc.Update(map[string]any{"workflowPaused": "yes"}); err == nil {
-		t.Error("non-boolean workflowPaused succeeded")
+	// The generic patch refuses the key: one write path per key, and this
+	// one's is WorkflowSetGlobalPause (docs/specs/remote-access.md §6).
+	if _, err := svc.Update(map[string]any{"workflowPaused": true}); err == nil {
+		t.Error("the generic patch wrote workflowPaused")
 	}
 	// A settings file written before the queue and the chat-enqueue MCP were
 	// removed still loads: the dropped keys decode to nothing (the typed
@@ -373,7 +375,7 @@ func TestWorkflowSettingsDefaultsAndValidation(t *testing.T) {
 	if loaded := legacy.Get(); loaded.WorkflowPaused != DefaultSettings.WorkflowPaused {
 		t.Fatalf("legacy settings file yielded paused = %t, want %t", loaded.WorkflowPaused, DefaultSettings.WorkflowPaused)
 	}
-	if _, err := legacy.Update(map[string]any{"workflowPaused": true}); err != nil {
+	if _, err := legacy.SetWorkflowPaused(true); err != nil {
 		t.Fatalf("update over a legacy settings file: %v", err)
 	}
 	if reloaded := NewService(dir).Get(); !reloaded.WorkflowPaused {

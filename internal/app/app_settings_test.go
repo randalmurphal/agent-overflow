@@ -273,7 +273,7 @@ func TestGetSettings_RedactsRemoteEndpointTokens(t *testing.T) {
 		t.Fatalf("seed B: %v", err)
 	}
 
-	got, err := app.GetSettings()
+	got, err := app.GetSettings(context.Background())
 	if err != nil {
 		t.Fatalf("GetSettings: %v", err)
 	}

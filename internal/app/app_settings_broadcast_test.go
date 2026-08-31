@@ -87,7 +87,7 @@ func TestEverySettingsBindingBroadcasts(t *testing.T) {
 				_, err := app.SetEditorSettings(settings.EditorSettings{Preference: "code"})
 				return err
 			},
-			tier: "device",
+			tier: "user",
 			keys: []string{"editor"},
 		},
 		{

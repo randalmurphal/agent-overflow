@@ -78,7 +78,7 @@ func TestRemoteEndpointCRUDAnnouncesItsTier(t *testing.T) {
 	if len(*seen) != 1 || len((*seen)[0]) != 1 {
 		t.Fatalf("add announced %+v", *seen)
 	}
-	if got := (*seen)[0][0]; got.Tier != TierDevice || !slices.Equal(got.Keys, []string{"remoteEndpoints"}) {
+	if got := (*seen)[0][0]; got.Tier != TierHost || !slices.Equal(got.Keys, []string{"remoteEndpoints"}) {
 		t.Fatalf("add announced %+v", got)
 	}
 	if err := svc.DeleteRemoteEndpoint(endpoint.ID); err != nil {

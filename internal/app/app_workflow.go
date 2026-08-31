@@ -622,6 +622,11 @@ func (a *App) WorkflowResolveGate(ctx context.Context, itemID, decision, note st
 // before it is applied, so a restart recovers the requested state even if
 // shutdown races the live update.
 //
+// This is the ONE write path for the `workflowPaused` setting: the generic
+// UpdateSettings patch refuses the key (docs/specs/remote-access.md §6, "one
+// write path per key"), because persisting a pause the engine never heard
+// about is not the same act as pausing.
+//
 //ao:scope threads:autonomy
 func (a *App) WorkflowSetGlobalPause(paused bool) error {
 	workflowEngine, err := a.requireWorkflowEngine()
@@ -629,11 +634,11 @@ func (a *App) WorkflowSetGlobalPause(paused bool) error {
 		return err
 	}
 	previous := a.currentSettings()
-	if _, err := a.settings.Update(map[string]any{"workflowPaused": paused}); err != nil {
+	if _, err := a.settings.SetWorkflowPaused(paused); err != nil {
 		return err
 	}
 	if err := workflowEngine.PauseDetachedStarts(paused); err != nil {
-		_, rollbackErr := a.settings.Update(map[string]any{"workflowPaused": previous.WorkflowPaused})
+		_, rollbackErr := a.settings.SetWorkflowPaused(previous.WorkflowPaused)
 		return errors.Join(err, rollbackErr)
 	}
 	return nil

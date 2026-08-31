@@ -61,7 +61,7 @@ func TestGetSettingsReturnsCurrentServiceState(t *testing.T) {
 	}
 
 	app := &App{settings: svc}
-	got, err := app.GetSettings()
+	got, err := app.GetSettings(context.Background())
 	if err != nil {
 		t.Fatalf("GetSettings() error = %v", err)
 	}
@@ -97,38 +97,22 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	}
 }
 
-func TestSettingsRollbackPatchRestoresEveryPatchedField(t *testing.T) {
-	previous := settings.DefaultSettings
-	previous.TimestampFormat = "12-hour"
-	previous.WorkflowPaused = true
-	rollback, err := settingsRollbackPatch(previous, map[string]any{
-		"timestampFormat": "24-hour", "workflowPaused": false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rollback["timestampFormat"] != "12-hour" || rollback["workflowPaused"] != true {
-		t.Fatalf("rollback patch = %#v", rollback)
-	}
-}
-
-func TestUpdateSettingsRollsBackMixedPatchWhenWorkflowEngineRejects(t *testing.T) {
+// workflowPaused has a dedicated RPC (WorkflowSetGlobalPause), so the generic
+// patch refuses it — and refuses the whole patch with it, leaving nothing
+// half-applied. That is what replaced the rollback this test used to pin:
+// there is no longer a write to undo, because the engine and the setting move
+// together or not at all (docs/specs/remote-access.md §6).
+func TestUpdateSettingsRefusesTheWorkflowPauseKey(t *testing.T) {
 	app := newTestAppWithStore(t)
-	if err := app.initWorkflowEngine(t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	if err := app.workflowApplication().Engine().Close(); err != nil {
-		t.Fatal(err)
-	}
 	previous := app.currentSettings()
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"timestampFormat": "24-hour", "workflowPaused": true,
 	}); err == nil {
-		t.Fatal("UpdateSettings with closed workflow engine succeeded")
+		t.Fatal("UpdateSettings wrote workflowPaused through the generic patch")
 	}
 	current := app.currentSettings()
 	if current.TimestampFormat != previous.TimestampFormat || current.WorkflowPaused != previous.WorkflowPaused {
-		t.Fatalf("mixed patch was not rolled back: got %+v, previous %+v", current, previous)
+		t.Fatalf("a refused patch still moved something: got %+v, previous %+v", current, previous)
 	}
 }
 

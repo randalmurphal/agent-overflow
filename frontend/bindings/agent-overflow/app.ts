@@ -1163,6 +1163,12 @@ export function GetRemoteEndpointToken(id: string): $CancellablePromise<string> 
 /**
  * GetSettings returns the current persisted settings merged over defaults,
  * with every secret redacted (see redactedSettings).
+ * 
+ * Resolved PER CALLER. The host and user tiers are global to this backend;
+ * the device tier comes out of the calling connection's own ui_state bucket
+ * (docs/specs/remote-access.md §6), so two screens attached to one backend see
+ * two font sizes and one shared set of confirmations. A caller with no device
+ * behind it — a background saga, a test — reads the device defaults.
  */
 export function GetSettings(): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2554697378).then(($result: any) => {
@@ -3949,6 +3955,12 @@ export function UpdateRemoteEndpoint(id: string, name: string, url: string, toke
  * after a generic update would leave the picker showing the wrong
  * availability flags until the next app launch.
  * 
+ * Each key is routed to its own tier's storage — settings.json for host keys,
+ * the `user:default` ui_state scope for user keys, the CALLING connection's
+ * bucket for device keys (docs/specs/remote-access.md §6). Validation runs on
+ * the whole merged struct first, so every key is validated the same way
+ * wherever it ends up.
+ * 
  * The returned snapshot is redacted like GetSettings': the frontend store
  * re-seeds from it, and the two read paths must not disagree about whether the
  * store holds a plaintext secret. (Nothing consumes the secrets from here —
@@ -4706,6 +4718,11 @@ export function WorkflowSetAutomationEnabled(automationID: string, enabled: bool
  * phase starts anywhere while paused, in-flight turns finish. It is persisted
  * before it is applied, so a restart recovers the requested state even if
  * shutdown races the live update.
+ * 
+ * This is the ONE write path for the `workflowPaused` setting: the generic
+ * UpdateSettings patch refuses the key (docs/specs/remote-access.md §6, "one
+ * write path per key"), because persisting a pause the engine never heard
+ * about is not the same act as pausing.
  */
 export function WorkflowSetGlobalPause(paused: boolean): $CancellablePromise<void> {
     return $Call.ByID(774492663, paused);

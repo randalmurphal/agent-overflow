@@ -153,7 +153,16 @@ func (h *harnessHost) ClearUIState() error {
 	if h.app.store == nil {
 		return fmt.Errorf("store unavailable")
 	}
-	return h.app.store.ClearUIState()
+	if err := h.app.store.ClearUIState(); err != nil {
+		return err
+	}
+	// The wipe took the user tier's rows with it (internal/settings/residency.go),
+	// and the settings cache keys on the FILE — which this did not touch. Tell
+	// it what happened, or the next read serves preferences whose rows are gone.
+	if h.app.settings != nil {
+		h.app.settings.InvalidateTierCache()
+	}
+	return nil
 }
 
 func (h *harnessHost) ResetSessionImporter() {

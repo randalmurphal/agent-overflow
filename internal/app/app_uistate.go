@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -99,6 +100,13 @@ func EnsureClientIDIn(dir string) string {
 	return state.ClientID
 }
 
+// errNoUIStateBucket is the one refusal that means "this connection has no
+// bucket", as opposed to "this connection may not have one". A launch-
+// credential tool, an in-process saga and a test all land here, and callers
+// that can answer from defaults (settingsBucket) treat it as a normal answer
+// rather than an error.
+var errNoUIStateBucket = errors.New("ui state: this connection names neither a session nor a client")
+
 // uiStateScope resolves the bucket this call may touch, from the
 // connection and nothing else (docs/specs/remote-access.md §6, "Fix the
 // identity hole").
@@ -159,9 +167,40 @@ func (a *App) uiStateScope(ctx context.Context) (string, error) {
 	}
 	client := transport.ClientFromContext(ctx).DeviceID
 	if !validClientID(client) {
-		return "", fmt.Errorf("ui state: this connection names neither a session nor a client")
+		return "", errNoUIStateBucket
 	}
 	return "client:" + client, nil
+}
+
+// settingsBucket resolves where the caller's DEVICE-tier settings live
+// (internal/settings/residency.go). Same derivation as uiStateScope, one
+// difference: a connection with no bucket at all is not an error here.
+//
+// Reading a bucket and reading settings are different acts. GetUIState with
+// no bucket has nothing to answer with, but settings always have an answer —
+// the device defaults — and a background saga or a test asking for settings
+// must get them rather than a refusal. A session the core REFUSES still
+// errors, because that refusal is about the credential, not about the bucket.
+func (a *App) settingsBucket(ctx context.Context) (string, error) {
+	scope, err := a.uiStateScope(ctx)
+	if errors.Is(err, errNoUIStateBucket) {
+		return "", nil
+	}
+	return scope, err
+}
+
+// callerSettingsBucket is settingsBucket for a call that must not FAIL over
+// it — a thread creation attributing its recent-workspace write. An
+// unresolvable bucket costs the attribution (the write lands on the backend's
+// own screen) and nothing else, which is not worth failing the create the
+// user asked for.
+func (a *App) callerSettingsBucket(ctx context.Context) string {
+	bucket, err := a.settingsBucket(ctx)
+	if err != nil {
+		log.Printf("settings bucket for this connection: %v", err)
+		return ""
+	}
+	return bucket
 }
 
 // GetUIState returns the calling connection's full persisted UI-state

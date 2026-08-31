@@ -396,8 +396,11 @@ transactions.
   table, migration v15). `(scope, key) → value` where scope is a
   namespace `internal/app` derives from the calling connection
   (`device:<id>` for a paired device, `client:<uuid>` for a screen on
-  the local page channel, `user:<id>` reserved) and values are opaque
-  strings. `DeleteUIStateScope` drops a whole bucket, which is how
+  the local page channel) plus `user:default`, which `internal/settings`
+  writes the USER tier into rather than a connection naming it, and
+  values are opaque strings. A row this table holds may therefore be a
+  frontend view-state value OR a settings value; the difference is
+  `internal/settings`' business, and nothing here inspects a key. `DeleteUIStateScope` drops a whole bucket, which is how
   revoking a device drops its state. The justified carve-out from "transient
   UI state belongs to frontend `$state`": these rows are the
   restart-surviving copy behind the frontend `appStorage` module,

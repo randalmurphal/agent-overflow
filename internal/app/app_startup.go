@@ -224,6 +224,14 @@ func (a *App) initStores() (string, *store.Store, error) {
 		WatchRootsFn: a.git.WatchRoots,
 	})
 	a.setSettingsService(settings.NewService(dbDir))
+	// Tiered residency (docs/specs/remote-access.md §6): the user and device
+	// tiers live in ui_state from here on, and whatever settings.json still
+	// holds for them seeds this machine's own screen and the reserved
+	// `user:default` scope. Runs before the first Get so nothing reads a
+	// pre-migration snapshot, and writes no settings file — which is what
+	// keeps it clear of initThemeDirectory's one-shot read of the retired
+	// `theme` key further down the boot.
+	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
 	accountStore, err := provideraccounts.NewStore(dbDir)
 	if err != nil {
 		closeErr := st.Close()

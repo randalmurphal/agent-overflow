@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -33,9 +31,22 @@ func (a *App) currentSettings() settings.Settings {
 // GetSettings returns the current persisted settings merged over defaults,
 // with every secret redacted (see redactedSettings).
 //
+// Resolved PER CALLER. The host and user tiers are global to this backend;
+// the device tier comes out of the calling connection's own ui_state bucket
+// (docs/specs/remote-access.md §6), so two screens attached to one backend see
+// two font sizes and one shared set of confirmations. A caller with no device
+// behind it — a background saga, a test — reads the device defaults.
+//
 //ao:scope settings:read
-func (a *App) GetSettings() (settings.Settings, error) {
-	return redactedSettings(a.currentSettings()), nil
+func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
+	if a.settings == nil {
+		return settings.DefaultSettings, nil
+	}
+	bucket, err := a.settingsBucket(ctx)
+	if err != nil {
+		return settings.Settings{}, err
+	}
+	return redactedSettings(a.settings.For(bucket).Get()), nil
 }
 
 // redactedSettings is the projection every bound method returning a full
@@ -81,6 +92,12 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // after a generic update would leave the picker showing the wrong
 // availability flags until the next app launch.
 //
+// Each key is routed to its own tier's storage — settings.json for host keys,
+// the `user:default` ui_state scope for user keys, the CALLING connection's
+// bucket for device keys (docs/specs/remote-access.md §6). Validation runs on
+// the whole merged struct first, so every key is validated the same way
+// wherever it ends up.
+//
 // The returned snapshot is redacted like GetSettings': the frontend store
 // re-seeds from it, and the two read paths must not disagree about whether the
 // store holds a plaintext secret. (Nothing consumes the secrets from here —
@@ -99,22 +116,14 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 	if err := a.requireSettingsTier(ctx, patch); err != nil {
 		return settings.Settings{}, err
 	}
-	prev := a.settings.Get()
-	next, err := a.settings.Update(patch)
+	bucket, err := a.settingsBucket(ctx)
 	if err != nil {
 		return settings.Settings{}, err
 	}
-	if workflowEngine := a.workflowApplication().Engine(); workflowEngine != nil {
-		if _, workflowPausedChanged := patch["workflowPaused"]; workflowPausedChanged {
-			if err := workflowEngine.PauseDetachedStarts(next.WorkflowPaused); err != nil {
-				rollback, rollbackBuildErr := settingsRollbackPatch(prev, patch)
-				var rollbackErr error
-				if rollbackBuildErr == nil {
-					_, rollbackErr = a.settings.Update(rollback)
-				}
-				return settings.Settings{}, errors.Join(err, rollbackBuildErr, rollbackErr)
-			}
-		}
+	prev := a.settings.Get()
+	next, err := a.settings.For(bucket).Update(patch)
+	if err != nil {
+		return settings.Settings{}, err
 	}
 	if patchTouchesLiveClaudeAxis(patch) {
 		// The settings-owned session axes a LIVE session reacts to. They
@@ -204,26 +213,6 @@ func patchTouchesLiveClaudeAxis(patch map[string]any) bool {
 		}
 	}
 	return false
-}
-
-func settingsRollbackPatch(previous settings.Settings, patch map[string]any) (map[string]any, error) {
-	encoded, err := json.Marshal(previous)
-	if err != nil {
-		return nil, fmt.Errorf("settings rollback: encode previous settings: %w", err)
-	}
-	var values map[string]any
-	if err := json.Unmarshal(encoded, &values); err != nil {
-		return nil, fmt.Errorf("settings rollback: decode previous settings: %w", err)
-	}
-	rollback := make(map[string]any, len(patch))
-	for key := range patch {
-		value, ok := values[key]
-		if !ok {
-			return nil, fmt.Errorf("settings rollback: previous value for %q is unavailable", key)
-		}
-		rollback[key] = value
-	}
-	return rollback, nil
 }
 
 // GetModelsForProvider returns the known model registry for the given provider.

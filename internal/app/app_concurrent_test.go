@@ -238,7 +238,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 
 	wg.Wait()
 
-	got, err := app.GetSettings()
+	got, err := app.GetSettings(context.Background())
 	if err != nil {
 		t.Fatalf("GetSettings: %v", err)
 	}

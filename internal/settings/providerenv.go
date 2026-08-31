@@ -393,7 +393,7 @@ func (s *Service) SetProviderEnvVar(providerName, name, value string, sensitive 
 	}
 	name = strings.TrimSpace(name)
 
-	return s.mutate(func(current Settings) (Settings, error) {
+	return s.mutate("", func(current Settings) (Settings, error) {
 		next := append([]ProviderEnvVar(nil), current.ProviderEnvVars(key)...)
 		replaced := false
 		for i := range next {
@@ -424,7 +424,7 @@ func (s *Service) DeleteProviderEnvVar(providerName, name string) (Settings, err
 		return Settings{}, fmt.Errorf("settings: environment variable name required")
 	}
 
-	return s.mutate(func(current Settings) (Settings, error) {
+	return s.mutate("", func(current Settings) (Settings, error) {
 		existing := current.ProviderEnvVars(key)
 		next := make([]ProviderEnvVar, 0, len(existing))
 		removed := false

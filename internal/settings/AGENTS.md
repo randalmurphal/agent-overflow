@@ -1,8 +1,14 @@
 # internal/settings/
 
-User preferences persisted as a single JSON file with sparse
-serialization (zero-value fields are omitted so defaults are
-forward-compatible).
+User preferences behind ONE service, persisted across three homes: the
+HOST tier in a JSON file with sparse serialization (zero-value fields are
+omitted so defaults are forward-compatible), and — once `AttachTierStore`
+has wired the `ui_state` table in — the USER tier in the reserved
+`user:default` scope and the DEVICE tier in the CALLING connection's own
+bucket. `tier.go` decides which is which; `residency.go` is where the
+split lives. A service with no store attached keeps every tier in the
+file, which is what the pre-database boot readers in `main.go` and
+`main_desktop.go` depend on.
 
 ## Layout
 
@@ -150,15 +156,33 @@ forward-compatible).
   `settings:updated` so a second attached client converges without a
   refresh, which is why the chokepoint is enforced rather than
   conventional: `TestOnlyMutateWritesSettings` fails if anything else
-  calls `writeSparse`. Two properties the callers depend on: the
-  observer runs AFTER the write lock is released (an observer that reads
-  settings back would otherwise deadlock), and a write that moved no key
-  reports nothing at all.
+  calls `writeSparse`. It also ROUTES: after apply, the keys that moved
+  are split by tier and each group is persisted to its own home, so the
+  file is not rewritten for a write that only moved a font size. Three
+  properties the callers depend on: the observer runs AFTER the write
+  lock is released (an observer that reads settings back would otherwise
+  deadlock), a write that moved no key reports nothing at all, and a
+  write spanning two homes is not one transaction — SQLite and a JSON
+  file cannot be — so a failure part-way through announces nothing and
+  the next read sees whatever landed.
 - `tier.go`: the host / user / device taxonomy (`docs/specs/remote-access.md`
   §6) as a total map from settings key to tier, plus the per-key JSON
   projection and diff `mutate` reports with. Total is the point: a new
   settings field fails `TestEverySettingsKeyHasATier` until it is placed,
-  because an unplaced key is one that silently stops announcing itself.
+  because an unplaced key is one that silently stops announcing itself —
+  and since phase 4 an unplaced key is also one with no home, because
+  this map is the STORAGE routing table. Placing a key is now two
+  decisions in one: who may write it, and where it lives.
+- `residency.go`: the three homes. `AttachTierStore` wires the `ui_state`
+  table and seeds it from the file; `Service.For(bucket)` is the service
+  seen from one connection, with the device tier resolved out of THAT
+  caller's bucket. Storage format is one row per key, spelled exactly as
+  the settings JSON key, holding the JSON encoding of the typed value —
+  the store stays opaque, and typed validation happens here before the
+  write. The non-collision argument against the frontend's own
+  `appStorage` keys is stated in the file and is worth keeping true: every
+  `appStorage` key is either colon-namespaced or one of three named legacy
+  spellings, and no settings key contains a colon.
 - `gendefaults.go` + `gendefaults/`: the generator that makes
   `DefaultSettings` the SINGLE source of settings defaults. It reflects
   the struct's json tags (the `knownSettingsFieldNames` walk), takes each
@@ -181,7 +205,14 @@ forward-compatible).
 ## Extension points
 
 - To add a new setting: add the field + a default + (if enum) an
-  allow-list + a `Validate` branch + a test that asserts round-trip.
+  allow-list + a `Validate` branch + its tier in `tier.go` + a test that
+  asserts round-trip. The tier is now two decisions at once — who may
+  write the key, and which of the three homes it lives in — so a key
+  that a REMOTE screen should own its own copy of goes to the device
+  tier, a preference that follows the person across screens goes to
+  user, and anything this backend's own behaviour reads goes to host or
+  user but never device (one backend behaviour cannot be driven by a
+  per-screen value).
   A field whose intended default is the Go zero value stays OUT of
   `DefaultSettings`. That is what makes an absent key read as the
   default for every settings file written before the field existed.
@@ -231,9 +262,16 @@ Three rules, each with a test behind it:
 
 ## Retired fields
 
-A setting that MOVED somewhere else (not one that was deleted) is
-retired rather than kept: it comes out of the `Settings` struct and goes
-into `retiredSettingsFieldNames()`. The name in that set does two things.
+A setting that MOVED OUT OF THIS PACKAGE (not one that was deleted, and
+not one that merely changed tier) is retired rather than kept: it comes
+out of the `Settings` struct and goes into `retiredSettingsFieldNames()`.
+
+A key that changed TIER is a different thing and must not be retired: it
+is still a settings key, still on the wire, still validated here — only
+its storage moved. `writeSparse` drops it from the file because it is no
+longer file-resident, and `loadFromFile` rolls back what a stale copy in
+the file would otherwise set. Retiring it would take it off the wire and
+break the frontend. The name in that set does two things.
 `captureUnknownFields` skips it, so the sparse writer does NOT round-trip
 it, and `Validate` never sees it because the struct has no field for it.
 
@@ -272,6 +310,13 @@ back. `Service.Update` therefore REJECTS `remoteEndpoints`,
 `claudeCustomEnv`, and `codexCustomEnv`; each has dedicated mutators
 that read the persisted value before writing. Any future field that
 gets redacted on read must follow the same pattern in the same commit.
+
+`workflowPaused` is refused by the same guard for a different reason:
+persisting a pause the engine never heard about is not the same act as
+pausing. Its one write path is `WorkflowSetGlobalPause`, which applies
+the pause and then persists it through `Service.SetWorkflowPaused`. The
+shape generalizes — a key whose write has a CONSEQUENCE beyond the file
+does not belong on the generic patch path.
 
 ## Anti-patterns
 

@@ -31,6 +31,11 @@ type PullRequestOptions struct {
 	// CreatedByDevice names the screen this call came from, or "" when the
 	// backend created the thread on its own behalf.
 	CreatedByDevice string
+	// SettingsBucket names the ui_state bucket holding the calling
+	// connection's device-tier settings. The recent-workspace write is
+	// attributed to it, and the PORT reads the same caller's recent list to
+	// find a local clone of the PR's repository.
+	SettingsBucket string
 	// AuthorizeRuntimeMode, when set, is asked to approve the RESOLVED
 	// runtime mode — this path takes no mode argument, so
 	// always the seed profile's — before the thread persists. Returning an
@@ -135,7 +140,7 @@ func (s *Service) CreateFromPR(opts PullRequestOptions, port PullRequestPort) (s
 	}
 	models.Remember(thread)
 	if s.deps.RecentWorkspaces != nil && workspace != "" {
-		s.deps.RecentWorkspaces.AddRecentWorkspace(workspace)
+		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, workspace)
 	}
 	item := store.Item{
 		ID:        s.newID(),

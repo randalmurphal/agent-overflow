@@ -103,9 +103,13 @@ func (p threadWorktreeSetupPort) Start(thread store.Thread) {
 
 type threadRecentWorkspacePort struct{ app *App }
 
-func (p threadRecentWorkspacePort) AddRecentWorkspace(path string) {
+// AddRecentWorkspace attributes the write to the connection that asked for the
+// thread. The list is device tier, so an empty bucket — a backend-initiated
+// create, an import, a test — lands on the backend machine's own screen
+// rather than being dropped (internal/settings/residency.go).
+func (p threadRecentWorkspacePort) AddRecentWorkspace(bucket, path string) {
 	if p.app.settings != nil {
-		p.app.settings.AddRecentWorkspace(path)
+		p.app.settings.For(bucket).AddRecentWorkspace(path)
 	}
 }
 
@@ -224,10 +228,16 @@ func (a *App) removeDeliberationByID(channelID string) {
 	a.discussionService().Remove(channelID)
 }
 
-type threadPullRequestPort struct{ app *App }
+// threadPullRequestPort carries the caller's settings bucket because the
+// recent-workspace list it searches is device tier: the clone this screen has
+// opened before is the one to seed the PR thread with.
+type threadPullRequestPort struct {
+	app    *App
+	bucket string
+}
 
 func (p threadPullRequestPort) ResolveWorkspace(ref gitops.PRReference) string {
-	return p.app.resolveRepoWorkspace(ref)
+	return p.app.resolveRepoWorkspace(p.bucket, ref)
 }
 
 func (p threadPullRequestPort) Load(workspace string, ref gitops.PRReference) (gitops.PRMetadata, string, error) {
@@ -247,13 +257,13 @@ func (p threadPullRequestPort) EnsureProject(workspaceOrAnchor string) (store.Pr
 	return p.app.ensureProjectForWorkspace(workspaceOrAnchor)
 }
 
-func (a *App) resolveRepoWorkspace(ref gitops.PRReference) string {
+func (a *App) resolveRepoWorkspace(bucket string, ref gitops.PRReference) string {
 	if a.settings == nil {
 		return ""
 	}
 	suffix := "/" + ref.Repo
 	fullSuffix := "/" + ref.Project()
-	for _, workspace := range a.settings.Get().RecentWorkspaces {
+	for _, workspace := range a.settings.For(bucket).Get().RecentWorkspaces {
 		workspace = strings.TrimSpace(strings.TrimRight(workspace, "/"))
 		if workspace != "" && (strings.HasSuffix(workspace, suffix) || strings.HasSuffix(workspace, fullSuffix)) {
 			return workspace

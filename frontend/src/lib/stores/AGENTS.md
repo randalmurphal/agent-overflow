@@ -96,7 +96,10 @@ stops waking readers.
   ignores the keys and re-reads the whole redacted projection, queued behind any
   in-flight write on the same queue `updateSettingsPatch` uses — an unordered
   re-read could be issued before a local optimistic write reached the backend
-  and land after it.
+  and land after it. Re-reading the whole projection is also what makes the
+  backend's per-caller device tier invisible here: a device-tier frame reaches
+  every attached client and each one's re-read answers with ITS OWN values
+  (`internal/settings/residency.go`).
 - Every delivered event carries the connection it arrived on as
   `wailsEventOn`'s SECOND argument (`{backendId}`). One backend fills it
   today and every handler ignores it; a store that later has to tell two

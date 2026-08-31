@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -369,7 +370,7 @@ func TestGetSettingsRedactsSensitiveCustomEnvValues(t *testing.T) {
 	// has to be redacted too.
 	assertRedacted(t, "SetProviderCustomEnvVar", returned.ClaudeCustomEnv)
 
-	got, err := app.GetSettings()
+	got, err := app.GetSettings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +381,7 @@ func TestGetSettingsRedactsSensitiveCustomEnvValues(t *testing.T) {
 	if env := app.providerCustomEnv(string(provider.Claude)); env["SECRET_TOKEN"] != "hunter2" {
 		t.Fatalf("spawn env = %#v, want the real secret", env)
 	}
-	again, err := app.GetSettings()
+	again, err := app.GetSettings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

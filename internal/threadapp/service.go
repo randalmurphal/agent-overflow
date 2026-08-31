@@ -42,8 +42,13 @@ type WorktreeSetup interface {
 }
 
 // RecentWorkspaces is the settings side effect of successful thread creation.
+//
+// The list is DEVICE tier (docs/specs/remote-access.md §6), so the write is
+// attributed to a bucket: the one the calling connection's device-tier
+// settings live in, empty when the backend created the thread on its own
+// behalf. Root reads it off the connection; this package only carries it.
 type RecentWorkspaces interface {
-	AddRecentWorkspace(path string)
+	AddRecentWorkspace(bucket, path string)
 }
 
 type Deps struct {

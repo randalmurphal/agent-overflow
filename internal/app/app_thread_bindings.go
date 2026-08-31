@@ -125,6 +125,7 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
 		CreatedByDevice:            creatingDevice(ctx),
+		SettingsBucket:             a.callerSettingsBucket(ctx),
 		// Judged on the RESOLVED mode, inside Create, where an omitted
 		// argument has already become whatever the seed profile says.
 		AuthorizeRuntimeMode: func(mode string) error {
@@ -572,6 +573,7 @@ func (a *App) CreateThreadFromPR(
 	model string,
 	forge string,
 ) (store.Thread, error) {
+	prBucket := a.callerSettingsBucket(ctx)
 	thread, err := a.threadApplication().CreateFromPR(
 		threadapp.PullRequestOptions{
 			Project:         project,
@@ -580,6 +582,7 @@ func (a *App) CreateThreadFromPR(
 			Model:           model,
 			Forge:           forge,
 			CreatedByDevice: creatingDevice(ctx),
+			SettingsBucket:  prBucket,
 			// No mode argument on this path, so the seed profile is the
 			// resolved mode — and it defaults to full-access. Creating a
 			// thread that acts without approval gates is the same
@@ -588,7 +591,7 @@ func (a *App) CreateThreadFromPR(
 				return a.requireAutonomy(ctx, mode)
 			},
 		},
-		threadPullRequestPort{app: a},
+		threadPullRequestPort{app: a, bucket: prBucket},
 	)
 	if err != nil {
 		return store.Thread{}, err

@@ -3,7 +3,9 @@ package settings
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
+	"sync"
 )
 
 // Tier says WHOSE preference a settings key is: the machine running the
@@ -13,12 +15,12 @@ import (
 // consumer that must decide "does this change concern me?" cannot answer from
 // the key name alone.
 //
-// STORAGE IS NOT THE TIER. Every key below lives in settings.json today, which
-// §6 calls the host-tier store. The tier a key carries here is the tier it
-// BELONGS to; phase 4 moves the user- and device-tier keys into `ui_state`
-// scopes without changing what any of them answer here. Keeping the answer in
-// one map now is what makes that move a storage change rather than a wire
-// change.
+// THE TIER NOW DECIDES STORAGE. Phase 4 (residency.go) made this map the
+// routing table for where a key persists: host tier in settings.json, user
+// tier in the `ui_state` scope `user:default`, device tier in the calling
+// connection's own `ui_state` bucket. Moving a key between tiers therefore
+// moves where its value lives, and a key with no tier at all is not
+// persistable — which is what `TestEverySettingsKeyHasATier` is guarding.
 type Tier string
 
 const (
@@ -32,9 +34,9 @@ const (
 	// whatever machine they are driving: confirmations, commit-message style,
 	// text-generation routing, hidden models, agent behaviour axes.
 	TierUser Tier = "user"
-	// TierDevice is a property of the screen and the installation in front of
-	// the user: fonts, density, motion, sort order, the recent list, window
-	// geometry, and the endpoints this installation attaches to.
+	// TierDevice is a property of the screen in front of the user: fonts,
+	// density, motion, sort order, the recent list, and the spinner's
+	// appearance.
 	TierDevice Tier = "device"
 )
 
@@ -78,6 +80,17 @@ var tierByKey = map[string]Tier{
 	"keepAwakeEnabled": TierHost,
 	"keepAwakeScreen":  TierHost,
 	"workflowPaused":   TierHost,
+	// Window geometry is THIS machine's own window. It is written by the
+	// geometry tracker, which has no RPC and no connection to derive a
+	// device from, and the Windows launcher already keeps its own
+	// per-installation file. Retiered from device 2026-08-31 (phase-4
+	// design, docs/specs/remote-access.md §6).
+	"window": TierHost,
+	// The endpoint list holds plaintext session tokens (see the SECURITY
+	// NOTE on the field) and the token read is already host-scoped; a
+	// device-tier row would declare that a phone may edit it. Retiered
+	// from device 2026-08-31, same block.
+	"remoteEndpoints": TierHost,
 
 	// ---- user: the person's working preferences -------------------------
 	"confirmArchive":                   TierUser,
@@ -111,6 +124,19 @@ var tierByKey = map[string]Tier{
 	"codexDisabledTools":          TierUser,
 	"claudePromptOverrides":       TierUser,
 	"codexPromptOverrides":        TierUser,
+	// Retiered from device 2026-08-31: both are read by BACKEND behaviour
+	// rather than rendered by a client, and one backend behaviour cannot
+	// be driven by a per-screen value.
+	//
+	//   - backgroundGitFetch drives the periodic fetch loop
+	//     (app_git_background_fetch.go), which runs once for the whole
+	//     backend with no caller to attribute a read to.
+	//   - editor names the editor this backend SPAWNS. OpenInEditor
+	//     launches a process on the backend machine, so the preference
+	//     describes what is installed there, not what a screen looks
+	//     like.
+	"backgroundGitFetch": TierUser,
+	"editor":             TierUser,
 
 	// ---- device: this screen and this installation ----------------------
 	"lowPowerMode":          TierDevice,
@@ -124,13 +150,9 @@ var tierByKey = map[string]Tier{
 	"diffWordWrap":          TierDevice,
 	"collapseDiffPreviews":  TierDevice,
 	"timestampFormat":       TierDevice,
-	"editor":                TierDevice,
-	"backgroundGitFetch":    TierDevice,
 	"projectSortMode":       TierDevice,
 	"usagePeriod":           TierDevice,
 	"recentWorkspaces":      TierDevice,
-	"remoteEndpoints":       TierDevice,
-	"window":                TierDevice,
 	// Spinner appearance is display, like fonts and motion.
 	"spinnerVerbsEnabled":         TierDevice,
 	"spinnerAnimationsEnabled":    TierDevice,
@@ -152,6 +174,22 @@ func TierForKey(key string) (Tier, bool) {
 	}
 	return tier, true
 }
+
+// defaultKeyValues is DefaultSettings under the same per-key projection,
+// computed once. Seeding compares against it to skip a file value that only
+// restates a default, and the residency writer never has to re-marshal the
+// defaults to answer "is this key still at its default?".
+var defaultKeyValues = sync.OnceValue(func() map[string]string {
+	values, err := keyValues(DefaultSettings)
+	if err != nil {
+		// DefaultSettings is a compile-time literal of JSON-encodable types;
+		// this cannot fail without the struct itself being unmarshalable,
+		// which every other path here would fail on too.
+		log.Printf("settings: project defaults: %v", err)
+		return map[string]string{}
+	}
+	return values
+})
 
 // keyValues projects a Settings value onto its per-key JSON encoding, which is
 // what change detection compares. Marshalling produces independent strings, so

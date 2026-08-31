@@ -139,6 +139,30 @@ bound method. That parameter is **stripped from the generated TS bindings**, so
 adding one changes no wire signature and no method ID — but regenerate both
 `methodgen` and the Wails bindings anyway, since the doc comment travels.
 
+## Settings answer per caller
+
+`GetSettings` and `UpdateSettings` are still one method each on one service,
+but the DEVICE tier is resolved from the connection: `settingsBucket`
+(`app_uistate.go`) derives the caller's `ui_state` bucket exactly as
+`uiStateScope` does, and `settings.Service.For(bucket)` is the service seen
+from there (`internal/settings/residency.go`). Two screens on one backend read
+two font sizes and one shared set of confirmations.
+
+- **A connection with no bucket is not an error here**, which is the one
+  difference from `uiStateScope`. `GetUIState` with no bucket has nothing to
+  answer with; settings always have an answer — the device defaults — and a
+  background saga asking for settings must get them. A session the core
+  REFUSES still errors, because that refusal is about the credential.
+- **A backend-initiated device write attributes to the caller when there is
+  one.** `recentWorkspaces` is written from thread creation, so the create
+  paths carry `SettingsBucket` down to `threadapp`; `callerSettingsBucket` is
+  the non-failing variant they use, because losing the attribution is not
+  worth failing the create. A genuinely caller-less write lands on the backend
+  machine's own screen rather than being dropped.
+- **A writer that reaches `ui_state` around the settings service owes it
+  `InvalidateTierCache`.** There is exactly one — the harness reset's
+  `ClearUIState` — and `harnessHost.ClearUIState` makes the call.
+
 ## The device-access surface
 
 `app_access.go` is the settings pane's half of the same core: which

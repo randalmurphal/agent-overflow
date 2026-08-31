@@ -624,12 +624,24 @@ func (s Settings) AutoCompactPercents(provider string) (standard, extended int) 
 	}
 }
 
-// Service manages reading and writing the settings JSON file.
+// Service manages reading and writing settings across their three homes:
+// settings.json for the host tier, and — once AttachTierStore has wired one —
+// the `ui_state` table for the user and device tiers. See residency.go.
 type Service struct {
-	path        string
-	mu          sync.RWMutex
+	path string
+	mu   sync.RWMutex
+	// cached is the SHARED half of the settings: host tier from the file,
+	// user tier from UserScope, device tier at its defaults. A caller's own
+	// device slice is overlaid per read (Caller.Get), never cached here,
+	// because one caller's screen is not every caller's answer.
 	cached      *Settings
 	cachedState fileState
+	// store and backendBucket are the user/device residency, nil and empty
+	// until AttachTierStore runs. A store-less service keeps every tier in
+	// the file — the pre-phase-4 behaviour the pre-database boot readers in
+	// main.go and main_desktop.go depend on.
+	store         TierStore
+	backendBucket string
 	// unknownFields captures any top-level JSON keys from the on-disk file
 	// that do not map to a field on the Settings struct. We preserve them
 	// verbatim on writeSparse so downgrading the app, or running a build
@@ -742,6 +754,10 @@ func (s *Service) Get() Settings {
 // This guard keeps a future caller — including a refactor or remote
 // loopback path — from regressing the contract.
 func (s *Service) Update(patch map[string]any) (Settings, error) {
+	return s.update("", patch)
+}
+
+func (s *Service) update(bucket string, patch map[string]any) (Settings, error) {
 	if _, ok := patch["remoteEndpoints"]; ok {
 		return Settings{}, fmt.Errorf("settings: use AddRemoteEndpoint / UpdateRemoteEndpoint / DeleteRemoteEndpoint to mutate remote endpoints")
 	}
@@ -761,7 +777,15 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 		// requirement.
 		return Settings{}, fmt.Errorf("settings: use SetNetworkSettings to change network exposure")
 	}
-	return s.mutate(func(current Settings) (Settings, error) {
+	if _, ok := patch["workflowPaused"]; ok {
+		// The fourth key with a dedicated RPC, and the class is closed here
+		// (docs/specs/remote-access.md §6): WorkflowSetGlobalPause enforces
+		// threads:autonomy and applies the pause to the live engine in the
+		// same act. Accepting the key here made the generic patch demand host
+		// step-up for the same change, which was two answers to one question.
+		return Settings{}, fmt.Errorf("settings: use WorkflowSetGlobalPause to pause or resume workflows")
+	}
+	return s.mutate(bucket, func(current Settings) (Settings, error) {
 		patched, err := applyPatch(current, patch)
 		if err != nil {
 			return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
@@ -780,21 +804,40 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 // step-up-annotated SetNetworkSettings RPC, and a generic settings
 // patch must not carry the same change past that requirement.
 func (s *Service) SetNetwork(n NetworkSettings) (Settings, error) {
-	return s.mutate(func(current Settings) (Settings, error) {
+	return s.mutate("", func(current Settings) (Settings, error) {
 		current.Network = n
 		return current, nil
 	})
 }
 
-// AddRecentWorkspace pushes a workspace path to the front of the recent list,
-// deduplicating and capping at 10 entries.
+// SetWorkflowPaused persists the global workflow kill switch. It is the ONE
+// write path for the "workflowPaused" key, which update refuses: the switch
+// is applied to the live engine in the same act, by the
+// threads:autonomy-scoped WorkflowSetGlobalPause RPC, and a generic settings
+// patch must not persist a pause the engine never heard about.
+func (s *Service) SetWorkflowPaused(paused bool) (Settings, error) {
+	return s.mutate("", func(current Settings) (Settings, error) {
+		current.WorkflowPaused = paused
+		return current, nil
+	})
+}
+
+// AddRecentWorkspace pushes a workspace path to the front of the BACKEND's
+// own recent list, deduplicating and capping at 10 entries. The list is
+// device tier, so an RPC-driven caller should reach it through
+// `For(bucket).AddRecentWorkspace` instead — this spelling is the one for a
+// call with no connection behind it.
 func (s *Service) AddRecentWorkspace(path string) {
+	s.addRecentWorkspace("", path)
+}
+
+func (s *Service) addRecentWorkspace(bucket, path string) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return
 	}
 
-	if _, err := s.mutate(func(current Settings) (Settings, error) {
+	if _, err := s.mutate(bucket, func(current Settings) (Settings, error) {
 		// Build new list: path first, then existing entries minus duplicates.
 		seen := map[string]bool{path: true}
 		recent := []string{path}
@@ -848,7 +891,26 @@ func (s *Service) loadFromFile() Settings {
 		return copyDefaults()
 	}
 	s.unknownFields = captureUnknownFields(data)
+	if s.store != nil {
+		// Non-host keys no longer persist here. Whatever the file still holds
+		// for them is a pre-migration leftover that seedTiers already
+		// consumed, so it is reset to the default and then overlaid from the
+		// user scope — otherwise a stale file value would outrank the row the
+		// user's last save actually wrote.
+		resetTieredFields(&result)
+		result = overlayScope(result, s.store, UserScope, TierUser)
+	}
 	return sanitizeLoadedSettings(result)
+}
+
+// resetTieredFields restores the DEFAULT of every key that no longer persists
+// in settings.json, undoing the whole-file unmarshal for the user and device
+// tiers. The unmarshal stays whole so a type-mismatched file is still
+// detected and preserved as corrupt, which a key-filtered decode would let
+// through one field at a time.
+func resetTieredFields(target *Settings) {
+	applyRows(target, defaultKeyValues(), TierUser)
+	applyRows(target, defaultKeyValues(), TierDevice)
 }
 
 // captureUnknownFields returns a map of top-level JSON keys from raw that
@@ -931,7 +993,8 @@ func retiredSettingsFieldNames() map[string]struct{} {
 	}
 }
 
-// writeSparse persists only the fields that differ from DefaultSettings.
+// writeSparse persists only the FILE-RESIDENT fields that differ from
+// DefaultSettings.
 // Uses atomic write (temp file + rename). Unknown fields previously read
 // from the file are preserved alongside the sparse known fields so
 // forward-compat / downgrade values are not dropped by an Update.
@@ -945,6 +1008,15 @@ func (s *Service) writeSparse(current Settings) error {
 	sparse, err := buildSparseMap(current)
 	if err != nil {
 		return fmt.Errorf("settings: build sparse map: %w", err)
+	}
+	// Once a store is attached, the user and device tiers live in `ui_state`
+	// and their keys leave this file on the next write. Dropping them here
+	// rather than in buildSparseMap keeps the residency question in one place
+	// (fileResident) and leaves the sparse projection about defaults only.
+	for key := range sparse {
+		if key != schemaVersionKey && !s.fileResident(key) {
+			delete(sparse, key)
+		}
 	}
 
 	// Merge unknown fields under the sparse known fields. Known keys win
