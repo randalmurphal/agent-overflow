@@ -16,6 +16,8 @@
 // drift fails CI rather than only showing up in production.
 
 import { __bindingMocksInternal } from './bindings-app';
+import { getBackendIdentity } from '../../lib/transport/backendIdentity';
+import type { EventOrigin } from '../../lib/transport/handle';
 
 /**
  * Stub of the real runtime's CancellablePromise. Mirrors every static
@@ -104,7 +106,7 @@ function wrap<T>(p: Promise<T>): CancellablePromise<T> {
   });
 }
 
-type Handler = (ev: { name: string; data: unknown }) => void;
+type Handler = (ev: { name: string; data: unknown; origin?: EventOrigin }) => void;
 
 const listeners: Map<string, Set<Handler>> = new Map();
 
@@ -229,9 +231,13 @@ export const Events = {
 export function emitWailsEvent(name: string, data: unknown): void {
   const set = listeners.get(name);
   if (!set) return;
+  // Same stamp the production shim applies: the identity of the one
+  // connection this client holds, so a test that sets a backend identity
+  // sees the origin its subscribers will see in the app.
+  const origin: EventOrigin = { backendId: getBackendIdentity().backendId };
   // Copy to avoid mutation-during-iteration if handlers unsubscribe.
   for (const handler of [...set]) {
-    handler({ name, data });
+    handler({ name, data, origin });
   }
 }
 

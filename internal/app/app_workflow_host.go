@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"agent-overflow/internal/entityid"
 )
 
 // workflowHostAdapter is `internal/app`'s implementation of the workflow runner's host
@@ -850,7 +850,8 @@ func (a *App) createWorkflowThread(spec workflowhost.ThreadSpec) (store.Thread, 
 	}
 	now := time.Now().UnixMilli()
 	thread := store.Thread{
-		ID: uuid.NewString(), ProjectID: spec.Workspace.Project.ID, ProjectPath: spec.Workspace.Project.Path,
+		// Globally unique by construction (internal/entityid).
+		ID: entityid.New(), ProjectID: spec.Workspace.Project.ID, ProjectPath: spec.Workspace.Project.Path,
 		Title: spec.Title, Provider: spec.ProviderName,
 		Model:         model,
 		WorkspacePath: workspace, Mode: "workflow",

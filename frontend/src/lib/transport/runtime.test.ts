@@ -32,6 +32,7 @@ vi.mock('./wsClient', () => ({
 }));
 
 import { Call, CancellablePromise, Create, Events } from './runtime';
+import { setBackendIdentityFromBootstrap } from './backendIdentity';
 import { CancellablePromise as MockCancellablePromise } from '../../test/mocks/wailsio-runtime';
 
 beforeEach(() => {
@@ -64,24 +65,66 @@ describe('Call', () => {
 });
 
 describe('Events.On', () => {
-  it('subscribes via wsClient and invokes the handler with {name, data}', () => {
+  function captureSubscription(): { deliver: (data: unknown) => void; unsubscribe: () => void } {
     let captured: ((data: unknown) => void) | null = null;
     const unsubscribe = vi.fn();
     mockClient.subscribe.mockImplementation((_channel, handler) => {
       captured = handler;
       return unsubscribe;
     });
+    return {
+      deliver: (data: unknown) => {
+        if (!captured) throw new Error('nothing subscribed');
+        captured(data);
+      },
+      unsubscribe,
+    };
+  }
+
+  it('subscribes via the transport and invokes the handler with {name, data, origin}', () => {
+    const subscription = captureSubscription();
 
     const handler = vi.fn();
     const off = Events.On('thread:updated', handler);
     expect(mockClient.subscribe).toHaveBeenCalledWith('thread:updated', expect.any(Function));
-    expect(captured).not.toBeNull();
 
-    captured!({ id: 'thread-a' });
-    expect(handler).toHaveBeenCalledWith({ name: 'thread:updated', data: { id: 'thread-a' } });
+    subscription.deliver({ id: 'thread-a' });
+    expect(handler).toHaveBeenCalledWith({
+      name: 'thread:updated',
+      data: { id: 'thread-a' },
+      // No manifest identity in this test: unknown origin, not a wildcard.
+      origin: { backendId: '' },
+    });
 
     off();
-    expect(unsubscribe).toHaveBeenCalled();
+    expect(subscription.unsubscribe).toHaveBeenCalled();
+  });
+
+  it('stamps each event with the backend the connection identified as', () => {
+    setBackendIdentityFromBootstrap('62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11', 'gen-1');
+    const subscription = captureSubscription();
+
+    const handler = vi.fn<(ev: { origin?: { backendId: string } }) => void>();
+    Events.On('thread:updated', handler);
+    subscription.deliver({ id: 'thread-a' });
+
+    expect(handler.mock.calls[0]?.[0].origin).toEqual({
+      backendId: '62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11',
+    });
+  });
+
+  it('hands every event of one connection the same origin object', () => {
+    setBackendIdentityFromBootstrap('62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11', 'gen-1');
+    const subscription = captureSubscription();
+
+    const handler = vi.fn<(ev: { origin?: { backendId: string } }) => void>();
+    Events.On('thread:updated', handler);
+    subscription.deliver({ id: 'a' });
+    subscription.deliver({ id: 'b' });
+
+    // Stamping is a property write, not an allocation: a streaming
+    // channel must not mint an origin object per frame.
+    expect(handler.mock.calls[0]?.[0].origin).toBe(handler.mock.calls[1]?.[0].origin);
   });
 });
 

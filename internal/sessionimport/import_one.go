@@ -8,9 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/project"
 	"agent-overflow/internal/provider"
@@ -286,7 +285,8 @@ func newImportedThread(
 	lastReadAt := updatedAt
 
 	return chatmodel.SanitizeThread(store.Thread{
-		ID:              uuid.NewString(),
+		// Globally unique by construction (internal/entityid).
+		ID:              entityid.New(),
 		ProjectID:       proj.ID,
 		ProjectPath:     proj.Path,
 		Title:           importedTitle(title),
