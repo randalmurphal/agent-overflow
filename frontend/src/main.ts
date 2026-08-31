@@ -76,8 +76,16 @@ async function mountApp(): Promise<void> {
             // the credential existed; the app must attach under the
             // session that was just confirmed. Module cache, not a new
             // chunk — App's static graph already carries the client.
+            //
+            // AWAITED, and the screen stays up for it. The app issues
+            // its whole boot fan-out on mount, and a transport still
+            // mid-redial rejects that fan-out wholesale — which is the
+            // burst of errors a freshly paired browser was shown for a
+            // pairing that worked (see wsClient.redialAfterPairing). The
+            // wait is bounded there, so an unreachable backend still
+            // mounts the app and lets its own banner say so.
             const { wsClient } = await import('./lib/transport/wsClient');
-            wsClient.redialAfterPairing();
+            await wsClient.redialAfterPairing();
             if (screen) await unmount(screen);
             mount(App, { target });
           })();

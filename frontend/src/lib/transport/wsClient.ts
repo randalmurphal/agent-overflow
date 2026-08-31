@@ -115,6 +115,14 @@ export const BOOTSTRAP_INVALIDATE_AFTER_FAILURES = 2;
 // connection that lasted this long proves the far side was actually
 // serving, which is what the ladder is supposed to measure.
 export const BACKOFF_RESET_AFTER_MS = 30_000;
+// How long redialAfterPairing waits for the transport to become usable
+// before handing back anyway. The app mounts on the other side of that
+// call, so the wait has to be long enough to cover a manifest fetch, a
+// ticket mint and an upgrade over a phone's link, and short enough that
+// an unreachable backend does not strand the person on the pairing
+// screen. Past it the app mounts into its ordinary reconnecting state,
+// which is the designed surface for a backend that is not answering.
+export const REDIAL_SETTLE_BUDGET_MS = 5_000;
 const TRANSPORT_GAP_CHANNEL = 'transport:gap';
 // Cap matches server-side MaxReplayChannels (frame.go) so the replay
 // frame can't exceed the wire limit.
@@ -558,6 +566,12 @@ export class WSClient {
   // resolves once the socket reaches OPEN. `ws` is the live socket.
   private ws: WSLike | null = null;
   private connectPromise: Promise<void> | null = null;
+  // Whether `ws` named the PAIRED session on its upgrade (it dialed with
+  // a ticket) rather than riding whatever cookie the browser had. Only
+  // redialAfterPairing reads it, to tell a socket it must retire from one
+  // that is already correct — the two are indistinguishable afterwards,
+  // because the ticket is spent and the URL is gone with the attempt.
+  private socketNamedPairedSession = false;
   private closed = false;
   private reconnectAttempt = 0;
   // Non-null exactly while a backoff timer is queued (no attempt in
@@ -876,16 +890,37 @@ export class WSClient {
   }
 
   /**
-   * Re-dial so the upgrade names the session this browser just paired.
+   * Re-dial so the upgrade names the session this browser just paired,
+   * and resolve once the transport has settled under it.
+   *
    * Called once, when the pairing flow completes: any socket opened
    * before the credential existed dialed without a ticket, so its
    * upgrade named whatever the page cookie did — on a browser that also
    * holds the local page cookie, that is the LOCAL channel, and
-   * revoking the new device would never reach it. Closing the socket
-   * (or the attempt in flight) routes through the ordinary reconnect
-   * path, whose next dial mints a ticket.
+   * revoking the new device would never reach it.
+   *
+   * **It returns a promise because the app mounts on the other side of
+   * it** (`src/main.ts`). Mounting while this is still in flight issues
+   * every boot RPC against a transport mid-transition, and there are two
+   * ways that ends in a burst of failures shown for a pairing that in
+   * fact worked (2026-08-31, the owner's first paired browser):
+   *
+   *  - the retiring socket's close reaches `handleSocketClose`'s LIVE
+   *    branch, whose `failPending` rejects every entry in `pending` —
+   *    including the boot calls registered a tick earlier that never
+   *    rode that socket — and then schedules a reconnect racing the dial
+   *    those same calls are awaiting;
+   *  - the first post-pairing attempt fails once, and its single
+   *    rejection settles all ~20 awaiting boot RPCs at once. The ladder
+   *    recovers a moment later, which is why the app came up "mostly"
+   *    and a manual refresh fixed it.
+   *
+   * Neither is a transport fault to report; the app booted a beat early.
+   * The wait is BOUNDED (`REDIAL_SETTLE_BUDGET_MS`) — a backend that is
+   * down must still mount the app, whose reconnecting banner is the
+   * designed surface for it.
    */
-  redialAfterPairing(): void {
+  async redialAfterPairing(): Promise<void> {
     // The credential that just landed published the grants it carries, and
     // this page's screens key off them. Re-read before the dial rather
     // than after: the pairing screen unmounts into the ordinary app on the
@@ -895,42 +930,66 @@ export class WSClient {
     if (this.closed) return;
     this.clearTerminal();
     this.reconnectAttempt = 0;
-    if (this.queuedAttempt !== null) {
-      // A queued attempt re-evaluates the session store when it dials —
-      // run it now rather than waiting out a backoff that was priced
-      // for a failure, not for a credential that just arrived.
-      this.queuedAttempt.fire();
-      return;
-    }
-    if (this.connectPromise !== null) {
-      // An attempt is in flight and may already be past its mint stage.
-      // Let it settle, then close whatever socket it produced; the
-      // close event drives the re-dial.
-      void this.connectPromise.then(
-        () => {
-          try {
-            this.ws?.close();
-          } catch {
-            // ignore — already closing; the close event still fires.
-          }
-        },
-        () => {
-          // A failed attempt scheduled its own retry.
-        },
-      );
-      return;
-    }
-    if (this.ws !== null && this.ws.readyState === WS_OPEN) {
-      try {
-        this.ws.close();
-      } catch {
-        // ignore — already closing; the close event drives the re-dial.
-      }
-      return;
-    }
-    void this.ensureConnected().catch((err) => {
-      console.warn('wsClient: redialAfterPairing failed', err);
+
+    // Settle whatever the pre-pairing page left running first, so the
+    // dial below is the only attempt in flight. A queued backoff is
+    // FIRED rather than waited out: its delay was priced for a failure,
+    // not for a credential that just arrived, and firing settles the
+    // same promise the timer would have.
+    this.queuedAttempt?.fire();
+    const inFlight = this.connectPromise;
+    if (inFlight !== null) await inFlight.catch(() => {});
+    if (this.closed) return;
+
+    // Retire a socket that did not name the paired session on its
+    // upgrade. An attempt fired above may have produced a correct one
+    // already, and closing that would cost a needless round trip.
+    if (this.ws !== null && !this.socketNamedPairedSession) this.detachSocket();
+
+    // Hand back only once the transport is usable, or once the budget
+    // is spent. Both outcomes resolve: this call reports that the
+    // transport has had its chance, never whether it took it.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, REDIAL_SETTLE_BUDGET_MS);
+      const settle = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      void this.ensureConnected().then(settle, settle);
     });
+  }
+
+  // detachSocket retires the live socket WITHOUT routing its death
+  // through the reconnect path. Only redialAfterPairing needs that:
+  // every other close is a real one the ladder must answer.
+  //
+  // The order is the mechanism. Dropping `this.ws` FIRST makes the close
+  // event that follows take handleSocketClose's superseded branch, which
+  // settles that socket's own attempt and touches nothing else. The live
+  // branch would instead reject every outstanding RPC and schedule a
+  // second attempt racing the dial this retirement exists to make room
+  // for.
+  //
+  // It owes `connectPromise` its own null, which the superseded branch
+  // cannot supply: on that branch's ordinary path a replacement attempt
+  // has already installed one, and nulling it there would strand the
+  // replacement's awaiters. A detach has no replacement yet, so leaving
+  // it set would hand every later ensureConnected a promise for a socket
+  // that is gone.
+  private detachSocket(): void {
+    const ws = this.ws;
+    if (ws === null) return;
+    this.ws = null;
+    this.connectPromise = null;
+    this.socketNamedPairedSession = false;
+    this.stopStaleWatchdog();
+    this.serverSendsHeartbeats = false;
+    this.connectedAt = 0;
+    try {
+      ws.close(1000, 'redial');
+    } catch {
+      // ignore — already closing; the superseded branch runs either way.
+    }
   }
 
   /**
@@ -1254,6 +1313,7 @@ export class WSClient {
         return;
       }
       this.ws = ws;
+      this.socketNamedPairedSession = dialTicket !== null;
       ws.addEventListener('open', () => this.handleSocketOpen(ws, bootstrap, attempt));
       ws.addEventListener('message', (ev: MessageEvent) => this.handleSocketMessage(ws, ev));
       ws.addEventListener('error', (errEv: Event) => {
@@ -1423,6 +1483,13 @@ export class WSClient {
   // state is not its to touch.
   private handleSocketClose(ws: WSLike, ev: CloseEvent, attempt: ConnectAttempt): void {
     if (this.ws !== ws) {
+      // Superseded: this socket is not the client's any more, so its
+      // death settles its own attempt and nothing else. `connectPromise`
+      // is deliberately NOT nulled here — a replacement attempt has
+      // already installed one on every path that reaches this, and
+      // nulling it would strand the replacement's awaiters. A caller
+      // that detaches WITHOUT replacing owes it that null itself; see
+      // detachSocket.
       attempt.settled = true;
       attempt.reject(new DisconnectedError('socket superseded', {
         closeCode: ev.code,
@@ -1470,6 +1537,7 @@ export class WSClient {
     this.notificationReplayPending = false;
     this.notificationReplayBuffer = [];
     this.ws = null;
+    this.socketNamedPairedSession = false;
     if (!attempt.settled) {
       this.outage.attempts += 1;
       this.preOpenFailures += 1;

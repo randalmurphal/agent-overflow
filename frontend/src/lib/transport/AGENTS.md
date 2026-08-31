@@ -286,6 +286,29 @@ remote browser alike. Protocol and authz rules:
   credential and carries the wrong identity — and because the grants the
   credential arrived with are what `scopes.ts` re-reads there.
 
+  **`redialAfterPairing` is AWAITED, and the app mounts on the other
+  side of it.** It resolves when the transport has had its chance —
+  connected, or `REDIAL_SETTLE_BUDGET_MS` spent — never when the redial
+  was merely requested. Mounting earlier issues the whole boot fan-out
+  against a transport mid-transition, and both ways that ends are a
+  burst of failures shown for a pairing that worked: the retiring
+  socket's close reaching `failPending`, or one failed first attempt
+  settling all ~20 awaiting calls at once (2026-08-31, the owner's first
+  paired browser; the app came up "mostly" and a refresh fixed it). The
+  budget is what keeps an unreachable backend from stranding the person
+  on the pairing screen — past it the app mounts into its ordinary
+  reconnecting banner, which is the designed surface for that.
+
+  The socket it retires is DETACHED before it is closed
+  (`detachSocket`), so the close takes `handleSocketClose`'s superseded
+  branch. The live branch would reject every outstanding RPC — including
+  calls registered after the retirement that never rode it — and
+  schedule a reconnect racing the dial the retirement exists to make
+  room for. That branch settles only its own attempt and deliberately
+  does not null `connectPromise`; a detach with no replacement owes
+  itself that null, which is why the one caller that detaches is also
+  the one that supplies it.
+
   It stores the session's GRANT SET alongside the credential, from
   `/auth/pair` and `/auth/token` (`transport.TokenGrant.Scopes`). Absent
   and empty are different answers and must stay so: `[]` means the

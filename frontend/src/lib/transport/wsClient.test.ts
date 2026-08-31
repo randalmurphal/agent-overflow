@@ -3357,6 +3357,12 @@ describe('WSClient', () => {
   // socket is already past 'open' when the queued one dials, so the
   // supersede guard never reaps it and BOTH sockets stay attached (seen
   // live as two registry entries for one page after a pairing redial).
+  //
+  // Driven through the stale watchdog's force-close (a bare
+  // `ws.close()`) rather than the pairing redial, which is where it was
+  // found: the redial now DETACHES the socket it retires, so its close
+  // takes the superseded branch and never reaches the schedule this
+  // pins. Every other close still does.
   it('does not dial a second socket when a close lands mid-connect', async () => {
     localStorage.clear();
     try {
@@ -3400,11 +3406,11 @@ describe('WSClient', () => {
       first.acceptOpen();
       await flushMicrotasks();
 
-      // The client closes the socket (browser semantics: CLOSING now,
-      // close event later), and fresh demand starts a connect that
+      // The client force-closes the socket (browser semantics: CLOSING
+      // now, close event later), and fresh demand starts a connect that
       // stalls in its mint, before constructing a socket.
       first.deferClose = true;
-      client.redialAfterPairing();
+      first.close();
       expect(first.readyState).toBe(2);
       void client.callByID(124, ['arg']).catch(() => {});
       await vi.waitFor(() => expect(mints).toBe(2));
@@ -3424,6 +3430,113 @@ describe('WSClient', () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
       expect(MockWebSocket.instances).toHaveLength(2);
       expect(MockWebSocket.instances[1]!.readyState).toBe(1);
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // Staging the whole transition main.ts drives: the pairing screen
+  // hands over, the redial retires the pre-pairing socket, and the app
+  // mounts. The bug this pins is that the app used to mount while the
+  // redial was still in flight, so the retiring socket's close rejected
+  // boot RPCs that never rode it — a burst of failures for a pairing
+  // that worked (2026-08-31).
+  it('does not reject calls issued while the pre-pairing socket is being retired', async () => {
+    localStorage.clear();
+    try {
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      void client.callByID(123, ['arg']).catch(() => {});
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+      const bare = MockWebSocket.instances[0]!;
+      bare.acceptOpen();
+      await flushMicrotasks();
+
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ ticket: 'tik-2' }), { status: 200 })),
+      );
+
+      // Browser semantics: close() moves the socket to CLOSING and the
+      // close event lands later — during the redial's mint, which is
+      // exactly the window the app used to mount into.
+      bare.deferClose = true;
+      const settled = client.redialAfterPairing();
+
+      let bootRejection: unknown = null;
+      const bootCall = client.callByID(456, ['boot']).catch((err: unknown) => {
+        bootRejection = err;
+        return null;
+      });
+      bare.flushClose();
+      await flushMicrotasks();
+      expect(bootRejection).toBeNull();
+
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+      const paired = MockWebSocket.instances[1]!;
+      expect(new URL(paired.url).searchParams.get('ticket')).toBe('tik-2');
+      paired.acceptOpen();
+      await settled;
+
+      // The redial resolved only once the ticketed socket was serving,
+      // and the call made during the retirement rode it.
+      expect(paired.readyState).toBe(1);
+      const bootFrames = paired.sent.filter((frame) => frame.methodId === 456);
+      expect(bootFrames).toHaveLength(1);
+      paired.pushFrame({ type: 'rpc', id: bootFrames[0]!.id as string, result: 'ok' });
+      await expect(bootCall).resolves.toBe('ok');
+      expect(bootRejection).toBeNull();
+      client.close();
+    } finally {
+      clearPairedSession();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // The app must mount even when the backend is not answering: its
+  // reconnecting banner is the designed surface for that, and a pairing
+  // screen that never handed over would be the worse answer.
+  it('redialAfterPairing resolves when the dial cannot be made', async () => {
+    localStorage.clear();
+    try {
+      const grant = async () =>
+        new Response(
+          JSON.stringify({
+            sessionId: 'sess-1',
+            credential: 'cred-1',
+            expiresAtMs: Date.now() + 900_000,
+          }),
+          { status: 200 },
+        );
+      await redeemPairing(
+        { v: 1, backendId: 'b', endpoint: 'http://example', token: 'link-token' },
+        'Test browser',
+        grant as unknown as typeof fetch,
+      );
+      // Every /auth call fails outright, so the mint proves nothing and
+      // the dial refuses to fall back to a bare socket.
+      vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+
+      const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      await client.redialAfterPairing();
+
+      expect(MockWebSocket.instances).toHaveLength(0);
+      expect(hasPairedSession()).toBe(true);
       client.close();
     } finally {
       clearPairedSession();
