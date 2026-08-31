@@ -627,7 +627,16 @@ Prerequisite sweep, valuable standalone:
   portals drift, and silent DPoP skew failures are undebuggable).
   Additive-only discipline on frames and channels. An HTTP
   `/healthz`-with-version endpoint doubles as the update watchdog probe
-  and the pre-WS compatibility check.
+  and the pre-WS compatibility check. LANDED 2026-08-31 (wave 4a):
+  `hello` is written synchronously before the pump goroutines exist, so
+  first-frame ordering is a contract; `serverTimeMs` samples at accept,
+  the client derives `clockSkewMs` at receipt; capabilities serialize
+  `[]`-never-`null` and are frozen by a test (`notifications.remote` is
+  the first); `/healthz` answers `{version, backendId}` with no
+  credential — both consumers run exactly when none is held — behind the
+  Host guard with no CORS read-back, and has its `internal/surfaces`
+  row. The client exposes `backendHasCapability()` and deliberately no
+  version accessor.
 - **Compatibility policy** (what the hello frame enforces): features
   gate on capability flags, never version comparison. A client asks
   "does the server have X", so mismatched pairs degrade instead of
@@ -642,7 +651,15 @@ Prerequisite sweep, valuable standalone:
   backend for minutes) requires one-step wire tolerance by
   construction; the shared client is made and kept forward-tolerant
   (unknown events, fields, and frame types ignored), tested with a
-  future-dialect fixture.
+  future-dialect fixture. Tolerance LANDED 2026-08-31 (wave 4a):
+  unknown input is counted (`noteUnknownInput`, bounded per-kind tally,
+  one `console.debug` per kind, never error-level), a `batch` missing
+  `events` drops whole rather than dispatching a prefix, and event
+  entries are shape-checked before they touch the replay cursor —
+  one `undefined`/NaN entry used to cost the session its entire gap
+  recovery. Fixtures at both levels: `wsClient.test.ts` (salted
+  future-dialect stream, exact counts, silent console) and
+  `e2e/tests/transport-forward-tolerance.spec.ts`.
 - **The phone app is the same app.** Capacitor shell around the
   existing SPA: same Svelte code, same TS transport client and
   generated bindings, same IndexedDB replica. No Swift/Kotlin
@@ -731,17 +748,19 @@ Prerequisite sweep, valuable standalone:
   verbatim copy before it moved there. Explicit retry-on-reconnect
   exists too (`editors.svelte.ts`, `prReviewStore`, `gitStatusStore`,
   `threadSwitchLoad`'s `retryHistoryLoad`). **Do not build a second
-  suspension mechanism.** What is genuinely missing is narrower: on
-  socket close `wsClient` still rejects every in-flight RPC with one
-  shared `DisconnectedError('socket closed')`, so a terminal failure
-  cannot name its own cause, and one-off RPCs that do not go through
-  an entity store have no suspension at all. Target for the
-  remainder: terminal states fail with the preserved underlying
-  cause, never a generic message. And retry-on-terminal is
-  only ever a small explicit allowlist scoped to a known transient
-  window (e.g. an authentication refusal in the seconds after a
-  server update restart), not a blanket policy. On a flaky link this
-  is the difference between an app that pauses and one that throws.
+  suspension mechanism.** The narrower remainder LANDED
+  2026-08-31 (wave 4a): `DisconnectedError` carries `closeCode`,
+  clamped `closeReason`, `cause`, and `terminal`, and renders the cause
+  into `message` — ~150 call sites and the error log read only
+  `message`, so a cause on a field alone reaches nobody. Connect-stage
+  failures (manifest fetch, thrown constructor) wrap instead of
+  re-throwing raw, so `isTransportClassError` classifies them.
+  Retry-on-transient-close is `RETRY_ON_TRANSIENT_CLOSE`, an explicit
+  allowlist frozen EMPTY by a test with the admission criteria written
+  at the seam (idempotent on the backend AND a known transient window,
+  e.g. the seconds after an update restart) — never a blanket policy.
+  On a flaky link this is the difference between an app that pauses
+  and one that throws.
 - **Ticket primitive generalizes beyond WS**: short-lived signed URLs
   for attachment upload/download and snapshot fetches, designed once in
   phase 2 rather than bolted on later. Attachments ride authenticated
@@ -774,11 +793,16 @@ Prerequisite sweep, valuable standalone:
   client already receives the *thread* events, so it raises native OS
   notifications for any attached backend — remote behaves exactly as
   native on the box, no push infrastructure involved (push is the
-  phone/unattached path). This needs an audience change, not just a
-  preferences UI: `NotificationSend` and `NotificationActivated` are
-  loopback-only channels today, so an attached LAN browser receives
-  neither. `NotificationSend`'s retained (non-ephemeral) retention
-  stays — the Windows launcher replays it by cursor after reconnect.
+  phone/unattached path). Audience change LANDED 2026-08-31 (wave
+  4a): both channels are `AudienceAny`, producing them stays host-only
+  (`LocalOnlyMethods`), and a paired test fails if that two-file
+  decision comes apart. The SPA's zero-seeded `notification:activated`
+  cursor — the cold-launch replay of the channel's whole retained ring —
+  is gated on the session being local in both senses, so a fresh remote
+  attach is not walked through every activation since boot; the ordinary
+  cursor still replays real gaps. `NotificationSend`'s retained
+  (non-ephemeral) retention stays — the Windows launcher replays it by
+  cursor after reconnect. The preferences UI is still open.
   Notification preferences become a general device-tier setting (per
   event type × per backend); today's always-on notifications fold
   into this and become configurable. Note there are two production
@@ -1365,16 +1389,14 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    2026-08-31 (b809e997, §7). Thread-row emits: LANDED 2026-08-31
    (9d48ee7c, §8). Remaining: settings/project emits,
    channels, gap entries, race handling,
-   device attribution column, thread branch/remote/head recording,
-   backend UUID, hello frame, multi-backend seams (§10). The
-   *remainder* of reconnect discipline lands here (§9) — per-call
-   cause preservation in `wsClient` and coverage for one-off RPCs
-   outside the entity primitive. The suspension mechanism itself is
-   already built and must not be duplicated. So does the replica's
-   missing lifecycle — nothing deletes a replica database today, and
-   a backend-id change orphans the old one on the origin permanently
-   — and §9's forward-tolerance obligation with its future-dialect
-   fixture. Byte budgets: LANDED 2026-08-31 (1fbb771c, §14
+   device attribution column, thread branch/remote/head recording.
+   Hello frame + `/healthz`, per-call cause preservation with the
+   frozen-empty retry allowlist, forward tolerance with its
+   future-dialect fixtures, and the notification audience change:
+   LANDED 2026-08-31 (wave 4a, §9). The suspension mechanism itself
+   was already built and was not duplicated. Replica lifecycle and the
+   multi-backend seams, backend UUID on the wire included (§10):
+   LANDED 2026-08-31 (wave 4c). Byte budgets: LANDED 2026-08-31 (1fbb771c, §14
    "Wire budget enforcement") — `internal/itemwire` projects every
    item path (pagers, `SyncThreadWindow`, live upserts/patches), with
    typed markers, the `GetThreadItemProjectionSource` recovery route,
