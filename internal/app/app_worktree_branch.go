@@ -6,6 +6,7 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 func (a *App) generatedWorktreeBranchName(thread store.Thread, message string) (string, error) {
@@ -50,8 +51,11 @@ func (a *App) maybeRenameTemporaryWorktreeBranch(threadID, message string) {
 		return
 	}
 
+	previousBranch := thread.Branch
 	thread.Branch = renamed
 	if err := a.store.UpdateThread(thread); err != nil {
 		log.Printf("send message: persist renamed worktree branch: %v", err)
+		return
 	}
+	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, thread, thread.Branch != previousBranch)
 }

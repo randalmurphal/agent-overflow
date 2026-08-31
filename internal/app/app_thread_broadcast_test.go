@@ -401,3 +401,28 @@ func initBroadcastRepo(t *testing.T, app *App) string {
 	}
 	return repo
 }
+
+// TestGitBranchChangeBroadcastsTheThreadRow covers the sibling class the
+// sweep found outside the thread bindings: the git paths persist a branch
+// onto the row directly, so they carry the same broadcast obligation.
+func TestGitBranchChangeBroadcastsTheThreadRow(t *testing.T) {
+	app := newTestAppWithStore(t)
+	repo := initBroadcastRepo(t, app)
+	testutil.RunGit(t, repo, "branch", "feature/broadcast")
+	thread := mustCreateBroadcastThreadIn(t, app, repo)
+	broadcasts := captureThreadBroadcasts(t, app)
+
+	if err := app.GitCheckout(thread.ID, "feature/broadcast"); err != nil {
+		t.Fatalf("GitCheckout: %v", err)
+	}
+	row := broadcasts.expectRow(triage.ThreadActionFull, thread.ID)
+	if row.Branch != "feature/broadcast" {
+		t.Fatalf("broadcast Branch = %q, want feature/broadcast", row.Branch)
+	}
+
+	broadcasts.reset()
+	if err := app.GitCheckout(thread.ID, "feature/broadcast"); err != nil {
+		t.Fatalf("GitCheckout(same branch): %v", err)
+	}
+	broadcasts.expectSilence("checking out the branch the thread is already on")
+}
