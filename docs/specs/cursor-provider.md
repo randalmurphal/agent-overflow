@@ -125,10 +125,20 @@ shared ACP runtime):
   reverse-engineering posts does not apply to ACP sessions.
 - Wire-native session enumeration exists: `sessionCapabilities.list`
   is advertised at `initialize`, and `session/list` returns
-  `{sessions: [{sessionId, cwd, title, updatedAt}]}`. With
-  `session/load`'s replay, import can be wire-first (enumerate + load)
-  with SQLite scraping as fallback for sessions the CLI can no longer
-  load.
+  `{sessions: [{sessionId, cwd, title, updatedAt}]}`. Scope is global
+  (spike-verified: full list from an unrelated cwd, with per-row cwd
+  for filtering), though not exhaustive — headless-created sessions
+  were absent, so the importer diffs `~/.cursor/acp-sessions/` dirs
+  against the list and falls back to store.db for the delta. With
+  `session/load`'s replay, import is wire-first (enumerate + load).
+- RuntimeMode mapping (decided): AO's tiers map to cursor's session
+  mode plus spawn flags — read-only tiers → `mode: "plan"`;
+  default/approval tiers → `mode: "agent"` with
+  `session/request_permission` driving AO's approval registry;
+  full-access tier → `mode: "agent"` + `--force`. `ask` mode is not
+  used by AO (plan covers read-only). Cursor gets
+  `EnforcesRuntimeMode` semantics equivalent to Claude's flag-based
+  tier, enforced provider-side per mode.
 - Auth lives in the CLI (`agent login`, or `CURSOR_API_KEY` /
   `--auth-token`). Nothing works unauthenticated.
 - Permission modes: `agent` / `plan` / `ask`, plus sandbox and
