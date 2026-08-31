@@ -140,6 +140,7 @@ func (a *App) GetProjectWorktreeSetup(projectID string) (WorktreeSetupConfig, er
 // "never configured" are the same state.
 //
 //ao:scope terminal:operate
+//ao:stepup
 func (a *App) SetProjectWorktreeSetup(projectID string, config WorktreeSetupConfig) (WorktreeSetupConfig, error) {
 	stored := worktreesetup.Config{Copy: config.Copy, Run: config.Run, Timeout: config.Timeout}
 	saved, write, err := a.projectApplication().SetWorktreeSetup(projectID, stored)

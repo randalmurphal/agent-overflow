@@ -283,7 +283,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write"},                          // main.App.SetEditorSettings
 	{Name: "SetNetworkSettings", ID: 3915514446, Scope: "settings:write", StepUp: true},           // main.App.SetNetworkSettings
 	{Name: "SetPRUpdatesActive", ID: 1078249699, Scope: "git:operate"},                            // main.App.SetPRUpdatesActive
-	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate"},                   // main.App.SetProjectWorktreeSetup
+	{Name: "SetProjectWorktreeSetup", ID: 322092470, Scope: "terminal:operate", StepUp: true},     // main.App.SetProjectWorktreeSetup
 	{Name: "SetProviderCustomEnvVar", ID: 2118904465, Scope: "settings:write", StepUp: true},      // main.App.SetProviderCustomEnvVar
 	{Name: "SetThreadMcpServerEnabled", ID: 1041195811, Scope: "settings:write", StepUp: true},    // main.App.SetThreadMcpServerEnabled
 	{Name: "SetThreadPinGroup", ID: 3112222989, Scope: "threads:operate"},                         // main.App.SetThreadPinGroup

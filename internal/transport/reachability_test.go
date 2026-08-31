@@ -219,6 +219,7 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"SetThreadMcpServerEnabled":    "MCP config write",
 		"SetWorkspaceMcpServerEnabled": "MCP config write",
 		"SetWSLDistroPreference":       "WSL distro preference",
+		"SetProjectWorktreeSetup":      "worktree-setup recipe write: stores argv that runs unattended on every worktree cut",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

@@ -277,9 +277,12 @@ Fallback is always pairing.
 A per-call fresh passkey (or host-presence) proof, never an ambient
 standing scope, is required for: minting pairing links, network bind /
 exposure changes, provider custom-env writes, MCP config writes, WSL
-distro preference, and remote update triggering (§7). Optional step-up
-is theater; these are the calls that re-key the system or re-route every
-prompt.
+distro preference, worktree-setup recipe writes (stored argv that runs
+unattended with the user's environment on every worktree cut — the
+same class as an MCP config write), and remote update triggering (§7).
+Optional step-up is theater; these are the calls that re-key the
+system, re-route every prompt, or register something the host will
+execute.
 
 ### Local clients
 
@@ -371,6 +374,34 @@ generated table.
 of phase 3 (privileged scope ⇒ local-only), so only one hand-edited
 source exists while clients are migrating; the origin gate is deleted
 once every client authenticates.
+
+LANDED 2026-08-31 (wave 6a): all 360 bound methods annotated, the
+generator gate live, `wireSafeMethods` / `localOnlyCategories` / the
+eleven-value category set retired, `LocalOnlyMethods` derived, step-up
+set pinned by test. Three facts the annotation pass established, each
+a decision the enforcement wave inherits rather than one it may
+rediscover:
+
+- **The day-one derivation rule is not reachability-preserving.** 21
+  thread/project/discussion bookkeeping mutations (rename, archive,
+  pin, read-state, plan/discussion CRUD) are execute-tier by any
+  honest reading and were wire-reachable before the table existed. A
+  shrink-only `transitionalReachability` override map (43 entries,
+  reasons inline) pins today's partition bit-identically; each entry
+  is adjudicated and deleted during enforcement, when a session grant
+  rather than the origin gate carries the answer.
+- **The ten scopes cannot spell a settings or preference read.** Ten
+  getters (settings, keybindings, themes, spinners, chat-bar
+  favorites, ui_state) sit in `settings:write` only because no
+  observe-tier name exists for them. Enforcement either adds
+  `settings:read` (observe) or rules that a read through a
+  settings-scoped method enforces as observe; until then the override
+  map keeps them wire-reachable.
+- **`files:read` = observe deliberately reverses the 2026-05 decision
+  that locked the diff surface loopback-only.** Twelve workspace-content
+  methods stay loopback-only via overrides; unlocking them for
+  sessions granted `files:read` is the intent of the scope and lands
+  with enforcement as a deliberate reachability change.
 
 ### Host-only scope (`scope: host`)
 
@@ -1562,7 +1593,13 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
 3. **Authorization.** Annotation-driven generated method table, scope
    tiers + binding enforcement + step-up set, event visibility, settings
    key→tier taxonomy, capability-driven frontend, `LocalOnlyMethods`
-   derived then deleted.
+   derived then deleted. The table, tier vocabulary, step-up
+   annotations, and derived `LocalOnlyMethods` (43 transitional
+   overrides): LANDED 2026-08-31 (wave 6a — see §5 for what the pass
+   established). Enforcement note: the annotation is the FLOOR for a
+   method whose authority depends on an argument — `CreateThread` and
+   the send/steer family can select an autonomy mode, so enforcement
+   re-checks `threads:autonomy` from the argument, not the table.
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
    migrations, per-class defaults.
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with

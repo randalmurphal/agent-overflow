@@ -42,9 +42,11 @@ and `TestScopeVocabularyMatchesIdentity` fails in either direction.
 
 `//ao:stepup` marks the calls §4 requires a fresh per-call proof for: minting a
 pairing link, network bind / exposure changes, provider custom-env writes, MCP
-config writes, the WSL distro preference. `TestStepUpMethodsAreTheSpecSet` pins
-that list, because a dropped directive turns a mandatory proof into an ambient
-standing grant and nothing else in the tree would notice.
+config writes, the WSL distro preference, and worktree-setup recipe writes
+(stored argv that runs unattended on every worktree cut).
+`TestStepUpMethodsAreTheSpecSet` pins that list, because a dropped directive
+turns a mandatory proof into an ambient standing grant and nothing else in the
+tree would notice.
 
 `internalmethods.go` holds the two things the dispatcher consults:
 
