@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -43,6 +43,27 @@ test('refuses a launch when the caller tree is not supervised', async () => {
     if (functional === undefined) delete process.env.AO_E2E_FUNCTIONAL_MANAGED;
     else process.env.AO_E2E_FUNCTIONAL_MANAGED = functional;
   }
+});
+
+test('captures the process group a Unix identity is signalled through', async () => {
+  test.skip(process.platform === 'win32', 'Windows teardown uses a Job Object, not a process group');
+  // Every Unix escalation path authenticates through the group. An identity
+  // that omits its group silently declines every member proof, so pin the
+  // field itself rather than only the paths that read it.
+  const expected = Number(execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim());
+  const identity = await captureProcessIdentity(process.pid);
+  expect(identity.groupId).toBe(expected);
+  expect(identity.executable).not.toBe('');
+});
+
+test('sweeps /proc by name so an ordinary exit cannot fail the scan', async () => {
+  test.skip(process.platform !== 'linux', 'Linux /proc sweep');
+  // A withFileTypes scan lstats every entry procfs leaves untyped, so a
+  // process exiting mid-scan raises ENOENT out of the whole readdir. The
+  // watchdog reads that as a backend fault and takes the run down with it.
+  const source = await readFile(new URL('../src/harness-process.ts', import.meta.url), 'utf8');
+  expect(source).toContain("await readdir('/proc')");
+  expect(source).not.toMatch(/readdir\('\/proc',/);
 });
 
 test('rejects a reused process-group member identity', async () => {

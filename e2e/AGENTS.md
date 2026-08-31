@@ -55,17 +55,29 @@ Not everything in `tests/` runs in the gate, on purpose. A
 set: they dump per-frame samples for offline analysis rather than
 asserting, so they are evidence, not a gate.
 
-## Process identity is per-platform, and every field is load-bearing
+## Owning processes
 
-`src/harness-process.ts` builds `ProcessIdentity` / `ProcessRow` three
-ways (Linux `/proc`, darwin `ps`, Windows CIM). A consumer that needs a
-field the platform branch forgot does not fail — it reads `undefined` and
-degrades. `captureProcessGroupMemberProof` returns `undefined` for an
-identity with no `groupId`, so the Linux branch omitting `groupId`, and
-the Linux row builder omitting `executable`, made every process-GROUP
-reaping assertion unreachable on the one platform that runs the gate here
-(fixed 2026-08-31). When adding a field, add it in every branch, and
-prefer an assertion that fails on the missing value over one that skips.
+`src/harness-process.ts` is the only place that reads the process table,
+and everything it produces is evidence for a kill. It builds
+`ProcessIdentity` / `ProcessRow` three ways (Linux `/proc`, darwin `ps`,
+Windows CIM); a consumer that needs a field the platform branch forgot
+does not fail — it reads `undefined` and degrades, so when adding a
+field, add it in every branch, and prefer an assertion that fails on the
+missing value over one that skips. Two rules keep the evidence real:
+
+- **An identity carries its process group on Unix.** Escalation after
+  the group leader exits authenticates through a surviving member proof,
+  and `captureProcessGroupMemberProof` declines any identity without a
+  `groupId` — so a platform branch that omits the field silently disarms
+  teardown instead of failing loudly (the Linux branch did exactly that,
+  fixed 2026-08-31). A row only becomes a proof once its executable
+  resolves; on Linux that link is read per candidate, never per row,
+  because the memory watchdog sweeps every row on a cadence.
+- **Sweep `/proc` by name.** `readdir` with `withFileTypes` lstats the
+  entries procfs leaves untyped, so a process exiting mid-scan raises
+  ENOENT out of the whole scan; the watchdog reads that as a backend
+  fault and takes the run down with it. Numeric names plus per-process
+  reads already guarded against disappearance are enough.
 
 ## Writing specs
 

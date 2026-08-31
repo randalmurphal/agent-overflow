@@ -448,6 +448,23 @@ want durable replicas.
 - **Database** `ao-replica-<backendId>`, per-backend keying per
   remote-access §10/§12. One object store `threads` keyed by
   `threadId`, one `meta` record `{generation, schemaVersion}`.
+- **Database lifecycle**: the per-database caps below bound one
+  database, and nothing inside a database nobody opens ever runs, so a
+  backend id that MOVES would strand its database on the origin
+  permanently. `purgeReplicaDatabases(liveBackendIds, token)`
+  (`replica/session.ts`) is the cross-database sweep that closes that,
+  and the same call is the purge sign-out and device revocation use
+  (remote-access §9): the argument is the set of backends that remain
+  attached, so an empty set drops the open database too. Boot schedules
+  it after the session is ready, never in front of the cold-open read.
+  It is sequenced against the session by the same token every other
+  replica operation carries — an identity change mid-sweep cancels the
+  rest, and a target that is the open database detaches the session
+  first. A client that cannot name a live backend does not sweep at all,
+  because an empty live set is an instruction, not an unknown. Where
+  `indexedDB.databases()` is missing (Firefox before 126) only the open
+  database can be named, so older orphans wait for an engine that can
+  list them.
 - **Envelope** per thread:
 
   ```ts
@@ -622,7 +639,11 @@ the freshly returned window, so there is nothing stale to page into.
   response's generation (the coincidental-`fresh` refusal, driven with
   TWO panes in flight across one flip so a per-process "did it change?"
   answer cannot pass); `rewritten` scrollback drop; eviction under the
-  char/thread caps; IDB failure degrades cleanly.
+  char/thread caps; IDB failure degrades cleanly; and the cross-database
+  sweep — a moved backend id's database reaped at the next open, a
+  database this app did not mint left alone, an empty live set dropping
+  the OPEN database (the sign-out contract), and a purge cancelled rather
+  than deleting what a newer identity just opened.
 - **Attestation pairing (frontend)**: a replica paint whose sync then
   FAILS must write back under the envelope's stamp even when the
   registry holds a newer attested one for that thread; a window

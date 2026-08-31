@@ -29,6 +29,7 @@
 //    commit rejects without saying whether it landed.
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import {
+  UNKNOWN_BACKEND_IDENTITY,
   onBackendIdentity,
   type BackendIdentity,
 } from '../transport/backendIdentity';
@@ -52,14 +53,17 @@ import {
   clearStores,
   commitEnvelope,
   commitRemoval,
+  deleteDatabase,
   deleteEnvelopes,
   indexedDbAvailable,
+  listDatabaseNames,
   openReplicaDb,
   readRecord,
   readThreadKeys,
   writeRecord,
   type ReplicaIndexEntry,
 } from './idb';
+import { replicaDatabaseName, unclaimedReplicaDatabases } from './purge';
 
 /**
  * Consecutive failed operations before the replica gives up for the
@@ -68,10 +72,6 @@ import {
  * keeps failing is one the cold-open path must stop waiting on.
  */
 const MAX_CONSECUTIVE_FAILURES = 3;
-
-export function replicaDatabaseName(backendId: string): string {
-  return `ao-replica-${backendId}`;
-}
 
 interface ReplicaSession {
   /** Monotonic token; every identity change invalidates in-flight work. */
@@ -168,6 +168,43 @@ function closeSession(): void {
 }
 
 /**
+ * Close the connection AND move the token on, leaving the replica bound
+ * to no backend. Both halves matter before deleting a database this page
+ * has open: the connection is what would block the deletion, and the
+ * token is what stops an in-flight commit re-creating what was deleted.
+ * The next identity event re-opens; nothing else does.
+ */
+function detachSession(): void {
+  const token = session.token + 1;
+  closeSession();
+  session = { ...session, token, identity: UNKNOWN_BACKEND_IDENTITY };
+}
+
+/**
+ * Backend ids whose replica database must survive a sweep: the backends
+ * this client is attached to. One today — the identity the bootstrap
+ * manifest named — and the reason this is a SET rather than that single
+ * id is that a multi-backend attach list (docs/specs/remote-access.md
+ * §10) drops straight in here with nothing else to change.
+ *
+ * An unidentified backend contributes nothing, so the set can come back
+ * empty. Callers must read that as "no live backend can be named", never
+ * as "nothing is live" — the same rule backendIdentity.ts states for the
+ * empty identity itself.
+ */
+function attachedBackendIds(): Set<string> {
+  const ids = new Set<string>();
+  if (session.identity.backendId !== '') ids.add(session.identity.backendId);
+  return ids;
+}
+
+/** Name of the database this session currently has open, or ''. */
+function openDatabaseName(): string {
+  const backendId = session.identity.backendId;
+  return backendId === '' ? '' : replicaDatabaseName(backendId);
+}
+
+/**
  * Point the replica at a backend. Opens (or re-opens) the per-backend
  * database, drops it wholesale when the stored generation or schema
  * version does not match, and rebuilds the in-memory accounting index.
@@ -244,6 +281,7 @@ export function initReplica(identity: BackendIdentity): Promise<void> {
   })().then(
     () => {
       noteSuccess();
+      scheduleUnclaimedSweep(token);
     },
     (err: unknown) => {
       if (session.token === token) closeSession();
@@ -252,6 +290,150 @@ export function initReplica(identity: BackendIdentity): Promise<void> {
   );
   session.ready = ready;
   return ready;
+}
+
+/** What a purge did. Every field is a distinct outcome, not a detail. */
+export interface ReplicaPurgeResult {
+  /** Databases dropped. */
+  deleted: readonly string[];
+  /** Databases that were targeted and did not go (blocked, or wedged). */
+  failed: readonly string[];
+  /**
+   * False when this engine cannot list the origin's databases, so only
+   * the database this page had open could be considered (idb.ts
+   * `listDatabaseNames`).
+   */
+  enumerated: boolean;
+  /** True when an identity change cut the purge short. */
+  cancelled: boolean;
+}
+
+/** One deletion failure: loud, but not evidence the read path is wedged. */
+function notePurgeFailure(name: string, err: unknown): void {
+  const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  console.error(`replica: deleting ${name} failed — ${detail}`);
+  reportFrontendDiagnostic(`replica: deleting ${name} failed`, detail);
+}
+
+/**
+ * Delete `targets`, re-checking `token` before each one so an identity
+ * change arriving mid-purge cancels the rest instead of deleting the
+ * database that identity just opened. The session is already detached
+ * from anything in this list — its caller does that before it decides
+ * what the list is — so no target here can be an open database.
+ */
+async function deleteDatabases(
+  targets: readonly string[],
+  token: number,
+): Promise<{ deleted: string[]; failed: string[]; cancelled: boolean }> {
+  const deleted: string[] = [];
+  const failed: string[] = [];
+  for (const name of targets) {
+    if (session.token !== token) return { deleted, failed, cancelled: true };
+    try {
+      await deleteDatabase(name);
+      deleted.push(name);
+    } catch (err) {
+      failed.push(name);
+      notePurgeFailure(name, err);
+    }
+  }
+  return { deleted, failed, cancelled: false };
+}
+
+/**
+ * Delete every replica database on this origin that `liveBackendIds` does
+ * not claim.
+ *
+ * **This is the purge primitive sign-out and device revocation call**
+ * (docs/specs/remote-access.md §9: the replica is "purged on sign-out and
+ * device revocation"). Pass the backends that REMAIN attached — an empty
+ * set for a full sign-out, which drops the current backend's database
+ * too. Boot passes the attached set, which is what stops a backend id
+ * that moved from leaving a database nothing will ever open again: it
+ * sits outside every per-database cap, so nothing else can ever reclaim
+ * it.
+ *
+ * Runs even when the replica has disabled itself after repeated failures.
+ * The latch protects the READ path from a wedged engine; a purge that
+ * skipped a disabled session would leave exactly the data a sign-out was
+ * asked to remove.
+ *
+ * A purge that took the open database leaves the replica bound to no
+ * backend, which is what a sign-out wants. Identity events only fire on
+ * CHANGE, so a caller that stays attached to the same backend afterwards
+ * (revoking one of several, purging then continuing) re-arms with
+ * `initReplica`; nothing else will.
+ *
+ * Where `indexedDB.databases()` is missing (Firefox before 126) the
+ * origin cannot be enumerated: only the database this page has open can
+ * be named, so that one is still purged when the live set does not claim
+ * it, and older orphans wait for an engine that can list them. The result
+ * says which case ran.
+ */
+export async function purgeReplicaDatabases(
+  liveBackendIds: ReadonlySet<string>,
+  token: number = replicaToken(),
+): Promise<ReplicaPurgeResult> {
+  if (!indexedDbAvailable()) {
+    return { deleted: [], failed: [], enumerated: false, cancelled: false };
+  }
+  // The open database is the one target nameable without enumerating, and
+  // it is decided FIRST, before any await: an open still in flight would
+  // otherwise re-create it a moment after a listing failed to see it, and
+  // the purge would report success over a database that came back.
+  // Detaching here also means nothing below can be looking at a database
+  // it is about to delete.
+  const openName = openDatabaseName();
+  const targets = openName === '' ? [] : unclaimedReplicaDatabases([openName], liveBackendIds);
+  let live = token;
+  if (targets.length > 0) {
+    if (session.token !== live) {
+      return { deleted: [], failed: [], enumerated: false, cancelled: true };
+    }
+    detachSession();
+    live = session.token;
+  }
+  const names = await listDatabaseNames();
+  if (names !== null) {
+    for (const name of unclaimedReplicaDatabases(names, liveBackendIds)) {
+      if (!targets.includes(name)) targets.push(name);
+    }
+  }
+  return { ...(await deleteDatabases(targets, live)), enumerated: names !== null };
+}
+
+/**
+ * The in-flight sweep, so one cannot overlap the next. Not a latch: an
+ * identity change after a sweep finished schedules another, because the
+ * backend that just went is exactly the one with a database to reap.
+ */
+let sweepInFlight: Promise<void> | null = null;
+
+/**
+ * Reap replica databases no attached backend claims, after the session
+ * is usable. Scheduled rather than awaited: this is storage hygiene over
+ * the whole origin, and the cold-open read that `initReplica` gates must
+ * not wait behind it.
+ */
+function scheduleUnclaimedSweep(token: number): void {
+  if (sweepInFlight) return;
+  if (session.token !== token) return;
+  const live = attachedBackendIds();
+  // Nothing nameable is live. Sweeping on an empty set would read
+  // "delete everything", which is a sign-out's instruction, not an
+  // unidentified backend's.
+  if (live.size === 0) return;
+  sweepInFlight = purgeReplicaDatabases(live, token)
+    .then(
+      () => undefined,
+      (err: unknown) => {
+        noteFailure('purge', err);
+      },
+    )
+    .finally(() => {
+      sweepInFlight = null;
+    });
 }
 
 /**
@@ -412,6 +594,11 @@ export function __resetReplicaForTest(): void {
   };
   disabled = false;
   consecutiveFailures = 0;
+}
+
+/** Test-only: the in-flight unclaimed-database sweep, when one is running. */
+export function __replicaSweepForTest(): Promise<void> | null {
+  return sweepInFlight;
 }
 
 /** Test-only: is a database open and the session un-latched? */

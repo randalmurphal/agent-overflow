@@ -53,6 +53,18 @@ stops waking readers.
   merges the named fields onto the cached row. The initiator's own echo is
   the same row its RPC returned, so an optimistic apply and the event
   settle on identical bytes.
+- Every delivered event carries the connection it arrived on as
+  `wailsEventOn`'s SECOND argument (`{backendId}`). One backend fills it
+  today and every handler ignores it; a store that later has to tell two
+  backends' events apart reads it instead of being re-plumbed
+  (remote-access spec §10). An empty `backendId` means the origin is
+  unknown — never "the backend I am attached to".
+- Thread and project ids are globally unique UUIDs minted by
+  `internal/entityid`, not ids unique per backend. That is what lets a
+  store keyed by thread or project id stay un-keyed by backend when a
+  second one attaches; the collision-prone singletons (git status by path,
+  provider accounts, settings, sysstat) are the ones §10 defers. Never
+  synthesise a thread or project key from anything shorter.
 - `bindings.ts` re-exports what `wails3 generate bindings -ts` produced.
   Add the new App method by regenerating and re-exporting. Never hand-wrap
   a binding, and never reach for `window.runtime`.

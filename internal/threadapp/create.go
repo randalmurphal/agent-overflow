@@ -6,12 +6,11 @@ import (
 	"strings"
 
 	"agent-overflow/internal/chatmodel"
+	"agent-overflow/internal/entityid"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
-
-	"github.com/google/uuid"
 )
 
 type CreateOptions struct {
@@ -338,9 +337,13 @@ func (s *Service) Defaults(opts CreateOptions) (Defaults, error) {
 	}, nil
 }
 
+// newID mints a thread id. Globally unique by construction — a client
+// attached to more than one backend keys its stores, its replica and its
+// deep links by this string, so see internal/entityid before minting one
+// any other way. `deps.NewID` is a test seam; production has no override.
 func (s *Service) newID() string {
 	if s.deps.NewID != nil {
 		return s.deps.NewID()
 	}
-	return uuid.NewString()
+	return entityid.New()
 }

@@ -12,8 +12,8 @@ import {
   initReplica,
   putReplicaWindow,
   removeReplicaWindow,
-  replicaDatabaseName,
 } from './session';
+import { replicaDatabaseName } from './purge';
 import {
   MAX_ENVELOPE_ITEMS,
   MAX_REPLICA_THREADS,

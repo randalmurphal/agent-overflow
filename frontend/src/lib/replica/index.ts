@@ -4,9 +4,11 @@
 export {
   getReplicaWindow,
   initReplica,
+  purgeReplicaDatabases,
   putReplicaWindow,
   removeReplicaWindow,
   replicaToken,
+  type ReplicaPurgeResult,
   __resetReplicaForTest,
 } from './session';
 export {

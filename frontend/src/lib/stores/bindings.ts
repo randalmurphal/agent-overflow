@@ -4,6 +4,12 @@
 // a new App method is added on the Go side, run
 // `wails3 task common:generate:bindings` and re-export it from this file
 // -- do not hand-wrap bindings.
+//
+// Every call below lands on the transport `lib/transport/handle.ts`
+// resolves: the generated wrappers call the runtime shim's `Call.ByID`,
+// which asks for the connection per call instead of importing the WS
+// singleton, so a second attached backend is a change to that resolution
+// and not to this file (docs/specs/remote-access.md §10).
 export {
   // Thread management
   ArchiveThread,

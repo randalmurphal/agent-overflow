@@ -7,9 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
-
-	"github.com/google/uuid"
 )
 
 // Deps names the persistence, clock, and registered-workspace dependencies of
@@ -78,7 +77,9 @@ func (s *Service) Create(path string) (store.Project, error) {
 
 	now := s.deps.Now().UnixMilli()
 	project := store.Project{
-		ID:        uuid.NewString(),
+		// Globally unique by construction: a client attached to more than
+		// one backend keys projects by this string (internal/entityid).
+		ID:        entityid.New(),
 		Path:      abs,
 		Name:      filepath.Base(abs),
 		CreatedAt: now,

@@ -11,8 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
-
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtitle"
@@ -89,7 +88,8 @@ func (s *Service) OpenTriageThread(itemID string) (store.Thread, error) {
 			return store.Thread{}, errors.New("workflow triage: thread factory unavailable")
 		}
 		thread = s.deps.NewTriageThread(TriageThreadInput{
-			ID: uuid.NewString(), Project: project, Workspace: workspace, Branch: item.Branch,
+			// Globally unique by construction (internal/entityid).
+			ID: entityid.New(), Project: project, Workspace: workspace, Branch: item.Branch,
 			Title: threadtitle.Sanitize("Workflow triage: " + item.Goal), Provider: providerName, Model: model,
 		})
 		if err := database.CreateWorkItemTriageThread(item.ID, thread); err != nil {

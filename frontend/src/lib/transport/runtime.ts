@@ -9,10 +9,13 @@
 // passes type-check under the test alias also type-checks here.
 //
 // The actual transport — opening the WS, dispatching frames, reconciling
-// reconnects — lives in ./wsClient.ts. This file is just the thin glue
-// that exposes a Wails-shaped API on top of it.
+// reconnects — lives in ./wsClient.ts, and this file reaches it through
+// ./handle.ts rather than importing that singleton: the connection a call
+// routes over is resolved per call, which is the seam a second attached
+// backend needs (docs/specs/remote-access.md §10). This file stays thin
+// glue exposing a Wails-shaped API on top of whichever handle answers.
 
-import { wsClient } from './wsClient';
+import { resolveTransport, type EventOrigin } from './handle';
 
 // CancellablePromise is the wrapper Wails-generated bindings always
 // return. The real runtime ships a complex implementation (see
@@ -129,15 +132,15 @@ function wrap<T>(p: Promise<T>): CancellablePromise<T> {
   });
 }
 
-// Call.ByID / Call.ByName route through the wsClient. Generated
-// bindings hit ByID exclusively; hand-written code paths (none today)
-// can use ByName.
+// Call.ByID / Call.ByName route through the resolved transport handle.
+// Generated bindings hit ByID exclusively; hand-written code paths (none
+// today) can use ByName.
 export const Call = {
   ByID(methodId: number, ...args: unknown[]): CancellablePromise<unknown> {
-    return wrap(wsClient.callByID(methodId, args));
+    return wrap(resolveTransport().callByID(methodId, args));
   },
   ByName(method: string, ...args: unknown[]): CancellablePromise<unknown> {
-    return wrap(wsClient.callByName(method, args));
+    return wrap(resolveTransport().callByName(method, args));
   },
 };
 
@@ -195,16 +198,24 @@ export const Create = {
   Events: {} as Record<string, (source: unknown) => unknown>,
 };
 
-// Events.On registers a subscriber via wsClient. The handler receives
-// `{name, data}` to match Wails' real runtime contract — the events.ts
-// store and other consumers expect the wrapped shape.
+// Events.On registers a subscriber on the resolved transport handle. The
+// handler receives `{name, data}` to match Wails' real runtime contract —
+// the events.ts store and other consumers expect the wrapped shape — plus
+// `origin`, the connection the event arrived on.
+//
+// The handle is resolved ONCE, at subscribe time, because it is the
+// connection: the subscription belongs to it, and so does the origin its
+// events carry. Stamping is free — the handle hands back the same origin
+// object until the identity moves, so this adds a property to an envelope
+// that was already being allocated per event.
 export const Events = {
   On(
     name: string,
-    handler: (ev: { name: string; data: unknown }) => void,
+    handler: (ev: { name: string; data: unknown; origin?: EventOrigin }) => void,
   ): () => void {
-    return wsClient.subscribe(name, (data) => {
-      handler({ name, data });
+    const transport = resolveTransport();
+    return transport.subscribe(name, (data) => {
+      handler({ name, data, origin: transport.origin });
     });
   },
   Emit(_event: { name: string; data: unknown }): void {

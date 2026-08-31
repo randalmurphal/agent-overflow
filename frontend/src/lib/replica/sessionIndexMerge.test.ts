@@ -12,8 +12,8 @@ import {
   initReplica,
   putReplicaWindow,
   removeReplicaWindow,
-  replicaDatabaseName,
 } from './session';
+import { replicaDatabaseName } from './purge';
 import { MAX_REPLICA_THREADS, type ReplicaBody } from './envelope';
 import {
   META_INDEX_KEY,
