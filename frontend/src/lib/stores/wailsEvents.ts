@@ -26,6 +26,19 @@ import type { EventOrigin } from '../transport/handle';
 const UNKNOWN_EVENT_ORIGIN: EventOrigin = { backendId: '' };
 
 /**
+ * What the app's transports actually deliver. `@wailsio/runtime` is
+ * replaced at build time (`lib/transport/runtime.ts`) and at test time
+ * (the mock), but the VENDORED package is what type-checks this file, and
+ * its `WailsEvent` predates the origin stamp both replacements set. This
+ * is the one place the two meet, so the narrowing lives here rather than
+ * as an augmentation of a vendored type nobody else reads.
+ */
+interface DeliveredEvent {
+  data: unknown;
+  origin?: EventOrigin;
+}
+
+/**
  * Subscribes to a backend-emitted Wails event and returns an unsubscribe fn.
  *
  * Unwraps the runtime envelope so the handler receives the inner Go payload
@@ -50,5 +63,8 @@ export function wailsEventOn<T = unknown>(
   name: string,
   handler: (data: T, origin: EventOrigin) => void,
 ): () => void {
-  return Events.On(name, (ev) => handler(ev.data as T, ev.origin ?? UNKNOWN_EVENT_ORIGIN));
+  return Events.On(name, (ev) => {
+    const delivered = ev as DeliveredEvent;
+    handler(delivered.data as T, delivered.origin ?? UNKNOWN_EVENT_ORIGIN);
+  });
 }

@@ -150,6 +150,23 @@ describe('replica database purge', () => {
     expect(await databaseNames()).toContain(replicaDatabaseName(backendId));
   });
 
+  it('purges a database an open still in flight would re-create', async () => {
+    const backendId = freshBackendId();
+    // No await: the open is issued and the identity is set, but the
+    // database may not exist yet when the purge lists the origin. The
+    // purge must still name it — otherwise a sign-out reports success and
+    // the open re-creates the database a moment later.
+    const opening = initReplica({ backendId, generation: 'g1' });
+
+    const result = await purgeReplicaDatabases(new Set());
+    await opening;
+
+    expect(result.deleted).toEqual([replicaDatabaseName(backendId)]);
+    expect(result.failed).toEqual([]);
+    expect(await databaseNames()).not.toContain(replicaDatabaseName(backendId));
+    expect(__replicaEnabledForTest()).toBe(false);
+  });
+
   it('still purges the open database where the engine cannot enumerate', async () => {
     const backendId = freshBackendId();
     await seedBackend(backendId);

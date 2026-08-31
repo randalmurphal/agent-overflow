@@ -316,12 +316,11 @@ function notePurgeFailure(name: string, err: unknown): void {
 }
 
 /**
- * Delete `targets`, oldest decision first, re-checking the caller's token
- * before each one so an identity change arriving mid-purge cancels the
- * rest instead of deleting the database that identity just opened. A
- * target that IS the open database detaches the session first, and takes
- * the token with it — the purge follows its own detach rather than
- * mistaking it for someone else's identity change.
+ * Delete `targets`, re-checking `token` before each one so an identity
+ * change arriving mid-purge cancels the rest instead of deleting the
+ * database that identity just opened. The session is already detached
+ * from anything in this list — its caller does that before it decides
+ * what the list is — so no target here can be an open database.
  */
 async function deleteDatabases(
   targets: readonly string[],
@@ -329,13 +328,8 @@ async function deleteDatabases(
 ): Promise<{ deleted: string[]; failed: string[]; cancelled: boolean }> {
   const deleted: string[] = [];
   const failed: string[] = [];
-  let live = token;
   for (const name of targets) {
-    if (session.token !== live) return { deleted, failed, cancelled: true };
-    if (name === openDatabaseName()) {
-      detachSession();
-      live = session.token;
-    }
+    if (session.token !== token) return { deleted, failed, cancelled: true };
     try {
       await deleteDatabase(name);
       deleted.push(name);
@@ -365,6 +359,12 @@ async function deleteDatabases(
  * skipped a disabled session would leave exactly the data a sign-out was
  * asked to remove.
  *
+ * A purge that took the open database leaves the replica bound to no
+ * backend, which is what a sign-out wants. Identity events only fire on
+ * CHANGE, so a caller that stays attached to the same backend afterwards
+ * (revoking one of several, purging then continuing) re-arms with
+ * `initReplica`; nothing else will.
+ *
  * Where `indexedDB.databases()` is missing (Firefox before 126) the
  * origin cannot be enumerated: only the database this page has open can
  * be named, so that one is still purged when the live set does not claim
@@ -378,14 +378,29 @@ export async function purgeReplicaDatabases(
   if (!indexedDbAvailable()) {
     return { deleted: [], failed: [], enumerated: false, cancelled: false };
   }
-  const names = await listDatabaseNames();
-  if (names === null) {
-    const open = openDatabaseName();
-    const targets = open === '' ? [] : unclaimedReplicaDatabases([open], liveBackendIds);
-    return { ...(await deleteDatabases(targets, token)), enumerated: false };
+  // The open database is the one target nameable without enumerating, and
+  // it is decided FIRST, before any await: an open still in flight would
+  // otherwise re-create it a moment after a listing failed to see it, and
+  // the purge would report success over a database that came back.
+  // Detaching here also means nothing below can be looking at a database
+  // it is about to delete.
+  const openName = openDatabaseName();
+  const targets = openName === '' ? [] : unclaimedReplicaDatabases([openName], liveBackendIds);
+  let live = token;
+  if (targets.length > 0) {
+    if (session.token !== live) {
+      return { deleted: [], failed: [], enumerated: false, cancelled: true };
+    }
+    detachSession();
+    live = session.token;
   }
-  const targets = unclaimedReplicaDatabases(names, liveBackendIds);
-  return { ...(await deleteDatabases(targets, token)), enumerated: true };
+  const names = await listDatabaseNames();
+  if (names !== null) {
+    for (const name of unclaimedReplicaDatabases(names, liveBackendIds)) {
+      if (!targets.includes(name)) targets.push(name);
+    }
+  }
+  return { ...(await deleteDatabases(targets, live)), enumerated: names !== null };
 }
 
 /**
@@ -410,9 +425,12 @@ function scheduleUnclaimedSweep(token: number): void {
   // unidentified backend's.
   if (live.size === 0) return;
   sweepInFlight = purgeReplicaDatabases(live, token)
-    .catch((err: unknown) => {
-      noteFailure('purge', err);
-    })
+    .then(
+      () => undefined,
+      (err: unknown) => {
+        noteFailure('purge', err);
+      },
+    )
     .finally(() => {
       sweepInFlight = null;
     });
