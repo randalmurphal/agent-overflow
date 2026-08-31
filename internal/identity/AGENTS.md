@@ -233,10 +233,16 @@ carrying no session credential proceeds and names none (every
 launch-credential client — the harness CLI, the e2e rig, a `--connect`
 stub), and one carrying a credential this package refuses is refused
 outright, rather than silently downgrading to an unattributed connection.
-Phase 3 is what makes a session credential REQUIRED and enforces scopes
-per method; until then the launch credential's rules
-(`internal/transport/AGENTS.md` § Credentials and refusal shapes) are
-unchanged.
+
+Phase 3 has since made naming a session REQUIRED where its absence
+cannot be tolerated, and the boundary it drew is the PEER rather than
+the route: a `/ws` upgrade from a peer that is not on this machine must
+name a live session, because a connection with no session id is one
+`CloseSession` has no id to reach and the per-RPC gate has no grant set
+to read. The launch credential is unchanged and still authorizes every
+request; what it no longer does is stand alone off-host. The rules and
+the admission matrix live in `internal/transport/AGENTS.md`
+(§ Credentials and refusal shapes).
 
 `CheckDeviceProof` is exported for that hook and runs on every request
 that names a session, not only on renewal. A session whose device enrolled

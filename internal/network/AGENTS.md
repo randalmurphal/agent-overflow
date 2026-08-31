@@ -7,6 +7,14 @@ side orchestration (settings persist + transport rebind with
 rollback) stays in `internal/app` so the failure-path rollback can
 touch `*App.settings` directly.
 
+What the share URL this package formats actually delivers is decided
+elsewhere and worth knowing here: it loads the SPA, and the page then
+needs a paired session before the backend will open its socket
+(`internal/transport/AGENTS.md`, the launch credential and the `/ws`
+upgrade). So the URL is how a device REACHES this backend, not how it
+gets in — which is also why the token in it buys less than its shape
+suggests.
+
 ## Layout
 
 - `network.go`: `Settings`, `BindHost`, `OriginPatterns`,

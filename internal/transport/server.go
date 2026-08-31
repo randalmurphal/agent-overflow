@@ -160,10 +160,11 @@ type Config struct {
 	// makes a reconnection on a revoked credential fail rather than
 	// silently downgrade to an unattributed connection.
 	//
-	// Optional. Nil — the state today, before phase 3 migrates clients
-	// onto session credentials — means every request proceeds and names
-	// no session, which is exactly the launch-credential behavior this
-	// server has always had.
+	// Optional. Nil means every request proceeds naming no session, which
+	// is the launch-credential behavior this server has always had — and
+	// handleWS then admits such a connection only from a loopback peer,
+	// because a server that cannot resolve a session cannot admit a
+	// session-naming one either.
 	SessionForRequest func(r *http.Request) (sessionID string, ok bool)
 
 	// SessionLive reports whether a session id still admits work. The
@@ -1310,8 +1311,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// which a reconnect ladder reads as a flaky network rather than as a
 	// dead credential.
 	//
-	// Nil hook means no client presents a session yet (the state before
-	// phase 3), and every request proceeds naming none.
+	// Nil hook means no client presents a session yet, and every request
+	// proceeds naming none — which the peer rule below then admits only
+	// from this machine.
 	//
 	// A ticket on the URL takes precedence, and is spent whether or not
 	// the upgrade goes on to succeed — that is what single use means. It
@@ -1342,6 +1344,30 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sessionID = id
+	}
+
+	// A peer that is not on this machine must NAME a session (spec §4,
+	// "Local clients"). The launch credential says which BACKEND LAUNCH a
+	// client belongs to and nothing about WHICH client it is, so a
+	// connection carrying only that credential is unattributable and
+	// unrevocable — CloseSession has no id to reach it by, and the
+	// per-RPC gate has no grant set to read. That is tolerable exactly
+	// while the peer is one of this host's own processes (the embedded
+	// webview, ao-harness, the e2e rig, the WSL launcher's notification
+	// socket, a --connect stub carrying its page's socket), and it is not
+	// tolerable off-host.
+	//
+	// This narrows what a sessionless credentialled connection may be; it
+	// loosens nothing. A session-naming peer still had to clear
+	// SessionForRequest above, and the launch credential is still
+	// demanded by upgrade() wherever it was demanded before.
+	//
+	// The refusal is the same unfingerprintable http.NotFound a bad
+	// credential and a missing route both get: a LAN scanner learns
+	// nothing from which of the three refused it.
+	if !isLoopback && sessionID == "" {
+		http.NotFound(w, r)
+		return
 	}
 
 	// Read the live (post-rebind) allow-list, not Config's static value.

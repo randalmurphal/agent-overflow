@@ -34,6 +34,15 @@
 //     rides the loopback connection. That is the point rather than an
 //     inconvenience: a LAN peer must not be able to reconfigure the bind.
 //
+// HOW THE LAN PEER GETS ONTO THE SOCKET AT ALL. The `/ws` upgrade now
+// refuses a non-loopback peer that names no durable session
+// (`internal/transport/AGENTS.md`), so the launch token alone no longer
+// opens one — this spec asserts that too. To reach the dispatcher it does
+// what a paired browser does: exchange the launch token for the backend's
+// session credential on `/bootstrap.json`, mint a single-use ticket at
+// `/auth/ticket`, and dial `?ticket=`. `fetch` can set a header and the
+// WHATWG `WebSocket` cannot, which is exactly why that ticket exists.
+//
 // The client here is deliberately hand-rolled rather than a second
 // `HarnessApp`: this spec asserts on the RPC error envelope, and the TS
 // client's `rpc()` flattens it into an `Error` message.
@@ -76,12 +85,13 @@ class WireClient {
     });
   }
 
-  static async connect(host: string, port: number, token: string): Promise<WireClient> {
-    const ws = new WebSocket(`ws://${host}:${port}/ws?token=${encodeURIComponent(token)}`);
+  static async connect(host: string, port: number, query: string): Promise<WireClient> {
+    const ws = new WebSocket(`ws://${host}:${port}/ws?${query}`);
     await new Promise<void>((resolve, reject) => {
       ws.addEventListener('open', () => resolve(), { once: true });
       // The upgrade answers 404 rather than 403 for every refusal it has
-      // (bad token, guarded Host), so a failure here is opaque by design.
+      // (bad token, guarded Host, no session named by an off-host peer),
+      // so a failure here is opaque by design.
       ws.addEventListener(
         'error',
         () => reject(new Error(`WS handshake to ${host}:${port} was refused`)),
@@ -101,6 +111,36 @@ class WireClient {
   close(): void {
     this.ws.close();
   }
+}
+
+/**
+ * The `?ticket=` query a LAN peer needs to open a socket: the backend's
+ * own session credential, exchanged for a single-use WebSocket ticket.
+ *
+ * Both requests present the launch token, which is what a client that is
+ * not a browser has always presented. What they buy is the session id the
+ * upgrade now requires of an off-host peer — the credential is the local
+ * page channel's, the same one the `--connect` stub forwards on its
+ * carried hop (`internal/relaysession`).
+ */
+async function lanTicketQuery(host: string, port: number, token: string): Promise<string> {
+  const base = `http://${host}:${port}`;
+  const manifest = await fetch(`${base}/bootstrap.json?token=${encodeURIComponent(token)}`);
+  expect(manifest.ok, 'the LAN bootstrap exchange must answer').toBe(true);
+  // The cookie is port-qualified because cookies do not scope by port
+  // (internal/transport/credential.go cookieNameForHost).
+  const prefix = `ao_session_${port}=`;
+  const planted = manifest.headers.getSetCookie().find((c) => c.startsWith(prefix));
+  expect(planted, 'the bootstrap exchange must plant a session cookie').toBeTruthy();
+  const credential = planted!.slice(prefix.length).split(';')[0];
+
+  const minted = await fetch(`${base}/auth/ticket`, {
+    method: 'POST',
+    headers: { 'X-AO-Session': credential },
+  });
+  expect(minted.ok, '/auth/ticket must answer a request naming a live session').toBe(true);
+  const { ticket } = (await minted.json()) as { ticket: string };
+  return `ticket=${encodeURIComponent(ticket)}`;
 }
 
 /**
@@ -149,7 +189,27 @@ test.describe('LAN-bound authorization', () => {
     });
     expect(settings.bindAll).toBe(true);
 
-    const remote = await WireClient.connect(lanIP!, harness.bootstrap.port, harness.bootstrap.token);
+    // The launch token alone no longer opens a socket off-host: it names
+    // the backend launch and not the client, so nothing could revoke the
+    // connection it would open.
+    let sessionlessRefused = false;
+    try {
+      const doomed = await WireClient.connect(
+        lanIP!,
+        harness.bootstrap.port,
+        `token=${encodeURIComponent(harness.bootstrap.token)}`,
+      );
+      doomed.close();
+    } catch {
+      sessionlessRefused = true;
+    }
+    expect(
+      sessionlessRefused,
+      'a LAN peer naming no session must be refused the upgrade',
+    ).toBe(true);
+
+    const ticketed = await lanTicketQuery(lanIP!, harness.bootstrap.port, harness.bootstrap.token);
+    const remote = await WireClient.connect(lanIP!, harness.bootstrap.port, ticketed);
     try {
       // (a) Refused. Two entries from two different mechanisms, because
       // they can regress independently: the whole `Harness` receiver is

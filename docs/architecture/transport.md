@@ -243,6 +243,41 @@ refused manifest and latches its existing `unauthorized` state. Nothing wedges.
 A route that needs a credential calls one of those two; there is no third path,
 and adding one is the mistake this shape exists to prevent.
 
+### The launch credential admits an upgrade only from this machine
+
+`Authenticate` says which backend LAUNCH a client belongs to. It does not say
+WHICH client, and that is the whole difference: a connection carrying only the
+launch credential has no session id, so `CloseSession` has nothing to reach it
+by and the per-RPC gate has no grant set to read. It is unattributable and
+unrevocable by construction.
+
+That is fine while the peer is one of this host's own processes, and it is not
+fine off-host. So `handleWS` requires a non-loopback peer to NAME a live durable
+session (spec §4, "Local clients") — through the spent `?ticket=`, the
+`X-AO-Session` header, or the `ao_session_<port>` cookie, the three carriers
+`SessionForRequest` already reads. Locality is `loopback.PeerAddress` over the
+kernel-reported peer, the same predicate `LocalOnlyMethods` and the event filter
+use.
+
+| Peer | Presents | Upgrade |
+|---|---|---|
+| loopback | launch credential, no session | admitted — the webview, `ao-harness`, the e2e rig, the launcher's notification socket, the `--connect` stub's carried hop when it is same-host |
+| loopback | a live session | admitted |
+| non-loopback | a live session (ticket, header, or cookie) | admitted |
+| non-loopback | launch credential alone | `http.NotFound` |
+| non-loopback | nothing | `http.NotFound` |
+
+This narrows what a sessionless credentialled connection may be; it loosens
+nothing. The launch credential is still demanded wherever it was demanded
+before, and the refusal is the same 404 a bad credential and a missing route
+both answer, so a LAN scanner still learns nothing from which rule refused it.
+
+The LAN share URL keeps loading the page — `/bootstrap.json` is unchanged, and
+the manifest must not be stricter than the socket it describes. What changes is
+what happens next: a networked page that never paired reaches a refused upgrade,
+and the SPA presents that as a pairing prompt rather than as an outage
+(`frontend/src/lib/transport/AGENTS.md`).
+
 ### Why the origin check is load-bearing, not defence in depth
 
 Cookies are scoped by host and path — **not by port**. Any page served by any

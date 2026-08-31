@@ -58,7 +58,9 @@ enforce for a caller that reached it another way; put it in
   request, so an App whose identity core failed serves the local page
   exactly as it did before this existed; what it loses is attribution and
   revocation. Refusing to boot would turn a credential-table problem into
-  "the app does not start".
+  "the app does not start". The loss is confined to this machine on its
+  own: no session resolves, so the transport's peer rule refuses every
+  off-host `/ws` upgrade rather than admitting one nothing could revoke.
 - Every accessor answers honestly for an App that never called `Start`.
   Test fixtures build one directly, and nil `identityState` means
   "identity is not wired" — a state, not a fault. The one asymmetry is

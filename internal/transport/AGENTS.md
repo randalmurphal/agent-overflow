@@ -274,6 +274,38 @@ The name carries the listen port because cookies are scoped by host and path but
 **not** by port — two backends on one host (the app and a harness instance, an
 app and a `--connect` stub) would otherwise overwrite each other's.
 
+**The launch credential admits a `/ws` upgrade only from THIS machine.** It
+names a backend LAUNCH, never a client, so a connection carrying nothing else
+has no session id: `CloseSession` cannot reach it and the per-RPC gate has no
+grant set to read. Unattributable and unrevocable is tolerable for the host's
+own processes and nowhere else, so `handleWS` requires a non-loopback peer to
+NAME a live durable session (spec §4, "Local clients") — through the spent
+`?ticket=`, the `X-AO-Session` header, or the `ao_session_<port>` cookie, the
+carriers `SessionForRequest` already reads. Locality is
+`loopback.PeerAddress`, the same predicate everything else here uses; there is
+no second one. This NARROWS what a sessionless credentialled connection may be
+and loosens nothing — the launch credential is still demanded wherever it was
+demanded before. A nil `SessionForRequest` therefore refuses every non-loopback
+peer: a server that cannot resolve a session cannot admit one either, and the
+host's own clients are unaffected.
+
+| peer | presents | upgrade |
+|---|---|---|
+| loopback | launch credential, no session | admitted |
+| loopback | a live session | admitted |
+| non-loopback | a live session | admitted |
+| non-loopback | launch credential alone | `http.NotFound` |
+| non-loopback | nothing | `http.NotFound` |
+
+`/bootstrap.json` is deliberately NOT narrowed the same way. The LAN share URL
+must keep loading the page, because the person holding it has to be able to
+act — and what they see is the SPA's pairing prompt, not an outage
+(`frontend/src/lib/transport/AGENTS.md`). `wsadmission_test.go` pins the matrix,
+and its fixture is the one way this package produces a non-loopback peer: the
+same `*http.Server` served over a second listener whose accepted connections
+report a LAN address, which is exactly what net/http copies into
+`Request.RemoteAddr`.
+
 Both credentialled entry points answer a refused credential with
 `http.NotFound`: `/bootstrap.json` (`handleBootstrap`) and the `/ws` upgrade
 (`upgrade`). The 404 is deliberately indistinguishable from "no such path" so a
@@ -736,8 +768,9 @@ closes it, and `CloseSession` is that something.
   shape a bad launch credential gets — see § Credentials and refusal shapes.
   The app supplies it from `internal/identity`; a request carrying no session
   credential still proceeds and names none, which is every launch-credential
-  client. It does NOT replace the launch credential on `/ws` — that migration
-  is phase 3.
+  client — and the peer rule above then admits such a connection only from
+  this machine. It does not REPLACE the launch credential on `/ws`: both are
+  still demanded of the clients that always presented both.
 - **A `?ticket=` on the upgrade takes precedence over the hook**, and is spent
   whether or not the upgrade then succeeds; that is what single use means. The
   ticket NAMES a session, it does not authorize one: the subject is re-checked
@@ -779,8 +812,8 @@ closes it, and `CloseSession` is that something.
   job (`SessionForRequest` → `identity.Sessions.Live`); a second source of that
   truth would be one that could disagree.
 - A connection that names no session attaches nothing. Empty session ids must
-  never share a slot — that is every launch-credential connection today, and
-  one revocation would close all of them.
+  never share a slot — that is every loopback launch-credential connection,
+  and one revocation would close all of them.
 
 ## Conventions specific to this package
 

@@ -22,8 +22,11 @@
 // booting, the session core did not start, an older backend that has no
 // such cookie — leaves the credential empty, and an empty credential
 // means the connection carries the launch token alone, exactly as it did
-// before this existed. Forwarding is an improvement in attribution, never
-// a new requirement for a relay to connect.
+// before this existed. What that then buys depends on where the relay
+// sits: the backend admits a sessionless upgrade from a peer on its own
+// machine and refuses one from anywhere else, so forwarding is attribution
+// for a same-host relay (both of today's callers) and the only way in for
+// a relay reaching a backend across a network.
 //
 // No transport import, deliberately: this package is compiled into the
 // Windows launcher binary, which does not link the transport server. The

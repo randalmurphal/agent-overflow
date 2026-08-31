@@ -84,14 +84,18 @@ cannot put a header on an upgrade, but a local non-browser client holding
 this stub's cookie could, and a forwarded one would let it name a session
 it never obtained.
 
-Failure degrades, never blocks. An upstream with no session core to speak
-of leaves the header off and the upgrade carries the bearer token alone,
-exactly as it did before forwarding existed. `ModifyResponse` marks the
-credential stale on any non-101 answer — a refused upgrade is the one
-signal it has gone dead — and passes the response through untouched: the
-verdict on whether the TOKEN is still honoured belongs to the
-`/bootstrap.json` probe below, which is the one place that maps upstream
-status onto the SPA's terminal state.
+Failure degrades on a SAME-HOST upstream and blocks on an off-host one,
+and the difference is the upstream's rule rather than this package's: a
+`/ws` upgrade from a non-loopback peer must name a session
+(`internal/transport/AGENTS.md`). An upstream with no session core to
+speak of leaves the header off, and the upgrade then carries the bearer
+token alone — which the upstream admits when this stub is on its machine
+(the SSH-tunnel and same-host cases) and refuses when it is not.
+`ModifyResponse` marks the credential stale on any non-101 answer — a
+refused upgrade is the one signal it has gone dead — and passes the
+response through untouched: the verdict on whether the TOKEN is still
+honoured belongs to the `/bootstrap.json` probe below, which is the one
+place that maps upstream status onto the SPA's terminal state.
 
 **Carrying `/ws` rather than pointing the browser at the upstream is the
 design choice this package is built around.** The alternative — hand the

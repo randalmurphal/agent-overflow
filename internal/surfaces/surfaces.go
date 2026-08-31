@@ -415,7 +415,10 @@ var Routes = []Route{
 			"whole authorization model hangs off this route. Origin is " +
 			"validated in our own code because a handshake is not subject " +
 			"to the cross-origin read rules, and a foreign Origin is " +
-			"refused on loopback too.",
+			"refused on loopback too. The launch credential alone admits " +
+			"a peer on THIS machine; a peer that is not must also name a " +
+			"live durable session, because a connection with no session " +
+			"id is one no revocation can reach.",
 	},
 	{
 		Pattern:    "/pageurl",
