@@ -267,8 +267,12 @@ builder for macOS.
   `+dataStoreForIdentifier:` store inside WebKit's own directory.
 - `browserPersistSiteData=false` is an EPHEMERAL session, not a suppressed
   write. It reaches an engine as `profileOptions.Persist`.
-- Clear site data closes the engine's pages for the workspace, then deletes the
-  profile directory. There is nothing else to clear.
+- Clear site data closes every engine page, then clears BOTH halves: the
+  Manager deletes the AO-owned `browser-profiles/` tree, and an engine whose
+  data lives somewhere the Manager cannot reach by path (the launcher's
+  WebView2 user-data folder, WebKit's macOS data-store directory) implements
+  `engineSiteData` and clears its own. The button must clear real state on
+  every platform — a per-engine silent no-op is a bug, not a platform quirk.
 - The AES-GCM checkpoint store (`state.go`, its keyring key, the harness
   force-file-key path) is DELETED. Its leftovers — `browser-state/` and
   `browser-state.key` — are pruned on the first boot of this code, because they

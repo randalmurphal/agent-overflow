@@ -36,6 +36,17 @@ type browserEngine interface {
 	DiscardPage(handle string)
 }
 
+// engineSiteData is the engine half of ClearSiteData (spec §4), implemented by
+// an engine whose site data lives somewhere the Manager cannot reach by path:
+// the launcher's WebView2 user-data folder on Windows, WebKit's own data-store
+// directory on macOS. The Manager calls it only after closeBrowser, so no page
+// or profile is live when it runs. An engine whose data lives under the
+// Manager's own profile tree (WebKitGTK) does not implement it — the tree
+// delete already is the clear.
+type engineSiteData interface {
+	ClearSiteData(ctx context.Context) error
+}
+
 // engineProfile is one canonical workspace's isolated site data: the unit that
 // owns its pages and their download behavior. Site data itself is the ENGINE's
 // (spec §4) — a real browser profile on disk, or an ephemeral session — so

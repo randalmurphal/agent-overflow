@@ -380,21 +380,30 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	return errors.Join(errs...)
 }
 
-// ClearSiteData closes every engine page first, then deletes the AO-owned
-// profile tree (spec §4). The order is load-bearing: an engine still holding a
-// profile open would write its cookie jar back out over the cleared directory.
+// ClearSiteData closes every engine page first, then deletes the site data
+// (spec §4). The order is load-bearing: an engine still holding a profile open
+// would write its cookie jar back out over the cleared state.
 //
-// It cannot reach the site data of an engine that keeps its own (macOS
-// `+dataStoreForIdentifier:` lives inside WebKit's directory), which is why
-// the disposal above is the part that always happens.
+// Two halves, because two kinds of engine exist: the AO-owned profile tree is
+// deleted here (WebKitGTK keeps its data under it), and an engine whose data
+// lives somewhere this process cannot reach by path — the launcher's WebView2
+// user-data folder, WebKit's own macOS data-store directory — implements
+// engineSiteData and clears its own. Both halves run; a Settings button that
+// silently clears nothing on some platforms is not an option.
 func (m *Manager) ClearSiteData(ctx context.Context) error {
 	if err := m.closeBrowser(ctx); err != nil {
 		return err
 	}
+	var errs []error
 	if err := os.RemoveAll(m.profileDir); err != nil {
-		return fmt.Errorf("browser: clear site data: %w", err)
+		errs = append(errs, fmt.Errorf("browser: clear site data: %w", err))
 	}
-	return nil
+	if engine, ok := m.engine.(engineSiteData); ok {
+		if err := engine.ClearSiteData(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (m *Manager) Close() error {
