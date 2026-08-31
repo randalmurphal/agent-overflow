@@ -291,7 +291,7 @@ func TestRegisterQueueItemSerializesInterruptRevertAcrossFlushHandoff(t *testing
 	// flush, so this goroutine parks inside the interpose with the mutex held.
 	registered := make(chan error, 1)
 	go func() {
-		_, err := app.RegisterQueueItem(thread.ID, "follow-up M", SendMessageOptions{})
+		_, err := app.RegisterQueueItem(context.Background(), thread.ID, "follow-up M", SendMessageOptions{})
 		registered <- err
 	}()
 

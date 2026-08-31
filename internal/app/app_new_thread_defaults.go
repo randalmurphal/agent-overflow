@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -32,9 +33,12 @@ type NewThreadDefaultsUpdate struct {
 // not mutate any existing thread row.
 //
 //ao:scope threads:operate
-func (a *App) UpdateNewThreadDefaults(update NewThreadDefaultsUpdate) (ThreadDefaults, error) {
+func (a *App) UpdateNewThreadDefaults(ctx context.Context, update NewThreadDefaultsUpdate) (ThreadDefaults, error) {
 	if a.store == nil {
 		return ThreadDefaults{}, fmt.Errorf("update new thread defaults: store unavailable")
+	}
+	if err := a.requireAutonomy(ctx, update.RuntimeMode); err != nil {
+		return ThreadDefaults{}, err
 	}
 	projectID := strings.TrimSpace(update.ProjectID)
 	if projectID == "" {

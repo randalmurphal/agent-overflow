@@ -495,7 +495,7 @@ func TestUpdateThreadRuntimeModeValidates(t *testing.T) {
 		t.Fatalf("createTestThread: %v", err)
 	}
 
-	updated, err := app.UpdateThreadRuntimeMode(thread.ID, "approval-required")
+	updated, err := app.UpdateThreadRuntimeMode(context.Background(), thread.ID, "approval-required")
 	if err != nil {
 		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestUpdateThreadRuntimeModeValidates(t *testing.T) {
 		t.Fatalf("RuntimeMode = %q, want approval-required", updated.RuntimeMode)
 	}
 
-	if _, err := app.UpdateThreadRuntimeMode(thread.ID, "yolo"); err == nil {
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), thread.ID, "yolo"); err == nil {
 		t.Fatal("UpdateThreadRuntimeMode(yolo) error = nil, want validation error")
 	}
 }
@@ -516,7 +516,7 @@ func TestUpdateNewThreadDefaultsPersistsProfileForFutureThreads(t *testing.T) {
 	}
 	fastMode := false
 
-	defaults, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+	defaults, err := app.UpdateNewThreadDefaults(context.Background(), NewThreadDefaultsUpdate{
 		ProjectID:       project.ID,
 		Provider:        "codex",
 		Model:           "5.4",
@@ -560,7 +560,7 @@ func TestUpdateNewThreadDefaultsValidatesRuntimeMode(t *testing.T) {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
 	}
 
-	if _, err := app.UpdateNewThreadDefaults(NewThreadDefaultsUpdate{
+	if _, err := app.UpdateNewThreadDefaults(context.Background(), NewThreadDefaultsUpdate{
 		ProjectID:   project.ID,
 		Provider:    "codex",
 		Model:       "gpt-5.4",

@@ -288,14 +288,14 @@ func TestArgumentRefusalSurvivesRedaction(t *testing.T) {
 
 func TestAuthzErrorsAreRecognizedThroughWrapping(t *testing.T) {
 	wrapped := fmt.Errorf("apply the patch: %w", StepUpRequired(`settings key "network"`))
-	frame, ok := authzFrame(wrapped)
+	frame, ok := AuthzFrame(wrapped)
 	if !ok {
 		t.Fatal("a wrapped step-up refusal was not recognized")
 	}
 	if frame.Code != ErrCodeStepUpRequired {
 		t.Fatalf("code = %q, want %q", frame.Code, ErrCodeStepUpRequired)
 	}
-	if _, ok := authzFrame(errors.New("ordinary failure")); ok {
+	if _, ok := AuthzFrame(errors.New("ordinary failure")); ok {
 		t.Fatal("an ordinary error was read as an authorization refusal")
 	}
 }

@@ -68,10 +68,16 @@ func (a *App) SendMessage(threadID string, content string, attachmentIDs []strin
 // the same per-thread action lock as provider session start/send.
 //
 //ao:scope threads:operate
-func (a *App) SendMessageWithOptions(threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
+func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
+	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+		return store.Thread{}, err
+	}
+	// The send itself runs on Background, NOT on ctx. ctx belongs to the
+	// caller's connection, and a client that drops mid-send must not cancel
+	// a turn the provider has already been told about.
 	if _, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,
 		RuntimeMode:                  opts.RuntimeMode,

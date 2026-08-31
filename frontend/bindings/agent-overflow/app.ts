@@ -805,6 +805,12 @@ export function GetClaudeSkills(workspacePath: string): $CancellablePromise<clau
  * (see internal/triage/provider_commands.go).
  * 
  * Never spawns — a pure read of what a probe already left behind.
+ * 
+ * Wire-reachable deliberately: the SAME rich entries already reach remote
+ * peers on the `provider:commands` channel, whose registry row is
+ * AudienceAny, so refusing the RPC would empty a cold thread's menu and buy
+ * no confidentiality. If that channel ever becomes loopback-only, or this
+ * shape grows a path or env field, re-run the decision.
  */
 export function GetClaudeSlashCommands(): $CancellablePromise<app$0.ClaudeSlashCommands> {
     return $Call.ByID(2854892544).then(($result: any) => {
@@ -2247,6 +2253,10 @@ export function ListRemoteEndpoints(): $CancellablePromise<app$0.RemoteEndpointS
  * differs: the tray's completed-sibling retention window is a
  * live-render tuning value, so the terminal rows it carries are dropped
  * and an inventory reports what is running.
+ * 
+ * The WRITE half does not follow it: StopThreadBackgroundWork stays
+ * local-only. Seeing what a host is running and killing it are separate
+ * authorizations, and only the read is safe on a session alone.
  */
 export function ListRunningBackgroundWork(): $CancellablePromise<app$0.BackgroundWorkInventory> {
     return $Call.ByID(3808352241).then(($result: any) => {
@@ -2261,7 +2271,7 @@ export function ListRunningBackgroundWork(): $CancellablePromise<app$0.Backgroun
  * internal/store/paging.go topLevelItemsFilter); this is the expansion
  * path that hydrates them. The result is every visible transitive
  * descendant in timeline order, capped store-side at the same scale as
- * maxWindowItems (newest rows win) so a malicious LAN-attached caller
+ * maxWindowItems (newest rows win) so an unintended LAN-attached caller
  * can't stream an unbounded subtree per call.
  */
 export function ListSubagentDescendants(threadID: string, rootItemID: string, inlinePreviews: boolean): $CancellablePromise<store$0.Item[]> {
@@ -3914,7 +3924,7 @@ export function UpdateProposedPlanComment(threadID: string, commentID: string, i
  * 
  * SECURITY: returns RemoteEndpointSummary so a no-op Update from a
  * LAN-attached token-holder can't harvest the persisted token. See
- * AddRemoteEndpoint for the threat model.
+ * AddRemoteEndpoint for the reasoning.
  */
 export function UpdateRemoteEndpoint(id: string, name: string, url: string, token: string): $CancellablePromise<app$0.RemoteEndpointSummary> {
     return $Call.ByID(4268476031, id, name, url, token).then(($result: any) => {

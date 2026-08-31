@@ -441,7 +441,7 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 		errResult := results[len(results)-1]
 		if !errResult.IsNil() {
 			methodErr := errResult.Interface().(error)
-			if frame, isAuthz := authzFrame(methodErr); isAuthz {
+			if frame, isAuthz := AuthzFrame(methodErr); isAuthz {
 				// The method refused on its ARGUMENTS rather than failing
 				// (authorize.go): a runtime mode the session may not select,
 				// a host-tier settings key. Its message names the scope and

@@ -781,7 +781,10 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 // webviews) that may be observing the same thread.
 //
 //ao:scope threads:operate
-func (a *App) RegisterQueueItem(threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
+func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
+	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+		return QueuedItem{}, err
+	}
 	// A user queueing a message has just consumed their composer draft, so the
 	// bound entry point clears it, and nothing is waiting on the dispatch.
 	return a.registerQueueItem(threadID, message, opts, injectedQueueOptions{

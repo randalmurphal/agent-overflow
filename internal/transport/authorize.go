@@ -181,10 +181,28 @@ func StepUpRequired(detail string) error {
 	}}
 }
 
-// authzFrame reports the wire refusal a method error carries, if it is one
-// of the two above. The dispatcher asks before its redaction path, because
-// these messages are the answer rather than an internal detail.
-func authzFrame(err error) (*FrameError, bool) {
+// AuthRefused builds the refusal a bound method returns when the session
+// its connection named stopped admitting work between the pre-call gate
+// and the argument recheck — a revocation landing mid-call, which is the
+// window §4 "Revocation" says must close on the next answer rather than on
+// the next watchdog tick.
+//
+// Same envelope AuthFailure builds for the pre-call path, wrapped so it
+// reaches the wire as itself: reasonCode is identity's closed vocabulary,
+// carried uninterpreted for authReason.ts to present.
+func AuthRefused(reasonCode string) error {
+	return &authzError{frame: *AuthFailure(reasonCode)}
+}
+
+// AuthzFrame reports the wire refusal a method error carries, if it is one
+// the constructors above built. The dispatcher asks before its redaction
+// path, because these messages are the answer rather than an internal
+// detail.
+//
+// Exported because the constructors are: a package that returns one of
+// these from a bound method is the package that has to assert what its
+// caller will actually receive.
+func AuthzFrame(err error) (*FrameError, bool) {
 	var refusal *authzError
 	if errors.As(err, &refusal) {
 		frame := refusal.frame

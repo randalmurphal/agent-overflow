@@ -746,7 +746,7 @@ func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := app.RegisterQueueItem(thread.ID, "queued while provider works", SendMessageOptions{})
+		_, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued while provider works", SendMessageOptions{})
 		done <- err
 	}()
 	select {
@@ -1882,7 +1882,7 @@ func TestRegisterQueueItem_AppendsAndEmitsState(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	queued, err := app.RegisterQueueItem(thread.ID, "hello", SendMessageOptions{})
+	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "hello", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
@@ -2761,7 +2761,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 
 func TestRegisterQueueItem_RejectsEmptyThreadID(t *testing.T) {
 	app, _ := newAppForFlushQueueRPC(t)
-	if _, err := app.RegisterQueueItem("", "x", SendMessageOptions{}); err == nil {
+	if _, err := app.RegisterQueueItem(context.Background(), "", "x", SendMessageOptions{}); err == nil {
 		t.Errorf("expected error for empty threadID")
 	}
 }
@@ -2778,7 +2778,7 @@ func TestRegisterQueueItem_RejectsTooManyAttachments(t *testing.T) {
 	for i := range too {
 		too[i] = fmt.Sprintf("att-%d", i)
 	}
-	_, err := app.RegisterQueueItem(thread.ID, "x", SendMessageOptions{AttachmentIDs: too})
+	_, err := app.RegisterQueueItem(context.Background(), thread.ID, "x", SendMessageOptions{AttachmentIDs: too})
 	if err == nil {
 		t.Errorf("expected error for too-many-attachments")
 	}
@@ -2795,7 +2795,7 @@ func TestRegisterQueueItem_RejectsRevisionCommentsWithoutPlan(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	_, err := app.RegisterQueueItem(thread.ID, "x", SendMessageOptions{
+	_, err := app.RegisterQueueItem(context.Background(), thread.ID, "x", SendMessageOptions{
 		RevisionSourceCommentIDs: []string{"c1"},
 	})
 	if err == nil {
@@ -2815,7 +2815,7 @@ func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
 		t.Errorf("empty queue should return nil, got %+v", got)
 	}
 
-	q, _ := app.RegisterQueueItem(thread.ID, "snapshot me", SendMessageOptions{})
+	q, _ := app.RegisterQueueItem(context.Background(), thread.ID, "snapshot me", SendMessageOptions{})
 
 	snap, err := app.GetQueueState(thread.ID)
 	if err != nil {
@@ -2845,7 +2845,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
-	queued, err := app.RegisterQueueItem(thread.ID, "queued text", SendMessageOptions{
+	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued text", SendMessageOptions{
 		AttachmentIDs: []string{"att-1"},
 	})
 	if err != nil {
@@ -2947,7 +2947,7 @@ func TestQueueStateChanged_PayloadDecodesAttachmentIDs(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	if _, err := app.RegisterQueueItem(thread.ID, "with attachments", SendMessageOptions{
+	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "with attachments", SendMessageOptions{
 		AttachmentIDs: []string{"att-1", "att-2"},
 	}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)

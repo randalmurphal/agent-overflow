@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -73,11 +74,11 @@ func TestDispatchFlush_EndToEnd_TriggerThroughWireEcho_Codex(t *testing.T) {
 	// Register two queue items via the public RPC. RegisterQueueItem now
 	// drains as soon as a live provider session exists, so the items move
 	// from queue snapshot to sent-but-unconfirmed markers immediately.
-	first, err := app.RegisterQueueItem(thread.ID, "first queued", SendMessageOptions{})
+	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "first queued", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem first: %v", err)
 	}
-	second, err := app.RegisterQueueItem(thread.ID, "second queued", SendMessageOptions{})
+	second, err := app.RegisterQueueItem(context.Background(), thread.ID, "second queued", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem second: %v", err)
 	}
@@ -374,7 +375,7 @@ func TestDispatchFlush_MarksProposedPlanImplementedAfterDispatch(t *testing.T) {
 		t.Fatalf("EventTurnStart: %v", err)
 	}
 
-	if _, err := app.RegisterQueueItem(thread.ID, "Implement the plan.", SendMessageOptions{
+	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)

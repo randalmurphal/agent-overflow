@@ -55,9 +55,12 @@ import (
 // echo with the pending-send marker we register here.
 //
 //ao:scope threads:operate
-func (a *App) SteerMessageWithOptions(threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
+func (a *App) SteerMessageWithOptions(ctx context.Context, threadID string, content string, opts SendMessageOptions) (store.Thread, error) {
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
+	}
+	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+		return store.Thread{}, err
 	}
 	if _, err := a.steerMessageWithOptions(threadID, content, sendMessageOptions{
 		AttachmentIDs:                opts.AttachmentIDs,

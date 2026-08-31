@@ -277,8 +277,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// Handlers that scope durable state read the session first and fall
 	// back to the screen, which is why neither may be dropped here.
 	connCtx, state := WithConnState(connCtx, ConnPrincipal{
-		Client:    profile.client,
-		SessionID: profile.sessionID,
+		Client:      profile.client,
+		SessionID:   profile.sessionID,
+		HostPresent: profile.isLoopback,
 	})
 	defer state.RunCleanups()
 

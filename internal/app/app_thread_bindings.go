@@ -108,6 +108,9 @@ type ThreadTitleGenerationEvent struct {
 //
 //ao:scope threads:operate
 func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
+	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+		return store.Thread{}, err
+	}
 	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
 		Title:                      opts.Title,
@@ -485,13 +488,16 @@ func (a *App) UpdateThreadContextWindow(id string, tokens int) (store.Thread, er
 // full access — that restarts, deferred until the thread is quiet).
 //
 //ao:scope threads:operate
-func (a *App) UpdateThreadRuntimeMode(id, mode string) (store.Thread, error) {
+func (a *App) UpdateThreadRuntimeMode(ctx context.Context, id, mode string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: store unavailable")
 	}
 	normalized, err := threadmode.ParseRuntime(mode)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: %w", err)
+	}
+	if err := a.requireAutonomy(ctx, string(normalized)); err != nil {
+		return store.Thread{}, err
 	}
 	if err := a.applyRuntimeMode(id, normalized); err != nil {
 		return store.Thread{}, fmt.Errorf("update runtime mode: %w", err)

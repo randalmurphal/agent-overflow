@@ -220,7 +220,7 @@ func TestSendMessageWithOptionsAppliesRuntimeModeBeforeLazyStart(t *testing.T) {
 		return nil
 	}
 
-	_, err := app.SendMessageWithOptions(thread.ID, "Hello", SendMessageOptions{
+	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Hello", SendMessageOptions{
 		RuntimeMode: string(provider.RuntimeFullAccess),
 	})
 	if err == nil {
@@ -298,7 +298,7 @@ func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
-	updated, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+	updated, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
 	if err != nil {
@@ -378,7 +378,7 @@ func TestSendMessageWithOptionsImplementSendFailureKeepsPlanAccepted(t *testing.
 	// provider write fails.
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "no-provider"})
 
-	_, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+	_, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
 	if err == nil {
@@ -463,7 +463,7 @@ func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttrib
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
-	if _, err := app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	}); err != nil {
 		t.Fatalf("first SendMessageWithOptions() error = %v", err)
@@ -477,7 +477,7 @@ func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttrib
 		t.Fatalf("first send did not mark plan: %+v", first)
 	}
 
-	if _, err := app.SendMessageWithOptions(thread.ID, "Implement again.", SendMessageOptions{
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "Implement again.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	}); err != nil {
 		t.Fatalf("second SendMessageWithOptions() error = %v", err)
@@ -543,7 +543,7 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
-	_, err = app.SendMessageWithOptions(thread.ID, "Implement the plan.", SendMessageOptions{
+	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
 	if err != nil {
@@ -583,7 +583,7 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 		t.Fatalf("plan meta = %v, want implemented by %s", plans, userItem.ID)
 	}
 
-	_, err = app.SendMessageWithOptions(thread.ID, "Implement the plan again.", SendMessageOptions{
+	_, err = app.SendMessageWithOptions(context.Background(), thread.ID, "Implement the plan again.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ItemID: "plan-item"},
 	})
 	if err != nil {
@@ -688,7 +688,7 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	t.Cleanup(func() { _ = sess.Close() })
 	app.sessionManager().put(targetThread.ID, session{Provider: string(provider.Claude), Token: "test-token", Claude: sess})
 
-	_, err = app.SendMessageWithOptions(targetThread.ID, "Implement the plan.", SendMessageOptions{
+	_, err = app.SendMessageWithOptions(context.Background(), targetThread.ID, "Implement the plan.", SendMessageOptions{
 		SourceProposedPlan: &SourceProposedPlan{ThreadID: sourceThread.ID, ItemID: "plan-item"},
 	})
 	if err != nil {
@@ -944,7 +944,7 @@ func TestSendMessageDoesNotPreStampProviderItemIDForCodex(t *testing.T) {
 	}
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "no-provider"})
 
-	if _, err := app.SendMessageWithOptions(thread.ID, "hello codex", SendMessageOptions{}); err == nil {
+	if _, err := app.SendMessageWithOptions(context.Background(), thread.ID, "hello codex", SendMessageOptions{}); err == nil {
 		t.Fatal("SendMessageWithOptions on no-provider Codex session returned nil, want failure")
 	}
 
