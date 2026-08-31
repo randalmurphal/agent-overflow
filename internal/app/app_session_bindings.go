@@ -72,7 +72,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
-	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return store.Thread{}, err
 	}
 	// The send itself runs on Background, NOT on ctx. ctx belongs to the

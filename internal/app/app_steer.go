@@ -59,7 +59,7 @@ func (a *App) SteerMessageWithOptions(ctx context.Context, threadID string, cont
 	if a.shuttingDown.Load() {
 		return store.Thread{}, ErrShuttingDown
 	}
-	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return store.Thread{}, err
 	}
 	if _, err := a.steerMessageWithOptions(threadID, content, sendMessageOptions{

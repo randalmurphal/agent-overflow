@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/threadmode"
@@ -80,11 +81,23 @@ func (a *App) requireStepUp(ctx context.Context, detail string) error {
 // in the loop and the calling session was not granted threads:autonomy
 // (docs/specs/remote-access.md §5).
 //
-// An EMPTY mode is not a selection and passes: it means "whatever this
-// thread or this install already resolves to", which the caller did not
-// choose. An unparseable mode also passes, because refusing it here would
-// answer scope_required for what is really a bad argument — the method's own
-// validator gives the caller the truthful error a moment later.
+// The mode passed here is the EFFECTIVE one — what the call will actually
+// leave the thread running in — never the literal argument. §5 draws the
+// boundary by outcome: threads:operate covers driving a thread "in
+// read-only or approval-required modes only", so a call whose effective
+// mode is autonomous is an autonomy act however it was spelled. An omitted
+// argument is not a free pass, because provider.DefaultRuntimeMode is
+// full-access and omitting it lands there. Resolving the effective mode is
+// the caller's job (requireAutonomyForThread, and the
+// AuthorizeRuntimeMode hook on threadapp's create paths); this function
+// only judges the answer.
+//
+// An EMPTY mode passes, which now means "nothing resolved to judge" rather
+// than "the caller selected nothing" — no create or drive path can reach
+// here with one. An unparseable mode passes too, because refusing it here
+// would answer scope_required for what is really a bad argument, and the
+// method's own validator gives the caller the truthful error a moment
+// later.
 func (a *App) requireAutonomy(ctx context.Context, mode string) error {
 	parsed, present, err := threadmode.ParseOptionalRuntime(mode)
 	if err != nil || !present {
@@ -95,6 +108,38 @@ func (a *App) requireAutonomy(ctx context.Context, mode string) error {
 	}
 	return a.requireScope(ctx, transport.ScopeThreadsAutonomy,
 		"selecting the "+string(parsed)+" runtime mode")
+}
+
+// requireAutonomyForThread judges the effective mode of a call that DRIVES
+// an existing thread — send, steer, queue.
+//
+// Effective mode is the override when one was selected, and otherwise the
+// mode the thread already runs in. That is not a second copy of a
+// resolution rule: it is the same answer the method's own code produces,
+// which applies an override if given and leaves the thread's mode alone if
+// not. Sending into a full-access thread commits the agent to acting
+// without approval gates just as surely as selecting full-access does, and
+// §5's boundary is the outcome.
+//
+// The thread read happens only when there is a session to judge AND no
+// override was given, so an in-process caller and an explicit selection
+// both cost nothing. A thread that cannot be loaded passes: the method's
+// own lookup is a step away and answers with the truthful error.
+func (a *App) requireAutonomyForThread(ctx context.Context, threadID, selected string) error {
+	if transport.SessionFromContext(ctx) == "" {
+		return nil
+	}
+	if strings.TrimSpace(selected) != "" {
+		return a.requireAutonomy(ctx, selected)
+	}
+	if a.store == nil {
+		return nil
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return nil
+	}
+	return a.requireAutonomy(ctx, thread.RuntimeMode)
 }
 
 // requireSettingsTier refuses a settings patch that reaches further than the

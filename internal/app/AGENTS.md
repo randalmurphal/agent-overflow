@@ -86,10 +86,24 @@ express, because the annotation classifies a method NAME and these authorities
 are decided by what the call CARRIES (`docs/specs/remote-access.md` §16 phase 3:
 "the annotation is the FLOOR").
 
-- `requireAutonomy` — selecting `auto` / `auto-accept-edits` / `full-access`
-  needs `threads:autonomy`. Six bound methods can select a runtime mode by
-  argument and all six call it; `TestBoundMethodsRecheckTheSelectedMode` is the
-  inventory in test form, so a seventh that skips the recheck fails there.
+- `requireAutonomy` — running in `auto` / `auto-accept-edits` / `full-access`
+  needs `threads:autonomy`. **It judges the EFFECTIVE mode, never the literal
+  argument.** §5 draws the boundary by outcome, so an omitted argument is not a
+  free pass: `provider.DefaultRuntimeMode` is full-access, and a create that
+  selects nothing lands there. The two resolution points:
+  - **Create paths** hand the recheck down as `threadapp`'s
+    `AuthorizeRuntimeMode` hook, called on the resolved mode after defaults
+    apply and before the thread persists. A hook rather than a mode the caller
+    resolved itself — re-deriving the resolution rules outside `threadapp`
+    would be a second copy that silently disagrees the day one changes.
+  - **Drive paths** (send, steer, queue) use `requireAutonomyForThread`:
+    the override if one was selected, else the target thread's CURRENT mode.
+    Sending into a full-access thread commits the agent to acting without
+    approval gates just as surely as selecting it does. The thread read happens
+    only when there is a session to judge and no override was given.
+
+  `UpdateThreadRuntimeMode` and `UpdateNewThreadDefaults` always carry an
+  explicit argument, so they judge it directly.
 - `requireSettingsTier` — `UpdateSettings` carries all three of §6's tiers, so
   it is decided per patch key: device rides any valid session, user needs
   `settings:write`, host needs a step-up proof.
@@ -103,8 +117,11 @@ Three rules hold for every helper here:
 - **One helper set, never a copy per method.** A seventh mode-selecting method
   gets written by somebody who greps for how the sixth did it, and a per-method
   copy is how one of them ends up with a subtly different rule.
-- **The recheck runs before any store read**, so its refusal cannot be confused
-  with a lookup failure.
+- **A refusal must not be confusable with a lookup failure.** Where the recheck
+  needs a store read to resolve the effective mode, an unreadable thread or
+  project PASSES — the method's own lookup answers a step later with something
+  true, rather than telling a caller it lacks a scope when the real problem is
+  a bad id.
 
 Reaching the connection principal needs a leading `ctx context.Context` on the
 bound method. That parameter is **stripped from the generated TS bindings**, so

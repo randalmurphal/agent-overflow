@@ -31,6 +31,16 @@ type PullRequestOptions struct {
 	// CreatedByDevice names the screen this call came from, or "" when the
 	// backend created the thread on its own behalf.
 	CreatedByDevice string
+	// AuthorizeRuntimeMode, when set, is asked to approve the RESOLVED
+	// runtime mode — this path takes no mode argument, so
+	// always the seed profile's — before the thread persists. Returning an
+	// error aborts the create with that error unwrapped.
+	//
+	// A hook rather than a resolved mode passed in by the caller: the
+	// resolution rules live here, and a caller that re-derived them to
+	// authorize would be a second copy that silently disagrees the day
+	// one of them changes. This package still knows nothing about scopes.
+	AuthorizeRuntimeMode func(mode string) error
 }
 
 func (s *Service) CreateFromPR(opts PullRequestOptions, port PullRequestPort) (store.Thread, error) {
@@ -87,6 +97,14 @@ func (s *Service) CreateFromPR(opts PullRequestOptions, port PullRequestPort) (s
 	projectRow, err := port.EnsureProject(projectAnchor)
 	if err != nil {
 		return store.Thread{}, err
+	}
+	// This path takes no mode argument, so the seed profile IS the resolved
+	// mode. Asked before the thread persists, for the same reason Create
+	// asks: the authority is decided by the outcome, not by the spelling.
+	if opts.AuthorizeRuntimeMode != nil {
+		if err := opts.AuthorizeRuntimeMode(seed.RuntimeMode); err != nil {
+			return store.Thread{}, err
+		}
 	}
 	now := s.deps.Now().UnixMilli()
 	thread := store.Thread{

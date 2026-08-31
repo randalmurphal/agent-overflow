@@ -108,9 +108,6 @@ type ThreadTitleGenerationEvent struct {
 //
 //ao:scope threads:operate
 func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
-	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
-		return store.Thread{}, err
-	}
 	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
 		Title:                      opts.Title,
@@ -128,6 +125,11 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
 		CreatedByDevice:            creatingDevice(ctx),
+		// Judged on the RESOLVED mode, inside Create, where an omitted
+		// argument has already become whatever the seed profile says.
+		AuthorizeRuntimeMode: func(mode string) error {
+			return a.requireAutonomy(ctx, mode)
+		},
 	})
 	if err != nil {
 		return store.Thread{}, err
@@ -578,6 +580,13 @@ func (a *App) CreateThreadFromPR(
 			Model:           model,
 			Forge:           forge,
 			CreatedByDevice: creatingDevice(ctx),
+			// No mode argument on this path, so the seed profile is the
+			// resolved mode — and it defaults to full-access. Creating a
+			// thread that acts without approval gates is the same
+			// authority however the mode arrived.
+			AuthorizeRuntimeMode: func(mode string) error {
+				return a.requireAutonomy(ctx, mode)
+			},
 		},
 		threadPullRequestPort{app: a},
 	)

@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"agent-overflow/internal/identity"
@@ -46,6 +45,21 @@ func pairSessionWithScopes(t *testing.T, app *App, thumbprint string, scopes []i
 		t.Fatalf("GetSession: %v", err)
 	}
 	return session
+}
+
+// threadInMode mints a thread already running in mode, which is what the
+// drive paths resolve their effective mode from.
+func threadInMode(t *testing.T, app *App, mode provider.RuntimeMode) store.Thread {
+	t.Helper()
+	thread, err := createTestThread(t, app, "claude", t.TempDir(), "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatalf("createTestThread: %v", err)
+	}
+	updated, err := app.UpdateThreadRuntimeMode(context.Background(), thread.ID, string(mode))
+	if err != nil {
+		t.Fatalf("UpdateThreadRuntimeMode(%s): %v", mode, err)
+	}
+	return updated
 }
 
 // callFrom is the ctx a bound method sees when the transport dispatched it
@@ -158,74 +172,166 @@ func TestRequireAutonomyRefusesARevokedSession(t *testing.T) {
 	}
 }
 
-// TestBoundMethodsRecheckTheSelectedMode is the inventory in test form: every
-// method that can select a runtime mode by ARGUMENT, called by a session
-// without the grant, refuses. A method added to that set and not listed here
-// is the defect this test exists to catch.
-func TestBoundMethodsRecheckTheSelectedMode(t *testing.T) {
+// TestCreateThreadJudgesTheResolvedMode is the headline of the
+// resolved-mode rule: the SAME call, with no mode argument at all, is
+// refused or admitted depending only on what the install's default
+// resolves to. §5 draws the boundary by outcome, so an omitted argument
+// that lands in full-access is an autonomy act.
+func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
+	app, granted, ungranted := autonomyApp(t)
+	project, err := app.ensureProjectForWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("ensureProjectForWorkspace: %v", err)
+	}
+	noModeSelected := CreateThreadOptions{ProjectID: project.ID}
+
+	// The precondition, asserted rather than assumed: with no profile
+	// saved, a create with no mode argument lands in full-access
+	// (provider.DefaultRuntimeMode). This is the thread a session without
+	// threads:autonomy must not be able to mint.
+	seeded, err := app.CreateThread(context.Background(), noModeSelected)
+	if err != nil {
+		t.Fatalf("CreateThread (sessionless): %v", err)
+	}
+	if seeded.RuntimeMode != string(provider.RuntimeFullAccess) {
+		t.Fatalf("the unset default resolved to %q, want full-access — this test "+
+			"no longer covers what it was written for", seeded.RuntimeMode)
+	}
+
+	wantScopeRefusal(t, mustErr(app.CreateThread(callFrom(ungranted, false), noModeSelected)),
+		transport.ScopeThreadsAutonomy)
+	if _, err := app.CreateThread(callFrom(granted, false), noModeSelected); err != nil {
+		t.Fatalf("a session holding threads:autonomy was refused: %v", err)
+	}
+
+	// Now move the install default to approval-required. The identical
+	// call — still selecting nothing — must be admitted, because the
+	// thread it produces no longer acts without a human.
+	if _, err := app.UpdateNewThreadDefaults(context.Background(), NewThreadDefaultsUpdate{
+		ProjectID:   project.ID,
+		RuntimeMode: string(provider.RuntimeApprovalRequired),
+	}); err != nil {
+		t.Fatalf("UpdateNewThreadDefaults: %v", err)
+	}
+	created, err := app.CreateThread(callFrom(ungranted, false), noModeSelected)
+	if err != nil {
+		t.Fatalf("creating an approval-required thread was refused: %v", err)
+	}
+	if created.RuntimeMode != string(provider.RuntimeApprovalRequired) {
+		t.Fatalf("resolved mode = %q, want approval-required", created.RuntimeMode)
+	}
+}
+
+// TestDrivingAnAutonomousThreadNeedsAutonomy. Send, steer and queue select
+// nothing here. Their effective mode is the mode the TARGET already runs
+// in, because sending into a full-access thread commits the agent to
+// acting without approval gates just as surely as selecting it does.
+func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 	app, _, ungranted := autonomyApp(t)
 	ctx := callFrom(ungranted, false)
+	autonomous := threadInMode(t, app, provider.RuntimeFullAccess)
+	gated := threadInMode(t, app, provider.RuntimeApprovalRequired)
+
+	for _, c := range []struct {
+		name string
+		call func(threadID string) error
+	}{
+		{"SendMessageWithOptions", func(id string) error {
+			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
+			return err
+		}},
+		{"SteerMessageWithOptions", func(id string) error {
+			_, err := app.SteerMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
+			return err
+		}},
+		{"RegisterQueueItem", func(id string) error {
+			_, err := app.RegisterQueueItem(ctx, id, "hi", SendMessageOptions{})
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			wantScopeRefusal(t, c.call(autonomous.ID), transport.ScopeThreadsAutonomy)
+		})
+	}
+
+	// The admitting half stops at the helper deliberately. Driving these
+	// methods through to a gated thread starts a real provider session,
+	// which tests must never do (internal/AGENTS.md, "Testing bar") — and
+	// the recheck is the only thing between the entry point and that
+	// session, so the helper answers exactly the question being asked.
+	if err := app.requireAutonomyForThread(ctx, gated.ID, ""); err != nil {
+		t.Errorf("driving an approval-required thread was refused as autonomy: %v", err)
+	}
+}
+
+// TestSelectingAnAutonomousModeStillNeedsAutonomy is the original
+// selection case, which the resolved-mode rule widened rather than
+// replaced: an explicit argument is judged as the override it is, on a
+// thread whose current mode would have passed on its own.
+func TestSelectingAnAutonomousModeStillNeedsAutonomy(t *testing.T) {
+	app, _, ungranted := autonomyApp(t)
+	ctx := callFrom(ungranted, false)
+	gated := threadInMode(t, app, provider.RuntimeApprovalRequired)
 	auto := string(provider.RuntimeFullAccess)
 
-	// Every call names a thread and a project that do not exist. That is
-	// deliberate: the recheck runs BEFORE any store read, so a refusal here
-	// cannot be confused with a lookup failure, and a method that moved its
-	// recheck below the lookup would fail this test with the wrong error.
-	calls := []struct {
+	for _, c := range []struct {
 		name string
 		call func() error
 	}{
-		{"CreateThread", func() error {
-			_, err := app.CreateThread(ctx, CreateThreadOptions{ProjectID: "no-project", RuntimeMode: auto})
-			return err
-		}},
-		{"UpdateThreadRuntimeMode", func() error {
-			_, err := app.UpdateThreadRuntimeMode(ctx, "no-thread", auto)
-			return err
-		}},
 		{"SendMessageWithOptions", func() error {
-			_, err := app.SendMessageWithOptions(ctx, "no-thread", "hi", SendMessageOptions{RuntimeMode: auto})
+			_, err := app.SendMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
 			return err
 		}},
 		{"SteerMessageWithOptions", func() error {
-			_, err := app.SteerMessageWithOptions(ctx, "no-thread", "hi", SendMessageOptions{RuntimeMode: auto})
+			_, err := app.SteerMessageWithOptions(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
 			return err
 		}},
 		{"RegisterQueueItem", func() error {
-			_, err := app.RegisterQueueItem(ctx, "no-thread", "hi", SendMessageOptions{RuntimeMode: auto})
+			_, err := app.RegisterQueueItem(ctx, gated.ID, "hi", SendMessageOptions{RuntimeMode: auto})
+			return err
+		}},
+		{"UpdateThreadRuntimeMode", func() error {
+			_, err := app.UpdateThreadRuntimeMode(ctx, gated.ID, auto)
 			return err
 		}},
 		{"UpdateNewThreadDefaults", func() error {
 			_, err := app.UpdateNewThreadDefaults(ctx, NewThreadDefaultsUpdate{
-				ProjectID: "no-project", RuntimeMode: auto,
+				ProjectID: gated.ProjectID, RuntimeMode: auto,
 			})
 			return err
 		}},
-	}
-	for _, c := range calls {
+	} {
 		t.Run(c.name, func(t *testing.T) {
 			wantScopeRefusal(t, c.call(), transport.ScopeThreadsAutonomy)
 		})
 	}
 }
 
-// TestGrantedSessionReachesTheMethodBody is the admitting half: the same
-// calls from a session that HOLDS threads:autonomy get past the recheck and
-// fail on the missing thread instead, which is the ordinary error.
-func TestGrantedSessionReachesTheMethodBody(t *testing.T) {
-	app, granted, _ := autonomyApp(t)
-	ctx := callFrom(granted, false)
-	auto := string(provider.RuntimeFullAccess)
+// TestEffectiveModeLeavesSessionlessCallersAlone. Every path above, from a
+// caller with no session: the workflow engine drives full-access threads
+// constantly and must keep doing so.
+func TestEffectiveModeLeavesSessionlessCallersAlone(t *testing.T) {
+	app, _, _ := autonomyApp(t)
+	autonomous := threadInMode(t, app, provider.RuntimeFullAccess)
 
-	_, err := app.UpdateThreadRuntimeMode(ctx, "no-thread", auto)
-	if err == nil {
-		t.Fatal("UpdateThreadRuntimeMode on a missing thread succeeded")
+	for _, ctx := range []context.Context{context.Background(), callFrom("", false)} {
+		if err := app.requireAutonomyForThread(ctx, autonomous.ID, ""); err != nil {
+			t.Errorf("driving a full-access thread with no session behind it: %v", err)
+		}
+		if err := app.requireAutonomy(ctx, string(provider.RuntimeFullAccess)); err != nil {
+			t.Errorf("selecting full-access with no session behind it: %v", err)
+		}
 	}
-	if _, isAuthz := transport.AuthzFrame(err); isAuthz {
-		t.Fatalf("a granted session was refused by the recheck: %v", err)
-	}
-	if errors.Is(err, context.Canceled) {
-		t.Fatalf("unexpected cancellation: %v", err)
+}
+
+// TestUnloadableThreadDefersToTheMethodsOwnError. A thread that cannot be
+// read is a bad argument, not a capability request, and the method's own
+// lookup answers it a step later with something true.
+func TestUnloadableThreadDefersToTheMethodsOwnError(t *testing.T) {
+	app, _, ungranted := autonomyApp(t)
+
+	if err := app.requireAutonomyForThread(callFrom(ungranted, false), "no-such-thread", ""); err != nil {
+		t.Errorf("an unreadable thread produced an authorization refusal: %v", err)
 	}
 }
 

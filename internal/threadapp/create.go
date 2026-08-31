@@ -33,6 +33,16 @@ type CreateOptions struct {
 	// backend created the thread on its own behalf. Root reads it off the
 	// connection; this package only records it.
 	CreatedByDevice string
+	// AuthorizeRuntimeMode, when set, is asked to approve the RESOLVED
+	// runtime mode — the argument if one was given, otherwise whatever the
+	// seed profile supplies — before the thread persists. Returning an
+	// error aborts the create with that error unwrapped.
+	//
+	// A hook rather than a resolved mode passed in by the caller: the
+	// resolution rules live here, and a caller that re-derived them to
+	// authorize would be a second copy that silently disagrees the day
+	// one of them changes. This package still knows nothing about scopes.
+	AuthorizeRuntimeMode func(mode string) error
 }
 
 type TerminalOptions struct {
@@ -114,6 +124,13 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 			return store.Thread{}, fmt.Errorf("create thread: %w", parseErr)
 		}
 		runtimeMode = string(parsedRuntimeMode)
+	}
+	// The resolved mode is known here and the thread has not persisted, so
+	// this is where an authority decided by the OUTCOME gets asked.
+	if opts.AuthorizeRuntimeMode != nil {
+		if err := opts.AuthorizeRuntimeMode(runtimeMode); err != nil {
+			return store.Thread{}, err
+		}
 	}
 	if trimmed := strings.TrimSpace(opts.ReasoningEffort); trimmed != "" {
 		if !models.SupportsReasoningEffort(providerName, model, trimmed) {

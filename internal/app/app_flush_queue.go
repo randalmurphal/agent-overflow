@@ -782,7 +782,7 @@ func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatch
 //
 //ao:scope threads:operate
 func (a *App) RegisterQueueItem(ctx context.Context, threadID string, message string, opts SendMessageOptions) (QueuedItem, error) {
-	if err := a.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+	if err := a.requireAutonomyForThread(ctx, threadID, opts.RuntimeMode); err != nil {
 		return QueuedItem{}, err
 	}
 	// A user queueing a message has just consumed their composer draft, so the
