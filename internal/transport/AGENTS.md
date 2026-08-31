@@ -218,7 +218,14 @@ happens to be listening. Subscription ids stay legitimate on the RPC result that
 hands out the unsubscribe handle (`GitStatusSubscriptionResult.ID`), a
 per-caller lease rather than an address.
 `TestWirePayloadsAreEntityKeyedNotSubscriptionKeyed` (repo root) fails on any
-struct field that serializes as `subscriptionId`.
+struct field that serializes as `subscriptionId`, and on the sibling spellings
+of the same idea (`subId`, `streamId`, `handleId`, `watcherId`).
+
+It carries exactly one carve-out, and the shape of it is the rule: a byte-stream
+MULTIPLEXER numbers its streams because the stream number IS the identity of a
+live socket, with no entity behind it and no shared observation being filtered
+down. `webview2host`'s CDP tunnel is that; an event that has merely run out of a
+better key is not. The exemption is keyed by file so it cannot widen quietly.
 
 Two panes routinely watch one entity, so subscription-keyed frames force each
 pane into a private filtered copy and those copies drift: they disagreed about

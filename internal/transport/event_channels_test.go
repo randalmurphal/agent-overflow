@@ -49,6 +49,7 @@ func TestChannelPolicyEveryRowHasAWhy(t *testing.T) {
 var (
 	frozenLoopbackOnlyChannels = []string{
 		"browser:companion-state",  // local URLs and file paths
+		"browser:host",             // 2026-08-31: launcher pane directive, same posture as webview:trim
 		"browser:install-progress", // 2026-08-26 pass
 		"git:status",
 		"harness:mock",     // 2026-08-25 pass
@@ -92,6 +93,7 @@ var (
 	}
 	frozenEphemeralChannels = []string{
 		"browser:companion-state", // subscribe returns the complete snapshot
+		"browser:host",            // 2026-08-31: replaying a stale pane directive reopens closed pages
 		"harness:ui-query",        // a one-shot query directive; a replayed one has no waiter
 		"highlight:diff_seed",
 		"highlight:seed",

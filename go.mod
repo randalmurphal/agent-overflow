@@ -14,6 +14,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/uuid v1.6.0
+	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rjeczalik/notify v0.9.3
 	github.com/robfig/cron/v3 v3.0.1

@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/selfupdate"
+	"agent-overflow/internal/webview2host"
 )
 
 // notificationBridgeRPCTimeout bounds one call over the launcher's bridge
@@ -19,9 +20,10 @@ const notificationBridgeRPCTimeout = 5 * time.Second
 // RPC id prefixes. Every call draws from one counter, so the prefix is
 // cosmetic correlation help in a packet capture, not a uniqueness mechanism.
 const (
-	rpcIDPrefixActivation = "notification"
-	rpcIDPrefixUpdate     = "update"
-	rpcIDPrefixShutdown   = "shutdown"
+	rpcIDPrefixActivation  = "notification"
+	rpcIDPrefixUpdate      = "update"
+	rpcIDPrefixShutdown    = "shutdown"
+	rpcIDPrefixBrowserHost = "browserhost"
 )
 
 type notificationRPCResult struct {
@@ -110,6 +112,41 @@ func (c *NotificationClient) ReportUpdateInstallStatus(ctx context.Context, stag
 		params = append(params, encoded)
 	}
 	return c.callRPC(ctx, rpcIDPrefixUpdate, selfupdate.RPCReportStatus, params)
+}
+
+// ReportBrowserHost tells the backend how the launcher's pane host acted:
+// a controller was created (detail carries its CDP targetId), a create
+// failed, a page closed, or a browser/renderer process died under one.
+//
+// Bounded END TO END at the RPC timeout, connection wait included, for
+// the same reason as ReportUpdateInstallStatus: a report only exists
+// because a directive arrived over a live connection, so a bridge that is
+// down now just died, and blocking a UI-thread-adjacent handler until it
+// returns would stall every later directive behind it. A lost report
+// costs the backend one page handle it re-derives on the next directive
+// round trip.
+//
+// The kind is checked here rather than trusted: a typo in launcher code
+// would otherwise reach the backend as an unrecognised report, which it
+// can only drop.
+func (c *NotificationClient) ReportBrowserHost(ctx context.Context, pageID string, kind webview2host.ReportKind, detail string) error {
+	if err := webview2host.ValidatePageID(pageID); err != nil {
+		return err
+	}
+	if !webview2host.ValidKind(kind) {
+		return fmt.Errorf("browser host report kind %q is not one the backend understands", kind)
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.rpcTimeout)
+	defer cancel()
+	params := make([]json.RawMessage, 0, 3)
+	for _, value := range []string{pageID, string(kind), webview2host.TruncateDetail(detail)} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("encode browser host report: %w", err)
+		}
+		params = append(params, encoded)
+	}
+	return c.callRPC(ctx, rpcIDPrefixBrowserHost, webview2host.RPCReport, params)
 }
 
 // callRPC posts one method call over the live bridge connection and waits for

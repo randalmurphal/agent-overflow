@@ -99,10 +99,18 @@ const (
 	ProviderUserInput              Channel = "provider:user_input"
 )
 
-// browser:* — managed browser artifact install progress and the live in-app
-// companion surface.
+// browser:* — managed browser artifact install progress, the live in-app
+// companion surface, and the embedded-pane host directive.
+//
+// BrowserHost is the odd one out: like updater:install and webview:trim it
+// is an imperative command for the Windows launcher, not a notification.
+// Its frames create, move, show, hide and destroy real browser windows
+// inside the launcher's own window, and the launcher answers on the same
+// connection with the BrowserHostReport RPC. Payload shape:
+// internal/webview2host.Directive.
 const (
 	BrowserCompanionState  Channel = "browser:companion-state"
+	BrowserHost            Channel = "browser:host"
 	BrowserInstallProgress Channel = "browser:install-progress"
 )
 

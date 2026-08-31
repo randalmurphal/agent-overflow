@@ -123,6 +123,49 @@ parked on a locked OS thread for the process lifetime. An unrecognized mode
 is dropped, never defaulted, since guessing `display` pins the machine awake
 on a garbled frame and guessing `off` drops an inhibit the user asked for.
 
+## Embedded browser pane: hosting the second WebView2
+
+The backend decides what the pane shows and where it sits; the controllers
+that draw it must be child windows of THIS process's HWND, driven from its
+UI thread. So the backend emits directives on `eventchan.BrowserHost` and
+`browserhost.go` executes them through `internal/webview2host`, which owns
+the COM, the z-order rule, and the CDP relay (its guide has the reasoning
+for all three).
+
+- **Lazy, not bootstrap-gated.** `handleBrowserHostDirective` builds the
+  host and its tunnel on the FIRST directive. The feature costs a browser
+  process and a profile directory, most sessions never open a pane, and a
+  backend without the feature simply never emits. A bootstrap flag would
+  have to be kept in sync to say what the first directive already proves.
+  A construction failure is not cached: its inputs (AppData, the profile
+  directory, a free port) can come back, and an `create` that fails this
+  way is reported as `create-failed` rather than becoming a pane that
+  never appears.
+- **Profile storage.** `prepareBrowserProfileStorage` creates
+  `appidentity.BrowserProfilesDir(mode)` beside the SPA's own webview2
+  directory, through the same `validateWindowsStoragePath` that refuses
+  symlinked and reparse-point components. Per mode like the others, and
+  for a harder reason: a WebView2 user-data folder belongs to one browser
+  process, so a shared folder would leave whichever launcher started
+  second unable to create its environment at all.
+- **Env scrub at boot.** `main` calls `webview2host.ScrubEnvOverrides`
+  before `prepareWebviewStorage`, ahead of the SPA environment Wails
+  builds. An inherited `WEBVIEW2_USER_DATA_FOLDER`, including a SET BUT
+  EMPTY one, silently collapses every environment in the process onto one
+  profile with no error anywhere.
+- **Reports go through a serial queue.** `reportBrowserHost` submits to
+  `launcherApp.browserReports` rather than calling the RPC inline. The
+  host reports `created` from a WebView2 completion handler running on the
+  UI thread, where a blocking RPC would freeze the window; a bare `go`
+  would let the backend see `closed` before the `created` carrying the
+  page's CDP target id.
+- **Teardown before the windows.** `OnShutdown` calls `closeBrowserHost`
+  ahead of `stopLaunchedBackend`: a pane controller outliving its parent
+  HWND faults inside WebView2. Calling it from that hook is safe even
+  though the hook already runs on the main thread, because Wails' dispatch
+  runs the closure inline when it is already there instead of posting to a
+  pump that is blocked waiting on the hook.
+
 ## Isolated-profile containment
 
 Three layers, all gated on `activeProfile != ""` so a production launch keeps

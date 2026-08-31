@@ -65,8 +65,10 @@ import (
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/observability/pprofserve"
+	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
+	"agent-overflow/internal/webview2host"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
 
@@ -248,6 +250,14 @@ func main() {
 	}
 	if err := installHarnessBoundary(governor.DefaultCeilingBytes); err != nil {
 		log.Fatalf("harness containment: %v", err)
+	}
+	// Before ANY WebView2 environment exists in this process, including the
+	// one Wails builds for the SPA. An inherited WEBVIEW2_USER_DATA_FOLDER
+	// overrides the folder we just pinned, and a SET BUT EMPTY one does it
+	// silently: every environment collapses onto the default profile, the
+	// pane would read the app's cookies, and nothing reports an error.
+	if removed := webview2host.ScrubEnvOverrides(); len(removed) > 0 {
+		log.Printf("launcher: cleared inherited WebView2 env overrides: %s", webview2host.FormatScrub(removed))
 	}
 	if err := prepareWebviewStorage(launcherRuntimeMode()); err != nil {
 		log.Fatalf("webview2 storage: %v", err)
@@ -499,6 +509,17 @@ type launcherApp struct {
 	notificationContext     context.Context
 	notificationCancel      context.CancelFunc
 	notificationActivations *wsllauncher.NotificationActivationQueue
+
+	// browserHost is the embedded browser pane's WebView2 environment,
+	// built on the first browser:host directive and nil until then
+	// (browserhost.go). Guarded by mu like the bridge above, because
+	// directives arrive on their own goroutine.
+	browserHost *webview2host.Host
+	// browserReports serializes the host's answers back to the backend.
+	// It is deliberately NOT under mu: its jobs take mu themselves, and
+	// submission happens from a WebView2 completion handler on the UI
+	// thread, which must never block. Zero value ready.
+	browserReports serialqueue.Queue
 
 	// flushGeometry persists the window placement immediately. Set on the
 	// ApplicationStarted handler (with window) and read on shutdown as a
@@ -1352,6 +1373,13 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			if flush != nil {
 				flush()
 			}
+			// Before Wails closes the windows below us: a pane controller
+			// outliving its parent HWND faults inside WebView2. Safe to
+			// call from here even though this hook already runs on the main
+			// thread, because Wails' dispatch runs the closure inline when
+			// it is already there rather than posting to a pump that is
+			// blocked on us.
+			a.closeBrowserHost()
 			if l != nil {
 				a.stopLaunchedBackend(l, bs)
 			}
@@ -1462,6 +1490,12 @@ func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launche
 		// backend cannot make, so keep awake is asserted here
 		// (keepawake.go).
 		HandleKeepAwake: applyKeepAwakeDirective,
+		// The backend decides what the embedded browser pane shows and
+		// where it sits; the controllers that draw it must be child windows
+		// of THIS process's HWND, driven from its UI thread (browserhost.go).
+		HandleBrowserHost: func(directive webview2host.Directive) {
+			a.handleBrowserHostDirective(bs, directive)
+		},
 	})
 	if err != nil {
 		return err

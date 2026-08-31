@@ -24,7 +24,12 @@ from a dev build is that profile, never `dev`.
   developer's own state, which is what the axis exists to prevent.
 - Per-instance names derive from the folded mode and nothing else:
   `SingleInstanceID`, `AppTitle`, `WebviewProfileDir`,
-  `RenderForensicsDir`, `DevToolsPort`. `StateFileName` is the one
+  `RenderForensicsDir`, `BrowserProfilesDir`, `DevToolsPort`.
+  `BrowserProfilesDir` names the embedded browser pane's SECOND WebView2
+  environment, and splitting it per mode is not just hygiene: a WebView2
+  user-data folder belongs to one browser process, so a shared folder
+  leaves whichever launcher started second unable to create the
+  environment at all. `StateFileName` is the one
   exception, suffixing only for isolated profiles (`launcher-soak.log`,
   `window-perf.json`), because a developer expects one `launcher.log` and
   one remembered window placement across dev and prod.
