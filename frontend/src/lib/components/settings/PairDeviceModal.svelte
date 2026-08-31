@@ -62,10 +62,10 @@
   let clockTimer: ReturnType<typeof setInterval> | null = null;
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // The QR carries the same URL the copy row shows. uqr renders its own
-  // quiet zone; the white card behind it just keeps the code scannable
-  // on dark themes.
-  let qrSVG = $derived(stage.at === 'share' ? renderSVG(stage.invite.url, { border: 2 }) : '');
+  // The QR carries the same URL the copy row shows. uqr paints its own
+  // full-bleed white rect plus this quiet-zone border, which is what keeps
+  // the code scannable on dark themes — no themed surface behind it.
+  let qrSVG = $derived(stage.at === 'share' ? renderSVG(stage.invite.url, { border: 3 }) : '');
 
   let countdown = $derived.by(() => {
     if (stage.at !== 'share') return '';
@@ -258,7 +258,7 @@
     </div>
   {:else if stage.at === 'share'}
     <div class="flex flex-col items-center gap-3">
-      <div class="w-[200px] rounded-md bg-white p-1.5" aria-label="Pairing QR code">
+      <div class="w-[200px] overflow-hidden rounded-md" aria-label="Pairing QR code">
         <!-- eslint-disable-next-line svelte/no-at-html-tags — uqr output over our own URL -->
         {@html qrSVG}
       </div>
