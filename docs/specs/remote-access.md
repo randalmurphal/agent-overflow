@@ -576,16 +576,39 @@ it; the backend derives scope from the authenticated session's device.
   channel session and one shared bucket would regress multi-screen.
   The user tier and typed validation remain phase-4 work.
 - Device tier (defaults per device class; phone ships `lowPowerMode`
-  on): `lowPowerMode`, theme, fonts + `fontSize`, `paneDensity`,
+  on): `lowPowerMode`, fonts + `fontSize`, `paneDensity`,
   `activityRunWindowRows`, `activityRunDefault`, `streamingEnabled`,
   `diffWordWrap`, `collapseDiffPreviews`, `timestampFormat`,
   `editor.preference`, `backgroundGitFetch`, `projectSortMode`,
-  `usagePeriod`, `recentWorkspaces`, `remoteEndpoints` (also ends
-  today's credential fan-out), window geometry (ends the single global
-  slot two desktops fight over).
-- User tier: confirmations, commit-message style, textgen routing,
-  hidden models, default thread env mode, worktree branch prefix,
-  auto-compact thresholds, GitLab hosts.
+  `usagePeriod`, `recentWorkspaces`, plus the six spinner-appearance
+  keys the taxonomy wave classified device (display, like fonts and
+  motion).
+
+  Adjudicated OUT of this list (2026-08-31, phase-4 design):
+  - **Theme** is client-file-resident by design (appearance.json on a
+    native client, built-ins + localStorage in a browser) and is NOT a
+    ui_state member. The selection is a property of the client
+    MACHINE: the `--connect` stub has no DB and a browser has no
+    backend bucket of its own, and `theme-system.md` §6.1 already
+    landed that argument. `settings.theme` is retired, not relocated.
+  - **Window geometry** retiers to HOST: it is the backend machine's
+    own window, written by the geometry tracker with no RPC and no
+    connection to derive a device from, and the Windows launcher
+    already keeps its own per-installation file. The "two desktops"
+    fight this line predicted does not exist — a `--connect` window
+    persists nothing today.
+  - **`remoteEndpoints` retiers to HOST**: the list holds plaintext
+    session tokens (its own SECURITY NOTE says so) and the token read
+    is already `host`-scoped; a device-tier row would declare a phone
+    may edit it. Its storage is redesigned in phase 7 with the
+    multi-backend UI, not here.
+- User tier (stored under the reserved `user:default` scope until
+  phase 8 introduces real user identities): confirmations,
+  commit-message style, textgen routing, hidden models, default thread
+  env mode, worktree branch prefix, auto-compact thresholds, GitLab
+  hosts, plus the eleven agent-behavior keys the taxonomy wave
+  classified user (thinking defaults, prompt overrides, disabled
+  tools, cross-session, output style, subagent limits, auto-pin).
 
 Multi-machine convenience without a sync engine: host- and user-tier
 settings are per-machine by design (divergence is a feature), but the
@@ -605,6 +628,43 @@ device-tier-only patch still needs that grant to reach the per-key
 gate — the scope vocabulary has no name for "any valid session".
 Stricter than this section, never looser; phase 4 either adds a
 session-floor value or moves device-tier writes onto their own name.
+
+Phase-4 design decisions (2026-08-31), settled ahead of the storage
+waves:
+
+- **One service, tiered storage.** `settings.Service` stays the one
+  API and the wire keeps `GetSettings`/`UpdateSettings`; what changes
+  is residency. Host tier stays in `settings.json`; user tier is
+  backed by `ui_state` under `user:default`; device tier by the
+  caller's own bucket (`device:<id>` for a paired session, the
+  existing per-screen `client:<id>` for the local page channel).
+  `GetSettings` resolves the device slice per CALLER; the settings
+  validators keep running on the merged patch regardless of where a
+  key lands, and `settings:updated` still announces `{tier, keys}` —
+  a device-tier frame prompts each client to re-read and each gets
+  its own values.
+- **Seeding**: on first boot after migration, the file's user-tier
+  values seed `user:default` and its device-tier values seed the
+  backend machine's own screen bucket (the embedded webview's
+  `client:<id>`); other devices start from device-class defaults.
+  Moved keys join `retiredSettingsFieldNames`. Never-overwrite,
+  log-and-continue — the pattern `migrateUIStateFromSettings` set.
+- **Backend-initiated writers**: `recentWorkspaces` is written on
+  thread creation, which is an RPC and therefore has a caller to
+  attribute the write to. Window geometry has no caller and stays a
+  host-tier file value (adjudication above).
+- **The session floor** lands as a scope value meaning "any named
+  session" carried by `UpdateSettings` (and the ui_state methods),
+  with the per-key tier gate doing all real enforcement: device keys
+  pass on session presence, user keys require `settings:write`, host
+  keys require step-up. A view-only device changing its own font size
+  is the case the floor exists for.
+- **One write path per key, closed as a class**: a settings key with
+  a dedicated RPC is refused by the generic patch. `network`,
+  `claudeCustomEnv`/`codexCustomEnv`, and `remoteEndpoints` already
+  are; `workflowPaused` joins (its dedicated RPC enforces
+  `threads:autonomy`, and the generic patch demanding host step-up
+  for the same act was two answers to one question).
 
 ## 7. Transport, reachability, TLS
 
