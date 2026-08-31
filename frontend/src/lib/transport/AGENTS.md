@@ -112,6 +112,18 @@ remote browser alike. Protocol and authz rules:
   wrong is user-visible in both directions: a false "remote" tells a
   desktop user to reopen a share link that does not exist, and a false
   "loopback" leaves a phone retrying a dead session.
+- `deviceSession.ts` is the deliberate exception to "nothing readable by
+  script", for exactly one credential class: a PAIRED device's session
+  pair arrives in the `/auth/pair` response body (a cross-device flow
+  cannot ride a cookie), so this module stores it, rotates it through
+  `/auth/token`, and turns it into the single-use `?ticket=` the upgrade
+  names its session with. The page credential doctrine above is
+  untouched — an unpaired page still has nothing to stash. Rotation
+  discipline lives in the module header and is load-bearing: renewal is
+  single-flight, stores before use, and never retries an unread
+  exchange, because a refresh secret presented twice reads as reuse
+  evidence that ends the session. `components/pairing/PairingScreen.svelte`
+  (mounted by `main.ts` on a `#pair=` fragment) is its enrolment surface.
 
 The connection's opening frame is the OTHER identity source, alongside
 the manifest. `wsClient` records it as `TransportHello` and
