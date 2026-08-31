@@ -177,13 +177,18 @@ remain a separate, narrower credential class, unchanged.
    no trust step.
 
 LANDED 2026-08-31 (wave 5b), steps 1-5: `identity` pairing over
-migration v76, `/auth/pair` as the one wire route (owner-facing mint /
-status / confirm / cancel are host-side Go API awaiting wave 5c's
-surface), redemption minting the real credential pair UNACTIVATED with
-the confirmation gate inside `Session.Live`, and the verification
-number as a backend-derived MAC over (link id, redeeming key). Step 6's
-fingerprint field is reserved in the payload and the row (phase 5
-fills it); step 7 (mDNS) is not built.
+migration v76, `/auth/pair` as the one wire route, redemption minting
+the real credential pair UNACTIVATED with the confirmation gate inside
+`Session.Live`, and the verification number as a backend-derived MAC
+over (link id, redeeming key). Wave 5c added the owner-facing surface:
+seven `CategoryDeviceAccess` RPCs in `internal/app/app_access.go`
+(overview / mint / status / confirm / cancel / revoke-session /
+revoke-device) and the redeeming client — `#pair=` fragment parse,
+`frontend/src/lib/transport/deviceSession.ts` (thumbprint mint, single-
+flight ticket renewal, store-before-use rotation discipline), and the
+full-page `PairingScreen`. Step 6's fingerprint field is reserved in
+the payload and the row (phase 5 fills it); step 7 (mDNS) is not
+built.
 
 ### Sessions
 
@@ -293,8 +298,11 @@ The channel device row (`devices.channel = "local"`, one row per boot
 via partial unique index) backs a session re-minted per boot with no
 refresh secret. The WSL launcher fetches the cookie over its
 authenticated bootstrap exchange and forwards it as a header on every
-dial (`internal/wsllauncher/session_credential.go`), re-fetching after
-a refused dial. The `--connect` stub does not forward one yet.
+dial, re-fetching after a refused dial. Wave 5c moved that fetch/cache
+into `internal/relaysession` (transport-free so the Windows launcher
+can link it; a drift test pins the restated cookie prefix and header
+name) and the `--connect` stub now forwards the credential on every
+carried upgrade too, marking it stale on any non-101 response.
 
 ## 5. Authorization
 
@@ -413,6 +421,15 @@ it; the backend derives scope from the authenticated session's device.
   settings). User tier = `user:<id>` scope; device tier = `device:<id>`
   scope, with typed validation over the same store. Device rows cascade
   on device deletion. Revoking a device drops its state for free.
+
+  LANDED 2026-08-31 (wave 5c), the device half: the ui_state scope is
+  derived from the CONNECTION (the session the upgrade presented →
+  `device:<id>`; the client id the RPC parameter used to carry is
+  gone). The local page channel deliberately keeps per-screen
+  `client:<declared id>` buckets, because every same-host surface
+  (embedded webview, WSL relay, `--connect` stub) presents the same
+  channel session and one shared bucket would regress multi-screen.
+  The user tier and typed validation remain phase-4 work.
 - Device tier (defaults per device class; phone ships `lowPowerMode`
   on): `lowPowerMode`, theme, fonts + `fontSize`, `paneDensity`,
   `activityRunWindowRows`, `activityRunDefault`, `streamingEnabled`,
@@ -1465,7 +1482,8 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      calls against spike-policy step 5; it sits outside the gate's
      package roots.
    - **Doc drift inside the classification table.** LANDED 2026-08-31
-     (0114caed): `LocalOnlyCategory` is a closed typed set of ten,
+     (0114caed): `LocalOnlyCategory` is a closed typed set (ten at
+     landing; wave 5c added `CategoryDeviceAccess` as the eleventh),
      each entry in the authored `localOnlyCategories` map carries one,
      and `LocalOnlyMethods` is derived from it — the name set held
      byte-identical through the change, with the wave-2 addition
@@ -1525,9 +1543,11 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    shared tight budget, the implicit loopback page-channel session
    riding the bootstrap exchange as an HttpOnly cookie, WSL launcher
    credential forwarding, and `SessionForRequest`/`SessionLive` wired
-   from app boot. Owner-facing pairing calls are host-side Go API
-   only. Still open in this phase: device management UI (wave 5c),
-   ui_state device binding.
+   from app boot. Device-access RPC surface, ui_state device binding,
+   the shared `relaysession` credential source (now also on the
+   `--connect` hop), and the redeeming client: LANDED 2026-08-31 (wave
+   5c). Still open in this phase: the owner-facing devices pane in
+   Settings (list / pair / confirm / revoke UI over those RPCs).
 3. **Authorization.** Annotation-driven generated method table, scope
    tiers + binding enforcement + step-up set, event visibility, settings
    key→tier taxonomy, capability-driven frontend, `LocalOnlyMethods`
