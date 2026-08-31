@@ -2,7 +2,15 @@
   import { Streamdown } from '../../markdown';
   import { chatMarkdownTheme } from './markdown/streamdownTheme';
 
-  let { source }: { source: string } = $props();
+  // `allowedLinkPrefixes` is a prop so a corpus can drive the
+  // explicit-prefix branch of `transformUrl` (a custom scheme on the
+  // allowlist), not just the `*` wildcard's http/https branch. ChatMarkdown
+  // passes `['*', PATH_LINK_HREF_PREFIX]`; the wildcard-only default keeps
+  // every existing caller of this harness unchanged.
+  let {
+    source,
+    allowedLinkPrefixes = ['*'],
+  }: { source: string; allowedLinkPrefixes?: string[] } = $props();
 </script>
 
 {#snippet renderer(compactStaticHtml: boolean)}
@@ -10,7 +18,7 @@
     content={source}
     parseIncompleteMarkdown={false}
     theme={chatMarkdownTheme}
-    allowedLinkPrefixes={['*']}
+    {allowedLinkPrefixes}
     allowedImagePrefixes={['*']}
     renderHtml={false}
     {compactStaticHtml}

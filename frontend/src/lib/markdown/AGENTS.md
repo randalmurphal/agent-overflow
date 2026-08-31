@@ -107,7 +107,9 @@ turns them into nonce'd `agent-overflow:open` editor links.
 Cited by
 [`remote-access-boundaries.md`](../../../../docs/specs/remote-access-boundaries.md).
 Pinned by `ChatMarkdown.test.ts` ("never renders a raw same-origin
-anchor…" / "…img…").
+anchor…" / "…img…" / "…a //-leading href…", the last one over both
+render paths) and, per href class, by
+`ChatMarkdown.compactStaticLinkUrls.test.ts`.
 
 ## Host seams
 
@@ -191,7 +193,10 @@ marker: `<code>.textContent` owns the source.
   `chat/ChatMarkdown.compactStaticMermaid.test.ts` (warm-cache unit)
   and `e2e/tests/markdown-render.spec.ts` (real app). When a test's
   fast path depends on a cache a backend fills, at least one test must
-  warm that cache by hand.
+  warm that cache by hand. Link href classification is the same fork
+  in miniature — two realizations of one `transformUrl` decision — and
+  is pinned per href class by
+  `chat/ChatMarkdown.compactStaticLinkUrls.test.ts`.
 - **A blockquote is lexed by a blockquote-SCOPED Lexer.** A module-level
   one accumulated an undrained `inlineQueue` entry per quoted paragraph
   for the life of the page (16,511 over one corpus) and carried
@@ -235,7 +240,8 @@ Behavioral changes need a differential, not a snapshot: these paths are
 | `chat/markdown/streamdownSingleVolatileBlock.test.ts` | the isolated-volatile-tail bypass of the document parse |
 | `chat/markdown/streamingAssistantLiteralOwner.test.ts` | literal-host ownership transitions |
 | `chat/markdown/streamdownTheme.test.ts` | the flat theme table is complete — it derives the slot roster from the render path's own source |
-| `chat/ChatMarkdown.test.ts` | link/image URL policy, backslash escapes, link titles, the footnote popup |
+| `chat/ChatMarkdown.test.ts` | link/image URL policy, backslash escapes, link titles, the incomplete-link sentinel, the footnote popup |
+| `chat/ChatMarkdown.compactStaticLinkUrls.test.ts` | one href corpus through both render paths: the render decision per URL class, and that `staticHtml.ts` and `Link.svelte` agree on it |
 | `chat/ChatMarkdown.compactStatic*.test.ts`, `.domBudget`, `.codeSpans*` | the compact completed path, its node budget and async island retirement |
 | `chat/ChatMarkdown.boundarySpacing.*`, `styleInvalidation.test.ts` | the `sd-*` marker seams |
 | `chat/ChatMarkdown.directReveal*.test.ts` | the extend-only mutation invariant, selection identity |
