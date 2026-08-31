@@ -310,7 +310,7 @@ carried upgrade too, marking it stale on any non-101 response.
 
 ## 5. Authorization
 
-### Two enforcement tiers, ten labels
+### Two enforcement tiers, eleven labels
 
 Scope names are the audit vocabulary; the enforced boundary is
 **observe vs. execute**, crossed with binding class (§2).
@@ -325,6 +325,7 @@ Scope names are the audit vocabulary; the enforced boundary is
 | `terminal:operate` | execute | PTY create/attach/write/replay, worktree-setup output |
 | `git:operate` | execute | git mutations, worktrees, PR surface |
 | `attachments:write` | execute | uploads (reads ride payload auth) |
+| `settings:read` | observe | settings and preference reads: settings snapshot, keybindings, themes, spinners, chat-bar favorites (added wave 6b — the original ten could not spell a settings read) |
 | `settings:write` | execute | user/device-tier settings; host-tier and the step-up set are excluded |
 | `access:admin` | execute | device list/revoke, audit read; **minting and network changes additionally require step-up** |
 
@@ -403,6 +404,28 @@ rediscover:
   sessions granted `files:read` is the intent of the scope and lands
   with enforcement as a deliberate reachability change.
 
+ENFORCEMENT LANDED 2026-08-31 (wave 6b): per-RPC scope gate for
+session-carrying connections (`transport.AuthorizeSessionMethod`,
+grants re-read per call through `Config.SessionScopes`, nothing cached
+at upgrade time); typed `scope_required` (missing scope as a wire
+FIELD) and `step_up_required` refusal codes following the
+`grant_required` precedent; step-up as one `stepUpProven` function
+whose proof this phase is host presence and which phase 5 swaps for a
+passkey assertion without moving call sites; the argument-dependent
+autonomy recheck judging the EFFECTIVE runtime mode (resolved default
+at both thread-create paths via a `threadapp.AuthorizeRuntimeMode`
+hook, override-else-current-thread-mode on send/steer/queue — an
+omitted argument resolving to full-access is an autonomy act);
+per-key settings-tier enforcement on `UpdateSettings`; `settings:read`
+added (resolving eight overrides, 35 remain). The launch-credential
+path is untouched and BOTH gates stay live for session connections
+until every client authenticates. Known gap, phase 4: the scope
+vocabulary cannot spell "any valid session", so a device-tier-only
+settings patch still needs `settings:write` to reach the per-key gate
+(stricter than §6, never looser), and `SetUIState`/`DeleteUIState`
+keep their overrides for the same reason. Scope refusals are not yet
+written to the auth audit log (no transport→identity hook for it).
+
 ### Host-only scope (`scope: host`)
 
 Acts on the host desktop or reconfigures the host itself; no remote
@@ -419,6 +442,15 @@ Filters become scope-driven: terminal frames require
 `terminal:operate`; `provider:account` (billing identity) requires
 `access:admin`; approval/queue channels follow their scopes.
 Loopback-vs-remote survives only as a transport optimization signal.
+
+LANDED 2026-08-31 (wave 6b): every `channelPolicies` row carries a
+`Scope`; a session-scoped connection filters frames through a
+per-connection grant mask computed at attach. That once-per-connection
+mask is sound because session grants are immutable and revocation
+force-closes the socket through the live-connection registry — a
+future "narrow a session's grants in place" API must revisit it.
+`system:stats` took `threads:read` as its observe floor (push-only
+channel with no pull half to derive from).
 
 ### Frontend capability model
 
@@ -484,6 +516,14 @@ The **key→tier taxonomy lands in phase 3**, with the scope table:
 device-tier writes ride a valid session (they touch only `device:self`),
 user-tier writes need `settings:write`, host-tier needs step-up. Phase 4
 is then pure storage migration with no scope churn.
+
+LANDED 2026-08-31 (wave 6b), with one deliberate deviation: the
+per-key tier gate enforces exactly the three rules above, but the
+METHOD floor on `UpdateSettings` is `settings:write`, so a
+device-tier-only patch still needs that grant to reach the per-key
+gate — the scope vocabulary has no name for "any valid session".
+Stricter than this section, never looser; phase 4 either adds a
+session-floor value or moves device-tier writes onto their own name.
 
 ## 7. Transport, reachability, TLS
 
@@ -1596,10 +1636,15 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    derived then deleted. The table, tier vocabulary, step-up
    annotations, and derived `LocalOnlyMethods` (43 transitional
    overrides): LANDED 2026-08-31 (wave 6a — see §5 for what the pass
-   established). Enforcement note: the annotation is the FLOOR for a
-   method whose authority depends on an argument — `CreateThread` and
-   the send/steer family can select an autonomy mode, so enforcement
-   re-checks `threads:autonomy` from the argument, not the table.
+   established). Enforcement — the per-RPC scope gate, typed
+   refusals, host-presence step-up, the effective-runtime-mode
+   autonomy recheck, scope-driven event visibility, settings-tier
+   gate, `settings:read` (35 overrides remain): LANDED 2026-08-31
+   (wave 6b — §5 has the shape and the two recorded gaps). Still open
+   in this phase: the capability-driven frontend, `/ws` onto session
+   credentials + the webview dropping `?t=`, origin-gate deletion
+   with the override adjudications it unlocks, and §13's RPC and
+   event-channel columns.
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
    migrations, per-class defaults.
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with
