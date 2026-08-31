@@ -134,11 +134,15 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
     retryable: false,
   },
   // A pairing redemption from a device the owner revoked. The remedy is on
-  // the owner's screen, not this one: restore the device there, then open
-  // a FRESH link (the one just used was spent by this attempt).
+  // the owner's screen, not this one, and there are two of them — both
+  // needing a FRESH link, because the one just used was spent by this
+  // attempt. Restoring re-admits this device's key; removing it forgets
+  // the device, and the same browser then pairs as a new one. Naming both
+  // matters: a person looking at a revoked row sees two controls, and a
+  // hint that names only one reads as though the other will not work.
   revoked_device: {
     title: "This device's access was removed.",
-    hint: 'Restore it under Settings → Network → Devices on the computer, then pair again with a new link.',
+    hint: 'Under Settings → Network → Devices on the computer, either restore this device or remove it — then pair again with a new link.',
     retryable: false,
   },
   // A proof this device already spent. Every proof is single-use, so the

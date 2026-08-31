@@ -22,8 +22,15 @@ interface MockDevice {
     expiresAtMs: number;
     connections?: number;
     lastUsedAtMs?: number;
+    scopes?: string[];
+    survivedRevocation?: boolean;
   }>;
 }
+
+// The observe tier, as the backend grants it for a `view-only` link
+// (internal/transport/scopes.go). Spelled out rather than imported so the
+// fixture states what the wire carries.
+const OBSERVE: string[] = ['threads:read', 'files:read', 'settings:read'];
 
 function overview(overrides: {
   devices?: MockDevice[];
@@ -207,6 +214,85 @@ describe('<DevicesSection>', () => {
     expect(queryByRole('button', { name: 'Revoke' })).toBeNull();
     await fireEvent.click(await findByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(restore).toHaveBeenCalledWith('dev-phone'));
+  });
+
+  it('labels a device by what its session was actually granted', async () => {
+    setBindingMock('GetAccessOverview', async () =>
+      overview({
+        devices: [
+          { ...PHONE, sessions: [{ ...PHONE.sessions![0]!, scopes: OBSERVE }] },
+          {
+            ...PHONE,
+            id: 'dev-laptop',
+            label: 'A laptop',
+            platform: 'macos',
+            sessions: [
+              { ...PHONE.sessions![0]!, id: 'ses-2', scopes: [...OBSERVE, 'threads:operate'] },
+            ],
+          },
+        ],
+      }),
+    );
+    const { findByText, queryByText } = render(DevicesSection);
+
+    // The label rides the GRANT SET, never the device class: both rows
+    // here are the same class and only one is read-only.
+    await findByText(/ios · View only · connected now/);
+    expect(queryByText(/macos · View only/)).toBeNull();
+    await findByText(/macos · connected now/);
+  });
+
+  it('says so when a paired device holds nothing', async () => {
+    setBindingMock('GetAccessOverview', async () =>
+      overview({ devices: [{ ...PHONE, sessions: [] }] }),
+    );
+    const { findByText } = render(DevicesSection);
+    // Used to read exactly like a device that was connected.
+    await findByText(/ios · signed out/);
+  });
+
+  it('renders a credential that outlived its revocation as the anomaly it is', async () => {
+    const survivor = {
+      id: 'ses-standing',
+      binding: 'device-bound',
+      createdAtMs: 2000,
+      expiresAtMs: Date.now() + 3_600_000,
+      connections: 2,
+      survivedRevocation: true,
+    };
+    setBindingMock('GetAccessOverview', async () =>
+      overview({
+        devices: [{ ...PHONE, revokedAtMs: Date.now() - 3_600_000, sessions: [survivor] }],
+      }),
+    );
+    const end = setBindingMock('RevokeAccessSession', async () => undefined);
+    const { findByRole, findByTestId, findByText } = render(DevicesSection);
+
+    const note = await findByTestId('revoked-device-standing');
+    expect(note.textContent).toMatch(/still standing/);
+    await findByText(/2 connections/);
+
+    // And the way out is on the row: end the credential that survived.
+    await fireEvent.click(await findByRole('button', { name: 'End' }));
+    await fireEvent.click(await findByRole('button', { name: 'Confirm end' }));
+    await waitFor(() => expect(end).toHaveBeenCalledWith('ses-standing'));
+  });
+
+  it('forgets a revoked device on the second click, never the first', async () => {
+    setBindingMock('GetAccessOverview', async () =>
+      overview({
+        devices: [{ ...PHONE, revokedAtMs: Date.now() - 3_600_000, sessions: [] }],
+      }),
+    );
+    const forget = setBindingMock('ForgetAccessDevice', async () => undefined);
+    const { findByRole } = render(DevicesSection);
+
+    // Arming only. Deleting a row is destructive, so it takes the same
+    // two steps a revoke does.
+    await fireEvent.click(await findByRole('button', { name: 'Remove' }));
+    expect(forget).not.toHaveBeenCalled();
+    await fireEvent.click(await findByRole('button', { name: 'Confirm remove' }));
+    await waitFor(() => expect(forget).toHaveBeenCalledWith('dev-phone'));
   });
 
   it('renders a pointer instead of controls in client mode', async () => {

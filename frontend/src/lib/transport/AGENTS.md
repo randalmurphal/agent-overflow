@@ -163,6 +163,16 @@ remote browser alike. Protocol and authz rules:
   mode-shaped gate would disable a `git:operate` button for a session that
   holds `git:operate` while lacking something else.
 
+  `isViewOnlyGrantSet(scopes)` is the same question asked about a set that
+  came from somewhere ELSE, and `isViewOnly()` is now it applied to this
+  page. Its other caller is `settings/DevicesSection.svelte`, which labels
+  each paired device from the grant set the overview carries
+  (`AccessSession.Scopes` — the backend ships the SET, not a verdict, so
+  there is one definition of the word rather than two that agree until one
+  moves). An unknown name is ignored rather than assumed execute-tier: a
+  bundle older than the backend has no gate for it, and guessing would
+  label a full-access device read-only.
+
   Two rules for the surfaces that DO gate. A control stays mounted and goes
   inert — `disabled` plus the platform's own affordance, never hidden and
   never a click that swallows itself — because a screen that lost half its

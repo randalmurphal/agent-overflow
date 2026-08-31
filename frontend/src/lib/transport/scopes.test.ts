@@ -7,6 +7,7 @@ import {
   hasScope,
   isScope,
   isViewOnly,
+  isViewOnlyGrantSet,
   refreshGrantedScopes,
   setPageGrantsFromBootstrap,
 } from './scopes';
@@ -223,6 +224,29 @@ describe('scopes', () => {
       await pairWith(['threads:read', 'files:read', 'settings:read']);
       expect(isViewOnly()).toBe(true);
       expect(hasScope('git:operate')).toBe(false);
+    });
+
+    // The same question asked about a set that came from somewhere else:
+    // the settings pane labels each PAIRED device from the grants its
+    // session carries. One definition, so a device cannot read "View
+    // only" on one screen and "Full access" on another.
+    describe('isViewOnlyGrantSet', () => {
+      it('answers for a grant set this page does not hold', () => {
+        setPageGrantsFromBootstrap(false); // the owner's own screen
+        expect(isViewOnlyGrantSet(['threads:read', 'files:read', 'settings:read'])).toBe(true);
+        expect(isViewOnlyGrantSet(['threads:read', 'approvals:respond'])).toBe(false);
+      });
+
+      it('is false for an empty set, matching isViewOnly', () => {
+        expect(isViewOnlyGrantSet([])).toBe(false);
+      });
+
+      it('ignores names this build does not know', () => {
+        // A bundle older than the backend cannot reason about a
+        // capability it has no gates for, and guessing execute-tier
+        // would label a full-access device read-only.
+        expect(isViewOnlyGrantSet(['threads:read', 'threads:teleport'])).toBe(true);
+      });
     });
   });
 

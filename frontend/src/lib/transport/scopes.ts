@@ -280,11 +280,35 @@ export function grantedScopes(): ScopeSnapshot {
  */
 export function isViewOnly(): boolean {
   subscribeScopes();
-  if (snapshot.everyScope || snapshot.scopes.size === 0) return false;
-  for (const scope of snapshot.scopes) {
-    if (EXECUTE_SCOPE_SET.has(scope)) return false;
+  if (snapshot.everyScope) return false;
+  return isViewOnlyGrantSet(snapshot.scopes);
+}
+
+/**
+ * Is an arbitrary grant set view-only — non-empty, and naming no
+ * execute-tier capability?
+ *
+ * The same question `isViewOnly` asks about THIS page, asked about a set
+ * that came from somewhere else: the settings pane labels each paired
+ * device from the grants its session carries
+ * (`AccessSession.Scopes`). One definition, because a device labelled
+ * "View only" on one screen and "Full access" on another is worse than
+ * either answer alone — which is also why the backend ships the grant
+ * set rather than a verdict of its own.
+ *
+ * An EMPTY set is false, for the reason `isViewOnly` gives: "nothing was
+ * granted to me" is not "I was granted a read-only slice". Unknown names
+ * are ignored rather than treated as execute-tier — this build cannot
+ * reason about a capability it has no gates for, and guessing would
+ * label a full-access device read-only.
+ */
+export function isViewOnlyGrantSet(scopes: Iterable<string>): boolean {
+  let named = false;
+  for (const scope of scopes) {
+    named = true;
+    if (isScope(scope) && EXECUTE_SCOPE_SET.has(scope)) return false;
   }
-  return true;
+  return named;
 }
 
 /**

@@ -1,8 +1,8 @@
 <script lang="ts">
   // Settings → Network → Devices: which devices hold a credential on this
   // backend, the pairing flow that adds one (PairDeviceModal), and the
-  // revocations that take one away — plus restore, the way back in for a
-  // revoked device's key. Wire: the eight `access:admin` RPCs
+  // revocations that take one away — plus restore and forget, the two
+  // ways out of a revoked row. Wire: the nine `access:admin` RPCs
   // (internal/app/app_access.go).
   //
   // The local page channel — the backend's own window, whatever relays it
@@ -23,8 +23,10 @@
     RevokeAccessDevice,
     RevokeAccessSession,
     RestoreAccessDevice,
+    ForgetAccessDevice,
     type AccessOverview,
     type AccessDevice,
+    type AccessSession,
     type DeviceRevocationResult,
     type PendingPairing,
   } from '../../stores/bindings';
@@ -32,6 +34,7 @@
   import { errString } from '../../utils/errors';
   import { relativeTime } from '../../utils/format';
   import { isClientMode } from '../../transport/runMode';
+  import { isViewOnlyGrantSet } from '../../transport/scopes';
   import PairDeviceModal from './PairDeviceModal.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import { GHOST_BUTTON_CLASS } from './styles';
@@ -132,6 +135,46 @@
     return `${prefix}. ${ended.join(', ')}.`;
   }
 
+  // What a device can DO, from what its sessions were actually granted.
+  // Read off the grant set rather than off a device class: the pairing
+  // surface mints view-only for a phone and full for a phone alike
+  // (docs/specs/remote-access.md §5). A device holding two sessions of
+  // different levels is labelled by the widest, because that is what it
+  // can reach.
+  function accessLabel(sessions: AccessSession[]): string {
+    const usable = sessions.filter((s) => !s.awaitingConfirmation && !s.survivedRevocation);
+    if (usable.length === 0) return '';
+    return usable.every((s) => isViewOnlyGrantSet(s.scopes ?? [])) ? 'View only' : '';
+  }
+
+  // The one-line truth about a device: what it can do, whether anything
+  // is attached right now, and when it was last here. "Signed out" is a
+  // real state — a paired device whose credentials all expired holds
+  // nothing until it renews — and it used to read exactly like a device
+  // that was connected.
+  function deviceMeta(device: AccessDevice): string {
+    const sessions = device.sessions ?? [];
+    const usable = sessions.filter((s) => !s.awaitingConfirmation && !s.survivedRevocation);
+    const connections = usable.reduce((total, s) => total + (s.connections ?? 0), 0);
+    const parts = [device.platform, accessLabel(sessions)];
+    if (connections > 0) {
+      parts.push(connections === 1 ? 'connected now' : `${connections} connections`);
+    } else if (usable.length === 0 && sessions.length === 0) {
+      parts.push('signed out');
+    } else if (device.lastSeenAtMs) {
+      parts.push(`seen ${relativeTime(device.lastSeenAtMs)}`);
+    }
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  // A credential that outlived the revocation meant to withdraw it. The
+  // backend marks the row rather than filtering it away, because the one
+  // thing worse than the state is not being able to see it — and the End
+  // control beside it is the way out.
+  function survivors(device: AccessDevice): AccessSession[] {
+    return (device.sessions ?? []).filter((s) => s.survivedRevocation);
+  }
+
   function revokeDevice(device: AccessDevice): void {
     armOrRun(`device:${device.id}`, () =>
       act('Failed to revoke the device', async () => {
@@ -149,6 +192,15 @@
 
   function restoreDevice(device: AccessDevice): void {
     void act('Failed to restore the device', () => RestoreAccessDevice(device.id));
+  }
+
+  // Two-step, on the same arming path as revoke: the row and its
+  // sessions go, and only the credential log remembers the device
+  // afterwards.
+  function forgetDevice(device: AccessDevice): void {
+    armOrRun(`forget:${device.id}`, () =>
+      act('Failed to remove the device', () => ForgetAccessDevice(device.id)),
+    );
   }
 
   function confirmPending(link: PendingPairing): void {
@@ -265,9 +317,7 @@
                 {#if local}
                   The app's own window — its credential renews with the app.
                 {:else}
-                  {[device.platform, device.lastSeenAtMs ? `seen ${relativeTime(device.lastSeenAtMs)}` : null]
-                    .filter(Boolean)
-                    .join(' · ')}
+                  {deviceMeta(device)}
                 {/if}
               </p>
             </div>
@@ -319,23 +369,79 @@
 
       {#each revokedDevices as device (device.id)}
         {@const Icon = CLASS_ICONS[device.class as keyof typeof CLASS_ICONS] ?? Monitor}
+        {@const standing = survivors(device)}
         <div
-          class="flex items-center gap-3 rounded-[var(--radius-field)] border border-border-subtle/60 bg-surface-0/50 px-3 py-2"
+          class={standing.length > 0
+            ? 'rounded-[var(--radius-field)] border border-error bg-error/10 px-3 py-2'
+            : 'rounded-[var(--radius-field)] border border-border-subtle/60 bg-surface-0/50 px-3 py-2'}
           data-testid="revoked-device"
         >
-          <span class="text-fg-hint opacity-60"><Icon size={18} strokeWidth={1.75} /></span>
-          <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-            <p class="truncate text-[0.75rem] font-medium text-fg-muted">
-              {device.label || device.class}
-            </p>
-            <p class="text-[0.6875rem] text-fg-hint">
-              Access removed {device.revokedAtMs ? relativeTime(device.revokedAtMs) : ''}. Restoring
-              lets it pair again with a fresh link — nothing signs in until you confirm the number.
-            </p>
+          <div class="flex items-center gap-3">
+            <span class={standing.length > 0 ? 'text-error' : 'text-fg-hint opacity-60'}>
+              <Icon size={18} strokeWidth={1.75} />
+            </span>
+            <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+              <p
+                class={standing.length > 0
+                  ? 'truncate text-[0.75rem] font-medium text-error'
+                  : 'truncate text-[0.75rem] font-medium text-fg-muted'}
+              >
+                {device.label || device.class}
+              </p>
+              {#if standing.length > 0}
+                <p class="text-[0.6875rem] leading-snug text-error" data-testid="revoked-device-standing">
+                  Access was removed {device.revokedAtMs ? relativeTime(device.revokedAtMs) : ''},
+                  but {standing.length === 1
+                    ? 'a credential is still standing'
+                    : `${standing.length} credentials are still standing`}. End
+                  {standing.length === 1 ? 'it' : 'them'} below, then revoke this device again.
+                </p>
+              {:else}
+                <p class="text-[0.6875rem] text-fg-hint">
+                  Access removed {device.revokedAtMs ? relativeTime(device.revokedAtMs) : ''}. Restoring
+                  lets it pair again with a fresh link — nothing signs in until you confirm the number.
+                  Removing it forgets the device entirely.
+                </p>
+              {/if}
+            </div>
+            <Button variant="ghost" size="xs" disabled={acting} onclick={() => restoreDevice(device)}>
+              Restore
+            </Button>
+            <Button
+              variant={armedRevoke === `forget:${device.id}` ? 'danger' : 'danger-ghost'}
+              size="xs"
+              disabled={acting}
+              onclick={() => forgetDevice(device)}
+            >
+              {armedRevoke === `forget:${device.id}` ? 'Confirm remove' : 'Remove'}
+            </Button>
           </div>
-          <Button variant="ghost" size="xs" disabled={acting} onclick={() => restoreDevice(device)}>
-            Restore
-          </Button>
+          {#if standing.length > 0}
+            <ul class="mt-2 flex flex-col gap-1 border-t border-error/40 pt-2">
+              {#each standing as session (session.id)}
+                <li class="flex items-center justify-between gap-3 pl-[1.875rem]">
+                  <span class="text-[0.6875rem] text-error">
+                    {session.binding} session
+                    {#if (session.connections ?? 0) > 0}
+                      · {session.connections === 1
+                        ? 'connected now'
+                        : `${session.connections} connections`}
+                    {:else if session.lastUsedAtMs}
+                      · last used {relativeTime(session.lastUsedAtMs)}
+                    {/if}
+                  </span>
+                  <Button
+                    variant={armedRevoke === `session:${session.id}` ? 'danger' : 'danger-ghost'}
+                    size="xs"
+                    disabled={acting}
+                    onclick={() => endSession(session.id)}
+                  >
+                    {armedRevoke === `session:${session.id}` ? 'Confirm end' : 'End'}
+                  </Button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </div>
       {/each}
     </div>
