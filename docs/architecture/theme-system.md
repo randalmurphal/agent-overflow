@@ -432,8 +432,8 @@ window background, both carried into phase 2 below.
 - **Native window background** binding (classified in
   `LocalOnlyMethods`) + FOUC stamp for the first frame.
 - **Transport posture**: theme reads LAN-allowed (keybindings parity),
-  writes local-only; view-only sessions render with built-ins or the
-  values the bootstrap/read path supplies.
+  writes need `settings:write`; a session without that grant renders with
+  built-ins or the values the bootstrap/read path supplies.
 
 ### Phase 2/3 concrete contract (build spec, 2026-08-18)
 
@@ -672,8 +672,8 @@ read):
   Not an error to report: it is a session without a themes directory.
   Built-ins only, and the settings surface says so.
 - **`writesRefused`**: a refused `SetAppearance` or a refused read, and
-  a view-only session is write-blocked up front rather than after a
-  failure. A write-blocked session still TAKES the wire's themes,
+  a session never granted `settings:write` is write-blocked up front
+  rather than after a failure. A write-blocked session still TAKES the wire's themes,
   directory and warnings; what it never adopts is the SELECTION. That is
   the client-residency decision (§6.1) enforced at the read: a remote
   browser renders its own choice out of `localStorage`, which is the only
@@ -709,8 +709,8 @@ line each:
 
 - **A remote session keeps its own selection.** §9.6's one degrade flag
   split into three independent facts: `readAvailable` (no themes
-  directory at all), `writesRefused` (structural, and view-only sessions
-  are write-blocked up front), and `loadError` (transient, latches
+  directory at all), `writesRefused` (structural, and a session
+  without `settings:write` is write-blocked up front), and `loadError` (transient, latches
   nothing). A write-blocked session still takes the wire's themes,
   directory and warnings but never adopts its SELECTION, which stays in
   `localStorage`: the theme is a property of the CLIENT, so a browser

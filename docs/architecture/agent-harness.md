@@ -572,9 +572,9 @@ the caller explicitly asked the page whether it had settled. The rig
 must not perturb the renderer it exists to watch, least of all while it
 is taking the numbers. The consequence is honest, not free: a freshly
 armed clock has no history, so that query's `settled` reads false until
-the observer has a settle window of it. A view-only remote session never
-arms at all (`harness:ui-query` is loopback-only, so it could never
-receive a query). An ordinary boot
+the observer has a settle window of it. A page that cannot act on the host never
+arms at all (`hasScope('host')`; `harness:ui-query` is loopback-only, so
+it could never receive a query). An ordinary boot
 reads a boolean and stops; the bridge modules are their own rolldown
 chunk that a normal page never fetches (`architecture.test.ts` bans any
 static import of `lib/harness/` outside the store's one dynamic door).

@@ -37,6 +37,19 @@ stops waking readers.
   is private for that reason. The duplicate scan in `panes.svelte.ts` is a
   deliberately non-dev-gated tripwire for a path that mounts around it.
   Two panes on one WORKSPACE stay first-class.
+- **What a session may do is NOT a store.** `hasScope('git:operate')`
+  and friends come from `transport/scopes.ts`, imported directly by
+  components, stores and utils alike, and no store re-exports them. It is
+  a credential fact resolved from the bootstrap manifest and the paired
+  session, with no wire subscription and no RPC of its own, so a store
+  wrapper would be a second door onto one answer. Keep it distinct from
+  `transport/runMode.ts`, which is the other axis: run mode says whose
+  settings an RPC would edit (a process-boot fact), a capability says
+  what this session was granted. A surface needing both asks both, and a
+  store that gates its own loader — `providerAccounts` on `access:admin`,
+  the skills stores on `threads:operate`, `appearance` on
+  `settings:write` — asks for the capability its RPCs actually carry,
+  never for a stand-in.
 - `events.ts` is the single subscription root. It owns channel names,
   generics and teardown order, and fans each channel out to the
   `events*.ts` module that owns the reaction. Add a channel there, put the

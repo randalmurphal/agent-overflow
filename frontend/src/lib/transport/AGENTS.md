@@ -89,6 +89,47 @@ remote browser alike. Protocol and authz rules:
   a retry offers a button that cannot work. `TestFrontendHintsCoverEveryRefusal`
   (Go side) fails if this module and the Go set disagree in either
   direction.
+- `scopes.ts` is the capability answer, and the TypeScript mirror of
+  `internal/transport/scopes.go`'s vocabulary. A surface asks
+  `hasScope('threads:operate')` rather than "am I a remote session",
+  because the two answer the same only until a paired device arrives
+  holding a named subset — at which point a gate written against the
+  proxy is wrong in both directions at once. It resolves in precedence
+  order: a PAIRED session's published grants (they win even on loopback,
+  since the upgrade presents that session and its grants are what the
+  backend's gate compares), then the local page, which holds every
+  grantable scope and answers so explicitly rather than by skipping the
+  check. A networked page that never paired names no session of its own,
+  so it answers "granted nothing"; reads are unaffected, because nothing
+  asks permission before reading. `host` is answered from PRESENCE and
+  never from a grant set — no session holds it, `internal/identity` does
+  not declare it, and `authorize.go` authorizes it from "is the caller on
+  this machine" alone. Never authorization: the backend re-checks every
+  RPC, so the worst a wrong answer does is offer a control that is
+  refused or hide one that would have worked.
+
+  Notified at the two moments the answer can move — the manifest
+  resolving, and `redialAfterPairing` — and polled never. Nothing clears
+  it on a disconnect, for the reason the hello snapshot survives one: a
+  capability that flapped to "nothing" for the length of an outage would
+  blank half the UI mid-reconnect. An unchanged answer keeps its snapshot
+  IDENTITY, so a reconnect's manifest refetch does not invalidate every
+  gated surface in the app.
+- `scopeRefusal.ts` is the AUTHORIZATION half of the refusal vocabulary,
+  sibling to `authReason.ts`'s credential half. Kept apart because the
+  remedies differ in kind: one says "sign in again", the other says "you
+  are signed in and were not granted this", and a module branching on
+  both would offer to re-pair somebody whose pairing is fine. The
+  backend puts the missing capability in a wire FIELD (`scope`, on
+  `scope_required`) because a method error's prose is redacted for a
+  non-loopback caller — the field is the whole answer that survives. It
+  is the REACTIVE backstop; `scopes.ts` is the proactive half a surface
+  reads to disable a control before anybody presses it. A refusal
+  reaching it means the two disagreed: a grant narrower than the page
+  believed, a method whose authority depends on its ARGUMENTS rather
+  than its name (`transport.ScopeRequired`), or a revocation landing
+  mid-session. Like `authReason.ts` it always answers — a capability
+  name this bundle has no word for degrades to the generic sentence.
 - `runtime.ts` replaces `@wailsio/runtime` through a Vite alias, so the
   generated bindings keep working unregenerated. Its surface must mirror
   `src/test/mocks/wailsio-runtime.ts`, or generated code that type-checks
@@ -135,7 +176,16 @@ remote browser alike. Protocol and authz rules:
   socket revoking the paired device never reaches. Completing the
   pairing flow calls `wsClient.redialAfterPairing()` for the same
   reason: the socket opened under the pairing screen predates the
-  credential and carries the wrong identity.
+  credential and carries the wrong identity — and because the grants the
+  credential arrived with are what `scopes.ts` re-reads there.
+
+  It stores the session's GRANT SET alongside the credential, from
+  `/auth/pair` and `/auth/token` (`transport.TokenGrant.Scopes`). Absent
+  and empty are different answers and must stay so: `[]` means the
+  backend said "granted nothing", absent means a backend too old to say,
+  and `scopes.ts` falls back to judging the page rather than blanking a
+  screen on silence. A rotation that publishes none keeps what the
+  redemption did, since grants are immutable for a session's lifetime.
 
 The connection's opening frame is the OTHER identity source, alongside
 the manifest. `wsClient` records it as `TransportHello` and
@@ -150,7 +200,8 @@ backend re-checks every RPC regardless. The snapshot survives a
 disconnect on purpose, since the ladder is trying to reach the same
 backend and a flapping capability answer would be worse than a stale one.
 
-Three boot-derived flags, each with a different reactivity contract:
+Three boot-derived flags, each with a different reactivity contract.
+None of them is a capability — that axis is `scopes.ts` above:
 
 - `runMode.ts` reads the page URL's `?mode=` once at module load, because a
   different mode means a different process boot — and because it must
@@ -158,8 +209,16 @@ Three boot-derived flags, each with a different reactivity contract:
   scrub, which removes only the ticket parameter. Settings panels that mutate LOCAL-ONLY state
   (the LAN-bind toggle, the saved `--connect` endpoints) hide or
   placeholder in `client` mode, or their RPCs would edit the remote
-  server's settings instead of the user's. `isViewOnlySession` is
-  reactive.
+  server's settings instead of the user's.
+
+  It carries NOTHING about authorization, and the split is load-bearing
+  in both directions: run mode answers "whose settings would this RPC
+  edit", `scopes.ts` answers "was this session granted this". A
+  `--connect` client attached to a LOCAL backend may do everything while
+  its local-only settings panels still hide, and a browser on the
+  network boots with mode `local` while holding no grant at all. A
+  surface that needs both asks both (`EditorSection.svelte`,
+  `utils/idleMemoryTrim.ts`).
 - `harnessMode.ts` LATCHES and is deliberately not reactive: it is a
   one-shot arm for `stores/harnessBridge.ts`, which subscribes to a wire
   channel, installs a document-wide MutationObserver and can hold a rAF

@@ -318,6 +318,14 @@ Rules that hold across all three:
   `ScopedTokens`. The DTOs (`PairingRedemption`, `SessionRenewal`,
   `TokenGrant`) are dumb: nothing here validates a token, interprets a reason
   code, or knows what a session row is.
+- **A grant publishes what it carries.** `TokenGrant.Scopes` is on both
+  redemption and rotation responses, always an array and never null, because
+  the client has no other way to learn what its own session may do — and an
+  absent field has to stay distinguishable from an empty grant set, or a
+  backend too old to send one reads as "granted nothing". It is DISCLOSURE, not
+  authorization: the gate re-reads the session row per call
+  (`Config.SessionScopes`), so a client editing the copy changes nothing.
+  `frontend/src/lib/transport/scopes.ts` is the consumer.
 - **A refusal is 401 with `{"reason": "<code>"}`**, whatever refused it. The
   code is the whole message; prose belongs to
   `frontend/src/lib/transport/authReason.ts`, which can phrase it for the
