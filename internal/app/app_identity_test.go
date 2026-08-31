@@ -78,7 +78,7 @@ func pairedDeviceGrant(t *testing.T, app *App, thumbprint string) transport.Toke
 		t.Fatalf("MintPairingLink: %v", err)
 	}
 	grant, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
-		Token: link.Token, KeyThumbprint: thumbprint,
+		Token: link.Token, DeviceProof: thumbprint,
 	})
 	if reason != "" {
 		t.Fatalf("RedeemPairing: %s", reason)
@@ -216,7 +216,7 @@ func TestADeviceBoundSessionPresentsItsKeyOnEveryRequest(t *testing.T) {
 		t.Fatalf("MintPairingLink: %v", err)
 	}
 	grant, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
-		Token: link.Token, KeyThumbprint: "thumb-phone", Label: "A Phone", Platform: "ios",
+		Token: link.Token, DeviceProof: "thumb-phone", Label: "A Phone", Platform: "ios",
 	})
 	if reason != "" {
 		t.Fatalf("RedeemPairing: %s", reason)
@@ -257,7 +257,7 @@ func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
 		t.Fatalf("MintPairingLink: %v", err)
 	}
 	first, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
-		Token: link.Token, KeyThumbprint: "thumb-phone",
+		Token: link.Token, DeviceProof: "thumb-phone",
 	})
 	if reason != "" {
 		t.Fatalf("RedeemPairing: %s", reason)
@@ -267,7 +267,7 @@ func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
 	}
 
 	second, reason := AuthEndpoints(app).RenewSession(transport.SessionRenewal{
-		RefreshSecret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
+		RefreshSecret: first.RefreshSecret, DeviceProof: "thumb-phone",
 	})
 	if reason != "" {
 		t.Fatalf("RenewSession: %s", reason)
@@ -281,7 +281,7 @@ func TestRenewalRotatesThroughTheTransportAdapter(t *testing.T) {
 	// The spent predecessor: reuse revokes the family, and the code has to
 	// survive the adapter unchanged.
 	if _, reason := AuthEndpoints(app).RenewSession(transport.SessionRenewal{
-		RefreshSecret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
+		RefreshSecret: first.RefreshSecret, DeviceProof: "thumb-phone",
 	}); reason != identity.ReasonRevokedSession.Code() {
 		t.Fatalf("reuse answered %q, want %q", reason, identity.ReasonRevokedSession.Code())
 	}
@@ -369,7 +369,7 @@ func TestAGrantPublishesTheSessionsScopes(t *testing.T) {
 		t.Fatalf("MintPairingLink: %v", err)
 	}
 	redeemed, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
-		Token: link.Token, KeyThumbprint: "thumb-phone",
+		Token: link.Token, DeviceProof: "thumb-phone",
 	})
 	if reason != "" {
 		t.Fatalf("RedeemPairing: %s", reason)
@@ -383,7 +383,7 @@ func TestAGrantPublishesTheSessionsScopes(t *testing.T) {
 	}
 
 	renewed, reason := AuthEndpoints(app).RenewSession(transport.SessionRenewal{
-		RefreshSecret: redeemed.RefreshSecret, KeyThumbprint: "thumb-phone",
+		RefreshSecret: redeemed.RefreshSecret, DeviceProof: "thumb-phone",
 	})
 	if reason != "" {
 		t.Fatalf("RenewSession: %s", reason)

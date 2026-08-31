@@ -86,15 +86,16 @@ type TokenSet struct {
 type RefreshRequest struct {
 	// Secret is the refresh secret as the device holds it.
 	Secret string
-	// KeyThumbprint is the device's proof of possession. Required for
-	// every `device-bound` and `public` session on EVERY listener, so a
-	// bare bearer copy of a refresh secret cannot renew itself even from
+	// Proof is the device's proof of possession. Required for every
+	// `device-bound` and `public` session on EVERY listener, so a bare
+	// bearer copy of a refresh secret cannot renew itself even from
 	// loopback (§4: "Refresh binds to the device key on every listener").
 	//
-	// Phase 5 replaces the thumbprint with a signed DPoP proof over the
-	// request. The token endpoint already accepts thumbprints for exactly
-	// that reason (§16 phase 5), so the wire shape does not move.
-	KeyThumbprint string
+	// A signed proof over this request for a device that enrolled a key,
+	// the bare enrollment thumbprint for one that could not (§15
+	// constraint 6). CheckDeviceProof decides which is acceptable from the
+	// device row, never from what arrived.
+	Proof DeviceProof
 	// Peer is the request's source address, for audit attribution only.
 	Peer string
 }
@@ -140,12 +141,15 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 		s.RecordRefusal(reason, req.Peer, held.SessionID)
 		return TokenSet{}, reason
 	}
-	if reason := s.CheckDeviceProof(session, req.KeyThumbprint); reason.Refused() {
+	if reason := s.CheckDeviceProof(session, req.Proof); reason.Refused() {
 		s.RecordRefusal(reason, req.Peer, session.ID)
 		return TokenSet{}, reason
 	}
 
-	if _, err := s.store.ConsumeRefreshSecret(digest[:], now, req.KeyThumbprint); err != nil {
+	// The consumption record names the DEVICE, not the presentation: a
+	// proof is a one-off signature, so storing it would write a value no
+	// later reader could match against anything.
+	if _, err := s.store.ConsumeRefreshSecret(digest[:], now, session.DeviceID); err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			log.Printf("identity: consume refresh secret: %v", err)
 			return TokenSet{}, ReasonUnknownCredential
@@ -236,18 +240,18 @@ func (s *Sessions) revokeFamilyForReuse(secret store.RefreshSecret, peer string)
 // A `loopback-only` session has no key to bind to — it is the credential
 // this backend mints for its own page channel — and it is not renewable at
 // all, so it never reaches here through Refresh. Every other class must
-// present the thumbprint its device row holds.
+// satisfy its device row.
 //
 // A device-bound session whose device row carries NO thumbprint is refused
-// with the same missing-proof answer as one that presented nothing. That is
-// the failure a device gets when it was paired before proof-of-possession
-// existed, and admitting it would be the downgrade the binding rule exists
-// to close.
-func (s *Sessions) CheckDeviceProof(session store.Session, thumbprint string) Reason {
+// (`key_mismatch`), the same as one whose thumbprint does not match. That
+// is the failure a device gets when it was paired before
+// proof-of-possession existed, and admitting it would be the downgrade the
+// binding rule exists to close.
+func (s *Sessions) CheckDeviceProof(session store.Session, proof DeviceProof) Reason {
 	if BindingClass(session.BindingClass) == BindingLoopbackOnly {
 		return ReasonNone
 	}
-	if thumbprint == "" {
+	if proof.Value == "" {
 		return ReasonMissingProof
 	}
 	device, err := s.store.GetDevice(session.DeviceID)
@@ -261,10 +265,74 @@ func (s *Sessions) CheckDeviceProof(session store.Session, thumbprint string) Re
 	if device.RevokedAt != 0 {
 		return ReasonRevokedSession
 	}
-	if device.KeyThumbprint == "" || device.KeyThumbprint != thumbprint {
+	if device.KeyThumbprint == "" {
 		return ReasonKeyMismatch
 	}
-	return ReasonNone
+	return s.checkProofAgainstDevice(device, proof)
+}
+
+// checkProofAgainstDevice compares one presentation against the device row
+// that decides what a valid presentation IS.
+//
+// The row decides, never the presentation. That sentence is the downgrade
+// rule: a device whose row records an enrolled key is answered by the
+// signed branch whatever it sent, so a bare thumbprint for such a device
+// is a refusal and not a fallback. The reverse — a bearer device that
+// sends a proof — is also a refusal, because a bearer row's thumbprint is
+// an opaque identifier that is not the hash of any key, so there is
+// nothing a signature could be checked against.
+func (s *Sessions) checkProofAgainstDevice(device store.Device, proof DeviceProof) Reason {
+	signed := proof.Signed()
+	switch proofKindOf(device) {
+	case ProofSignedKey:
+		if !signed {
+			// Exactly today's wire: the thumbprint string, presented for a
+			// device that has since enrolled a real key. Named apart from
+			// malformed_proof so this reads as what it is.
+			return ReasonProofDowngraded
+		}
+		return s.verifyDeviceProof(device.KeyThumbprint, proof)
+	default:
+		if signed {
+			return ReasonMalformedProof
+		}
+		if device.KeyThumbprint != proof.Value {
+			return ReasonKeyMismatch
+		}
+		return ReasonNone
+	}
+}
+
+// verifyDeviceProof is the whole signed path, in the order the checks have
+// to run.
+//
+// Ordering, and what each position buys:
+//
+//  1. PARSE. Structure, the pinned `typ` and `alg`, and a key that is
+//     actually a point on P-256. Nothing here is trusted yet.
+//  2. THUMBPRINT. The embedded key must be the one this device enrolled.
+//     Before the signature, because a signature proves possession of
+//     whatever key the presentation chose — the thumbprint is what ties
+//     that key to this device, and checking it first also declines to
+//     spend a P-256 verify on a key we were never going to accept.
+//  3. SIGNATURE. The only constructor of verifiedDeviceProof, which is
+//     what makes steps 4 and 5 unreachable from an unverified proof.
+//  4. BINDING, then FRESHNESS. Both are statements about what the client
+//     signed, so both are meaningless before step 3 — and the freshness
+//     refusal in particular carries the "check your clock" hint, which
+//     must never be shown for a proof this backend's device never signed.
+//  5. REPLAY, last. The identifier is spent only by a proof that passed
+//     everything else, so a presentation that could never be admitted
+//     cannot consume the identifier of one that would be.
+func (s *Sessions) verifyDeviceProof(thumbprint string, presented DeviceProof) Reason {
+	parsed, reason := parseDeviceProof(presented.Value)
+	if reason.Refused() {
+		return reason
+	}
+	if parsed.thumbprint != thumbprint {
+		return ReasonKeyMismatch
+	}
+	return s.admitProof(parsed, presented)
 }
 
 // reissue extends a live session's window and issues the next credential

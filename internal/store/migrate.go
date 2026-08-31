@@ -1424,6 +1424,16 @@ ALTER TABLE threads ADD COLUMN created_head_commit TEXT NOT NULL DEFAULT '';`,
 		// each non-obvious column decides.
 		SQL: pairingAndRefreshV76SQL,
 	},
+	{
+		Version: 77,
+		Name:    "device_proof_kind",
+		// How a device proves possession of the key its row names: an
+		// opaque enrollment identifier compared as a string, or an ECDSA
+		// P-256 key whose only accepted presentation is a signed proof.
+		// See the const's doc comment for why one column makes the
+		// stronger form enforceable.
+		SQL: deviceProofKindV77SQL,
+	},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

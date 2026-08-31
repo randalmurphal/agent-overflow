@@ -31,6 +31,7 @@ func TestDeclaredValueSetsMatchTheSchemaChecks(t *testing.T) {
 		declared []string
 	}{
 		{"devices", "class", asStrings(DeviceClasses)},
+		{"devices", "proof_kind", asStrings(ProofKinds)},
 		{"sessions", "binding_class", asStrings(BindingClasses)},
 	}
 	for _, tc := range cases {

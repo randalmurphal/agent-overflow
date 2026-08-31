@@ -387,8 +387,8 @@ that has never met this backend gets one.
 
 | route | what the caller presents | registered when |
 |---|---|---|
-| `/auth/pair` | a single-use pairing token, plus the thumbprint of the key the device generated first | `Config.AuthEndpoints != nil` |
-| `/auth/token` | a rotating refresh secret in the body, its device key in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
+| `/auth/pair` | a single-use pairing token, plus the proof of the key the device generated first — signed in `X-AO-Device-Key`, or a bare identifier in the body for a device that cannot sign | `Config.AuthEndpoints != nil` |
+| `/auth/token` | a rotating refresh secret in the body, its device proof in `X-AO-Device-Key` | `Config.AuthEndpoints != nil` |
 | `/auth/ticket` | the session credential it already holds | `Config.SessionForRequest != nil` |
 
 Rules that hold across all three:
@@ -412,19 +412,30 @@ Rules that hold across all three:
   `frontend/src/lib/transport/authReason.ts`, which can phrase it for the
   surface the person is looking at. Mapping codes onto distinct statuses would
   put the same fact in two places.
-- **A proof never comes from the body.** `SessionRenewal.KeyThumbprint` is read
-  from `DeviceKeyHeader` and the JSON tag is `-`. A proof a caller may write
-  into the same document it is proving something about is not a proof.
+- **A proof never comes from the body.** `SessionRenewal.DeviceProof` and
+  `PairingRedemption.DeviceProof` are read from `DeviceKeyHeader` and both JSON
+  tags are `-`. A proof a caller may write into the same document it is proving
+  something about is not a proof. The same rule is why `Method` and `Path` are
+  filled in HERE from the request: a signed proof binds them, and one that named
+  its own target would prove nothing about where it was presented.
+  `PairingRedemption.KeyThumbprint` survives in the body because it is not a
+  proof — it is an identifier a keyless device asks to be known by, and the app
+  side ignores it entirely whenever a header proof is present.
 - **Origin runs before anything else**, for the reason it does on the bootstrap
   exchange: these routes hand out credentials, and a request another origin
   initiated must never be answered with one.
 - **One budget for all three** (`authRateLimit`), because they are alternative
   ways for the same peer to ask this backend for a credential.
-- `DeviceKeyHeader` carries a THUMBPRINT this phase, not a signature. It proves
-  the client knows which key the device enrolled, not that it holds the private
-  half; the spec's end state is a per-request DPoP proof, which needs a signing
-  scheme the wire does not have yet. The header is named for the KEY so phase 5
-  replaces the value and keeps every call site.
+- `DeviceKeyHeader` carries one of two shapes, and this package does not
+  distinguish them — which one a given device may present is
+  `internal/identity`'s answer, read off the device row (`proof_kind`, migration
+  v77). A device that enrolled an ECDSA P-256 key presents a compact JWS signed
+  over THIS request (`internal/identity/deviceproof.go`); one that could not
+  presents its bare enrollment thumbprint, which is the plain-HTTP LAN browser
+  of spec §15 constraint 6 — no secure context, so no `crypto.subtle`, so
+  deliberately no signed path. A device that enrolled a key is never accepted on
+  the bare shape, on any route. Phase 5 swapped the VALUE and moved no call
+  site, which is what the header being named for the KEY bought.
 
 **The owner-facing half of pairing is deliberately not here.** Minting a link,
 reading the verification number, confirming and cancelling are Go API on

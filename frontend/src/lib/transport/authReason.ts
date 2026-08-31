@@ -34,6 +34,9 @@ export const AUTH_REASON_CODES = [
   'pending_confirmation',
   'unknown_credential',
   'revoked_device',
+  'proof_replayed',
+  'proof_not_bound',
+  'proof_downgraded',
 ] as const;
 
 export type AuthReasonCode = (typeof AUTH_REASON_CODES)[number];
@@ -136,6 +139,34 @@ const PRESENTATIONS: Record<AuthReasonCode, AuthReasonPresentation> = {
   revoked_device: {
     title: "This device's access was removed.",
     hint: 'Restore it under Settings → Network → Devices on the computer, then pair again with a new link.',
+    retryable: false,
+  },
+  // A proof this device already spent. Every proof is single-use, so the
+  // remedy is to make a new request rather than to re-send the old one —
+  // which is what any caller does anyway, so a person should essentially
+  // never read this. `retryable` is true because the credential is fine:
+  // it is the one-off proof that was stale, and the next request mints a
+  // fresh one.
+  proof_replayed: {
+    title: 'That request was already used.',
+    hint: 'Try what you were doing again.',
+    retryable: true,
+  },
+  // The proof verified but was minted for a different request. A client
+  // bug or something rewriting the path in between; nothing the person did
+  // and nothing re-sending fixes.
+  proof_not_bound: {
+    title: "This device's request could not be matched to its sign-in.",
+    hint: 'Reload the page. If it keeps happening, pair this device again.',
+    retryable: false,
+  },
+  // This device holds a key, and the key is not available to sign with —
+  // browser data cleared, or a private window that kept the session but
+  // not the key. Naming the cause matters here: the alternative reading
+  // ("something is broken") sends a person looking in the wrong place.
+  proof_downgraded: {
+    title: "This device's security key is no longer available.",
+    hint: 'Its stored key was cleared. Pair this device again to make a new one.',
     retryable: false,
   },
 };

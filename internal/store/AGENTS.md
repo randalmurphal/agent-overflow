@@ -1038,7 +1038,15 @@ v75 — every bullet there applies here unchanged.
 - **`devices.key_thumbprint` uniqueness makes re-pairing an ADOPTION.**
   A device that pairs twice matches its existing row rather than
   accumulating one per pairing; `internal/identity` refuses the match
-  when that row is revoked or belongs to another user.
+  when that row is revoked, belongs to another user, or would change the
+  row's `proof_kind`.
+- **`devices.proof_kind` (v77) is what makes `key_thumbprint` mean one
+  thing.** The column held two different values under one name until this
+  migration: the RFC 7638 thumbprint of a real key, and an opaque
+  identifier minted by a page that has no WebCrypto. `key` accepts only a
+  signed proof over the request; `bearer` compares the string. The
+  DEFAULT is `bearer`, which is what makes the migration a no-op for every
+  device paired before it — and why the ADD COLUMN needs no rebuild.
 - **Both new tables cascade from their owner** (`users` for links,
   `sessions` for secrets) because neither is a record of what happened —
   `auth_audit` is, and it deliberately does not cascade. Deleting a

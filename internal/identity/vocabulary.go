@@ -20,6 +20,8 @@ package identity
 import (
 	"fmt"
 	"slices"
+
+	"agent-overflow/internal/store"
 )
 
 // DeviceClass is what kind of client instance a device row describes. The
@@ -88,6 +90,66 @@ var BindingClasses = []BindingClass{
 
 // Valid reports whether b is a declared binding class.
 func (b BindingClass) Valid() bool { return slices.Contains(BindingClasses, b) }
+
+// ProofKind is how a device presents possession of the key its row names
+// (docs/specs/remote-access.md §4, phase 5). The set is closed and
+// mirrored by the `devices.proof_kind` CHECK (internal/store migration
+// v77); TestDeclaredValueSetsMatchTheSchemaChecks drives every value
+// through a real store and fails in both directions.
+//
+// The distinction is the whole point of phase 5: until it existed, one
+// column held both a real key thumbprint and an opaque identifier minted
+// by a page with no WebCrypto, and one string comparison served both. A
+// device that had enrolled a real key could therefore still be admitted
+// on the string alone, which made possession of a copied credential
+// equivalent to possession of the key.
+type ProofKind string
+
+const (
+	// ProofBearer means the device's thumbprint is an opaque enrollment
+	// identifier and is compared as a string.
+	//
+	// This is not a weaker version of the same thing — it is the only
+	// thing a plain-HTTP LAN browser can do. Such a page is not a secure
+	// context, so `crypto.subtle` does not exist there and no
+	// non-extractable key can be generated at all; spec §15 constraint 6
+	// states the consequence plainly ("there is no LAN-HTTP DPoP path")
+	// and this value is how the backend records it rather than pretending
+	// otherwise.
+	//
+	// It is also what every device paired before migration v77 holds, so
+	// this is the value the column defaults to.
+	ProofBearer ProofKind = "bearer"
+	// ProofSignedKey means the device holds an ECDSA P-256 private key,
+	// its thumbprint is the RFC 7638 thumbprint of the public half, and
+	// the ONLY accepted presentation is a signed proof over the request
+	// (deviceproof.go). The bare thumbprint is refused for such a device
+	// on every route — that refusal is what phase 5 buys.
+	ProofSignedKey ProofKind = "key"
+)
+
+// ProofKinds is every declared kind, in the order the schema CHECK spells
+// them.
+var ProofKinds = []ProofKind{ProofBearer, ProofSignedKey}
+
+// Valid reports whether k is a declared proof kind.
+func (k ProofKind) Valid() bool { return slices.Contains(ProofKinds, k) }
+
+// proofKindOf reads a device row's recorded kind, treating an empty value
+// as ProofBearer.
+//
+// Empty is not reachable through the schema (the column is NOT NULL with a
+// default), but a zero-valued store.Device in a test or a future caller
+// would otherwise resolve to a kind that matches nothing — and the failure
+// mode of a mis-defaulted proof kind must be the WEAKER form, which
+// refuses a bare thumbprint mismatch, never the stronger one silently
+// admitting a device whose row was never given a key.
+func proofKindOf(device store.Device) ProofKind {
+	if kind := ProofKind(device.ProofKind); kind.Valid() {
+		return kind
+	}
+	return ProofBearer
+}
 
 // Scope names what a principal may ask for. The values are the audit
 // vocabulary of docs/specs/remote-access.md §5, persisted on a session row

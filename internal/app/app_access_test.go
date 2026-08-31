@@ -64,7 +64,7 @@ func mintLink(t *testing.T, app *App, class identity.DeviceClass) (linkID, token
 func redeem(t *testing.T, app *App, token, label, thumbprint string) identity.Redemption {
 	t.Helper()
 	redemption, reason := app.identityState().sessions.RedeemPairing(identity.RedemptionRequest{
-		Token: token, KeyThumbprint: thumbprint, Label: label, Platform: "linux",
+		Token: token, Proof: identity.DeviceProof{Value: thumbprint}, Label: label, Platform: "linux",
 	})
 	if reason.Refused() {
 		t.Fatalf("RedeemPairing: %s", reason.Code())

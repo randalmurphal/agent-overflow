@@ -32,7 +32,7 @@ func pairSessionWithScopes(t *testing.T, app *App, thumbprint string, scopes []i
 		t.Fatalf("MintPairingLink: %v", err)
 	}
 	redemption, reason := state.sessions.RedeemPairing(identity.RedemptionRequest{
-		Token: link.Token, KeyThumbprint: thumbprint, Label: "a browser", Platform: "linux",
+		Token: link.Token, Proof: identity.DeviceProof{Value: thumbprint}, Label: "a browser", Platform: "linux",
 	})
 	if reason.Refused() {
 		t.Fatalf("RedeemPairing: %s", reason.Code())

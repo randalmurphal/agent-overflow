@@ -67,6 +67,11 @@ type Sessions struct {
 	// boot, a test — and revocation then only has to reach the database and
 	// the fast path.
 	conns LiveConns
+
+	// proofs is the device-proof replay guard (proofreplay.go). Process
+	// local and deliberately not persisted; the file argues both the bound
+	// and what a restart costs.
+	proofs *proofReplay
 }
 
 // liveSweepThreshold is when the fast path drops expired entries. Below it
@@ -91,6 +96,7 @@ func NewSessions(st *store.Store, backendID string) (*Sessions, error) {
 		now:       time.Now,
 		live:      make(map[string]store.Session),
 		keys:      make(map[string][]byte),
+		proofs:    newProofReplay(),
 	}, nil
 }
 

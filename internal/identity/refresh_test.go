@@ -33,7 +33,7 @@ func TestRefreshRotatesAndKeepsTheSession(t *testing.T) {
 
 	c.advance(time.Minute)
 	second, reason := sessions.Refresh(RefreshRequest{
-		Secret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: first.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	})
 	if reason.Refused() {
 		t.Fatalf("Refresh: %s", reason)
@@ -54,7 +54,7 @@ func TestRefreshRotatesAndKeepsTheSession(t *testing.T) {
 	}
 	// The predecessor is spent the moment its successor exists.
 	if _, refused := sessions.Refresh(RefreshRequest{
-		Secret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: first.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); refused != ReasonRevokedSession {
 		t.Fatalf("replayed predecessor = %s, want revoked_session", refused)
 	}
@@ -71,7 +71,7 @@ func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 
 	c.advance(time.Minute)
 	second, reason := sessions.Refresh(RefreshRequest{
-		Secret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: first.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	})
 	if reason.Refused() {
 		t.Fatalf("Refresh: %s", reason)
@@ -79,7 +79,7 @@ func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 
 	// The spent predecessor, presented again.
 	if _, refused := sessions.Refresh(RefreshRequest{
-		Secret: first.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: first.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); refused != ReasonRevokedSession {
 		t.Fatalf("reuse = %s, want revoked_session", refused)
 	}
@@ -90,7 +90,7 @@ func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 	// whole point: the copy and the original are indistinguishable, so
 	// both stop.
 	if _, refused := sessions.Refresh(RefreshRequest{
-		Secret: second.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: second.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); refused != ReasonRevokedSession {
 		t.Fatalf("the outstanding successor still renewed: %s", refused)
 	}
@@ -133,14 +133,14 @@ func TestRefreshBindsToTheDeviceKey(t *testing.T) {
 		t.Fatalf("bare bearer refresh = %s, want missing_proof", reason)
 	}
 	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: tokens.RefreshSecret, KeyThumbprint: "thumb-someone-else",
+		Secret: tokens.RefreshSecret, Proof: bearerProof("thumb-someone-else"),
 	}); reason != ReasonKeyMismatch {
 		t.Fatalf("wrong key refresh = %s, want key_mismatch", reason)
 	}
 	// Neither refusal may have spent the secret: a proof mistake is
 	// recoverable, and consuming first would sign the device out for one.
 	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: tokens.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); reason.Refused() {
 		t.Fatalf("a refused proof spent the secret: %s", reason)
 	}
@@ -149,7 +149,7 @@ func TestRefreshBindsToTheDeviceKey(t *testing.T) {
 func TestRefreshRefusesAnUnknownSecret(t *testing.T) {
 	sessions, st, _, _, _ := newFixture(t)
 	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: "never-issued", KeyThumbprint: "thumb",
+		Secret: "never-issued", Proof: bearerProof("thumb"),
 	}); reason != ReasonUnknownCredential {
 		t.Fatalf("unknown secret = %s, want unknown_credential", reason)
 	}
@@ -171,7 +171,7 @@ func TestRefreshRefusesALapsedSecret(t *testing.T) {
 	c.advance(PolicyFor(DevicePhone, BindingDeviceBound).Refresh + time.Minute)
 
 	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: tokens.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); reason != ReasonExpiredSession {
 		t.Fatalf("lapsed refresh = %s, want expired_session", reason)
 	}
@@ -184,7 +184,7 @@ func TestRefreshRefusesARevokedDevice(t *testing.T) {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
 	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: tokens.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); !reason.Refused() {
 		t.Fatal("a revoked device renewed its credential")
 	}
@@ -198,7 +198,7 @@ func TestRefreshRefusesAnUnconfirmedSession(t *testing.T) {
 	redemption := mustRedeem(t, sessions, link.Token, "thumb-phone")
 
 	if _, reason := sessions.Refresh(RefreshRequest{
-		Secret: redemption.Tokens.RefreshSecret, KeyThumbprint: "thumb-phone",
+		Secret: redemption.Tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
 	}); reason != ReasonPendingConfirmation {
 		t.Fatalf("unconfirmed renewal = %s, want pending_confirmation", reason)
 	}
@@ -323,7 +323,7 @@ func TestPruneCredentialsKeepsWhatCouldStillAdmitOrExplain(t *testing.T) {
 		t.Fatalf("the prune reached a live credential: %s", reason)
 	}
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
-		Token: stale.Token, KeyThumbprint: "thumb",
+		Token: stale.Token, Proof: bearerProof("thumb"),
 	}); reason != ReasonUnknownCredential {
 		t.Fatalf("the expired link survived the prune: %s", reason)
 	}

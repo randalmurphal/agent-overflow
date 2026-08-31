@@ -45,6 +45,15 @@ func newFixture(t *testing.T) (*Sessions, *store.Store, *clock, store.User, stor
 	return sessions, st, c, owner, device
 }
 
+// bearerProof is a presentation from a device with no signing key: the
+// enrollment thumbprint itself, which is what §15 constraint 6's
+// plain-HTTP LAN browser has and all it will ever have. Method and Path
+// are deliberately empty — nothing reads them on this path, and a test
+// that filled them would suggest otherwise.
+func bearerProof(thumbprint string) DeviceProof {
+	return DeviceProof{Value: thumbprint}
+}
+
 func mustMint(t *testing.T, s *Sessions, owner store.User, device store.Device, ttl time.Duration) (store.Session, string) {
 	t.Helper()
 	session, credential, err := s.Mint(MintRequest{

@@ -53,7 +53,7 @@ func pairDevice(t *testing.T, app *App, label, thumbprint string) (store.Device,
 		t.Fatalf("MintPairingLink: %v", err)
 	}
 	redemption, reason := state.sessions.RedeemPairing(identity.RedemptionRequest{
-		Token: link.Token, KeyThumbprint: thumbprint, Label: label, Platform: "linux",
+		Token: link.Token, Proof: identity.DeviceProof{Value: thumbprint}, Label: label, Platform: "linux",
 	})
 	if reason.Refused() {
 		t.Fatalf("RedeemPairing: %s", reason.Code())

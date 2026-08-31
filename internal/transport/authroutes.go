@@ -45,15 +45,26 @@ const AuthTicketPath = "/auth/ticket"
 // can set headers. The cookie below is for the one that cannot.
 const SessionCredentialHeader = "X-AO-Session"
 
-// DeviceKeyHeader carries the thumbprint of the device key a paired
-// client holds. It is the proof-of-possession carrier for this phase.
+// DeviceKeyHeader carries a paired client's proof of possession.
 //
-// A thumbprint is not a signature: it proves the client knows which key
-// the device enrolled, not that it currently holds the private half. The
-// spec's end state is a per-request DPoP proof (§4), and that needs a
-// signing scheme on the wire which does not exist yet. Naming the header
-// for the KEY rather than for the thumbprint is deliberate — phase 5
-// replaces the value with a proof and keeps every call site.
+// Named for the KEY rather than for one encoding of it, which is what let
+// phase 5 swap the VALUE without moving a single call site. Two shapes
+// ride it now, and this package does not distinguish them — which one a
+// given device may present is internal/identity's answer, from the device
+// row (`proof_kind`, migration v77):
+//
+//   - a compact JWS signed over this request, for a device that enrolled
+//     an ECDSA P-256 key. A signature, so a copy of the string admits
+//     nothing: it is bound to one method and path, carries a single-use
+//     identifier, and expires in minutes.
+//   - the bare enrollment thumbprint, for a device that could not enroll a
+//     key. A plain-HTTP LAN page is not a secure context, so it has no
+//     `crypto.subtle` at all; spec §15 constraint 6 states that there is
+//     deliberately no LAN-HTTP proof path, and this is that class.
+//
+// A device that enrolled a key is never accepted on the second shape. The
+// wire allows both because two kinds of device exist, not because either
+// device gets to choose.
 const DeviceKeyHeader = "X-AO-Device-Key"
 
 // WSTicketParam carries a WebSocket ticket on the upgrade URL. A ticket,
@@ -90,7 +101,29 @@ type PairingRedemption struct {
 	// KeyThumbprint identifies the keypair this device generated BEFORE
 	// redeeming. There is no path that enrolls a device which presented
 	// none.
+	//
+	// The BEARER carrier only, and the body is the right place for it
+	// precisely because it is not a proof: it is an identifier the device
+	// asks to be known by. A device that can sign presents DeviceProof
+	// instead, from the header, and this field is then never read — see
+	// that field.
 	KeyThumbprint string `json:"keyThumbprint"`
+	// DeviceProof is the signed proof from DeviceKeyHeader, for a device
+	// that generated a real key. Never from the body: a proof a caller may
+	// write into the same document it is proving something about is not a
+	// proof.
+	//
+	// When present it decides the enrollment ALONE — the thumbprint the
+	// backend records is derived from the key inside it, so KeyThumbprint
+	// is not consulted and a request carrying both cannot name a key other
+	// than the one it proved.
+	DeviceProof string `json:"-"`
+	// Method and Path are what a signed proof binds, filled in by this
+	// package from the request itself. Never from the body, for the reason
+	// above: a proof that names its own target proves nothing about where
+	// it was presented.
+	Method string `json:"-"`
+	Path   string `json:"-"`
 	// Label and Platform are what the device calls itself in the owner's
 	// device list. Advisory, and replaceable from the host later.
 	Label    string `json:"label,omitempty"`
@@ -105,10 +138,15 @@ type SessionRenewal struct {
 	// RefreshSecret is the secret issued alongside the credential this
 	// call replaces.
 	RefreshSecret string `json:"refreshSecret"`
-	// KeyThumbprint comes from DeviceKeyHeader, never from the body: a
-	// proof a caller may write into the same document it is proving
-	// something about is not a proof.
-	KeyThumbprint string `json:"-"`
+	// DeviceProof comes from DeviceKeyHeader, never from the body: a proof
+	// a caller may write into the same document it is proving something
+	// about is not a proof. A signed JWS or a bare thumbprint, per that
+	// constant.
+	DeviceProof string `json:"-"`
+	// Method and Path are what a signed proof binds, read off the request
+	// by this package.
+	Method string `json:"-"`
+	Path   string `json:"-"`
 	// Peer is the request's remote address, for the audit trail.
 	Peer string `json:"-"`
 }
@@ -200,6 +238,8 @@ func (s *Server) handleAuthPair(w http.ResponseWriter, r *http.Request) {
 	if !decodeAuthBody(w, r, &req) {
 		return
 	}
+	req.DeviceProof = r.Header.Get(DeviceKeyHeader)
+	req.Method, req.Path = r.Method, r.URL.Path
 	req.Peer = r.RemoteAddr
 	grant, reason := endpoints.RedeemPairing(req)
 	writeAuthResult(w, s.csp, grant, reason)
@@ -220,7 +260,8 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	if !decodeAuthBody(w, r, &req) {
 		return
 	}
-	req.KeyThumbprint = r.Header.Get(DeviceKeyHeader)
+	req.DeviceProof = r.Header.Get(DeviceKeyHeader)
+	req.Method, req.Path = r.Method, r.URL.Path
 	req.Peer = r.RemoteAddr
 	grant, reason := endpoints.RenewSession(req)
 	writeAuthResult(w, s.csp, grant, reason)

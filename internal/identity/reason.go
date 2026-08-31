@@ -76,6 +76,41 @@ const (
 	// remedy here is on the OWNER's screen — restore the device, then
 	// redeem a fresh link.
 	ReasonRevokedDevice
+	// ReasonProofReplayed means a device proof verified, is inside its
+	// freshness window, and carries a `jti` this backend already spent
+	// (deviceproof.go). Single-use is the whole property a per-request
+	// proof adds over a per-session one, so a second presentation of the
+	// same proof is refused rather than treated as a retry.
+	//
+	// Its own code because the remedy is unlike every neighbour's: nothing
+	// is wrong with the credential, the key, or the clock. A client that
+	// re-sent a request body verbatim mints a FRESH proof and succeeds;
+	// one that cached a proof string and replays it never will.
+	ReasonProofReplayed
+	// ReasonProofNotBound means a device proof verified but names a
+	// different method or path than the request carrying it. A proof is
+	// bound to one call — that binding is what stops a proof captured on
+	// one route from being presented on another — so the mismatch is a
+	// refusal and not a detail.
+	//
+	// Kept apart from ReasonInvalidSignature because the two send a
+	// debugging effort in opposite directions: an invalid signature is a
+	// key or an encoding problem, and this one is a client signing the
+	// wrong request. Silent DPoP failures being undebuggable is the
+	// specific complaint this vocabulary exists to answer
+	// (docs/specs/remote-access.md §9).
+	ReasonProofNotBound
+	// ReasonProofDowngraded means a device whose row records an enrolled
+	// KEY presented the bare thumbprint instead of a signed proof.
+	//
+	// The refusal that makes phase 5 worth building. Both halves of the
+	// old wire are still shaped the same, so without this the presentation
+	// would read as an ordinary malformed proof and the log would say
+	// "corruption" for the one event worth naming exactly: a credential
+	// being offered more weakly than it was issued (the boundaries doc's
+	// case 4). It is also what a device with a cleared IndexedDB gets, and
+	// the client-side hint says so.
+	ReasonProofDowngraded
 )
 
 // reasonCodes maps each Reason to its stable wire spelling, indexed by
@@ -97,6 +132,9 @@ var reasonCodes = [...]string{
 	ReasonPendingConfirmation: "pending_confirmation",
 	ReasonUnknownCredential:   "unknown_credential",
 	ReasonRevokedDevice:       "revoked_device",
+	ReasonProofReplayed:       "proof_replayed",
+	ReasonProofNotBound:       "proof_not_bound",
+	ReasonProofDowngraded:     "proof_downgraded",
 }
 
 // Code returns the stable wire spelling. An out-of-range value — only

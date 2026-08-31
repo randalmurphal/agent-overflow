@@ -177,7 +177,7 @@ func SessionForRequest(a *App, r *http.Request) (string, bool) {
 	if reason.Refused() {
 		return "", false
 	}
-	if refused := state.sessions.CheckDeviceProof(session, r.Header.Get(transport.DeviceKeyHeader)); refused.Refused() {
+	if refused := state.sessions.CheckDeviceProof(session, deviceProofFrom(r)); refused.Refused() {
 		// The device-key requirement lives HERE rather than on each route,
 		// so a session whose device enrolled a key presents it on every
 		// request that names that session — including the ticket route,
@@ -188,6 +188,27 @@ func SessionForRequest(a *App, r *http.Request) (string, bool) {
 		return "", true
 	}
 	return session.ID, true
+}
+
+// deviceProofFrom reads a request's proof of possession.
+//
+// The one place an *http.Request becomes an identity.DeviceProof, because
+// internal/identity never sees a request and must not: it is the layer
+// below the transport (see that package's doc). Method and Path come from
+// the request itself rather than from anything the caller wrote, which is
+// what makes a signed proof's binding a statement about where the proof
+// actually arrived.
+//
+// Path, never the full URL. One backend answers on loopback, on a LAN
+// address, behind the WSL launcher's relay and behind a `--connect` stub's
+// proxy, and a client cannot predict which authority its request will be
+// seen under. See identity/deviceproof.go for the argument.
+func deviceProofFrom(r *http.Request) identity.DeviceProof {
+	return identity.DeviceProof{
+		Value:  r.Header.Get(transport.DeviceKeyHeader),
+		Method: r.Method,
+		Path:   r.URL.Path,
+	}
 }
 
 // bindingAdmitsPeer reports whether a session's BINDING CLASS
@@ -324,11 +345,11 @@ func (e authEndpoints) RedeemPairing(req transport.PairingRedemption) (transport
 		return transport.TokenGrant{}, identity.ReasonUnknownCredential.Code()
 	}
 	redemption, reason := state.sessions.RedeemPairing(identity.RedemptionRequest{
-		Token:         req.Token,
-		KeyThumbprint: req.KeyThumbprint,
-		Label:         req.Label,
-		Platform:      req.Platform,
-		Peer:          req.Peer,
+		Token:    req.Token,
+		Proof:    redemptionProof(req),
+		Label:    req.Label,
+		Platform: req.Platform,
+		Peer:     req.Peer,
 	})
 	if reason.Refused() {
 		return transport.TokenGrant{}, reason.Code()
@@ -347,14 +368,34 @@ func (e authEndpoints) RenewSession(req transport.SessionRenewal) (transport.Tok
 		return transport.TokenGrant{}, identity.ReasonUnknownCredential.Code()
 	}
 	tokens, reason := state.sessions.Refresh(identity.RefreshRequest{
-		Secret:        req.RefreshSecret,
-		KeyThumbprint: req.KeyThumbprint,
-		Peer:          req.Peer,
+		Secret: req.RefreshSecret,
+		Proof: identity.DeviceProof{
+			Value:  req.DeviceProof,
+			Method: req.Method,
+			Path:   req.Path,
+		},
+		Peer: req.Peer,
 	})
 	if reason.Refused() {
 		return transport.TokenGrant{}, reason.Code()
 	}
 	return localGrant(tokens), ""
+}
+
+// redemptionProof resolves which of a redemption's two carriers holds the
+// device's presentation.
+//
+// The header wins whenever it is present. A signed proof names the key it
+// was made with, so the body's thumbprint field would be a second, weaker
+// claim about the same fact — and a request carrying both must not be able
+// to enroll a key it did not demonstrate. The body carrier survives for
+// the device that has nothing to sign with (spec §15 constraint 6).
+func redemptionProof(req transport.PairingRedemption) identity.DeviceProof {
+	value := req.DeviceProof
+	if value == "" {
+		value = req.KeyThumbprint
+	}
+	return identity.DeviceProof{Value: value, Method: req.Method, Path: req.Path}
 }
 
 // localGrant is the one translation between the session core's TokenSet

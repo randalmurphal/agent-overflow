@@ -118,10 +118,16 @@ the case worth closing again.
 `pairing.go` runs the seven steps of spec §4 in one place. The shape worth
 keeping:
 
-- **The redeeming device generates its keypair FIRST** and presents the
-  thumbprint as part of redemption. Proof-of-possession is universal —
-  there is no path that mints a session for a device that proved nothing,
-  so no later phase has to add one.
+- **The redeeming device generates its keypair FIRST** and presents it as
+  part of redemption. Proof-of-possession is universal — there is no path
+  that mints a session for a device that proved nothing, so no later phase
+  has to add one. What it presents decides its `ProofKind` for the life of
+  the row: a SIGNED proof over the redemption enrolls it `key`, and the
+  thumbprint recorded is derived from a key the device just demonstrated
+  it holds; a bare identifier enrolls it `bearer`. A device may only make
+  itself weaker by choosing the second, which is why sniffing the shape is
+  safe at enrollment and refused everywhere else — there is no stronger row
+  to downgrade from yet.
 - **Redemption returns the real credential immediately, and it admits
   nothing.** The session row is minted with `activated_at` unset, and
   `store.Session.Live` requires it. So the pending state costs no poll
@@ -143,7 +149,11 @@ keeping:
 - **Re-pairing a known key ADOPTS its device row** (`key_thumbprint` is
   uniquely indexed), so a device that pairs twice does not accumulate
   rows. A revoked device, or one belonging to another user, is refused
-  with `key_mismatch` rather than re-admitted.
+  with `key_mismatch` rather than re-admitted. Adoption may never change
+  the row's `ProofKind`: this is the one path that writes device rows, so
+  without that rule a key-bound device's requirement could be undone by
+  redeeming a fresh link with its thumbprint as a bare string
+  (`proof_downgraded`).
 - **The grant set is decided at MINT and copied onto the session.**
   `PairingRequest.Scopes` is the link's set, `mintPendingSession` copies
   it onto the row, and nothing edits it afterwards — so how much a device
@@ -261,6 +271,72 @@ the admission matrix live in `internal/transport/AGENTS.md`
 that names a session, not only on renewal. A session whose device enrolled
 a key presents it everywhere, so no route added later can be a way around
 it — including `/auth/ticket`, whose whole authentication is that hook.
+
+## The device proof, and why the row decides
+
+`deviceproof.go`. Phase 5 replaced the thumbprint STRING with an ES256
+compact JWS signed over the request (spec §4). A string copied out of a
+page's storage was as good as the key it named, so the old binding bought
+attribution and nothing more; a proof is minted per call, so a copied
+credential is no longer sufficient on any path that binds to a device key.
+
+- **The row decides what a valid presentation IS, never the
+  presentation.** `checkProofAgainstDevice` switches on the device's
+  `ProofKind` before it looks at what arrived. That one sentence is the
+  downgrade rule: a `key` device sending a bare thumbprint is
+  `proof_downgraded`, not a fallback to the weaker branch. Sniffing the
+  shape and taking whichever path it fits is exactly the hole this
+  replaces.
+- **`bearer` is not a weaker option, it is a different device.** A
+  plain-HTTP LAN page is not a secure context, so `crypto.subtle` does not
+  exist there at all and no key can be generated. Spec §15 constraint 6
+  states there is deliberately no LAN-HTTP proof path; `ProofBearer` is how
+  that is recorded rather than pretended away, and such a device keeps
+  exactly the behavior it had before phase 5.
+- **The refusal ordering is structural, the same way claims.go's is.**
+  `verifiedDeviceProof` is constructed only by `checkProofSignature`'s
+  success path, and `withinWindow` and `boundTo` are methods on it. So a
+  proof that did not verify can never be reported as a clock problem —
+  `outside_time_window` carries the "check automatic date & time" hint, and
+  showing that for a proof this backend's device never signed sends a
+  person to fix the wrong thing.
+- **One ordering, two callers.** `admitProof` holds signature → binding →
+  freshness → replay, because a request against an enrolled row
+  (`verifyDeviceProof`) and an enrollment with no row yet (`enrollmentFor`)
+  would otherwise be free to drift apart. What differs between them —
+  whether a stored thumbprint exists to compare against — sits outside that
+  function on both sides.
+- **Replay is spent LAST**, so a presentation that could never be admitted
+  cannot consume the identifier of one that would be.
+- **Enrollment verifies before the link is spent.** A signing bug on the
+  device must not cost the link somebody minted, or a spent link and a
+  broken client would be indistinguishable to the person holding the phone.
+- **`htp` is the PATH, not RFC 9449's full URI**, and `iatMs` is
+  milliseconds rather than JWT seconds. One backend answers on loopback, a
+  LAN address, the WSL relay and a `--connect` proxy at once, and a client
+  cannot predict which authority its request is seen under. The field names
+  and `typ` are ours precisely so a reader who knows DPoP does not read
+  them as the RFC's and be wrong.
+- **The replay guard is two rotating maps** (`proofreplay.go`), bounded by
+  the window with a hard cap, per spec §14. An entry lives between one and
+  two windows — always at least the window a proof is acceptable across,
+  which is the only property correctness needs — and a rotation frees a
+  whole generation with no scan. At the cap it rotates EARLY rather than
+  refusing: refusing would turn a burst into a sign-out for every real
+  device, and reaching the cap requires thousands of proofs that already
+  verified under a device's private key. A restart clears it; the spec
+  accepts that and says why.
+- **Signature work is bounded to establishment.** Per HTTP request and per
+  WS upgrade, never per frame — `Sessions.Live`, the per-RPC path, does no
+  signature work at all.
+
+`TestProofVectorFromRealWebCrypto` is the one test that would fail if Go
+and WebCrypto disagreed: every other test signs with `crypto/ecdsa`, so
+they would all still pass. It pins a proof a real Chromium minted,
+covering the two things that are easy to get wrong — WebCrypto emits a
+64-byte r‖s signature rather than ASN.1 (`ecdsa.VerifyASN1` answers a
+silent false on those bytes), and its exported JWK carries `ext` and
+`key_ops` members that the RFC 7638 thumbprint must not include.
 
 ## Binding class is compared at PRESENTATION, and only there
 

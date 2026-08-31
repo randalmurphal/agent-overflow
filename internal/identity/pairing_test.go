@@ -30,7 +30,7 @@ func mustMintLink(t *testing.T, s *Sessions, owner store.User, scopes ...Scope) 
 func mustRedeem(t *testing.T, s *Sessions, token, thumbprint string) Redemption {
 	t.Helper()
 	redemption, reason := s.RedeemPairing(RedemptionRequest{
-		Token: token, KeyThumbprint: thumbprint, Label: "A Phone", Platform: "ios",
+		Token: token, Proof: bearerProof(thumbprint), Label: "A Phone", Platform: "ios",
 	})
 	if reason.Refused() {
 		t.Fatalf("RedeemPairing: %s", reason)
@@ -120,7 +120,7 @@ func TestPairingLinkIsSingleUseAcrossRedeemers(t *testing.T) {
 	mustRedeem(t, sessions, link.Token, "thumb-phone")
 
 	_, reason := sessions.RedeemPairing(RedemptionRequest{
-		Token: link.Token, KeyThumbprint: "thumb-other",
+		Token: link.Token, Proof: bearerProof("thumb-other"),
 	})
 	if reason != ReasonUnknownCredential {
 		t.Fatalf("second redemption = %s, want unknown_credential", reason)
@@ -141,7 +141,7 @@ func TestPairingLinkRedemptionUnderConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, reason := sessions.RedeemPairing(RedemptionRequest{
-				Token: link.Token, KeyThumbprint: "thumb-" + string(rune('a'+i)),
+				Token: link.Token, Proof: bearerProof("thumb-" + string(rune('a'+i))),
 			})
 			admitted[i] = !reason.Refused()
 		}()
@@ -165,12 +165,12 @@ func TestPairingRedemptionRequiresAKeyThumbprint(t *testing.T) {
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{Token: link.Token}); reason != ReasonMissingProof {
 		t.Fatalf("redemption with no key = %s, want missing_proof", reason)
 	}
-	if _, reason := sessions.RedeemPairing(RedemptionRequest{KeyThumbprint: "thumb"}); reason != ReasonMissingProof {
+	if _, reason := sessions.RedeemPairing(RedemptionRequest{Proof: bearerProof("thumb")}); reason != ReasonMissingProof {
 		t.Fatalf("redemption with no token = %s, want missing_proof", reason)
 	}
 	// Neither refusal may have spent the link.
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
-		Token: link.Token, KeyThumbprint: "thumb",
+		Token: link.Token, Proof: bearerProof("thumb"),
 	}); reason.Refused() {
 		t.Fatalf("a refused redemption spent the link: %s", reason)
 	}
@@ -182,7 +182,7 @@ func TestPairingLinkExpires(t *testing.T) {
 	c.advance(PairingLinkTTL + time.Second)
 
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
-		Token: link.Token, KeyThumbprint: "thumb",
+		Token: link.Token, Proof: bearerProof("thumb"),
 	}); reason != ReasonUnknownCredential {
 		t.Fatalf("expired link = %s, want unknown_credential", reason)
 	}
@@ -346,13 +346,13 @@ func TestRepairingARevokedDeviceIsRefused(t *testing.T) {
 	}
 	link := mustMintLink(t, sessions, owner)
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
-		Token: link.Token, KeyThumbprint: "thumb-phone",
+		Token: link.Token, Proof: bearerProof("thumb-phone"),
 	}); reason != ReasonRevokedDevice {
 		t.Fatalf("re-pairing a revoked device = %s, want revoked_device", reason)
 	}
 	// The refused redemption must have settled the link, not released it.
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
-		Token: link.Token, KeyThumbprint: "thumb-fresh",
+		Token: link.Token, Proof: bearerProof("thumb-fresh"),
 	}); reason != ReasonUnknownCredential {
 		t.Fatalf("a link survived a refused redemption: %s", reason)
 	}
@@ -473,7 +473,7 @@ func TestPairingAuditTrailNamesEveryStep(t *testing.T) {
 		t.Fatalf("ConfirmPairing: %v", err)
 	}
 	if _, reason := sessions.RedeemPairing(RedemptionRequest{
-		Token: "never-minted", KeyThumbprint: "thumb",
+		Token: "never-minted", Proof: bearerProof("thumb"),
 	}); !reason.Refused() {
 		t.Fatal("an unknown token was admitted")
 	}

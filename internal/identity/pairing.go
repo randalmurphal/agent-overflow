@@ -227,11 +227,26 @@ func (s *Sessions) MintPairingLink(req PairingRequest) (PairingLink, error) {
 type RedemptionRequest struct {
 	// Token is the link token from the payload fragment.
 	Token string
-	// KeyThumbprint is the device's public-key thumbprint, generated
-	// before this call. REQUIRED on every redemption: proof-of-possession
-	// is universal (§4 step 2), so there is no path where a link alone
-	// admits a device.
-	KeyThumbprint string
+	// Proof is what the device generated BEFORE this call and presents to
+	// enroll. REQUIRED on every redemption: proof-of-possession is
+	// universal (§4 step 2), so there is no path where a link alone admits
+	// a device.
+	//
+	// Two shapes, and the device chooses which by what it can do:
+	//
+	//   - a signed proof over this redemption, which enrolls the device
+	//     `key`. The public key travels inside it, so the thumbprint this
+	//     backend records is derived from a key the device just
+	//     DEMONSTRATED it holds — enrollment is itself a possession proof,
+	//     not a claim to be trusted later.
+	//   - a bare opaque identifier, which enrolls it `bearer`. This is the
+	//     plain-HTTP LAN browser of §15 constraint 6: no secure context,
+	//     no WebCrypto, nothing to sign with.
+	//
+	// A device may only make itself weaker by choosing the second, which
+	// is why sniffing the shape is safe HERE and refused everywhere else:
+	// at enrollment there is no stronger row to downgrade from.
+	Proof DeviceProof
 	// Label and Platform are what the device calls itself. Presentation
 	// only — nothing authorizes on either, which is why the device is
 	// allowed to name them and not its class.
@@ -275,8 +290,17 @@ type Redemption struct {
 // deliberate answer to "I want that device back" is to remove the
 // revocation on the device surface.
 func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
-	if req.Token == "" || req.KeyThumbprint == "" {
+	if req.Token == "" || req.Proof.Value == "" {
 		return Redemption{}, ReasonMissingProof
+	}
+	// Resolve the enrollment BEFORE the link is spent. A signed proof that
+	// does not verify must not cost the link somebody minted: nothing has
+	// happened yet, and cancelling here would make a client-side signing
+	// bug indistinguishable from a spent link.
+	enrollment, reason := s.enrollmentFor(req.Proof)
+	if reason.Refused() {
+		s.auditPairingRefusal(reason, req.Peer, "")
+		return Redemption{}, reason
 	}
 	digest := hashPairingToken(req.Token)
 	now := s.now().UnixMilli()
@@ -286,7 +310,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	// rather than releasing it — a link that could be freed by a failed
 	// redemption would be one a second presentation gets another turn at,
 	// which is exactly what single-use forbids.
-	pending, err := s.store.RedeemPairingLink(digest[:], now, req.KeyThumbprint)
+	pending, err := s.store.RedeemPairingLink(digest[:], now, enrollment.thumbprint)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.auditPairingRefusal(ReasonUnknownCredential, req.Peer, "")
 		return Redemption{}, ReasonUnknownCredential
@@ -296,7 +320,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		return Redemption{}, ReasonUnknownCredential
 	}
 
-	device, reason := s.resolveRedeemingDevice(pending, req)
+	device, reason := s.resolveRedeemingDevice(pending, req, enrollment)
 	if reason.Refused() {
 		s.cancelRedeemedLink(pending.ID)
 		s.auditPairingRefusal(reason, req.Peer, pending.ID)
@@ -322,7 +346,7 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 		s.cancelRedeemedLink(pending.ID)
 		return Redemption{}, ReasonUnknownCredential
 	}
-	number, err := s.VerificationNumber(pending.ID, req.KeyThumbprint)
+	number, err := s.VerificationNumber(pending.ID, enrollment.thumbprint)
 	if err != nil {
 		log.Printf("identity: derive verification number for %s: %v", pending.ID, err)
 		return Redemption{}, ReasonUnknownCredential
@@ -340,17 +364,69 @@ func (s *Sessions) RedeemPairing(req RedemptionRequest) (Redemption, Reason) {
 	}, ReasonNone
 }
 
+// deviceEnrollment is what a redemption's proof resolved to: the
+// thumbprint that will name the device row, and how that thumbprint may be
+// presented from then on.
+type deviceEnrollment struct {
+	thumbprint string
+	kind       ProofKind
+}
+
+// enrollmentFor reads a redemption's presentation and decides which of the
+// two enrollments it is.
+//
+// The signed branch VERIFIES before it records anything. That is what
+// makes a `key` device's thumbprint trustworthy for the whole life of the
+// row: it is the hash of a key whose private half signed this exact
+// redemption, checked here in the same order CheckDeviceProof uses —
+// signature, then binding, then freshness, then replay — and there is no
+// device row yet to compare a thumbprint against, so that step is simply
+// absent rather than skipped.
+//
+// The bearer branch records the identifier as presented. It proves nothing
+// beyond "the same device will send this string again", which is exactly
+// what §15 constraint 6 leaves available to a page with no WebCrypto, and
+// exactly what the owner-confirmed verification number is there to
+// compensate for: that number is derived from the thumbprint, so a device
+// that enrolled a different one cannot display digits the owner's screen
+// will match.
+func (s *Sessions) enrollmentFor(presented DeviceProof) (deviceEnrollment, Reason) {
+	if !presented.Signed() {
+		return deviceEnrollment{thumbprint: presented.Value, kind: ProofBearer}, ReasonNone
+	}
+	parsed, reason := parseDeviceProof(presented.Value)
+	if reason.Refused() {
+		return deviceEnrollment{}, reason
+	}
+	if reason := s.admitProof(parsed, presented); reason.Refused() {
+		return deviceEnrollment{}, reason
+	}
+	return deviceEnrollment{thumbprint: parsed.thumbprint, kind: ProofSignedKey}, ReasonNone
+}
+
 // resolveRedeemingDevice finds or creates the device row for a presented
 // key. See RedeemPairing for why an existing key is adopted and a revoked
 // one is refused.
-func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req RedemptionRequest) (store.Device, Reason) {
+func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req RedemptionRequest, enrollment deviceEnrollment) (store.Device, Reason) {
 	label := strings.TrimSpace(req.Label)
 	if label == "" {
 		label = defaultDeviceLabel(DeviceClass(link.DeviceClass))
 	}
-	existing, err := s.store.DeviceByKeyThumbprint(req.KeyThumbprint)
+	existing, err := s.store.DeviceByKeyThumbprint(enrollment.thumbprint)
 	switch {
 	case err == nil:
+		if proofKindOf(existing) != enrollment.kind {
+			// Adoption must never change what a row's thumbprint MEANS.
+			// The reachable direction is a device whose row records an
+			// enrolled key presenting that thumbprint as a bare
+			// identifier — which would adopt the row and make every later
+			// presentation a string comparison, undoing phase 5 for that
+			// device permanently through the one path that writes device
+			// rows. The other direction cannot occur: a key thumbprint is
+			// the hash of a public key, so a bearer row's opaque
+			// identifier does not collide with one.
+			return store.Device{}, ReasonProofDowngraded
+		}
 		if existing.RevokedAt != 0 {
 			// The owner withdrew this device; a fresh link must not undo
 			// that by itself. The reason names the remedy: restore the
@@ -370,7 +446,8 @@ func (s *Sessions) resolveRedeemingDevice(link store.PairingLink, req Redemption
 		return store.Device{}, ReasonKeyMismatch
 	}
 	device, err := s.store.CreatePairedDevice(
-		link.UserID, label, link.DeviceClass, req.Platform, req.KeyThumbprint)
+		link.UserID, label, link.DeviceClass, req.Platform,
+		enrollment.thumbprint, string(enrollment.kind))
 	if err != nil {
 		log.Printf("identity: create paired device: %v", err)
 		return store.Device{}, ReasonKeyMismatch

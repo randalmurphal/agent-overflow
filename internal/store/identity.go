@@ -62,6 +62,16 @@ type Device struct {
 	// present, so one key can never name two devices.
 	KeyThumbprint       string `json:"keyThumbprint,omitempty"`
 	PasskeyCredentialID string `json:"passkeyCredentialId,omitempty"`
+	// ProofKind is how KeyThumbprint may be presented (migration v77).
+	// `bearer` compares the thumbprint as a string; `key` accepts only a
+	// signed proof over the request, and the thumbprint is then the RFC
+	// 7638 thumbprint of the public key that signed it. Empty reads as
+	// `bearer` for a row written before the column existed, which is what
+	// the column DEFAULT already guarantees.
+	//
+	// The value set is closed and mirrored by the schema CHECK;
+	// internal/identity declares the names and cross-checks both.
+	ProofKind string `json:"proofKind,omitempty"`
 	// Channel names a device the backend mints for ITSELF rather than one
 	// a person paired: today only the local page channel (v76). Empty for
 	// every paired device, and uniquely indexed when present, so a channel
@@ -166,7 +176,7 @@ const authAuditPruneEvery = 64
 const userColumns = `id, display_name, role, created_at, disabled_at`
 
 const deviceColumns = `id, user_id, label, class, platform, key_thumbprint,
-	passkey_credential_id, channel, created_at, last_seen_at, revoked_at`
+	passkey_credential_id, channel, created_at, last_seen_at, revoked_at, proof_kind`
 
 const sessionColumns = `id, user_id, device_id, binding_class, scopes,
 	signing_key_id, created_at, expires_at, revoked_at, last_seen_at, activated_at`
@@ -376,7 +386,7 @@ func (s *Store) deviceByChannel(channel string) (Device, error) {
 // two writes with no transaction around them: a thumbprint that loses the
 // unique index to a concurrent redemption would leave a device row nothing
 // created it for. One INSERT means the conflict refuses the whole thing.
-func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint string) (Device, error) {
+func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint, proofKind string) (Device, error) {
 	if strings.TrimSpace(userID) == "" {
 		return Device{}, fmt.Errorf("%w: device user id", ErrIdentityFieldRequired)
 	}
@@ -386,6 +396,9 @@ func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint st
 	if strings.TrimSpace(thumbprint) == "" {
 		return Device{}, fmt.Errorf("%w: device key thumbprint", ErrIdentityFieldRequired)
 	}
+	if strings.TrimSpace(proofKind) == "" {
+		return Device{}, fmt.Errorf("%w: device proof kind", ErrIdentityFieldRequired)
+	}
 	device := Device{
 		ID:            uuid.NewString(),
 		UserID:        userID,
@@ -393,14 +406,15 @@ func (s *Store) CreatePairedDevice(userID, label, class, platform, thumbprint st
 		Class:         class,
 		Platform:      platform,
 		KeyThumbprint: thumbprint,
+		ProofKind:     proofKind,
 		CreatedAt:     nowMillis(),
 	}
 	if _, err := s.db.Exec(
 		`INSERT INTO devices (id, user_id, label, class, platform, key_thumbprint,
-			passkey_credential_id, channel, created_at, last_seen_at, revoked_at)
-		 VALUES (?, ?, ?, ?, ?, ?, NULL, '', ?, 0, NULL)`,
+			passkey_credential_id, channel, created_at, last_seen_at, revoked_at, proof_kind)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, '', ?, 0, NULL, ?)`,
 		device.ID, device.UserID, device.Label, device.Class, device.Platform,
-		device.KeyThumbprint, device.CreatedAt,
+		device.KeyThumbprint, device.CreatedAt, device.ProofKind,
 	); err != nil {
 		return Device{}, fmt.Errorf("store: create paired device: %w", err)
 	}
@@ -594,7 +608,7 @@ func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	if err := sc.Scan(
 		&device.ID, &device.UserID, &device.Label, &device.Class, &device.Platform,
 		&thumbprint, &passkey, &device.Channel, &device.CreatedAt, &device.LastSeenAt,
-		&revokedAt,
+		&revokedAt, &device.ProofKind,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Device{}, err

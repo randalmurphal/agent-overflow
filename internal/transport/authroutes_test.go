@@ -117,6 +117,13 @@ func TestPairRouteCarriesTheRedemptionAndAnswersAGrant(t *testing.T) {
 	if req.Token != "pairing-token" || req.KeyThumbprint != "thumb-phone" || req.Label != "A Phone" {
 		t.Fatalf("the route reshaped the redemption: %+v", req)
 	}
+	// The bearer identifier rides the BODY, and the route fills in the
+	// request facts a signed proof binds. Both matter: a proof that named
+	// its own method and path would prove nothing about where it arrived.
+	if req.Method != http.MethodPost || req.Path != AuthPairPath {
+		t.Fatalf("the route did not carry the request binding: method %q path %q",
+			req.Method, req.Path)
+	}
 	if req.Peer == "" {
 		t.Fatal("the peer was not filled in; the audit entry would name nobody")
 	}
@@ -163,8 +170,29 @@ func TestRenewalTakesTheKeyFromTheHeaderOnly(t *testing.T) {
 	if req.RefreshSecret != "secret-1" {
 		t.Fatalf("refresh secret = %q", req.RefreshSecret)
 	}
-	if req.KeyThumbprint != "thumb-from-the-header" {
-		t.Fatalf("key thumbprint = %q, want the header's", req.KeyThumbprint)
+	if req.DeviceProof != "thumb-from-the-header" {
+		t.Fatalf("key thumbprint = %q, want the header's", req.DeviceProof)
+	}
+}
+
+// TestPairRouteCarriesTheSignedProofFromTheHeader: a device that can sign
+// presents its proof on DeviceKeyHeader, never in the body — a proof a
+// caller may write into the same document it is proving something about
+// is not a proof. Both carriers reach the app side, which decides between
+// them.
+func TestPairRouteCarriesTheSignedProofFromTheHeader(t *testing.T) {
+	auth := &stubAuth{grant: TokenGrant{SessionID: "sess-1", Credential: "ao1.credential"}}
+	f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+
+	resp := postJSON(t, f.srv.Addr(), AuthPairPath, PairingRedemption{
+		Token: "pairing-token", KeyThumbprint: "ignored-when-a-proof-is-present",
+	}, map[string]string{DeviceKeyHeader: "header.proof.signature"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	req := auth.lastPairing(t)
+	if req.DeviceProof != "header.proof.signature" {
+		t.Fatalf("device proof = %q, want the header's", req.DeviceProof)
 	}
 }
 
