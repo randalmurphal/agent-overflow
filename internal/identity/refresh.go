@@ -67,6 +67,19 @@ type TokenSet struct {
 	// redemption and the owner has not confirmed the verification number
 	// yet. Both credentials are real; neither admits anything until then.
 	AwaitingConfirmation bool
+	// Scopes is the session row's grant set, returned so the device that
+	// just paired (or just rotated) can tell its own screens which
+	// surfaces it holds instead of discovering each one by being refused
+	// (docs/specs/remote-access.md §5, frontend capability model).
+	//
+	// The issuance is the only moment a device learns this without a
+	// dedicated round trip, and grants are immutable for a session's
+	// lifetime, so one copy at issue time stays true until the session
+	// ends. It is a disclosure of what the caller already holds, never an
+	// authorization: every RPC re-checks against the row.
+	//
+	// The row's own slice, read-only to its caller.
+	Scopes []string
 }
 
 // RefreshRequest is one renewal presentation.
@@ -308,6 +321,7 @@ func (s *Sessions) issueFor(session store.Session, policy TokenPolicy, now int64
 		Credential:           credential,
 		ExpiresAtMillis:      session.ExpiresAt,
 		AwaitingConfirmation: session.AwaitingConfirmation(),
+		Scopes:               session.Scopes,
 	}
 	if !policy.Renewable() {
 		return tokens, nil

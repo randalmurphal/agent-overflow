@@ -315,7 +315,15 @@ func (e authEndpoints) RenewSession(req transport.SessionRenewal) (transport.Tok
 // localGrant is the one translation between the session core's TokenSet
 // and the transport's wire shape. One function so a field added to either
 // side is added once.
+//
+// The scope set is copied rather than aliased, and an empty one is
+// normalised to a non-nil slice: the wire contract says the field is
+// always an array (TokenGrant.Scopes), and handing the encoder the
+// session row's own backing array would publish a value the identity
+// layer still owns.
 func localGrant(tokens identity.TokenSet) transport.TokenGrant {
+	scopes := make([]string, len(tokens.Scopes))
+	copy(scopes, tokens.Scopes)
 	return transport.TokenGrant{
 		SessionID:            tokens.SessionID,
 		Credential:           tokens.Credential,
@@ -323,6 +331,7 @@ func localGrant(tokens identity.TokenSet) transport.TokenGrant {
 		RefreshSecret:        tokens.RefreshSecret,
 		RefreshExpiresAtMs:   tokens.RefreshExpiresAtMillis,
 		AwaitingConfirmation: tokens.AwaitingConfirmation,
+		Scopes:               scopes,
 	}
 }
 

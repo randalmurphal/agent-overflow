@@ -143,6 +143,21 @@ type TokenGrant struct {
 	// PairingID names the link this grant came from, so a client can poll
 	// or cancel it. Redemption only.
 	PairingID string `json:"pairingId,omitempty"`
+	// Scopes is the grant set the issued session holds, so the device can
+	// answer "which surfaces do I have" from the response that enrolled or
+	// renewed it, rather than one refusal per control
+	// (docs/specs/remote-access.md §5, frontend capability model).
+	//
+	// Always present, never null — the same rule the hello frame's
+	// capability list follows, and for the same reason: a missing field
+	// would be indistinguishable from a backend too old to send one, while
+	// `[]` says plainly that this session was granted nothing. The producer
+	// normalises it (internal/app localGrant).
+	//
+	// It is disclosure, not authorization. A client that edits its copy
+	// changes what its own screens offer and nothing else; every RPC is
+	// re-checked against the session row.
+	Scopes []string `json:"scopes"`
 }
 
 // authRefusal is the body of a refused credential request. One field,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -430,4 +431,50 @@ func TestSessionCredentialIsPortQualified(t *testing.T) {
 	if got := sessionCookieName("example.test"); got != strings.TrimSuffix(sessionCookiePrefix, "_") {
 		t.Fatalf("portless authority named the cookie %q", got)
 	}
+}
+
+// TestGrantCarriesItsScopesAsAnArray — a device learns which surfaces it
+// holds from the response that enrolled or renewed it, so the field has to
+// survive the wire, and it has to survive it as an ARRAY even when the
+// session was granted nothing.
+//
+// A `null` there would read as "this backend does not publish grants",
+// which is the answer an older build gives, and a client cannot tell that
+// apart from "granted nothing" — so the one case would silently take the
+// other's fallback and offer surfaces the session does not hold.
+func TestGrantCarriesItsScopesAsAnArray(t *testing.T) {
+	t.Run("named grants survive", func(t *testing.T) {
+		auth := &stubAuth{grant: TokenGrant{
+			SessionID: "sess-1", Credential: "ao1.credential",
+			Scopes: []string{string(ScopeThreadsRead), string(ScopeFilesRead)},
+		}}
+		f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+		resp := postJSON(t, f.srv.Addr(), AuthPairPath, PairingRedemption{
+			Token: "pairing-token", KeyThumbprint: "thumb",
+		}, nil)
+		var grant TokenGrant
+		if err := json.NewDecoder(resp.Body).Decode(&grant); err != nil {
+			t.Fatalf("decode grant: %v", err)
+		}
+		if len(grant.Scopes) != 2 || grant.Scopes[0] != "threads:read" || grant.Scopes[1] != "files:read" {
+			t.Fatalf("scopes did not survive the wire: %+v", grant.Scopes)
+		}
+	})
+
+	t.Run("an empty grant set encodes as []", func(t *testing.T) {
+		auth := &stubAuth{grant: TokenGrant{
+			SessionID: "sess-1", Credential: "ao1.credential", Scopes: []string{},
+		}}
+		f := newServerFixtureWith(t, func(cfg *Config) { cfg.AuthEndpoints = auth })
+		resp := postJSON(t, f.srv.Addr(), AuthPairPath, PairingRedemption{
+			Token: "pairing-token", KeyThumbprint: "thumb",
+		}, nil)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if !strings.Contains(string(body), `"scopes":[]`) {
+			t.Fatalf("empty grant set did not encode as an array: %s", body)
+		}
+	})
 }

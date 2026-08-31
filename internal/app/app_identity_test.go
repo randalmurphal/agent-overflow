@@ -3,6 +3,7 @@ package app
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"agent-overflow/internal/identity"
@@ -239,4 +240,88 @@ func TestTheSessionCookieCarriesTheLocalCredential(t *testing.T) {
 		return
 	}
 	t.Fatal("no cookie carried the local credential")
+}
+
+// TestAGrantPublishesTheSessionsScopes — the redemption and the renewal
+// both hand a device its grant set, because the issuance is the only moment
+// it can learn what it holds without a round trip nothing else needs.
+//
+// Both halves matter. Redemption is where a screen first decides what to
+// offer; renewal is where a long-lived device re-reads the answer, and a
+// rotation that dropped the field would leave a page that had reloaded
+// unable to tell "granted nothing" from "backend does not say".
+func TestAGrantPublishesTheSessionsScopes(t *testing.T) {
+	app := identityApp(t)
+	sessions := app.identityState().sessions
+	owner := app.identityState().owner
+
+	link, err := sessions.MintPairingLink(identity.PairingRequest{
+		UserID:       owner.ID,
+		DeviceClass:  identity.DevicePhone,
+		BindingClass: identity.BindingDeviceBound,
+		Scopes:       []identity.Scope{identity.ScopeThreadsRead, identity.ScopeFilesRead},
+	})
+	if err != nil {
+		t.Fatalf("MintPairingLink: %v", err)
+	}
+	redeemed, reason := AuthEndpoints(app).RedeemPairing(transport.PairingRedemption{
+		Token: link.Token, KeyThumbprint: "thumb-phone",
+	})
+	if reason != "" {
+		t.Fatalf("RedeemPairing: %s", reason)
+	}
+	want := []string{"threads:read", "files:read"}
+	if !slices.Equal(redeemed.Scopes, want) {
+		t.Fatalf("redemption published %v, want %v", redeemed.Scopes, want)
+	}
+	if _, err := sessions.ConfirmPairing(redeemed.PairingID); err != nil {
+		t.Fatalf("ConfirmPairing: %v", err)
+	}
+
+	renewed, reason := AuthEndpoints(app).RenewSession(transport.SessionRenewal{
+		RefreshSecret: redeemed.RefreshSecret, KeyThumbprint: "thumb-phone",
+	})
+	if reason != "" {
+		t.Fatalf("RenewSession: %s", reason)
+	}
+	if !slices.Equal(renewed.Scopes, want) {
+		t.Fatalf("renewal published %v, want %v", renewed.Scopes, want)
+	}
+
+	// The grant the wire carries is a COPY. A caller that sorts or trims
+	// its slice must not be editing the session row the gate reads.
+	renewed.Scopes[0] = "access:admin"
+	live, refusal := SessionScopes(app, renewed.SessionID)
+	if refusal != "" {
+		t.Fatalf("SessionScopes: %s", refusal)
+	}
+	if !slices.Equal(live, want) {
+		t.Fatalf("editing the published grant reached the session row: %v", live)
+	}
+}
+
+// TestTheLocalPageChannelPublishesEveryGrantableScope — the owner's own
+// screen holds everything a session can hold, and it says so explicitly.
+// The frontend expresses that as an all-scopes answer rather than as an
+// absent check (docs/specs/remote-access.md §5), which only works if the
+// row it is derived from really carries the full set.
+func TestTheLocalPageChannelPublishesEveryGrantableScope(t *testing.T) {
+	app := identityApp(t)
+	state := app.identityState()
+	session, _, err := state.sessions.EnsureLocalChannelSession(state.owner.ID)
+	if err != nil {
+		t.Fatalf("EnsureLocalChannelSession: %v", err)
+	}
+	granted, refusal := SessionScopes(app, session.ID)
+	if refusal != "" {
+		t.Fatalf("SessionScopes: %s", refusal)
+	}
+	for _, scope := range identity.Scopes {
+		if !slices.Contains(granted, string(scope)) {
+			t.Fatalf("the local page channel is missing %s; the owner's own screen must hold every grantable scope", scope)
+		}
+	}
+	if slices.Contains(granted, "host") {
+		t.Fatal("a session row claimed `host`, which is a method property and never a grant")
+	}
 }
