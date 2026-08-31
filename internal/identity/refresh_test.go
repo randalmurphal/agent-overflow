@@ -335,3 +335,37 @@ func TestPruneCredentialsKeepsWhatCouldStillAdmitOrExplain(t *testing.T) {
 		t.Fatalf("the prune took the live refresh secret: %d rows", len(chain))
 	}
 }
+
+// A revocation that lands between the slow-path row read and the fast-path
+// install must win: rememberAt declines a stale generation rather than
+// resurrecting the dead session in the in-memory table. The direct-call
+// shape stages the interleaving Reissue/Revoke race deterministically.
+func TestRememberAtDeclinesAcrossARevocation(t *testing.T) {
+	sessions, _, _, owner, _ := newFixture(t)
+	_, tokens := pairedDevice(t, sessions, owner, "thumb-race")
+
+	row, err := sessions.store.GetSession(tokens.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	generation := sessions.generationNow()
+	if _, err := sessions.RevokeSession(tokens.SessionID); err != nil {
+		t.Fatalf("RevokeSession: %v", err)
+	}
+	sessions.rememberAt(generation, row)
+	if _, reason := sessions.Live(tokens.SessionID); reason != ReasonRevokedSession {
+		t.Fatalf("Live after a raced install = %s, want %s", reason, ReasonRevokedSession)
+	}
+
+	// The same install with a CURRENT generation is the ordinary path and
+	// must still work — the guard declines staleness, not remembering.
+	_, fresh := pairedDevice(t, sessions, owner, "thumb-race-2")
+	freshRow, err := sessions.store.GetSession(fresh.SessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	sessions.rememberAt(sessions.generationNow(), freshRow)
+	if _, reason := sessions.Live(fresh.SessionID); reason.Refused() {
+		t.Fatalf("Live after an ordinary install refused: %s", reason)
+	}
+}

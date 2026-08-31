@@ -76,11 +76,12 @@ func (s *Sessions) EnsureLocalChannelSession(userID string) (store.Session, Toke
 		if _, err := s.store.ExtendSession(session.ID, expiresAt, now); err != nil {
 			return store.Session{}, TokenSet{}, err
 		}
+		generation := s.generationNow()
 		refreshed, err := s.store.GetSession(session.ID)
 		if err != nil {
 			return store.Session{}, TokenSet{}, err
 		}
-		s.remember(refreshed)
+		s.rememberAt(generation, refreshed)
 		tokens, err := s.issueFor(refreshed, policy, now)
 		if err != nil {
 			return store.Session{}, TokenSet{}, err

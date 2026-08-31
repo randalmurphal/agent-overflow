@@ -275,11 +275,12 @@ func (s *Sessions) reissue(session store.Session, now int64) (TokenSet, error) {
 	// The extend is conditional (it never shortens a window), so read back
 	// what the row actually holds rather than assuming ours won. A session
 	// whose window already reached further keeps it, and the claims say so.
+	generation := s.generationNow()
 	extended, err := s.store.GetSession(session.ID)
 	if err != nil {
 		return TokenSet{}, fmt.Errorf("identity: reissue: read session: %w", err)
 	}
-	s.remember(extended)
+	s.rememberAt(generation, extended)
 	return s.issueFor(extended, policy, now)
 }
 
@@ -334,16 +335,30 @@ func (s *Sessions) signingKeyByID(keyID string) (store.SigningKey, error) {
 	return store.SigningKey{ID: keyID, Secret: secret}, nil
 }
 
-// remember installs a row the caller just wrote into the fast path. Safe
-// against a concurrent revocation for the same reason Live's install is:
-// the generation is captured and compared, so a revocation that landed
-// while this call was in flight declines the write.
-func (s *Sessions) remember(session store.Session) {
+// generationNow snapshots the revocation generation. Capture it BEFORE
+// reading the row you intend to rememberAt: the compare under the write
+// lock is what makes the pair safe, and a snapshot taken after the read
+// would miss a revocation that landed during it.
+func (s *Sessions) generationNow() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
+}
+
+// rememberAt installs a row the caller just read into the fast path,
+// declining when any revocation moved the generation since it was
+// captured — the same rule Live's slow path applies to its own read.
+// Installing unconditionally would let a Revoke that ran between the row
+// read and this call resurrect the dead session in the fast path.
+func (s *Sessions) rememberAt(generation uint64, session store.Session) {
 	if !session.Live(s.now().UnixMilli()) {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.generation != generation {
+		return
+	}
 	s.live[session.ID] = session
 }
 
