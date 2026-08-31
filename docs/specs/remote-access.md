@@ -1148,14 +1148,20 @@ Rules that follow, and hold for any future payload:
 
 ### Wire budget enforcement
 
-The harness scenario is a real gate, modeled on t3code's: seed a
-deterministic heavy thread, drive one turn, and count actual socket
-bytes (headers included, compression negotiated exactly as in
-production), with separate ceilings for the cold snapshot and the
-live turn, plus the frame count. Theirs holds a 9 MB persisted tool
-result to 15.5 KB of total client-bound wire traffic and has never
-been raised. Budgets belong in that test rather than in logs or
-one-off measurements, so a regression fails locally before it ships.
+LANDED 2026-08-31 (1fbb771c) as a Go gate rather than a harness
+scenario, deliberately: `internal/app/app_wire_budget_test.go` seeds a
+deterministic heavy thread built to the field split above (fixture
+entropy corrected until its deflate ratio matches the real thread's
+5.6:1), marshals the cold 200-row window into the same
+`transport.ServerFrame` the connection writes, and deflates it at the
+socket's own level. That puts the gate in `make go-test` on every
+commit instead of `make e2e`, with ceilings for both clients (default
+193.1 KB raw / 38.4 KB deflated measured, ceilings 216 KB / 44 KB —
+under the 50 KB budget with room; previews-on 248.4 / 49.0, ceilings
+272 / 54) plus an anti-rot companion that measures the same window
+unprojected and fails if the projection's saving disappears. Budgets
+live in that test rather than in logs, so a regression fails locally
+before it ships.
 
 ### What t3code did that we do not need, and what we do
 
@@ -1333,14 +1339,12 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    missing lifecycle — nothing deletes a replica database today, and
    a backend-id change orphans the old one on the origin permanently
    — and §9's forward-tolerance obligation with its future-dialect
-   fixture. Byte budgets land here too (§14), and the shape is
-   settled: elide the fields that arrive unrendered (full tool
-   arguments, diff preview text and its spans) with a typed marker
-   and their fetch route, following the `persistedCodeSpansMaxBytes`
-   precedent, and make the counting harness scenario the gate. The
-   window keeps its 200 rows. This is not remote-only work — the same
-   330 KB is parsed by the renderer on every cold thread open today,
-   and a third of it renders nothing.
+   fixture. Byte budgets: LANDED 2026-08-31 (1fbb771c, §14
+   "Wire budget enforcement") — `internal/itemwire` projects every
+   item path (pagers, `SyncThreadWindow`, live upserts/patches), with
+   typed markers, the `GetThreadItemProjectionSource` recovery route,
+   a per-window byte backstop, and the counting gate in `make
+   go-test`. The window keeps its 200 rows.
 2. **Identity core.** Genuinely N-user from the start, with no implicit
    single owner anywhere in queries, session checks, or audit
    attribution (hub deployments depend on it; §11). Schema
