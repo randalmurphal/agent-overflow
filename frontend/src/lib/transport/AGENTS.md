@@ -10,14 +10,27 @@ remote browser alike. Protocol and authz rules:
   replay-on-reconnect cursor, the dedup check, and mid-connection drop
   detection, since a forward skip on a channel already seen on THIS
   connection means the server's non-blocking fanout dropped what sat
-  between. Anything needing the WS goes through the `wsClient` singleton.
+  between. It is the implementation behind the handle below, not the door:
+  code that issues RPCs or subscribes resolves a transport instead of
+  importing this singleton.
+- `handle.ts` is that door. `resolveTransport()` answers with the
+  connection to route over, and its `origin` is the backend UUID stamped
+  on every event arriving there. One connection is the only answer today;
+  attaching to a second backend changes the resolution HERE and leaves the
+  generated bindings, the runtime shim and the event hub untouched
+  (remote-access spec §10). Resolution is one call and no allocation, and
+  the origin object is rebuilt only when the identity moves, so a
+  streaming channel does not mint one per frame.
 - `frames.ts` is the TypeScript mirror of `internal/transport/frame.go`.
   Change one and change the other in the same commit.
 - `runtime.ts` replaces `@wailsio/runtime` through a Vite alias, so the
   generated bindings keep working unregenerated. Its surface must mirror
   `src/test/mocks/wailsio-runtime.ts`, or generated code that type-checks
-  under the test alias stops type-checking in production. Keep it thin:
-  transport behavior belongs in `wsClient.ts`.
+  under the test alias stops type-checking in production — the event
+  envelope's `origin` field included, which is why the mock stamps it from
+  the same backend identity. Keep it thin: transport behavior belongs in
+  `wsClient.ts`, and which transport a call lands on belongs in
+  `handle.ts`.
 - `bootstrap.ts` owns the `/bootstrap.json` fetch, the per-tab token stash
   that survives URL scrubbing, and WS-URL validation that stops a hijacked
   manifest pivoting the connection to another scheme. Whether the page is
