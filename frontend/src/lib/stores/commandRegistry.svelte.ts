@@ -73,6 +73,16 @@ export interface CommandFlags {
    * command gated on it could not say which authority it actually wanted.
    */
   accessAdmin: boolean;
+  /**
+   * Whether this session holds `threads:operate` — creating, renaming,
+   * forking, deleting, interrupting, and every model/mode write. The
+   * largest execute-tier surface, so most thread commands gate on it.
+   */
+  threadsOperate: boolean;
+  /** Whether this session holds `terminal:operate` (PTYs, worktree setup). */
+  terminalOperate: boolean;
+  /** Whether this session holds `git:operate` (commit, push, pull, PR, ship). */
+  gitOperate: boolean;
   /** Extra identifiers callers want to expose to `when` expressions. */
   [key: string]: boolean;
 }

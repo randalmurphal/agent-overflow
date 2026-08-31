@@ -47,6 +47,7 @@
     syncExpandedTreeForActiveThread,
   } from '../../utils/sidebarTree';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     projectId: string;
@@ -58,6 +59,9 @@
 
   let { projectId, threads, pane, onNewThread }: Props = $props();
   let lastNewThreadContextMenuAt = 0;
+  // Creating a thread rides `threads:operate`. The empty-state control is
+  // the whole content of an empty project, so it stays and goes inert.
+  let newThreadUngranted = $derived(!hasScope('threads:operate'));
 
   // Tree is built per-render: cheap (small N) and lets us reactively
   // pick up effective live-status changes from the status store and
@@ -192,8 +196,10 @@
     type="button"
     onclick={handleEmptyNewThreadClick}
     oncontextmenu={handleEmptyNewThreadContextMenu}
+    disabled={newThreadUngranted}
+    title={newThreadUngranted ? 'Local only' : undefined}
     data-testid="project-thread-list-empty"
-    class="ml-4 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+    class="ml-4 mr-2 my-1 inline-flex items-center gap-1 rounded-[var(--radius-field)] px-2 py-1 text-[0.6875rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-surface-2/0 disabled:hover:text-fg-hint"
   >
     <Icon icon={Plus} size={11} strokeWidth={2.2} class="opacity-80" />
     <span>New Thread</span>

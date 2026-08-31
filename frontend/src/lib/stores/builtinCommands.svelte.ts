@@ -251,6 +251,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.new',
     label: 'Thread: New',
     icon: '+',
+    when: 'threadsOperate',
     editableReachable: true,
     run: () => openThreadForm(),
   });
@@ -259,6 +260,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.newPane',
     label: 'Thread: New in New Pane',
     icon: '+',
+    when: 'threadsOperate',
     editableReachable: true,
     run: () => openThreadFormInNewPane?.(),
   });
@@ -343,6 +345,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.new.fromPR',
     label: 'Thread: New from Pull/Merge Request',
     icon: '⇠',
+    when: 'threadsOperate',
     run: () => openThreadFromPR(),
   });
 
@@ -350,7 +353,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.new.discussion',
     label: 'Thread: Start Discussion',
     icon: '◆',
-    when: 'canStartDiscussion',
+    when: 'canStartDiscussion && threadsOperate',
     run: (ctx) =>
       withActiveThread(ctx, (t, pane) => {
         if (!pane.threadId) {
@@ -365,7 +368,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.rename',
     label: 'Thread: Rename',
     icon: 'A',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && threadsOperate',
     run: (ctx) =>
       withActiveThread(ctx, (_thread, pane) => {
         if (!pane.threadId) {
@@ -382,7 +385,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.archive',
     label: 'Thread: Archive',
     icon: '▤',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && threadsOperate',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
         if (!pane.threadId) {
@@ -402,7 +405,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.delete',
     label: 'Thread: Delete',
     icon: '✕',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && threadsOperate',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
         if (!pane.threadId) {
@@ -426,7 +429,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.fork',
     label: 'Thread: Fork',
     icon: '⎇',
-    when: 'canForkActiveThread',
+    when: 'canForkActiveThread && threadsOperate',
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
         if (!pane.threadId) {
@@ -447,7 +450,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'thread.interrupt',
     label: 'Thread: Interrupt Turn',
     icon: '■',
-    when: 'hasActiveThread && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
+    when: 'hasActiveThread && threadsOperate && (turnActive || sendInFlight || hasPendingPrompt) && !anyModalOpen',
     editableReachable: true,
     run: (ctx) => {
       // Industry-pattern interrupt: clear UI state synchronously,
@@ -524,7 +527,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     label: 'Agent Mode: Toggle Chat ↔ Plan',
     description: 'Toggle the active chat thread between chat and plan agent modes. No-op on discussion threads.',
     icon: '⇆',
-    when: 'hasActiveThread && !paletteOpen && !anyModalOpen',
+    when: 'hasActiveThread && threadsOperate && !paletteOpen && !anyModalOpen',
     editableReachable: true,
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
@@ -807,7 +810,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     description:
       'Open the terminal and focus it; if it is already open, close it.',
     icon: '▶',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && terminalOperate',
     // Reachable from editable targets so the chord still fires while the
     // xterm <textarea> holds focus — that's the press that closes it.
     editableReachable: true,
@@ -856,7 +859,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'terminal.new',
     label: 'Terminal: Show',
     icon: '▶',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && terminalOperate',
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
         pane.setShowTerminal(true);
@@ -890,7 +893,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     // the escape: App.svelte only dispatches editable-target chords for
     // editableReachable commands, so without it the chord would no-op from
     // the xterm <textarea>.
-    when: 'terminalFocus || hasActiveThread',
+    when: 'terminalFocus || (hasActiveThread && terminalOperate)',
     editableReachable: true,
     run: (ctx) => {
       const thread = ctx.pane?.thread;
@@ -1026,7 +1029,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'git.commit',
     label: 'Git: Commit All',
     icon: '✓',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
         openShipChanges(pane.paneId);
@@ -1037,7 +1040,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'git.push',
     label: 'Git: Push',
     icon: '↑',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
       withMaterializedThread(ctx, async (threadId) => {
         try {
@@ -1053,7 +1056,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'git.pull',
     label: 'Git: Pull',
     icon: '↓',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
       withMaterializedThread(ctx, async (threadId) => {
         try {
@@ -1069,7 +1072,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'git.openPR',
     label: 'Git: Open Pull/Merge Request',
     icon: '⇥',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
         openShipChanges(pane.paneId);
@@ -1080,7 +1083,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     id: 'git.ship',
     label: 'Git: Ship Changes (commit → push → PR/MR)',
     icon: '⇪',
-    when: 'hasActiveThread',
+    when: 'hasActiveThread && gitOperate',
     run: (ctx) =>
       withActiveThread(ctx, (_t, pane) => {
         openShipChanges(pane.paneId);
@@ -1136,6 +1139,20 @@ export function makeCommandContext(pane: ThreadPane | null, extra: Partial<Comma
     // the palette, per-keypress dispatch and tests must all see one answer for
     // "was this session granted that".
     accessAdmin: hasScope('access:admin'),
+    // The other three capability flags, on the same terms. A command whose
+    // RPCs need one gates on it, so a session without the grant finds the
+    // command absent from the palette and its chord falling through rather
+    // than a control that reports a refusal after the press.
+    //
+    // The terminal TAB commands deliberately do NOT gate: their `when` is
+    // also evaluated against `TERMINAL_FOCUSED_CTX` (keybindings.svelte.ts),
+    // a synthetic context carrying only `terminalFocus`, and every other
+    // flag reads false there — a gate would break the xterm escape for
+    // everybody. They are unreachable anyway, since a session that cannot
+    // open a terminal never has one focused.
+    threadsOperate: hasScope('threads:operate'),
+    terminalOperate: hasScope('terminal:operate'),
+    gitOperate: hasScope('git:operate'),
     ...extra,
   };
   return {

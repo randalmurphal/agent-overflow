@@ -18,9 +18,11 @@
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError?: (message: string) => void;
     responding?: boolean;
+    /** Ungranted `approvals:respond`: every action is inert, never loading. */
+    ungranted?: boolean;
   }
 
-  let { approval, onResolve, onError, responding = false }: Props = $props();
+  let { approval, onResolve, onError, responding = false, ungranted = false }: Props = $props();
   let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   type DecisionAction = {
@@ -228,15 +230,15 @@
   onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
 >
   {#if editable && !editing}
-    <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle" disabled={responding}>
+    <Button variant="secondary" size="sm" onclick={openEdit} testId="approval-edit-toggle" disabled={responding || ungranted}>
       {#snippet children()}Edit input…{/snippet}
     </Button>
   {/if}
   {#if editing}
-    <Button variant="danger-ghost" size="sm" onclick={() => respond(decisionAction('cancel', 0)!)} testId="approval-cancel" disabled={responding}>
+    <Button variant="danger-ghost" size="sm" onclick={() => respond(decisionAction('cancel', 0)!)} testId="approval-cancel" disabled={responding || ungranted}>
       {#snippet children()}Cancel turn{/snippet}
     </Button>
-    <Button variant="danger-outline" size="sm" onclick={() => respond(decisionAction('decline', 0)!)} testId="approval-deny" disabled={responding}>
+    <Button variant="danger-outline" size="sm" onclick={() => respond(decisionAction('decline', 0)!)} testId="approval-deny" disabled={responding || ungranted}>
       {#snippet children()}Decline{/snippet}
     </Button>
     <Button
@@ -244,7 +246,8 @@
       size="sm"
       onclick={allowWithEdits}
       testId="approval-allow-with-edits"
-      loading={responding}
+      disabled={ungranted}
+      loading={!ungranted && responding}
     >
       {#snippet children()}Allow with edits{/snippet}
     </Button>
@@ -255,8 +258,8 @@
         size="sm"
         onclick={() => respond(action)}
         testId={action.testId}
-        disabled={responding && action.variant !== 'primary'}
-        loading={responding && action.variant === 'primary'}
+        disabled={ungranted || (responding && action.variant !== 'primary')}
+        loading={!ungranted && responding && action.variant === 'primary'}
       >
         {#snippet children()}{action.label}{/snippet}
       </Button>

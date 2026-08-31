@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import ProjectItem from './ProjectItem.svelte';
 import { addProjectLocal, resetProjectsForTest } from '../../stores/projects.svelte';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Project, ProjectWithCounts } from '../../types/models';
 
 function makeProject(id: string, name: string, path: string): Project {
@@ -36,6 +37,31 @@ function renderItem(p: Project) {
 afterEach(() => {
   cleanup();
   resetProjectsForTest();
+  resetToLocalPage();
+});
+
+// The row's two create controls stay in place for a session that cannot use
+// them — a project whose row lost half its affordances reads as a broken
+// sidebar rather than a read-only one — and go inert instead.
+describe('ProjectItem create controls', () => {
+  it('offers both on the local page', () => {
+    const p = makeProject('a', 'web', '/work/web');
+    addProjectLocal(p);
+    const { getByTestId } = renderItem(p);
+    expect((getByTestId('project-item-new-thread') as HTMLButtonElement).disabled).toBe(false);
+    expect((getByTestId('project-item-new-terminal') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('renders them inert for a view-only session', async () => {
+    const p = makeProject('a', 'web', '/work/web');
+    addProjectLocal(p);
+    await pairViewOnly();
+    const { getByTestId } = renderItem(p);
+    const newThread = getByTestId('project-item-new-thread') as HTMLButtonElement;
+    expect(newThread.disabled).toBe(true);
+    expect(newThread.title).toBe('Local only');
+    expect((getByTestId('project-item-new-terminal') as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 describe('ProjectItem label', () => {

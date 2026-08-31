@@ -39,6 +39,12 @@
     /** When true the popup body is hidden (minimized via the activity-rail
      *  chip). The component stays mounted so entered answers are preserved. */
     collapsed?: boolean;
+    /**
+     * This session was not granted `approvals:respond`. The question still
+     * renders — it is what explains why the turn is parked — and every
+     * control that would answer it goes inert.
+     */
+    ungranted?: boolean;
   }
 
   let {
@@ -51,6 +57,7 @@
     onError,
     workspacePath = '',
     collapsed = false,
+    ungranted = false,
   }: Props = $props();
 
   let index = $state(0);
@@ -68,7 +75,7 @@
   const complete = $derived(isRequestComplete(request, answers));
   const canGoPrevious = $derived(index > 0 && !responding);
   const canShowNext = $derived(index < request.questions.length - 1 && !responding);
-  const canSubmit = $derived(complete && !responding);
+  const canSubmit = $derived(complete && !responding && !ungranted);
 
   // Side-by-side preview pane is single-select only per the upstream tool
   // spec. A multi-select question with previews still renders the option
@@ -231,6 +238,9 @@
     label: string,
     originHint: 'mouse' | 'keyboard',
   ): void {
+    // The option buttons are already inert, but the keyboard handlers reach
+    // here directly — one guard at the mutation rather than one per key.
+    if (ungranted) return;
     clearAutoAdvanceTimer();
     // Single-select is mutually exclusive with a typed answer, so picking an
     // option clears the custom box. Multi-select lets options and a typed
@@ -261,7 +271,7 @@
   }
 
   async function submit(answersToSubmit: UserInputAnswers = answers): Promise<void> {
-    if (!isRequestComplete(request, answersToSubmit) || responding) return;
+    if (!isRequestComplete(request, answersToSubmit) || responding || ungranted) return;
     responding = true;
     try {
       await onResolve(new UserInputResponse({
@@ -373,7 +383,7 @@
       {/if}
     </div>
     {#snippet submitButton()}
-      <Button variant="primary" size="sm" onclick={() => submit()} testId="user-input-submit" disabled={!canSubmit} loading={responding}>
+      <Button variant="primary" size="sm" onclick={() => submit()} testId="user-input-submit" disabled={!canSubmit} loading={!ungranted && responding}>
         {#snippet children()}{isMulti ? 'Submit answers' : 'Submit answer'}{/snippet}
       </Button>
     {/snippet}
@@ -427,7 +437,7 @@
               {optionIndex}
               {selected}
               focused={focusedOptionIndex === optionIndex}
-              disabled={responding}
+              disabled={responding || ungranted}
               tabIndex={focusedOptionIndex === optionIndex ? 0 : -1}
               onSelect={() => selectOption(question, option.label, 'mouse')}
               onFocus={() => (focusedOptionIndex = optionIndex)}
@@ -483,7 +493,7 @@
             {optionIndex}
             {selected}
             focused={focusedOptionIndex === optionIndex}
-            disabled={responding}
+            disabled={responding || ungranted}
             tabIndex={focusedOptionIndex === optionIndex ? 0 : -1}
             onSelect={() => selectOption(question, option.label, 'mouse')}
             onFocus={() => (focusedOptionIndex = optionIndex)}

@@ -2,6 +2,14 @@ import type { SendButtonAction } from './toolbar/sendButtonTypes';
 
 export interface ComposerSendStateInput {
   isDisabled: boolean;
+  /**
+   * This session was not granted `threads:operate`, so nothing the send
+   * button does can reach the backend. Separate from `isDisabled`, which
+   * is "there is no thread to send into": the two want different
+   * placeholder copy, and only this one is a standing property of the
+   * session rather than of the pane.
+   */
+  sendUngranted?: boolean;
   sending: boolean;
   hasBlockingPrompt: boolean;
   hasUserInputPrompt: boolean;
@@ -43,6 +51,7 @@ export function deriveComposerSendState(input: ComposerSendStateInput): Composer
     // still requires an idle turn because it runs the plan implementation
     // helper, not just a SendMessage RPC.
     canSend: !input.isDisabled
+      && !input.sendUngranted
       && !input.sending
       && !input.sendSuspended
       && !input.hasBlockingPrompt

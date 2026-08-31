@@ -17,6 +17,7 @@ import {
   resetForTest as resetThreadStatuses,
 } from './threadStatuses.svelte';
 import { makeCommandContext, registerBuiltinCommands } from './builtinCommands.svelte';
+import { pairViewOnly, resetToLocalPage } from '../../test/helpers/scopes';
 import {
   clearCommandRegistry,
   getCommand,
@@ -1884,5 +1885,53 @@ describe('settings commands', () => {
     runCommand('settings.open', makeCommandContext(null, {}) as CommandContext);
     expect(isSettingsOpen()).toBe(true);
     expect(isWorkflowsOverlayOpen()).toBe(false);
+  });
+});
+
+// Capability gating: a command whose RPCs ride an execute-tier scope is
+// DISABLED without the grant — absent from the palette, chord falling
+// through — rather than running and reporting a refusal.
+describe('capability-gated commands', () => {
+  afterEach(() => {
+    resetToLocalPage();
+  });
+
+  it('enables the create/git/terminal commands on the local page', () => {
+    const pane = readyPane();
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(isCommandEnabled('thread.new', ctx)).toBe(true);
+    expect(isCommandEnabled('thread.delete', ctx)).toBe(true);
+    expect(isCommandEnabled('git.push', ctx)).toBe(true);
+    expect(isCommandEnabled('terminal.new', ctx)).toBe(true);
+  });
+
+  it('disables them for a view-only session', async () => {
+    await pairViewOnly();
+    const pane = readyPane();
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    expect(ctx.flags.threadsOperate).toBe(false);
+    expect(ctx.flags.gitOperate).toBe(false);
+    expect(ctx.flags.terminalOperate).toBe(false);
+    expect(isCommandEnabled('thread.new', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.newPane', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.new.fromPR', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.delete', ctx)).toBe(false);
+    expect(isCommandEnabled('thread.fork', ctx)).toBe(false);
+    expect(isCommandEnabled('git.commit', ctx)).toBe(false);
+    expect(isCommandEnabled('git.push', ctx)).toBe(false);
+    expect(isCommandEnabled('git.ship', ctx)).toBe(false);
+    expect(isCommandEnabled('terminal.new', ctx)).toBe(false);
+    expect(isCommandEnabled('terminal.toggle', ctx)).toBe(false);
+  });
+
+  // The xterm escape predicate evaluates `when` against a synthetic context
+  // carrying only terminalFocus, so a capability term on a tab command would
+  // trap the chord in the PTY for everybody. terminal.newPane keeps its
+  // escape arm un-gated for the same reason.
+  it('keeps the terminal-escape commands enabled under the focused-only context', () => {
+    const focusedOnly = { flags: { terminalFocus: true } } as unknown as CommandContext;
+    for (const id of TERMINAL_ESCAPE_COMMAND_IDS) {
+      expect(isCommandEnabled(id, focusedOnly)).toBe(true);
+    }
   });
 });

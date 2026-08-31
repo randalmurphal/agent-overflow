@@ -150,6 +150,29 @@ remote browser alike. Protocol and authz rules:
   RPC, so the worst a wrong answer does is offer a control that is
   refused or hide one that would have worked.
 
+  `isViewOnly()` is the one exception to "ask for the capability, not the
+  mode", and it exists for exactly one consumer: the ambient marker in
+  `components/sidebar/SettingsFooter.svelte`. It is derived from the GRANT
+  SET — a set was granted, and none of its names is execute-tier
+  (`EXECUTE_SCOPES`, pinned to transport's `TierExecute` rows by
+  `TestFrontendExecuteTierMatches`) — never from a device class, because the
+  pairing surface mints `view-only` for a phone and `full` for a phone alike.
+  It answers FALSE for the local page, for a full-access device, and for an
+  EMPTY set: "nothing was granted to me" is the pre-bootstrap and unpaired
+  answer, not "I was granted a read-only slice". No control gates on it. A
+  mode-shaped gate would disable a `git:operate` button for a session that
+  holds `git:operate` while lacking something else.
+
+  Two rules for the surfaces that DO gate. A control stays mounted and goes
+  inert — `disabled` plus the platform's own affordance, never hidden and
+  never a click that swallows itself — because a screen that lost half its
+  buttons reads as broken rather than read-only. And a PASSIVE load, one
+  that runs because a pane mounted rather than because anybody pressed
+  anything, checks before it fires: it has nobody to report a refusal to,
+  so an ungranted session spends one refusal per surface per open. That was
+  the whole shape of the view-only toast burst (owner's live test,
+  2026-08-30). `stores/viewOnlyPassiveLoads.test.ts` is the sweep.
+
   Notified at the two moments the answer can move — the manifest
   resolving, and `redialAfterPairing` — and polled never. Nothing clears
   it on a disconnect, for the reason the hello snapshot survives one: a

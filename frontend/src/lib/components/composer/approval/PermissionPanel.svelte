@@ -18,9 +18,11 @@
     onResolve: (response: ApprovalResponse) => Promise<void>;
     onError?: (message: string) => void;
     responding?: boolean;
+    /** Ungranted `approvals:respond`: every action is inert, never loading. */
+    ungranted?: boolean;
   }
 
-  let { approval, onResolve, onError, responding = false }: Props = $props();
+  let { approval, onResolve, onError, responding = false, ungranted = false }: Props = $props();
   let actionRow: HTMLDivElement | undefined = $state(undefined);
 
   async function grant(scope: 'turn' | 'session') {
@@ -82,16 +84,16 @@
   tabindex="0"
   onkeydown={(event) => focusApprovalActionFromKey(event, actionRow)}
 >
-  <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="permission-cancel" disabled={responding}>
+  <Button variant="danger-ghost" size="sm" onclick={() => respond('cancel')} testId="permission-cancel" disabled={responding || ungranted}>
     {#snippet children()}Cancel turn{/snippet}
   </Button>
-  <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="permission-deny" disabled={responding}>
+  <Button variant="danger-outline" size="sm" onclick={() => respond('decline')} testId="permission-deny" disabled={responding || ungranted}>
     {#snippet children()}Decline{/snippet}
   </Button>
-  <Button variant="secondary" size="sm" onclick={() => grant('session')} testId="permission-grant-session" disabled={responding}>
+  <Button variant="secondary" size="sm" onclick={() => grant('session')} testId="permission-grant-session" disabled={responding || ungranted}>
     {#snippet children()}Always allow this session{/snippet}
   </Button>
-  <Button variant="primary" size="sm" onclick={() => grant('turn')} testId="permission-grant" loading={responding}>
+  <Button variant="primary" size="sm" onclick={() => grant('turn')} testId="permission-grant" disabled={ungranted} loading={!ungranted && responding}>
     {#snippet children()}Approve once{/snippet}
   </Button>
 </div>

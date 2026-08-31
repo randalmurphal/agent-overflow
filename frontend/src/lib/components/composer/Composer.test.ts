@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import Composer from './Composer.svelte';
@@ -9,6 +9,7 @@ import {
 import { createThreadPane } from '../../stores/thread.svelte';
 import { buildPane, makeItem, makeThread as makeTestThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { Attachment } from '../../types/attachment';
 import {
   resetProposedPlanCacheForTests,
@@ -3144,6 +3145,60 @@ describe('<Composer>', () => {
       await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
       await tick();
       expect(textarea.value).toBe('second message, edited');
+    });
+  });
+
+  // View-only mode, at the surface the owner's live test found first. The
+  // rule is per-capability, never per-device-class: send asks for
+  // `threads:operate`, attaching asks for `attachments:write`.
+  describe('a session without threads:operate', () => {
+    afterEach(() => {
+      resetToLocalPage();
+    });
+
+    it('leaves the composer mounted and inert, and says so in the placeholder', async () => {
+      const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+      const draft = await buildDraft();
+      await pairViewOnly();
+
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      expect(textarea.disabled).toBe(true);
+      expect(textarea.placeholder).toBe('This device has read-only access');
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('refuses a pasted image without a toast', async () => {
+      const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+      const draft = await buildDraft();
+      const upload = setBindingMock('UploadAttachment', async () => makeAttachment('uploaded'));
+      await pairViewOnly();
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      await fireEvent(getByLabelText('Message Input'), makeClipboardPaste([
+        new File(['png'], 'shot.png', { type: 'image/png' }),
+      ]));
+      await tick();
+
+      expect(upload).not.toHaveBeenCalled();
+      expect(document.querySelectorAll('[data-testid="toast"]').length).toBe(0);
+    });
+
+    it('goes inert without a remount when the grant set narrows mid-session', async () => {
+      const pane = await buildPane(makeTestThread({ provider: 'claude' }));
+      const draft = await buildDraft();
+
+      const { getByLabelText, getByTestId } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      expect(textarea.disabled).toBe(false);
+
+      // What a revocation-and-repair looks like from this module's side.
+      await pairViewOnly();
+      await tick();
+
+      expect(textarea.disabled).toBe(true);
+      expect((getByTestId('composer-send') as HTMLButtonElement).disabled).toBe(true);
     });
   });
 });

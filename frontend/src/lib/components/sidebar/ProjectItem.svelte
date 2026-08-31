@@ -54,6 +54,7 @@
     getDropTargetProjectId,
     updateDropTarget,
   } from '../../stores/projectDnd.svelte';
+  import { hasScope } from '../../transport/scopes';
 
   interface Props {
     project: ProjectWithCounts;
@@ -85,6 +86,14 @@
     onReorder,
     separatedFromPrevious = false,
   }: Props = $props();
+
+  // Creating a thread rides `threads:operate`; a terminal thread also
+  // starts a PTY, which rides `terminal:operate`. Both controls stay in the
+  // row and go inert rather than disappearing — a project whose row lost
+  // half its affordances reads as a broken sidebar, not as a read-only one.
+  // The hover-reveal is untouched, so nothing new is visible at rest.
+  let newThreadUngranted = $derived(!hasScope('threads:operate'));
+  let newTerminalUngranted = $derived(!hasScope('terminal:operate'));
 
   let rowEl: HTMLDivElement | undefined = $state(undefined);
   let contextMenuOpen = $state(false);
@@ -393,10 +402,11 @@
       <button
         type="button"
         onclick={handleNewTerminalClick}
-        title="New Terminal in This Project"
+        disabled={newTerminalUngranted}
+        title={newTerminalUngranted ? 'Local only' : 'New Terminal in This Project'}
         aria-label="New Terminal in This Project"
         data-testid="project-item-new-terminal"
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
       >
         <Icon icon={Terminal} size={12} strokeWidth={2} class="opacity-90" />
       </button>
@@ -404,10 +414,11 @@
         type="button"
         onclick={handleNewThreadClick}
         oncontextmenu={handleNewThreadContextMenu}
-        title="New Thread in This Project"
+        disabled={newThreadUngranted}
+        title={newThreadUngranted ? 'Local only' : 'New Thread in This Project'}
         aria-label="New Thread in This Project"
         data-testid="project-item-new-thread"
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ml-1 shrink-0 flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-surface-2/40 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:text-fg-subtle disabled:hover:text-fg-subtle disabled:hover:bg-surface-2/0"
       >
         <Icon icon={Plus} size={12} strokeWidth={2} class="opacity-90" />
       </button>

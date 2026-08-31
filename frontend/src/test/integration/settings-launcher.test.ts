@@ -27,7 +27,14 @@ const SETTINGS_TESTID = 'settings-overlay';
 
 type Rendered = { getByTestId: (id: string) => HTMLElement };
 
-const LAZY_LOAD_BUDGET_MS = 5000;
+// The lazy load's own wall-clock budget. 5s was still a TUNED value rather
+// than a tripwire, and the first case in the file — the one that pays the
+// on-demand transform for the whole suite run — spent 5.3s of it under a
+// full-suite fan-out and failed (2026-08-31, green in isolation every time,
+// and again once the run grew a few more files). Sized as the tripwire the
+// area guide asks for: far above any healthy transform, still under
+// LAZY_CASE_TIMEOUT_MS so this wait stays the thing that fails.
+const LAZY_LOAD_BUDGET_MS = 15_000;
 
 // A case that waits on the lazy load needs a WALL-CLOCK budget above that
 // wait's own, or the inner waitFor can never be the thing that fails: at

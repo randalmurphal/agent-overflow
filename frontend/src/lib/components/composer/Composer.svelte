@@ -59,6 +59,7 @@
   } from '../../stores/worktreeIntent.svelte';
   import { prepareThreadWorktreeIntent } from '../../stores/worktreeIntentMaterialize';
   import { providerSupports } from '../../providers/catalog';
+  import { hasScope } from '../../transport/scopes';
   import { getFlushedForThread, getQueueForThread, registerQueueItem } from '../../stores/sendQueue.svelte';
   import { registerComposerDraft } from '../../stores/composerDraftRegistry.svelte';
   import { getThreadById, prependThread } from '../../stores/threads.svelte';
@@ -96,6 +97,18 @@
   let emptyDraftCleanupKey: string | null = null;
 
   let isDisabled = $derived(!pane.canCompose);
+  // Sending rides `threads:operate`, answering a prompt rides
+  // `approvals:respond`, and attaching rides `attachments:write`. Each
+  // control asks for the capability IT needs rather than for a mode: a
+  // grant set narrower than full is not necessarily view-only, and one
+  // predicate for the whole composer would take the wrong things away.
+  //
+  // The controls stay where they are and go inert. A composer that
+  // vanished would leave a thread looking broken rather than read-only,
+  // and the disabled state is the affordance the rest of the app already
+  // uses for a control that is out of reach.
+  let sendUngranted = $derived(!hasScope('threads:operate'));
+  let respondUngranted = $derived(!hasScope('approvals:respond'));
   // Mid-round signal: a wire round is currently in flight (the model
   // is streaming text/tool work). The composer stays typeable during
   // a round and Send routes through the backend-owned per-thread
@@ -169,6 +182,7 @@
   let hasDraftDiffReviewComments = $derived(Boolean(activeDiffReviewSource) && activeDiffReviewDraftComments.length > 0);
   let sendState = $derived(deriveComposerSendState({
     isDisabled,
+    sendUngranted,
     sending,
     sendSuspended: sendSuspended || interruptPending,
     hasBlockingPrompt,
@@ -186,6 +200,7 @@
   let hasPlanImplementAction = $derived(sendState.hasPlanImplementAction);
   let inputState = $derived(deriveComposerInputState({
     isDisabled,
+    sendUngranted,
     hasBlockingPrompt,
     hasUserInputPrompt,
     userInputCustomAnswer,
@@ -774,6 +789,13 @@
   let supportsAttachments = $derived(providerSupports(pane.thread?.provider, 'attachments'));
 
   function blockAttachment(event: DragEvent | ClipboardEvent, notify = true): boolean {
+    // Uploading rides `attachments:write`, and a paste or a drop is not a
+    // control anybody chose to press — so this refuses without a toast.
+    // Nothing was offered, so nothing failed.
+    if (!hasScope('attachments:write')) {
+      event.preventDefault();
+      return true;
+    }
     if (!supportsAttachments) {
       event.preventDefault();
       if (notify) {
@@ -790,13 +812,13 @@
   // resolution event like any other.
   async function resolveApproval(response: ApprovalResponse): Promise<void> {
     const threadId = pane.threadId;
-    if (!threadId) return;
+    if (!threadId || respondUngranted) return;
     await ignoringAlreadyHandled(RespondToApproval(threadId, response));
   }
 
   async function resolveUserInput(response: UserInputResponse): Promise<void> {
     const threadId = pane.threadId;
-    if (!threadId) return;
+    if (!threadId || respondUngranted) return;
     await ignoringAlreadyHandled(RespondToUserInput(threadId, response));
   }
 
@@ -880,6 +902,7 @@
         <ComposerPendingApprovalPanel
           approval={activeApproval}
           count={blockingApprovals.length}
+          ungranted={respondUngranted}
           onResolve={resolveApproval}
           onError={handlePromptError}
         />
@@ -888,6 +911,7 @@
       {#key activeUserInput.requestId}
         <ComposerPendingUserInputPanel
           request={activeUserInput}
+          ungranted={respondUngranted}
           customAnswer={userInputCustomAnswer}
           submitSignal={userInputSubmitSignal}
           collapsed={userInputCollapsed}
