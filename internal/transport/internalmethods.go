@@ -434,14 +434,24 @@ var LocalOnlyMethods = map[string]bool{
 	// dispatches the edited replacement on the same session — the fork
 	// variants' session-control + FS class plus SendMessage's.
 	"RevertConversationAndResendMessage": true,
-	// Background-task control terminates host subprocesses. All three are
+	// Background-task control terminates host subprocesses. All four are
 	// the same class: a PTY / task the model launched on this machine dies
 	// when the call lands. TerminateCodexBackgroundTerminal is the per-row
 	// sibling of the thread-wide clean.
+	//
+	// StopThreadBackgroundWork is the provider-neutral thread-wide form:
+	// it routes each of that thread's live tasks through the very RPCs
+	// above, so it terminates host subprocesses by definition and takes
+	// their classification. Its read companion, ListRunningBackgroundWork,
+	// is deliberately NOT here — see the wireSafeMethods note on it. The
+	// remote-access spec wants an attached client to hold these stop
+	// controls; that arrives with the labelled step-up tiers, not by
+	// making one termination RPC the exception.
 	"StopClaudeTask":                   true,
 	"CleanCodexBackgroundTerminals":    true,
 	"TerminateCodexBackgroundTerminal": true,
 	"StopCodexSubagent":                true,
+	"StopThreadBackgroundWork":         true,
 	// BackgroundClaudeTask drives the same live Claude stdio control
 	// channel in the opposite direction: it detaches a running subagent /
 	// Bash from the foreground turn rather than killing it. Session

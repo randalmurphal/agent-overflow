@@ -3,6 +3,7 @@
 
 export {
     AttachmentThumbnail,
+    BackgroundWorkInventory,
     BranchCommit,
     BranchPruneCandidate,
     BranchPruneCandidates,
@@ -70,6 +71,7 @@ export {
     RemoteEndpointSummary,
     RetainedWorktree,
     RevertAndResendOptions,
+    RunningBackgroundWork,
     SendDiffReviewCommentsInput,
     SendMessageOptions,
     SourceDiffReview,

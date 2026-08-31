@@ -56,6 +56,16 @@ var wireSafeMethods = map[string]bool{
 
 	// Thread lifecycle (CRUD, archive, pin, read/unread). Same
 	// user-driven UI surface.
+	//
+	// ArchiveThread and DeleteThread both close the thread's provider
+	// session as part of the lifecycle change, which does NOT move them
+	// into session control (category 2). That category exists to stop a
+	// LAN peer from DRIVING the host's CLI — spawning it, steering it,
+	// putting prompts and tool calls into the user's shell context.
+	// Releasing one thread's own process is the opposite direction and
+	// carries none of that reach: it starts nothing and can run nothing.
+	// DeleteThread has stopped sessions for as long as it has existed;
+	// archive now does the same, and inherits the same reasoning.
 	"ArchiveThread":        true,
 	"UnarchiveThread":      true,
 	"DeleteThread":         true,
@@ -152,6 +162,34 @@ var wireSafeMethods = map[string]bool{
 	// global-thread-count reads with no sensitive content).
 	"CountRunningBackgroundTasks": true,
 	"ListLiveBackgroundTasks":     true,
+
+	// ListRunningBackgroundWork is the cross-thread inventory of what
+	// the host is running now. It is here rather than in
+	// LocalOnlyMethods on three counts, and the first is the one that
+	// settles it:
+	//
+	//  1. It discloses nothing new. ListThreads (above) enumerates
+	//     threads and ListLiveBackgroundTasks (one line up) returns
+	//     each thread's rows INCLUDING their full meta blob, both
+	//     wire-reachable today, so a token-holder can already assemble
+	//     this answer by looping. The inventory strictly narrows what
+	//     that loop returns — thread, tool, summary, timestamp, and the
+	//     stop handle; no meta, no payload ids, no completed rows.
+	//  2. It spawns nothing and touches no path. It reads SQLite and
+	//     two in-memory maps. Contrast GetWorkspaceActivity, which is
+	//     LocalOnly for taking a caller-supplied path and resolving it —
+	//     an FS oracle. There is no caller-supplied anything here.
+	//  3. Its only consumer is a client attached to a machine it cannot
+	//     look at. Classifying the read LocalOnly would leave a remote
+	//     operator unable to see a runaway dev server they are paying
+	//     for, which is the situation the method exists for.
+	//
+	// The WRITE half does not follow it: StopThreadBackgroundWork is in
+	// LocalOnlyMethods with the rest of the background-task control
+	// surface. Seeing what a host runs and killing it are separate
+	// authorizations, and only the read is safe to grant on a token
+	// alone.
+	"ListRunningBackgroundWork": true,
 
 	// Discussion CRUD + transcript reads. Channel messages and FSM
 	// state are the user's deliberation surface from the browser — both
