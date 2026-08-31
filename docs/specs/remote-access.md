@@ -86,7 +86,7 @@ device is not equally privileged everywhere:
 |---|---|
 | loopback / same host | full (subject to tier) |
 | private network: LAN with TLS, tailnet | full (subject to tier) |
-| public: Funnel, Cloudflare tunnel | full **minus the step-up set**, and `public` binding required |
+| public: Funnel, Cloudflare tunnel | full **minus the step-up set and `terminal:operate`** (ruled 2026-08-31, §18), and `public` binding required |
 
 ### Effective scopes
 
@@ -1866,22 +1866,30 @@ Each phase leaves `make check` green.
 
 ## 18. Decisions still open
 
-1. Whether `access:admin` exists as a standing remote scope at all, or
-   whether every admin action requires step-up.
-2. Push distribution posture (§9). Direct for personal builds is fine;
+1. Push distribution posture (§9). Direct for personal builds is fine;
    the distributed answer must be chosen before public release.
-3. How much of the payload-sensitivity machinery (§11) is built at
+2. How much of the payload-sensitivity machinery (§11) is built at
    team-time vs. designed-only now.
-4. Whether draft "edited on <device>" and presence-aware routing survive
+3. Whether draft "edited on <device>" and presence-aware routing survive
    at all (marked cuttable).
-5. Whether the public-path ceiling (§2) should exclude anything beyond
-   the step-up set, e.g. whether `terminal:operate` over a public
-   tunnel is acceptable given it is already key-bound and TLS-wrapped.
-6. Hub-thread operability (§11): whether shared-workspace threads on a
+4. Hub-thread operability (§11): whether shared-workspace threads on a
    team server are operable by members via workspace roles (personal
    backends stay read-only + fork regardless), and who may answer
    approvals on a hub thread: any member holding the scope, the
    thread starter, or a role gate.
+
+Ruled 2026-08-31 (user): `access:admin` exists as a standing remote
+scope. Device revoke and rename from a paired device ride the standing
+grant behind a confirmation dialog; step-up stays on pairing-grant
+minting only, because pairing is where the strong ceremony already
+lives (passkey once phase 5 lands) and a device's own unlock covers
+casual access. Also ruled: the reachable paths are LAN and the owner's
+tailnet, and both are trusted alike — every granted scope, including
+`terminal:operate`, works over the tailnet. The public-path ceiling
+(§2) applies only to a deliberately published endpoint (Funnel or an
+equivalent public tunnel), and there it excludes `terminal:operate` on
+top of the step-up set. The owner does not plan to publish one, so the
+ceiling is headroom, not a constraint.
 
 Settled in review: approvals are never gated on the owner's own devices;
 terminal access is not withheld from native clients by device class;
