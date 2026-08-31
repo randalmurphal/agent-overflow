@@ -492,3 +492,142 @@ func TestEveryRouteHasAnInventoryRow(t *testing.T) {
 			len(stale), strings.Join(stale, "\n  "))
 	}
 }
+
+// TestEveryRegistryStillMatchesItsTable is the gate for the two
+// reference rows. Listeners and routes are checked by scanning the whole
+// tree for binds and registrations; a registry cannot be found that way,
+// because its 360 (or 72) entries are the thing this package
+// deliberately does not copy. What it CAN check is that the row still
+// describes the table it points at:
+//
+//   - the file exists and declares the named symbol,
+//   - the symbol is a composite literal with entries in it, so a row
+//     naming an emptied-out table fails rather than reading as coverage,
+//   - every entry sets every field the row names as required, which is
+//     what catches an entry somebody added without classifying it, and
+//   - every named gate is still a function in the file that held it.
+//
+// The last one is the drift a reference row exists to notice. This
+// tree's per-method origin partition was deleted in one wave; a row
+// naming the function that used to enforce it would have kept claiming a
+// control that no longer existed.
+func TestEveryRegistryStillMatchesItsTable(t *testing.T) {
+	root := repoRoot(t)
+	fset := token.NewFileSet()
+
+	for _, registry := range Registries {
+		t.Run(registry.Name, func(t *testing.T) {
+			file, err := parser.ParseFile(fset, filepath.Join(root, registry.Source), nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", registry.Source, err)
+			}
+
+			literal := packageLevelComposite(file, registry.Symbol)
+			if literal == nil {
+				t.Fatalf("%s declares no package-level %s bound to a composite literal; the row is pointing at something that moved or was renamed",
+					registry.Source, registry.Symbol)
+			}
+			if len(literal.Elts) == 0 {
+				t.Fatalf("%s.%s is empty; a registry row over an empty table reads as coverage and is none",
+					registry.Source, registry.Symbol)
+			}
+			for i, element := range literal.Elts {
+				entry, ok := element.(*ast.CompositeLit)
+				if !ok {
+					t.Errorf("%s.%s[%d] is not a composite literal, so its fields cannot be checked", registry.Source, registry.Symbol, i)
+					continue
+				}
+				set := keyedFieldNames(entry)
+				for _, required := range registry.RowFields {
+					if !set[required] {
+						t.Errorf("%s.%s[%d] sets no %s; every entry must carry the decisions surfaces.Registries names",
+							registry.Source, registry.Symbol, i, required)
+					}
+				}
+			}
+
+			for _, gate := range registry.Gates {
+				source, name, ok := strings.Cut(gate, ":")
+				if !ok {
+					t.Errorf("Registries[%q] gate %q is not \"file:function\"", registry.Name, gate)
+					continue
+				}
+				gateFile, err := parser.ParseFile(fset, filepath.Join(root, source), nil, 0)
+				if err != nil {
+					t.Errorf("parse %s: %v", source, err)
+					continue
+				}
+				if !declaresFunc(gateFile, name) {
+					t.Errorf("%s declares no %s; the row names a gate that moved or was deleted", source, name)
+				}
+			}
+		})
+	}
+}
+
+// packageLevelComposite finds `var name = <composite literal>` or
+// `var name = func() T { … }()`. The second form is how a table built
+// once at init is spelled, and the literal inside it is still the
+// authored rows.
+func packageLevelComposite(file *ast.File, name string) *ast.CompositeLit {
+	var found *ast.CompositeLit
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, ident := range value.Names {
+				if ident.Name != name || i >= len(value.Values) {
+					continue
+				}
+				ast.Inspect(value.Values[i], func(node ast.Node) bool {
+					if found != nil {
+						return false
+					}
+					if literal, ok := node.(*ast.CompositeLit); ok {
+						found = literal
+						return false
+					}
+					return true
+				})
+			}
+		}
+	}
+	return found
+}
+
+// keyedFieldNames is the set of field names an entry sets explicitly.
+// Keyed literals are what every table here uses, and they are what makes
+// an omitted field visible: a positional literal would set every field
+// and say nothing about which ones somebody thought about.
+func keyedFieldNames(entry *ast.CompositeLit) map[string]bool {
+	names := map[string]bool{}
+	for _, element := range entry.Elts {
+		pair, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if key, ok := pair.Key.(*ast.Ident); ok {
+			names[key.Name] = true
+		}
+	}
+	return names
+}
+
+// declaresFunc reports whether the file declares name as a function or
+// as a method on any receiver. Either spelling satisfies a gate row:
+// what the row asserts is that the decision still has somewhere to
+// happen, not how it is reached.
+func declaresFunc(file *ast.File, name string) bool {
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == name {
+			return true
+		}
+	}
+	return false
+}

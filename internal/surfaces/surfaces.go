@@ -24,11 +24,17 @@
 // workspace file reads, which is a much larger grant than "carries no
 // session credential" makes it sound.
 //
-// Scope is phase 0 of docs/specs/remote-access.md §13: listeners, HTTP
-// routes, and content origins. RPC methods and event channels are
-// deliberately absent — they get their columns when the scope table
-// generates in phase 3, and until then they have their own enforcement
-// (internal/transport's method classification and channelPolicies).
+// Scope is docs/specs/remote-access.md §13. Listeners, HTTP routes, and
+// content origins landed in phase 0 and are enumerated ROW BY ROW,
+// because each one is a decision somebody made once. RPC methods and
+// event channels landed in phase 3 and are enumerated as REGISTRIES —
+// one row each, naming the authored table and the gate that reads it —
+// because 360 methods and 72 channels are generated or table-driven, and
+// copying them here would produce a second list whose only reliable
+// property is disagreeing with the first. The Registry row records what
+// this package can say that the tables cannot say about themselves:
+// which listener carries them, over which routes, and what decides one
+// entry for one caller.
 package surfaces
 
 // BindingClass is what a listener's bind address admits. It is a
@@ -225,6 +231,49 @@ type Origin struct {
 	Why     string
 }
 
+// Registry is a policy table that decides what a caller reaches THROUGH
+// a surface, rather than a surface of its own. Two exist: the RPC method
+// table and the event-channel table.
+//
+// A Registry row is a REFERENCE, not a copy. It names where the authored
+// table lives, what every row of it must carry, and which function reads
+// it at call time — the facts that go stale when somebody moves or
+// renames a gate, which is exactly what happened to this tree's origin
+// partition. The entries themselves stay in their own package, gated by
+// their own tests, because two lists of the same 360 names would agree
+// only until the first edit.
+type Registry struct {
+	// Name identifies the registry in prose and in gate failures.
+	Name string
+
+	// Listener is the Name of the Listener that carries it, and Routes
+	// are the Patterns on that listener a caller reaches it over. Both
+	// are checked against the rows above, so a registry cannot outlive
+	// the surface it rides.
+	Listener string
+	Routes   []string
+
+	// Source is the repository-relative file holding the authored table,
+	// and Symbol is the declaration inside it whose elements are the
+	// rows. The gate finds them; a rename or a move fails here.
+	Source string
+	Symbol string
+
+	// RowFields are the fields EVERY element of Symbol must set. They
+	// are the decisions the registry exists to record, so an element
+	// that omits one is an entry somebody added without classifying —
+	// the failure this reference is worth having.
+	RowFields []string
+
+	// Gates are the functions that decide one entry for one caller,
+	// repository-relative file first. Named because a deleted gate is
+	// the drift this row cannot otherwise notice: a table nothing reads
+	// still looks complete.
+	Gates []string
+
+	Why string
+}
+
 // Listeners is every port this repository's code opens, plus the ones
 // its child processes open on its behalf.
 //
@@ -250,8 +299,8 @@ var Listeners = []Listener{
 			"fallback. Three checks run ahead of the credential: an Origin " +
 			"allow-list derived from the request's own authority, a " +
 			"Host-header guard that rejects non-loopback names while in " +
-			"loopback mode, and the LocalOnlyMethods classification once a " +
-			"call is authenticated.",
+			"loopback mode, and — once a call is authenticated — the " +
+			"per-call scope gate over the session's grants.",
 	},
 	{
 		Name:       "--connect client stub",
@@ -709,5 +758,66 @@ var Origins = []Origin{
 			"CDP frames, authored by the Chrome process we launched. " +
 			"Recorded here because \"our child opened an origin\" is exactly " +
 			"the thing an inventory of our own code would miss.",
+	},
+}
+
+// Registries is every policy table that decides what a caller reaches
+// through a surface above.
+//
+// Verified against the tree on 2026-08-31: 360 RPC methods and 72 event
+// channels. Those counts are an observation rather than a claim the gate
+// holds — a new method or channel is an ordinary edit, and a count here
+// would make every one of them edit this file for nothing.
+var Registries = []Registry{
+	{
+		Name:      "RPC methods",
+		Listener:  "app transport",
+		Routes:    []string{"/ws", "/rpc"},
+		Source:    "internal/transport/methods_gen.go",
+		Symbol:    "GeneratedMethods",
+		RowFields: []string{"Name", "ID", "Scope"},
+		Gates: []string{
+			"internal/transport/authorize.go:AuthorizeSessionMethod",
+			"internal/transport/dispatcher.go:ResolveForOrigin",
+		},
+		Why: "Every exported method on the App receiver is a wire RPC by " +
+			"construction, so the table is GENERATED from the //ao:scope " +
+			"directive each one carries and methodgen fails the run on a " +
+			"method that carries none — there is no default and no silent " +
+			"row. Two gates read it. AuthorizeSessionMethod compares a " +
+			"session's grants against the row's scope on every call, " +
+			"re-reading the grants each time so a revocation lands inside " +
+			"an open connection; ResolveForOrigin is the narrower one, and " +
+			"judges the RECEIVER rather than the method — the harness " +
+			"registers RegisterOptions{LocalOnly} and is refused off-host " +
+			"with the same method_not_found shape an unregistered method " +
+			"returns, so host tooling stays unenumerable. The per-METHOD " +
+			"origin partition that used to sit beside them is deleted: " +
+			"every off-host connection names a session, and its grants are " +
+			"the answer. `host` is the scope no session may hold.",
+	},
+	{
+		Name:      "event channels",
+		Listener:  "app transport",
+		Routes:    []string{"/ws"},
+		Source:    "internal/transport/event_channels.go",
+		Symbol:    "channelPolicies",
+		RowFields: []string{"Channel", "Audience", "Retention", "Scope", "Why"},
+		Gates: []string{
+			"internal/transport/event_visibility.go:eventVisibleToOrigin",
+			"internal/transport/event_visibility.go:sessionScopeFilter",
+		},
+		Why: "Server push is the THIRD DOOR, and it is the one an RPC " +
+			"inventory misses: a channel fans out to every subscriber " +
+			"regardless of who armed it, so a stream a local pane opened " +
+			"reaches a remote client unless a row says otherwise. Each row " +
+			"carries three decisions — the audience a frame may reach, " +
+			"whether it is retained for replay on reconnect, and the scope " +
+			"a session needs to receive it — and both filters run per " +
+			"event per subscriber AND per event per connection. The " +
+			"spelling half of the table is internal/eventchan, which " +
+			"imports nothing so every emitting layer can name a channel; a " +
+			"cross-check test fails on either half missing its counterpart, " +
+			"which is what makes adding a channel two edits and no more.",
 	},
 }

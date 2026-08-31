@@ -197,3 +197,58 @@ func TestAuthoredBytesNeverExecute(t *testing.T) {
 		}
 	}
 }
+
+// TestRegistryRowsAreWellFormed holds the same bar the three surface
+// tables are held to, plus the one property that is specific to a
+// reference row: it has to be anchored to a surface this package already
+// enumerates. A registry pointing at a listener or a route nobody
+// declares is describing a door that does not exist.
+func TestRegistryRowsAreWellFormed(t *testing.T) {
+	byListener := map[string]Listener{}
+	for _, listener := range Listeners {
+		byListener[listener.Name] = listener
+	}
+	routesOn := map[string]bool{}
+	for _, route := range Routes {
+		routesOn[route.Listener+"\x00"+route.Pattern] = true
+	}
+
+	seen := map[string]bool{}
+	for i, registry := range Registries {
+		if registry.Name == "" {
+			t.Fatalf("Registries[%d] has no name", i)
+		}
+		if seen[registry.Name] {
+			t.Errorf("Registries has %q twice", registry.Name)
+		}
+		seen[registry.Name] = true
+
+		listener, ok := byListener[registry.Listener]
+		if !ok {
+			t.Errorf("Registries[%q] names a listener no row declares: %q", registry.Name, registry.Listener)
+		} else if listener.Implicit {
+			t.Errorf("Registries[%q] rides %q, which is implicit; we dispatch nothing on a listener a child process opens", registry.Name, registry.Listener)
+		}
+		if len(registry.Routes) == 0 {
+			t.Errorf("Registries[%q] names no route; a registry nothing is reached over is not a registry", registry.Name)
+		}
+		for _, pattern := range registry.Routes {
+			if !routesOn[registry.Listener+"\x00"+pattern] {
+				t.Errorf("Registries[%q] names route %q on %q, which no Route row declares", registry.Name, pattern, registry.Listener)
+			}
+		}
+
+		if registry.Source == "" || registry.Symbol == "" {
+			t.Errorf("Registries[%q] does not say where its table lives", registry.Name)
+		}
+		if len(registry.RowFields) == 0 {
+			t.Errorf("Registries[%q] names no required row field; the gate would then assert nothing about its entries", registry.Name)
+		}
+		if len(registry.Gates) == 0 {
+			t.Errorf("Registries[%q] names no gate; a table nothing reads still looks complete", registry.Name)
+		}
+		if len(registry.Why) < minimumWhy {
+			t.Errorf("Registries[%q].Why is %d chars; too short to say anything the fields do not", registry.Name, len(registry.Why))
+		}
+	}
+}
