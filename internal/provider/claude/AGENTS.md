@@ -221,10 +221,13 @@ dispatches. Parser state is single-goroutine, driven by the read loop.
   is usually a real replacement value; check the wire reference per
   envelope before treating one as the other.
 - In `transcript_mirror`, `attributionSkill` is attribution, not ownership.
-  It labels both inline-skill main work and forked-skill work. Only an
-  `isSidechain:true` row carrying that attribution proves a direct command
-  fork; `isSidechain:false` must never open a projector or parent later main
-  activity beneath the command.
+  It labels inline-skill main work, ordinary children launched afterward, and
+  forked-skill work. `agent_metadata.toolUseId` owns an ordinary child even
+  when it arrives before `task_started`; its duplicate mirror stays ignored
+  unless backgrounding stopped stdout or a mirrored parent owns the launch.
+  Only ownerless `agent_metadata` plus `isSidechain:true` and attribution prove
+  a direct command fork. `isSidechain:false` must never open a projector or
+  parent later main activity beneath the command.
 
 ## Lifecycles this package drives
 

@@ -3078,15 +3078,19 @@ Two gaps make this surface necessary:
 - A directly entered forked command such as `/code-review high` produces only
   its outer `<synthetic>` command result on ordinary stdout. Its fork-root
   prompt, tool calls, results, and final assistant row arrive live in the
-  mirrored sidechain. Its rows carry `isSidechain:true`; root assistant rows
-  also carry `attributionSkill` and `agentId`. The conjunction dynamically
-  proves a Skill fork without a command-name list. `attributionSkill` alone is
-  insufficient because Claude also stamps it on `isSidechain:false` main-agent
-  work after an inline skill injects context. The `command_lifecycle` uuid
-  identifies the outer command. AO shows a provisional running Command row on
-  the lifecycle's `started` frame, then changes that same row to Skill when the
-  sidechain attribution arrives. A long first model step no longer looks like
-  a command that failed to start.
+  mirrored sidechain. The file starts with
+  `agent_metadata {agentType:"general-purpose"}` and no `toolUseId`; root
+  assistant rows carry `isSidechain:true`, `attributionSkill`, and `agentId`.
+  Those facts dynamically prove a Skill fork without a command-name list.
+  `attributionSkill` alone is insufficient because Claude also stamps it on
+  `isSidechain:false` main-agent work after an inline skill injects context.
+  It is also inherited by ordinary Agent children launched after that inline
+  skill. Their metadata instead carries the owning launch as
+  `toolUseId:"toolu_…"`. The `command_lifecycle` uuid identifies the outer
+  command. AO shows a provisional running Command row on the lifecycle's
+  `started` frame, then changes that same row to Skill after ownerless metadata
+  and sidechain attribution confirm the fork. A long first model step no longer
+  looks like a command that failed to start.
 - A foreground agent moved through `background_tasks` stops ordinary
   sidechain forwarding at the acknowledgement. Its later rows continue in
   the mirror. An agent launched async normally still forwards its sidechain,
@@ -3099,11 +3103,16 @@ received entries through the session-import converter's stateful
 never tails transcript files for live updates. The terminal file converter
 remains only for an older process that has no mirrored marker.
 
-Rows whose scope or attribution is not known stay in a bounded buffer until
-`isSidechain:true` plus `attributionSkill` claim the fork. An explicit
-`isSidechain:false` clears that buffer and leaves the command unprojected. If
-the file, entry, or byte bound drops any prefix data, AO persists a warning
-beneath the command row instead of leaving the gap silent.
+Rows whose scope or attribution is not known stay in a bounded buffer. An
+ordinary Agent's `agent_metadata.toolUseId` classifies the mirror as that
+Agent's duplicate even if the metadata beats `system/task_started`; ordinary
+stdout remains its live source. AO opens a projector only if
+`background_tasks` stopped that feed or the launch belongs below an already
+mirrored scope. Ownerless `agent_metadata` plus `isSidechain:true` and
+`attributionSkill` claim a forked Skill. An explicit `isSidechain:false` clears
+the buffer and leaves the command unprojected. If the file, entry, or byte bound
+drops any prefix data, AO persists a warning beneath the command row instead of
+leaving the gap silent.
 
 ### Local command envelope sequence
 

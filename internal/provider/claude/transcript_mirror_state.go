@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 
@@ -23,9 +24,31 @@ func (s *transcriptMirrorState) clearPending(key string) {
 		s.totalPendingBytes = 0
 	}
 	delete(s.pendingBytes, key)
+	delete(s.pendingFacts, key)
 	delete(s.pendingOwner, key)
 	delete(s.pending, key)
 	delete(s.pendingWarned, key)
+}
+
+func (s *transcriptMirrorState) noteMetadataTaskScope(agentID, toolUseID string) error {
+	agentID = strings.TrimSpace(agentID)
+	toolUseID = strings.TrimSpace(toolUseID)
+	if agentID == "" || toolUseID == "" {
+		return nil
+	}
+	binding := s.taskScopes[agentID]
+	// task_started is newer lifecycle evidence when an existing agent is
+	// resumed under another tool call. Metadata only closes the earlier race.
+	if binding.scope != "" {
+		if !binding.needsProjection && binding.scope != toolUseID {
+			return fmt.Errorf("agent %q changed agent_metadata toolUseId from %q to %q", agentID, binding.scope, toolUseID)
+		}
+		return nil
+	}
+	binding.scope = toolUseID
+	binding.needsProjection = s.scopeOwners[toolUseID] != ""
+	s.taskScopes[agentID] = binding
+	return nil
 }
 
 func (s *transcriptMirrorState) warnPendingOnce(key, commandUUID, message string) bool {
@@ -103,6 +126,7 @@ func (s *transcriptMirrorState) newProjection(filePath, scope, agentID, commandU
 		binding := s.taskScopes[agentID]
 		binding.scope = scope
 		binding.projectionKey = key
+		binding.needsProjection = true
 		s.taskScopes[agentID] = binding
 	}
 	return projection, nil
@@ -217,6 +241,7 @@ func (s *transcriptMirrorState) observeBindings(rows []sessionimport.Row, curren
 			if owner := s.scopeOwners[toolUseID]; owner == projectionKey || toolUseID == currentScope {
 				binding := s.taskScopes[agentID]
 				binding.scope = toolUseID
+				binding.needsProjection = true
 				s.taskScopes[agentID] = binding
 			}
 		}
