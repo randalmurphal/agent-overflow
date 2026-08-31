@@ -49,6 +49,18 @@ func (c *Core) readOriginRemote(cwd string) originIdentity {
 	return originIdentity{url: strings.TrimSpace(result.stdout), known: true}
 }
 
+// OriginRemoteURL returns the workspace's `origin` remote URL, or "" when the
+// path is not a repository, has no such remote, or git failed. The three cases
+// are deliberately one answer: every caller so far wants "the URL, if there is
+// one", and an error return would only be discarded. Fronted by the same
+// per-repository TTL cache DetectForge uses.
+func (c *Core) OriginRemoteURL(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	return c.originRemote(cwd).url
+}
+
 // DetectForge returns the canonical forge id ("github" | "gitlab") for
 // cwd's origin remote, or "" when the remote is missing or the host is
 // unsupported. Results are memoized for forgeDetectionTTL on the Core

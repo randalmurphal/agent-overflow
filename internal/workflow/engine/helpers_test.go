@@ -505,7 +505,7 @@ func newHarnessWith(t *testing.T, options harnessOptions) *testHarness {
 		t.Fatal(err)
 	}
 	for index, projectID := range options.projectIDs {
-		if err := database.CreateProject(store.Project{
+		if _, err := database.CreateProject(store.Project{
 			ID: projectID, Path: filepath.Join(t.TempDir(), projectID), Name: projectID,
 			SortPosition: index, CreatedAt: 1, UpdatedAt: 1,
 		}); err != nil {

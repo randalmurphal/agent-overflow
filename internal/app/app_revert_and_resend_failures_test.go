@@ -53,7 +53,7 @@ func TestRevertAndResendStagingFailureLeavesEverythingUntouched(t *testing.T) {
 		TerminalChips: `[{"id":"chip-1","label":"npm test"}]`,
 		UpdatedAt:     time.Now().UnixMilli(),
 	}
-	if err := app.store.UpsertThreadDraft(corrupt); err != nil {
+	if _, err := app.store.UpsertThreadDraft(corrupt); err != nil {
 		t.Fatalf("seed corrupt draft: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) 
 	app, bus := newResendTestApp(t)
 	thread, workspace := seedResendThread(t, app, "t-resend-rollback-fail")
 
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:      thread.ID,
 		Content:       "half-typed follow-up",
 		TerminalChips: `[{"id":"chip-1","label":"npm test"}]`,
@@ -257,7 +257,7 @@ func TestRevertAndResendRestoresChipsAndPlanLinkByteIdentical(t *testing.T) {
 		PendingPlanImplementation: `{"threadId":"plan-thread","itemId":"plan-item"}`,
 		UpdatedAt:                 time.Now().UnixMilli(),
 	}
-	if err := app.store.UpsertThreadDraft(wip); err != nil {
+	if _, err := app.store.UpsertThreadDraft(wip); err != nil {
 		t.Fatalf("seed WIP draft: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestRevertAndResendStagedCrashCopyKeepsChipsAndPlanLink(t *testing.T) {
 
 	const chips = `[{"id":"chip-1","label":"npm test","preview":"ok","content":"PASS","createdAt":7}]`
 	const plan = `{"threadId":"plan-thread","itemId":"plan-item"}`
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:                  thread.ID,
 		Content:                   "half-typed follow-up",
 		Attachments:               `["att-wip"]`,
@@ -428,7 +428,7 @@ func TestRevertAndResendSettlesDraftAgainstMidSagaComposerSaves(t *testing.T) {
 				UpdatedAt:     time.Now().UnixMilli(),
 			}
 			if tc.priorWIP {
-				if err := app.store.UpsertThreadDraft(wip); err != nil {
+				if _, err := app.store.UpsertThreadDraft(wip); err != nil {
 					t.Fatalf("seed WIP draft: %v", err)
 				}
 			}
@@ -440,7 +440,7 @@ func TestRevertAndResendSettlesDraftAgainstMidSagaComposerSaves(t *testing.T) {
 				if !tc.midSagaSave {
 					return nil
 				}
-				if err := app.SaveDraft(thread.ID, "typed while the saga ran", nil, nil, nil); err != nil {
+				if err := app.SaveDraft(t.Context(), thread.ID, "typed while the saga ran", nil, nil, nil); err != nil {
 					t.Errorf("mid-saga composer save: %v", err)
 					return nil
 				}
@@ -498,7 +498,7 @@ func TestRevertAndResendReportsSuccessWhenTheSettleFails(t *testing.T) {
 	app, _ := newResendTestApp(t)
 	thread, _ := seedResendThread(t, app, "t-resend-settle-fail")
 
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:  thread.ID,
 		Content:   "half-typed follow-up",
 		UpdatedAt: time.Now().UnixMilli(),
@@ -599,7 +599,7 @@ func TestRevertAndResendCodexForksAndResends(t *testing.T) {
 		t.Fatalf("install mock codex binary: %v", err)
 	}
 
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:      thread.ID,
 		Content:       "half-typed follow-up",
 		TerminalChips: `[{"id":"chip-1","label":"npm test"}]`,
@@ -680,7 +680,7 @@ func TestRevertAndResendCodexRollbackFailureKeepsCrashCopy(t *testing.T) {
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
 		t.Fatalf("install mock codex binary: %v", err)
 	}
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:  thread.ID,
 		Content:   "half-typed follow-up",
 		UpdatedAt: time.Now().UnixMilli(),

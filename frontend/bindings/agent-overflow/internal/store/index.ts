@@ -24,6 +24,7 @@ export {
     ProposedPlanSourceRef,
     Thread,
     ThreadMessageHit,
+    ThreadOrigin,
     TimelineCursor,
     Turn,
     TurnPreview,

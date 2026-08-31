@@ -342,7 +342,7 @@ func TestSubscribePRUpdatesReleasesOnConnectionClose(t *testing.T) {
 	}
 	// Mimics the per-connection ctx the transport layer installs: when the
 	// WS connection ends, RunCleanups releases whatever it held.
-	ctx, state := transport.WithConnState(context.Background())
+	ctx, state := transport.WithConnState(context.Background(), transport.ClientIdentity{})
 	sub, err := app.SubscribePRUpdates(ctx, testPR)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)

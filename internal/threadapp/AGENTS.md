@@ -47,3 +47,10 @@ What stays in `internal/app`:
   caller still owes its client a row.
 - Thread action locks self-clean through `internal/keyedlock`; callers never
   delete registry entries manually.
+- Creation provenance is observed once, at creation, and never restated.
+  `CreatedByDevice` arrives on the options struct (root reads it off the
+  connection; this package only records it), and the git coordinates come
+  from the `Workspace` port's `ObserveOrigin`. Both are write-once at the
+  store layer, so a creation path that skips them leaves a row that can never
+  acquire them — which is what `TestEveryNewThreadRecordsWhereItCameFrom` in
+  `internal/app` exists to catch.

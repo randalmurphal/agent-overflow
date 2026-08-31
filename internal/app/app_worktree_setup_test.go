@@ -95,7 +95,7 @@ func newWorktreeSetupTestApp(t *testing.T, config *worktreesetup.Config) (*App, 
 
 	now := time.Now().UnixMilli()
 	projectID := uuid.New().String()
-	if err := app.store.CreateProject(store.Project{
+	if _, err := app.store.CreateProject(store.Project{
 		ID:        projectID,
 		Path:      projectPath,
 		Name:      "Worktree Setup Test",
@@ -106,7 +106,7 @@ func newWorktreeSetupTestApp(t *testing.T, config *worktreesetup.Config) (*App, 
 		t.Fatalf("CreateProject: %v", err)
 	}
 	if config != nil {
-		if err := app.store.UpdateProjectWorktreeSetup(projectID, config); err != nil {
+		if _, _, err := app.store.UpdateProjectWorktreeSetup(projectID, config); err != nil {
 			t.Fatalf("UpdateProjectWorktreeSetup: %v", err)
 		}
 	}
@@ -319,7 +319,7 @@ func TestWorktreeSetupUnstartableRecipeFailsVisibly(t *testing.T) {
 		t.Fatal("snapshot runId is empty; the retained failure has no identity for the panel to match")
 	}
 	// The retained failure must not block the repair the user is about to make.
-	if err := app.store.UpdateProjectWorktreeSetup(thread.ProjectID, &worktreesetup.Config{
+	if _, _, err := app.store.UpdateProjectWorktreeSetup(thread.ProjectID, &worktreesetup.Config{
 		Run: [][]string{{"/bin/sh", "-c", "true"}},
 	}); err != nil {
 		t.Fatalf("rewrite recipe: %v", err)
@@ -369,7 +369,7 @@ func TestWorktreeSetupRetryAfterFailureSucceeds(t *testing.T) {
 
 	// Retry re-reads the recipe, so fixing it in Settings and pressing Retry
 	// does what the user means.
-	if err := app.store.UpdateProjectWorktreeSetup(thread.ProjectID, &worktreesetup.Config{
+	if _, _, err := app.store.UpdateProjectWorktreeSetup(thread.ProjectID, &worktreesetup.Config{
 		Run: [][]string{{"/bin/sh", "-c", "true"}},
 	}); err != nil {
 		t.Fatalf("rewrite recipe: %v", err)

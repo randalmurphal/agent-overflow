@@ -139,7 +139,7 @@ func newWorkflowPRTestApp(t *testing.T) (*App, store.WorkItem) {
 		ID: "workflow-pr-project", Path: t.TempDir(), Name: "Workflow PR",
 		CreatedAt: 1, UpdatedAt: 1,
 	}
-	if err := app.store.CreateProject(project); err != nil {
+	if _, err := app.store.CreateProject(project); err != nil {
 		t.Fatal(err)
 	}
 	workflow := def.Workflow{ID: "pr-workflow", Phases: []def.Phase{{
@@ -221,7 +221,7 @@ func TestWorkflowTriageThreadSeedsOnceAndPersistsAssociation(t *testing.T) {
 
 	repo := testutil.InitGitRepo(t)
 	project := store.Project{ID: "triage-project", Path: repo, Name: "Triage", CreatedAt: 1, UpdatedAt: 1}
-	if err := app.store.CreateProject(project); err != nil {
+	if _, err := app.store.CreateProject(project); err != nil {
 		t.Fatal(err)
 	}
 	workflow := def.Workflow{ID: "build", Phases: []def.Phase{{

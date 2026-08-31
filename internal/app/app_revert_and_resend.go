@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/transport"
 )
 
 // RevertAndResendOptions carries the resend half of
@@ -293,12 +294,12 @@ func (a *App) settleRevertAndResendDraft(threadID string, staged stagedThreadDra
 		return
 	}
 	if staged.priorExisted {
-		if err := a.store.UpsertThreadDraft(staged.prior); err != nil {
+		if err := a.writeThreadDraft(transport.ClientIdentity{}, staged.prior); err != nil {
 			log.Printf("app: revert and resend: restore composer draft for thread %s: %v", threadID, err)
 		}
 		return
 	}
-	if err := a.store.DeleteThreadDraft(threadID); err != nil {
+	if err := a.removeThreadDraft(transport.ClientIdentity{}, threadID); err != nil {
 		log.Printf("app: revert and resend: clear staged draft for thread %s: %v", threadID, err)
 	}
 }

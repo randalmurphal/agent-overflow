@@ -140,7 +140,7 @@ func seedWorktreeSetupRecipe(t *testing.T, app *App, repo string) store.Project 
 	if err := os.WriteFile(filepath.Join(repo, "setup-marker.txt"), []byte("project convention\n"), 0o644); err != nil {
 		t.Fatalf("write setup marker: %v", err)
 	}
-	if err := app.store.UpdateProjectWorktreeSetup(project.ID, &worktreesetup.Config{Copy: []string{"setup-marker.txt"}}); err != nil {
+	if _, _, err := app.store.UpdateProjectWorktreeSetup(project.ID, &worktreesetup.Config{Copy: []string{"setup-marker.txt"}}); err != nil {
 		t.Fatalf("UpdateProjectWorktreeSetup() error = %v", err)
 	}
 	return project

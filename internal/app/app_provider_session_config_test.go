@@ -70,7 +70,7 @@ func TestPushCodexThreadSettingsIgnoresEmptyWork(t *testing.T) {
 // derivation exists to make a thread pickable out of a peer's ListAgents.
 func TestPeerSessionNameForThreadPrefersTheTitle(t *testing.T) {
 	app := newTestAppWithStore(t)
-	if err := app.store.CreateProject(store.Project{
+	if _, err := app.store.CreateProject(store.Project{
 		ID: "p1", Path: "/repos/agent-overflow", Name: "Agent Overflow", Slug: "agent-overflow",
 	}); err != nil {
 		t.Fatalf("CreateProject: %v", err)

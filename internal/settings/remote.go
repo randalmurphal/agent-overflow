@@ -142,23 +142,18 @@ func (s *Service) AddRemoteEndpoint(name, rawURL, token string) (RemoteEndpoint,
 		return RemoteEndpoint{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
 	next := RemoteEndpoint{
 		ID:    id,
 		Name:  strings.TrimSpace(name),
 		URL:   cleanURL,
 		Token: cleanToken,
 	}
-	current.RemoteEndpoints = append(current.RemoteEndpoints, next)
-
-	if err := s.writeSparse(current); err != nil {
+	if _, err := s.mutate(func(current Settings) (Settings, error) {
+		current.RemoteEndpoints = append(current.RemoteEndpoints, next)
+		return current, nil
+	}); err != nil {
 		return RemoteEndpoint{}, err
 	}
-	s.cached = &current
-	s.cachedState = readFileState(s.path)
 	return next, nil
 }
 
@@ -175,40 +170,37 @@ func (s *Service) UpdateRemoteEndpoint(id, name, rawURL, token string) (RemoteEn
 		return RemoteEndpoint{}, errors.New("remote endpoint id required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-	idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
-	if idx < 0 {
-		return RemoteEndpoint{}, fmt.Errorf("remote endpoint %q not found", id)
-	}
-
-	updated := current.RemoteEndpoints[idx]
-	if strings.TrimSpace(name) != "" {
-		updated.Name = strings.TrimSpace(name)
-	}
-	if strings.TrimSpace(rawURL) != "" {
-		clean, err := ValidateRemoteEndpointURL(rawURL)
-		if err != nil {
-			return RemoteEndpoint{}, err
+	var updated RemoteEndpoint
+	if _, err := s.mutate(func(current Settings) (Settings, error) {
+		idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
+		if idx < 0 {
+			return Settings{}, fmt.Errorf("remote endpoint %q not found", id)
 		}
-		updated.URL = clean
-	}
-	if strings.TrimSpace(token) != "" {
-		clean, err := ValidateRemoteEndpointToken(token)
-		if err != nil {
-			return RemoteEndpoint{}, err
-		}
-		updated.Token = clean
-	}
 
-	current.RemoteEndpoints[idx] = updated
-	if err := s.writeSparse(current); err != nil {
+		updated = current.RemoteEndpoints[idx]
+		if strings.TrimSpace(name) != "" {
+			updated.Name = strings.TrimSpace(name)
+		}
+		if strings.TrimSpace(rawURL) != "" {
+			clean, err := ValidateRemoteEndpointURL(rawURL)
+			if err != nil {
+				return Settings{}, err
+			}
+			updated.URL = clean
+		}
+		if strings.TrimSpace(token) != "" {
+			clean, err := ValidateRemoteEndpointToken(token)
+			if err != nil {
+				return Settings{}, err
+			}
+			updated.Token = clean
+		}
+
+		current.RemoteEndpoints[idx] = updated
+		return current, nil
+	}); err != nil {
 		return RemoteEndpoint{}, err
 	}
-	s.cached = &current
-	s.cachedState = readFileState(s.path)
 	return updated, nil
 }
 
@@ -220,26 +212,20 @@ func (s *Service) DeleteRemoteEndpoint(id string) error {
 		return errors.New("remote endpoint id required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	_, err := s.mutate(func(current Settings) (Settings, error) {
+		idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
+		if idx < 0 {
+			return Settings{}, fmt.Errorf("remote endpoint %q not found", id)
+		}
 
-	current := s.loadFromFile()
-	idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
-	if idx < 0 {
-		return fmt.Errorf("remote endpoint %q not found", id)
-	}
-
-	current.RemoteEndpoints = append(current.RemoteEndpoints[:idx], current.RemoteEndpoints[idx+1:]...)
-	if len(current.RemoteEndpoints) == 0 {
-		// Drop the slice entirely so writeSparse omits the key from JSON.
-		current.RemoteEndpoints = nil
-	}
-	if err := s.writeSparse(current); err != nil {
-		return err
-	}
-	s.cached = &current
-	s.cachedState = readFileState(s.path)
-	return nil
+		current.RemoteEndpoints = append(current.RemoteEndpoints[:idx], current.RemoteEndpoints[idx+1:]...)
+		if len(current.RemoteEndpoints) == 0 {
+			// Drop the slice entirely so writeSparse omits the key from JSON.
+			current.RemoteEndpoints = nil
+		}
+		return current, nil
+	})
+	return err
 }
 
 // TouchRemoteEndpoint updates the LastUsedAt timestamp on the named
@@ -252,21 +238,15 @@ func (s *Service) TouchRemoteEndpoint(id string) error {
 		return errors.New("remote endpoint id required")
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-	idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
-	if idx < 0 {
-		return fmt.Errorf("remote endpoint %q not found", id)
-	}
-	current.RemoteEndpoints[idx].LastUsedAt = time.Now().Unix()
-	if err := s.writeSparse(current); err != nil {
-		return err
-	}
-	s.cached = &current
-	s.cachedState = readFileState(s.path)
-	return nil
+	_, err := s.mutate(func(current Settings) (Settings, error) {
+		idx := indexRemoteEndpointByID(current.RemoteEndpoints, id)
+		if idx < 0 {
+			return Settings{}, fmt.Errorf("remote endpoint %q not found", id)
+		}
+		current.RemoteEndpoints[idx].LastUsedAt = time.Now().Unix()
+		return current, nil
+	})
+	return err
 }
 
 // indexRemoteEndpointByID returns the slice index of the record with

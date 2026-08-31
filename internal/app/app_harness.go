@@ -107,7 +107,10 @@ func (h *harnessHost) CreateProject(path string) (store.Project, error) {
 }
 
 func (h *harnessHost) CreateThread(options harnessrpc.ThreadOptions) (store.Thread, error) {
-	return h.app.CreateThread(CreateThreadOptions{
+	// The harness RPC is its own screenless caller, so the created thread
+	// carries no device attribution — the same answer a script driving the
+	// app locally should get.
+	return h.app.CreateThread(context.Background(), CreateThreadOptions{
 		ProjectID:   options.ProjectID,
 		Title:       options.Title,
 		Provider:    options.Provider,

@@ -57,6 +57,12 @@ func BuildParticipantPlans(parent store.Thread, def store.DiscussionDefinition, 
 			ParentThreadID: parent.ID,
 			CreatedAt:      nowMillis,
 			UpdatedAt:      nowMillis,
+			// A participant is not independently created: it is spawned from
+			// the parent, runs in the parent's workspace, and its provenance
+			// IS the parent's. Inherited for the same reason Branch and
+			// WorktreePath above are.
+			CreatedByDevice: parent.CreatedByDevice,
+			Origin:          parent.Origin,
 		}
 		plans = append(plans, ParticipantPlan{
 			Thread:       child,

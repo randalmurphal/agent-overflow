@@ -27,17 +27,18 @@
 
 import { DeleteUIState, GetUIState, SetUIState } from './bindings';
 import { addToast } from './toast.svelte';
+// The device id is transport identity, not a UI-state detail: the WebSocket
+// client puts it on the upgrade URL so bound methods can attribute a write.
+// Both read it from the same leaf so the bucket this store scopes and the
+// identity the backend sees can never be two different strings.
+import {
+  clearCachedDeviceIdForTest,
+  getDeviceId,
+  reresolveDeviceIdForTest,
+} from '../transport/clientIdentity';
 
-const CLIENT_ID_CACHE_KEY = 'agent-overflow:uistate:clientId';
 const BUCKET_CACHE_KEY = 'agent-overflow:uistate:bucket';
 const WRITE_DEBOUNCE_MS = 300;
-
-// Mirrors validClientID in app_uistate.go.
-const CLIENT_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
-
-function isValidClientId(value: unknown): value is string {
-  return typeof value === 'string' && CLIENT_ID_PATTERN.test(value);
-}
 
 function readLocal(key: string): string | null {
   if (typeof localStorage === 'undefined') return null;
@@ -55,35 +56,6 @@ function writeLocal(key: string, value: string): void {
   } catch {
     // Best-effort cache; the RPC layer is the durable copy.
   }
-}
-
-function resolveClientId(): string {
-  if (typeof window !== 'undefined') {
-    const cid = new URLSearchParams(window.location.search).get('cid');
-    if (isValidClientId(cid)) {
-      writeLocal(CLIENT_ID_CACHE_KEY, cid);
-      return cid;
-    }
-  }
-  const cached = readLocal(CLIENT_ID_CACHE_KEY);
-  if (isValidClientId(cached)) return cached;
-  const minted =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : mintFallbackId();
-  writeLocal(CLIENT_ID_CACHE_KEY, minted);
-  return minted;
-}
-
-// Non-crypto fallback for environments without crypto.randomUUID
-// (older happy-dom builds in tests). The id names a preference bucket,
-// not a credential, so Math.random-grade uniqueness is acceptable.
-function mintFallbackId(): string {
-  let out = '';
-  for (let i = 0; i < 32; i++) {
-    out += Math.floor(Math.random() * 16).toString(16);
-  }
-  return out;
 }
 
 function readCachedBucket(): Map<string, string> {
@@ -106,7 +78,7 @@ function writeCachedBucket(): void {
   writeLocal(BUCKET_CACHE_KEY, JSON.stringify(Object.fromEntries(bucket)));
 }
 
-let clientId = resolveClientId();
+let clientId = getDeviceId();
 // Pre-hydration reads serve the same-session cache; hydration
 // reconciles it against the server bucket.
 let bucket: Map<string, string> = readCachedBucket();
@@ -297,7 +269,7 @@ export function reinitAppStorageForTest(): void {
   pendingDeletes.clear();
   hydrated = false;
   saveFailureToastShown = false;
-  clientId = resolveClientId();
+  clientId = reresolveDeviceIdForTest();
   bucket = readCachedBucket();
 }
 
@@ -314,12 +286,12 @@ export function resetAppStorageForTest(): void {
   saveFailureToastShown = false;
   if (typeof localStorage !== 'undefined') {
     try {
-      localStorage.removeItem(CLIENT_ID_CACHE_KEY);
       localStorage.removeItem(BUCKET_CACHE_KEY);
     } catch {
       // ignore
     }
   }
-  clientId = resolveClientId();
+  clearCachedDeviceIdForTest();
+  clientId = getDeviceId();
   bucket = new Map();
 }

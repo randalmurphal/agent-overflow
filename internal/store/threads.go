@@ -37,6 +37,7 @@ const threadColumns = `id, COALESCE(project_id, ''),
       WHERE turns.thread_id = threads.id AND completed_at IS NOT NULL),
     archived, last_read_at, pinned_at, pin_group,
     worktree_setup_state, import_source,
+    created_by_device, created_branch, created_remote_url, created_head_commit,
 	EXISTS (
       SELECT 1
         FROM proposed_plans
@@ -188,6 +189,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
 		&t.CreatedAt, &t.UpdatedAt, &latestTurnCompletedAt, &archived, &lastReadAt, &pinnedAt, &pinGroup,
 		&t.WorktreeSetupState, &t.ImportSource,
+		&t.CreatedByDevice, &t.Origin.Branch, &t.Origin.RemoteURL, &t.Origin.HeadCommit,
 		&hasActionableProposedPlan, &hasIncompleteTurn, &isDraft,
 	); err != nil {
 		return Thread{}, err
@@ -271,8 +273,9 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
-		    created_at, updated_at, archived, last_read_at, import_source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    created_at, updated_at, archived, last_read_at, import_source,
+		    created_by_device, created_branch, created_remote_url, created_head_commit)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
@@ -282,6 +285,11 @@ func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
 		t.CreatedAt, t.UpdatedAt, boolToInt(t.Archived), lastReadAtArg, t.ImportSource,
+		// The write-once creation facts. They appear here and in
+		// threadColumns, and deliberately NOT in updateThreadSetSQL: a
+		// whole-row UpdateThread carrying a stale copy must not be able to
+		// blank a thread's provenance or its git origin.
+		t.CreatedByDevice, t.Origin.Branch, t.Origin.RemoteURL, t.Origin.HeadCommit,
 	)
 	return err
 }
@@ -923,7 +931,7 @@ func (s *Store) deleteThreadItemsChunk(id string) (int64, error) {
 // nothing, so it must not bump updated_at and must not broadcast. A missing
 // id is still sql.ErrNoRows.
 func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:  fmt.Sprintf("store: archive thread %s", id),
 		ID:      id,
 		Set:     "archived = 1, updated_at = ?",
@@ -938,7 +946,7 @@ func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
 // that was already active is a no-op, not a reshuffle. Returns sql.ErrNoRows
 // if no row matches the id.
 func (s *Store) UnarchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:  fmt.Sprintf("store: unarchive thread %s", id),
 		ID:      id,
 		Set:     "archived = 0, updated_at = ?",
@@ -1105,7 +1113,7 @@ func (s *Store) setThreadLastRead(id string, ts *int64) (Thread, bool, error) {
 	if ts != nil {
 		arg = *ts
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update last_read_at for %s", id),
 		ID:         id,
 		Set:        "last_read_at = ?",
@@ -1142,7 +1150,7 @@ func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
 	if group != PinGroupFront && group != PinGroupBack {
 		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update pin_group for pinned thread %s", id),
 		ID:         id,
 		Set:        "pin_group = ?",
@@ -1158,7 +1166,7 @@ func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
 // thread activity, and bumping updated_at would shuffle the project's
 // `lastActivity` ordering.
 func (s *Store) setThreadPinnedAt(id string, ts *int64) (Thread, bool, error) {
-	write := threadRowWrite{
+	write := rowWrite{
 		Action: fmt.Sprintf("store: update pin state for %s", id),
 		ID:     id,
 	}
@@ -1390,7 +1398,7 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) (Thread, bool, er
 	if !legalEffortForProvider(providerName, normalized) {
 		return Thread{}, false, fmt.Errorf("%w: %s/%s", ErrInvalidEffort, providerName, normalized)
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update reasoning effort for %s", threadID),
 		ID:         threadID,
 		Set:        "reasoning_effort = ?",
@@ -1404,7 +1412,7 @@ func (s *Store) UpdateReasoningEffort(threadID, effort string) (Thread, bool, er
 // Setting the value the thread already carries changes nothing.
 func (s *Store) UpdateFastMode(threadID string, on bool) (Thread, bool, error) {
 	value := boolToInt(on)
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action:     fmt.Sprintf("store: update fast mode for %s", threadID),
 		ID:         threadID,
 		Set:        "fast_mode = ?",
@@ -1450,7 +1458,7 @@ func (s *Store) UpdateContextSettings(threadID string, tokens, standardPercent, 
 	if !validAutoCompactPercent(extendedPercent) {
 		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidAutoCompactPercent, extendedPercent)
 	}
-	return s.applyThreadRowWrite(threadRowWrite{
+	return s.applyThreadRowWrite(rowWrite{
 		Action: fmt.Sprintf("store: update context settings for %s", threadID),
 		ID:     threadID,
 		Set: `context_window = ?,

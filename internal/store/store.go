@@ -345,6 +345,32 @@ func (s *Store) vacuumIfFragmented(minFreeBytes int64, minFreeFraction float64) 
 
 // runMigrations is defined in migrate.go.
 
+// ThreadOrigin is a workspace's git coordinates at one moment: the moment a
+// thread was created. It is a historical record, not live state — the live
+// branch of a checkout is Thread.Branch, which moves with the working tree.
+//
+// Every field is optional and empty means "not known", never "none" and never
+// an error. A workspace outside a repository, a detached HEAD, a repository
+// with no remote, and any thread created before migration v74 all produce
+// empty values, and a consumer that cannot proceed without them has to say so
+// itself rather than assume they are there.
+//
+// It exists so a thread can be forked or transferred later: reproducing where
+// a thread grew from needs the repository, the branch and the commit, and by
+// the time anyone asks, the branch has moved and the workspace may hold
+// something else. Observed once, at creation, because that is the only moment
+// the answer is still true.
+type ThreadOrigin struct {
+	Branch     string `json:"branch,omitempty"`
+	RemoteURL  string `json:"remoteUrl,omitempty"`
+	HeadCommit string `json:"headCommit,omitempty"`
+}
+
+// IsZero reports whether nothing at all was observed.
+func (o ThreadOrigin) IsZero() bool {
+	return o.Branch == "" && o.RemoteURL == "" && o.HeadCommit == ""
+}
+
 // Thread represents a conversation thread.
 //
 // ID is minted by internal/entityid and is unique across BACKENDS, not
@@ -434,6 +460,20 @@ type Thread struct {
 	// import and deliberately absent from updateThreadSetSQL, so no
 	// whole-row UpdateThread can rewrite it.
 	ImportSource string `json:"importSource"`
+	// CreatedByDevice names the screen that started this thread — the
+	// durable per-browser-profile device id the connection carries
+	// (transport.ClientIdentity), empty when the backend created the thread
+	// itself or when the caller had no connection behind it.
+	//
+	// Provenance, not an audit trail: written once at creation and
+	// deliberately absent from updateThreadSetSQL, like ImportSource above.
+	// A column holds one answer, so re-stamping it on every mutation would
+	// destroy the fact it exists to keep and still not record a history.
+	CreatedByDevice string `json:"createdByDevice,omitempty"`
+	// Origin is where this thread's workspace stood in git when the thread
+	// was created. Write-once for the same reason and by the same mechanism
+	// as the two fields above.
+	Origin ThreadOrigin `json:"origin"`
 	// HasActionableProposedPlan is derived for sidebar boot state. It is
 	// true when the latest assistant proposed plan is completed and has
 	// not been implemented yet. It is not a persisted threads column.

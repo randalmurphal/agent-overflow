@@ -11,6 +11,8 @@
 //   - eventsTerminal.ts      — backgrounded-terminal output/exit
 //   - eventsQueue.ts         — send-queue mirror (state/flushed/restored)
 //   - eventsMessageRevert.ts — user-message revert (Stop/Esc un-send)
+//   - eventsDraftRows.ts     — composer-draft convergence across clients
+//   - eventsProjectRows.ts   — project row projections (sidebar list)
 //   - eventsTransportGap.ts  — missed-seq resync
 //   - eventsDiscussion.ts    — discussion:message / discussion:state push
 //   - eventsNotification.ts  — OS activation routing + cold-start queue
@@ -29,6 +31,7 @@ import type {
   ProviderAccountEvent,
   ProviderAccountUsageErrorEvent,
   ProviderSessionAccountEvent,
+  SettingsUpdatedEvent,
   SystemStatsEvent,
   TodoUpdateEvent,
   ProviderStatusEvent,
@@ -63,6 +66,14 @@ import {
   applyRuntimeModeChanged,
   type RuntimeModeChangedPayload,
 } from './eventsThreadRows';
+import {
+  applyProjectUpdated,
+  type ProjectUpdateEvent,
+} from './eventsProjectRows';
+import {
+  applyDraftUpdated,
+  type DraftUpdatedEvent,
+} from './eventsDraftRows';
 import {
   applyApprovalEvent,
   applyUserInputEvent,
@@ -102,6 +113,7 @@ import {
   applyProviderCommands,
   type ProviderCommandsPayload,
 } from './providerCommands.svelte';
+import { resyncSettings } from './settings.svelte';
 import { bumpUsageRefresh } from './usageRefresh.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import { applyTransportGap } from './eventsTransportGap';
@@ -282,6 +294,16 @@ export function setupEventListeners(): () => void {
     const threadId = payload?.threadId;
     if (threadId) bumpUsageRefresh(threadId);
   });
+  // settings:updated — a persisted settings write moved keys in one tier, on
+  // this client or another. Payload is the tier and the changed key names
+  // only: settings carry redacted fields with no read path, so nothing that
+  // could reconstruct the new state may ride the wire. Every client — the
+  // initiator included — converges by re-reading GetSettings, queued behind
+  // any in-flight local write. See resyncSettings.
+  const cancelSettingsUpdated = wailsEventOn<SettingsUpdatedEvent>(
+    'settings:updated',
+    () => { void resyncSettings(); },
+  );
   // provider:session_died — provider subprocess exited mid-turn. Drives
   // the per-pane Reconnect banner (separately from the synthesized
   // turn-completed event that clears the working indicator). The
@@ -373,6 +395,23 @@ export function setupEventListeners(): () => void {
   );
 
   const cancelThreadUpdated = wailsEventOn<ThreadUpdateEvent>('thread:updated', applyThreadUpdated);
+
+  // project:updated — one frame per project row a persisted write moved. The
+  // sidebar list is otherwise refreshed only on mount and after the issuing
+  // client's own RPC, so this is what converges a second attached client.
+  const cancelProjectUpdated = wailsEventOn<ProjectUpdateEvent>(
+    'project:updated',
+    applyProjectUpdated,
+  );
+
+  // draft:updated — one frame per persisted composer-draft write, naming the
+  // thread and the screen that wrote it. The applier drops this client's own
+  // echo and re-reads otherwise, so a draft typed on one screen appears on
+  // every other screen showing that thread.
+  const cancelDraftUpdated = wailsEventOn<DraftUpdatedEvent>(
+    'draft:updated',
+    applyDraftUpdated,
+  );
 
   // thread:title_generation — the completion frame of one title-generation
   // run (auto first-turn, heal, or user-triggered regeneration). Clears the
@@ -502,6 +541,7 @@ export function setupEventListeners(): () => void {
     cancelTurnStarted();
     cancelTurnCompleted();
     cancelThreadCost();
+    cancelSettingsUpdated();
     cancelSessionDied();
     cancelTodoUpdate();
     cancelTerminalOutput();
@@ -516,6 +556,8 @@ export function setupEventListeners(): () => void {
     cancelProviderCommands();
     cancelUserMessageReverted();
     cancelThreadUpdated();
+    cancelProjectUpdated();
+    cancelDraftUpdated();
     cancelThreadTitleGeneration();
     cancelWorktreeSetup();
     cancelTransportGap();

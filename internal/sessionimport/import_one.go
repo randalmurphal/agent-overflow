@@ -103,7 +103,8 @@ func resolveProject(s *store.Store, row Row) (store.Project, error) {
 			return store.Project{}, err
 		}
 	}
-	return project.EnsureForWorkspace(s, row.ProjectPath)
+	proj, _, err := project.EnsureForWorkspace(s, row.ProjectPath)
+	return proj, err
 }
 
 // branchPlan is one thread-to-be: everything the thread row needs and the
@@ -286,14 +287,22 @@ func newImportedThread(
 
 	return chatmodel.SanitizeThread(store.Thread{
 		// Globally unique by construction (internal/entityid).
-		ID:              entityid.New(),
-		ProjectID:       proj.ID,
-		ProjectPath:     proj.Path,
-		Title:           importedTitle(title),
-		Provider:        row.Provider,
-		Model:           profile.Model,
-		WorkspacePath:   row.ProjectPath,
-		Branch:          row.GitBranch,
+		ID:            entityid.New(),
+		ProjectID:     proj.ID,
+		ProjectPath:   proj.Path,
+		Title:         importedTitle(title),
+		Provider:      row.Provider,
+		Model:         profile.Model,
+		WorkspacePath: row.ProjectPath,
+		Branch:        row.GitBranch,
+		// Creation provenance stays empty by design. The session already
+		// happened, on a machine and at a commit this import cannot recover:
+		// the provider session file records the branch (above) and nothing
+		// else, and observing the workspace now would stamp today's head onto
+		// a thread that ran months ago. Empty reads as "not known", which is
+		// exactly what is true here.
+		Origin:          store.ThreadOrigin{},
+		CreatedByDevice: "",
 		Mode:            threadmode.DefaultCreateMode,
 		ReasoningEffort: profile.ReasoningEffort,
 		ContextWindow:   profile.ContextWindow,

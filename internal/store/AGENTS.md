@@ -978,6 +978,45 @@ an empty `provider_turn_id`.
   so no rebuild; a future `work_items` rebuild must carry it, like every other
   column added since v39.
 
+## Recent schema changes (v73, v74) — where a thread came from
+
+- `threads.created_by_device` (v73, `TEXT NOT NULL DEFAULT ''`) names the
+  screen that started a thread: the durable per-browser-profile device id the
+  connection carries (`transport.ClientIdentity`, parsed off the WebSocket
+  upgrade query). Empty means the backend created the thread itself — a
+  workflow phase, the harness RPC, a session import — which is a normal
+  answer, not a missing one.
+- It is **creation** attribution, not last-touched attribution, and that is a
+  decision rather than a shortcut. A column holds one answer: re-stamping it
+  on every mutation would overwrite the provenance it exists to keep and still
+  not produce a history, so a real "who changed what" record would be a log
+  table, not a column. Recording the DEVICE rather than the connection is the
+  matching choice — a connection id dies with the page load, which would make
+  the attribution expire on reload.
+- `threads.created_branch`, `threads.created_remote_url`,
+  `threads.created_head_commit` (v74, all `TEXT NOT NULL DEFAULT ''`) are the
+  workspace's git coordinates at the moment the thread was created, surfaced
+  on `store.Thread` as the `Origin` sub-struct. They exist so a thread can be
+  reproduced elsewhere later: by the time anyone asks, the branch has moved,
+  the commit may have been rebased away, and the workspace may hold something
+  else. `threads.branch` is a different question — the live checkout, which
+  moves with the working tree.
+- Empty is always "not known", never "none" and never an error. A workspace
+  outside a repository, a detached HEAD, a repo with no remote, and every row
+  created before v74 all read the same, and a consumer that needs the values
+  has to say so itself.
+- All four are write-once by the same mechanism as `import_source`: absent
+  from `updateThreadSetSQL`, classified in
+  `threadColumnsNotWrittenByUpdateThread`, and written only by `CreateThread`.
+  Plain `ADD COLUMN`s with no CHECK, so the FK-parent `threads` table is not
+  rebuilt.
+- The values are observed at the one moment they are true, by
+  `(*App).stampThreadCreation` / `(*App).observeThreadOrigin` and by the
+  `threadapp.Workspace` port's `ObserveOrigin`. Forgetting is structural, not
+  remembered: `TestEveryNewThreadRecordsWhereItCameFrom` (`internal/app`) scans
+  every thread-creating package for new-thread literals and fails any that
+  neither sets `Origin` nor carries a written reason.
+
 ## Recent schema changes (v50) — imported provider sessions
 
 - `threads.import_source` (`TEXT NOT NULL DEFAULT '' CHECK(import_source IN
@@ -1291,14 +1330,16 @@ before changing a write path.
   the only writer past `busy_timeout`. A rollback restores the flag with
   the rows.
 
-## Thread-row writes report what they changed
+## Row writes report what they changed
 
-Every persisted thread-row mutation is broadcast on `thread:updated` so a
-second attached client converges without a refresh, and a write that changed
-nothing is not broadcast. That makes "did this row actually move" a value the
-write itself must return, so the thread mutators go through
-`applyThreadRowWrite` (`threadrowwrite.go`) and return
-`(Thread, changed bool, error)`.
+Every persisted thread row and project row is broadcast (`thread:updated`,
+`project:updated`) so a second attached client converges without a refresh, and
+a write that changed nothing is not broadcast. That makes "did this row
+actually move" a value the write itself must return, so those mutators go
+through `applyThreadRowWrite` / `applyProjectRowWrite` (`rowwrite.go`) and
+return `(row, changed bool, error)`. Both entry points wrap one generic
+`applyRowWrite`, and each names its own table AND its own read-back projection,
+because those two always have to agree.
 
 - **Rows-affected cannot answer it.** SQLite counts a row as affected when
   the SET restates the value the row already held, so `requireRowsAffected`
@@ -1319,6 +1360,15 @@ write itself must return, so the thread mutators go through
   correlated subqueries, which `RETURNING` cannot evaluate, and a second
   round trip could read a row a concurrent write had already moved. The
   projection is paid only when something changed.
+- **A write that is not one row states its rules by hand.**
+  `UpdateProjectSortPositions` writes N rows in one transaction, which
+  `applyRowWrite` cannot do without giving up that transaction, so it carries
+  its own `RETURNING id` + in-transaction read-back. It deliberately has NO
+  change predicate: the `updated_at` bump is the point of the write (a reorder
+  counts as project activity), so every matched row really did move.
+- **`CreateProject` returns the row it inserted, not its argument.** The slug
+  is generated inside the insert, so a caller holding its own copy has an empty
+  one — and would broadcast it.
 
 ## Reads that are easy to get wrong
 

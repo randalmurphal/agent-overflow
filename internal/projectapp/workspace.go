@@ -10,13 +10,19 @@ import (
 )
 
 // EnsureForWorkspace applies repository-root project identity while retaining
-// the caller's workspace separately on its thread.
-func (s *Service) EnsureForWorkspace(workspacePath string) (store.Project, error) {
+// the caller's workspace separately on its thread. The Write's Changed reports
+// whether a project row was CREATED — resolving to an existing one moves
+// nothing and announces nothing.
+func (s *Service) EnsureForWorkspace(workspacePath string) (Write, error) {
 	database, err := s.database("ensure project for workspace")
 	if err != nil {
-		return store.Project{}, err
+		return Write{}, err
 	}
-	return project.EnsureForWorkspace(database, workspacePath)
+	row, created, err := project.EnsureForWorkspace(database, workspacePath)
+	if err != nil {
+		return Write{}, err
+	}
+	return Write{Project: row, Changed: created}, nil
 }
 
 // ProjectForWorkspaceOperation resolves and validates the project row used by

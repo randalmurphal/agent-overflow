@@ -1035,6 +1035,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	profile := connProfile{
 		isLoopback: isLoopback,
 		remoteAddr: r.RemoteAddr,
+		// Read from the pre-upgrade request: websocket.Conn does not
+		// re-expose the handshake URL, and the identity has to be in place
+		// before the first RPC is dispatched.
+		client: ParseClientIdentity(r.URL.Query()),
 	}
 
 	if !isLoopback {

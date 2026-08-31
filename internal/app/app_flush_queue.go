@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 
 	"github.com/google/uuid"
@@ -526,7 +527,7 @@ func (a *App) dispatchFlushItem(threadID string, item triage.QueuedFlushItem) (Q
 		// Deferred: row persists at echo time via persistDeferredUserText.
 		a.triage.RegisterPendingFlushSendWithExpectation(threadID, item.ID, userItem, item.EnqueuedAt, sendExpect)
 	}
-	if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+	if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
 		log.Printf("flush queue: delete draft for thread %s: %v", threadID, draftErr)
 	}
 
@@ -915,7 +916,7 @@ func (a *App) registerQueueItem(
 		EnqueuedAt:                   enqueuedAt,
 	}
 	if !injected.preserveDraft {
-		if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+		if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
 			log.Printf("register queue item: delete draft for thread %s: %v", threadID, draftErr)
 		}
 	}

@@ -50,6 +50,11 @@ var (
 	frozenLoopbackOnlyChannels = []string{
 		"browser:companion-state",  // local URLs and file paths
 		"browser:install-progress", // 2026-08-26 pass
+		// Wave 4b: names the thread whose composer draft moved. Same posture
+		// as its own RPCs (GetDraft / SaveDraft / ClearDraft are all
+		// CategorySessionControl) — in-progress user-typed work, and "who is
+		// typing where" is the same answer one turn smaller.
+		"draft:updated",
 		"git:status",
 		"harness:mock",     // 2026-08-25 pass
 		"harness:perf",     // W3 bridge: per-process RSS + host detail

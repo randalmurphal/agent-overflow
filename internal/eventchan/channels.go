@@ -14,6 +14,14 @@ const (
 	DiscussionState   Channel = "discussion:state"
 )
 
+// draft:* — one frame per persisted composer-draft write, naming the thread
+// and the screen that wrote it. Carries no draft TEXT: receivers re-read
+// through GetDraft, which is loopback-only for the same reason this channel
+// is (in-progress user-typed work).
+const (
+	DraftUpdated Channel = "draft:updated"
+)
+
 // git:* — per-workspace git status streams, keyed by canonical absolute
 // workspace path.
 const (
@@ -70,6 +78,13 @@ const (
 	PRUpdated Channel = "pr:updated"
 )
 
+// project:* — one frame per project row a persisted write moved, carrying
+// the row and what the receiver must do with it. Same vocabulary and same
+// rules as thread:updated (triage.ProjectUpdateEvent).
+const (
+	ProjectUpdated Channel = "project:updated"
+)
+
 // provider:* — everything a provider session produces: the transcript
 // stream, turn lifecycle, approvals, queue state, account identity.
 const (
@@ -111,6 +126,16 @@ const (
 // which is why the registry keeps the channel loopback-only.
 const (
 	SessionImportProgress Channel = "session-import:progress"
+)
+
+// settings:* — one frame per tier a persisted settings write moved,
+// carrying the tier and the changed KEY NAMES only. No values ride it:
+// GetSettings redacts endpoint tokens and sensitive environment values,
+// and a push carrying values would be the one path around that.
+// Receivers re-read through GetSettings, the same refetch-nudge shape
+// usage:thread_cost uses.
+const (
+	SettingsUpdated Channel = "settings:updated"
 )
 
 // spinner:* / theme:* — payload-less refetch nudges from the two

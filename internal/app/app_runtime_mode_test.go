@@ -267,7 +267,7 @@ func TestCreateThreadUsesFallbackRuntimeMode(t *testing.T) {
 
 func TestCreateThreadRejectsInvalidRuntimeMode(t *testing.T) {
 	app := newTestAppWithStore(t)
-	_, err := app.CreateThread(CreateThreadOptions{
+	_, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:   defaultTestProjectID,
 		Provider:    string(provider.Claude),
 		Model:       "claude-sonnet-4-6",

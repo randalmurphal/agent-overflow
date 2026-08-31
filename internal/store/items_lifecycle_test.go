@@ -895,7 +895,7 @@ func newBenchStore(b *testing.B) *Store {
 	}
 	b.Cleanup(func() { s.Close() })
 	now := time.Now().UnixMilli()
-	if err := s.CreateProject(Project{
+	if _, err := s.CreateProject(Project{
 		ID:        defaultTestProjectID,
 		Path:      "/tmp/test",
 		Name:      "Default Test Project",

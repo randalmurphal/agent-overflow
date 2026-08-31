@@ -636,6 +636,13 @@ type Service struct {
 	// with forward-compat fields the Settings struct doesn't yet know
 	// about, does not silently drop those fields. Written under s.mu.
 	unknownFields map[string]json.RawMessage
+
+	// observer is notified after a persisted change (see mutate.go). Its own
+	// lock, not s.mu: the notification deliberately runs with s.mu released so
+	// an observer may read settings back, and guarding the field with s.mu
+	// would put the read back inside the section it just left.
+	observerMu sync.RWMutex
+	observer   ChangeObserver
 }
 
 type fileState struct {
@@ -746,27 +753,17 @@ func (s *Service) Update(patch map[string]any) (Settings, error) {
 			return Settings{}, fmt.Errorf("settings: use SetProviderEnvVar / DeleteProviderEnvVar to mutate %s", key)
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-
-	patched, err := applyPatch(current, patch)
-	if err != nil {
-		return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
-	}
-	patched, err = validateSettings(patched)
-	if err != nil {
-		return Settings{}, fmt.Errorf("settings: validate: %w", err)
-	}
-
-	if err := s.writeSparse(patched); err != nil {
-		return Settings{}, err
-	}
-
-	s.cached = &patched
-	s.cachedState = readFileState(s.path)
-	return patched, nil
+	return s.mutate(func(current Settings) (Settings, error) {
+		patched, err := applyPatch(current, patch)
+		if err != nil {
+			return Settings{}, fmt.Errorf("settings: apply patch: %w", err)
+		}
+		patched, err = validateSettings(patched)
+		if err != nil {
+			return Settings{}, fmt.Errorf("settings: validate: %w", err)
+		}
+		return patched, nil
+	})
 }
 
 // AddRecentWorkspace pushes a workspace path to the front of the recent list,
@@ -777,33 +774,24 @@ func (s *Service) AddRecentWorkspace(path string) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current := s.loadFromFile()
-
-	// Build new list: path first, then existing entries minus duplicates.
-	seen := map[string]bool{path: true}
-	recent := []string{path}
-	for _, ws := range current.RecentWorkspaces {
-		if !seen[ws] {
-			seen[ws] = true
-			recent = append(recent, ws)
+	if _, err := s.mutate(func(current Settings) (Settings, error) {
+		// Build new list: path first, then existing entries minus duplicates.
+		seen := map[string]bool{path: true}
+		recent := []string{path}
+		for _, ws := range current.RecentWorkspaces {
+			if !seen[ws] {
+				seen[ws] = true
+				recent = append(recent, ws)
+			}
 		}
-	}
-	if len(recent) > 10 {
-		recent = recent[:10]
-	}
-
-	current.RecentWorkspaces = recent
-
-	if err := s.writeSparse(current); err != nil {
+		if len(recent) > 10 {
+			recent = recent[:10]
+		}
+		current.RecentWorkspaces = recent
+		return current, nil
+	}); err != nil {
 		log.Printf("settings: persist recent workspace: %v", err)
-		return
 	}
-
-	s.cached = &current
-	s.cachedState = readFileState(s.path)
 }
 
 // loadFromFile reads the settings file and merges over defaults.

@@ -45,13 +45,18 @@ func scanProject(scanner interface{ Scan(...any) error }) (Project, error) {
 	return p, nil
 }
 
-// CreateProject inserts a new project row. The path UNIQUE constraint
-// surfaces as ErrProjectPathInUse so callers can decide whether to
-// redirect the user to the existing project.
-func (s *Store) CreateProject(p Project) error {
+// CreateProject inserts a new project row and returns the row as stored. The
+// path UNIQUE constraint surfaces as ErrProjectPathInUse so callers can decide
+// whether to redirect the user to the existing project.
+//
+// The RETURN VALUE is the row, not the argument: the slug is generated here,
+// so a caller that kept its own copy would hold a project with an empty slug
+// and put it on the wire as the created row. Returning what was written is
+// what makes the created row and the broadcast row the same object.
+func (s *Store) CreateProject(p Project) (Project, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: create project: begin: %w", err)
+		return Project{}, fmt.Errorf("store: create project: begin: %w", err)
 	}
 	p.Slug, err = nextProjectSlug(p.Name, func(candidate string) (bool, error) {
 		var exists bool
@@ -64,7 +69,7 @@ func (s *Store) CreateProject(p Project) error {
 	})
 	if err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("store: create project: %w", err)
+		return Project{}, fmt.Errorf("store: create project: %w", err)
 	}
 	_, err = tx.Exec(
 		`INSERT INTO projects (id, path, name, slug, color, sort_position, created_at, updated_at, archived)
@@ -78,14 +83,19 @@ func (s *Store) CreateProject(p Project) error {
 		// detect by substring because exposing the full driver error
 		// type would couple this package to the driver.
 		if isUniqueConstraintError(err, "projects.path") {
-			return fmt.Errorf("%w: %s", ErrProjectPathInUse, p.Path)
+			return Project{}, fmt.Errorf("%w: %s", ErrProjectPathInUse, p.Path)
 		}
-		return fmt.Errorf("store: create project: %w", err)
+		return Project{}, fmt.Errorf("store: create project: %w", err)
+	}
+	stored, err := scanProject(tx.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id = ?`, p.ID))
+	if err != nil {
+		_ = tx.Rollback()
+		return Project{}, fmt.Errorf("store: create project: read back: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: create project: commit: %w", err)
+		return Project{}, fmt.Errorf("store: create project: commit: %w", err)
 	}
-	return nil
+	return stored, nil
 }
 
 // GetProject returns a single project by id. Returns sql.ErrNoRows when
@@ -205,77 +215,108 @@ func (s *Store) ListProjectsWithThreadCounts() ([]ProjectWithCounts, error) {
 // UpdateProjectName overwrites the display name. Path is immutable after
 // creation; renaming semantically means "new project + move threads", a
 // flow not supported in v1.
-func (s *Store) UpdateProjectName(id, name string) error {
-	result, err := s.db.Exec(
-		`UPDATE projects SET name = ?, updated_at = ? WHERE id = ?`,
-		name, nowMillis(), id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update project name %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update project name %s", id))
+func (s *Store) UpdateProjectName(id, name string) (Project, bool, error) {
+	return s.applyProjectRowWrite(rowWrite{
+		Action:     fmt.Sprintf("store: update project name %s", id),
+		ID:         id,
+		Set:        "name = ?, updated_at = ?",
+		SetArgs:    []any{name, nowMillis()},
+		Change:     "name IS NOT ?",
+		ChangeArgs: []any{name},
+	})
 }
 
 // UpdateProjectSortPositions assigns a fresh sort_position to each id in
-// the order supplied. The sidebar uses this when the user drag-reorders
-// the project list under the "manual" sort mode. Positions are dense
-// 0..N-1 — the bulk update normalises any gaps left by archive / delete.
+// the order supplied and returns the rows that actually moved. The sidebar
+// uses this when the user drag-reorders the project list under the "manual"
+// sort mode. Positions are dense 0..N-1 — the bulk update normalises any gaps
+// left by archive / delete.
 //
 // Runs as a single transaction so a partial write doesn't leave the
 // list half-reordered if SQLite errors mid-batch. Ids not present in
 // the supplied slice keep their existing positions.
-func (s *Store) UpdateProjectSortPositions(orderedIDs []string) error {
+//
+// This is the one project write that is not a single row, so it cannot go
+// through applyProjectRowWrite without giving up that transaction. It reaches
+// the same answer differently: there is no Change predicate, because the
+// updated_at bump is the point — a reorder counts as project activity, which
+// is what re-surfaces the row under the "latest activity" ordering
+// (TestUpdateProjectSortPositionsBumpsUpdatedAt). Every matched row therefore
+// really did change, and `RETURNING id` names exactly the matched set, so an
+// id belonging to no row is skipped rather than refused. That is the behavior
+// this call already had, since it never checked rows-affected.
+func (s *Store) UpdateProjectSortPositions(orderedIDs []string) ([]Project, error) {
 	if len(orderedIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: update project sort positions: begin tx: %w", err)
+		return nil, fmt.Errorf("store: update project sort positions: begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`UPDATE projects SET sort_position = ?, updated_at = ? WHERE id = ?`)
+	stmt, err := tx.Prepare(
+		`UPDATE projects SET sort_position = ?, updated_at = ? WHERE id = ? RETURNING id`,
+	)
 	if err != nil {
-		return fmt.Errorf("store: update project sort positions: prepare: %w", err)
+		return nil, fmt.Errorf("store: update project sort positions: prepare: %w", err)
 	}
 	defer stmt.Close()
 
 	now := nowMillis()
+	movedIDs := make([]string, 0, len(orderedIDs))
 	for index, id := range orderedIDs {
-		if _, err := stmt.Exec(index, now, id); err != nil {
-			return fmt.Errorf("store: update project sort position %s: %w", id, err)
+		var moved string
+		err := stmt.QueryRow(index, now, id).Scan(&moved)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
 		}
+		if err != nil {
+			return nil, fmt.Errorf("store: update project sort position %s: %w", id, err)
+		}
+		movedIDs = append(movedIDs, moved)
+	}
+
+	// Read back inside the write's own transaction, for the same reason
+	// applyRowWrite does: a second round trip could read a row a concurrent
+	// write had already moved. One query per written row is affordable because
+	// this list is the sidebar's and a drag-reorder is a rare gesture.
+	moved := make([]Project, 0, len(movedIDs))
+	for _, id := range movedIDs {
+		row, err := scanProject(tx.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id = ?`, id))
+		if err != nil {
+			return nil, fmt.Errorf("store: update project sort positions: read back %s: %w", id, err)
+		}
+		moved = append(moved, row)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: update project sort positions: commit: %w", err)
+		return nil, fmt.Errorf("store: update project sort positions: commit: %w", err)
 	}
-	return nil
+	return moved, nil
 }
 
 // ArchiveProject hides the project from default listings. Threads remain
 // intact; UnarchiveProject reverses it.
-func (s *Store) ArchiveProject(id string) error {
-	result, err := s.db.Exec(
-		`UPDATE projects SET archived = 1, updated_at = ? WHERE id = ?`,
-		nowMillis(), id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: archive project %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: archive project %s", id))
+func (s *Store) ArchiveProject(id string) (Project, bool, error) {
+	return s.applyProjectRowWrite(rowWrite{
+		Action:  fmt.Sprintf("store: archive project %s", id),
+		ID:      id,
+		Set:     "archived = 1, updated_at = ?",
+		SetArgs: []any{nowMillis()},
+		Change:  "archived IS NOT 1",
+	})
 }
 
 // UnarchiveProject reverses ArchiveProject and bumps updated_at so the
 // project resurfaces at the top of any "recently touched" ordering.
-func (s *Store) UnarchiveProject(id string) error {
-	result, err := s.db.Exec(
-		`UPDATE projects SET archived = 0, updated_at = ? WHERE id = ?`,
-		nowMillis(), id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: unarchive project %s: %w", id, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: unarchive project %s", id))
+func (s *Store) UnarchiveProject(id string) (Project, bool, error) {
+	return s.applyProjectRowWrite(rowWrite{
+		Action:  fmt.Sprintf("store: unarchive project %s", id),
+		ID:      id,
+		Set:     "archived = 0, updated_at = ?",
+		SetArgs: []any{nowMillis()},
+		Change:  "archived IS NOT 0",
+	})
 }
 
 // DeleteProject removes the project row only when it contains no threads. The

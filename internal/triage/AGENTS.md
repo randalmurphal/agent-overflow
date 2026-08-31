@@ -146,6 +146,28 @@ Categories, for placing new state:
 A new map holding user-blocking live state goes into `HasPendingWork`
 (`interactive_requests.go`) with matching test coverage.
 
+**Answering an open question is arbitrated** (`interactive_claim.go`).
+One backend serves several clients, each rendering the same approval
+prompt and the same structured-input form, so two of them can answer
+within the same second. `ClaimApprovalResponse` /
+`ClaimUserInputResponse` let the first answer through and refuse the
+rest; the App turns a refusal into `transport.ErrAlreadyHandled`, which
+crosses the wire as a code rather than as redacted prose. Three rules
+hold it together, and each one is a defect if dropped:
+
+- It refuses only on POSITIVE evidence — an answer this router
+  forwarded. A request it has no record of passes through, because the
+  router's pending map is not the only authority on what is answerable
+  (a Codex session keeps its own request table) and reporting "someone
+  else answered" about a request nobody answered is a worse report than
+  the one this closes.
+- It does not consume the pending entry. `handleApprovalResolved` reads
+  that entry to build the resolved tool row's summary; taking it here
+  leaves the row describing the wrong input.
+- A write that never reached the provider must
+  `ReleaseInteractiveResponse`, or the prompt is wedged open with
+  nobody — including the client that just failed — able to answer it.
+
 ## Pending sends
 
 Every AO-initiated user message registers a FIFO entry that its wire

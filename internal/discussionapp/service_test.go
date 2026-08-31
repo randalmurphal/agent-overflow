@@ -47,7 +47,7 @@ func TestStartFailureRollsBackEveryOwnedResource(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	project := store.Project{ID: "project", Path: t.TempDir(), Name: "Project", CreatedAt: now, UpdatedAt: now}
-	if err := database.CreateProject(project); err != nil {
+	if _, err := database.CreateProject(project); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	parent := store.Thread{

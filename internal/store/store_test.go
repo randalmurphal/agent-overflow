@@ -26,7 +26,7 @@ func TestMain(m *testing.M) {
 	testStoreTemplatePath = filepath.Join(dir, "template.sqlite")
 	template, err := New(testStoreTemplatePath)
 	if err == nil {
-		err = template.CreateProject(Project{
+		_, err = template.CreateProject(Project{
 			ID: defaultTestProjectID, Path: "/tmp/test", Name: "Default Test Project",
 			CreatedAt: 1, UpdatedAt: 1,
 		})

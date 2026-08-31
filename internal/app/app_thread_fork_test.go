@@ -48,7 +48,7 @@ func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
 	seedMessageAnchor(t, app.store, source.ID, "user:1", 1, "u1", "a0")
 	seedMessageAnchor(t, app.store, source.ID, "user:2", 2, "u2", "a1")
 
-	fork, err := app.ForkThreadFromMessage(source.ID, "user:2")
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
 	if err != nil {
 		t.Fatalf("fork from message: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestForkThreadAtTurnIndexRemapsClaudeUUIDs(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
 
 	atTurn := 1
-	fork, err := app.ForkThread(source.ID, &atTurn)
+	fork, err := app.ForkThread(t.Context(), source.ID, &atTurn)
 	if err != nil {
 		t.Fatalf("fork at turn: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 	seedMessageAnchor(t, app.store, source.ID, "user:1", 1, "u1", "a0")
 	seedMessageAnchor(t, app.store, source.ID, "user:2", 2, "u2", "a1")
 
-	fork1, err := app.ForkThreadFromMessage(source.ID, "user:2")
+	fork1, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
 	if err != nil {
 		t.Fatalf("fork1: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 	}
 
 	atTurn := 0
-	fork2, err := app.ForkThread(fork1.ID, &atTurn)
+	fork2, err := app.ForkThread(t.Context(), fork1.ID, &atTurn)
 	if err != nil {
 		t.Fatalf("fork2: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 	insertAssistantTextItem(t, app.store, source.ID, "a:q", 1, "queued reply")
 	seedMessageAnchor(t, app.store, source.ID, "user:q", 1, "uq", "a1")
 
-	fork, err := app.ForkThreadFromMessage(source.ID, "user:q")
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:q")
 	if err != nil {
 		t.Fatalf("fork from message: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:q", 0, "queued", `{"provider_item_id":"uq"}`)
 	seedMessageAnchor(t, app.store, source.ID, "user:q", 0, "uq", "a0")
 
-	fork, err := app.ForkThreadFromMessage(source.ID, "user:q")
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:q")
 	if err != nil {
 		t.Fatalf("fork from message: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh(t *testing.T) {
 	}
 	seedMessageAnchor(t, app.store, source.ID, "user:0:flush:0", 0, "u0", "")
 
-	fork, err := app.ForkThreadFromMessage(source.ID, "user:0:flush:0")
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:0:flush:0")
 	if err != nil {
 		t.Fatalf("fork from head-healed first prompt: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestForkThreadFromMessageSynthesizesOnAnchorTurnDrift(t *testing.T) {
 	// Anchor cached at the WRONG turn (0) for a turn-1 item.
 	seedMessageAnchor(t, app.store, source.ID, "user:1", 0, "stale-uuid", "")
 
-	fork, err := app.ForkThreadFromMessage(source.ID, "user:1")
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:1")
 	if err != nil {
 		t.Fatalf("fork with drifted anchor turn: %v", err)
 	}

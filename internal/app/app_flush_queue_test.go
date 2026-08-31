@@ -2465,7 +2465,7 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 	// A draft whose attachments blob cannot decode makes MergeParts —
 	// and therefore the restore's draft write — fail deterministically
 	// while every store read/write still works.
-	if err := app.store.UpsertThreadDraft(store.ThreadDraft{
+	if _, err := app.store.UpsertThreadDraft(store.ThreadDraft{
 		ThreadID:    thread.ID,
 		Content:     "half-typed draft",
 		Attachments: "corrupt",

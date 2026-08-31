@@ -2978,6 +2978,12 @@ export function ResizeTerminal(terminalID: string, rows: number, cols: number): 
 
 /**
  * RespondToApproval forwards an interactive response to the active provider session.
+ * 
+ * Several clients render the same prompt, so two of them can answer it. The
+ * router arbitrates: the loser gets transport.ErrAlreadyHandled and no
+ * failure event, because nothing failed — the question was answered without
+ * them, which is the state they wanted. Forwarding both answers would send
+ * the provider a second response for a request it has already resolved.
  */
 export function RespondToApproval(threadID: string, response: provider$0.ApprovalResponse): $CancellablePromise<void> {
     return $Call.ByID(1919237704, threadID, response);
@@ -2985,6 +2991,10 @@ export function RespondToApproval(threadID: string, response: provider$0.Approva
 
 /**
  * RespondToUserInput forwards structured answers to the active provider session.
+ * 
+ * Arbitrated the same way as RespondToApproval: a form two screens can both
+ * submit is answered once, and the second submitter is told it arrived second
+ * rather than handed a failure.
  */
 export function RespondToUserInput(threadID: string, response: provider$0.UserInputResponse): $CancellablePromise<void> {
     return $Call.ByID(1071592868, threadID, response);
@@ -3095,6 +3105,10 @@ export function RevertConversationAndResendMessage(threadID: string, userItemID:
 
 /**
  * SaveDraft replaces the draft row for a thread.
+ * 
+ * ctx carries the calling screen's identity so the broadcast can name it and
+ * so that screen can recognize the echo of its own save. The generated TS
+ * bindings strip a leading ctx parameter, so the wire signature is unchanged.
  */
 export function SaveDraft(threadID: string, content: string, attachmentIDs: string[], terminalChips: app$0.TerminalChip[], sourceProposedPlan: app$0.SourceProposedPlan | null): $CancellablePromise<void> {
     return $Call.ByID(3025273299, threadID, content, attachmentIDs, terminalChips, sourceProposedPlan);
@@ -3787,6 +3801,11 @@ export function UpdateNewThreadDefaults(update: app$0.NewThreadDefaultsUpdate): 
  * UpdateProjectSortPositions re-orders the projects list. The frontend
  * emits the full ordered list when the user drops a drag-reorder so the
  * store assigns dense positions 0..N-1 in one transaction.
+ * 
+ * One frame per row written. Every listed project is written, not only the
+ * ones whose index moved, because the reorder also bumps updated_at — that
+ * bump is deliberate (it makes a reorder count as project activity), so those
+ * rows really did change and other clients need them.
  */
 export function UpdateProjectSortPositions(orderedIDs: string[]): $CancellablePromise<void> {
     return $Call.ByID(3717363955, orderedIDs);

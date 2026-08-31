@@ -32,10 +32,8 @@ import (
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 	st := storetest.Clone(t)
-	app := &App{
-		store:    st,
-		settings: settings.NewService(t.TempDir()),
-	}
+	app := &App{store: st}
+	app.setSettingsService(settings.NewService(t.TempDir()))
 	// Registered before the cleanups below so (LIFO) its spawn check runs
 	// last, once nothing is still in flight.
 	isolateE2EProviderSpawns(t, app)
@@ -56,7 +54,7 @@ func createAppTestThread(t *testing.T, app *App, id, provider, workspace string)
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	if err := app.store.CreateProject(store.Project{ID: "p1", Path: workspace, Name: "p1", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := app.store.CreateProject(store.Project{ID: "p1", Path: workspace, Name: "p1", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if err := app.store.CreateThread(thread); err != nil {

@@ -23,7 +23,7 @@ func newTestProject(t *testing.T, s *Store, id, path string) Project {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := s.CreateProject(p); err != nil {
+	if _, err := s.CreateProject(p); err != nil {
 		t.Fatalf("CreateProject(%s): %v", id, err)
 	}
 	return p
@@ -1864,7 +1864,7 @@ func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 		}
 	}
 
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:                  implDraft.ID,
 		Content:                   "PLEASE IMPLEMENT THIS PLAN:\n# Foo",
 		Attachments:               "[]",
@@ -1876,7 +1876,7 @@ func TestListThreadsWithItemsSurfacesNonEmptyDrafts(t *testing.T) {
 	}
 	// emptyDraft gets a content-only draft with no source-plan link. That is
 	// still user-authored state, so it should now surface in the sidebar.
-	if err := s.UpsertThreadDraft(ThreadDraft{
+	if _, err := s.UpsertThreadDraft(ThreadDraft{
 		ThreadID:      emptyDraft.ID,
 		Content:       "typed but never sent",
 		Attachments:   "[]",
@@ -2857,6 +2857,10 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"history_epoch":            "the replica-invalidation epoch (v55), maintained by the same triggers",
 	"history_bulk_load":        "a transaction-private flag ApplyImportBatch and DeleteThread raise to suppress the per-row triggers; it is never visible outside their transaction",
 	"live_todo":                "the provider's live todo list (v65), owned by SetThreadLiveTodo / ClearThreadLiveTodo; a rename must not drop a list the user is still working through",
+	"created_by_device":        "write-once provenance (v73); the screen that started the thread is a fact about its creation, and a later mutation from anywhere must not restate it",
+	"created_branch":           "write-once git origin (v74); it records where the workspace STOOD at creation, which is exactly what a whole-row write from a thread that has since moved would destroy",
+	"created_remote_url":       "write-once git origin (v74), same reason",
+	"created_head_commit":      "write-once git origin (v74), same reason",
 }
 
 // TestUpdateThreadColumnGate is the standing version of the six

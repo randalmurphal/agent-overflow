@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -48,11 +49,21 @@ func (s *Store) GetThreadDraft(threadID string) (ThreadDraft, bool, error) {
 	return d, true, nil
 }
 
-// UpsertThreadDraft writes the draft for a thread, replacing any existing row.
-// Callers should pre-encode Attachments and TerminalChips as JSON arrays.
-func (s *Store) UpsertThreadDraft(d ThreadDraft) error {
+// UpsertThreadDraft writes the draft for a thread, replacing any existing row,
+// and reports whether the write actually moved it. Callers should pre-encode
+// Attachments and TerminalChips as JSON arrays.
+//
+// The changed flag exists because every persisted draft write is broadcast on
+// `draft:updated`, and the composer AUTOSAVES: a save fired on a buffer nobody
+// touched must not wake every attached client. `updated_at` is deliberately
+// left out of the change test — it is a fresh timestamp on every call, so
+// including it would make every write look like a change and defeat the point.
+// The consequence is that a no-op save leaves the stored timestamp where it
+// was, which is the honest answer (nothing was edited) and which nothing
+// reads: the draft's updated_at is not rendered anywhere.
+func (s *Store) UpsertThreadDraft(d ThreadDraft) (bool, error) {
 	if d.ThreadID == "" {
-		return fmt.Errorf("store: upsert draft: thread id is required")
+		return false, fmt.Errorf("store: upsert draft: thread id is required")
 	}
 	// Normalise nullable JSON fields so SELECTs always return valid JSON.
 	if d.Attachments == "" {
@@ -72,7 +83,11 @@ func (s *Store) UpsertThreadDraft(d ThreadDraft) error {
 		d.PendingPlanImplementation != "" {
 		hasContent = 1
 	}
-	_, err := s.db.Exec(
+	// `IS NOT` rather than `<>` on every term: pending_plan_implementation is
+	// nullable and `NULL <> 'x'` is NULL, which SQLite reads as false — a `<>`
+	// predicate would report a plan link appearing or disappearing as a no-op.
+	var written string
+	err := s.db.QueryRow(
 		`INSERT INTO thread_drafts (thread_id, content, attachments, terminal_chips, pending_plan_implementation, updated_at, has_content)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(thread_id) DO UPDATE SET
@@ -81,21 +96,38 @@ func (s *Store) UpsertThreadDraft(d ThreadDraft) error {
 			terminal_chips = excluded.terminal_chips,
 			pending_plan_implementation = excluded.pending_plan_implementation,
 			updated_at = excluded.updated_at,
-			has_content = excluded.has_content`,
+			has_content = excluded.has_content
+		 WHERE thread_drafts.content IS NOT excluded.content
+		    OR thread_drafts.attachments IS NOT excluded.attachments
+		    OR thread_drafts.terminal_chips IS NOT excluded.terminal_chips
+		    OR thread_drafts.pending_plan_implementation IS NOT excluded.pending_plan_implementation
+		 RETURNING thread_id`,
 		d.ThreadID, d.Content, d.Attachments, d.TerminalChips, pendingPlan, d.UpdatedAt, hasContent,
-	)
-	if err != nil {
-		return fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
+	).Scan(&written)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The row already held exactly this draft. A normal outcome, not an
+		// error: the composer autosaves whether or not anything was typed.
+		return false, nil
 	}
-	return nil
+	if err != nil {
+		return false, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
+	}
+	return true, nil
 }
 
-// DeleteThreadDraft removes the draft for a thread. Missing rows are not an
-// error — clearing something that was never there is a no-op.
-func (s *Store) DeleteThreadDraft(threadID string) error {
-	_, err := s.db.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, threadID)
-	if err != nil {
-		return fmt.Errorf("store: delete thread draft %s: %w", threadID, err)
+// DeleteThreadDraft removes the draft for a thread and reports whether a row
+// was there to remove. Missing rows are not an error — clearing something that
+// was never there is a no-op, and it is one nothing needs to hear about.
+func (s *Store) DeleteThreadDraft(threadID string) (bool, error) {
+	var deleted string
+	err := s.db.QueryRow(
+		`DELETE FROM thread_drafts WHERE thread_id = ? RETURNING thread_id`, threadID,
+	).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	return nil
+	if err != nil {
+		return false, fmt.Errorf("store: delete thread draft %s: %w", threadID, err)
+	}
+	return true, nil
 }

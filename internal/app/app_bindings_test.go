@@ -317,7 +317,7 @@ func TestCreateThreadInheritsWorktreeAndBranch(t *testing.T) {
 		t.Fatalf("ensureProjectForWorkspace: %v", err)
 	}
 
-	thread, err := app.CreateThread(CreateThreadOptions{
+	thread, err := app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:    project.ID,
 		Provider:     string(provider.Codex),
 		Model:        "gpt-5.4",
@@ -361,7 +361,7 @@ func TestCreateThreadRejectsUnknownWorktreePath(t *testing.T) {
 	if err := os.MkdirAll(bogus, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	_, err = app.CreateThread(CreateThreadOptions{
+	_, err = app.CreateThread(t.Context(), CreateThreadOptions{
 		ProjectID:    project.ID,
 		Provider:     string(provider.Codex),
 		Model:        "gpt-5.4",

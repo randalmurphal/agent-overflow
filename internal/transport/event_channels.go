@@ -193,6 +193,20 @@ var channelPolicies = []ChannelPolicy{
 			"channel id, so it must never become latest-only.",
 	},
 	{
+		Channel:   eventchan.DraftUpdated,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionDefault,
+		Why: "Names a thread whose composer draft moved and the screen that " +
+			"moved it; the draft TEXT never rides it, because receivers " +
+			"re-read through GetDraft. Loopback-only regardless: GetDraft / " +
+			"SaveDraft / ClearDraft are all CategorySessionControl for the " +
+			"disclosure reason (in-progress user-typed work), and a push " +
+			"telling a LAN peer WHICH thread someone is typing in is the " +
+			"same class of answer one turn smaller. Never latest-only: a " +
+			"clear and a save are different edges on the same thread, and " +
+			"collapsing them loses the one the client needed.",
+	},
+	{
 		Channel:   eventchan.GitStatus,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,
@@ -354,6 +368,21 @@ var channelPolicies = []ChannelPolicy{
 			"SetPRUpdatesActive) is LocalOnly, so a LAN peer can neither arm " +
 			"nor pause the stream, but once a local pane subscribes the pump " +
 			"emits to every subscriber: the push side is the third door.",
+	},
+	{
+		Channel:   eventchan.ProjectUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Why: "Carries a store.Project — the project's absolute path among " +
+			"them — but ListProjects is wire-reachable and returns exactly " +
+			"these rows, so the push discloses nothing a poll could not " +
+			"(same reasoning as thread:updated). The mutations behind it " +
+			"split: CreateProject and the worktree-setup writes are " +
+			"LocalOnly, rename / archive / reorder / delete are not, and " +
+			"the frames look identical either way, so no receiver can infer " +
+			"who issued one. Never latest-only: each frame names a " +
+			"different row and a different action, and a dropped one is a " +
+			"project the client keeps or loses wrongly.",
 	},
 	{
 		Channel:   eventchan.ProviderAccount,
@@ -582,6 +611,20 @@ var channelPolicies = []ChannelPolicy{
 			"message, which quotes the absolute transcript path. Its RPCs are " +
 			"all LocalOnly, so keeping the push side loopback-only closes the " +
 			"third door.",
+	},
+	{
+		Channel:   eventchan.SettingsUpdated,
+		Audience:  AudienceAny,
+		Retention: RetentionDefault,
+		Why: "Carries a tier plus the changed key NAMES, never values — " +
+			"GetSettings is wire-safe precisely because it redacts endpoint " +
+			"tokens and sensitive environment values, and this channel must " +
+			"not become the path around that redaction. A remote peer that " +
+			"may already poll GetSettings therefore learns nothing new from " +
+			"the push. Retention default, not latest-only: each frame names " +
+			"a DIFFERENT set of keys, so the newest does not supersede the " +
+			"ones before it, and a client that dropped the frame naming " +
+			"`fontSize` would keep rendering the old size forever.",
 	},
 	{
 		Channel:   eventchan.SpinnerChanged,

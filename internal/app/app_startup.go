@@ -216,7 +216,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 		FastStatusFn: a.git.StatusFast,
 		WatchRootsFn: a.git.WatchRoots,
 	})
-	a.settings = settings.NewService(dbDir)
+	a.setSettingsService(settings.NewService(dbDir))
 	accountStore, err := provideraccounts.NewStore(dbDir)
 	if err != nil {
 		closeErr := st.Close()

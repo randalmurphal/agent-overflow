@@ -88,7 +88,7 @@ func (h *testHost) Notify(string, string, notify.Target) error { return nil }
 func (h *testHost) CreateProject(path string) (store.Project, error) {
 	now := time.Now().UnixMilli()
 	project := store.Project{ID: uuid.NewString(), Path: path, Name: filepath.Base(path), CreatedAt: now, UpdatedAt: now}
-	return project, h.store.CreateProject(project)
+	return h.store.CreateProject(project)
 }
 func (h *testHost) CreateThread(options ThreadOptions) (store.Thread, error) {
 	now := time.Now().UnixMilli()
@@ -142,7 +142,7 @@ func (h *testHost) SendMessage(threadID, message string) error {
 func seedHarnessThread(t *testing.T, database *store.Store, threadID string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
-	if err := database.CreateProject(store.Project{
+	if _, err := database.CreateProject(store.Project{
 		ID: "proj-" + threadID, Path: filepath.Join(t.TempDir(), "ws"), Name: "p",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {

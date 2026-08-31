@@ -1397,6 +1397,10 @@ func (r *Router) clearOpenTurn(threadID string) {
 		clear(st.pendingApprovals)
 		clear(st.pendingApprovalItems)
 		clear(st.pendingUserInputs)
+		// The answer records go with them: nothing is open to answer any
+		// more, so a surviving record could only refuse a later request
+		// that reused the id.
+		clear(st.answeredRequests)
 		st.pendingApprovalOrder = nil
 		st.pendingUserInputOrder = nil
 	}

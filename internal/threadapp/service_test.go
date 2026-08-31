@@ -44,9 +44,15 @@ type testWorkspace struct {
 	findBranch    string
 	createPath    string
 	createBranch  string
+	// origin is what ObserveOrigin reports for any path. Zero by default, so
+	// a test that says nothing about git provenance asserts the "workspace is
+	// not a repository" shape for free.
+	origin store.ThreadOrigin
 }
 
 func (w testWorkspace) CurrentBranch(string) string { return w.currentBranch }
+
+func (w testWorkspace) ObserveOrigin(string) store.ThreadOrigin { return w.origin }
 func (w testWorkspace) FindWorktree(string, string) (string, string, bool, error) {
 	return w.findPath, w.findBranch, w.findPath != "", nil
 }
@@ -86,7 +92,7 @@ func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 		t.Fatalf("store.New: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	if err := database.CreateProject(store.Project{
+	if _, err := database.CreateProject(store.Project{
 		ID: "project", Path: "/repo", Name: "repo", CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
@@ -170,7 +176,13 @@ func TestCreateFromPROwnsRowAndFirstItemSaga(t *testing.T) {
 		t.Fatalf("GetProject: %v", err)
 	}
 	thread, err := service.CreateFromPR(
-		"owner/repo", 42, "claude", "claude-sonnet-4-6", "github",
+		PullRequestOptions{
+			Project:  "owner/repo",
+			Number:   42,
+			Provider: "claude",
+			Model:    "claude-sonnet-4-6",
+			Forge:    "github",
+		},
 		pullRequestPort{workspace: "/repo", project: project},
 	)
 	if err != nil {
@@ -183,7 +195,8 @@ func TestCreateFromPROwnsRowAndFirstItemSaga(t *testing.T) {
 	if err != nil || !found || item.Kind != "user_text" || item.Role != "user" {
 		t.Fatalf("first item = %+v, %v, %v", item, found, err)
 	}
-	if _, err := service.CreateFromPR("owner/repo", 1, "claude", "", "bitbucket", pullRequestPort{}); err == nil {
+	bitbucket := PullRequestOptions{Project: "owner/repo", Number: 1, Provider: "claude", Forge: "bitbucket"}
+	if _, err := service.CreateFromPR(bitbucket, pullRequestPort{}); err == nil {
 		t.Fatal("CreateFromPR(bitbucket) error = nil")
 	}
 }

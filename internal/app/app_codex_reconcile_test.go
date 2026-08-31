@@ -190,7 +190,7 @@ func ensureCodexReconcileTestProject(t *testing.T, st *store.Store) {
 	now := time.Now().UnixMilli()
 	// Tolerate duplicate-insert from a previous subtest — tests in this
 	// file share the same store instance via newAppWithStore.
-	if err := st.CreateProject(store.Project{
+	if _, err := st.CreateProject(store.Project{
 		ID:        codexReconcileTestProjectID,
 		Path:      "/tmp/reconcile",
 		Name:      "Reconcile Test",

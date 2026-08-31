@@ -29,12 +29,17 @@ type CreateOptions struct {
 	WorkspaceOverride          string
 	WorktreePath               string
 	Branch                     string
+	// CreatedByDevice names the screen this call came from, or "" when the
+	// backend created the thread on its own behalf. Root reads it off the
+	// connection; this package only records it.
+	CreatedByDevice string
 }
 
 type TerminalOptions struct {
-	ProjectID string
-	Cwd       string
-	Title     string
+	ProjectID       string
+	Cwd             string
+	Title           string
+	CreatedByDevice string
 }
 
 type Defaults struct {
@@ -211,6 +216,8 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 		RuntimeMode:                runtimeMode,
 		CreatedAt:                  now,
 		UpdatedAt:                  now,
+		CreatedByDevice:            opts.CreatedByDevice,
+		Origin:                     s.observeOrigin(workspace),
 	}
 	if err := database.CreateThread(thread); err != nil {
 		return store.Thread{}, err
@@ -281,6 +288,8 @@ func (s *Service) StartTerminal(opts TerminalOptions) (store.Thread, error) {
 		ReasoningEffort: effort,
 		CreatedAt:       now,
 		UpdatedAt:       now,
+		CreatedByDevice: opts.CreatedByDevice,
+		Origin:          s.observeOrigin(workspace),
 	}
 	if err := database.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("start terminal: %w", err)

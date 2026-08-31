@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
@@ -477,7 +478,7 @@ func (a *App) sendMessageLocked(
 	}
 	userMsgKept = true
 	if !opts.PreserveDraft {
-		if draftErr := a.store.DeleteThreadDraft(threadID); draftErr != nil {
+		if draftErr := a.removeThreadDraft(transport.ClientIdentity{}, threadID); draftErr != nil {
 			log.Printf("send message: delete draft for thread %s: %v", threadID, draftErr)
 		}
 	}

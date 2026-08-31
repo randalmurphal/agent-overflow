@@ -44,21 +44,28 @@ func (s *Store) ProjectWorktreeSetup(projectID string) (worktreesetup.Config, bo
 // Validation belongs to the caller (worktreesetup.Validate): this package
 // persists what it is given, but it will not persist a blob it could not read
 // back.
-func (s *Store) UpdateProjectWorktreeSetup(projectID string, config *worktreesetup.Config) error {
+//
+// Returns the project row and whether the write moved it. The recipe itself is
+// not on that row — `worktree_setup` is deliberately outside projectColumns,
+// since the sidebar reads the project list far more often than anyone opens
+// the recipe editor — so the row carries only the bumped updated_at. That is
+// still what the `project:updated` broadcast needs: the announcement is "this
+// project moved", and the recipe has its own read (ProjectWorktreeSetup).
+func (s *Store) UpdateProjectWorktreeSetup(projectID string, config *worktreesetup.Config) (Project, bool, error) {
 	stored := ""
 	if config != nil && !config.IsZero() {
 		data, err := json.Marshal(*config)
 		if err != nil {
-			return fmt.Errorf("store: encode project %s worktree setup: %w", projectID, err)
+			return Project{}, false, fmt.Errorf("store: encode project %s worktree setup: %w", projectID, err)
 		}
 		stored = string(data)
 	}
-	result, err := s.db.Exec(
-		`UPDATE projects SET worktree_setup = ?, updated_at = ? WHERE id = ?`,
-		stored, nowMillis(), projectID,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update project %s worktree setup: %w", projectID, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update project %s worktree setup", projectID))
+	return s.applyProjectRowWrite(rowWrite{
+		Action:     fmt.Sprintf("store: update project %s worktree setup", projectID),
+		ID:         projectID,
+		Set:        "worktree_setup = ?, updated_at = ?",
+		SetArgs:    []any{stored, nowMillis()},
+		Change:     "worktree_setup IS NOT ?",
+		ChangeArgs: []any{stored},
+	})
 }

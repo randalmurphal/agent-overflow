@@ -22,7 +22,7 @@ import (
 // need is the recipe in place.
 func seedWorktreeSetup(t *testing.T, dataStore *store.Store, projectID string, config worktreesetup.Config) {
 	t.Helper()
-	if err := dataStore.UpdateProjectWorktreeSetup(projectID, &config); err != nil {
+	if _, _, err := dataStore.UpdateProjectWorktreeSetup(projectID, &config); err != nil {
 		t.Fatalf("seed worktree setup: %v", err)
 	}
 }

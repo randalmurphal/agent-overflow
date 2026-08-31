@@ -105,7 +105,7 @@ type ThreadTitleGenerationEvent struct {
 // The created row is broadcast as `listed` so a second attached client puts
 // it in its sidebar without a refresh, matching what the creating client does
 // with the return value.
-func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
+func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
 	thread, err := a.threadApplication().Create(threadapp.CreateOptions{
 		ProjectID:                  opts.ProjectID,
 		Title:                      opts.Title,
@@ -122,6 +122,7 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 		WorkspaceOverride:          opts.WorkspaceOverride,
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,
+		CreatedByDevice:            creatingDevice(ctx),
 	})
 	if err != nil {
 		return store.Thread{}, err
@@ -141,11 +142,12 @@ func (a *App) CreateThread(opts CreateThreadOptions) (store.Thread, error) {
 // OpenTerminal on pane mount, which is also why a terminal thread restored
 // after restart re-spawns a fresh shell in its saved workspace (PTYs are
 // ephemeral across restart; the saved cwd is what persists).
-func (a *App) StartTerminal(opts StartTerminalOptions) (store.Thread, error) {
+func (a *App) StartTerminal(ctx context.Context, opts StartTerminalOptions) (store.Thread, error) {
 	thread, err := a.threadApplication().StartTerminal(threadapp.TerminalOptions{
-		ProjectID: opts.ProjectID,
-		Cwd:       opts.Cwd,
-		Title:     opts.Title,
+		ProjectID:       opts.ProjectID,
+		Cwd:             opts.Cwd,
+		Title:           opts.Title,
+		CreatedByDevice: creatingDevice(ctx),
 	})
 	if err != nil {
 		return store.Thread{}, err
@@ -507,6 +509,7 @@ func (a *App) UpdateThreadMode(threadID string, mode string) (store.Thread, erro
 // Otherwise the caller is expected to pick a workspace; we still create the
 // thread but WorkspacePath is left empty and the UI can prompt.
 func (a *App) CreateThreadFromPR(
+	ctx context.Context,
 	project string,
 	number int,
 	providerName string,
@@ -514,7 +517,15 @@ func (a *App) CreateThreadFromPR(
 	forge string,
 ) (store.Thread, error) {
 	thread, err := a.threadApplication().CreateFromPR(
-		project, number, providerName, model, forge, threadPullRequestPort{app: a},
+		threadapp.PullRequestOptions{
+			Project:         project,
+			Number:          number,
+			Provider:        providerName,
+			Model:           model,
+			Forge:           forge,
+			CreatedByDevice: creatingDevice(ctx),
+		},
+		threadPullRequestPort{app: a},
 	)
 	if err != nil {
 		return store.Thread{}, err
