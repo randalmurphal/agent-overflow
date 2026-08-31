@@ -255,10 +255,18 @@ func Serve(cfg Config) (*Server, error) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
+	// "/{$}" is the exact root and nothing else, so every other path
+	// reaches the file server. The bundle's root-level files —
+	// boot-theme.js, favicon.svg — live beside /assets/ in dist and are
+	// unreachable if the shell answers for them: served as text/html
+	// under X-Content-Type-Options: nosniff, the boot script would be
+	// refused and the first-paint theme stamp would silently stop
+	// applying on this origin only. Serving the whole bundle from one
+	// file server also matches what the transport does with the same FS.
+	mux.HandleFunc("/{$}", s.handleIndex)
+	mux.Handle("/", withSecurityHeaders(http.FileServerFS(cfg.Assets)))
 	mux.HandleFunc("/bootstrap.json", s.handleBootstrap)
 	mux.HandleFunc("/ws", s.handleWS)
-	mux.Handle("/assets/", withSecurityHeaders(http.FileServerFS(cfg.Assets)))
 
 	// loopbackOnly wraps every route with a Host-header check so a site
 	// whose DNS resolves to 127.0.0.1 cannot navigate the user's browser
@@ -347,10 +355,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// handleIndex serves index.html for "/" and "/index.html". Anything
-// else under "/" that isn't /assets/ falls through to the SPA shell so
-// client-side routing keeps working (the SPA's router handles in-app
-// paths from the rendered shell).
+// handleIndex serves index.html for the exact root and nothing else.
+// The SPA has no client-side router — it is loaded once, at "/", and
+// only ever rewrites its own query string — so every other path is a
+// bundle file or a 404, and answering one with the shell would just
+// mislabel it as HTML.
 //
 // The shell is served verbatim: nothing is injected into it any more.
 // The SPA learns where its socket is from /bootstrap.json, exactly as it
@@ -369,7 +378,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Same headers the transport package puts on the SPA shell. Keeps
 	// the security posture identical between the embedded-webview path
 	// (transport.go) and the remote-client path (this).
-	transport.WriteSecurityHeaders(h)
+	transport.WriteSecurityHeaders(h, transport.CSPProduction)
 	// no-store, matching the transport's policy for the entry shell: a
 	// deploy must never be shadowed by a cached shell, and the local
 	// webview loads it once per process so nothing is gained by keeping
@@ -491,7 +500,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
-	transport.WriteSecurityHeaders(h)
+	transport.WriteSecurityHeaders(h, transport.CSPProduction)
 	// Same no-store posture as the shell: a manifest from a previous
 	// launch names a socket that no longer exists.
 	h.Set("Cache-Control", "no-store, max-age=0")
@@ -559,7 +568,7 @@ func loopbackOnly(next http.Handler) http.Handler {
 func withSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		transport.WriteSecurityHeaders(h)
+		transport.WriteSecurityHeaders(h, transport.CSPProduction)
 		h.Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})

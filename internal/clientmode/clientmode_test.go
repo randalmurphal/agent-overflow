@@ -46,6 +46,17 @@ func fakeAssets() fstest.MapFS {
 		"assets/index-abc.js": &fstest.MapFile{
 			Data: []byte("// fake spa entry"),
 		},
+		// The bundle's root-level files. boot-theme.js is the
+		// first-paint theme stamp, which must load before the deferred
+		// module or the frame it exists to paint is already gone;
+		// favicon.svg is what index.html's <link rel="icon"> names.
+		// Both live beside assets/ in dist rather than inside it.
+		"boot-theme.js": &fstest.MapFile{
+			Data: []byte("/* fake boot theme */"),
+		},
+		"favicon.svg": &fstest.MapFile{
+			Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`),
+		},
 	}
 }
 

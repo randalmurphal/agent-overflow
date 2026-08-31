@@ -194,6 +194,14 @@ type Config struct {
 	// remote subresources while on. See WriteCrossOriginIsolationHeaders.
 	CrossOriginIsolate bool
 
+	// DevAssetProxy marks a boot whose AssetHandler forwards to a live
+	// Vite dev server instead of serving the embedded bundle. It picks
+	// CSPDevServer over CSPProduction, once, in New — the strict/relaxed
+	// split is a boot-mode decision, never a per-request one. main.go
+	// sets it from the same condition that built the proxy handler, so
+	// the two can never disagree about which bundle is being served.
+	DevAssetProxy bool
+
 	// HTTPReadHeaderTimeout, HTTPReadTimeout, HTTPWriteTimeout,
 	// HTTPIdleTimeout map onto net/http.Server fields. Zero values
 	// pick safe defaults documented in New().
@@ -253,6 +261,13 @@ type Server struct {
 	// replay checkpoint). Opaque and non-credential: it is published in
 	// the manifest precisely so nothing else has to be.
 	launchID string
+
+	// csp is the one Content-Security-Policy every response on this
+	// server carries, resolved from Config.DevAssetProxy in New and
+	// immutable afterwards. Rebind does not revisit it: swapping the
+	// listener changes where the bundle is reachable from, never which
+	// bundle it is.
+	csp ContentSecurityPolicy
 
 	// rootCtx + rootCancel scope every connection's lifetime to the
 	// server. Shutdown cancels rootCtx so live readLoops exit
@@ -331,10 +346,15 @@ func New(cfg Config) (*Server, error) {
 	if len(cfg.OriginPatterns) > 0 {
 		originPatterns = append(originPatterns, cfg.OriginPatterns...)
 	}
+	csp := CSPProduction
+	if cfg.DevAssetProxy {
+		csp = CSPDevServer
+	}
 	s := &Server{
 		cfg:            cfg,
 		cred:           cred,
 		launchID:       launchID,
+		csp:            csp,
 		originPatterns: originPatterns,
 		serveErr:       make(chan error, 1),
 	}
@@ -468,7 +488,7 @@ func (s *Server) buildHTTPServer() *http.Server {
 	if assetH == nil {
 		assetH = http.NotFoundHandler()
 	}
-	assetFinal := withAssetHeaders(assetH)
+	assetFinal := withAssetHeaders(assetH, s.csp)
 	if s.cfg.CrossOriginIsolate {
 		assetFinal = withCrossOriginIsolation(assetFinal)
 	}
@@ -777,7 +797,7 @@ func (s *Server) handlePageURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h := w.Header()
-	WriteSecurityHeaders(h)
+	WriteSecurityHeaders(h, s.csp)
 	h.Set("Cache-Control", "no-store, max-age=0")
 	h.Set("Content-Type", "text/plain; charset=utf-8")
 	if r.Method == http.MethodHead {
@@ -819,7 +839,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// foreign page.
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, max-age=0")
-	WriteSecurityHeaders(h)
+	WriteSecurityHeaders(h, s.csp)
 	if s.startupFailed.Load() {
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		http.Error(w, "backend startup failed", http.StatusInternalServerError)
@@ -859,10 +879,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 //
 // Security headers come from WriteSecurityHeaders so the rule set stays
 // in sync between this server and clientmode's stub.
-func withAssetHeaders(next http.Handler) http.Handler {
+func withAssetHeaders(next http.Handler, csp ContentSecurityPolicy) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		WriteSecurityHeaders(h)
+		WriteSecurityHeaders(h, csp)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/assets/"):
 			if remoteAddrIsLoopback(r.RemoteAddr) {

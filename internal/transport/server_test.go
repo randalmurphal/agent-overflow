@@ -1822,7 +1822,7 @@ func TestWithAssetHeadersCachePolicy(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	h := withAssetHeaders(inner)
+	h := withAssetHeaders(inner, CSPProduction)
 	cases := []struct {
 		name       string
 		path       string

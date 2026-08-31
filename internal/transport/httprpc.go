@@ -80,7 +80,7 @@ func (s *Server) handleScopedRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeScopedRPCResult(w, s.invokeScoped(r, scope, frame))
+	writeScopedRPCResult(w, s.csp, s.invokeScoped(r, scope, frame))
 }
 
 // invokeScoped resolves, authorizes, and calls one method. Split out so the
@@ -120,10 +120,10 @@ func (s *Server) invokeScoped(r *http.Request, scope CallerScope, frame ClientFr
 	return response
 }
 
-func writeScopedRPCResult(w http.ResponseWriter, response ServerFrame) {
+func writeScopedRPCResult(w http.ResponseWriter, csp ContentSecurityPolicy, response ServerFrame) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	WriteSecurityHeaders(w.Header())
+	WriteSecurityHeaders(w.Header(), csp)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		// The response is already being written; the log is the only remaining
 		// visible error channel at this boundary.
