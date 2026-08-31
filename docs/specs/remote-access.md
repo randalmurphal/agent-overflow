@@ -514,6 +514,36 @@ rather than borrowing the local channel's grants it cannot enumerate
 — stricter than the backend would permit, moot once pairing is the
 only way onto a networked page.
 
+### Phase 3 closed
+
+LANDED 2026-08-31 (wave 6d2). The local-channel session's
+`loopback-only` binding class is enforced at presentation
+(`bindingAdmitsPeer` inside the one `SessionForRequest` hook, so
+`/ws`, the manifest fallback, and `/auth/ticket` inherit it; a
+binding-refused presentation resolves NO session and falls to the
+sessionless rules), and `/bootstrap.json` plants the session cookie
+only for loopback peers — a LAN share-URL page gets the page cookie
+and reaches the pairing prompt with no local channel. On that
+foundation the origin gate is DELETED: `LocalOnlyMethods`, the
+derivation, all 35 `transitionalReachability` overrides, and the
+frozen partition are gone; `AuthorizeSessionMethod` is the one
+per-method gate, and receiver-level `RegisterOptions{LocalOnly}` (the
+harness) is the only locality rule left on the dispatcher. The 2026-05
+diff-surface lock is deliberately open: the twelve workspace-content
+methods answer a session granted `files:read` (three ride
+`threads:read`), the 21 bookkeeping mutations ride `threads:operate`,
+and `reachability_test.go` pins each by name plus the floors (`host`
+refused for every off-host session; step-up still demands its proof).
+Consequence recorded in `internal/relaysession`: a cross-host
+`--connect` stub can no longer borrow the upstream's local channel —
+it needs a paired device session.
+
+Posture notes from the deletion, adjudicated: a paired session with
+`threads:operate` can run a session import (reads the host's provider
+homes) — accepted, that is what pairing a trusted device means. OPEN
+product decision: `MintDevicePairing` grants every scope; a per-grant
+pairing surface is a later decision, not a phase-3 gap.
+
 ## 6. Per-device and per-user state
 
 ### Fix the identity hole
@@ -1599,8 +1629,13 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
      AST gate scans the Makefile's package roots, failing in both
      directions (unenumerated bind/route, or a row whose file no
      longer binds) with zero exclusions. The RPC-method and
-     event-channel columns join in phase 3 when the scope table
-     generates. Open repo-hygiene item the sweep surfaced:
+     event-channel columns LANDED 2026-08-31 (wave 6d2) as two
+     `Registry` REFERENCE rows — listener, routes, authored-table
+     source/symbol, required row fields, and the gate functions that
+     read each — with an AST cross-check that fails on a moved symbol,
+     an unclassified entry, or a deleted gate, rather than a duplicate
+     of the 360-method / 72-channel tables that would only ever drift
+     from them. Open repo-hygiene item the sweep surfaced:
      `spike/claude-mitm` is checked in with two live `net.Listen`
      calls against spike-policy step 5; it sits outside the gate's
      package roots.
@@ -1696,11 +1731,10 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    webview dropping `?t=`: LANDED 2026-08-31 (wave 6c2 — §4 "Local
    clients"). `/ws` onto session credentials: LANDED 2026-08-31 (wave
    6d1 — §4 "Local clients") for every off-host peer; loopback tooling
-   keeps the launch credential by adjudication. Still open in this
-   phase: origin-gate deletion with the override adjudications it
-   unlocks (prerequisite: enforce the local-channel session's
-   `loopback-only` binding class at presentation), and §13's RPC and
-   event-channel columns.
+   keeps the launch credential by adjudication. Origin-gate deletion,
+   the binding-class prerequisite, and §13's RPC and event-channel
+   registry rows: LANDED 2026-08-31 (wave 6d2 — §5 "Phase 3 closed").
+   **Phase 3 is complete.**
 4. **Settings storage.** Host JSON / user+device in `ui_state`,
    migrations, per-class defaults.
 5. **Serve mode, endpoint, TLS, tsnet, passkeys, remote update with

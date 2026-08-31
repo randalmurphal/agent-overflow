@@ -139,10 +139,10 @@ func NewManager(config ManagerConfig) *Manager {
 		config.Now = time.Now
 	}
 	manager := &Manager{
-		config:        config,
-		importOne:     ImportOne,
-		planUpdate:    PlanUpdate,
-		applyUpdate:   ApplyUpdate,
+		config:      config,
+		importOne:   ImportOne,
+		planUpdate:  PlanUpdate,
+		applyUpdate: ApplyUpdate,
 		ensureProject: func(database *store.Store, workspacePath string) (store.Project, error) {
 			// The created flag is dropped on purpose: an import that mints
 			// projects announces them through its own progress channel, which
