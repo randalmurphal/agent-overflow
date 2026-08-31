@@ -1,11 +1,11 @@
 // Locality of the document origin decides whether a refused bootstrap
 // credential is terminal (see wsClient's credentialDead latch): a page
 // served over the network can only be re-credentialled by re-opening a
-// share link, while a loopback page is handed a live token by the shell
-// that launched it. Getting this predicate wrong in either direction is
-// a user-visible bug — a false "remote" tells a desktop user to reopen a
-// share link that does not exist, and a false "loopback" leaves a phone
-// retrying a dead token forever.
+// share link, while a loopback page is handed a fresh page URL by the
+// shell that launched it. Getting this predicate wrong in either
+// direction is a user-visible bug — a false "remote" tells a desktop
+// user to reopen a share link that does not exist, and a false
+// "loopback" leaves a phone retrying a dead session forever.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -122,216 +122,111 @@ describe('wsUrlMatchesPageOrigin', () => {
 const SAME_ORIGIN_WS = `ws://${window.location.host}/ws`;
 
 describe('validateWsUrl', () => {
-  it('rejects a non-ws scheme whatever the origin posture', () => {
-    for (const requireSameOrigin of [true, false]) {
-      expect(() => validateWsUrl(`http://${window.location.host}/ws`, requireSameOrigin)).toThrow(
-        /scheme not ws\/wss/,
-      );
-      expect(() => validateWsUrl('javascript:alert(1)', requireSameOrigin)).toThrow();
-      expect(() => validateWsUrl('nonsense', requireSameOrigin)).toThrow(/invalid/);
-    }
+  it('rejects a non-ws scheme', () => {
+    expect(() => validateWsUrl(`http://${window.location.host}/ws`)).toThrow(/scheme not ws\/wss/);
+    expect(() => validateWsUrl('javascript:alert(1)')).toThrow();
+    expect(() => validateWsUrl('nonsense')).toThrow(/invalid/);
   });
 
-  it('accepts a same-origin wsUrl when the call site requires same-origin', () => {
-    expect(() => validateWsUrl(SAME_ORIGIN_WS, true)).not.toThrow();
+  it('accepts a same-origin wsUrl', () => {
+    expect(() => validateWsUrl(SAME_ORIGIN_WS)).not.toThrow();
   });
 
-  it('refuses a cross-origin wsUrl when the call site requires same-origin', () => {
-    expect(() => validateWsUrl('ws://desktop.tailnet.ts.net:8790/ws', true)).toThrow(
-      /not same-origin/,
-    );
-  });
-
-  // The `--connect` remote client is legitimately cross-origin: the page
-  // is served by the local stub and the socket goes to another machine.
-  it('accepts a cross-origin wsUrl when the call site does not require same-origin', () => {
-    expect(() => validateWsUrl('ws://desktop.tailnet.ts.net:8790/ws', false)).not.toThrow();
+  // There is no exemption left to get wrong. Every manifest the SPA can
+  // receive is served by the page's own origin — including the
+  // `--connect` stub's, which carries the socket to the remote backend
+  // itself rather than pointing the page at it.
+  it('refuses a cross-origin wsUrl on every path', () => {
+    expect(() => validateWsUrl('ws://desktop.tailnet.ts.net:8790/ws')).toThrow(/not same-origin/);
   });
 });
 
 describe('defaultBootstrap', () => {
+  // The page ticket lives in the URL, so each case stamps the URL it is
+  // describing and the reset puts the document back on a bare path.
+  function setPageSearch(search: string): void {
+    window.history.replaceState(null, '', window.location.pathname + search);
+  }
+
   afterEach(() => {
-    window.sessionStorage.clear();
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
+    setPageSearch('');
     vi.unstubAllGlobals();
   });
 
-  const INJECTED = {
-    wsUrl: 'ws://desktop.tailnet.ts.net:8790/ws',
-    token: 'tok-injected',
-    mode: 'client',
-    remote: true,
-  };
+  function manifestResponse(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
 
-  it('returns the injected manifest without fetching on first load', async () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
-    const fetchMock = vi.fn();
+  it('spends the URL ticket on the manifest fetch and scrubs it', async () => {
+    setPageSearch('?t=ticket-1&cid=desktop-1');
+    const fetchMock = vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const b = await defaultBootstrap();
-
-    expect(b.token).toBe('tok-injected');
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  // The `--connect` stub serves /bootstrap.json on the page's own
-  // origin by probing the upstream from Go (CORS-free), so a
-  // revalidation must NOT short-circuit on the injected global — the
-  // fetch is the whole point.
-  it('revalidates an injected manifest through the stub origin', async () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(JSON.stringify(INJECTED), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-    );
-    vi.stubGlobal('fetch', fetchMock);
-
-    const b = await defaultBootstrap({ revalidate: true });
+    await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/bootstrap.json?t=tok-injected',
+      '/bootstrap.json?t=ticket-1',
       expect.objectContaining({ credentials: 'same-origin' }),
     );
-    expect(b.wsUrl).toBe(INJECTED.wsUrl);
-    expect(b.remote).toBe(true);
+    // Only the ticket is removed; the parameters the shell stamped for
+    // the SPA to read (client identity, run mode) survive.
+    expect(window.location.search).toBe('?cid=desktop-1');
   });
 
-  // The trust anchor is the local stub, so a revalidation may confirm
-  // the session but never retarget it: a manifest naming a different
-  // wsUrl than the one injected at page load is refused (2026-08-25
-  // security review, finding 7).
-  it('rejects a revalidated manifest that names a different wsUrl', async () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
-    const retargeted = { ...INJECTED, wsUrl: 'ws://attacker.example:9999/ws' };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify(retargeted), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-      ),
-    );
+  // The refetch after a run of connect failures carries nothing: the
+  // ticket is spent, and the session cookie the browser attaches is the
+  // whole credential. A fetch that still demanded a ticket would make
+  // every reconnect refetch a refusal.
+  it('fetches without a ticket once the URL has none', async () => {
+    const fetchMock = vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS }));
+    vi.stubGlobal('fetch', fetchMock);
 
-    await expect(defaultBootstrap({ revalidate: true })).rejects.toThrow(
-      /different wsUrl/,
+    await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/bootstrap.json',
+      expect.objectContaining({ credentials: 'same-origin' }),
     );
   });
 
-  // REGRESSION GUARD for the same-origin check's exemption. The
-  // `--connect` stub (internal/clientmode) injects this manifest into
-  // the page it serves from loopback, and its wsUrl names the REMOTE
-  // backend by construction. Requiring same-origin here — or inferring
-  // the exemption from the manifest's own `mode` field, which a spoofed
-  // manifest sets for free — kills remote-client boot outright.
-  it('accepts the injected cross-origin manifest on first load (--connect)', async () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new Error('fetch should not be called');
-      }),
-    );
-
-    const b = await defaultBootstrap();
-
-    expect(b.wsUrl).toBe(INJECTED.wsUrl);
-    expect(b.mode).toBe('client');
-  });
-
-  // Same exemption on the other half of the --connect flow: the stub's
-  // /bootstrap.json answers with its OWN manifest (clientmode
-  // manifestJSON), so the reconnect revalidation sees the same remote
-  // wsUrl through a fetch rather than the injected global.
-  it('accepts the stub-relayed cross-origin manifest on revalidation', async () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify(INJECTED), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-      ),
-    );
-
-    await expect(defaultBootstrap({ revalidate: true })).resolves.toMatchObject({
-      wsUrl: INJECTED.wsUrl,
-    });
-  });
-
-  // The hazard the check exists for: nothing injected the manifest, so
-  // the page is served by the transport itself and its wsUrl must name
-  // that same origin. A manifest naming somewhere else was tampered with
-  // in flight, and honouring it would hand the token to the attacker's
-  // socket.
+  // The hazard the origin check exists for: the manifest's wsUrl must
+  // name the origin that served the page. A manifest naming somewhere
+  // else was tampered with in flight, and honouring it would point the
+  // page's socket at another authority.
   it('refuses a cross-origin wsUrl from the fetched manifest', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ wsUrl: 'ws://evil.example.com/ws', token: 'tok' }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-      ),
-    );
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: 'ws://evil.example.com/ws' })));
 
     await expect(defaultBootstrap()).rejects.toThrow(/not same-origin/);
   });
 
   it('accepts a same-origin wsUrl from the fetched manifest', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ wsUrl: SAME_ORIGIN_WS, token: 'tok' }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-      ),
-    );
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ wsUrl: SAME_ORIGIN_WS })));
 
     await expect(defaultBootstrap()).resolves.toMatchObject({ wsUrl: SAME_ORIGIN_WS });
   });
 
-  it('surfaces the stub-relayed refusal as BootstrapRejectedError', async () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
+  it('surfaces a refusal as BootstrapRejectedError', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('not found', { status: 404 })));
 
-    await expect(defaultBootstrap({ revalidate: true })).rejects.toBeInstanceOf(
-      BootstrapRejectedError,
-    );
+    await expect(defaultBootstrap()).rejects.toBeInstanceOf(BootstrapRejectedError);
   });
 
-  it('keeps a stub-relayed 503 transient', async () => {
-    (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__ = { ...INJECTED };
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('unreachable', { status: 503 })));
+  // 503 is the readiness gate, not a verdict on the credential: the
+  // server has already issued the cookie by the time it answers one.
+  it('keeps a 503 transient', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not ready', { status: 503 })));
 
-    const err = await defaultBootstrap({ revalidate: true }).catch((e: unknown) => e);
+    const err = await defaultBootstrap().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(BootstrapRejectedError);
   });
 
-  // Clearing on refusal would buy nothing (a re-presented stale token
-  // 404s identically) while destroying the one copy that lets a page
-  // reload recover from a refusal that wasn't real.
-  it('keeps the stashed token when the server refuses it', async () => {
-    window.sessionStorage.setItem('ao:bootstrap-token', 'stashed-token');
-    const fetchMock = vi.fn(async () => new Response('not found', { status: 404 }));
-    vi.stubGlobal('fetch', fetchMock);
+  it('rejects a manifest without a wsUrl', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifestResponse({ launchId: 'launch-1' })));
 
-    await expect(defaultBootstrap()).rejects.toBeInstanceOf(BootstrapRejectedError);
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/bootstrap.json?t=stashed-token',
-      expect.objectContaining({ credentials: 'same-origin' }),
-    );
-    expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('stashed-token');
+    await expect(defaultBootstrap()).rejects.toThrow(/missing wsUrl/);
   });
 });

@@ -638,9 +638,19 @@ func isClosedError(err error) bool {
 		status == websocket.StatusNoStatusRcvd
 }
 
-// upgrade authenticates the request via ?token= query param and
-// upgrades to WebSocket. Returns the connection on success or writes
-// the appropriate HTTP status on failure.
+// upgrade validates the request and upgrades it to a WebSocket.
+// Returns the connection on success, or writes the HTTP refusal and
+// returns the error.
+//
+// Two gates, in order. The origin check first: a handshake carrying an
+// Origin outside what this listener serves is refused before its
+// credential is read, because a browser attaches the page cookie to
+// such a handshake whether or not the page that opened it could ever
+// read that cookie (OriginAllowed explains why another port on the same
+// host is not a different cookie scope). Then the credential itself,
+// through the same Credential.Authenticate every other route uses: the
+// page cookie for a browser, the session token for a client that is not
+// one.
 //
 // enableCompression negotiates permessage-deflate with context
 // takeover when true. Intended for non-loopback connections where
@@ -648,28 +658,41 @@ func isClosedError(err error) bool {
 // Loopback connections skip compression — shared-memory pipe, no
 // benefit. Clients that don't support permessage-deflate (Safari /
 // WKWebView) fall back to uncompressed transparently.
-func upgrade(w http.ResponseWriter, r *http.Request, expectedToken string, originPatterns []string, enableCompression bool) (*websocket.Conn, error) {
-	supplied := r.URL.Query().Get("token")
-	if err := ConstantTimeEqual(expectedToken, supplied); err != nil {
+func upgrade(w http.ResponseWriter, r *http.Request, cred *Credential, originPatterns []string, enableCompression bool) (*websocket.Conn, error) {
+	if !OriginAllowed(r, originPatterns) {
+		// Same 404 as a refused credential and as a path that does not
+		// exist, so no response shape tells one apart from the others.
+		http.NotFound(w, r)
+		return nil, errOriginNotServed
+	}
+	if !cred.Authenticate(r) {
 		// Match the unauth path's response shape with the static asset
 		// 404. Distinguishable status codes let a LAN scanner fingerprint
 		// "this is the agent-overflow server" — return 404 instead.
 		http.NotFound(w, r)
-		return nil, err
+		return nil, errCredentialRefused
 	}
-	opts := &websocket.AcceptOptions{}
+	opts := &websocket.AcceptOptions{
+		// The origin decision is made above, against the live allow-list
+		// and this request's own authority, and it answers with this
+		// package's 404 rather than the library's 403. Leaving the
+		// library's own check on as well would mean two policies to keep
+		// in agreement, one of them writing a fingerprintable status.
+		InsecureSkipVerify: true,
+	}
 	if enableCompression {
 		opts.CompressionMode = websocket.CompressionContextTakeover
 	}
-	if len(originPatterns) == 0 {
-		// Loopback-only: skip origin checks. The token itself is the
-		// gate, and there's no LAN-attached browser-origin to validate.
-		opts.InsecureSkipVerify = true
-	} else {
-		opts.OriginPatterns = originPatterns
-	}
 	return websocket.Accept(w, r, opts)
 }
+
+// errOriginNotServed and errCredentialRefused name the two handshake
+// refusals for the caller's own logging. Neither reaches the wire: both
+// answer the same 404.
+var (
+	errOriginNotServed   = errors.New("transport: request origin is not served by this listener")
+	errCredentialRefused = errors.New("transport: request carries no valid credential")
+)
 
 // remoteAddrIsLoopback reports whether the peer's RemoteAddr is a
 // loopback interface. Used at upgrade time to decide whether to allow

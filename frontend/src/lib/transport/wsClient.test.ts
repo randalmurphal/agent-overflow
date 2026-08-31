@@ -176,12 +176,10 @@ describe('WSClient', () => {
   beforeEach(() => {
     MockWebSocket.reset();
     sessionStorage.clear();
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
   });
 
   afterEach(() => {
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -797,13 +795,13 @@ describe('WSClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('rejects bootstrap missing wsUrl/token', async () => {
+  it('rejects bootstrap missing wsUrl', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: 'ws://example/ws' }),
+      json: async () => ({ launchId: 'launch-1' }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -815,7 +813,7 @@ describe('WSClient', () => {
     } catch (err) {
       caught = err;
     }
-    expect((caught as Error).message).toMatch(/missing wsUrl\/token/);
+    expect((caught as Error).message).toMatch(/missing wsUrl/);
     client.close();
     vi.unstubAllGlobals();
   });
@@ -843,26 +841,26 @@ describe('WSClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reads bootstrap from window.__AO_BOOTSTRAP__ without fetching', async () => {
-    const fetchMock = vi.fn(async () => {
-      throw new Error('fetch should not be called');
-    });
+  it('opens the manifest wsUrl verbatim, with no credential in the URL', async () => {
+    // The page's credential is the HttpOnly cookie the manifest fetch
+    // set, and the browser attaches it to a same-origin upgrade by
+    // itself. Anything appended here would be a credential the page
+    // could read — the exact thing this transport no longer has.
+    const wsUrl = `ws://${window.location.host}/ws`;
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({ wsUrl, launchId: 'launch-1', remote: true }),
+    }));
     vi.stubGlobal('fetch', fetchMock);
-    (globalThis as { __AO_BOOTSTRAP__?: { wsUrl: string; token: string; remote?: boolean } }).__AO_BOOTSTRAP__ = {
-      wsUrl: 'ws://injected/',
-      token: 'inj',
-      remote: true,
-    };
 
     try {
       const client = createWSClient({ WebSocketCtor: FakeCtor });
       const p = client.callByID(1, []);
-      await flushMicrotasks();
-      expect(fetchMock).not.toHaveBeenCalled();
-      expect(MockWebSocket.instances).toHaveLength(1);
+      await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
       const ws = MockWebSocket.instances[0]!;
-      expect(ws.url).toContain('ws://injected/');
-      expect(ws.url).toContain('token=inj');
+      expect(ws.url).toBe(wsUrl);
       expect(isViewOnlySession()).toBe(true);
 
       ws.acceptOpen();
@@ -872,7 +870,6 @@ describe('WSClient', () => {
       await expect(p).resolves.toBe('ok');
       client.close();
     } finally {
-      delete (globalThis as { __AO_BOOTSTRAP__?: { wsUrl: string; token: string } }).__AO_BOOTSTRAP__;
       vi.unstubAllGlobals();
     }
   });
@@ -882,7 +879,7 @@ describe('WSClient', () => {
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, token: 'abc123', remote: true }),
+      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, remote: true }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -898,16 +895,17 @@ describe('WSClient', () => {
     }
   });
 
-  it('stashes the URL token and falls back to it once the URL is scrubbed', async () => {
-    // First load carries ?t=; defaultBootstrap must scrub it from the
-    // URL, stash it in sessionStorage, and serve a tokenless "reload"
-    // (second client, scrubbed URL) from the stash.
-    window.history.replaceState(null, '', '/?t=abc123');
+  it('spends the URL ticket once and boots a reload without one', async () => {
+    // First load carries ?t=; the manifest fetch spends it and scrubs
+    // the URL. A reload (second client, scrubbed URL) fetches with no
+    // ticket at all — the cookie the exchange set is the credential from
+    // then on, so nothing script-readable has to survive the scrub.
+    window.history.replaceState(null, '', '/?t=ticket-1');
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
       headers: new Headers({ 'content-type': 'application/json' }),
-      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, token: 'abc123' }),
+      json: async () => ({ wsUrl: `ws://${window.location.host}/ws`, launchId: 'launch-1' }),
     }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -915,51 +913,48 @@ describe('WSClient', () => {
       const first = createWSClient({ WebSocketCtor: FakeCtor });
       void first.callByID(1, []).catch(() => {});
       await flushMicrotasks();
-      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=abc123', expect.anything());
-      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('abc123');
+      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=ticket-1', expect.anything());
       expect(window.location.search).toBe('');
       first.close();
 
       const second = createWSClient({ WebSocketCtor: FakeCtor });
       void second.callByID(1, []).catch(() => {});
       await flushMicrotasks();
-      expect(fetchMock).toHaveBeenLastCalledWith('/bootstrap.json?t=abc123', expect.anything());
+      expect(fetchMock).toHaveBeenLastCalledWith('/bootstrap.json', expect.anything());
       second.close();
     } finally {
-      window.sessionStorage.clear();
       window.history.replaceState(null, '', '/');
       vi.unstubAllGlobals();
     }
   });
 
-  it('marks the post-invalidation refetch as a revalidation', async () => {
-    // An injected (--connect) manifest short-circuits an ordinary fetch,
-    // so the fetcher must be told when the refetch exists to observe a
-    // suspect credential (defaultBootstrap then routes it through the
-    // stub's /bootstrap.json probe). The flag arms on invalidation and
-    // stands down once a fetch resolves.
+  it('refetches the manifest after consecutive pre-open failures', async () => {
+    // The cached manifest is what a reconnect replays, so a backend that
+    // restarted would be retried forever on a credential it no longer
+    // honours. Every BOOTSTRAP_INVALIDATE_AFTER_FAILURES pre-open deaths
+    // the cache is dropped and the next attempt fetches for real, which
+    // is what turns a doomed loop into an observable refusal.
     vi.useFakeTimers();
     try {
-      const calls: Array<boolean | undefined> = [];
+      let fetches = 0;
       const client = createWSClient({
         WebSocketCtor: FakeCtor,
-        bootstrap: async (opts?: { revalidate?: boolean }) => {
-          calls.push(opts?.revalidate);
-          return { wsUrl: 'ws://example/ws', token: 't', remote: true };
+        bootstrap: async () => {
+          fetches += 1;
+          return { wsUrl: 'ws://example/ws', launchId: 'launch-1', remote: true };
         },
       });
       client.subscribe('x', () => {});
       await vi.advanceTimersByTimeAsync(0);
-      expect(calls).toEqual([false]);
+      expect(fetches).toBe(1);
 
       // Two consecutive pre-open deaths trip the cache invalidation; the
-      // refetch that follows must carry the revalidation mark, and the
-      // pre-invalidation attempts must not have fetched at all (cache).
+      // attempts before it reuse the cache and must not fetch again.
       for (let i = 0; i < BOOTSTRAP_INVALIDATE_AFTER_FAILURES; i++) {
         MockWebSocket.instances.at(-1)!.triggerClose();
         await vi.advanceTimersByTimeAsync(RECONNECT_MAX_REMOTE_MS);
       }
-      expect(calls).toEqual([false, true]);
+      expect(fetches).toBe(2);
       MockWebSocket.instances.at(-1)!.acceptOpen();
       await vi.advanceTimersByTimeAsync(0);
       client.close();
@@ -968,13 +963,11 @@ describe('WSClient', () => {
     }
   });
 
-  it('keeps a stashed token the server refuses', async () => {
-    // Re-presenting a stale token costs the identical 404, so clearing
-    // buys nothing — and it would destroy the one copy that lets a page
-    // reload recover from a refusal that wasn't real (a proxy blip
-    // answering 404 for a token the server still honours).
+  it('surfaces a refusal from a ticketless refetch', async () => {
+    // Mid-session there is no ticket to present: the request carries the
+    // cookie alone, and a server that no longer recognises it answers
+    // the same unfingerprintable 404 it gives an unknown path.
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    window.sessionStorage.setItem('ao:bootstrap-token', 'stale');
     const fetchMock = vi.fn(async () => ({ ok: false, status: 404 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -987,11 +980,9 @@ describe('WSClient', () => {
         caught = err;
       }
       expect((caught as Error).message).toMatch(/HTTP 404/);
-      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json?t=stale', expect.anything());
-      expect(window.sessionStorage.getItem('ao:bootstrap-token')).toBe('stale');
+      expect(fetchMock).toHaveBeenCalledWith('/bootstrap.json', expect.anything());
       client.close();
     } finally {
-      window.sessionStorage.clear();
       vi.unstubAllGlobals();
     }
   });

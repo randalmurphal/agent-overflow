@@ -109,7 +109,7 @@ test('a forked code-review skill is one skill card and nothing it does is the ma
   });
 
   const threadId = await seedAgentThread(harness, 'fork-app', 'Forked skill');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Forked skill').click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'review the change', null);
@@ -239,7 +239,7 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   });
 
   const threadId = await seedAgentThread(harness, 'depth2-app', 'Nested background');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Nested background').click();
   const mockId = await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'review deeply', null);

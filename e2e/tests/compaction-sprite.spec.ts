@@ -60,7 +60,7 @@ test('compaction shows the default compaction sprite with field settings', async
   await harness.rpc('SendMessage', threadId, 'go compact', null);
   await harness.waitForEvent('provider:compacting');
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Compact turn').click();
   await expect(page.getByText('Compacting')).toBeVisible();
   const sprite = page.locator('[data-testid="activity-rail-sprite"] .working-sprite');

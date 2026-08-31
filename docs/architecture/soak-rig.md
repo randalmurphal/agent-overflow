@@ -141,7 +141,8 @@ its own default.
 
 Same isolation, different shell. `--harness` prints an `__AO_HARNESS__`
 line and expects a browser to be pointed at it; the launcher can only
-parse the ordinary `__AO_BOOTSTRAP__` `{port, token, clientId}` contract
+parse the ordinary `__AO_BOOTSTRAP__` `{port, token, pageUrl, clientId}`
+contract
 (`internal/wsllauncher`). `--soak` is that contract plus harness
 isolation: the launcher-owned wire name for the launcher-shell
 instance, historical and never typed by a user. What makes it a SOAK is

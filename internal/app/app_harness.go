@@ -65,7 +65,10 @@ func (h *harnessHost) Shutdown(ctx context.Context) error { return h.app.Shutdow
 
 func (h *harnessHost) ExpectedOrigin() string {
 	if server := h.app.transportServer.Load(); server != nil {
-		return server.AppURL()
+		// Origin, not AppURL: this answers "which origin is ours" and
+		// nothing here navigates, so minting a page ticket per check
+		// would spend one for nothing.
+		return server.Origin()
 	}
 	return ""
 }

@@ -195,7 +195,7 @@ async function main(options: Options): Promise<number> {
     harness = await launchHarness({ dataDir: flowDataDir, binary: options.binary, mockProvider: options.mockProvider });
     context = await browser.newContext();
     const page = await context.newPage();
-    await page.goto(harness.url, { waitUntil: 'domcontentloaded' });
+    await harness.open(page, { waitUntil: 'domcontentloaded' });
     const expectedOrigin = new URL(harness.url).origin;
     pageOrigin = new URL(page.url()).origin;
     if (pageOrigin !== expectedOrigin) throw new Error(`owned flow page navigated to ${pageOrigin}, expected ${expectedOrigin}`);

@@ -28,9 +28,12 @@ type Settings struct {
 	// own Addr.
 	URL string `json:"url"`
 
-	// Token is the current ephemeral auth token. Surfaced for
-	// debugging / advanced wiring; the user shouldn't normally need
-	// to touch it directly.
+	// Token is this launch's session credential — what a client that is
+	// not a browser presents (`agent-overflow --connect
+	// ws://host:port/ws?token=<value>`, the `ao-harness` CLI). Browsers
+	// never use it: the URL above carries a one-time page ticket instead
+	// and the browser ends up holding a cookie. Surfaced for debugging /
+	// advanced wiring; the user shouldn't normally need to touch it.
 	Token string `json:"token"`
 
 	// Insecure is true when the URL above traverses an untrusted
@@ -53,14 +56,22 @@ func BindHost(bindAll bool) string {
 	return "127.0.0.1"
 }
 
-// OriginPatterns returns the WS-upgrade origin allow-list for the
-// given LAN toggle and discovered LAN IP. On loopback the list is
-// nil — the upgrader treats nil as "InsecureSkipVerify", appropriate
-// for 127.0.0.1 where there's no LAN-attached browser origin to
-// validate. On LAN bind the list explicitly enumerates loopback
-// variants plus the discovered LAN IP so a browser tab from any
-// other origin (a malicious LAN peer, a leaked-token URL pasted into
-// a foreign page) can't open a WS to this server.
+// OriginPatterns returns the extra origins the WS upgrade accepts
+// beyond the one it is addressed to, for the given LAN toggle and
+// discovered LAN IP.
+//
+// On loopback the list is nil, which is not "accept anything": the
+// upgrade always accepts a request carrying no Origin (every client
+// that is not a browser) and a request whose Origin is this listener's
+// own authority, and refuses every other Origin. That refusal is what
+// keeps a page served by some other port on this machine from opening
+// an authenticated socket with the cookie the browser would attach for
+// it — cookies are scoped by host, not by port. See
+// transport.OriginAllowed.
+//
+// On LAN bind the list adds the spellings a shared URL can legitimately
+// be opened under: the loopback aliases and the discovered LAN IP. A
+// browser tab from any other origin still cannot open a socket here.
 func OriginPatterns(bindAll bool, lanIP string) []string {
 	if !bindAll {
 		return nil
@@ -78,6 +89,12 @@ func OriginPatterns(bindAll bool, lanIP string) []string {
 // AppURLWithLAN renders the URL using a caller-supplied LAN IP so
 // the discovery function isn't called twice in a Set flow (once for
 // the allow-list, once for the URL).
+//
+// Both branches carry a freshly minted one-time page ticket: the
+// loopback one from Server.AppURL, the LAN one minted here because only
+// this function knows the interface address to name. Each render of the
+// share panel therefore hands out a URL that opens one browser session
+// — a second device needs the panel read again.
 func AppURLWithLAN(srv *transport.Server, bindAll bool, lanIP string) string {
 	loopback := srv.AppURL()
 	if !bindAll {
@@ -95,7 +112,11 @@ func AppURLWithLAN(srv *transport.Server, bindAll bool, lanIP string) string {
 		// discovery failed via the BindAll=true flag.
 		return loopback
 	}
-	return fmt.Sprintf("http://%s:%s/?t=%s", lanIP, port, srv.Token())
+	ticket, err := srv.MintPageTicket()
+	if err != nil {
+		return loopback
+	}
+	return fmt.Sprintf("http://%s:%s/?%s=%s", lanIP, port, transport.PageTicketParam, ticket)
 }
 
 // FromServer builds a Settings record for the given bind-all flag

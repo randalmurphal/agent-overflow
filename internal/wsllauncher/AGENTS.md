@@ -19,7 +19,9 @@ Two callers:
 - `distro.go` is the `wsl.exe -l -v` output parser. UTF-16 LE BOM-aware,
   whitespace-tolerant (column widths shift across Windows versions).
 - `launcher.go` is the public surface: `Distro`, `Bootstrap`, `Launcher`,
-  `LaunchOptions`, plus the `readBootstrapLine` helper. Cross-platform
+  `LaunchOptions`, the two-binary contract constants
+  (`ResetTransportPortFlag`, `PageURLPath`), plus the `readBootstrapLine`
+  helper. Cross-platform
   in shape; Linux/macOS callers get errors from `Launch` /
   `InstallPayload` so the package compiles for unit tests on those hosts.
   Also owns `buildLaunchArgs` (the wsl.exe argv builder) so the argument
@@ -99,6 +101,26 @@ Two callers:
   - The WSL-side backend itself. That's the root `main.go`'s headless
     mode (`--print-url-fd`).
 
+## The page URL comes from the backend, once per navigation
+
+`Bootstrap.PageURL` is the fully assembled URL the WebView2 navigates to.
+The launcher never builds one: the URL carries a **one-time page ticket**
+the browser exchanges for its session cookie, and only the backend can
+mint one. A bootstrap line without `pageUrl` is refused at the parse
+boundary rather than opening an empty window.
+
+The ticket is spent by the load it was minted for, so the reload
+keybinding cannot reuse the boot URL. It asks the backend's `PageURLPath`
+(`/pageurl`) route for a fresh one, presenting `Bootstrap.Token` as a
+bearer header. That path is restated here rather than imported so this
+package stays linkable without the transport server; a drift-guard test
+compares it to `transport.PageURLPath`. If the request fails the launcher
+logs and reuses the launch URL — a spent ticket at worst, never a wedge.
+
+`Bootstrap.Token` is the session credential for the launcher's OWN
+requests (the connectivity probe, the notification socket). It is never
+put on a page URL.
+
 ## WSL2 localhost forwarding
 
 WSL2 forwards `127.0.0.1:<port>` from inside the distro to the Windows
@@ -119,7 +141,8 @@ package because both binaries need the same spelling.
 
 `cmd/agent-overflow-windows/main.go::launchAndProbe` runs a
 deadline-bounded HTTP probe against `http://localhost:<port>/bootstrap.json`
-after `Launch` returns, and drives that single retry. If the retry also
+after `Launch` returns, presenting `Bootstrap.Token` as an
+`Authorization: Bearer` header, and drives that single retry. If the retry also
 fails, it routes the WebView to a `/connectivity-error` page that names
 the actionable mitigation explicitly:
 

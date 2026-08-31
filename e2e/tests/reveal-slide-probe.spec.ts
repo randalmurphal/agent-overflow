@@ -236,7 +236,7 @@ async function runProbe(
     // 800px the body column came out 264px wide — ~9 lines — which slides
     // twice as often as the incident did.)
     const page = await browser.newPage({ viewport: { width: 1100, height: 1100 } });
-    await openProbeThread(page, harness.url, `Reveal slide ${engine} ${mode}`);
+    await openProbeThread(page, harness, `Reveal slide ${engine} ${mode}`);
 
     // Per-frame sampler on the live think body. The rect and clientHeight
     // reads force layout, but the page is animating every frame anyway and

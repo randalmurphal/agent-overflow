@@ -83,7 +83,7 @@ test('a top-level background completion writes a bell and a nested one does not'
   });
 
   const threadId = await seedAgentThread(harness, 'notify-app', 'Nested notify');
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText('Nested notify').click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'run both', null);

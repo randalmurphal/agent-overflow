@@ -19,7 +19,7 @@ test('first successful send auto-pins a new in-app thread on the front burner', 
     projects: [{ name: 'auto-pin-app', repo: {} }],
   });
 
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByTestId('project-item-new-thread').first().click();
   await page.getByLabel('Message Input').fill('Start this thread');
   await page.getByTestId('composer-send').click();
@@ -59,7 +59,7 @@ test('front and back blocks move through the context menu and pin right-click', 
   await harness.rpc('PinThread', backId);
   await harness.rpc('SetThreadPinGroup', backId, 1);
 
-  await page.goto(harness.url);
+  await harness.open(page);
   const rows = page.getByTestId('thread-row');
   await expect(rows).toHaveCount(2);
   expect(await page.getByTestId('thread-row-title').allTextContents()).toEqual([

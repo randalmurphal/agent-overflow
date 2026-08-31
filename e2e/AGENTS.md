@@ -48,6 +48,18 @@ Not everything in `tests/` runs in the gate, on purpose. A
 set: they dump per-frame samples for offline analysis rather than
 asserting, so they are evidence, not a gate.
 
+## Process identity is per-platform, and every field is load-bearing
+
+`src/harness-process.ts` builds `ProcessIdentity` / `ProcessRow` three
+ways (Linux `/proc`, darwin `ps`, Windows CIM). A consumer that needs a
+field the platform branch forgot does not fail — it reads `undefined` and
+degrades. `captureProcessGroupMemberProof` returns `undefined` for an
+identity with no `groupId`, so the Linux branch omitting `groupId`, and
+the Linux row builder omitting `executable`, made every process-GROUP
+reaping assertion unreachable on the one platform that runs the gate here
+(fixed 2026-08-31). When adding a field, add it in every branch, and
+prefer an assertion that fails on the missing value over one that skips.
+
 ## Writing specs
 
 - **Never sleep.** Await `harness.waitForEvent('harness:mock', ...)`,
@@ -88,6 +100,13 @@ asserting, so they are evidence, not a gate.
   no-op worker fixture identity, and each cold-activation case declares
   its own, so an activation for deleted test state cannot redirect or
   satisfy a later spec.
+- **Navigate with `harness.open(page)`, never `page.goto(harness.url)`.**
+  A page URL carries a one-time ticket the first load exchanges for an
+  HttpOnly session cookie, and each Playwright context is a fresh cookie
+  jar, so every navigation needs a ticket of its own. `open` asks the
+  running instance for one (`GET /pageurl`, session token in an
+  `Authorization` header). `harness.url` is the boot URL's identity —
+  origin, page marker, client id — not something to navigate to twice.
 - Provider homes are seeded by writing files under
   `harness.bootstrap.homeDir`. The harness pins both `$HOME` and
   `App.credentialHomeOverride` at `<dataRoot>/home`, so a spec cannot

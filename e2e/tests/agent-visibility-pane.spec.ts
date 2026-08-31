@@ -97,7 +97,7 @@ async function runSurveyTurn(
 ): Promise<string> {
   await harness.rpc('HarnessSetScenario', { scenario: surveyScenario() });
   const threadId = await seedAgentThread(harness, projectName, title);
-  await page.goto(harness.url);
+  await harness.open(page);
   await page.getByText(title).click();
   await startMock(harness, threadId);
   await harness.rpc('SendMessage', threadId, 'survey the parser', null);

@@ -7,7 +7,6 @@ import WorkflowJobNotes from './WorkflowJobNotes.svelte';
 describe('WorkflowJobNotes', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
     resetBindingMocks();
     setBindingMock('WorkflowGetJobNotes', async () => 'existing');
@@ -16,7 +15,6 @@ describe('WorkflowJobNotes', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    delete (globalThis as { __AO_BOOTSTRAP__?: unknown }).__AO_BOOTSTRAP__;
     __resetRunModeForTest();
     resetBindingMocks();
   });

@@ -117,7 +117,7 @@ every provider spawn inherits its env), the transport comes up, and
 stdout carries exactly one parseable line:
 
 ```
-__AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?token=...","port":PORT,"token":"...",
+__AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?t=TICKET&cid=...","port":PORT,"token":"...",
                  "dataRoot":"...","dataDir":"...","homeDir":"...","mockProvider":"...",
                  "pid":123,"version":"...","clientId":"...",
                  "startupError":"only on failed boot"}
@@ -126,6 +126,22 @@ __AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?token=...","port":PORT,"token":".
 `url` goes straight into a browser / `page.goto()` (it already carries
 `&cid=`), and `token` opens the RPC WebSocket. All subsequent logging goes
 to stderr.
+
+**`url` opens ONE browser session.** The `?t=` on it is a one-time page
+ticket; the load that spends it receives an HttpOnly cookie that carries
+every later request from that browser, including the WebSocket upgrade. A
+caller that navigates again — a reload, or a second cookie-less browser
+context, which is what every Playwright test gets — asks the running
+instance for a fresh URL instead of reusing this string:
+
+```
+GET http://127.0.0.1:PORT/pageurl      Authorization: Bearer <token>
+```
+
+`ao-harness open`/`info`/`attach`/`up` and the e2e rig's
+`HarnessApp.open()` already do this; `harnessclient.Bootstrap.PageURL` is
+the Go helper. Reusing a spent ticket is not a wedge — the page simply
+gets the transport's ordinary refusal — but it is a blank window.
 
 `clientId` is the instance's durable UI-state identity, resolved under its
 OWN `--data-dir` and therefore never the developer's. It is reported

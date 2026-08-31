@@ -31,17 +31,20 @@ func runOpen(e *env, args []string) error {
 		}
 		return err
 	}
+	// A fresh ticket per invocation: this URL exists to be opened, and
+	// the one recorded at boot may already have been spent.
+	pageURL := pageURLForTarget(context.Background(), e, bs)
 	if e.jsonOutput() {
-		if err := e.writeJSON(map[string]any{"id": t.ID, "url": bs.URL}); err != nil {
+		if err := e.writeJSON(map[string]any{"id": t.ID, "url": pageURL}); err != nil {
 			return err
 		}
 	} else {
-		e.printf("%s\n", bs.URL)
+		e.printf("%s\n", pageURL)
 	}
 	if !*browser {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return externalurl.Open(ctx, bs.URL)
+	return externalurl.Open(ctx, pageURL)
 }

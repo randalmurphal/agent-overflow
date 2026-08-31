@@ -1,6 +1,8 @@
 import { type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 
+import type { Page } from '@playwright/test';
+
 import {
   type ProcessIdentity,
   type ProcessGroupMemberProof,
@@ -34,7 +36,12 @@ interface PendingRpc {
 /** A live harness-mode backend plus one WS connection to it. */
 export class HarnessApp {
   readonly bootstrap: HarnessBootstrap;
-  /** SPA URL including the auth token — pass to page.goto(). */
+  /**
+   * The page URL the backend printed at boot. Its one-time ticket is
+   * spent by the first page that loads it, so this is the URL's identity
+   * (origin, page marker, client id) rather than something to navigate
+   * to twice: call `open` / `pageURL` to navigate.
+   */
   readonly url: string;
 
   private child: ChildProcess;
@@ -101,6 +108,38 @@ export class HarnessApp {
         once: true,
       });
     });
+  }
+
+  /**
+   * Returns a page URL carrying a freshly minted one-time ticket, which
+   * the page exchanges for its HttpOnly session cookie on first contact.
+   *
+   * Every navigation needs one of its own: a Playwright context is a
+   * fresh cookie jar, so a URL whose ticket another context already
+   * spent would load a page with no credential to present.
+   */
+  async pageURL(): Promise<string> {
+    const resp = await fetch(`http://127.0.0.1:${this.bootstrap.port}/pageurl`, {
+      // The session token is not a page credential, so it travels as a
+      // header — the query slot on the transport's routes belongs to the
+      // page ticket.
+      headers: { authorization: `Bearer ${this.bootstrap.token}` },
+    });
+    if (!resp.ok) {
+      throw new Error(`harness page url request failed: HTTP ${resp.status}`);
+    }
+    const url = (await resp.text()).trim();
+    if (url === '') throw new Error('harness page url response was empty');
+    return url;
+  }
+
+  /**
+   * Navigates a page to this instance with a ticket of its own. The one
+   * navigation helper the suite uses, so no test can reach the app
+   * through a spent ticket.
+   */
+  async open(page: Page, options?: Parameters<Page['goto']>[1]): Promise<void> {
+    await page.goto(await this.pageURL(), options);
   }
 
   async startWatchdog(memoryLimitBytes: number): Promise<void> {
