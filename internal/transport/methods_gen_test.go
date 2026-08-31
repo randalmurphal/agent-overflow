@@ -110,6 +110,16 @@ var wireSafeMethods = map[string]bool{
 
 	// Timeline reads (item slice / turn / search).
 	"GetThreadItem": true,
+	// The recovery route out of the wire projection: one item's
+	// unprojected meta / payload meta / preview spans. Strictly narrower
+	// than GetThreadItem, which returns the same row plus every other
+	// column, and thread-scoped by the same argument so an item id is
+	// not a key to arbitrary history. It has to sit on the same side of
+	// this line as the reads it recovers from — a remote client is
+	// exactly the client whose window was projected, and an elision
+	// whose route it cannot call is a permanent loss rather than a
+	// deferred fetch (docs/specs/remote-access.md §14).
+	"GetThreadItemProjectionSource": true,
 	// Same read surface as GetThreadItem: pure SQLite history reads
 	// backing the nav rail (whole-thread tick list; hover preview for
 	// an unloaded turn).

@@ -278,6 +278,22 @@ export interface ToolInlineDiffFile {
   previewPatch?: string;
   previewLineCount?: number;
   previewTruncated?: boolean;
+  /**
+   * The wire projection removed this file's `previewPatch` — either the
+   * client did not ask for inline previews, or the row was over the
+   * preview byte budget (internal/itemwire).
+   *
+   * A render-time signal, not a content state: the stored payload is
+   * complete, the file's chrome (path, counts, kind) is untouched, and
+   * expanding the file fetches the patch through
+   * `GetThreadItemProjectionSource`. Distinct from `previewTruncated`,
+   * which means the STORED patch is a prefix of a larger diff.
+   *
+   * Never true and `previewPatch` set at the same time: the projection
+   * drops the field and sets the marker together, so a row cannot be
+   * elided without saying so or say so without being elided.
+   */
+  previewElided?: boolean;
 }
 
 export interface ToolInlineDiffMeta {

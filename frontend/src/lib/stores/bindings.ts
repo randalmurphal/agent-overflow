@@ -330,6 +330,11 @@ export {
   ListItemsAfterCursor,
   ListItemsAfterTurn,
   ListSubagentDescendants,
+  // Recovery route out of the wire projection: returns the complete
+  // stored `meta` / `payloadMeta` / `payloadPreviewSpans` for one item,
+  // for a consumer that reached a projection marker and now needs the
+  // value behind it. Fetched on expand, never on arrival.
+  GetThreadItemProjectionSource,
   ListThreadProposedPlans,
   ListProposedPlanComments,
   CountRunningBackgroundTasks,
@@ -768,6 +773,17 @@ export interface SyncThreadWindowInput {
   /** -1 when no cached window backs the stamp. */
   haveEpoch: number;
   haveRev: number;
+  /**
+   * The client's stated projection preference — `wantsInlinePreviews()`
+   * in threadPaneShared, never a literal.
+   *
+   * Required here although the generated request class types it optional
+   * (Go's `omitempty`): the positional item-window bindings make the
+   * preference impossible to omit, and the one path that passes a request
+   * object should be no easier to under-specify. Omitting it would ask
+   * for a different projection than the rest of the window.
+   */
+  inlinePreviews: boolean;
 }
 
 export interface SyncThreadWindowResult {

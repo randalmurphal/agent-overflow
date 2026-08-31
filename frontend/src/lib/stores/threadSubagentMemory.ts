@@ -15,6 +15,7 @@ import type {
 import { createSubagentFoldRegistry } from '../utils/subagentFold';
 import { ListSubagentDescendants } from './bindings';
 import { itemsForThread, mergeMissingItemsById } from './threadItems';
+import { wantsInlinePreviews } from './threadPaneShared';
 import { addToast } from './toast.svelte';
 
 export interface ThreadSubagentMemoryOptions {
@@ -398,6 +399,7 @@ export function createThreadSubagentMemory(
       const children = (await ListSubagentDescendants(
         currentThread.id,
         rootItemID,
+        wantsInlinePreviews(),
       )) as Item[];
       if (gen !== options.getSwitchGeneration()) return false;
       const incoming = itemsForThread(children ?? [], currentThread.id);

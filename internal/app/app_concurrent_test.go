@@ -178,7 +178,7 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 					return
 				default:
 				}
-				items, err := app.ListItems(thread.ID)
+				items, err := app.ListItems(thread.ID, true)
 				if err != nil {
 					t.Errorf("ListItems: %v", err)
 					return

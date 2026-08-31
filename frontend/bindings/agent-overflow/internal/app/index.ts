@@ -45,6 +45,7 @@ export {
     ImportUpdateStatus,
     ImportableSession,
     InterruptAndRevertResult,
+    ItemProjectionSource,
     LiveStateActiveTurn,
     LiveStateTodo,
     LiveStateTodoStep,
