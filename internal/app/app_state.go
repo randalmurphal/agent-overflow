@@ -102,8 +102,12 @@ type appSessionImportState struct {
 // MCP listener is cheap and per-session-tokened; Manager owns the lazily
 // launched Chrome process and workspace BrowserContexts.
 type appBrowserState struct {
-	manager            *appbrowser.Manager
-	mcp                *appbrowser.MCPServer
+	manager *appbrowser.Manager
+	mcp     *appbrowser.MCPServer
+	// cdpRelay is the backend end of the Windows launcher's CDP tunnel,
+	// handed in by the executable before startup (bootstrap.go) and non-nil
+	// only on the WSL deployment. Its presence selects the hosted engine.
+	cdpRelay           appbrowser.CDPRelay
 	applyMu            sync.Mutex
 	applyWG            sync.WaitGroup
 	settingsGeneration atomic.Uint64

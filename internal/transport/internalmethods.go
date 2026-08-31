@@ -670,6 +670,17 @@ var LocalOnlyMethods = map[string]bool{
 	// and letting one command GC pauses into it would be a jank lever.
 	"RequestWebviewMemoryTrim": true,
 
+	// 9d. The Windows launcher's answer to a browser:host directive.
+	// BrowserHostReport settles the pane host's state for real browser
+	// windows on this desktop: `created` carries the CDP target id a
+	// pending page creation is waiting on, and `closed` / `process-failed`
+	// retire a live page handle. Same category-9 story as its two siblings
+	// — the only legitimate caller is the launcher process on this host,
+	// loopback by construction over the WSL localhost relay. A LAN peer
+	// forging `created` would point a page at an arbitrary CDP target;
+	// forging `closed` would tear a user's pane down under them.
+	"BrowserHostReport": true,
+
 	// 10. Session import. Every method here reads the user's provider homes
 	// (~/.claude, ~/.codex) off the local filesystem and hands back what it
 	// finds: absolute session-file paths, workspace paths, and the prompt text

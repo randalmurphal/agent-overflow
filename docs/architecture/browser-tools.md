@@ -171,9 +171,18 @@ CLI's normal configuration.
 
 ## Platform behavior
 
-Native macOS and Linux use managed Chrome for Testing. WSL uses the Linux
-artifact. Every platform launches it headless and, when explicitly requested,
-displays it through the same companion protocol. The companion RPCs and
+Native macOS and Linux use managed Chrome for Testing, launched headless and,
+when explicitly requested, displayed through the companion protocol.
+
+The Windows/WSL deployment uses the hosted engine instead
+(`docs/specs/embedded-browser.md`): a page is a WebView2 controller in the
+Windows launcher's process, and the backend drives it over CDP through the
+launcher's relay tunnel. The tool surface is identical, because the operations
+are the same CDP calls. What differs is the user-visible half — a real browser
+view positioned by the launcher rather than a streamed image — so the
+screencast companion described above does not apply on that leg.
+
+The companion RPCs and
 URL/title state events are
 loopback-only because they expose local files and authenticated browser
 content. Pixels return only to the connection holding their subscription; a

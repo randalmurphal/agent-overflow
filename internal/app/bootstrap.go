@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/windowgeom"
 )
 
@@ -34,6 +35,16 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 
 // SetDataDirOverride installs the executable's --data-dir boot input.
 func SetDataDirOverride(a *App, dataDir string) { a.dataDirOverride = dataDir }
+
+// SetBrowserCDPRelay installs the backend end of the Windows launcher's CDP
+// tunnel, which the executable creates before the transport so the same
+// object can serve the /browser-cdp route.
+//
+// Non-nil only on the WSL deployment, and that is the whole engine
+// selection: the browser Manager takes the hosted (embedded-pane) engine
+// exactly when a relay exists, so "which engine" and "is there a launcher
+// to host windows" can never disagree. Must be called before Start.
+func SetBrowserCDPRelay(a *App, relay appbrowser.CDPRelay) { a.browser.cdpRelay = relay }
 
 // EnsurePrivateDir applies the same ownership and mode rules used by App
 // startup to a bootstrap-owned data directory.

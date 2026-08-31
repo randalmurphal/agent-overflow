@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/chromium"
+	"agent-overflow/internal/webview2host"
 
 	"github.com/google/uuid"
 )
@@ -80,6 +81,31 @@ type ManagerOptions struct {
 	// keychain. Production leaves this false and stores the encryption key in
 	// the OS credential store.
 	FileStateKey bool
+
+	// PaneHost, when set, selects the hosted engine instead of managed
+	// Chrome: pages become WebView2 controllers in the Windows launcher,
+	// driven over CDP through the relay tunnel (hosted_engine.go). Set on
+	// the Windows/WSL deployment, where the launcher is what owns a window
+	// a browser view can live in; nil everywhere else.
+	PaneHost *PaneHostOptions
+}
+
+// PaneHostOptions is what the hosted engine needs from the process around
+// it. Both halves are supplied by internal/app: one emits on
+// eventchan.BrowserHost, the other is the backend end of the launcher's
+// CDP tunnel.
+type PaneHostOptions struct {
+	// Directive emits one browser:host frame to the launcher.
+	Directive func(webview2host.Directive)
+	// Relay reaches the pane environment's CDP endpoint through the tunnel.
+	Relay CDPRelay
+}
+
+// CDPRelay is the Manager's view of internal/cdprelay.Endpoint. Narrow on
+// purpose: the browser package must not learn what a tunnel, a listener or
+// a WebSocket is.
+type CDPRelay interface {
+	BrowserWebSocketURL(ctx context.Context) (string, error)
 }
 
 type workspaceScope struct {
@@ -153,14 +179,43 @@ func NewManager(installer *chromium.Installer, configDir string, config Config, 
 		sessions:      make(map[string]SessionInfo),
 		artifactRoot:  filepath.Join(configDir, "browser-artifacts"),
 	}
-	m.engine = newCDPEngine(installer, engineEvents{
+	events := engineEvents{
 		PopupOpened:      m.adoptPopup,
 		PageClosed:       m.removeClosedPage,
 		PageInfoChanged:  m.updatePageInfo,
 		DownloadStarted:  m.downloadStarted,
 		DownloadProgress: m.downloadProgress,
-	})
+	}
+	if opts.PaneHost != nil {
+		m.engine = newHostedEngine(opts.PaneHost.Relay, opts.PaneHost.Directive, events)
+	} else {
+		m.engine = newCDPEngine(installer, events)
+	}
 	return m
+}
+
+// ReportPaneHost routes one launcher report (created / create-failed /
+// closed / process-failed) to the hosted engine. The App's
+// BrowserHostReport binding is the only caller: the report arrives over
+// the notification bridge, and the Manager is the one object that knows
+// which engine is live.
+//
+// No policy crosses here. The engine settles its own create waiter and
+// reports a closed page back through engineEvents, where the Manager
+// applies the same registry rules a Chrome target destruction would.
+func (m *Manager) ReportPaneHost(pageID string, kind webview2host.ReportKind, detail string) error {
+	if err := webview2host.ValidatePageID(pageID); err != nil {
+		return fmt.Errorf("browser: %w", err)
+	}
+	if !webview2host.ValidKind(kind) {
+		return fmt.Errorf("browser: unknown pane host report kind %q", kind)
+	}
+	host, ok := m.engine.(*hostedEngine)
+	if !ok {
+		return errors.New("browser: this deployment has no pane host")
+	}
+	host.Report(pageID, kind, webview2host.TruncateDetail(detail))
+	return nil
 }
 
 func (m *Manager) SetEventSink(sink func(CompanionEvent)) {
@@ -444,7 +499,7 @@ func (m *Manager) createScope(workspace string) (*workspaceScope, error) {
 	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create download directory: %w", err)
 	}
-	profile, err := m.engine.NewProfile(context.Background(), profileOptions{Workspace: workspace, DownloadDir: downloadDir, Cookies: state.Cookies})
+	profile, err := m.engine.NewProfile(context.Background(), profileOptions{Workspace: workspace, DownloadDir: downloadDir, Cookies: state.Cookies, Ephemeral: !persist})
 	if err != nil {
 		return nil, err
 	}

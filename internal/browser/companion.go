@@ -299,6 +299,38 @@ func (m *Manager) syncThreadStream(threadID string) {
 	if width > 0 && active != nil {
 		active.startStream(m, width, height)
 	}
+	m.syncPanePresentation(pages, active, visible)
+}
+
+// syncPanePresentation drives an engine whose pages are real windows.
+//
+// This is the same decision the screencast selection above makes — WHICH
+// of a thread's pages is presented, and whether the pane is showing at all
+// — expressed to an engine that answers it by moving a window instead of
+// by starting a frame stream. The decision itself stays here, in the
+// Manager: the engine is told the outcome, never the rule.
+//
+// Managed Chrome has no window and no paneHost, so this is a type
+// assertion that fails and costs nothing on every other deployment.
+//
+// Where the pane SITS is not decided here. Bounds come from the frontend's
+// host rect, which reaches paneHost.SetPageBounds through its own binding;
+// a controller with no bounds yet is shown at whatever the launcher last
+// positioned it to.
+func (m *Manager) syncPanePresentation(pages []*managedPage, active *managedPage, visible bool) {
+	host, ok := m.engine.(paneHost)
+	if !ok {
+		return
+	}
+	for _, p := range pages {
+		if p == active && visible {
+			continue
+		}
+		host.HidePage(p.driver.Handle())
+	}
+	if visible && active != nil {
+		host.ShowPage(active.driver.Handle())
+	}
 }
 
 func (p *managedPage) startStream(m *Manager, width, height int) {

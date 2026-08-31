@@ -7,8 +7,9 @@ walkthroughs live in
 
 ## What this package owns
 
-The HTTP listener (embedded SPA, `/bootstrap.json`, the `/ws` upgrade, and
-`POST /rpc` for the `ao` CLI), the JSON wire frame, token authentication, the
+The HTTP listener (embedded SPA, `/bootstrap.json`, the `/ws` upgrade,
+`POST /rpc` for the `ao` CLI, and `/browser-cdp` where a pane host exists), the
+JSON wire frame, token authentication, the
 per-connection authorization policy, reflection-based RPC dispatch, and a
 per-channel bounded ring for event replay on reconnect. Method IDs are FNV-1a
 32-bit of `<package>.<typeName>.<methodName>`, matching Wails'
@@ -63,6 +64,25 @@ readiness gate stays 503 and the startup-failure page stays 500, and neither may
 become a 404, or a client that is merely early gets told its credential is dead.
 See `frontend/src/lib/transport/bootstrap.ts` (`BootstrapRejectedError`) and
 `wsClient.ts` (`enterCredentialDead`).
+
+## The CDP tunnel route
+
+`/browser-cdp` (`webview2host.CDPTunnelPath`) is the third credentialled entry
+point: the Windows launcher dials it to carry the embedded browser pane's CDP
+traffic into the WSL backend. It is registered ONLY when `Config.CDPTunnel` is
+set, which the executable does only on the WSL deployment, so on every other
+build the path does not exist.
+
+Same credential and same locality rules as `/ws`, and deliberately no wider:
+`loopbackHostGuard` on the Host header, the launch token through `upgrade`, and
+`remoteAddrIsLoopback` on the peer, all answering 404. The socket is handed
+whole to `CDPTunnelEndpoint.ServeCDPTunnel` — a byte-stream multiplexer, not an
+RPC surface — so no method table, replay ring, or event policy applies to it.
+This package does not speak the frame protocol; the interface is one method so
+that `internal/cdprelay` owns the codec and this package owns only who may
+reach it. A LAN peer that could open this route would be driving a real browser
+window on the user's desktop, which is why none of the three checks is
+optional.
 
 ## Origin allow-list and peer locality
 

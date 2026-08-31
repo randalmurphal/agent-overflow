@@ -1,6 +1,8 @@
 # internal/browser/
 
-Built-in browser MCP backed by one lazily launched managed Chrome process.
+Built-in browser MCP over one engine behind the `driver.go` seam: managed
+headless Chrome everywhere, and launcher-hosted WebView2 controllers on the
+Windows/WSL deployment.
 
 ## Ownership and isolation
 
@@ -10,9 +12,9 @@ Built-in browser MCP backed by one lazily launched managed Chrome process.
 - An ENGINE is reached only through the seam in `driver.go`: `browserEngine`
   (the process and its profile factory), `engineProfile` (one workspace's
   isolated site data), and `pageDriver` (every per-page tool operation).
-  `cdp_*.go` is the managed-Chrome implementation of those three; a second
-  engine (spec `docs/specs/embedded-browser.md` §6) implements them and nothing
-  else.
+  `cdp_*.go` is the managed-Chrome implementation of those three and
+  `hosted_engine.go` is the launcher-hosted one; an engine implements them and
+  nothing else (spec `docs/specs/embedded-browser.md` §6).
 - `Manager` owns POLICY and never engine mechanics: `Access` checks, the page
   registry and its per-thread ownership, labels, session/visibility state, every
   cap and bound, artifact quotas, the AO-managed per-tab clipboard, and the MCP
@@ -29,6 +31,49 @@ Built-in browser MCP backed by one lazily launched managed Chrome process.
 - Chrome is always headless. The user-visible surface is the calling thread's
   companion pane, driven from the exact same CDP target as the MCP tools; do
   not reintroduce an external Chrome window or a separate webview session.
+
+## The hosted engine (Windows/WSL)
+
+`hosted_engine.go` is the second implementation of the same three interfaces.
+Page OPERATIONS are unchanged — CDP is CDP, so `cdp_page.go` drives a WebView2
+controller exactly as it drives a Chrome tab. Only LIFETIME differs.
+
+- **Selection is a wiring fact, not a platform test.** `ManagerOptions.PaneHost`
+  is non-nil exactly when the executable built a CDP relay, which happens only
+  under WSL (`internal/app/bootstrap.go`, `SetBrowserCDPRelay`). "Which engine"
+  and "is there a launcher to host windows" therefore cannot disagree. Do not
+  add a `runtime.GOOS` branch in this package.
+- **A page id is the handle.** `hostedPage.Handle()` answers the backend's own
+  page id, never the CDP target id: the id is what directives address, what the
+  launcher's reports name, and what `Manager.removeClosedPage` and `engineEvents`
+  key on. The engine keeps a private bidirectional target↔page map and re-keys
+  browser-level CDP events before reporting them, so a target this engine never
+  created is dropped rather than reported under a handle nobody owns.
+- **Every wait is bounded.** `NewPage` emits a `create` directive and waits for
+  the launcher's `created` report (`hostCreateTimeout`), then attaches chromedp
+  through the relay (`hostAttachTimeout`, which also bounds chromedp's own
+  unbounded first attach). A launcher that never answers is an error, never a
+  hang; every failure path after the directive emits a `close`, because the
+  controller may already be real.
+- **`Start` is a deliberate no-op.** The launcher builds its WebView2
+  environment on the first directive and its tunnel dials back only after that,
+  so the CDP connection cannot exist until `NewPage` has emitted a `create`.
+  Blocking in `Start` would wait for a tunnel that `Start` is what unblocks.
+- **Show/hide/bounds/devtools are engine mechanism.** The Manager's visibility
+  path calls them through the `paneHost` interface (`syncPanePresentation`);
+  the Manager still decides WHICH page is presented. Visibility is deduped in
+  the engine because it is recomputed on every selection, focus and page-list
+  change.
+- **Two carve-outs, both deliberate.** `hostedProfile.Cookies` returns nothing:
+  a hosted profile is a real on-disk browser profile that persists its own site
+  data (spec §4), and a browser-wide CDP cookie read would cross the workspace
+  boundary the profile exists to draw. `AttachPage` fails: the launcher does not
+  surface WebView2's `NewWindowRequested`, so no popup is ever reported and a
+  driver for a controller nobody created would be worse than a loud failure.
+- **Unverified CDP support stays on the CDP path.** `Browser.cancelDownload`,
+  `Browser.setDownloadBehavior` and `Browser.setPermission` are not confirmed on
+  WebView2. The existing code path is kept rather than guessed at; if one turns
+  out unsupported, the refusal is bounded by the Manager's own caps.
 
 ## Local files and website capabilities
 
@@ -100,3 +145,8 @@ Built-in browser MCP backed by one lazily launched managed Chrome process.
 - `docs/architecture/browser-tools.md`: shipped product and authority contract.
 - `docs/references/codex-browser-parity.md`: bundled Codex browser API map and validation ownership.
 - `docs/architecture/in-app-browser-spike.md`: measured engine and ownership decision evidence.
+- `docs/specs/embedded-browser.md`: the embedded-pane feature spec.
+- `internal/webview2host/AGENTS.md`: the launcher half the hosted engine's
+  directives and reports cross to.
+- `internal/cdprelay/AGENTS.md`: the tunnel the hosted engine attaches chromedp
+  through.

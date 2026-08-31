@@ -242,6 +242,29 @@ export function BrowserCompanionUnsubscribe(subscriptionID: string): $Cancellabl
 }
 
 /**
+ * BrowserHostReport is how the Windows launcher answers a browser:host
+ * directive. Its name is pinned by webview2host.RPCReport, which both
+ * sides of the wire import.
+ * 
+ * kind is one of created (detail is the page's CDP target id, which is
+ * what lets this backend attach chromedp to a controller it did not
+ * create), create-failed, closed, or process-failed. An unrecognised kind
+ * or a malformed page id is refused rather than guessed at: both ends
+ * validate, because a near-miss would settle the wrong page's create.
+ * 
+ * The report is best-effort in the launcher — a lost one costs a page
+ * handle the backend re-derives — so this returns quickly and never
+ * blocks on browser work.
+ * 
+ * LocalOnly: it settles pane-host state for real browser windows on this
+ * machine, and its only legitimate caller is the launcher process beside
+ * this backend.
+ */
+export function BrowserHostReport(pageID: string, kind: string, detail: string): $CancellablePromise<void> {
+    return $Call.ByID(2848608143, pageID, kind, detail);
+}
+
+/**
  * CancelSessionImport stops the named run. The run still emits its terminal
  * frame, with Completed short of Total — a listener never has to infer the
  * end from silence.

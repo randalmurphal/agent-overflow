@@ -65,6 +65,11 @@ type profileOptions struct {
 	DownloadDir string
 	// Cookies seeds the profile from the persisted checkpoint.
 	Cookies []*network.CookieParam
+	// Ephemeral asks for a profile that persists nothing, from the
+	// browserPersistSiteData setting. Managed Chrome's contexts are always
+	// incognito and ignore it; an engine whose profiles are real on-disk
+	// browser profiles (spec §4) needs it to honour the setting at all.
+	Ephemeral bool
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry

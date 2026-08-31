@@ -57,7 +57,12 @@ resurrecting a stream the backend has forgotten
 The backend side owes two things: wait for `opened` before sending data
 frames (early data has no socket yet and is dropped), and chunk its own
 writes at or under the 1MiB frame limit — a CDP message larger than one
-frame spans several data frames, byte-stream style.
+frame spans several data frames, byte-stream style. Both are honoured in
+`internal/cdprelay`, which is the backend half of this tunnel: it serves
+the `/browser-cdp` route this package dials and exposes the far end as a
+loopback listener inside the distro. Change the codec, the bounds or the
+control vocabulary here and that package moves with it — it imports all
+three rather than restating any.
 
 ## Two failures that are silent, and what prevents them
 
@@ -166,5 +171,10 @@ trailing-space or case-folding rule to remember.
   constructs the host, prepares its profile folder, and answers reports.
 - `internal/wsllauncher/AGENTS.md`: the bridge the directives arrive on
   and the reports go back over.
+- `internal/cdprelay/AGENTS.md`: the backend half — the `/browser-cdp`
+  endpoint this package dials, and the loopback listener chromedp
+  attaches to.
+- `internal/browser/AGENTS.md`: the hosted engine that sends these
+  directives and consumes these reports.
 - `docs/specs/embedded-browser.md`: the feature spec; section 5 is this
   wave.

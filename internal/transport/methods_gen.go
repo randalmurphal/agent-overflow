@@ -37,6 +37,7 @@ var GeneratedMethods = []GeneratedMethod{
 	{Name: "BrowserCompanionResize", ID: 2921114943},               // main.App.BrowserCompanionResize
 	{Name: "BrowserCompanionSubscribe", ID: 668496681},             // main.App.BrowserCompanionSubscribe
 	{Name: "BrowserCompanionUnsubscribe", ID: 3385360912},          // main.App.BrowserCompanionUnsubscribe
+	{Name: "BrowserHostReport", ID: 2848608143},                    // main.App.BrowserHostReport
 	{Name: "CancelSessionImport", ID: 2562316972},                  // main.App.CancelSessionImport
 	{Name: "CheckForUpdate", ID: 2347956003},                       // main.App.CheckForUpdate
 	{Name: "CheckThreadImportUpdates", ID: 2932719708},             // main.App.CheckThreadImportUpdates

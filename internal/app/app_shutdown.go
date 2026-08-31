@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -302,6 +303,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	if a.browser.mcp != nil {
 		record("close built-in browser MCP server", a.browser.mcp.Close())
+	}
+	// The CDP relay outlives the engine on purpose: the manager's close
+	// tears pages down over CDP, and that traffic rides this tunnel.
+	// Non-nil (and an io.Closer) only on the WSL deployment.
+	if closer, ok := a.browser.cdpRelay.(io.Closer); ok {
+		record("close browser pane CDP relay", closer.Close())
 	}
 
 	// Step 8: close the provider event logger. After providers are
