@@ -27,7 +27,7 @@ const DefaultReadLimit = 75 * 1024 * 1024
 
 // DefaultMaxConcurrentRPCs caps how many RPC dispatches a single WS
 // connection can have in flight at once. Bound exists so a misbehaving
-// or malicious client can't fan out unbounded goroutines on the
+// or misbehaving client can't fan out unbounded goroutines on the
 // server. Sized for typical streaming UX (chat thread expansion can
 // fire ~30 GetPayloadData in parallel).
 const DefaultMaxConcurrentRPCs = 64
@@ -143,6 +143,9 @@ type connSettings struct {
 	// sessionLive re-checks the named session, or nil when nothing can
 	// answer. See Config.SessionLive.
 	sessionLive func(sessionID string) bool
+	// sessionScopes reads the named session's grants per RPC, or nil when
+	// nothing can answer. See Config.SessionScopes.
+	sessionScopes func(sessionID string) ([]string, string)
 	// sessionRecheck and maxLifetime are Config.SessionRecheckInterval
 	// and Config.MaxRemoteConnLifetime, unresolved: zero takes the
 	// package default, negative disables.
@@ -192,6 +195,11 @@ type connHandler struct {
 	sessionLive    func(sessionID string) bool
 	sessionRecheck time.Duration
 	maxLifetime    time.Duration
+
+	// sessionScopes is the per-RPC grant read for a connection that named
+	// a session (authorize.go). Nil disables the scope gate, which is the
+	// pre-enforcement behavior every launch-credential client still has.
+	sessionScopes func(sessionID string) ([]string, string)
 
 	// inRead is true exactly while the read loop sits in ws.Read.
 	// coder/websocket only surfaces pongs from inside Read, so a
@@ -250,6 +258,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		sessionLive:       settings.sessionLive,
 		sessionRecheck:    settings.sessionRecheck,
 		maxLifetime:       settings.maxLifetime,
+		sessionScopes:     settings.sessionScopes,
 	}
 	h.lastReadAt.Store(time.Now().UnixNano())
 	defer h.sub.Close()
@@ -635,6 +644,11 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		return
 	}
 
+	if fe := h.authorizeSession(method.Name); fe != nil {
+		h.writeError(ctx, frame.ID, fe)
+		return
+	}
+
 	result, fe := h.dispatcher.InvokeForOrigin(ctx, method, frame.Params, h.profile.isLoopback)
 	if fe != nil {
 		h.writeError(ctx, frame.ID, fe)
@@ -646,6 +660,33 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 		ID:     frame.ID,
 		Result: result,
 	})
+}
+
+// authorizeSession runs the per-RPC scope gate for a connection that
+// named a durable session. A nil return authorizes the call.
+//
+// Three ways to answer nothing, and they are all the same statement: this
+// connection carries no session (every launch-credential client, which
+// keeps exactly the reachability the origin gate gives it), or nothing in
+// this process can resolve a session's grants. Both leave the origin gate
+// as the only judge, which is what it was before enforcement.
+//
+// The grants are read HERE, per call, rather than captured at upgrade:
+// revoking a session must stop the next RPC on a socket that is already
+// open, and the refusal the hook returns is how it does (§4
+// "Revocation").
+func (h *connHandler) authorizeSession(methodName string) *FrameError {
+	if h.profile.sessionID == "" || h.sessionScopes == nil {
+		return nil
+	}
+	granted, refusal := h.sessionScopes(h.profile.sessionID)
+	if refusal != "" {
+		// The session stopped admitting work between the upgrade and this
+		// call. That is the credential channel's refusal, not the scope
+		// gate's, so it keeps the credential channel's shape.
+		return AuthFailure(refusal)
+	}
+	return AuthorizeSessionMethod(granted, methodName, h.profile.isLoopback)
 }
 
 // handleReplay streams every event missed since the client's
@@ -665,7 +706,7 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 // writeMu, spliceBatchFrame preserves slice order inside a chunk, and
 // every batch consumer iterates entries in order.
 //
-// The map size is capped so a malicious replay request can't force
+// The map size is capped so an oversized replay request can't force
 // the bus to allocate proportionally large response slices.
 func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 	if len(frame.LastSeqByChannel) > MaxReplayChannels {

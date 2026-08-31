@@ -196,6 +196,34 @@ func SessionLive(a *App, sessionID string) bool {
 	return !reason.Refused()
 }
 
+// SessionScopes reports the grants a session holds right now, or the
+// closed-vocabulary reason it holds none. Satisfies
+// transport.Config.SessionScopes, which the per-RPC scope gate reads.
+//
+// It goes through Live, the same per-RPC path every other liveness answer
+// uses, so a revoked or expired session refuses on the next call rather
+// than on the next watchdog tick — and so the generation discipline that
+// keeps a racing read from re-caching a dead row covers the scope gate
+// too. Nothing is cached on the transport side; that is the point.
+//
+// The returned slice is the session row's own and is read-only to its
+// caller: the gate ranges over it and keeps no reference.
+func SessionScopes(a *App, sessionID string) ([]string, string) {
+	state := a.identityState()
+	if state == nil {
+		// A connection cannot name a session without identity having
+		// admitted it, so this is unreachable in a booted app. Refuse
+		// rather than admit: an App that lost its session core must not
+		// start authorizing on an empty grant set.
+		return nil, identity.ReasonUnknownSession.Code()
+	}
+	session, reason := state.sessions.Live(sessionID)
+	if reason.Refused() {
+		return nil, reason.Code()
+	}
+	return session.Scopes, ""
+}
+
 // PageSessionCredential returns the local page channel's credential for
 // the bootstrap exchange to plant as a cookie. Satisfies
 // transport.Config.PageSessionCredential.

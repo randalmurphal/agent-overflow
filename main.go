@@ -342,15 +342,18 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// token's lifetime is a provider session's lifetime; the transport
 		// only asks what a presented token is allowed to do.
 		ScopedTokens: appService,
-		// The session core's three seams, all late-bound for the reason
+		// The session core's four seams, all late-bound for the reason
 		// BackendIdentity is: identity boots during ServiceStartup, after
 		// this config is built. The transport never learns what a session
-		// row is — it asks these three questions and nothing else.
+		// row is — it asks these four questions and nothing else.
 		SessionForRequest: func(r *http.Request) (string, bool) {
 			return appservice.SessionForRequest(appService.App, r)
 		},
 		SessionLive: func(sessionID string) bool {
 			return appservice.SessionLive(appService.App, sessionID)
+		},
+		SessionScopes: func(sessionID string) ([]string, string) {
+			return appservice.SessionScopes(appService.App, sessionID)
 		},
 		PageSessionCredential: func() string {
 			return appservice.PageSessionCredential(appService.App)

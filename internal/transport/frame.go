@@ -198,6 +198,17 @@ type FrameError struct {
 	// Omitted on every other error, so a client that reads it as
 	// "was this an auth refusal, and why" gets an unambiguous answer.
 	Reason string `json:"reason,omitempty"`
+	// Scope is set only alongside ErrCodeScopeRequired, and names the
+	// capability the caller's session was not granted — one member of
+	// scopes.go's set, `host` included (which no session can hold, and
+	// which the message says so about).
+	//
+	// A field rather than prose to parse, for the reason Code is one: a
+	// method error's TEXT does not survive the wire for a non-loopback
+	// caller, and this is exactly what such a caller must branch on to
+	// explain a disabled surface rather than showing a dead control
+	// (docs/specs/remote-access.md §5 "Frontend capability model").
+	Scope string `json:"scope,omitempty"`
 }
 
 // Error codes returned on rpc responses. Stable strings so the frontend
@@ -221,6 +232,9 @@ type FrameError struct {
 //   - auth_failed:      the caller's session credential did not admit this
 //     call. The FrameError carries a Reason naming which
 //     check refused it; see the field.
+//
+// Two more live in authorize.go beside the gate that produces them:
+// scope_required and step_up_required (docs/specs/remote-access.md §5).
 const (
 	ErrCodeMethodNotFound         = "method_not_found"
 	ErrCodeBadParams              = "bad_params"

@@ -176,6 +176,23 @@ type Config struct {
 	// before any client presents a session.
 	SessionLive func(sessionID string) bool
 
+	// SessionScopes resolves the capability grants a session holds RIGHT
+	// NOW, or refuses it outright.
+	//
+	// The third hook over the same seam, and the one the per-RPC gate
+	// reads (authorize.go). It answers a scope set and an empty refusal
+	// when the session still admits work, and a non-empty refusal — one
+	// spelling from internal/identity's closed set, which this package
+	// carries without interpreting — when it does not. That second answer
+	// is why the gate needs no separate liveness call: a revoked session
+	// stops authorizing on the very next RPC rather than at the next
+	// watchdog tick.
+	//
+	// Optional. Nil means a connection's scopes are never consulted, which
+	// is the pre-enforcement behavior: the origin gate alone decides, as it
+	// does for every launch-credential client.
+	SessionScopes func(sessionID string) (scopes []string, refusal string)
+
 	// PageSessionCredential returns the session credential to plant on
 	// the page as an HttpOnly cookie during the bootstrap exchange, or ""
 	// when there is none.
@@ -1291,6 +1308,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
 		sessionConns:      s.sessionConns,
 		sessionLive:       s.cfg.SessionLive,
+		sessionScopes:     s.cfg.SessionScopes,
 		sessionRecheck:    s.cfg.SessionRecheckInterval,
 		maxLifetime:       s.cfg.MaxRemoteConnLifetime,
 		hello: helloFrame{
