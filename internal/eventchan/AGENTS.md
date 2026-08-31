@@ -26,7 +26,7 @@ A channel exists only when BOTH halves are present:
 
 1. a constant here (the spelling), and
 2. a `ChannelPolicy` row in `internal/transport/event_channels.go`
-   (the audience + retention decision).
+   (the audience + scope + retention decision).
 
 `internal/transport`'s `TestEveryEventChannelConstantHasAPolicyRow` and
 `TestEveryChannelPolicyRowHasAConstant` fail on either half missing. The
