@@ -869,8 +869,9 @@ verdict it now is, with what the first attempt got wrong.
   not by CI.** `make provider-smoke` (Makefile) drives one trivial workflow
   through the real `claude` and `codex` binaries and asserts schema
   acceptance, envelope round-trip, and the §9 worktree/branch rules; the
-  `providersmoke` build tag keeps it out of `make go-test` and `make verify`,
-  which stay hermetic and token-free. **Cadence: before a release, and after
+  `providersmoke` build tag keeps it out of `make go-test`; `make verify`
+  compiles it without running any test, so it stays hermetic and token-free.
+  **Cadence: before a release, and after
   upgrading either provider CLI.** That is the enforcement mechanism for
   D2a: the mocked suites accept any structured-output schema by
   construction, and `internal/providerschema` encodes rules observed from CLI

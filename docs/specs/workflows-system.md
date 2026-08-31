@@ -1285,8 +1285,9 @@ the schema-generation rules both providers enforce live in
 providers accept any schema; the CLIs enforce strict mode and refuse the phase
 before it starts, which is how five envelope-schema defects survived a fully
 green harness. `make provider-smoke` (build-tagged out of the ordinary Go
-suite, so `make verify` stays hermetic) drives one trivial single-phase
-workflow through the **real** `claude` and `codex` binaries under default
+suite; `make verify` only compiles it, so verification stays hermetic) drives
+one trivial single-phase workflow through the **real** `claude` and `codex`
+binaries under default
 binary resolution and asserts the three things only a real run can show:
 the CLI accepted the generated envelope schema, the run reached `done` through
 a real envelope carrying its declared output, and the writing phase ran in the

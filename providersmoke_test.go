@@ -9,12 +9,14 @@
 // envelope-schema defects survived a fully green harness, and this file is the
 // live check that closes it.
 //
-// It is behind the `providersmoke` build tag, so `make go-test` and `make
-// verify` never compile it and stay hermetic. Run it manually before a release
-// and after upgrading either provider CLI. It spends real model tokens — one
-// trivial turn per provider here, plus the four the Claude imported-branch
-// scenario costs (providersmoke_importbranch_test.go) — which is the price of
-// the only assertions a mock cannot make.
+// It is behind the `providersmoke` build tag, so `make go-test` never compiles
+// it. `make verify` performs a compile-only, zero-token check so API drift
+// cannot break the manual gate unnoticed while verification stays hermetic.
+// Run the real gate manually before a release and after upgrading either
+// provider CLI. It spends real model tokens — one trivial turn per provider
+// here, plus the four the Claude imported-branch scenario costs
+// (providersmoke_importbranch_test.go) — which is the price of the only
+// assertions a mock cannot make.
 //
 // This file's workflow gate measures three things, in the order a failure
 // should be read:

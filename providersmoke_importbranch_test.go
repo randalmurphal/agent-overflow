@@ -105,7 +105,9 @@ func TestProviderSmokeClaudeImportedBranchResume(t *testing.T) {
 	// Turn 3 — rewind to the prefix leaf and say something else. This is what
 	// makes the transcript multi-leaf: the CLI chains the new rows onto the
 	// prefix leaf, leaving turn 2's leaf on a branch nothing will resume.
-	onBranch, err := claude.ResumeAtOnActiveBranch(sessionID, driver.workspace, prefix.leafUUID)
+	onBranch, err := claude.ResumeAtOnActiveBranch(
+		testProviderProjectsDir(t), sessionID, driver.workspace, prefix.leafUUID,
+	)
 	if err != nil || !onBranch {
 		driver.fail(t, "IMPORTED-BRANCH RESUME FAILED: production's own resume-at validator refuses the prefix leaf %s of session %s (onBranch=%v err=%v); the rewind that builds the second branch cannot be attempted",
 			prefix.leafUUID, sessionID, onBranch, err)

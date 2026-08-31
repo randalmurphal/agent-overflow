@@ -18,6 +18,7 @@ STATUS_BEFORE=$(git -C "$ROOT_DIR" status --porcelain)
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm run build"
 run make -C "$ROOT_DIR" go-build
 run make -C "$ROOT_DIR" go-test
+run make -C "$ROOT_DIR" provider-smoke-compile
 run sh -c "cd '$ROOT_DIR/frontend' && pnpm run check"
 run sh -c "cd '$ROOT_DIR/frontend' && AO_PERF_CONTRACT=1 pnpm test"
 run sh -c "cd '$ROOT_DIR/frontend' && AO_PERF_CONTRACT=1 pnpm run test:browser"

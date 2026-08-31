@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
+.PHONY: help ao-harness-docs install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -145,16 +145,21 @@ test-race:
 # one trivial turn per provider plus four for that scenario — and requires both
 # CLIs installed and authenticated.
 #
-# The `providersmoke` build tag is what keeps it out of `make go-test` and
-# `make verify`, which stay hermetic. Run this manually before a release and
-# after upgrading either provider CLI; the mocked suites accept any
-# structured-output schema, so nothing else in the repo can catch a schema the
-# real CLIs reject. See providersmoke_test.go.
+# The `providersmoke` build tag keeps these tests out of `make go-test`.
+# `make verify` compiles them without running any test so production API changes
+# cannot leave the manual gate broken; that compile-only check stays hermetic.
+# Run the real gate manually before a release and after upgrading either
+# provider CLI; the mocked suites accept any structured-output schema, so
+# nothing else in the repo can catch a schema the real CLIs reject. See
+# providersmoke_test.go.
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
 # the imported-branch scenario, plus per-leg auth probes) with headroom, so a
 # wedged turn fails through the gate's own diagnostics rather than as a bare
 # test-binary timeout panic.
+provider-smoke-compile:
+	go test -tags providersmoke -run '^$$' .
+
 provider-smoke:
 	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 20m .
 
