@@ -143,7 +143,13 @@ for all three).
   with `create-failed`, `clear-data` with `clear-failed` — rather than
   becoming a pane that never appears or a Settings button that spins until
   its own timeout. The rest address a page that, by definition, was never
-  created.
+  created. Being lazy also makes it profile-agnostic for free:
+  `startNotificationBridge` wires `HandleBrowserHost` on every launch, so
+  an isolated profile's backend is served exactly like the dev instance
+  the moment it emits — which is what makes
+  `AO_HARNESS_REAL_BROWSER=1 make harness-wsl` the Windows leg of the
+  real-engine gate (`docs/specs/embedded-browser.md` §10) with no
+  launcher-side wiring of its own.
 - **Profile storage.** `prepareBrowserProfileStorage` creates
   `appidentity.BrowserProfilesDir(mode)` beside the SPA's own webview2
   directory, through the same `validateWindowsStoragePath` that refuses

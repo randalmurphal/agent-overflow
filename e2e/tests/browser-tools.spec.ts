@@ -113,7 +113,9 @@ test('agent browser page stays headless until explicitly presented as an interac
 
   // The harness boots the fake engine (spec §10): pages navigate and carry a
   // URL, but nothing renders them, so the title is derived from the address
-  // rather than read from a document.
+  // rather than read from a document. That pin is default-on and this suite
+  // must never lift it — AO_HARNESS_REAL_BROWSER is a MANUAL gate, and an
+  // e2e run that set it would assert against a real document instead.
   await expect.poll(async () => {
     const state = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, {
       kind: 'activate',

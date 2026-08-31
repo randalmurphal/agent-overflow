@@ -28,8 +28,9 @@ that could only fail.
   nothing else.
 - WHICH engine is a WIRING answer, never a `runtime.GOOS` check. `selectEngine`
   is a three-fact table: `ManagerOptions.FakeEngine` (the harness and soak
-  pins, spec §10) wins first; then `ManagerOptions.PaneHost`, non-nil exactly
-  when the executable built a CDP relay (WSL only), which selects the hosted
+  pins, spec §10 — default-on, and lifted only by the manual
+  `AO_HARNESS_REAL_BROWSER` gate) wins first; then `ManagerOptions.PaneHost`,
+  non-nil exactly when the executable built a CDP relay (WSL only), which selects the hosted
   engine; then the native one, only when `ManagerOptions.NativeWindow` answers
   a real window AND the platform half can actually host it. Anything else is
   `unavailableEngine`. `Manager.Available()` is how the App asks, and it is
@@ -323,7 +324,15 @@ builder for macOS.
   against invented content. Do not build a second fake.
 - Windowless selection must keep choosing NO engine, and that rule is tag-free
   (`manager_test.go`) because its only failure mode is a silently launched
-  browser. It is also what keeps `make go-test` display-free.
+  browser.
+- The tag-free suite stays display-free BECAUSE the mocked boots' fake-engine
+  pin is default-ON, not because a real engine is unreachable from here. The
+  lift is one manual gate — `AO_HARNESS_REAL_BROWSER` on an attended
+  `--harness` boot (spec §10, `realBrowserEngineRequested` in
+  `main_harness.go`) — and it is the ONLY way this package's real engines run
+  outside the shipped app. A test must never set that variable, and no fixture
+  may reach the lift by another route: `ManagerOptions.FakeEngine` is the one
+  fact that keeps `go test` from touching GTK, AppKit, or a launcher.
 - Both WebKit engines' testable half is everything pure: the JS builders, the
   screenshot pixel path, the profile identifier, the site-data clear's outcome
   fold, and the platform half of

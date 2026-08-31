@@ -232,7 +232,10 @@ the desktop app instance, and a browser tool call on a windowless deployment
 answers one sentence saying browser tools are not available there. The mocked
 boot modes (`--harness`, `--soak`) are the one exception: they pin a fake engine
 so the companion pane's chrome, tab strip, and host rect render with nothing
-behind them.
+behind them. That pin is default-on and lifted by one manual gate —
+`AO_HARNESS_REAL_BROWSER=1` on an ATTENDED isolated boot (never a soak
+autopilot), which turns `make harness-window` / `make harness-wsl` into
+the real-engine rig described in `docs/specs/embedded-browser.md` §10.
 
 The companion RPCs and URL/title state events are loopback-only because they
 expose local files and authenticated browser content, and the pane mount drives

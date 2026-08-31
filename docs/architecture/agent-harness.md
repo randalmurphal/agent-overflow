@@ -156,6 +156,50 @@ webview's cookies, localStorage, IndexedDB replica and shader caches
 stay inside the data root. Under WSLg the window lands on the Windows
 desktop. Full contract: `docs/specs/testing-harness.md` §1-§2.
 
+### The browser engine, and the one opt-in that un-stubs it
+
+An isolated boot pins the browser Manager to the FAKE engine
+(`newIsolatedProviderApp` → `IsolationConfig.MockBrowserEngine`, spec
+`docs/specs/embedded-browser.md` §10). The companion pane's chrome, tab
+strip and host rect all render; nothing is behind them, and every tool
+needing real page content refuses by name. The pin is what keeps
+`make go-test`, `make e2e` and every unattended boot display-free.
+
+`AO_HARNESS_REAL_BROWSER=1` lifts it — the manual real-engine gate:
+
+```
+AO_HARNESS_REAL_BROWSER=1 make harness-window   # native engine (WebKitGTK / WKWebView)
+AO_HARNESS_REAL_BROWSER=1 make harness-wsl      # launcher-hosted WebView2, the Windows leg
+```
+
+Nothing else about the boot changes: same isolated data root, same mock
+providers, same Harness RPC surface. Site data stays isolated as well
+(native engines write under `<dataRoot>/browser-profiles/`; the Windows
+launcher's WebView2 user-data folder is already per-mode).
+
+Three properties are load-bearing:
+
+- **Default-off.** Unset, or set to anything `envTruthy` rejects, keeps
+  the pin. The only failure mode of getting this wrong is a browser
+  launched on a machine nobody is watching, so the safe answer is the
+  one you get by not deciding.
+- **Never for a soak.** `--autopilot` is what makes an isolated instance
+  a soak rather than a harness, and the variable is refused (loudly, in
+  the log) whenever it is armed. The axis is the autopilot, not the flag
+  spelling: the Windows harness rides the launcher-owned `--soak` wire
+  flag WITHOUT it and is as attended as `--harness`.
+- **It crosses the WSL boundary.** `make harness-wsl` runs the backend
+  inside the distro, two WSLENV hops from the shell you typed in:
+  `DEV_WSL_FWD_VARS` (Makefile) is hop 1, `diagenv.Passthrough()` is
+  hop 2. Exactly how `AGENT_OVERFLOW_PPROF` travels.
+
+The Windows leg needs no launcher wiring beyond that. The WSL backend
+already builds the CDP relay on every boot (`bootBrowserCDPRelay`, gated
+on `platform.IsWSL()`, not on boot mode), and the launcher already
+handles `browser:host` directives for every profile — it builds the host
+lazily on the FIRST directive, so a harness backend that emits one is
+served exactly like the dev instance.
+
 ### What an isolated boot does NOT stub
 
 The premise is that everything except the provider processes is

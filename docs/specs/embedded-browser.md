@@ -335,16 +335,50 @@ the streamed pane.
 
 - Unit: engine interface gets a fake driver; Manager policy tests run
   against it (today's fake-controller pattern continues).
-- Windows: real-engine integration behind a manual gate (spawns
-  WebView2 with a temp user-data dir; never the app's). Linux: same
-  with WebKitGTK under WSLg/Xvfb.
 - Harness/e2e: harness boots with the fake driver; the browser pane
-  host rect renders without an engine.
+  host rect renders without an engine. That pin is DEFAULT-ON in both
+  mocked boot modes (`newIsolatedProviderApp` →
+  `IsolationConfig.MockBrowserEngine`), which is what keeps
+  `make go-test`, `make e2e`, and every unattended boot display-free
+  and browser-free.
+- **Real-engine gate (manual, opt-in).** `AO_HARNESS_REAL_BROWSER=1`
+  lifts that pin, so the instance selects whatever real engine its
+  deployment has and the harness becomes the real-browser rig:
+
+  | Command | Engine it exercises |
+  |---|---|
+  | `AO_HARNESS_REAL_BROWSER=1 make harness-window` | the native engine — WebKitGTK on Linux (under WSLg), WKWebView on macOS (§6) |
+  | `AO_HARNESS_REAL_BROWSER=1 make harness-wsl` | the launcher-hosted WebView2 engine, the real Windows leg (§5) |
+
+  Everything else about the boot is unchanged: isolated data root,
+  mocked providers, harness RPC surface. Site data stays isolated too —
+  the native engines write under `<dataRoot>/browser-profiles/`, and the
+  launcher's WebView2 user-data folder is already per-mode
+  (`appidentity.BrowserProfilesDir("harness")` →
+  `browser-profiles-harness`), so a harness run never touches the
+  developer's own pane cookies.
+
+  The variable is REFUSED whenever `--autopilot` is armed: that is what
+  makes an isolated instance a soak rather than a harness, and a rig left
+  streaming for hours with nobody watching must never grow a browser
+  engine. The refusal is logged, not silent.
+
+  Windowed boots work here because the two window facts are needed at
+  different times: engine SELECTION only reads whether a window getter
+  exists, and the window POINTER is resolved lazily when the first tool
+  call starts the engine. So an isolated boot installs an empty getter
+  before `App.Start` (`newIsolatedProviderApp`) and the windowed shell
+  fills it in when Wails creates the window.
+- Windows/Linux real-engine integration otherwise stays manual: there is
+  no automated suite that spawns an engine, and windowless selection
+  must keep answering `unavailableEngine`
+  (`internal/browser/manager_test.go`).
 - macOS: written to the driver contract; compile+run verification on
   the user's Mac (this machine cannot build darwin cgo). Expect a
   fix-up pass there — disclosed upfront.
-- Live verification checklist (user, per platform): audio/video, site
-  context menu on a custom-menu test page, file upload, download,
+- Live verification checklist (user, per platform — run it in the real
+  app, or on the isolated instance the gate above opens): audio/video,
+  site context menu on a custom-menu test page, file upload, download,
   dialogs, clipboard both directions, copy-file-to-Teams, devtools,
   HiDPI crispness, overlay clip behavior, workspace login isolation.
 

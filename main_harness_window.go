@@ -46,10 +46,21 @@ func requireWindowedBuild() {}
 //     registering App as a service here would start it a second time.
 //   - No updater. An isolated instance must never swap the binary it is
 //     testing.
-func runWindowedShell(appService *App, srv *transport.Server, title string) error {
+func runWindowedShell(appService *App, srv *transport.Server, title string, nativeWindow *isolatedNativeWindow) error {
 	shell := webviewShell{
 		title:     title,
 		beforeRun: quitOnSignal,
+		// The browser engine's window getter was installed empty before
+		// App.Start (newIsolatedProviderApp) and is filled here, which is the
+		// first moment a window can exist at all on this path. Selection only
+		// asked whether a getter EXISTS; the pointer behind it is resolved
+		// lazily, when the first browser tool call starts the engine — long
+		// after this. Unconditional and inert when the fake-engine pin is on
+		// (it wins selection first) and on WSL (the launcher-hosted engine
+		// wins before the native one).
+		withWindow: func(getWindow func() *application.WebviewWindow) {
+			nativeWindow.publish(nativeWindowPointer(getWindow))
+		},
 		// Raw URL on purpose: webviewShell.run threads the client id on
 		// (its `withClientID`), and it is the one place that rule lives for
 		// every windowed boot.

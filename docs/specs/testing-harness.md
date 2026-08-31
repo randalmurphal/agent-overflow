@@ -193,10 +193,13 @@ choose a lower or higher limit within host capacity. The ceiling was raised
 from 600 MiB when the in-app browser made a full managed Chrome a legitimate
 app-owned child; 1 GiB and 1.5 GiB trials also killed the browser-companion
 E2E during that Chrome's measured 1.69 GB aggregate-RSS macOS startup peak.
-Managed Chrome is gone (the harness now boots the fake browser engine and
-spawns no browser at all), but the bound still covers the backend, mock
-providers, webview children, and profilers that remain in the backend's
-process tree. Worktree reservations use the same 2 GiB claim, so
+Managed Chrome is gone (the harness boots the fake browser engine by
+default and spawns no browser at all), but the bound still covers the
+backend, mock providers, webview children, and profilers that remain in
+the backend's process tree — including the real engine an attended
+`AO_HARNESS_REAL_BROWSER=1` boot selects
+(`docs/specs/embedded-browser.md` §10), which is in-process on the native
+desktops and launcher-side on Windows. Worktree reservations use the same 2 GiB claim, so
 parallel harnesses cannot overcommit the host's available-memory floor.
 
 - Linux uses a private cgroup v2 with `memory.max=2 GiB`,

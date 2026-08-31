@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"time"
+	"unsafe"
 
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/provider"
@@ -17,6 +18,44 @@ func TestBrowserSettingsDefaultToEnabledPersistent(t *testing.T) {
 	config := browserConfigFromSettings(settings.DefaultSettings)
 	if !config.Enabled || !config.PersistSiteData || config.AllowOutsideWorkspace {
 		t.Fatalf("browser config = %+v", config)
+	}
+}
+
+// The fake-engine pin crosses the bootstrap boundary as one bool, and
+// startup hands it straight to ManagerOptions.FakeEngine — which wins
+// engine selection ahead of every other fact. A boot that asks for the
+// pin must get it, and one that lifted it (the manual real-engine gate,
+// docs/specs/embedded-browser.md §10) must not have it reinstated here.
+func TestConfigureIsolationCarriesTheBrowserEnginePin(t *testing.T) {
+	pinned := &App{}
+	ConfigureIsolation(pinned, IsolationConfig{MockBrowserEngine: true})
+	if !pinned.browser.mockEngine {
+		t.Fatal("MockBrowserEngine: true did not pin the fake engine")
+	}
+	lifted := &App{}
+	ConfigureIsolation(lifted, IsolationConfig{MockBrowserEngine: false})
+	if lifted.browser.mockEngine {
+		t.Fatal("MockBrowserEngine: false still pinned the fake engine")
+	}
+}
+
+// No window getter is the whole windowless story: selection reads only
+// whether one EXISTS, so an App that was never handed one has no
+// in-process engine at all. The isolated boots rely on the other half of
+// that rule — a getter installed before Start whose pointer arrives
+// later — so the presence, not the answer, is what must be recorded here.
+func TestSetBrowserNativeWindowRecordsThePresenceOfAGetter(t *testing.T) {
+	app := &App{}
+	if app.browser.nativeWindow != nil {
+		t.Fatal("a bare App already carries a window getter")
+	}
+	app2 := &App{}
+	SetBrowserNativeWindow(app2, func() unsafe.Pointer { return nil })
+	if app2.browser.nativeWindow == nil {
+		t.Fatal("SetBrowserNativeWindow did not record the getter")
+	}
+	if app2.browser.nativeWindow() != nil {
+		t.Fatal("a getter answering nil should still answer nil")
 	}
 }
 

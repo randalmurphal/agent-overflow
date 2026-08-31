@@ -123,6 +123,12 @@ type webviewShell struct {
 	// window (which does not exist until ApplicationStarted). Nil
 	// registers none.
 	services func(getWindow func() *application.WebviewWindow) []application.Service
+	// withWindow receives the same getter, for a boot that needs the window
+	// but is NOT registering a service to reach it. The embedded browser's
+	// in-process engine is the case: it must be handed the window before
+	// App.Start, and the isolated windowed boots register no services at
+	// all, so `services` is not a hook they have.
+	withWindow func(getWindow func() *application.WebviewWindow)
 	// beforeRun runs after application.New and before the app loop
 	// starts. runDesktop boots its transport here, because the updater
 	// must observe the application first.
@@ -159,6 +165,9 @@ func (s webviewShell) run() error {
 	appOpts := desktopApplicationOptions(s.title)
 	if s.singleInstance {
 		appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
+	}
+	if s.withWindow != nil {
+		s.withWindow(getWindow)
 	}
 	if s.services != nil {
 		appOpts.Services = s.services(getWindow)
@@ -231,6 +240,20 @@ func (s webviewShell) run() error {
 	return runErr
 }
 
+// nativeWindowPointer adapts a Wails window getter to the raw handle the
+// browser engine wants. nil answers "no window yet": the window is created
+// on ApplicationStarted, and the engine resolves this only when its first
+// page starts, so the gap is real and expected on every windowed boot.
+func nativeWindowPointer(getWindow func() *application.WebviewWindow) func() unsafe.Pointer {
+	return func() unsafe.Pointer {
+		window := getWindow()
+		if window == nil {
+			return nil
+		}
+		return window.NativeWindow()
+	}
+}
+
 // runDesktop is the original Wails-window entry point used on
 // macOS/Linux/Windows native builds. The Windows binary that proxies
 // into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
@@ -244,19 +267,16 @@ func runDesktop(listenAddr string) {
 	shell := webviewShell{
 		title:          appidentity.AppTitle(nativeSingleInstanceMode()),
 		singleInstance: true,
+		// The embedded browser's in-process engine hosts its views inside
+		// this window. Handed over before Start, because the manager picks
+		// its engine while starting; answering nil (no window yet, or a
+		// platform with no in-process engine) leaves the process with NO
+		// browser engine and no browser tools. The isolated windowed boots
+		// reach the same call through the same hook (main_harness_window.go).
+		withWindow: func(getWindow func() *application.WebviewWindow) {
+			appservice.SetBrowserNativeWindow(appService.App, nativeWindowPointer(getWindow))
+		},
 		services: func(getWindow func() *application.WebviewWindow) []application.Service {
-			// The embedded browser's in-process engine hosts its views inside
-			// this window. Handed over before Start, because the manager picks
-			// its engine while starting; answering nil (no window yet, or a
-			// platform with no in-process engine) leaves the process with NO
-			// browser engine and no browser tools.
-			appservice.SetBrowserNativeWindow(appService.App, func() unsafe.Pointer {
-				window := getWindow()
-				if window == nil {
-					return nil
-				}
-				return window.NativeWindow()
-			})
 			return []application.Service{
 				application.NewService(appservice.NewDesktopNotificationService(appService.App, getWindow)),
 				application.NewService(appService),

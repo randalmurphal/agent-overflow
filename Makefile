@@ -251,10 +251,15 @@ dev:
 # window — closing it kills the app, WebView2Feedback #3192) and
 # AGENT_OVERFLOW_WEBVIEW_SOFTWARE (opt-in --disable-gpu software
 # rendering, desktop-stutter diagnostics) only need hop 1: they are
-# consumed by the Windows launcher itself. AGENT_OVERFLOW_PPROF and
-# AGENT_OVERFLOW_RENDERER_DIAG (internal/diagenv) ride both hops to
-# reach the WSL backend.
-DEV_WSL_FWD_VARS := AGENT_OVERFLOW_DEBUG AGENT_OVERFLOW_WEBVIEW_LOG AGENT_OVERFLOW_WEBVIEW_SOFTWARE AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS AGENT_OVERFLOW_PPROF AGENT_OVERFLOW_RENDERER_DIAG
+# consumed by the Windows launcher itself. AGENT_OVERFLOW_PPROF,
+# AGENT_OVERFLOW_RENDERER_DIAG and AO_HARNESS_REAL_BROWSER
+# (internal/diagenv) ride both hops to reach the WSL backend — the last
+# one is what makes `AO_HARNESS_REAL_BROWSER=1 make harness-wsl` the
+# Windows leg of the manual real-browser-engine gate
+# (docs/specs/embedded-browser.md §10). It is inert on every other
+# profile: the backend refuses it whenever the soak autopilot is armed,
+# and no non-isolated boot reads it at all.
+DEV_WSL_FWD_VARS := AGENT_OVERFLOW_DEBUG AGENT_OVERFLOW_WEBVIEW_LOG AGENT_OVERFLOW_WEBVIEW_SOFTWARE AGENT_OVERFLOW_WEBVIEW_EXTRA_ARGS AGENT_OVERFLOW_PPROF AGENT_OVERFLOW_RENDERER_DIAG AO_HARNESS_REAL_BROWSER
 
 # LAUNCH_PROFILE selects which instance launch-wsl builds and runs:
 # empty is the developer's normal dev instance, `harness` is the isolated
