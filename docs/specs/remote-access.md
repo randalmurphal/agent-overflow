@@ -1547,8 +1547,18 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    from app boot. Device-access RPC surface, ui_state device binding,
    the shared `relaysession` credential source (now also on the
    `--connect` hop), and the redeeming client: LANDED 2026-08-31 (wave
-   5c). Still open in this phase: the owner-facing devices pane in
-   Settings (list / pair / confirm / revoke UI over those RPCs).
+   5c). The owner-facing devices pane in Settings (list / pair /
+   confirm / revoke UI over those RPCs) and the paired client's
+   restart-recovery legs: LANDED 2026-08-31 (wave 5c close). Live
+   verification surfaced three wire rules now pinned in
+   `internal/transport/AGENTS.md` and the frontend transport guide:
+   while a paired session is stored it is the ONLY identity the
+   upgrade may present (a dial that cannot mint a ticket fails and
+   retries instead of proceeding on the page cookie); the manifest
+   admits a live durable session when the page-credential exchange
+   refuses, without planting the local channel's session cookie; and
+   a spent WS ticket naming a live session stands in for the launch
+   credential on that upgrade, with the Origin check unconditional.
 3. **Authorization.** Annotation-driven generated method table, scope
    tiers + binding enforcement + step-up set, event visibility, settings
    key→tier taxonomy, capability-driven frontend, `LocalOnlyMethods`
