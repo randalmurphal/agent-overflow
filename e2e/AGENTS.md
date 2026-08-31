@@ -48,6 +48,25 @@ Not everything in `tests/` runs in the gate, on purpose. A
 set: they dump per-frame samples for offline analysis rather than
 asserting, so they are evidence, not a gate.
 
+## Owning processes
+
+`src/harness-process.ts` is the only place that reads the process table,
+and everything it produces is evidence for a kill. Two rules keep that
+evidence real:
+
+- **An identity carries its process group on Unix.** Escalation after
+  the group leader exits authenticates through a surviving member proof,
+  and `captureProcessGroupMemberProof` declines any identity without a
+  `groupId` — so a platform branch that omits the field silently disarms
+  teardown instead of failing loudly. A row only becomes a proof once its
+  executable resolves; on Linux that link is read per candidate, never
+  per row, because the memory watchdog sweeps every row on a cadence.
+- **Sweep `/proc` by name.** `readdir` with `withFileTypes` lstats the
+  entries procfs leaves untyped, so a process exiting mid-scan raises
+  ENOENT out of the whole scan; the watchdog reads that as a backend
+  fault and takes the run down with it. Numeric names plus per-process
+  reads already guarded against disappearance are enough.
+
 ## Writing specs
 
 - **Never sleep.** Await `harness.waitForEvent('harness:mock', ...)`,
