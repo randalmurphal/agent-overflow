@@ -377,11 +377,26 @@ test('a Claude fork with no transcript on disk yet starts a fresh provider threa
 
   await driver.advance('finish');
   await harness.waitForEvent('provider:turn_completed');
-  const sourceItems = await harness.rpc<Item[]>('ListItems', threadId, true);
-  expect(sourceItems.map((i) => [i.kind, i.status, i.summary])).toEqual([
-    ['user_text', 'completed', 'answer before the file lands'],
-    ['assistant_text', 'completed', 'Turn 1 first half. Turn 1 second half.'],
-  ]);
+  // POLLED, not read once. `provider:turn_completed` is emitted at the
+  // TOP of handleTurnComplete and the row settles after it
+  // (internal/triage/turn_lifecycle.go, settleTurnRow's doc comment), so
+  // the event is not a promise that the cache has caught up — reading
+  // immediately caught the row still `streaming` under full-suite load
+  // while passing in isolation every time (2026-08-31). expect.poll
+  // FAILS at its deadline with the mismatch, so a row that never settles
+  // is still this assertion failing and not a timeout somewhere else.
+  await expect
+    .poll(async () =>
+      (await harness.rpc<Item[]>('ListItems', threadId, true)).map((i) => [
+        i.kind,
+        i.status,
+        i.summary,
+      ]),
+    )
+    .toEqual([
+      ['user_text', 'completed', 'answer before the file lands'],
+      ['assistant_text', 'completed', 'Turn 1 first half. Turn 1 second half.'],
+    ]);
 });
 
 test('a Codex fork mid-turn forks the live thread with no boundary', async ({ harness }) => {
