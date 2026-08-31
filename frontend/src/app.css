@@ -518,6 +518,20 @@ pre, code, kbd, samp, .ansi-body {
 }
 
 /*
+ * Sibling overlays and composited scroll clips can snap to opposite device-
+ * pixel edges in WebKit. The opaque extra pixel crosses that seam while the
+ * declared depth still measures from the viewport edge to transparent.
+ */
+.scroll-top-fade {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  height: calc(var(--scroll-top-fade-depth) + 1px);
+  pointer-events: none;
+  background: linear-gradient(to bottom, var(--surface-0) 1px, transparent);
+}
+
+/*
  * Search inputs draw their own clear affordance (or none); WebKit's native
  * cancel "x" would double it up next to ours.
  */

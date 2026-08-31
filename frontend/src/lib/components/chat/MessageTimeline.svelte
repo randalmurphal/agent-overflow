@@ -1114,15 +1114,16 @@
   </div>
 
   <!-- Top-fade overlay (see the TOP_FADE_PX comment for why this is an
-       overlay and not a mask on the scroller). Sits after the scroller
-       in source order so it paints above content, before the
-       jump-to-latest chip so the chip stays on top. -->
+       overlay and not a mask on the scroller). `.scroll-top-fade` owns the
+       one-pixel overdraw across the independently snapped compositor edge.
+       It sits after the scroller in source order so it paints above content,
+       before the jump-to-latest chip so the chip stays on top. -->
   <div
     aria-hidden="true"
-    class="pointer-events-none absolute top-0 left-0"
+    class="scroll-top-fade"
     style:right={`${SCROLLBAR_SAFE_PX}px`}
-    style:height={`${TOP_FADE_PX}px`}
-    style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+    style:--scroll-top-fade-depth={`${TOP_FADE_PX}px`}
+    data-testid="message-timeline-top-fade"
   ></div>
 
   <!-- The pane's scrollbar. A sibling of the scroller (nothing that starts

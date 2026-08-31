@@ -111,6 +111,14 @@ describe('<ChatHeader>', () => {
     vi.mocked(openTerminalThread).mockClear();
   });
 
+  it('keeps its bottom border above the timeline fade overdraw', async () => {
+    const pane = await buildPane(makeThread({ title: 'Layered header' }));
+    const { getByTestId } = render(ChatHeader, { props: { pane } });
+    const header = getByTestId('chat-header');
+    expect(header.classList).toContain('relative');
+    expect(header.classList).toContain('z-10');
+  });
+
   it('shows the thread title as a button in view mode', async () => {
     const pane = await buildPane(makeThread({ title: 'Shipping design' }));
     const { getByTestId } = render(ChatHeader, { props: { pane } });

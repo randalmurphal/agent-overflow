@@ -243,7 +243,10 @@ a run collapsing off-screen changes nothing about where its header sits.
   just make it look dimmer than the rows below it. Paint-only, so it never
   touches `scrollHeight`/`clientHeight`/`scrollTop` and stays clear of the
   controller. It needs no scrollbar-safe inset (the conversation's does): the
-  overlay bar hangs outside the clip's right edge.
+  overlay bar hangs outside the clip's right edge. All three scroll-surface
+  copies use `.scroll-top-fade`, whose extra opaque pixel starts
+  above the clip so independently snapped WebKit compositor edges cannot expose
+  an unfaded row; that overdraw does not shorten the declared 24px fade.
 - `overflow-y: auto`, `overflow-x: hidden`: a wide preview inside a tool row
   must not raise a horizontal bar at run level, which would consume *height*
   and shift every row below.

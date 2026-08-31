@@ -21,9 +21,11 @@
 </script>
 
 {#if pane.thread}
+  <!-- The timeline fade overdraws its composited clip by one pixel. Keep the
+       header's existing bottom border above that overlap. -->
   <div
     data-testid="chat-header"
-    class="flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
+    class="relative z-10 flex items-center gap-2 border-b border-border-subtle bg-transparent px-5 py-2 shrink-0 min-w-0 flex-nowrap"
   >
     {#if attentionDot}
       <span

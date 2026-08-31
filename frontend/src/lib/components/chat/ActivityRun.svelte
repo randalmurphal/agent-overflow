@@ -974,9 +974,9 @@
              transition kill rule in app.css). -->
         <div
           aria-hidden="true"
-          class="pointer-events-none absolute -top-px right-0 left-0 h-[25px]"
+          class="scroll-top-fade right-0"
           class:opacity-0={!fadedTop}
-          style:background="linear-gradient(to bottom, var(--surface-0), transparent)"
+          style:--scroll-top-fade-depth="24px"
           data-testid="activity-run-top-fade"
           data-faded={fadedTop ? 'true' : 'false'}
         ></div>

@@ -23,6 +23,13 @@ load-older behavior, or anything that touches `scrollTop`.
   writes `--composer-height`. Observe as `'composer-geometry'`, the
   live-capable path, so active output springs through activity-rail
   height changes while idle geometry still sync-pins.
+- Every sibling-overlay top fade uses the global `.scroll-top-fade` rule. Its opaque
+  first pixel starts one CSS pixel above the scroll clip while its bottom stays
+  at the declared fade depth. WebKit can snap a composited scroll layer and an
+  ancestor-painted gradient to opposite device-pixel edges, exposing a bright
+  row if they merely meet. Do not inline a `top: 0` gradient beside a scroller,
+  and do not clip the rule's overdraw. A header directly above one
+  keeps its border in a higher stacking level, as `ChatHeader` does.
 
 Thread-switch restore is split on purpose: `$effect.pre` arms warm-up and
 restore consent before DOM flush, then the restore `$effect` calls
