@@ -1414,19 +1414,6 @@ func (s *Store) UpdateFastMode(threadID string, on bool) (Thread, bool, error) {
 	})
 }
 
-// UpdateContextWindow overwrites the context_window column.
-func (s *Store) UpdateContextWindow(threadID string, tokens int) error {
-	if !validContextWindow(tokens) {
-		return fmt.Errorf("%w: %d", ErrInvalidContextWindow, tokens)
-	}
-	result, err := s.db.Exec(`UPDATE threads SET context_window = ? WHERE id = ?`,
-		tokens, threadID)
-	if err != nil {
-		return fmt.Errorf("store: update context window for %s: %w", threadID, err)
-	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update context window for %s", threadID))
-}
-
 func (s *Store) GetThreadContextSettings(threadID string) (ThreadContextSettings, error) {
 	var settings ThreadContextSettings
 	err := s.reader().QueryRow(

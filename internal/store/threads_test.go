@@ -1054,8 +1054,8 @@ func TestUpdateContextWindowValid(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateContextWindow(thr.ID, 200000); err != nil {
-		t.Fatalf("UpdateContextWindow(200000): %v", err)
+	if _, _, err := s.UpdateContextSettings(thr.ID, 200000, 0, 0); err != nil {
+		t.Fatalf("UpdateContextSettings(200000): %v", err)
 	}
 	got, _ := s.GetThread(thr.ID)
 	if got.ContextWindow != 200000 {
@@ -1073,8 +1073,8 @@ func TestUpdateContextWindowInvalid(t *testing.T) {
 		t.Fatalf("CreateThread(): %v", err)
 	}
 
-	if err := s.UpdateContextWindow(thr.ID, -1); !errors.Is(err, ErrInvalidContextWindow) {
-		t.Fatalf("UpdateContextWindow(-1) = %v, want ErrInvalidContextWindow", err)
+	if _, _, err := s.UpdateContextSettings(thr.ID, -1, 0, 0); !errors.Is(err, ErrInvalidContextWindow) {
+		t.Fatalf("UpdateContextSettings(-1) = %v, want ErrInvalidContextWindow", err)
 	}
 }
 

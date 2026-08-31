@@ -25,8 +25,8 @@ type LiveStateSnapshot struct {
 	// structurally blind to them: without this, a transport-gap refresh
 	// mid-send drops the user's own message from the timeline until the
 	// echo lands (incident 2026-08-29). FIFO order, all send shapes.
-	DeferredItems []store.Item
-	Interactive   provider.PendingInteractiveRequests
+	DeferredItems          []store.Item
+	Interactive            provider.PendingInteractiveRequests
 	EffectiveModel         string
 	EffectiveModelRevision uint64
 	// CompactingSinceUnixMs is the open compacting window's start (epoch
