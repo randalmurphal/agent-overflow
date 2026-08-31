@@ -341,7 +341,7 @@ func TestUpdateSettings_RefreshesEditorCacheWhenEditorPatched(t *testing.T) {
 		t.Fatalf("test pre-condition: detection cache should be primed")
 	}
 
-	if _, err := app.UpdateSettings(map[string]any{
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"editor": map[string]any{"preference": "code"},
 	}); err != nil {
 		t.Fatalf("UpdateSettings(editor): %v", err)
@@ -366,7 +366,7 @@ func TestUpdateSettings_DoesNotRefreshEditorCacheForUnrelatedPatch(t *testing.T)
 		t.Fatalf("test pre-condition: detection cache should be primed")
 	}
 
-	if _, err := app.UpdateSettings(map[string]any{"theme": "dark"}); err != nil {
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"theme": "dark"}); err != nil {
 		t.Fatalf("UpdateSettings(theme): %v", err)
 	}
 

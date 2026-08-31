@@ -74,7 +74,7 @@ func TestUpdateSettingsPersistsPatch(t *testing.T) {
 	dir := t.TempDir()
 	app := &App{settings: settings.NewService(dir)}
 
-	got, err := app.UpdateSettings(map[string]any{
+	got, err := app.UpdateSettings(context.Background(), map[string]any{
 		"timestampFormat": "24-hour",
 		"paneDensity":     "spacious",
 	})
@@ -121,7 +121,7 @@ func TestUpdateSettingsRollsBackMixedPatchWhenWorkflowEngineRejects(t *testing.T
 		t.Fatal(err)
 	}
 	previous := app.currentSettings()
-	if _, err := app.UpdateSettings(map[string]any{
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{
 		"timestampFormat": "24-hour", "workflowPaused": true,
 	}); err == nil {
 		t.Fatal("UpdateSettings with closed workflow engine succeeded")
@@ -205,7 +205,7 @@ func TestUpdateSettingsInvalidatesCodexCatalogOnBinaryChange(t *testing.T) {
 	if _, err := app.GetModelsForProvider("codex"); err != nil {
 		t.Fatalf("GetModelsForProvider first: %v", err)
 	}
-	if _, err := app.UpdateSettings(map[string]any{"codexBinaryPath": second}); err != nil {
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"codexBinaryPath": second}); err != nil {
 		t.Fatalf("UpdateSettings codexBinaryPath: %v", err)
 	}
 	models, err := app.GetModelsForProvider("codex")

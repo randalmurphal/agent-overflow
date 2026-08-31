@@ -87,10 +87,17 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // tokens are fetched through GetRemoteEndpointToken and sensitive environment
 // values have no read path at all.)
 //
+// The scope below is the FLOOR. Which keys a given caller may actually write
+// is decided per key by requireSettingsTier, because one method carries all
+// three of §6's tiers and no single annotation can express that.
+//
 //ao:scope settings:write
-func (a *App) UpdateSettings(patch map[string]any) (settings.Settings, error) {
+func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (settings.Settings, error) {
 	if a.settings == nil {
 		return settings.Settings{}, fmt.Errorf("settings service unavailable")
+	}
+	if err := a.requireSettingsTier(ctx, patch); err != nil {
+		return settings.Settings{}, err
 	}
 	prev := a.settings.Get()
 	next, err := a.settings.Update(patch)

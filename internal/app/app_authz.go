@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"sort"
 
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
 )
@@ -51,10 +53,8 @@ func (a *App) requireScope(ctx context.Context, scope transport.Scope, detail st
 	if refusal != "" {
 		return transport.AuthRefused(refusal)
 	}
-	for _, name := range granted {
-		if name == string(scope) {
-			return nil
-		}
+	if holdsScope(granted, scope) {
+		return nil
 	}
 	return transport.ScopeRequired(scope, detail)
 }
@@ -95,4 +95,75 @@ func (a *App) requireAutonomy(ctx context.Context, mode string) error {
 	}
 	return a.requireScope(ctx, transport.ScopeThreadsAutonomy,
 		"selecting the "+string(parsed)+" runtime mode")
+}
+
+// requireSettingsTier refuses a settings patch that reaches further than the
+// calling session may write. One rule per tier, exactly as
+// docs/specs/remote-access.md §6 states them:
+//
+//   - device tier rides ANY valid session. It is a property of the screen in
+//     front of the person, and refusing it would mean a phone cannot set its
+//     own font size.
+//   - user tier needs settings:write. It is the person's working preference
+//     and follows them between machines.
+//   - host tier needs a fresh step-up proof. It configures the backend
+//     machine itself — the listeners it binds, the binaries it spawns, the
+//     authorities it hands a provider session.
+//
+// An UNCLASSIFIED key is host tier and false from settings.TierForKey, and is
+// treated as host here for the same fail-closed reason that answer exists: a
+// key nobody assigned a tier to is not one to write from a phone.
+//
+// The METHOD's own //ao:scope floor is still settings:write, so today a
+// device-tier-only patch also needs that grant to reach this function at all.
+// That is coarser than §6 wants and is a known gap of this phase: the scope
+// vocabulary has no name for "any valid session", so the floor cannot spell
+// the device rule. Narrowing the floor is a phase-4 change; nothing is
+// LOOSER than the spec here, only stricter.
+func (a *App) requireSettingsTier(ctx context.Context, patch map[string]any) error {
+	granted, refusal, hasSession := a.callerGrants(ctx)
+	if !hasSession {
+		return nil
+	}
+	if refusal != "" {
+		return transport.AuthRefused(refusal)
+	}
+
+	// Sorted, so a patch touching several keys always names the same one in
+	// its refusal. A message that varies run to run is one nobody can search
+	// for in a bug report.
+	keys := make([]string, 0, len(patch))
+	for key := range patch {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		tier, _ := settings.TierForKey(key)
+		switch tier {
+		case settings.TierHost:
+			if err := a.requireStepUp(ctx, "writing the host-tier setting "+key); err != nil {
+				return err
+			}
+		case settings.TierUser:
+			if !holdsScope(granted, transport.ScopeSettingsWrite) {
+				return transport.ScopeRequired(transport.ScopeSettingsWrite,
+					"writing the user-tier setting "+key)
+			}
+		case settings.TierDevice:
+			// A live session is the whole requirement, and callerGrants just
+			// re-read it.
+		}
+	}
+	return nil
+}
+
+// holdsScope reports whether a grant set carries scope.
+func holdsScope(granted []string, scope transport.Scope) bool {
+	for _, name := range granted {
+		if name == string(scope) {
+			return true
+		}
+	}
+	return false
 }

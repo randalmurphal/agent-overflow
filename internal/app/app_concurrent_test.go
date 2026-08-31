@@ -228,7 +228,7 @@ func TestConcurrent_SettingsUpdateDuringStartup(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if _, err := app.UpdateSettings(map[string]any{
+			if _, err := app.UpdateSettings(context.Background(), map[string]any{
 				"theme": themes[i%len(themes)],
 			}); err != nil {
 				t.Errorf("UpdateSettings[%d]: %v", i, err)

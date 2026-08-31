@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -47,7 +48,7 @@ func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
 	t.Run("flipping the master switch applies and emits the derived mode", func(t *testing.T) {
 		app, rec := newKeepAwakeApp(t)
 
-		if _, err := app.UpdateSettings(map[string]any{"keepAwakeEnabled": true}); err != nil {
+		if _, err := app.UpdateSettings(context.Background(), map[string]any{"keepAwakeEnabled": true}); err != nil {
 			t.Fatalf("UpdateSettings() error = %v", err)
 		}
 		// keepAwakeScreen defaults TRUE, so the master switch alone means
@@ -56,7 +57,7 @@ func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
 		assertModes(t, rec.applied, power.ModeDisplay)
 		assertEmitted(t, rec.emitted, "display")
 
-		if _, err := app.UpdateSettings(map[string]any{"keepAwakeEnabled": false}); err != nil {
+		if _, err := app.UpdateSettings(context.Background(), map[string]any{"keepAwakeEnabled": false}); err != nil {
 			t.Fatalf("UpdateSettings() error = %v", err)
 		}
 		assertModes(t, rec.applied, power.ModeDisplay, power.ModeOff)
@@ -66,10 +67,10 @@ func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
 	t.Run("the screen axis alone reaches the OS while the feature stays on", func(t *testing.T) {
 		app, rec := newKeepAwakeApp(t)
 
-		if _, err := app.UpdateSettings(map[string]any{"keepAwakeEnabled": true}); err != nil {
+		if _, err := app.UpdateSettings(context.Background(), map[string]any{"keepAwakeEnabled": true}); err != nil {
 			t.Fatalf("UpdateSettings() error = %v", err)
 		}
-		if _, err := app.UpdateSettings(map[string]any{"keepAwakeScreen": false}); err != nil {
+		if _, err := app.UpdateSettings(context.Background(), map[string]any{"keepAwakeScreen": false}); err != nil {
 			t.Fatalf("UpdateSettings() error = %v", err)
 		}
 		assertModes(t, rec.applied, power.ModeDisplay, power.ModeSystem)
@@ -82,7 +83,7 @@ func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
 		// Still a fan-out — presence in the patch is what triggers it —
 		// but the derived mode is off, because the master switch decides
 		// whether anything is held at all.
-		if _, err := app.UpdateSettings(map[string]any{"keepAwakeScreen": false}); err != nil {
+		if _, err := app.UpdateSettings(context.Background(), map[string]any{"keepAwakeScreen": false}); err != nil {
 			t.Fatalf("UpdateSettings() error = %v", err)
 		}
 		assertModes(t, rec.applied, power.ModeOff)
@@ -92,7 +93,7 @@ func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
 	t.Run("an unrelated patch does not touch the inhibitor", func(t *testing.T) {
 		app, rec := newKeepAwakeApp(t)
 
-		if _, err := app.UpdateSettings(map[string]any{"fontSize": 15}); err != nil {
+		if _, err := app.UpdateSettings(context.Background(), map[string]any{"fontSize": 15}); err != nil {
 			t.Fatalf("UpdateSettings() error = %v", err)
 		}
 		assertModes(t, rec.applied)
@@ -106,7 +107,7 @@ func TestUpdateSettingsFansOutKeepAwake(t *testing.T) {
 		// swallow the directive.
 		rec.applyErr = errors.New("no inhibitor available")
 
-		if _, err := app.UpdateSettings(map[string]any{"keepAwakeEnabled": true}); err != nil {
+		if _, err := app.UpdateSettings(context.Background(), map[string]any{"keepAwakeEnabled": true}); err != nil {
 			t.Fatalf("UpdateSettings() error = %v, want the save to succeed regardless", err)
 		}
 		assertEmitted(t, rec.emitted, "display")

@@ -528,7 +528,7 @@ func TestRestoreDeviceReadmitsItToTheOverview(t *testing.T) {
 func TestRevokeReachesSocketsWhenTheTransportBootsFirst(t *testing.T) {
 	app := newTestAppWithStore(t)
 	conns := &recordingConns{}
-	AttachSessionConns(app, conns) // transport first,
+	AttachSessionConns(app, conns)         // transport first,
 	app.initIdentity("backend-under-test") // identity second
 	app.SetTransportServer(startTestTransportServer(t))
 	id, err := app.store.Identity()

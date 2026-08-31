@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -41,7 +42,7 @@ func TestUpdateSettingsBroadcastsOneFramePerTier(t *testing.T) {
 	app := newTestApp(t)
 	broadcasts := captureSettingsBroadcasts(t, app)
 
-	if _, err := app.UpdateSettings(map[string]any{"fontSize": 17, "confirmDelete": false}); err != nil {
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"fontSize": 17, "confirmDelete": false}); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
 	if len(broadcasts.events) != 2 {
@@ -57,11 +58,11 @@ func TestUpdateSettingsBroadcastsOneFramePerTier(t *testing.T) {
 
 func TestUpdateSettingsWithNoChangeBroadcastsNothing(t *testing.T) {
 	app := newTestApp(t)
-	if _, err := app.UpdateSettings(map[string]any{"fontSize": 17}); err != nil {
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"fontSize": 17}); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
 	broadcasts := captureSettingsBroadcasts(t, app)
-	if _, err := app.UpdateSettings(map[string]any{"fontSize": 17}); err != nil {
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"fontSize": 17}); err != nil {
 		t.Fatalf("repeat UpdateSettings: %v", err)
 	}
 	if len(broadcasts.events) != 0 {

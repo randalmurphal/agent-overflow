@@ -3951,6 +3951,10 @@ export function UpdateRemoteEndpoint(id: string, name: string, url: string, toke
  * store holds a plaintext secret. (Nothing consumes the secrets from here —
  * tokens are fetched through GetRemoteEndpointToken and sensitive environment
  * values have no read path at all.)
+ * 
+ * The scope below is the FLOOR. Which keys a given caller may actually write
+ * is decided per key by requireSettingsTier, because one method carries all
+ * three of §6's tiers and no single annotation can express that.
  */
 export function UpdateSettings(patch: { [_ in string]?: any }): $CancellablePromise<settings$0.Settings> {
     return $Call.ByID(2894041249, patch).then(($result: any) => {

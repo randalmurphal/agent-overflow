@@ -228,3 +228,109 @@ func TestGrantedSessionReachesTheMethodBody(t *testing.T) {
 		t.Fatalf("unexpected cancellation: %v", err)
 	}
 }
+
+// The settings tiers (docs/specs/remote-access.md §6). One case per tier,
+// plus the two the table itself decides: an unclassified key and a caller
+// with no session.
+
+// settingsTierApp pairs an identity-wired App with three callers: a session
+// holding everything, one holding no settings grant at all, and the host.
+func settingsTierApp(t *testing.T) (app *App, full, limited string) {
+	t.Helper()
+	app = identityApp(t)
+	return app,
+		pairSessionWithScopes(t, app, "thumb-settings-full", identity.Scopes).ID,
+		pairSessionWithScopes(t, app, "thumb-settings-limited",
+			[]identity.Scope{identity.ScopeThreadsRead}).ID
+}
+
+// TestDeviceTierSettingRidesAnyValidSession: a font size is a property of the
+// screen in front of the person. Refusing it would mean a phone cannot set
+// its own.
+func TestDeviceTierSettingRidesAnyValidSession(t *testing.T) {
+	app, _, limited := settingsTierApp(t)
+
+	patch := map[string]any{"fontSize": 15}
+	if err := app.requireSettingsTier(callFrom(limited, false), patch); err != nil {
+		t.Fatalf("a device-tier key from a session with no settings grant: %v", err)
+	}
+}
+
+// TestUserTierSettingNeedsSettingsWrite: a working preference follows the
+// person, and writing one is a grant they gave this device.
+func TestUserTierSettingNeedsSettingsWrite(t *testing.T) {
+	app, full, limited := settingsTierApp(t)
+	patch := map[string]any{"confirmDelete": false}
+
+	wantScopeRefusal(t, app.requireSettingsTier(callFrom(limited, false), patch),
+		transport.ScopeSettingsWrite)
+	if err := app.requireSettingsTier(callFrom(full, false), patch); err != nil {
+		t.Fatalf("a user-tier key from a session holding settings:write: %v", err)
+	}
+}
+
+// TestHostTierSettingNeedsAStepUpProof: no standing grant reaches the backend
+// machine's own configuration. The session below holds EVERY scope and is
+// still refused off-host, which is the property worth pinning — a host-tier
+// write is not a scope anybody can be given.
+func TestHostTierSettingNeedsAStepUpProof(t *testing.T) {
+	app, full, _ := settingsTierApp(t)
+	patch := map[string]any{"retention": map[string]any{}}
+
+	err := app.requireSettingsTier(callFrom(full, false), patch)
+	frame, ok := transport.AuthzFrame(err)
+	if !ok {
+		t.Fatalf("err = %v, want a typed authorization refusal", err)
+	}
+	if frame.Code != transport.ErrCodeStepUpRequired {
+		t.Errorf("code = %q, want %q", frame.Code, transport.ErrCodeStepUpRequired)
+	}
+
+	if err := app.requireSettingsTier(callFrom(full, true), patch); err != nil {
+		t.Fatalf("a host-tier key with host presence proven: %v", err)
+	}
+}
+
+// TestUnclassifiedSettingsKeyIsHostTier. settings.TierForKey answers
+// (TierHost, false) for a key nobody classified, and this is the enforcement
+// half of that fail-closed default.
+func TestUnclassifiedSettingsKeyIsHostTier(t *testing.T) {
+	app, full, _ := settingsTierApp(t)
+
+	err := app.requireSettingsTier(callFrom(full, false), map[string]any{"noSuchSetting": 1})
+	frame, ok := transport.AuthzFrame(err)
+	if !ok || frame.Code != transport.ErrCodeStepUpRequired {
+		t.Fatalf("err = %v, want step_up_required for an unclassified key", err)
+	}
+}
+
+// TestSettingsTierAdmitsACallWithNoSession is the compatibility case: the
+// launch-credential connection and every in-process caller are unchanged.
+func TestSettingsTierAdmitsACallWithNoSession(t *testing.T) {
+	app, _, _ := settingsTierApp(t)
+
+	for _, ctx := range []context.Context{context.Background(), callFrom("", false)} {
+		if err := app.requireSettingsTier(ctx, map[string]any{"retention": map[string]any{}}); err != nil {
+			t.Errorf("a call with no session behind it was refused: %v", err)
+		}
+	}
+}
+
+// TestUpdateSettingsRefusesBeforeItWrites is the wiring test: the gate runs
+// ahead of the persist, so a refused patch leaves the file untouched. A gate
+// placed after settings.Update would pass every assertion above and still
+// have applied the change.
+func TestUpdateSettingsRefusesBeforeItWrites(t *testing.T) {
+	app, full, _ := settingsTierApp(t)
+	before := app.currentSettings()
+
+	_, err := app.UpdateSettings(callFrom(full, false), map[string]any{
+		"observabilityTracingEnabled": !before.ObservabilityTracingEnabled,
+	})
+	if _, ok := transport.AuthzFrame(err); !ok {
+		t.Fatalf("UpdateSettings err = %v, want a typed authorization refusal", err)
+	}
+	if got := app.currentSettings().ObservabilityTracingEnabled; got != before.ObservabilityTracingEnabled {
+		t.Errorf("the refused patch was persisted anyway: tracing = %v", got)
+	}
+}
