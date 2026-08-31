@@ -17,6 +17,7 @@ import (
 	"log"
 	"sync"
 
+	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/settings"
@@ -154,7 +155,6 @@ func (s webviewShell) run() error {
 		defer winMu.Unlock()
 		return window
 	}
-
 	appOpts := desktopApplicationOptions(s.title)
 	if s.singleInstance {
 		appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
@@ -245,7 +245,7 @@ func runDesktop(listenAddr string) {
 		singleInstance: true,
 		services: func(getWindow func() *application.WebviewWindow) []application.Service {
 			return []application.Service{
-				application.NewService(newDesktopNotificationService(appService, getWindow)),
+				application.NewService(appservice.NewDesktopNotificationService(appService.App, getWindow)),
 				application.NewService(appService),
 			}
 		},
@@ -254,7 +254,7 @@ func runDesktop(listenAddr string) {
 			// RPC handlers observe appService.updater.handle without a race. No-op for dev
 			// builds and on provider/init failure (logged) — updates stay unavailable
 			// and the app runs normally.
-			initUpdater(appService, app)
+			appservice.InitUpdater(appService.App, app)
 			// An empty AppURL is refused by the shell, immediately after
 			// this returns and before the window options are built — one
 			// check, on the path that would actually hand Wails the empty
@@ -269,8 +269,10 @@ func runDesktop(listenAddr string) {
 			}
 			return srv.AppURL()
 		},
-		loadGeometry:    loadPersistedWindowGeometry,
-		persistGeometry: appService.persistWindowGeometry,
+		loadGeometry: loadPersistedWindowGeometry,
+		persistGeometry: func(geometry windowgeom.Geometry) {
+			appservice.PersistWindowGeometry(appService.App, geometry)
+		},
 	}
 
 	runErr := shell.run()

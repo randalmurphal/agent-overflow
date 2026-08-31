@@ -23,20 +23,20 @@ that is not `$HOME`.
 
 Rules that keep the seam a seam:
 
-- **`main` satisfies it through exactly one adapter**,
-  `workflowHostAdapter` in `app_workflow_host.go`. Every method is a
+- **`internal/app` satisfies it through exactly one adapter**,
+  `workflowHostAdapter` in `internal/app/app_workflow_host.go`. Every method is a
   forward to the App's own unexported one and nothing else. Behavior
   belongs on the App method; the adapter must stay pure glue. It exists
-  because an interface declared outside `main` cannot name an unexported
-  method, and exporting the App methods would ripple through `main`
+  because an interface declared outside `internal/app` cannot name an
+  unexported method, and exporting the App methods would ripple through that package
   further than the forwards do.
 - **Adding a capability means adding it to a seam**, not reaching around
   it. There is no `*App` here and none may come back.
 - **The store is NOT a host capability.** It is a dependency of the
   runner, held as `*store.Store` directly, the way every other workflow
-  collaborator in `main` (`workflowProfileSource`,
+  collaborator in `internal/app` (`workflowProfileSource`,
   `workflowDefinitionSource`, `workflowSpendSource`) holds it.
-- **Nothing here registers on the wire.** Bound methods stay in `main`;
+- **Nothing here registers on the wire.** Bound methods stay in `internal/app`;
   `App.workflowRunner` is the only reference into this package.
 
 ## Layout
@@ -57,7 +57,7 @@ Rules that keep the seam a seam:
 | `takeover.go` | Human takeover: detach without losing the reliability deadline, the yield wait, and the Claude schema swap. |
 | `tool.go` | `driver: tool` phases: process supervision, envelope synthesis, and the reaper. |
 | `narrative.go` | Settling an accepted attempt's narrative file from its three ordered sources. |
-| `artifacts.go` | `CaptureArtifact` / `OpenArtifactRoot` / `ArtifactDir`. |
+| `artifacts.go` | Capture plus safe listing of per-run artifacts: `CaptureArtifact`, `ListArtifacts`, `OpenArtifactRoot`, and `ArtifactDir`. `internal/app` retains the Wails DTO conversion. |
 
 ## Testing
 
@@ -87,7 +87,7 @@ Deliberate choices in the fixture:
 Tests that exercise App-level workflow behavior through bound methods
 (engine-driven end-to-end runs, `workflowSchemaForSession`, the
 access→runtime-mode mapping, project deletion against a live run) stay
-in `main`.
+in `internal/app`.
 
 ## References
 

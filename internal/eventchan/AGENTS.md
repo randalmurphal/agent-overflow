@@ -36,8 +36,8 @@ is no third list to keep in sync. Adding a constant is enough.
 ## Why the newtype, and what it does not do
 
 `EventBus.Emit`, `(*App).emit` / `emitEvent`, `triage.NewRouter`'s emit
-callback, `workflow/engine.Emitter`, and `screenshot.Installer.Emit` all
-take a `Channel`. A channel *variable* therefore cannot cross into an
+callback, and `workflow/engine.Emitter` all take a `Channel`. A channel
+*variable* therefore cannot cross into an
 emit site without an explicit `eventchan.Channel(...)` conversion, which
 is exactly what the harness escape hatches spell (`HarnessEmit`,
 `harness.Replayer`). A caller-named channel that matches a registered
@@ -46,7 +46,7 @@ gated by `--harness`/`--soak` + a LocalOnly receiver); an unrecognized
 name lands on the registry's fail-closed loopback-only default.
 
 What the type does NOT stop is an untyped string LITERAL: Go assigns
-those to any string type. The root package's
+those to any string type. `internal/app`'s
 `TestEmitSitesNameAnEventChannelConstant` closes that hole by AST-scanning
 every production source for an emit call with a `BasicLit` first argument.
 Both guards are load-bearing; neither is sufficient alone.

@@ -82,7 +82,7 @@ cannot debug.
   the instant the blocker is removed. Unlike `theme.Service` there is no
   value riding along: nothing is being migrated, so the retry is just the
   seed again.
-- The watcher (`app_spinner_watcher.go`) makes edits live. This package
+- The watcher (`internal/assetwatch`) makes edits live. This package
   never writes into the directory except that one boot refresh, whose
   `internal/atomicfile` temp name (`SPINNERS.md.tmp-NNNNN`) falls outside
   the watcher's `.png`/`.json` rule by construction, which is why there

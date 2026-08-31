@@ -12,20 +12,34 @@ writes, `app.Event.Emit`, cross-thread orchestration and reconnect policy.
 
 ## Account probes
 
-`claude.ProbeAccount`, `codex.ProbeAccount` and `codex.ProbeIdentity` enforce
-two rules in code rather than by caller discipline.
-- **`ProbeConfig.WorkDir` is required and absolute** (`ValidateProbeWorkDir`,
-  `probeworkdir.go`). Both CLIs walk up from their cwd for project-scoped
-  config, and a project `.claude/settings.json` env block can repoint the CLI
-  at another backend, so an inherited cwd makes "who is logged in" depend on
-  where AO was launched from.
-- **`ProbeCacheKey` carries `(Binary, AccountID, WorkDir, EnvFingerprint)`**
-  (`probecache.go`). Dropping a dimension serves one environment's identity as
-  another's; the fingerprint is a digest, since a key outlives its call.
+- **`ProbeConfig.WorkDir` is required and must be absolute**
+  (`ValidateProbeWorkDir`, `probeworkdir.go`). Both CLIs discover
+  project-scoped configuration by walking up from their cwd, and a
+  project `.claude/settings.json` env block can repoint the CLI at a
+  different backend — so an inherited cwd makes "who is logged in"
+  depend on where the app was launched from.
+- **`ProbeCacheKey` carries `(Binary, AccountID, WorkDir,
+  EnvFingerprint)`** (`probecache.go`). Dropping any dimension serves one
+  environment's identity as another's. `EnvFingerprint` is a digest (not
+  the values — a cache key outlives the call that built it and a custom
+  environment may hold a credential) of the user's configured environment
+  for the provider: `ANTHROPIC_BASE_URL` and a proxy decide which backend
+  answers "who am I", so the answer must not outlive the setting.
 
-Every probe runs in the one directory `providerProbeWorkDir` pins (the user
-home) because probe consumers are global; making probes follow the active
-thread's workspace is a product change, not a bug fix.
+`ReservedEnvNames` (`pinnedenv.go`) is the source of truth for the
+variables AO sets or clears itself, and therefore the ones a user's custom
+environment may not override. `internal/settings` keeps a copy (it cannot
+import this package) and `internal/app`'s
+`TestReservedEnvNamesMatchTheProviderPins` fails if the two drift in either
+direction. A new pin in any
+spawn path belongs in that list in the same commit.
+
+The app pins one directory for every probe (`providerProbeWorkDir` in
+`internal/app/app_provider_account_adapters.go`, the user home) because AO's probe
+consumers are global: managed-account adoption, external-login
+reconciliation, and Claude's canonical-home OAuth refresh. Making probes
+reflect the active thread's workspace instead is a product change, not a
+bug fix — see `t3-improvements.md` §2.3.
 
 ## Child environment
 
@@ -37,8 +51,9 @@ AppImage mount's bin directory from re-entering through the override path.
 `ReservedEnvNames` (`pinnedenv.go`) is the source of truth for the variables
 AO sets or clears itself, and therefore the ones a user's custom environment
 may not override. `internal/settings` keeps a copy because it cannot import
-this package; `TestReservedEnvNamesMatchTheProviderPins` fails on drift either
-way. A new pin in any spawn path joins that list in the same commit.
+this package; `internal/app`'s `TestReservedEnvNamesMatchTheProviderPins` fails
+on drift either way. A new pin in any spawn path joins that list in the same
+commit.
 
 ## Model catalogs
 

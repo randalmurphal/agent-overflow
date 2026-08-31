@@ -2,7 +2,7 @@
 // sanitisers behind the "generate a commit message" provider call.
 //
 // The App-coupled glue (workspace resolution, settings routing, CLI
-// invocation) stays in the main package — this package only knows how
+// invocation) stays in `internal/app` — this package only knows how
 // to assemble the prompt, parse the structured output, and trim the
 // model's response into a well-formed subject + body.
 package commitmsg

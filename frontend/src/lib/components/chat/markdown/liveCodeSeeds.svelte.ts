@@ -1,7 +1,7 @@
 // Live syntax-span seeds for streaming code blocks. The backend
 // watches its own copy of a streaming assistant_text row for fenced
 // code, highlights it, and pushes span metadata on the remote-only
-// `highlight:seed` channel (app_highlight_seed.go). A remote client
+// `highlight:seed` channel (app_highlight.go / internal/highlightapp). A remote client
 // colors the streaming block from the seed riding the event stream —
 // one-way latency — instead of paying a WAN round trip per growth
 // step. Loopback clients never receive these frames.

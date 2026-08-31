@@ -406,8 +406,9 @@ func (r *Runner) attachUnitRun(key engine.RunKey, plan workflowUnitPlan, threadI
 // system prompt suffix states it), so a dirty unit checkout here means that
 // contract slipped — and forcing would destroy the only copy of work no branch
 // carries. Such a checkout is KEPT, path and all, and named loudly instead.
-// `removeWorkflowUnitWorktrees` stays forced, because a discard is the human
-// saying the work is not wanted.
+// `workflowapp.Service.removeUnitWorktrees` stays forced for explicit
+// disposition cleanup, where the run has already finished and the checkout is
+// being torn down as part of the chosen policy.
 //
 // A removal failure is reported and never changes the phase's outcome: the join
 // is done, and an undeleted directory is not a reason to fail a run.

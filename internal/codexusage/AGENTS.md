@@ -26,8 +26,8 @@ render of the overlay section would pay that.
 - What does NOT belong here:
   - Deciding HOW to read. The App supplies a `Fetch` closure because
     only it knows whether a live session's connection can be ridden
-    (`app_codex_usage.go#readCodexAccountUsage`).
-  - The wire shape and its parsing (`internal/provider/codex/account_usage.go`).
+    (`app_codex_bindings.go#readCodexAccountUsage`).
+  - The wire shape and its parsing — `internal/provider/codex/account_usage.go`.
   - `*App` state or frontend-facing types.
 
 ## Two rules that are not stylistic

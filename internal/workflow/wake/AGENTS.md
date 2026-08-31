@@ -17,175 +17,223 @@ same ask. See Coalescing.
 
 ## Invariants
 
-- **Pure.** No lookups, no I/O. The same input always produces the same message,
-  which is what makes the format testable without a store, engine, or provider.
-- **No envelope dumps.** A wake names the resting state, its typed reason, the
-  phase's free text, the run's *declared* outputs, and references. Raw envelopes,
-  gate traces, and diffs are reachable through the references only.
-- **A bounded digest is not a dump.** Two facts ride the message because the
-  alternative was measured: the run's **worktree and branch**, and, for a `gate`
-  park alone, a bounded digest of what the PARKED ATTEMPT produced
-  (`Input.AttemptOutputs`, the verdict a human is being asked to rule on). Both
-  are resolved app-side. The digest reuses `run inspect`'s bounding rather than a
-  second one, states its own overflow, and names the drill-down. Every other park
-  either has no decision to make or already carries its account in the detail
-  line, so it carries no digest.
-- **The engine's diagnosis is its own line and a separate field.** `Run.Cause` /
-  `Descendant.Cause` carry the resting attempt's persisted `park_cause`, resolved
-  app-side, and render as one bounded line distinct from the detail above it. The
-  detail is what the PHASE said; conflating the two would let engine prose read as
-  a model's report. An absent cause renders nothing.
-- **Every quoted value is data.** Goals, questions, stuck reasons, and output
-  values come out of a model. They go through `internal/untrustedtext` and the
-  message leads with the notice that says so, because the reader is another agent.
-- **Bounded.** Outputs, references, and every free-text field carry a rune/count
-  budget with an explicit "…and N more" tail. `MaxDetailRunes` (2000) is
-  deliberately the largest: the question or stuck reason is the one field the
-  reader has to ACT on. `MaxCauseRunes` is 400, `MaxChainRuns` 6.
-- **A descendant park is composed against the root.** Child runs never bind and
-  never notify as themselves; when `Input.Descendant` is set the headline is the
-  root's (still `running`, because it is *waiting*) and the body names the parked
-  descendant, its depth, and what it is parked on. It carries **no
-  `Input.Outputs`**: those are the ROOT's declared outputs and the root has not
-  finished, so on a recursive campaign they are the previous wave's carry-forward
-  values restated as though they described the run that just stopped. Same rule as
-  the blanked `Run.Reason`; the resolver (`app_workflow_wake.go`) omits both, and
-  the descendant's own outputs already ride as `AttemptOutputs`. The body also
-  carries the **call chain** root to park (`Descendant.Chain`, elided in the middle
-  past `MaxChainRuns` with the elision stating how many it dropped) and a closing
-  naming which run to act on, so a repair verb can be issued without a second
-  command (D36a).
-- **`checkpoint` is the one reason whose closing is not a fault.** The run stopped
-  exactly where it was asked to (D36), so both closings point at the resume rather
-  than at a resolution. Its sentence lives in `repairSentence` like every other
-  reason's and both closings RETURN it rather than restating it, because
-  `agent-overflow run watch` prints `RepairSentence` and nothing else: a branch
-  living only in `closing` watches to a resting line naming no verb.
+- **Pure.** `Compose` / `ComposeProgress` perform no lookups and no I/O.
+  The same input always produces the same message, which is what makes
+  the format testable without a store, an engine, or a provider.
+- **No envelope dumps.** A wake names the resting state, its typed
+  reason, the phase's free text, the run's *declared* outputs, and
+  references. Raw envelopes, gate traces, and diffs are reachable
+  through the references — they never ride the message.
+- **A bounded digest is not a dump (K3).** Two facts ride the message
+  because the alternative was measured, not because they fit: the run's
+  **worktree and branch** (asked twelve times in one live campaign), and
+  — for a `gate` park alone — a bounded digest of what the PARKED
+  ATTEMPT produced (`Input.AttemptOutputs`, the verdict/severity a human
+  is being asked to rule on, read before *every* gate resolution in that
+  same campaign). Both are resolved app-side. The digest reuses `run
+  inspect`'s bounding rather than a second one, states its own overflow,
+  and names the drill-down that answers it. Every other park either has
+  no decision to make or already carries its account in the detail line,
+  so it carries no digest — the message is compact because the lists are
+  chosen, not because everything is short.
+- **The engine's diagnosis is its own line, and a separate field.**
+  `Run.Cause` / `Descendant.Cause` carry the resting attempt's persisted
+  `park_cause` — resolved app-side from the attempt row, never looked up
+  here — and render as one bounded line ("The engine stopped it here:")
+  distinct from the detail above it. The detail is what the PHASE said;
+  conflating the two would let engine prose read as a model's report. An
+  absent cause renders nothing: an empty label would read as a diagnosis
+  that was lost on the way here.
+- **Every quoted value is data.** Goals, questions, stuck reasons, and
+  output values come out of a model. They go through
+  `internal/untrustedtext` and the message leads with the notice that
+  says so, because the reader is another agent.
+- **Bounded.** Outputs, references, and every free-text field carry a
+  rune/count budget with an explicit "…and N more" tail. A run that
+  produced a thousand outputs still composes a message a thread can
+  take. `MaxDetailRunes` is deliberately the largest of them: the
+  question or stuck reason is the one field the reader has to ACT on,
+  and a wake that halves it buys its compactness by making the round
+  trip it exists to prevent mandatory.
+- **A descendant park is composed against the root.** Child runs never
+  bind and never notify as themselves; when `Input.Descendant` is set
+  the headline is the root's (still `running` — it is *waiting*) and the
+  body names the parked descendant, its depth, and what it is parked on.
+  This is what turns "a grandchild is stuck" into one message on the
+  surface a human or agent actually watches. It carries **no
+  `Input.Outputs`**: those are the ROOT's declared outputs and the root
+  has not finished, so for a recursive campaign they are the previous
+  wave's carry-forward values (`next-wave-number: 3`) restated on every
+  park deep in the tree as though they described the run that just
+  stopped. Same rule as the blanked `Run.Reason` — the resolver
+  (`internal/workflowapp/wake_surface.go`) omits both on a descendant wake, and the
+  descendant's own attempt outputs already ride the message as
+  `AttemptOutputs`. The body also carries the
+  **call chain** root→park (`Descendant.Chain`, elided in the middle
+  past `MaxChainRuns` with the elision stating how many it dropped) and
+  a closing naming which run to act on, because a campaign's sixth wave
+  is a run the reader has never seen and the message has to be enough to
+  issue a repair verb against it without a second command (D36a).
+- **`checkpoint` is the one reason whose closing is not a fault.** The
+  run stopped exactly where it was asked to (D36), so both the root and
+  the descendant closing say that and point at the resume rather than at
+  a resolution. Its sentence lives in `repairSentence` like every other
+  reason's, and both closings return it rather than restating it: the
+  descendant branch adds only the lead-in naming which run stopped, and
+  the root branch is the sentence alone (with no "parked and does not
+  continue" preamble, which would report the stop as something owing
+  resolution). That matters beyond tidiness — `agent-overflow run watch`
+  prints `RepairSentence` and nothing else, so a checkpoint branch that
+  existed only in `closing` watched to a resting line naming no verb, on
+  the one park a supervising agent produces for itself.
+- **A closing names the verb, not just the run (D38).** `repairSentence`
+  appends the literal command to the closing: `run resume` for
+  paused/interrupted/checkpoint, `run rerun` for a failed state,
+  `run retry-failed-units` / `run retry-unit` for `unit-failed` (a failed
+  JOIN is one of those units, so the closing says so, and it names `run
+  resume` alongside them: it continues the same attempt, while `run resume
+  --phase <id>` is the one form that re-runs work the wave already
+  finished),
+  `run resolve --approve|--reject` for a `gate` park whose persisted decision
+  is a human: route, `run resume` for one whose decision is a park: route
+  (D41 amendment — a park: route declares no approve/reject, so naming
+  `run resolve` for it would be the dead verb this sentence exists to
+  prevent; the kind rides in on `Run.GateDecision` / `Descendant.GateDecision`,
+  resolved app-side from the gate trace, and an empty kind names both verbs
+  keyed off `run status`'s decision= field), `run answer` for `question`
+  (resolve/answer exist since D41; the closing also says a phase session needs
+  the `resolve` grant and that the judgment must be the reader's to make), and
+  `run resume` for `provider-retries-exhausted` — the turn died on a provider failure the
+  transient retries could not outlast, and the session it died in is where the
+  next one belongs (the reason IS a `ContinuableReason`) when that
+  provider context remains available, otherwise the round is reconstructed in
+  a new thread from its full persisted input; `provider-usage-limited` also
+  names `run resume`, but states the stronger D75 contract: it makes an
+  immediate real attempt after a reset or account switch, and no recorded
+  availability state may block it; `loop-limit-exhausted` instead
+  names `run resume --phase <phase-id>` at an earlier phase because only an
+  outside entry refills its bound; legacy `retries-exhausted` names both
+  possibilities without guessing its source; and
+  `run resume` for `stuck` — the phase said what it needs, and once that is
+  cleared a bare resume enters the parked phase again as a FRESH attempt
+  (`stuck` is not a `ContinuableReason`), with `--refresh-def` named alongside
+  it because the usual fix for a stuck phase is an edit to the prompt or the
+  definition it froze at start. Every other
+  reason prints no verb, because the reason names its
+  own cause and a generic "resume" would be exactly the wrong guess. The
+  command carries the id of the run being acted on, which for a
+  descendant park is the DESCENDANT's, still quoted as untrusted data.
+  The states and reasons the closing branches on are mirrored here as
+  package constants rather than imported from the engine — this package
+  is pure text assembly over a flat input, and importing the engine for a
+  handful of strings would drag the whole FSM in.
 
 ## The closing names the verb, not just the run (D38)
 
-`repairSentence` appends the literal command, carrying the id of the run being
-acted on (the DESCENDANT's for a descendant park), still quoted as untrusted data.
-
-| Reason / state | Verb |
-|---|---|
-| `paused`, `interrupted`, `checkpoint` | `run resume` |
-| a failed state | `run rerun` |
-| `unit-failed` | `run retry-failed-units` / `run retry-unit`, plus `run resume` |
-| `gate` park, decision is a `human:` route | `run resolve --approve\|--reject` |
-| `gate` park, decision is a `park:` route | `run resume` |
-| `gate` park, decision kind empty | both, keyed off `run status`'s `decision=` |
-| `question` | `run answer` |
-| `provider-retries-exhausted` | `run resume` |
-| `provider-usage-limited` | `run resume` |
-| `loop-limit-exhausted` | `run resume --phase <phase-id>` |
-| legacy `retries-exhausted` | both possibilities, without guessing its source |
-| `stuck` | `run resume`, with `--refresh-def` named alongside |
-| everything else | no verb: the reason names its own cause |
-
-Notes the sentences carry:
-
-- A failed JOIN is one of the units, so the `unit-failed` closing says so. `run
-  resume` continues the same attempt; `run resume --phase <id>` is the one form
-  that re-runs work the wave already finished.
-- A `park:` route declares no approve/reject, so naming `run resolve` for it would
-  be the dead verb this sentence exists to prevent (D41 amendment). The kind rides
-  in on `Run.GateDecision` / `Descendant.GateDecision`, resolved app-side from the
-  gate trace.
-- The `question` closing also says a phase session needs the `resolve` grant and
-  that the judgment must be the reader's to make (D41).
-- `provider-retries-exhausted` IS a `ContinuableReason`: the session the turn died
-  in is where the next one belongs when that provider context remains available,
-  otherwise the round is reconstructed in a new thread from its full persisted
-  input. `provider-usage-limited` states the stronger D75 contract: an immediate
-  real attempt after a reset or account switch, with no recorded availability
-  state permitted to block it.
-- `loop-limit-exhausted` names an earlier phase because only an outside entry
-  refills its bound.
-- `stuck` is NOT a `ContinuableReason`: a bare resume enters the parked phase as a
-  FRESH attempt, and the usual fix is an edit to the prompt or definition it froze
-  at start.
-
-The states and reasons the closing branches on are mirrored here as package
-constants rather than imported from the engine: this package is pure text assembly
-over a flat input, and importing the engine for a handful of strings would drag
-the whole FSM in.
-
-## Coalescing
-
-- **Deduplication is by CONTENT, never by a time window.** A timer answers the
-  wrong question in both directions. `Signature` is over exactly the fields that
-  appear in the text: run, resting state, typed reason, phase and attempt, the
-  free-text detail, the engine cause, the gate kind, and for a descendant park the
-  same set again for the descendant.
-- **The digest, the outputs, the references, and the workspace are deliberately
-  NOT in the signature.** All are derived from the coordinate that is: a run
-  resting twice at the same coordinate with a fuller record has not asked a second
-  question, it has had its record re-read.
-- **Free text is bounded in the signature exactly as the composer bounds it.** Two
-  causes differing only past `MaxCauseRunes` render byte-identical.
-- **`ProgressSignature` carries the ATTEMPT, and that is load-bearing.** A
-  campaign's loop-back notify fires once per wave over the same phase and route; a
-  signature keyed on route alone would report wave one and swallow every wave
-  after it.
-- A signature is a readable string rather than a hash because it is persisted on
-  the run row (`work_items.wake_signature`, v52) and read by a human debugging a
-  wake that did or did not arrive. Comparison, recording, and the "somebody acted,
-  so the record is spent" clear all live in `app_workflow_wake_delivery.go`.
-- **A signature is recorded only once the message it identifies has stopped being
-  losable, and each delivery branch records at its own durability point.** A
-  session-less thread's ordinary send persists a durable row before it returns, so
-  that branch records inline; a live session's message goes through the flush
-  queue, which is process memory until the dispatch worker writes it or session
-  recovery persists it in the composer, so that branch defers to the queue item's
-  durability settlement (`triage.QueuedFlushItem`). Recording at hand-off would let
-  a crash, teardown, or rollback take the message while the row swore it was
-  delivered, and since the record is spent only when somebody ACTS, the identical
-  wake would then be suppressed forever. Redeliver over lose.
-- **A deferred record CLAIMS the row at hand-off (`queued:<signature>`) and is
-  promoted by a compare-and-set.** The two writers race by construction: the record
-  lands on the flush-dispatch worker, the clear on the app's serial wake queue. The
-  claim is what an action spends, and the promotion is a compare-and-set against it
-  (`UpdateWorkItemWakeSignatureIfCurrent`), so a spent claim can never become a
-  record. **The invalidation therefore lives where the clear already lives**: route
-  every clear through `clearWakeRecord`, so a future third clear site cannot miss
-  it. A claim never suppresses (comparison is for equality, and a real signature
-  always starts `kind=rest ` / `kind=progress `), so one stranded by a crash makes
-  the run more talkative, never silent.
+- **Deduplication is by CONTENT, never by a time window.** A timer
+  answers the wrong question in both directions: it suppresses a
+  genuinely new state that arrives quickly and lets a slow duplicate
+  through. What a reader experiences as a duplicate is a message that
+  says what the last one said, so `Signature` is over exactly the fields
+  that appear in the text — run, resting state, typed reason, phase and
+  attempt, the free-text detail, the engine cause, the gate kind, and for
+  a descendant park the same set again for the descendant.
+- **The digest, the outputs, the references, and the workspace are
+  deliberately NOT in the signature.** All of them are derived from the
+  coordinate that is: a run resting twice at the same coordinate with a
+  fuller record has not asked a second question, it has had its record
+  re-read.
+- **Free text is bounded in the signature exactly as the composer bounds
+  it in the message.** Two causes differing only past `MaxCauseRunes`
+  render byte-identical, so treating them as different asks would deliver
+  the same words twice.
+- **`ProgressSignature` carries the ATTEMPT, and that is load-bearing.**
+  A campaign's loop-back notify fires once per wave over the same phase
+  and the same route; a signature keyed on route alone would report wave
+  one and swallow every wave after it — the failure this mechanism exists
+  to prevent, inverted.
+- A signature is a readable string rather than a hash because it is
+  persisted on the run row (`work_items.wake_signature`, v52) and read
+  by a human debugging a wake that did or did not arrive. The comparison,
+  the record, and the "somebody acted, so the record is spent" clear all
+  live in `internal/workflowapp/wake_delivery.go` — this package only
+  says what identity means.
+- **A signature is recorded only once the message it identifies has
+  stopped being losable, and each delivery branch records at its own
+  durability point.** A session-less thread's ordinary send persists a
+  durable row before it returns, so that branch records inline; a live
+  session's message goes through the flush queue, which is process
+  memory until the dispatch worker writes it to the provider or session
+  recovery persists it in the composer, so that branch defers the record to
+  the queue item's durability settlement (`triage.QueuedFlushItem`). Recording
+  at hand-off would let a crash, a
+  session teardown, or a rollback take the message while the row swore
+  it had been delivered — and because the record is only spent when
+  somebody ACTS on the run, the identical wake would then be suppressed
+  forever. Redeliver over lose, the same trade the guidance slot makes:
+  the cost of erring the other way is one duplicate message.
+- **A deferred record CLAIMS the row at hand-off (`queued:<signature>`)
+  and is promoted by a compare-and-set.** The two writers of this column
+  race by construction — the record lands on the flush-dispatch worker,
+  the clear on the app's serial wake queue — so a deferred record with
+  nothing written yet leaves an action taken while the message was still
+  queued with nothing to spend, and the record then lands *behind* it.
+  A bare `run resume` of a `provider-retries-exhausted` run produces exactly that
+  sequence: it continues the same attempt, so every signature field
+  matches and the re-park would be suppressed forever. The claim is what
+  the action spends, and the promotion is a compare-and-set against it
+  (`UpdateWorkItemWakeSignatureIfCurrent`), so a spent claim can never
+  become a record. **The invalidation therefore lives where the clear
+  already lives** — any code that writes the column spends a pending
+  promotion for free, so a future third clear site cannot miss it; route
+  every clear through `clearWakeRecord`. A claim never suppresses (the
+  comparison is for equality and a real signature always starts
+  `kind=rest ` / `kind=progress `), so one stranded by a crash makes the
+  run more talkative, never silent.
 - **Provider usage storms add one app-side correlation layer above content
   identity (D75).** A typed usage-limit park's phase or failed units point at a
-  durable provider/account/credential scope. Bound roots sharing that scope and
-  watching thread claim one notification generation in
-  `app_workflow_usage_attention.go`; a transition back to `running` advances it,
-  and queued delivery settles by tokenized compare-and-set. This package stays
-  unaware of that state; mixed failures and attribution/storage errors deliberately
+  durable provider/account/credential scope. Bound roots sharing that scope
+  and watching thread claim one notification generation in
+  `internal/workflowapp/usage_attention.go`; a transition back to `running` advances
+  it, and queued delivery settles by tokenized compare-and-set. This package
+  remains unaware of that state: it composes the one message the winning claim
+  delivers, while mixed failures and attribution/storage errors deliberately
   fall back to ordinary per-run wakes.
 
 ## Extension points
 
-- A new reference kind is a new `Reference{Label, Value}` at the call site; the
-  composer does not enumerate kinds.
-- **A failed-unit reference says WHY that unit rests, not only which one it is.**
-  The resolver (`workflowFailedUnitReferences`) renders `<unit-id> (thread <id>):
-  <note>`, bounded at `maxFailedUnitNoteRunes` so the id and the thread, the two
-  things a repair verb takes, can never be the part that is cut. A pause tears its
-  in-flight units down `failed` carrying an interrupted note (there is no
-  interrupted unit status), so a reference naming the status alone told an operator
-  who paused a healthy run that their own units had failed.
-- **A new field that changes the ask goes in the signature too.** If a reader would
-  act differently on the new value, two wakes differing only in it are not
-  duplicates; if not, it is elaboration and stays out.
-- **A reference must resolve.** The composer renders whatever it is handed, so the
-  rule lives with the resolver (`workflowNarrativeReference`): a narrative path is
-  included only when the file is on disk. Same for the descendant's `called run
-  narrative`.
-- A new resting state gets a `closing` branch. The default already reads correctly
-  for a terminal state, so the branch is about precision, not correctness.
+- A new reference kind is a new `Reference{Label, Value}` at the call
+  site — the composer does not enumerate kinds.
+- **A failed-unit reference says WHY that unit rests, not only which one
+  it is.** The resolver (`internal/workflowapp/wake_surface.go` →
+  `workflowFailedUnitReferences`) renders
+  `<unit-id> (thread <id>): <note>`, bounded at
+  `maxFailedUnitNoteRunes` so the id and the thread — the two things a
+  repair verb takes — can never be the part that is cut. A pause tears
+  its in-flight units down `failed` carrying an interrupted note (there
+  is no interrupted unit status, and `failed` is what the repair verbs
+  recover), so a reference naming the status alone told an operator who
+  paused a healthy run that their own units had failed.
+- **A new field that changes the ask goes in the signature too.** The
+  two are one decision: if a reader would act differently on the new
+  value, two wakes differing only in it are not duplicates. If they
+  would not, it is elaboration and stays out.
+- **A reference must resolve.** The composer renders whatever it is
+  handed, so the rule lives with the resolver
+  (`internal/workflowapp/wake_surface.go` → `workflowNarrativeReference`): a narrative
+  path is included only when the file is on disk. An agent that opens a
+  reference and finds nothing has spent a tool call learning that the
+  message was wrong, which is worse than a message with one fewer
+  pointer. Same for the descendant's `called run narrative`.
+- A new resting state gets a `closing` branch. The default already
+  reads correctly for a terminal state, so the branch is about
+  precision, not correctness.
 
 ## Anti-patterns
 
-- Do NOT reach into the store or the engine from here. If the composer needs a new
-  fact, resolve it in `app_workflow_wake.go` and add a field to the input.
+- Do NOT reach into the store or the engine from here. If the composer
+  needs a new fact, resolve it in `internal/workflowapp/wake_surface.go` and add a
+  field to the input.
 - Do NOT bypass `untrustedtext` for a field a model can write.
 - Do NOT grow a second composer for a new TRIGGER. `ComposeProgress` is not one: a
   resting wake and a progress wake are different *messages*, one naming a verb the
@@ -198,9 +246,10 @@ the whole FSM in.
 
 ## References
 
-- `docs/specs/workflows-system.md` §5, `docs/specs/workflows-system-decisions.md`
-  D17 (plus the 2026-07-25 amendment that made descendant parks surface at the
-  root).
-- `app_workflow_wake.go` (resolution), `app_workflow_wake_delivery.go` (the one
-  delivery + coalescing decision point), `app_workflow_wake_progress.go` (the
-  progress resolver).
+- `docs/specs/workflows-system.md` §5 — thread binding and wake.
+- `docs/specs/workflows-system-decisions.md` D17 — the ruling, plus the
+  2026-07-25 amendment that made descendant parks surface at the root.
+- `internal/workflowapp/wake_surface.go` — resolution.
+- `internal/workflowapp/wake_delivery.go` — the one delivery + coalescing
+  decision point every composed wake goes through.
+- `internal/workflowapp/wake_progress.go` — the progress wake's resolver.

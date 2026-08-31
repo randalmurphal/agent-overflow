@@ -40,7 +40,7 @@ the Claude CLI ignores stdin EOF). This package closes that gap.
   close-on-exec, so it never leaks into provider subprocesses. That's
   what makes EOF a reliable death signal. Don't dup the write end into
   anything that outlives the app.
-- **Release only after a *successful* Close.** `app_orphan_reaper.go`'s
+- **Release only after a *successful* Close.** `internal/app/app_orphan_reaper.go`'s
   release fires from `closeProviderSession` only when Close returns nil;
   an abandoned/timed-out close keeps the watch so a still-alive subprocess
   is still reaped if the app then dies.
@@ -50,9 +50,9 @@ the Claude CLI ignores stdin EOF). This package closes that gap.
 - **pgid ≤ 1 is always refused** (caller's own group / init) in both the
   protocol parser and `killGroup`.
 
-## Lifecycle wiring lives in the main package
+## Lifecycle wiring lives in `internal/app`
 
-`app_orphan_reaper.go` owns `startOrphanReaper` / `stopOrphanReaper` /
+`internal/app/app_orphan_reaper.go` owns `startOrphanReaper` / `stopOrphanReaper` /
 `watchSessionProcess` / `releaseSessionProcess`, gated on
 `runtime.GOOS == "darwin"`. The `Client` methods and those helpers are
 nil-safe, so non-macOS builds and tests call them unconditionally with no

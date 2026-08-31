@@ -3,8 +3,8 @@
 // frames from a shell script, letting tests exercise the full provider +
 // triage + store pipeline without touching a real CLI.
 //
-// Helpers that wire up the *App itself live in the test files under package
-// main — App is in the main package and cannot be imported here.
+// Helpers that wire up the *App itself live in the test files under
+// `internal/app`, where they can reach the shell's private seams.
 package testutil
 
 import (

@@ -32,8 +32,8 @@ Project-row lifecycle helpers that bridge git repository roots and the
     `filepath.Base(candidatePath)`, choosing repository root over
     verbatim path).
 - What does NOT belong here:
-  - Bare project CRUD. Those live in `internal/store` and surface
-    through the `Projects*` bindings.
+  - Bare project CRUD application behavior — that lives in
+    `internal/projectapp` and delegates persistence to `internal/store`.
   - Workspace-change locks, thread CRUD, worktree management.
   - `app.Event.Emit` calls. Callers project the result onto whatever
     wire shape they need.
@@ -54,7 +54,8 @@ Project-row lifecycle helpers that bridge git repository roots and the
 - `internal/gitroot/AGENTS.md`: how a path resolves to a main
   repository root, and why a deleted worktree needs the registration
   side instead.
-- `app_projects.go`: currently a thin wrapper over `EnsureForWorkspace`
-  plus the bound `ListProjects` / `CreateProject` / `RenameProject` /
-  `DeleteProject` / `MoveProject` methods.
-- `internal/store/projects.go`: underlying SQL CRUD.
+- `app_projects.go` — the bound project façade plus the destructive deletion
+  coordinator.
+- `internal/projectapp` — the application service that calls
+  `EnsureForWorkspace` and owns project persistence and membership policy.
+- `internal/store/projects.go` — underlying SQL CRUD.

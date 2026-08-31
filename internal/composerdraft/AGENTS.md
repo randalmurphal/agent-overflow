@@ -47,13 +47,13 @@ not cost them context they staged themselves.
   via the existing `usermessage.FromItem` decode + JSON re-encoding.
 - What does NOT belong here: cross-thread attachment cloning (needs
   `a.attachments` from the App) and the binding-tier types (`Draft`,
-  `TerminalChip`), which stay in `app_draft.go` because the Wails
-  binding generator emits TS types from the main-package shapes.
+  `TerminalChip`), which stay in `internal/app/app_draft.go` because the Wails
+  binding generator emits TS types from the application-shell shapes.
 
 ## Anti-patterns
 
-- Do NOT inline the wire shape here. Wails bindings must stay in the
-  main package; if the wire shape ever needs to change, the App layer
+- Do NOT inline the wire shape here. Wails bindings must stay in
+  `internal/app`; if the wire shape ever needs to change, the App layer
   marshals back and forth, not this package.
 - Do NOT let a `From*` builder carry `TerminalChips` out of a stored
   user item. The empty `[]` is part of that contract, and `MergeParts`

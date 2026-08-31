@@ -31,10 +31,10 @@ carried on, the other failed the read outright and parked the run. A run's
 budget must be judged against the same number its overlay shows, so the fold is
 shared rather than duplicated.
 
-It lives in package `main` and not here because the fold is over
-`store.UsageDetailRow`, and this package's boundary (stdlib-only, no store or
-provider imports) is what lets the App layer import it at all. Every consumer
-is already in `main`, so the shared fold costs nothing by sitting there.
+The fold lives in `internal/usageledger`, not here, because it operates on
+`store.UsageDetailRow`. Keeping this package stdlib-only and store-free lets
+the ledger layer reuse the pricing rule without coupling the rate table to
+persistence or application-shell policy.
 
 ## Surface
 

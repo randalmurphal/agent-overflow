@@ -274,7 +274,7 @@ export function setupEventListeners(): () => void {
   const cancelTurnCompleted = wailsEventOn<TurnCompletedEvent>('provider:turn_completed', applyTurnCompleted);
   // usage:thread_cost — a PROVIDER's own cost figure for a thread landed
   // after the turn that produced it had already settled (Codex asks its
-  // backend asynchronously; see app_codex_thread_cost.go). The turn-completed
+  // backend asynchronously; see app_codex_thread.go). The turn-completed
   // bump has already fired by then, so without this the chip would keep
   // showing the rate-table estimate until the next turn. Payload is the
   // thread id only: every usage surface refetches from the backend.

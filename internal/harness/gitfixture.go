@@ -1,7 +1,7 @@
 // Package harness holds the backend-side engines of the agent test
 // harness: workspace git fixtures, and the wire-level event replayer.
-// The RPC surface that drives them lives in the main package
-// (app_harness*.go); the mock-provider script format and control wire
+// The RPC surface that drives them lives in `internal/harnessrpc`; the
+// mock-provider script format and control wire
 // live in the scenario/ and control/ subpackages.
 package harness
 

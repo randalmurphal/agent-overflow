@@ -9,7 +9,7 @@ import (
 // ThreadStatusKind enumerates the closed set of `thread.status.type`
 // values the Codex app-server reports on `thread/read`. The app relies
 // on this enum to pick a reconciliation strategy after a restart — see
-// `(*App).ReconcileCodexOnReopen` for the consumer.
+// `codexthread.Service.ReconcileOnReopen` for the consumer.
 //
 // Source of truth:
 //

@@ -120,7 +120,7 @@ func TestChannelServiceRejectsPostingToConcludedChannel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected posting to concluded channel to fail")
 	}
-	// syncDiscussionTurn (app_discussion_runtime.go) distinguishes this
+	// discussionapp.Service.SyncTurn distinguishes this
 	// expected-shape rejection — a discussion concluding while a
 	// participant's turn is still in flight — from other PostMessage
 	// failures via errors.Is against this sentinel.

@@ -27,14 +27,14 @@ action-prefixed wrapping.
   depend on App state or wire shapes.
 - What does NOT belong here: the App-specific glue that builds
   `Task`s out of a `session` or a `store.Thread`. That stays in the
-  main package (e.g. `sessionThreadCloser` in `app_emit.go`,
+  `internal/app` package (e.g. `sessionThreadCloser` in `app_emit.go`,
   `cleanups.Add(...)` in `app_thread_fork.go`).
 
 ## Anti-patterns
 
 - Do NOT import non-stdlib packages other than `internal/errorsx`.
   The no-cycle guarantee is the reason this helper lives separately
-  from the main package.
+  from `internal/app`.
 - Do NOT change the timeout semantics to fire mid-loop. Callers depend
   on "everything in or one global deadline". Partial early returns
   would surface tasks the caller hasn't seen yet.

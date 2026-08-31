@@ -38,7 +38,7 @@ import "agent-overflow/internal/eventchan"
 // Three emit paths do not spell their channel as a constant at the call
 // site. Two resolve to names already in the table; one is unbounded:
 //
-//   - `app_updater.go`'s `updaterEventBridge` maps six Wails updater
+//   - `internal/appupdate`'s `updaterEventBridge` maps six Wails updater
 //     event names onto six `updater:*` channels. All six are listed;
 //     `mustBridgedChannel` panics at startup if a row is deleted from
 //     that bridge, so the two spellings cannot drift apart silently.
@@ -805,8 +805,8 @@ var channelPolicies = []ChannelPolicy{
 		Why: "Workflow-authored ids and enums only; the one surface that " +
 			"reports a gate crossing without a park, so each frame is a " +
 			"distinct crossing and the ring must hold them all — never " +
-			"latest-only. (No frontend subscriber today; App consumes it in " +
-			"afterWorkflowEngineEvent to raise OS notifications.)",
+			"latest-only. (No frontend subscriber today; workflowapp consumes " +
+			"it after transport emission to schedule progress wakes.)",
 	},
 	{
 		Channel:   eventchan.WorkflowItemState,

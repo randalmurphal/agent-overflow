@@ -6,60 +6,101 @@ deliberation as the "lightweight coordination" exception.
 
 ## Rules
 
-- **`Deliberation` + `DeliberationState` are the only in-memory state here**:
-  roster, current speaker, turn count, awaiting-response flag, conclusion
-  proposals, for one discussion at a time. `NewDeliberation` seeds the full roster
-  up front (round-robin order equals discussion-definition order);
-  `RestoreDeliberation` reconstructs an equivalent FSM from persisted SQLite state
-  after a restart.
-- **`TryClaimCurrentSpeaker` / `ClearAwaitingResponse` are the only ways
-  `AwaitingResponse` changes.** Their doc comments carry the double-dispatch race
-  `TryClaimCurrentSpeaker`'s atomicity closes.
-- **`PostMessage`'s not-open rejection wraps `ErrChannelNotOpen`** so callers can
-  `errors.Is` it. `syncDiscussionTurn` (`app_discussion_runtime.go`) uses it to
-  tell "the discussion concluded while this participant's turn was in flight"
-  (benign, drop the mirror) from a genuine store error (propagate).
-- **Conclusion is a marker protocol.** A participant proposes by ending its message
-  with a final line starting `CONCLUDE:` (case-insensitive, optional one-line
-  summary). `syncDiscussionTurn` parses every turn through
-  `conclusion.ParseConclusionProposal` and calls `ProposeConclusionFrom` /
-  `WithdrawConclusionProposal`, so the FSM always reflects each participant's
-  LATEST message. Once every roster participant (>= 2) has a live proposal it
-  concludes exactly like the `MaxTurns` circuit breaker.
-- **There are three `ConclusionCause` values**: turn-limit, unanimous, and
-  moderator. `App.ConcludeDiscussion` (`app_discussion.go`) is the moderator form:
-  it deliberately skips FSM resolution/rebuild (it needs no proposals or roster)
-  and does not interrupt an in-flight participant turn, whose late reply mirror is
-  dropped as a benign no-op through `ErrChannelNotOpen`.
-- `conclusion.go` and `turnprompt.go` are pure and independent of the FSM's
-  locking: marker parsing, the cause-aware conclusion notice, and the
-  unseen-messages turn prompt. The app layer resolves WHICH messages a speaker has
-  not seen and dispatches the result.
-- `participant.go` derives the per-participant child-thread blueprint plus the
-  shared `discussionProtocolPreamble` every participant's system prompt carries.
-  `app_discussion_start.go` consumes a slice of `ParticipantPlan` and runs the
-  orchestration (CreateThread / startSession / channel link / cleanup) around it.
+- `registry.go` — `Registry` service for persisted discussion
+  definitions (templates + participant lists). Pure store wrapper.
+- `channel.go` — `ChannelService` for ordered channel messages.
+  Messages persist raw `ChannelMessage.Content` via `internal/store`.
+  The frontend renders discussion markdown. `Create` also normalizes
+  a non-positive `maxTurns` to `DefaultMaxTurns` before persisting.
+  `PostMessage`'s not-open rejection wraps `ErrChannelNotOpen` so
+  callers can `errors.Is` it — `internal/discussionapp`'s `SyncTurn`
+  uses this to tell "the discussion concluded
+  while this participant's turn was in flight" (benign, drop the
+  mirror) apart from a genuine store error (propagate).
+- `deliberation.go` — `Deliberation` + `DeliberationState`. The only
+  in-memory state in this package: roster, current speaker, turn
+  count, awaiting-response flag, conclusion proposals. Coordinates one
+  discussion at a time. `NewDeliberation` seeds the full roster up
+  front (round-robin order = discussion-definition order);
+  `RestoreDeliberation` reconstructs an equivalent FSM from persisted
+  SQLite state after a restart. `TryClaimCurrentSpeaker` /
+  `ClearAwaitingResponse` are the only ways `AwaitingResponse` changes
+  — see their doc comments for the double-dispatch race
+  `TryClaimCurrentSpeaker`'s atomicity closes. `ProposeConclusionFrom` /
+  `WithdrawConclusionProposal` track each participant's latest
+  conclusion stance (see `conclusion.go`) and flip `Concluded` once
+  every roster participant (>= 2) has a live proposal.
+- `conclusion.go` — pure marker-protocol helpers, independent of the
+  FSM's locking/state: `ParseConclusionProposal` reads a participant's
+  final CONCLUDE marker line into a summary, `BuildConclusionMessage`
+  renders the cause-aware system conclusion notice for all three
+  `ConclusionCause` values (turn-limit, unanimous, moderator). The
+  moderator form needs no FSM/roster input — see
+  `App.ConcludeDiscussion` in `internal/app/app_discussion.go`. No app-layer or
+  store dependency.
+- `turnprompt.go` — `BuildTurnPrompt`. Pure renderer: unseen channel
+  messages (labeled `Human:` / `Moderator:` / `<Role>:`) followed by a
+  your-turn instruction naming the speaker's own role. The application layer
+  (`internal/discussionapp`) resolves which messages a speaker hasn't
+  seen yet and dispatches the result to the provider session — this
+  file only shapes the text.
+- `participant.go` — `ParticipantPlan`, `BuildParticipantPlans`,
+  `BuildParticipantPrompt`, `FormatRole`, `RoleFromThreadTitle`. Pure
+  derivation of the per-participant child-thread blueprint from a
+  parent thread + `DiscussionDefinition`, plus the shared
+  `discussionProtocolPreamble` every participant's system prompt
+  carries (explains that other participants' and the human's messages
+  arrive as labeled user messages, and how to propose ending the
+  discussion via a final `CONCLUDE:` marker line). `internal/discussionapp`
+  consumes a slice of `ParticipantPlan` and
+  runs the orchestration (CreateThread / startSession / channel link /
+  cleanup) around it.
 
 ## Responsibility boundary
 
-What does NOT belong here:
-
-- Provider calls. Discussions drive multiple providers from
-  `app_discussion_drive.go`; this package only coordinates.
-- SQL schema. `store` owns the tables (`discussions.go`, `channels.go`).
-- Frontend events. `app_discussion_events.go` fans channel messages and FSM-state
-  snapshots out (`discussion:message` / `discussion:state`).
-- Deciding WHEN to prompt (claim-then-dispatch timing, async dispatch,
-  retry-on-failure). That is app-layer turn driving; this package exposes only the
-  atomic primitives (`TryClaimCurrentSpeaker` / `ClearAwaitingResponse` /
-  `RecordPost`) the app layer composes.
+- What BELONGS here:
+  - Registering / listing / updating discussion definitions.
+  - Appending channel messages in strict order.
+  - Turn alternation, awaiting-response tracking, and
+    conclusion-proposal bookkeeping during an active deliberation.
+  - Rendering the unseen-messages turn prompt (pure text; no I/O).
+- What does NOT belong here:
+  - Provider calls — `internal/discussionapp` drives them through a narrow
+    participant-runtime port; this package only coordinates.
+  - SQL schema. The `store` package owns the tables.
+  - Frontend events — `internal/discussionapp` produces typed projections and
+    `internal/app/app_discussion.go` maps them to the stable wire DTOs.
+  - Deciding WHEN to prompt (claim-then-dispatch timing, async
+    dispatch, retry-on-failure). That's app-layer turn driving; this
+    package only exposes the atomic primitives
+    (`TryClaimCurrentSpeaker` / `ClearAwaitingResponse` / `RecordPost`)
+    the app layer composes.
 
 ## Extension points
 
-- A new discussion mode (round-robin vs facilitator) extends `Deliberation` with a
-  strategy and keeps `DeliberationState` serializable.
-- Persisting conclusion artifacts means a column plus a test in
-  `internal/store/discussions.go`; deliberation logic stays in memory.
+- To add a new discussion mode (e.g. round-robin vs. facilitator):
+  extend `Deliberation` with a strategy and keep `DeliberationState`
+  serializable.
+- To persist conclusion artifacts: add a column + test in
+  `internal/store/discussions.go`; keep deliberation logic in memory.
+- `ProposeConclusionFrom` / `WithdrawConclusionProposal` (unanimous
+  early-exit) ARE driven today: a participant proposes by ending its
+  message with a final line starting `CONCLUDE:` (case-insensitive,
+  optional one-line summary); `internal/discussionapp.Service.SyncTurn`
+  parses every turn's text via
+  `discussion.ParseConclusionProposal` and calls propose/withdraw
+  accordingly, so conclusion always reflects each participant's LATEST
+  message. Once every roster participant (>= 2) has proposed, the FSM
+  concludes exactly like the `MaxTurns` circuit breaker.
+- A UI affordance beyond the marker convention now exists:
+  `App.ConcludeDiscussion` (`internal/app/app_discussion.go`) lets the human
+  moderator end an open discussion immediately — the third
+  `ConclusionCause`, alongside turn-limit and unanimous. It
+  deliberately skips FSM resolution/rebuild (the moderator form needs
+  no proposals/roster) and does not interrupt an in-flight participant
+  turn; that turn's late reply mirror is dropped as a benign no-op via
+  `ErrChannelNotOpen` (see `channel.go` above and
+  `internal/discussionapp.Service.SyncTurn`).
 
 ## Anti-patterns
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { WorkflowArtifact } from '../../../../bindings/agent-overflow/models';
+  import type { WorkflowArtifact } from '../../../../bindings/agent-overflow/internal/app/models';
 
   interface Props {
     values: Record<string, unknown>;

@@ -5,11 +5,79 @@ The store side of session import. The **writer** (`NewWriter` / `Build`) turns
 `ImportOne` / `Cursor` / `PlanUpdate`) decides what is importable and where a
 refresh resumes. Session files are parsed only in the provider packages.
 
-It deliberately does not drive `triage.Router`, which has live-only side effects
-(session-ref updates, activity bumps, `now()`-stamped usage, async settles) and
-would persist an imported prompt as an "Injected provider context" notification.
-Row shapes come from triage's Router-free helpers:
-[`internal/triage/AGENTS.md` §Exported shape surface](../triage/AGENTS.md#exported-shape-surface).
+- the **writer** — `[]importir.Event` in, one `store.ImportBatch` out —
+  which is what makes an imported provider session indistinguishable from
+  one AO ran itself;
+- the **orchestrator** (`Scan` / `ImportOne` / `Cursor`) — which sessions
+  are importable, which thread rows they become, and where a refresh
+  resumes.
+
+Provider-specific reading stays in `internal/provider/claude/sessionimport`
+and `internal/provider/codex/rollout`; those two never see `store` or
+`triage`, and this package never parses a session file.
+
+It deliberately does **not** drive `triage.Router`. The Router has
+live-only side effects (session-ref updates, thread-activity bumps,
+`now()`-stamped usage, async settle goroutines) and would persist an
+imported prompt as an "Injected provider context" notification, because
+no pending-send entry ever registered it. Instead every row shape comes
+from triage's exported, Router-free shaping helpers — see
+[`internal/triage/AGENTS.md` §Exported shape surface](../triage/AGENTS.md).
+`parity_test.go` is what keeps that honest.
+
+## Layout
+
+- `writer.go` — `Writer` / `NewWriter` / `Build`, the per-event dispatch,
+  the shared row plumbing (item-index allocation, provenance stamping,
+  the writer's control meta keys, meta helpers), and the invariant-23
+  force-close of tools a turn boundary left unresolved.
+- `items.go` — the per-kind row builders for the standalone rows:
+  prompts, subagent prompts, proposed plans, compaction boundaries,
+  errors, notifications, command results.
+- `blocks.go` — the streaming-block family: `assistant_text` and
+  `thinking` rows, the open-block bookkeeping that lets consecutive
+  deltas accumulate into one row, and the content-block-stop settle.
+- `tools.go` — the tool-call lifecycle: launch, in-place completion,
+  Codex's split `tool_completion` sibling, the backgrounded-Task
+  terminal, file-change result payloads, diff / command-output payloads.
+- `turns.go` — `turnState`: turn allocation, adoption of a provider's
+  own turn id, settle, and the seal every unfinished turn gets.
+- `usage.go` — `usage_ledger` row projection for a settled turn.
+- `orchestrator.go` — `Scan`: what is importable. Provider availability,
+  the three dedup subtractions, the origin marker, per-row warnings.
+- `projectindex.go` — `projectIndex`: which project each row is grouped
+  under, and the per-cwd memo that makes answering it once per distinct
+  cwd rather than once per row. See "Which project a row lands under".
+- `import_one.go` — `ImportOne`: one scanned row → at most one thread, history,
+  and cursors. `resolveProject` prefers the `ProjectID` the scan already
+  stamped and falls back to `project.EnsureForWorkspace` — so the project
+  a row was LISTED under is the project it imports into, including for a
+  dead worktree the index could only place from a registration. Claude uses
+  `ConvertActiveBranch`: one transcript may retain alternate DAG leaves, but
+  only the coherent active ancestry that `claude --resume` continues becomes
+  the selected provider session's thread.
+- `import_apply.go` — `sessionImporter`: the per-session accumulator
+  `ImportOne` drives — single-thread creation, warnings, cursor persistence,
+  and rollback.
+- `cursor.go` — `Cursor` + `Diverged` + `Advance`: where an import
+  stopped, in the thread and in the source file.
+- `refresh.go` — `PlanUpdate` / `ApplyUpdate`: what a re-read of the
+  source file would add to a thread that was already imported.
+- `scancache.go` — `ScanCache`: THE cached `Scan`, one entry rather than a
+  keyed map (the scan is unfiltered by construction), with `ScanTTL`,
+  single-flight `Get(ctx, force)`, id `Lookup` that honors the TTL, and a
+  deep copy per caller. Failures are never cached. `Manager` owns the
+  instance; the walk itself is an injected function.
+- `manager.go` — app-facing coordination around the orchestrator: the scan
+  cache, one active import run, weighted worker bound, cancellation/shutdown
+  join, thread-locked refresh, and wire-neutral progress/status projections.
+  Provider homes, lifecycle context, locks, and emission remain injected by
+  the `internal/app` adapter.
+
+`Scan`, `ImportOne` and `ApplyUpdate` are the only things here that
+WRITE. The writer half (everything above them) reads the thread row and
+writes nothing —
+`store.ApplyImportBatch` is what commits, and `ImportOne` is its caller.
 
 ## Contract
 

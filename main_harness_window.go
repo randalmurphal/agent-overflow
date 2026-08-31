@@ -18,7 +18,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/windowgeom"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -56,8 +58,10 @@ func runWindowedShell(appService *App, srv *transport.Server, title string) erro
 		// resolve through the --data-dir override (bootSettingsDir for the
 		// read, App.settings for the write), so a windowed harness
 		// remembers where IT was, and never moves the user's real window.
-		loadGeometry:    loadPersistedWindowGeometry,
-		persistGeometry: appService.persistWindowGeometry,
+		loadGeometry: loadPersistedWindowGeometry,
+		persistGeometry: func(geometry windowgeom.Geometry) {
+			appservice.PersistWindowGeometry(appService.App, geometry)
+		},
 	}
 	runErr := shell.run()
 	shutdownHeadless(appService, srv)

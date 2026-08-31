@@ -33,11 +33,11 @@ what lets the `nogui` WSL backend and the GUI Windows launcher both import it.
 
 ## What does NOT belong here
 
-- **`app_updater*.go` (repo root)** owns the GitHub-facing side: release
-  listing, by-tag targeting, the checksum-sidecar lookup, the `verifiedProvider`
-  fail-closed wrapper, the RPC surface, emitting the directive, calling the
-  Linux preflight from `initUpdater`, and macOS's pre-swap code-signing,
-  notarization-ticket, Gatekeeper, and signer-match verification.
+- **`internal/appupdate`** owns the backend lifecycle: GitHub release listing,
+  by-tag targeting, checksum-sidecar verification, download/install state, WSL
+  staging and directive emission. `internal/app` retains the stable `App` RPC
+  facade plus desktop/WSL boot adapters and the Linux preflight call; root
+  supplies executable-only boot inputs.
 - **The launcher (`cmd/agent-overflow-windows`)** owns receiving the directive,
   deciding when to act on it, and the `app.Updater` lifecycle around
   `StagedFileProvider`.

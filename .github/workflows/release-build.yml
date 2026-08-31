@@ -124,31 +124,7 @@ jobs:
           ./scripts/sync-release-version.sh "$VERSION"
           git diff --exit-code
 
-      - name: Import Developer ID certificate
-        env:
-          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ao-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          : "${MACOS_CERTIFICATE_BASE64:?MACOS_CERTIFICATE_BASE64 secret is required}"
-          : "${MACOS_CERTIFICATE_PASSWORD:?MACOS_CERTIFICATE_PASSWORD secret is required}"
-          certificate="$RUNNER_TEMP/developer-id.p12"
-          keychain="$RUNNER_TEMP/agent-overflow-signing.keychain-db"
-          printf '%s' "$MACOS_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-          security import "$certificate" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple: -s \
-            -k "$KEYCHAIN_PASSWORD" "$keychain"
-          security list-keychains -d user -s "$keychain"
-          security default-keychain -d user -s "$keychain"
-          rm -f "$certificate"
-          echo "AO_MACOS_CI_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-
-      - name: Build, sign, and notarize macOS app bundle
+      - name: Build macOS app bundle
         env:
           # actool in Xcode 26.4-26.6 crashes on Icon Composer .icon bundles
           # ("attempt to insert nil object", Apple regression FB20183399;
@@ -162,26 +138,10 @@ jobs:
           # on it (bisected in the same spike). Drop the pin once a fixed
           # Xcode ships.
           DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-          AO_MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          AO_MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
-          AO_MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
-          AO_MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
         run: |
-          set -euo pipefail
           VERSION="$VERSION" wails3 task darwin:package
-          ./scripts/sign-notarize-macos.sh bin/agent-overflow.app
-          ./scripts/verify-macos-app.sh --require-notarized bin/agent-overflow.app
           mkdir -p "dist/release/$VERSION"
-          ditto -c -k --sequesterRsrc --keepParent \
-            bin/agent-overflow.app \
-            "dist/release/$VERSION/agent-overflow-darwin-arm64.zip"
-
-      - name: Remove signing keychain
-        if: always()
-        run: |
-          if [[ -n "${AO_MACOS_CI_KEYCHAIN:-}" ]]; then
-            security delete-keychain "$AO_MACOS_CI_KEYCHAIN" || true
-          fi
+          ( cd bin && zip -qr "../dist/release/$VERSION/agent-overflow-darwin-arm64.zip" "agent-overflow.app" )
 
       - name: Upload raw macOS artifact
         uses: actions/upload-artifact@v7

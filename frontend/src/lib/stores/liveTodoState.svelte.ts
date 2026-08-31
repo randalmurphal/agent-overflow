@@ -1,5 +1,5 @@
 import type { TodoStep } from '../types/events';
-import type { ThreadLiveState } from '../../../bindings/agent-overflow/models';
+import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
 
 /**
  * LiveTodo is the snapshot the activity rail's Todos segment renders.

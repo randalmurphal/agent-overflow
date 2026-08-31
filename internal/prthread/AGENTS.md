@@ -5,9 +5,9 @@ sidebar title, building the first user message, picking a code fence
 that won't be closed by inner backtick runs, and truncating oversized
 titles / diffs on rune boundaries.
 
-The App-coupled glue stays in `app_thread_from_pr.go`: forge CLI
-invocation (`gh view`, `glab mr view`), local-clone resolution,
-project-row creation, and store reads/writes.
+The App-coupled glue — forge CLI invocation (`gh view`, `glab mr
+view`), local-clone resolution, project-row creation, and store
+reads/writes — stays in `app_thread_bindings.go`.
 
 ## Surface
 

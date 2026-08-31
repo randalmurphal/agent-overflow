@@ -173,7 +173,7 @@ func TestSoakScenarioIsShipped(t *testing.T) {
 // The four pins below are what make a mocked boot mode incapable of
 // reaching a real provider binary or the developer's real provider
 // homes. They are applied in exactly ONE function
-// (newIsolatedProviderApp), so a future mode — a second soak variant, a
+// (app.ConfigureIsolation through newIsolatedProviderApp), so a future mode — a second soak variant, a
 // profiling boot, whatever — either calls that helper and gets all four,
 // or fails this test. Three of four is the failure shape that burned a
 // real login (see the incident history in CLAUDE.md).
@@ -189,32 +189,35 @@ func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 		assignment[i] = regexp.MustCompile(`\.` + pin + `\s*=[^=]`)
 	}
 
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read repo root: %v", err)
-	}
 	found := map[string][]string{}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(name)
+	for _, dir := range []string{".", "internal/app"} {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+			t.Fatalf("read %s: %v", dir, err)
 		}
-		for i, pin := range pins {
-			if assignment[i].Match(src) {
-				found[pin] = append(found[pin], name)
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			src, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			for i, pin := range pins {
+				if assignment[i].Match(src) {
+					found[pin] = append(found[pin], path)
+				}
 			}
 		}
 	}
 
 	for _, pin := range pins {
 		files := found[pin]
-		if len(files) != 1 || files[0] != "main_harness.go" {
+		if len(files) != 1 || files[0] != filepath.Join("internal", "app", "bootstrap.go") {
 			t.Errorf(
-				"%s is assigned in %v; it must be set only by newIsolatedProviderApp in main_harness.go "+
+				"%s is assigned in %v; it must be set only by app.ConfigureIsolation "+
 					"so every mocked boot mode (--harness, --soak, ...) gets the complete isolation set",
 				pin, files)
 		}

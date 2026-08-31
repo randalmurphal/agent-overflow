@@ -23,15 +23,16 @@ import (
 // for its own boundaries: several narrow, capability-named seams rather than
 // one wide one.
 //
-// `main` satisfies them through one adapter (`workflowHostAdapter` in
-// `app_workflow_host.go`) whose methods forward to the App's unexported ones.
-// The adapter is glue and nothing else: an interface declared outside `main`
-// cannot name an unexported method, and renaming ~19 App methods to exported
-// would ripple further through `main` than the forwards do.
+// `internal/app` satisfies them through one adapter (`workflowHostAdapter` in
+// `internal/app/app_workflow_host.go`) whose methods forward to the App's
+// unexported ones. The adapter is glue and nothing else: an interface declared
+// outside `internal/app` cannot name an unexported method, and renaming ~19 App
+// methods to exported would ripple further through that package than the
+// forwards do.
 //
 // The store is deliberately NOT here: it is a dependency of the runner, not a
 // capability of the process around it, and every other workflow collaborator in
-// `main` (`workflowProfileSource`, `workflowDefinitionSource`,
+// `internal/app` (`workflowProfileSource`, `workflowDefinitionSource`,
 // `workflowSpendSource`) already holds `*store.Store` directly.
 
 // SessionHost is the provider-session lifecycle a workflow element's turn runs

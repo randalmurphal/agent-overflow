@@ -95,7 +95,7 @@ SwitchThread(id) ──► store.GetThread ──► thread in sessions map?
                                           │        │ no  → return thread
 ```
 
-`App.runSessionStart` (in `app_session_start.go`) coalesces concurrent
+`App.runSessionStart` (in `app_session_runtime.go`) coalesces concurrent
 starts on the same thread id (see
 `TestSwitchThreadCoalescesConcurrentAutoResume` in
 `app_bindings_test.go`). Failures synthesize an `EventError` through

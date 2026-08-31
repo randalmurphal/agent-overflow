@@ -168,7 +168,7 @@ const claudeFirstPartyAPIProvider = "firstParty"
 func ClaudeUnauthenticated(info provider.AccountInfo) bool {
 	// Trim so a whitespace-only field (a CLI that pads, a caller that
 	// hand-builds an AccountInfo) can't masquerade as identity evidence.
-	// The persisted-account path in app_provider_accounts.go already
+	// The persisted-account path in app_provider_account_bindings.go already
 	// trims; probe results do not.
 	tokenSource := strings.TrimSpace(info.TokenSource)
 	if strings.EqualFold(tokenSource, "none") {

@@ -5,19 +5,20 @@ that looks like orchestration. Per the core principles it is
 *coordination* between multiple provider processes and the frontend,
 not orchestration. The individual participants remain the source of
 truth for their own turns, and the `discussion` package only decides
-whose turn is next. Implementation lives in `internal/discussion/` and
-`app_discussion_*.go`.
+whose turn is next. Domain logic lives in `internal/discussion/`, while
+store/session/event coordination lives in `internal/discussionapp/`.
+The two stable Wails façade files remain at root.
 
 ## The Shape
 
 A discussion starts when `App.StartDiscussion(threadID, name)` is
-called on a "parent" thread. The binding (in `app_discussion_start.go`)
-resolves a `DiscussionDefinition` (global or per-project), spawns one
+called on a "parent" thread. The binding delegates to
+`discussionapp.Service.Start`, which resolves a `DiscussionDefinition`
+(global or per-project), spawns one
 child thread per participant role, creates a `channels` row of type
 `deliberation`, and wires each participant's `DiscussionID` to that
 channel id. All step failures share a cleanup helper that tears down
-whatever partial state was built (`cleanupDiscussionSetup` in the same
-file).
+whatever partial state was built (`Service.cleanupSetup`).
 
 Child thread shape (see `BuildParticipantPlans` in
 `internal/discussion/participant.go`):
@@ -62,9 +63,9 @@ small, self-locking state machine keyed by channel ID. It tracks:
 
 Key methods:
 
-- `RecordPost(threadID)`: called once per completed participant turn
-  (`app_discussion_runtime.go`'s `recordDiscussionPost`). Any
-  participant's post counts (not just the one the FSM was waiting on,
+- `RecordPost(threadID)` — called once per completed participant turn
+  (`discussionapp.Service.recordPost`). Any
+  participant's post counts (not just the one the FSM was waiting on —
   e.g. a human manually driving a child thread's pane directly).
   Clears `AwaitingResponse`, increments `TurnCount`, and either
   concludes (`TurnCount >= MaxTurns`) or advances `CurrentSpeaker`
@@ -80,9 +81,9 @@ Key methods:
   provider dispatch is still in flight) could see `AwaitingResponse ==
   false` too and double-prompt the same speaker. The app layer always
   claims synchronously, in the same goroutine that decided to prompt,
-  before handing the actual dispatch to a background goroutine. See
-  `claimAndPromptNextSpeaker` in `app_discussion_drive.go`.
-- `ClearAwaitingResponse()`: un-claims a turn after a dispatch attempt
+  before handing the actual dispatch to a background goroutine — see
+  `discussionapp.Service.claimAndPrompt`.
+- `ClearAwaitingResponse()` — un-claims a turn after a dispatch attempt
   failed to actually reach the provider. Without this, a failed
   dispatch would leave `AwaitingResponse` stuck forever (the
   participant never received the prompt, so nothing would ever post to
@@ -97,16 +98,16 @@ Key methods:
 ## Turn Driving
 
 Two triggers advance the conversation, both funneling through
-`claimAndPromptNextSpeaker` (`app_discussion_drive.go`) so the
+`discussionapp.Service.claimAndPrompt` so the
 claim-then-dispatch sequence has exactly one implementation:
 
 1. **A human posts** (`App.PostChannelMessage`, `app_discussion.go`).
    After persisting the message and emitting `discussion:message`,
-   `maybePromptNextDiscussionSpeaker` resolves the channel's
+   `discussionapp.Service.maybePromptNext` resolves the channel's
    deliberation and attempts to claim `CurrentSpeaker`. A no-op if a
    turn is already in flight or the channel isn't a live/rebuildable
    deliberation.
-2. **A participant's turn completes** (`syncDiscussionTurn`, driven off
+2. **A participant's turn completes** (`discussionapp.Service.SyncTurn`, driven off
    `EventTurnComplete` in `app_provider_events.go`). Resolves the
    channel's deliberation via `deliberationForChannel` **before**
    touching the channel. The ordering is load-bearing for restart
@@ -222,9 +223,9 @@ The FSM's own half lives in `deliberation.go`:
   proposal, so a participant that flip-flops can't accidentally leave a
   stale "yes" in the unanimity count.
 
-### Wiring: `syncDiscussionTurn`
+### Wiring: `discussionapp.Service.SyncTurn`
 
-`app_discussion_runtime.go`'s `syncDiscussionTurn`, after mirroring a
+`discussionapp.Service.SyncTurn`, after mirroring a
 participant's assistant text into the channel (see "Turn Driving"
 above), parses that same text: a match calls `ProposeConclusionFrom`,
 no match calls `WithdrawConclusionProposal`. The mirrored channel
@@ -271,8 +272,8 @@ happens once per discussion); a roster resolution failure is returned,
 never silently degraded to the wrong-cause message. It then hands the
 rendered content to `postDiscussionConclusion`.
 
-A **successful** conclusion also removes the FSM from `a.deliberations`
-(`removeDeliberationByID`). A concluded channel has nothing left to
+A **successful** conclusion also removes the FSM from the service runtime map
+(`removeDeliberationByID`) — a concluded channel has nothing left to
 coordinate, and retaining the entry would leak it until thread
 deletion. `buildChannelState`'s SQLite fallback branch serves concluded
 channels from then on, so the post-conclusion `discussion:state` and
@@ -352,9 +353,9 @@ participant turn), not a plain data read.
 
 ## Restart Recovery
 
-`a.deliberations` is in-memory only per root `AGENTS.md` principle 3.
-Nothing about the FSM's turn state is persisted as such. Instead,
-`deliberationForChannel` (`app_discussion_drive.go`) rebuilds an
+The service's runtime map is in-memory only per root `CLAUDE.md` principle 3 —
+nothing about the FSM's turn state is persisted as such. Instead,
+`discussionapp.Service.deliberationForChannel` rebuilds an
 equivalent `Deliberation` purely from SQLite when the process restarted
 since the channel was opened:
 
@@ -378,8 +379,8 @@ since the channel was opened:
   the live FSM does), or `participants[0]` if no agent has posted yet.
 - **ConclusionProposals** (re-seeded): `ConclusionProposals` is
   in-memory-only state, same as everything else in `DeliberationState`;
-  it does not survive a restart on its own. `scanChannelAgentHistory`
-  (`app_discussion_drive.go`) walks the channel's full message history
+  it does not survive a restart on its own. `scanAgentHistory`
+  in `internal/discussionapp` walks the channel's full message history
   ONCE and returns both the last agent poster (feeding
   `rebuildCurrentSpeaker` above) and, per participant, that
   participant's most recent agent-message content, one query serving
@@ -399,12 +400,12 @@ since the channel was opened:
   `ConclusionProposals` map.
 - **MaxTurns**: `channels.max_turns` (see below).
 
-`deliberationForChannel` double-checks under `a.mu` before installing
-the rebuilt instance, so a race between two concurrent callers (e.g. a
+`Service.deliberationForChannel` double-checks under the service's private
+runtime mutex before installing the rebuilt instance, so a race between two concurrent callers (e.g. a
 human post and a participant's turn-complete landing at the same
 moment right after a restart) can't fork two different `Deliberation`
-objects for the same channel. Whichever rebuild wins the lock is the
-one both callers end up sharing.
+objects for the same channel — whichever rebuild wins the lock is the
+one both callers end up sharing. Root owns neither the map nor its ward.
 
 Only `"deliberation"`-type, `"open"`-status channels are rebuildable; a
 concluded/closed channel has nothing left to coordinate, so a miss
@@ -423,7 +424,7 @@ already imports both.
 ## Events
 
 Two wire events keep the frontend live-updated instead of polling
-(`app_discussion_events.go`):
+(`app_discussion.go`):
 
 - **`discussion:message`**: `{channelId, threadId, message}`, where
   `threadId` is the **parent** thread ID (`channel.ThreadID`). The

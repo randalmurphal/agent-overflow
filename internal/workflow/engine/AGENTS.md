@@ -193,30 +193,119 @@ than the run. One contract covers both.
 
 ## Fan-out attempts
 
-- Expansion happens at phase entry against the live variable context, so width is a runtime
-  fact: zero units is legal and runs the join immediately, and an `over:` variable missing or
-  not an array is a `wiring-error` park. **`expandFanOut` enforces the project's fan-out
-  ceiling** (D29) before any unit row exists, so a refusal leaves no row, no sub-worktree, and
-  no session. It refuses, never truncates, static lists included, because a frozen snapshot is
-  decoded and never re-validated. `restoreFanOut` deliberately does not re-check, so a lowered
-  ceiling cannot strand rows that already exist.
-- Whether an attempt may still launch is derived from unit statuses (`fanOutRun.blocked`),
-  never latched into a flag, so a rebuilt attempt blocks for the same reason the live one did.
-  A unit resting `failed` parks the run `unit-failed` once in-flight units finish, `taken-over`
-  outranks it, and in-flight units are never interrupted by a sibling's failure.
-- The join is the attempt's final unit: it runs when every unit rests `done` or `dropped`,
-  receives their persisted results under the reserved `units` variable, and its envelope is the
-  phase's. A join that fails parks `unit-failed`, not `agent-error`, because the wave behind it
-  is finished work, and `fanOutRun.blocked` reads work units only so its own repair cannot
-  refuse itself.
-- **The join is a retry target and never a drop target.** Accepting its absence leaves nothing
-  to consolidate the units and no envelope for the phase. `workflowFailedUnits`
-  (`app_workflow_unit_actions.go`) reports the same set, join included. Repair verbs repair an
-  attempt rather than replacing it: `reopenUnit` is the one reopen path, the phase attempt row
-  is reopened so finished units keep their results, and the run returns to `running` only when
-  no unit blocks it. `RetryFailedUnits` repairs every failed unit as one command (D33), because
-  a half-repaired attempt must not be observable. A phase-level continuation of a fan-out
-  attempt is a continuation of its join, refused while any unit still blocks.
+- Expansion happens at phase entry, from the frozen phase plus the live
+  variable context: a static `fan_out:` list expands to itself, and a dynamic
+  `over:`/`as:`/`unit:` phase stamps one unit per array element. Width is a
+  runtime fact — zero units is legal and runs the join immediately, and an
+  `over:` variable that is missing or not an array at runtime is a
+  `wiring-error` park, not a crash. Every unit row is persisted `pending`
+  before any unit starts.
+- **`expandFanOut` is where the project's fan-out ceiling is enforced** (D29),
+  between `def.ExpandUnits` and `CreateWorkItemUnits`, so a refusal leaves no
+  unit row, no sub-worktree, and no provider session. It **refuses, never
+  truncates**: an expansion wider than `def.EffectiveMaxFanOutWidth` of the
+  *live* profile parks `needs-human(wiring-error)` — the same reason the
+  unusable `over:` above takes, because a width the project forbids is again
+  the frozen definition and the live context failing to produce runnable work.
+  It applies to static lists too, not just dynamic ones: a frozen snapshot is
+  decoded and never re-validated, so a run predating the rule or a project that
+  lowered its ceiling mid-flight reaches here with no dry-run finding behind
+  it. A profile that cannot be read parks `setup-failed` rather than expanding
+  unbounded. `parkFanOutSetup` writes the cause onto the attempt's
+  `park_cause`, since no unit ran to author an envelope and the resolved width
+  is stated nowhere else. The same live-profile read also backs
+  `noteFanOutCapacity`, which logs (never emits) when a wave is wider than the
+  provider capacity its units will contend on — inside the ceiling but over
+  capacity is pacing, not a refusal, and a wave of eight against a bound of two
+  is otherwise indistinguishable from a slow provider. `restoreFanOut`
+  deliberately does **not** re-check:
+  lowering a ceiling must not make an attempt whose rows already exist
+  unrecoverable.
+- Whether an attempt may still launch is derived from its unit statuses
+  (`fanOutRun.blocked`), never latched into a flag, so an attempt rebuilt from
+  its rows blocks for exactly the reason the live one did. A unit resting
+  `failed` stops further launches and parks the run `unit-failed` once the
+  in-flight units finish; a unit resting `taken-over` does the same under
+  `taken-over`, which outranks a failure. In-flight units are never interrupted
+  by a sibling's failure — their work is durable. `advanceFanOut` closes the one
+  state that is neither: an attempt resting with its join already launched and
+  not `done` has nothing left that could ever run, so it parks `unit-failed`
+  rather than sitting `running` forever. Every legitimate repair is past it —
+  reopening the join clears `joinStarted`, and a join that finished tears the
+  attempt down instead of advancing it.
+- The join is the attempt's final unit. It runs when every unit rests `done` or
+  `dropped`, receives their persisted results (id, index, status, outputs,
+  branch, worktree, thread) under the reserved `units` variable, and its
+  envelope *is* the phase's envelope — so its outcome is the phase's outcome,
+  gate and all. **A join that FAILS is a unit of the attempt failing**
+  (`phaseFailureReason`): it parks `unit-failed`, not `agent-error`, because the
+  wave behind it is finished work — for a campaign, whole child runs — and
+  `agent-error` is a reason no repair verb reaches, which left re-entering the
+  phase (and re-running every one of those children) as the only move a human
+  had. `fanOutRun.blocked` still reads the WORK units only: a failed join blocks
+  no launch, and counting it there would make its own repair refuse itself,
+  since `continueFanOutJoin` asks that question before it reopens the join.
+  Those results are what
+  the STORE knows; the per-unit git state a merge join actually decides on
+  (`commitsAhead`, `dirty`) is added by the app runner on the way in
+  (`internal/workflowhost/units.go` `enrichJoinUnits`), because this package is git-free
+  by boundary. `def` declares the whole shape, enriched fields included, so the
+  prompt validator and the runtime context cannot disagree about what
+  `{{units}}` renders.
+- **Reopening a unit goes through `reopenUnit`.** Bumping the try number,
+  attaching the feedback, clearing the envelope, and persisting all of it via
+  `store.RetryWorkItemUnit` is one helper shared by `RetryUnit`,
+  `RetryFailedUnits`, the fan-out resume, and the join continuation. The try
+  number and the note are PERSISTED, not only held in memory, so an evicted and
+  restored attempt comes back on the try it is actually on with the note that
+  told it what to do differently. The engine computes the next number once and
+  the later `StartWorkItemUnit` writes the same value, so there is no
+  double-bump. Reopening the JOIN also clears `joinStarted` there — the flag
+  means "the join of this attempt has been launched", and leaving it set would
+  leave an attempt with a pending join nothing ever starts.
+- `RetryUnit` / `RetryFailedUnits` / `DropUnit` / `TakeOverUnit` repair an
+  attempt rather than replacing it: the phase attempt row is reopened (`ReopenWorkItemPhase`) so
+  finished units keep their results, and the run only returns to `running` when
+  no unit is left blocking it. A unit that cannot *start* is not a unit failure
+  — it parks the attempt under the same sentinel-mapped reason a single-shape
+  phase would, because nothing runnable was ever produced.
+- **The join is a retry target and never a drop target.** `repairable` is the
+  status rule every repair shares, and it says nothing about kind: retrying a
+  failed join re-runs it over the results the wave already produced, which is
+  the same continuation `Answer` takes. `droppable` adds the one refusal —
+  accepting the join's absence would leave nothing to consolidate the units and
+  no envelope for the phase, so there would be no attempt left to resume. The
+  reported failed set follows the same rule: `workflowFailedUnits`
+  (`app_workflow_unit_actions.go`) lists the CURRENT attempt's failed units,
+  join included, so `run status`, the wake's references, and the verbs that
+  repair them cannot name different sets.
+- `RetryFailedUnits` is `RetryUnit` over every unit resting `failed`, as ONE
+  command (D33). It exists because the failure it repairs usually has one cause
+  hitting many units at once — a provider usage limit stopping most of a wide
+  fan-out — and it is one command rather than N submitted retries because the
+  loop serializes commands but not the gaps between them: a half-repaired
+  attempt must not be observable by a concurrent drop or single retry. It
+  collects the failed set — from `fan.all()`, join last and included, because a
+  failed join is often the only failed unit there is — before its first write,
+  so "nothing was failed" is a
+  refusal that changed nothing; it leaves `taken-over` units to the human and
+  the attempt parked on them; and it resumes through `resumeRepairedFanOut`
+  like the single retry, so the repaired units are admitted one at a time
+  through `acquireUnitResources` and queue in the shared FIFO rather than
+  bursting past the provider bound.
+- A phase-level continuation of a fan-out attempt is a continuation of its
+  **join**, because the join's envelope is the phase's: `Answer` and
+  `CompleteTakeover` route through `continueFanOutJoin`, which re-runs only the
+  join (a fresh try on the thread the attempt parked on, carrying the answer as
+  feedback) instead of re-entering the phase and re-expanding every unit. The
+  work units keep the results the join exists to consolidate. It is refused
+  when the join never ran ("repair its units instead") or while any unit is
+  still blocking, because there would be nothing coherent to consolidate.
+  `item.priorThreadID` / `takeoverFinalize` are consumed by the join alone;
+  a work unit never inherits them, so a continuation cannot leak into the next
+  phase's first attempt. The app runner is what makes this resolvable at all —
+  it stamps the join's thread onto the phase attempt row (`AttachWorkItemPhaseRun`)
+  the moment the join's thread exists.
 
 ## Call phases and call units
 
@@ -253,28 +342,36 @@ than the run. One contract covers both.
 
 ## Boundaries
 
-- Provider and app/channel implementations live behind `Runner` and `Emitter`, and workflow
-  resolution and project-profile loading live behind their narrow sources. The frozen
-  `Snapshot` pins definitions, never profile capacities. No timers, watchdogs, retry backoff,
-  worktree setup, or transport wiring belongs here: those are runner-owned, along with setup
-  hooks, artifact capture, and cleanup.
-- **One carve-out, a reply deadline rather than a policy timer.** `runnerStartReplyBudget`
-  (20s, `reply_budget.go`) bounds how long an API caller already inside `request` waits for the
-  runner start its own command produced. It schedules nothing and cannot change a run's state:
-  expiry answers the caller success and leaves the start running. It is paired with
-  `internal/aocli`'s 30s `rpcTimeout` and neither constant moves without the other. Abandoning
-  a future must stay safe: `done` is buffered, `settleRunnerStart` sends non-blockingly.
-- Waking a bound thread is app wiring: the engine contributes `workflow:item-state` and
-  `workflow:gate-notify` and nothing else. Discard (worktree removal, branch deletion) is
-  entirely app-side; the engine only cancels the tree members the app hands it. Automations are
-  app-fed and engine-unaware. `internal/workflow/scheduler` never imports this package, and a
-  fired automation enters through `StartItem` like any other start.
-
-## References
-
-- `docs/specs/workflows-system.md` for the system this implements.
-- `docs/specs/workflows-system-decisions.md` for D22, D29, D33, D36, D44, D45, D75, and every
-  other ruling cited above.
-- `internal/workflow/def/AGENTS.md` for authoring rules, reserved names, and the constants this
-  package binds against.
-- `internal/workflowhost/AGENTS.md` for the `Runner` this package calls.
+- Provider and app/channel implementations live behind `Runner` and `Emitter`.
+- Workflow resolution and project-profile loading live behind their narrow
+  sources. The frozen `Snapshot` pins definitions, never profile capacities.
+- No timers, watchdogs, retry backoff, worktree setup, or transport/app wiring
+  belongs in this package. Reliability timers and sub-attempt retries are
+  runner-owned; the engine only checks phase-boundary budgets and maps outcomes.
+  - **One carve-out, and it is a reply deadline rather than a policy timer**:
+    `runnerStartReplyBudget` (`reply_budget.go`) bounds how long an API CALLER
+    already inside `request` waits for the runner starts its own command
+    produced. It schedules nothing, retries nothing, and cannot change a run's
+    state — expiry answers the caller SUCCESS and leaves the start running — so
+    it is the wait's bound, not the work's. A timer that would decide anything
+    about the run (a start deadline, a backoff, a scheduled resume) still lives
+    app-side; `app_workflow_start_watchdog.go` is the start's own bound.
+- Persisting the pause flag and emitting it to the frontend is app wiring. The
+  engine owns the live flag and the `workflow:engine-state` payload shape.
+- Waking a bound thread is app wiring too. The engine's contribution is two
+  events and nothing else: the `workflow:item-state` transition, and
+  `workflow:gate-notify` for a `notify:` route the run continued through.
+  `internal/workflowapp/events.go` decides from those who is told and how (a
+  wake into the run's bound thread, an OS notification when it needs a human, a
+  descendant's park or progress announced at its root), and whether the message
+  is one the thread has already been told. Discard — worktree removal and branch deletion — is entirely
+  app-side; the engine only cancels the tree members the app hands it, which
+  since `cancelParked` means the parked ones too (`workflowDiscardStops`): a
+  run left needing a human after its checkout was removed and its branch
+  deleted has no remaining move that can succeed.
+- Automations are app-fed and engine-unaware. `internal/workflow/scheduler`
+  never imports this package: its internal-event triggers are driven by the
+  app forwarding `workflow:item-state` transitions from the same listener that
+  wakes bound threads, and a fired automation enters through `StartItem` like
+  any other start. The engine holds no timer, no trigger, and no automation
+  identity — a run started by one is just a run whose `source` is `automation`.

@@ -1251,7 +1251,8 @@ run. The composed message itself is bounded and quoted per invariant 34.
 
 - **Lifetime.** `App.aoTokens` is mutated only by
   `registerAOTokenLocked` / `revokeAOTokenLocked`, called from the
-  session-map mutators in `app_session_manager.go` under `a.mu`.
+  session-runtime mutations in `internal/sessionruntime.Manager` through
+  `app_session_runtime.go`.
   Registration rides the session map, not the spawn path, so a token
   cannot outlive the process it was minted for.
 - **Surface.** `transport.ScopedTokenMethods` is a closed allow-list

@@ -243,7 +243,12 @@ beforeEach(() => {
   }));
 });
 
-describe('direct markdown reveal differential', () => {
+// Deterministic CPU sweeps over fixed corpora: the per-character
+// transition sweep is ~3.2s on an idle core, and the default 5s budget
+// flaked at ~1.6x suite contention (2026-08-30). The budget is a
+// wedged-runtime tripwire, not a perf assertion — every lap is a bounded
+// loop that cannot spin forever on its own.
+describe('direct markdown reveal differential', { timeout: 60_000 }, () => {
   it('matches authoritative markdown after every character', async () => {
     const count = await assertEveryAppend(RICH_MARKDOWN, Array.from(RICH_MARKDOWN));
     expect(count).toBeGreaterThan(100);

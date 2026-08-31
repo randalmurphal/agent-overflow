@@ -1,9 +1,10 @@
 // Package threadmode owns the pure validators and parsers behind the
 // thread interaction-mode (chat/plan) and runtime-mode
-// (approval-required / auto-accept-edits / full-access) axes.
+// (read-only / approval-required / auto-accept-edits / auto / full-access)
+// axes.
 //
 // The persistence and session-restart orchestration that consume these
-// validators stay in main package — this package only knows the legal
+// validators stay in `internal/app` — this package only knows the legal
 // values and how to parse them.
 package threadmode
 

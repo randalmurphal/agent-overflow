@@ -5,7 +5,7 @@
 // theme, transport) say so where they would otherwise be missing.
 
 import { describe, expect, it } from 'vitest';
-import { WorkflowRunMapRun, WorkflowRunMapView } from '../../../bindings/agent-overflow/models';
+import { WorkflowRunMapRun, WorkflowRunMapView } from '../../../bindings/agent-overflow/internal/app/models';
 import {
   campaignSkeleton,
   nestedFanView,

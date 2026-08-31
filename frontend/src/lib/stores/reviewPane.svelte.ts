@@ -148,7 +148,7 @@ export interface ReviewPaneState {
    * still valid, only what surrounds it stopped updating. */
   readonly prUpdateError: string | null;
   /** Scope fields for parse-priming span requests — the same triple
-   * the diff-context expansion sends (`app_diff_context.go` scopes). */
+   * the diff-context expansion sends (`app_review_diffs.go` scopes). */
   readonly spanContext: PatchScopeContext;
   /** The PR moved since this pane loaded its diff: derived from the live
    * head against the head this pane loaded at, so a push seen by one pane
@@ -866,7 +866,7 @@ function createReviewPaneState(
   }
 
   // The scope triple GetDiffContextLines / HighlightPatchWithContext
-  // use to resolve new-side file content (`app_diff_context.go`). A
+  // use to resolve new-side file content (`app_review_diffs.go`). A
   // selected commit in branch scope reads through 'commit' scope; pr
   // scope reads the local PR clone, at the selected commit when one is
   // set (falling back to the head).

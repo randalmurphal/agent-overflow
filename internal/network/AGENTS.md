@@ -4,7 +4,7 @@ Wire shape + helpers behind the LAN-bind toggle in Settings. Owns the
 public `Settings` struct, the bind-host / origin-allow-list / share-
 URL formatters, and the deterministic local-IP discovery. The App-
 side orchestration (settings persist + transport rebind with
-rollback) stays in main package so the failure-path rollback can
+rollback) stays in `internal/app` so the failure-path rollback can
 touch `*App.settings` directly.
 
 ## Layout
@@ -26,7 +26,7 @@ touch `*App.settings` directly.
 - What does NOT belong here: settings persistence (lives in
   `internal/settings`), transport rebind (lives in
   `internal/transport`), or the orchestration that combines the
-  three (lives in `app_network.go` so the rollback path can touch
+  three (lives in `internal/app/app_network.go` so the rollback path can touch
   `*App.settings` on failure).
 
 ## Anti-patterns

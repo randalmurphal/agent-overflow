@@ -10,7 +10,7 @@ import {
   replaceQueueForThread,
   type FlushedLifecycle,
 } from './sendQueue.svelte';
-import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/models';
+import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
 import { iterPanes } from './panes.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';

@@ -1,21 +1,26 @@
 # Root decomposition
 
-`*App` is the root receiver every wire method hangs off. It has grown to
-59k lines of production code across 235 root `.go` files. This doc is the
-measured picture of that mass and the staged plan for cutting it, so each
-wave is a bounded slice rather than a rewrite.
+`*App` is the stable service receiver every wire method hangs off. The
+decomposition recorded below first moved state and behavior into
+responsibility-owned `internal/` packages, then relocated the complete
+integration shell from the repository root into `internal/app`. A named root
+wrapper embeds that implementation, so Wails and the custom transport still
+register exactly 349 methods as `main.App.<Method>` with unchanged IDs.
 
-All numbers below are measured against the tree at the time of writing
-(re-measure before quoting them; the scripts are one-liners over
-`app*.go`).
+The top-level `app_*.go` inventory fell from 432 files to **zero**. Root now
+contains 25 production Go files: executable/bootstrap concerns plus the
+small `service.go` compatibility wrapper. Application façades, composition,
+lifecycle, explicit cross-package transactions, and their integration tests
+live together under `internal/app`.
 
-> **Field names in §(a)/§(b) are pre-stage-2.** Stage 2 collapsed 92 of
-> the 221 fields into 15 named group structs (`app_state.go`), so e.g.
-> `updaterMu` now reads `a.updater.mu` and `gitWatchPumpsMu` reads
-> `a.gitStatus.mu`. The counts and the cluster shape they describe are
-> unchanged. Only the spellings are.
+All numbers below are measured against the tree at the time of writing.
 
-## (a) Field ownership
+> **Sections (a) and (b) are the baseline discovery measurements, not the
+> current tree.** They explain why the staged cuts were chosen. Many of those
+> fields and files subsequently moved into the services recorded in section
+> (c); section (e) is the completion inventory.
+
+## (a) Baseline field ownership
 
 | Metric | Count |
 |---|---|
@@ -42,18 +47,18 @@ of hubs:
 | `configDir` | 10 | 10 |
 
 Everything else is ≤ 8 files. `store`, `shuttingDown`, `settings` and
-`configDir` are ambient dependencies, not seams. They belong in a `Deps`
-struct any extracted service takes by value. `triage` and `mu` are the
-two that carry real behavior across cluster lines.
+`configDir` are ambient dependencies, not seams — they belong in a `Deps`
+struct any extracted service takes by value. `triage` and the package-owned
+`sessionruntime.Manager` carry real behavior across cluster lines.
 
-## (b) Seam map
+## (b) Baseline seam map
 
 Clustering production files by filename prefix, fields-per-cluster:
 
 | Cluster | Fields touched | Notes |
 |---|---|---|
-| session lifecycle | 39 | `mu`'s concern; `sessionManager` is the only sanctioned accessor of `sessions` |
-| startup / shutdown | 34 / 29 | not a feature: the ordering constraint every other cluster registers into |
+| session lifecycle | 39 | owned by `internal/sessionruntime.Manager`; root uses narrow lifecycle readers and mutators |
+| startup / shutdown | 34 / 29 | not a feature — the ordering constraint every other cluster registers into |
 | workflow host | 26 | 49 files, 14.3k lines, 191 methods (53 exported) |
 | thread ops | 19 | fork/delete/title/locks |
 | mcp | 19 | three of its own mutexes (`claudeMCPOAuthPollsMu`, `workspaceMCPAuthMu`, `codexMCPReloadsMu`) |
@@ -98,8 +103,9 @@ detectable.
   refuses a duplicate method name the same way it refuses an ID
   collision.
 
-**Stage 1: lock hygiene (this wave).** `mu` now guards session
-lifecycle only and says so, field by field, in its doc comment.
+**Stage 1 — lock hygiene (landed, then superseded by sessionruntime).** At
+this stage `mu` was reduced to session lifecycle only and documented field by
+field.
 `deliberations` → `deliberationsMu`; `backgroundFetchStop` +
 `backgroundFetchCancel` → `backgroundFetchMu` (moved as a pair, since
 they are set and cleared in one critical section). Both new locks are
@@ -128,21 +134,25 @@ neither critical section calls anything that takes another App mutex.
   (`WorktreeSetupRunState` et al. appear in
   `frontend/bindings/.../models.ts`). `app_updater_desktop.go` and
   `app_notifications_desktop.go` take `*App` as a parameter.
-  `app_dir_watcher.go` was moved and reverted: `themeWatcher` /
-  `spinnerWatcher` are DEFINED TYPES over `dirWatcher` and their tests
-  reach its unexported suppression ledger under its unexported mutex, so
-  promoting it means exporting a mutex on a shared core or rewriting a
-  live-fsnotify test. Neither is a behavior-preserving mechanical move.
+  The flat-directory watcher later moved to `internal/assetwatch` with its
+  concrete theme/spinner types and tests. Moving the tests with the private
+  core preserved coverage of the suppression ledger and live fsnotify re-arm
+  without exporting a mutex, clock, or generic watcher API.
 - *Field grouping*: `App` went from 221 fields to **144 top-level**,
-  92 of them collapsed into **15 named group structs** in
-  `app_state.go`: `updater` (13), `mcp` (15), `flushDispatch` (8),
-  `design` (8), `prUpdates` (7), `usageProbe` (7), `sessionImport` (6),
+  92 of them initially collapsed into **15 named group structs** in
+  `app_state.go` — `updater` (13), `mcp` (15), `flushDispatch` (8),
+  `design` (8, subsequently retired), `prUpdates` (7), `usageProbe` (7),
+  `sessionImport` (6),
   `backgroundFetch` (5), `gitStatus` (4), `worktreeSetup` (4),
   `workflowAutoResume` (4), `turnObservers` (4), `markThreadRead` (3),
-  `threadTitleGen` (2), `codexThreadCost` (2). Named fields, never
-  embedded; every mutex moved with all of its wards; `mu` (session
-  lifecycle) and the ambient set stayed top-level. `app_state.go`'s
-  header states the rules a new group must follow.
+  `threadTitleGen` (2), `codexThreadCost` (2). The updater group later moved
+  intact into `internal/appupdate`; the `worktreeSetup` group later moved
+  intact into `internal/worktreesetupapp`; background fetch and git-status
+  pump state later moved into `internal/gitapp`. Named fields, never embedded;
+  every mutex moved with all of its wards. Session `mu` and the ambient set
+  stayed top-level at this intermediate stage; `mu` later moved atomically into
+  `sessionruntime.Manager`. `app_state.go`'s header states the rules a new
+  group must follow.
 
 **Stage 3+: workflow-host extraction (landed).** The workflow host was
 the largest coherent cluster and the best-isolated: 26 fields, of which
@@ -176,15 +186,241 @@ Three pieces the runner shared with `main` were promoted out on the way:
 `appdirs.PrivateDirPerm` / `SensitiveFilePerm`, and
 `gitops.RetainedDirtyReason`.
 
-What deliberately stayed in `main`: every bound method (they are the
-wire, see (d)), `App.createWorkflowThread` (model-profile seeding and
-the access→runtime-mode mapping are App policy), and `WorkflowArtifact`,
-a wire model already emitted into
-`frontend/bindings/agent-overflow/models.ts` whose relocation would be
-a bindings regeneration, not a code move.
+What deliberately stayed on `App` at this stage: every bound method (they are
+the wire, see (d)), `App.createWorkflowThread` (model-profile seeding and the
+access→runtime-mode mapping are App policy), and `WorkflowArtifact`. Stage 14
+later moved that receiver and its DTOs together into `internal/app`; the root
+wrapper preserved the method identity while Wails correctly relocated those
+generated models into `frontend/bindings/agent-overflow/internal/app/models.ts`.
 
-Only now consider promoting other clusters (updater, mcp) the same way.
-Do not start one as a rider on another wave.
+**Stage 4 — leaf services (landed).** Small, single-owner concerns moved
+without moving any wire method.
+
+- `internal/assetwatch` owns the shared fsnotify loop, debounce, directory
+  re-arm, and theme self-write suppression. Root keeps only the two lifecycle
+  adapters that translate callbacks onto typed event channels.
+- `internal/appupdate` owns all updater state, provider targeting, checksum
+  verification, desktop/WSL staging, launcher handoff, and deadline policy.
+  Root keeps the five bound `App` methods and their DTOs, plus thin native and
+  WSL boot adapters. Regenerating Wails bindings and the transport registry is
+  the compatibility gate: their checked-in outputs remain byte-identical.
+- `internal/claudeapp`, `internal/claudecatalog`, and `internal/codexapp` own
+  the provider leaf surface: live task/background-terminal controls, exact
+  context usage, filesystem skills, account-wide Codex usage, and the paired
+  Claude probe catalogs. Root keeps the nine stable bound methods, their wire
+  DTOs, shutdown policy, and typed lookups into the session/account owners.
+  Send/rollback, account switching, and session lifecycle deliberately remain
+  outside these leaf services.
+
+**Stage 5 — MCP coordination (landed).** `internal/mcpapp` now owns the two
+provider-native config adapters, status cache, OAuth polling and temporary
+workspace auth processes, live reconnect/reload application, and all associated
+coordination locks. Root retains one stable binding façade with the original
+method signatures and wire DTOs, plus typed adapters into session lifecycle,
+credentials, event emission, and triage. The harness RPC receiver later moved
+as the explicit stateful cut described in stage 13.
+
+**Stage 6 — Codex provider-thread coordination (landed).**
+`internal/codexthread` owns reopen reconciliation, ghost background-row
+settlement, cumulative provider-cost reads, their per-thread single-flight and
+rollback fence, and the narrow lifetime-thread usage overlay. Root keeps the
+ignored compatibility method/DTO plus typed session, event, startup, rollback,
+and usage-query adapters. Provider queue/revert mechanics, review, and rate
+limits remain outside this service.
+
+**Stage 7 — managed provider accounts (landed).**
+`internal/provideraccountapp.Manager` owns the account metadata and native
+credential stores, selection and provider-specific reconcile locks, credential
+fingerprints, audit, login/switch/removal sagas, external-login and organization
+reconciliation, stable identity probes, and account-scoped usage refresh. Those
+pieces moved atomically because a Claude rotation cannot cross two lock domains.
+Root keeps the five byte-compatible Wails methods and DTO in
+`app_provider_account_bindings.go`, provider-session runtime, periodic polling
+triggers, event projection, and the narrow selection-lease, probe-invalidation,
+rate-limit, settings, browser, binary, and lifecycle ports in
+`app_provider_account_adapters.go`.
+
+**Stage 8 — thread-title coordination (landed).**
+`internal/threadtitleapp` owns the per-thread in-flight claim shared by
+automatic, healing, and user-triggered generation, plus prompt/context and
+image-attachment gathering, result sanitization, and compare-and-swap
+persistence. Root retains the byte-compatible `RegenerateThreadTitle` method
+and completion DTO, projects title/completion events and Claude peer naming,
+and injects the only provider-capable generator boundary.
+
+**Stage 9 — thread application core (landed store/policy cut).**
+`internal/threadapp` owns thread creation/default/terminal row policy,
+CRUD/list/read/pin/branch metadata, model-profile selection and guarded
+provider-switch persistence, chat/plan mode validation, PR-seeded creation,
+recursive deletion ordering, the shared keyed thread-action lock registry, and
+the store-only fork rules (range validation, interrupted settlement, Codex
+anchor lookup, Claude provider-id remap). Root retains the byte-compatible
+Wails methods and DTOs, event projection, live session reconciliation, real
+git/forge and worktree-setup adapters, destructive resource cleanup callbacks,
+and provider-specific fork mechanics. Claude JSONL slicing and Codex
+`thread/fork` remain separate root ports; the cross-provider fork saga remains
+root-side until its attachment/draft and live-snapshot boundary can move as one
+without an App-shaped host.
+
+**Stage 10 — provider discovery coordination (landed).**
+`internal/providerdiscoveryapp` owns the bounded Claude/Codex identity caches,
+the Codex live-model cache, separate provider-specific zero-token probe
+requests, provider binary status detection, probe-enriched Claude catalog
+lookups, and custom-environment cache invalidation. Root retains the exact
+probe/status/environment/model Wails methods and injects event projection,
+settings persistence, provider-specific probe configs, and the managed-account
+probe transaction. Credential stability/adoption remains atomic inside
+`provideraccountapp`; session events, rate-limit persistence, start/send,
+revert, review, and provider-queue ownership did not move.
+
+**Stage 11 — provider quota lifecycle coordination (landed).**
+`internal/providerlifecycleapp` owns the complete rate-limit state cluster:
+account-scoped snapshot cache and merge normalization, synchronous persistence
+before event publication, durable per-account 429 backoff, provider activity
+marks, polling goroutines, coalescing gates, and separate Claude HTTP / Codex
+app-server refresh paths. It also performs the pre-triage session quota
+attribution and projects the account a live session is actually using through
+narrow `sessionruntime` and `provideraccountapp` ports.
+
+The provider event chokepoint remains root-side because its order spans triage,
+MCP and Claude live-config observations, turn observers, dead-pre-init reap,
+Codex cost, queue recovery, workflow disconnect, unregister, and reconnect.
+Claude live config and Codex queue/revert/review remain provider-specific
+transactions; moving fragments of either would split their lock and rollback
+boundaries.
+
+**Stage 12 — git and worktree application cuts (landed).**
+`internal/gitapp` owns the simple thread/project git reads and actions, exact-tip
+branch-prune validation, one canonical-cwd status pump shared by every caller,
+and the cancellable unattended fetch cadence. Root keeps the exact Wails
+methods, connection-scoped cleanup, event projection, and shutdown placement.
+
+`internal/worktreeapp` owns registered-worktree membership, dirty/unpushed
+status, picker blocking, and workspace activity aggregated across every thread
+referencing either path column. Worktree deletion and workspace switching stay
+in root on purpose: their visible order spans lock-set recomputation, activity
+checks, setup cancellation, git removal, thread persistence, Claude transcript
+relocation, event publication, and provider-session restart. Moving that order
+behind a host interface would be a directory move, not an architectural cut.
+
+**Stage 13 — application ownership and root organization (landed).**
+The other bounded cuts completed in the same decomposition:
+
+- `internal/workflowapp` owns the workflow engine/runner/scheduler references,
+  definitions watcher, transition ring, serialized reaction queues, wake and
+  disposition policy, autoresume timers, digest CAS coordination, CLI reads,
+  narratives, memory, PR follow-up, and tree-loss model. The 77-file root
+  workflow cluster is now five production façade/glue files plus thirteen
+  genuine App/provider/git integration suites.
+- `internal/sessionruntime.Manager` owns the one lock domain covering live
+  sessions, AO authorities, start handoff, reconnect/config admission, Claude
+  live-config and prompt wards, and sweep handles. `App.mu` and every
+  compatibility session map were deleted in the same atomic cut.
+- `internal/discussionapp`, `internal/worktreesetupapp`, and
+  `internal/threadtitleapp` own their complete process-local state, timers,
+  goroutines, and locks. Root retains typed provider/store/event adapters.
+- `internal/projectapp` owns project CRUD, implicit workspace identity,
+  workspace membership, setup-recipe persistence, deletion footprints, and
+  deterministic thread ordering. The live destructive cleanup saga remains
+  visible in root.
+- `internal/harnessrpc` owns the LocalOnly harness receiver, mock
+  control, replay, seed/reset coordination, and soak autopilot. Root retains
+  registration and the real-App boot adapter.
+- `internal/highlightapp` and `internal/sessionimport.Manager` own their bounded
+  asynchronous coordination. `internal/workflowdefs` and
+  `internal/workflowwatch` own the workflow filesystem watcher and transition
+  ring leaves.
+- Thin root files were consolidated by responsibility after their behavior
+  moved: provider/account, workflow, session, thread, discussion, appearance,
+  editor, host, review, composer, observability, and paging façades. Platform
+  splits and provider-specific Claude/Codex transaction files remain separate.
+
+**Stage 14 — physical application-shell relocation (landed).** The complete
+`App` implementation and its integration/manual-smoke tests moved as one Go
+package into `internal/app`. Root now declares only:
+
+```go
+type App struct { *appservice.App }
+```
+
+Wails v3 builds the intuitive method set of that named wrapper, including
+promoted methods. Both Wails reflection and the generator therefore continue
+to see the receiver as `main.App`, so every `$Call.ByID` value is unchanged.
+The custom transport independently pins `Package: "main", TypeName: "App"`;
+`methodgen` scans `internal/app` but hashes those same compatibility labels.
+
+The relocation exposed a small set of legitimate executable→service boot
+inputs: build version, data-directory override, mocked-provider isolation,
+mock-control environment, notification adapters, updater configuration,
+backend identity, and window geometry. These now cross the package boundary
+through explicit package functions in `internal/app/bootstrap.go`; root no
+longer reaches into service fields. Application tests keep their historical
+repository-root working directory through the package `TestMain`, so committed
+fixture and whole-repository AST contracts retain the same scope.
+
+## (e) Current inventory and target
+
+At completion, the top level contains **zero `app_*.go` files**, down all 432
+from the start-of-refactor inventory. The root Go package is now the executable
+shell:
+
+| Kind | Files | Lines |
+|---|---:|---:|
+| root production | 25 | 3,782 |
+| root tests | 16 | 2,288 |
+| `internal/app` production | 127 | 34,049 |
+| `internal/app` tests | 172 | 83,698 |
+
+Reproduce the file counts with:
+
+```sh
+find . -maxdepth 1 -type f -name 'app_*.go' | wc -l
+find . -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' | wc -l
+find internal/app -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' | wc -l
+```
+
+The final shape separates physical organization from architectural ownership:
+
+1. Root `main.App` is a named compatibility wrapper and executable boot seam.
+2. `internal/app.App` owns the Wails façades, integration transactions,
+   composition, lifecycle, DTOs, and application-level integration tests.
+3. Responsibility packages beneath `internal/` own domain/application behavior,
+   state, timers, goroutines, and focused tests.
+4. Promoted wrapper methods preserve every `main.App.<Method>` RPC identity.
+5. Generated App DTOs now live at
+   `frontend/bindings/agent-overflow/internal/app/models.ts`; frontend imports
+   follow that generated ownership without changing JSON shapes.
+
+### Deliberate residual seams
+
+Another package extraction is not automatically another improvement. These
+`internal/app` transactions remain explicit because moving them would split a
+lock/rollback boundary or replace visible ordering with an App-shaped callback
+interface:
+
+- the provider-event chokepoint: MCP/live-config observation, triage,
+  observers, dead-pre-init cleanup, Codex cost, queue recovery, workflow
+  disconnect, unregister, and reconnect;
+- the cross-provider fork saga: triage flush, live Claude leaf/JSONL slicing,
+  Codex `thread/fork`, attachment draft cloning, anchor synthesis, and rollback;
+- worktree deletion/switch and project deletion: lock-set rechecks, live
+  workflow/session cancellation, setup cancellation, git/filesystem mutation,
+  transcript relocation, persistence, events, and restart;
+- Claude live-config and Codex queue/revert/review transactions, which remain
+  provider-specific by core principle 6;
+- send/flush/revert orchestration, whose serial placement and restoration rules
+  span triage, provider sessions, drafts, attachments, and thread locks;
+- platform lifecycle files whose build tags, native resources, timers, or
+  shutdown-before-store-close ordering are the responsibility boundary.
+
+A giant `Host` interface that enumerates `App`, or a second service authority
+over any of those wards, would reverse the decomposition rather than finish it.
+
+The session-runtime ownership audit is recorded in
+`docs/architecture/session-runtime-extraction.md`. The live registry moved only
+as one atomic cut: registry membership, scoped `ao` authority, Claude
+live-config cleanup, and the start-registration handoff now share the mutex
+owned by `internal/sessionruntime.Manager`; `App.mu` no longer exists.
 
 ## (d) Wire compatibility
 
@@ -196,19 +432,19 @@ on the wire. The facts that make that true:
   `fnvHash`). It matches Wails' own `internal/hash.Fnv`, verified against
   generated bindings (`fnvHash("main.App.ArchiveProject") ==
   1352159878`).
-- **`pkgPath` is forced to `"main"`.** `Register` defaults
-  `RegisterOptions.Package` to `"main"` when empty, and `TypeName` to
-  the receiver's `reflect` name. Both are **plain strings**, not derived
-  from the receiver's real package, so a service that physically lives
-  in `internal/workflowhost` can register with
-  `RegisterOptions{Package: "main", TypeName: "App"}` and produce
-  byte-identical IDs and names.
+- **The registered receiver is still the named root `main.App`.** It embeds
+  `*internal/app.App`; Go reflection and Wails' `IntuitiveMethodSet` include
+  the promoted methods but compute their service FQN from the wrapper. The
+  custom dispatcher also receives explicit
+  `RegisterOptions{Package: "main", TypeName: "App"}` labels. Runtime,
+  generator, and `methodgen` therefore produce the same IDs even though the
+  method bodies live in another package.
 - **The generator emits per-package TS models.**
   `frontend/bindings/agent-overflow/internal/<pkg>/models.ts` already
-  exists for ~25 internal packages, and `bindings/agent-overflow/app.ts`
+  exists for internal ownership packages, and `bindings/agent-overflow/app.ts`
   imports them (`import * as store$0 from
-  "./internal/store/models.js"`). Wire *shapes* are free to live in
-  `internal/`; only the binding *registration* has to be in `main`.
+  "./internal/store/models.js"`). App-owned DTOs now live in
+  `internal/app/models.ts`; their JSON field shapes are unchanged.
 - **`//wails:id` pins an ID explicitly** (Wails
   `internal/generator/collect/service.go`) if a rename ever has to keep
   its old hash. `//wails:ignore` keeps a method off the wire entirely,
@@ -218,9 +454,9 @@ on the wire. The facts that make that true:
   registered receiver must not reuse an existing method name. The
   stage-0 registration test is what catches that.
 
-Consequence: extraction is a compile-time refactor with a test gate, not
-a wire migration. If a stage ever proposes changing a method's package,
-type name, or spelling, that is a separate, deliberate wire change.
+Consequence: extraction and physical relocation remain compile-time refactors
+with a test gate, not wire migrations. Changing the named root wrapper or a
+method spelling is still a separate, deliberate wire change.
 
 ## See also
 

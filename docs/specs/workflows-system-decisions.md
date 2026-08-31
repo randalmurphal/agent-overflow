@@ -791,8 +791,8 @@ verdict it now is, with what the first attempt got wrong.
   this from Agent Overflow." Git is a system the user owns independently, with
   its own tools for throwing work away; a sidebar housekeeping action has no
   business rewriting their repository as a side effect. The codebase already
-  drew the line. See `discardWorkflowTree`'s header
-  (`app_workflow_discard_apply.go`): cleanup frees a checkout and leaves the
+  drew the line — see `discardWorkflowTree`'s header
+  (`internal/workflowapp/discard_apply.go`): cleanup frees a checkout and leaves the
   commits reachable through the branch, while discard is the human saying the
   work itself is not wanted. Project deletion is cleanup. **D23's per-run
   discard remains the only flow in the app that deletes a branch**, which is

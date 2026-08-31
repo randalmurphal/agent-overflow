@@ -31,8 +31,8 @@ directory. Without coalescing, every composer-menu render would pay that.
 - What does NOT belong here:
   - Deciding HOW to read. The App supplies a `Fetch` closure because only
     it knows whether a live session's connection can be ridden
-    (`app_codex_skills.go#readCodexSkills`).
-  - The wire shape and its parsing (`internal/provider/codex/skills.go`).
+    (`app_codex_bindings.go#readCodexSkills`).
+  - The wire shape and its parsing — `internal/provider/codex/skills.go`.
   - Importing `internal/provider/codex`. That direction is what would make
     the import cycle; the App is the seam.
 

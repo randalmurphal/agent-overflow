@@ -14,7 +14,7 @@
 
 import { render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { WorkflowRunMapRun, WorkflowRunMapView } from '../../../../bindings/agent-overflow/models';
+import type { WorkflowRunMapRun, WorkflowRunMapView } from '../../../../bindings/agent-overflow/internal/app/models';
 import {
   campaignSkeleton as skeleton,
   mapRun,

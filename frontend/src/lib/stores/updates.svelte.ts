@@ -2,7 +2,7 @@
 // Updates panel and the sidebar "update available" badge, and bridges the
 // backend updater:* events into that state.
 //
-// UX contract (mirrors the backend in app_updater.go): the on-launch check only
+// UX contract (mirrors the backend in internal/appupdate): the on-launch check only
 // reads release metadata — nothing downloads or installs without an explicit
 // button press. The download and the restart are each a separate user action.
 

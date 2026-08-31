@@ -57,7 +57,7 @@ cannot debug.
   `<base>.tmp-NNNNN`, so an appearance write lands as
   `appearance.json.tmp-2148294417`, whose EXTENSION is `.tmp-2148294417`,
   not `.json`, which is what keeps it outside the `*.json` set the watcher
-  (`app_theme_watcher.go`) reacts to. That property belongs to atomicfile's
+  (`internal/assetwatch`) reacts to. That property belongs to atomicfile's
   naming, not to this package, so it is pinned from the watcher side
   (`TestThemeWatcherIgnoresAtomicfileTempNames`). Self-write suppression is
   a backstop for the DESTINATION name, not the temp file.

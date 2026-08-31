@@ -75,11 +75,11 @@ lines by construction.
 
 Clients don't pay a highlight RPC round trip for always-rendered
 content: the app layer precomputes spans as the same seed wire shapes
-and both pushes them live and persists them with history:
-`app_highlight_seed.go` (streaming code fences → `highlight:seed`
+and both pushes them live and persists them with history —
+`internal/highlightapp/seed.go` (streaming code fences → `highlight:seed`
 events for remote clients, plus settle-time `codeSpans` enrichment
 into `items.meta` via the triage `SetCodeSpanEnricher` hook),
-`app_highlight_diff_seed.go` (diff-payload persist tap →
+`internal/highlightapp/diff.go` (diff-payload persist tap →
 `payloads.preview_spans` / `payloads.spans` columns, plus
 `highlight:diff_seed` events for every client). Diff seeds go to
 loopback clients too because persist time is the one moment the

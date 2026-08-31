@@ -40,8 +40,8 @@ Debian 13+).
 | `make release` | direct-install artifacts in `dist/release/<version>/` |
 | `make harness` | real app, isolated data dir, mocked providers; `harness-window` / `harness-wsl` open a real window on it, `make e2e` runs Playwright against it, `bin/ao-harness` drives any instance from a shell. See [agent-harness.md](docs/architecture/agent-harness.md). |
 | `make soak` | the harness shell plus the indefinite streaming preset, for hours-long renderer reproductions beside your own app; `soak-check` summarizes, `soak-window` is the native equivalent. See [soak-rig.md](docs/architecture/soak-rig.md). |
-| `make provider-smoke` | manual real-provider gate. **Spends real model tokens**; needs authenticated `claude` + `codex` on PATH. Run before a release and after upgrading either provider CLI. See [providersmoke_test.go](providersmoke_test.go). |
-| `make import-corpus-smoke` | manual session-import gate over a **copy** of your provider homes (`AO_IMPORT_CORPUS_CLAUDE` / `AO_IMPORT_CORPUS_CODEX`; a root overlapping a live home is refused, and there is no fallback). Spends no tokens. Run after provider CLI upgrades and before importer changes. See [importcorpussmoke_test.go](importcorpussmoke_test.go). |
+| `make provider-smoke` | manual real-provider gate. **Spends real model tokens**; needs authenticated `claude` + `codex` on PATH. Run before a release and after upgrading either provider CLI. See [providersmoke_test.go](internal/app/providersmoke_test.go). |
+| `make import-corpus-smoke` | manual session-import gate over a **copy** of your provider homes (`AO_IMPORT_CORPUS_CLAUDE` / `AO_IMPORT_CORPUS_CODEX`; a root overlapping a live home is refused, and there is no fallback). Spends no tokens. Run after provider CLI upgrades and before importer changes. See [importcorpussmoke_test.go](internal/app/importcorpussmoke_test.go). |
 
 Every task must leave `make go-build`, `make go-test`,
 `cd frontend && pnpm run check`, and `cd frontend && pnpm run build`
@@ -56,7 +56,7 @@ final binaries on the same minimum macOS version.
    no in-memory read models. The deliberate exceptions are coordination,
    not orchestration, and are called out where they live: lightweight
    brokering between provider processes and the frontend (deliberation
-   turn tracking, design option flow), and the workflows engine
+   turn tracking), and the workflows engine
    (`internal/workflow/`; spec: `docs/specs/workflows-system.md`), which
    sequences phases over the same thread/provider runtime.
 2. **Provider process is the source of truth during a turn.** Don't
@@ -141,8 +141,8 @@ Guardrails:
 ## Repo Map
 
 ```
-/                             root guides (this file)
-/main.go, /app.go, /app_*.go  Wails entry + bound methods
+/                             root guides + executable bootstrap (`main*.go`, `service.go`)
+/internal/app/                Wails service shell, bound methods, integration tests
 /cmd/                         alternative entry-point binaries (Windows WSL launcher, ao-mockprovider)
 /internal/                    Go packages (see internal/AGENTS.md)
 /frontend/                    Svelte 5 app (see frontend/AGENTS.md)

@@ -124,7 +124,7 @@ note with no group is one no reader would ever be shown.
 | Concern | Where |
 |---|---|
 | Which tree a run writes into, provenance resolution, appends, digest rendering for a prompt | `app_workflow_memory.go` |
-| The `memory add` / `memory list` bound methods and their row-level authorization | `app_workflow_cli_memory.go` |
+| The `memory add` / `memory list` bound methods and their row-level authorization | `app_workflow_agent_bindings.go` |
 | The envelope's `memory` control field: schema fragment, post-validation, the strip seam | `internal/workflow/def/envelope_memory.go` |
 | The prompt section stating the channel per `access` | `internal/workflow/runner` (`writeMemorySection`) |
 | The CLI verb | `internal/aocli/exec_memory.go` |

@@ -31,7 +31,7 @@ Pure projectors backing the per-thread flush queue: the wire-side
 
 `app_flush_queue_test.go` keeps a compile-only
 `guardCompileEnsureSendMessageOptionsCompatible` referencing the
-`flushQueuePayload` alias the main package keeps for
+`flushQueuePayload` alias `internal/app` keeps for
 `flushqueue.Payload`. The alias is intentional. Removing it would
 require either churning that drift guard or moving it across the
 package boundary, and the local name is cheap.

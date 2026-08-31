@@ -207,3 +207,22 @@ func TestHarnessBootstrapPrefixIsStable(t *testing.T) {
 		t.Fatalf("harnessStdoutPrefix = %q; update every parser before changing it", harnessStdoutPrefix)
 	}
 }
+
+func TestMockControlEnvironmentIsInstalledBeforeAppStart(t *testing.T) {
+	for _, path := range []string{"main_harness.go", "main_soak.go"} {
+		source, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(source)
+		startControl := strings.Index(text, "harnessrpc.StartControl(h)")
+		installEnv := strings.Index(text, "appservice.SetProviderExtraEnv(appService.App, providerEnv)")
+		startApp := strings.Index(text, "appService.Start(bootCtx)")
+		if startControl < 0 || installEnv < 0 || startApp < 0 || !(startControl < installEnv && installEnv < startApp) {
+			t.Fatalf(
+				"%s boot order changed: StartControl=%d provider env=%d App.Start=%d; mock credentials must be installed before startup",
+				path, startControl, installEnv, startApp,
+			)
+		}
+	}
+}

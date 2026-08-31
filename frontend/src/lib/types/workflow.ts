@@ -21,7 +21,7 @@ import type {
   WorkflowRunMapUnit,
   WorkflowRunMapView,
   WorkflowRunSpend,
-} from '../../../bindings/agent-overflow/models';
+} from '../../../bindings/agent-overflow/internal/app/models';
 import type {
   WorkItem,
   WorkItemUsage,

@@ -62,8 +62,9 @@ The seams live on the subject, so wiring is caller-side by necessity:
 - Installing `DisabledCodexModelCatalog()` and
   `StubTextGenerationExecutor()` on the subject's fields.
 
-In package `main`, `isolateE2EProviderSpawns` (`app_e2e_isolation_test.go`)
-is that glue, and it is what `setupE2EApp` and `newTestAppWithStore` call.
+In package `internal/app`, `isolateE2EProviderSpawns`
+(`internal/app/app_e2e_isolation_test.go`) is that glue, and it is what
+`setupE2EApp` and `newTestAppWithStore` call.
 Its `//go:build providersmoke` twin is a deliberate no-op: that gate exists
 to exercise production's DEFAULT binary resolution against the real,
 authenticated CLIs, is manual-only (`make provider-smoke`), and is
@@ -76,5 +77,5 @@ documented as spending real tokens. Nothing else may have a twin.
 - Do NOT copy these helpers into a package-local fixture. A copy drifts,
   and the drift is invisible until it costs a login.
 - Do NOT add a build tag to this package. The one build-tagged no-op is
-  the root-side wrapper, and it exists for the smoke gate only.
+  the application-test wrapper, and it exists for the smoke gate only.
 - Do NOT import this from production code. It imports `testing`.

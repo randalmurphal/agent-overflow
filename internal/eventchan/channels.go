@@ -140,7 +140,7 @@ const (
 )
 
 // updater:* — the self-update lifecycle. Six of these are bridged from
-// Wails updater event names by app_updater.go's updaterEventBridge;
+// Wails updater event names by internal/appupdate's updaterEventBridge;
 // UpdaterInstall is the imperative directive the Windows launcher acts
 // on, and internal/selfupdate re-exports its spelling as a string.
 const (

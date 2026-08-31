@@ -138,7 +138,7 @@ Rules only. The reasoning lives in `docs/specs/workflows-system.md` (section num
   **`report-back` is deliberately not in the v1 set** even though §5 lists it. Grants require
   an agent session, so a tool phase is a finding; a fan-out phase answers with its units and
   its join, and a call phase grants nothing. Grants freeze with the snapshot, and
-  `frozenPhaseGrants` (repo root) drops any name this build does not recognize.
+  `frozenPhaseGrants` (`internal/app`) drops any name this build does not recognize.
 - `effort:` is legal exactly where `provider:`/`model:` are, so it is a finding on a tool
   phase, a call phase, a fan-out phase, and a call unit.
 - **Validation checks the tier NAME; the app checks the tier against the model.** `effort.go`
@@ -149,22 +149,149 @@ Rules only. The reasoning lives in `docs/specs/workflows-system.md` (section num
 
 ## Envelopes
 
-- `EnvelopeContract` is the one thing schema generation and post-validation are written
-  against, so a unit cannot drift from the rules a phase is held to. The control fields are
-  `status`, `outputs`, `question`, `reason`, `narrative`, and `memory`. **`narrative` and
-  `memory` are the two with no branch rule**, and the two the app lifts back out. Outputs nest
-  under `outputs`, so an output named `narrative` never collides.
-- **The generated schema requires every control key; post-validation requires only `status`.**
-  Strict mode has no optional, only required-and-nullable (`internal/providerschema`), so
-  post-validation reads what a null MEANT: an absent `outputs` is an empty one, and a `done`
-  element still owes every declared output. A hand-written tool envelope owes no null
-  boilerplate.
-- What a memory note IS lives in `internal/workflow/memory`; `envelope_memory.go` adds only the
-  schema fragment and the two things a schema cannot express, `MaxEnvelopeMemoryNotes` (20) and
-  the refusal of an author-supplied `provenance` / `at` / `wave`.
-- A **call unit** and a **join** each declare no `outputs:`. A call unit's envelope is the
-  child workflow's outputs; a join's IS the phase's, which is also why a join may not be a
-  `call:`. What produces a phase's envelope therefore follows the join.
+## Reasoning effort
+
+- `effort:` pins the reasoning tier of one model turn. It is legal **exactly
+  where `provider:`/`model:` are** — an agent-driver phase running its own turn,
+  and a prompt-bound fan-out unit or join. On a tool phase it is
+  `phase.effort`, and a stray `provider:`/`model:`/`prompt:` on a tool phase is
+  refused the same way (`phase.tool`) — a tool phase runs a command, not a model
+  turn, so any of the four would be a dead line the author never learns was
+  ignored. On a call phase, a fan-out phase, and a call unit `effort:` joins the
+  existing `provider/model/effort/prompt` refusal group, because those elements
+  run no turn of their own. A command unit gets the same "a unit declares a
+  command, provider/model/effort/prompt, or call, not more than one" finding a
+  stray `provider:` gets: it is one rule, not a parallel one.
+- **Validation checks the tier NAME; the app checks the tier against the
+  model.** `effort.go` owns the closed vocabulary (`none`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max`, `ultra`) and an unknown name is a finding —
+  a typo must not read as "run at the model's default". Which of those tiers a
+  *given* model advertises is deliberately NOT validated: the catalog is
+  provider-owned and partly live (Codex's comes off the app-server, Claude's is
+  probe-enriched), so a static rule would make a definition's validity depend on
+  data the author cannot see in the YAML and cannot pin. An authored tier the
+  model does not advertise is coerced onto that model's own default at thread
+  creation instead (`createWorkflowThread`, `internal/app`), which is also where the
+  `threads.reasoning_effort` CHECK constraint is satisfied.
+- The vocabulary is declared here rather than imported because this package
+  stays free of `internal/provider`. The two lists are held together by
+  `TestWorkflowEffortTiersMatchTheProviderReasoningEfforts` in `internal/app`,
+  which compares them in both directions and in order.
+
+## Phase grants
+
+- A phase may declare `grants:`, the first-party `ao` capabilities its agent is
+  allowed to exercise (spec §5). The set is CLOSED — `start-run`, `schedule`,
+  `update-notes`, `introspect` — and lives in `grants.go`. An unknown name is a
+  finding rather than an ignored line, because a typo would otherwise read as
+  "this phase deliberately has no authority".
+- Grants require an agent session, which `phaseHoldsAgentSession` is the one
+  predicate for. A `driver: tool` phase runs a command, not a session that could
+  hold the credentials, so `grants:` on one is a finding. A fan-out phase has no
+  driver at all, so it answers with its units and its join — grants stay legal
+  there (the app scopes every unit's token from the *phase's* frozen set) and
+  are a finding only when nothing under the phase runs an agent. A call phase
+  grants nothing either: the child workflow's own phases declare what they may
+  do.
+- Grants are frozen into the run snapshot with everything else. A phase
+  re-entered after the definition was edited keeps the authority the run
+  started with — widening a running phase's authority by editing a file is
+  exactly what freezing exists to prevent. `frozenPhaseGrants`
+  (`internal/app/app_session_runtime.go`) reads them back and drops any name this build does not
+  recognize, so an old snapshot cannot hand out authority the code cannot
+  enforce.
+- **`report-back` is deliberately NOT in the v1 set** even though spec §5 lists
+  it. The other four map onto CLI commands that already exist; `report-back`
+  does not yet have a defined destination or payload contract, and shipping a
+  grant name that authorizes nothing would be a promise the enforcement layer
+  cannot keep. It stays out until it is ratified with a contract; §5 is
+  unchanged and the orchestrator owns surfacing the gap.
+
+## Unit and join envelopes
+
+- `EnvelopeContract` is the one thing schema generation and post-validation are
+  written against, so a unit cannot drift from the rules a phase is held to.
+  `PhaseEnvelope(phase)` and `UnitEnvelope(unit)` differ only in the
+  declarations they carry and the element name diagnostics blame.
+  `EnvelopeSchema` / `ValidateEnvelope` remain the phase-level shorthands.
+- The control fields are `status`, `outputs`, `question`, `reason`, and
+  `narrative`. **`narrative` is the one field with no branch rule**: a done, a
+  question, and a stuck element all did work worth an account, so refusing it
+  anywhere would burn the element's single envelope retry on the one field that
+  is never a mistake. It exists because Codex applies a turn's `outputSchema` to
+  EVERY assistant message in that turn — an element under a schema cannot emit
+  prose there at all, so "send your narrative as the message before your
+  envelope" was an instruction only Claude could follow. Outputs nest under
+  `outputs`, so an author may still declare an output literally named
+  `narrative` and the two never meet — no reserved-name check is needed or
+  wanted.
+- **The generated schema requires every control key; post-validation requires
+  only `status`.** Strict mode has no optional, only required-and-nullable
+  (`internal/providerschema`), so the schema lists all five and a provider under
+  it emits all five, answering null where it has nothing to say. Post-validation
+  reads back what that null MEANT rather than the null itself: an absent
+  `question`, `reason`, or `narrative` is that null, and an absent `outputs` is
+  an empty one — a `done` element still owes every declared output, so an
+  envelope that omits the key is told which deliverables are missing, never that
+  a container is. `status` is the one literal requirement, because it is the
+  discriminator and a document without it is not an envelope. The keys a schema
+  forces onto a provider are not a debt a hand-written envelope owes: a tool
+  command's envelope, and every envelope frozen before a field existed, carry no
+  null boilerplate and are judged identically to one that does.
+- **`memory` is the second field with no branch rule**, and the second one the
+  app lifts out. It carries an array of `{kind, text, files}` campaign-memory
+  notes; a `read-only` element records through it because it cannot reach the
+  `agent-overflow memory add` verb at all (see `internal/workflow/runner`), and
+  a `write` element is told to leave it null. Post-validation accepts it from
+  either — one contract, one rule set — so a write element that answers it has
+  its notes recorded rather than dropped. What a note IS lives in
+  `internal/workflow/memory` (the closed kind vocabulary, the text/file bounds,
+  `ValidateDraft`); `envelope_memory.go` adds only the schema fragment and the
+  two things a schema cannot express: the per-envelope count bound
+  (`MaxEnvelopeMemoryNotes`, 20) and the refusal of an author-supplied
+  `provenance` / `at` / `wave`, reported as `property is not allowed` rather
+  than ignored, because a field an element is told is merely ignored keeps
+  getting sent.
+- The field has to be in the GENERATED schema, not merely tolerated by
+  post-validation: the top-level object is closed, so a provider under it
+  physically cannot emit a property the schema does not declare. It is
+  required-and-nullable like every other control field, since strict mode has no
+  optional.
+- `SplitEnvelopeNarrative` is the seam the app lifts that field out at,
+  `SplitEnvelopeMemory` is its twin for the notes, and
+  `EnvelopeAccount` is what narrative recovery reads an envelope-SHAPED document
+  with (a top-level `status`, weaker than the document-identity test recovery
+  applies to the accepted envelope). Both live here because this package owns
+  what an envelope is; neither validates, and both return their input untouched
+  when it is not one.
+- A unit may declare its own `outputs:`, validated by the same name grammar,
+  schema vocabulary, and reserved-tool-output rules a phase's are. A unit that
+  declares none gets the control-only envelope: `status`, `question`, `reason`,
+  and an `outputs` with nothing to answer — empty, null, and absent are one
+  answer there, since no declaration is being withheld. The run still has to
+  learn done/question/stuck from it.
+- A **call unit** declares none either, and for the opposite reason: its
+  envelope is the *child workflow's* declared `outputs:`, synthesized from the
+  child run rather than authored, so any declaration here duplicates or
+  contradicts a contract this definition does not own.
+- A **join** declares none at all: its envelope IS the phase's, so the only
+  contract it can answer is the phase's `outputs:`, and a second declaration
+  would name outputs the gate never reads. A join may not be a `call:` for the
+  same reason it declares no outputs — the phase's continuations
+  (`Answer`, `CompleteTakeover`, a resume in place) are continuations of the
+  join's own session, and a child run is not one. That also means what produces a
+  phase's envelope follows the join — `PhaseProducesToolEnvelope` reports true
+  for a fan-out whose join is a command, so `PhaseOutputs` merges `passed` /
+  `exit-code` exactly as it does for a `driver: tool` phase and the synthesized
+  tool envelope validates against its own phase contract.
+- A fan-out phase runs no turn of its own, so **any** `driver:` on the phase is
+  a finding (see "Fan-out authoring"): the binding would never run, and "what
+  produces this phase's envelope" would be ambiguous between the phase and its
+  join.
+- `JoinDeclarations(phase)` binds the reserved `units` name last so a phase
+  input can never shadow the results a join exists to consolidate. The
+  reference grammar has no indexing, so `{{units}}` — the whole array rendered
+  as JSON — is the supported form in a join prompt or command.
 
 ## The merge-join contract: `accounts_for_units:`
 

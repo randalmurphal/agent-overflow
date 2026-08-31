@@ -14,10 +14,10 @@ Pure validators and parsers for the two thread-mode axes:
   AI-reviewed tier, became legal here with no edit to this package).
 
 The package owns the legal value sets, normalisation (trim), and a clear
-error path for unknown values. Everything stateful (persisting, emitting
-`thread:mode_changed` / `thread:runtime_mode_changed`, restarting active
-sessions) lives in the main package's `app_thread_interaction_mode.go`
-and `app_runtime_mode.go`, which compose this package's pieces.
+error path for unknown values. Everything stateful—persisting, emitting
+`thread:mode_changed` / `thread:runtime_mode_changed`, and restarting active
+sessions—lives in `internal/app/app_thread_bindings.go` and
+`internal/app/app_runtime_mode.go`, which compose this package's pieces.
 
 ## Surface
 
@@ -48,7 +48,7 @@ and `app_runtime_mode.go`, which compose this package's pieces.
   constants. It does not import anything else.
 - The validators are pure: same inputs always produce the same outputs,
   no clocks, no globals, no I/O. That keeps the active-session restart
-  orchestration in the main package easy to test against fixed inputs.
+  orchestration in `internal/app` easy to test against fixed inputs.
 - Saga-owned threads are intentionally not accepted by the public validators. The
   `StartDiscussion` saga creates discussion-mode threads directly via
   the store; routing those through `ValidateCreate` would let any UI

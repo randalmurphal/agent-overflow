@@ -4,12 +4,11 @@ Pure prompt builders, thread-context formatter, decoder, and sanitisers
 behind the thread title flow, both first-turn generation and the
 user-triggered regeneration.
 
-The App-coupled glue (workspace resolution, settings routing, image
-attachment plumbing, the store read behind the regeneration context, and
-the compare-and-swap into `store.UpdateTitleIfCurrent`) stays in
-`app_thread_title.go`. This package only knows how to assemble the
-prompt, parse the structured output, and trim the model's response into
-a well-formed title.
+Application coordination — image attachment selection, regeneration-context
+reads, per-thread singleflight, and compare-and-swap persistence — lives in
+`internal/threadtitleapp`. `internal/app` retains workspace/settings routing
+and provider CLI execution. This package only assembles prompts, parses
+structured output, and trims the model response into a well-formed title.
 
 ## Surface
 

@@ -1,7 +1,8 @@
 // methodgen produces internal/transport/methods_gen.go: a static map
 // of every exported method the wire-level dispatcher should expose,
 // keyed by name. The scan targets are the receiverSpecs list below —
-// one entry today (the repo-root App), an explicit list because
+// one entry today (the internal/app App promoted by the root wrapper),
+// an explicit list because
 // docs/architecture/root-decomposition.md promotes services into
 // internal packages that keep registering under main.App. Used by:
 //
@@ -76,8 +77,9 @@ func (s receiverSpec) fqnType() string {
 }
 
 // receiverSpecs is the full set of receivers whose methods belong in
-// the generated table. One entry today: the App in the repo root,
-// registered as main.App.<Method>.
+// the generated table. One entry today: the App implementation in
+// internal/app, promoted by the root wrapper and registered as
+// main.App.<Method>.
 //
 // Harness (also a repo-root receiver registered as main.Harness) is
 // deliberately absent. The generated table is the App allow-list —
@@ -87,7 +89,7 @@ func (s receiverSpec) fqnType() string {
 // would put boot-mode-only methods into the production allow-list and
 // into the LAN-safety classification gate that partners it.
 var receiverSpecs = []receiverSpec{
-	{Dir: ".", Receiver: "App", Package: "main"},
+	{Dir: "internal/app", Receiver: "App", Package: "main"},
 }
 
 // loadInternalSkipList parses internal/transport/internalmethods.go

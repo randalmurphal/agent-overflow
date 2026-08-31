@@ -15,7 +15,7 @@ import (
 // rule has to hold on both sides of the split: the send path asks "did the
 // user invoke a command", and history rendering asks "where in this row's text
 // does the command its meta names appear". The TABLE of commands and what each
-// one expands to lives in the main package, where the resolvers can reach the
+// one expands to lives in `internal/app`, where the resolvers can reach the
 // store. The frontend's own copy of the rule is
 // `frontend/src/lib/utils/commandWords.ts` (with the registry in
 // `frontend/src/lib/components/composer/slashCommands.ts`) — the two are
