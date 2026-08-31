@@ -938,8 +938,10 @@ RPC surface only as a privileged local path. Any App-bound method added or chang
 for this path must use that surface. If it spawns or steers provider processes,
 touches local files,
 mutates config/trust, handles credentials, or writes attachments, annotate it
-with the `//ao:scope` naming that capability, so the derived `LocalOnlyMethods`
-keeps non-loopback peers from enumerating or invoking it.
+with the `//ao:scope` naming that capability, so the per-call scope gate
+(`transport.AuthorizeSessionMethod`) refuses a session that was not granted it.
+A relay path that has no remote form at all takes `//ao:scope host`, which no
+session may hold.
 
 - **Launch:** `claude` in a PTY, `CLAUDE_CONFIG_DIR=<isolated-or-user-config>`,
   `ANTHROPIC_BASE_URL=<per-session loopback gateway>`, `--permission-mode default`,
