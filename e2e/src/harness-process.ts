@@ -100,20 +100,11 @@ async function captureProcessIdentityOnce(pid: number): Promise<ProcessIdentity>
       throw new Error(`harness watchdog: incomplete /proc/${pid}/stat`);
     }
     const { stdout: executable } = await execFile('/usr/bin/readlink', [`/proc/${pid}/exe`]);
-<<<<<<< HEAD
-    // groupId comes from the same stat line (field 5, pgrp), as it does on
-    // darwin. Without it every process-GROUP consumer degrades to undefined
-    // and the reaping regression tests pass vacuously on Linux.
-    return { pid, birth: fields[19], executable: executable.trim(), groupId: Number(fields[2]) };
-||||||| 34622f98
-    return { pid, birth: fields[19], executable: executable.trim() };
-=======
     // Field 2 after comm is pgrp. A Linux identity without it carries no
     // process group, so captureProcessGroupMemberProof declines every identity
     // and teardown loses the member proof that authenticates escalation once
     // the group leader has exited.
     return { pid, birth: fields[19], executable: executable.trim(), groupId: Number(fields[2]) };
->>>>>>> worktree-agent-a61b245f8a4a9071f
   }
   if (process.platform === 'darwin') {
     const [{ stdout: birth }, { stdout: executable }, { stdout: group }] = await Promise.all([
@@ -255,22 +246,6 @@ export async function processTreeRSS(identity: ProcessIdentity): Promise<number>
   return total;
 }
 
-<<<<<<< HEAD
-// processExecutable resolves /proc/<pid>/exe, which every proof consumer
-// requires and which the row builder therefore has to carry. Undefined
-// rather than throwing: another user's process, a kernel thread, or one
-// that exited mid-scan all fail this readlink, and dropping those rows
-// would take their RSS and their parent links with them.
-async function processExecutable(pid: number): Promise<string | undefined> {
-  try {
-    return await readlink(`/proc/${pid}/exe`);
-  } catch {
-    return undefined;
-  }
-}
-
-||||||| 34622f98
-=======
 /**
  * Resolve the executable behind a process row. Linux rows come from /proc,
  * where the path costs one readlink per process, and the watchdog samples
@@ -288,7 +263,6 @@ async function rowExecutable(row: ProcessRow): Promise<string | undefined> {
   }
 }
 
->>>>>>> worktree-agent-a61b245f8a4a9071f
 async function processRows(): Promise<ProcessRow[]> {
   if (process.platform === 'linux') {
     // Names only. A withFileTypes scan lstats every entry procfs reports as an
@@ -311,7 +285,6 @@ async function processRows(): Promise<ProcessRow[]> {
           pid,
           ppid: Number(fields[1]),
           birth: fields[19],
-          executable: await processExecutable(pid),
           groupId: Number(fields[2]),
           rssBytes: Number(rss[1]) * 1024,
         });
