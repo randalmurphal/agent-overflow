@@ -42,6 +42,13 @@ import (
 // goroutine on a queue nothing will drain again.
 const wkCallTimeout = 10 * time.Second
 
+// wkClearTimeout bounds the whole site-data clear. wkCallTimeout bounds ONE
+// main-thread dispatch; this covers WebKit's own asynchronous removal of every
+// store it holds — one round trip per workspace the user has ever opened — so
+// it is deliberately longer. The Settings button must fail rather than park its
+// caller forever on a WebKit callback that never arrives.
+const wkClearTimeout = 30 * time.Second
+
 // wkAlive reports whether there is an app loop to dispatch to at all. It is the
 // difference between "this will never run" and "this did not run yet", which is
 // what decides who owns a C allocation a closure would have freed.
@@ -130,6 +137,14 @@ func aoWKVEvalDone(callID C.uint64_t, jsonText *C.char, errText *C.char) {
 	wkCompleteCall(uint64(callID), wkCallResult{
 		json: wkTakeString(jsonText), err: wkTakeString(errText),
 	})
+}
+
+//export aoWKVClearDone
+func aoWKVClearDone(callID C.uint64_t, errText *C.char) {
+	// Lands on the main queue, like every other export here, and does nothing
+	// but the registry lookup and one buffered send — never a wkDo, which would
+	// queue behind the very main-thread turn this is running on.
+	wkCompleteCall(uint64(callID), wkCallResult{err: wkTakeString(errText)})
 }
 
 //export aoWKVSnapshotDone
@@ -349,6 +364,39 @@ func wkNewStore(identifier string, ephemeral bool) (unsafe.Pointer, error) {
 
 func wkFreeStore(store unsafe.Pointer) {
 	wkDo(func() { C.ao_wkv_store_free(store) })
+}
+
+// wkClearSiteData removes every WKWebsiteDataStore this app has created, which
+// IS this engine's whole persisted site data: only +dataStoreForIdentifier:
+// stores are enumerable, every one of them is a workspace store AO asked for
+// inside this app's container, and the SPA webview's default store has no
+// identifier and is never returned. There is no directory to delete beside it —
+// WebKit owns where those stores live, which is exactly why this engine has to
+// implement the capability at all.
+//
+// It deliberately does NOT need a started engine: removal is class-level WebKit
+// API with no view, no store object, and no host in it, and the Settings button
+// must work on a Mac that has not opened a browser page this run. What it does
+// need is the app loop wkDo dispatches to — always there in the desktop app,
+// and a build without one has no engine to reach this through.
+func wkClearSiteData(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, wkClearTimeout)
+	defer cancel()
+	if !wkAlive() {
+		return errWKUnavailable
+	}
+	id, ch := wkRegisterCall()
+	if !wkDo(func() { C.ao_wkv_clear_data(C.uint64_t(id)) }) {
+		wkCallByID.Delete(id)
+		return errWKUnavailable
+	}
+	select {
+	case result := <-ch:
+		return wkClearSiteDataFailure(result.err)
+	case <-ctx.Done():
+		wkCallByID.Delete(id)
+		return ctx.Err()
+	}
 }
 
 func wkNewView(store unsafe.Pointer, pageID, profileID uint64, userScript, consoleHandler, downloadDir string) (unsafe.Pointer, error) {

@@ -66,6 +66,22 @@ int ao_wkv_host_presented(void *view);
 void *ao_wkv_store_new(const char *identifier_uuid, int ephemeral);
 void ao_wkv_store_free(void *store);
 
+// ao_wkv_clear_data removes EVERY WKWebsiteDataStore this app created and
+// reports completion to aoWKVClearDone under call_id: a NULL error on success,
+// otherwise the per-store failure descriptions joined by newlines, which the Go
+// half folds into one message.
+//
+// "All of them" IS exactly this engine's site data. The only enumerable stores
+// are the ones +dataStoreForIdentifier: made, every one of them is a workspace
+// store AO asked for inside this app's own container, and the SPA webview's
+// default store carries no identifier and is therefore never returned.
+//
+// Below macOS 14 there is no +dataStoreForIdentifier: at all: every workspace
+// ran on +nonPersistentDataStore, nothing persistent was ever written, and
+// there is genuinely nothing to remove. That is reported as SUCCESS with zero
+// identifiers, never as an error.
+void ao_wkv_clear_data(uint64_t call_id);
+
 // ---- view ----------------------------------------------------------------
 
 // ao_wkv_view_new creates a hidden page view bound to a store, with the console

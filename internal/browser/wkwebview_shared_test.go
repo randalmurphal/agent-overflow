@@ -6,11 +6,12 @@ import (
 	"testing"
 )
 
-// The WKWebView engine's testable half is everything pure. These two rules are
-// the ones a macOS-only mistake would be silent about: an identifier WebKit
-// rejects costs a workspace its isolation without an error anywhere, and a
-// full-document capture size that ignores its bounds turns one screenshot into
-// an unbounded allocation.
+// The WKWebView engine's testable half is everything pure. These rules are the
+// ones a macOS-only mistake would be silent about: an identifier WebKit rejects
+// costs a workspace its isolation without an error anywhere, a full-document
+// capture size that ignores its bounds turns one screenshot into an unbounded
+// allocation, and a site-data clear that reports the wrong outcome tells the
+// user their cookies are gone when they are not, or the reverse.
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
@@ -54,6 +55,50 @@ func TestClampDocumentCaptureGrowsToATallDocument(t *testing.T) {
 	got := clampDocumentCapture(1280, 5_000, 1280, 800)
 	if got.width != 1280 || got.height != 5_000 {
 		t.Fatalf("clamped = %+v, want the document's own height", got)
+	}
+}
+
+// Nothing removed and nothing TO remove are both success. The second is the
+// macOS 11-13 answer and the answer of any Mac that never persisted site data,
+// and reporting it as a failure would tell the user the button did not work.
+func TestClearSiteDataFailureTreatsNothingRemovedAsSuccess(t *testing.T) {
+	for _, reported := range []string{"", "\n", "  \n \n"} {
+		if err := wkClearSiteDataFailure(reported); err != nil {
+			t.Fatalf("wkClearSiteDataFailure(%q) = %v, want nil: zero identifiers is a cleared engine", reported, err)
+		}
+	}
+}
+
+func TestClearSiteDataFailureNamesTheReason(t *testing.T) {
+	err := wkClearSiteDataFailure("the file is locked\n")
+	if err == nil {
+		t.Fatal("a reported removal failure must not be swallowed: the user would be told their site data is gone")
+	}
+	if !strings.Contains(err.Error(), "the file is locked") {
+		t.Fatalf("error %q must carry WebKit's own reason", err)
+	}
+}
+
+// WebKit answers once per store, so an unwritable container reports the same
+// sentence once per workspace the user has ever opened. One line, not a
+// transcript — and never a count that hides how many stores actually failed.
+func TestClearSiteDataFailureFoldsRepeatedAndExcessReasons(t *testing.T) {
+	repeated := wkClearSiteDataFailure("same reason\nsame reason\nsame reason\nsame reason")
+	if repeated == nil {
+		t.Fatal("repeated failures are still failures")
+	}
+	if got := strings.Count(repeated.Error(), "same reason"); got != 1 {
+		t.Fatalf("error %q repeats one reason %d times", repeated, got)
+	}
+	many := wkClearSiteDataFailure("one\ntwo\nthree\nfour\nfive")
+	if many == nil {
+		t.Fatal("five failures are still failures")
+	}
+	if !strings.Contains(many.Error(), "and 2 more") {
+		t.Fatalf("error %q must account for the reasons it did not name", many)
+	}
+	if strings.Contains(many.Error(), "five") {
+		t.Fatalf("error %q names more than %d reasons", many, wkClearFailureLimit)
 	}
 }
 

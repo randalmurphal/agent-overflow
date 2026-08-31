@@ -22,6 +22,7 @@ extern int aoWKVPagePresented(uint64_t page_id);
 extern void aoWKVDownloadStarted(uint64_t profile_id, uint64_t page_id, uint64_t download_id,
                                  void *download, char *uri, char *suggested);
 extern void aoWKVDownloadFinished(uint64_t download_id, double received, int state, char *path);
+extern void aoWKVClearDone(uint64_t call_id, char *err);
 
 // The download state vocabulary the Go seam uses (driver.go).
 #define AO_DL_IN_PROGRESS 0
@@ -578,6 +579,79 @@ void ao_wkv_store_free(void *store) {
     if (store != NULL) {
       [(WKWebsiteDataStore *)store release];
     }
+  }
+}
+
+// ao_clear_all_data_stores is the macOS 14+ body of ao_wkv_clear_data. It is a
+// separate API_AVAILABLE function for the same reason ao_attach_download is:
+// the work happens inside nested block literals, and annotating the function is
+// how the whole nested body inherits the availability context rather than
+// depending on how far an `if (@available)` reaches into a block.
+//
+// The Manager calls this only after closeBrowser, so no page, profile, or live
+// store exists — which matters, because a data store still in use is the one
+// thing removal refuses.
+API_AVAILABLE(macos(14.0))
+static void ao_clear_all_data_stores(uint64_t call_id) {
+  [WKWebsiteDataStore fetchAllDataStoreIdentifiers:^(NSArray<NSUUID *> *identifiers) {
+    NSUInteger total = [identifiers count];
+    if (total == 0) {
+      // No stores is a cleared engine, not a failure.
+      aoWKVClearDone(call_id, NULL);
+      return;
+    }
+    // One outcome string per finished removal, "" for success: the tally and
+    // the failure list are then the same object and no __block counter is
+    // needed (a __block object is not retained by the blocks that capture it,
+    // which is the MRC trap this shape avoids). Owned by the +1 from -alloc
+    // and released by the last tally turn; every block capturing it retains it
+    // until then.
+    NSMutableArray<NSString *> *outcomes = [[NSMutableArray alloc] init];
+    for (NSUUID *identifier in identifiers) {
+      [WKWebsiteDataStore
+          removeDataStoreForIdentifier:identifier
+                     completionHandler:^(NSError *error) {
+                       NSString *outcome = error == nil ? @"" : [error localizedDescription];
+                       // Hopped onto the main queue so the tally is
+                       // single-threaded whichever queue WebKit answered on,
+                       // and so aoWKVClearDone lands on the same thread every
+                       // other //export in this file does. The Go side is
+                       // bounded by its own deadline, so a run loop that never
+                       // drains this is a timeout, never a parked goroutine.
+                       dispatch_async(dispatch_get_main_queue(), ^{
+                         [outcomes addObject:outcome == nil ? @"" : outcome];
+                         if ([outcomes count] < total) {
+                           return;
+                         }
+                         NSMutableArray<NSString *> *failures = [NSMutableArray array];
+                         for (NSString *reported in outcomes) {
+                           if ([reported length] > 0) {
+                             [failures addObject:reported];
+                           }
+                         }
+                         // Joined raw; wkClearSiteDataFailure owns the shape of
+                         // the sentence a human reads.
+                         char *text = [failures count] == 0
+                                          ? NULL
+                                          : ao_dup([failures componentsJoinedByString:@"\n"]);
+                         [outcomes release];
+                         aoWKVClearDone(call_id, text);
+                       });
+                     }];
+    }
+  }];
+}
+
+void ao_wkv_clear_data(uint64_t call_id) {
+  @autoreleasepool {
+    if (@available(macOS 14.0, *)) {
+      ao_clear_all_data_stores(call_id);
+      return;
+    }
+    // Below macOS 14 every workspace ran on +nonPersistentDataStore
+    // (ao_wkv_store_new above), so no persistent site data was ever written and
+    // there is nothing to remove. Zero identifiers is success.
+    aoWKVClearDone(call_id, NULL);
   }
 }
 

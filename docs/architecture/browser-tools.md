@@ -33,8 +33,11 @@ host rect. The user and agent share its URL, DOM, cookies, history, focus, and
 tab set; no separate browser window or duplicate browsing session is opened.
 
 The Browser settings panel also exposes a destructive **Clear site data**
-action. It closes the workspace's pages first, then deletes the profile
-directory, so a later teardown cannot write the cleared state back.
+action. It closes every browser page first, then clears both places site data
+can live: the AO-owned profile directory, and — on an engine that keeps its own
+store somewhere AO cannot reach by path — that engine's own state. Closing
+first is load-bearing: a later teardown would otherwise write the cleared state
+back.
 
 ## Ownership and lifecycle
 
@@ -190,6 +193,12 @@ so the differences are only where the platform itself differs:
   the site-data setting has no effect there and every workspace is
   in-memory-only. A macOS too old for `-callAsyncJavaScript:` has no engine
   at all, and therefore no browser tools.
+- **Clearing site data is WebKit's removal, not a directory delete.** Because
+  WebKit owns where those stores live, Clear site data asks it to remove every
+  data store AO created — all of them, and only them: the app's own SPA webview
+  uses the unidentified default store, which is never one of them. A Mac with
+  no persistent stores to remove, including every macOS 11–13 one, clears
+  successfully with nothing to do.
 - **Devtools are Safari's.** Views are marked inspectable, and inspection
   happens from Safari's Develop menu rather than an in-app inspector.
 - **A full-page screenshot resizes the view.** WebKit's macOS snapshot cannot

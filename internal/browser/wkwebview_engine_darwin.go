@@ -131,6 +131,23 @@ func (e *wkEngine) Stop() {
 	}
 }
 
+// ClearSiteData is this engine's half of the Settings action (engineSiteData in
+// driver.go, spec §4). WebKit owns the directory +dataStoreForIdentifier:
+// persists into, so the Manager's tree delete reaches none of it and the clear
+// has to be WebKit's own removal of every store this app created.
+//
+// The Manager calls it only after closeBrowser, so nothing is live to refuse
+// removal. A stopped or never-started engine still clears: nothing below
+// touches a view, the host, or e.mu, so there is no state to be missing and no
+// lock to deadlock against.
+func (e *wkEngine) ClearSiteData(ctx context.Context) error {
+	return wkClearSiteData(ctx)
+}
+
+// The Manager finds this capability by TYPE ASSERTION, so a signature that
+// drifted would silently stop clearing rather than fail to build.
+var _ engineSiteData = (*wkEngine)(nil)
+
 // holdPopup takes ownership of an engine-created view until the Manager adopts
 // or discards it. The engine never decides which.
 func (e *wkEngine) holdPopup(view unsafe.Pointer) string {

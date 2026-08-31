@@ -190,6 +190,20 @@ builder for macOS.
   directory: there is NO macOS counterpart to the AO-owned `browser-profiles/`
   tree (spec §4), and on macOS 11–13 the site-data setting has no effect at all.
   Do not invent a directory to make the platforms look alike.
+- Clearing is therefore WebKit's own call, never a tree delete. The engine
+  implements `engineSiteData` by removing EVERY identifier
+  `+fetchAllDataStoreIdentifiers:` reports, each through
+  `+removeDataStoreForIdentifier:completionHandler:` — and "all of them" is
+  exactly this engine's site data, because the only enumerable stores are the
+  ones `+dataStoreForIdentifier:` made inside this app's own container, while
+  the SPA webview's default store carries no identifier and is never returned.
+  Zero identifiers is SUCCESS (macOS 11–13 had only non-persistent stores, so
+  nothing persistent was ever written), and the clear needs NO started engine:
+  it is class-level API with no view, no store object, no host, and no engine
+  lock in it. The tally of the per-store answers is folded into one sentence by
+  the tag-free `wkClearSiteDataFailure`, for the usual reason — a clear that
+  misreports its outcome tells the user their cookies are gone when they are
+  not.
 - A full-page or clipped screenshot RESIZES the view, captures, and restores:
   `WKSnapshotConfiguration` cannot reach past the view's bounds, unlike
   WebKitGTK's `FULL_DOCUMENT` region. Frames are normalized to one image pixel
@@ -293,7 +307,8 @@ builder for macOS.
   (`manager_test.go`) because its only failure mode is a silently launched
   browser. It is also what keeps `make go-test` display-free.
 - Both WebKit engines' testable half is everything pure: the JS builders, the
-  screenshot pixel path, the profile identifier, and the platform half of
+  screenshot pixel path, the profile identifier, the site-data clear's outcome
+  fold, and the platform half of
   engine selection. Their live half needs a real GTK or AppKit
   window and is proven by running the desktop app, not by the suite. A rule
   whose only failure mode is silent belongs in the tag-free half: a malformed

@@ -150,8 +150,10 @@ func TestAuthorizeFileStaysWithinGrantedRoots(t *testing.T) {
 	}
 }
 
-// Clearing site data deletes the ENGINE's profile tree (spec §4). There is no
-// checkpoint left to clear, so the directory IS the site data.
+// Clearing site data deletes the AO-owned profile tree (spec §4). There is no
+// checkpoint left to clear, so for an engine that keeps its data under that
+// tree the directory IS the site data; an engine whose store lives elsewhere
+// clears its own through engineSiteData, which needs the real platform.
 func TestClearSiteDataRemovesTheProfileTree(t *testing.T) {
 	configDir := t.TempDir()
 	manager := NewManager(configDir, Config{Enabled: true}, ManagerOptions{FakeEngine: true})
